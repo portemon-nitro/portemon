@@ -414,6 +414,10 @@ local function followerIsEventTrigger(ins)
   }
 end
 
+local function followerInteract(_)
+  return { op = "follower_interact" }
+end
+
 local function followerIsActive(ins)
   -- ScrCmd_729 writes the live active-state query into its result variable.
   return { op = "follower_is_active", result = Operands.varRef(ins.operands[1]) }
@@ -1006,6 +1010,21 @@ local function partyMonRibbonCount(ins)
   }
 end
 
+local function partyMonShinyLeafCount(ins)
+  return {
+    op = "party_mon_shiny_leaf_count",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function tryGiveShinyLeafCrown(ins)
+  return {
+    op = "try_give_shiny_leaf_crown",
+    slot = Operands.varRef(ins.operands[1]),
+  }
+end
+
 local function partyRibbonCount(ins)
   return { op = "party_ribbon_count", result = Operands.varRef(ins.operands[1]) }
 end
@@ -1484,6 +1503,8 @@ return {
   [457] = partyMonNature,
   [458] = partySlotWithNature,
   [478] = partyMonRibbonCount,
+  [825] = partyMonShinyLeafCount,
+  [826] = tryGiveShinyLeafCrown,
   [479] = partyRibbonCount,
   [496] = partyLead,
   [529] = partyLeadAlive,
@@ -1528,6 +1549,7 @@ return {
   [621] = placeStarterBalls,
   [609] = yieldFollowerCheck,
   [698] = followerIsEventTrigger,
+  [711] = followerInteract,
   [729] = followerIsActive,
   [294] = checkBadge,
   [295] = awardBadge,

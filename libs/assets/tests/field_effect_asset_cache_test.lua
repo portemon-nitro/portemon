@@ -6,7 +6,7 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
-local EXPECTED_MARKER = "field-effect-cache-v8:rom:dep"
+local EXPECTED_MARKER = "field-effect-cache-v9:rom:dep"
 
 local function validModel()
   return {
@@ -128,10 +128,32 @@ local function validDynamicModel()
   }
 end
 
+local function validReactionModel(selector)
+  local model = validDynamicModel()
+  model.key = "field-effect:follower-reaction-" .. selector
+  local clip = model.animations[1]
+  clip.category = "material"
+  clip.kind = "pattern"
+  clip.tracks = { { target = "grass", targetIndex = 0 } }
+  clip.compiled = {
+    textureNames = { "reaction.1" },
+    paletteNames = { "reaction" },
+    targets = {
+      {
+        index = 0,
+        name = "grass",
+        rate = 1,
+        keys = { { frame = 0, texIdx = 0, plttIdx = 0 } },
+      },
+    },
+  }
+  return model
+end
+
 local function cache(model, present, marker, omitLifecycle, omitPlacement, extra)
   extra = extra or {}
   local index = {
-    schema = "g4-field-effect-index-v2",
+    schema = "g4-field-effect-index-v3",
     effects = {},
   }
   for _, kind in ipairs({
@@ -149,6 +171,17 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       definition = kind,
       path = FieldEffectAssetCache.definitionPath(kind),
     }
+  end
+  for selector = 1, 14 do
+    local kind = "follower_reaction_" .. selector
+    index.effects[kind] = {
+      kind = "reaction",
+      definition = kind,
+      path = FieldEffectAssetCache.definitionPath(kind),
+    }
+  end
+  if extra.omitReaction then
+    index.effects.follower_reaction_14 = nil
   end
   if extra.omitTrainerReveal then
     index.effects.trainer_reveal = nil
@@ -195,6 +228,18 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
           transition.placementOffset = nil
         end
         return transition
+      end
+      local selector = kind:match("^follower_reaction_(%d+)$")
+      if selector then
+        local reaction = validReactionModel(selector)
+        if extra.malformedReaction and selector == "14" then
+          reaction.key = "field-effect:follower-reaction-13"
+        end
+        return {
+          definition = kind,
+          model = reaction,
+          lifecycle = { mode = "once", frameCount = 4 },
+        }
       end
       if kind == "trainer_reveal" then
         if extra.unknownLifecycleMode then
@@ -261,7 +306,7 @@ T.tests["accepts the current format and rejects the previous format"] = function
       ["texture-a"] = true,
       ["texture-variant"] = true,
       ["grass.mesh"] = true,
-    }, "field-effect-cache-v7:rom:dep"),
+    }, "field-effect-cache-v8:rom:dep"),
     EXPECTED_MARKER
   )
   Assert.isFalse(staleReady)
@@ -284,6 +329,25 @@ T.tests["rejects a missing referenced asset"] = function()
   local ready =
     FieldEffectAssetCache.isReady(cache(validModel(), { ["mesh-a"] = true, ["grass.mesh"] = true }), EXPECTED_MARKER)
   Assert.isFalse(ready)
+end
+
+T.tests["requires all source reaction resources with matching semantic identities"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local missing = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, { omitReaction = true }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(missing, "each compiled reaction must be indexed")
+  local malformed = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, { malformedReaction = true }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(malformed, "reaction definition key must match its cache resource")
 end
 
 T.tests["rejects grass definitions missing lifecycle metadata"] = function()
@@ -388,8 +452,8 @@ T.tests["rejects trainer reveal with missing or malformed placement"] = function
   Assert.isFalse(malformed, "trainer reveal with non-finite placement must not be ready")
 end
 
-local SURF_MARKER = "field-effect-cache-v8:rom:dep"
-local SURF_INDEX_SCHEMA = "g4-field-effect-index-v2"
+local SURF_MARKER = "field-effect-cache-v9:rom:dep"
+local SURF_INDEX_SCHEMA = "g4-field-effect-index-v3"
 
 local function validSurfModel()
   local model = validModel()
@@ -453,6 +517,14 @@ local function surfCache(surfDefinition, mutateIndex)
       },
     },
   }
+  for selector = 1, 14 do
+    local kind = "follower_reaction_" .. selector
+    index.effects[kind] = {
+      kind = "reaction",
+      definition = kind,
+      path = FieldEffectAssetCache.definitionPath(kind),
+    }
+  end
   if mutateIndex ~= nil then
     mutateIndex(index)
   end
@@ -476,6 +548,15 @@ local function surfCache(surfDefinition, mutateIndex)
           models = { validModel(), validDynamicModel() },
           lifecycle = { mode = "once", frameCount = 4, preludeTicks = 2 },
           placementOffset = { x = 0, y = 0.375, z = 0 },
+        }
+      end
+      local selector = kind:match("^follower_reaction_(%d+)$")
+      if selector then
+        local reaction = validReactionModel(selector)
+        return {
+          definition = kind,
+          model = reaction,
+          lifecycle = { mode = "once", frameCount = 4 },
         }
       end
       if kind == "trainer_reveal" then

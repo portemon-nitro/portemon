@@ -87,8 +87,12 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-new-game-init-v3",
     },
     fieldEffects = {
-      cacheFormat = "field-effect-cache-v8",
-      indexSchema = "g4-field-effect-index-v2",
+      cacheFormat = "field-effect-cache-v9",
+      indexSchema = "g4-field-effect-index-v3",
+    },
+    followerInteractions = {
+      cacheFormat = "follower-interaction-cache-v1",
+      schema = "g4-follower-interactions-v3",
     },
     fieldEmotes = {
       cacheFormat = "field-emotes-cache-v2",
@@ -109,7 +113,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     mons = {
       cacheFormat = "mon-cache-v1",
-      catalogSchema = "g4-mon-catalog-v3",
+      catalogSchema = "g4-mon-catalog-v4",
       indexSchema = "g4-mon-index-v2",
       iconManifestSchema = "g4-mon-icon-manifest-v2",
       portraitManifestSchema = "g4-mon-portrait-manifest-v2",

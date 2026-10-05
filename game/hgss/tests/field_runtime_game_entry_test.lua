@@ -140,6 +140,9 @@ local function captureRuntime(overrides)
       options = { textSpeed = "mid", textFrame = 0 },
     },
     fieldTravel = require("libs.hgss.src.field.FieldTravelState").new({ lastHealSpawn = "SPAWN_NEW_BARK" }),
+    fashionCase = require("libs.hgss.src.save.FashionCaseState").new(
+      require("libs.hgss.src.save.FashionCaseState").empty()
+    ),
     session = {
       tick = 42,
       player = {
@@ -220,6 +223,7 @@ end
 
 function T.captureGameSave_returns_a_strict_snapshot_without_storage_io()
   local runtime = captureRuntime()
+  Assert.isTrue(runtime.fashionCase:tryAdd(0))
   local validationCalls = 0
   runtime.saveValidation = {
     contexts = {},
@@ -260,6 +264,7 @@ function T.captureGameSave_returns_a_strict_snapshot_without_storage_io()
   Assert.equal(valid.world.objects.schema, "g4-field-objects-v1")
   Assert.equal(valid.mons.schema, "g4-mons-save-v1", "every save captures the mons bucket")
   Assert.equal(valid.bag.schema, "hgss-bag-v1", "every save captures the bag bucket")
+  Assert.equal(valid.fashionCase.counts[1], 1, "every save captures Fashion Case quantities")
   Assert.equal(scriptCaptureCalls, 1)
   Assert.equal(validationCalls, 1)
 end

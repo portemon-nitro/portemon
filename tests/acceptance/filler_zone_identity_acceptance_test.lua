@@ -47,6 +47,7 @@ function T.tests.action_facing_filler_stays_in_the_current_logical_map()
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),

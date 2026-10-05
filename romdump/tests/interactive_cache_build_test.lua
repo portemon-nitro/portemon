@@ -1718,8 +1718,11 @@ function T.runtime_milestone_carries_bounded_static_services()
     Assert.isTrue(kind ~= "map", "runtime enrolls no visual map: " .. identityKey)
     if kind == "message-bank" then
       Assert.isTrue(
-        key == tostring(MenuProtocol.STANDARD_MESSAGE_BANK) or key == tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
-        "runtime carries only the two protocol menu banks: " .. identityKey
+        key == tostring(MenuProtocol.STANDARD_MESSAGE_BANK)
+          or key == tostring(MenuProtocol.START_MENU_MESSAGE_BANK)
+          or key == "40"
+          or key == "265",
+        "runtime carries the protocol and follower interaction message banks: " .. identityKey
       )
     end
   end
@@ -1989,7 +1992,7 @@ local function sessionMinimalCatalog()
     return curve
   end
   return {
-    schema = "g4-mon-catalog-v3",
+    schema = "g4-mon-catalog-v4",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},

@@ -23,7 +23,38 @@ local function validForm()
     icon = "CHIKORITA/f0",
     portrait = "CHIKORITA/f0/male/plain",
     follower = { visualId = 20153, size = 4, objectParam = 1024 },
+    performance = {
+      power = { base = 3, min = 2, max = 5 },
+      skill = { base = 3, min = 2, max = 5 },
+      speed = { base = 3, min = 2, max = 5 },
+      jump = { base = 3, min = 2, max = 5 },
+      stamina = { base = 3, min = 2, max = 5 },
+    },
   }
+end
+
+function T.forms_require_valid_pokeathlon_performance()
+  local MonAssetSchema = schema()
+  local missing = validForm()
+  missing.performance = nil
+  Assert.isFalse(MonAssetSchema.isValidForm(missing, {}))
+  local badRange = validForm()
+  badRange.performance.power.base = 6
+  badRange.performance.power.max = 5
+  Assert.isFalse(MonAssetSchema.isValidForm(badRange, {}))
+  local badValue = validForm()
+  badValue.performance.stamina.min = 8
+  Assert.isFalse(MonAssetSchema.isValidForm(badValue, {}))
+end
+
+function T.only_source_unindexable_reserved_forms_may_omit_performance()
+  local MonAssetSchema = schema()
+  local reserved = validForm()
+  reserved.performance = nil
+  Assert.isTrue(MonAssetSchema.isValidForm(reserved, { speciesId = 494 }))
+  Assert.isTrue(MonAssetSchema.isValidForm(reserved, { speciesId = 495 }))
+  Assert.isFalse(MonAssetSchema.isValidForm(reserved, { speciesId = 493 }))
+  Assert.isFalse(MonAssetSchema.isValidForm(reserved, {}))
 end
 
 function T.valid_forms_pass_andpredicates_mirror_validators()
@@ -57,7 +88,7 @@ end
 
 local function catalogWith(species, moves, abilities, growthCurves)
   return {
-    schema = "g4-mon-catalog-v3",
+    schema = "g4-mon-catalog-v4",
     version = { id = "heartgold", language = "english" },
     species = species,
     moves = moves,

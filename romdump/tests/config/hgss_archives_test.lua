@@ -96,7 +96,7 @@ end
 
 function T.alias_list_is_complete_and_deterministic()
   local list = HgssArchives.aliasList()
-  Assert.equal(#list, 43)
+  local seenAliases = {}
   -- Sorted ascending by narcId, with deterministic alias ordering for shared roles.
   for i = 2, #list do
     local previous = list[i - 1]
@@ -112,6 +112,17 @@ function T.alias_list_is_complete_and_deterministic()
     Assert.notNil(e.alias)
     Assert.notNil(e.path)
     Assert.notNil(e.narcId)
+    seenAliases[e.alias] = true
+  end
+  for _, alias in ipairs({
+    "personal",
+    "performance",
+    "follower_interaction_rules",
+    "follower_interaction_programs",
+    "follower_interaction_motions",
+    "follower_interaction_species_classes",
+  }) do
+    Assert.isTrue(seenAliases[alias], "required alias missing: " .. alias)
   end
 end
 

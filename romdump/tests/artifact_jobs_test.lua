@@ -36,6 +36,7 @@ local CANONICAL_KEYS = {
   ["actors"] = "global",
   ["starter-choice"] = "global",
   ["items"] = "global",
+  ["follower-interactions"] = "global",
   mart = "global",
   ["bag"] = "global",
   ["mon-catalog"] = "global",
@@ -609,14 +610,20 @@ function T.field_runtime_covers_both_menu_protocol_banks_without_family_summarie
     set["message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK)] == true,
     "field runtime carries the start menu bank"
   )
+  Assert.isTrue(set["message-bank:40"] == true, "field runtime carries follower reaction messages")
+  Assert.isTrue(set["message-bank:265"] == true, "field runtime carries follower reaction messages")
+  Assert.isTrue(set["follower-interactions:global"] == true, "field runtime carries the interaction catalog")
   Assert.isNil(set["message-summary:global"], "field runtime enrolls no message summary")
   Assert.isNil(set["audio-summary:global"], "field runtime enrolls no audio summary")
   for key in pairs(set) do
     local bank = key:match("^message%-bank:(.+)$")
     if bank ~= nil then
       Assert.isTrue(
-        bank == tostring(MenuProtocol.STANDARD_MESSAGE_BANK) or bank == tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
-        "field runtime carries no message bank beyond the two protocol banks: " .. key
+        bank == tostring(MenuProtocol.STANDARD_MESSAGE_BANK)
+          or bank == tostring(MenuProtocol.START_MENU_MESSAGE_BANK)
+          or bank == "40"
+          or bank == "265",
+        "field runtime carries only synchronously addressed message banks: " .. key
       )
     end
   end

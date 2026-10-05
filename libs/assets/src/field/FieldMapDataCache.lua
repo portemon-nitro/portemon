@@ -148,6 +148,14 @@ function FieldMapDataCache.hasRequiredEvents(events)
     if type(event) ~= "table" or type(event.hiddenItem) ~= "boolean" then
       return false
     end
+    local flagId = event.hiddenItemFlagId
+    if event.hiddenItem then
+      if not Validate.isNonNegativeInteger(flagId) or flagId < 800 or flagId > 1799 then
+        return false
+      end
+    elseif flagId ~= nil then
+      return false
+    end
   end
   for _, object in ipairs(events.objects) do
     if

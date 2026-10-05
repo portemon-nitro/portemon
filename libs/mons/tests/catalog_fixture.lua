@@ -52,7 +52,19 @@ CatalogFixture.CHARMAP = {
   [" "] = 0x1DE,
 }
 
-CatalogFixture.GAMES = { heartgold = 7, soulsilver = 8 }
+CatalogFixture.GAMES = {
+  sapphire = 1,
+  ruby = 2,
+  emerald = 3,
+  firered = 4,
+  leafgreen = 5,
+  heartgold = 7,
+  soulsilver = 8,
+  diamond = 10,
+  pearl = 11,
+  platinum = 12,
+  gamecube = 15,
+}
 CatalogFixture.LANGUAGES = { english = 2 }
 CatalogFixture.ITEMS = { NONE = 0, POKE_BALL = 4, GREAT_BALL = 3, SITRUS_BERRY = 158 }
 CatalogFixture.BALLS = { POKE_BALL = 4, GREAT_BALL = 3 }
@@ -111,6 +123,13 @@ local function formEntry(baseStats, types, abilities, tmhm, levelUpMoves, icon, 
     icon = icon,
     portrait = portrait,
     follower = follower,
+    performance = {
+      power = { base = 3, min = 2, max = 5 },
+      skill = { base = 3, min = 2, max = 5 },
+      speed = { base = 3, min = 2, max = 5 },
+      jump = { base = 3, min = 2, max = 5 },
+      stamina = { base = 3, min = 2, max = 5 },
+    },
   }
 end
 
@@ -198,7 +217,7 @@ end
 
 function CatalogFixture.buildAssetRoot()
   local root = {
-    schema = "g4-mon-catalog-v3",
+    schema = "g4-mon-catalog-v4",
     version = { id = "heartgold", language = "english" },
     species = {
       CHIKORITA = speciesEntry({

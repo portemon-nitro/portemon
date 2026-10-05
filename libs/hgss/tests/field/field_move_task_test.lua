@@ -647,6 +647,12 @@ function T.composition_registers_the_field_task()
   local impl = assert(registry:resolve("field_move", 1), "field task must be registered")
   Assert.equal(impl.type, "field_move")
   Assert.equal(impl.version, 1)
+  local followerInteraction = assert(
+    registry:resolve("follower_interaction", 1),
+    "follower interaction task must be registered before save restoration"
+  )
+  Assert.equal(followerInteraction.type, "follower_interaction")
+  Assert.equal(followerInteraction.version, 1)
 end
 
 return { tests = T }

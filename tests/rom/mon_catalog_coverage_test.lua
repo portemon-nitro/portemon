@@ -36,7 +36,7 @@ function T.complete_native_catalog_compiles_and_validates(romFs, versionId)
     Assert.notNil(species.forms[0], key .. " must carry its base form")
     for formId, form in pairs(species.forms) do
       Assert.isTrue(
-        MonAssetSchema.isValidForm(form, { species = key, form = formId }),
+        MonAssetSchema.isValidForm(form, { species = key, speciesId = speciesId, form = formId }),
         key .. " form " .. tostring(formId) .. " must validate"
       )
       covered[MonSources.resolvePersonalMember(speciesId, formId)] = true

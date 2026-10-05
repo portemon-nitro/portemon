@@ -93,6 +93,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     playTimeSeconds = runtime.playTime:seconds(),
     playerData = runtime.playerData,
     fieldTravel = assert(runtime.fieldTravel, "field runtime has no travel state"):capture(),
+    fashionCase = assert(runtime.fashionCase, "field runtime has no Fashion Case state"):capture(),
     world = world,
     scripts = ScriptSave.capture(runtime.scripts.scheduler, session.tick, {
       registryFingerprint = runtime.scripts:registryFingerprint(),

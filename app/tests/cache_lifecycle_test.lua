@@ -75,6 +75,7 @@ local function record(saveId, overrides)
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {},
     bag = BagSave.empty(),
+    fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
     mart = MartSave.empty(),
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},

@@ -61,10 +61,10 @@ local function record(saveId, versionId, playerData)
       schema = "g4-script-save-v1",
       registryFingerprint = "registry",
       taskFingerprint = "tasks",
-      capturedAtSimulationTick = 0,
-      nextEnvironmentId = 0,
-      nextInstanceId = 0,
-      nextTaskId = 0,
+      capturedAtSimulationTick = 41,
+      nextEnvironmentId = 3,
+      nextInstanceId = 5,
+      nextTaskId = 7,
       environments = {},
       instances = {},
       tasks = {},
@@ -75,6 +75,22 @@ local function record(saveId, versionId, playerData)
     bag = BagSave.empty(),
     mart = MartSave.empty(),
   }
+end
+
+local function copy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, child in pairs(value) do
+    result[key] = copy(child)
+  end
+  return result
+end
+
+local function markPreUpdateFingerprints(candidate)
+  candidate.scripts.registryFingerprint = "pre-update-registry"
+  candidate.scripts.taskFingerprint = "pre-update-tasks"
 end
 
 local function fieldObjectActor(overrides)
@@ -111,6 +127,16 @@ local validPlayerData = {
   options = { textFrame = 0, textSpeed = "mid" },
 }
 
+-- A true v4 player profile: the national Dex flag did not exist yet. Copies
+-- so the shared current fixture is never stripped by historical tests.
+local function v4playerData()
+  local playerData = copy(validPlayerData)
+  playerData.profile = copy(validPlayerData.profile)
+  playerData.profile.nationalDex = nil
+  playerData.options = copy(validPlayerData.options)
+  return playerData
+end
+
 function T.full_record_validation_is_shared_and_version_context_is_cached()
   local loads = 0
   local service = GameSaveValidation.new({
@@ -124,8 +150,42 @@ function T.full_record_validation_is_shared_and_version_context_is_cached()
   local second = assert(service:validate(record("save-00000002", "heartgold", validPlayerData)))
   Assert.equal(first.saveId, "save-00000001")
   Assert.equal(second.saveId, "save-00000002")
+  Assert.equal(first.schema, "g4-game-save-v6")
+  Assert.equal(first.fashionCase.schema, "hgss-fashion-case-v1")
   Assert.equal(loads, 1)
   local invalid, err = service:validate(record("save-00000003", "heartgold", { options = {} }))
+  Assert.isNil(invalid)
+  Assert.isTrue(Errors.is(err))
+end
+
+function T.v5_fashion_case_is_required_and_strict_while_v4_migrates()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local current = assert(service:validate(record("save-00000031", "heartgold", validPlayerData)))
+  local missing = {}
+  for key, value in pairs(current) do
+    missing[key] = value
+  end
+  missing.fashionCase = nil
+  local invalid, err = service:validate(missing)
+  Assert.isNil(invalid)
+  Assert.isTrue(Errors.is(err))
+
+  local malformed = {}
+  for key, value in pairs(current) do
+    malformed[key] = value
+  end
+  malformed.fashionCase = { schema = "hgss-fashion-case-v1", counts = {} }
+  invalid, err = service:validate(malformed)
+  Assert.isNil(invalid)
+  Assert.isTrue(Errors.is(err))
+
+  local invalidV4 = record("save-00000032", "heartgold", validPlayerData)
+  invalidV4.fashionCase = { schema = "hgss-fashion-case-v1", counts = {} }
+  invalid, err = service:validate(invalidV4)
   Assert.isNil(invalid)
   Assert.isTrue(Errors.is(err))
 end
@@ -165,11 +225,160 @@ function T.complete_validation_rejects_stale_task_identity()
       return selected
     end,
   })
-  local invalid, err = service:validate(record("save-00000004", "heartgold", validPlayerData))
+  local current = assert(
+    GameSaveValidation.new({
+      contextLoader = function()
+        return context()
+      end,
+    }):validate(record("save-00000004", "heartgold", validPlayerData))
+  )
+  current.scripts.taskFingerprint = "pre-update-tasks"
+  local invalid, err = service:validate(current)
   Assert.isNil(invalid)
   Assert.isTrue(Errors.is(err))
   local validationError = assert(err)
   Assert.equal(validationError.code, "GAME_SAVE_BUCKET_INVALID")
+end
+
+function T.quiescent_v4_saves_rebind_stale_fingerprints_and_preserve_state()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local candidate = record("save-00000018", "heartgold", v4playerData())
+  candidate.schema = "g4-game-save-v4"
+  candidate.mart = nil
+  markPreUpdateFingerprints(candidate)
+  candidate.world.flags = { [12] = true }
+  candidate.world.rng = { state = 91, calls = 37 }
+  candidate.mons = monsBucket()
+  local sourceWorld = copy(candidate.world)
+  local sourcePlayerData = copy(candidate.playerData)
+  local sourceFieldTravel = copy(candidate.fieldTravel)
+  local sourceMons = copy(candidate.mons)
+  local sourceBag = copy(candidate.bag)
+  local sourceScripts = copy(candidate.scripts)
+
+  local valid = assert(service:validate(candidate))
+  Assert.equal(valid.schema, "g4-game-save-v6")
+  Assert.equal(valid.fashionCase.schema, "hgss-fashion-case-v1")
+  Assert.equal(valid.scripts.registryFingerprint, "registry")
+  Assert.equal(valid.scripts.taskFingerprint, "tasks")
+  Assert.equal(valid.scripts.capturedAtSimulationTick, sourceScripts.capturedAtSimulationTick)
+  Assert.equal(valid.scripts.nextEnvironmentId, sourceScripts.nextEnvironmentId)
+  Assert.equal(valid.scripts.nextInstanceId, sourceScripts.nextInstanceId)
+  Assert.equal(valid.scripts.nextTaskId, sourceScripts.nextTaskId)
+  Assert.deepEqual(valid.world, sourceWorld)
+  Assert.equal(valid.playerData.profile.nationalDex, false, "migration introduces the national Dex flag")
+  sourcePlayerData.profile.nationalDex = false
+  Assert.deepEqual(valid.playerData, sourcePlayerData)
+  Assert.deepEqual(valid.fieldTravel, sourceFieldTravel)
+  Assert.deepEqual(valid.mons, sourceMons)
+  Assert.deepEqual(valid.bag, sourceBag)
+  Assert.equal(candidate.schema, "g4-game-save-v4")
+  Assert.equal(candidate.scripts.registryFingerprint, "pre-update-registry")
+  Assert.equal(candidate.scripts.taskFingerprint, "pre-update-tasks")
+  Assert.deepEqual(candidate.scripts, sourceScripts)
+  Assert.isNil(candidate.fashionCase)
+end
+
+function T.active_v4_graphs_reject_without_mutating_the_source()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local candidate = record("save-00000019", "heartgold", v4playerData())
+  candidate.schema = "g4-game-save-v4"
+  candidate.mart = nil
+  markPreUpdateFingerprints(candidate)
+  candidate.scripts.environments = { { environmentId = 1 } }
+  candidate.scripts.instances = { { instanceId = 1 } }
+  candidate.scripts.tasks = { { taskId = 1, taskType = "old_task", taskVersion = 1 } }
+  local before = copy(candidate)
+
+  local invalid, err = service:validate(candidate)
+  Assert.isNil(invalid)
+  local rejection = assert(err)
+  Assert.equal(rejection.code, "GAME_SAVE_SCHEMA_UNSUPPORTED")
+  Assert.equal(rejection.context.schema, "g4-game-save-v4")
+  Assert.isTrue(rejection.message:find("active", 1, true) ~= nil)
+  Assert.deepEqual(candidate, before)
+end
+
+function T.historical_records_with_live_scripts_reject_before_migration()
+  -- A master-era record: national Dex plus mart state, no fashion-case
+  -- state, and a live script graph. The rejection must precede any bucket
+  -- validation, so this fixture needs no catalog fixtures.
+  local candidate = {
+    schema = "g4-game-save-v5",
+    saveId = "save-00000041",
+    versionId = "heartgold",
+    playTimeSeconds = 0,
+    mapId = 60,
+    fieldX = 684,
+    fieldZ = 393,
+    worldY = 0,
+    surfaceId = 0,
+    terrainDependencyHash = "terrain-heartgold",
+    facing = "south",
+    playerData = {
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+      options = { textFrame = 0, textSpeed = "mid" },
+    },
+    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+    world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
+    scripts = {
+      schema = "g4-script-save-v1",
+      registryFingerprint = "pre-update-registry",
+      taskFingerprint = "pre-update-tasks",
+      capturedAtSimulationTick = 41,
+      nextEnvironmentId = 3,
+      nextInstanceId = 5,
+      nextTaskId = 7,
+      environments = { { environmentId = 1 } },
+      instances = { { instanceId = 1 } },
+      tasks = { { taskId = 1, taskType = "old_task", taskVersion = 1 } },
+    },
+    auxiliaryUi = { requested = "shown", state = "shown" },
+    audio = {},
+    mons = {},
+    bag = BagSave.empty(),
+    mart = MartSave.empty(),
+  }
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return {
+        charmap = { G = 1, O = 2, L = 3, D = 4 },
+        frameIndexes = { [0] = true },
+        audioSequenceIds = { [7] = true },
+        scriptCompatibility = {
+          validationOptions = function()
+            return {
+              expectedRegistryFingerprint = "registry",
+              expectedTaskFingerprint = "tasks",
+              resolveTask = function()
+                return nil
+              end,
+              resolveComposition = function()
+                return nil
+              end,
+            }
+          end,
+        },
+      }
+    end,
+  })
+  local before = copy(candidate)
+
+  local invalid, err = service:validate(candidate)
+  Assert.isNil(invalid)
+  local rejection = assert(err)
+  Assert.equal(rejection.code, "GAME_SAVE_SCHEMA_UNSUPPORTED")
+  Assert.equal(rejection.context.schema, "g4-game-save-v5")
+  Assert.isTrue(rejection.message:find("active", 1, true) ~= nil)
+  Assert.deepEqual(candidate, before)
 end
 
 function T.complete_validation_composes_field_object_validation()
@@ -226,7 +435,7 @@ function T.complete_validation_canonicalizes_a_missing_avatar_to_walking()
   Assert.isNil(candidate.avatar)
   local valid = assert(service:validate(candidate))
   Assert.deepEqual(valid.avatar, { state = "walking" }, "a legacy record without avatar state loads as walking")
-  Assert.equal(valid.schema, candidate.schema, "canonicalization preserves the validated schema")
+  Assert.equal(valid.schema, "g4-game-save-v6", "legacy records migrate to the current schema")
 end
 
 function T.complete_validation_round_trips_every_durable_avatar_state()
@@ -293,6 +502,7 @@ local function v3record(saveId, playerData, scripts)
   local value = record(saveId, "heartgold", playerData)
   value.schema = "g4-game-save-v3"
   value.fieldTravel = nil
+  value.mart = nil
   value.playerData = {
     profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
     options = { textFrame = 0, textSpeed = "mid" },
@@ -323,8 +533,10 @@ function T.quiescent_v3_saves_migrate_without_losing_history()
     end,
   })
   local candidate = v3record("save-00000015", validPlayerData, quiescentScripts())
+  candidate.mart = nil
   local valid = assert(service:validate(candidate))
-  Assert.equal(valid.schema, "g4-game-save-v5")
+  Assert.equal(valid.schema, "g4-game-save-v6")
+  Assert.equal(valid.fashionCase.schema, "hgss-fashion-case-v1")
   Assert.equal(valid.playerData.profile.badges, 0)
   Assert.equal(valid.playerData.profile.nationalDex, false)
   Assert.deepEqual(valid.mart, MartSave.empty())
@@ -379,6 +591,70 @@ function T.malformed_v4_travel_is_rejected_never_repaired()
   local invalid, err = service:validate(candidate)
   Assert.isNil(invalid)
   Assert.isTrue(Errors.is(err))
+end
+
+function T.quiescent_historical_records_advance_stepwise_to_the_current_schema()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local v3 = v3record("save-00000301", validPlayerData, quiescentScripts())
+  v3.world.flags = { [12] = true }
+  local fromV3 = assert(service:validate(v3))
+  Assert.equal(fromV3.schema, "g4-game-save-v6")
+  Assert.equal(fromV3.playerData.profile.badges, 0)
+  Assert.equal(fromV3.playerData.profile.nationalDex, false)
+  Assert.deepEqual(fromV3.mart, MartSave.empty())
+  Assert.equal(fromV3.fashionCase.schema, "hgss-fashion-case-v1")
+  Assert.deepEqual(fromV3.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
+  Assert.deepEqual(fromV3.world.flags, { [12] = true })
+  Assert.equal(fromV3.scripts.registryFingerprint, "registry")
+  Assert.equal(fromV3.scripts.taskFingerprint, "tasks")
+  Assert.equal(v3.schema, "g4-game-save-v3")
+  Assert.isNil(v3.fieldTravel)
+
+  local v4 = record("save-00000302", "heartgold", v4playerData())
+  v4.schema = "g4-game-save-v4"
+  v4.mart = nil
+  markPreUpdateFingerprints(v4)
+  local v4scripts = copy(v4.scripts)
+  local fromV4 = assert(service:validate(v4))
+  Assert.equal(fromV4.schema, "g4-game-save-v6")
+  Assert.equal(fromV4.playerData.profile.badges, 0)
+  Assert.equal(fromV4.playerData.profile.nationalDex, false)
+  Assert.deepEqual(fromV4.mart, MartSave.empty())
+  Assert.equal(fromV4.fashionCase.schema, "hgss-fashion-case-v1")
+  Assert.equal(fromV4.scripts.registryFingerprint, "registry")
+  Assert.equal(fromV4.scripts.taskFingerprint, "tasks")
+  Assert.equal(fromV4.scripts.nextTaskId, v4scripts.nextTaskId)
+  Assert.equal(v4.schema, "g4-game-save-v4")
+  Assert.isNil(v4.mart)
+  Assert.isNil(v4.fashionCase)
+end
+
+function T.quiescent_master_records_advance_to_current_without_mutating_source()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local candidate = record("save-00000303", "heartgold", validPlayerData)
+  markPreUpdateFingerprints(candidate)
+  candidate.world.flags = { [12] = true }
+  local before = copy(candidate)
+
+  local valid = assert(service:validate(candidate))
+  Assert.equal(valid.schema, "g4-game-save-v6")
+  Assert.equal(valid.playerData.profile.nationalDex, false)
+  Assert.deepEqual(valid.mart, MartSave.empty())
+  Assert.equal(valid.fashionCase.schema, "hgss-fashion-case-v1")
+  Assert.deepEqual(valid.world.flags, { [12] = true })
+  Assert.equal(valid.scripts.registryFingerprint, "registry")
+  Assert.equal(valid.scripts.taskFingerprint, "tasks")
+  Assert.equal(candidate.schema, "g4-game-save-v5")
+  Assert.isNil(candidate.fashionCase)
+  Assert.deepEqual(candidate, before)
 end
 
 return { tests = T }

@@ -586,6 +586,9 @@ function T.tests.save_capture_is_denied_while_a_field_operation_is_pending()
       options = { textSpeed = "mid", textFrame = 0 },
     },
     fieldTravel = require("libs.hgss.src.field.FieldTravelState").new({ lastHealSpawn = "SPAWN_NEW_BARK" }),
+    fashionCase = require("libs.hgss.src.save.FashionCaseState").new(
+      require("libs.hgss.src.save.FashionCaseState").empty()
+    ),
     session = {
       tick = 42,
       player = { motion = "idle", fieldX = 1, fieldZ = 2, worldY = 0, surfaceId = 1, facing = "south" },

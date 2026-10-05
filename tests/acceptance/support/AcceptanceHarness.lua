@@ -16,6 +16,7 @@ local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs"
 local RepoFs = require("libs.storage.src.RepoFs")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
 
 ---@class AcceptanceHarness
@@ -1070,6 +1071,7 @@ function AcceptanceHarness.new(options)
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+        fashionCase = FashionCaseState.empty(),
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = mons,

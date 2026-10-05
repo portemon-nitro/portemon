@@ -8,6 +8,7 @@ local MartSave = require("libs.hgss.src.save.MartSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MonsSave = require("libs.mons.src.MonsSave")
 local U32 = require("libs.codec.src.U32")
 
@@ -127,6 +128,7 @@ function NewGame.createCandidate(options)
     playerData = nil,
     mons = mons,
     bag = BagSave.empty(),
+    fashionCase = FashionCaseState.empty(),
     mart = MartSave.empty(),
     -- New games start badge-less at the mother's house respawn (the source
     -- default lastSpawn); the candidate carries the travel value record so

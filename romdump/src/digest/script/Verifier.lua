@@ -67,6 +67,7 @@ local BLOCKING_OPS = {
   wait_signpost = true,
   mart_open = true,
   follower_wait = true,
+  follower_interact = true,
 }
 
 -- Operations that end the run phase: yield boundaries and stops.

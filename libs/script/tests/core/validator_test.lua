@@ -307,6 +307,30 @@ function T.request_start_menu_operation_has_no_operands()
   })
 end
 
+function T.follower_and_shiny_leaf_nodes_reject_incomplete_shapes()
+  valid(S.script({ api = 1, id = "x", steps = { { op = "follower_interact" } } }))
+  invalidCode("SCRIPT_SCHEMA_INVALID", {
+    api = 1,
+    id = "x",
+    steps = { { op = "follower_interact", slot = 0 } },
+  })
+  invalidCode("SCRIPT_SCHEMA_INVALID", {
+    api = 1,
+    id = "x",
+    steps = { { op = "party_mon_shiny_leaf_count", slot = 0 } },
+  })
+  invalidCode("SCRIPT_SCHEMA_INVALID", {
+    api = 1,
+    id = "x",
+    steps = { { op = "party_mon_shiny_leaf_count", result = S.var("VAR_LEAVES") } },
+  })
+  invalidCode("SCRIPT_SCHEMA_INVALID", {
+    api = 1,
+    id = "x",
+    steps = { { op = "try_give_shiny_leaf_crown" } },
+  })
+end
+
 function T.trainer_tips_and_wait_signpost_reject_malformed_shapes()
   invalidCode("SCRIPT_SCHEMA_INVALID", {
     api = 1,

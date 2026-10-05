@@ -61,7 +61,6 @@ FollowingMonController.__index = FollowingMonController
 ---@field setMovementType fun(self: FollowingMonController, movementType: string)
 ---@field repositionRelativeToPlayer fun(self: FollowingMonController, offsetSelector: integer, directionRaw: integer)
 ---@field facePlayer fun(self: FollowingMonController)
----@field isEventTrigger fun(self: FollowingMonController, kind: integer, param: unknown): boolean
 ---@field dispose fun(self: FollowingMonController)
 ---@field _descriptor fun(self: FollowingMonController, snapshot: table<string, unknown>): table<string, unknown>?
 ---@field _desiredLead fun(self: FollowingMonController): table<string, unknown>?
@@ -143,11 +142,6 @@ local FOLLOWER_MOVEMENT_TYPES = {
   follow_transition_a = true,
   follow_transition_b = true,
 }
-
--- Trigger kinds the controller answers from live state (corpus-observed
--- 1/2). Anything else is outside the delivered trigger contract and reads
--- false rather than faulting the script.
-local KNOWN_TRIGGER_KINDS = { [1] = true, [2] = true }
 
 ---@class FollowingMonControllerOptions
 ---@field service table<string, unknown> live party service { partyRevision, leadAliveSlot, partyMon }
@@ -1158,22 +1152,6 @@ function FollowingMonController:facePlayer()
   end
   local facing = self._playerOf():committedAnchor().facing
   self._actors:setFacing(partnerId, assert(OPPOSITE_FACING[facing], "player anchor facing is required"))
-end
-
--- Event-trigger check for known trigger kinds: an idle installed partner on
--- a visible map. Unknown kinds read false.
----@param kind integer
----@param _ unknown trigger parameter carried for future trigger kinds
----@return boolean
----@param self FollowingMonController
-function FollowingMonController:isEventTrigger(kind, _)
-  if not self:isVisible() or self._action ~= nil then
-    return false
-  end
-  if KNOWN_TRIGGER_KINDS[kind] ~= true then
-    return false
-  end
-  return self._actors:partnerId() ~= nil
 end
 
 -- Direct player-relative placement: copy the player's committed tile,

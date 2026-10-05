@@ -55,6 +55,7 @@ end
 function T.catalogs_reject_malformed_item_records()
   local ItemAssetSchema = schema()
   local variants = {
+    obsolete_gift_scalar = { naturalGiftPower = 120 },
     invalid_price = { price = 65536 },
     text_ball = { isBall = "yes" },
     negative_id = { nativeId = -1 },
@@ -195,8 +196,8 @@ function T.catalogs_require_held_item_action_metadata()
   badHold.items["ITEM_55"].canHold = "yes"
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badHold))
   local oldSchema = validRoot()
-  oldSchema.schema = "g4-item-catalog-v2"
-  Assert.isFalse(ItemAssetSchema.isValidCatalog(oldSchema), "the v2 schema no longer validates")
+  oldSchema.schema = "g4-item-catalog-v3"
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(oldSchema), "the v3 schema is not accepted")
 end
 
 function T.catalogs_require_party_use_metadata()

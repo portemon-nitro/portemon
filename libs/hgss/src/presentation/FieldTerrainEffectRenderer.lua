@@ -20,7 +20,11 @@ function FieldTerrainEffectRenderer.new(assets, pool)
   assert(pool and pool.meshFor and pool.imageFor and pool.build, "field effect asset pool is required")
   local resources = {}
   pool:build(function()
-    for _, kind in ipairs({ "tall_grass", "very_tall_grass", "trainer_reveal" }) do
+    local kinds = { "tall_grass", "very_tall_grass", "trainer_reveal" }
+    for selector = 1, 14 do
+      kinds[#kinds + 1] = "follower_reaction_" .. selector
+    end
+    for _, kind in ipairs(kinds) do
       local descriptor = assert(assets.effects[kind].model)
       local definition = ModelDefinition.fromNitroDescriptor(descriptor, { key = "field-effect:" .. kind })
       local renderMeshesById = {}
@@ -31,7 +35,7 @@ function FieldTerrainEffectRenderer.new(assets, pool)
       end
       resources[kind] = {
         definition = definition,
-        placementOffset = assert(assets.effects[kind].placementOffset),
+        placementOffset = assets.effects[kind].placementOffset or { x = 0, y = 0, z = 0 },
         renderMeshesById = renderMeshesById,
         wraps = SceneDescriptor.wrapByMaterial(descriptor.materials),
       }
@@ -66,11 +70,13 @@ function FieldTerrainEffectRenderer:drawItems(status, runtimeMap)
     if effect.kind == "trainer_reveal" then
       local point = FieldCoordinates.fieldToWorld(runtimeMap, effect.fieldX, effect.fieldZ, effect.worldY)
       anchorX, anchorY, anchorZ = point.x, point.y, point.z
-    else
-      assert(runtimeMap and runtimeMap.projectPhysicalPoint, "terrain effect runtime map projection is required")
+    elseif runtimeMap.projectPhysicalPoint ~= nil and effect.cellKey ~= nil and effect.sourceSurfaceId ~= nil then
       local point =
         runtimeMap:projectPhysicalPoint(effect.fieldX, effect.fieldZ, effect.cellKey, effect.sourceSurfaceId)
       anchorX, anchorY, anchorZ = point.worldX, point.worldY, point.worldZ
+    else
+      local point = FieldCoordinates.fieldToWorld(runtimeMap, effect.fieldX, effect.fieldZ, effect.worldY)
+      anchorX, anchorY, anchorZ = point.x, point.y, point.z
     end
     local instance = assert(effect.modelInstance, "terrain effect model instance is missing")
     local resource = assert(self.resources[effect.kind], "terrain renderer is missing " .. effect.kind)

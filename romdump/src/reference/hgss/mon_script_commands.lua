@@ -161,6 +161,8 @@ local commands = {
   { opcode = 788, category = "contest" },
   { opcode = 789, category = "contest" },
   { opcode = 790, category = "contest" },
+  { opcode = 825, category = "mon" },
+  { opcode = 826, category = "mon" },
   { opcode = 827, category = "party" },
   { opcode = 828, category = "contest" },
   { opcode = 836, category = "party" },

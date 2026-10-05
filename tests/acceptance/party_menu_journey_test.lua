@@ -538,6 +538,7 @@ function T.tests.production_swap_summary_save_reload_persists(context)
     party:dispose()
     -- Save, reload, and prove the journey state persists.
     local record = assert(game.runtime:captureGameSave(), "a settled field captures")
+    Assert.equal(record.schema, "g4-game-save-v6", "capture writes the current save schema")
     Assert.equal(record.schema, GameSave.SCHEMA, "capture writes the current save schema")
     game:restart()
     game:waitForFieldEntry()

@@ -1,5 +1,5 @@
 -- ROM-gated follower-command disposition audit: every source opcode in
--- the follower family (595-609, 698, 729) carries a machine-checked
+-- the follower family (595-609, 698, 711, 729) carries a machine-checked
 -- disposition, and the core active-follower operations the delivered
 -- controller owns are supported rather than deferred. Static catalog
 -- assertions and the explicit Elm starter and Route 24 retail checks stay
@@ -18,7 +18,7 @@ local T = {}
 -- The required core: queries, face/pause/wait/movement, the Elm
 -- follow-up state operation, the nonblocking transition, settle, and the
 -- event-trigger check.
-local REQUIRED_SUPPORTED = { 596, 601, 602, 603, 604, 605, 608, 609, 698, 729 }
+local REQUIRED_SUPPORTED = { 596, 601, 602, 603, 604, 605, 608, 609, 698, 711, 729 }
 
 -- Opaque neighbours that recipe-tracing must still classify explicitly;
 -- they may stay deferred only under a documented allowed reason.
@@ -93,6 +93,16 @@ T["follower transition command is supported and same-tick"] = function()
     CommandCatalog.CONTINUE,
     "the transition must continue in the same tick without a wait task"
   )
+end
+
+T["follower interaction is supported and blocking"] = function()
+  Assert.equal(disposition(711), "supported", "the interaction command must lower through the blocking task")
+  Assert.equal(
+    CommandCatalog.classification(711),
+    CommandCatalog.NATIVE_WAIT,
+    "the interaction command must preserve its native wait timing"
+  )
+  Assert.deepEqual(CommandCatalog.widths(711), {}, "the interaction command has no operands")
 end
 
 -- Route 24's Rocket cutscene (member 215 script 2) drives

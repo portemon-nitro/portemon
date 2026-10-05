@@ -14,6 +14,7 @@ local AudioCache = require("libs.assets.src.audio.AudioCache")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local Errors = require("libs.errors.src.Errors")
 local FieldScriptCompatibility = require("libs.hgss.src.script.FieldScriptCompatibility")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -78,8 +79,8 @@ local function contextForCache(cacheFs, overrideFs, versionId)
     "GameSave validation requires a native language identity for " .. tostring(monLanguage)
   )
   return {
-    charmap = fontDef.charmap,
     language = monLanguage,
+    charmap = fontDef.charmap,
     frameIndexes = frameIndexes,
     audioSequenceIds = audioSequenceIds,
     scriptCompatibility = FieldScriptCompatibility.new({ cacheFs = cacheFs, overrideFs = overrideFs }),
@@ -87,6 +88,21 @@ local function contextForCache(cacheFs, overrideFs, versionId)
     itemCatalog = itemCatalog,
     martCatalog = martCatalog,
   }
+end
+
+-- Only a validated empty old script bucket rebinds to the current
+-- fingerprints: no environments, instances, or tasks may be live. Counters
+-- and every other bucket field survive untouched.
+---@param bucket unknown
+---@return boolean
+local function isQuiescentScripts(bucket)
+  return type(bucket) == "table"
+    and type(bucket.environments) == "table"
+    and #bucket.environments == 0
+    and type(bucket.instances) == "table"
+    and #bucket.instances == 0
+    and type(bucket.tasks) == "table"
+    and #bucket.tasks == 0
 end
 
 ---@param bucket table<string, unknown>
@@ -144,15 +160,22 @@ function GameSaveValidation:validate(record, context)
       return GameSave.validate(record)
     end
     local selected = context or self:contextForVersion(record.versionId)
-    -- Explicit v3 -> v4 migration before canonical validation. Quiescent
-    -- old script buckets rebind to the current fingerprints (counters and
-    -- world/RNG data preserved); an incompatible active graph is rejected
-    -- with the save bytes untouched, never cleared or rewritten.
+    -- Explicit v3 -> v4 -> v5 -> v6 migration before canonical validation.
+    -- Quiescent old script buckets rebind once to the current fingerprints
+    -- (counters and world/RNG data preserved); an incompatible active graph
+    -- is rejected with the save bytes untouched, never cleared or rewritten.
     local effective = record
-    if type(record) == "table" and (record.schema == "g4-game-save-v3" or record.schema == "g4-game-save-v4") then
+    if
+      type(record) == "table"
+      and (
+        record.schema == "g4-game-save-v3"
+        or record.schema == "g4-game-save-v4"
+        or record.schema == "g4-game-save-v5"
+      )
+    then
       local schema = record.schema
       local options = selected.scriptCompatibility:validationOptions()
-      if not ScriptSave.isQuiescent(record.scripts) then
+      if not isQuiescentScripts(record.scripts) then
         return nil,
           Errors.new(
             GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
@@ -160,16 +183,18 @@ function GameSaveValidation:validate(record, context)
             { schema = schema }
           )
       end
-      local oldRecord = schema == "g4-game-save-v3" and GameSave.migrateV3(record) or record
-      if schema == "g4-game-save-v3" then
-        -- Preserve the existing v3 -> v4 script compatibility boundary.
-        oldRecord.scripts = rebindScripts(record.scripts, options)
-        oldRecord = GameSave.migrateV4(oldRecord)
-      else
-        oldRecord = GameSave.migrateV4(oldRecord)
+      local candidate = record
+      if candidate.schema == "g4-game-save-v3" then
+        candidate = GameSave.migrateV3(candidate)
       end
-      effective = oldRecord
-      effective.scripts = rebindScripts(record.scripts, options)
+      if candidate.schema == "g4-game-save-v4" then
+        candidate = GameSave.migrateV4(candidate)
+      end
+      if candidate.schema == "g4-game-save-v5" then
+        candidate = GameSave.migrateV5(candidate)
+      end
+      candidate.scripts = rebindScripts(record.scripts, options)
+      effective = candidate
     end
     local function playerDataValidate(value)
       return PlayerData.validate(value, selected)
@@ -247,6 +272,19 @@ function GameSaveValidation:validate(record, context)
       end
       return state:capture()
     end
+    local function fashionCaseValidate(value)
+      local stateOk, state = pcall(FashionCaseState.new, value)
+      if not stateOk then
+        return nil,
+          Errors.new(
+            GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
+            "game save fashionCase bucket is invalid",
+            { bucket = "fashionCase" }
+          )
+      end
+      ---@cast state FashionCaseState
+      return state:capture()
+    end
     return GameSave.validate(effective, {
       playerDataValidate = playerDataValidate,
       scriptsValidate = scriptsValidate,
@@ -257,6 +295,7 @@ function GameSaveValidation:validate(record, context)
       bagValidate = bagValidate,
       martValidate = martValidate,
       fieldTravelValidate = fieldTravelValidate,
+      fashionCaseValidate = fashionCaseValidate,
     })
   end)
   if ok then

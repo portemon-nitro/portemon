@@ -59,6 +59,16 @@ function T.follower_transition_command_lowers_to_a_no_operand_same_tick_node()
   Assert.isNil(node.command, "transition semantics dispatch no source opcode number")
 end
 
+function T.following_mon_interaction_lowers_to_one_no_operand_node()
+  Assert.equal(CommandCatalog.disposition(711), "supported")
+  Assert.equal(CommandCatalog.classification(711), CommandCatalog.NATIVE_WAIT)
+  Assert.deepEqual(CommandCatalog.widths(711), {})
+  local node = lowerSingle(711, {})
+  Assert.equal(node.op, "follower_interact", "the runtime node carries no source mechanics")
+  Assert.deepEqual(node.provenance.opcodes, { 711 }, "the source instruction remains attributed")
+  Assert.isNil(node.command, "runtime dispatch carries no source opcode")
+end
+
 -- Opcode 604 carries a persistent map-object movement selector, not a
 -- one-shot movement-script command: raw 55 selects the Elm transition
 -- controller, so it must lower to that semantic mode rather than the

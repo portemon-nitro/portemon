@@ -22,20 +22,21 @@ local function openFs()
 end
 
 function T.loads_index_and_builds_path_map()
-  local fs = openFs()
+  local fs, r = openFs()
   Assert.equal(fs:version(), "heartgold")
-  Assert.equal(fs:fileCount(), 7)
+  Assert.equal(fs:fileCount(), r.rom:fatCount())
   Assert.equal(fs:fileIdForPath("a/0/0/2"), 2)
   Assert.equal(fs:fileIdForPath("a/0/4/1"), 5)
-  Assert.equal(fs:pathForFileId(6), "romfs/data/sound/gs_sound_data.sdat")
+  Assert.equal(fs:info("data/sound/gs_sound_data.sdat").path, "romfs/data/sound/gs_sound_data.sdat")
 end
 
 function T.reads_by_file_id_and_source_path()
   local fs = openFs()
-  Assert.equal(fs:read(6), "SDAT-STUB")
+  local soundFileId = fs:fileIdForPath("data/sound/gs_sound_data.sdat")
+  Assert.equal(fs:read(soundFileId), "SDAT-STUB")
   Assert.equal(fs:readSourcePath("data/sound/gs_sound_data.sdat"), "SDAT-STUB")
   -- fileId and source path resolve to the same bytes.
-  Assert.equal(fs:read(6), fs:readSourcePath("data/sound/gs_sound_data.sdat"))
+  Assert.equal(fs:read(soundFileId), fs:readSourcePath("data/sound/gs_sound_data.sdat"))
 end
 
 function T.info_resolves_source_path_and_file_id()

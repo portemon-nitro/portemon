@@ -524,6 +524,9 @@ function FieldObjectActor:beginAction(descriptor, owner)
     startPose = self.pose,
     startPoseTick = state.poseTick,
     gestureName = descriptor.name,
+    presentationOffsetX = descriptor.presentationOffsetX,
+    presentationOffsetY = descriptor.presentationOffsetY,
+    presentationOffsetZ = descriptor.presentationOffsetZ,
     startGesturePose = self._gesturePose,
     startGestureTick = state.hasGestureTick == 1 and state.gestureTick or nil,
     startGestureOffsetY = state.gestureOffsetY,
@@ -611,6 +614,11 @@ local function applyActionWorldPosition(actor, motion)
   elseif motion.action == "reveal_trainer" then
     setWorld(state, motion.startWorldX, motion.startWorldY, motion.startWorldZ)
     state.presentationOffsetY = MovementCalibration.revealTrainerOffsetAt(progressTicks)
+  elseif motion.action == "presentation_offset" then
+    setWorld(state, motion.startWorldX, motion.startWorldY, motion.startWorldZ)
+    state.presentationOffsetX = assert(motion.presentationOffsetX)
+    state.presentationOffsetY = assert(motion.presentationOffsetY)
+    state.presentationOffsetZ = assert(motion.presentationOffsetZ)
   elseif
     motion.action == "face"
     or motion.action == "delay"

@@ -468,11 +468,15 @@ function FieldStatePresentationFixture.terrainEffects(cache)
       placementOffset = { x = 0, y = 0, z = 0 },
     }
   end
-  return {
+  local effects = {
     tall_grass = effect(),
     very_tall_grass = effect(),
     trainer_reveal = effect(),
   }
+  for selector = 1, 14 do
+    effects["follower_reaction_" .. selector] = effect()
+  end
+  return effects
 end
 
 -- Explicit headless semantic host for presentation fixtures: mirrors the

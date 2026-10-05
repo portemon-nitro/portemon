@@ -253,6 +253,53 @@ function MonCatalogCompiler.decodeLearnset(member, context)
   return moves
 end
 
+-- PokeathlonBasePerformance follows include/pokemon_types_def.h: five source
+-- base bytes, four reserved bytes, ten min/max bytes, then one reserved byte.
+-- Array order follows include/constants/pokemon.h ARCPERF_* identities.
+---@param member string
+---@param context Errors.Context|nil
+---@return table<string, {base:integer, min:integer, max:integer}>|nil, Errors.Error|nil
+function MonCatalogCompiler.decodePerformance(member, context)
+  context = context or {}
+  local ok, sizeErr = checkSize(member, MonSources.PERFORMANCE_MEMBER_SIZE, "MON_PERFORMANCE_BAD_SIZE", context)
+  if not ok then
+    return nil, sizeErr
+  end
+  local reader = BinaryReader.new(member, contextLabel(context))
+  local sourceStats = {
+    { key = "power", index = 0 },
+    { key = "stamina", index = 1 },
+    { key = "jump", index = 2 },
+    { key = "skill", index = 3 },
+    { key = "speed", index = 4 },
+  }
+  local performance = {}
+  for _, stat in ipairs(sourceStats) do
+    local base = reader:u8(stat.index)
+    local min = reader:u8(9 + stat.index * 2)
+    local max = reader:u8(10 + stat.index * 2)
+    if base > 7 or min > 7 or max > 7 or min > base or base > max then
+      return nil,
+        Errors.new("MON_PERFORMANCE_BAD_VALUE", contextLabel(context) .. " has invalid " .. stat.key .. " bounds", {
+          archive = context.archive,
+          memberId = context.memberId,
+          stat = stat.key,
+          base = base,
+          min = min,
+          max = max,
+        })
+    end
+    performance[stat.key] = { base = base, min = min, max = max }
+  end
+  return {
+    power = performance.power,
+    skill = performance.skill,
+    speed = performance.speed,
+    jump = performance.jump,
+    stamina = performance.stamina,
+  }
+end
+
 -- Decode one 16-byte MoveTbl entry. Field names follow the src/move.c
 -- MoveAttr vocabulary; the trailing word is verified zero padding on
 -- supported dumps.
@@ -579,9 +626,10 @@ end
 ---@param learnsets table<integer, table<integer, table<string, unknown>>>
 ---@param evos table<integer, table<integer, table<string, unknown>>>
 ---@param tpArchive Narc
+---@param performanceTable table<integer, table<string, {base:integer, min:integer, max:integer}>>
 ---@param romFs RomFs
 ---@return table<string, unknown>|nil, Errors.Error|nil
-local function assembleForm(speciesId, form, personal, learnsets, evos, tpArchive, romFs)
+local function assembleForm(speciesId, form, personal, learnsets, evos, tpArchive, performanceTable, romFs)
   local context = { archive = "personal", memberId = MonSources.resolvePersonalMember(speciesId, form) }
   local speciesKey = must(MonSources.speciesKeys[speciesId])
   local types = {}
@@ -672,6 +720,18 @@ local function assembleForm(speciesId, form, personal, learnsets, evos, tpArchiv
     portrait = MonCache.portraitSelector(speciesKey, form, defaultVariant.gender, false),
     follower = nil,
   }
+  local performanceMemberId = MonSources.performanceMember(speciesId, form)
+  if performanceMemberId == nil then
+    if speciesId ~= 494 and speciesId ~= 495 then
+      return nil,
+        Errors.new("MON_PERFORMANCE_MEMBER_UNMAPPED", "species/form has no Pokeathlon performance member", {
+          speciesId = speciesId,
+          form = form,
+        })
+    end
+  else
+    formRecord.performance = must(performanceTable[performanceMemberId])
+  end
   if speciesId >= 1 and speciesId <= MonSources.MAX_SPECIES then
     local paramIndex = must(MonSources.followerParamIndex(speciesId, form, false))
     local tpMember, tpErr = readMember(tpArchive, paramIndex, "follower_params")
@@ -731,6 +791,11 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
   if not personal then
     return fail(err)
   end
+  local performance
+  performance, err = openArchive(romFs, "performance")
+  if not performance then
+    return fail(err)
+  end
   local growthTables
   growthTables, err = openArchive(romFs, "growth_tables")
   if not growthTables then
@@ -782,6 +847,26 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
         ),
         0
       )
+    end
+    local performanceCount = performance:memberCount()
+    if performanceCount ~= MonSources.PERFORMANCE_MEMBER_COUNT then
+      error(
+        Errors.new(
+          "MON_PERFORMANCE_MEMBER_COUNT",
+          "performance archive carries "
+            .. performanceCount
+            .. " members, expected "
+            .. MonSources.PERFORMANCE_MEMBER_COUNT,
+          { memberCount = performanceCount, expected = MonSources.PERFORMANCE_MEMBER_COUNT }
+        ),
+        0
+      )
+    end
+    local performanceTable = {}
+    for memberId = 0, performanceCount - 1 do
+      local member = must(readMember(performance, memberId, "performance"))
+      performanceTable[memberId] =
+        must(MonCatalogCompiler.decodePerformance(member, { archive = "performance", memberId = memberId }))
     end
     -- Decode every personal member once; assembly attaches pseudo-members
     -- to their parent species form below.
@@ -856,7 +941,16 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
     local covered = {}
     local function attachForm(speciesId, form, memberId)
       local record = must(
-        assembleForm(speciesId, form, must(decoded[memberId]), learnsetTable, evoTable, followerParamsArchive, romFs)
+        assembleForm(
+          speciesId,
+          form,
+          must(decoded[memberId]),
+          learnsetTable,
+          evoTable,
+          followerParamsArchive,
+          performanceTable,
+          romFs
+        )
       )
       local key = must(MonSources.speciesKeys[speciesId])
       local entry = species[key]

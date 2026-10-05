@@ -5,6 +5,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local DumpFixture = require("tests.support.DumpFixture")
+local HgssArchives = require("romdump.src.config.HgssArchives")
 
 local T = {}
 
@@ -19,13 +20,13 @@ end
 function T.writes_every_fat_entry_once()
   local r = extractOk()
   local files = r.backend.files
-  -- One overlay, one unmapped, five named NitroFS files.
+  -- Every FAT entry is published once, including each required source archive.
   Assert.notNil(files[HG .. "system/overlay9/overlay_0.bin"])
   Assert.notNil(files[HG .. "system/unmapped/file_1.bin"])
   Assert.equal(files[HG .. "romfs/a/0/0/2"], require("tests.support.NarcBuilder").build({ "P0", "P1" }))
   Assert.notNil(files[HG .. "romfs/a/0/4/1"])
   Assert.equal(files[HG .. "romfs/data/sound/gs_sound_data.sdat"], "SDAT-STUB")
-  Assert.equal(r.report.fatEntryCount, 7)
+  Assert.equal(r.report.fatEntryCount, r.rom:fatCount())
   Assert.equal(r.report.unmappedFileCount, 1)
 end
 
@@ -49,7 +50,13 @@ end
 
 function T.resolves_required_narcs_and_smoke_decodes()
   local r = extractOk()
-  Assert.equal(r.report.resolvedRequiredNarcCount, 4)
+  local requiredNarcCount = 0
+  for _, entry in ipairs(HgssArchives.aliasList()) do
+    if entry.required then
+      requiredNarcCount = requiredNarcCount + 1
+    end
+  end
+  Assert.equal(r.report.resolvedRequiredNarcCount, requiredNarcCount)
   Assert.equal(r.report.matrix.width, 2)
   Assert.equal(r.report.matrix.height, 2)
   Assert.equal(r.report.matrix.name, "MM")
@@ -87,7 +94,7 @@ function T.romfs_index_preserves_zero_based_ids()
   Assert.equal(index.files[1].kind, "unmapped")
   Assert.equal(index.files[2].sourcePath, "a/0/0/2")
   Assert.equal(index.files[5].sourcePath, "a/0/4/1")
-  Assert.equal(index.fileCount, 7)
+  Assert.equal(index.fileCount, r.rom:fatCount())
 end
 
 function T.does_not_touch_another_version_prefix()

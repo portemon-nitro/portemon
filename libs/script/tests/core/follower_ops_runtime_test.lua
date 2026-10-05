@@ -69,7 +69,7 @@ local function follower(overrides)
   return collaborator
 end
 
-local function runWith(collaborator, vars)
+local function runWith(collaborator, vars, mons)
   local stored = vars or {}
   local world = {
     getVar = function(_, id)
@@ -81,10 +81,11 @@ local function runWith(collaborator, vars)
   }
   return {
     instance = { scriptId = "test.follower", locals = {}, textArgs = {} },
-    services = { followingMon = collaborator, world = world },
+    services = { followingMon = collaborator, world = world, mons = mons },
     semantics = RuntimeValues,
     scheduler = {
-      createTask = function(_, taskType)
+      createTask = function(self, taskType, spec)
+        self.created = { taskType = taskType, spec = spec }
         return "task:" .. taskType
       end,
     },
@@ -183,13 +184,69 @@ function T.reposition_operation_places_through_the_controller()
 end
 
 function T.event_trigger_check_writes_the_source_boolean()
-  local run, stored = runWith(follower({ _trigger = true }))
+  local calls = {}
+  local mons = {
+    followerEventTrigger = function(_, kind, slot)
+      calls[#calls + 1] = { kind, slot }
+      return true
+    end,
+  }
+  local followingMon = follower()
+  local run, stored = runWith(followingMon, nil, mons)
   local node = { op = "follower_is_event_trigger", kind = 1, param = 7, result = var(0x800C) }
   Assert.equal(Runtime.executeNode(node, run), Runtime.OUTCOME_CONTINUE)
-  Assert.equal(stored[0x800C], 1, "a live trigger reads true")
-  local cold, coldStored = runWith(follower({ _trigger = false }))
-  Assert.equal(Runtime.executeNode(node, cold), Runtime.OUTCOME_CONTINUE)
-  Assert.equal(coldStored[0x800C], 0, "no trigger reads false")
+  Assert.equal(stored[0x800C], 1, "a mon metadata match writes true")
+  Assert.deepEqual(calls, { { 1, 7 } }, "the event kind and party slot reach the mon owner")
+  Assert.deepEqual(followingMon._calls, {}, "the result is independent of follower actor state")
+end
+
+function T.shiny_leaf_nodes_route_once_to_mons_and_keep_same_tick_outcome()
+  local calls = {}
+  local mons = {
+    shinyLeafCount = function(_, slot)
+      calls[#calls + 1] = { "count", slot }
+      return slot == 5 and 6 or 5
+    end,
+    tryGiveShinyLeafCrown = function(_, slot)
+      calls[#calls + 1] = { "crown", slot }
+    end,
+  }
+  local run, stored = runWith(follower(), nil, mons)
+  Assert.equal(
+    Runtime.executeNode({ op = "party_mon_shiny_leaf_count", slot = 5, result = var(0x800C) }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(stored[0x800C], 6, "the service's crowned count reaches the result")
+  Assert.equal(
+    Runtime.executeNode({ op = "try_give_shiny_leaf_crown", slot = 4 }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.deepEqual(calls, { { "count", 5 }, { "crown", 4 } }, "each semantic op calls its mon owner once")
+end
+
+function T.interaction_node_blocks_on_the_registered_task()
+  local run = runWith(follower())
+  run.services.followerInteraction = {}
+  Assert.equal(Runtime.executeNode({ op = "follower_interact" }, run), Runtime.OUTCOME_BLOCK)
+  Assert.equal(run.blockTaskId, "task:follower_interaction")
+  Assert.deepEqual(run.scheduler.created, { taskType = "follower_interaction", spec = { node = { op = "follower_interact" } } })
+end
+
+function T.new_operations_fault_when_their_required_service_is_missing()
+  local run = runWith(follower())
+  local cases = {
+    { op = "follower_interact" },
+    { op = "party_mon_shiny_leaf_count", slot = 0, result = var(0x800C) },
+    { op = "try_give_shiny_leaf_crown", slot = 0 },
+  }
+  run.services.followerInteraction = nil
+  for _, node in ipairs(cases) do
+    local err = Assert.throws(function()
+      Runtime.executeNode(node, run)
+    end)
+    Assert.isTrue(Errors.is(err), "a missing collaborator is an attributed script error")
+    Assert.equal(err.code, "SCRIPT_SERVICE_MISSING")
+  end
 end
 
 function T.missing_collaborator_faults_loudly()

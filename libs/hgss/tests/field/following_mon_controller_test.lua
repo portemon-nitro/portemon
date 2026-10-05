@@ -628,13 +628,13 @@ function T.lost_lead_clears_without_ghosts()
   w.mgr:dispose()
 end
 
-function T.script_queries_read_live_state()
+function T.script_queries_report_live_partner_and_settlement_state()
   local w = world()
-  Assert.equal(w.controller:isEventTrigger(1, 0), false, "no trigger without a partner")
+  Assert.isFalse(w.controller:isActive(), "no partner means inactive")
   w.svc:setLead(0, mon())
   tick(w, 2)
-  Assert.equal(w.controller:isEventTrigger(1, 0), true, "an idle installed partner triggers")
-  Assert.equal(w.controller:isEventTrigger(9, 0), false, "unknown trigger kinds stay false")
+  Assert.isTrue(w.controller:isActive(), "a lead installs the partner")
+  Assert.isTrue(w.controller:isMovementSettled(), "an idle installed partner is settled")
   w.player:turn("north")
   w.controller:facePlayer()
   Assert.equal(w.mgr:getById("field:partner").facing, "south", "face turns the partner toward the player")
@@ -1030,7 +1030,7 @@ function T.free_stationary_follower_idles_without_starting_movement()
     1e-9,
     "native idle never changes the height anchor"
   )
-  Assert.isTrue(w.controller:isEventTrigger(1, 0), "the idling follower stays available for interaction")
+  Assert.isTrue(w.controller:isMovementSettled(), "the idling follower stays settled")
   w.mgr:dispose()
 end
 
@@ -1119,10 +1119,10 @@ function T.stationary_follower_stays_available_for_interaction()
     "idle",
     "setup presents native idle"
   )
-  Assert.isTrue(w.controller:isEventTrigger(1, 0), "the stationary follower stays stationary for triggers")
+  Assert.isTrue(w.controller:isMovementSettled(), "the stationary follower stays settled")
   Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
   w.controller:update()
-  Assert.isFalse(w.controller:isEventTrigger(1, 0), "a real trail stays movement-busy for triggers")
+  Assert.isFalse(w.controller:isMovementSettled(), "a real trail stays movement-busy")
   w.mgr:dispose()
 end
 

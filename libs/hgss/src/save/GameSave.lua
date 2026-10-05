@@ -5,11 +5,12 @@
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v5"
+GameSave.SCHEMA = "g4-game-save-v6"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local FACING = { north = true, south = true, west = true, east = true }
@@ -19,6 +20,7 @@ local TOP_LEVEL_FIELDS = {
   auxiliaryUi = true,
   bag = true,
   facing = true,
+  fashionCase = true,
   fieldTravel = true,
   fieldX = true,
   fieldZ = true,
@@ -226,6 +228,7 @@ local function validate(record, opts)
   local canonicalBag = validateBucket(record, "bag", opts, "bagValidate")
   local canonicalMart = validateBucket(record, "mart", opts, "martValidate")
   local canonicalFieldTravel = validateBucket(record, "fieldTravel", opts, "fieldTravelValidate")
+  local canonicalFashionCase = validateBucket(record, "fashionCase", opts, "fashionCaseValidate")
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
   local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
   local canonicalAvatar = validateAvatar(record)
@@ -240,6 +243,7 @@ local function validate(record, opts)
   canonical.bag = canonicalBag
   canonical.mart = canonicalMart
   canonical.fieldTravel = canonicalFieldTravel
+  canonical.fashionCase = canonicalFashionCase
   canonical.auxiliaryUi = canonicalAuxiliaryUi
   canonical.audio = canonicalAudio
   canonical.avatar = canonicalAvatar
@@ -278,22 +282,41 @@ function GameSave.migrateV3(record)
   return migrated
 end
 
--- Historical save upgrade. The caller validates the v4 record and script
--- quiescence before this copy becomes the v5 candidate.
+-- v4 saves predate the national Dex flag and the durable mart bucket.
+-- Preserve the existing state and initialize only that master-era delta;
+-- Fashion Case arrives through a later dedicated step.
+---@param record table<string, unknown> a v4 save record
+---@return table<string, unknown> the migrated master-era v5 record
 function GameSave.migrateV4(record)
   assert(type(record) == "table" and record.schema == "g4-game-save-v4", "GameSave.migrateV4 requires v4")
   assert(
     type(record.playerData) == "table" and type(record.playerData.profile) == "table",
     "v4 player data is required"
   )
+  if record.fashionCase ~= nil or record.mart ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v4 save cannot contain v5 buckets", {})
+  end
   local migrated = deepCopy(record)
-  local playerData = migrated.playerData
-  local profile = playerData.profile
+  local profile = migrated.playerData.profile
   profile.nationalDex = false
-  playerData.profile = profile
-  migrated.playerData = playerData
+  migrated.schema = "g4-game-save-v5"
   migrated.mart = MartSave.empty()
+  return migrated
+end
+
+-- Master-era v5 saves predate only the durable Fashion Case bucket.
+-- Preserve every master-era value and initialize that single bucket; a v5
+-- record already carrying Fashion Case state is inconsistent and rejected.
+---@param record table<string, unknown> a master-era v5 save record
+---@return table<string, unknown> the migrated current v6 record
+function GameSave.migrateV5(record)
+  assert(type(record) == "table" and record.schema == "g4-game-save-v5", "GameSave.migrateV5 requires v5")
+  if record.fashionCase ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v5 save cannot contain fashion-case state", {})
+  end
+  local migrated = deepCopy(record)
   migrated.schema = GameSave.SCHEMA
+  migrated.fashionCase = FashionCaseState.empty()
   return migrated
 end
 
@@ -325,6 +348,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= "g4-game-save-v5"
       and record.schema ~= "g4-game-save-v4"
       and record.schema ~= "g4-game-save-v3"
     then

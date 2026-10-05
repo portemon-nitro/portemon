@@ -30,6 +30,7 @@ function T.decodes_the_catalog_consumed_fields()
     memberId = 196,
   }))
   Assert.equal(decoded.holdEffect, 53)
+  Assert.isNil(decoded.naturalGiftPower)
   Assert.isFalse(decoded.preventToss)
   Assert.isFalse(decoded.selectable)
   Assert.equal(decoded.fieldPocket, 0)

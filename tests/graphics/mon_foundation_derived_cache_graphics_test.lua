@@ -4,6 +4,7 @@
 
 local Assert = require("tests.support.Assert")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -150,6 +151,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+        fashionCase = FashionCaseState.empty(),
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = service:capture(),

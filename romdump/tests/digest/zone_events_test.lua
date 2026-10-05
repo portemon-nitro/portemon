@@ -101,6 +101,27 @@ function T.decodes_every_field_and_preserves_zero_based_indexes()
   })
 end
 
+function T.normalizes_hidden_item_collection_flag_from_standard_script()
+  local result = assert(ZoneEvents.decode(Builder.build({
+    backgroundEvents = {
+      { scriptId = 8000, type = 2, x = 0, z = 0, y = 0, direction = 0 },
+      { scriptId = 10, type = 11, x = 0, z = 0, y = 0, direction = 0 },
+    },
+  })))
+  Assert.equal(result.backgroundEvents[1].hiddenItemFlagId, 800)
+  Assert.isNil(result.backgroundEvents[2].hiddenItemFlagId)
+end
+
+function T.rejects_hidden_items_outside_the_standard_script_range()
+  local result, err = ZoneEvents.decode(Builder.build({
+    backgroundEvents = {
+      { scriptId = 7999, type = 2, x = 0, z = 0, y = 0, direction = 0 },
+    },
+  }))
+  Assert.isNil(result)
+  Assert.equal(assert(err).code, "ZONE_EVENTS_HIDDEN_ITEM_SCRIPT_INVALID")
+end
+
 function T.preserves_the_signed_unbounded_range_sentinel()
   local source = fixture()
   source.objectEvents[1].xRange = -1

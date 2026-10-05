@@ -827,6 +827,21 @@ local function publishEffectFamily(cache)
       },
     }
   end
+  local function reactionModel(selector)
+    local model = dynamicModel("field-effect:follower-reaction-" .. selector)
+    local clip = model.animations[1]
+    clip.category = "material"
+    clip.kind = "pattern"
+    clip.tracks = { { target = "grass", targetIndex = 0 } }
+    clip.compiled = {
+      textureNames = { "reaction.1" },
+      paletteNames = { "reaction" },
+      targets = {
+        { index = 0, name = "grass", rate = 1, keys = { { frame = 0, texIdx = 0, plttIdx = 0 } } },
+      },
+    }
+    return model
+  end
   local marker = EffectCache.marker("test-rom", "test-dep")
   local bundle = {
     marker = marker,
@@ -901,6 +916,19 @@ local function publishEffectFamily(cache)
     meshes = { ["mesh-key"] = {} },
     textures = { ["texture-key"] = { width = 1, height = 1, data = PngWriter.encode(1, 1, "rgba") } },
   }
+  for selector = 1, 14 do
+    local kind = "follower_reaction_" .. selector
+    bundle.index.effects[kind] = {
+      path = EffectCache.definitionPath(kind),
+      definition = kind,
+      kind = "reaction",
+    }
+    bundle.effects[kind] = {
+      definition = kind,
+      model = reactionModel(selector),
+      lifecycle = { mode = "once", frameCount = 4 },
+    }
+  end
   local oldEncode = MeshWriter.encode
   MeshWriter.encode = function()
     return "encoded-mesh"
@@ -1176,6 +1204,39 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
   publishWeatherFamily(cache)
   publishBagFamily(cache)
   publishEffectFamily(cache)
+  local InteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
+  local interactionMarker = InteractionCache.marker("test-rom", "test-dep")
+  local rulesByMapSection = {}
+  for sectionId = 0, 235 do
+    rulesByMapSection[sectionId] = {}
+  end
+  local interactionCatalog = {
+    schema = InteractionCache.SCHEMA,
+    version = "heartgold",
+    rulesByMapSection = rulesByMapSection,
+    programs = {},
+    motions = {},
+    reactions = {},
+    speciesClassBySpeciesId = {},
+    locationNames = {},
+    fashionNames = {},
+  }
+  for selector = 1, 14 do
+    local definition = "follower_reaction_" .. selector
+    interactionCatalog.reactions[selector] = {
+      definition = definition,
+      resourceKey = require("libs.assets.src.field.FieldEffectAssetCache").definitionPath(definition),
+    }
+  end
+  for speciesId = 1, 493 do
+    interactionCatalog.speciesClassBySpeciesId[speciesId] = 0
+  end
+  for accessoryId = 0, 99 do
+    interactionCatalog.fashionNames[accessoryId] = { name = "Accessory", nameWithArticle = "an Accessory" }
+  end
+  cache:writeLua(InteractionCache.catalogPath(), interactionCatalog)
+  cache:write(InteractionCache.markerPath(), interactionMarker)
+  writeReceipt(cache, "follower-interactions", "global", interactionMarker)
   publishUiFamily(cache)
   publishIntroFamily(cache)
   writeReceipt(cache, "source-plan", "global", "source-plan-marker")
@@ -1213,6 +1274,7 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
     { kind = "field-camera", key = "global" },
     { kind = "field-cell-index", key = "global" },
     { kind = "field-effects", key = "global" },
+    { kind = "follower-interactions", key = "global" },
     { kind = "field-emotes", key = "global" },
     { kind = "field-font", key = "global" },
     { kind = "field-ui", key = "global" },

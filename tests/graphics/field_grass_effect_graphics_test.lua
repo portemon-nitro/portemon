@@ -9,9 +9,11 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 local FieldTerrainEffectRenderer = require("libs.hgss.src.presentation.FieldTerrainEffectRenderer")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
+local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
+local Matrix4 = require("libs.math.src.Matrix4")
 local RomImporter = require("romdump.src.source.RomImporter")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 
@@ -41,8 +43,12 @@ local function runVersion(scope, versionId)
   for _, kind in ipairs({ "tall_grass", "very_tall_grass", "trainer_reveal" }) do
     assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
   end
+  for selector = 1, 14 do
+    local kind = "follower_reaction_" .. selector
+    assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
+  end
 
-  Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v8")
+  Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v9")
   local pool = scope:own(GpuAssetPool.new(cache))
   local renderer = FieldTerrainEffectRenderer.new(assets, pool)
   scope:own({
@@ -113,6 +119,48 @@ local function runVersion(scope, versionId)
   end
 end
 
+local function loadEffectAssets(cache)
+  local index = assert(cache:loadLua(FieldEffectAssetCache.indexPath()))
+  local assets = { effects = {} }
+  for _, kind in ipairs({ "tall_grass", "very_tall_grass", "trainer_reveal" }) do
+    assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
+  end
+  for selector = 1, 14 do
+    local kind = "follower_reaction_" .. selector
+    assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
+  end
+  return assets
+end
+
+local function composedEffects(scope, versionId)
+  local cache = CacheFs.forVersion(versionId)
+  local assets = loadEffectAssets(cache)
+  local pool = scope:own(GpuAssetPool.new(cache))
+  local renderer = FieldTerrainEffectRenderer.new(assets, pool)
+  scope:own({
+    release = function()
+      renderer:dispose()
+    end,
+  })
+  local controller = FieldTerrainEffectController.new({
+    effects = assets.effects,
+    modelFactory = function(kind)
+      return renderer:newInstance(kind)
+    end,
+  })
+  return assets, renderer, controller
+end
+
+local function readyVersions()
+  local versions = {}
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
+    end
+  end
+  return versions
+end
+
 local T = GraphicsSmoke.suite({
   ["generated grass changes material and remains drawable at its held frame"] = function(scope)
     local versions = 0
@@ -123,6 +171,82 @@ local T = GraphicsSmoke.suite({
       end
     end
     Assert.isTrue(versions > 0, "a ready imported game version is required")
+  end,
+  ["streamed effect keeps its source-projected anchor"] = function(scope)
+    for _, versionId in ipairs(readyVersions()) do
+      local assets, renderer, controller = composedEffects(scope, versionId)
+      local calls = {}
+      local runtimeMap = {
+        projectPhysicalPoint = function(_, fieldX, fieldZ, cellKey, sourceSurfaceId)
+          calls[#calls + 1] = {
+            fieldX = fieldX,
+            fieldZ = fieldZ,
+            cellKey = cellKey,
+            sourceSurfaceId = sourceSurfaceId,
+          }
+          return { worldX = 11, worldY = 22, worldZ = 33 }
+        end,
+      }
+      controller:emit({
+        kind = "tall_grass",
+        fieldX = 0,
+        fieldZ = 0,
+        worldY = 99,
+        cellKey = "0:0",
+        sourceSurfaceId = 0,
+      })
+      local items = renderer:drawItems(controller:status(), runtimeMap)
+      Assert.isTrue(#items > 0, "a streamed effect must produce a real draw item")
+      Assert.equal(#calls, 1, "stable projection must consult the physical projector exactly once")
+      Assert.deepEqual(calls[1], {
+        fieldX = 0,
+        fieldZ = 0,
+        cellKey = "0:0",
+        sourceSurfaceId = 0,
+      })
+      local offset = assets.effects.tall_grass.placementOffset or { x = 0, y = 0, z = 0 }
+      local transform = assert(controller:status().instances[1]).modelInstance.transform
+      Assert.deepEqual(
+        transform,
+        Matrix4.translate(11 + offset.x, 22 + offset.y, 33 + offset.z),
+        "the draw transform must use the projected position rather than the stored world height"
+      )
+    end
+    Assert.isTrue(#readyVersions() > 0, "a ready imported game version is required")
+  end,
+  ["local effect renders from committed coordinates without source projection"] = function(scope)
+    for _, versionId in ipairs(readyVersions()) do
+      local assets, renderer, controller = composedEffects(scope, versionId)
+      local runtimeMap = {
+        coordinateOrigin = { x = 1, z = 2 },
+        collision = {
+          containsLocal = function()
+            return true
+          end,
+        },
+      }
+      Assert.isNil(
+        runtimeMap.projectPhysicalPoint,
+        "the local map must expose no physical projector"
+      )
+      controller:emit({ kind = "follower_reaction_1", fieldX = 4, fieldZ = 6, worldY = 3 })
+      local items = renderer:drawItems(controller:status(), runtimeMap)
+      Assert.isTrue(#items > 0, "a local follower effect must produce a real draw item")
+      Assert.equal(
+        items[1].fieldEffect,
+        "follower_reaction_1",
+        "the draw item must carry the emitted reaction kind"
+      )
+      local gridX, gridZ = FieldGrid.tileCenterToWorld(4 - 1, 6 - 2)
+      local offset = assets.effects.follower_reaction_1.placementOffset or { x = 0, y = 0, z = 0 }
+      local transform = assert(controller:status().instances[1]).modelInstance.transform
+      Assert.deepEqual(
+        transform,
+        Matrix4.translate(gridX + offset.x, 3 + offset.y, gridZ + offset.z),
+        "the draw transform must convert the committed local anchor rather than project a source surface"
+      )
+    end
+    Assert.isTrue(#readyVersions() > 0, "a ready imported game version is required")
   end,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }

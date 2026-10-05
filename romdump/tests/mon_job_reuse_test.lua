@@ -187,6 +187,9 @@ local function syntheticRomFs()
       end
       return allZero(44)
     end),
+    performance = fixedArchive(MonSources.PERFORMANCE_MEMBER_COUNT, function()
+      return allZero(MonSources.PERFORMANCE_MEMBER_SIZE)
+    end),
     growth_tables = fixedArchive(8, function()
       return allZero(404)
     end),
@@ -445,7 +448,7 @@ function T.summary_dispatch_reads_published_results_without_recompiling()
     zeroCurve[level] = 0
   end
   local catalog = {
-    schema = "g4-mon-catalog-v3",
+    schema = "g4-mon-catalog-v4",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},

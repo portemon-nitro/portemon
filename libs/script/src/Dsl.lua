@@ -791,6 +791,15 @@ end
 function M.partyMonRibbonCount(spec)
   return op("party_mon_ribbon_count", spec)
 end
+function M.partyMonShinyLeafCount(spec)
+  return op("party_mon_shiny_leaf_count", spec)
+end
+function M.tryGiveShinyLeafCrown(spec)
+  return op("try_give_shiny_leaf_crown", spec)
+end
+function M.followerInteract()
+  return op("follower_interact")
+end
 function M.partyRibbonCount(spec)
   return op("party_ribbon_count", spec)
 end

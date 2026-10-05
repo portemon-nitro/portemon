@@ -20,6 +20,15 @@ function T.metatile_behavior_names_cover_navigation_categories()
   Assert.isFalse(MetatileBehavior.isSurfableWater(BEHAVIOR.TALL_GRASS))
 end
 
+function T.reaction_suppression_matches_the_three_retail_metatiles()
+  for _, behavior in ipairs({ 46, 113, 114 }) do
+    Assert.isTrue(MetatileBehavior.suppressesFollowerReaction(behavior), "suppressed behavior " .. behavior)
+  end
+  for _, behavior in ipairs({ 0, 2, 3, 45, 47, 112, 115 }) do
+    Assert.isFalse(MetatileBehavior.suppressesFollowerReaction(behavior), "ordinary behavior " .. behavior)
+  end
+end
+
 function T.source_behavior_values_and_directions_are_exact()
   local ledges = {
     { name = "JUMP_EAST", value = 56, direction = "east" },

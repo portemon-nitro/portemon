@@ -20,6 +20,7 @@ local HgssScript = require("libs.hgss.src.script.Composition")
 local FieldScriptCompatibility = require("libs.hgss.src.script.FieldScriptCompatibility")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MapInitScriptController = require("libs.hgss.src.field.MapInitScriptController")
+local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteractionEngine")
 
 -- The player facade the script services consume: position/facing/gender/name
 -- plus the mutation hooks the movement tasks use (the player can be a
@@ -218,6 +219,9 @@ end
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field starterBalls table<string, unknown>|nil the Elm starter-ball runtime-prop controller (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field followerInteractionCatalog table<string, unknown> validated generated follower-interaction catalog
+---@field clock table<string, unknown> live local clock
+---@field fashionCase table<string, unknown> live fashion accessory inventory
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -230,6 +234,7 @@ end
 ---@field mapsService ScriptMapsService
 ---@field menuHost ScriptMenuHost
 ---@field signpostHost ScriptSignpostHost
+---@field followerInteractionEngine FollowerInteractionEngine?
 ---@field player ScriptPlayerFacade
 ---@field cacheFs table<string, unknown> CacheFs-shaped
 ---@field overrideFs table<string, unknown> read-shaped filesystem for data/scripts/overrides
@@ -297,6 +302,21 @@ function FieldScripts.new(opts)
     player:setAvatarApplier(assert(opts.avatarApplier))
   end
   local actors = ScriptActorWorld.new(opts.actors --[[@as ScriptActorManager]], player)
+  local followerInteractionEngine = nil
+  if opts.followerInteractionCatalog ~= nil then
+    followerInteractionEngine = FollowerInteractionEngine.new({
+      catalog = opts.followerInteractionCatalog,
+      mons = assert(opts.mons),
+      items = assert(opts.itemCatalog),
+      fashionCase = assert(opts.fashionCase),
+      world = worldState,
+      actors = opts.actors,
+      followingMon = assert(opts.followingMon),
+      runtimeMap = opts.sourceMap,
+      player = player,
+      clock = assert(opts.clock),
+    })
+  end
   local dialogueHost = ScriptDialogueHost.new({
     controller = opts.dialogue,
     yesNoController = FieldYesNoController.new({ audio = opts.audio }),
@@ -308,6 +328,7 @@ function FieldScripts.new(opts)
     world = worldState,
     mons = opts.mons,
     items = opts.itemCatalog,
+    locationNames = opts.followerInteractionCatalog and opts.followerInteractionCatalog.locationNames,
     frameIndex = opts.frameIndex,
   })
   local mapsService = ScriptMapsService.new({
@@ -348,6 +369,7 @@ function FieldScripts.new(opts)
     mapsService = mapsService,
     menuHost = menuHost,
     signpostHost = signpostHost,
+    followerInteractionEngine = followerInteractionEngine,
     player = player,
     mapSource = opts.sourceMap,
   }, FieldScripts)
@@ -400,6 +422,7 @@ function FieldScripts.new(opts)
       windowStyles = opts.windowStyles,
       startMenuReopen = opts.startMenuReopen,
       effects = opts.effects,
+      terrainEffects = opts.effects,
       mons = opts.mons,
       items = opts.items,
       starterProvider = opts.starterProvider,
@@ -410,6 +433,7 @@ function FieldScripts.new(opts)
       fieldMoves = opts.fieldMoves,
       pokemonNaming = opts.pokemonNaming,
       followingMon = opts.followingMon,
+      followerInteraction = followerInteractionEngine,
       followerTransition = opts.followerTransition,
       starterBalls = opts.starterBalls,
       advanceAsync = advanceAsync,
@@ -461,6 +485,9 @@ local function rebindMapContext(self, sourceMap)
   self.client:setScriptBankId(sourceMap.fieldData.scriptBankId)
   self.initController:setRules(sourceMap.fieldData.initScripts, sourceMap.fieldData.mapId)
   self.mapSource = sourceMap
+  if self.followerInteractionEngine ~= nil then
+    self.followerInteractionEngine.runtimeMap = sourceMap
+  end
 end
 
 -- Rebind the facade and warp source after a map swap (the player and the

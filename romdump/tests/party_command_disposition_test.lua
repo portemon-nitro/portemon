@@ -134,6 +134,8 @@ local FAMILY = {
   788,
   789,
   790,
+  825,
+  826,
   827,
   828,
   836,
@@ -146,7 +148,6 @@ local FAMILY = {
 -- applications.
 local LATER_OWNED = {
   [600] = "following_mon",
-  [711] = "following_mon",
   [727] = "following_mon",
   [783] = "following_mon",
 }
@@ -201,6 +202,22 @@ function T.gift_command_is_supported_with_real_semantics()
   local tagged = entry(137)
   Assert.equal(tagged.disposition, "supported", "the gift command is supported here")
   Assert.equal(tagged.feature, "mons", "the gift command belongs to the mon family")
+end
+
+function T.interaction_and_shiny_leaf_commands_are_supported_with_source_timing()
+  local cases = {
+    [711] = { feature = "following_mon", classification = "native_wait", widths = {} },
+    [825] = { feature = "mons", classification = "continue_same_tick", widths = { 2, 2 } },
+    [826] = { feature = "mons", classification = "continue_same_tick", widths = { 2 } },
+  }
+  for opcode, expected in pairs(cases) do
+    local tagged = entry(opcode)
+    Assert.equal(tagged.disposition, "supported", "opcode " .. opcode .. " is executable")
+    Assert.equal(tagged.feature, expected.feature, "opcode " .. opcode .. " names its semantic owner")
+    Assert.equal(tagged.classification, expected.classification, "opcode " .. opcode .. " keeps source timing")
+    Assert.deepEqual(tagged.widths, expected.widths, "opcode " .. opcode .. " keeps source operands")
+    Assert.isNil(tagged.deferredReason, "opcode " .. opcode .. " is no longer deferred")
+  end
 end
 
 function T.deferred_commands_lower_to_explicit_unsupported_nodes()

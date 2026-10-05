@@ -39,10 +39,45 @@ local function stubRuntime()
     windowStyles = {},
     transition = {},
     mapLoader = {},
+    fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
   }
 end
 
 local function stubOptions(partySelection, mart)
+  local InteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
+  local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
+  local reactions = {}
+  local speciesClassBySpeciesId = {}
+  local fashionNames = {}
+  for selector = 1, 14 do
+    local definition = "follower_reaction_" .. selector
+    reactions[selector] = {
+      definition = definition,
+      resourceKey = FieldEffectAssetCache.definitionPath(definition),
+    }
+  end
+  for speciesId = 1, 493 do
+    speciesClassBySpeciesId[speciesId] = 0
+  end
+  for accessoryId = 0, 99 do
+    fashionNames[accessoryId] = { name = "Accessory", nameWithArticle = "an Accessory" }
+  end
+  local rulesByMapSection = {}
+  for sectionId = 0, 235 do
+    rulesByMapSection[sectionId] = {}
+  end
+  local followerInteractionCatalog = {
+    schema = InteractionCache.SCHEMA,
+    version = "heartgold",
+    rulesByMapSection = rulesByMapSection,
+    programs = {},
+    motions = {},
+    reactions = reactions,
+    speciesClassBySpeciesId = speciesClassBySpeciesId,
+    locationNames = {},
+    fashionNames = fashionNames,
+  }
+  assert(InteractionCache.validateCatalog(followerInteractionCatalog))
   return {
     cacheFs = {},
     layoutMessage = function(message)
@@ -52,6 +87,10 @@ local function stubOptions(partySelection, mart)
     audioService = nil,
     loadedGame = nil,
     mons = {},
+    itemCatalog = {},
+    followingMon = {},
+    clock = {},
+    followerInteractionCatalog = followerInteractionCatalog,
     partySelection = partySelection,
     mart = mart,
   }
@@ -97,7 +136,9 @@ function T.compose_threads_the_party_selection_host()
   local ok, err = pcall(function()
     local compose = require(COMPOSE_MODULE).compose
     local host = { scriptPartyHost = true }
-    local result = compose(stubRuntime(), stubOptions(host))
+    local runtime = stubRuntime()
+    runtime.fashionCase = require("libs.hgss.src.save.FashionCaseState").empty()
+    local result = compose(runtime, stubOptions(host))
     Assert.notNil(result.scripts, "composition still yields its scripts")
     Assert.equal(seen.opts and seen.opts.partySelection, host, "the host reaches scheduler services intact")
   end)

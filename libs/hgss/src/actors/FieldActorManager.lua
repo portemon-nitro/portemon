@@ -2924,7 +2924,20 @@ function FieldActorManager:beginScriptedAction(actorId, action)
   local distance = action.distance
   local speed = action.speed
   local durationTicks
-  if
+  if kind == "presentation_offset" then
+    assert(
+      type(action.ticks) == "number" and action.ticks >= 0 and action.ticks % 1 == 0,
+      "presentation offset ticks must be a non-negative integer"
+    )
+    for _, key in ipairs({ "x", "y", "z" }) do
+      local value = action[key]
+      assert(
+        type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge,
+        "presentation offset components must be finite numbers"
+      )
+    end
+    durationTicks = action.ticks
+  elseif
     kind == "walk"
     or kind == "walk_in_place"
     or kind == "jump"
@@ -2934,6 +2947,7 @@ function FieldActorManager:beginScriptedAction(actorId, action)
     or kind == "gesture"
     or kind == "reveal_trainer"
     or kind == "trajectory_segment"
+    or kind == "presentation_offset"
   then
     durationTicks = MovementCalibration.actionTicks(action)
   else
@@ -2957,6 +2971,7 @@ function FieldActorManager:beginScriptedAction(actorId, action)
     or kind == "emote"
     or kind == "gesture"
     or kind == "reveal_trainer"
+    or kind == "presentation_offset"
   then
     destInfo = {
       start = committedEndpoint(actor),
@@ -2972,6 +2987,9 @@ function FieldActorManager:beginScriptedAction(actorId, action)
     deltaZ = action.deltaZ,
     surfaceBandDelta = action.surfaceBandDelta,
     ticks = action.ticks,
+    presentationOffsetX = action.x,
+    presentationOffsetY = action.y,
+    presentationOffsetZ = action.z,
     start = destInfo.start,
     dest = destInfo.dest,
     durationTicks = durationTicks,

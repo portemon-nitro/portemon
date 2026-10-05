@@ -12,7 +12,10 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 
-local T = { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "field-runtime", "map:64" } }, tests = {} }
+local T = {
+  metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "field-runtime", "map:64" } },
+  tests = {},
+}
 
 local function readyVersions()
   local versions = {}
@@ -49,6 +52,7 @@ local function validEntry(versionId, withBuckets)
   if withBuckets ~= false then
     entry.mons = require("tests.support.MonBucket").emptyForVersion(versionId)
     entry.bag = require("libs.hgss.src.save.BagSave").empty()
+    entry.fashionCase = require("libs.hgss.src.save.FashionCaseState").empty()
     entry.mart = require("libs.hgss.src.save.MartSave").empty()
   end
   return entry
@@ -65,6 +69,7 @@ function T.tests.boot_builds_and_teardown_releases_the_host(context)
   for _, versionId in ipairs(versions) do
     local runtime = FieldRuntime.new(validEntry(versionId), { presentation = false })
     local host = assert(runtime.partySelection, "boot constructs the script party host")
+    Assert.equal(runtime.fashionCase:quantity(0), 0, "boot keeps the live Fashion Case state")
     Assert.isNil(host:status(), "a fresh boot owns no open selection")
     runtime:dispose()
     Assert.isNil(runtime.partySelection, "teardown releases the host field")

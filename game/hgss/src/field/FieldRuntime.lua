@@ -36,6 +36,7 @@ local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
 local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
 local FollowingMonController = require("libs.hgss.src.field.FollowingMonController")
 local GameSave = require("libs.hgss.src.save.GameSave")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScreenFade")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -58,6 +59,7 @@ local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
+local FollowerInteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
 local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntranceIndicatorRuntime")
@@ -183,6 +185,8 @@ end
 ---@field itemCatalog ItemCatalog the shared item catalog behind mon and later Bag composition
 ---@field monLanguage string the semantic language key the mon catalog was built for
 ---@field monService HgssMonService the live party/creation/script mon service
+---@field fashionCase FashionCaseState live accessory inventory restored from the save
+---@field followerInteractionCatalog table<string, unknown> generated follower interaction rules
 ---@field bagService HgssBagService the live bag/inventory service
 ---@field martService MartService the live mart inventory/session service
 ---@field martHost table<string, unknown> the one script-owned mart child host
@@ -591,6 +595,15 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   ) --[[@as FieldWeatherCache.Catalog]]
   assert(FieldWeatherCache.validateCatalog(weatherCatalog), "field weather catalog is invalid")
   self.weatherCatalog = weatherCatalog
+  local followerInteractionCatalog = assert(
+    boot.cacheFs:loadLua(FollowerInteractionCache.catalogPath()),
+    "follower interaction catalog is missing -- run `scripts/buildcache.sh` first"
+  )
+  assert(
+    FollowerInteractionCache.validateCatalog(followerInteractionCatalog),
+    "follower interaction catalog is invalid"
+  )
+  self.followerInteractionCatalog = followerInteractionCatalog
   -- The mon catalog behind the live party: loaded once per runtime
   -- through the ready cache path, before save validation and service
   -- construction. The shared item catalog loads beside it and is retained
@@ -604,12 +617,18 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   self.fieldEntranceIndicatorAsset, self.fieldEntranceIndicator = FieldEntranceIndicatorRuntime.load(boot.cacheFs)
   self.fieldEmoteModels = FieldActorEmoteRuntime.load(boot.cacheFs)
   self.fieldEffectAssets = self.fieldEntranceIndicatorAsset
+  local terrainEffects = {
+    tall_grass = self.fieldEntranceIndicatorAsset.effects.tall_grass,
+    very_tall_grass = self.fieldEntranceIndicatorAsset.effects.very_tall_grass,
+    trainer_reveal = self.fieldEntranceIndicatorAsset.effects.trainer_reveal,
+  }
+  for selector = 1, 14 do
+    local kind = "follower_reaction_" .. selector
+    terrainEffects[kind] =
+      assert(self.fieldEntranceIndicatorAsset.effects[kind], "follower reaction definition is missing: " .. kind)
+  end
   self.fieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController").new({
-    effects = {
-      tall_grass = self.fieldEntranceIndicatorAsset.effects.tall_grass,
-      very_tall_grass = self.fieldEntranceIndicatorAsset.effects.very_tall_grass,
-      trainer_reveal = self.fieldEntranceIndicatorAsset.effects.trainer_reveal,
-    },
+    effects = terrainEffects,
     modelFactory = require("libs.hgss.src.presentation.FieldTerrainEffectModelFactory").new(),
   })
 
@@ -699,6 +718,7 @@ function FieldRuntime:_loadInitialWorld(boot)
     self.game.schema == GameSave.SCHEMA
     or self.game.schema == "g4-game-save-v3"
     or self.game.schema == "g4-game-save-v4"
+    or self.game.schema == "g4-game-save-v5"
   then
     entryGame = assert(boot.saveValidation:validate(self.game))
     assert(entryGame.versionId == self.versionId, "loaded game belongs to another version")
@@ -718,6 +738,8 @@ function FieldRuntime:_loadInitialWorld(boot)
   self.playerData = boot.activeGame.playerData
   self.fieldTravel =
     FieldTravelState.new(assert(boot.activeGame.fieldTravel, "field travel state is required to enter the field"))
+  self.fashionCase =
+    FashionCaseState.new(assert(boot.activeGame.fashionCase, "Fashion Case state is required to enter the field"))
   local fieldX, fieldZ = self.entryLocation.fieldX, self.entryLocation.fieldZ
   local surfaceId, facing = self.entryLocation.surfaceId, self.entryLocation.facing
   self.player = FieldPlayer.new({
@@ -1156,6 +1178,8 @@ function FieldRuntime:_composeFieldServices(boot)
     fieldMoves = self.pokemonMenu.fieldMoves,
     pokemonNaming = self.pokemonNaming,
     followingMon = self.followingMon,
+    followerInteractionCatalog = self.followerInteractionCatalog,
+    clock = self.localClock,
     followerTransition = self.followingMonTransition,
     starterBalls = self.starterBalls,
   })
@@ -2051,6 +2075,7 @@ function FieldRuntime:_releaseAll()
   self.martService = nil
   self.martStockResolver = nil
   self.itemCatalog = nil
+  self.followerInteractionCatalog = nil
   self.starterProvider, self.starterChoice, self.pokemonNaming = nil, nil, nil
   self.partySelection = nil
   self.pokemonMenu, self.menuLaneWarps = nil, nil

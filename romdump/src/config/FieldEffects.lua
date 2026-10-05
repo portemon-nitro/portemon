@@ -96,4 +96,29 @@ return {
       placementOffset = { x = 0, y = 6, z = 0 },
     },
   },
+  -- The source callback table `ov01_02209544` in
+  -- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36
+  -- pairs each reaction's BTX0 texture member with a companion four-frame
+  -- selector table. Both source identities stay here; generated keys stay semantic.
+  followerReactions = {
+    { key = "follower_reaction_1", textureMember = 2, descriptorMember = 150 },
+    { key = "follower_reaction_2", textureMember = 3, descriptorMember = 151 },
+    { key = "follower_reaction_3", textureMember = 4, descriptorMember = 152 },
+    { key = "follower_reaction_4", textureMember = 5, descriptorMember = 153 },
+    { key = "follower_reaction_5", textureMember = 6, descriptorMember = 154 },
+    { key = "follower_reaction_6", textureMember = 7, descriptorMember = 155 },
+    { key = "follower_reaction_7", textureMember = 8, descriptorMember = 156 },
+    { key = "follower_reaction_8", textureMember = 9, descriptorMember = 157 },
+    { key = "follower_reaction_9", textureMember = 10, descriptorMember = 158 },
+    { key = "follower_reaction_10", textureMember = 11, descriptorMember = 159 },
+    { key = "follower_reaction_11", textureMember = 12, descriptorMember = 160 },
+    { key = "follower_reaction_12", textureMember = 13, descriptorMember = 161 },
+    { key = "follower_reaction_13", textureMember = 14, descriptorMember = 162 },
+    { key = "follower_reaction_14", textureMember = 15, descriptorMember = 163 },
+  },
+  followerReactionBase = {
+    modelMember = 130,
+    textureMember = 28,
+    patternMember = 140,
+  },
 }

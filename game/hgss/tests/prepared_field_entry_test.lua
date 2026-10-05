@@ -220,7 +220,7 @@ local function pollUntilReady(entry, builds, limit)
       builds[1].makeReady()
     end
     local ready, failure = entry:poll()
-    Assert.isNil(failure, "preparation must not fail while polling to ready")
+    Assert.isNil(failure, "preparation must not fail while polling to ready: " .. tostring(failure))
     if ready then
       return true
     end
@@ -233,7 +233,7 @@ function T.staging_advances_the_bedroom_and_reports_readiness_once()
   local entry, builds = stagedEntry(log)
   Assert.isFalse(entry:isReady(), "a fresh entry is not ready")
   local ready, failure = entry:poll()
-  Assert.isNil(failure, "the first poll must not fail")
+  Assert.isNil(failure, "the first poll must not fail: " .. tostring(failure))
   Assert.isFalse(ready, "the staged scene stays pending until it completes")
   Assert.equal(#builds, 1, "the first poll starts exactly one staged scene build")
   Assert.isTrue(pollUntilReady(entry, builds), "repeated polls complete the staged bedroom")

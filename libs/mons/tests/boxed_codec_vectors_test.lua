@@ -229,4 +229,19 @@ function T.boxed_bytes_match_reference_vectors_and_decode_exactly()
   end)
 end
 
+function T.boxed_origin_games_round_trip_every_representable_native_identity()
+  local catalog = CatalogFixture.makeCatalog()
+  local context = CatalogFixture.domainContext(catalog)
+  local Mon = require("libs.mons.src.Mon")
+  local BoxCodec = require("libs.mons.src.gen4.BoxCodec")
+  local mon = CatalogFixture.makeFactory(0x10000024, catalog):createNormal(CatalogFixture.normalRequest({ level = 5 }))
+  for game, nativeId in pairs(CatalogFixture.GAMES) do
+    mon.origin.game = game
+    local canonical = Mon.validate(mon, context)
+    local decoded = BoxCodec.decode(BoxCodec.encode(canonical, context), context)
+    Assert.equal(decoded.origin.game, game)
+    Assert.equal(context.games[decoded.origin.game], nativeId)
+  end
+end
+
 return { tests = T }

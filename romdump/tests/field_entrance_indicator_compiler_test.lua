@@ -1,6 +1,7 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
+local SourceFieldEffects = require("romdump.src.config.FieldEffects")
 
 local T = { tests = {} }
 
@@ -23,6 +24,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
+    "libs.nds.src.nitro.g3d.Nsbtx",
     "libs.nds.src.nitro.g3d.NitroAnimation",
     "romdump.src.digest.field.FieldEffectPatternAnimation",
     "romdump.src.digest.model.ModelAssetCompiler",
@@ -84,6 +86,8 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
         placementOffset = { x = 0, y = 6, z = 0 },
       },
     },
+    followerReactions = SourceFieldEffects.followerReactions,
+    followerReactionBase = SourceFieldEffects.followerReactionBase,
   }
   package.loaded["libs.nds.src.nitro.g3d.Nsbmd"] = {
     decode = function(_, context)
@@ -100,6 +104,14 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
           textures = { { name = "texture" } },
           palettes = { { name = "palette" } },
         },
+      }
+    end,
+  }
+  package.loaded["libs.nds.src.nitro.g3d.Nsbtx"] = {
+    decode = function()
+      return {
+        textures = { { name = "texture" } },
+        palettes = { { name = "palette" } },
       }
     end,
   }
@@ -234,6 +246,11 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   Assert.deepEqual(distinctMembers(modelMembersBySection, "tall-grass-renderer-8"), { 126 }, "tall-grass-renderer-8")
   Assert.deepEqual(distinctMembers(modelMembersBySection, "tall-grass-renderer-12"), { 122 }, "tall-grass-renderer-12")
   Assert.deepEqual(distinctMembers(modelMembersBySection, "trainer-reveal-effect"), { 124 }, "trainer-reveal-effect")
+  Assert.deepEqual(
+    distinctMembers(modelMembersBySection, "follower-reaction-model"),
+    { 130 },
+    "follower-reaction-model"
+  )
   Assert.deepEqual(distinctMembers(modelMembersBySection, "surf-attachment-effect"), { 86 }, "surf-attachment-effect")
   Assert.deepEqual(
     distinctMembers(modelMembersBySection, "follower-transition-effect"),
@@ -264,6 +281,9 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   Assert.equal(result.effects.trainer_reveal.placementOffset.x, 0)
   Assert.equal(result.effects.trainer_reveal.placementOffset.y, 0)
   Assert.equal(result.effects.trainer_reveal.placementOffset.z, 0.5)
+  Assert.equal(result.effects.follower_reaction_1.model.key, "field-effect:follower-reaction-1")
+  Assert.equal(result.effects.follower_reaction_1.model.animations[1].source.memberId, 150)
+  Assert.equal(result.effects.follower_reaction_1.lifecycle.mode, "once")
   local surf = result.effects.surf_attachment
   Assert.notNil(surf)
   Assert.equal(surf.model.kind, "static")
@@ -318,6 +338,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
+    "libs.nds.src.nitro.g3d.Nsbtx",
     "libs.nds.src.nitro.g3d.NitroAnimation",
     "romdump.src.digest.field.FieldEffectPatternAnimation",
     "romdump.src.digest.model.ModelAssetCompiler",
@@ -338,6 +359,14 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
           textures = { { name = "texture" } },
           palettes = { { name = "palette" } },
         },
+      }
+    end,
+  }
+  package.loaded["libs.nds.src.nitro.g3d.Nsbtx"] = {
+    decode = function()
+      return {
+        textures = { { name = "texture" } },
+        palettes = { { name = "palette" } },
       }
     end,
   }

@@ -8,6 +8,7 @@ local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
@@ -43,6 +44,7 @@ local function freshGame(versionId)
       options = { textSpeed = "fastest", textFrame = 0 },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+    fashionCase = FashionCaseState.empty(),
     playTime = PlayTime.new(),
     worldState = FieldEventState.new(),
     mons = require("tests.support.MonBucket").emptyForVersion(versionId),

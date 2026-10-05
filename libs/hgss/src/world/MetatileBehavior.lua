@@ -8,6 +8,23 @@
 local MetatileBehavior = {}
 
 local LEDGE_DIRECTIONS = {}
+local WALKING_ENCOUNTER_BEHAVIORS = {
+  [2] = true,
+  [3] = true,
+  [5] = true,
+  [8] = true,
+  [11] = true,
+  [16] = true,
+  [18] = true,
+  [21] = true,
+  [37] = true,
+  [42] = true,
+  [114] = true,
+  [119] = true,
+  [123] = true,
+  [166] = true,
+  [167] = true,
+}
 
 -- TILE_BEHAVIOR_* warp-relevant values (pokeheartgold metatile_behavior.h).
 MetatileBehavior.BEHAVIOR = {
@@ -94,6 +111,18 @@ end
 ---@return boolean
 function MetatileBehavior.isVeryTallGrass(behavior)
   return behavior == MetatileBehavior.BEHAVIOR.VERY_TALL_GRASS
+end
+
+---@param behavior integer?
+---@return boolean
+function MetatileBehavior.suppressesFollowerReaction(behavior)
+  return behavior == 46 or behavior == 113 or behavior == 114
+end
+
+---@param behavior integer?
+---@return boolean
+function MetatileBehavior.canGenerateWalkingEncounters(behavior)
+  return WALKING_ENCOUNTER_BEHAVIORS[behavior] == true
 end
 
 local WARP_ENTRANCE_DIRECTIONS = {
