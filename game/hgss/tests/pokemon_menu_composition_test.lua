@@ -21,6 +21,7 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyCache = require("libs.assets.src.PartyCache")
 local PcCache = require("libs.assets.src.PcCache")
+local PcPresentationFixture = require("tests.support.PcPresentationFixture")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -236,14 +237,7 @@ local function dependencies(overrides)
     uiManifest = FieldUiFixture.manifest(),
     mailbox = Mailbox.new(),
     photoAlbum = PhotoAlbum.new(),
-    pcManifest = {
-      mail = { stationery = {} },
-      storage = { geometry = { wallpaperMap = {} } },
-      photoAlbum = {
-        ui = { backgrounds = {}, sprites = {}, animations = {} },
-        geometry = {},
-      },
-    },
+    pcManifest = PcPresentationFixture.manifest(),
     profile = CatalogFixture.profile(),
     versionId = "heartgold",
     cacheFs = {},

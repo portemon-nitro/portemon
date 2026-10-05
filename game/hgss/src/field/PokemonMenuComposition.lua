@@ -13,6 +13,8 @@ local FieldMoveContext = require("game.hgss.src.field.FieldMoveContext")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMoveWorld = require("game.hgss.src.field.FieldMoveWorld")
 local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
+local BagCursor = require("libs.hgss.src.items.BagCursor")
+local BagScreenState = require("game.hgss.src.field.BagScreenState")
 local MailActions = require("libs.hgss.src.field.MailActions")
 local MailboxScreenState = require("game.hgss.src.pc.MailboxScreenState")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
@@ -213,6 +215,26 @@ function PokemonMenuComposition.create(deps)
     })
   end
   local function makeStorageChild(mode)
+    local function makeHeldItemPicker(_)
+      local pocket = bagCursor:currentPocket()
+      local pickerCursor = BagCursor.new()
+      pickerCursor:setPocket(pocket)
+      pickerCursor:setPosition(pocket, bagCursor:position(pocket))
+      pickerCursor:setScroll(pocket, bagCursor:scroll(pocket))
+      return BagScreenState.new({
+        service = bag,
+        cursor = pickerCursor,
+        manifest = bagManifest,
+        uiManifest = uiManifest,
+        monCatalog = monCatalog,
+        heroGender = deps.heroGender,
+        measureDisplay = measureDisplay,
+        context = "pick_held",
+        partyEmpty = mons:partyCount() == 0,
+        effect = deps.effect,
+        textPolicy = deps.textPolicy,
+      })
+    end
     local function makeSummary(request)
       local source = assert(request.source, "Storage summary carries its subject address")
       local subjectPort
@@ -285,7 +307,11 @@ function PokemonMenuComposition.create(deps)
       measureDisplay = measureDisplay,
       audio = { play = deps.effect },
       overrides = overrides and overrides.storage,
-      childFactories = { summary = makeSummary, boxName = makeBoxName },
+      childFactories = {
+        summary = makeSummary,
+        boxName = makeBoxName,
+        heldItemPicker = makeHeldItemPicker,
+      },
     })
   end
   local function makePhotoAlbumChild()
