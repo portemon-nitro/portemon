@@ -617,7 +617,7 @@ function T.ai_memory_rides_the_native_snapshot_and_restores_exactly()
   Assert.equal(type(held.trainerAi), "table", "the capture carries the detached trainer record")
   Assert.equal(
     (held.trainerAi --[[@as table<string, unknown>]]).version,
-    2,
+    3,
     "the record carries its schema mark"
   )
   Assert.equal(memoryEntryOf(held).itemCount, 1, "the carried count survives the serving")
@@ -1292,7 +1292,7 @@ function T.fresh_trainer_memory_opens_zeroed_beside_the_session()
   local held = session:capture()
   local memory = held.trainerAi --[[@as table<string, unknown>]]
   Assert.equal(type(memory), "table", "the capture carries the trainer record")
-  Assert.equal(memory.version, 2, "the record carries its schema mark")
+  Assert.equal(memory.version, 3, "the record carries its schema mark")
   local controllers = memory.controllers --[[@as table<string, unknown>]]
   local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
   Assert.deepEqual(
@@ -1369,7 +1369,7 @@ function T.malformed_trainer_records_fail_restore_as_incompatible()
     owned({ "POTION", "SUPER_POTION", "FULL_RESTORE", "MAX_POTION" }, 4),
   }) do
     Assert.isTrue(
-      TrainerAi.validateMemory({ version = 2, controllers = { ["trainer:1"] = valid } }),
+      TrainerAi.validateMemory({ version = 3, controllers = { ["trainer:1"] = valid }, arrivals = {} }),
       "a well-formed record validates"
     )
   end
@@ -1407,6 +1407,11 @@ function T.malformed_trainer_records_fail_restore_as_incompatible()
       {
         version = 2,
         controllers = { ["trainer:1"] = { slots = { "NONE", "NONE", "NONE", "NONE" }, knownMoves = { [0] = {} } } },
+      },
+      {
+        version = 3,
+        controllers = { ["trainer:1"] = owned({ "POTION", "NONE", "NONE", "NONE" }, 1) },
+        arrivals = { [1] = { counter = 0, enteredWithItem = true } },
       },
     })
   do
@@ -5354,6 +5359,439 @@ function T.vacant_slots_leave_stored_answers_unchanged()
     "the restored snapshot answers identically with vacant slots present"
   )
   replayed:dispose()
+end
+
+---@param effect integer compiled move effect steering the probe program
+---@return table scoring slots with one isolated probe and three spent fillers
+local function arrivalSlots(effect)
+  return {
+    slotWith({
+      key = "PROBE",
+      id = 500,
+      moveType = "water",
+      power = 60,
+      category = "special",
+      accuracy = 100,
+      effect = effect,
+      pp = 5,
+    }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+end
+
+---@param word integer? arrival counter in native word units, omitted while unstamped
+---@return table<string, unknown> live-shaped battler facts for the singles scoring path
+local function arrivalSide(word)
+  return {
+    ability = "RUN_AWAY",
+    item = 0,
+    status = 0,
+    status2 = 0,
+    moveFlags = 0,
+    base = { attack = 12, defense = 10, specialAttack = 12, specialDefense = 10, speed = 10 },
+    stages = { 6, 6, 6, 6, 6, 6, 6, 6 },
+    gender = 2,
+    weightHg = 100,
+    friendship = 0,
+    ivs = { hp = 10, attack = 10, defense = 10, speed = 10, specialAttack = 10, specialDefense = 10 },
+    lastMove = 0,
+    entryMoves = { 500, 33, 33, 33 },
+    w88b1 = 0,
+    w88neg = false,
+    w94 = word,
+  }
+end
+
+---@param effect integer probe effect under compiled facts
+---@param word integer? arrival counter shared by both duellists, omitted while unstamped
+---@param round integer? explicit turn clock overriding the opening default
+---@return table<string, unknown> explicit evaluation context with stamped sides
+local function arrivalExtra(effect, word, round)
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  return {
+    parties = { [0] = members, [1] = members },
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+    attacker = arrivalSide(word),
+    defender = arrivalSide(word),
+    atkHp = 100,
+    atkMaxHp = 100,
+    foeMaxHp = 100,
+    fullMoveById = {
+      [500] = {
+        effect = effect,
+        power = 60,
+        moveType = "water",
+        category = "special",
+        accuracy = 100,
+        basePp = 5,
+      },
+      [33] = { effect = 0, power = 35, moveType = "normal", category = "physical", accuracy = 95, basePp = 35 },
+    },
+    fullMoveIdByKey = { PROBE = 500 },
+    lastMove = { [0] = 0, [1] = 0 },
+    round = round,
+  }
+end
+
+---@param word integer? arrival counter shared by every record, omitted while unstamped
+---@param targetHp integer health of the targeted record mirroring the singles foe
+---@return table<string, unknown> live-shaped doubles record for one battler
+local function arrivalRecord(word, targetHp)
+  local program = programOwner()
+  local typeIds = program.TYPE_IDS --[[@as table<string, integer>]]
+  local abilityIds = program.ABILITY_IDS --[[@as table<string, integer>]]
+  return {
+    hp = targetHp,
+    maxHp = 100,
+    level = 5,
+    t1 = typeIds["normal"],
+    t2 = typeIds["normal"],
+    ability = abilityIds["RUN_AWAY"],
+    item = 0,
+    status = 0,
+    status2 = 0,
+    moveFlags = 0,
+    atk = 12,
+    def = 10,
+    spa = 12,
+    spd = 10,
+    spe = 10,
+    stages = { 6, 6, 6, 6, 6, 6, 6, 6 },
+    moves = { 500, 33, 33, 33 },
+    pp = { 5, 0, 0, 0 },
+    gender = 2,
+    weightHg = 100,
+    friendship = 0,
+    ivs = { hp = 10, attack = 10, defense = 10, speed = 10, specialAttack = 10, specialDefense = 10 },
+    lastMove = 0,
+    entryMoves = { 500, 33, 33, 33 },
+    suppressed = false,
+    magnetRise = false,
+    roosted = false,
+    miracleEye = false,
+    foresight = false,
+    w88b1 = 0,
+    w88neg = false,
+    w94 = word,
+  }
+end
+
+---@param word integer? arrival counter shared by every record, omitted while unstamped
+---@return table<string, unknown> explicit doubles evaluation context with stamped records
+local function arrivalDoubles(word)
+  return {
+    doublesBattlers = {
+      atk = 1,
+      tgt = 0,
+      records = {
+        [0] = arrivalRecord(word, 14),
+        [1] = arrivalRecord(word, 100),
+        [2] = arrivalRecord(word, 100),
+        [3] = arrivalRecord(word, 100),
+      },
+    },
+    fullMoveById = {
+      [500] = { effect = 183, power = 60, moveType = "water", category = "special", accuracy = 100, basePp = 5 },
+      [33] = { effect = 0, power = 35, moveType = "normal", category = "physical", accuracy = 95, basePp = 35 },
+    },
+    fullMoveIdByKey = { PROBE = 500 },
+    lastMove = { [0] = 0, [1] = 0 },
+    round = 6,
+  }
+end
+
+-- Freshly entered duellists take the recent-arrival branch: with every
+-- counter stamped at the opening turn the recency check stores its
+-- positive outcome and the probe holds its score past one routine draw.
+function T.freshly_entered_duellists_take_the_recent_arrival_branch()
+  local TrainerAi = trainerPolicy()
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(
+    nativeChart(),
+    arrivalSlots(183),
+    fighterWith({ types = { "normal" } }),
+    fighterWith({ types = { "normal" } }),
+    14,
+    { 1 },
+    true,
+    stream,
+    arrivalExtra(183, 1, nil)
+  )
+  Assert.equal(scored[1].score, 100, "the freshly entered probe holds its score")
+  Assert.deepEqual(
+    { scored[2].score, scored[3].score, scored[4].score },
+    { 0, 0, 0 },
+    "the spent fillers stay excluded"
+  )
+  Assert.deepEqual(
+    stream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" },
+    "the taken branch spends its routine draw"
+  )
+end
+
+-- Freshly entered duellists preview negative turn advantage: the
+-- opening turn minus the opening counter reads one below zero, so the
+-- probe holds its lower score without spending a routine draw.
+function T.freshly_entered_duellists_preview_negative_turn_advantage()
+  local TrainerAi = trainerPolicy()
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(
+    nativeChart(),
+    arrivalSlots(28),
+    fighterWith({ types = { "normal" } }),
+    fighterWith({ types = { "normal" } }),
+    14,
+    { 1 },
+    true,
+    stream,
+    arrivalExtra(28, 1, nil)
+  )
+  Assert.equal(scored[1].score, 97, "the opening difference previews below the bonus gate")
+  Assert.deepEqual(
+    stream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3" },
+    "the missed gate spends no routine draw"
+  )
+end
+
+-- Later arrivals keep their entry round against the turn clock: the
+-- entrant and the last-turn arrival take the recent branch while older
+-- arrivals fall through, and the equal word takes the recent branch.
+function T.later_arrivals_keep_their_entry_round_against_the_turn_clock()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local vectors = {
+    { word = 6, score = 100 },
+    { word = 5, score = 100 },
+    { word = 4, score = 99 },
+    { word = 1, score = 99 },
+  }
+  for _, vector in ipairs(vectors) do
+    local stream = spyStream(FIXED_SEED)
+    local scored = TrainerAi.scoreSlots(
+      chart,
+      arrivalSlots(183),
+      user,
+      user,
+      14,
+      { 1 },
+      false,
+      stream,
+      arrivalExtra(183, vector.word, 6)
+    )
+    Assert.equal(
+      scored[1].score,
+      vector.score,
+      "the arrival counter " .. vector.word .. " holds its branch at the sixth turn"
+    )
+    Assert.deepEqual(
+      stream:drawLabels(),
+      { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" },
+      "the arrival counter " .. vector.word .. " draws its reached gates"
+    )
+  end
+end
+
+-- Turn advantage grows with time since entry: a long-out veteran clears
+-- the bonus gate with its two routine draws while newer arrivals fall
+-- through, pinning the turn-minus-counter subtraction exactly.
+function T.turn_advantage_grows_with_time_since_entry()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local opening = { "score_init_0", "score_init_1", "score_init_2", "score_init_3" }
+  local taken = { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance", "program_chance" }
+  local vectors = {
+    { word = 1, score = 102, draws = taken },
+    { word = 2, score = 97, draws = opening },
+    { word = 6, score = 97, draws = opening },
+  }
+  for _, vector in ipairs(vectors) do
+    local stream = spyStream(FIXED_SEED)
+    local scored = TrainerAi.scoreSlots(
+      chart,
+      arrivalSlots(28),
+      user,
+      user,
+      14,
+      { 1 },
+      false,
+      stream,
+      arrivalExtra(28, vector.word, 6)
+    )
+    Assert.equal(
+      scored[1].score,
+      vector.score,
+      "the arrival counter " .. vector.word .. " previews its exact difference at the sixth turn"
+    )
+    Assert.deepEqual(
+      stream:drawLabels(),
+      vector.draws,
+      "the arrival counter " .. vector.word .. " draws its reached gates"
+    )
+  end
+end
+
+-- Records without the arrival counter fail closed at the recency
+-- check: a live-shaped battler missing its counter raises a structured
+-- missing behavior naming the battler fact instead of guessing a value.
+function T.unstamped_live_battlers_fail_closed_at_the_recency_check()
+  local TrainerAi = trainerPolicy()
+  local extra = arrivalExtra(183, 1, nil)
+  extra.attacker = arrivalSide(nil)
+  local failure = Assert.throws(function()
+    TrainerAi.scoreSlots(
+      nativeChart(),
+      arrivalSlots(183),
+      fighterWith({ types = { "normal" } }),
+      fighterWith({ types = { "normal" } }),
+      14,
+      { 1 },
+      true,
+      spyStream(FIXED_SEED),
+      extra
+    )
+  end, "a battler without its arrival counter fails instead of guessing")
+  Assert.equal(failure.code, "BATTLE_MISSING_BEHAVIOR", "the failure stays a structured missing behavior")
+  Assert.isTrue(
+    failure.message ~= "trainer programs dispatch their transcribed commands",
+    "the failure names the missing battler fact instead of the missing dispatch"
+  )
+end
+
+-- Unstamped doubles records fail closed at the recency check: records
+-- without the counter raise the same structured missing behavior
+-- through the doubles record path.
+function T.unstamped_doubles_records_fail_closed_at_the_recency_check()
+  local TrainerAi = trainerPolicy()
+  local failure = Assert.throws(function()
+    TrainerAi.scoreSlots(
+      nativeChart(),
+      arrivalSlots(183),
+      fighterWith({ types = { "normal" } }),
+      fighterWith({ types = { "normal" } }),
+      14,
+      { 1 },
+      true,
+      spyStream(FIXED_SEED),
+      arrivalDoubles(nil)
+    )
+  end, "records without the arrival counter fail instead of guessing")
+  Assert.equal(failure.code, "BATTLE_MISSING_BEHAVIOR", "the failure stays a structured missing behavior")
+  Assert.isTrue(
+    failure.message ~= "trainer programs dispatch their transcribed commands",
+    "the failure names the missing battler fact instead of the missing dispatch"
+  )
+end
+
+-- Absent targets preview through the zeroed battler default: with no
+-- record for the opposing slot the difference reads the zeroed counter
+-- and the probe holds the same score as a zeroed preview.
+function T.absent_targets_preview_through_the_zeroed_battler_default()
+  local TrainerAi = trainerPolicy()
+  local extra = {
+    doublesBattlers = {
+      atk = 1,
+      tgt = 0,
+      records = {
+        [1] = arrivalRecord(1, 100),
+        [2] = arrivalRecord(1, 100),
+        [3] = arrivalRecord(1, 100),
+      },
+    },
+    fullMoveById = {
+      [500] = { effect = 28, power = 60, moveType = "water", category = "special", accuracy = 100, basePp = 5 },
+      [33] = { effect = 0, power = 35, moveType = "normal", category = "physical", accuracy = 95, basePp = 35 },
+    },
+    fullMoveIdByKey = { PROBE = 500 },
+    lastMove = { [0] = 0, [1] = 0 },
+  }
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(
+    nativeChart(),
+    arrivalSlots(28),
+    fighterWith({ types = { "normal" } }),
+    fighterWith({ types = { "normal" } }),
+    14,
+    { 1 },
+    true,
+    stream,
+    extra
+  )
+  Assert.equal(scored[1].score, 97, "the absent target previews through its zeroed counter")
+  Assert.deepEqual(
+    stream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3" },
+    "the defaulted preview spends no routine draw"
+  )
+end
+
+-- Memory without arrival facts fails as incompatible: the record moves
+-- to its arrival-era schema mark and older snapshots are rejected
+-- instead of migrating.
+function T.memory_without_arrival_facts_fails_as_incompatible()
+  local TrainerAi = trainerPolicy()
+  Assert.equal(TrainerAi.MEMORY_VERSION, 3, "the record carries its arrival-era schema mark")
+  local previous = {
+    version = 2,
+    controllers = {
+      ["trainer:1"] = { slots = { "POTION", "NONE", "NONE", "NONE" }, itemCount = 1, knownMoves = {} },
+    },
+  }
+  local failure = Assert.throws(function()
+    TrainerAi.validateMemory(previous)
+  end, "memory without arrival facts fails instead of migrating")
+  Assert.isTrue(
+    string.find(string.lower(tostring(failure)), "incompatible", 1, true) ~= nil,
+    "the failure names the incompatible snapshot"
+  )
+end
+
+-- Doubles records share the same arrival counter semantics: stamped
+-- records on every slot take the recent branch for fresh arrivals and
+-- fall through for older ones, matching the singles record path.
+function T.doubles_records_share_the_same_arrival_counter_semantics()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local vectors = {
+    { word = 6, score = 100 },
+    { word = 5, score = 100 },
+    { word = 4, score = 99 },
+    { word = 1, score = 99 },
+  }
+  for _, vector in ipairs(vectors) do
+    local stream = spyStream(FIXED_SEED)
+    local scored = TrainerAi.scoreSlots(
+      chart,
+      arrivalSlots(183),
+      user,
+      user,
+      14,
+      { 1 },
+      false,
+      stream,
+      arrivalDoubles(vector.word)
+    )
+    Assert.equal(
+      scored[1].score,
+      vector.score,
+      "the arrival counter " .. vector.word .. " holds its branch on the doubles path"
+    )
+    Assert.deepEqual(
+      stream:drawLabels(),
+      { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" },
+      "the arrival counter " .. vector.word .. " draws its reached gates"
+    )
+  end
 end
 
 return { tests = T }

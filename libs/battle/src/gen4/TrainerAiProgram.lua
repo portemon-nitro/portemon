@@ -8473,6 +8473,7 @@ local function battlerFacts(state, battler)
     w88b1 = 0,
     w88neg = false,
     w94 = 0,
+    enteredWithItem = false,
   }
 end
 
@@ -9934,6 +9935,27 @@ local function loadPrevCategory(state)
   end
 end
 
+-- Recent-entry flag into scratch (handler ov10_0221EA7C for opcode
+-- 67): the scratch register takes 1 when the resolved battler's entry
+-- word at 0x2DD4 reads at or past total turns, else 0. Records without
+-- the word fail closed; absent battlers read the zeroed word.
+---@param state TrainerAiProgramState command state under execution
+---@param selector integer battler selector under evaluation
+local function entryRecency(state, selector)
+  local facts = state.facts --[[@as table<string, unknown>]]
+  local record = battlerFacts(state, resolveBattler(state, selector))
+  local word = record.w94
+  if word == nil then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its battler word", {}))
+  end
+  local totalTurns = facts.round --[[@as integer]] - 1
+  if word >= totalTurns then
+    state.scratch = 1
+  else
+    state.scratch = 0
+  end
+end
+
 -- Turn-advantage difference into scratch (handler ov10_0221E290 for
 -- opcode 96): total turns minus the battler word at 0x2DD4.
 ---@param state TrainerAiProgramState command state under execution
@@ -10546,6 +10568,9 @@ function executeCommand(state, op, pc)
     }))
   elseif op == 64 or op == 66 or op == 68 or op == 69 or op == 70 then
     singleLoad(state, arg(1), op)
+    return after
+  elseif op == 67 then
+    entryRecency(state, arg(1))
     return after
   elseif op == 65 then
     itemEffectLoad(state, arg(1))

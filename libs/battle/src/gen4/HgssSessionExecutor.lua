@@ -3714,6 +3714,18 @@ function HgssSessionExecutor.new(scenarioRecord, content)
   -- Fresh sessions open with zeroed trainer memory beside the generic
   -- state before the first decision.
   TrainerAi.initializeMemory(live)
+  -- Opening occupants enter with the battle, so their entry turns stamp
+  -- here before the first decision exactly like later reserves stamp at
+  -- the entry boundary. This runs unconditionally: the effect-timing
+  -- pass below may skip an empty bag, but battle facts never skip.
+  for _, positionId in
+    ipairs(live.positionOrder --[[@as integer[] ]])
+  do
+    local occupant = BattleState.position(live, positionId --[[@as integer]]).occupant
+    if occupant ~= nil then
+      TrainerAi.noteArrival(live, occupant --[[@as integer]])
+    end
+  end
   -- Opening occupants receive their entry pass exactly once through the
   -- same arrival helper as later reserves. Fresh sessions start with an
   -- empty bag, so the pass is skipped until mechanics create instances;

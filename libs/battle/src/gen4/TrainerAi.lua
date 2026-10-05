@@ -13,7 +13,8 @@
 -- targets through its own selector, the switch gate answers before the
 -- item path, items scan ordered working slots under the initial-count
 -- gate, and persistent knowledge plus slot order ride the native session
--- record. Effectiveness resolves
+-- record. Per-battler entry turns and entered-with-item flags ride the
+-- same record keyed by combatant identity. Effectiveness resolves
 -- through the passed session chart, damage previews reuse the shared
 -- staged arithmetic with an explicit roll, and every random branch draws
 -- from the caller-owned battle stream in a stable order. Per-evaluation
@@ -45,8 +46,11 @@ local initThresholds
 local executePrograms
 local buildEvaluationFacts
 
--- Schema mark for the persisted native record.
-TrainerAi.MEMORY_VERSION = 2
+-- Schema mark for the persisted native record. The entry-turn table keyed
+-- by combatant identity joins the record at mark 3 with stale rejection
+-- and no migration: battle-round entry turns plus the entered-with-item
+-- flag, stamped by noteArrival on every entry path.
+TrainerAi.MEMORY_VERSION = 3
 
 -- Native flag bits with program data, in dispatch order. The doubles bit
 -- is forced by the live battle format in doubles rather than stored passes,
@@ -406,6 +410,8 @@ function buildEvaluationFacts(chart, slots, user, foe, foeHp, firstTurn, extra)
       flingPower = extraBattler.flingPower,
       w88b1 = extraBattler.w88b1 or 0,
       w88neg = extraBattler.w88neg or false,
+      w94 = extraBattler.w94,
+      enteredWithItem = extraBattler.enteredWithItem or false,
     }
   end
   local atkMoves = {}
@@ -703,6 +709,38 @@ local function checkKnownMoves(known)
   end
 end
 
+---@param arrivals unknown candidate per-battler entry-turn record under validation
+local function checkArrivals(arrivals)
+  if type(arrivals) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("trainer memory carries its entry turns", {}))
+  end
+  for combatantId, stamped in
+    pairs(arrivals --[[@as table<integer, unknown>]])
+  do
+    if type(combatantId) ~= "number" or combatantId % 1 ~= 0 or combatantId < 1 then
+      error(BattleErrors.incompatibleSnapshot("entry turns name their battler", {}))
+    end
+    if type(stamped) ~= "table" then
+      error(BattleErrors.incompatibleSnapshot("entry turns carry their stamp", { battler = combatantId }))
+    end
+    local entry = stamped --[[@as table<string, unknown>]]
+    if type(entry.counter) ~= "number" or entry.counter % 1 ~= 0 or entry.counter < 1 then
+      error(BattleErrors.incompatibleSnapshot("entry turns carry their round", { battler = combatantId }))
+    end
+    if type(entry.enteredWithItem) ~= "boolean" then
+      error(BattleErrors.incompatibleSnapshot("entry turns carry their held item flag", { battler = combatantId }))
+    end
+    for key, value in pairs(entry) do
+      if key ~= "counter" and key ~= "enteredWithItem" then
+        error(BattleErrors.incompatibleSnapshot("entry turns carry only their round and flag", {
+          field = tostring(key),
+        }))
+      end
+      assert(value ~= nil, "entry-turn fields stay present")
+    end
+  end
+end
+
 --- Validates a restored native trainer record. Snapshots missing the
 --- record or carrying a foreign shape are incompatible: these are
 --- transient pre-release snapshots with no migration path.
@@ -721,6 +759,7 @@ function TrainerAi.validateMemory(memory)
   if type(record.controllers) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("trainer records carry their controller memory", {}))
   end
+  checkArrivals(record.arrivals)
   for controller, entry in
     pairs(record.controllers --[[@as table<string, unknown>]])
   do
@@ -818,7 +857,7 @@ end
 function TrainerAi.initializeMemory(state)
   assert(type(state) == "table", "trainer memory initializes from live battle state")
   assert(type(state.participantOrder) == "table", "trainer memory reads its participants")
-  local memory = { version = TrainerAi.MEMORY_VERSION, controllers = {} }
+  local memory = { version = TrainerAi.MEMORY_VERSION, controllers = {}, arrivals = {} }
   local owned = memory.controllers --[[@as table<string, table<string, unknown>>]]
   for _, participantId in
     ipairs(state.participantOrder --[[@as integer[] ]])
@@ -861,6 +900,25 @@ local function controllerMemory(state, controller)
     return nil
   end
   return entry --[[@as table<string, unknown>]]
+end
+
+---@param state table<string, unknown> live battle state under inspection
+---@param combatantId integer battler identity under the entry-turn read
+---@return table<string, unknown>? stamped entry turn, when the battler entered through the boundary
+local function arrivalOf(state, combatantId)
+  local memory = liveMemory(state)
+  if memory == nil then
+    return nil
+  end
+  local stamps = (memory --[[@as table<string, unknown>]]).arrivals
+  if type(stamps) ~= "table" then
+    return nil
+  end
+  local stamped = (stamps --[[@as table<integer, unknown>]])[combatantId]
+  if type(stamped) ~= "table" then
+    return nil
+  end
+  return stamped --[[@as table<string, unknown>]]
 end
 
 --- Records an executed strike in every opposing trainer memory. Learned
@@ -907,8 +965,9 @@ function TrainerAi.observeMove(state, userId, moveKey)
 end
 
 --- Clears learned knowledge about an entering combatant in every trainer
---- memory. A new entry fights unknown again while ordered item slots
---- survive; this runs at the source-equivalent battler reset boundary.
+--- memory and stamps the entry turn with the entered-with-item flag. A
+--- new entry fights unknown again while ordered item slots survive; this
+--- runs at the source-equivalent battler reset boundary.
 ---@param state table<string, unknown> live battle state under entry reset
 ---@param incomingId integer entering combatant under reset
 function TrainerAi.noteArrival(state, incomingId)
@@ -935,6 +994,17 @@ function TrainerAi.noteArrival(state, incomingId)
       end
     end
   end
+  local round = state.round
+  assert(type(round) == "number" and round % 1 == 0 and round >= 1, "entry turns stamp the battle round")
+  local stamps = (memory --[[@as table<string, unknown>]]).arrivals
+  assert(type(stamps) == "table", "entry turns ride the trainer record")
+  local combatant = BattleState.combatant(state, incomingId)
+  local carried = combatant.mon
+  local heldKey = type(carried) == "table" and (carried --[[@as table<string, unknown>]]).heldItem or nil
+  (stamps --[[@as table<integer, table<string, unknown>>]])[incomingId] = {
+    counter = round,
+    enteredWithItem = type(heldKey) == "string" and heldKey ~= "" and heldKey ~= "NONE",
+  }
 end
 
 ---@param speciesFacts table<string, table<integer, table<string, unknown>>> static species facts by species and form
@@ -2416,6 +2486,13 @@ local function battlerProgramFacts(state, authorities, combatant, moveIdByKey, h
     end
   end
   local weightHg = static.weightHg
+  local entryWord = nil ---@type integer?
+  local enteredWithItem = false
+  local arrival = arrivalOf(state, combatantId)
+  if arrival ~= nil then
+    entryWord = arrival.counter --[[@as integer]]
+    enteredWithItem = arrival.enteredWithItem == true
+  end
   local record = {
     hp = hp,
     maxHp = ceiling,
@@ -2459,6 +2536,8 @@ local function battlerProgramFacts(state, authorities, combatant, moveIdByKey, h
     flingPower = 0,
     w88b1 = 0,
     w88neg = false,
+    w94 = entryWord,
+    enteredWithItem = enteredWithItem,
   }
   -- Move-effect flags from modeled volatiles; unmodeled mechanics never
   -- set them in these battles.
