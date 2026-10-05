@@ -3820,4 +3820,565 @@ function T.accuracy_gated_strikes_answer_through_live_stages()
   session:dispose()
 end
 
+-- The draining-effect block scores through its own damage-class gate:
+-- with a grass drainer facing a resisting foe the class gate takes and a
+-- single chance roll decides between holding baseline and a three point
+-- deduction, while plain strikes walk the whole dispatch ladder without
+-- drawing. A second seed takes the gate the other way.
+function T.draining_strike_routes_through_its_own_effect_block()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "grass" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local slots = {
+    slotWith({
+      key = "GIGA_DRAIN",
+      id = 202,
+      moveType = "grass",
+      power = 60,
+      category = "special",
+      accuracy = 100,
+      effect = 3,
+    }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 1 }, false, stream)
+  Assert.deepEqual(
+    { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
+    { 97, 100, 100, 0 },
+    "the resisted drain pays three points on the high roll"
+  )
+  Assert.deepEqual(
+    stream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" },
+    "only the reached block draws beyond initialization"
+  )
+  local probe = BattleRng.new(FIXED_SEED)
+  local expected = {}
+  for _ = 1, 5 do
+    expected[#expected + 1] = probe:nextU16("drain_probe", {})
+  end
+  Assert.deepEqual(stream:drawValues(), expected, "draws follow the shared stream head in order")
+  local kindStream = spyStream(FIXED_SEED + 1)
+  local kind = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 1 }, false, kindStream)
+  Assert.deepEqual(
+    { kind[1].score, kind[2].score, kind[3].score, kind[4].score },
+    { 100, 100, 100, 0 },
+    "the low roll leaves the drain at baseline"
+  )
+  Assert.equal(#kindStream:drawLabels(), 5, "the taken gate still spends its single draw")
+end
+
+-- The knockout-side program scores a status slot through both chance
+-- gates: falling through both pays three points up front and ten back at
+-- the health gate, while taking either gate ends the slot untouched. A
+-- second seed takes the later gate and holds baseline with the same draw
+-- count, proving the draws sit at the branches.
+function T.knockout_program_scores_a_status_slot_through_both_chance_gates()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "water" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local slots = {
+    slotWith({ key = "WATER_GUN", id = 55, moveType = "water", power = 40, category = "special", accuracy = 100 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({
+      key = "SCREECH",
+      id = 103,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 100,
+      effect = 7,
+    }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  local extra = {
+    parties = { [0] = members, [1] = members },
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+    attacker = { ability = "RUN_AWAY" },
+    defender = { ability = "RUN_AWAY" },
+  }
+  local stream = spyStream(NATIVE_SEED)
+  local scored = TrainerAi.scoreSlots(chart, slots, user, foe, 1, { 5 }, false, stream, extra)
+  Assert.deepEqual(
+    { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
+    { 100, 100, 93, 0 },
+    "both gates fall through to the three-up-ten-down line"
+  )
+  Assert.deepEqual(
+    stream:drawLabels(),
+    {
+      "score_init_0",
+      "score_init_1",
+      "score_init_2",
+      "score_init_3",
+      "program_chance",
+      "program_chance",
+    },
+    "initialization precedes the two reached gates"
+  )
+  local probe = BattleRng.new(NATIVE_SEED)
+  local expected = {}
+  for _ = 1, 6 do
+    expected[#expected + 1] = probe:nextU16("knockout_probe", {})
+  end
+  Assert.deepEqual(stream:drawValues(), expected, "draws follow the shared stream head in order")
+  local heldStream = spyStream(FIXED_SEED)
+  local held = TrainerAi.scoreSlots(chart, slots, user, foe, 1, { 5 }, false, heldStream, extra)
+  Assert.deepEqual(
+    { held[1].score, held[2].score, held[3].score, held[4].score },
+    { 100, 100, 100, 0 },
+    "the later gate ends the slot untouched"
+  )
+  Assert.equal(#heldStream:drawLabels(), 6, "the taken gate still spends its own draw")
+end
+
+-- A heavy halving-effect strike still takes the status path: the native
+-- matchup tables leave effect seven at zero even at two hundred power, so
+-- the strike scores through the same gates as a status move and the staged
+-- halve-defense arm never fires for it here.
+function T.excluded_heavy_strike_takes_the_status_path()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local slots = {
+    slotWith({
+      key = "SELFDESTRUCT",
+      id = 120,
+      moveType = "normal",
+      power = 200,
+      category = "physical",
+      accuracy = 100,
+      effect = 7,
+    }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "TACKLE", id = 34 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  local extra = {
+    parties = { [0] = members, [1] = members },
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+    attacker = { ability = "RUN_AWAY" },
+    defender = { ability = "RUN_AWAY" },
+  }
+  local stream = spyStream(NATIVE_SEED)
+  local scored = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 5 }, false, stream, extra)
+  Assert.deepEqual(
+    { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
+    { 93, 100, 100, 0 },
+    "the excluded strike scores through the status gates"
+  )
+  Assert.deepEqual(
+    stream:drawLabels(),
+    {
+      "score_init_0",
+      "score_init_1",
+      "score_init_2",
+      "score_init_3",
+      "program_chance",
+      "program_chance",
+    },
+    "initialization precedes the two reached gates"
+  )
+  local probe = BattleRng.new(NATIVE_SEED)
+  local expected = {}
+  for _ = 1, 6 do
+    expected[#expected + 1] = probe:nextU16("halving_probe", {})
+  end
+  Assert.deepEqual(stream:drawValues(), expected, "draws follow the shared stream head in order")
+end
+
+-- The setup-side program leaves quiet lines untouched: damaging slots
+-- ranked level fall through to the chance gate and take it on these
+-- rolls, then fall through every class gate to the ordered tail, while
+-- status slots rejoin the tail directly; no reached command moves points.
+function T.setup_program_leaves_quiet_lines_untouched()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local slots = {
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "TACKLE", id = 34 }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  local extra = {
+    parties = { [0] = members, [1] = members },
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+    attacker = { ability = "RUN_AWAY" },
+    defender = { ability = "RUN_AWAY" },
+  }
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 6 }, false, stream, extra)
+  Assert.deepEqual(
+    { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
+    { 100, 100, 100, 0 },
+    "no reached command moves any quiet slot"
+  )
+  Assert.deepEqual(
+    stream:drawLabels(),
+    {
+      "score_init_0",
+      "score_init_1",
+      "score_init_2",
+      "score_init_3",
+      "program_chance",
+      "program_chance",
+    },
+    "each ranked line spends its own chance gate"
+  )
+  local probe = BattleRng.new(FIXED_SEED)
+  local expected = {}
+  for _ = 1, 6 do
+    expected[#expected + 1] = probe:nextU16("setup_probe", {})
+  end
+  Assert.deepEqual(stream:drawValues(), expected, "draws follow the shared stream head in order")
+end
+
+-- Every supported flag bit owns at least one named program case below:
+-- the table pairs each bit with the tests proving its program path, so a
+-- bit without its case fails here instead of passing silently. The bit
+-- list is declared here and never read back from the battle modules.
+local FLAG_CASES = {
+  [0] = {
+    "bad_move_program_routes_listed_effects_through_its_gate",
+    "fixed_damage_strikes_run_the_staged_pipeline",
+  },
+  [1] = {
+    "faint_seeking_dispatch_reaches_routine_commands_for_listed_effects",
+    "draining_strike_routes_through_its_own_effect_block",
+    "strong_bench_member_takes_the_party_matchup_jump",
+    "quiet_bench_leaves_the_party_matchup_untouched",
+    "unresolved_bench_facts_fail_the_matchup_closed",
+  },
+  [2] = { "effectiveness_program_gates_on_turn_and_effect_list" },
+  [3] = { "preference_programs_follow_the_list_gate_draw_shape" },
+  [5] = {
+    "knockout_program_scores_a_status_slot_through_both_chance_gates",
+    "knockout_and_setup_passes_execute_genuine_branches",
+    "excluded_heavy_strike_takes_the_status_path",
+    "health_restore_berry_leaves_the_damage_preview_untouched",
+  },
+  [6] = {
+    "setup_program_leaves_quiet_lines_untouched",
+    "knockout_and_setup_passes_execute_genuine_branches",
+  },
+  [7] = { "doubles_forces_the_doubles_pass_without_a_stored_mark" },
+  [9] = {
+    "preference_programs_follow_the_list_gate_draw_shape",
+    "membership_draws_fire_per_listed_effect",
+  },
+}
+
+-- A health-restore berry on the holder leaves the staged damage preview
+-- untouched: the source damage calculation reads no berry hold effects,
+-- so the holder scores exactly like the bare holder with the same draws,
+-- while an unlisted hold effect still fails closed instead of guessing.
+function T.health_restore_berry_leaves_the_damage_preview_untouched()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "water" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local slots = {
+    slotWith({ key = "WATER_GUN", id = 55, moveType = "water", power = 40, category = "special", accuracy = 100 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({
+      key = "SCREECH",
+      id = 103,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 100,
+      effect = 7,
+    }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  local function extraWith(item, heldEffects)
+    local extra = {
+      parties = { [0] = members, [1] = members },
+      partyIndex = { [0] = 0, [1] = 0 },
+      partyPartner = { [0] = 0, [1] = 0 },
+      attacker = { ability = "RUN_AWAY" },
+      defender = { ability = "RUN_AWAY" },
+    }
+    if item ~= 0 then
+      extra.attacker.item = item
+    end
+    if heldEffects ~= nil then
+      extra.heldEffects = heldEffects
+    end
+    return extra
+  end
+  local plainStream = spyStream(NATIVE_SEED)
+  local plain = TrainerAi.scoreSlots(chart, slots, user, foe, 1, { 5 }, false, plainStream, extraWith(0, nil))
+  local heldStream = spyStream(NATIVE_SEED)
+  local held =
+    TrainerAi.scoreSlots(chart, slots, user, foe, 1, { 5 }, false, heldStream, extraWith(158, { [158] = 13 }))
+  Assert.deepEqual(
+    { held[1].score, held[2].score, held[3].score, held[4].score },
+    { plain[1].score, plain[2].score, plain[3].score, plain[4].score },
+    "the berry holder scores exactly like the bare holder"
+  )
+  Assert.deepEqual(heldStream:drawLabels(), plainStream:drawLabels(), "the berry path draws identically")
+  Assert.deepEqual(heldStream:drawValues(), plainStream:drawValues(), "the berry path spends identical draws")
+  local failure = Assert.throws(function()
+    TrainerAi.scoreSlots(
+      chart,
+      slots,
+      user,
+      foe,
+      1,
+      { 5 },
+      false,
+      spyStream(NATIVE_SEED),
+      extraWith(158, { [158] = 1 })
+    )
+  end, "an unlisted hold effect fails instead of guessing")
+  Assert.isTrue(
+    string.find(tostring(failure), "held item facts", 1, true) ~= nil,
+    "the failure names the held item facts"
+  )
+end
+
+---@return table four explicit move slots routing the wish block to the party scan
+local function matchupSlots()
+  return {
+    slotWith({
+      key = "HEALING_WISH",
+      id = 361,
+      moveType = "psychic",
+      power = 0,
+      category = "status",
+      accuracy = 100,
+      effect = 220,
+    }),
+    slotWith({ key = "WATER_GUN", id = 55, moveType = "water", power = 40, category = "special", accuracy = 100 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "TACKLE", id = 34, pp = 0, usable = false }),
+  }
+end
+
+---@return table<string, unknown> shared heavy strike facts beyond the four slots
+local function hydroFacts()
+  return { effect = 0, power = 120, moveType = "water", category = "special", accuracy = 80, basePp = 5 }
+end
+
+---@param bench table<string, unknown> benched member under the attacker party
+---@return table explicit evaluation context with the attacker party and the heavy strike maps
+local function matchupExtra(bench)
+  local own = { hp = 30, maxHp = 30, species = "EEVEE", status = 0, moves = {} }
+  local attackerMembers = { own, bench }
+  local foeMembers = {
+    { hp = 60, maxHp = 60, species = "EEVEE", status = 0, moves = {} },
+    { hp = 60, maxHp = 60, species = "EEVEE", status = 0, moves = {} },
+  }
+  return {
+    parties = { [0] = foeMembers, [1] = attackerMembers },
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+    attacker = { ability = "RUN_AWAY" },
+    defender = { ability = "RUN_AWAY" },
+    fullMoveById = { [56] = hydroFacts() },
+    fullMoveIdByKey = { HYDRO_PUMP = 56 },
+  }
+end
+
+---@return table<string, unknown> benched member outranking the holder with a heavy strike
+local function strongBench()
+  return {
+    hp = 30,
+    maxHp = 30,
+    species = "TOTODILE",
+    status = 0,
+    moves = { { move = "HYDRO_PUMP", pp = 5, ppUps = 0 } },
+    ability = "RUN_AWAY",
+    ivs = { hp = 10, attack = 10, defense = 10, speed = 10, specialAttack = 10, specialDefense = 10 },
+  }
+end
+
+-- Seed reaching the party scan: the faint-seeking block routes the wish
+-- carrier through the super-effective stay check into the scan on this
+-- stream, proven by the taken/quiet divergence below.
+local MATCHUP_SEED = 77
+
+-- A benched member with a strictly better staged matchup takes the party
+-- matchup jump: the wish carrier routes the faint-seeking block to the
+-- party scan, the member's heavy super-effective strike outranks the
+-- holder's best, and the taken jump pays one point over the quiet path
+-- with exactly one trailing routine draw.
+function T.strong_bench_member_takes_the_party_matchup_jump()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "water" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local stream = spyStream(MATCHUP_SEED)
+  local scored =
+    TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, stream, matchupExtra(strongBench()))
+  Assert.deepEqual(
+    { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
+    { 102, 100, 100, 0 },
+    "the taken jump pays one point on the wish slot"
+  )
+  Assert.deepEqual(
+    stream:drawLabels(),
+    {
+      "score_init_0",
+      "score_init_1",
+      "score_init_2",
+      "score_init_3",
+      "program_chance",
+      "program_chance",
+      "program_chance",
+    },
+    "the taken path spends one trailing routine draw"
+  )
+  local probe = BattleRng.new(MATCHUP_SEED)
+  local expected = {}
+  for _ = 1, 7 do
+    expected[#expected + 1] = probe:nextU16("matchup_probe", {})
+  end
+  Assert.deepEqual(stream:drawValues(), expected, "draws follow the shared stream head in order")
+end
+
+-- A bench that cannot outrank the holder leaves the party scan quiet: a
+-- moveless member previews zero and falls through one point below the
+-- taken path with one fewer draw, while fainted, egg, and holder-side
+-- members stay skipped and score exactly the same.
+function T.quiet_bench_leaves_the_party_matchup_untouched()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "water" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local function scoredWith(bench)
+    local stream = spyStream(MATCHUP_SEED)
+    local scored = TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, stream, matchupExtra(bench))
+    return scored, stream
+  end
+  local moveless = { hp = 30, maxHp = 30, species = "TOTODILE", status = 0, moves = {} }
+  local scored, stream = scoredWith(moveless)
+  Assert.deepEqual(
+    { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
+    { 101, 100, 100, 0 },
+    "the quiet path holds one point below the taken jump"
+  )
+  Assert.deepEqual(
+    stream:drawLabels(),
+    {
+      "score_init_0",
+      "score_init_1",
+      "score_init_2",
+      "score_init_3",
+      "program_chance",
+      "program_chance",
+    },
+    "the quiet path skips the taken trailing draw"
+  )
+  local probe = BattleRng.new(MATCHUP_SEED)
+  local expected = {}
+  for _ = 1, 6 do
+    expected[#expected + 1] = probe:nextU16("matchup_probe", {})
+  end
+  Assert.deepEqual(stream:drawValues(), expected, "draws follow the shared stream head in order")
+  local function quietSignature(bench)
+    local runStream = spyStream(MATCHUP_SEED)
+    local run = TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, runStream, matchupExtra(bench))
+    return { run[1].score, run[2].score, run[3].score, run[4].score }, runStream:drawLabels()
+  end
+  local fainted = strongBench()
+  fainted.hp = 0
+  local faintedScores, faintedDraws = quietSignature(fainted)
+  Assert.deepEqual(faintedScores, { 101, 100, 100, 0 }, "a fainted bench stays skipped")
+  Assert.deepEqual(faintedDraws, stream:drawLabels(), "a fainted bench draws like the quiet path")
+  local egg = strongBench()
+  egg.species = "EGG"
+  egg.moves = {}
+  local eggScores, eggDraws = quietSignature(egg)
+  Assert.deepEqual(eggScores, { 101, 100, 100, 0 }, "an egg bench stays skipped")
+  Assert.deepEqual(eggDraws, stream:drawLabels(), "an egg bench draws like the quiet path")
+  local holderSide = matchupExtra(moveless)
+  holderSide.parties[1][1] = strongBench()
+  local holderStream = spyStream(MATCHUP_SEED)
+  local holder =
+    TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, holderStream, holderSide)
+  Assert.deepEqual(
+    { holder[1].score, holder[2].score, holder[3].score, holder[4].score },
+    { 101, 100, 100, 0 },
+    "a strong member under the holder slot stays skipped"
+  )
+  Assert.deepEqual(holderStream:drawLabels(), stream:drawLabels(), "the skipped holder draws like the quiet path")
+end
+
+-- A benched member the scan cannot preview fails closed: an unresolvable
+-- held key, an unknown move key, and an unknown ability key each raise
+-- naming their missing facts instead of guessing a matchup.
+function T.unresolved_bench_facts_fail_the_matchup_closed()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "water" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local held = strongBench()
+  held.heldKey = "MYSTERY_ITEM"
+  local heldFailure = Assert.throws(function()
+    TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, spyStream(MATCHUP_SEED), matchupExtra(held))
+  end, "an unresolvable bench held item fails instead of guessing")
+  Assert.isTrue(
+    string.find(tostring(heldFailure), "held item facts", 1, true) ~= nil,
+    "the failure names the held item facts"
+  )
+  local moved = strongBench()
+  moved.moves = { { move = "MYSTERY_MOVE", pp = 5, ppUps = 0 } }
+  local movedFailure = Assert.throws(function()
+    TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, spyStream(MATCHUP_SEED), matchupExtra(moved))
+  end, "an unknown bench move fails instead of guessing")
+  Assert.isTrue(
+    string.find(tostring(movedFailure), "compiled move facts", 1, true) ~= nil,
+    "the failure names the compiled move facts"
+  )
+  local skilled = strongBench()
+  skilled.ability = "MYSTERY_ABILITY"
+  local skilledFailure = Assert.throws(function()
+    TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, spyStream(MATCHUP_SEED), matchupExtra(skilled))
+  end, "an unknown bench ability fails instead of guessing")
+  Assert.isTrue(
+    string.find(tostring(skilledFailure), "ability identity", 1, true) ~= nil,
+    "the failure names the ability identity"
+  )
+end
+
+function T.each_supported_flag_bit_maps_to_a_program_case()
+  for _, bit in ipairs({ 0, 1, 2, 3, 5, 6, 7, 9 }) do
+    local cases = FLAG_CASES[bit]
+    Assert.notNil(cases, "flag bit " .. bit .. " names its program cases")
+    Assert.isTrue(#cases > 0, "flag bit " .. bit .. " keeps at least one program case")
+    for _, name in ipairs(cases) do
+      Assert.isTrue(type(T[name]) == "function", "flag bit " .. bit .. " keeps its program case " .. name)
+    end
+  end
+end
+
 return { tests = T }

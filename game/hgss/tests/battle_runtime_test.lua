@@ -624,8 +624,11 @@ function T.session_item_facts_project_exactly_the_referenced_party_use()
 end
 
 -- Battle-use riders project beside party use through the same
--- projector: a stub catalog carrying battle-use, throw, and missing
--- records proves each family lands detached without leaking across.
+-- projector: a stub catalog carrying battle-use, throw, held-behavior, and
+-- missing records proves each family lands detached without leaking
+-- across. Trainer evaluation reads held effects through the session facts,
+-- so every held entry carries its canonical held behavior, including
+-- held-only entries with no throw facts at all.
 function T.session_item_facts_project_battle_use_and_throw_facts()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with readiness waits")
   local stubCatalog = {
@@ -646,6 +649,7 @@ function T.session_item_facts_project_battle_use_and_throw_facts()
               critical = 0,
             },
           },
+          heldBehavior = { key = "no_hold_effect", params = { nativeId = 999, holdEffect = 0 } },
         }
       end
       if key == "BERRY" then
@@ -653,6 +657,12 @@ function T.session_item_facts_project_battle_use_and_throw_facts()
           partyUse = { kind = "medicine", cures = {}, revive = "none", mood = 0 },
           naturalGift = { power = 60, typeId = 14, type = "psychic" },
           fling = { effect = 10, power = 10 },
+          heldBehavior = { key = "unmapped_hold_effect", params = { nativeId = 158, holdEffect = 5 } },
+        }
+      end
+      if key == "CHARM" then
+        return {
+          heldBehavior = { key = "money_up", params = { nativeId = 223, holdEffect = 58 } },
         }
       end
       error("unknown item " .. tostring(key))
@@ -670,15 +680,30 @@ function T.session_item_facts_project_battle_use_and_throw_facts()
       { id = "pack", owners = { 1 }, quantities = { X_ITEM = 2 } },
     },
     participants = {
-      { roster = { { mon = { heldItem = "BERRY" } } } },
+      { roster = { { mon = { heldItem = "BERRY" } }, { mon = { heldItem = "CHARM" } } } },
     },
   }
   local facts = BattleRuntime._sessionItemFacts(projector, record)
   Assert.deepEqual(facts.X_ITEM.partyUse, { kind = "deferred", reason = "battle_only" }, "party use projects")
   Assert.equal(facts.X_ITEM.battleUse.stages.attack, 1, "battle-use stages project beside party use")
+  Assert.deepEqual(
+    facts.X_ITEM.heldBehavior,
+    { key = "no_hold_effect", params = { nativeId = 999, holdEffect = 0 } },
+    "inventory entries carry their held behavior"
+  )
   Assert.equal(facts.BERRY.naturalGift.power, 60, "held throw power projects")
   Assert.equal(facts.BERRY.fling.power, 10, "held fling power projects")
+  Assert.deepEqual(
+    facts.BERRY.heldBehavior,
+    { key = "unmapped_hold_effect", params = { nativeId = 158, holdEffect = 5 } },
+    "held entries carry their held behavior"
+  )
   Assert.isNil(facts.BERRY.partyUse, "held-only entries carry no party use")
+  Assert.deepEqual(
+    facts.CHARM,
+    { heldBehavior = { key = "money_up", params = { nativeId = 223, holdEffect = 58 } } },
+    "a held-behavior record alone is a complete held family"
+  )
   facts.X_ITEM.battleUse.stages.attack = 9
   local again = BattleRuntime._sessionItemFacts(projector, record)
   Assert.equal(again.X_ITEM.battleUse.stages.attack, 1, "projector edits never reach the catalog")
