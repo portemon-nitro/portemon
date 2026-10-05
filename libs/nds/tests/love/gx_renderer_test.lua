@@ -40,6 +40,7 @@ local T = {}
 ---@field format string?
 ---@class GxRendererTest.GraphicsCalls
 ---@field canvas table[]
+---@field canvasTransitions table[]
 ---@field blend table[]
 ---@field depth table[]
 ---@field wireframe table[]
@@ -180,6 +181,7 @@ local function fakeGraphics(opts)
   local shaderCount, canvasCount, drawCalls = 0, 0, 0
   local calls = {
     canvas = {},
+    canvasTransitions = {},
     blend = {},
     depth = {},
     wireframe = {},
@@ -261,6 +263,12 @@ local function fakeGraphics(opts)
       return state.canvas
     end,
     setCanvas = function(canvas)
+      local scissorCopy
+      if state.scissor ~= nil then
+        scissorCopy = { state.scissor[1], state.scissor[2], state.scissor[3], state.scissor[4] }
+      end
+      calls.canvasTransitions[#calls.canvasTransitions + 1] =
+        { from = state.canvas, to = canvas, scissor = scissorCopy }
       state.canvas = canvas
       calls.canvas[#calls.canvas + 1] = canvas
     end,
@@ -1334,6 +1342,34 @@ function T.presentation_sprite_allocation_embeds_the_visible_viewport_and_uses_w
   renderer:release()
 end
 
+-- Render-target switches must never carry an active scissor: the window
+-- case starts with no caller canvas, so the sprite composite crosses from
+-- the renderer-owned sprite target back to the window/backbuffer (nil).
+function T.sprite_target_to_window_switch_carries_no_scissor()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local item = boundedSpriteItem(0, 0)
+  local viewport = { worldViewport = { x = 0, y = 0, width = 640, height = 480 } }
+
+  local transitionBase = #lg.calls.canvasTransitions
+  render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
+
+  local sawSpriteToWindow = false
+  for index = transitionBase + 1, #lg.calls.canvasTransitions do
+    local transition = lg.calls.canvasTransitions[index]
+    if transition.from == renderer._spriteTargets and transition.to == nil then
+      sawSpriteToWindow = true
+    end
+    Assert.isNil(transition.scissor, "every render-target switch occurs with scissor disabled")
+  end
+  Assert.isTrue(
+    sawSpriteToWindow,
+    "the frame switches from the sprite target back to the window"
+  )
+  renderer:release()
+end
+
 function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_failure()
   local canvas, shader = {}, {}
   canvas.getWidth = function()
@@ -1389,7 +1425,16 @@ function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_f
   )
   Assert.isTrue(#lg.calls.scissor >= 2, "the sprite composite temporarily applies and then restores clipping")
 
-  lg.setFailOnScissor(#lg.calls.scissor + 2)
+  -- Fail the composite-entry clear so drawFrame unwinds with the
+  -- sprite-target dirty scissor still active on the sprite target: cleanup
+  -- must clear that scissor before restoring the caller target. (Clears
+  -- consume a scissor attempt without appending to calls.scissor, so count
+  -- attempts rather than records: the frame above made four clears
+  -- alongside its four recorded installs, and the composite-entry clear is
+  -- the fifth attempt of this frame after its start clear, resolve
+  -- reinstall, sprite-target clear, and dirty install.)
+  lg.setFailOnScissor(#lg.calls.scissor + 9)
+  local transitionBase = #lg.calls.canvasTransitions
   local failed = Assert.throws(function()
     render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
   end)
@@ -1400,6 +1445,15 @@ function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_f
   Assert.equal(sy, 40)
   Assert.equal(sw, 10)
   Assert.equal(sh, 10)
+  local sawCallerRestore = false
+  for index = transitionBase + 1, #lg.calls.canvasTransitions do
+    local transition = lg.calls.canvasTransitions[index]
+    if transition.to == canvas then
+      sawCallerRestore = true
+      Assert.isNil(transition.scissor, "caller target restoration crosses with scissor disabled")
+    end
+  end
+  Assert.isTrue(sawCallerRestore, "cleanup restores the caller target")
   renderer:release()
   for _, releasedShader in ipairs(lg.shaders) do
     Assert.equal(releasedShader.releaseCount, 1, "release disposes every shader exactly once")

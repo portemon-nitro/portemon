@@ -1332,6 +1332,9 @@ local function drawFrame(
       spriteShader:send("u_presentationSprite", true)
       self:_ensureSpriteTargets(spriteW, spriteH)
       local spriteTargets = assert(self._spriteTargets)
+      -- Scissor rectangles are target-local: clear any presentation scissor
+      -- before crossing onto the sprite target, then clip to the dirty union.
+      lg.setScissor()
       lg.setCanvas(spriteTargets)
       lg.setScissor(dirtyX0, dirtyY0, dirtyX1 - dirtyX0, dirtyY1 - dirtyY0)
       lg.clear(0, 0, 0, 0, false, true)
@@ -1375,8 +1378,11 @@ local function drawFrame(
         clipBottom = math.min(clipBottom, callerScissorY + callerScissorH)
       end
       if clipRight > clipX and clipBottom > clipY then
-        lg.setScissor(clipX, clipY, clipRight - clipX, clipBottom - clipY)
+        -- The dirty clip belongs to the sprite target: drop it before
+        -- returning to the presentation target, then clip the composite there.
+        lg.setScissor()
         lg.setCanvas(presentationCanvas)
+        lg.setScissor(clipX, clipY, clipRight - clipX, clipBottom - clipY)
         lg.setDepthMode()
         lg.setBlendMode("replace", "premultiplied")
         lg.setColor(1, 1, 1, 1)
@@ -1463,6 +1469,10 @@ function GxRenderer:draw(frame)
   )
 
   self._activeShader = nil
+  -- Caller and renderer scissors live in different target spaces: leave no
+  -- scissor active across the switch back to the caller target, then bring
+  -- the caller clip back last on its own target.
+  lg.setScissor()
   lg.setCanvas(canvas)
   lg.setShader(shader)
   lg.setBlendMode(blendMode, blendAlpha)
