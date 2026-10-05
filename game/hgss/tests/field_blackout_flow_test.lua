@@ -19,27 +19,6 @@ local function harness(initialPhase)
     events[#events + 1] = { "covered_swap", sourceMap, trigger, facing }
   end
   local audioFadeActive = true
-  local dialogueOpen = false
-  local dialogue = {
-    isOpen = function()
-      return dialogueOpen
-    end,
-    openMessage = function(_, node)
-      events[#events + 1] = { "openMessage", node }
-    end,
-    startPrint = function(_, message, bindings, textArgs)
-      dialogueOpen = true
-      events[#events + 1] = { "startPrint", message, bindings, textArgs }
-    end,
-    printProgress = function()
-      return { done = true }
-    end,
-    close = function(_, erase)
-      Assert.isTrue(erase)
-      dialogueOpen = false
-      events[#events + 1] = { "close" }
-    end,
-  }
   local world = {
     clearFlag = function(_, flag)
       events[#events + 1] = { "clearFlag", flag }
@@ -113,7 +92,10 @@ local function harness(initialPhase)
       end,
     },
     overworld = overworld,
-    dialogue = dialogue,
+    resolveMessage = function(message, bindings, textArgs)
+      events[#events + 1] = { "resolveMessage", message, bindings, textArgs }
+      return { tokens = { { kind = "glyph", code = 1, text = "R" } } }
+    end,
   })
   return {
     flow = flow,
@@ -151,10 +133,12 @@ T["mother recovery waits for covered relocation, audio, fade, input and restore"
   Assert.equal(h.flow:status().phase, "fade_music")
   h.finishMusicFade()
   h.flow:updateFixed()
-  Assert.equal(h.events[10][1], "startPrint")
-  Assert.equal(h.events[10][2], "msg.hgss.0203.00004")
-  Assert.equal(h.events[10][4][0].text, "player_name")
+  local resolvedMessage = h.events[#h.events]
+  Assert.equal(resolvedMessage[1], "resolveMessage")
+  Assert.equal(resolvedMessage[2], "msg.hgss.0203.00004")
+  Assert.equal(resolvedMessage[4][0].text, "player_name")
   Assert.equal(h.flow:status().phase, "message_in")
+  Assert.deepEqual(h.flow:status().message.tokens, { { kind = "glyph", code = 1, text = "R" } })
   Assert.equal(h.flow:status().coverColor, "white")
   Assert.equal(h.flow:status().coverAlpha, 1)
 
@@ -189,7 +173,7 @@ T["center recovery selects the Pokémon Center message and rejects transitions i
   h.flow:updateFixed()
   h.finishMusicFade()
   h.flow:updateFixed()
-  Assert.equal(h.events[9][2], "msg.hgss.0203.00003")
+  Assert.equal(h.events[#h.events][2], "msg.hgss.0203.00003")
   Assert.equal(h.flow:status().followup, nil)
 
   for _, phase in ipairs({ "leaving", "restoring" }) do
@@ -205,6 +189,30 @@ T["invalid blackout destination leaves a present overworld untouched"] = functio
   Assert.isFalse(ok)
   Assert.equal(h.events[1], nil, "destination validation precedes lifecycle mutation")
   Assert.equal(h.flow:status().phase, "idle")
+end
+
+T["cancel and disposal discard a static message without dialogue cleanup"] = function()
+  local cancelled = harness("absent")
+  local cancelId = cancelled.flow:start("SPAWN_NEW_BARK")
+  cancelled.flow:updateFixed()
+  cancelled.finishSwap()
+  cancelled.flow:updateFixed()
+  cancelled.finishMusicFade()
+  cancelled.flow:updateFixed()
+  Assert.notNil(cancelled.flow:status().message)
+  cancelled.flow:cancel(cancelId)
+  Assert.equal(cancelled.flow:status().phase, "idle")
+
+  local disposed = harness("absent")
+  disposed.flow:start("SPAWN_NEW_BARK")
+  disposed.flow:updateFixed()
+  disposed.finishSwap()
+  disposed.flow:updateFixed()
+  disposed.finishMusicFade()
+  disposed.flow:updateFixed()
+  Assert.notNil(disposed.flow:status().message)
+  disposed.flow:dispose()
+  Assert.equal(disposed.flow:status().phase, "idle")
 end
 
 return { tests = T }

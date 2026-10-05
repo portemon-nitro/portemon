@@ -1,6 +1,8 @@
 -- Draws the retail blackout message in its source window and palette.
 
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 
 local FieldBlackoutRenderer = {}
 
@@ -26,20 +28,28 @@ local function sourceWindowColor(color)
   return { red, green, blue, 1 }
 end
 
----@param controller FieldDialogueController
+---@param status FieldBlackoutStatus
 ---@param window FieldWindowRenderer
 ---@param text FieldTextRenderer
 ---@param bounds { x: number, y: number, width: number, height: number }
-function FieldBlackoutRenderer.draw(controller, window, text, bounds)
-  if not controller:isModal() then
-    return
+function FieldBlackoutRenderer.draw(status, window, text, bounds)
+  local message = assert(status.message, "blackout presentation requires a formatted message")
+  local formattedTokens = assert(message.tokens, "blackout message has no formatted tokens")
+  local layout = DialogueLayout.layout(formattedTokens, FieldDialogueTheme.fontMetrics(text.fontDef), {
+    width = BOX.width,
+    maxLines = #formattedTokens + 1,
+    sourcePositioned = true,
+  })
+  local lines = {}
+  for _, page in ipairs(layout.pages) do
+    for _, line in ipairs(page.lines) do
+      lines[#lines + 1] = line
+    end
   end
   local lg = love.graphics
   local scale = math.min(bounds.width / 256, bounds.height / 192)
   local originX = bounds.x + (bounds.width - 256 * scale) / 2
   local originY = bounds.y + (bounds.height - 192 * scale) / 2
-  local status = controller:status()
-  local lines = status.scrollLines or status.visibleLines
   FieldDrawState.protectedDraw(lg, function()
     lg.push()
     lg.translate(originX, originY)
@@ -53,20 +63,12 @@ function FieldBlackoutRenderer.draw(controller, window, text, bounds)
     }
     local maxWidth = 0
     for _, line in ipairs(lines) do
-      local tokens = line.tokens or line
-      local width = 0
-      for _, token in ipairs(tokens) do
-        if token.kind == "glyph" then
-          local glyph = text.fontDef.glyphs[token.code] or text.fontDef.glyphs[0]
-          width = width + glyph.advance + (text.fontDef.letterSpacing or 0)
-        end
-      end
-      maxWidth = math.max(maxWidth, width)
+      maxWidth = math.max(maxWidth, line.width)
     end
     local textX = BOX.x + (BOX.width - maxWidth) / 2 + TEXT_X_ADJUSTMENT
     local lineY = BOX.y
     for _, line in ipairs(lines) do
-      text:drawLineWithPalette(line.tokens or line, textX, lineY, palette)
+      text:drawLineWithPalette(line.tokens, textX, lineY, palette)
       lineY = lineY + LINE_HEIGHT
     end
     lg.pop()

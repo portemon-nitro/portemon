@@ -18,6 +18,7 @@ local FADE_STEPS = { 0, 2, 4, 6, 8, 10, 12, 14, 16 }
 ---@field coverColor "white"|"black"|nil
 ---@field coverAlpha number|nil
 ---@field waitingInput boolean
+---@field message table<string, unknown>|nil
 ---@field error unknown|nil
 ---@field complete boolean
 ---@field followup string|nil
@@ -30,13 +31,13 @@ local FADE_STEPS = { 0, 2, 4, 6, 8, 10, 12, 14, 16 }
 ---@field mons table<string, unknown>
 ---@field audio table<string, unknown>
 ---@field overworld table<string, unknown>
----@field dialogue table<string, unknown>|nil
+---@field resolveMessage fun(message: string, bindings: table<integer, unknown>, textArgs: table<integer, unknown>): table<string, unknown>
 local FieldBlackoutFlow = {}
 FieldBlackoutFlow.__index = FieldBlackoutFlow
 
 function FieldBlackoutFlow.new(opts)
   assert(type(opts) == "table", "blackout flow options are required")
-  for _, name in ipairs({ "cacheFs", "loader", "transition", "world", "mons", "audio", "overworld" }) do
+  for _, name in ipairs({ "cacheFs", "loader", "transition", "world", "mons", "audio", "overworld", "resolveMessage" }) do
     assert(opts[name] ~= nil, "blackout flow requires " .. name)
   end
   return setmetatable({
@@ -48,7 +49,7 @@ function FieldBlackoutFlow.new(opts)
     mons = opts.mons,
     audio = opts.audio,
     overworld = opts.overworld,
-    dialogue = opts.dialogue,
+    resolveMessage = opts.resolveMessage,
     active = nil,
     nextId = 0,
   }, FieldBlackoutFlow)
@@ -122,21 +123,21 @@ function FieldBlackoutFlow:updateFixed(input)
   elseif phase == "fade_music" then
     if not self.audio:isMusicFadeActive() then
       self.audio:stopMusic()
-      self:_openMessage(run)
+      self:_resolveMessage(run)
       run.phase = "message_in"
     end
   elseif phase == "message_in" then
-    if run.fadeStep == #FADE_STEPS - 1 and self.dialogue:printProgress().done then
+    if run.fadeStep == #FADE_STEPS - 1 then
       run.phase = "message_wait"
     end
   elseif phase == "message_wait" then
     if input ~= nil and (input.pressedAction == true or input.pressedCancel == true or input.touchPressed == true) then
-      self.dialogue:close(true)
       run.fadeStep = 0
       run.phase = "message_out"
     end
   elseif phase == "message_out" then
-    if run.fadeStep == #FADE_STEPS - 1 and not self.dialogue:isOpen() then
+    if run.fadeStep == #FADE_STEPS - 1 then
+      run.message = nil
       self.overworld:requestRestore()
       run.phase = "restore"
     end
@@ -161,12 +162,14 @@ function FieldBlackoutFlow:updateSourceFrame()
   end
 end
 
-function FieldBlackoutFlow:_openMessage(run)
+function FieldBlackoutFlow:_resolveMessage(run)
   local messageId = run.followup == WHITEOUT_TO_MOM and MOTHER_MESSAGE or CENTER_MESSAGE
   local message = string.format("msg.hgss.%04d.%05d", MESSAGE_BANK, messageId)
-  local node = { op = "say", message = message }
-  self.dialogue:openMessage(node)
-  self.dialogue:startPrint(message, {}, { [0] = { text = "player_name" } })
+  run.message = self.resolveMessage(message, {}, { [0] = { text = "player_name" } })
+  assert(
+    type(run.message) == "table" and type(run.message.tokens) == "table",
+    "blackout message resolver returned an invalid message"
+  )
 end
 
 ---@return FieldBlackoutStatus
@@ -187,6 +190,8 @@ function FieldBlackoutFlow:status()
     phase = run.phase,
     fadeStep = run.fadeStep,
     waitingInput = run.phase == "message_wait",
+    message = (run.phase == "message_in" or run.phase == "message_wait" or run.phase == "message_out") and run.message
+      or nil,
     coverColor = coverColor,
     coverAlpha = coverAlpha,
     error = run.error,
@@ -207,18 +212,11 @@ end
 
 function FieldBlackoutFlow:cancel(runId)
   if self.active ~= nil and self.active.id == runId then
-    if self.dialogue:isOpen() then
-      self.dialogue:close(false)
-    end
     self.active = nil
   end
 end
 
 function FieldBlackoutFlow:dispose()
-  local run = self.active
-  if run ~= nil and self.dialogue ~= nil and self.dialogue:isOpen() then
-    self.dialogue:close(false)
-  end
   self.active = nil
 end
 

@@ -504,13 +504,8 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       or blackoutStatus.phase == "message_wait"
       or blackoutStatus.phase == "message_out"
     )
-  if dialogueModal and blackoutMessage then
-    FieldBlackoutRenderer.draw(
-      self.runtime.dialogue,
-      assert(resources.windowRenderer),
-      assert(resources.textRenderer),
-      bounds
-    )
+  if blackoutMessage and blackoutStatus ~= nil then
+    FieldBlackoutRenderer.draw(blackoutStatus, assert(resources.windowRenderer), assert(resources.textRenderer), bounds)
   elseif dialogueModal then
     local manifestPlacement = assert(self.runtime.uiManifest).dialogueFrames.continueCursor.placement
     local dialogueScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, 48, assert(fieldScale))

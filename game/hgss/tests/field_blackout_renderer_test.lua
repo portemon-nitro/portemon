@@ -13,18 +13,17 @@ function T.message_uses_source_window_palette_and_shared_centered_line_anchor()
     { r = 32, g = 48, b = 64 },
     { r = 80, g = 96, b = 112 },
   }
-  local controller = {
-    isModal = function()
-      return true
-    end,
-    status = function()
-      return {
-        visibleLines = {
-          { { kind = "glyph", code = 1, colorIndex = 1 }, { kind = "glyph", code = 1, colorIndex = 1 } },
-          { { kind = "glyph", code = 1, colorIndex = 1 } },
-        },
-      }
-    end,
+  local status = {
+    phase = "message_in",
+    message = {
+      tokens = {
+        { kind = "glyph", code = 1, colorIndex = 1 },
+        { kind = "glyph", code = 1, colorIndex = 1 },
+        { kind = "line_break" },
+        { kind = "glyph", code = 1, colorIndex = 1 },
+        { kind = "eos" },
+      },
+    },
   }
   local window = {
     drawWindow = function(_, box, framePalette, background)
@@ -49,8 +48,7 @@ function T.message_uses_source_window_palette_and_shared_centered_line_anchor()
   FieldDrawState.protectedDraw = function(_, draw)
     draw()
   end
-  local ok, err =
-    pcall(FieldBlackoutRenderer.draw, controller, window, text, { x = 0, y = 0, width = 256, height = 192 })
+  local ok, err = pcall(FieldBlackoutRenderer.draw, status, window, text, { x = 0, y = 0, width = 256, height = 192 })
   FieldDrawState.protectedDraw = priorProtectedDraw
   love = priorLove
   if not ok then
@@ -72,6 +70,8 @@ function T.message_uses_source_window_palette_and_shared_centered_line_anchor()
   Assert.equal(calls[1].palette.shadow, fontPalette[3])
   Assert.equal(calls[1].palette.background, fontPalette[1])
   Assert.equal(calls[1].tokens[1].colorIndex, 1)
+  Assert.equal(#calls[1].tokens, 2, "all first-line glyphs draw immediately")
+  Assert.equal(#calls[2].tokens, 1, "all second-line glyphs draw immediately")
 end
 
 return { tests = T }

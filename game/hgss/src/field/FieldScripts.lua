@@ -420,7 +420,7 @@ function FieldScripts.new(opts)
       mons = opts.mons,
       audio = opts.audio,
       overworld = opts.overworld,
-      dialogue = dialogueHost,
+      resolveMessage = resolveMessage,
     })
     platform.blackoutFlow = blackoutFlow
   end
@@ -428,14 +428,7 @@ function FieldScripts.new(opts)
   local scheduler
   local function advanceAsync()
     opts.auxiliaryUi:advance()
-    local input = scheduler:currentInput()
-    if blackoutFlow ~= nil then
-      local blackoutPhase = blackoutFlow:status().phase
-      if blackoutPhase == "message_in" or blackoutPhase == "message_out" then
-        input = nil
-      end
-    end
-    dialogueHost:advance(input)
+    dialogueHost:advance(scheduler:currentInput())
     -- The signpost controller is pure and fixed-tick: exactly one step per
     -- scheduler tick, commands and printer together.
     signpostHost:advance(scheduler:currentInput())
