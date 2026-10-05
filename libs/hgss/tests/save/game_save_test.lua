@@ -7,6 +7,7 @@ local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
+local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 
 local T = {}
 
@@ -33,6 +34,7 @@ local function record(overrides)
     bag = BagSave.empty(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
+    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
   for key, replacement in pairs(overrides or {}) do
     rawset(value, key, replacement)

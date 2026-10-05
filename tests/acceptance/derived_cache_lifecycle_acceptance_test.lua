@@ -29,6 +29,7 @@ local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitializati
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local MonsSave = require("libs.mons.src.MonsSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
+local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 
 local T = {
   metadata = {
@@ -71,6 +72,7 @@ local function seedRecord(saveId, versionId)
     bag = BagSave.empty(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
+    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
 end
 

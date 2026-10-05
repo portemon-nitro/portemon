@@ -2,6 +2,8 @@
 
 local FieldScripts = require("game.hgss.src.field.FieldScripts")
 local ScriptSave = require("libs.script.src.ScriptSave")
+local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
+local TrainerCardStars = require("libs.hgss.src.save.TrainerCardStars")
 
 ---@class FieldScriptCompositionResult
 ---@field scripts FieldScripts
@@ -25,7 +27,31 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 ---@field followerTransition table<string, unknown>? the transient follower-transition owner the nonblocking transition command starts
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller
 ---@field battle table<string, unknown>? the battle host for script battle tasks (absent until the application wires it)
+---@field pokemonCenterHeal table<string, unknown>? the runtime-owned blocking Pokémon Center choreography
 local FieldScriptComposition = {}
+
+local function currentTimeOfDayCode(runtime)
+  return TimeOfDayProps.rtcCodeForHour(runtime.localClock:nowLocal().hour)
+end
+
+local function timeOfDayService(runtime)
+  local function currentCode()
+    return currentTimeOfDayCode(runtime)
+  end
+  return { currentCode = currentCode }
+end
+
+local function trainerCardStarsService(runtime)
+  local function count()
+    local scripts = assert(runtime.scripts, "field script runtime is assigned before script execution")
+    return TrainerCardStars.count(
+      scripts.worldState,
+      assert(runtime.dexKnowledge, "field runtime has no dex knowledge"),
+      assert(runtime.battleFrontierRecords, "field runtime has no Battle Frontier records")
+    )
+  end
+  return { count = count }
+end
 
 ---@param runtime FieldRuntime
 ---@param options FieldScriptCompositionOptions
@@ -87,6 +113,9 @@ function FieldScriptComposition.compose(runtime, options)
     battle = options.battle,
     overworld = runtime.overworld,
     propAnimations = runtime.propAnimations,
+    pokemonCenterHeal = runtime.pokemonCenterHeal,
+    timeOfDay = timeOfDayService(runtime),
+    trainerCardStars = trainerCardStarsService(runtime),
   })
   local function restore()
     if options.loadedGame then

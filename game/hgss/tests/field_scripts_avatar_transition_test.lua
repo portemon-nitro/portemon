@@ -281,6 +281,7 @@ end
 function T.tests.avatar_facade_delegates_to_the_same_owner_across_map_swaps()
   local fixture = build({})
   local facade = fixture.platform.player
+  Assert.equal(facade:stateCode(), 0, "walking uses PLAYER_STATE_WALKING")
   facade:queueAvatarTransition("rocket")
   Assert.isTrue(fixture.owner:status().pending.rocket, "queueing must delegate to the transition owner")
   Assert.equal(fixture.player.fieldX, 10, "queueing must not mutate logical movement")
@@ -290,6 +291,7 @@ function T.tests.avatar_facade_delegates_to_the_same_owner_across_map_swaps()
   Assert.equal(status.visualState, "rocket")
   Assert.equal(status.durableState, "rocket")
   Assert.isNil(next(status.pending))
+  Assert.equal(facade:stateCode(), 3, "rocket uses PLAYER_STATE_ROCKET")
   Assert.equal(fixture.visual.spriteId, 1010, "the apply swaps the visual through the materializer")
   Assert.deepEqual(fixture.visual.swaps, { 1010 })
   local newPlayer = { fieldX = 3, fieldZ = 5, worldY = 0, facing = "north" }

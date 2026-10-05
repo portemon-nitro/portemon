@@ -6,6 +6,7 @@ local GameSave = require("libs.hgss.src.save.GameSave")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
+local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 
 local T = {}
 
@@ -200,6 +201,7 @@ local function captureRuntime(overrides)
       maps = {},
     }),
     dexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge").new({ species = { CHIKORITA = true } }),
+    battleFrontierRecords = BattleFrontierRecords.new(),
     saveValidation = {
       contexts = {},
       contextLoader = function()

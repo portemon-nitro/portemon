@@ -13,6 +13,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
+local GameSave = require("libs.hgss.src.save.GameSave")
 
 local T = {
   metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "map:7" }, tags = { "party", "bag", "journey" } },
@@ -436,7 +437,7 @@ function T.tests.production_swap_summary_save_reload_persists(context)
     party:dispose()
     -- Save, reload, and prove the journey state persists.
     local record = assert(game.runtime:captureGameSave(), "a settled field captures")
-    Assert.equal(record.schema, "g4-game-save-v5", "capture writes the current save schema")
+    Assert.equal(record.schema, GameSave.SCHEMA, "capture writes the current save schema")
     game:restart()
     game:waitForFieldEntry()
     -- The restart boots a fresh runtime: rebind the headless

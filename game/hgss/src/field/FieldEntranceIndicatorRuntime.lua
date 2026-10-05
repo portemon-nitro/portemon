@@ -22,6 +22,18 @@ function M.load(cacheFs)
     ModelAsset.validate(definition.model)
     effects[kind] = definition
   end
+  local healingEntry = assert(index.effects.pokemon_center_heal, "field-effect index is missing pokemon_center_heal")
+  assert(
+    healingEntry.kind == "healing"
+      and healingEntry.definition == "pokemon_center_heal"
+      and healingEntry.path == FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
+    "field-effect index has an invalid pokemon_center_heal entry"
+  )
+  local healingDefinition =
+    assert(cacheFs:loadLua(healingEntry.path), "field-effect definition is missing: pokemon_center_heal")
+  assert(type(healingDefinition.models) == "table" and #healingDefinition.models == 1, "healing model is missing")
+  ModelAsset.validate(healingDefinition.models[1])
+  effects.pokemon_center_heal = healingDefinition
   local model = effects.warp_entrance.model
   ModelAsset.validate(model)
   return { model = model, schema = index.schema, index = index, effects = effects }, FieldEntranceIndicator.new()

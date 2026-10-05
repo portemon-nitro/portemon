@@ -416,6 +416,9 @@ function FieldState:_worldParts(alpha)
       and transitionRenderer:drawItems(transition:status(), self.runtime.runtimeMap)
     or NO_DRAWS
   worldParts[10] = sceneRuntime and sceneRuntime.runtimePropDraws or NO_DRAWS
+  local healFlow = self.runtime.pokemonCenterHeal
+  local healRenderer = resources.pokemonCenterHealRenderer
+  worldParts[11] = (healFlow and healRenderer) and healRenderer:drawItems(healFlow:status()) or NO_DRAWS
   return worldParts
 end
 
@@ -1081,6 +1084,7 @@ function FieldState:dispose()
     self.worldParts[8] = nil
     self.worldParts[9] = nil
     self.worldParts[10] = nil
+    self.worldParts[11] = nil
   end
   self.worldActorItems = nil
   self.spriteItems = nil

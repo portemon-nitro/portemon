@@ -17,6 +17,8 @@ local BagCache = require("libs.assets.src.BagCache")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
+local GameSave = require("libs.hgss.src.save.GameSave")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
@@ -430,7 +432,7 @@ end
 
 local function validRecord(saveId)
   return {
-    schema = "g4-game-save-v5",
+    schema = GameSave.SCHEMA,
     saveId = saveId,
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -462,6 +464,7 @@ local function validRecord(saveId)
     bag = BagSave.empty(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
+    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
 end
 
@@ -484,6 +487,7 @@ local function v3record(saveId)
   local value = validRecord(saveId)
   value.schema = "g4-game-save-v3"
   value.fieldTravel = nil
+  value.battleFrontier = nil
   value.playerData = {
     profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
     options = { textFrame = 0, textSpeed = "mid" },
@@ -568,7 +572,8 @@ function T.tests.v3_record_migrates_through_store_load()
   local saveId = assert(store:reserve(), "reservation must succeed")
   Assert.isTrue(store:publishFirst(v3record(saveId)), "a quiescent v3 record must publish as migrated")
   local loaded = assert(store:load(saveId), "the migrated record must load")
-  Assert.equal(loaded.schema, "g4-game-save-v5", "load exposes the migrated schema")
+  Assert.equal(loaded.schema, GameSave.SCHEMA, "load exposes the migrated schema")
+  Assert.isTrue(type(loaded.battleFrontier) == "table", "v3 migration initializes the current Frontier bucket")
   Assert.equal(loaded.playerData.profile.badges, 0, "migration starts with zero badges")
   Assert.deepEqual(loaded.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" }, "migration seeds the mother spawn")
   Assert.equal(loaded.playerData.profile.name, "GOLD", "migration preserves the profile")

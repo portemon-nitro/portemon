@@ -1466,6 +1466,26 @@ T["map index and camera target actors"] = function()
   Assert.equal(assert(h.services.events:eventFor("script.error", bad)).code, "SCRIPT_ACTOR_NOT_FOUND")
 end
 
+T["variable-backed map index actor resolves at runtime"] = function()
+  local h = harness()
+  h.services.actors:add("nurse", { numericId = 0, fieldX = 7, fieldZ = 8 })
+  h.services.actors.mapIndexes = { [0] = "nurse" }
+  h.services.world:setVar("VAR_SPECIAL_x8007", 0)
+  local dynamicIndex = { ref = "actor", mapIndex = { id = "VAR_SPECIAL_x8007", value = "var" } }
+  local instance = startForeground(
+    h,
+    script("test.dynamicmapindex", {
+      S.getObjectCoords({ actor = dynamicIndex, x = S.var("VAR_X"), z = S.var("VAR_Z") }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, nil)
+  Assert.equal(h.services.world:getVar("VAR_X"), 7)
+  Assert.equal(h.services.world:getVar("VAR_Z"), 8)
+  Assert.isTrue(assert(h.services.events:eventFor("script.ended", instance)).completed)
+end
+
 -- 3u. The countdown variable is the authoritative counter (source
 -- RunPauseTimer semantics): a later write to it is observed and decremented,
 -- so a mid-wait overwrite shortens the wait exactly like the source engine.

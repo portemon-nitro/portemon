@@ -226,6 +226,34 @@ function T.start_without_a_partner_accepts_one_pending_request()
   Assert.equal(#actors._shows, 0, "quiet updates reveal nothing without a partner")
 end
 
+function T.source_appearance_waits_two_plus_clip_plus_twenty_ticks_before_snap()
+  local actors = fakeActors()
+  actors:install(partnerRecord())
+  local transitions = controller(actors, 8)
+  local snap = nil
+  transitions:startAppearance({
+    repositionRelativeToPlayer = function(_, offset, direction)
+      snap = { offset, direction }
+    end,
+  })
+  for _ = 1, 2 do
+    transitions:updateFixed()
+  end
+  Assert.equal(liveInstance(transitions).phase, "animated")
+  for _ = 1, 8 do
+    transitions:updateFixed()
+  end
+  Assert.equal(liveInstance(transitions).phase, "tail")
+  Assert.isNil(snap, "the follower remains at its trail tile throughout the animation and tail")
+  for _ = 1, 19 do
+    transitions:updateFixed()
+  end
+  Assert.isNil(snap, "the tail holds for nineteen complete updates")
+  transitions:updateFixed()
+  Assert.deepEqual(snap, { 4, 0 }, "the source helper snaps to the player and faces north")
+  Assert.equal(#transitions:status().instances, 0, "the visual is retired after the source tail")
+end
+
 function T.pending_request_binds_the_first_hidden_partner_through_the_reveal_boundary()
   local actors = fakeActors()
   local transitions, made = controller(actors)

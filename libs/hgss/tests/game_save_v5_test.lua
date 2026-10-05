@@ -9,11 +9,12 @@ local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
+local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 local BagSave = require("libs.hgss.src.save.BagSave")
 
 local T = {}
 
-local BATTLE_ERA_SCHEMA = "g4-game-save-v5"
+local BATTLE_ERA_SCHEMA = "g4-game-save-v6"
 
 local function battleEraRecord(overrides)
   local value = {
@@ -41,6 +42,7 @@ local function battleEraRecord(overrides)
     bag = BagSave.empty(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
+    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
   for key, replacement in pairs(overrides or {}) do
     rawset(value, key, replacement)
@@ -91,7 +93,11 @@ function T.supported_saves_migrate_without_losing_state()
       options = { textFrame = 0, textSpeed = "fast" },
     },
   })
-  local migrated = GameSave.migrateV4(input)
+  input.schema = GameSave.HISTORICAL_SCHEMA_V4
+  input.encounters = nil
+  input.pokedex = nil
+  input.battleFrontier = nil
+  local migrated = GameSave.migrateV5(GameSave.migrateV4(input))
   Assert.equal(migrated.schema, BATTLE_ERA_SCHEMA)
   Assert.deepEqual(migrated.world, input.world, "migration preserves world flags, variables, and generator state")
   Assert.deepEqual(migrated.mons, input.mons, "migration preserves the party bucket")
@@ -104,6 +110,7 @@ function T.supported_saves_migrate_without_losing_state()
   Assert.equal(migrated.fieldX, 684, "migration preserves the actual saved coordinates")
   Assert.deepEqual(migrated.encounters, EncounterSave.initial(), "only genuinely absent encounter state initializes")
   Assert.deepEqual(migrated.pokedex, PokedexSave.initial(), "only genuinely absent dex knowledge initializes")
+  Assert.deepEqual(migrated.battleFrontier, BattleFrontierRecords.new():bucket(), "new Frontier counters initialize explicitly")
   Assert.equal(
     migrated.playerData.options.battleStyle,
     "shift",

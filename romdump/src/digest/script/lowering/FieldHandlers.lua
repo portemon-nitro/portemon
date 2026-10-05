@@ -58,6 +58,9 @@ local function actorRef(value)
       -- VAR_SPECIAL_LAST_TALKED to 0x800D; the decoder emits the name.)
       return { ref = "actor", special = "last_talked" }
     end
+    if raw:match("^VAR_") then
+      return { ref = "actor", mapIndex = { id = raw, value = "var" } }
+    end
     return { ref = "actor", id = raw }
   end
   return { ref = "actor", mapIndex = raw }
@@ -107,16 +110,25 @@ local function npcMessage(ins)
   return { op = "npc_msg", message = messageRef(Operands.operandValue(ins.operands[1])) }
 end
 
-local function nonNpcMessageVar(ins)
+local function variableMessageReference(ins, memberIr)
+  assert(memberIr.messageBank ~= nil, "variable message requires a script message bank")
+  return {
+    message = "external",
+    bank = memberIr.messageBank,
+    id = Operands.varRef(ins.operands[1]),
+  }
+end
+
+local function nonNpcMessageVar(ins, memberIr)
   return {
     op = "message",
-    message = Operands.varRef(ins.operands[1]),
+    message = variableMessageReference(ins, memberIr),
     waitForPrint = false,
   }
 end
 
-local function npcMessageVar(ins)
-  return { op = "npc_msg_var", message = Operands.varRef(ins.operands[1]) }
+local function npcMessageVar(ins, memberIr)
+  return { op = "npc_msg_var", message = variableMessageReference(ins, memberIr) }
 end
 
 local function waitInput()
@@ -426,6 +438,11 @@ local function followerTransition()
   return { op = "follower_transition" }
 end
 
+local function followerAppearance()
+  -- Retail opcode 599 starts the nonblocking partner appearance task.
+  return { op = "follower_appearance" }
+end
+
 local function placeStarterBalls()
   return { op = "place_starter_balls" }
 end
@@ -709,6 +726,22 @@ end
 
 local function currentMapId(ins)
   return { op = "current_map_id", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function playerState(ins)
+  return { op = "player_state", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function timeOfDay(ins)
+  return { op = "time_of_day", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function discardValue(ins)
+  return { op = "discard_value", value = Operands.varRef(ins.operands[1]) }
+end
+
+local function trainerCardStars(ins)
+  return { op = "trainer_card_stars", result = Operands.varRef(ins.operands[1]) }
 end
 
 local function propAnimationLoad(ins)
@@ -1091,6 +1124,10 @@ end
 
 local function healParty()
   return { op = "heal_party" }
+end
+
+local function pokemonCenterHeal(ins)
+  return { op = "pokemon_center_heal", count = Operands.varRef(ins.operands[1]) }
 end
 
 local function bufferNatureName(ins)
@@ -1529,6 +1566,7 @@ return {
   [581] = lockLastTalkedActor,
   [582] = setSpecialSpawn,
   [596] = followerPartnerState,
+  [599] = followerAppearance,
   [601] = followerFacePlayer,
   [602] = followerSetPaused,
   [603] = followerWait,
@@ -1565,4 +1603,9 @@ return {
   [311] = propAnimationPlayReverse,
   [436] = overworldLeave,
   [446] = currentMapId,
+  [187] = playerState,
+  [379] = timeOfDay,
+  [437] = discardValue,
+  [590] = trainerCardStars,
+  [487] = pokemonCenterHeal,
 }

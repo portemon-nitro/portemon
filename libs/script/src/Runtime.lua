@@ -1079,8 +1079,24 @@ end
 -- the injected following-mon collaborator (the field controller behind the
 -- `followingMon` service) and writes its source-shaped result. No handler
 -- switches on a source opcode; the node op already names the behavior.
+---@class RuntimeFollowingMon
+---@field isActive fun(self: RuntimeFollowingMon): boolean
+---@field partnerSourceState fun(self: RuntimeFollowingMon): unknown
+---@field facePlayer fun(self: RuntimeFollowingMon)
+---@field isSourceActive fun(self: RuntimeFollowingMon): boolean
+---@field setMovementPaused fun(self: RuntimeFollowingMon, paused: boolean)
+---@field setMovementType fun(self: RuntimeFollowingMon, movementType: string)
+---@field repositionRelativeToPlayer fun(self: RuntimeFollowingMon, offsetSelector: integer, directionRaw: integer)
+---@field isEventTrigger fun(self: RuntimeFollowingMon, kind: string, param: unknown): boolean
+
+---@class RuntimeFollowerTransition
+---@field start fun(self: RuntimeFollowerTransition)
+---@field startAppearance fun(self: RuntimeFollowerTransition, follower: RuntimeFollowingMon)
+
+---@param run table<string, unknown>
+---@return RuntimeFollowingMon
 local function followingMonFor(run)
-  return requireService(run, "followingMon")
+  return requireService(run, "followingMon") --[[@as RuntimeFollowingMon]]
 end
 
 local function handleFollowerIsActive(node, run)
@@ -1135,10 +1151,16 @@ local function handleFollowerIsEventTrigger(node, run)
 end
 
 local function handleFollowerTransition(_, run)
-  if not followingMonFor(run):isSourceActive() then
+  local follower = followingMonFor(run)
+  if not follower:isSourceActive() then
     return Runtime.OUTCOME_CONTINUE
   end
-  requireService(run, "followerTransition"):start()
+  local owner = requireService(run, "followerTransition") --[[@as RuntimeFollowerTransition]]
+  if run.node.op == "follower_appearance" then
+    owner:startAppearance(follower)
+  else
+    owner:start()
+  end
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -1408,10 +1430,11 @@ local function handleMessage(node, run)
     -- and the instance's buffered text args ride alongside node bindings
     -- exactly as on the blocking DialogueTask path.
     local host = requireService(run, "dialogue")
+    local message = semanticsFor(run).evaluateMessage(node.message, run)
     -- LuaLS cannot see through Errors.raise; requireService never returns nil.
     ---@cast host table<string, unknown>
     host:openMessage(node)
-    host:startPrint(node.message, node.bindings or {}, run.instance.textArgs or {})
+    host:startPrint(message, node.bindings or {}, run.instance.textArgs or {})
     return Runtime.OUTCOME_CONTINUE
   end
   return blockOnTask(run, "dialogue", { node = node })
@@ -1825,6 +1848,9 @@ HANDLERS.check_badge = handleCheckBadge
 HANDLERS.award_badge = handleAwardBadge
 HANDLERS.count_badges = handleCountBadges
 HANDLERS.heal_party = handleHealParty
+function HANDLERS.pokemon_center_heal(node, run)
+  return blockOnTask(run, "pokemon_center_heal", { count = evalField(node, run, "count") })
+end
 HANDLERS.bag_add_item = handleBagAddItem
 HANDLERS.bag_take_item = handleBagTakeItem
 HANDLERS.bag_has_space = handleBagHasSpace
@@ -1843,6 +1869,7 @@ HANDLERS.follower_set_movement_type = handleFollowerSetMovementType
 HANDLERS.follower_reposition = handleFollowerReposition
 HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
 HANDLERS.follower_transition = handleFollowerTransition
+HANDLERS.follower_appearance = handleFollowerTransition
 HANDLERS.place_starter_balls = handlePlaceStarterBalls
 HANDLERS.lock_player = handleLockPlayer
 HANDLERS.release_player = handleReleasePlayer
@@ -1891,6 +1918,22 @@ function HANDLERS.overworld_restore(node, run)
 end
 function HANDLERS.current_map_id(node, run)
   semanticsFor(run).writeRef(node.result, requireService(run, "maps"):currentId(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.player_state(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "player"):stateCode(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.time_of_day(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "timeOfDay"):currentCode(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.discard_value(node, run)
+  semanticsFor(run).evaluateValue(node.value, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.trainer_card_stars(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "trainerCardStars"):count(), run)
   return Runtime.OUTCOME_CONTINUE
 end
 function HANDLERS.prop_animation_load(node, run)

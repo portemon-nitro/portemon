@@ -49,6 +49,11 @@ local function cacheWithIndexSchema(schema)
   for _, kind in ipairs(KINDS) do
     index.effects[kind] = { definition = kind, path = FieldEffectAssetCache.definitionPath(kind) }
   end
+  index.effects.pokemon_center_heal = {
+    kind = "healing",
+    definition = "pokemon_center_heal",
+    path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
+  }
   return {
     loadLua = function(_, path)
       if path == FieldEffectAssetCache.indexPath() then
@@ -70,9 +75,20 @@ local function cacheWithIndexSchema(schema)
       if kind == "warp_entrance" then
         return { model = staticModel("field-effect:warp-entrance"), lifetime = 1 }
       end
+      if kind == "pokemon_center_heal" then
+        return { models = { staticModel("field-effect:pokemon-center-heal-ball") } }
+      end
       return { model = staticModel("field-effect:" .. kind) }
     end,
   }
+end
+
+T.tests["loads healing models as their own generated effect definition"] = function()
+  local bundle = FieldEntranceIndicatorRuntime.load(cacheWithIndexSchema(Contract.fieldEffects.indexSchema))
+  local healing = assert(bundle.effects.pokemon_center_heal)
+  Assert.equal(#healing.models, 1)
+  Assert.equal(healing.models[1].key, "field-effect:pokemon-center-heal-ball")
+  Assert.isNil(healing.model, "the healing definition does not pretend to be a static entrance effect")
 end
 
 T.tests["loads all five current definitions including the surf attachment"] = function()

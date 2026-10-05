@@ -701,6 +701,10 @@ Schema.OPERATIONS = {
   overworld_leave = { fields = {} },
   overworld_restore = { fields = {} },
   current_map_id = { fields = { result = { type = "id_or_var", required = true } } },
+  player_state = { fields = { result = { type = "id_or_var", required = true } } },
+  time_of_day = { fields = { result = { type = "id_or_var", required = true } } },
+  discard_value = { fields = { value = { type = "scalar_or_value", required = true } } },
+  trainer_card_stars = { fields = { result = { type = "id_or_var", required = true } } },
   prop_animation_load = {
     fields = {
       fieldX = { type = "scalar_or_value", required = true },
@@ -716,6 +720,7 @@ Schema.OPERATIONS = {
   },
   prop_animation_wait = { fields = { slot = { type = "scalar_or_value", required = true } } },
   prop_animation_unload = { fields = { slot = { type = "scalar_or_value", required = true } } },
+  pokemon_center_heal = { fields = { count = { type = "scalar_or_value", required = true } } },
   set_spawn = { fields = { spawn = { type = "string", required = true } } },
   -- The source special-spawn setter (opcode 582): records a pending spawn
   -- location distinct from `set_spawn`'s named spawn-point concept. warpId
@@ -1152,6 +1157,7 @@ Schema.OPERATIONS = {
     },
   },
   follower_transition = { fields = {} },
+  follower_appearance = { fields = {} },
   unsupported = {
     fields = {
       command = { type = "integer", required = true },

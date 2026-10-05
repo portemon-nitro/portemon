@@ -1325,6 +1325,7 @@ return {
       },
     },
     [187] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetPlayerState",
       widths = {
         [1] = 2,
@@ -2720,6 +2721,7 @@ return {
       },
     },
     [379] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_379",
       widths = {
         [1] = 2,
@@ -3213,6 +3215,7 @@ return {
       widths = {},
     },
     [437] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_DebugWatch",
       widths = {
         [1] = 2,
@@ -3606,6 +3609,7 @@ return {
       widths = {},
     },
     [487] = {
+      classification = "native_wait",
       name = "ScrCmd_PokeCenAnim",
       widths = {
         [1] = 2,
@@ -4346,6 +4350,7 @@ return {
       },
     },
     [590] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetTrcardStars",
       widths = {
         [1] = 2,
@@ -4407,11 +4412,10 @@ return {
       },
     },
     [599] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_599",
       feature = "following_mon",
-      disposition = "deferred",
-      deferredReason = "special_follower_event",
-      deferredNote = "opcode 599 is an opaque follower neighbour off the default trail; it stays deferred pending a source trace",
+      disposition = "supported",
       widths = {},
     },
     [600] = {

@@ -181,7 +181,7 @@ function GameSaveValidation:validate(record, context)
     end
     local selected = context or self:_context(record.versionId)
     -- Explicit chained migration before canonical validation: v3 -> v4,
-    -- then v4 -> the battle era. Quiescent old script buckets pass through
+    -- v4 -> v5, then v5 -> the current record era. Quiescent old script buckets pass through
     -- with their recorded provenance (counters and world/RNG data
     -- preserved); an incompatible active graph is rejected with the save
     -- bytes untouched, never cleared or rewritten. Recognized nested
@@ -213,6 +213,9 @@ function GameSaveValidation:validate(record, context)
     end
     if type(effective) == "table" and effective.schema == GameSave.HISTORICAL_SCHEMA_V4 then
       effective = GameSave.migrateV4(effective)
+    end
+    if type(effective) == "table" and effective.schema == GameSave.HISTORICAL_SCHEMA_V5 then
+      effective = GameSave.migrateV5(effective)
     end
     local function playerDataValidate(value)
       return PlayerData.validate(value, selected)

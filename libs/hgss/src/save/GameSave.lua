@@ -7,17 +7,19 @@ local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
+local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v5"
+GameSave.SCHEMA = "g4-game-save-v6"
 -- Historical envelopes listing still recognizes: v4 records predate the
 -- encounter and dex buckets and the battle-style option; v3 records predate
 -- those plus the travel bucket and the badge mask. Listing an old envelope
 -- implies nothing loadable; semantic validation migrates or rejects it
 -- separately.
 GameSave.HISTORICAL_SCHEMA_V4 = "g4-game-save-v4"
+GameSave.HISTORICAL_SCHEMA_V5 = "g4-game-save-v5"
 GameSave.HISTORICAL_SCHEMA_V3 = "g4-game-save-v3"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
@@ -27,6 +29,7 @@ local TOP_LEVEL_FIELDS = {
   audio = true,
   auxiliaryUi = true,
   bag = true,
+  battleFrontier = true,
   encounters = true,
   facing = true,
   fieldTravel = true,
@@ -313,6 +316,15 @@ local function validate(record, opts)
   local canonicalEncounters =
     validateBucket(record, "encounters", opts, "encountersValidate", defaultEncountersValidate)
   local canonicalPokedex = validateBucket(record, "pokedex", opts, "pokedexValidate", defaultPokedexValidate)
+  local canonicalBattleFrontier = validateBucket(
+    record,
+    "battleFrontier",
+    opts,
+    "battleFrontierValidate",
+    function(bucket)
+      return BattleFrontierRecords.restore(bucket):bucket()
+    end
+  )
   local canonicalFieldTravel = validateBucket(record, "fieldTravel", opts, "fieldTravelValidate")
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
   local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
@@ -328,6 +340,7 @@ local function validate(record, opts)
   canonical.bag = canonicalBag
   canonical.encounters = canonicalEncounters
   canonical.pokedex = canonicalPokedex
+  canonical.battleFrontier = canonicalBattleFrontier
   canonical.fieldTravel = canonicalFieldTravel
   canonical.auxiliaryUi = canonicalAuxiliaryUi
   canonical.audio = canonicalAudio
@@ -384,7 +397,7 @@ end
 -- display profile name and the integral bounded play time. It performs no
 -- generated-cache lookup and implies no semantic validity; a listed record
 -- is not thereby loadable. The current schema and the one supported
--- historical envelopes (v4, v3) list; anything else stays unsupported.
+-- historical envelopes (v5, v4, v3) list; anything else stays unsupported.
 -- Never throws a validation failure: malformed
 -- input returns a structured error instead.
 ---@param record unknown
@@ -397,6 +410,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.HISTORICAL_SCHEMA_V5
       and record.schema ~= GameSave.HISTORICAL_SCHEMA_V4
       and record.schema ~= GameSave.HISTORICAL_SCHEMA_V3
     then
@@ -457,14 +471,14 @@ function GameSave.metadata(record)
   error(envelopeOrError)
 end
 
--- Battle-era migration: fills the genuinely absent battle-era buckets with
+-- V4 migration: fills the genuinely absent battle-era buckets with
 -- their defined source defaults while preserving every carried value. The
 -- input record is never mutated. Only absence initializes: a present
 -- bucket (even an empty one) rides through untouched for validation to
 -- judge, and a present malformed battle style fails loudly instead of
 -- being repaired. Safe to run over an already-current record.
 ---@param record table<string, unknown> a previous supported save record
----@return table<string, unknown> the migrated battle-era record
+---@return table<string, unknown> the migrated v5 record
 function GameSave.migrateV4(record)
   assert(type(record) == "table", "GameSave.migrateV4 requires a record")
   if type(record.playerData) ~= "table" or type(record.playerData.options) ~= "table" then
@@ -477,7 +491,7 @@ function GameSave.migrateV4(record)
   for key, value in pairs(record) do
     migrated[key] = value
   end
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.HISTORICAL_SCHEMA_V5
   if migrated.encounters == nil then
     migrated.encounters = EncounterSave.initial()
   end
@@ -502,6 +516,28 @@ function GameSave.migrateV4(record)
   end
   playerData.options = options
   migrated.playerData = playerData
+  return migrated
+end
+
+-- V5 had no Battle Frontier record owner. This migration initializes the
+-- counters explicitly because earlier Portemon versions could not record them.
+---@param record table<string, unknown> a v5 save record
+---@return table<string, unknown> the migrated v6 record
+function GameSave.migrateV5(record)
+  assert(type(record) == "table", "GameSave.migrateV5 requires a record")
+  if record.schema ~= GameSave.HISTORICAL_SCHEMA_V5 then
+    Errors.raise(GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED, "GameSave.migrateV5 requires a v5 save", {
+      schema = record.schema,
+    })
+  end
+  local migrated = {}
+  for key, value in pairs(record) do
+    migrated[key] = value
+  end
+  migrated.schema = GameSave.SCHEMA
+  if migrated.battleFrontier == nil then
+    migrated.battleFrontier = BattleFrontierRecords.new():bucket()
+  end
   return migrated
 end
 

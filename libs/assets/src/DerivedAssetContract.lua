@@ -270,9 +270,8 @@ DerivedAssetContract.newGameInit = {
 }
 
 DerivedAssetContract.fieldEffects = {
-  -- v8 carries the persistent surf attachment and the follower-transition
-  -- effect alongside the existing grass hold and trainer reveal definitions.
-  cacheFormat = "field-effect-cache-v8",
+  -- v9 adds the source-selected Pokémon Center healing choreography model.
+  cacheFormat = "field-effect-cache-v9",
   indexSchema = "g4-field-effect-index-v2",
 }
 

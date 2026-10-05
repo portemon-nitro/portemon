@@ -12,6 +12,7 @@ local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
+local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
 local SaveFs = require("libs.storage.src.SaveFs")
@@ -60,6 +61,7 @@ local function v4record(overrides)
   value.fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" }
   value.encounters = EncounterSave.initial()
   value.pokedex = PokedexSave.initial()
+  value.battleFrontier = BattleFrontierRecords.new():bucket()
   return value
 end
 
@@ -108,7 +110,7 @@ function T.current_validation_requires_travel_and_rejects_old_schemas()
 end
 
 function T.migrated_records_validate_with_a_travel_validator()
-  local migrated = GameSave.migrateV4(GameSave.migrateV3(v3record()))
+  local migrated = GameSave.migrateV5(GameSave.migrateV4(GameSave.migrateV3(v3record())))
   local opts = {
     fieldTravelValidate = function(value)
       Assert.deepEqual(value, { lastHealSpawn = "SPAWN_NEW_BARK" })
@@ -117,6 +119,17 @@ function T.migrated_records_validate_with_a_travel_validator()
   }
   local valid = assert(GameSave.validate(migrated, opts))
   Assert.deepEqual(valid.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
+end
+
+function T.v5_migration_initializes_frontier_records_without_mutating_the_source()
+  local input = GameSave.migrateV4(GameSave.migrateV3(v3record()))
+  local originalSchema = input.schema
+  local migrated = GameSave.migrateV5(input)
+  Assert.equal(originalSchema, GameSave.HISTORICAL_SCHEMA_V5)
+  Assert.equal(input.schema, originalSchema)
+  Assert.isNil(input.battleFrontier)
+  Assert.deepEqual(migrated.battleFrontier, BattleFrontierRecords.new():bucket())
+  Assert.equal(migrated.schema, GameSave.SCHEMA)
 end
 
 local function quiescentScripts()
@@ -254,7 +267,7 @@ function T.migrated_loads_write_nothing_until_explicit_save()
   plantPayload(backend, "save-00000001", historicalRecord("save-00000001"))
   writes = {}
   local loaded = assert(store:load("save-00000001"))
-  Assert.equal(loaded.schema, "g4-game-save-v5")
+  Assert.equal(loaded.schema, "g4-game-save-v6")
   Assert.equal(loaded.playerData.profile.badges, 0)
   Assert.deepEqual(writes, {}, "loading and migrating must not write")
   local raw = assert(SaveFs.global(backend):loadLua("games/save-00000001.lua"))
@@ -266,7 +279,7 @@ function T.migrated_loads_write_nothing_until_explicit_save()
   store:save(loaded)
   Assert.isTrue(#writes > 0, "the explicit save must record its writes")
   local published = assert(SaveFs.global(backend):loadLua("games/save-00000001.lua"))
-  Assert.equal(published.schema, "g4-game-save-v5", "only the explicit save publishes migrated bytes")
+  Assert.equal(published.schema, "g4-game-save-v6", "only the explicit save publishes migrated bytes")
 end
 
 function T.active_historical_saves_stay_rejected()

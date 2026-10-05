@@ -9,6 +9,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 
 local DialogueTask = {}
 
@@ -37,14 +38,15 @@ local MODES = {
 -- Resolve a gendered message descriptor against the player's gender:
 -- male for gender 0, female otherwise.
 ---@param message unknown
+---@param node table<string, unknown>
 ---@param ctx table<string, unknown>
 ---@return unknown
-local function resolveMessage(message, ctx)
-  if type(message) == "table" and message.text == "gendered_message" then
-    local gender = ctx.services.player:gender()
-    return gender == 0 and message.male or message.female
-  end
-  return message
+local function resolveMessage(message, node, ctx)
+  return RuntimeValues.evaluateMessage(message, {
+    services = ctx.services,
+    instance = ctx.instance,
+    node = node,
+  })
 end
 
 ---@param spec table<string, unknown>
@@ -60,7 +62,7 @@ function DialogueTask.create(spec, ctx)
       { scriptId = ctx.instance.scriptId, op = op }
     )
   end
-  local message = resolveMessage(node.message, ctx)
+  local message = resolveMessage(node.message, node, ctx)
   local host = assert(ctx.services.dialogue, "dialogue task requires the dialogue host")
   local mode = op == "message" and "print" or "say"
   if mode == "print" and host:isOpen() then

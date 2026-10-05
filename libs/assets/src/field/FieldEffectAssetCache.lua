@@ -190,6 +190,112 @@ local function validTransitionDefinition(definition)
   return validLifecycle(lifecycle, animatedClip.frameCount) and validPlacement(definition.placementOffset)
 end
 
+local function validPokemonCenterHealDefinition(definition)
+  local fieldCount = 0
+  local allowed = {
+    models = true,
+    anchorModelKey = true,
+    machineModelKey = true,
+    ballAnimation = true,
+    machineAnimation = true,
+    machineAnimationFrameCount = true,
+    ballPositions = true,
+    spawnIntervalSourceFrames = true,
+    placementSound = true,
+    fanfare = true,
+  }
+  for key in pairs(definition) do
+    fieldCount = fieldCount + 1
+    if not allowed[key] then
+      return false
+    end
+  end
+  if fieldCount ~= 10 then
+    return false
+  end
+  if type(definition.models) ~= "table" or #definition.models ~= 1 then
+    return false
+  end
+  local model = definition.models[1]
+  if
+    type(model) ~= "table"
+    or model.kind ~= "nitro-dynamic"
+    or type(model.animations) ~= "table"
+    or #model.animations ~= 1
+  then
+    return false
+  end
+  if
+    type(definition.anchorModelKey) ~= "string"
+    or definition.anchorModelKey == ""
+    or type(definition.machineModelKey) ~= "string"
+    or definition.machineModelKey == ""
+    or definition.anchorModelKey == definition.machineModelKey
+  then
+    return false
+  end
+  if
+    type(definition.ballAnimation) ~= "string"
+    or definition.ballAnimation == ""
+    or type(definition.machineAnimation) ~= "string"
+    or definition.machineAnimation == ""
+  then
+    return false
+  end
+  local ballClip = model.animations[1]
+  if ballClip.name ~= definition.ballAnimation and ballClip.id ~= definition.ballAnimation then
+    return false
+  end
+  local machineFrameCount = definition.machineAnimationFrameCount
+  if
+    not finiteNumber(machineFrameCount)
+    or machineFrameCount < 1
+    or machineFrameCount ~= math.floor(machineFrameCount)
+  then
+    return false
+  end
+  if definition.spawnIntervalSourceFrames ~= 12 then
+    return false
+  end
+  if definition.placementSound ~= "SEQ_SE_DP_BOWA" or definition.fanfare ~= "SEQ_ME_ASA" then
+    return false
+  end
+  local positions = definition.ballPositions
+  if type(positions) ~= "table" or #positions ~= 6 then
+    return false
+  end
+  local expected = {
+    { x = -4.5, y = 12, z = -4.5 },
+    { x = 4.5, y = 12, z = -4.5 },
+    { x = -4.5, y = 12, z = 0 },
+    { x = 4.5, y = 12, z = 0 },
+    { x = -4.5, y = 12, z = 4.5 },
+    { x = 4.5, y = 12, z = 4.5 },
+  }
+  local expectedRoles = { "northwest", "northeast", "west", "east", "southwest", "southeast" }
+  for index, position in ipairs(positions) do
+    if type(position) ~= "table" or position.role ~= expectedRoles[index] then
+      return false
+    end
+    local offset = position.offset
+    local source = expected[index]
+    if not validPlacement(offset) or offset.x ~= source.x or offset.y ~= source.y or offset.z ~= source.z then
+      return false
+    end
+    local count = 0
+    for key in pairs(position) do
+      count = count + 1
+      if key ~= "role" and key ~= "offset" then
+        return false
+      end
+    end
+    if count ~= 2 then
+      return false
+    end
+  end
+  return true
+end
+
 function FieldEffectAssetCache.indexPath()
   return INDEX
 end
@@ -228,6 +334,7 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     "trainer_reveal",
     "surf_attachment",
     "follower_transition",
+    "pokemon_center_heal",
   }
   if type(index.effects) ~= "table" then
     return false
@@ -246,6 +353,7 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     trainer_reveal = "animated_model",
     surf_attachment = "model",
     follower_transition = "transition",
+    pokemon_center_heal = "healing",
   }
   for _, kind in ipairs(required) do
     local entry = index.effects and index.effects[kind]
@@ -263,7 +371,7 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
       return false
     end
     local descriptors = definition.models or { definition.model }
-    if kind ~= "follower_transition" and definition.models ~= nil then
+    if kind ~= "follower_transition" and kind ~= "pokemon_center_heal" and definition.models ~= nil then
       return false
     end
     local descriptorCount = 0
@@ -305,6 +413,10 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
       end
     elseif kind == "follower_transition" then
       if not validTransitionDefinition(definition) then
+        return false
+      end
+    elseif kind == "pokemon_center_heal" then
+      if not validPokemonCenterHealDefinition(definition) then
         return false
       end
     end
