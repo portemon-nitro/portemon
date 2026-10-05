@@ -1924,7 +1924,11 @@ function State:_dispatchIntent(intent)
   elseif intent.kind == "move" then
     local plan = self:_resolve(self:_snapshot())
     local layout = assert(plan.content.layout)
-    if layout.targets.section ~= nil and (intent.direction == "left" or intent.direction == "right") then
+    if
+      layout.targets.section ~= nil
+      and self.controller.focus == "section"
+      and (intent.direction == "left" or intent.direction == "right")
+    then
       local sections = { "Location", "Player", "Party", "Bag", "Progress" }
       local current = 1
       for index, section in ipairs(sections) do

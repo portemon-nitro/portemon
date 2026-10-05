@@ -399,6 +399,7 @@ function T.tests.input_reaches_money_and_toggle_rows_on_compact_and_dual_touch()
 
     local joystick = {} --[[@as love.Joystick]]
     for _ = 1, 3 do
+      state.controller:setFocus("section")
       state:gamepadpressed(joystick, "dpright")
       state:gamepadreleased(joystick, "dpright")
     end
@@ -2117,11 +2118,94 @@ function T.tests.compact_section_cycling_uses_the_resolved_logical_layout()
     local before = state:view()
     Assert.isTrue(before.layout.viewport.width < 400, "high-density presentation resolves a compact logical canvas")
     Assert.notNil(before.layout.targets.section, "compact layout publishes the section chooser target")
-    state.controller:setFocus("money")
+    state.controller:setFocus("section")
+    Assert.equal(state:view().focus, "section", "the compact section chooser owns focus before cycling")
     state:keypressed("right")
     Assert.equal(state.controller.section, "Party", "logical compact layout cycles right to the next section")
     Assert.notNil(state:view().layout.targets.section, "the resulting section stays in compact navigation")
   end, 2)
+end
+
+function T.tests.compact_card_grids_keep_horizontal_moves_inside_the_resolved_graph()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = false,
+    role = "world",
+  })
+  withEditor(256, 192, topology, function(state)
+    local joystick = {} --[[@as love.Joystick]]
+    local function expectGraphMove(section, startTarget, direction, useGamepad, label)
+      state.controller:setFocus(startTarget)
+      local before = state:view()
+      Assert.equal(before.section, section, label .. " starts inside " .. section)
+      Assert.isTrue(
+        before.layout.viewport.width < 400,
+        label .. " resolves a compact logical canvas (" .. tostring(before.layout.viewport.width) .. ")"
+      )
+      Assert.notNil(
+        before.layout.targets.section,
+        label .. " publishes the compact section chooser alongside grid content"
+      )
+      local node = assert(
+        before.layout.focusGraph[startTarget],
+        label .. " starts from a focus graph node (" .. startTarget .. ")"
+      )
+      local expected = assert(node[direction][1], label .. " has a resolved " .. direction .. " edge")
+      if useGamepad then
+        local button = direction == "left" and "dpleft" or "dpright"
+        state:gamepadpressed(joystick, button)
+        state:gamepadreleased(joystick, button)
+      else
+        state:keypressed(direction)
+        state:keyreleased(direction)
+      end
+      local after = state:view()
+      Assert.equal(after.section, section, label .. " horizontal input stays inside " .. section .. " content")
+      Assert.equal(
+        after.focus,
+        expected,
+        label .. " follows the resolved graph edge (" .. direction .. " from " .. startTarget .. ")"
+      )
+    end
+
+    selectSection(state, Layout, "Bag")
+    fillBagPocket(state, 2)
+    local bag = state:view()
+    local firstItem = assert(bag.bagPageRows[1], "the compact Bag page exposes its first occupied card").item
+    local secondItem = assert(bag.bagPageRows[2], "the compact Bag page exposes an adjacent card").item
+    local firstTarget, secondTarget = "bag:item:" .. firstItem, "bag:item:" .. secondItem
+    local firstNode = assert(bag.layout.focusGraph[firstTarget], "the resolved graph owns the first Bag card")
+    Assert.equal(firstNode.left[1], firstTarget, "the first Bag column clamps Left to the focused card")
+    Assert.equal(firstNode.right[1], secondTarget, "the first Bag card links Right to its neighbor")
+    expectGraphMove("Bag", firstTarget, "left", false, "keyboard Bag clamp")
+    expectGraphMove("Bag", firstTarget, "left", true, "gamepad Bag clamp")
+    expectGraphMove("Bag", firstTarget, "right", false, "keyboard Bag step")
+    expectGraphMove("Bag", firstTarget, "right", true, "gamepad Bag step")
+
+    selectSection(state, Layout, "Party")
+    Assert.isTrue(state:_beginMonAdd("CHIKORITA"), "the real species catalog opens a Party draft")
+    state:_resolveDraftChoice("apply")
+    state.controller:closePartyDetail()
+    local party = state:view()
+    Assert.equal(party.partyPage, "list", "closing the detail page returns to the Party card grid")
+    local slotTarget = assert(party.focus, "closing the detail page leaves a focused card")
+    Assert.isTrue(
+      slotTarget:match("^party:slot:") ~= nil,
+      "the closed detail page focuses the added member card (" .. slotTarget .. ")"
+    )
+    local slotNode = assert(party.layout.focusGraph[slotTarget], "the resolved graph owns the member card")
+    Assert.equal(slotNode.left[1], slotTarget, "the member card clamps Left to the focused card")
+    Assert.isTrue(
+      slotNode.right[1] ~= slotTarget,
+      "the member card moves Right to a neighboring card (" .. tostring(slotNode.right[1]) .. ")"
+    )
+    expectGraphMove("Party", slotTarget, "left", false, "keyboard Party clamp")
+    expectGraphMove("Party", slotTarget, "left", true, "gamepad Party clamp")
+    expectGraphMove("Party", slotTarget, "right", false, "keyboard Party step")
+    expectGraphMove("Party", slotTarget, "right", true, "gamepad Party step")
+  end)
 end
 
 function T.tests.item_choice_is_flat_filtered_and_uses_clamped_page_navigation()
