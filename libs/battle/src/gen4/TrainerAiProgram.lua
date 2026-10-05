@@ -10664,7 +10664,7 @@ function executeCommand(state, op, pc)
     end
     return after
   elseif op == 99 then
-    local target = matchupCompareGate(arg(1), arg(2))
+    local target = matchupCompareGate(state, arg(1), arg(2), arg(3))
     if target ~= nil then
       return after + target
     end
@@ -10865,24 +10865,18 @@ end
 -- Forward declaration for the fixed-damage arm core defined below.
 local fixedPreview
 
--- Matchup value per move slot (handler ov10_0221EF7C core behind opcodes
--- 32/99/105): effects outside the evaluation class read zero; other
--- slots run the fixed-damage arms or the staged preview, scaled by the
--- slot factor (100, or the stored threshold when the history selector
--- requests it).
+-- Staged preview for one explicit move identity (the ov10_0221F084
+-- switch at the heart of the matchup core): effects outside the
+-- evaluation class read zero; other moves run the fixed-damage arms or
+-- the staged preview, scaled by the caller-selected factor. The working
+-- move type is the compiled type unless an override selects another, so
+-- ordinary moves preview against their own type through the pipeline.
 ---@param state TrainerAiProgramState command state under execution
----@param slot integer zero-based move slot under preview
+---@param moveId integer numeric move identity under preview
 ---@param scale integer 100 or the slot threshold under the final multiply
----@return integer matchup value under the rank
-function matchupValue(state, slot, scale)
+---@return integer staged matchup value under the preview
+local function previewMove(state, moveId, scale)
   local facts = state.facts --[[@as table<string, unknown>]]
-  local atk = facts.atk --[[@as integer]]
-  local record = battlerFacts(state, atk)
-  local moves = record.moves --[[@as table<integer, integer>]]
-  local moveId = moves[slot + 1] or 0
-  if moveId == 0 then
-    return 0
-  end
   local byId = facts.moveById --[[@as table<integer, table<string, unknown>>]]
   local detail = byId[moveId]
   if type(detail) ~= "table" then
@@ -10897,7 +10891,7 @@ function matchupValue(state, slot, scale)
       return 0
     end
   end
-  local fixed = fixedPreview(state, moveId, slot)
+  local fixed = fixedPreview(state, moveId)
   if fixed ~= nil then
     local damage, immune = pipelinePreview(state, moveId, fixed.type, fixed.damage)
     if immune then
@@ -10923,7 +10917,10 @@ function matchupValue(state, slot, scale)
   elseif fly.category == "special" then
     category = 1
   end
-  local effective = effectiveMoveType(state, moveId, workingType)
+  local effective = effectiveMoveType(state, moveId)
+  if effective == 0 then
+    effective = workingType
+  end
   local armed = armedPower(state, moveId, workingPower)
   local base = calcPreview(state, moveId, armed, effective, category)
   local damage, immune = pipelinePreview(state, moveId, effective, base)
@@ -10931,6 +10928,27 @@ function matchupValue(state, slot, scale)
     return 0
   end
   return damage * scale
+end
+
+-- Matchup value per move slot (handler ov10_0221EF7C core behind opcodes
+-- 32/99/105): vacant slots read zero; other slots run the staged
+-- preview above for the move held in that slot, scaled by the slot
+-- factor (100, or the stored threshold when the history selector
+-- requests it).
+---@param state TrainerAiProgramState command state under execution
+---@param slot integer zero-based move slot under preview
+---@param scale integer 100 or the slot threshold under the final multiply
+---@return integer matchup value under the rank
+function matchupValue(state, slot, scale)
+  local facts = state.facts --[[@as table<string, unknown>]]
+  local atk = facts.atk --[[@as integer]]
+  local record = battlerFacts(state, atk)
+  local moves = record.moves --[[@as table<integer, integer>]]
+  local moveId = moves[slot + 1] or 0
+  if moveId == 0 then
+    return 0
+  end
+  return previewMove(state, moveId, scale)
 end
 
 -- Hidden Power type from attacker IV parity (handlers ov10_0221F536
@@ -11692,12 +11710,46 @@ function statCompareGate(state, selector, stat, jump, kind)
 end
 
 -- Ally-aware matchup rank (handler ov10_0221E848 for opcode 105):
--- like the effectiveness rank with partner-state awareness folded
--- through the same preview core.
+-- the current slot must lead or tie every attacker move first against
+-- the current target and then against that target's partner. Either
+-- trailing rank answers 1; only a lead on both answers 2. Ineligible
+-- moves keep the ordinary rank's zero. The partner evaluation reuses
+-- the same rank through function-local facts, so shared facts and live
+-- battler records stay untouched.
 ---@param state TrainerAiProgramState command state under execution
 ---@return integer effectiveness class 0/1/2 under the rank
 function allyMatchupRank(state)
-  return matchupRank(state)
+  local first = matchupRank(state)
+  if first ~= 2 then
+    return first
+  end
+  local facts = state.facts --[[@as table<string, unknown>]]
+  local battlers = facts.battlers --[[@as table<integer, table<string, unknown>>]]
+  local partner = partnerOf(facts.tgt --[[@as integer]])
+  -- An absent partner slot carries no battler record and contributes no
+  -- second target, so the rank rests on the current target alone.
+  if type(battlers[partner]) ~= "table" then
+    return first
+  end
+  local partnerFacts = {}
+  for key, value in pairs(facts) do
+    partnerFacts[key] = value
+  end
+  partnerFacts.tgt = partner
+  local probe = {
+    facts = partnerFacts,
+    rng = state.rng,
+    bit = state.bit,
+    slot = state.slot,
+    thresholds = state.thresholds,
+    points = state.points,
+    cur = state.cur,
+    scratch = state.scratch,
+  }
+  if matchupRank(probe) ~= 2 then
+    return 1
+  end
+  return 2
 end
 
 -- Switch-in flag jumps (handlers ov10_0221E9A4 for opcode 106,
@@ -11728,18 +11780,62 @@ function switchInGate(state, selector, jump, set)
   return nil
 end
 
--- Matchup-compare jump (handler ov10_0221E498 for opcode 99): bespoke
--- preview blocks compare against the operand bound. Reached only by
--- bespoke blocks; resolved through the shared preview core once its
--- block structure is transcribed, failing closed until then.
----@param bound integer preview bound under comparison
+-- Matchup-compare jump (handler ov10_0221E498 for opcode 99): the
+-- attacker's best four-slot staged preview at the operand scale races
+-- the resolved battler's previous-move preview at the executing slot
+-- scale, and the jump takes only when the previous move reads strictly
+-- greater. An absent previous move previews zero. The previous-move
+-- preview reuses the shared staged core with function-local facts that
+-- name the resolved battler as the attacker, so shared facts stay
+-- untouched.
+---@param state TrainerAiProgramState command state under execution
+---@param selector integer battler selector owning the previous move
+---@param scaleMode integer threshold scale selector under the previews
 ---@param jump integer relative word distance under the taken branch
 ---@return integer? jump target under the taken branch, nil to fall through
-function matchupCompareGate(bound, jump)
-  error(BattleErrors.missingBehavior("trainer programs compare their matchup previews", {
-    bound = bound,
-    jump = jump,
-  }))
+function matchupCompareGate(state, selector, scaleMode, jump)
+  local best = 0
+  for slot = 0, 3 do
+    local scale = 100
+    if scaleMode == 1 then
+      scale = state.thresholds[slot + 1]
+    end
+    local value = matchupValue(state, slot, scale)
+    if value > best then
+      best = value
+    end
+  end
+  local facts = state.facts --[[@as table<string, unknown>]]
+  local previousBattler = resolveBattler(state, selector)
+  local lasts = facts.lastMove --[[@as table<integer, integer>]]
+  local previousMove = lasts[previousBattler] or 0
+  local previousValue = 0
+  if previousMove ~= 0 then
+    local scale = 100
+    if scaleMode == 1 then
+      scale = state.thresholds[state.slot + 1]
+    end
+    local previewFacts = {}
+    for key, value in pairs(facts) do
+      previewFacts[key] = value
+    end
+    previewFacts.atk = previousBattler
+    local preview = {
+      facts = previewFacts,
+      rng = state.rng,
+      bit = state.bit,
+      slot = state.slot,
+      thresholds = state.thresholds,
+      points = state.points,
+      cur = state.cur,
+      scratch = state.scratch,
+    }
+    previousValue = previewMove(preview, previousMove, scale)
+  end
+  if previousValue > best then
+    return jump
+  end
+  return nil
 end
 
 -- Encore-slot jumps (handler ov10_0221DCEC for opcode 59): battlers 0
