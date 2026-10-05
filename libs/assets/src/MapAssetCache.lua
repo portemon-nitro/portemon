@@ -500,6 +500,9 @@ function MapAssetCache.referencedPaths(scene, cacheFs)
     if type(inst) ~= "table" or type(inst.modelKey) ~= "string" then
       invalid("a building instance does not carry a modelKey")
     end
+    if inst.semanticRole ~= nil and inst.semanticRole ~= "pc_terminal" then
+      invalid("a building instance has an unsupported semanticRole")
+    end
     local modelPath = MapAssetCache.modelPath(inst.modelKey)
     paths[#paths + 1] = modelPath
     local desc = cacheFs and cacheFs:loadLua(modelPath)

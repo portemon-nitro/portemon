@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 
@@ -81,6 +82,23 @@ local function hasEffect(effects, sound)
     end
   end
   return false
+end
+
+local function withoutSourceMemberId(cacheFs, modelKey)
+  local originalLoadLua = cacheFs.loadLua
+  local modelPath = MapAssetCache.modelPath(modelKey)
+  cacheFs.loadLua = function(self, path)
+    local descriptor = originalLoadLua(self, path)
+    if path ~= modelPath or type(descriptor) ~= "table" then
+      return descriptor
+    end
+    local semanticDescriptor = {}
+    for key, value in pairs(descriptor) do
+      semanticDescriptor[key] = value
+    end
+    semanticDescriptor.memberId = nil
+    return semanticDescriptor
+  end
 end
 
 local function pressAction(game)
@@ -427,6 +445,16 @@ end
 
 function T.tests.pokecenter_pc_metatile_routes_only_when_faced_north()
   withPokecenter(function(game)
+    local terminalPlacement
+    for _, placement in ipairs(assert(game.runtime.runtimeMap.mapProps).placements) do
+      if placement.semanticRole == "pc_terminal" then
+        Assert.isNil(terminalPlacement, "the generated map has one semantic PC-terminal placement")
+        terminalPlacement = placement
+      end
+    end
+    terminalPlacement = assert(terminalPlacement, "the generated map exposes the PC terminal by semantic role")
+    withoutSourceMemberId(game.runtime.cacheFs, terminalPlacement.modelKey)
+
     local pc = pokecenterPcTile(game)
     Assert.notNil(pc, "the generated Cherrygrove map contains an accessible source PC metatile")
     Assert.equal(game:snapshot().mapSymbol, POKECENTER)

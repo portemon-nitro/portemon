@@ -15,11 +15,6 @@ PcTerminal.__index = PcTerminal
 
 local function validatePolicy(policy)
   assert(type(policy) == "table" and type(policy.slots) == "table", "PC terminal source policy is required")
-  assert(policy.animationTag == 90, "PC terminal manager selector is source tag 90")
-  assert(
-    type(policy.candidateBuildModelMembers) == "table" and #policy.candidateBuildModelMembers == 2,
-    "PC terminal candidate order is compiled"
-  )
   for slot = 0, 1 do
     local record = assert(policy.slots[slot], "PC terminal source slot is compiled")
     assert(record.role == (slot == 0 and "terminal.on" or "terminal.off"), "PC terminal slot role is source-defined")

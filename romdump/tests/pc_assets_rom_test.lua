@@ -5,11 +5,37 @@ local Narc = require("libs.nds.src.nitro.Narc")
 local RomSuite = require("tests.rom.support.RomSuite")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
+local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
+local PcSources = require("romdump.src.config.PcSources")
 local charmap = require("romdump.src.reference.hgss.charmap")
 local PcAssetSchema = require("libs.assets.src.PcAssetSchema")
 
 local T = {}
 local assertSelection
+
+function T.real_map_compilation_marks_pc_terminal_placements_by_semantic_role(romFs, _)
+  local bundle = assert(
+    MapAssetCompiler.compile(romFs, "MAP_CHERRYGROVE_POKECENTER_1F"),
+    "the source Pokecenter map compiles"
+  )
+  local candidates = {}
+  for _, memberId in ipairs(PcSources.terminal.candidateBuildModelMembers) do
+    candidates[memberId] = true
+  end
+  local matched = 0
+  for _, placement in ipairs(bundle.scene.buildingInstances) do
+    local descriptor = assert(bundle.models[placement.modelKey], "the placement model was compiled")
+    if candidates[descriptor.memberId] then
+      matched = matched + 1
+      Assert.equal(
+        placement.semanticRole,
+        "pc_terminal",
+        "source candidate building models compile to the semantic PC-terminal placement role"
+      )
+    end
+  end
+  Assert.isTrue(matched > 0, "the real Pokecenter places a source PC-terminal candidate model")
+end
 
 function T.real_source_compiles_all_wallpaper_and_stationery_variants(romFs, _)
   local loaded, PcAssetCompiler = pcall(require, "romdump.src.digest.ui.PcAssetCompiler")
@@ -19,14 +45,12 @@ function T.real_source_compiles_all_wallpaper_and_stationery_variants(romFs, _)
   Assert.deepEqual(
     manifest.terminal,
     {
-      animationTag = 90,
-      candidateBuildModelMembers = { 33, 138 },
       slots = {
         [0] = { role = "terminal.on", playMode = "forward" },
         [1] = { role = "terminal.off", playMode = "forward" },
       },
     },
-    "terminal metadata retains the source tag, prop order, slots, and one-shot playback"
+    "terminal metadata retains the runtime slot policy"
   )
   local withoutTerminal = {}
   for key, value in pairs(manifest) do
@@ -35,6 +59,7 @@ function T.real_source_compiles_all_wallpaper_and_stationery_variants(romFs, _)
     end
   end
   Assert.isFalse(PcAssetSchema.isValidManifest(withoutTerminal), "the schema requires source terminal metadata")
+  Assert.isNil(manifest.terminal.candidateBuildModelMembers, "source model selectors remain producer-side")
   local bank279 = assert(manifest.text.banks[279], "the full source landmark text bank is published")
   Assert.isTrue(type(manifest.text.banks[0]) == "table", "the Photo Album UI source text bank is published")
   Assert.isTrue(PcAssetSchema.isValidManifest(manifest), "the complete PC family passes its strict schema")

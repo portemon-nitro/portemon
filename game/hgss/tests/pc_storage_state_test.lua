@@ -13,15 +13,22 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PcStorageState = require("game.hgss.src.pc.StorageScreenState")
 local PcPresentationFixture = require("tests.support.PcPresentationFixture")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 
-local function monService()
+local function monService(configuredCount)
   local catalog = CatalogFixture.makeCatalog()
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(
+      Party.new():capture(),
+      Lcrng.new(0x12345678):capture(),
+      catalog:fingerprint(),
+      nil,
+      configuredCount and { configuredCount = configuredCount } or nil
+    ),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -34,6 +41,45 @@ local function monService()
   local factory = CatalogFixture.makeFactory(0x87654321, catalog)
   Assert.isTrue(service:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
   return service
+end
+
+local function hostPointForRect(state, rect)
+  local plan = state._session:plan()
+  local x, y
+  for _, pane in ipairs(plan.panes) do
+    local placement = pane.placement
+    if
+      pane.interactive
+      and placement ~= nil
+      and rect.x + rect.width <= placement.logicalWidth
+      and rect.y + rect.height <= placement.logicalHeight
+    then
+      x, y = LayoutGeometry.logicalToHost(
+        placement,
+        rect.x + rect.width / 2,
+        rect.y + rect.height / 2
+      )
+      break
+    end
+  end
+  assert(x ~= nil and y ~= nil, "Storage hit target has a placed pane")
+  return x, y
+end
+
+local function rawPointerAt(state, rect, pointerId)
+  local x, y = hostPointForRect(state, rect)
+  state:updateFixed({
+    { type = "pointer_down", pointerId = pointerId, x = x, y = y },
+    { type = "pointer_up", pointerId = pointerId, x = x, y = y },
+  })
+end
+
+local function setActiveBox(mons, box)
+  local change = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { activeBox = box }))
+  change.publish()
 end
 
 local function releaseService()
@@ -266,6 +312,187 @@ function T.move_swap_cancel_and_held_item_routes_keep_domain_owners_authoritativ
   items:dispose()
 end
 
+function T.active_box_projection_keeps_all_thirty_slots_after_holes()
+  local mons = monService()
+  local boxed = mons:partyMon(0)
+  local change = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 29, mon = boxed } } }))
+  change.publish()
+
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  local slots = state:status().boxSlots
+  Assert.equal(#slots, 30, "the active box projection retains all thirty positions")
+  Assert.equal(slots[1], false, "an empty first position uses the explicit sentinel")
+  Assert.equal(slots[16], false, "an empty middle position uses the explicit sentinel")
+  Assert.equal(slots[30].personality, boxed.personality, "an occupied final position survives earlier holes")
+  state:dispose()
+end
+
+function T.give_item_existing_item_confirmation_can_cancel_or_commit_through_storage()
+  local mons = monService()
+  local options = openOptions(mons, 3, "wide")
+  local bag = options.bag
+  Assert.isTrue(bag:add("POTION", 1))
+  Assert.isTrue(bag:add("SITRUS_BERRY", 1))
+  setPartyHeldItem(mons, "POTION")
+
+  options.childFactories.heldItemPicker = heldItemPicker("SITRUS_BERRY")
+  local cancelled = PcStorageState.new(options)
+  cancelled:updateFixed({ { type = "action", action = "giveItem" } })
+  cancelled:updateFixed({})
+  Assert.equal(cancelled:status().lastAction.kind, "confirm", "replacing a held item requests confirmation")
+  local beforeCancelMon = mons:partyMon(0)
+  local beforeCancelRevision = bag:revision()
+  cancelled:updateFixed({ { type = "cancel" } })
+  Assert.deepEqual(mons:partyMon(0), beforeCancelMon, "cancelling replacement preserves the held item")
+  Assert.equal(bag:quantity("POTION"), 1, "cancelling replacement does not return the old item")
+  Assert.equal(bag:quantity("SITRUS_BERRY"), 1, "cancelling replacement does not take the new item")
+  Assert.equal(bag:revision(), beforeCancelRevision, "cancelling replacement does not publish Bag state")
+  cancelled:dispose()
+
+  options.childFactories.heldItemPicker = heldItemPicker("SITRUS_BERRY")
+  local confirmed = PcStorageState.new(options)
+  confirmed:updateFixed({ { type = "action", action = "giveItem" } })
+  confirmed:updateFixed({})
+  local beforeConfirmRevision = bag:revision()
+  confirmed:updateFixed({ { type = "confirm" } })
+  Assert.equal(mons:partyMon(0).heldItem, "SITRUS_BERRY", "confirmation installs the picked item")
+  Assert.equal(bag:quantity("POTION"), 2, "confirmation returns the old held item")
+  Assert.equal(bag:quantity("SITRUS_BERRY"), 0, "confirmation consumes the selected item")
+  Assert.equal(bag:revision(), beforeConfirmRevision + 1, "confirmation publishes the Bag change once")
+  confirmed:dispose()
+end
+
+function T.give_item_refusal_from_picker_preserves_mon_and_bag()
+  local mons = monService()
+  local options = openOptions(mons, 3, "wide")
+  local bag = options.bag
+  Assert.isTrue(bag:add("ITEM_112", 1))
+  options.childFactories.heldItemPicker = heldItemPicker("ITEM_112")
+  local state = PcStorageState.new(options)
+  local beforeMon, beforeBagRevision = mons:partyMon(0), bag:revision()
+  state:updateFixed({ { type = "action", action = "giveItem" } })
+  state:updateFixed({})
+  Assert.equal(state:status().lastAction.reason, "griseous_orb", "the domain owner refuses an ineligible mon/item pair")
+  Assert.deepEqual(mons:partyMon(0), beforeMon, "a refused picker result does not change the Pokemon")
+  Assert.equal(bag:quantity("ITEM_112"), 1, "a refused picker result leaves inventory untouched")
+  Assert.equal(bag:revision(), beforeBagRevision, "a refused picker result publishes no Bag revision")
+  state:dispose()
+end
+
+function T.deposit_commits_to_the_currently_focused_box_target()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0x55667788, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  local occupied = mons:partyMon(1)
+  local change = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = occupied } } }))
+  change.publish()
+
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  local deposited = mons:partyMon(0)
+  state:updateFixed({ { type = "action", action = "deposit" } })
+  Assert.equal(state:status().phase, "carry", "Deposit waits for the user's destination")
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", slot = 1 } } })
+  local confirmed, failure = pcall(function()
+    state:updateFixed({ { type = "confirm" } })
+  end)
+  Assert.isTrue(confirmed, "Deposit confirmation uses the focused empty slot instead of the occupied initial slot: "
+    .. tostring(failure))
+  Assert.equal(mons:boxMon(0, 0).personality, occupied.personality, "the occupied source slot remains unchanged")
+  local destination = mons:boxMon(0, 1)
+  Assert.isTrue(destination ~= nil, "the focused empty destination receives the Party Pokemon")
+  Assert.equal(destination.personality, deposited.personality, "the selected Party Pokemon reaches the focused slot")
+  Assert.equal(mons:partyCount(), 1, "the deposited Pokemon leaves Party custody")
+  state:dispose()
+end
+
+function T.deposit_tracks_controller_navigation_after_box_focus_changes()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0x66778899, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  local occupied = mons:partyMon(1)
+  local change = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = occupied } } }))
+  change.publish()
+
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  local deposited = mons:partyMon(0)
+  state:updateFixed({ { type = "action", action = "deposit" } })
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", slot = 0 } } })
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 1 }, "controller input advances the Box focus")
+  local confirmed, failure = pcall(function()
+    state:updateFixed({ { type = "confirm" } })
+  end)
+  Assert.isTrue(confirmed, "Deposit confirmation follows controller focus to the empty Box slot: " .. tostring(failure))
+  Assert.equal(mons:boxMon(0, 1).personality, deposited.personality)
+  Assert.equal(mons:boxMon(0, 0).personality, occupied.personality)
+  state:dispose()
+end
+
+function T.fresh_box_name_uses_the_manifest_default_without_overwriting_custom_names()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  Assert.equal(state:status().boxName, "BOX 1", "a fresh box displays its compiled default label")
+  state:dispose()
+
+  local change = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { metadata = { { box = 0, name = "MY BOX" } } }))
+  change.publish()
+  local renamed = PcStorageState.new(openOptions(mons, 0, "wide"))
+  Assert.equal(renamed:status().boxName, "MY BOX", "a persisted custom name takes precedence over the default")
+  Assert.equal(mons:boxMetadata(0).name, "MY BOX", "presentation does not rewrite box metadata")
+  renamed:dispose()
+end
+
+function T.expanded_box_name_uses_the_production_expansion_ordinal()
+  local mons = monService(19)
+  setActiveBox(mons, 18)
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  Assert.equal(state:status().boxName, "BOX 19")
+  state:dispose()
+end
+
+function T.raw_pointer_selects_a_storage_target_through_the_state_owner()
+  local mons = monService()
+  local boxed = mons:partyMon(0)
+  local change = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 4, mon = boxed } } }))
+  change.publish()
+  local state = PcStorageState.new(openOptions(mons, 0, "nativeLike"))
+  local target = assert(state._session:plan().content.hitRegions.boxSlots[5])
+  local x, y = hostPointForRect(state, target.rect)
+  local ok, failure = pcall(function()
+    state:updateFixed({
+      { type = "pointer_down", pointerId = "storage-target", x = x, y = y },
+      { type = "pointer_up", pointerId = "storage-target", x = x, y = y },
+    })
+  end)
+  Assert.isTrue(ok, "the Storage owner maps raw pointer events before semantic dispatch: " .. tostring(failure))
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 4 })
+  state:dispose()
+end
+
+function T.missing_compiled_box_name_fails_instead_of_using_expansion_copy()
+  local options = openOptions(monService(), 0, "wide")
+  options.manifest.storage.boxNames[1] = nil
+  local ok = pcall(function()
+    PcStorageState.new(options)
+  end)
+  Assert.isFalse(ok, "missing source box labels are generated-asset invariant failures")
+end
+
 function T.child_cancel_returns_to_the_same_mode_box_and_focus()
   local mons = monService()
   local disposed = 0
@@ -302,6 +529,133 @@ function T.child_cancel_returns_to_the_same_mode_box_and_focus()
   Assert.equal(state:status().mode, 2)
   Assert.deepEqual(state:status().focus, { domain = "party", slot = 0 })
   Assert.equal(disposed, 1, "returned child is disposed exactly once")
+  state:dispose()
+end
+
+function T.nested_child_receives_the_original_raw_pointer_batch()
+  local mons = monService()
+  local received
+  local options = openOptions(mons, 2, "nativeLike")
+  options.childFactories.summary = function()
+    return {
+      updateFixed = function(_, events)
+        received = events
+      end,
+      result = function()
+        return nil
+      end,
+      dispose = function() end,
+    }
+  end
+  local state = PcStorageState.new(options)
+  state:updateFixed({ { type = "action", action = "summary" } })
+  local hit = assert(state._session:plan().content.hitRegions.boxSlots[1])
+  local x, y = hostPointForRect(state, hit.rect)
+  local raw = { type = "pointer_down", pointerId = "summary-touch", x = x, y = y }
+  state:updateFixed({ raw })
+  Assert.deepEqual(received, { raw }, "the child owns the raw host event and its coordinates")
+  Assert.deepEqual(state:status().focus, { domain = "party", slot = 0 }, "parent focus is untouched while the child owns input")
+  state:dispose()
+end
+
+function T.direct_disposal_releases_a_live_child_once()
+  local mons = monService()
+  local disposed = 0
+  local options = openOptions(mons, 2, "wide")
+  options.childFactories.summary = function()
+    return {
+      updateFixed = function() end,
+      result = function()
+        return nil
+      end,
+      dispose = function()
+        disposed = disposed + 1
+      end,
+    }
+  end
+  local state = PcStorageState.new(options)
+  state:updateFixed({ { type = "action", action = "summary" } })
+  state:dispose()
+  state:dispose()
+  Assert.equal(disposed, 1, "direct and repeated parent disposal release the child exactly once")
+  Assert.isFalse(state:isActive())
+end
+
+function T.storage_pointer_capture_cancellation_drops_release_and_reaches_child()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 0, "nativeLike"))
+  local target = assert(state._session:plan().content.hitRegions.boxSlots[3])
+  local x, y = hostPointForRect(state, target.rect)
+  state:updateFixed({ { type = "pointer_down", pointerId = "storage-touch", x = x, y = y } })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 2 })
+  state:cancelPointerCapture()
+  local ok, failure = pcall(function()
+    state:updateFixed({ { type = "pointer_up", pointerId = "storage-touch", x = x, y = y } })
+  end)
+  Assert.isTrue(ok, "cancelled capture consumes its stale release: " .. tostring(failure))
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 2 }, "stale release does not activate another target")
+  state:dispose()
+
+  local childCancelled = 0
+  local childOptions = openOptions(monService(), 2, "wide")
+  childOptions.childFactories.summary = function()
+    return {
+      updateFixed = function() end,
+      result = function()
+        return nil
+      end,
+      cancelPointerCapture = function()
+        childCancelled = childCancelled + 1
+      end,
+      dispose = function() end,
+    }
+  end
+  local childState = PcStorageState.new(childOptions)
+  childState:updateFixed({ { type = "action", action = "summary" } })
+  childState:cancelPointerCapture()
+  Assert.equal(childCancelled, 1, "Storage forwards capture cancellation to its active child")
+  childState:dispose()
+end
+
+function T.refused_carry_keeps_storage_live_and_preserves_domain_custody()
+  local mons = monService()
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  local state = PcStorageState.new({
+    mode = 2,
+    mons = mons,
+    bag = bag,
+    manifest = PcPresentationFixture.manifest(),
+    measureDisplay = function()
+      return measurement("wide")
+    end,
+    audio = { play = function() end },
+    charmap = CatalogFixture.CHARMAP,
+    icons = {},
+    portraits = {},
+    childFactories = {},
+  })
+  local beforeMon = mons:partyMon(0)
+  local beforePartyRevision = mons:partyRevision()
+  local beforeBoxRevision = mons:boxRevision()
+  local beforeBagRevision = bag:revision()
+  state:updateFixed({ { type = "action", action = "move" } })
+  Assert.notNil(state:status().carry)
+  local ok, failure = pcall(function()
+    state:updateFixed({
+      { type = "storage_target", target = { kind = "box", box = 0, slot = 0 } },
+      { type = "confirm" },
+    })
+  end)
+  Assert.isTrue(ok, "the Storage consumer commits the domain refusal as data: " .. tostring(failure))
+  Assert.equal(state:status().lastAction.kind, "refused")
+  Assert.equal(state:status().lastAction.reason, "last_usable")
+  Assert.notNil(state:status().carry, "the user can select another destination or cancel")
+  Assert.isTrue(state:isActive())
+  Assert.deepEqual(mons:partyMon(0), beforeMon)
+  Assert.equal(mons:partyRevision(), beforePartyRevision)
+  Assert.equal(mons:boxRevision(), beforeBoxRevision)
+  Assert.equal(bag:revision(), beforeBagRevision)
+  Assert.isNil(mons:boxMon(0, 0))
   state:dispose()
 end
 
@@ -488,7 +842,8 @@ function T.markings_and_wallpaper_edit_as_local_source_phases()
     { type = "marking_choice", id = 0 },
     "the source marking tile and its pointer target share one plan"
   )
-  state:updateFixed({ { type = "navigate", direction = "right" }, { type = "confirm" } })
+  rawPointerAt(state, markingPlan.content.hitRegions.editorChoices[2].rect, "marking-choice")
+  Assert.equal(state:status().editor.mask, 7, "raw pointer input toggles a local marking choice")
   state:updateFixed({ { type = "submit" } })
   Assert.equal(assert(mons:boxMon(0, 7)).markings, 7)
   Assert.equal(openedChildren, 0)
@@ -501,9 +856,11 @@ function T.markings_and_wallpaper_edit_as_local_source_phases()
   local tap = plan.mapInput({ type = "pointer_down", x = 84, y = 21 }, state:_view(), plan)
   Assert.deepEqual(tap, { type = "wallpaper_choice", id = 1 }, "pointer and draw plans share wallpaper geometry")
   local lockedTap = plan.mapInput({ type = "pointer_down", x = 40, y = 117 }, state:_view(), plan)
-  Assert.equal(lockedTap.type, "pointer_down", "locked bonus wallpaper has no pointer selection")
+  Assert.isNil(lockedTap, "locked bonus wallpaper has no pointer selection")
+  rawPointerAt(state, plan.content.hitRegions.editorChoices[1].rect, "wallpaper-choice")
+  Assert.equal(state:status().editor.selected, 1, "raw pointer input selects a local wallpaper choice")
   state:updateFixed({ { type = "wallpaper_choice", id = 16 } })
-  Assert.equal(state:status().editor.selected, 0, "locked bonus wallpaper cannot be selected")
+  Assert.equal(state:status().editor.selected, 1, "locked bonus wallpaper preserves the current selection")
   state:updateFixed({ { type = "wallpaper_choice", id = 2 } })
   state:updateFixed({ { type = "submit" } })
   Assert.equal(mons:boxMetadata(0).wallpaperId, 2)

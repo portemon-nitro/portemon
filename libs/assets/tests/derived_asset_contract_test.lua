@@ -37,7 +37,7 @@ function T.contract_pins_the_current_asset_identities()
     revision = 12,
     map = {
       cacheFormat = "map-cache-v7",
-      sceneSchema = "g4-map-scene-v10",
+      sceneSchema = "g4-map-scene-v11",
       terrainSchema = "g4-terrain-surfaces-v1",
       collisionVersion = 1,
     },
@@ -139,7 +139,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     pc = {
       cacheFormat = "pc-cache-v1",
-      schema = "g4-pc-v1",
+      schema = "g4-pc-v2",
     },
     audio = {
       cacheFormat = "g4-audio-cache-v1",

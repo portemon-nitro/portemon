@@ -79,24 +79,29 @@ local function validProvenance(provenance, expectedMarker)
   then
     return false
   end
-  local expected = {
-    storage = { physical = 87, selected = 87 },
-    mailbox = { physical = 11, selected = 11 },
-    stationery = { physical = 37, selected = 36 },
-    photoAlbum = { physical = 13, selected = 13 },
-  }
-  for key, counts in pairs(expected) do
-    local archive = provenance.archives[key]
+  for key, archive in pairs(provenance.archives) do
     if
-      type(archive) ~= "table"
+      type(key) ~= "string"
+      or #key == 0
+      or type(archive) ~= "table"
       or type(archive.path) ~= "string"
+      or #archive.path == 0
       or type(archive.fileId) ~= "number"
       or archive.fileId % 1 ~= 0
-      or archive.memberCount ~= counts.physical
-      or archive.selectedMemberCount ~= counts.selected
+      or archive.fileId < 0
+      or type(archive.memberCount) ~= "number"
+      or archive.memberCount % 1 ~= 0
+      or archive.memberCount < 0
+      or type(archive.selectedMemberCount) ~= "number"
+      or archive.selectedMemberCount % 1 ~= 0
+      or archive.selectedMemberCount < 0
+      or archive.selectedMemberCount > archive.memberCount
     then
       return false
     end
+  end
+  if next(provenance.archives) == nil then
+    return false
   end
   return expectedMarker == PcCache.marker(provenance.versionRomSha1, provenance.dependencyHash)
 end

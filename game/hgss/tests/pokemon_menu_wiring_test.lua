@@ -223,7 +223,7 @@ local function pcManifest()
     stationery[stationeryType] = { itemKey = "MAIL_" .. stationeryType }
   end
   return {
-    schema = "g4-pc-v1",
+    schema = "g4-pc-v2",
     mailbox = { background = {}, geometry = { visibleLetters = 10 }, pageSize = 10 },
     mail = { stationery = stationery, geometry = { iconSlots = 3 }, text = { templates = {} }, wordDictionary = {} },
   }
