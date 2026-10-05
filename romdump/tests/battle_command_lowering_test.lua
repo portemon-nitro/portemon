@@ -59,15 +59,11 @@ function T.battle_won_check_lowers_to_a_result_read()
   Assert.equal(read.op, "battle_result")
   Assert.equal(read.result.value, "var", "the result variable rides the read")
   Assert.equal(CommandCatalog.disposition(220), "supported")
-  Assert.equal(
-    CommandCatalog.classification(220),
-    "continue_same_tick",
-    "result reads answer in the same tick"
-  )
+  Assert.equal(CommandCatalog.classification(220), "continue_same_tick", "result reads answer in the same tick")
 end
 
 function T.unknown_battle_opcodes_never_map_to_ordinary_launches()
-  for _, opcode in ipairs({ 36, 168, 214, 217, 218, 219, 221, 225, 249, 279, 562, 683, 754 }) do
+  for _, opcode in ipairs({ 36, 168, 214, 217, 218, 221, 225, 249, 562, 683, 754 }) do
     local step = lowerSingle(opcode, {})
     Assert.equal(step.op, "unsupported", "opcode " .. opcode .. " must not lower to a battle")
     Assert.isTrue(

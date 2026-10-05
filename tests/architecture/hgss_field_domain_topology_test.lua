@@ -54,6 +54,7 @@ local DOMAINS = {
   transition = {
     "DoorSound",
     "DoorTiles",
+    "FieldCoveredSwap",
     "FieldEntranceIndicator",
     "FieldScriptScreenFade",
     "FieldTransition",
