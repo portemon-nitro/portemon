@@ -93,15 +93,14 @@ function BattleFrontierRecords:recordSourceId(sourceRecordId, streak)
   })
 end
 
----@param threshold integer
 ---@return boolean
-function BattleFrontierRecords:allAtLeast(threshold)
+function BattleFrontierRecords:qualifiesForTrainerCardStar()
   for _, streak in ipairs(self._streaks) do
-    if streak < threshold then
-      return false
+    if streak >= 100 then
+      return true
     end
   end
-  return true
+  return false
 end
 
 ---@return table<string, unknown>
