@@ -407,6 +407,12 @@ local function bootCoveredField(scope)
           return { phase = "closed", fadeAlpha = 0 }
         end,
       },
+      pcApplicationHost = {
+        isActive = function()
+          return false
+        end,
+        cancelPointerCapture = function() end,
+      },
       input = {
         pressDirection = function() end,
         pressAction = function() end,

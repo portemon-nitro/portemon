@@ -81,6 +81,15 @@ end
 function Mailbox:count()
   return Mailbox.CAPACITY
 end
+function Mailbox:usedCount()
+  local count = 0
+  for _, mail in ipairs(self._slots) do
+    if mail ~= false then
+      count = count + 1
+    end
+  end
+  return count
+end
 
 function Mailbox:get(slot)
   if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot >= Mailbox.CAPACITY then

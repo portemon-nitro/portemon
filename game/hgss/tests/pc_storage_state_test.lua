@@ -369,7 +369,7 @@ function T.take_held_item_and_edit_box_records_return_through_child_results()
   }, { boxUpdates = { { box = 0, slot = 7, mon = original } } }))
   stored.publish()
   local childFactories = {}
-  for _, kind in ipairs({ "markings", "boxName", "wallpaper" }) do
+  for _, kind in ipairs({ "boxName" }) do
     local childKind = kind
     childFactories[childKind] = function(request)
       return {
@@ -398,18 +398,20 @@ function T.take_held_item_and_edit_box_records_return_through_child_results()
   local editing = PcStorageState.new(editingOptions)
   editing:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 7 } } })
   editing:updateFixed({ { type = "action", action = "markings" } })
+  editing:updateFixed({ { type = "confirm" } })
   editing:updateFixed({ { type = "submit" } })
-  Assert.equal(assert(mons:boxMon(0, 7)).markings, 37)
+  Assert.equal(assert(mons:boxMon(0, 7)).markings, 1)
   editing:updateFixed({ { type = "action", action = "boxName" } })
   editing:updateFixed({ { type = "submit" } })
   Assert.equal(mons:boxMetadata(0).name, "TEST BOX")
   editing:updateFixed({ { type = "action", action = "wallpaper" } })
+  editing:updateFixed({ { type = "wallpaper_choice", id = 2 } })
   editing:updateFixed({ { type = "submit" } })
   Assert.equal(mons:boxMetadata(0).wallpaperId, 2)
   editing:dispose()
 end
 
-function T.cancelled_summary_marking_name_and_wallpaper_children_return_to_parent()
+function T.cancelled_summary_and_name_children_return_to_parent()
   local mons = monService()
   local stored = assert(mons:preparePcChanges({
     partyRevision = mons:partyRevision(),
@@ -420,7 +422,7 @@ function T.cancelled_summary_marking_name_and_wallpaper_children_return_to_paren
   local beforeMetadata = mons:boxMetadata(0)
   local disposed = 0
   local childFactories = {}
-  for _, childKind in ipairs({ "summary", "markings", "boxName", "wallpaper" }) do
+  for _, childKind in ipairs({ "summary", "boxName" }) do
     childFactories[childKind] = function()
       return {
         updateFixed = function() end,
@@ -437,7 +439,7 @@ function T.cancelled_summary_marking_name_and_wallpaper_children_return_to_paren
   options.childFactories = childFactories
   local state = PcStorageState.new(options)
   state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 7 } } })
-  for _, childKind in ipairs({ "summary", "markings", "boxName", "wallpaper" }) do
+  for _, childKind in ipairs({ "summary", "boxName" }) do
     state:updateFixed({ { type = "action", action = childKind } })
     Assert.equal(state:status().phase, "child")
     state:updateFixed({ { type = "cancel" } })
@@ -448,7 +450,93 @@ function T.cancelled_summary_marking_name_and_wallpaper_children_return_to_paren
   end
   Assert.deepEqual(mons:boxMon(0, 7), beforeMon)
   Assert.deepEqual(mons:boxMetadata(0), beforeMetadata)
-  Assert.equal(disposed, 4, "each cancelled child is disposed once")
+  Assert.equal(disposed, 2, "each cancelled child is disposed once")
+  state:dispose()
+end
+
+function T.markings_and_wallpaper_edit_as_local_source_phases()
+  local mons = monService()
+  local boxed = mons:partyMon(0)
+  boxed.markings = 5
+  local stored = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 7, mon = boxed } } }))
+  stored.publish()
+  local openedChildren = 0
+  local options = openOptions(mons, 0, "wide")
+  options.childFactories = {
+    markings = function()
+      openedChildren = openedChildren + 1
+      error("markings are a local Storage phase")
+    end,
+    wallpaper = function()
+      openedChildren = openedChildren + 1
+      error("wallpaper is a local Storage phase")
+    end,
+  }
+  local state = PcStorageState.new(options)
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 7 } } })
+  state:updateFixed({ { type = "action", action = "markings" } })
+  Assert.equal(state:status().phase, "editor")
+  Assert.equal(state:status().editor.kind, "markings")
+  local markingPlan = state._session:plan()
+  Assert.equal(#markingPlan.content.hitRegions.editorChoices, 6)
+  Assert.deepEqual(markingPlan.content.hitRegions.editorChoices[1].rect, { x = 120, y = 8, width = 8, height = 8 })
+  Assert.deepEqual(
+    markingPlan.mapInput({ type = "pointer_down", x = 121, y = 9 }, state:_view(), markingPlan),
+    { type = "marking_choice", id = 0 },
+    "the source marking tile and its pointer target share one plan"
+  )
+  state:updateFixed({ { type = "navigate", direction = "right" }, { type = "confirm" } })
+  state:updateFixed({ { type = "submit" } })
+  Assert.equal(assert(mons:boxMon(0, 7)).markings, 7)
+  Assert.equal(openedChildren, 0)
+
+  state:updateFixed({ { type = "action", action = "wallpaper" } })
+  Assert.equal(state:status().phase, "editor")
+  Assert.equal(state:status().editor.kind, "wallpaper")
+  local plan = state._session:plan()
+  Assert.equal(#plan.content.hitRegions.editorChoices, 15, "locked and current wallpapers have no pointer hit")
+  local tap = plan.mapInput({ type = "pointer_down", x = 84, y = 21 }, state:_view(), plan)
+  Assert.deepEqual(tap, { type = "wallpaper_choice", id = 1 }, "pointer and draw plans share wallpaper geometry")
+  local lockedTap = plan.mapInput({ type = "pointer_down", x = 40, y = 117 }, state:_view(), plan)
+  Assert.equal(lockedTap.type, "pointer_down", "locked bonus wallpaper has no pointer selection")
+  state:updateFixed({ { type = "wallpaper_choice", id = 16 } })
+  Assert.equal(state:status().editor.selected, 0, "locked bonus wallpaper cannot be selected")
+  state:updateFixed({ { type = "wallpaper_choice", id = 2 } })
+  state:updateFixed({ { type = "submit" } })
+  Assert.equal(mons:boxMetadata(0).wallpaperId, 2)
+  Assert.equal(openedChildren, 0)
+
+  state:updateFixed({ { type = "action", action = "wallpaper" } })
+  state:updateFixed({ { type = "wallpaper_choice", id = 2 } })
+  state:updateFixed({ { type = "submit" } })
+  Assert.equal(state:status().phase, "browse", "confirming the current wallpaper closes the editor")
+  Assert.equal(mons:boxMetadata(0).wallpaperId, 2, "confirming the current wallpaper does not mutate the box")
+
+  local unlocked = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { bonusUnlocks = { true, true, true, true, true, true, true, true } }))
+  unlocked.publish()
+  state:updateFixed({ { type = "action", action = "wallpaper" } })
+  state:updateFixed({ { type = "navigate", direction = "right" }, { type = "navigate", direction = "right" } })
+  Assert.equal(state:status().editor.selected, 0, "horizontal movement wraps within four source columns")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(state:status().editor.selected, 20, "vertical movement wraps six source rows by four")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(state:status().editor.selected, 0)
+  state:updateFixed({ { type = "wallpaper_choice", id = 20 } })
+  state:updateFixed({ { type = "submit" } })
+  Assert.equal(mons:boxMetadata(0).wallpaperId, 36, "logical bonus wallpaper maps to its stored identity")
+
+  state:updateFixed({ { type = "action", action = "markings" } })
+  local cancelledPlan = state._session:plan()
+  local markingTap = cancelledPlan.mapInput({ type = "pointer_down", x = 121, y = 9 }, state:_view(), cancelledPlan)
+  state:updateFixed({ markingTap })
+  state:updateFixed({ { type = "cancel" } })
+  Assert.equal(assert(mons:boxMon(0, 7)).markings, 7, "cancel discards the local marking draft")
   state:dispose()
 end
 

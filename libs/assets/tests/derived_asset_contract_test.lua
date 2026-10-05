@@ -133,6 +133,10 @@ function T.contract_pins_the_current_asset_identities()
       cacheFormat = "party-cache-v1",
       schema = "g4-party-presentation-v6",
     },
+    pc = {
+      cacheFormat = "pc-cache-v1",
+      schema = "g4-pc-v1",
+    },
     audio = {
       cacheFormat = "g4-audio-cache-v1",
       -- The sequence vocabulary and initial-volume domain are strict current

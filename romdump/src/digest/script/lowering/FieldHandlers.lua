@@ -1201,6 +1201,62 @@ local function hideWaitingIcon()
   return { op = "hide_waiting_icon" }
 end
 
+local function restoreOverworld()
+  return { op = "restore_overworld" }
+end
+
+local function openPcStorage(ins)
+  return { op = "pc_open", app = "storage", mode = Operands.varRef(ins.operands[1]) }
+end
+
+local function openPcMailbox()
+  return { op = "pc_open", app = "mailbox" }
+end
+
+local function openPcPhotoAlbum()
+  return { op = "pc_open", app = "photoAlbum" }
+end
+
+local function countPcMailbox(ins)
+  return { op = "pc_count", kind = "mailbox", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function countPcPhotos(ins)
+  return { op = "pc_count", kind = "photos", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function pcCapsules()
+  return { op = "pc_capsules" }
+end
+
+local function pcTerminalWait(_)
+  return { op = "pc_terminal_effect", action = "wait", prop = "pc_terminal" }
+end
+
+local function pcTerminalRelease(_)
+  return { op = "pc_terminal_effect", action = "release", prop = "pc_terminal" }
+end
+
+local function pcTerminalStart(_)
+  return { op = "pc_terminal_effect", action = "start", prop = "pc_terminal" }
+end
+
+local function pcTerminalOn(_)
+  return { op = "pc_terminal_effect", action = "on", prop = "pc_terminal" }
+end
+
+local function pcTerminalOff(_)
+  return { op = "pc_terminal_effect", action = "off", prop = "pc_terminal" }
+end
+
+local function pcHallOfFameStatus(ins)
+  return { op = "pc_hof_status", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function pcHallOfFameOpen()
+  return { op = "pc_hof_open" }
+end
+
 local function waitInputOrTicks(ins)
   return { op = "wait_input_or_ticks", ticks = Operands.operandValue(ins.operands[1]) }
 end
@@ -1507,7 +1563,21 @@ return {
   [341] = setObjectFacing,
   [345] = showWaitingIcon,
   [346] = hideWaitingIcon,
+  [150] = restoreOverworld,
   [348] = waitInputOrTicks,
+  [156] = pcCapsules,
+  [158] = openPcStorage,
+  [164] = pcHallOfFameOpen,
+  [308] = pcTerminalWait,
+  [309] = pcTerminalRelease,
+  [376] = openPcMailbox,
+  [377] = countPcMailbox,
+  [500] = pcTerminalStart,
+  [501] = pcTerminalOn,
+  [502] = pcTerminalOff,
+  [616] = countPcPhotos,
+  [617] = openPcPhotoAlbum,
+  [706] = pcHallOfFameStatus,
   [375] = showObjectAt,
   [438] = waitButton,
   [439] = externalMessage,

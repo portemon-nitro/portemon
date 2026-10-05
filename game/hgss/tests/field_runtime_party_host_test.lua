@@ -9,6 +9,7 @@ local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local GameVersion = require("romdump.src.source.GameVersion")
 local PartyCache = require("libs.assets.src.PartyCache")
+local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 
@@ -45,6 +46,8 @@ local function validEntry(versionId, withBuckets)
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     playTime = PlayTime.new(),
     worldState = FieldEventState.new(),
+    mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
+    photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
   }
   if withBuckets ~= false then
     entry.mons = require("tests.support.MonBucket").emptyForVersion(versionId)
@@ -63,7 +66,10 @@ function T.tests.boot_builds_and_teardown_releases_the_host(context)
     error("party host boot needs a ready versioned cache", 0)
   end
   for _, versionId in ipairs(versions) do
-    local runtime = FieldRuntime.new(validEntry(versionId), { presentation = false })
+    local runtime = FieldRuntime.new(validEntry(versionId), {
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+      presentation = false,
+    })
     local host = assert(runtime.partySelection, "boot constructs the script party host")
     Assert.isNil(host:status(), "a fresh boot owns no open selection")
     runtime:dispose()
@@ -88,7 +94,10 @@ function T.tests.manifest_failure_fails_boot_loudly(context)
       end,
     }
     local ok, err = pcall(function()
-      FieldRuntime.new(validEntry(versionId), { presentation = false })
+      FieldRuntime.new(validEntry(versionId), {
+        derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+        presentation = false,
+      })
     end)
     package.loaded["libs.assets.src.PartyCache"] = saved
     Assert.isFalse(ok, "a missing party manifest fails the boot loudly")

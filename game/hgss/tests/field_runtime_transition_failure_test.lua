@@ -6,7 +6,15 @@
 -- background corpus pass.
 
 local Assert = require("tests.support.Assert")
+local S = require("gen4.script")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldState = require("game.hgss.src.field.FieldState")
+local Registry = require("libs.script.src.Registry")
+local ScriptComposition = require("libs.script.src.Composition")
+local Scheduler = require("libs.script.src.Scheduler")
+local TaskRegistry = require("libs.script.src.TaskRegistry")
+local HgssScriptComposition = require("libs.hgss.src.script.Composition")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 
 local T = {}
 
@@ -49,6 +57,23 @@ local function runtimeWithTransitionError(transitionError)
   return runtime, calls
 end
 
+local function presentationState(runtime)
+  local state = setmetatable({
+    runtime = runtime,
+    presentationResources = {
+      preparePcApplication = function()
+        return false, "injected"
+      end,
+    },
+    actorPresentation = { sync = function() end },
+    _advanceStarterPreparation = function() end,
+    _syncStarterPresentationInput = function() end,
+    _advanceEntryCover = function() end,
+    _sampleOverlayFps = function() end,
+  }, FieldState)
+  return state
+end
+
 function T.runtime_freezes_simulation_and_warmup_after_promoting_transition_error()
   local tostringCalls = 0
   local transitionError = setmetatable({}, {
@@ -67,6 +92,70 @@ function T.runtime_freezes_simulation_and_warmup_after_promoting_transition_erro
   Assert.equal(calls.session, 1, "terminal runtime does not continue session updates")
   Assert.equal(tostringCalls, 1, "the transition failure is formatted once")
   Assert.equal(runtime.errorText, "destination preparation failed\nsource map 61 warp 0 -> map 60 warp 0")
+end
+
+function T.pc_presentation_failure_cancels_its_script_task_before_freezing_runtime()
+  local host = { active = false, cancellations = 0 }
+  function host:open(_)
+    self.active = true
+    return {}
+  end
+  function host:activeHandle()
+    return self.active and {} or nil
+  end
+  function host:isActive()
+    return self.active
+  end
+  function host:status()
+    return {}
+  end
+  function host:setPresentationReady(_, _)
+    return false
+  end
+  function host:cancel(_)
+    self.active = false
+    self.cancellations = self.cancellations + 1
+  end
+
+  local registry = Registry.new()
+  local composition = ScriptComposition.new(registry)
+  local taskRegistry = HgssScriptComposition.registerTasks(TaskRegistry.new())
+  local scheduler = Scheduler.new({
+    semantics = RuntimeValues,
+    services = { pcApplications = host },
+    taskRegistry = taskRegistry,
+    resolveComposition = function(id)
+      return composition:effective(id)
+    end,
+  })
+  local scriptId = "test.pc_presentation_failure"
+  registry:installBase(scriptId, S.script({ api = 1, id = scriptId, steps = { S.pcOpen({ app = "storage", mode = 0 }) } }), "generated")
+  local composed = assert(composition:effective(scriptId), "the test script composes")
+  scheduler:startInteraction({ type = "test", scriptId = scriptId }, composed, 100, true)
+  Assert.isTrue(host.active, "the production PC task opened its child")
+  Assert.notNil(scheduler:foregroundEnvironmentId(), "the script owns foreground input")
+
+  local runtime = setmetatable({
+    session = { scriptScheduler = scheduler },
+    pcApplicationHost = host,
+    update = function() end,
+    saveCoordinator = {
+      capture = function()
+        if scheduler:foregroundEnvironmentId() ~= nil then
+          return nil, "script active"
+        end
+        return { stable = true }
+      end,
+    },
+  }, FieldRuntime)
+  Assert.isNil(runtime:captureGameSave(), "an active script refuses save capture")
+  presentationState(runtime):update(0)
+
+  Assert.isFalse(host.active, "the task cancellation releases the active child")
+  Assert.equal(host.cancellations, 1, "the application child is cancelled exactly once")
+  Assert.isNil(scheduler:foregroundEnvironmentId(), "the failed script releases foreground ownership")
+  Assert.deepEqual(runtime:captureGameSave(), { stable = true }, "save capture recovers after task cleanup")
+  Assert.equal(runtime.errorText, "PC application presentation failed: injected", "the diagnostic remains visible")
 end
 
 return { tests = T }

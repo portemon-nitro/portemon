@@ -23,6 +23,7 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local PcCache = require("libs.assets.src.PcCache")
 local BagCache = require("libs.assets.src.BagCache")
 local PartyCache = require("libs.assets.src.PartyCache")
@@ -238,10 +239,16 @@ local function compositionDeps(overrides)
     itemCatalog = bag:catalog(),
     monCatalog = CatalogFixture.makeCatalog(),
     mailbox = Mailbox.new(),
+    photoAlbum = PhotoAlbum.new(),
     pcManifest = pcManifest(),
     bagManifest = {},
     partyManifest = {},
     uiManifest = FieldUiFixture.manifest(),
+    profile = CatalogFixture.profile(),
+    versionId = "heartgold",
+    cacheFs = {},
+    derivedAssets = {},
+    charmap = CatalogFixture.CHARMAP,
     heroGender = "male",
     measureDisplay = stubMeasurement,
     prepareIcons = function(_)
@@ -657,6 +664,21 @@ function T.tests.save_capture_is_denied_while_a_field_operation_is_pending()
   composition.dispose()
 end
 
+function T.tests.save_capture_is_denied_while_a_pc_application_owns_field_ui()
+  local runtime = setmetatable({
+    session = {
+      player = { motion = "idle" },
+      transition = { phase = "idle" },
+      mapEntryController = { isActive = function() return false end },
+    },
+    pcApplicationHost = { isActive = function() return true end },
+  }, FieldRuntime)
+  runtime.saveCoordinator = FieldSaveCoordinator.new(runtime)
+  local record, reason = runtime:captureGameSave()
+  Assert.isNil(record, "an open PC application cannot publish a partial snapshot")
+  Assert.isTrue(type(reason) == "string" and reason ~= "", "the denial explains itself")
+end
+
 function T.tests.context_free_cancel_marks_state_and_disposal_releases_once()
   local composition = openComposition()
   local state = { plan = { kind = "cut", phase = "acknowledge", ticksLeft = 3, committed = false } }
@@ -698,9 +720,13 @@ function T.tests.field_menu_coordinator_passes_its_runtime_mailbox_and_loaded_pc
     player = {},
     playerAvatar = {},
     presentationDisplay = stubMeasurement(),
+    versionId = "heartgold",
+    derivedAssets = deps.derivedAssets,
+    fontDef = { charmap = CatalogFixture.CHARMAP },
     monService = deps.mons,
     bagService = deps.bag,
     mailbox = mailbox,
+    photoAlbum = PhotoAlbum.new(),
     bagCursor = deps.bagCursor,
     itemCatalog = deps.itemCatalog,
     monCatalog = deps.monCatalog,

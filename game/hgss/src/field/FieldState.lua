@@ -142,6 +142,16 @@ end
 
 function FieldState:update(dt)
   self.runtime:update(dt)
+  local pcHost = self.runtime.pcApplicationHost
+  if pcHost ~= nil and pcHost:isActive() then
+    local handle = assert(pcHost:activeHandle(), "active PC host publishes its handle")
+    local resources = assert(self.presentationResources, "PC presentation resources are unavailable")
+    local ready, failure = resources:preparePcApplication(assert(pcHost:status()), self.runtime)
+    pcHost:setPresentationReady(handle, ready == true)
+    if failure ~= nil then
+      self.runtime:failPcApplicationPresentation("PC application presentation failed: " .. tostring(failure))
+    end
+  end
   local pokemonNaming = self.runtime.pokemonNaming
   if self.runtime.errorText ~= nil then
     self._namingPresentationReady = false
@@ -438,6 +448,10 @@ function FieldState:resize(width, height)
   local provider = assert(self.topologyProvider, "field presentation needs its topology provider")
   local topology = provider(width, height)
   self.runtime:resizePresentation(width, height, topology)
+  local pcHost = self.runtime.pcApplicationHost
+  if pcHost ~= nil then
+    pcHost:cancelPointerCapture()
+  end
   if self._pollPresentationTopology then
     self:_recordGeometrySignature(width, height, topology)
   end
@@ -605,6 +619,9 @@ function FieldState:draw()
     resources.menuRenderer:draw(presentation)
   end
   resources:drawMart(self.runtime.martHost)
+  if self.runtime.pcApplicationHost:isActive() then
+    resources:drawPcApplication(self.runtime.pcApplicationHost, self.runtime)
+  end
   self:_drawEntryCoverIfNeeded(width, height)
   self:_drawScriptScreenFadeIfNeeded()
   -- The script-owned starter modal draws over the restored field while the
@@ -880,6 +897,10 @@ function FieldState:focus(focused)
     local host = self.runtime.applicationHost
     if host ~= nil and type(host.cancelPointerCapture) == "function" then
       host:cancelPointerCapture()
+    end
+    local pcHost = self.runtime.pcApplicationHost
+    if pcHost ~= nil then
+      pcHost:cancelPointerCapture()
     end
     local martHost = self.runtime.martHost
     if martHost ~= nil and martHost:isActive() then

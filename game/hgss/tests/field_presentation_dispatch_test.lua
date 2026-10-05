@@ -17,6 +17,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.assets.src.BagCache",
   "libs.assets.src.MartCache",
   "libs.assets.src.PartyCache",
+  "libs.assets.src.PcCache",
   "libs.hgss.src.presentation.BagHeroRenderer",
   "libs.hgss.src.ui.BagRenderer",
   "libs.hgss.src.ui.MartRenderer",
@@ -34,6 +35,9 @@ local CONSTRUCTOR_MODULES = {
   "libs.hgss.src.ui.TrainerCardRenderer",
   "libs.hgss.src.ui.PartyScreenRenderer",
   "libs.hgss.src.ui.NamingScreenRenderer",
+  "libs.hgss.src.ui.PcStorageRenderer",
+  "libs.hgss.src.ui.MailboxRenderer",
+  "libs.hgss.src.ui.PhotoAlbumRenderer",
   "libs.hgss.src.presentation.MonIconAssetProvider",
   "libs.hgss.src.presentation.AssetPreparationQueue",
   "libs.hgss.src.presentation.ItemIconAssetProvider",
@@ -85,6 +89,11 @@ local function buildDoubles(sink, calls)
     ["libs.assets.src.PartyCache"] = {
       loadManifest = function(_)
         return { compiled = true }
+      end,
+    },
+    ["libs.assets.src.PcCache"] = {
+      loadManifest = function(_)
+        return { storage = {}, mailbox = {}, photoAlbum = {} }
       end,
     },
     ["libs.hgss.src.presentation.BagHeroRenderer"] = {
@@ -215,6 +224,29 @@ local function buildDoubles(sink, calls)
             calls.namingImageReleased = (calls.namingImageReleased or 0) + 1
           end,
         }
+      end,
+    },
+    ["libs.hgss.src.ui.PcStorageRenderer"] = {
+      new = function(_)
+        return releasable(calls, "pcStorage")
+      end,
+    },
+    ["libs.hgss.src.ui.MailboxRenderer"] = {
+      new = function(_)
+        return releasable(calls, "mailbox")
+      end,
+    },
+    ["libs.hgss.src.ui.PhotoAlbumRenderer"] = {
+      new = function(_)
+        local renderer = releasable(calls, "photoAlbum")
+        function renderer:advance(_, _)
+          calls.photoAlbumAdvanced = (calls.photoAlbumAdvanced or 0) + 1
+          return true, nil
+        end
+        function renderer:draw(_, _, _)
+          calls.photoAlbumDrawn = (calls.photoAlbumDrawn or 0) + 1
+        end
+        return renderer
       end,
     },
     ["libs.hgss.src.presentation.MonIconAssetProvider"] = {
@@ -728,18 +760,14 @@ function T.party_wait_renders_without_icon_getters()
           },
         },
       }
-      resources:drawApplication(
-        FieldApplicationIds.POKEMON,
-        {
-          child = {
-            preparationState = "pending",
-            layout = { frame = frame },
-            presentation = plan,
-          },
-          transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
+      resources:drawApplication(FieldApplicationIds.POKEMON, {
+        child = {
+          preparationState = "pending",
+          layout = { frame = frame },
+          presentation = plan,
         },
-        drawRuntime()
-      )
+        transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
+      }, drawRuntime())
       Assert.equal(#sink, 1, "the wait renders exactly one message")
       Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
       Assert.equal(#graphics.rectangles, 3, "the outgoing shutter and sub-pane brightness cover the Party wait")
@@ -754,18 +782,14 @@ function T.party_wait_renders_without_icon_getters()
         "the Party wait shutter stays inside its resolved content pane"
       )
       Assert.equal(graphics.rectangles[3].color[4], 7 / 16, "the detail pane keeps its exit brightness")
-      resources:drawApplication(
-        FieldApplicationIds.POKEMON,
-        {
-          child = {
-            preparationState = "failed",
-            preparationError = "boom",
-            layout = { frame = frame },
-            presentation = plan,
-          },
+      resources:drawApplication(FieldApplicationIds.POKEMON, {
+        child = {
+          preparationState = "failed",
+          preparationError = "boom",
+          layout = { frame = frame },
+          presentation = plan,
         },
-        drawRuntime()
-      )
+      }, drawRuntime())
       Assert.equal(#sink, 2, "the failure renders exactly one message")
       Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
       Assert.isTrue(
@@ -797,14 +821,10 @@ function T.pending_producer_wait_draws_through_the_app_exit_transition()
   rawset(_G, "love", { graphics = graphics })
   local ok, err = pcall(function()
     withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-      resources:drawApplication(
-        FieldApplicationIds.POKEMON,
-        {
-          child = waiting,
-          transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
-        },
-        drawRuntime()
-      )
+      resources:drawApplication(FieldApplicationIds.POKEMON, {
+        child = waiting,
+        transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
+      }, drawRuntime())
       Assert.equal(#sink, 1, "the pending wait renders exactly one message")
       Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
       Assert.equal(#graphics.rectangles, 2, "the outgoing shutter draws its two bars over the pending wait")
@@ -846,14 +866,10 @@ function T.failed_producer_wait_draws_through_the_app_exit_transition()
   rawset(_G, "love", { graphics = graphics })
   local ok, err = pcall(function()
     withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-      resources:drawApplication(
-        FieldApplicationIds.POKEMON,
-        {
-          child = waiting,
-          transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
-        },
-        drawRuntime()
-      )
+      resources:drawApplication(FieldApplicationIds.POKEMON, {
+        child = waiting,
+        transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
+      }, drawRuntime())
       Assert.equal(#sink, 1, "the failed wait renders exactly one message")
       Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
       Assert.isTrue(
@@ -908,14 +924,10 @@ function T.menu_app_exit_uses_pane_local_shutter_and_brightness()
           render = function(_, _, _) end,
           mapInput = function(_, _, _) end,
         }
-        resources:drawApplication(
-          FieldApplicationIds.POKEMON,
-          {
-            child = { open = true, presentation = plan },
-            transition = { phase = "app_exit", step = sourceStep, brightnessCoefficient = coefficient },
-          },
-          drawRuntime()
-        )
+        resources:drawApplication(FieldApplicationIds.POKEMON, {
+          child = { open = true, presentation = plan },
+          transition = { phase = "app_exit", step = sourceStep, brightnessCoefficient = coefficient },
+        }, drawRuntime())
 
         local edge = 16 * sourceStep
         Assert.equal(#graphics.rectangles, 3, "the exit draws two main shutter bars and one sub overlay")
@@ -924,16 +936,12 @@ function T.menu_app_exit_uses_pane_local_shutter_and_brightness()
           { 0, 0, 256, edge },
           "the top shutter edge follows the source step"
         )
-        Assert.deepEqual(
-          {
-            graphics.rectangles[2].x,
-            graphics.rectangles[2].y,
-            graphics.rectangles[2].w,
-            graphics.rectangles[2].h,
-          },
-          { 0, 192 - edge, 256, edge },
-          "the bottom shutter edge follows the source step"
-        )
+        Assert.deepEqual({
+          graphics.rectangles[2].x,
+          graphics.rectangles[2].y,
+          graphics.rectangles[2].w,
+          graphics.rectangles[2].h,
+        }, { 0, 192 - edge, 256, edge }, "the bottom shutter edge follows the source step")
         Assert.deepEqual(
           { graphics.rectangles[1].color[1], graphics.rectangles[1].color[2], graphics.rectangles[1].color[3] },
           { 0, 0, 0 },
@@ -1002,21 +1010,17 @@ function T.menu_return_draws_brightness_inside_retained_panes_without_a_child()
         local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
         local mainPlacement = LayoutGeometry.centeredFit({ x = 48, y = 36, width = 256, height = 192 }, 256, 192)
         local subPlacement = LayoutGeometry.centeredFit({ x = 420, y = 180, width = 256, height = 192 }, 256, 192)
-        resources:drawApplication(
-          case.applicationId,
-          {
-            transition = {
-              phase = "menu_return",
-              brightnessCoefficient = 9,
-              inputKey = case.inputKey,
-              panes = {
-                { id = case.mainId, placement = mainPlacement },
-                { id = case.subId, placement = subPlacement },
-              },
+        resources:drawApplication(case.applicationId, {
+          transition = {
+            phase = "menu_return",
+            brightnessCoefficient = 9,
+            inputKey = case.inputKey,
+            panes = {
+              { id = case.mainId, placement = mainPlacement },
+              { id = case.subId, placement = subPlacement },
             },
           },
-          drawRuntime()
-        )
+        }, drawRuntime())
         Assert.equal(#graphics.rectangles, 2, "menu return overlays both retained app panes")
         Assert.equal(graphics.rectangles[1].color[4], 9 / 16, "the main pane uses the return brightness")
         Assert.equal(graphics.rectangles[2].color[4], 9 / 16, "the sub pane uses the return brightness")
@@ -1044,28 +1048,20 @@ function T.bag_flow_party_target_wait_renders_without_icon_getters()
   local sink, calls = {}, {}
   withProductionComposition(sink, calls, compositionRuntime(), function(resources)
     local frame = { x = 0, y = 0, width = 640, height = 480 }
-    resources:drawApplication(
-      FieldApplicationIds.BAG,
-      {
-        open = true,
-        root = "bag",
-        page = "party_give_target",
-        child = { preparationState = "pending", layout = { frame = frame } },
-      },
-      drawRuntime()
-    )
+    resources:drawApplication(FieldApplicationIds.BAG, {
+      open = true,
+      root = "bag",
+      page = "party_give_target",
+      child = { preparationState = "pending", layout = { frame = frame } },
+    }, drawRuntime())
     Assert.equal(#sink, 1, "the bag-hosted party wait renders exactly one message")
     Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
-    resources:drawApplication(
-      FieldApplicationIds.BAG,
-      {
-        open = true,
-        root = "bag",
-        page = "party_give_target",
-        child = { preparationState = "failed", preparationError = "boom", layout = { frame = frame } },
-      },
-      drawRuntime()
-    )
+    resources:drawApplication(FieldApplicationIds.BAG, {
+      open = true,
+      root = "bag",
+      page = "party_give_target",
+      child = { preparationState = "failed", preparationError = "boom", layout = { frame = frame } },
+    }, drawRuntime())
     Assert.equal(#sink, 2, "the bag-hosted party failure renders exactly one message")
     Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
     Assert.isTrue(
@@ -1146,11 +1142,7 @@ function T.pokemon_flow_bag_picker_routes_to_the_bag_presenter()
       Assert.equal(sink[1][1], "bag", "the party-hosted bag picker draws through the bag renderer")
       Assert.equal(sink[1][2], child, "the presenter receives the resolved bag child status")
       Assert.equal(sink[1][3], child.presentation, "the presenter draws through the bag plan")
-      Assert.equal(
-        sink[1][4].icons,
-        resources.itemIconProvider,
-        "the bag picker borrows the shared item icon provider"
-      )
+      Assert.equal(sink[1][4].icons, resources.itemIconProvider, "the bag picker borrows the shared item icon provider")
       Assert.isNil(calls.itemIcons, "drawing never releases the borrowed item icon provider")
       resources:dispose()
     end)
@@ -1266,6 +1258,31 @@ function T.dispose_releases_owned_resources_exactly_once()
   if not ok then
     error(err, 0)
   end
+end
+
+function T.pc_renderers_are_owned_prepared_and_drawn_through_field_resources()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    Assert.notNil(resources.storageRenderer, "PC Storage has its source renderer")
+    Assert.notNil(resources.mailboxRenderer, "Mailbox has its source renderer")
+    Assert.notNil(resources.photoAlbumRenderer, "Photo Album has its source renderer")
+    local status = { app = "photoAlbum", presentation = { inputKey = "photo-album" } }
+    local host = {
+      draw = function(_, _)
+        calls.pcChildDrawn = (calls.pcChildDrawn or 0) + 1
+      end,
+    }
+    local ready = resources:preparePcApplication(status, { monCatalog = {} })
+    Assert.isTrue(ready, "photo icon resources are prepared before the drawable pass")
+    Assert.equal(calls.photoAlbumAdvanced, 1)
+    resources:drawPcApplication(host, { monCatalog = {} })
+    Assert.equal(calls.pcChildDrawn, 1, "Field presentation delegates to the active child owner")
+    resources:dispose()
+    resources:dispose()
+    Assert.equal(calls.pcStorage, 1, "PC Storage renderer releases once")
+    Assert.equal(calls.mailbox, 1, "Mailbox renderer releases once")
+    Assert.equal(calls.photoAlbum, 1, "Photo Album renderer releases once")
+  end)
 end
 
 function T.dispose_releases_the_borrowed_hero_model_renderer_exactly_once()

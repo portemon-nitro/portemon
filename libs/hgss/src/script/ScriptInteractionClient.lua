@@ -129,6 +129,17 @@ end
 ---@param intent table<string, unknown> InteractionIntent
 ---@return table<string, unknown>|nil { trigger, composed }
 function ScriptInteractionClient:resolve(intent)
+  if intent.kind == "standard" then
+    assert(intent.scriptId == "common.pokecenter_pc", "unknown standard field interaction")
+    local composed = self._compose(intent.scriptId)
+    if composed == nil then
+      error("missing composed standard interaction " .. intent.scriptId)
+    end
+    return {
+      trigger = { type = "standard", scriptId = intent.scriptId },
+      composed = composed,
+    }
+  end
   local hit = self._bindings:resolveIntent(intent, intent.playerFacing)
   if hit == nil then
     return nil

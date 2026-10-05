@@ -1079,6 +1079,9 @@ return {
     [150] = {
       name = "ScrCmd_RestoreOverworld",
       widths = {},
+      classification = "continue_same_tick",
+      feature = "pc",
+      disposition = "supported",
     },
     [151] = {
       name = "ScrCmd_151",
@@ -1110,6 +1113,9 @@ return {
       },
     },
     [156] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_156",
       widths = {},
     },
@@ -1118,6 +1124,9 @@ return {
       widths = {},
     },
     [158] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "native_wait",
       name = "ScrCmd_158",
       widths = {
         [1] = 1,
@@ -1146,6 +1155,9 @@ return {
       },
     },
     [164] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "native_wait",
       name = "ScrCmd_164",
       widths = {},
     },
@@ -2112,12 +2124,18 @@ return {
       },
     },
     [308] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "native_wait",
       name = "ScrCmd_308",
       widths = {
         [1] = 1,
       },
     },
     [309] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_309",
       widths = {
         [1] = 1,
@@ -2615,10 +2633,16 @@ return {
       },
     },
     [376] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "native_wait",
       name = "ScrCmd_376",
       widths = {},
     },
     [377] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_377",
       widths = {
         [1] = 2,
@@ -3638,18 +3662,27 @@ return {
       },
     },
     [500] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_500",
       widths = {
         [1] = 1,
       },
     },
     [501] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_501",
       widths = {
         [1] = 1,
       },
     },
     [502] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_502",
       widths = {
         [1] = 1,
@@ -4438,12 +4471,18 @@ return {
       },
     },
     [616] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_CountSavedPhotos",
       widths = {
         [1] = 2,
       },
     },
     [617] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "native_wait",
       name = "ScrCmd_OpenPhotoAlbum",
       widths = {},
     },
@@ -5130,6 +5169,9 @@ return {
       },
     },
     [706] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_706",
       widths = {
         [1] = 2,

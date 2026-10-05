@@ -26,6 +26,7 @@ local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
+local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 
 ---@class FieldInteractionResolver
 ---@field actorAt fun(mapId: integer, candidate: FieldOccupancyCandidate): table<string, unknown>|nil
@@ -301,6 +302,15 @@ function FieldInteractionResolver:resolve(snapshot)
       direction = event.directionRaw,
     }
     return intent
+  end
+
+  if snapshot.facing == "north" then
+    local localX, localZ = FieldCoordinates.fieldToLocal(targetMap, targetX, targetZ)
+    local collision = assert(targetMap.collision, "reachable interaction target has collision data")
+    local behavior = assert(collision:getLocal(localX, localZ).behavior, "facing collision behavior required")
+    if behavior == MetatileBehavior.BEHAVIOR.PC then
+      return baseIntent("standard", targetMap, snapshot, targetX, targetZ, "common.pokecenter_pc")
+    end
   end
 
   return nil

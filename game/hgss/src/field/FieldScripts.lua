@@ -218,6 +218,8 @@ end
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field starterBalls table<string, unknown>|nil the Elm starter-ball runtime-prop controller (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field pcApplications table<string, unknown> the script-owned PC application host
+---@field pcTerminal table<string, unknown> source PC terminal effects
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -412,6 +414,8 @@ function FieldScripts.new(opts)
       followingMon = opts.followingMon,
       followerTransition = opts.followerTransition,
       starterBalls = opts.starterBalls,
+      pcApplications = opts.pcApplications,
+      pcTerminal = opts.pcTerminal,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,

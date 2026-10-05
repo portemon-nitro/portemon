@@ -58,6 +58,9 @@ Schema.ENUMS = {
   signpost_command = { "nop", "show", "wipe_out", "wipe_in", "hide" },
   mart_kind = { "standard", "special", "seal", "decoration", "athlete", "data_cards", "custom", "sell" },
   mart_query = { "athlete_available", "card_prefix" },
+  pc_application = { "storage", "mailbox", "photoAlbum" },
+  pc_count_kind = { "mailbox", "photos", "seals" },
+  pc_terminal_action = { "start", "on", "off", "wait", "release" },
   -- The three persistent follower map-object movement modes opcode 604 may
   -- select; raw source selectors never appear past the generated boundary.
   follower_movement_type = { "follow_player", "follow_transition_a", "follow_transition_b" },
@@ -276,6 +279,28 @@ Schema.OPERATIONS = {
       result = { type = "writable_value", required = true },
     },
   },
+  pc_open = {
+    fields = {
+      app = { type = "enum:pc_application", required = true },
+      mode = { type = "scalar_or_value" },
+    },
+  },
+  pc_count = {
+    fields = {
+      kind = { type = "enum:pc_count_kind", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  pc_capsules = { fields = {} },
+  pc_terminal_effect = {
+    fields = {
+      action = { type = "enum:pc_terminal_action", required = true },
+      prop = { type = "string" },
+    },
+  },
+  pc_hof_status = { fields = { result = { type = "writable_value", required = true } } },
+  pc_hof_open = { fields = {} },
+  restore_overworld = { fields = {} },
   wait_ticks = {
     fields = {
       ticks = { type = "integer", required = true },
@@ -1374,6 +1399,43 @@ Schema.CONSTRUCTORS = {
         signature = "S.menuExec(spec)",
         canonical = "op=menu_exec",
         notes = "Generated/advanced imported-HGSS builder form.",
+      },
+    },
+  },
+  {
+    section = "PC application constructors",
+    notes = "Typed generated field-script operations for the retained PC applications and terminal services.",
+    rows = {
+      {
+        signature = "S.pcOpen(spec)",
+        canonical = "op=pc_open",
+        notes = "spec={app,mode}; app is storage, mailbox, or photoAlbum. Mode carries the source storage selector.",
+      },
+      {
+        signature = "S.pcCount(spec)",
+        canonical = "op=pc_count",
+        notes = "spec={kind,result}; kind is mailbox, photos, or seals.",
+      },
+      { signature = "S.pcCapsules()", canonical = "op=pc_capsules", notes = "Runs the immediate Capsule UI handler." },
+      {
+        signature = "S.pcTerminalEffect(spec)",
+        canonical = "op=pc_terminal_effect",
+        notes = "spec={action,prop}; action is start, on, off, wait, or release.",
+      },
+      {
+        signature = "S.pcHallOfFameStatus(spec)",
+        canonical = "op=pc_hof_status",
+        notes = "spec={result}; writes the source status result.",
+      },
+      {
+        signature = "S.pcHallOfFameOpen()",
+        canonical = "op=pc_hof_open",
+        notes = "Fails explicitly while no viewer provider exists.",
+      },
+      {
+        signature = "S.restoreOverworld()",
+        canonical = "op=restore_overworld",
+        notes = "Completes the source application's return boundary.",
       },
     },
   },

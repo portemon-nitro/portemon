@@ -187,7 +187,6 @@ function T.sparse_listing_view_back_and_confirmed_delete_keep_persisted_slots()
   state:updateFixed({ { type = "cancel" } })
   Assert.equal(album:get(8).mapSymbol, "MAP_SECOND", "cancelling deletion preserves the record")
 
-  state:updateFixed({ { type = "cancel" } })
   state:updateFixed({ { type = "confirm" } })
   state:updateFixed({ { type = "navigate", direction = "down" } })
   state:updateFixed({ { type = "confirm" } })
@@ -246,6 +245,36 @@ function T.move_swaps_exact_sparse_slots_in_one_album_revision()
   Assert.equal(state:status().phase, "list", "a completed move returns to the album list")
   Assert.equal(state:status().selectedSlot, 8, "selection follows the moved photo to its destination")
   Assert.equal(state:status().sourceMessageId, 8, "the source move-result message is shown")
+  state:dispose()
+end
+
+function T.cancel_from_the_root_list_returns_to_the_parent_exactly_once()
+  local PhotoAlbumScreenState = implementation()
+  local state = PhotoAlbumScreenState.new({
+    album = seededAlbum(),
+    manifest = manifest(),
+    measureDisplay = measurement,
+    profile = { name = "GOLD", gender = 0 },
+  })
+
+  state:updateFixed({ { type = "cancel" } })
+  Assert.deepEqual(state:takeResult(), { kind = "closed" }, "the root list returns to its script parent")
+  Assert.isNil(state:takeResult(), "the parent consumes the close result once")
+  state:dispose()
+end
+
+function T.retained_album_publishes_a_drawable_application_plan()
+  local PhotoAlbumScreenState = implementation()
+  local state = PhotoAlbumScreenState.new({
+    album = seededAlbum(),
+    manifest = manifest(),
+    measureDisplay = measurement,
+    profile = { name = "GOLD", gender = 0 },
+  })
+
+  local status = state:status()
+  Assert.equal(status.presentation.inputKey, "photo-album", "the retained album publishes its interface plan")
+  Assert.equal(#status.presentation.panes, 1, "the album plan owns one interactive pane")
   state:dispose()
 end
 

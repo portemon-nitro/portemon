@@ -313,6 +313,12 @@ function SceneLoaderFixture.newHarness(versionId, opts)
         return false
       end,
     },
+    pcApplications = {
+      isActive = function()
+        return false
+      end,
+      cancelPointerCapture = function() end,
+    },
     bagUnlocked = function()
       return true
     end,

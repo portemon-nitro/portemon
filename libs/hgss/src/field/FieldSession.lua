@@ -60,6 +60,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
 ---@field signpost FieldSignpostController
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
+---@field pcApplications table<string, unknown> script-owned PC child host
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
@@ -103,6 +104,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
 ---@field signpost FieldSignpostController the fixed-tick signpost controller (save-gate interrogation only; the scheduler steps it)
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
+---@field pcApplications table<string, unknown> script-owned PC child host
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
@@ -320,6 +322,10 @@ function FieldSession.new(options)
       and options.applicationHost.takeReopen,
     "field session application host required"
   )
+  assert(
+    options.pcApplications and options.pcApplications.isActive and options.pcApplications.cancelPointerCapture,
+    "field session PC application host required"
+  )
   assert(options.interactions and options.interactions.resolve, "field session interaction resolver required")
   assert(
     options.fieldEntranceIndicator and options.fieldEntranceIndicator.updateFixed,
@@ -371,6 +377,7 @@ function FieldSession.new(options)
     pokemonNaming = options.pokemonNaming,
     signpost = options.signpost,
     applicationHost = options.applicationHost,
+    pcApplications = options.pcApplications,
     fieldEntranceIndicator = options.fieldEntranceIndicator,
     terrainEffects = options.terrainEffects,
     playerAvatar = options.playerAvatar,
@@ -708,11 +715,17 @@ local function runScriptPhase(self, inputSnapshot)
   local partySelectionModal = partySelection ~= nil and partySelection:isActive()
   local martHost = self.martHost
   local martModal = martHost ~= nil and martHost:isActive()
+  local pcApplications = self.pcApplications
+  local pcApplicationModal = pcApplications:isActive()
   local pokemonNaming = self.pokemonNaming
   local pokemonNamingModal = pokemonNaming ~= nil and pokemonNaming:isActive()
   assert(not (starterChoiceModal and pokemonNamingModal), "script-owned field modals are mutually exclusive")
   assert(
-    not (martModal and (starterChoiceModal or pokemonNamingModal or partySelectionModal)),
+    not (martModal and (starterChoiceModal or pokemonNamingModal or partySelectionModal or pcApplicationModal)),
+    "script-owned field modals are mutually exclusive"
+  )
+  assert(
+    not (pcApplicationModal and (starterChoiceModal or pokemonNamingModal or partySelectionModal)),
     "script-owned field modals are mutually exclusive"
   )
   local scriptModal = starterChoiceModal or pokemonNamingModal
@@ -723,7 +736,15 @@ local function runScriptPhase(self, inputSnapshot)
   if not contextChoiceModal and yesNoHost ~= nil then
     yesNoHost:clearBorrowedChoice()
   end
-  if menuModal or contextChoiceModal or scriptModal or partySelectionModal or martModal or yesNoModal then
+  if
+    menuModal
+    or contextChoiceModal
+    or scriptModal
+    or partySelectionModal
+    or martModal
+    or pcApplicationModal
+    or yesNoModal
+  then
     local uiEvents = self.input:uiSnapshot(self.tick + 1)
     if menuModal then
       schedulerInput.menuEvents = self.menuHost:inputEvents(uiEvents)
@@ -784,6 +805,19 @@ local function runScriptPhase(self, inputSnapshot)
   if not martModal and martNowModal then
     self.input:beginUi(self.tick + 1)
   elseif martModal and not martNowModal then
+    self.input:clearUi()
+  end
+  local pcApplicationNowModal = pcApplications:isActive()
+  assert(
+    not (
+        pcApplicationNowModal
+        and (starterChoiceNowModal or pokemonNamingNowModal or partySelectionNowModal or martNowModal)
+      ),
+    "script-owned field modals are mutually exclusive"
+  )
+  if not pcApplicationModal and pcApplicationNowModal then
+    self.input:beginUi(self.tick + 1)
+  elseif pcApplicationModal and not pcApplicationNowModal then
     self.input:clearUi()
   end
   return playerInputOwnedAtTickStart

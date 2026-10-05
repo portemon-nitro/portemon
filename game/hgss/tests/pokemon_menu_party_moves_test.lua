@@ -13,6 +13,8 @@ local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local MailActions = require("libs.hgss.src.field.MailActions")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
@@ -89,6 +91,8 @@ local function openPartyFlow(mons)
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local commits = {}
   local checks = {}
+  local mailbox = Mailbox.new()
+  local pcManifest = require("tests.support.PcPresentationFixture").manifest()
   local flow = Flow.new({
     root = "party",
     mons = mons,
@@ -103,6 +107,9 @@ local function openPartyFlow(mons)
         return { kind = "no_op" }
       end,
     },
+    mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest }),
+    mailbox = mailbox,
+    pcManifest = pcManifest,
     fieldMoves = {
       check = function(request)
         checks[#checks + 1] = request

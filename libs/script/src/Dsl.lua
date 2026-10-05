@@ -334,6 +334,38 @@ function M.martQuery(spec)
   return op("mart_query", spec)
 end
 
+function M.pcOpen(spec)
+  assert(type(spec) == "table", "PC application spec must be a table")
+  return op("pc_open", spec)
+end
+
+function M.pcCount(spec)
+  assert(type(spec) == "table", "PC count spec must be a table")
+  return op("pc_count", spec)
+end
+
+function M.pcCapsules()
+  return op("pc_capsules")
+end
+
+function M.pcTerminalEffect(spec)
+  assert(type(spec) == "table", "PC terminal effect spec must be a table")
+  return op("pc_terminal_effect", spec)
+end
+
+function M.pcHallOfFameStatus(spec)
+  assert(type(spec) == "table", "Hall of Fame status spec must be a table")
+  return op("pc_hof_status", spec)
+end
+
+function M.restoreOverworld()
+  return op("restore_overworld")
+end
+
+function M.pcHallOfFameOpen()
+  return op("pc_hof_open")
+end
+
 -- One serializable semantic menu entry. `metadata` is opaque to the core.
 function M.choice(messageRef, choiceValue, opts)
   assert(opts == nil or type(opts) == "table", "choice options must be a table")

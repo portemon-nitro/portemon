@@ -16,6 +16,8 @@ local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local MainMenuState = require("app.src.mainmenu.MainMenuState")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
 local MonsSave = require("libs.mons.src.MonsSave")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local VersionSelectState = require("app.src.launcher.VersionSelectState")
 local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
@@ -79,6 +81,8 @@ local function record(saveId, overrides)
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
+    mailbox = Mailbox.new():capture(),
+    photoAlbum = PhotoAlbum.new():capture(),
   }
   for key, override in pairs(overrides or {}) do
     value[key] = override

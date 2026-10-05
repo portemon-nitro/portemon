@@ -16,6 +16,7 @@ local StorageInterface = require("game.hgss.src.pc.StorageInterface")
 ---@field _focus table<string, unknown>
 ---@field _carry table<string, unknown>?
 ---@field _menu { actions: string[], selected: integer, address: table<string, unknown> }?
+---@field _editor table<string, unknown>?
 ---@field _child table<string, unknown>?
 ---@field _childKind string?
 ---@field _childRequest table<string, unknown>?
@@ -67,6 +68,7 @@ function StorageScreenState.new(options)
     _focus = { domain = options.mode == 1 and "box" or "party", slot = 0 },
     _carry = nil,
     _menu = nil,
+    _editor = nil,
     _child = nil,
     _childKind = nil,
     _childRequest = nil,
@@ -112,6 +114,8 @@ function StorageScreenState:_view()
     focus = copy(self._focus),
     carry = copy(self._carry),
     menu = copy(self._menu),
+    editor = copy(self._editor),
+    wallpaperUnlocks = self._mons:boxSnapshot().bonusUnlocks,
   }
 end
 
@@ -201,10 +205,107 @@ function StorageScreenState:_beginAction(action, data)
       self._releaseCheck =
         { address = source, scanned = 0, total = self._mons:boxCount() * 30 + 6, outcome = "confirm" }
     end
-  elseif action == "summary" or action == "markings" or action == "boxName" or action == "wallpaper" then
+  elseif action == "markings" then
+    local mon = assert(self:_monVisual(source), "markings edit an occupied address")
+    self._editor = { kind = "markings", source = source, mask = mon.markings, selected = 0 }
+  elseif action == "wallpaper" then
+    local wallpaperId = self._mons:boxMetadata(self._activeBox).wallpaperId
+    local selected = wallpaperId >= 32 and wallpaperId - 16 or wallpaperId
+    self._editor = { kind = "wallpaper", box = self._activeBox, selected = selected }
+  elseif action == "summary" or action == "boxName" then
     self:_openChild(action, { source = source, box = self._activeBox })
   else
     error("unknown Storage action " .. tostring(action), 0)
+  end
+end
+
+function StorageScreenState:_updateEditor(events)
+  local editor = assert(self._editor)
+  local function submit()
+    local action
+    if editor.kind == "markings" then
+      action = { kind = "markings", source = editor.source, mask = editor.mask }
+    else
+      local wallpaperId = editor.selected < 16 and editor.selected or editor.selected + 16
+      local unlocks = self._mons:boxSnapshot().bonusUnlocks
+      local unlocked = editor.selected < 16 or unlocks[editor.selected - 15] == true
+      if unlocked then
+        if wallpaperId ~= self._mons:boxMetadata(editor.box).wallpaperId then
+          action = { kind = "wallpaper", box = editor.box, wallpaperId = wallpaperId }
+        end
+        self._editor = nil
+      end
+    end
+    if action ~= nil then
+      self._lastAction = self._actions:commit(self._actions:preview(action))
+      self._editor = nil
+    end
+  end
+  for _, event in ipairs(events) do
+    if event.type == "cancel" then
+      self._editor = nil
+      return
+    elseif event.type == "submit" then
+      submit()
+      if self._editor == nil then
+        return
+      end
+    elseif editor.kind == "markings" and event.type == "navigate" then
+      local delta = (event.direction == "left" and -1) or (event.direction == "right" and 1) or 0
+      editor.selected = math.max(0, math.min(5, editor.selected + delta))
+    elseif editor.kind == "wallpaper" and event.type == "navigate" then
+      local delta = (event.direction == "left" and -1)
+        or (event.direction == "right" and 1)
+        or (event.direction == "up" and -4)
+        or (event.direction == "down" and 4)
+        or 0
+      local row, column = math.floor(editor.selected / 4), editor.selected % 4
+      if delta == -1 then
+        column = (column + 3) % 4
+      elseif delta == 1 then
+        column = (column + 1) % 4
+      elseif delta == -4 then
+        row = (row + 5) % 6
+      elseif delta == 4 then
+        row = (row + 1) % 6
+      end
+      editor.selected = row * 4 + column
+    elseif event.type == "wallpaper_choice" and editor.kind == "wallpaper" then
+      local choice = event.id
+      if type(choice) == "number" and choice % 1 == 0 and choice >= 0 and choice < 24 then
+        local unlocks = self._mons:boxSnapshot().bonusUnlocks
+        if choice < 16 or unlocks[choice - 15] == true then
+          local storedId = choice < 16 and choice or choice + 16
+          if storedId ~= self._mons:boxMetadata(editor.box).wallpaperId then
+            editor.selected = choice
+          end
+        end
+      end
+    elseif event.type == "marking_choice" and editor.kind == "markings" then
+      local choice = event.id
+      if type(choice) == "number" and choice % 1 == 0 and choice >= 0 and choice < 6 then
+        editor.selected = choice
+        local bit = 2 ^ choice
+        local selected = math.floor(editor.mask / bit) % 2 == 1
+        editor.mask = selected and editor.mask - bit or editor.mask + bit
+      end
+    elseif event.type == "confirm" then
+      if editor.kind == "markings" then
+        local bit = 2 ^ editor.selected
+        local selected = math.floor(editor.mask / bit) % 2 == 1
+        editor.mask = selected and editor.mask - bit or editor.mask + bit
+      else
+        submit()
+        if self._editor == nil then
+          return
+        end
+      end
+    else
+      assert(
+        event.type == "navigate" or event.type == "wallpaper_choice" or event.type == "marking_choice",
+        "unknown Storage editor input " .. event.type
+      )
+    end
   end
 end
 
@@ -281,6 +382,11 @@ function StorageScreenState:updateFixed(events)
   assert(not self._disposed, "disposed Storage does not update")
   assert(type(events) == "table", "Storage updates use an ordered event batch")
   if self._closed then
+    return
+  end
+  if self._editor ~= nil then
+    self:_updateEditor(events)
+    self:_resolve()
     return
   end
   if self._child ~= nil then
@@ -413,17 +519,25 @@ function StorageScreenState:updateFixed(events)
 end
 
 function StorageScreenState:status()
+  local view = self:_view()
   return {
     mode = self._mode,
     activeBox = self._activeBox,
     focus = copy(self._focus),
-    carry = copy(self._carry),
-    phase = self._childKind and "child" or self._menu and "menu" or self._carry and "carry" or "browse",
+    phase = self._childKind and "child"
+      or self._editor and "editor"
+      or self._menu and "menu"
+      or self._carry and "carry"
+      or "browse",
+    editor = copy(self._editor),
     menu = copy(self._menu),
     lastAction = copy(self._lastAction),
     transitionTick = self._transitionTick,
     childKind = self._childKind,
     releaseCheck = copy(self._releaseCheck),
+    boxSlots = view.boxSlots,
+    party = view.party,
+    carry = view.carry,
   }
 end
 
@@ -454,6 +568,7 @@ function StorageScreenState:cancel(_)
     self._child:dispose()
     self._child, self._childKind, self._childRequest = nil, nil, nil
   end
+  self._editor = nil
   if self._releaseCheck ~= nil and self._releaseCheck.outcome == "pending" then
     self._releaseCheck.outcome = "cancelled"
     self._releaseIntent = nil

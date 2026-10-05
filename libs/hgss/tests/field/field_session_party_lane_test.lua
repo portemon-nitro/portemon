@@ -176,6 +176,7 @@ local function optionsWith(overrides)
       end,
       status = function() end,
     },
+    pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
     interactions = {
       resolve = function()
         return nil
@@ -275,6 +276,40 @@ function T.modal_edges_balance_on_acquire_and_release()
   Assert.equal(options.input.clears, 0)
   session:updateFixed({})
   Assert.equal(options.input.clears, 1, "releasing the lane clears the modal batch once")
+end
+
+function T.pc_application_owns_the_same_modal_ui_lane_and_balances_capture()
+  local active = false
+  local input = recordingInput()
+  local scheduler = recordingScheduler()
+  scheduler.step = function(_, _, schedulerInput)
+    if #scheduler.seen == 0 then
+      active = true
+    elseif #scheduler.seen == 1 then
+      active = false
+    end
+    scheduler.seen[#scheduler.seen + 1] = schedulerInput
+  end
+  local options = optionsWith({
+    input = input,
+    scriptScheduler = scheduler,
+    pcApplications = {
+      isActive = function()
+        return active
+      end,
+      cancelPointerCapture = function() end,
+    },
+  })
+  local session = FieldSession.new(options)
+  session:updateFixed({ pressedDirection = "south", actionPressed = true, cancelPressed = true })
+  Assert.equal(input.begins, 1, "opening a PC child begins UI capture")
+  session:updateFixed({ pressedDirection = "north", actionPressed = true, cancelPressed = true })
+  local routed = scheduler.seen[2]
+  Assert.equal(routed.uiEvents, input.batch, "the PC child receives the normalized UI snapshot")
+  Assert.isNil(routed.pressedDirection, "field direction is suppressed while the PC child is open")
+  Assert.isNil(routed.pressedAction, "field action is suppressed while the PC child is open")
+  Assert.isNil(routed.pressedCancel, "field cancel is suppressed while the PC child is open")
+  Assert.equal(input.clears, 1, "closing the PC child clears captured UI edges")
 end
 
 return { tests = T }

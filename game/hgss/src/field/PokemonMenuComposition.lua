@@ -16,6 +16,10 @@ local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
 local MailActions = require("libs.hgss.src.field.MailActions")
 local MailboxScreenState = require("game.hgss.src.pc.MailboxScreenState")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
+local StorageScreenState = require("game.hgss.src.pc.StorageScreenState")
+local PhotoAlbumScreenState = require("game.hgss.src.pc.PhotoAlbumScreenState")
+local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
+local BoxNamingState = require("game.hgss.src.pc.BoxNamingState")
 
 ---@class PokemonMenuComposition
 ---@field partyActions table<string, unknown> borrowed action coordinator
@@ -25,6 +29,9 @@ local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 ---@field makeBagFlow fun(): table<string, unknown>
 ---@field makePartyFlow fun(): table<string, unknown>
 ---@field makeMailboxChild fun(): table<string, unknown>
+---@field makeStorageChild fun(mode: integer): table<string, unknown>
+---@field makePhotoAlbumChild fun(): table<string, unknown>
+---@field pcManifest table<string, unknown> validated PC manifest borrowed by leaf owners
 ---@field mailboxCount fun(): integer
 ---@field dispose fun()
 local PokemonMenuComposition = {}
@@ -39,7 +46,13 @@ local PokemonMenuComposition = {}
 ---@field partyManifest table<string, unknown> generated Party manifest (borrowed)
 ---@field uiManifest table<string, unknown> validated field-UI manifest (borrowed)
 ---@field mailbox table<string, unknown> persistent Mailbox (borrowed)
+---@field photoAlbum table<string, unknown> persistent PhotoAlbum (borrowed)
 ---@field pcManifest table<string, unknown> validated PC manifest (borrowed)
+---@field profile table<string, unknown> live player profile (borrowed)
+---@field versionId string selected game version
+---@field cacheFs table<string, unknown>? selected version cache reader
+---@field derivedAssets table<string, function> semantic asset host
+---@field charmap table<string, unknown> generated HGSS character map
 ---@field heroGender string "male" or "female"
 ---@field measureDisplay fun(): table<string, unknown> current display facts
 ---@field prepareIcons fun(iconKeys: string[]): boolean, string? presented icon preparation (borrowed binding)
@@ -47,7 +60,6 @@ local PokemonMenuComposition = {}
 ---@field contextSources fun(): table<string, unknown> live world reads per check
 ---@field worldPorts table<string, unknown> field world ports (borrowed owners)
 ---@field fieldTravel table<string, unknown>? durable travel owner (borrowed)
----@field cacheFs table<string, unknown>? version cache reader for cited spawn landings
 ---@field overrides table<string, unknown>? per-case application overrides
 ---@field effect (fun(sequence: string))? the production semantic sound boundary for bag children
 ---@field textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
@@ -88,7 +100,13 @@ function PokemonMenuComposition.create(deps)
   local partyManifest = assert(deps.partyManifest, "the menu composition borrows the generated party manifest")
   local uiManifest = assert(deps.uiManifest, "the menu composition borrows the validated field-UI manifest")
   local mailbox = assert(deps.mailbox, "the menu composition borrows the persistent Mailbox")
+  local photoAlbum = assert(deps.photoAlbum, "the menu composition borrows the persistent Photo Album")
   local pcManifest = assert(deps.pcManifest, "the menu composition borrows the compiled PC manifest")
+  local profile = assert(deps.profile, "the menu composition borrows the live player profile")
+  local versionId = assert(deps.versionId, "the menu composition requires the selected game version")
+  local cacheFs = assert(deps.cacheFs, "the menu composition requires the selected version cache")
+  local derivedAssets = assert(deps.derivedAssets, "the menu composition requires semantic asset access")
+  local charmap = assert(deps.charmap, "the menu composition requires the generated character map")
   assert(deps.heroGender == "male" or deps.heroGender == "female", "the menu composition needs the hero gender")
   local measureDisplay = assert(deps.measureDisplay, "the menu composition needs the display facts")
   assert(type(measureDisplay) == "function", "the menu composition needs the display facts")
@@ -194,6 +212,95 @@ function PokemonMenuComposition.create(deps)
       createPartyPicker = makePartyPicker,
     })
   end
+  local function makeStorageChild(mode)
+    local function makeSummary(request)
+      local source = assert(request.source, "Storage summary carries its subject address")
+      local subjectPort
+      if source.kind == "box" then
+        local box = assert(source.box, "boxed summary carries its box index")
+        local function slots()
+          local result = {}
+          for slot = 0, 29 do
+            if mons:boxMon(box, slot) ~= nil then
+              result[#result + 1] = slot
+            end
+          end
+          return result
+        end
+        local function countSubjects()
+          return #slots()
+        end
+        local function boxRevision()
+          return mons:boxRevision()
+        end
+        local function readSubject(index)
+          local slot = assert(slots()[index + 1], "boxed summary subject remains occupied")
+          return assert(mons:boxMon(box, slot), "boxed summary reads a copied mon")
+        end
+        local function publishSubject(index, mon, expectedRevision)
+          local currentSlots = slots()
+          local slot = currentSlots[index + 1]
+          if expectedRevision ~= mons:boxRevision() or slot == nil then
+            return { kind = "stale" }
+          end
+          local preparation, reason = mons:preparePcChanges({
+            partyRevision = mons:partyRevision(),
+            boxRevision = expectedRevision,
+          }, { boxUpdates = { { box = box, slot = slot, mon = mon } } })
+          if preparation == nil then
+            assert(reason == "stale", "boxed summary publication only refuses stale revisions")
+            return { kind = "stale" }
+          end
+          preparation.publish()
+          return { kind = "changed" }
+        end
+        subjectPort = {
+          count = countSubjects,
+          revision = boxRevision,
+          read = readSubject,
+          publish = publishSubject,
+        }
+      end
+      return SummaryScreenState.new({
+        mons = mons,
+        manifest = partyManifest,
+        initialSlot = subjectPort == nil and source.slot or 0,
+        measureDisplay = measureDisplay,
+        subjectPort = subjectPort,
+        mode = "summary",
+      })
+    end
+    local function makeBoxName(request)
+      local box = assert(request.box, "box naming carries its box index")
+      local metadata = mons:boxMetadata(box)
+      local child = BoxNamingState.new({ charmap = charmap, measureDisplay = measureDisplay })
+      child:open({ currentText = metadata.name, maxLength = 16 })
+      return child
+    end
+    return StorageScreenState.new({
+      mode = mode,
+      mons = mons,
+      bag = bag,
+      manifest = pcManifest,
+      measureDisplay = measureDisplay,
+      audio = { play = deps.effect },
+      overrides = overrides and overrides.storage,
+      childFactories = { summary = makeSummary, boxName = makeBoxName },
+    })
+  end
+  local function makePhotoAlbumChild()
+    return PhotoAlbumScreenState.new({
+      album = photoAlbum,
+      manifest = pcManifest,
+      measureDisplay = measureDisplay,
+      profile = profile,
+      versionId = versionId,
+      monCatalog = monCatalog,
+      cacheFs = cacheFs,
+      derivedAssets = derivedAssets,
+      overrides = overrides and overrides.photoAlbum,
+    })
+  end
   local function mailboxCount()
     local count = 0
     for slot = 0, mailbox:count() - 1 do
@@ -212,6 +319,9 @@ function PokemonMenuComposition.create(deps)
     makeBagFlow = makeBagFlow,
     makePartyFlow = makePartyFlow,
     makeMailboxChild = makeMailboxChild,
+    makeStorageChild = makeStorageChild,
+    makePhotoAlbumChild = makePhotoAlbumChild,
+    pcManifest = pcManifest,
     mailboxCount = mailboxCount,
     dispose = dispose,
   }

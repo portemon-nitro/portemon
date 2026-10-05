@@ -15,6 +15,9 @@ local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local BagCache = require("libs.assets.src.BagCache")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
+local MartSave = require("libs.hgss.src.save.MartSave")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
@@ -95,6 +98,9 @@ local function openFlow(game, root)
     bag = bag,
     bagCursor = assert(runtime.bagCursor, "field runtime owns the live bag cursor"),
     partyActions = actions,
+    mailActions = assert(runtime.pokemonMenu).mailActions,
+    mailbox = assert(runtime.mailbox),
+    pcManifest = assert(runtime.pokemonMenu).pcManifest,
     fieldMoves = {
       check = function(_)
         return { kind = "ok" }
@@ -448,14 +454,14 @@ end
 
 local function validPlayerData()
   return {
-    profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+    profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
     options = { textFrame = 0, textSpeed = "mid" },
   }
 end
 
 local function validRecord(saveId)
   return {
-    schema = "g4-game-save-v4",
+    schema = GameSave.SCHEMA,
     saveId = saveId,
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -485,6 +491,9 @@ local function validRecord(saveId)
     audio = {},
     mons = monsBucket(),
     bag = BagSave.empty(),
+    mart = MartSave.empty(),
+    mailbox = Mailbox.new():capture(),
+    photoAlbum = PhotoAlbum.new():capture(),
   }
 end
 
@@ -506,7 +515,12 @@ end
 local function v3record(saveId)
   local value = validRecord(saveId)
   value.schema = "g4-game-save-v3"
+  value.mons.schema = MonsSave.LEGACY_SCHEMA
+  value.mons.boxes = nil
   value.fieldTravel = nil
+  value.mart = nil
+  value.mailbox = nil
+  value.photoAlbum = nil
   value.playerData = {
     profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
     options = { textFrame = 0, textSpeed = "mid" },

@@ -40,6 +40,7 @@ MetatileBehavior.BEHAVIOR = {
   WARP_WEST = 109,
   WARP_NORTH = 110,
   WARP_SOUTH = 111,
+  PC = 131,
 }
 
 LEDGE_DIRECTIONS[MetatileBehavior.BEHAVIOR.JUMP_EAST] = "east"

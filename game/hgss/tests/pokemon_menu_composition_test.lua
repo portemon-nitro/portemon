@@ -20,15 +20,20 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyCache = require("libs.assets.src.PartyCache")
+local PcCache = require("libs.assets.src.PcCache")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local COMPOSITION_MODULE = "game.hgss.src.field.PokemonMenuComposition"
 
 local T = {
-  metadata = { capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "bag:global", "party:global" },
-    tags = { "menu", "composition" } },
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "bag:global", "party:global", "pc:global" },
+    tags = { "menu", "composition" },
+  },
   tests = {},
 }
 
@@ -229,6 +234,21 @@ local function dependencies(overrides)
     bagManifest = {},
     partyManifest = {},
     uiManifest = FieldUiFixture.manifest(),
+    mailbox = Mailbox.new(),
+    photoAlbum = PhotoAlbum.new(),
+    pcManifest = {
+      mail = { stationery = {} },
+      storage = { geometry = { wallpaperMap = {} } },
+      photoAlbum = {
+        ui = { backgrounds = {}, sprites = {}, animations = {} },
+        geometry = {},
+      },
+    },
+    profile = CatalogFixture.profile(),
+    versionId = "heartgold",
+    cacheFs = {},
+    derivedAssets = {},
+    charmap = CatalogFixture.CHARMAP,
     heroGender = "male",
     measureDisplay = stubMeasurement,
     prepareIcons = function(_)
@@ -257,6 +277,18 @@ function T.tests.create_assembles_the_complete_collaborator_set()
   Assert.isFalse(composition.fieldMoves:isBusy(), "a fresh composition holds no field operation")
   Assert.isTrue(type(composition.makeBagFlow) == "function", "composition exposes the bag flow factory")
   Assert.isTrue(type(composition.makePartyFlow) == "function", "composition exposes the party flow factory")
+  Assert.isTrue(type(composition.makeMailboxChild) == "function", "composition exposes the Mailbox child factory")
+  Assert.isTrue(type(composition.makeStorageChild) == "function", "composition exposes the Storage child factory")
+  Assert.isTrue(
+    type(composition.makePhotoAlbumChild) == "function",
+    "composition exposes the Photo Album child factory"
+  )
+  local storage = composition.makeStorageChild(0)
+  Assert.equal(storage:status().mode, 0, "Storage opens through the production composition")
+  local photoAlbum = composition.makePhotoAlbumChild()
+  Assert.equal(photoAlbum:status().presentation.inputKey, "photo-album", "Photo Album opens with its interface plan")
+  storage:dispose()
+  photoAlbum:dispose()
   Assert.isTrue(type(composition.dispose) == "function", "composition exposes disposal")
   composition.dispose()
 end
@@ -367,6 +399,65 @@ function T.tests.flow_factories_open_through_the_borrowed_manifests(context)
     partyFlow:dispose()
     composition.dispose()
   end
+end
+
+function T.tests.box_summary_moves_publish_to_the_selected_box()
+  local versionId = "heartgold"
+  local cacheFs = CacheFs.forVersion(versionId)
+  local mons = openMons(0xC00517)
+  Assert.isTrue(
+    mons:giveMon({
+      species = "CHIKORITA",
+      level = 5,
+      heldItem = "NONE",
+      form = 0,
+      location = 7,
+      date = CatalogFixture.metDate(),
+    }),
+    "setup gift must enter the party"
+  )
+  mons:setMove(0, 0, "TACKLE")
+  mons:setMove(0, 1, "GROWL")
+  local partyBefore = mons:partyMon(0)
+  local boxed = mons:partyMon(0)
+  local prepared = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = boxed } } }))
+  prepared.publish()
+
+  local bag = openBag()
+  local composition = requireComposition().create(dependencies({
+    mons = mons,
+    bag = bag,
+    pcManifest = PcCache.loadManifest(cacheFs),
+    partyManifest = PartyCache.loadManifest(cacheFs),
+    versionId = versionId,
+    cacheFs = cacheFs,
+    derivedAssets = {},
+  }))
+  local storage = composition.makeStorageChild(1)
+  storage:updateFixed({ { type = "confirm" } })
+  storage:updateFixed({ { type = "navigate", direction = "down" } })
+  storage:updateFixed({ { type = "navigate", direction = "down" } })
+  storage:updateFixed({ { type = "confirm" } })
+  Assert.equal(storage:status().childKind, "summary", "Storage opens Summary for the selected box mon")
+  for _, batch in ipairs({
+    {},
+    { { type = "navigate", direction = "down" } },
+    { { type = "navigate", direction = "down" } },
+    { { type = "confirm" } },
+    { { type = "navigate", direction = "down" } },
+    { { type = "confirm" } },
+  }) do
+    storage:updateFixed(batch)
+  end
+  local moved = assert(mons:boxMon(0, 0)).moves
+  Assert.equal(moved[1].move, "GROWL", "the boxed subject publishes its move reordering")
+  Assert.equal(moved[2].move, "TACKLE")
+  Assert.deepEqual(mons:partyMon(0), partyBefore, "boxed Summary never routes through Party")
+  storage:dispose()
+  composition.dispose()
 end
 
 return T

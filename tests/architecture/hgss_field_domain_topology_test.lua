@@ -83,7 +83,9 @@ local FIELD_COORDINATION = {
   "FollowingMonController",
   "FollowingMonTransitionController",
   "MapInitScriptController",
+  "MailActions",
   "PartyActions",
+  "PcStorageActions",
 }
 
 local PRESENTATION = { "BillboardTransform" }
