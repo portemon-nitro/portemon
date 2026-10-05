@@ -992,4 +992,245 @@ function T.tests.choice_typing_reconciles_the_cursor_without_publishing()
   Assert.isNil(editor:result(), "filtering publishes no result")
 end
 
+local function recordingLocationService()
+  local stub = {
+    openMaps = {},
+    updateCalls = 0,
+    viewportCalls = {},
+  }
+  function stub:openMap(mapId)
+    self.openMaps[#self.openMaps + 1] = mapId
+  end
+  function stub:setViewport(centerX, centerZ, widthTiles, heightTiles)
+    self.viewportCalls[#self.viewportCalls + 1] = {
+      centerX = centerX,
+      centerZ = centerZ,
+      widthTiles = widthTiles,
+      heightTiles = heightTiles,
+    }
+  end
+  function stub:update()
+    self.updateCalls = self.updateCalls + 1
+  end
+  function stub:snapshot()
+    return { generation = 3, status = { state = "pending" } }
+  end
+  return stub
+end
+
+local function mapActivationHarness()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:enterLocation({ mapId = 12, fieldX = 32, fieldZ = 48 })
+  local service = recordingLocationService()
+  local resolveCount = 0
+  local grid = { columns = 7, rows = 5 }
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    locationService = service,
+    locationServiceMapId = 12,
+    locationViewport = nil,
+    locationActionStatus = nil,
+    errorMessage = nil,
+    dependencies = {
+      world = {
+        maps = { { worldOriginX = 100, worldOriginZ = 200 } },
+        byId = { [34] = 1 },
+      },
+    },
+    _snapshot = function()
+      return {}
+    end,
+    _resolve = function()
+      resolveCount = resolveCount + 1
+      return { content = { layout = { locationGrid = grid } } }
+    end,
+  }, State)
+  return {
+    controller = controller,
+    service = service,
+    state = state,
+    resolveCount = function()
+      return resolveCount
+    end,
+  }
+end
+
+function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_work()
+  local harness = locationListHarness()
+  local controller, state = harness.controller, harness.state
+  controller:setFocus("list:location:map-list")
+  state:_consumeUiInput({ { type = "confirm" } })
+  Assert.equal(controller.focus, "location:map:12", "Confirm enters the first map row")
+
+  state:_consumeUiInput({ { type = "navigate", direction = "down" } })
+  Assert.equal(controller.focus, "location:map:34", "Down moves one map row")
+  Assert.equal(controller.locationMapId, 12, "moving the map cursor leaves the committed map alone")
+  Assert.equal(harness.buildView().location.mapId, 12, "the committed map snapshot is untouched by browsing")
+  for _, intent in ipairs(harness.intents) do
+    Assert.isTrue(intent.kind ~= "location-map-select", "browsing rows never selects a map")
+  end
+
+  Assert.isNil(
+    controller:pointer({ type = "pointer_down", pointerId = "touch:map-row", targetId = "location:map:47", x = 8, y = 8 }),
+    "pressing a map row never starts map work"
+  )
+  local firstTap =
+    controller:pointer({ type = "pointer_up", pointerId = "touch:map-row", targetId = "location:map:47", x = 8, y = 8 })
+  Assert.isTrue(firstTap == nil, "a first clean tap on an unfocused map row only focuses it")
+  Assert.equal(controller.focus, "location:map:47", "a first clean tap moves map row focus")
+  Assert.equal(controller.locationMapId, 12, "a focusing tap leaves the committed map alone")
+
+  Assert.isNil(
+    controller:pointer({ type = "pointer_down", pointerId = "touch:map-act", targetId = "location:map:47", x = 8, y = 8 })
+  )
+  local secondTap =
+    controller:pointer({ type = "pointer_up", pointerId = "touch:map-act", targetId = "location:map:47", x = 8, y = 8 })
+  Assert.deepEqual(
+    secondTap,
+    { kind = "location-map-select", mapId = 47 },
+    "a second clean tap on the focused row requests activation"
+  )
+  Assert.equal(
+    controller.locationMapId,
+    12,
+    "the activation request alone never commits the map; only explicit handling does"
+  )
+
+  Assert.isNil(
+    controller:pointer({ type = "pointer_down", pointerId = "touch:map-drag", targetId = "location:map:7", x = 8, y = 8 })
+  )
+  Assert.isNil(
+    controller:pointer({ type = "pointer_move", pointerId = "touch:map-drag", x = 8, y = 80 }),
+    "a map-list scroll drag produces no map intent while moving"
+  )
+  Assert.isNil(
+    controller:pointer({ type = "pointer_up", pointerId = "touch:map-drag", targetId = "location:map:7", x = 8, y = 80 }),
+    "releasing after a scroll drag never selects a map"
+  )
+  Assert.equal(controller.locationMapId, 12, "scrolling the map list leaves the committed map alone")
+end
+
+function T.tests.confirming_a_map_row_publishes_the_map_without_loading_in_the_input_path()
+  local harness = mapActivationHarness()
+  harness.state:_performDeferred({ kind = "location-map-select", mapId = 34 })
+
+  local navigation = harness.controller:locationSnapshot()
+  Assert.equal(navigation.mapId, 34, "activation publishes the new browser map immediately")
+  Assert.deepEqual(navigation.center, { fieldX = 116, fieldZ = 216 }, "activation recenters on the new map")
+  Assert.equal(
+    harness.service.updateCalls,
+    0,
+    "the input path performs no service update before the next update"
+  )
+end
+
+function T.tests.steady_update_never_prepares_icons()
+  local harness = mapActivationHarness()
+  harness.state.locationViewport = { centerX = 32, centerZ = 48, widthTiles = 7, heightTiles = 5 }
+  local iconPrepCalls = 0
+  harness.state.tickRemainder = 0
+  harness.state.inputTick = 0
+  harness.state.numberHold = nil
+  harness.state.pendingLocationSave = nil
+  harness.state.derivedAssets = {
+    requestMilestone = function()
+      return true
+    end,
+  }
+  harness.state.dependencies.cacheFs = {}
+  harness.state.renderer = {
+    iconStatus = "ready",
+    iconFailure = nil,
+    prepareVisibleIcons = function()
+      iconPrepCalls = iconPrepCalls + 1
+    end,
+  }
+  harness.state.fieldInput = {
+    uiSnapshot = function()
+      return {}
+    end,
+  }
+  local layout = {
+    focusGraph = { [harness.controller.focus] = true },
+    defaultFocus = harness.controller.focus,
+  }
+  harness.state._snapshot = function()
+    return {}
+  end
+  harness.state._resolve = function()
+    return { content = { layout = layout } }
+  end
+
+  harness.state:update(1 / 60)
+  Assert.equal(iconPrepCalls, 0, "the steady update path never prepares icons")
+end
+
+function T.tests.location_service_refresh_reuses_known_grid_size_without_resolving_layout()
+  local harness = mapActivationHarness()
+  harness.state:_updateLocationService()
+
+  Assert.equal(harness.resolveCount(), 0, "the service refresh never resolves presentation layout")
+  Assert.equal(harness.service.updateCalls, 1, "the refresh still advances loading through the service")
+  local viewport = assert(harness.service.viewportCalls[1], "the refresh still publishes its viewport")
+  Assert.equal(viewport.centerX, 32, "the viewport follows the browser center")
+  Assert.equal(viewport.centerZ, 48, "the viewport follows the browser center")
+  Assert.equal(viewport.widthTiles, 1, "an unknown grid falls back to a temporary single tile")
+  Assert.equal(viewport.heightTiles, 1, "an unknown grid falls back to a temporary single tile")
+end
+
+function T.tests.draw_prepares_icons_from_the_same_plan_it_renders()
+  local harness = mapActivationHarness()
+  harness.state.disposed = false
+  harness.state.dependencies.cacheFs = {}
+  harness.state.derivedAssets = {}
+  local snapshots, resolves = 0, 0
+  local plan = { content = { layout = {} } }
+  harness.state._snapshot = function()
+    snapshots = snapshots + 1
+    return { section = "Location" }
+  end
+  harness.state._resolve = function()
+    resolves = resolves + 1
+    return plan
+  end
+  local iconView, iconPlan, iconPrepCalls = nil, nil, 0
+  harness.state.renderer = {
+    graphics = {},
+    text = {},
+    prepareVisibleIcons = function(_, view, presentation)
+      iconPrepCalls = iconPrepCalls + 1
+      iconView, iconPlan = view, presentation
+    end,
+  }
+  local drawnView, drawnPresentation = nil, nil
+  local originalDraw = ApplicationPresentation.draw
+  ApplicationPresentation.draw = function(_, _, view, presentation)
+    drawnView, drawnPresentation = view, presentation
+  end
+  local ok, drawError = pcall(function()
+    harness.state:draw()
+  end)
+  ApplicationPresentation.draw = originalDraw
+  Assert.isTrue(ok, "draw runs without platform rendering: " .. tostring(drawError))
+  Assert.equal(snapshots, 1, "draw snapshots its view once")
+  Assert.equal(resolves, 1, "draw resolves its presentation plan once")
+  Assert.equal(iconPrepCalls, 1, "draw prepares icons from its resolved plan")
+  Assert.isTrue(iconView == drawnView, "icon preparation sees the rendered view")
+  Assert.isTrue(iconPlan == drawnPresentation, "icon preparation sees the rendered plan")
+end
+
+function T.tests.resize_republishes_the_location_viewport_on_the_next_refresh()
+  local harness = mapActivationHarness()
+  harness.state.presentation = {
+    cancelPointers = function() end,
+  }
+  harness.state:resize(800, 600)
+  harness.state:_updateLocationService()
+
+  Assert.equal(#harness.service.viewportCalls, 1, "the next refresh republishes the viewport after a resize")
+  Assert.equal(harness.service.updateCalls, 1, "the refresh still advances loading after a resize")
+end
+
 return T

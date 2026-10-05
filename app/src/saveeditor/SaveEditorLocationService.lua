@@ -59,6 +59,9 @@ local SaveEditorLocationPolicy = require("app.src.saveeditor.SaveEditorLocationP
 ---@field derivedAssets SaveEditorDerivedAssetHost
 ---@field savedActors table[]
 ---@field loader FieldMapLoader
+---@field loadTask FieldMapLoader.StagedTask?
+---@field loadTaskMapId integer?
+---@field loadTaskGeneration integer?
 ---@field maps table[]
 ---@field mapId integer?
 ---@field runtimeMap RuntimeFieldMap?
@@ -83,6 +86,7 @@ SaveEditorLocationService.__index = SaveEditorLocationService
 local TILE_SIZE = 32
 local MAX_VIEW_TILES = 64
 local MAX_CLASSIFICATIONS_PER_UPDATE = 256
+local LOAD_WORK_UNITS = 8
 
 local function copy(value)
   if type(value) ~= "table" then
@@ -263,6 +267,9 @@ function SaveEditorLocationService.new(options)
     derivedAssets = options.derivedAssets,
     savedActors = savedActorList(options.savedObjects),
     loader = FieldMapLoader.new(options.cacheFs, options.world, { derivedAssets = options.derivedAssets }),
+    loadTask = nil,
+    loadTaskMapId = nil,
+    loadTaskGeneration = nil,
     maps = mapList(options.world),
     mapId = nil,
     runtimeMap = nil,
@@ -291,7 +298,18 @@ function SaveEditorLocationService:_invalidate()
   self.tileStatuses = {}
 end
 
+function SaveEditorLocationService:_releaseLoadTask()
+  local task = self.loadTask
+  self.loadTask = nil
+  self.loadTaskMapId = nil
+  self.loadTaskGeneration = nil
+  if task ~= nil then
+    task:release()
+  end
+end
+
 function SaveEditorLocationService:_releaseMap()
+  self:_releaseLoadTask()
   if self.coverage then
     self.coverage:release()
     self.coverage = nil
@@ -309,6 +327,7 @@ function SaveEditorLocationService:openMap(mapId)
   assert(not self.disposed, "location service is disposed")
   assertInteger("mapId", mapId)
   local record = assert(recordById(self.world, mapId), "location browser map is not in the structural world")
+  self:_releaseLoadTask()
   if self.mapId ~= mapId then
     self:_releaseMap()
     self.mapId = mapId
@@ -379,6 +398,68 @@ function SaveEditorLocationService:_collectRepresented()
   self.coordinateEvents = coordinateEvents
 end
 
+function SaveEditorLocationService:_failStaged(err)
+  self:_releaseLoadTask()
+  self.objectEvents = nil
+  self.warpEvents = nil
+  self.coordinateEvents = nil
+  self.representedMapIds = nil
+  self.mapBounds = nil
+  if not Errors.is(err) then
+    error(err, 0)
+  end
+  self.status = status("failed", Errors.format(err))
+end
+
+-- Advances the outstanding staged map load without blocking and publishes
+-- the runtime map once the loader task is ready. Returns true when the
+-- runtime map is available for coverage and classification work.
+function SaveEditorLocationService:_advanceStagedMap()
+  if self.loadTask ~= nil and (self.loadTaskMapId ~= self.mapId or self.loadTaskGeneration ~= self.generation) then
+    self:_releaseLoadTask()
+  end
+  if self.loadTask == nil then
+    local begun, taskOrError = pcall(self.loader.beginLoad, self.loader, self.mapId)
+    if not begun then
+      self:_failStaged(taskOrError)
+      return false
+    end
+    self.loadTask = taskOrError
+    self.loadTaskMapId = self.mapId
+    self.loadTaskGeneration = self.generation
+  end
+  local task = assert(self.loadTask, "staged map task is required")
+  local advanced, advanceError = pcall(task.advance, task, LOAD_WORK_UNITS)
+  if not advanced then
+    self:_failStaged(advanceError)
+    return false
+  end
+  if not task:isReady() then
+    self.status = status("pending")
+    return false
+  end
+  if self.loadTaskMapId ~= self.mapId or self.loadTaskGeneration ~= self.generation then
+    self:_releaseLoadTask()
+    self.status = status("pending")
+    return false
+  end
+  local taken, runtimeOrError = pcall(function()
+    local runtime = task:takeResult()
+    self.loader:protectMap(self.mapId, true)
+    return runtime
+  end)
+  if not taken then
+    self:_failStaged(runtimeOrError)
+    return false
+  end
+  self.loadTask = nil
+  self.loadTaskMapId = nil
+  self.loadTaskGeneration = nil
+  self.runtimeMap = runtimeOrError
+  self.preparedMapId = self.mapId
+  return true
+end
+
 function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
   local ready, err = self.loader:requestLocation(self.mapId, fieldX, fieldZ, "required")
   if err ~= nil then
@@ -390,13 +471,11 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
     return false
   end
 
-  local prepared, prepareError = pcall(function()
-    if self.runtimeMap == nil then
-      self.runtimeMap = self.loader:load(self.mapId)
-      self.loader:protectMap(self.mapId, true)
-      self.preparedMapId = self.mapId
-    end
+  if self.runtimeMap == nil and not self:_advanceStagedMap() then
+    return false
+  end
 
+  local prepared, prepareError = pcall(function()
     if self.runtimeMap.scene.type == "outdoor" then
       local anchorX, anchorZ = math.floor(fieldX / TILE_SIZE), math.floor(fieldZ / TILE_SIZE)
       if self.coverage == nil then

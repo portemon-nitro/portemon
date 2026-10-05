@@ -53,6 +53,8 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field locationService SaveEditorLocationService?
 ---@field locationViewport table<string, number>?
 ---@field locationServiceMapId integer?
+---@field locationGridWidthTiles integer?
+---@field locationGridHeightTiles integer?
 ---@field errorMessage string?
 ---@field notice string?
 ---@field generation number
@@ -212,6 +214,8 @@ function State.new(options)
     locationService = nil,
     locationViewport = nil,
     locationServiceMapId = nil,
+    locationGridWidthTiles = nil,
+    locationGridHeightTiles = nil,
     pendingLocationSave = nil,
     locationSaveOperationId = 0,
     valueEditor = nil,
@@ -355,12 +359,6 @@ function State:update(dt)
       self:_cancelPendingLocationSave()
       error(updateError, 0)
     end
-  end
-  if self.status == "ready" and self.renderer and self.dependencies then
-    local view = self:_snapshot()
-    local plan = self:_resolve(view)
-    self.renderer:prepareVisibleIcons(view, plan, self.dependencies.cacheFs, self.derivedAssets)
-    self.iconStatus, self.iconFailure = self.renderer.iconStatus, self.renderer.iconFailure
   end
 end
 
@@ -978,7 +976,13 @@ end
 
 function State:_resolve(view)
   view.textMetrics = assert(self.renderer):metrics()
-  return self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
+  local plan = self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
+  local grid = plan.content.layout.locationGrid
+  if grid ~= nil then
+    self.locationGridWidthTiles = grid.columns
+    self.locationGridHeightTiles = grid.rows
+  end
+  return plan
 end
 
 ---@param layout table<string, unknown>
@@ -1177,35 +1181,42 @@ function State:_handleListConfirm(list, rowIndex)
 end
 
 ---@param preferred string?
-function State:_reconcileFocus(preferred)
-  local layout = self:_resolve(self:_snapshot()).content.layout
+---@param layout table<string, unknown>?
+---@return table<string, unknown> layout the reconciled layout
+function State:_reconcileFocus(preferred, layout)
+  local current = layout or self:_resolve(self:_snapshot()).content.layout
+  local before = self.controller.focus
   local focus = preferred or self.pendingFocusReturn or self.controller.focus
-  if focus == nil or layout.focusGraph[focus] == nil then
+  if focus == nil or current.focusGraph[focus] == nil then
     if
       self.controller.section == "Progress"
       and self.session ~= nil
       and #self:_flagRows(self.session:snapshot().flags) == 0
     then
-      focus = layout.defaultFocus
+      focus = current.defaultFocus
     elseif
       self.controller.section == "Location"
       and self.controller.locationPage == "grid"
       and self.controller.focus == "location:grid"
-      and layout.focusGraph["location:grid"]
+      and current.focusGraph["location:grid"]
     then
       focus = "location:grid"
     else
-      focus = layout.defaultFocus
+      focus = current.defaultFocus
     end
   end
   self.controller:setFocus(assert(focus))
   self.pendingFocusReturn = nil
-  local reconciled = self:_resolve(self:_snapshot()).content.layout
+  local reconciled = current
+  if self.controller.focus ~= before then
+    reconciled = self:_resolve(self:_snapshot()).content.layout
+  end
   if reconciled.lists ~= nil then
     for _, list in pairs(reconciled.lists) do
       self:_reconcileListCursor(list)
     end
   end
+  return reconciled
 end
 
 ---@param editor SaveEditorValueEditor
@@ -1235,14 +1246,12 @@ function State:_updateLocationService()
     self.locationViewport = nil
   end
 
-  local plan = self:_resolve(self:_snapshot())
-  local grid = plan.content.layout.locationGrid
   local center = assert(navigation.center, "Location viewport needs a center")
   local viewport = {
     centerX = center.fieldX,
     centerZ = center.fieldZ,
-    widthTiles = grid and grid.columns or 1,
-    heightTiles = grid and grid.rows or 1,
+    widthTiles = self.locationGridWidthTiles or 1,
+    heightTiles = self.locationGridHeightTiles or 1,
   }
   local previous = self.locationViewport
   if
@@ -1267,9 +1276,7 @@ function State:_syncLocationToSession()
 end
 
 function State:_locationGridSize()
-  local layout = self:_resolve(self:_snapshot()).content.layout
-  local grid = layout.locationGrid
-  return grid and grid.columns or 1, grid and grid.rows or 1
+  return self.locationGridWidthTiles or 1, self.locationGridHeightTiles or 1
 end
 
 function State:_selectLocationTile(fieldX, fieldZ)
@@ -1518,7 +1525,7 @@ function State:_performDeferred(action)
     self.locationViewport = nil
     self.locationActionStatus = nil
     self.errorMessage = nil
-    self:_updateLocationService()
+    return
   elseif action.kind == "location-map-move" then
     local view = self:_snapshot()
     local plan = self:_resolve(view)
@@ -2253,6 +2260,10 @@ function State:draw()
     return
   end
   local view = self:view()
+  if self.dependencies then
+    self.renderer:prepareVisibleIcons(view, view.presentation, self.dependencies.cacheFs, self.derivedAssets)
+    self.iconStatus, self.iconFailure = self.renderer.iconStatus, self.renderer.iconFailure
+  end
   ApplicationPresentation.draw(
     self.renderer.graphics,
     { renderer = self.renderer, text = self.renderer.text },
@@ -2268,6 +2279,8 @@ function State:resize(width, height)
   self.numberHold = nil
   self.numberPressTarget = nil
   self.locationViewport = nil
+  self.locationGridWidthTiles = nil
+  self.locationGridHeightTiles = nil
 end
 
 function State:focus(focused)
@@ -2284,14 +2297,13 @@ end
 function State:_consumeUiInput(events)
   for _, event in ipairs(events) do
     if event.type == "navigate" then
-      self:_reconcileFocus()
       if self.controller.modal then
-        local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+        local layout = self:_reconcileFocus()
         self.controller:moveFocus(layout.focusGraph, event.direction)
       elseif self.valueEditor then
         local snapshot = self.valueEditor:snapshot()
         if snapshot.kind == "choice" then
-          local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+          local layout = self:_reconcileFocus()
           local list, rowIndex = self:_activeList(layout)
           if list ~= nil and list.id == "value:choice" and rowIndex ~= nil then
             self:_moveListRow(list, rowIndex, event.direction, layout)
@@ -2315,7 +2327,7 @@ function State:_consumeUiInput(events)
           self.valueEditor:press(event.direction)
         end
       else
-        local layout = self:_resolve(self:_snapshot()).content.layout
+        local layout = self:_reconcileFocus()
         local list, rowIndex = self:_activeList(layout)
         if list ~= nil and rowIndex ~= nil then
           self:_moveListRow(list, rowIndex, event.direction, layout)
@@ -2325,8 +2337,7 @@ function State:_consumeUiInput(events)
         end
       end
     elseif event.type == "confirm" then
-      self:_reconcileFocus()
-      local currentLayout = assert(self:_resolve(self:_snapshot()).content.layout)
+      local currentLayout = self:_reconcileFocus()
       if self.controller.modal then
         local target = currentLayout.targets[self.controller.focus]
         if target and target.activationEnabled and currentLayout.focusGraph[self.controller.focus] then
