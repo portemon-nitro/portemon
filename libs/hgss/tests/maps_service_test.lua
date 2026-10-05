@@ -5,6 +5,7 @@
 -- observable semantic state instead of vanishing as a noop.
 
 local Assert = require("tests.support.Assert")
+local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local ScriptMapsService = require("libs.hgss.src.script.ScriptMapsService")
 
 local T = {}
@@ -23,6 +24,71 @@ end
 
 local function target()
   return { map = "MAP_NEW_BARK_ELMS_LAB_2F", warp = 0, fieldX = 12, fieldZ = 6, facing = "west" }
+end
+
+function T.covered_scripted_warps_can_be_reused_after_success()
+  local calls = {}
+  local transition = {
+    phase = FieldTransition.PHASES.idle,
+    sourceMap = nil,
+    startCoveredSwap = function(self, sourceMap)
+      calls[#calls + 1] = sourceMap
+      self.phase = FieldTransition.PHASES.load_destination
+      self.sourceMap = sourceMap
+    end,
+  }
+  local service = ScriptMapsService.new({
+    transition = transition,
+    loader = fakeLoader(),
+    sourceMap = fakeSourceMap(),
+    screen = { isOpaque = function() return true end },
+  })
+
+  service:startWarp(target())
+  Assert.isFalse(service:warpDone(), "a covered warp stays pending while it owns its source map")
+  transition.phase = FieldTransition.PHASES.idle
+  transition.sourceMap = nil
+  Assert.isTrue(service:warpDone(), "the first covered warp completes after transition ownership returns")
+  Assert.isFalse(service:warpDone(), "a completed warp is consumed once")
+
+  local replacementSourceMap = { mapId = "MAP_NEW_BARK_ELMS_LAB_2F" }
+  service:setSourceMap(replacementSourceMap)
+  service:startWarp(target())
+
+  Assert.equal(#calls, 2, "the same service starts the next covered warp")
+  Assert.equal(calls[2], replacementSourceMap, "the next covered warp uses the rebound source map")
+end
+
+function T.covered_scripted_warp_failure_is_exposed_and_does_not_poison_reuse()
+  local calls = 0
+  local transition = {
+    phase = FieldTransition.PHASES.load_destination,
+    sourceMap = fakeSourceMap(),
+    startCoveredSwap = function(self)
+      calls = calls + 1
+      self.phase = FieldTransition.PHASES.load_destination
+      self.sourceMap = fakeSourceMap()
+    end,
+  }
+  local service = ScriptMapsService.new({
+    transition = transition,
+    loader = fakeLoader(),
+    sourceMap = fakeSourceMap(),
+    screen = { isOpaque = function() return true end },
+  })
+  local failure = { code = "transition failed" }
+
+  service:startWarp(target())
+  transition.error = failure
+  Assert.isTrue(service:warpDone(), "a failed covered transition completes its warp task")
+  Assert.equal(service:pendingError(), failure, "the exact transition failure remains available to the script task")
+
+  transition.error = nil
+  transition.phase = FieldTransition.PHASES.idle
+  transition.sourceMap = nil
+  service:startWarp(target())
+
+  Assert.equal(calls, 2, "a covered failure does not prevent a later warp from starting")
 end
 
 -- A covered scripted swap must not start the ordinary FieldTransition fade

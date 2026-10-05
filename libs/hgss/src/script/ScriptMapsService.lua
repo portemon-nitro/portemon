@@ -170,6 +170,14 @@ function ScriptMapsService:warpDone()
   if self.pendingWarp == nil then
     return false
   end
+  if self._screen ~= nil then
+    if not self._coveredSwap:done() then
+      return false
+    end
+    self._error = self._coveredSwap:error()
+    self.pendingWarp = nil
+    return true
+  end
   local transition = self._transition
   if transition.error ~= nil then
     self._error = transition.error
