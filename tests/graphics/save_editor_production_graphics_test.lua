@@ -159,8 +159,79 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       Assert.near(red, state.renderer.skin.background[1], 1 / 255, name .. " uses the editor palette red")
       Assert.near(green, state.renderer.skin.background[2], 1 / 255, name .. " uses the editor palette green")
       Assert.near(blue, state.renderer.skin.background[3], 1 / 255, name .. " uses the editor palette blue")
-      Assert.isTrue(#frameDraws > frameCount, name .. " draws its framed surface")
-      Assert.equal(frameDraws[#frameDraws], view.session.frameIndex, name .. " uses the staged dialogue frame")
+      local explicitFrames = #(view.layout.listSurfaces or {})
+      if view.layout.decisionList ~= nil then
+        explicitFrames = explicitFrames + 1
+      end
+      if view.layout.valueModal ~= nil then
+        explicitFrames = explicitFrames + 1
+      end
+      Assert.equal(
+        #frameDraws - frameCount,
+        explicitFrames,
+        name .. " draws only explicit list/modal frames without a blanket content frame"
+      )
+      if #frameDraws - frameCount > 0 then
+        Assert.equal(frameDraws[#frameDraws], view.session.frameIndex, name .. " uses the staged dialogue frame")
+      end
+      local content = assert(view.layout.content, name .. " publishes its content bounds")
+      local occupied = {}
+      for _, target in pairs(view.layout.targets or {}) do
+        if target.rect ~= nil then
+          occupied[#occupied + 1] = target.rect
+        end
+      end
+      for _, surface in ipairs(view.layout.listSurfaces or {}) do
+        occupied[#occupied + 1] = surface
+      end
+      if view.layout.decisionList ~= nil then
+        occupied[#occupied + 1] = view.layout.decisionList.surface
+      end
+      if view.layout.valueModal ~= nil then
+        occupied[#occupied + 1] = view.layout.valueModal
+      end
+      if view.layout.bagPageText ~= nil then
+        occupied[#occupied + 1] = view.layout.bagPageText
+      end
+      if view.layout.locationStatus ~= nil then
+        occupied[#occupied + 1] = view.layout.locationStatus.bounds
+      end
+      local gapX, gapY = nil, nil
+      local probeY = content.y + content.height - 4
+      while probeY > content.y + 2 and gapX == nil do
+        local probeX = content.x + content.width / 2
+        local covered = false
+        for _, rect in ipairs(occupied) do
+          if probeX >= rect.x and probeX < rect.x + rect.width and probeY >= rect.y and probeY < rect.y + rect.height then
+            covered = true
+            break
+          end
+        end
+        local grid = view.layout.locationGrid
+        if not covered and grid ~= nil then
+          local clip = grid.clip
+          if probeX >= clip.x and probeX < clip.x + clip.width and probeY >= clip.y and probeY < clip.y + clip.height then
+            covered = true
+          end
+        end
+        if not covered then
+          gapX, gapY = probeX, probeY
+        else
+          probeY = probeY - 4
+        end
+      end
+      Assert.notNil(gapX, name .. " keeps ordinary themed page space inside its content")
+      local background = state.renderer.skin.background
+      local themed = false
+      for _, offset in ipairs({ { 0, 0 }, { -3, 0 }, { 3, 0 }, { 0, -3 }, { 0, 3 } }) do
+        local sampleX, sampleY =
+          LayoutGeometry.logicalToHost(assert(pane.placement), (gapX or 0) + offset[1], (gapY or 0) + offset[2])
+        local sampleRed, sampleGreen, sampleBlue = actual:getPixel(math.floor(sampleX), math.floor(sampleY))
+        if math.abs(sampleRed - background[1]) < 0.02 and math.abs(sampleGreen - background[2]) < 0.02 and math.abs(sampleBlue - background[3]) < 0.02 then
+          themed = true
+        end
+      end
+      Assert.isTrue(themed, name .. " leaves ordinary content on the themed page background")
       return view
     end
     local cases = {

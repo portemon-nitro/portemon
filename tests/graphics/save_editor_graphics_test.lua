@@ -314,17 +314,20 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   local graphics = love.graphics
   local view, presentation, plan = fixture(scope, width, height, topology, section, variant, versionId)
   local drawnText = {}
+  local paletteCalls = {}
   local text = {
     fontDef = { lineHeight = 14 },
     textWidth = function(_, value)
       return view.textMetrics.measure(value)
     end,
-    drawTextWithPalette = function(_, value, x, y)
+    drawTextWithPalette = function(_, value, x, y, palette)
       drawnText[#drawnText + 1] = value
+      paletteCalls[#paletteCalls + 1] = { value = value, x = x, y = y, palette = palette }
       graphics.print(value, x, y)
     end,
     drawText = function(_, value, x, y)
       drawnText[#drawnText + 1] = value
+      paletteCalls[#paletteCalls + 1] = { value = value, x = x, y = y, palette = nil }
       graphics.print(value, x, y)
     end,
   }
@@ -425,8 +428,13 @@ local function draw(scope, width, height, topology, name, section, variant, vers
         end
       end
       Assert.isTrue(nature, name .. " explains derived nature without making it focusable")
-      Assert.notNil(layout.targets["party:apply"], name .. " exposes the nested Apply decision")
-      Assert.notNil(layout.targets["party:cancel"], name .. " exposes the nested Cancel decision")
+      if view.partyPage == "detail" then
+        Assert.notNil(layout.targets["party:edit"], name .. " exposes the nested Edit decision")
+        Assert.notNil(layout.targets["party:back"], name .. " exposes the nested Back decision")
+      else
+        Assert.notNil(layout.targets["party:apply"], name .. " exposes the nested Apply decision")
+        Assert.notNil(layout.targets["party:cancel"], name .. " exposes the nested Cancel decision")
+      end
     end
   elseif view.section == "Location" then
     Assert.notNil(layout.targets["location:map-picker"], name .. " exposes Change Map")
@@ -520,7 +528,82 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   end
   renderer:dispose()
   presentation:dispose()
-  return data, renderedText, layout, bagDrawn, drawnText, view, renderer.skin.background, bagDrawOrder
+  return data, renderedText, layout, bagDrawn, drawnText, view, renderer.skin.background, bagDrawOrder, paletteCalls
+end
+
+-- Local helpers for presentation-feedback coverage. They interpret recorded
+-- palette/rectangle state in relational terms so no exact color constant is frozen.
+local function foregroundAverage(palette)
+  if palette == nil or palette.foreground == nil then
+    return nil
+  end
+  local foreground = palette.foreground
+  local r = foreground.r or foreground[1]
+  local g = foreground.g or foreground[2]
+  local b = foreground.b or foreground[3]
+  if r == nil or g == nil or b == nil then
+    return nil
+  end
+  return (r + g + b) / 3
+end
+
+local function shadowAverage(palette)
+  if palette == nil or palette.shadow == nil then
+    return nil
+  end
+  local shadow = palette.shadow
+  local r = shadow.r or shadow[1]
+  local g = shadow.g or shadow[2]
+  local b = shadow.b or shadow[3]
+  if r == nil or g == nil or b == nil then
+    return nil
+  end
+  return (r + g + b) / 3
+end
+
+local function findPaletteCall(paletteCalls, pattern)
+  for index = #paletteCalls, 1, -1 do
+    local call = paletteCalls[index]
+    if call.value ~= nil and call.value:find(pattern, 1, true) ~= nil and call.palette ~= nil then
+      return call
+    end
+  end
+  return nil
+end
+
+local function ordinaryContentGap(layout)
+  local content = assert(layout.content)
+  local occupied = {}
+  for _, target in pairs(layout.targets or {}) do
+    if target.rect ~= nil then
+      occupied[#occupied + 1] = target.rect
+    end
+  end
+  for _, surface in ipairs(layout.listSurfaces or {}) do
+    occupied[#occupied + 1] = surface
+  end
+  if layout.decisionList ~= nil then
+    occupied[#occupied + 1] = layout.decisionList.surface
+  end
+  if layout.valueModal ~= nil then
+    occupied[#occupied + 1] = layout.valueModal
+  end
+  local y = content.y + content.height - 4
+  while y > content.y + 2 do
+    local x = content.x + content.width / 2
+    local inside = false
+    for _, rect in ipairs(occupied) do
+      if x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height then
+        inside = true
+        break
+      end
+    end
+    if not inside then
+      return { x = x, y = y }
+    end
+    y = y - 4
+  end
+  return nil
 end
 
 function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(scope)
@@ -792,15 +875,7 @@ function T.party_member_card_uses_light_face_and_selected_border(scope)
     return oldRectangle(mode, x, y, rectWidth, rectHeight, ...)
   end
   local ok, layout = xpcall(function()
-    local _, _, renderedLayout = draw(
-      scope,
-      width,
-      height,
-      topology,
-      "party-selected-card",
-      "Party",
-      "list-selected"
-    )
+    local _, _, renderedLayout = draw(scope, width, height, topology, "party-selected-card", "Party", "list-selected")
     return renderedLayout
   end, debug.traceback)
   love.graphics.setColor, love.graphics.rectangle = oldSetColor, oldRectangle
@@ -813,19 +888,27 @@ function T.party_member_card_uses_light_face_and_selected_border(scope)
   local face, selectedBorder, primaryAddFace = false, false, false
   local skin = require("app.src.ui.ProductMenuSkin").forVersion("heartgold")
   for _, call in ipairs(rectangleCalls) do
-    local exactMember = call.x == memberRect.x and call.y == memberRect.y
-      and call.width == memberRect.width and call.height == memberRect.height
+    local exactMember = call.x == memberRect.x
+      and call.y == memberRect.y
+      and call.width == memberRect.width
+      and call.height == memberRect.height
     if exactMember and call.mode == "fill" then
       face = call.color[1] == 1 and call.color[2] == 1 and call.color[3] == 1
     elseif exactMember and call.mode == "line" then
       local rim = skin.cards.normal.selectedRim
       selectedBorder = call.color[1] == rim[1] and call.color[2] == rim[2] and call.color[3] == rim[3]
     end
-    local withinAdd = call.x >= addRect.x and call.y >= addRect.y
+    local withinAdd = call.x >= addRect.x
+      and call.y >= addRect.y
       and call.x + call.width <= addRect.x + addRect.width
       and call.y + call.height <= addRect.y + addRect.height
-    if withinAdd and call.mode == "fill" and call.color[1] == 0.56 and call.color[2] == 0.82
-      and call.color[3] == 0.48 then
+    if
+      withinAdd
+      and call.mode == "fill"
+      and call.color[1] == 0.56
+      and call.color[2] == 0.82
+      and call.color[3] == 0.48
+    then
       primaryAddFace = true
     end
   end
@@ -1394,6 +1477,347 @@ function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scop
   Assert.notNil(view.layout.targets.cancel, "name cancel remains reachable")
   renderer:dispose()
   presentation:dispose()
+end
+
+function T.ordinary_page_keeps_themed_background_without_extra_frame(scope)
+  local width, height = 640, 480
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local frames = {}
+  local data, _, layout, _, _, view, background = draw(
+    scope,
+    width,
+    height,
+    topology,
+    "ordinary-themed-page",
+    "Player",
+    "dirty-status",
+    nil,
+    function(renderer)
+      local windowRenderer = assert(renderer._windowRenderer)
+      local drawApplicationFrame = windowRenderer.drawApplicationFrame
+      windowRenderer.drawApplicationFrame = function(self, box, frameIndex)
+        frames[#frames + 1] = frameIndex
+        return drawApplicationFrame(self, box, frameIndex)
+      end
+    end
+  )
+  local expectedFrames = #(layout.listSurfaces or {})
+  if layout.decisionList ~= nil then
+    expectedFrames = expectedFrames + 1
+  end
+  if layout.valueModal ~= nil then
+    expectedFrames = expectedFrames + 1
+  end
+  Assert.equal(#frames, expectedFrames, "ordinary page draws only explicit application frames")
+  local gap = assert(ordinaryContentGap(layout), "ordinary page has gap space inside its content")
+  local pane = assert(view.presentation.panes[1])
+  local hostX, hostY = LayoutGeometry.logicalToHost(pane.placement, gap.x, gap.y)
+  local red, green, blue = data:getPixel(math.floor(hostX), math.floor(hostY))
+  Assert.near(red, background[1], 0.02, "ordinary content gap uses the themed background red")
+  Assert.near(green, background[2], 0.02, "ordinary content gap uses the themed background green")
+  Assert.near(blue, background[3], 0.02, "ordinary content gap uses the themed background blue")
+end
+
+function T.surface_text_and_party_action_hierarchy_follow_surface_role(scope)
+  local width, height = 640, 480
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local oldSetColor, oldRectangle = love.graphics.setColor, love.graphics.rectangle
+  local currentColor = { 1, 1, 1, 1 }
+  local rectangleCalls = {}
+  love.graphics.setColor = function(r, g, b, a)
+    currentColor = { r, g, b, a }
+    return oldSetColor(r, g, b, a)
+  end
+  love.graphics.rectangle = function(mode, x, y, rectWidth, rectHeight, ...)
+    rectangleCalls[#rectangleCalls + 1] = {
+      mode = mode,
+      x = x,
+      y = y,
+      width = rectWidth,
+      height = rectHeight,
+      color = { currentColor[1], currentColor[2], currentColor[3], currentColor[4] },
+    }
+    return oldRectangle(mode, x, y, rectWidth, rectHeight, ...)
+  end
+  local ok, failure = xpcall(function()
+    rectangleCalls = {}
+    local _, _, playerLayout, _, _, _, _, _, playerPalettes =
+      draw(scope, width, height, topology, "hierarchy-player", "Player", "dirty-status")
+    local function assertWhiteRowFace(targetId)
+      local rect = assert(playerLayout.targets[targetId], "player layout exposes " .. targetId).rect
+      local found = false
+      for _, call in ipairs(rectangleCalls) do
+        if
+          call.mode == "fill"
+          and call.x == rect.x
+          and call.y == rect.y
+          and call.width == rect.width
+          and call.height == rect.height
+        then
+          if call.color[1] == 1 and call.color[2] == 1 and call.color[3] == 1 then
+            found = true
+          end
+        end
+      end
+      Assert.isTrue(found, targetId .. " uses the white selectable-row face")
+    end
+    assertWhiteRowFace("money")
+    assertWhiteRowFace("dialogue-frame")
+    local saveCall = assert(findPaletteCall(playerPalettes, "Save"), "enabled Save label records its palette")
+    local saveAverage = assert(foregroundAverage(saveCall.palette), "enabled Save has a foreground")
+    local saveShadow = assert(shadowAverage(saveCall.palette), "enabled Save has a shadow")
+    Assert.isTrue(saveAverage > 150, "enabled colored control uses a light foreground")
+    Assert.isTrue(saveShadow + 40 < saveAverage, "enabled colored control pairs light ink with a darker shadow")
+
+    rectangleCalls = {}
+    local _, _, _, _, _, _, _, _, disabledPalettes =
+      draw(scope, width, height, topology, "hierarchy-player-clean", "Player", "clean-status")
+    local disabledCall = assert(findPaletteCall(disabledPalettes, "Save"), "disabled Save label records its palette")
+    local disabledAverage = assert(foregroundAverage(disabledCall.palette), "disabled Save has a foreground")
+    Assert.isTrue(disabledAverage < saveAverage - 15, "disabled Save is visibly muted next to enabled Save")
+    Assert.isTrue(disabledAverage > 80, "disabled Save remains legible")
+
+    local wideTopology = ScreenTopology.oneDisplay({
+      id = "hierarchy-wide",
+      rect = { x = 0, y = 0, width = 1280, height = 720 },
+      touch = true,
+      role = "world",
+    })
+    -- Detail and draft pages are captured once each; every action on the same
+    -- page shares its capture instead of re-rendering an identical page.
+    local captures = {}
+    local function assertActionFaceAndLabel(name, targetId, label)
+      local variant = (targetId == "party:discard" or targetId == "party:apply") and "draft" or "detail"
+      local cached = captures[variant]
+      if cached == nil then
+        rectangleCalls = {}
+        local pageData, _, pageLayout, _, _, pageView, _, _, pagePalettes =
+          draw(scope, 1280, 720, wideTopology, name, "Party", variant)
+        cached = { data = pageData, layout = pageLayout, view = pageView, palettes = pagePalettes }
+        captures[variant] = cached
+      end
+      local pageData, pageLayout, pageView, pagePalettes = cached.data, cached.layout, cached.view, cached.palettes
+      local rect = assert(pageLayout.targets[targetId], name .. " exposes " .. targetId).rect
+      local pane = assert(pageView.presentation.panes[1])
+      local hostX, hostY = LayoutGeometry.logicalToHost(pane.placement, rect.x + 3, rect.y + 3)
+      local red, green, blue = pageData:getPixel(math.floor(hostX), math.floor(hostY))
+      Assert.isTrue(red < 0.95 or green < 0.95 or blue < 0.95, targetId .. " paints a colored semantic face")
+      local labelCall = assert(findPaletteCall(pagePalettes, label), targetId .. " label records its palette")
+      local average = assert(foregroundAverage(labelCall.palette), targetId .. " has a foreground")
+      Assert.isTrue(average > 150, targetId .. " label uses light control ink")
+      return { red, green, blue }
+    end
+    local editFace = assertActionFaceAndLabel("hierarchy-party-detail", "party:edit", "Edit")
+    local removeFace = assertActionFaceAndLabel("hierarchy-party-detail", "party:remove", "Remove")
+    local backFace = assertActionFaceAndLabel("hierarchy-party-detail", "party:back", "Back")
+    Assert.isTrue(
+      editFace[1] ~= removeFace[1] or editFace[2] ~= removeFace[2] or editFace[3] ~= removeFace[3],
+      "primary edit and destructive remove use different faces"
+    )
+    Assert.isTrue(
+      backFace[1] ~= removeFace[1] or backFace[2] ~= removeFace[2] or backFace[3] ~= removeFace[3],
+      "secondary back and destructive remove use different faces"
+    )
+    local applyFace = assertActionFaceAndLabel("hierarchy-party-draft", "party:apply", "Apply")
+    local discardFace = assertActionFaceAndLabel("hierarchy-party-draft", "party:discard", "Discard")
+    Assert.isTrue(
+      applyFace[1] ~= discardFace[1] or applyFace[2] ~= discardFace[2] or applyFace[3] ~= discardFace[3],
+      "draft apply and discard use different faces"
+    )
+
+    rectangleCalls = {}
+    local _, _, _, _, _, _, _, _, listPalettes = draw(scope, 800, 600, topology, "hierarchy-party-add", "Party", "list")
+    local addCall = assert(findPaletteCall(listPalettes, "Add Pokemon"), "Add card label records its palette")
+    Assert.isTrue(
+      assert(foregroundAverage(addCall.palette), "Add card has a foreground") > 150,
+      "Add card text is light on its primary face"
+    )
+
+    rectangleCalls = {}
+    local _, _, _, _, _, _, _, _, bagPalettes =
+      draw(scope, width, height, topology, "hierarchy-bag-page", "Bag", "bag-pages")
+    local pageCall = nil
+    for _, call in ipairs(bagPalettes) do
+      if call.value ~= nil and call.value:find("/", 1, true) ~= nil and call.palette ~= nil then
+        pageCall = call
+      end
+    end
+    pageCall = assert(pageCall, "Bag page indicator records its palette")
+    Assert.isTrue(
+      assert(foregroundAverage(pageCall.palette), "page indicator has a foreground") > 150,
+      "direct page text uses the light page palette"
+    )
+  end, debug.traceback)
+  love.graphics.setColor, love.graphics.rectangle = oldSetColor, oldRectangle
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.bag_page_arrows_expose_focus_press_and_muted_disabled(scope)
+  local width, height = 640, 480
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local skin = require("app.src.ui.ProductMenuSkin").forVersion("heartgold")
+  local rim = skin.cards.normal.selectedRim
+  local function renderArrowState(name, focusId, capturedTarget, page0)
+    local oldDraw, oldRect, oldSet = love.graphics.draw, love.graphics.rectangle, love.graphics.setColor
+    local current = { 1, 1, 1, 1 }
+    local imageToPath, arrowDraws, rimCalls = {}, {}, {}
+    local rendered
+    local ok, result = xpcall(function()
+      local _, text, layout = draw(
+        scope,
+        width,
+        height,
+        topology,
+        name,
+        "Bag",
+        "bag-pages",
+        nil,
+        function(renderer, view)
+          view.focus = focusId
+          view.capturedTarget = capturedTarget
+          view.bagPage0 = page0
+          for path, image in pairs(renderer._bagImages) do
+            imageToPath[image] = path
+          end
+          love.graphics.setColor = function(r, g, b, a)
+            current = { r, g, b, a }
+            return oldSet(r, g, b, a)
+          end
+          love.graphics.draw = function(drawable, ...)
+            local path = imageToPath[drawable]
+            if path ~= nil then
+              arrowDraws[#arrowDraws + 1] = { path = path, color = { current[1], current[2], current[3], current[4] } }
+            end
+            return oldDraw(drawable, ...)
+          end
+          love.graphics.rectangle = function(mode, x, y, rectWidth, rectHeight, ...)
+            rimCalls[#rimCalls + 1] = {
+              mode = mode,
+              x = x,
+              y = y,
+              width = rectWidth,
+              height = rectHeight,
+              color = { current[1], current[2], current[3], current[4] },
+            }
+            return oldRect(mode, x, y, rectWidth, rectHeight, ...)
+          end
+        end
+      )
+      rendered = { text = text, layout = layout }
+    end, debug.traceback)
+    love.graphics.draw, love.graphics.rectangle, love.graphics.setColor = oldDraw, oldRect, oldSet
+    if not ok then
+      error(result, 0)
+    end
+    return rendered.text, rendered.layout, arrowDraws, rimCalls
+  end
+  local function hasPath(arrowDraws, path)
+    for _, entry in ipairs(arrowDraws) do
+      if entry.path == path then
+        return entry
+      end
+    end
+    return nil
+  end
+  local function hasRimAt(rimCalls, rect)
+    for _, call in ipairs(rimCalls) do
+      if
+        call.mode == "line"
+        and call.x == rect.x
+        and call.y == rect.y
+        and call.width == rect.width
+        and call.height == rect.height
+      then
+        if call.color[1] == rim[1] and call.color[2] == rim[2] and call.color[3] == rim[3] then
+          return true
+        end
+      end
+    end
+    return false
+  end
+  local unfocusedText, unfocusedLayout, unfocusedDraws, unfocusedRims =
+    renderArrowState("arrow-next-idle", "bag:pocket:items", nil, 0)
+  local nextRect = assert(unfocusedLayout.targets["bag:page:next"]).rect
+  Assert.notNil(hasPath(unfocusedDraws, "bag/inc-normal"), "idle Next draws its normal generated art")
+  Assert.isNil(hasPath(unfocusedDraws, "bag/inc-pressed"), "idle Next does not draw pressed art")
+  Assert.isFalse(hasRimAt(unfocusedRims, nextRect), "idle Next has no focus rim")
+  Assert.isFalse(unfocusedText:find("Previous", 1, true) ~= nil, "Previous stays arrow art without text")
+  Assert.isFalse(unfocusedText:find("Next", 1, true) ~= nil, "Next stays arrow art without text")
+
+  local _, focusedLayout, focusedDraws, focusedRims = renderArrowState("arrow-next-focused", "bag:page:next", nil, 0)
+  local focusedNext = assert(focusedLayout.targets["bag:page:next"]).rect
+  Assert.notNil(hasPath(focusedDraws, "bag/inc-normal"), "focused Next keeps its normal generated art")
+  Assert.isTrue(hasRimAt(focusedRims, focusedNext), "focused Next draws the selected rim")
+
+  local _, _, pressedDraws, _ = renderArrowState("arrow-next-pressed", "bag:page:next", "bag:page:next", 0)
+  Assert.notNil(hasPath(pressedDraws, "bag/inc-pressed"), "held Next draws its pressed generated art")
+
+  local _, disabledLayout, disabledDraws, disabledRims =
+    renderArrowState("arrow-previous-disabled", "bag:pocket:items", nil, 0)
+  local previousRect = assert(disabledLayout.targets["bag:page:previous"]).rect
+  local disabledDraw = assert(hasPath(disabledDraws, "bag/dec-normal"), "disabled Previous keeps normal art")
+  local alpha = disabledDraw.color[4]
+  Assert.isTrue(alpha ~= nil and alpha < 0.9, "disabled Previous renders at visibly reduced opacity")
+  Assert.isFalse(hasRimAt(disabledRims, previousRect), "disabled Previous has no focus rim")
+  local _, _, forcedDraws, forcedRims =
+    renderArrowState("arrow-previous-disabled-forced", "bag:page:previous", "bag:page:previous", 0)
+  local forcedDraw = assert(hasPath(forcedDraws, "bag/dec-normal"), "forced disabled Previous keeps normal art")
+  Assert.isNil(hasPath(forcedDraws, "bag/dec-pressed"), "disabled Previous never uses pressed art")
+  Assert.isTrue(forcedDraw.color[4] ~= nil and forcedDraw.color[4] < 0.9, "disabled wins over press with muted art")
+  Assert.isFalse(hasRimAt(forcedRims, previousRect), "disabled wins over focus with no rim")
+end
+
+function T.long_bag_description_marks_truncation_with_ellipsis(scope)
+  local width, height = 1280, 720
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local _, renderedText, _, _, drawnText =
+    draw(scope, width, height, topology, "bag-cards-ellipsis", "Bag", "bag-cards")
+  Assert.isTrue(
+    renderedText:find("Restores a small amount of HP", 1, true) ~= nil,
+    "cards keep the visible description prefix"
+  )
+  Assert.isFalse(renderedText:find("OVERFLOW_SENTINEL", 1, true) ~= nil, "descriptions stop at the card two-line limit")
+  local truncated = false
+  for _, value in ipairs(drawnText) do
+    local isDescription = value:find("Restores", 1, true) ~= nil
+      or value:find("remains", 1, true) ~= nil
+      or value:find("useful", 1, true) ~= nil
+      or value:find("longer", 1, true) ~= nil
+      or value:find("description", 1, true) ~= nil
+    if isDescription and value:sub(-3) == "\226\128\166" then
+      truncated = true
+    end
+  end
+  Assert.isTrue(truncated, "a truncated description line ends with an ellipsis")
+  local shortComplete = false
+  for _, value in ipairs(drawnText) do
+    if value == "Cures poison." then
+      shortComplete = true
+    end
+  end
+  Assert.isTrue(shortComplete, "a short description renders without an ellipsis")
 end
 
 return GraphicsSmoke.suite(T, { capabilities = { "graphics" } })

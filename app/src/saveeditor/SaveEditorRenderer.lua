@@ -251,6 +251,46 @@ local function visibleText(renderer, value)
   return table.concat(glyphs)
 end
 
+local function textPalette(skin, foreground)
+  local shadow = skin.text.normal.foreground
+  return {
+    foreground = foreground,
+    shadow = { r = shadow.r, g = shadow.g, b = shadow.b },
+    background = { r = 0, g = 0, b = 0, a = 0 },
+  }
+end
+
+local function pagePalette(skin)
+  return textPalette(skin, { r = 248, g = 248, b = 248 })
+end
+
+local function pageMutedPalette(skin)
+  return textPalette(skin, { r = 198, g = 200, b = 204 })
+end
+
+local function pageErrorPalette(skin)
+  return textPalette(skin, { r = 255, g = 200, b = 190 })
+end
+
+local function buttonPalette(skin)
+  return textPalette(skin, { r = 250, g = 250, b = 250 })
+end
+
+local function buttonDisabledPalette(skin)
+  return textPalette(skin, { r = 192, g = 194, b = 197 })
+end
+
+local function actionSemantic(targetId)
+  if targetId == "party:edit" or targetId == "party:apply" then
+    return "primary"
+  elseif targetId == "party:remove" or targetId == "party:discard" then
+    return "destructive"
+  elseif targetId == "party:back" or targetId == "party:cancel" then
+    return "secondary"
+  end
+  return "navigation"
+end
+
 local function drawText(renderer, value, x, y, role)
   local textRole = role == "error" and "error"
     or role == "information" and "information"
@@ -258,6 +298,12 @@ local function drawText(renderer, value, x, y, role)
     or "normal"
   local skin = renderer.skin
   if type(role) == "table" then
+    if role.foreground ~= nil and role.shadow ~= nil then
+      renderer.graphics.setColor(1, 1, 1, 1)
+      renderer.text:drawTextWithPalette(visibleText(renderer, value), x, y, role)
+      renderer.graphics.setColor(1, 1, 1, 1)
+      return
+    end
     local foreground
     if role.foreground ~= nil then
       foreground = role.foreground
@@ -280,9 +326,10 @@ local function drawText(renderer, value, x, y, role)
   ProductMenuSkin.drawText(renderer.graphics, renderer.text, skin, textRole, visibleText(renderer, value), x, y)
 end
 
-local function drawShadedControl(renderer, rect, label, selected, disabled, destructive, semantic)
-  local role = disabled and "disabled" or destructive and "destructive" or semantic or "navigation"
+local function drawShadedControl(renderer, rect, label, selected, disabled, semantic)
+  local role = disabled and "disabled" or semantic or "navigation"
   local colors = assert(BUTTON_COLORS[role], "unknown save editor button role: " .. tostring(role))
+  local labelPalette = disabled and buttonDisabledPalette(renderer.skin) or buttonPalette(renderer.skin)
   local scale = math.min(1, rect.width / TextButton.REFERENCE_WIDTH, rect.height / TextButton.REFERENCE_HEIGHT)
   local button = TextButton.resolve({ rect = rect, scale = scale })
   TextButton.draw(renderer.graphics, button, {
@@ -295,7 +342,7 @@ local function drawShadedControl(renderer, rect, label, selected, disabled, dest
         return renderer.text:textWidth(value)
       end,
       draw = function(value, x, y)
-        drawText(renderer, value, x, y, "normal")
+        drawText(renderer, value, x, y, labelPalette)
       end,
     },
   })
@@ -350,32 +397,53 @@ end
 
 local drawCenteredIcon
 
+local function overflowsWithEllipsis(line)
+  return line:sub(-3) == "…"
+end
+
+local function foldOverflowIntoSecondLine(renderer, lines, words, index, width)
+  local remainder = table.concat(words, " ", index)
+  lines[2] = fitText(renderer, lines[2] .. " " .. remainder, width)
+end
+
 local function descriptionLines(renderer, description, width)
-  local lines, current = {}, ""
+  local words = {}
   for word in description:gmatch("%S+") do
+    words[#words + 1] = word
+  end
+  local lines, current, index = {}, "", 1
+  while index <= #words do
+    local word = words[index]
     local candidate = current == "" and word or (current .. " " .. word)
     if renderer.text:textWidth(candidate) <= width then
       current = candidate
+      index = index + 1
     elseif current == "" then
-      current = fitText(renderer, word, width)
-      lines[#lines + 1], current = current, ""
+      local fitted = fitText(renderer, word, width)
+      lines[#lines + 1] = fitted
+      current = ""
+      index = index + 1
       if #lines == 2 then
+        if index <= #words and not overflowsWithEllipsis(lines[2]) then
+          foldOverflowIntoSecondLine(renderer, lines, words, index, width)
+        end
         return lines
       end
     else
       lines[#lines + 1] = current
-      current = word
+      current = ""
       if #lines == 2 then
-        lines[2] = fitText(renderer, lines[2], width)
+        foldOverflowIntoSecondLine(renderer, lines, words, index, width)
         return lines
       end
     end
   end
-  if current ~= "" and #lines < 2 then
-    lines[#lines + 1] = current
-  end
-  if #lines == 2 and current ~= "" then
-    lines[2] = fitText(renderer, lines[2], width)
+  if current ~= "" then
+    if #lines < 2 then
+      lines[#lines + 1] = current
+    else
+      lines[2] = fitText(renderer, lines[2] .. " " .. current, width)
+    end
   end
   return lines
 end
@@ -423,11 +491,16 @@ local function drawBagCard(renderer, card, focused, focusVisual)
   graphics.pop()
 end
 
-local function drawBagPageArrow(renderer, target, visual, angle, disabled, _)
+local function drawBagPageArrow(renderer, target, visuals, angle, focused, pressed, disabled)
+  local visual = (pressed == true and not disabled) and visuals.pressed or visuals.normal
   local image = assert(renderer._bagImages[assert(visual.image)])
   local width, height = image:getDimensions()
   local scale = math.min(1, (target.width - 4) / width, (target.height - 4) / height)
-  renderer.graphics.setColor(1, 1, 1, 1)
+  if disabled then
+    renderer.graphics.setColor(1, 1, 1, 0.35)
+  else
+    renderer.graphics.setColor(1, 1, 1, 1)
+  end
   renderer.graphics.draw(
     image,
     target.x + target.width / 2,
@@ -438,9 +511,11 @@ local function drawBagPageArrow(renderer, target, visual, angle, disabled, _)
     width / 2,
     height / 2
   )
-  if disabled then
-    setColor(renderer.graphics, { 0.52, 0.54, 0.55, 1 })
+  renderer.graphics.setColor(1, 1, 1, 1)
+  if focused == true and not disabled then
+    setColor(renderer.graphics, renderer.skin.cards.normal.selectedRim)
     renderer.graphics.rectangle("line", target.x, target.y, target.width, target.height)
+    renderer.graphics.setColor(1, 1, 1, 1)
   end
 end
 
@@ -495,12 +570,16 @@ local function drawGridCard(renderer, card, focused)
     setColor(renderer.graphics, focused and renderer.skin.cards.normal.selectedRim or renderer.skin.cards.normal.border)
     renderer.graphics.rectangle("line", card.rect.x, card.rect.y, card.rect.width, card.rect.height, 3, 3)
   else
-    drawShadedControl(renderer, card.rect, "", focused, false, false, "primary")
+    drawShadedControl(renderer, card.rect, "", focused, false, "primary")
   end
   local icon = card.iconKey and renderer._icons[card.iconKey]
   if icon then
     drawCenteredIcon(renderer, icon, card.iconRect)
   end
+  local addPalette = card.kind == "add" and buttonPalette(renderer.skin) or nil
+  -- Add cards paint light button ink over their primary face; member cards keep
+  -- the default dark label role and muted value role on their white face.
+  local valueRole = addPalette or "hint"
   if card.kind == "add" then
     local plus = "+"
     local plusWidth = renderer.text:textWidth(plus)
@@ -508,7 +587,8 @@ local function drawGridCard(renderer, card, focused)
       renderer,
       plus,
       card.iconRect.x + (card.iconRect.width - plusWidth) / 2,
-      card.iconRect.y + math.max(0, (card.iconRect.height - renderer.text.fontDef.lineHeight) / 2)
+      card.iconRect.y + math.max(0, (card.iconRect.height - renderer.text.fontDef.lineHeight) / 2),
+      addPalette
     )
   end
   if card.textScale ~= nil then
@@ -516,26 +596,26 @@ local function drawGridCard(renderer, card, focused)
     renderer.graphics.push("all")
     renderer.graphics.translate(card.textRect.x, card.textRect.y)
     renderer.graphics.scale(scale, scale)
-    drawText(renderer, fitText(renderer, card.label, card.textRect.width / scale), 0, 0)
+    drawText(renderer, fitText(renderer, card.label, card.textRect.width / scale), 0, 0, addPalette)
     if card.value ~= nil then
       drawText(
         renderer,
         fitText(renderer, card.value, card.textRect.width / scale),
         0,
         renderer.text.fontDef.lineHeight,
-        "hint"
+        valueRole
       )
     end
     renderer.graphics.pop()
   else
-    drawText(renderer, fitText(renderer, card.label, card.textRect.width), card.textRect.x, card.textRect.y)
+    drawText(renderer, fitText(renderer, card.label, card.textRect.width), card.textRect.x, card.textRect.y, addPalette)
     if card.value ~= nil then
       drawText(
         renderer,
         fitText(renderer, card.value, card.textRect.width),
         card.textRect.x,
         card.textRect.y + renderer.text.fontDef.lineHeight,
-        "hint"
+        valueRole
       )
     end
   end
@@ -551,11 +631,8 @@ local function paintPane(self, view, plan, pane)
   local BORDER = self.skin.cards.normal.border
   local SELECTED = self.skin.cards.normal.selectedRim
   local MUTED = self.skin.text.hint.foreground
-  local framedContent = framedContentRect(layout.content)
   setColor(graphics, self.skin.background)
   graphics.rectangle("fill", 0, 0, placement.logicalWidth, placement.logicalHeight)
-  setColor(graphics, { 1, 1, 1, 1 })
-  graphics.rectangle("fill", framedContent.x, framedContent.y, framedContent.width, framedContent.height)
   for _, surface in ipairs(layout.listSurfaces or {}) do
     graphics.setColor(1, 1, 1, 1)
     graphics.rectangle("fill", surface.x, surface.y, surface.width, surface.height)
@@ -577,7 +654,6 @@ local function paintPane(self, view, plan, pane)
     for _, surface in ipairs(layout.listSurfaces or {}) do
       self._windowRenderer:drawApplicationFrame(framedContentRect(surface), frameIndex)
     end
-    self._windowRenderer:drawApplicationFrame(framedContent, frameIndex)
   end
   for _, navigation in ipairs(layout.navigation) do
     local target = targetRect(layout, navigation.targetId)
@@ -620,11 +696,31 @@ local function paintPane(self, view, plan, pane)
           )
           return
         end
-        local actionable = row.role == "action"
-          or row.role == "toggle"
-          or row.role == "integer value"
-          or row.role == "named choice"
-          or row.role == "party slot"
+        if row.role == "toggle" or row.role == "integer value" or row.role == "named choice" then
+          drawListRow(
+            self,
+            rect,
+            row.displayName or row.label,
+            row.targetId == view.focus,
+            row.valueText or row.value,
+            nil,
+            row.labelRect,
+            row.valueRect
+          )
+          return
+        end
+        if row.role == "action" then
+          drawShadedControl(
+            self,
+            rect,
+            row.displayName or row.label,
+            row.targetId == view.focus,
+            row.enabled == false,
+            actionSemantic(row.targetId)
+          )
+          return
+        end
+        local actionable = row.role == "party slot"
           or row.role == "bag item"
           or row.targetId:match("^party:slot:") ~= nil
           or row.targetId:match("^bag:item:") ~= nil
@@ -638,17 +734,25 @@ local function paintPane(self, view, plan, pane)
           graphics.draw(icon.image, icon.quad, rect.x + 3, rect.y + 2)
         end
         local labelRect = assert(row.labelRect, "layout rows own their label text bounds")
-        local textRole = row.role == "warning" and "error" or row.role == "read-only value" and "hint" or "normal"
+        local labelPalette = row.role == "warning" and pageErrorPalette(self.skin)
+          or row.role == "read-only value" and pageMutedPalette(self.skin)
+          or pagePalette(self.skin)
         drawText(
           self,
           fitText(self, row.displayName or row.label, labelRect.width),
           labelRect.x,
           rect.y + 3,
-          actionable and row.enabled == false and "hint" or textRole
+          labelPalette
         )
         if row.valueText ~= nil and row.valueRect ~= nil then
           local valueRect = row.valueRect
-          drawText(self, fitText(self, row.valueText, valueRect.width), valueRect.x, rect.y + 3)
+          drawText(
+            self,
+            fitText(self, row.valueText, valueRect.width),
+            valueRect.x,
+            rect.y + 3,
+            pageMutedPalette(self.skin)
+          )
         end
       end)
     end
@@ -706,10 +810,11 @@ local function paintPane(self, view, plan, pane)
       drawBagPageArrow(
         self,
         targetRect(layout, "bag:page:previous"),
-        view.bagQuantityVisuals.decrement[view.capturedTarget == "bag:page:previous" and "pressed" or "normal"],
+        view.bagQuantityVisuals.decrement,
         math.pi / 2,
-        view.bagPage0 == 0,
-        view.capturedTarget == "bag:page:previous"
+        view.focus == "bag:page:previous",
+        view.capturedTarget == "bag:page:previous",
+        view.bagPage0 == 0
       )
       local pageText = tostring(layout.bagPage.index) .. " / " .. tostring(layout.bagPage.count)
       drawText(
@@ -717,15 +822,16 @@ local function paintPane(self, view, plan, pane)
         pageText,
         layout.bagPageText.x + math.max(0, (layout.bagPageText.width - self.text:textWidth(pageText)) / 2),
         layout.bagPageText.y,
-        MUTED
+        pageMutedPalette(self.skin)
       )
       drawBagPageArrow(
         self,
         targetRect(layout, "bag:page:next"),
-        view.bagQuantityVisuals.increment[view.capturedTarget == "bag:page:next" and "pressed" or "normal"],
+        view.bagQuantityVisuals.increment,
         -math.pi / 2,
-        view.bagPage0 + 1 >= view.bagPageCount,
-        view.capturedTarget == "bag:page:next"
+        view.focus == "bag:page:next",
+        view.capturedTarget == "bag:page:next",
+        view.bagPage0 + 1 >= view.bagPageCount
       )
       drawShadedControl(
         self,
@@ -733,7 +839,6 @@ local function paintPane(self, view, plan, pane)
         "Add",
         view.focus == "bag:add",
         view.bagAddEnabled == false,
-        false,
         "primary"
       )
     end
@@ -747,15 +852,15 @@ local function paintPane(self, view, plan, pane)
     local textRect = layout.partySummary.textRect
     if layout.partySummary.inline then
       local identity = summary.species .. "  Lv. " .. tostring(summary.level)
-      drawText(self, fitText(self, identity, textRect.width), textRect.x, textRect.y + 1, "hint")
+      drawText(self, fitText(self, identity, textRect.width), textRect.x, textRect.y + 1, pagePalette(self.skin))
     else
-      drawText(self, fitText(self, summary.label, textRect.width), textRect.x, textRect.y)
+      drawText(self, fitText(self, summary.label, textRect.width), textRect.x, textRect.y, pagePalette(self.skin))
       drawText(
         self,
         fitText(self, summary.species .. "  Lv. " .. tostring(summary.level), textRect.width),
         textRect.x,
         textRect.y + self.text.fontDef.lineHeight,
-        "hint"
+        pageMutedPalette(self.skin)
       )
     end
   end
@@ -768,7 +873,7 @@ local function paintPane(self, view, plan, pane)
           fitText(self, row.label, row.labelRect.width),
           row.labelRect.x,
           y,
-          row.role == "warning" and "error" or "normal"
+          row.role == "warning" and pageErrorPalette(self.skin) or pagePalette(self.skin)
         )
         if row.editable then
           drawShadedControl(
@@ -779,9 +884,22 @@ local function paintPane(self, view, plan, pane)
             false
           )
         elseif row.role == "action" then
-          drawShadedControl(self, row.layoutRect, row.label, row.targetId == view.focus, row.enabled == false)
+          drawShadedControl(
+            self,
+            row.layoutRect,
+            row.label,
+            row.targetId == view.focus,
+            row.enabled == false,
+            actionSemantic(row.targetId)
+          )
         elseif row.valueText ~= nil then
-          drawText(self, fitText(self, row.valueText, row.valueRect.width), row.valueRect.x, y, "hint")
+          drawText(
+            self,
+            fitText(self, row.valueText, row.valueRect.width),
+            row.valueRect.x,
+            y,
+            pageMutedPalette(self.skin)
+          )
         end
       end
     end
@@ -791,7 +909,7 @@ local function paintPane(self, view, plan, pane)
         fitText(self, layout.partyHelp.text, layout.partyHelp.rect.width),
         layout.partyHelp.rect.x,
         layout.partyHelp.rect.y,
-        "hint"
+        pageMutedPalette(self.skin)
       )
     end
     if layout.partyStatsTable ~= nil then
@@ -803,7 +921,10 @@ local function paintPane(self, view, plan, pane)
         graphics.push("all")
         graphics.translate(target.x + 4, target.y + math.max(0, (target.height - lineHeight * scale) / 2))
         graphics.scale(scale, scale)
-        drawText(self, fitText(self, text, (target.width - 8) / scale), 0, 0, role)
+        local palette = role == "hint" and pageMutedPalette(self.skin)
+          or role == "error" and pageErrorPalette(self.skin)
+          or pagePalette(self.skin)
+        drawText(self, fitText(self, text, (target.width - 8) / scale), 0, 0, palette)
         graphics.pop()
       end
       for _, header in ipairs(stats.headers) do
@@ -838,7 +959,7 @@ local function paintPane(self, view, plan, pane)
     if rect then
       local label = action.id == "save" and view.locationSave and "Cancel check" or action.label
       local role = action.id == "save" and "primary" or action.id == "discard" and "destructive" or "secondary"
-      drawShadedControl(self, rect, label, action.id == view.focus, not action.enabled, false, role)
+      drawShadedControl(self, rect, label, action.id == view.focus, not action.enabled, role)
     end
   end
   if view.valueEditor then
@@ -883,18 +1004,16 @@ local function paintPane(self, view, plan, pane)
         local label = (control.delta > 0 and "+" or "") .. tostring(control.delta)
         drawText(self, label, target.x + 2, target.y + target.height - self.text.fontDef.lineHeight, INK)
       end
-      drawShadedControl(
-        self,
-        targetRect(layout, "confirm"),
-        "Confirm",
-        view.focus == "confirm",
-        false,
-        false,
-        "primary"
-      )
+      drawShadedControl(self, targetRect(layout, "confirm"), "Confirm", view.focus == "confirm", false, "primary")
       drawShadedControl(self, targetRect(layout, "cancel"), "Cancel", view.focus == "cancel", false)
     elseif dialog.kind == "choice" then
-      drawText(self, "Search: " .. dialog.query, layout.content.x + 4, layout.content.y + 4, MUTED)
+      drawText(
+        self,
+        "Search: " .. dialog.query,
+        layout.content.x + 4,
+        layout.content.y + 4,
+        pageMutedPalette(self.skin)
+      )
       local viewport = assert(layout.viewports["value:choice"])
       LogicalSurface.clip(graphics, viewport.clip, function()
         for _, option in ipairs(dialog.options) do
@@ -915,7 +1034,7 @@ local function paintPane(self, view, plan, pane)
       end
     elseif dialog.kind == "name" then
       local naming = dialog.naming
-      drawText(self, naming.text, layout.content.x + 4, layout.content.y + 3, INK)
+      drawText(self, naming.text, layout.content.x + 4, layout.content.y + 3, pagePalette(self.skin))
       for row = 1, 6 do
         for column = 1, 13 do
           local id = row .. ":" .. column
@@ -923,7 +1042,7 @@ local function paintPane(self, view, plan, pane)
           local cell = naming.grid[row][column]
           setColor(graphics, naming.cursor.row == row and naming.cursor.column == column and SELECTED or BORDER)
           graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-          drawText(self, cell.glyph or "", rect.x + 2, rect.y + 2, INK)
+          drawText(self, cell.glyph or "", rect.x + 2, rect.y + 2, pagePalette(self.skin))
         end
       end
       for _, control in ipairs(naming.controls) do
@@ -931,13 +1050,13 @@ local function paintPane(self, view, plan, pane)
         local rect = assert(targetRect(layout, id))
         setColor(graphics, BORDER)
         graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-        drawText(self, control.label, rect.x + 2, rect.y + 2, INK)
+        drawText(self, control.label, rect.x + 2, rect.y + 2, pagePalette(self.skin))
       end
       for _, id in ipairs({ "confirm", "cancel" }) do
         local rect = targetRect(layout, id)
         setColor(graphics, BORDER)
         graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-        drawText(self, id == "confirm" and "OK" or "Cancel", rect.x + 3, rect.y + 3, INK)
+        drawText(self, id == "confirm" and "OK" or "Cancel", rect.x + 3, rect.y + 3, pagePalette(self.skin))
       end
     end
   end
@@ -947,10 +1066,16 @@ local function paintPane(self, view, plan, pane)
       "Preparing party icons…",
       layout.content.x + 4,
       layout.content.y + layout.content.height - 16,
-      "hint"
+      pageMutedPalette(self.skin)
     )
   elseif view.iconStatus == "failed" then
-    drawText(self, "Icons unavailable", layout.content.x + 4, layout.content.y + layout.content.height - 16, "error")
+    drawText(
+      self,
+      "Icons unavailable",
+      layout.content.x + 4,
+      layout.content.y + layout.content.height - 16,
+      pageErrorPalette(self.skin)
+    )
   end
   if view.modal then
     local prompt
@@ -973,9 +1098,8 @@ end
 
 drawLocation = function(self, view, layout)
   local graphics = self.graphics
-  local INK = self.skin.text.normal.foreground
   local BORDER = self.skin.cards.normal.border
-  local MUTED = self.skin.text.hint.foreground
+  local tileMuted = self.skin.text.hint.foreground
   local location = assert(view.location)
   local navigation = assert(view.locationNavigation)
   local grid = layout.locationGrid
@@ -986,18 +1110,13 @@ drawLocation = function(self, view, layout)
   for _, targetId in ipairs({ "location:map-picker", "location:map-back" }) do
     local target = targetRect(layout, targetId)
     if target then
-      local content = drawShadedControl(self, target, "", targetId == view.focus, false)
       local label = targetId == "location:map-picker"
           and navigation.page == "map-list"
           and ("Search maps: " .. tostring(view.query or ""))
         or targetId == "location:map-picker" and "Change Map"
         or "Back"
-      local fitted = fitText(self, label, content.width)
-      if targetId == "location:map-picker" and navigation.page == "map-list" then
-        fitted = fitText(self, label, target.width - 16)
-      end
-      local textWidth = self.text:textWidth(fitted)
-      drawText(self, fitted, content.x + (content.width - textWidth) / 2, content.y + 2, INK)
+      local fitted = fitText(self, label, target.width - 16)
+      drawShadedControl(self, target, fitted, targetId == view.focus, false)
     end
   end
 
@@ -1032,7 +1151,7 @@ drawLocation = function(self, view, layout)
           else
             setColor(graphics, { 0.89, 0.9, 0.87, 1 })
             graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
-            setColor(graphics, MUTED)
+            setColor(graphics, tileMuted)
             graphics.line(x + 2, y + grid.tileSize - 2, x + grid.tileSize - 2, y + 2)
           end
           setColor(graphics, BORDER)
@@ -1065,17 +1184,20 @@ drawLocation = function(self, view, layout)
       or status.reason
       or "Map unavailable"
     local mapLine = statusLayout.mapLine
+    local statusPalette = status.state == "ready" and pagePalette(self.skin)
+      or status.state == "failed" and pageErrorPalette(self.skin)
+      or pageMutedPalette(self.skin)
     drawText(
       self,
       fitText(self, mapLabel .. (statusLabel ~= "" and (" · " .. statusLabel) or ""), mapLine.width),
       mapLine.x,
       mapLine.y,
-      status.state == "ready" and "information" or status.state == "failed" and "error" or "hint"
+      statusPalette
     )
     local staged = view.pendingLocation or view.savedLocation
     local markerText = staged and string.format("X %d  Z %d", staged.fieldX, staged.fieldZ) or ""
     local summaryLine = statusLayout.summaryLine
-    drawText(self, fitText(self, markerText, summaryLine.width), summaryLine.x, summaryLine.y, INK)
+    drawText(self, fitText(self, markerText, summaryLine.width), summaryLine.x, summaryLine.y, pagePalette(self.skin))
   end
   if layout.locationFocusCue then
     local cue = layout.locationFocusCue
@@ -1086,12 +1208,10 @@ end
 
 local function paintLocationContext(self, view, pane)
   local graphics = self.graphics
-  local INK = self.skin.text.normal.foreground
-  local MUTED = self.skin.text.hint.foreground
   local location = assert(view.location)
   setColor(graphics, self.skin.background)
   graphics.rectangle("fill", 0, 0, pane.placement.logicalWidth, pane.placement.logicalHeight)
-  drawText(self, "Location context", 8, 8, INK)
+  drawText(self, "Location context", 8, 8, pagePalette(self.skin))
   drawText(
     self,
     fitText(
@@ -1101,21 +1221,23 @@ local function paintLocationContext(self, view, pane)
     ),
     8,
     28,
-    INK
+    pagePalette(self.skin)
   )
   local current = view.savedLocation
   if current then
-    drawText(self, string.format("Current %d, %d", current.fieldX, current.fieldZ), 8, 46, INK)
+    drawText(self, string.format("Current %d, %d", current.fieldX, current.fieldZ), 8, 46, pagePalette(self.skin))
   elseif view.session then
     drawText(
       self,
       fitText(self, view.session.playerName .. " · " .. view.session.versionId, pane.placement.logicalWidth - 16),
       8,
-      46
+      46,
+      pagePalette(self.skin)
     )
   end
   local status = location.status
-  drawText(self, status.state == "ready" and "Map ready" or status.reason or "Preparing map data", 8, 64, MUTED)
+  local statusPalette = status.state == "failed" and pageErrorPalette(self.skin) or pageMutedPalette(self.skin)
+  drawText(self, status.state == "ready" and "Map ready" or status.reason or "Preparing map data", 8, 64, statusPalette)
 end
 
 function Renderer:draw(view, plan)
@@ -1141,7 +1263,8 @@ function Renderer:draw(view, plan)
             self,
             view.session and (view.session.playerName .. " · " .. view.session.versionId) or "Save context",
             8,
-            8
+            8,
+            pagePalette(self.skin)
           )
         end
       end)
