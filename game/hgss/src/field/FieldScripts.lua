@@ -445,6 +445,7 @@ function FieldScripts.new(opts)
       sourceMap = opts.blackout.sourceMap,
       world = worldState,
       mons = opts.mons,
+      travel = opts.travel,
       audio = opts.audio,
       overworld = opts.overworld,
       resolveMessage = resolveMessage,

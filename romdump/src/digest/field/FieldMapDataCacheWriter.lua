@@ -85,7 +85,10 @@ local function persistSpawnIndex(tx, bundle)
     Errors.raise("FIELD_MAP_DATA_CACHE_STALE", "spawn index artifact failed readback: " .. Errors.format(indexErr), {})
   end
   if
-    index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA or not FieldMapDataCache.hasSpawnDestinations(index.spawns)
+    index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA
+    or not FieldMapDataCache.hasSpawnDestinations(index.spawns)
+    or not FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
+    or not FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns)
   then
     Errors.raise("FIELD_MAP_DATA_CACHE_STALE", "spawn index readback has the wrong identity", {})
   end

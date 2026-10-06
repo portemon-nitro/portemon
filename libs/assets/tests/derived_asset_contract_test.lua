@@ -62,7 +62,7 @@ function T.contract_pins_the_current_asset_identities()
     fieldMapData = {
       cacheFormat = "g4-field-map-cache-v1",
       fieldSchema = "g4-field-map-v11",
-      spawnIndexSchema = "g4-field-spawn-index-v2",
+      spawnIndexSchema = "g4-field-spawn-index-v3",
     },
     messages = {
       cacheFormat = "field-message-cache-v3",
