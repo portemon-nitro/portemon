@@ -43,7 +43,6 @@ local function rig(ballCount)
       machineAnimation = "heal",
       fanfare = "heal",
       placementSound = "ball",
-      spawnIntervalSourceFrames = 12,
       ballPositions = {
         { role = "one", offset = { x = 0, y = 0, z = 0 } },
         { role = "two", offset = { x = 1, y = 0, z = 0 } },
@@ -97,16 +96,41 @@ local function rig(ballCount)
   return flow, calls
 end
 
-function T.tests.spawns_requested_prefix_at_twelve_frame_intervals_and_waits_for_all_gates()
+function T.tests.spawns_each_ball_after_a_full_delay_then_threshold_transition_and_waits_for_all_gates()
   local flow, calls = rig()
   flow:start(3)
   Assert.equal(#flow:status().balls, 1)
-  calls:tick(11)
+  -- Twelve delay invocations create nothing and start nothing.
+  calls:tick(12)
   Assert.equal(#flow:status().balls, 1)
+  Assert.equal(calls.machine, 0)
+  Assert.equal(calls.fanfare, 0)
+  -- The threshold-observation invocation selects the next ball without
+  -- creating it or starting the machine.
+  calls:tick(1)
+  Assert.equal(#flow:status().balls, 1)
+  Assert.equal(calls.machine, 0)
+  Assert.equal(calls.fanfare, 0)
+  -- Only the following invocation creates the next ball.
   calls:tick(1)
   Assert.equal(#flow:status().balls, 2)
   calls:tick(12)
+  Assert.equal(#flow:status().balls, 2)
+  calls:tick(1)
+  Assert.equal(#flow:status().balls, 2)
+  Assert.equal(calls.machine, 0)
+  Assert.equal(calls.fanfare, 0)
+  calls:tick(1)
   Assert.equal(#flow:status().balls, 3)
+  -- The same delay/transition sequence runs after the final ball before
+  -- the machine starts.
+  calls:tick(12)
+  Assert.equal(#flow:status().balls, 3)
+  Assert.equal(calls.machine, 0)
+  Assert.equal(calls.fanfare, 0)
+  calls:tick(1)
+  Assert.equal(calls.machine, 0)
+  Assert.equal(calls.fanfare, 0)
   calls:tick(1)
   Assert.equal(calls.machine, 1)
   Assert.equal(calls.fanfare, 1)
@@ -159,16 +183,28 @@ function T.tests.one_and_six_party_members_use_the_generated_position_boundaries
   one:start(1)
   Assert.equal(#oneCalls.spawned, 1)
   Assert.equal(one:status().balls[1].index, 1)
-  oneCalls:tick()
-  Assert.equal(oneCalls.machine, 1, "one ball advances directly to the paired animation stage")
+  oneCalls:tick(12)
+  Assert.equal(oneCalls.machine, 0, "the delay still runs for a single ball")
+  oneCalls:tick(1)
+  Assert.equal(oneCalls.machine, 0, "the threshold step must not start the machine early")
+  oneCalls:tick(1)
+  Assert.equal(oneCalls.machine, 1, "the paired animation stage starts after the full delay sequence")
 
   local six, sixCalls = rig()
   six:start(6)
   for expected = 2, 6 do
     sixCalls:tick(12)
+    Assert.equal(#sixCalls.spawned, expected - 1)
+    sixCalls:tick(1)
+    Assert.equal(#sixCalls.spawned, expected - 1)
+    sixCalls:tick(1)
     Assert.equal(#sixCalls.spawned, expected)
   end
-  sixCalls:tick()
+  sixCalls:tick(12)
+  Assert.equal(sixCalls.machine, 0)
+  sixCalls:tick(1)
+  Assert.equal(sixCalls.machine, 0)
+  sixCalls:tick(1)
   Assert.equal(sixCalls.machine, 1)
   Assert.equal(sixCalls.placement, 6)
 end
@@ -230,7 +266,9 @@ function T.tests.failure_during_later_spawn_releases_already_owned_balls()
     return originalSpawn(...)
   end
   flow:start(2)
-  calls:tick(12)
+  calls:tick(13)
+  Assert.equal(flow:status().phase, "spawning", "the second spawn waits for the full delay and threshold steps")
+  calls:tick(1)
   Assert.equal(flow:status().phase, "failed")
   Assert.notNil(flow:status().error)
   Assert.equal(#flow:status().balls, 0)

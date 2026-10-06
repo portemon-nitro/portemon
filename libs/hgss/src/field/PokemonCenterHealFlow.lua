@@ -16,7 +16,8 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field activeMapId integer?
 ---@field anchor table<string, unknown>|nil
 ---@field spawned integer
----@field age integer
+---@field taskState integer
+---@field delay integer
 ---@field machine table<string, unknown>|nil
 ---@field start fun(self: PokemonCenterHealFlow, count: integer)
 ---@field updateFixed fun(self: PokemonCenterHealFlow)
@@ -25,6 +26,12 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field dispose fun(self: PokemonCenterHealFlow)
 local PokemonCenterHealFlow = {}
 PokemonCenterHealFlow.__index = PokemonCenterHealFlow
+
+-- State 2 of the healing-machine task waits while its delay counter is below
+-- this threshold (0x0C). It is a counter threshold, never a spawn interval:
+-- the threshold-observation invocation only selects the next state, and the
+-- following invocation performs it.
+local HEALING_MACHINE_DELAY_THRESHOLD = 12
 
 local function finiteNumber(value)
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
@@ -49,7 +56,6 @@ function PokemonCenterHealFlow.new(options)
   assert(options.audio and options.audio.play and options.audio.playFanfare, "center healing flow audio is required")
   local positions = assert(definition.ballPositions, "center healing flow ball positions are required")
   assert(#positions == 6, "center healing flow has six retail ball positions")
-  assert(definition.spawnIntervalSourceFrames == 12, "center healing flow interval must match the retail cadence")
   return setmetatable({
     definition = definition,
     mapId = options.mapId,
@@ -60,7 +66,8 @@ function PokemonCenterHealFlow.new(options)
     balls = {},
     error = nil,
     count = 0,
-    age = 0,
+    taskState = 0,
+    delay = 0,
   }, PokemonCenterHealFlow)
 end
 
@@ -151,7 +158,8 @@ function PokemonCenterHealFlow:start(count)
   self.phase = "spawning"
   self.count = count
   self.spawned = 0
-  self.age = 0
+  self.taskState = 0
+  self.delay = 0
   self.error = nil
   local ok, anchor = pcall(function()
     local resolved = self.resolveAnchor(self.definition.machineAnimation)
@@ -174,12 +182,13 @@ function PokemonCenterHealFlow:start(count)
       return
     end
     self.spawned = 1
-    if count == 1 then
-      self.phase = "start_animations"
-    else
-      self.age = self.definition.spawnIntervalSourceFrames
-    end
+    -- The first ball is created during startup. Every later ball, and the
+    -- machine startup itself, runs through the fixed-update state dispatch
+    -- below after the full delay and transition sequence.
+    self.taskState = 2
+    self.delay = 0
   else
+    self.taskState = 3
     self.phase = "start_animations"
   end
 end
@@ -193,20 +202,30 @@ function PokemonCenterHealFlow:updateFixed()
     return
   end
   local ok, err = pcall(function()
-    if self.phase == "spawning" then
-      self.age = self.age - 1
-      if self.age == 0 then
-        self:_spawn(self.spawned + 1)
-        self.spawned = self.spawned + 1
+    if self.taskState == 1 then
+      self:_spawn(self.spawned + 1)
+      self.spawned = self.spawned + 1
+      self.taskState = 2
+      self.delay = 0
+    elseif self.taskState == 2 then
+      if self.delay < HEALING_MACHINE_DELAY_THRESHOLD then
+        self.delay = self.delay + 1
+      else
+        -- The threshold observation only selects the next state. The
+        -- selected ball creation or machine startup runs on a later
+        -- invocation, never in this one.
+        self.delay = 0
         if self.spawned == self.count then
+          self.taskState = 3
           self.phase = "start_animations"
         else
-          self.age = self.definition.spawnIntervalSourceFrames
+          self.taskState = 1
         end
       end
-    elseif self.phase == "start_animations" then
+    elseif self.taskState == 3 then
       self:_startAnimations()
-    elseif self.phase == "waiting" then
+      self.taskState = 4
+    elseif self.taskState == 4 then
       local ballsFinished = true
       for _, ball in ipairs(self.balls) do
         ball.handle:updateFixed()
@@ -219,6 +238,7 @@ function PokemonCenterHealFlow:updateFixed()
       end
       if ballsFinished and self.machine:isFinished() and not self.audio:isFanfarePlaying() then
         releaseFlow(self)
+        self.taskState = 5
         self.phase = "complete"
       end
     end
