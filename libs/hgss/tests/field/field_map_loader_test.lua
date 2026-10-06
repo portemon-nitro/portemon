@@ -1892,6 +1892,52 @@ function T.synchronous_load_delegates_to_the_staged_transaction()
   loader:release()
 end
 
+-- The script special-spawn setter carries retail numeric map ids; the maps
+-- adapter resolves them through this pure world-table query. It reads no
+-- scene, collision, terrain, or other generated asset and caches nothing.
+function T.map_symbol_resolves_known_ids_and_symbols_without_acquiring_assets()
+  local cache, world = fixture(2)
+  cache.loadLua = function(_, path)
+    error("symbol resolution reads no generated asset: " .. tostring(path), 0)
+  end
+  cache.read = function(_, path)
+    error("symbol resolution reads no generated asset: " .. tostring(path), 0)
+  end
+  local loader = FieldMapLoader.new(cache, world)
+  Assert.equal(loader:mapSymbol(1), "MAP_1")
+  Assert.equal(loader:mapSymbol("MAP_1"), "MAP_1")
+  Assert.equal(loader:residentCount(), 0, "symbol resolution caches no map")
+  Assert.isNil(loader:get(1), "symbol resolution publishes no resident entry")
+  loader:release()
+end
+
+function T.map_symbol_rejects_unknown_ids_and_symbols_loudly()
+  local cache, world = fixture(1)
+  local loader = FieldMapLoader.new(cache, world)
+  local byId = Assert.throws(function()
+    loader:mapSymbol(999)
+  end)
+  Assert.isTrue(Errors.is(byId) and byId.code == "FIELD_MAP_UNKNOWN", "unknown numeric ids fail loudly")
+  local bySymbol = Assert.throws(function()
+    loader:mapSymbol("MAP_MISSING")
+  end)
+  Assert.isTrue(Errors.is(bySymbol) and bySymbol.code == "FIELD_MAP_UNKNOWN", "unknown symbols fail loudly")
+  Assert.equal(loader:residentCount(), 0)
+  loader:release()
+end
+
+-- Symbol-space agreement with the generated world manifest and the
+-- spawn-index key space: retail numeric id 60 is New Bark Town.
+function T.numeric_new_bark_id_resolves_to_the_spawn_index_symbol()
+  local cache, world = fixture(61)
+  world.maps[61].symbol = "MAP_NEW_BARK"
+  world.bySymbol["MAP_NEW_BARK"] = 60
+  local loader = FieldMapLoader.new(cache, world)
+  Assert.equal(loader:mapSymbol(60), "MAP_NEW_BARK")
+  Assert.equal(loader:mapSymbol("MAP_NEW_BARK"), "MAP_NEW_BARK")
+  loader:release()
+end
+
 function T.begin_load_on_a_resident_entry_returns_it_ready()
   local cache, world = fixture(1)
   local sceneLoader, builds = stagedSceneLoader(0)

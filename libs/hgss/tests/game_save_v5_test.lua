@@ -9,7 +9,6 @@ local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
-local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 local BagSave = require("libs.hgss.src.save.BagSave")
 
 local T = {}
@@ -42,7 +41,6 @@ local function battleEraRecord(overrides)
     bag = BagSave.empty(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
-    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
   for key, replacement in pairs(overrides or {}) do
     rawset(value, key, replacement)
@@ -96,7 +94,6 @@ function T.supported_saves_migrate_without_losing_state()
   input.schema = GameSave.HISTORICAL_SCHEMA_V4
   input.encounters = nil
   input.pokedex = nil
-  input.battleFrontier = nil
   local migrated = GameSave.migrateV5(GameSave.migrateV4(input))
   Assert.equal(migrated.schema, BATTLE_ERA_SCHEMA)
   Assert.deepEqual(migrated.world, input.world, "migration preserves world flags, variables, and generator state")
@@ -110,7 +107,8 @@ function T.supported_saves_migrate_without_losing_state()
   Assert.equal(migrated.fieldX, 684, "migration preserves the actual saved coordinates")
   Assert.deepEqual(migrated.encounters, EncounterSave.initial(), "only genuinely absent encounter state initializes")
   Assert.deepEqual(migrated.pokedex, PokedexSave.initial(), "only genuinely absent dex knowledge initializes")
-  Assert.deepEqual(migrated.battleFrontier, BattleFrontierRecords.new():bucket(), "new Frontier counters initialize explicitly")
+  Assert.isNil(migrated.battleFrontier, "no Frontier bucket is synthesized")
+  Assert.isNil(migrated.fieldTravel.specialSpawn, "an absent special spawn migrates as nil")
   Assert.equal(
     migrated.playerData.options.battleStyle,
     "shift",

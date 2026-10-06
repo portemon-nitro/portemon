@@ -41,13 +41,23 @@ local function timeOfDayService(runtime)
   return { currentCode = currentCode }
 end
 
+-- No Frontier gameplay owns a writer yet, so the current production
+-- composition supplies a stateless non-qualifying Frontier capability. The
+-- source predicate inside TrainerCardStars.count stays untouched for the
+-- day a real Frontier subsystem injects a qualifying record.
+local function frontierNeverQualifiesForTrainerCardStar()
+  return false
+end
+
 local function trainerCardStarsService(runtime)
   local function count()
     local scripts = assert(runtime.scripts, "field script runtime is assigned before script execution")
     return TrainerCardStars.count(
       scripts.worldState,
       assert(runtime.dexKnowledge, "field runtime has no dex knowledge"),
-      assert(runtime.battleFrontierRecords, "field runtime has no Battle Frontier records")
+      {
+        qualifiesForTrainerCardStar = frontierNeverQualifiesForTrainerCardStar,
+      }
     )
   end
   return { count = count }

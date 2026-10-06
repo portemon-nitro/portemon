@@ -10,7 +10,6 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
-local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 local SaveFs = require("libs.storage.src.SaveFs")
 
 local T = {}
@@ -52,7 +51,6 @@ local function record(saveId, versionId, overrides)
     bag = BagSave.empty(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
-    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
   for key, valueOverride in pairs(overrides or {}) do
     value[key] = valueOverride

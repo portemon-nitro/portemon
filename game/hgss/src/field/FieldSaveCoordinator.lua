@@ -122,7 +122,6 @@ function FieldSaveCoordinator:capture(allowMenu)
     bag = runtime.bagService:capture(),
     encounters = EncounterSave.capture(assert(runtime.roamerState, "field runtime has no roamer state")),
     pokedex = assert(runtime.dexKnowledge, "field runtime has no dex knowledge"):bucket(),
-    battleFrontier = assert(runtime.battleFrontierRecords, "field runtime has no Battle Frontier records"):bucket(),
   }
   if runtime.playerAvatar then
     snapshot.avatar = runtime.playerAvatar:capture()

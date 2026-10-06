@@ -409,4 +409,46 @@ function T.malformed_v4_travel_is_rejected_never_repaired()
   Assert.isTrue(Errors.is(err))
 end
 
+
+function T.special_spawn_survives_validation_and_field_entry_reconstruction()
+  local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local candidate = record("save-00000018", "heartgold", validPlayerData)
+  candidate.fieldTravel = {
+    lastHealSpawn = "SPAWN_NEW_BARK",
+    specialSpawn = { map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" },
+  }
+  local valid = assert(service:validate(candidate))
+  local reentered = FieldTravelState.new(assert(valid.fieldTravel, "validated travel survives"))
+  Assert.deepEqual(reentered:specialSpawn(), {
+    map = "MAP_NEW_BARK",
+    fieldX = 688,
+    fieldZ = 393,
+    warpId = -1,
+    direction = "south",
+  }, "the persisted special spawn survives validation exactly as field entry rebuilds it")
+end
+
+function T.malformed_persisted_special_spawn_is_rejected_as_bucket_invalid()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local candidate = record("save-00000019", "heartgold", validPlayerData)
+  candidate.fieldTravel = {
+    lastHealSpawn = "SPAWN_NEW_BARK",
+    specialSpawn = { map = "", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" },
+  }
+  local invalid, err = service:validate(candidate)
+  Assert.isNil(invalid, "a malformed persisted special spawn never validates")
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "GAME_SAVE_BUCKET_INVALID")
+  Assert.equal(err.context.bucket, "fieldTravel")
+end
+
 return { tests = T }

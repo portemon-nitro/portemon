@@ -12,7 +12,6 @@ local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
-local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
 local SaveFs = require("libs.storage.src.SaveFs")
@@ -61,7 +60,6 @@ local function v4record(overrides)
   value.fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" }
   value.encounters = EncounterSave.initial()
   value.pokedex = PokedexSave.initial()
-  value.battleFrontier = BattleFrontierRecords.new():bucket()
   return value
 end
 
@@ -121,15 +119,28 @@ function T.migrated_records_validate_with_a_travel_validator()
   Assert.deepEqual(valid.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
 end
 
-function T.v5_migration_initializes_frontier_records_without_mutating_the_source()
+function T.v5_migration_fabricates_neither_frontier_nor_special_spawn()
   local input = GameSave.migrateV4(GameSave.migrateV3(v3record()))
   local originalSchema = input.schema
   local migrated = GameSave.migrateV5(input)
   Assert.equal(originalSchema, GameSave.HISTORICAL_SCHEMA_V5)
   Assert.equal(input.schema, originalSchema)
   Assert.isNil(input.battleFrontier)
-  Assert.deepEqual(migrated.battleFrontier, BattleFrontierRecords.new():bucket())
+  Assert.isNil(migrated.battleFrontier, "migration creates no Frontier bucket")
+  Assert.isNil(migrated.fieldTravel.specialSpawn, "an absent special spawn migrates as nil")
+  Assert.deepEqual(migrated.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
   Assert.equal(migrated.schema, GameSave.SCHEMA)
+end
+
+function T.v5_migration_preserves_field_travel_exactly()
+  local input = GameSave.migrateV4(GameSave.migrateV3(v3record()))
+  input.fieldTravel = {
+    lastHealSpawn = "SPAWN_GOLDENROD",
+    specialSpawn = { map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" },
+  }
+  local migrated = GameSave.migrateV5(input)
+  Assert.deepEqual(migrated.fieldTravel, input.fieldTravel, "migration carries travel through untouched")
+  Assert.isNil(migrated.battleFrontier, "migration creates no Frontier bucket")
 end
 
 local function quiescentScripts()

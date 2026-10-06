@@ -7,7 +7,6 @@ local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
-local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 
 local GameSave = {}
@@ -29,7 +28,6 @@ local TOP_LEVEL_FIELDS = {
   audio = true,
   auxiliaryUi = true,
   bag = true,
-  battleFrontier = true,
   encounters = true,
   facing = true,
   fieldTravel = true,
@@ -316,15 +314,6 @@ local function validate(record, opts)
   local canonicalEncounters =
     validateBucket(record, "encounters", opts, "encountersValidate", defaultEncountersValidate)
   local canonicalPokedex = validateBucket(record, "pokedex", opts, "pokedexValidate", defaultPokedexValidate)
-  local canonicalBattleFrontier = validateBucket(
-    record,
-    "battleFrontier",
-    opts,
-    "battleFrontierValidate",
-    function(bucket)
-      return BattleFrontierRecords.restore(bucket):bucket()
-    end
-  )
   local canonicalFieldTravel = validateBucket(record, "fieldTravel", opts, "fieldTravelValidate")
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
   local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
@@ -340,7 +329,6 @@ local function validate(record, opts)
   canonical.bag = canonicalBag
   canonical.encounters = canonicalEncounters
   canonical.pokedex = canonicalPokedex
-  canonical.battleFrontier = canonicalBattleFrontier
   canonical.fieldTravel = canonicalFieldTravel
   canonical.auxiliaryUi = canonicalAuxiliaryUi
   canonical.audio = canonicalAudio
@@ -519,8 +507,10 @@ function GameSave.migrateV4(record)
   return migrated
 end
 
--- V5 had no Battle Frontier record owner. This migration initializes the
--- counters explicitly because earlier Portemon versions could not record them.
+-- V5 carries no special-spawn writer: migration copies the record, stamps
+-- the current schema, and preserves fieldTravel exactly. An absent special
+-- spawn stays absent (nil is the canonical unestablished state); neither a
+-- Frontier bucket nor a special spawn is fabricated here.
 ---@param record table<string, unknown> a v5 save record
 ---@return table<string, unknown> the migrated v6 record
 function GameSave.migrateV5(record)
@@ -535,9 +525,6 @@ function GameSave.migrateV5(record)
     migrated[key] = value
   end
   migrated.schema = GameSave.SCHEMA
-  if migrated.battleFrontier == nil then
-    migrated.battleFrontier = BattleFrontierRecords.new():bucket()
-  end
   return migrated
 end
 

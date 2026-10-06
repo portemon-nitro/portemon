@@ -7,7 +7,6 @@ local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
-local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 
 local T = {}
 
@@ -34,7 +33,6 @@ local function record(overrides)
     bag = BagSave.empty(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
-    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
   for key, replacement in pairs(overrides or {}) do
     rawset(value, key, replacement)
@@ -187,6 +185,15 @@ function T.rejects_non_table_and_missing_required_buckets()
     value.bag = nil
     return GameSave.validate(value)
   end)
+end
+
+function T.rejects_a_frontier_bucket_as_an_unknown_field()
+  local valid, err = GameSave.validate(record({ battleFrontier = { schema = "frontier", stateVersion = 1 } }))
+  Assert.isNil(valid, "a Frontier envelope is not a compatible v6 record")
+  err = assert(err)
+  Assert.equal(err.code, "GAME_SAVE_INVALID")
+  Assert.equal(err.context.field, "battleFrontier")
+  Assert.notNil(GameSave.validate(record()))
 end
 
 function T.rejects_removed_top_level_session_fields()

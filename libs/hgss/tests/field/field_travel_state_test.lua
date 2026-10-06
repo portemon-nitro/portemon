@@ -75,4 +75,62 @@ function T.constructor_rejects_malformed_save_data()
   end)
 end
 
+function T.special_spawn_defaults_to_nil_and_round_trips_a_copied_record()
+  local state = FieldTravelState.new(travel())
+  Assert.isNil(state:specialSpawn())
+  Assert.isNil(state:capture().specialSpawn)
+  local input = { map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" }
+  state:setSpecialSpawn(input)
+  Assert.deepEqual(state:specialSpawn(), input)
+  Assert.deepEqual(state:capture().specialSpawn, input)
+  input.fieldX = 999
+  Assert.equal(state:specialSpawn().fieldX, 688, "later caller mutation must not reach travel state")
+  local observed = state:specialSpawn()
+  observed.map = "MAP_MUTATED"
+  Assert.equal(state:specialSpawn().map, "MAP_NEW_BARK", "getter results share no identity with the owner")
+  local snapshot = state:capture()
+  snapshot.specialSpawn.direction = "north"
+  Assert.equal(state:specialSpawn().direction, "south", "captures share no identity with the owner")
+end
+
+function T.special_spawn_rejects_malformed_records_without_mutating_prior_value()
+  local state = FieldTravelState.new(travel())
+  local malformed = {
+    { map = "", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" },
+    { map = 7, fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" },
+    { map = "MAP_X", fieldX = -1, fieldZ = 2, warpId = -1, direction = "south" },
+    { map = "MAP_X", fieldX = 1.5, fieldZ = 2, warpId = -1, direction = "south" },
+    { map = "MAP_X", fieldX = 1, fieldZ = 2, warpId = 0.5, direction = "south" },
+    { map = "MAP_X", fieldX = 1, fieldZ = 2, warpId = "-1", direction = "south" },
+    { map = "MAP_X", fieldX = 1, fieldZ = 2, warpId = -1, direction = "up" },
+  }
+  for _, record in ipairs(malformed) do
+    Assert.throws(function()
+      state:setSpecialSpawn(record)
+    end)
+  end
+  Assert.isNil(state:specialSpawn(), "failed updates leave the unset value unchanged")
+  local established = { map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" }
+  state:setSpecialSpawn(established)
+  for _, record in ipairs(malformed) do
+    Assert.throws(function()
+      state:setSpecialSpawn(record)
+    end)
+  end
+  Assert.deepEqual(state:specialSpawn(), established, "failed updates preserve the prior record")
+end
+
+function T.constructor_copies_an_optional_special_spawn_and_rejects_malformed_persisted_values()
+  local persisted = { map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" }
+  local state = FieldTravelState.new(travel({ specialSpawn = persisted }))
+  Assert.deepEqual(state:specialSpawn(), persisted)
+  persisted.map = "MAP_MUTATED"
+  Assert.equal(state:specialSpawn().map, "MAP_NEW_BARK", "construction copies the persisted record")
+  Assert.throws(function()
+    FieldTravelState.new(travel({
+      specialSpawn = { map = "", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" },
+    }))
+  end)
+end
+
 return { tests = T }
