@@ -1092,7 +1092,6 @@ end
 do
   ---@class RuntimeFollowerTransition
   ---@field start fun(self: RuntimeFollowerTransition)
-  ---@field startAppearance fun(self: RuntimeFollowerTransition, follower: RuntimeFollowingMon)
 
   ---@param run table<string, unknown>
   ---@return RuntimeFollowingMon

@@ -58,6 +58,11 @@ FollowingMonController.__index = FollowingMonController
 ---@field setMovementPaused fun(self: FollowingMonController, paused: boolean)
 ---@field isMovementSettled fun(self: FollowingMonController): boolean
 ---@field settleMovement fun(self: FollowingMonController)
+---@field isPartnerVisible fun(self: FollowingMonController): boolean
+---@field classifyAppearanceGeometry fun(self: FollowingMonController): { mirror: boolean, nextState: integer }
+---@field startAppearanceMovement fun(self: FollowingMonController, kind: string)
+---@field setAppearancePresentationOffset fun(self: FollowingMonController, offset: { x: number, y: number, z: number })
+---@field clearAppearancePresentationOffset fun(self: FollowingMonController)
 ---@field setMovementType fun(self: FollowingMonController, movementType: string)
 ---@field repositionRelativeToPlayer fun(self: FollowingMonController, offsetSelector: integer, directionRaw: integer)
 ---@field facePlayer fun(self: FollowingMonController)
@@ -134,6 +139,16 @@ local ZERO_OFFSET = { x = 0, z = 0 }
 -- 1 south, 2 west, 3 east.
 local FACING_BY_RAW = { [0] = "north", [1] = "south", [2] = "west", [3] = "east" }
 
+-- The closed appearance movement vocabulary: two normal-speed walks; the
+-- facing snap is handled separately. Raw movement ids never reach that seam.
+local APPEARANCE_WALK_DIRECTIONS = { walk_west = "west", walk_north = "north" }
+
+---@param value unknown
+---@return boolean
+local function isFiniteNumber(value)
+  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
 -- The persistent follower map-object movement modes: ordinary free
 -- following plus the two scripted-transition modes. The setter stores the
 -- mode only; movement behavior reads it on later ticks.
@@ -142,6 +157,11 @@ local FOLLOWER_MOVEMENT_TYPES = {
   follow_transition_a = true,
   follow_transition_b = true,
 }
+
+-- Trigger kinds the controller answers from live state (corpus-observed
+-- 1/2). Anything else is outside the delivered trigger contract and reads
+-- false rather than faulting the script.
+local KNOWN_TRIGGER_KINDS = { [1] = true, [2] = true }
 
 ---@class FollowingMonControllerOptions
 ---@field service table<string, unknown> live party service { partyRevision, leadAliveSlot, partyMon }
@@ -1154,6 +1174,111 @@ function FollowingMonController:facePlayer()
   self._actors:setFacing(partnerId, assert(OPPOSITE_FACING[facing], "player anchor facing is required"))
 end
 
+-- Whether the installed partner actor is currently rendered visible. This is
+-- the actor visibility flag, not the map-permission visibility answered by
+-- isVisible: a mid-map lead birth installs hidden until the appearance
+-- choreography reveals it. Absence reads hidden.
+---@return boolean
+---@param self FollowingMonController
+function FollowingMonController:isPartnerVisible()
+  local partnerId = self._actors:partnerId()
+  if partnerId == nil or self._actors:getById(partnerId) == nil then
+    return false
+  end
+  return self._actors:isVisible(partnerId)
+end
+
+-- Classify the committed follower/player tile geometry for the appearance
+-- choreography: south-of-player mirrors into the walk pair, east/west of
+-- player skip straight to facing. Answers a fresh value table, never live
+-- actor state. Anything else fails loudly rather than guessing a branch.
+---@return { mirror: boolean, nextState: integer }
+---@param self FollowingMonController
+function FollowingMonController:classifyAppearanceGeometry()
+  local partnerId = self._actors:partnerId()
+  local position = partnerId ~= nil and self._actors:getPosition(partnerId) or nil
+  if position == nil then
+    Errors.raise(FieldErrors.ACTOR_PARTNER_NOT_INSTALLED, "appearance geometry requires the installed partner", {})
+  end
+  assert(position ~= nil, "appearance geometry requires the partner position")
+  local anchor = self._playerOf():committedAnchor()
+  local dx = position.fieldX - anchor.fieldX
+  local dz = position.fieldZ - anchor.fieldZ
+  if dx == 0 and dz == 1 then
+    return { mirror = true, nextState = 2 }
+  end
+  if dx == 1 and dz == 0 then
+    return { mirror = false, nextState = 3 }
+  end
+  if dx == -1 and dz == 0 then
+    return { mirror = true, nextState = 3 }
+  end
+  Errors.raise(
+    FieldErrors.FOLLOWER_APPEARANCE_GEOMETRY_INVALID,
+    "unsupported follower appearance geometry",
+    { fieldX = position.fieldX, fieldZ = position.fieldZ, playerX = anchor.fieldX, playerZ = anchor.fieldZ }
+  )
+  error("unreachable after unsupported appearance geometry")
+end
+
+-- Start one appearance movement step through the existing follower walk
+-- owner, so placement rejection reconciles exactly like ordinary follow.
+-- The kind is one of walk_west, walk_north, or face_north.
+---@param kind string
+---@param self FollowingMonController
+function FollowingMonController:startAppearanceMovement(kind)
+  local partnerId = assert(self._actors:partnerId(), "appearance movement requires the partner actor")
+  if kind == "face_north" then
+    self._actors:setFacing(partnerId, "north")
+    return
+  end
+  local direction = APPEARANCE_WALK_DIRECTIONS[kind]
+  assert(direction ~= nil, "unknown appearance movement " .. tostring(kind))
+  local mapId = assert(self._actors.currentMapId, "appearance movement requires the follower map")
+  self:_beginActorWalk(mapId, direction, "normal")
+end
+
+-- Apply an absolute task-owned render-vector displacement to the partner.
+-- Presentation only: logical tiles, occupancy, and map residency never move.
+-- Values are copied, never retained.
+---@param offset { x: number, y: number, z: number } absolute world/model-unit offset
+---@param self FollowingMonController
+function FollowingMonController:setAppearancePresentationOffset(offset)
+  assert(
+    type(offset) == "table" and isFiniteNumber(offset.x) and isFiniteNumber(offset.y) and isFiniteNumber(offset.z),
+    "appearance offset requires finite x, y, z"
+  )
+  local partnerId = assert(self._actors:partnerId(), "appearance offset requires the partner actor")
+  self._actors:setPresentationOffset(partnerId, { x = offset.x, y = offset.y, z = offset.z })
+end
+
+-- Clear the task-owned render-vector displacement. Absence is a no-op so
+-- cancellation and settle paths stay safe when the partner is gone.
+---@param self FollowingMonController
+function FollowingMonController:clearAppearancePresentationOffset()
+  local partnerId = self._actors:partnerId()
+  if partnerId == nil or self._actors:getById(partnerId) == nil then
+    return
+  end
+  self._actors:clearPresentationOffset(partnerId)
+end
+
+-- Event-trigger check for known trigger kinds: an idle installed partner on
+-- a visible map. Unknown kinds read false.
+---@param kind integer
+---@param _ unknown trigger parameter carried for future trigger kinds
+---@return boolean
+---@param self FollowingMonController
+function FollowingMonController:isEventTrigger(kind, _)
+  if not self:isVisible() or self._action ~= nil then
+    return false
+  end
+  if KNOWN_TRIGGER_KINDS[kind] ~= true then
+    return false
+  end
+  return self._actors:partnerId() ~= nil
+end
+
 -- Direct player-relative placement: copy the player's committed tile,
 -- offset one tile by the source selector (0 north, 1 south, 2 west,
 -- 3 east, anything else no offset), and face the partner per the source
@@ -1184,6 +1309,7 @@ function FollowingMonController:repositionRelativeToPlayer(offsetSelector, direc
   self._actors:cancelScriptedMovement(partnerId)
   self._action = nil
   self._queue = {}
+  self._actors:clearPresentationOffset(partnerId)
   local mapId = assert(self._actors.currentMapId, "follower map is required")
   local ok, err = pcall(
     self._actors.setPosition,
