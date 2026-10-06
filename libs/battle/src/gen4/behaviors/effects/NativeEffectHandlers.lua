@@ -796,13 +796,29 @@ local function buildBeforeActionHandlers(facts)
       return nil
     end
     local stats = statsOf(facts, combatant)
+    -- Confusion self-hits stay outside the strike-law checkpoints:
+    -- explicit neutral facts keep the canonical owner strict without
+    -- changing the self-hit arithmetic.
     local result = Damage.calculate({
       level = stats.level,
       power = CONFUSION_POWER,
       attack = stats.attack,
       defense = stats.defense,
+      rawAttack = stats.attack,
+      rawDefense = stats.defense,
+      attackStage = 0,
+      defenseStage = 0,
+      criticalMultiplier = 1,
+      category = "physical",
+      burned = false,
+      guts = false,
       stab = { numerator = 1, denominator = 1 },
       effectiveness = { numerator = 1, denominator = 1 },
+      effectivenessFactors = { { numerator = 1, denominator = 1 } },
+      weather = "none",
+      weatherSuppressed = false,
+      moveType = "typeless",
+      solarBeam = false,
     }, stream)
     health[combatant] = healthOf(health, combatant) - result.amount
     context.blockedBy = instance.key

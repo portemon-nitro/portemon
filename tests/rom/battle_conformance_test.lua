@@ -127,8 +127,21 @@ local DAMAGE_CASE = {
   power = 80,
   attack = 120,
   defense = 90,
+  rawAttack = 120,
+  rawDefense = 90,
+  attackStage = 0,
+  defenseStage = 0,
+  criticalMultiplier = 1,
+  category = "physical",
+  burned = false,
+  guts = false,
   stab = { numerator = 1, denominator = 1 },
   effectiveness = { numerator = 1, denominator = 1 },
+  effectivenessFactors = { { numerator = 1, denominator = 1 } },
+  weather = "none",
+  weatherSuppressed = false,
+  moveType = "normal",
+  solarBeam = false,
   randomPercent = 100,
 }
 
@@ -165,7 +178,7 @@ function T.staged_damage_truncation_matches_hand_evaluated_stages(romFs, version
   local traced = Damage.trace(DAMAGE_CASE, BattleRng.new(4242))
   Assert.equal(traced.amount, 48, "the traced path agrees on the hand-evaluated amount")
   Assert.equal(traced.stages[1].name, "base", "stages open with the base truncation")
-  Assert.equal(traced.stages[1].output, 48, "the base stage truncates to the hand-evaluated value")
+  Assert.equal(traced.stages[1].output, 46, "the base stage truncates to the hand-evaluated pre-bonus value")
 
   local collapsed = Fixture.compare({ amount = 49 }, { expected = { amount = 48 } })
   Assert.isTrue(type(collapsed) == "table", "a wrong rounding stage reports its mismatch")

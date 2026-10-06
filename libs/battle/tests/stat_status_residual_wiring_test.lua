@@ -1509,4 +1509,194 @@ function T.hazard_faint_on_arrival_owes_a_second_replacement()
   restored:dispose()
 end
 
+-- Field weather reaches ordinary strikes through the projected facts:
+-- twin sessions share every seed, so their rolls agree and only the
+-- weather law separates the struck amounts. Rain halves the fire probe
+-- and boosts the water probe, sun inverts both, and a living suppressor
+-- restores neutral amounts while every twin consumes identical draws.
+--- Neutral high-level probe pair: normal-type leads stay neutral to fire
+-- and water while their stats keep every weather truncation visible.
+---@param id integer nonreused positive combatant identity
+---@param seed integer fixed generator state for the underlying mon
+---@param moves table<integer, table<string, unknown>> persistent move entries in slot order
+---@return table combatant seed carrying its scripted moveset
+local function eeveeCombatant(id, seed, moves)
+  local entry = { id = id, mon = SessionFixture.makeMon(seed, { species = "EEVEE", level = 50 }) }
+  entry.mon.moves = moves
+  return entry
+end
+
+---@param moveType string probe move type carried by the water-gun strike
+---@return table detached native battle setup record with the typed probe
+local function probeScenario(moveType)
+  local alpha = eeveeCombatant(1, 11, { moveSlot("WATER_GUN", 25), moveSlot("SPLASH", 40) })
+  local beta = eeveeCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  local setup = duelScenario({ alpha, beta }, {}, {})
+  setup.moveFacts.WATER_GUN = { power = 40, accuracy = 100, category = "special", moveType = moveType, priority = 0 }
+  return setup
+end
+
+---@param session table live headless session playing its opening strike
+---@return integer damage the opening water-gun strike dealt
+---@return table rng position after the opening turn
+local function openingStrike(session)
+  local frame, events = playTurn(session, strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  }))
+  Assert.equal(frame.status, "waiting", "the probe turn continues the battle")
+  local dealt = nil
+  for _, event in ipairs(events) do
+    if event.kind == "struck" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if payload.target == 2 then
+        dealt = payload.damage
+      end
+    end
+  end
+  Assert.notNil(dealt, "the opening strike lands on the defender")
+  local rng = session:capture().rng --[[@as table<string, unknown>]]
+  Assert.notNil(rng, "captures carry the stream position")
+  return dealt --[[@as integer]], rng
+end
+
+---@param content table frozen battle content for the restored session
+---@param setup table detached native battle setup record under seeding
+---@param weatherKey string field weather identity to seed, or nil for clear skies
+---@return table live session carrying the seeded sky
+local function sessionWithSky(content, setup, weatherKey)
+  local contracts = SessionFixture.sessionContracts()
+  local session = contracts.Battle.newSession(setup, content)
+  if weatherKey == nil then
+    return session
+  end
+  return restoreWithEffects(session, content, {
+    effectRecord(
+      weatherKey,
+      901,
+      { kind = "field" },
+      { kind = "move", combatant = 1 },
+      { version = 1, turns = 5 }
+    ),
+  })
+end
+
+function T.field_weather_scales_fire_and_water_strikes_without_extra_draws()
+  local contracts = SessionFixture.sessionContracts()
+  Assert.notNil(contracts, "session contracts load before the weather twins run")
+  local content = nativeContent()
+
+  local fireNeutral = sessionWithSky(content, probeScenario("fire"), nil)
+  local neutralFire, neutralRng = openingStrike(fireNeutral)
+  local fireRain = sessionWithSky(content, probeScenario("fire"), "raindance")
+  local rainFire, rainRng = openingStrike(fireRain)
+  local fireSun = sessionWithSky(content, probeScenario("fire"), "sunnyday")
+  local sunFire, _ = openingStrike(fireSun)
+  Assert.isTrue(rainFire < neutralFire, "rain halves the fire strike")
+  Assert.isTrue(sunFire > neutralFire, "sun boosts the fire strike")
+  Assert.deepEqual(rainRng, neutralRng, "rain adds no random draws to the strike")
+
+  local waterNeutral = sessionWithSky(content, probeScenario("water"), nil)
+  local neutralWater, _ = openingStrike(waterNeutral)
+  local waterRain = sessionWithSky(content, probeScenario("water"), "raindance")
+  local rainWater, _ = openingStrike(waterRain)
+  local waterSun = sessionWithSky(content, probeScenario("water"), "sunnyday")
+  local sunWater, sunRng = openingStrike(waterSun)
+  Assert.isTrue(rainWater > neutralWater, "rain boosts the water strike")
+  Assert.isTrue(sunWater < neutralWater, "sun halves the water strike")
+  Assert.deepEqual(sunRng, neutralRng, "sun adds no random draws to the strike")
+
+  fireNeutral:dispose()
+  fireRain:dispose()
+  fireSun:dispose()
+  waterNeutral:dispose()
+  waterRain:dispose()
+  waterSun:dispose()
+end
+
+-- A living suppressor neutralizes the sky without deleting it: the same
+-- rainy twin with a cloud-nine defender deals the neutral amount while
+-- the weather instance survives in live effect state.
+function T.suppressing_ability_neutralizes_rain_without_clearing_it()
+  local content = nativeContent()
+
+  local plain = sessionWithSky(content, probeScenario("fire"), nil)
+  local neutralFire, neutralRng = openingStrike(plain)
+
+  local alpha = eeveeCombatant(1, 11, { moveSlot("WATER_GUN", 25), moveSlot("SPLASH", 40) })
+  local beta = eeveeCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "CLOUD_NINE"
+  local setup = duelScenario({ alpha, beta }, {}, {})
+  setup.moveFacts.WATER_GUN = { power = 40, accuracy = 100, category = "special", moveType = "fire", priority = 0 }
+  local contracts = SessionFixture.sessionContracts()
+  local seeded = contracts.Battle.newSession(setup, content)
+  local rainy = restoreWithEffects(seeded, content, {
+    effectRecord("raindance", 902, { kind = "field" }, { kind = "move", combatant = 1 }, { version = 1, turns = 5 }),
+  })
+  local suppressedFire, suppressedRng = openingStrike(rainy)
+  Assert.equal(suppressedFire, neutralFire, "the suppressor restores the neutral amount under rain")
+  Assert.deepEqual(suppressedRng, neutralRng, "suppression adds no random draws to the strike")
+  local skies = 0
+  for _, record in ipairs(rainy:capture().effects --[[@as table<integer, table<string, unknown>>]]) do
+    if record.key == "raindance" then
+      skies = skies + 1
+    end
+  end
+  Assert.equal(skies, 1, "the rain instance survives suppression")
+  plain:dispose()
+  rainy:dispose()
+end
+
+-- Burn reaches ordinary strikes through the projected facts: the burned
+-- twin halves its physical tackle while its special water-gun strike
+-- matches the clean twin exactly, and both twins consume identical
+-- draws.
+function T.burn_halves_physical_strikes_and_spares_special_ones()
+  local content = nativeContent()
+  local contracts = SessionFixture.sessionContracts()
+
+  ---@param burned boolean whether the attacker carries the burn condition
+  ---@param slot integer attacker move slot under the probe
+  ---@return integer damage the probe strike dealt
+  ---@return table rng position after the probe turn
+  local function probeStrike(burned, slot)
+    local alpha = movesetCombatant(1, 11, { moveSlot("TACKLE", 35), moveSlot("WATER_GUN", 25) })
+    if burned then
+      local mon = alpha.mon --[[@as table<string, unknown>]]
+      local condition = mon.condition --[[@as table<string, unknown>]]
+      condition.effects = { { key = "burn", version = 1, state = {} } }
+    end
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    local setup = duelScenario({ alpha, beta }, {}, {})
+    local session = contracts.Battle.newSession(setup, content)
+    local frame, events = playTurn(session, strikeAnswer({
+      alpha = { slot = slot, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    }))
+    Assert.equal(frame.status, "waiting", "the probe turn continues the battle")
+    local dealt = nil
+    for _, event in ipairs(events) do
+      if event.kind == "struck" then
+        local payload = event.payload --[[@as table<string, unknown>]]
+        if payload.target == 2 then
+          dealt = payload.damage
+        end
+      end
+    end
+    Assert.notNil(dealt, "the probe strike lands on the defender")
+    local rng = session:capture().rng --[[@as table<string, unknown>]]
+    session:dispose()
+    return dealt --[[@as integer]], rng
+  end
+
+  local plainPhysical, plainRng = probeStrike(false, 0)
+  local burnedPhysical, burnedRng = probeStrike(true, 0)
+  Assert.isTrue(burnedPhysical < plainPhysical, "burn halves the physical strike")
+  Assert.deepEqual(burnedRng, plainRng, "burn adds no random draws to the strike")
+
+  local plainSpecial, _ = probeStrike(false, 1)
+  local burnedSpecial, _ = probeStrike(true, 1)
+  Assert.equal(burnedSpecial, plainSpecial, "burn spares the special strike")
+end
+
 return { tests = T }

@@ -143,7 +143,20 @@ local function runStrike(moveKey, extra, userHp, foeHp, userStatus)
     targets = { { combatant = 2 } },
     moves = { { move = moveKey, pp = 10, ppUps = 0 } },
     moveFacts = facts,
-    combat = { level = 50, attack = 120, defense = 110 },
+    combat = {
+      level = 50,
+      attack = 120,
+      defense = 110,
+      rawAttack = 120,
+      rawDefense = 110,
+      attackStage = 0,
+      defenseStage = 0,
+    },
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = nativeChart(content),
@@ -184,10 +197,13 @@ function T.brine_holds_base_power_against_a_healthy_target()
 end
 
 function T.facade_doubles_through_burn()
-  local probe = runStrike("FACADE", {}, nil, nil, "burn")
+  -- The frame mirrors the burned live entry, so the doubled power still
+  -- pays the burn checkpoint: pre-bonus 67 halves to 33, adds 2 for 35,
+  -- rolls 87 for 30, and the same-type bonus lands 45.
+  local probe = runStrike("FACADE", { burned = true }, nil, nil, "burn")
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the facade connects")
-  Assert.equal(probe.dealt, 89, "facade doubles through burn")
+  Assert.equal(probe.dealt, 45, "facade doubles through burn")
 end
 
 function T.facade_holds_base_power_when_healthy()
@@ -243,7 +259,9 @@ function T.low_kick_climbs_the_weight_ladder()
   local probe = runStrike("LOW_KICK", { foeWeightHg = 900 }, nil, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the low kick connects")
-  Assert.equal(probe.dealt, 69, "low kick climbs the weight ladder")
+  -- Ninety kilograms strike at power 80: pre-bonus 38 rolls 87 first
+  -- (floor(40*87/100) = 34) before doubling into the target for 68.
+  Assert.equal(probe.dealt, 68, "low kick climbs the weight ladder")
 end
 
 function T.grass_knot_climbs_the_weight_ladder()

@@ -18,6 +18,10 @@
 ---@field denominator integer
 ---@field immune boolean
 ---@field reason string
+---@field factors EffectivenessFactor[]
+---@class EffectivenessFactor
+---@field numerator integer
+---@field denominator integer
 local TypeEffectiveness = {}
 
 ---@param value integer value under test
@@ -59,36 +63,71 @@ function TypeEffectiveness.resolve(chart, attack, defendList, context)
   local seen = context or {}
   assert(type(seen) == "table", "effectiveness reads its immunity checkpoints")
 
+  local neutralFactors = { { numerator = 1, denominator = 1 } }
   if #defendList == 0 then
-    return { numerator = 1, denominator = 1, immune = false, reason = "lost_type" }
+    return { numerator = 1, denominator = 1, immune = false, reason = "lost_type", factors = neutralFactors }
   end
   if attack == "mystery" or attack == "typeless" or seen.typeless == true then
-    return { numerator = 1, denominator = 1, immune = false, reason = "neutral_special" }
+    return { numerator = 1, denominator = 1, immune = false, reason = "neutral_special", factors = neutralFactors }
   end
 
+  -- Ordered per-type factors in declared defender order: a repeated type
+  -- resolves once, matching the native two-slot equality handling, so
+  -- damage truncates after each distinct defending type instead of
+  -- collapsing into one aggregate rounding.
   local numerator = 1
   local denominator = 1
+  local factors = {} ---@type EffectivenessFactor[]
+  local resolved = {} ---@type table<string, boolean>
   for _, defend in ipairs(defendList) do
     assert(type(defend) == "string" and defend ~= "", "effectiveness names each defending type")
-    local pair = chart:effectiveness(attack, defend)
-    assert(
-      type(pair.numerator) == "number" and type(pair.denominator) == "number",
-      "chart pairs carry their exact rational"
-    )
-    if pair.numerator == 0 then
-      return { numerator = 0, denominator = 1, immune = true, reason = "chart_immunity" }
+    if resolved[defend] ~= true then
+      resolved[defend] = true
+      local pair = chart:effectiveness(attack, defend)
+      assert(
+        type(pair.numerator) == "number" and type(pair.denominator) == "number",
+        "chart pairs carry their exact rational"
+      )
+      if pair.numerator == 0 then
+        return {
+          numerator = 0,
+          denominator = 1,
+          immune = true,
+          reason = "chart_immunity",
+          factors = { { numerator = 0, denominator = 1 } },
+        }
+      end
+      factors[#factors + 1] = { numerator = pair.numerator, denominator = pair.denominator }
+      numerator = numerator * pair.numerator
+      denominator = denominator * pair.denominator
     end
-    numerator = numerator * pair.numerator
-    denominator = denominator * pair.denominator
   end
   local reducedNumerator, reducedDenominator = reduce(numerator, denominator)
   if seen.abilityImmunity == true then
-    return { numerator = reducedNumerator, denominator = reducedDenominator, immune = true, reason = "ability_immunity" }
+    return {
+      numerator = reducedNumerator,
+      denominator = reducedDenominator,
+      immune = true,
+      reason = "ability_immunity",
+      factors = factors,
+    }
   end
   if seen.airborne == true and attack == "ground" then
-    return { numerator = reducedNumerator, denominator = reducedDenominator, immune = true, reason = "grounding" }
+    return {
+      numerator = reducedNumerator,
+      denominator = reducedDenominator,
+      immune = true,
+      reason = "grounding",
+      factors = factors,
+    }
   end
-  return { numerator = reducedNumerator, denominator = reducedDenominator, immune = false, reason = "effective" }
+  return {
+    numerator = reducedNumerator,
+    denominator = reducedDenominator,
+    immune = false,
+    reason = "effective",
+    factors = factors,
+  }
 end
 
 ---@param moveType string attacking move type under test

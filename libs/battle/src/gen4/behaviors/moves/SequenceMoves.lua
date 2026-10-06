@@ -82,9 +82,15 @@ local function combatOf(frame)
     error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = "combat" }))
   end
   local combat = facts --[[@as table<string, unknown>]]
-  for _, fact in ipairs({ "level", "attack", "defense" }) do
+  for _, fact in ipairs({ "level", "attack", "defense", "rawAttack", "rawDefense" }) do
     local value = combat[fact]
     if type(value) ~= "number" or value % 1 ~= 0 or value < 1 then
+      error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = fact }))
+    end
+  end
+  for _, fact in ipairs({ "attackStage", "defenseStage" }) do
+    local value = combat[fact]
+    if type(value) ~= "number" or value % 1 ~= 0 or value < -6 or value > 6 then
       error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = fact }))
     end
   end
@@ -92,7 +98,74 @@ local function combatOf(frame)
     level = combat.level --[[@as integer]],
     attack = combat.attack --[[@as integer]],
     defense = combat.defense --[[@as integer]],
+    rawAttack = combat.rawAttack --[[@as integer]],
+    rawDefense = combat.rawDefense --[[@as integer]],
+    attackStage = combat.attackStage --[[@as integer]],
+    defenseStage = combat.defenseStage --[[@as integer]],
   }
+end
+
+-- Strike-law facts the executor projects beside the staged pair. Charge
+-- and ramp strikes read the live facts; delayed landings carry explicit
+-- neutral facts so their typeless arithmetic never guesses.
+---@param frame table<string, unknown> move frame under execution
+---@return boolean whether the attacker carries burn
+---@return boolean whether the attacker carries the resilient ability
+---@return string active field weather identity
+---@return boolean whether a live ability suppresses weather damage
+---@return string striking move category
+---@return string striking move type under weather law
+---@return boolean whether the strike is the charging grass special case
+local function strikeLawOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  for _, fact in ipairs({ "burned", "guts", "weather", "weatherSuppressed" }) do
+    if locals[fact] == nil then
+      error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = fact }))
+    end
+  end
+  if type(locals.burned) ~= "boolean" or type(locals.guts) ~= "boolean" then
+    error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = "burn" }))
+  end
+  if type(locals.weather) ~= "string" or locals.weather == "" or type(locals.weatherSuppressed) ~= "boolean" then
+    error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = "weather" }))
+  end
+  local move = locals.move --[[@as table<string, unknown>]]
+  if type(move) ~= "table" then
+    error(BattleErrors.missingBehavior("sequences read their immutable move facts", { key = key, fact = "move" }))
+  end
+  local category = move.category
+  if category ~= "physical" and category ~= "special" then
+    error(BattleErrors.missingBehavior("sequences read their immutable move facts", { key = key, fact = "category" }))
+  end
+  local moveType = move.moveType
+  if type(moveType) ~= "string" or moveType == "" then
+    error(BattleErrors.missingBehavior("sequences read their immutable move facts", { key = key, fact = "moveType" }))
+  end
+  return locals.burned, --[[@as boolean]]
+    locals.guts, --[[@as boolean]]
+    locals.weather, --[[@as string]]
+    locals.weatherSuppressed, --[[@as boolean]]
+    category, --[[@as string]]
+    moveType, --[[@as string]]
+    record.executingMove == "SOLAR_BEAM"
+end
+
+-- Whether the striker carries the triple-damage critical ability. Absent
+-- ability facts fail instead of defaulting.
+---@param frame table<string, unknown> move frame under execution
+---@return boolean true when the striker snipes critical hits
+local function sniperOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local abilities = locals.abilities
+  if type(abilities) ~= "table" then
+    error(BattleErrors.missingBehavior("sequences read their battle abilities", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  return (abilities --[[@as table<string, unknown>]]).user == "SNIPER"
 end
 
 -- Strike power always arrives in the frame move facts; without it the
@@ -275,16 +348,32 @@ local function strikeTarget(ctx, frame, defender, override)
     skipCheck = true,
   }, stream)
   assert(resolution.kind == "hit", "unrolled checks always connect")
-  local critical = Critical.resolve(0, stream, causeFor(record))
+  -- Charge, lock, and ramp strikes roll the base critical stage like any
+  -- unstaged strike and read the live strike-law facts, so the charging
+  -- grass strike halves off sun through the same canonical arithmetic.
+  local burned, guts, weather, weatherSuppressed, category, moveType, solarBeam = strikeLawOf(record)
+  local critical = Critical.resolve(0, stream, causeFor(record), sniperOf(record))
   local stab, effectiveness = StagedTypeModifiers.forStrike(record, defender)
   local result = Damage.calculate({
     level = combat.level,
     power = power,
     attack = combat.attack,
     defense = combat.defense,
+    rawAttack = combat.rawAttack,
+    rawDefense = combat.rawDefense,
+    attackStage = combat.attackStage,
+    defenseStage = combat.defenseStage,
+    criticalMultiplier = critical.multiplier,
+    category = category,
+    burned = burned,
+    guts = guts,
     stab = stab,
-    effectiveness = effectiveness,
-    critical = critical.critical,
+    effectiveness = { numerator = effectiveness.numerator, denominator = effectiveness.denominator },
+    effectivenessFactors = effectiveness.factors,
+    weather = weather,
+    weatherSuppressed = weatherSuppressed,
+    moveType = moveType,
+    solarBeam = solarBeam,
   }, stream)
   local outcome = ctx:damage(defender, result.amount, causeFor(record))
   ctx:emit("struck", causeFor(record), { target = defender, hitIndex = 1, damage = outcome.before - outcome.after })
@@ -470,13 +559,37 @@ local function makeDelayed()
       local combat = combatOf(record)
       local stream = checkStream(record.stream)
       local stab, effectiveness = StagedTypeModifiers.forDelayedImpact(record, defender)
+      -- Delayed landings deal typeless damage outside the strike-law
+      -- checkpoints: explicit neutral facts keep the canonical owner
+      -- strict without changing the landing arithmetic.
+      local move = (record.locals --[[@as table<string, unknown>]]).move --[[@as table<string, unknown>]]
+      local category = move.category
+      if category ~= "physical" and category ~= "special" then
+        error(BattleErrors.missingBehavior("sequences read their immutable move facts", {
+          key = record.executingMove --[[@as string]],
+          fact = "category",
+        }))
+      end
       local result = Damage.calculate({
         level = combat.level,
         power = power,
         attack = combat.attack,
         defense = combat.defense,
+        rawAttack = combat.rawAttack,
+        rawDefense = combat.rawDefense,
+        attackStage = combat.attackStage,
+        defenseStage = combat.defenseStage,
+        criticalMultiplier = 1,
+        category = category --[[@as string]],
+        burned = false,
+        guts = false,
         stab = stab,
-        effectiveness = effectiveness,
+        effectiveness = { numerator = effectiveness.numerator, denominator = effectiveness.denominator },
+        effectivenessFactors = effectiveness.factors,
+        weather = "none",
+        weatherSuppressed = false,
+        moveType = "typeless",
+        solarBeam = false,
       }, stream)
       local outcome = ctx:damage(defender, result.amount, causeFor(record))
       ctx:emit("struck", causeFor(record), {

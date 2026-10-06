@@ -136,16 +136,30 @@ function T.diagnostics_observe_without_changing_mechanics_and_within_bounds()
 
   -- Level 50, power 80, attack 120, defense 90, neutral modifiers, maximum
   -- roll: floor(2*50/5+2) = 22; floor(22*80*120/90) = 2346;
-  -- floor(2346/50)+2 = 48; every later stage holds 48. Hand-evaluated from
-  -- the staged Generation-IV sequence and pinned by the staged damage
-  -- vector suite, never read out of the implementation under test.
+  -- floor(2346/50) = 46; +2 = 48; every later stage holds 48.
+  -- Hand-evaluated from the staged Generation-IV sequence and pinned by
+  -- the staged damage vector suite, never read out of the implementation
+  -- under test.
   local damageSpec = {
     level = 50,
     power = 80,
     attack = 120,
     defense = 90,
+    rawAttack = 120,
+    rawDefense = 90,
+    attackStage = 0,
+    defenseStage = 0,
+    criticalMultiplier = 1,
+    category = "physical",
+    burned = false,
+    guts = false,
     stab = { numerator = 1, denominator = 1 },
     effectiveness = { numerator = 1, denominator = 1 },
+    effectivenessFactors = { { numerator = 1, denominator = 1 } },
+    weather = "none",
+    weatherSuppressed = false,
+    moveType = "normal",
+    solarBeam = false,
     randomPercent = 100,
   }
   local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
@@ -158,7 +172,9 @@ function T.diagnostics_observe_without_changing_mechanics_and_within_bounds()
   Assert.deepEqual(stagedStream:capture(), untracedStream:capture(), "tracing consumes no extra draws")
   Assert.isTrue(#staged.stages > 0, "traced calculations expose their staged intermediates")
   Assert.equal(staged.stages[1].name, "base", "stages open with the base truncation")
-  Assert.equal(staged.stages[1].output, 48, "the base stage truncates to the hand-evaluated value")
+  Assert.equal(staged.stages[1].output, 46, "the base stage truncates to the hand-evaluated pre-bonus value")
+  Assert.equal(staged.stages[2].name, "bonus", "the bonus addition follows the base truncation")
+  Assert.equal(staged.stages[2].output, 48, "the bonus stage adds exactly two")
 
   -- The mirrored run observes the identical battle: every emitted event, a
   -- fixed labeled probe draw sequence from its own stream, and the staged
