@@ -272,4 +272,88 @@ function T.passive_boundaries_hold_at_exact_thresholds()
   Assert.deepEqual(passing.events, {}, "a hit-embedded non-ground type stays silent")
 end
 
+-- Synchronize reflects only the native major statuses: poison (with
+-- toxic), burn, and paralysis announce a reflection while sleep and
+-- freeze stay silent.
+function T.synchronize_reflects_only_poison_burn_and_paralysis()
+  local EffectBag =
+    SessionFixture.requirePresent("libs.battle.src.EffectBag", "scoped effect instances own their lifetimes")
+  local EffectDispatch = SessionFixture.requirePresent(
+    "libs.battle.src.EffectDispatch",
+    "finite timing dispatch owns collection and liveness"
+  )
+  local handlers = registeredHandlers("native passive registration owns the ability and item binding set")
+
+  for _, status in ipairs({ "poison", "toxic", "burn", "paralysis" }) do
+    local bag = EffectBag.new()
+    addBoundInstance(bag, "SYNCHRONIZE", "afterHit", "affliction", EffectFixture.activeScope(1, 1))
+    local dispatch = EffectDispatch.new(bag, handlers)
+    local reflected = dispatch:invoke("afterHit", dispatchContext({ inflictedStatus = status }))
+    Assert.isTrue(reflected.done, "the synchronize pass runs to completion")
+    Assert.equal(#reflected.events, 1, status .. " announces its reflection")
+    Assert.equal(reflected.events[1].key, "SYNCHRONIZE", "the announcement carries its source identity")
+    Assert.equal(reflected.events[1].reflected, status, "the announcement names the reflected status")
+  end
+  for _, status in ipairs({ "sleep", "freeze" }) do
+    local bag = EffectBag.new()
+    addBoundInstance(bag, "SYNCHRONIZE", "afterHit", "affliction", EffectFixture.activeScope(1, 1))
+    local dispatch = EffectDispatch.new(bag, handlers)
+    local silent = dispatch:invoke("afterHit", dispatchContext({ inflictedStatus = status }))
+    Assert.isTrue(silent.done, "the synchronize pass runs to completion")
+    Assert.deepEqual(silent.events, {}, status .. " never reflects")
+  end
+end
+
+-- Wonder Guard blocks only damaging non-super-effective hits: a
+-- powerless move passes even with matching typing, while a damaging
+-- non-super-effective move is blocked and super-effective or
+-- mold-breaking hits pass. Missing move power fails closed.
+function T.wonder_guard_permits_status_moves()
+  local EffectBag =
+    SessionFixture.requirePresent("libs.battle.src.EffectBag", "scoped effect instances own their lifetimes")
+  local EffectDispatch = SessionFixture.requirePresent(
+    "libs.battle.src.EffectDispatch",
+    "finite timing dispatch owns collection and liveness"
+  )
+  local handlers = registeredHandlers("native passive registration owns the ability and item binding set")
+
+  ---@param facts table<string, unknown> hit facts under test
+  ---@return table[] emitted immunity events for the pass
+  local function warded(facts)
+    local bag = EffectBag.new()
+    addBoundInstance(bag, "WONDER_GUARD", "beforeHit", "affliction", EffectFixture.activeScope(2, 1))
+    local dispatch = EffectDispatch.new(bag, handlers)
+    local outcome = dispatch:invoke("beforeHit", dispatchContext(facts))
+    Assert.isTrue(outcome.done, "the wonder guard pass runs to completion")
+    return outcome.events
+  end
+
+  Assert.deepEqual(
+    warded({ moveType = "fire", superEffective = false, movePower = 0, hit = { attackerAbility = "STATIC" } }),
+    {},
+    "a powerless move passes the guard"
+  )
+  Assert.equal(
+    #warded({ moveType = "fire", superEffective = false, movePower = 80, hit = { attackerAbility = "STATIC" } }),
+    1,
+    "a damaging non-super-effective move is blocked"
+  )
+  Assert.deepEqual(
+    warded({ moveType = "fire", superEffective = true, movePower = 80, hit = { attackerAbility = "STATIC" } }),
+    {},
+    "a super-effective move passes the guard"
+  )
+  Assert.deepEqual(
+    warded(
+      { moveType = "fire", superEffective = false, movePower = 80, hit = { attackerAbility = "MOLD_BREAKER" } }
+    ),
+    {},
+    "a mold-breaking move passes the guard"
+  )
+  local missing = Assert.throws(function()
+    warded({ moveType = "fire", superEffective = false, hit = { attackerAbility = "STATIC" } })
+  end, "missing move power never reads as damaging")
+  Assert.notNil(missing, "missing move power never reads as damaging")
+end
+
 return { tests = T }

@@ -49,6 +49,21 @@ local function canDraw(stream)
   return type(stream) == "table" and type((stream --[[@as table<string, unknown>]]).nextU16) == "function"
 end
 
+-- Pinch-check divisor for the quarter-health berry family. Gluttony
+-- holders eat those berries at half health instead, while the
+-- half-health flavor family keeps its own gate either way.
+local PINCH_DIVISOR = 4
+local GLUTTONY_DIVISOR = 2
+
+---@param context table<string, unknown> residual context under handling
+---@return integer hp divisor for quarter-family pinch checks
+local function pinchDivisor(context)
+  if context.ability == "GLUTTONY" then
+    return GLUTTONY_DIVISOR
+  end
+  return PINCH_DIVISOR
+end
+
 local HP_BERRY = {
   ORAN_BERRY = true,
   SITRUS_BERRY = true,
@@ -174,16 +189,24 @@ local function pinchBerry(instance, context)
   if hp == nil or maxHp == nil then
     return nil
   end
-  if
-    hp <= 0 or hp * 4 > maxHp --[[@as integer]]
-  then
+  if hp <= 0 then
     return nil
   end
   if PINCH_RESTORE[instance.key] == true then
+    if
+      hp * 2 > maxHp --[[@as integer]]
+    then
+      return nil
+    end
     return { kind = "trigger", key = instance.key, combatant = holder, recovered = true }
   end
   local stat = PINCH_STAT[instance.key]
   if stat == nil then
+    return nil
+  end
+  if
+    hp * pinchDivisor(context) > maxHp --[[@as integer]]
+  then
     return nil
   end
   return { kind = "trigger", key = instance.key, combatant = holder, stat = stat, stages = "boosted" }
@@ -232,7 +255,7 @@ local function micleBerry(instance, context)
     return nil
   end
   if
-    hp <= 0 or hp * 4 > maxHp --[[@as integer]]
+    hp <= 0 or hp * pinchDivisor(context) > maxHp --[[@as integer]]
   then
     return nil
   end
@@ -251,7 +274,7 @@ local function custapBerry(instance, context)
     return nil
   end
   if
-    hp <= 0 or hp * 4 > maxHp --[[@as integer]]
+    hp <= 0 or hp * pinchDivisor(context) > maxHp --[[@as integer]]
   then
     return nil
   end
