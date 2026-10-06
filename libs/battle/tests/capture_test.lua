@@ -407,4 +407,191 @@ function T.bag_throws_delegate_to_the_capture_path()
   Assert.notNil(outcome.result, "the bag throw returns the capture outcome")
 end
 
+-- A landed throw needs every shake check: with the first three draws kind,
+-- a kind fourth draw reports three visible shakes and lands the catch,
+-- while a hostile fourth draw still reports three visible shakes but breaks
+-- free. Both tapes spend exactly four draws.
+function T.fourth_shake_check_decides_the_catch_after_three_visible_shakes()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local Context = contextOwner("typed capture environments own the facts each ball reads")
+  local attempt = { actor = 1, inventoryId = "party", ball = "POKE_BALL", target = { combatant = 2 } }
+  local landedStream = scriptedStream({ 0, 0, 0, 0 })
+  local landed = Capture.calculate(
+    attempt,
+    Context.forBall("POKE_BALL", targetFacts({ hp = 1 }), wildEnv()),
+    landedStream
+  )
+  Assert.isTrue(landed.success, "four kind draws land the catch")
+  Assert.equal(landed.shakes, 3, "a landed catch never reports a fourth shake")
+  Assert.deepEqual(landedStream:capture(), { used = 4 }, "a landed catch spends all four checks")
+  local missedStream = scriptedStream({ 0, 0, 0, 65535 })
+  local missed = Capture.calculate(
+    attempt,
+    Context.forBall("POKE_BALL", targetFacts({ hp = 1 }), wildEnv()),
+    missedStream
+  )
+  Assert.isFalse(missed.success, "a hostile fourth draw breaks free")
+  Assert.equal(missed.shakes, 3, "a fourth-check breakout still reports three shakes")
+  Assert.deepEqual(missedStream:capture(), { used = 4 }, "a fourth-check breakout spends all four checks")
+end
+
+-- Level and Love bonuses stage on the rate before the neutral multiplier:
+-- an eightfold bonus on rate 45 clamps to 255, so both balls stage the same
+-- odds as a flat 255 rate while a mismatched Love pairing stages no bonus.
+function T.apricorn_rate_bonuses_clamp_before_the_neutral_multiplier()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local Context = contextOwner("typed capture environments own the facts each ball reads")
+  local levelAttempt = { actor = 1, inventoryId = "party", ball = "LEVEL_BALL", target = { combatant = 2 } }
+  local level = Capture.calculate(
+    levelAttempt,
+    Context.forBall("LEVEL_BALL", targetFacts({ level = 5 }), wildEnv({ attackerLevel = 40 })),
+    scriptedStream({ 0, 0, 0, 0 })
+  )
+  Assert.equal(level.odds, 85, "the eightfold level bonus clamps rate 45 to 255")
+  local loveAttempt = { actor = 1, inventoryId = "party", ball = "LOVE_BALL", target = { combatant = 2 } }
+  local love = Capture.calculate(
+    loveAttempt,
+    Context.forBall(
+      "LOVE_BALL",
+      targetFacts({ species = "PIKACHU", gender = "male" }),
+      wildEnv({ attackerSpecies = "PIKACHU", attackerGender = "female" })
+    ),
+    scriptedStream({ 0, 0, 0, 0 })
+  )
+  Assert.equal(love.odds, 85, "the love bonus clamps rate 45 to 255")
+  local cold = Capture.calculate(
+    loveAttempt,
+    Context.forBall(
+      "LOVE_BALL",
+      targetFacts({ species = "PIKACHU", gender = "male" }),
+      wildEnv({ attackerSpecies = "PIKACHU", attackerGender = "male" })
+    ),
+    scriptedStream({ 0, 0, 0, 0 })
+  )
+  Assert.equal(cold.odds, 15, "a mismatched love pairing stages no bonus")
+end
+
+-- Level bonuses compare floored halves and quarters of the attacker level:
+-- attacker 5 against target 2 doubles, attacker 4 against target 2 doubles,
+-- attacker 8 against target 2 quadruples, and an attacker at or below the
+-- target stages no bonus.
+function T.level_bonus_odd_attacker_levels_use_integer_floors()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local Context = contextOwner("typed capture environments own the facts each ball reads")
+  local attempt = { actor = 1, inventoryId = "party", ball = "LEVEL_BALL", target = { combatant = 2 } }
+  local function oddsFor(attackerLevel, targetLevel)
+    local context = Context.forBall(
+      "LEVEL_BALL",
+      targetFacts({ level = targetLevel }),
+      wildEnv({ attackerLevel = attackerLevel })
+    )
+    return Capture.calculate(attempt, context, scriptedStream({ 0, 0, 0, 0 })).odds
+  end
+  Assert.equal(oddsFor(5, 2), 30, "attacker 5 against target 2 doubles")
+  Assert.equal(oddsFor(4, 2), 30, "attacker 4 against target 2 doubles")
+  Assert.equal(oddsFor(8, 2), 60, "attacker 8 against target 2 quadruples")
+  Assert.equal(oddsFor(2, 5), 15, "an attacker at or below the target stages no bonus")
+end
+
+-- Safari balls read the staged catch stage: the same target stages low odds
+-- at stage 0, neutral odds at stage 6, and high odds at stage 12, while an
+-- already staged throw never moves when its source environment changes.
+function T.safari_balls_read_the_staged_catch_stage()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local Context = contextOwner("typed capture environments own the facts each ball reads")
+  local attempt = { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 } }
+  local function oddsAt(stage)
+    local context =
+      Context.forBall("SAFARI_BALL", targetFacts(), wildEnv({ mode = "safari", safariCatchRateStage = stage }))
+    return Capture.calculate(attempt, context, scriptedStream({ 0, 0, 0, 0 })).odds
+  end
+  Assert.equal(oddsAt(0), 5, "stage 0 stages the low rate")
+  Assert.equal(oddsAt(6), 22, "stage 6 stages the neutral rate")
+  Assert.equal(oddsAt(12), 90, "stage 12 stages the high rate")
+  local env = wildEnv({ mode = "safari", safariCatchRateStage = 6 })
+  local staged = Context.forBall("SAFARI_BALL", targetFacts(), env)
+  env.safariCatchRateStage = 12
+  Assert.equal(staged.env.safariCatchRateStage, 6, "the staged throw snapshots its stage")
+end
+
+-- Early shake failures exit with matching shakes and draws: a hostile
+-- first, second, or third check reports zero, one, or two shakes while
+-- spending exactly one draw more than the reported shakes.
+function T.early_shake_failures_exit_with_matching_shakes_and_draws()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local Context = contextOwner("typed capture environments own the facts each ball reads")
+  local attempt = { actor = 1, inventoryId = "party", ball = "POKE_BALL", target = { combatant = 2 } }
+  local cases = {
+    { tape = { 65535 }, shakes = 0, used = 1 },
+    { tape = { 0, 65535 }, shakes = 1, used = 2 },
+    { tape = { 0, 0, 65535 }, shakes = 2, used = 3 },
+  }
+  for _, case in ipairs(cases) do
+    local stream = scriptedStream(case.tape)
+    local result =
+      Capture.calculate(attempt, Context.forBall("POKE_BALL", targetFacts({ hp = 1 }), wildEnv()), stream)
+    Assert.isFalse(result.success, "a hostile check breaks free")
+    Assert.equal(result.shakes, case.shakes, "the breakout reports its landed checks")
+    Assert.deepEqual(stream:capture(), { used = case.used }, "the breakout spends one draw per check")
+  end
+end
+
+-- A thrown ball spends its stock once despite four checks: a landed
+-- four-check catch leaves zero units and exactly one ledger entry.
+function T.a_thrown_ball_spends_its_stock_once_despite_four_checks()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local mon = wildMon(83)
+  local battle = wildBattle(mon, "POKE_BALL", 1)
+  battle.combatants[2].hp = 1
+  battle.combatants[2].maxHp = 100
+  local outcome = Capture.execute(wildAttempt("POKE_BALL"), battle, scriptedStream({ 0, 0, 0, 0 }))
+  Assert.isTrue(outcome.result.success, "the kind tape lands the catch")
+  Assert.equal(outcome.result.shakes, 3, "the landed catch reports three shakes")
+  Assert.equal(battle.inventories.party.quantities.POKE_BALL, 0, "the throw spends its ball")
+  Assert.equal(#battle.ledger, 1, "the throw records exactly one consumption")
+end
+
+-- Safari throws without a staged stage fail before spend or draw: a safari
+-- battle missing its format state, or carrying a stage outside 0..12,
+-- refuses the throw with the counter and the stream untouched.
+function T.safari_throws_without_a_staged_stage_fail_before_spend_or_draw()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local attempt = { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 } }
+  local function safariBattle(formatState)
+    return {
+      mode = "safari",
+      safariBalls = 2,
+      formatState = formatState,
+      inventories = { party = { quantities = {} } },
+      ledger = {},
+      combatants = { [2] = { mon = { species = "PIKACHU" }, hp = 100, maxHp = 100 } },
+    }
+  end
+  for _, formatState in ipairs({ {}, { safariCatchRateStage = 13, safariRunAttempts = 6 } }) do
+    local battle = safariBattle(formatState)
+    local stream = scriptedStream({ 0, 0, 0, 0 })
+    local ok, err = pcall(Capture.execute, attempt, battle, stream)
+    Assert.isFalse(ok, "an unstaged safari throw never executes")
+    Assert.isTrue(type(err) == "table" and type(err.code) == "string", "an unstaged throw names its failure")
+    Assert.deepEqual(stream:capture(), { used = 0 }, "an unstaged throw spends no draw")
+    Assert.equal(battle.safariBalls, 2, "an unstaged throw spends no counter")
+    Assert.deepEqual(battle.ledger, {}, "an unstaged throw records no consumption")
+  end
+end
+
+-- Safari balls name their missing stage instead of guessing: staging
+-- without the native stage facts fails, while a staged stage validates.
+function T.safari_balls_name_their_missing_stage()
+  local Context = contextOwner("typed capture environments own the facts each ball reads")
+  local ok, err = pcall(Context.forBall, "SAFARI_BALL", targetFacts(), wildEnv({ mode = "safari" }))
+  Assert.isFalse(ok, "a stageless safari throw never stages")
+  Assert.isTrue(type(err) == "table" and type(err.code) == "string", "a stageless throw names its failure")
+  local staged = Context.forBall(
+    "SAFARI_BALL",
+    targetFacts(),
+    wildEnv({ mode = "safari", safariCatchRateStage = 6 })
+  )
+  Assert.isTrue(Context.validate(staged), "a staged safari throw validates")
+end
+
 return { tests = T }

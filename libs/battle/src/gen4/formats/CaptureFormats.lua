@@ -1,11 +1,12 @@
--- Capture-only and special-capture battle policies. Native anchors: the
--- battle-type flags for Safari, Pal Park, tutorial, and Bug Contest battles
--- from battle setup, the Pal Park and tutorial early return in the native
--- catch calculation, and the Safari controller commands for throwing balls,
--- bait, rocks, and running. Registration binds the native action, counter,
--- and outcome policies without implementing the owning world applications:
--- bait and rock stage management, Pal Park transfers, tutorial scripting,
--- and contest world judging stay with their owners.
+-- Capture-only and special-capture battle policies with the native Safari
+-- stage state. Native anchors: the battle-type flags for Safari, Pal
+-- Park, tutorial, and Bug Contest battles from battle setup, the Pal Park
+-- and tutorial early return in the native catch calculation, and the Safari
+-- controller commands for throwing balls, bait, rocks, and running.
+-- Registration binds the native action, counter, and outcome policies and
+-- owns the Safari bait/rock stage state and transitions; Pal Park
+-- transfers, tutorial scripting, and contest world judging stay with their
+-- owners.
 
 local Errors = require("libs.errors.src.Errors")
 
@@ -23,6 +24,12 @@ local Errors = require("libs.errors.src.Errors")
 ---@field policies table<string, CapturePolicy> bound policies keyed by mode
 
 local CaptureFormats = {}
+
+--- Labeled native draw spent by a bait action.
+CaptureFormats.BAIT_LABEL = "safari:bait"
+
+--- Labeled native draw spent by a rock action.
+CaptureFormats.ROCK_LABEL = "safari:rock"
 
 ---@param a table<string, unknown> earlier contest candidate under judging
 ---@param b table<string, unknown> later contest candidate under judging
@@ -85,6 +92,13 @@ end
 --- modes refuse, such as trainer captures; the throw path reads the merged
 --- bindings so permitted custom throws take the same mechanics.
 local customBindings = {} ---@type table<string, CapturePolicy>
+
+--- Native Safari stage bounds: the catch-rate stage and the run-attempt
+--- counter each live between zero and twelve and open at six.
+local SAFARI_STAGE_MIN = 0
+local SAFARI_STAGE_MAX = 12
+local SAFARI_INITIAL_CATCH_STAGE = 6
+local SAFARI_INITIAL_RUN_ATTEMPTS = 6
 
 ---@param code string refusal code under report
 ---@param message string human-readable reason under report
@@ -188,6 +202,100 @@ function CaptureFormats.policyFor(registry, mode)
     error(failure("unknown_mode", "the capture mode binds no policy", { code = "unknown_mode", mode = mode }))
   end
   return policy --[[@as CapturePolicy]]
+end
+
+--- Returns fresh native format state for modes that own battle-local
+--- capture state. Only safari owns state today; other known modes own none
+--- and answer nil while unknown modes fail.
+---@param mode unknown capture mode requesting initial state
+---@return table<string, unknown>? fresh safari state, or nil when the mode owns none
+function CaptureFormats.initialState(mode)
+  local policy = CaptureFormats.policyFor(CaptureFormats.register(), mode)
+  if policy.mode ~= "safari" then
+    return nil
+  end
+  return {
+    safariCatchRateStage = SAFARI_INITIAL_CATCH_STAGE,
+    safariRunAttempts = SAFARI_INITIAL_RUN_ATTEMPTS,
+  }
+end
+
+---@param state unknown candidate safari state under validation
+---@return integer staged catch-rate stage between zero and twelve
+---@return integer staged run attempts between zero and twelve
+local function checkSafariState(state)
+  if type(state) ~= "table" then
+    error(failure("invalid_format_state", "safari actions mutate safari state", { code = "invalid_format_state" }))
+  end
+  local record = state --[[@as table<string, unknown>]]
+  local stage = record.safariCatchRateStage
+  if type(stage) ~= "number" or stage % 1 ~= 0 or stage < SAFARI_STAGE_MIN or stage > SAFARI_STAGE_MAX then
+    error(
+      failure(
+        "invalid_format_state",
+        "safari actions need a catch-rate stage from 0 to 12",
+        { code = "invalid_format_state", stage = stage }
+      )
+    )
+  end
+  local attempts = record.safariRunAttempts
+  if type(attempts) ~= "number" or attempts % 1 ~= 0 or attempts < SAFARI_STAGE_MIN or attempts > SAFARI_STAGE_MAX then
+    error(
+      failure(
+        "invalid_format_state",
+        "safari actions need run attempts from 0 to 12",
+        { code = "invalid_format_state", attempts = attempts }
+      )
+    )
+  end
+  return stage, --[[@as integer]]
+    attempts --[[@as integer]]
+end
+
+--- Executes one safari bait or rock action against the caller-owned format
+--- state: consumes exactly one labeled draw, then mutates the two safari
+--- integers with native clamps. Bait spends an attempt and, on a share not
+--- divisible by ten, lowers the catch-rate stage; rock raises the
+--- catch-rate stage and, on a share not divisible by ten, refunds an
+--- attempt. Anything outside safari bait or rock fails before spending a
+--- draw or mutating state.
+---@param mode unknown capture mode requesting the action
+---@param action unknown safari action under execution
+---@param formatState unknown caller-owned safari state under mutation
+---@param stream table<string, unknown> labeled native draw stream under execution
+function CaptureFormats.applyAction(mode, action, formatState, stream)
+  if mode ~= "safari" or (action ~= "throw_bait" and action ~= "throw_rock") then
+    error(
+      failure(
+        "invalid_action",
+        "safari actions run only as safari bait or rock",
+        { code = "invalid_action", mode = mode, action = action }
+      )
+    )
+  end
+  assert(type(stream) == "table", "safari actions spend one labeled draw")
+  local stage, attempts = checkSafariState(formatState)
+  local state = formatState --[[@as table<string, unknown>]]
+  local label = CaptureFormats.BAIT_LABEL
+  if action == "throw_rock" then
+    label = CaptureFormats.ROCK_LABEL
+  end
+  local draw = (stream --[[@as BattleRng]]):nextU16(label, { mode = mode, action = action })
+  if action == "throw_bait" then
+    if attempts > SAFARI_STAGE_MIN then
+      state.safariRunAttempts = attempts - 1
+    end
+    if draw % 10 ~= 0 and stage > SAFARI_STAGE_MIN then
+      state.safariCatchRateStage = stage - 1
+    end
+  else
+    if stage < SAFARI_STAGE_MAX then
+      state.safariCatchRateStage = stage + 1
+    end
+    if draw % 10 ~= 0 and attempts < SAFARI_STAGE_MAX then
+      state.safariRunAttempts = attempts + 1
+    end
+  end
 end
 
 return CaptureFormats

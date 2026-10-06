@@ -263,6 +263,31 @@ function CaptureContext.forBall(ball, target, env)
       )
     end
   end
+  local effectiveMode = envFacts.mode
+  if type(effectiveMode) ~= "string" then
+    effectiveMode = "wild"
+  end
+  if ball == "SAFARI_BALL" and effectiveMode == "safari" then
+    local stage = envFacts.safariCatchRateStage
+    if type(stage) ~= "number" then
+      error(
+        failure(
+          "missing_fact",
+          "the SAFARI_BALL throw needs safariCatchRateStage",
+          { code = "missing_fact", ball = ball, missing = "safariCatchRateStage" }
+        )
+      )
+    end
+    if stage % 1 ~= 0 or stage < 0 or stage > 12 then
+      error(
+        failure(
+          "invalid_format_state",
+          "the SAFARI_BALL throw needs a stage from 0 to 12",
+          { code = "invalid_format_state", ball = ball, stage = stage }
+        )
+      )
+    end
+  end
   local stagedEnv = copyFacts(envFacts)
   if type(stagedEnv.mode) ~= "string" then
     stagedEnv.mode = "wild"
