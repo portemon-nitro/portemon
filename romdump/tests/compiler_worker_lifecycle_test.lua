@@ -181,6 +181,122 @@ function T.missing_receipt_compiles_through_the_producer_path()
   Assert.isTrue(sourceOpened, "compilation opens ROM source lazily")
 end
 
+-- A receipt file that cannot be parsed or evaluated as Lua proves nothing,
+-- so the job falls through to ordinary compilation exactly like a missing
+-- receipt: damaged trust metadata never becomes readiness and never fails
+-- the job by itself.
+function T.damaged_receipt_lua_compiles_through_the_producer_path()
+  local CompilerWorker = require("romdump.src.build.CompilerWorker")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local RomFs = require("romdump.src.source.RomFs")
+  local damages = {
+    { label = "parse damage", rawLua = "return { this is not valid receipt lua !!!" },
+    { label = "evaluation damage", rawLua = "return undefined_global()" },
+  }
+  for _, damage in ipairs(damages) do
+    local input = scriptedChannel({
+      {
+        kind = "field-font",
+        key = "global",
+        jobKey = "field-font:global",
+        versionId = "heartgold",
+        generationId = "damaged-receipt-generation",
+        epoch = 1,
+        stageName = "font-stage",
+        sizeClass = "normal",
+        payload = {},
+        producerFingerprint = "producer",
+      },
+      { kind = "stop" },
+    })
+    local resultsChannel, received = recordingChannel()
+    local sourceOpened = false
+    local realOpen = RomFs.open
+    RomFs.open = function(_)
+      sourceOpened = true
+      return { close = function(_) end }
+    end
+    local realExecute = CompilerWorker.execute
+    CompilerWorker.execute = function(_, _)
+      return { stageName = "font-stage", result = { marker = "fresh-marker" } }
+    end
+    local runOk, runErr = withLove(fakeLove(), function()
+      local cacheFs = CacheFs.forVersion("heartgold")
+      assert(cacheFs:write(ArtifactState.path("field-font", "global"), damage.rawLua))
+      return pcall(CompilerWorker.run, 1, input, resultsChannel)
+    end)
+    RomFs.open = realOpen
+    CompilerWorker.execute = realExecute
+    Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
+    Assert.equal(#received, 1, "the compiled job reports once (" .. damage.label .. ")")
+    Assert.equal(received[1].status, "prepared", "a damaged receipt compiles (" .. damage.label .. ")")
+    Assert.isTrue(sourceOpened, "compilation opens ROM source lazily (" .. damage.label .. ")")
+  end
+end
+
+-- A receipt the backend reports present but cannot read is an
+-- infrastructure failure, not unusable metadata: the job fails without
+-- opening ROM source as a recovery fallback.
+function T.unreadable_receipt_backend_failure_stays_terminal()
+  local CompilerWorker = require("romdump.src.build.CompilerWorker")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local RomFs = require("romdump.src.source.RomFs")
+  local input = scriptedChannel({
+    {
+      kind = "field-font",
+      key = "global",
+      jobKey = "field-font:global",
+      versionId = "heartgold",
+      generationId = "backend-failure-generation",
+      epoch = 1,
+      stageName = "font-stage",
+      sizeClass = "normal",
+      payload = {},
+      producerFingerprint = "producer",
+    },
+    { kind = "stop" },
+  })
+  local resultsChannel, received = recordingChannel()
+  local sourceOpened = false
+  local realOpen = RomFs.open
+  RomFs.open = function(_)
+    sourceOpened = true
+    return { close = function(_) end }
+  end
+  local realExecute = CompilerWorker.execute
+  CompilerWorker.execute = function(_, _)
+    error("a backend receipt failure must not reach compilation")
+  end
+  local hosted = fakeLove()
+  local runOk, runErr = withLove(hosted, function()
+    local cacheFs = CacheFs.forVersion("heartgold")
+    cacheFs:writeLua(ArtifactState.path("field-font", "global"), {
+      schema = ArtifactState.RECEIPT_SCHEMA,
+      generationId = "backend-failure-generation",
+      kind = "field-font",
+      key = "global",
+      marker = "receipt-trust-marker",
+    })
+    local receiptFullPath = cacheFs:resolve(ArtifactState.path("field-font", "global"))
+    local realRead = hosted.filesystem.read
+    hosted.filesystem.read = function(path)
+      if path == receiptFullPath then
+        return nil, "injected receipt read failure"
+      end
+      return realRead(path)
+    end
+    return pcall(CompilerWorker.run, 1, input, resultsChannel)
+  end)
+  RomFs.open = realOpen
+  CompilerWorker.execute = realExecute
+  Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
+  Assert.equal(#received, 1, "the failed job reports once")
+  Assert.equal(received[1].status, "failed", "a backend receipt read failure stays terminal")
+  Assert.isFalse(sourceOpened, "a backend failure never opens ROM source as a fallback")
+end
+
 function T.failed_source_close_emits_no_closure_acknowledgement()
   local CompilerWorker = require("romdump.src.build.CompilerWorker")
   local RomFs = require("romdump.src.source.RomFs")

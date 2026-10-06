@@ -96,6 +96,23 @@ local RECEIPT_FIELDS = {
   marker = true,
 }
 
+-- Receipt trust metadata that cannot be loaded proves nothing: a missing file
+-- and Lua content the cache loader cannot parse or evaluate are unusable
+-- receipts, not infrastructure faults. Genuine backend failures stay
+-- terminal and propagate to the caller unchanged.
+local UNUSABLE_RECEIPT_CODES = {
+  [StorageErrors.CACHE_FILE_MISSING] = true,
+  [StorageErrors.CACHE_LUA_PARSE_FAILED] = true,
+  [StorageErrors.CACHE_LUA_EVAL_FAILED] = true,
+}
+
+---@param loadError unknown
+---@return boolean
+local function isUnusableReceiptError(loadError)
+  local code = type(loadError) == "table" and loadError.code or nil
+  return UNUSABLE_RECEIPT_CODES[code] == true
+end
+
 local function checkKind(kind)
   assert(type(kind) == "string" and ArtifactState.KINDS[kind], "unknown artifact kind: " .. tostring(kind))
 end
@@ -185,8 +202,10 @@ function ArtifactState.read(cacheFs, generationId, kind, key)
   local path = ArtifactState.path(kind, key)
   local receipt, loadError = cacheFs:loadLua(path)
   if receipt == nil then
-    assert(loadError, "receipt read failed without a cause")
-    if loadError.code == StorageErrors.CACHE_FILE_MISSING then
+    if isUnusableReceiptError(loadError) then
+      return nil, "no current receipt is published"
+    end
+    if loadError == nil then
       return nil, "no current receipt is published"
     end
     error(loadError, 0)
