@@ -1478,32 +1478,43 @@ local function volatileTrapOf(state, combatantId)
 end
 
 -- Ticks persistent poison, burn, and toxic through the same health map
--- the dispatch pass consumes, in sampled Speed order with combatant
--- identity breaking ties. Poison and burn drain one eighth of maximum
+-- the dispatch pass consumes, walking the sampled battler order the
+-- residual owner nests instances under. Poison and burn drain one eighth of maximum
 -- health; toxic increments its owned counter first (capped at the
 -- native fifteen) and drains one sixteenth per counter point. Every
 -- tick floors at a minimum of one. Sleep, freeze, and paralysis carry
 -- no residual damage; their law lives at the before-action gate.
 ---@param state table<string, unknown> live battle state under the pass
----@param context table<string, unknown> validated mechanics context under the pass
+---@param context table<string, unknown> session context owning status writes
 ---@param health table<integer, integer> battle-local health under the pass
----@param speeds table<integer, integer> sampled effective Speed per combatant
+---@param turnOrder integer[] sampled battler order for the pass
 ---@param ceilings table<integer, integer> battle maximum health per combatant
-local function tickPersistentConditions(state, context, health, speeds, ceilings)
-  local order = {}
-  for combatantId in pairs(health) do
-    order[#order + 1] = combatantId
-  end
-  table.sort(order, function(left, right)
-    local leftSpeed = speeds[left] or 0
-    local rightSpeed = speeds[right] or 0
-    if leftSpeed ~= rightSpeed then
-      return leftSpeed > rightSpeed
+local function tickPersistentConditions(state, context, health, turnOrder, ceilings)
+  -- Status ticks walk the same sampled battler order the residual owner
+  -- nests instances under. The identity-ordered tail only covers health
+  -- entries missing from the sampled order, so the pass never depends
+  -- on hash iteration order.
+  local sequenced = {} ---@type integer[]
+  local seen = {}
+  for _, combatantId in ipairs(turnOrder) do
+    if health[combatantId] ~= nil and seen[combatantId] == nil then
+      seen[combatantId] = true
+      sequenced[#sequenced + 1] = combatantId
     end
-    return left < right
-  end)
+  end
+  local tail = {} ---@type integer[]
+  for combatantId in pairs(health) do
+    if type(combatantId) == "number" and seen[combatantId] == nil then
+      tail[#tail + 1] = combatantId
+    end
+  end
+  table.sort(tail)
+  for _, combatantId in ipairs(tail) do
+    seen[combatantId] = true
+    sequenced[#sequenced + 1] = combatantId
+  end
   local typed = context --[[@as BattleContext]]
-  for _, combatantId in ipairs(order) do
+  for _, combatantId in ipairs(sequenced) do
     if health[combatantId] > 0 then
       local combatant = BattleState.combatant(state, combatantId)
       local mon = combatant.mon --[[@as table<string, unknown>]]
@@ -2258,6 +2269,16 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       then
         speed = speed * 2
       end
+      -- Static ordering facts stage with the candidate: lagging holders
+      -- and Stall users sit late in their priority bracket, while
+      -- roll-gated early priority resolves at move use and never stages.
+      local monRecord = combatant.mon
+      local held = nil
+      local ability = nil
+      if type(monRecord) == "table" then
+        held = (monRecord --[[@as table<string, unknown>]]).heldItem
+        ability = (monRecord --[[@as table<string, unknown>]]).ability
+      end
       candidates[#candidates + 1] = {
         id = ordinal,
         actor = { combatant = actor.combatant, activation = actor.activation },
@@ -2266,6 +2287,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         selectedOrdinal = ordinal,
         priority = priority,
         speed = speed,
+        boostedPriority = false,
+        loweredPriority = held == "LAGGING_TAIL" or held == "FULL_INCENSE",
+        stall = ability == "STALL",
       }
       entry.ordinal = ordinal
     end
@@ -3057,11 +3081,25 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     end
     local stream = state.rng --[[@as table<string, unknown>]]
     assert(type(stream.nextU16) == "function", "native residuals draw from the battle stream")
+    -- The per-battler mon phase walks this sampled order: persistent
+    -- conditions tick through it below, and the residual owner nests
+    -- battle-local instances under it, so both paths share one speed
+    -- sequence without spending a second tie draw.
+    local turnEntries = {} ---@type table<integer, { id: integer, speed: integer }>
+    for combatant, speed in pairs(speeds) do
+      turnEntries[#turnEntries + 1] = { id = combatant, speed = speed }
+    end
+    local turnOrder = {}
+    for _, entry in
+      ipairs(TurnOrder.orderResiduals(turnEntries, { trickRoom = fieldActive(state, "trickroom") }, stream))
+    do
+      turnOrder[#turnOrder + 1] = entry.id
+    end
     local context = BattleContext.wrap(state)
-    -- Persistent conditions tick first in sampled Speed order through
+    -- Persistent conditions tick first in sampled turn order through
     -- the status owner; battle-local instances follow through the
     -- shared finite dispatch over the same health map.
-    tickPersistentConditions(state, context, health, speeds, ceilings)
+    tickPersistentConditions(state, context, health, turnOrder, ceilings)
     -- The dispatch owner serves the residual view through named
     -- collection and invocation: the view contract is duck-typed, so
     -- the session adapts method calls to plain view functions.
@@ -3086,6 +3124,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       speeds = speeds,
       health = health,
       stream = stream,
+      turnOrder = turnOrder,
+      trickRoom = fieldActive(state, "trickroom"),
+      nativeTurn = BattleState.nativeTurn(state),
     })
     for _, event in ipairs(outcome.events) do
       local record = event --[[@as table<string, unknown>]]

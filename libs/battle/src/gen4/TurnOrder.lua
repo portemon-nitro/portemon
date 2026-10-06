@@ -1,16 +1,20 @@
 -- Native turn and action ordering. Priority brackets dominate every speed
--- comparison, sampled speed decides inside one bracket, and Trick Room
--- reverses only the speed dimension. Equal priority and speed resolve
--- through labeled battle-stream draws taken in recorded selection order, so
--- input array positions and library sort internals never influence the
--- stream. Building freezes each action's ordering facts at the sampled
--- point, so later mutations never reorder built actions. Native anchors:
--- CheckSortSpeed, SortMonsBySpeed and SortExecutionOrderBySpeed feeding the
--- command and subscript dispatch.
+-- comparison; inside one bracket, boosted-priority holders go first,
+-- lowered-priority and Stall holders go last, and Trick Room reverses only
+-- the remaining plain-speed comparison. Equal comparisons resolve through
+-- labeled battle-stream draws taken while walking the live nested pairwise
+-- order, so input array positions and library sort internals never
+-- influence the stream. Building freezes each action's ordering facts at
+-- the sampled point, so later mutations never reorder built actions.
+-- Native anchors: CheckSortSpeed, SortMonsBySpeed and
+-- SortExecutionOrderBySpeed feeding the command and subscript dispatch.
 
 ---@class ActionOrderFacts
 ---@field priority integer
 ---@field speed integer
+---@field boostedPriority boolean
+---@field loweredPriority boolean
+---@field stall boolean
 
 ---@class ScheduledActor
 ---@field combatant integer
@@ -34,6 +38,9 @@
 ---@field selectedOrdinal integer
 ---@field priority integer
 ---@field speed integer
+---@field boostedPriority boolean?
+---@field loweredPriority boolean?
+---@field stall boolean?
 
 ---@class TurnOrderOptions
 ---@field trickRoom boolean
@@ -67,6 +74,17 @@ local function drawTieSwap(stream, label)
   return stream:nextU16(label, { kind = label }) % 2 == 1
 end
 
+---@param value unknown
+---@param name string
+---@return boolean staged special-ordering fact, false when the stager carries none
+local function checkOrderFlag(value, name)
+  if value == nil then
+    return false
+  end
+  assert(type(value) == "boolean", name .. " stages a boolean ordering fact")
+  return value
+end
+
 ---@param candidate TurnOrderCandidate
 ---@return ScheduledAction
 local function checkCandidate(candidate)
@@ -83,6 +101,9 @@ local function checkCandidate(candidate)
     "ordering candidates carry an integer priority"
   )
   requireSampledSpeed(candidate.speed, "ordering candidate")
+  local boosted = checkOrderFlag(candidate.boostedPriority, "ordering candidate boosted priority")
+  local lowered = checkOrderFlag(candidate.loweredPriority, "ordering candidate lowered priority")
+  local stall = checkOrderFlag(candidate.stall, "ordering candidate stall")
   local payload = {} ---@type table<string, unknown>
   for key, value in pairs(candidate.payload) do
     payload[key] = value
@@ -93,9 +114,72 @@ local function checkCandidate(candidate)
     kind = candidate.kind,
     payload = payload,
     selectedOrdinal = candidate.selectedOrdinal,
-    sampledOrder = { priority = candidate.priority, speed = candidate.speed },
+    sampledOrder = {
+      priority = candidate.priority,
+      speed = candidate.speed,
+      boostedPriority = boosted,
+      loweredPriority = lowered,
+      stall = stall,
+    },
     progress = "queued",
   }
+end
+
+---@param firstSpeed integer sampled speed of the current holder
+---@param secondSpeed integer sampled speed of the later challenger
+---@param reverse boolean true while the speed dimension is reversed
+---@param stream BattleRng labeled battle stream for tie resolution
+---@param label string tie-draw label for this ordering
+---@return boolean true when the challenger belongs ahead of the holder
+local function comparePlainSpeed(firstSpeed, secondSpeed, reverse, stream, label)
+  if firstSpeed ~= secondSpeed then
+    if reverse then
+      return secondSpeed < firstSpeed
+    end
+    return secondSpeed > firstSpeed
+  end
+  return drawTieSwap(stream, label)
+end
+
+---@param first ScheduledAction current holder under comparison
+---@param second ScheduledAction later challenger under comparison
+---@param reverse boolean true while the speed dimension is reversed
+---@param stream BattleRng labeled battle stream for tie resolution
+---@return boolean true when the challenger belongs ahead of the holder
+local function secondGoesFirst(first, second, reverse, stream)
+  local head = first.sampledOrder
+  local tail = second.sampledOrder
+  if head.priority ~= tail.priority then
+    return tail.priority > head.priority
+  end
+  if head.boostedPriority ~= tail.boostedPriority then
+    return tail.boostedPriority
+  end
+  if head.boostedPriority and tail.boostedPriority then
+    if head.speed ~= tail.speed then
+      return tail.speed > head.speed
+    end
+    return drawTieSwap(stream, SPEED_TIE_LABEL)
+  end
+  if head.loweredPriority ~= tail.loweredPriority then
+    return head.loweredPriority
+  end
+  if head.loweredPriority and tail.loweredPriority then
+    if head.speed ~= tail.speed then
+      return tail.speed < head.speed
+    end
+    return drawTieSwap(stream, SPEED_TIE_LABEL)
+  end
+  if head.stall ~= tail.stall then
+    return head.stall
+  end
+  if head.stall and tail.stall then
+    if head.speed ~= tail.speed then
+      return tail.speed < head.speed
+    end
+    return drawTieSwap(stream, SPEED_TIE_LABEL)
+  end
+  return comparePlainSpeed(head.speed, tail.speed, reverse, stream, SPEED_TIE_LABEL)
 end
 
 ---@param candidates TurnOrderCandidate[]
@@ -111,46 +195,22 @@ function TurnOrder.buildActions(candidates, options, stream)
     staged[#staged + 1] = checkCandidate(candidate)
   end
   local reverse = options.trickRoom
-  ---@param a ScheduledAction
-  ---@param b ScheduledAction
-  ---@return boolean
-  local function byExecutionOrder(a, b)
-    if a.sampledOrder.priority ~= b.sampledOrder.priority then
-      return a.sampledOrder.priority > b.sampledOrder.priority
-    end
-    if a.sampledOrder.speed ~= b.sampledOrder.speed then
-      if reverse then
-        return a.sampledOrder.speed < b.sampledOrder.speed
-      end
-      return a.sampledOrder.speed > b.sampledOrder.speed
-    end
+  -- Selection order seeds the live order before any comparison runs, so
+  -- input array permutation never influences the stream; the nested walk
+  -- below swaps the holder the moment a later challenger wins, exactly
+  -- like the native pairwise pass.
+  table.sort(staged, function(a, b)
     if a.selectedOrdinal ~= b.selectedOrdinal then
       return a.selectedOrdinal < b.selectedOrdinal
     end
     return a.id < b.id
-  end
-  -- The comparator above is a total order over recorded selection facts, so
-  -- tied priority and speed always land adjacent in selection order before
-  -- any draw is taken; input array permutation cannot move them.
-  table.sort(staged, byExecutionOrder)
-  local index = 1
-  while index <= #staged do
-    local runEnd = index
-    while
-      runEnd + 1 <= #staged
-      and staged[runEnd + 1].sampledOrder.priority == staged[index].sampledOrder.priority
-      and staged[runEnd + 1].sampledOrder.speed == staged[index].sampledOrder.speed
-    do
-      runEnd = runEnd + 1
-    end
-    if runEnd > index then
-      for position = index, runEnd - 1 do
-        if drawTieSwap(stream, SPEED_TIE_LABEL) then
-          staged[position], staged[position + 1] = staged[position + 1], staged[position]
-        end
+  end)
+  for i = 1, #staged - 1 do
+    for j = i + 1, #staged do
+      if secondGoesFirst(staged[i], staged[j], reverse, stream) then
+        staged[i], staged[j] = staged[j], staged[i]
       end
     end
-    index = runEnd + 1
   end
   return staged
 end
@@ -178,33 +238,18 @@ local function orderBySampledSpeed(entries, context, stream, label)
     staged[#staged + 1] = copy
   end
   local reverse = context.trickRoom
-  ---@param a ResidualEntry
-  ---@param b ResidualEntry
-  ---@return boolean
-  local function bySpeed(a, b)
-    if a.speed ~= b.speed then
-      if reverse then
-        return a.speed < b.speed
-      end
-      return a.speed > b.speed
-    end
+  -- Entry identity seeds the live order before any comparison runs; the
+  -- nested walk below resolves equal speeds through the same pairwise
+  -- tie draws as the action pass, without action-special branches.
+  table.sort(staged, function(a, b)
     return a.id < b.id
-  end
-  table.sort(staged, bySpeed)
-  local index = 1
-  while index <= #staged do
-    local runEnd = index
-    while runEnd + 1 <= #staged and staged[runEnd + 1].speed == staged[index].speed do
-      runEnd = runEnd + 1
-    end
-    if runEnd > index then
-      for position = index, runEnd - 1 do
-        if drawTieSwap(stream, label) then
-          staged[position], staged[position + 1] = staged[position + 1], staged[position]
-        end
+  end)
+  for i = 1, #staged - 1 do
+    for j = i + 1, #staged do
+      if comparePlainSpeed(staged[i].speed, staged[j].speed, reverse, stream, label) then
+        staged[i], staged[j] = staged[j], staged[i]
       end
     end
-    index = runEnd + 1
   end
   return staged
 end

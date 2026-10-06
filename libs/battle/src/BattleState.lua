@@ -19,12 +19,14 @@ local BattleState = {}
 
 -- Interruption captures carrying an older version reject as incompatible:
 -- pre-release battle snapshots never migrate, they fail before publication.
--- Version 6 carries the knockout-reward continuation (reward children,
--- per-opponent participation records, and evolution eligibility) alongside
--- the version-2 replacement lifecycle, the session-owned action ledger (escape
+-- Version 7 carries the activation entry turn (the battle turn an entry
+-- was seated on, read against the round mapping below) alongside the
+-- version-6 knockout-reward continuation (reward children, per-opponent
+-- participation records, and evolution eligibility), the version-2
+-- replacement lifecycle, the session-owned action ledger (escape
 -- attempts, capture identities, capture records, and item consumption),
 -- and the live battle-local effect records owned by the effect bag.
-BattleState.VERSION = 6
+BattleState.VERSION = 7
 
 ---@param value unknown
 ---@return unknown
@@ -240,6 +242,19 @@ function BattleState.participant(state, id)
   return found
 end
 
+-- Maps the session round to the battle turn counter mechanics read:
+-- turn-since-entry questions subtract a stamped entry turn from this
+-- value, so every such mechanic shares one mapping instead of copying
+-- round arithmetic. The opening round is the first battle turn.
+---@param state table<string, unknown> live battle state
+---@return integer current battle turn
+function BattleState.nativeTurn(state)
+  assert(type(state) == "table", "battle turns map from live battle state")
+  local round = state.round
+  assert(type(round) == "number" and round % 1 == 0 and round >= 1, "battle turns map from a positive round")
+  return round --[[@as integer]] - 1
+end
+
 ---@param state table<string, unknown> live battle state
 ---@param combatantId integer
 ---@param positionId integer
@@ -279,8 +294,10 @@ function BattleState.enter(state, combatantId, positionId)
   -- Health is roster-local: entering seats the combatant with its
   -- current battle health and original baseline untouched, so damage
   -- taken before leaving is still there when it returns. Only the
-  -- activation-local entry token and stages reset here.
-  combatant.active = { position = positionId, activation = counter }
+  -- activation-local entry token, entry turn, and stages reset here: the
+  -- entry turn is immutable for this activation, so turn-since-entry
+  -- mechanics read a stable value until the next replacement.
+  combatant.active = { position = positionId, activation = counter, entryTurn = BattleState.nativeTurn(state) }
   combatant.stages = zeroStages()
   position.occupant = combatantId
   position.activation = counter
@@ -398,6 +415,10 @@ function BattleState.validateSnapshot(snapshot)
       local active = combatant.active --[[@as table<string, unknown>]]
       if type(active.position) ~= "number" or type(active.activation) ~= "number" then
         error(BattleErrors.incompatibleSnapshot("snapshot entries must name position and token", {}))
+      end
+      local entryTurn = active.entryTurn
+      if type(entryTurn) ~= "number" or entryTurn % 1 ~= 0 or entryTurn < 0 then
+        error(BattleErrors.incompatibleSnapshot("snapshot entries must carry their native entry turn", {}))
       end
     end
     if type(combatant.materialized) ~= "table" then

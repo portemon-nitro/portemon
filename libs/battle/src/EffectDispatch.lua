@@ -178,11 +178,23 @@ end
 ---@field binding DispatchBinding
 ---@field speed number
 ---@field rank number
+---@field ordinal integer? invocation-local explicit position, when planned
 
 ---@param left RankedDispatchEntry
 ---@param right RankedDispatchEntry
 ---@return boolean
 local function entryBefore(left, right)
+  if left.ordinal ~= nil or right.ordinal ~= nil then
+    if left.ordinal == nil then
+      return false
+    end
+    if right.ordinal == nil then
+      return true
+    end
+    if left.ordinal ~= right.ordinal then
+      return left.ordinal < right.ordinal
+    end
+  end
   if left.rank ~= right.rank then
     return left.rank < right.rank
   end
@@ -192,9 +204,32 @@ local function entryBefore(left, right)
   return left.instance.createdOrdinal < right.instance.createdOrdinal
 end
 
+---@param planned table<integer, integer> explicit position per planned instance identity
+---@param instance DispatchInstance collected instance under planning
+---@param seen table<integer, integer> claiming instance per position
+---@return integer? explicit position for the instance, absent when unplanned
+local function checkPlannedOrdinal(planned, instance, seen)
+  local ordinal = planned[instance.id]
+  if ordinal == nil then
+    return nil
+  end
+  if type(ordinal) ~= "number" or ordinal % 1 ~= 0 or ordinal < 1 then
+    error(BattleErrors.invalidState("dispatch plans carry positive integral positions", { id = instance.id }))
+  end
+  local claimed = seen[ordinal]
+  if claimed ~= nil and claimed ~= instance.id then
+    error(BattleErrors.invalidState("dispatch plans carry one position per entry", { ordinal = ordinal }))
+  end
+  seen[ordinal] = instance.id
+  return ordinal
+end
+
 --- Collects the ordered candidates for one timing: every live instance
 --- bound to it, traversed by source category, then sampled speed order,
---- then creation ordinal. Insertion order never decides.
+--- then creation ordinal. Insertion order never decides. When the context
+--- carries an invocation-local explicit order per instance identity, the
+--- planned entries traverse by it first while unplanned extensions keep
+--- the deterministic fallback order behind them.
 ---@param timing string mechanics timing under collection
 ---@param context table<string, unknown> pass context carrying sampled speeds
 ---@return DispatchEntry[] ordered candidate entries with detached instances
@@ -203,18 +238,28 @@ function EffectDispatch:collect(timing, context)
     error(BattleErrors.invalidState("dispatch collects only finite known timings", { timing = timing }))
   end
   assert(type(context) == "table", "dispatch collection carries its pass context")
+  local planned = context.orderOrdinal
+  if planned ~= nil then
+    assert(type(planned) == "table", "dispatch plans map instance identities to positions")
+  end
   local bag = self._bag --[[@as DispatchBagView]]
   local speeds = context.speeds --[[@as table<integer, integer>?]]
   local records = bag:capture()
+  local seen = {}
   local entries = {}
   for _, instance in ipairs(records) do
     for _, binding in ipairs(instance.timings) do
       if binding.timing == timing then
+        local ordinal = nil
+        if planned ~= nil then
+          ordinal = checkPlannedOrdinal(planned --[[@as table<integer, integer>]], instance, seen)
+        end
         entries[#entries + 1] = {
           instance = instance,
           binding = copyValue(binding),
           speed = traversalSpeed(instance, speeds),
           rank = categoryRank(binding.orderClass),
+          ordinal = ordinal,
         }
       end
     end
