@@ -140,12 +140,18 @@ local function openFlow(game, root)
   local bag = assert(runtime.bagService, "field runtime owns the live bag service")
   local actions = PartyActions.new({ mons = mons, bag = bag })
   local cacheFs = assert(runtime.cacheFs, "field runtime owns its asset filesystem")
+  local mailbox = assert(runtime.mailbox, "field runtime owns the live Mailbox")
+  local MailActions = require("libs.hgss.src.field.MailActions")
+  local pcManifest = require("libs.assets.src.PcCache").loadManifest(cacheFs)
   return Flow.new({
     root = root,
     mons = mons,
     bag = bag,
     bagCursor = assert(runtime.bagCursor, "field runtime owns the live bag cursor"),
     partyActions = actions,
+    mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest }),
+    mailbox = mailbox,
+    pcManifest = pcManifest,
     fieldMoves = {
       check = function(_)
         return { kind = "ok" }

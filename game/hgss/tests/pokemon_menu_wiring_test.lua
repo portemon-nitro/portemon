@@ -27,6 +27,8 @@ local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local PcCache = require("libs.assets.src.PcCache")
 local BagCache = require("libs.assets.src.BagCache")
 local PartyCache = require("libs.assets.src.PartyCache")
+local SummaryCache = require("libs.assets.src.SummaryCache")
+local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
@@ -697,8 +699,8 @@ function T.tests.field_menu_coordinator_passes_its_runtime_mailbox_and_loaded_pc
   local mailbox = Mailbox.new()
   local pcManifest = pcManifest()
   local cacheFs = {}
-  local originalPcLoad, originalBagLoad, originalPartyLoad =
-    PcCache.loadManifest, BagCache.loadManifest, PartyCache.loadManifest
+  local originalPcLoad, originalBagLoad, originalPartyLoad, originalSummaryLoad =
+    PcCache.loadManifest, BagCache.loadManifest, PartyCache.loadManifest, SummaryCache.loadManifest
   local seenPcFs
   PcCache.loadManifest = function(fs)
     seenPcFs = fs
@@ -711,6 +713,10 @@ function T.tests.field_menu_coordinator_passes_its_runtime_mailbox_and_loaded_pc
   PartyCache.loadManifest = function(fs)
     Assert.equal(fs, cacheFs, "Party assets use the requested version cache")
     return deps.partyManifest
+  end
+  SummaryCache.loadManifest = function(fs)
+    Assert.equal(fs, cacheFs, "Summary assets use the requested version cache")
+    return SummaryPresentationFixture.manifest()
   end
   local runtime = {
     avatar = { gender = 0 },
@@ -753,8 +759,8 @@ function T.tests.field_menu_coordinator_passes_its_runtime_mailbox_and_loaded_pc
     child:dispose()
     runtime.pokemonMenu.dispose()
   end)
-  PcCache.loadManifest, BagCache.loadManifest, PartyCache.loadManifest =
-    originalPcLoad, originalBagLoad, originalPartyLoad
+  PcCache.loadManifest, BagCache.loadManifest, PartyCache.loadManifest, SummaryCache.loadManifest =
+    originalPcLoad, originalBagLoad, originalPartyLoad, originalSummaryLoad
   if not ok then
     error(message, 0)
   end

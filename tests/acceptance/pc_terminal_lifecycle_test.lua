@@ -16,6 +16,7 @@ local T = {
       "map-data:7",
       "map:7",
       "pc:global",
+      "summary:global",
     },
     tags = { "field", "pc", "acceptance", "lifecycle" },
   },
@@ -31,6 +32,18 @@ function T.tests.cancel_during_carry_and_nested_summary_releases_the_field()
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
+    -- Headless summary leases resolve instantly with the validated
+    -- family: nothing draws, so no portrait realizes.
+    local SummaryCache = require("libs.assets.src.SummaryCache")
+    local summaryManifest = SummaryCache.loadManifest(assert(game.runtime.cacheFs, "the runtime owns its cache"))
+    game.runtime:bindSummaryPreparation(function()
+      local lease = {}
+      function lease:prepare(demand)
+        return { kind = "ready", key = demand.key, assets = { manifest = summaryManifest } }
+      end
+      function lease:release() end
+      return lease
+    end)
     local runtime = game.runtime
     local mons = assert(runtime.monService, "field runtime owns the live mon service")
     Assert.isTrue(mons:giveMon({ species = "CHIKORITA", level = 5 }), "setup mon enters through the live service")

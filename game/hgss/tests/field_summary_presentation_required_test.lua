@@ -442,12 +442,20 @@ local function openProductionPartyFlow(versionId, summaryManifest, runtime, coun
   SummaryAcceptanceFixture.gift(service, "TOTODILE", 12)
   local context = SummaryAcceptanceFixture.displayContext(summaryManifest, service:partyCount())
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  local Mailbox = require("libs.hgss.src.save.Mailbox")
+  local MailActions = require("libs.hgss.src.field.MailActions")
+  local PcPresentationFixture = require("tests.support.PcPresentationFixture")
+  local mailbox = Mailbox.new()
+  local pcManifest = PcPresentationFixture.manifest()
   local flow = PokemonMenuFlow.new({
     root = "party",
     mons = service,
     bag = bag,
     bagCursor = BagCursor.new(),
     partyActions = PartyActions.new({ mons = service, bag = bag }),
+    mailActions = MailActions.new({ mons = service, mailbox = mailbox, bag = bag, manifest = pcManifest }),
+    mailbox = mailbox,
+    pcManifest = pcManifest,
     fieldMoves = {
       check = function(_)
         return { kind = "ok" }
