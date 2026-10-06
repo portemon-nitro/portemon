@@ -649,6 +649,51 @@ local function probeDecision(bundle, versionId, trainerIndex, passes, doubles)
   return signature, delta
 end
 
+---@param trainer string trainer identity under classification
+---@param passes table<integer, unknown> unchanged generated pass list under classification
+---@param unsupported table<integer, table<string, string>> unsupported diagnostics in traversal order
+---@return boolean true when the production policy accepts the list
+local function classifyTrainerPasses(trainer, passes, unsupported)
+  local parseOk, parsedOrErr = pcall(TrainerAi.parsePasses, passes)
+  if parseOk then
+    return true
+  end
+  if isMissingBehavior(parsedOrErr) then
+    unsupported[#unsupported + 1] = {
+      trainer = trainer,
+      passes = describePasses(passes),
+      reason = tostring(parsedOrErr),
+    }
+    return false
+  end
+  error(
+    "trainer "
+      .. trainer
+      .. " passes ["
+      .. describePasses(passes)
+      .. "] malformed pass metadata: "
+      .. tostring(parsedOrErr),
+    0
+  )
+end
+
+---@param unsupported table<integer, table<string, string>> unsupported diagnostics in traversal order
+---@param supported table<integer, table<string, string>> accepted-but-unexecutable diagnostics in traversal order
+local function checkTrainerCorpusFitsSupport(unsupported, supported)
+  if #unsupported == 0 and #supported == 0 then
+    return
+  end
+  local sections = {}
+  if #unsupported > 0 then
+    sections[#sections + 1] = "unsupported trainer pass lists:\n" .. formatSupportedFailures(unsupported)
+  end
+  if #supported > 0 then
+    sections[#sections + 1] = "accepted trainer pass lists miss executable behavior:\n"
+      .. formatSupportedFailures(supported)
+  end
+  error("generated trainer passes miss executable behavior:\n" .. table.concat(sections, "\n"), 0)
+end
+
 function T.generated_trainer_passes_answer_through_the_native_session(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local compiled = bundle.compiled --[[@as table<string, unknown>]]
@@ -682,29 +727,8 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
     passesByTrainer[trainerIndex] = passes
     -- The trainer policy owns the supported pass surface: only pass lists
     -- it accepts reach the session below. Lists it rejects stay recorded
-    -- as explicitly unsupported and never execute here.
-    local parseOk, parseErr = pcall(function()
-      return TrainerAi.parsePasses(passes --[[@as string[] ]])
-    end)
-    if not parseOk then
-      if isMissingBehavior(parseErr) then
-        unsupportedPasses[#unsupportedPasses + 1] = {
-          trainer = tostring(trainerIndex),
-          passes = describePasses(passes),
-          reason = tostring(parseErr),
-        }
-      else
-        error(
-          "trainer "
-            .. trainerIndex
-            .. " passes ["
-            .. describePasses(passes)
-            .. "] malformed pass metadata: "
-            .. tostring(parseErr),
-          0
-        )
-      end
-    else
+    -- and never execute here; the gate after the sweep fails on them.
+    if classifyTrainerPasses(tostring(trainerIndex), passes, unsupportedPasses) then
       local session = trainerSession(bundle, versionId, trainerIndex, passes, doubles)
       local opening = SessionFixture.driveUntilSettled(session)
       Assert.equal(opening.status, "waiting", "trainer " .. trainerIndex .. " reaches its opening decision")
@@ -759,21 +783,12 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
   end
   Assert.isTrue(seenDouble, "the corpus holds at least one native double trainer for the topology gate")
   Assert.isTrue(seenPasses > 0, "the corpus must yield at least one generated pass for the coverage gate")
-  -- An accepted pass list that still misses behavior is a gap in claimed
-  -- support, never a waived skip: fail once after the full sweep with one
-  -- deterministic line per trainer so a single passing trainer cannot mask
-  -- other trainers. Trainers with explicitly unsupported pass lists stay
-  -- out of this gate and out of the executed counts below.
-  if #supportedFailures > 0 then
-    error(
-      "accepted trainer pass lists miss executable behavior:\n"
-        .. formatSupportedFailures(supportedFailures)
-        .. "\n(unsupported pass lists: "
-        .. #unsupportedPasses
-        .. ")",
-      0
-    )
-  end
+  -- A rejected pass list is a gap in claimed support, never a waived
+  -- skip, and an accepted pass list that still misses behavior is one
+  -- too: fail once after the full sweep with one deterministic line per
+  -- trainer so a single passing trainer cannot mask other trainers.
+  -- Unsupported trainers stay out of the executed counts below.
+  checkTrainerCorpusFitsSupport(unsupportedPasses, supportedFailures)
   -- Every executed configuration replays its opening decision
   -- deterministically: the same passes answer with the same choices at
   -- the same shared-stream cost on a fresh session. This is coverage
@@ -846,6 +861,50 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
       .. #unsupportedPasses
       .. ")"
   )
+end
+
+-- A source pass list the production policy rejects must fail the corpus
+-- gate instead of staying a silent skip, while the same arbitrary input
+-- still fails closed when handed to production directly. The rejected
+-- input is discovered by asking the production policy itself, never from
+-- a copied support list, and no dump data is read here.
+function T.rejected_pass_lists_fail_the_corpus_gate_while_production_stays_closed(_, versionId)
+  local rejected = nil
+  for candidateBit = 0, 31 do
+    local candidate = "ai_pass_" .. candidateBit
+    if not pcall(TrainerAi.parsePasses, { candidate }) then
+      rejected = candidate
+      break
+    end
+  end
+  Assert.notNil(rejected, "the production policy still rejects at least one pass name")
+  local probe = rejected --[[@as string]]
+  local unsupported = {} ---@type table<integer, table<string, string>>
+  Assert.isFalse(
+    classifyTrainerPasses("synthetic:" .. versionId, { probe }, unsupported),
+    "the rejected pass list stays out of execution"
+  )
+  Assert.equal(#unsupported, 1, "the rejected pass list records exactly one diagnostic")
+  Assert.isTrue(
+    string.find(unsupported[1].trainer, "synthetic:", 1, true) ~= nil,
+    "the diagnostic keeps the trainer identity"
+  )
+  Assert.equal(unsupported[1].passes, probe, "the diagnostic keeps the original pass list")
+  Assert.isTrue(
+    string.find(unsupported[1].reason, probe, 1, true) ~= nil,
+    "the diagnostic keeps the original production reason"
+  )
+  local gateFailure = Assert.throws(function()
+    checkTrainerCorpusFitsSupport(unsupported, {})
+  end, "an unsupported source pass list fails the corpus gate")
+  Assert.isTrue(
+    string.find(tostring(gateFailure), probe, 1, true) ~= nil,
+    "the gate failure names the rejected pass"
+  )
+  local directFailure = Assert.throws(function()
+    TrainerAi.parsePasses({ probe })
+  end, "production still rejects the same arbitrary pass")
+  Assert.isTrue(isMissingBehavior(directFailure), "the production rejection stays structured missing behavior")
 end
 
 ---@param mons table<integer, unknown> materialized party members under the move search
