@@ -92,7 +92,7 @@ local function record(saveId, overrides)
 end
 
 local function countingStore(backend)
-  local calls = { validate = 0, cacheReads = {} }
+  local calls = { cacheReads = {} }
   local reader = backend.read
   local reading = backend
   function reading.read(_, path)
@@ -101,25 +101,19 @@ local function countingStore(backend)
     end
     return reader(backend, path)
   end
-  local store = GameSaveStore.new(SaveFs.global(backend), {
-    recordValidate = function(candidate)
-      calls.validate = calls.validate + 1
-      return GameSave.validate(candidate)
-    end,
-  })
+  local store = GameSaveStore.new(SaveFs.global(backend))
   return store, calls
 end
 
-function T.menu_listing_reads_display_envelopes_without_deep_validation()
+function T.menu_listing_reads_display_envelopes_without_generated_caches()
   local backend = FakeCache.new()
   local store, calls = countingStore(backend)
   local saveId = store:reserve()
   store:publishFirst(record(saveId))
-  Assert.equal(calls.validate, 1, "first publication deep-validates once")
 
   Assert.isTrue(
     type(store.listMetadata) == "function",
-    "menu listing reads validated display envelopes through GameSaveStore.listMetadata without deep validation"
+    "menu listing reads display envelopes through GameSaveStore.listMetadata without generated caches"
   )
   local entries = store:listMetadata()
   Assert.equal(#entries, 1, "metadata listing preserves catalog ordering")
@@ -129,8 +123,7 @@ function T.menu_listing_reads_display_envelopes_without_deep_validation()
   Assert.equal(assert(entry.playerData and entry.playerData.profile).name, "GOLD")
   Assert.equal(entry.playTimeSeconds, 61)
   Assert.isNil(entry.error, "a valid envelope lists no error")
-  Assert.equal(calls.validate, 1, "metadata listing performs no deep validation")
-  Assert.deepEqual(calls.cacheReads, {}, "metadata listing reads no generated caches")
+  Assert.deepEqual(calls.cacheReads, {}, "publication and metadata listing read no generated caches")
 
   local results = {}
   local renderer = {
@@ -163,7 +156,7 @@ function T.menu_listing_reads_display_envelopes_without_deep_validation()
   )
 end
 
-function T.incompatible_save_reports_semantic_rejection_not_cache_acceptance()
+function T.nested_script_drift_loads_while_envelope_corruption_still_rejects()
   local backend = FakeCache.new()
   local store = GameSaveStore.new(SaveFs.global(backend))
   local saveId = store:reserve()
@@ -171,27 +164,32 @@ function T.incompatible_save_reports_semantic_rejection_not_cache_acceptance()
 
   Assert.isTrue(
     type(store.listMetadata) == "function",
-    "metadata listing keeps display data distinct from semantic validity"
+    "metadata listing keeps display data distinct from nested validity"
   )
   local before = store:listMetadata()
   Assert.equal(#before, 1)
   Assert.equal(before[1].saveId, saveId)
   Assert.isNil(before[1].error, "listing never marks a record corrupt for missing generated data")
 
-  local semanticFailure = Errors.new("SCRIPT_REGISTRY_MISMATCH", "script registry is incompatible")
-  local drifted = GameSaveStore.new(SaveFs.global(backend), {
-    recordValidate = function(_)
-      return nil, semanticFailure
-    end,
-  })
+  -- Nested script drift is owned by script restore, not by load: the
+  -- envelope still routes, so the store returns the record untouched.
+  local drifted = record(saveId)
+  drifted.scripts = { registryFingerprint = "drifted-registry", taskFingerprint = "drifted-tasks" }
+  store:save(drifted)
+  local loaded = assert(store:load(saveId))
+  Assert.equal(loaded.scripts.registryFingerprint, "drifted-registry")
+
+  -- Envelope corruption still rejects with a structured error and rewrites
+  -- neither the payload nor its display envelope.
+  backend.files["saves/games/" .. saveId .. ".lua"] = "return { schema = 'not-a-save' }"
   local ok, failure = pcall(function()
-    return drifted:load(saveId)
+    return store:load(saveId)
   end)
-  Assert.isFalse(ok, "semantic incompatibility still rejects at load")
+  Assert.isFalse(ok, "envelope corruption still rejects at load")
   Assert.isTrue(Errors.is(failure), "the rejection is a structured error")
-  Assert.equal(failure.code, "SCRIPT_REGISTRY_MISMATCH", "deep save errors stay semantic, never cache-versionmarked")
   local after = store:listMetadata()
-  Assert.deepEqual(after, before, "a rejected load rewrites neither the payload nor its display envelope")
+  Assert.equal(#after, 1)
+  Assert.notNil(after[1].error, "a corrupt envelope lists its error, never a silent card")
 end
 
 -- Synthetic service behind the relocated controller: epochs are minted
@@ -1261,11 +1259,7 @@ end
 function T.cancelled_preparation_leaves_persisted_save_bytes_unchanged(context)
   withLiveApp(context, function(App, harness)
     local saveFs = SaveFs.global()
-    local store = GameSaveStore.new(saveFs, {
-      recordValidate = function(candidate)
-        return GameSave.validate(candidate)
-      end,
-    })
+    local store = GameSaveStore.new(saveFs)
     local catalogBefore = saveFs:read(GameSaveStore.CATALOG_PATH)
     local saveId = store:reserve()
     store:publishFirst(record(saveId))

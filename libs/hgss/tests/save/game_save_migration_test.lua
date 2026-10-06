@@ -104,22 +104,26 @@ function T.migration_preserves_party_bag_leaves_world_and_rng()
   Assert.deepEqual(migrated.bag, input.bag)
 end
 
-function T.current_validation_requires_travel_and_rejects_old_schemas()
+function T.current_envelope_normalizes_while_old_schemas_migrate_first()
   local current = GameSave.migrateV6(GameSave.migrateV5(v5record()))
-  Assert.notNil(GameSave.validate(current))
-  returnsCode("GAME_SAVE_BUCKET_INVALID", function()
-    local value = currentRecord()
-    value.fieldTravel = nil
-    return GameSave.validate(value)
-  end)
+  Assert.notNil(GameSave.normalize(current))
+  -- Nested buckets travel to their owning domains untouched: a missing
+  -- travel record still normalizes, and field restore reports the failure
+  -- when it actually needs the state.
+  local withoutTravel = currentRecord()
+  withoutTravel.fieldTravel = nil
+  Assert.notNil(GameSave.normalize(withoutTravel))
+  -- Historical records never normalize directly as current: they advance
+  -- only through the migration boundary.
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
-    return GameSave.validate(v3record())
+    local value = v3record()
+    value.schema = "g4-game-save-v2"
+    return GameSave.normalize(value)
   end)
-  -- Historical records never validate directly as current: they advance
-  -- only through the compatibility boundary.
-  returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
-    return GameSave.validate(v5record())
-  end)
+  local migratedV3 = assert(GameSave.normalize(v3record()))
+  Assert.equal(migratedV3.schema, GameSave.SCHEMA)
+  local migratedV5 = assert(GameSave.normalize(v5record()))
+  Assert.equal(migratedV5.schema, GameSave.SCHEMA)
 end
 
 function T.v4_migration_adds_only_national_dex_and_mart_state()
@@ -165,16 +169,10 @@ function T.v4_migration_rejects_a_bucket_that_did_not_exist_in_v4()
   Assert.equal(source.schema, "g4-game-save-v4")
 end
 
-function T.migrated_records_validate_with_a_travel_validator()
+function T.migrated_records_carry_their_travel_state_to_the_owning_domain()
   local migrated = GameSave.migrateV6(GameSave.migrateV5(GameSave.migrateV4(GameSave.migrateV3(v3record()))))
-  local opts = {
-    fieldTravelValidate = function(value)
-      Assert.deepEqual(value, { lastHealSpawn = "SPAWN_NEW_BARK" })
-      return value
-    end,
-  }
-  local valid = assert(GameSave.validate(migrated, opts))
-  Assert.deepEqual(valid.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
+  local normalized = assert(GameSave.normalize(migrated))
+  Assert.deepEqual(normalized.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
 end
 
 function T.v4_migration_adds_only_the_declared_state_and_does_not_mutate_input()
@@ -211,18 +209,17 @@ function T.v3_migrates_through_v4_v5_and_both_v6_layout_steps()
   Assert.deepEqual(current.mart, MartSave.empty())
 end
 
-function T.malformed_current_economy_and_v4_input_are_not_repaired_in_place()
+function T.malformed_nested_economy_is_not_repaired_by_normalization()
   local malformed = GameSave.migrateV6(GameSave.migrateV5(v5record()))
   malformed.mart.dailyPurchasedMask = 4096
-  returnsCode("GAME_SAVE_BUCKET_INVALID", function()
-    return GameSave.validate(malformed, { martValidate = function(value)
-      local canonical, err = MartSave.validate(value, {
-        cards = {}, apricorns = {}, seals = {},
-      })
-      return canonical, err
-    end })
-  end)
-  Assert.equal(malformed.schema, GameSave.SCHEMA)
+  -- The envelope boundary trusts nested state: the tampered record
+  -- normalizes untouched, and the mart owner still rejects it locally.
+  local normalized = assert(GameSave.normalize(malformed))
+  Assert.equal(normalized.schema, GameSave.SCHEMA)
+  Assert.equal(normalized.mart.dailyPurchasedMask, 4096)
+  local canonical, err = MartSave.validate(malformed.mart, { cards = {}, apricorns = {}, seals = {} })
+  Assert.isNil(canonical)
+  Assert.isTrue(Errors.is(err))
   Assert.equal(malformed.mart.dailyPurchasedMask, 4096)
 end
 
@@ -230,7 +227,7 @@ function T.future_schemas_reject_while_known_envelopes_stay_listable()
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     local value = currentRecord()
     value.schema = "g4-game-save-v8"
-    return GameSave.validate(value)
+    return GameSave.normalize(value)
   end)
   local envelope, envelopeErr = GameSave.metadata({
     schema = "g4-game-save-v8",

@@ -144,10 +144,9 @@ local function emptyCatalog()
 end
 
 ---@class GameSaveStoreModule
----@field new fun(saveFs: SaveFs, opts: table<string, unknown>?): GameSaveStore
+---@field new fun(saveFs: SaveFs): GameSaveStore
 ---@class GameSaveStore
 ---@field saveFs SaveFs
----@field opts table<string, unknown>
 ---@field private _busy boolean
 ---@field reserve fun(self: GameSaveStore): string
 ---@field list fun(self: GameSaveStore): table[]
@@ -157,14 +156,13 @@ end
 ---@field save fun(self: GameSaveStore, record: table<string, unknown>): boolean
 ---@field delete fun(self: GameSaveStore, saveId: string): boolean
 ---@param saveFs SaveFs
----@param opts table<string, unknown>?
 ---@return GameSaveStore
-function GameSaveStore.new(saveFs, opts)
+function GameSaveStore.new(saveFs)
   assert(
     getmetatable(saveFs) == SaveFs and saveFs:prefix() == "saves/" and saveFs.versionId == nil,
     "global GameSave store requires a global SaveFs"
   )
-  local store = setmetatable({ saveFs = saveFs, opts = opts or {}, _busy = false }, GameSaveStore)
+  local store = setmetatable({ saveFs = saveFs, _busy = false }, GameSaveStore)
   ---@cast store GameSaveStore
   return store
 end
@@ -220,26 +218,22 @@ function GameSaveStore:_payloadTempPath(saveId)
   return self:_gamePath(saveId) .. ".tmp"
 end
 
-function GameSaveStore:_validateRecord(record, expectedSaveId)
-  local validator = self.opts.recordValidate
-  local valid, err
-  if validator then
-    assert(type(validator) == "function", "recordValidate must be a function")
-    valid, err = validator(record)
-  else
-    valid, err = GameSave.validate(record, self.opts)
-  end
-  if not valid then
+-- Normalizes one parsed payload through the canonical GameSave envelope
+-- boundary. Storage enforces identity and routing safety here; nested
+-- buckets travel untouched to the runtime domains that own them.
+function GameSaveStore:_normalizeRecord(record, expectedSaveId)
+  local normalized, err = GameSave.normalize(record)
+  if not normalized then
     error(err)
   end
-  valid = assert(valid)
-  if expectedSaveId ~= nil and valid.saveId ~= expectedSaveId then
+  normalized = assert(normalized)
+  if expectedSaveId ~= nil and normalized.saveId ~= expectedSaveId then
     Errors.raise(GameSaveErrors.GAME_SAVE_SAVE_ID_MISMATCH, "game save id does not match its catalog identity", {
       expected = expectedSaveId,
-      actual = valid.saveId,
+      actual = normalized.saveId,
     })
   end
-  return valid
+  return normalized
 end
 
 function GameSaveStore:_isListed(catalog, saveId)
@@ -270,13 +264,13 @@ function GameSaveStore:_loadPublished(saveId)
   if record == nil and err ~= nil then
     error(err)
   end
-  return self:_validateRecord(record --[[@as table]], saveId)
+  return self:_normalizeRecord(record --[[@as table]], saveId)
 end
 
--- Reads one payload's display envelope without deep validation: the raw
--- record is loaded as stored and only GameSave.metadata runs over it. The
--- injected record validator never runs and no generated cache is touched.
--- A catalog-listed id whose payload carries another id is a mismatch.
+-- Reads one payload's display envelope without normalization: the raw
+-- record is loaded as stored and only GameSave.metadata runs over it. No
+-- generated cache is touched. A catalog-listed id whose payload carries
+-- another id is a mismatch.
 ---@param saveId string
 ---@return table<string, unknown>
 function GameSaveStore:_loadEnvelope(saveId)
@@ -344,9 +338,9 @@ function GameSaveStore:list()
 end
 
 -- Metadata-only listing for menu cards: validates the catalog and each
--- payload's display envelope without invoking the injected deep validator
--- and without reading generated caches. A listed envelope is not thereby
--- semantically valid. Ordering and per-entry error reporting match list().
+-- payload's display envelope without normalizing records and without
+-- reading generated caches. A listed envelope is not thereby loadable.
+-- Ordering and per-entry error reporting match list().
 ---@return table[]
 function GameSaveStore:listMetadata()
   local catalog = self:_readCatalog()
@@ -392,7 +386,7 @@ end
 function GameSaveStore:publishFirst(record)
   return self:_mutate(function()
     local catalog = self:_readCatalog()
-    local valid = self:_validateRecord(record)
+    local valid = self:_normalizeRecord(record)
     if self:_isListed(catalog, valid.saveId) then
       Errors.raise(
         GameSaveErrors.GAME_SAVE_ALREADY_PUBLISHED,
@@ -403,8 +397,8 @@ function GameSaveStore:publishFirst(record)
     if not self:_isReserved(catalog, valid.saveId) then
       Errors.raise(GameSaveErrors.GAME_SAVE_NOT_RESERVED, "game save id was not reserved", { saveId = valid.saveId })
     end
-    -- A first publication has no prior checkpoint to protect. The record is
-    -- fully validated before the staged payload is moved into place, and
+    -- A first publication has no prior checkpoint to protect. The record
+    -- is normalized before the staged payload is moved into place, and
     -- catalog visibility is published only after that move succeeds.
     local payloadPath = self:_gamePath(valid.saveId)
     local temporaryPath = self:_payloadTempPath(valid.saveId)
@@ -454,7 +448,7 @@ end
 function GameSaveStore:save(record)
   return self:_mutate(function()
     local catalog = self:_readCatalog()
-    local valid = self:_validateRecord(record)
+    local valid = self:_normalizeRecord(record)
     if not self:_isListed(catalog, valid.saveId) then
       Errors.raise(
         GameSaveErrors.GAME_SAVE_NOT_PUBLISHED,

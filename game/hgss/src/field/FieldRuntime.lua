@@ -71,7 +71,6 @@ local FieldPresentation = require("data.manifests.field_presentation")
 local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
-local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local LocalClock = require("game.src.LocalClock")
 local RepoFs = require("libs.storage.src.RepoFs")
 local WindowConfig = require("game.src.WindowConfig")
@@ -151,7 +150,6 @@ end
 ---@field localClock LocalClock? injectable host-local civil-time boundary
 ---@field weatherClock table<string, unknown>? injectable host boundary { today()->{month,day}, hasPenalty()->boolean }
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
----@field saveValidation GameSaveValidation? shared semantic GameSave validator
 
 ---@class FieldRuntimeScriptHosts
 ---@field audio table<string, unknown>?
@@ -167,7 +165,7 @@ end
 ---@field versionId string
 ---@field overrideFs table<string, unknown> read-shaped repository filesystem
 ---@field saveId string
----@field game table<string, unknown> finalized unpublished game or validated loaded GameSave
+---@field game table<string, unknown> finalized unpublished game or normalized loaded GameSave
 ---@field viewportWidth integer
 ---@field viewportHeight integer
 ---@field screenTopology ScreenTopology?
@@ -175,7 +173,6 @@ end
 ---@field fieldPixelScale FieldPixelScale
 ---@field saveStatus string?
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
----@field saveValidation GameSaveValidation? shared semantic GameSave validator
 ---@field savePublished boolean whether the reserved record has been published
 ---@field saveCoordinator FieldSaveCoordinator required save capture/publication owner
 ---@field worldSwapCoordinator FieldWorldSwapCoordinator required staged transition/world owner
@@ -584,7 +581,6 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
     charmap = boot.fontDef.charmap,
     frameIndexes = frameIndexes,
   }
-  boot.saveValidation = assert(self.saveValidation)
   boot.world =
     assert(boot.cacheFs:loadLua(MapAssetCache.worldPath()), "world.lua missing -- run `scripts/buildcache.sh` first")
   local profiles = assert(
@@ -611,8 +607,8 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   )
   self.followerInteractionCatalog = followerInteractionCatalog
   -- The mon catalog behind the live party: loaded once per runtime
-  -- through the ready cache path, before save validation and service
-  -- construction. The shared item catalog loads beside it and is retained
+  -- through the ready cache path, before service construction.
+  -- The shared item catalog loads beside it and is retained
   -- for later Bag composition. Screens and scripts borrow the service,
   -- never the catalogs directly.
   local monRoot = MonCache.loadCatalog(boot.cacheFs)
@@ -719,19 +715,16 @@ end
 -- Restore the entry record and establish the initial map, player, and actor owners.
 ---@param boot table<string, unknown>
 function FieldRuntime:_loadInitialWorld(boot)
+  -- A loaded game arrives normalized through the save store, so the runtime
+  -- trusts its envelope and restores each nested domain directly. Only a
+  -- finalized new game still validates, through the player-data owner.
   local entryGame
-  if
-    self.game.schema == GameSave.SCHEMA
-    or self.game.schema == "g4-game-save-v3"
-    or self.game.schema == "g4-game-save-v4"
-    or self.game.schema == "g4-game-save-v5"
-  then
-    entryGame = assert(boot.saveValidation:validate(self.game))
+  if self.game.schema == GameSave.SCHEMA then
+    entryGame = self.game
     assert(entryGame.versionId == self.versionId, "loaded game belongs to another version")
   else
     assert(self.game.playerData, "finalized game player data is required")
-    local validPlayerData, playerDataErr =
-      boot.saveValidation:validatePlayerData(self.game.playerData, boot.playerDataContext)
+    local validPlayerData, playerDataErr = PlayerData.validate(self.game.playerData, boot.playerDataContext)
     assert(validPlayerData, "finalized game player data is invalid: " .. tostring(playerDataErr))
     self.game.playerData = validPlayerData
   end
@@ -1087,7 +1080,7 @@ function FieldRuntime:_composeFieldUi(boot)
   -- The override files live in the repo tree outside the LÖVE source dir,
   -- so the loader reads them through the io-backed repo filesystem.
   -- The live mon service: constructed once per runtime from the
-  -- canonical bucket (the validated continue record, or the unpublished
+  -- canonical bucket (the normalized continue record, or the unpublished
   -- new-game bucket) and the HGSS player/version policy. A failed
   -- restore propagates before any field state publishes. The met
   -- location resolves from the active map and the met date from the
@@ -1536,7 +1529,6 @@ function FieldRuntime.new(game, options)
     audioOutput = options.audioOutput,
     derivedAssets = options.derivedAssets,
     saveStore = options.saveStore,
-    saveValidation = options.saveValidation or GameSaveValidation.new({ overrideFs = effectiveOverrideFs }),
     savePublished = false,
     localClock = options.localClock or LocalClock.system(),
     weatherClock = options.weatherClock,

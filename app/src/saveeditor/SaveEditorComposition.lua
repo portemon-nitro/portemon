@@ -1,15 +1,21 @@
--- Loads and validates one selected save after its derived assets are ready.
+-- Loads one selected save after its derived assets are ready. The generated
+-- catalogs below exist so the editor can present and check edited values;
+-- the save itself loads through store normalization without a
+-- whole-record validation pass.
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
-local RepoFs = require("libs.storage.src.RepoFs")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
-local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
+local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local BagCache = require("libs.assets.src.BagCache")
+local MonCache = require("libs.assets.src.MonCache")
+local MonCatalog = require("libs.mons.src.MonCatalog")
+local ItemCache = require("libs.assets.src.ItemCache")
+local ItemCatalog = require("libs.items.src.ItemCatalog")
 local ScriptSave = require("libs.script.src.ScriptSave")
 local SaveEditorSession = require("app.src.saveeditor.SaveEditorSession")
 
@@ -32,7 +38,6 @@ function SaveEditorComposition.open(options)
   assert(type(options) == "table", "save editor composition options are required")
   local versionId = assert(options.versionId)
   local saveId = assert(options.saveId)
-  local repoFs = RepoFs.new(assert(options.repositoryRoot))
   local cacheFs = CacheFs.forVersion(versionId)
   local fieldUiManifest, fieldUiError = cacheFs:loadLua(FieldUiAssetCache.manifestPath())
   if type(fieldUiManifest) ~= "table" then
@@ -42,23 +47,33 @@ function SaveEditorComposition.open(options)
   if not manifestValid then
     error(assert(manifestError, "field UI manifest is invalid"), 0)
   end
-  local saveFs = SaveFs.global()
-  local validation = GameSaveValidation.new({ overrideFs = repoFs })
-  local context = validation:contextForVersion(versionId)
-  local function validateRecord(record)
-    if record.saveId ~= saveId or record.versionId ~= versionId then
-      return nil,
-        Errors.new("SAVE_EDITOR_IDENTITY_MISMATCH", "The selected save no longer matches its catalog entry.", {
-          saveId = saveId,
-          versionId = versionId,
-        })
-    end
-    return validation:validate(record, context)
+  local frameIndexes = {}
+  for frame = 0, fieldUiManifest.dialogueFrames.count - 1 do
+    frameIndexes[frame] = true
   end
-  local store = GameSaveStore.new(saveFs, { recordValidate = validateRecord })
+  local monRoot = MonCache.loadCatalog(cacheFs)
+  local itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
+  local context = {
+    language = monRoot.version.language,
+    charmap = FieldFontLoader.load(cacheFs).charmap,
+    frameIndexes = frameIndexes,
+    monCatalog = MonCatalog.new(monRoot, itemCatalog),
+    itemCatalog = itemCatalog,
+  }
+  local saveFs = SaveFs.global()
+  local store = GameSaveStore.new(saveFs)
   local validated, loadError = store:load(saveId)
   if validated == nil then
     error(assert(loadError, "save load failed without a structured error"), 0)
+  end
+  if validated.versionId ~= versionId then
+    error(
+      Errors.new("SAVE_EDITOR_IDENTITY_MISMATCH", "The selected save no longer matches its catalog entry.", {
+        saveId = saveId,
+        versionId = versionId,
+      }),
+      0
+    )
   end
   if not ScriptSave.isQuiescent(validated.scripts) then
     error(Errors.new("SAVE_EDITOR_NOT_QUIESCENT", "Resume and save at a stable point before editing this save."), 0)
@@ -72,7 +87,6 @@ function SaveEditorComposition.open(options)
     context = context,
     saveStore = store,
     saveFs = saveFs,
-    validateRecord = validateRecord,
     symbols = FieldScriptSymbols,
   })
   if session == nil then
@@ -88,7 +102,6 @@ function SaveEditorComposition.open(options)
     world = world,
     derivedAssets = options.derivedAssets,
     savedObjects = copy(validated.world.objects),
-    validation = validation,
     saveStore = store,
   }
 end

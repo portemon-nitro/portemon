@@ -1,6 +1,7 @@
--- Save compatibility: the former schema and records with a missing Bag
--- or mons bucket are rejected through the structured save-error path
--- without migrating or synthesizing a fallback.
+-- Save compatibility: the former schema is rejected through the structured
+-- save-error path without migrating or synthesizing a fallback. Nested
+-- buckets travel untouched to their owning runtime domains, so a missing
+-- bucket still normalizes and its owner reports the failure at restore.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -37,8 +38,8 @@ local function record(schema, overrides)
 end
 
 local function rejectionCode(candidate)
-  local valid, err = GameSave.validate(candidate)
-  Assert.isNil(valid, "the record must not validate")
+  local normalized, err = GameSave.normalize(candidate)
+  Assert.isNil(normalized, "the record must not normalize")
   Assert.isTrue(Errors.is(err), "rejection uses the structured save-error path")
   return assert(err).code
 end
@@ -51,23 +52,18 @@ function T.former_schema_is_rejected_without_migration()
   )
 end
 
-function T.missing_bag_bucket_is_rejected_without_synthesis()
-  local value = record(GameSave.SCHEMA)
-  value.bag = nil
-  Assert.equal(
-    rejectionCode(value),
-    "GAME_SAVE_BUCKET_INVALID",
-    "a record without a bag bucket is rejected rather than defaulted"
+function T.missing_nested_buckets_travel_to_their_owning_domains()
+  local withoutBag = record(GameSave.SCHEMA)
+  withoutBag.bag = nil
+  Assert.notNil(
+    GameSave.normalize(withoutBag),
+    "a record without a bag bucket normalizes; the bag owner reports the missing state at restore"
   )
-end
-
-function T.missing_mons_bucket_is_rejected_without_synthesis()
-  local value = record(GameSave.SCHEMA)
-  value.mons = nil
-  Assert.equal(
-    rejectionCode(value),
-    "GAME_SAVE_BUCKET_INVALID",
-    "a record without a mons bucket is rejected rather than defaulted"
+  local withoutMons = record(GameSave.SCHEMA)
+  withoutMons.mons = nil
+  Assert.notNil(
+    GameSave.normalize(withoutMons),
+    "a record without a mons bucket normalizes; the mon service reports the missing state at restore"
   )
 end
 

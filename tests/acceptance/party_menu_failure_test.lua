@@ -1,10 +1,11 @@
 -- Cross-system failure proof for the bounded Bag/Party/Summary menu flow:
 -- stale revisions refuse without consuming, a full Bag refuses takes
 -- without touching the mon, disposal abandons uncommitted work safely,
--- and the real save store rejects malformed records and incompatible
--- active script graphs while preserving the original file bytes. A v3
--- record migrates through the store load path. Faults are injected at
--- real boundaries (live services, real store backend, real validators);
+-- and the real save store normalizes envelopes and migrates supported
+-- records while preserving the original file bytes on rejected writes.
+-- Nested script graphs travel untouched to the scheduler that restores
+-- them. A v3 record migrates through the store load path. Faults are
+-- injected at real boundaries (live services, real store backend);
 -- failing operations leave revisions, quantities, order, and files
 -- unchanged. Stops before GPU rendering like every acceptance path.
 -- Deferred capabilities (evolution, level-up items, mail, contests,
@@ -22,9 +23,7 @@ local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local GameSave = require("libs.hgss.src.save.GameSave")
-local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
-local ItemFixture = require("libs.items.tests.item_fixture")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local MonsSave = require("libs.mons.src.MonsSave")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
@@ -425,31 +424,6 @@ end
 -- Save-boundary legs below run against the real store, real validators,
 -- and an isolated memory backend: no ROM, no graphics, no composed field.
 
-local function fixtureContext()
-  return {
-    charmap = { G = 1, O = 2, L = 3, D = 4 },
-    frameIndexes = { [0] = true },
-    audioSequenceIds = { [7] = true },
-    monCatalog = CatalogFixture.makeCatalog(),
-    itemCatalog = ItemFixture.makeCatalog(),
-    martCatalog = { cards = {}, apricorns = {}, seals = {} },
-    scriptCompatibility = {
-      validationOptions = function()
-        return {
-          expectedRegistryFingerprint = "registry",
-          expectedTaskFingerprint = "tasks",
-          resolveTask = function()
-            return nil
-          end,
-          resolveComposition = function()
-            return nil
-          end,
-        }
-      end,
-    },
-  }
-end
-
 local function monsBucket()
   return MonsSave.empty(CatalogFixture.makeCatalog():fingerprint(), 7)
 end
@@ -537,16 +511,7 @@ local function newStore(backend)
   local loaded, GameSaveStore = pcall(require, "libs.hgss.src.save.GameSaveStore")
   Assert.isTrue(loaded, "global GameSave storage service is not implemented")
   local SaveFs = require("libs.storage.src.SaveFs")
-  local service = GameSaveValidation.new({
-    contextLoader = function()
-      return fixtureContext()
-    end,
-  })
-  return GameSaveStore.new(SaveFs.global(backend), {
-    recordValidate = function(value)
-      return service:validate(value)
-    end,
-  })
+  return GameSaveStore.new(SaveFs.global(backend))
 end
 
 local function gamePath(saveId)
@@ -558,30 +523,32 @@ local function snapshotBytes(backend, saveId)
   return raw
 end
 
-function T.tests.malformed_current_record_rejected_with_file_preserved()
+function T.tests.missing_travel_saves_while_broken_envelopes_reject_with_file_preserved()
   local backend = FakeCache.new()
   local store = newStore(backend)
   local saveId = assert(store:reserve(), "reservation must succeed")
   Assert.isTrue(store:publishFirst(validRecord(saveId)), "a valid record must publish")
+  local withoutTravel = validRecord(saveId)
+  withoutTravel.fieldTravel = nil
+  Assert.isTrue(store:save(withoutTravel), "a record without travel facts still saves; field restore owns that state")
   local before = snapshotBytes(backend, saveId)
-  local malformed = validRecord(saveId)
-  malformed.fieldTravel = nil
+  local envelopeBroken = validRecord(saveId)
+  envelopeBroken.schema = "g4-game-save-v8"
   local ok, failure = pcall(function()
-    return store:save(malformed)
+    return store:save(envelopeBroken)
   end)
-  Assert.isFalse(ok, "a record without travel facts must not save")
+  Assert.isFalse(ok, "an unsupported envelope must not save")
   Assert.isTrue(Errors.is(failure), "the rejection must carry a structured error")
   Assert.equal(backend.files[gamePath(saveId)], before, "a rejected save must preserve the payload bytes")
   local loaded = assert(store:load(saveId), "the preserved record must still load")
-  Assert.equal(loaded.fieldTravel.lastHealSpawn, "SPAWN_NEW_BARK", "the preserved record keeps its travel facts")
+  Assert.isNil(loaded.fieldTravel, "the preserved record keeps its trusted travel-less state")
 end
 
-function T.tests.active_old_graph_rejected_with_file_preserved()
+function T.tests.active_graph_publishes_without_whole_save_preflight()
   local backend = FakeCache.new()
   local store = newStore(backend)
   local saveId = assert(store:reserve(), "reservation must succeed")
   Assert.isTrue(store:publishFirst(validRecord(saveId)), "a valid record must publish")
-  local before = snapshotBytes(backend, saveId)
   local active = validRecord(saveId)
   active.scripts.tasks = {
     {
@@ -593,14 +560,12 @@ function T.tests.active_old_graph_rejected_with_file_preserved()
       state = {},
     },
   }
-  local ok, failure = pcall(function()
-    return store:save(active)
-  end)
-  Assert.isFalse(ok, "an incompatible active graph must not save")
-  Assert.isTrue(Errors.is(failure), "the rejection must carry a structured error")
-  Assert.equal(backend.files[gamePath(saveId)], before, "a rejected save must preserve the payload bytes")
-  local loaded = assert(store:load(saveId), "the preserved record must still load")
-  Assert.deepEqual(loaded.scripts.tasks, {}, "the preserved record keeps its quiescent graph")
+  -- A live continuation travels untouched to the scheduler that restores
+  -- it; the store publishes the owner-produced snapshot without a
+  -- whole-save compatibility pass.
+  Assert.isTrue(store:save(active), "an active graph still saves")
+  local loaded = assert(store:load(saveId), "the published record must still load")
+  Assert.equal(#loaded.scripts.tasks, 1, "the published record keeps its live graph")
 end
 
 function T.tests.v3_record_migrates_through_store_load()

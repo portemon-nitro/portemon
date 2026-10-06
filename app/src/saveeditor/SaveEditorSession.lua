@@ -25,7 +25,6 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field context table<string, unknown>
 ---@field saveStore table<string, unknown>
 ---@field saveFs SaveFs
----@field validateRecord fun(record: table<string, unknown>): table<string, unknown>?, Errors.Error?
 ---@field symbols table<string, unknown>?
 
 ---@class SaveEditorDirtySections
@@ -85,7 +84,6 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field private _symbols table<string, unknown>
 ---@field private _saveStore table<string, unknown>
 ---@field private _saveFs SaveFs
----@field private _validateRecord fun(record: table<string, unknown>): table<string, unknown>?, Errors.Error?
 ---@field private _revision integer
 ---@field private _partyRevision integer
 ---@field private _monService HgssMonService
@@ -295,7 +293,6 @@ function SaveEditorSession.new(options)
   assert(type(options.saveStore.load) == "function" and type(options.saveStore.save) == "function")
   assert(type(options.saveFs) == "table", "the global save filesystem is required")
   assert(type(options.saveFs.writeLua) == "function" and type(options.saveFs.replace) == "function")
-  assert(type(options.validateRecord) == "function", "the complete save validator is required")
   assert(type(record.playerData) == "table" and type(record.world) == "table", "canonical save domains are required")
   local profile = record.playerData.profile
   assert(type(profile) == "table" and finiteInteger(profile.money), "canonical player money is required")
@@ -357,7 +354,6 @@ function SaveEditorSession.new(options)
     _symbols = options.symbols or FieldScriptSymbols,
     _saveStore = options.saveStore,
     _saveFs = options.saveFs,
-    _validateRecord = options.validateRecord,
     _revision = 0,
     _partyRevision = 0,
     _monService = monService,
@@ -756,15 +752,7 @@ function SaveEditorSession:setLocation(placement)
 
   local candidate = self:captureCandidate()
   applyLocation(candidate, nextLocation, self._baseline)
-  local validated, validationError = self._validateRecord(candidate)
-  if validated == nil then
-    if Errors.is(validationError) then
-      return { ok = false, error = validationError }
-    end
-    return failure(VALUE_INVALID, "The destination did not pass complete save validation.", {})
-  end
-
-  self._location = locationSnapshot(validated)
+  self._location = locationSnapshot(candidate)
   self._revision = self._revision + 1
   return success(true)
 end
@@ -803,13 +791,7 @@ function SaveEditorSession:save(hasUnappliedDraft)
 
   self._busy = true
   local ok, result = pcall(function()
-    local candidate, validationError = self._validateRecord(self:captureCandidate())
-    if candidate == nil then
-      if Errors.is(validationError) then
-        return { ok = false, error = validationError }
-      end
-      return failure(VALUE_INVALID, "The edited save did not pass complete validation.", {})
-    end
+    local candidate = self:captureCandidate()
 
     local current, loadError = self._saveStore:load(self._baseline.saveId)
     if current == nil then

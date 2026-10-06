@@ -93,7 +93,7 @@ function T.menu_bindings_are_built_from_the_field_presentation_manifest(context)
   end
 end
 
-function T.default_save_validation_uses_repository_overrides()
+function T.constructor_composes_without_a_save_validator()
   local originalLoad = FieldRuntime._load
   local entry = {
     saveId = "save-00000001",
@@ -117,14 +117,9 @@ function T.default_save_validation_uses_repository_overrides()
   FieldRuntime._load = originalLoad
 
   Assert.isTrue(ok, tostring(runtime))
-  local overrideManifest = runtime.saveValidation.overrideFs:read("data/scripts/manifests/overrides.lua")
-  Assert.notNil(overrideManifest, "default save validation needs repository overrides")
+  Assert.isNil(runtime.saveValidation, "save loading normalizes through the store; the runtime restores domains itself")
   Assert.notNil(runtime.overrideFs, "the runtime must retain its effective repository filesystem")
-  Assert.equal(
-    runtime.overrideFs,
-    runtime.saveValidation.overrideFs,
-    "default save validation must use the runtime's effective repository filesystem"
-  )
+  Assert.notNil(runtime.saveCoordinator, "capture stays owned by the save coordinator")
 end
 
 local function captureRuntime(overrides)
@@ -204,15 +199,6 @@ local function captureRuntime(overrides)
         return require("libs.hgss.src.save.MartSave").empty()
       end,
     },
-    saveValidation = {
-      contexts = {},
-      contextLoader = function()
-        return {}
-      end,
-      validate = function(_, record)
-        return record
-      end,
-    },
   }, FieldRuntime)
   for key, value in pairs(overrides or {}) do
     runtime[key] = value
@@ -223,20 +209,10 @@ local function captureRuntime(overrides)
   return runtime
 end
 
-function T.captureGameSave_returns_a_strict_snapshot_without_storage_io()
+function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io()
   local runtime = captureRuntime()
+  Assert.isNil(runtime.saveValidation, "capture must not depend on a whole-save validator")
   Assert.isTrue(runtime.fashionCase:tryAdd(0))
-  local validationCalls = 0
-  runtime.saveValidation = {
-    contexts = {},
-    contextLoader = function()
-      return {}
-    end,
-    validate = function(_, record)
-      validationCalls = validationCalls + 1
-      return record
-    end,
-  }
   local scriptCaptureCalls = 0
   local originalCapture = require("libs.script.src.ScriptSave").capture
   require("libs.script.src.ScriptSave").capture = function(_, tick, options)
@@ -252,7 +228,7 @@ function T.captureGameSave_returns_a_strict_snapshot_without_storage_io()
   require("libs.script.src.ScriptSave").capture = originalCapture
 
   Assert.isTrue(ok, tostring(result))
-  local valid = assert(GameSave.validate(result))
+  local valid = assert(GameSave.normalize(result))
   Assert.equal(valid.saveId, "save-00000001")
   Assert.equal(valid.versionId, "heartgold")
   Assert.equal(valid.mapId, 60)
@@ -268,7 +244,6 @@ function T.captureGameSave_returns_a_strict_snapshot_without_storage_io()
   Assert.equal(valid.bag.schema, "hgss-bag-v1", "every save captures the bag bucket")
   Assert.equal(valid.fashionCase.counts[1], 1, "every save captures Fashion Case quantities")
   Assert.equal(scriptCaptureCalls, 1)
-  Assert.equal(validationCalls, 1)
 end
 
 function T.captureGameSave_refuses_an_unstable_boundary_without_mutating_state()
@@ -536,30 +511,21 @@ function T.constructor_applies_defaults_and_keeps_injected_identities()
     Assert.equal(defaulted.viewportHeight, WindowConfig.REFERENCE_HEIGHT)
     Assert.equal(defaulted.presentation, false)
     Assert.notNil(defaulted.overrideFs)
-    Assert.notNil(defaulted.saveValidation)
+    Assert.isNil(defaulted.saveValidation)
     Assert.notNil(defaulted.localClock)
     Assert.notNil(defaulted.fieldPixelScale)
     Assert.notNil(defaulted.saveCoordinator)
     Assert.notNil(defaulted.worldSwapCoordinator)
-    Assert.equal(
-      defaulted.saveValidation.overrideFs,
-      defaulted.overrideFs,
-      "the default validation dependency must share the effective repository filesystem"
-    )
-
     local overrideFs = { injectedOverride = true }
-    local saveValidation = { injectedValidation = true }
     local localClock = { injectedClock = true }
     local injected = FieldRuntime.new(validEntry(), {
       overrideFs = overrideFs,
-      saveValidation = saveValidation,
       localClock = localClock,
       viewportWidth = 800,
       viewportHeight = 600,
       presentation = true,
     })
     Assert.equal(injected.overrideFs, overrideFs)
-    Assert.equal(injected.saveValidation, saveValidation)
     Assert.equal(injected.localClock, localClock)
     Assert.equal(injected.viewportWidth, 800)
     Assert.equal(injected.viewportHeight, 600)

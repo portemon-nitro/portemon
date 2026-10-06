@@ -9,7 +9,6 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
-local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
@@ -88,7 +87,6 @@ local function withSpies(fn)
   local originalApply = NewGameInitialization.apply
   local originalInitialLocation = NewGameInitialization.initialLocation
   local originalFieldStateNew = FieldState.new
-  local originalValidationNew = GameSaveValidation.new
   local originalStoreNew = GameSaveStore.new
   local originalCandidate = NewGame.createCandidate
   local originalOakCompose = OakIntroComposition.compose
@@ -139,13 +137,6 @@ local function withSpies(fn)
     context.fieldOptions[#context.fieldOptions + 1] = options
     return { dispose = function() end }
   end
-  rawset(GameSaveValidation, "new", function()
-    return {
-      validate = function(_, record)
-        return record
-      end,
-    }
-  end)
   rawset(GameSaveStore, "new", function()
     return assert(context.store, "test save store not configured")
   end)
@@ -191,7 +182,6 @@ local function withSpies(fn)
   rawset(NewGameInitialization, "apply", originalApply)
   rawset(NewGameInitialization, "initialLocation", originalInitialLocation)
   FieldState.new = originalFieldStateNew
-  rawset(GameSaveValidation, "new", originalValidationNew)
   rawset(GameSaveStore, "new", originalStoreNew)
   rawset(NewGame, "createCandidate", originalCandidate)
   rawset(OakIntroComposition, "compose", originalOakCompose)

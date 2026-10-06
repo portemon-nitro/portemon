@@ -12,9 +12,7 @@ local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparatio
 local PreparedFieldEntry = require("game.hgss.src.field.PreparedFieldEntry")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
-local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
-local RepoFs = require("libs.storage.src.RepoFs")
 local CacheFs = require("libs.storage.src.CacheFs")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
@@ -46,11 +44,10 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 
 local HgssGame = {}
 
-local function fieldStateOptions(options, saveStore, saveValidation, extra, shared)
+local function fieldStateOptions(options, saveStore, extra, shared)
   local fieldOptions = {
     development = options.development == true,
     saveStore = saveStore,
-    saveValidation = saveValidation,
     derivedAssets = options.derivedAssets,
     martStockResolver = options.martStockResolver,
   }
@@ -116,9 +113,8 @@ end
 ---@param options HgssGameOptions
 ---@param game Game
 ---@param saveStore table<string, unknown>
----@param saveValidation GameSaveValidation
 ---@param versionId string
-local function installRoutes(options, game, saveStore, saveValidation, versionId)
+local function installRoutes(options, game, saveStore, versionId)
   -- One actual-display measurement owner and one copied override record
   -- for each retail route, shared by field and Oak presentation.
   local displayContext = DisplayContext.new({ topologyProvider = options.topologyProvider })
@@ -131,7 +127,7 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
   local function enterField(record, extraOptions)
     game:setState(FieldState.new(
       record,
-      fieldStateOptions(options, saveStore, saveValidation, extraOptions, {
+      fieldStateOptions(options, saveStore, extraOptions, {
         displayContext = displayContext,
         presentationOverrides = presentationOverrides,
       })
@@ -283,16 +279,8 @@ function HgssGame.new(options)
 
   local game = Game.new({ onExit = options.onExit })
 
-  local saveValidation = GameSaveValidation.new({
-    overrideFs = RepoFs.new(love.filesystem.getSourceBaseDirectory()),
-  })
-  local function validateSaveRecord(record)
-    return saveValidation:validate(record)
-  end
-  local saveStore = GameSaveStore.new(SaveFs.global(), {
-    recordValidate = validateSaveRecord,
-  })
-  installRoutes(options, game, saveStore, saveValidation, versionId)
+  local saveStore = GameSaveStore.new(SaveFs.global())
+  installRoutes(options, game, saveStore, versionId)
   return game
 end
 

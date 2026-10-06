@@ -1,42 +1,18 @@
--- Catalog compatibility: continuing a save written against different
--- generated content fails with a structured error before any field state
--- or service is published, leaving the last valid record untouched.
+-- Catalog compatibility: the mons owner rejects a bucket written against
+-- different generated content with a structured error before any live
+-- service is published, leaving the last valid record untouched. Store
+-- loading itself stays at the envelope: only the restoring domain proof
+-- reads the bucket.
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
-local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
-local ItemFixture = require("libs.items.tests.item_fixture")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 
 local T = {}
-
-local function context()
-  return {
-    charmap = { G = 1, O = 2, L = 3, D = 4 },
-    frameIndexes = { [0] = true },
-    audioSequenceIds = { [7] = true },
-    monCatalog = CatalogFixture.makeCatalog(),
-    itemCatalog = ItemFixture.makeCatalog(),
-    scriptCompatibility = {
-      validationOptions = function()
-        return {
-          expectedRegistryFingerprint = "registry",
-          expectedTaskFingerprint = "tasks",
-          resolveTask = function()
-            return nil
-          end,
-          resolveComposition = function()
-            return nil
-          end,
-        }
-      end,
-    },
-  }
-end
 
 local function record(mons)
   local value = {
@@ -86,16 +62,11 @@ function T.stale_catalog_fingerprint_blocks_continue_without_publication()
     catalogFingerprint = stale.catalogFingerprint,
     rngState = stale.rng.state,
   }
-  local service = GameSaveValidation.new({
-    contextLoader = function()
-      return context()
-    end,
-  })
-  local valid, err = service:validate(candidate)
-  Assert.isNil(valid, "the mismatched save never becomes a field state")
-  local blockError = assert(err, "the block uses the structured save-error path")
+  local ok, blockError = pcall(MonsSave.validate, candidate.mons, CatalogFixture.domainContext(catalog))
+  Assert.isFalse(ok, "the mismatched bucket never becomes a live service")
+  blockError = assert(blockError, "the block uses the structured save-error path")
   Assert.isTrue(Errors.is(blockError), "the block uses the structured save-error path")
-  Assert.equal(blockError.code, "GAME_SAVE_BUCKET_INVALID", "the mons bucket owns the incompatibility")
+  Assert.equal(blockError.code, "MONS_SAVE_FINGERPRINT_MISMATCH", "the mons bucket owns the incompatibility")
   Assert.equal(candidate.schema, snapshot.schema, "the rejected record is left untouched")
   Assert.equal(
     candidate.mons.catalogFingerprint,

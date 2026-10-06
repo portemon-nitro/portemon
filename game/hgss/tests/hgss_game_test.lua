@@ -15,8 +15,8 @@ local function loadApplicationModules()
   Assert.isTrue(okField, "the HGSS application must own FieldState: " .. tostring(fieldOrError))
   local okInit, initOrError = pcall(require, "game.hgss.src.newgame.NewGameInitialization")
   Assert.isTrue(okInit, "the HGSS application must own new-game initialization: " .. tostring(initOrError))
-  local okValidation, validationOrError = pcall(require, "libs.hgss.src.save.GameSaveValidation")
-  Assert.isTrue(okValidation, "the HGSS application must own save validation: " .. tostring(validationOrError))
+  local okEnvelope, envelopeOrError = pcall(require, "libs.hgss.src.save.GameSave")
+  Assert.isTrue(okEnvelope, "the HGSS application must own save envelope normalization: " .. tostring(envelopeOrError))
   local okStore, storeOrError = pcall(require, "libs.hgss.src.save.GameSaveStore")
   Assert.isTrue(okStore, "the HGSS application must compose the save store: " .. tostring(storeOrError))
   local okNewGame, newGameOrError = pcall(require, "game.hgss.src.newgame.NewGame")
@@ -35,7 +35,7 @@ local function loadApplicationModules()
     game = gameOrError,
     fieldState = fieldOrError,
     initialization = initOrError,
-    validation = validationOrError,
+    envelope = envelopeOrError,
     store = storeOrError,
     newGame = newGameOrError,
     oak = oakOrError,
@@ -150,7 +150,6 @@ local function withCompositionSpies(fn)
     fieldNew = modules.fieldState.new,
     apply = modules.initialization.apply,
     initialLocation = modules.initialization.initialLocation,
-    validationNew = modules.validation.new,
     storeNew = modules.store.new,
     candidate = modules.newGame.createCandidate,
     oakCompose = modules.oak.compose,
@@ -188,20 +187,12 @@ local function withCompositionSpies(fn)
   context = {
     fieldCalls = {},
     applyCalls = {},
-    validationCalls = {},
     storeCalls = {},
     candidateCalls = {},
     oakCalls = {},
     preparedEntry = nil,
     preparationCalls = {},
     stores = {},
-    validationFactory = function(_)
-      return {
-        validate = function(_, record)
-          return record
-        end,
-      }
-    end,
     storeFactory = function(_, index)
       return assert(context.stores[index], "test store not configured")
     end,
@@ -243,10 +234,6 @@ local function withCompositionSpies(fn)
       facing = "south",
     }
   end)
-  modules.validation.new = function(options)
-    context.validationCalls[#context.validationCalls + 1] = options
-    return context.validationFactory(options)
-  end
   rawset(modules.store, "new", function(fs, options)
     context.storeCalls[#context.storeCalls + 1] = { fs = fs, options = options }
     return context.storeFactory(fs, #context.storeCalls)
@@ -268,7 +255,6 @@ local function withCompositionSpies(fn)
   modules.fieldState.new = original.fieldNew
   rawset(modules.initialization, "apply", original.apply)
   rawset(modules.initialization, "initialLocation", original.initialLocation)
-  modules.validation.new = original.validationNew
   rawset(modules.store, "new", original.storeNew)
   rawset(modules.newGame, "createCandidate", original.candidate)
   rawset(modules.oak, "compose", original.oakCompose)
@@ -317,7 +303,7 @@ function T.explicit_entries_start_retail_preparation_and_reject_invalid_intents(
 
     local continueGame = construct({ kind = "continue", saveId = continueRecord.saveId })
     Assert.equal(getmetatable(continueGame.state).__index, FieldPreparationState)
-    Assert.deepEqual(context.stores[2].loads, {}, "Continue validation remains deferred during preparation")
+    Assert.deepEqual(context.stores[2].loads, {}, "Continue loading remains deferred during preparation")
     continueGame:dispose()
   end)
 end

@@ -19,13 +19,13 @@ local T = {}
 
 local GAME_SCHEMA = GameSave.SCHEMA
 
-local function newStore(backend, opts)
+local function newStore(backend)
   local loaded, GameSaveStore = pcall(require, "libs.hgss.src.save.GameSaveStore")
   Assert.isTrue(loaded, "global GameSave storage service is not implemented")
   Assert.isTrue(type(GameSaveStore.new) == "function", "global GameSave storage needs a constructor")
   Assert.isTrue(type(SaveFs.global) == "function", "SaveFs needs a global product save root")
   local Store = GameSaveStore --[[@as GameSaveStoreModule]]
-  return Store.new(SaveFs.global(backend), opts)
+  return Store.new(SaveFs.global(backend))
 end
 
 local function record(saveId, versionId, overrides)
@@ -65,6 +65,28 @@ end
 
 local function gamePath(saveId)
   return "saves/games/" .. saveId .. ".lua"
+end
+
+local function v1MonsBucket()
+  return {
+    schema = "g4-mons-save-v1",
+    catalogFingerprint = "legacy-catalog",
+    rng = { state = 7, calls = 0 },
+    party = { max = 6, mons = {} },
+  }
+end
+
+local function v4Payload(saveId, versionId)
+  local value = record(saveId, versionId)
+  value.schema = "g4-game-save-v4"
+  value.playerData.profile.badges = 0
+  value.fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" }
+  value.mons = v1MonsBucket()
+  value.mart = nil
+  value.mailbox = nil
+  value.photoAlbum = nil
+  value.fashionCase = nil
+  return value
 end
 
 local function findEntry(entries, saveId)
@@ -135,31 +157,30 @@ function T.multiple_versions_use_one_global_catalog_and_strict_game_records()
   end)
 end
 
-function T.injected_full_record_validator_classifies_payload_errors_per_card()
+function T.load_trusts_nested_buckets_and_reads_no_generated_caches()
   local backend = FakeCache.new()
-  local calls = 0
-  local rejectSoulsilver = false
-  local store = newStore(backend, {
-    recordValidate = function(value)
-      calls = calls + 1
-      if rejectSoulsilver and value.versionId == "soulsilver" then
-        return nil, Errors.new("SAVE_VERSION_CONTEXT_UNAVAILABLE", "version context unavailable", {})
-      end
-      return value
-    end,
-  })
-  local heartgold = store:reserve()
-  local soulsilver = store:reserve()
-  store:publishFirst(record(heartgold, "heartgold"))
-  store:publishFirst(record(soulsilver, "soulsilver"))
-  rejectSoulsilver = true
+  local generatedReads = 0
+  local reader = backend.read
+  function backend.read(self, path)
+    if type(path) == "string" and path:sub(1, 6) ~= "saves/" then
+      generatedReads = generatedReads + 1
+    end
+    return reader(self, path)
+  end
+  local store = newStore(backend)
+  local saveId = store:reserve()
+  -- Valid envelope, garbage nested buckets: the owning runtime domains read
+  -- that state later, so publication and load both succeed without touching
+  -- generated caches.
+  local trusted = record(saveId, "heartgold", { mons = { fingerprint = "drifted" }, world = {}, bag = {} })
+  store:publishFirst(trusted)
+  local loaded = assert(store:load(saveId))
+  Assert.equal(loaded.saveId, saveId)
+  Assert.equal(loaded.mons.fingerprint, "drifted")
   local entries = assert(store:list())
-  Assert.equal(#entries, 2)
-  Assert.equal(entries[1].saveId, soulsilver)
-  Assert.notNil(entries[1].error)
-  Assert.equal(entries[2].saveId, heartgold)
-  Assert.isNil(entries[2].error)
-  Assert.isTrue(calls >= 4, "full validation must cover publication and listing")
+  Assert.equal(#entries, 1)
+  Assert.isNil(entries[1].error)
+  Assert.equal(generatedReads, 0, "persistence load performs no generated-cache reads")
 end
 
 function T.reservation_survives_restart_without_payload_or_visibility_and_never_reuses_ids()
@@ -179,7 +200,7 @@ function T.reservation_survives_restart_without_payload_or_visibility_and_never_
   Assert.notNil(backend.files["saves/catalog.lua"], "allocation state must be durable")
 end
 
-function T.first_publication_validates_payload_before_catalog_visibility_and_can_retry_an_orphan()
+function T.first_publication_normalizes_before_catalog_visibility_and_can_retry_an_orphan()
   local backend = FakeCache.new()
   local store = newStore(backend)
   local saveId = store:reserve()
@@ -258,7 +279,7 @@ function T.update_and_delete_failures_preserve_a_valid_checkpoint_and_order()
   callFailure(function()
     store:save(replacement)
   end)
-  -- Loading canonicalizes the legacy record: validation backfills the
+  -- Loading canonicalizes the envelope: normalization backfills the
   -- reserved avatar field to walking.
   first.avatar = { state = "walking" }
   Assert.deepEqual(assert(store:load(firstId)), first)
@@ -332,25 +353,16 @@ function T.catalog_authority_preserves_errors_and_ignores_orphans_and_reserved_g
   Assert.notNil(findEntry(assert(store:list()), validId))
 end
 
-function T.metadata_listing_never_deep_validates_and_keeps_ordering_and_errors()
+function T.metadata_listing_reads_envelopes_and_keeps_ordering_and_errors()
   local backend = FakeCache.new()
-  local validations = 0
-  local store = newStore(backend, {
-    recordValidate = function(candidate)
-      validations = validations + 1
-      local GameSave = require("libs.hgss.src.save.GameSave")
-      return GameSave.validate(candidate)
-    end,
-  })
+  local store = newStore(backend)
   local firstId = store:reserve()
   local secondId = store:reserve()
   store:publishFirst(record(firstId, "heartgold"))
   store:publishFirst(record(secondId, "soulsilver"))
-  Assert.equal(validations, 2)
   backend.files[gamePath(secondId)] = LuaWriter.encode(record(secondId, "soulsilver", { playerData = {} }))
 
   local metadata = assert(store:listMetadata())
-  Assert.equal(validations, 2, "metadata listing performs no deep validation")
   Assert.equal(#metadata, 2)
   Assert.equal(metadata[1].saveId, secondId)
   Assert.equal(metadata[2].saveId, firstId)
@@ -362,35 +374,28 @@ function T.metadata_listing_never_deep_validates_and_keeps_ordering_and_errors()
   Assert.equal(broken.error.code, "GAME_SAVE_BUCKET_INVALID")
 
   local listed = assert(store:list())
-  Assert.equal(#listed, 2, "deep listing keeps the same catalog ordering")
+  Assert.equal(#listed, 2, "listing keeps the same catalog ordering")
   Assert.equal(listed[1].saveId, secondId)
   Assert.equal(listed[2].saveId, firstId)
 end
 
-function T.metadata_listing_exposes_v4_envelopes_without_deep_validation()
+function T.metadata_listing_exposes_v4_envelopes_without_normalization()
   local backend = FakeCache.new()
-  local validations = 0
-  local store = newStore(backend, {
-    recordValidate = function(candidate)
-      validations = validations + 1
-      return candidate
-    end,
-  })
+  local store = newStore(backend)
   local v4Id = store:reserve()
   local currentId = store:reserve()
   local unknownId = store:reserve()
-  local v4 = record(v4Id, "heartgold")
-  v4.schema = "g4-game-save-v4"
-  v4.fashionCase = nil
-  store:publishFirst(v4)
+  store:publishFirst(record(v4Id, "heartgold"))
   store:publishFirst(record(currentId, "soulsilver"))
+  store:publishFirst(record(unknownId, "heartgold"))
+  -- Historical and future payloads arrive as stored bytes: the v4 record
+  -- stays a v4 record on disk, and the future record stays unreadable.
+  backend.files[gamePath(v4Id)] = LuaWriter.encode(v4Payload(v4Id, "heartgold"))
   local unknown = record(unknownId, "heartgold")
   unknown.schema = "g4-game-save-v8"
-  store:publishFirst(unknown)
-  Assert.equal(validations, 3)
+  backend.files[gamePath(unknownId)] = LuaWriter.encode(unknown)
 
   local metadata = assert(store:listMetadata())
-  Assert.equal(validations, 3, "metadata listing performs no deep validation")
   Assert.equal(#metadata, 3)
   Assert.equal(metadata[1].saveId, unknownId)
   Assert.equal(assert(metadata[1].error).code, "GAME_SAVE_SCHEMA_UNSUPPORTED")
@@ -401,30 +406,33 @@ function T.metadata_listing_exposes_v4_envelopes_without_deep_validation()
   Assert.isNil(metadata[3].error, "a known v4 envelope remains visible")
   Assert.equal(metadata[3].versionId, "heartgold")
   Assert.equal(assert(metadata[3].playerData and metadata[3].playerData.profile).name, "GOLD")
+
+  -- Loading migrates the stored v4 record to current through normalization.
+  local loaded = assert(store:load(v4Id))
+  Assert.equal(loaded.schema, GameSave.SCHEMA)
 end
 
 function T.metadata_listing_distinguishes_historical_from_current_and_future_schemas()
   local backend = FakeCache.new()
-  local store = newStore(backend, {
-    recordValidate = function(candidate)
-      return candidate
-    end,
-  })
+  local store = newStore(backend)
   local historicalId = store:reserve()
   local currentId = store:reserve()
   local futureId = store:reserve()
   -- A master-era record: v5 schema with national Dex plus mart state,
-  -- no fashion-case state. It stays listable without deep validation.
-  local historical = record(historicalId, "heartgold")
+  -- no fashion-case state. It stays listable as stored bytes.
+  local historical = v4Payload(historicalId, "heartgold")
   historical.schema = "g4-game-save-v5"
-  historical.fashionCase = nil
-  store:publishFirst(historical)
+  historical.playerData.profile.nationalDex = false
+  historical.mart = MartSave.empty()
   local current = record(currentId, "soulsilver")
   current.schema = GameSave.SCHEMA
-  store:publishFirst(current)
   local future = record(futureId, "heartgold")
   future.schema = "g4-game-save-v8"
-  store:publishFirst(future)
+  store:publishFirst(record(historicalId, "heartgold"))
+  store:publishFirst(current)
+  store:publishFirst(record(futureId, "heartgold"))
+  backend.files[gamePath(historicalId)] = LuaWriter.encode(historical)
+  backend.files[gamePath(futureId)] = LuaWriter.encode(future)
 
   local metadata = assert(store:listMetadata())
   Assert.equal(#metadata, 3)

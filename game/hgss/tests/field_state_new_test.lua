@@ -13,7 +13,6 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
-local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
@@ -124,12 +123,6 @@ end
 -- actual display.
 function T.only_documented_runtime_options_reach_the_runtime()
   local options = fieldStateOptions()
-  local saveValidation = GameSaveValidation.new({
-    contextLoader = function()
-      return {}
-    end,
-  })
-  options.saveValidation = saveValidation
   options.fieldScaleConfig = { mode = "test" }
   local stockResolver = function() end
   options.martStockResolver = stockResolver
@@ -138,7 +131,6 @@ function T.only_documented_runtime_options_reach_the_runtime()
   Assert.deepEqual(captured.options, {
     fieldScaleConfig = { mode = "test" },
     presentation = true,
-    saveValidation = saveValidation,
     martStockResolver = stockResolver,
     displayContext = state.displayContext,
   })

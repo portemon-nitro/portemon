@@ -1,5 +1,5 @@
--- GameSave validation tests cover the strict persisted record boundary while
--- leaving domain-owned bucket rules with their injected validators.
+-- GameSave envelope tests cover the strict persisted routing boundary while
+-- leaving nested-bucket rules with their owning runtime domains.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -45,33 +45,33 @@ local function record(overrides)
 end
 
 local function returnsCode(code, fn)
-  local valid, err = fn()
-  Assert.isNil(valid)
+  local normalized, err = fn()
+  Assert.isNil(normalized)
   Assert.isTrue(Errors.is(err))
   Assert.equal(err.code, code)
 end
 
-function T.validates_required_buckets_and_numeric_ranges()
-  local valid = assert(GameSave.validate(record()))
-  Assert.equal(valid.saveId, "save-00000001")
+function T.normalizes_the_envelope_and_leaves_nested_buckets_untouched()
+  local normalized = assert(GameSave.normalize(record()))
+  Assert.equal(normalized.saveId, "save-00000001")
 
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
-    return GameSave.validate(record({ schema = "g4-field-save-v3" }))
+    return GameSave.normalize(record({ schema = "g4-field-save-v3" }))
   end)
   returnsCode("GAME_SAVE_SAVE_ID_INVALID", function()
-    return GameSave.validate(record({ saveId = "../escape" }))
+    return GameSave.normalize(record({ saveId = "../escape" }))
   end)
   returnsCode("GAME_SAVE_PLAY_TIME_INVALID", function()
-    return GameSave.validate(record({ playTimeSeconds = 3599999 + 1 }))
+    return GameSave.normalize(record({ playTimeSeconds = 3599999 + 1 }))
   end)
   returnsCode("GAME_SAVE_FIELD_INVALID", function()
-    return GameSave.validate(record({ facing = "up" }))
+    return GameSave.normalize(record({ facing = "up" }))
   end)
-  returnsCode("GAME_SAVE_BUCKET_INVALID", function()
-    local value = record()
-    value.scripts = nil
-    return GameSave.validate(value)
-  end)
+  -- Nested buckets travel to their owning domains untouched: a missing or
+  -- placeholder bucket still normalizes, and the owner reports the failure
+  -- when it restores the state it actually uses.
+  Assert.notNil(GameSave.normalize(record({ scripts = nil })))
+  Assert.notNil(GameSave.normalize(record({ mons = { fingerprint = "drifted" } })))
 end
 
 function T.metadata_extracts_only_the_display_envelope_without_semantic_checks()
@@ -84,13 +84,13 @@ function T.metadata_extracts_only_the_display_envelope_without_semantic_checks()
     playTimeSeconds = 0,
   })
 
-  -- Semantic breakage the strict validator rejects never reaches the menu:
-  -- the envelope validates while full validation fails.
-  local semanticallyBroken = record({ playerData = { profile = { name = "GOLD" } } })
-  semanticallyBroken.mons = { fingerprint = "drifted" }
-  semanticallyBroken.world = {}
-  Assert.isNil(GameSave.validate(semanticallyBroken))
-  Assert.notNil(GameSave.metadata(semanticallyBroken))
+  -- Envelope extraction never implies loadability: nested breakage the
+  -- owning domains would reject still lists a menu card.
+  local nestedBroken = record({ playerData = { profile = { name = "GOLD" } } })
+  nestedBroken.mons = { fingerprint = "drifted" }
+  nestedBroken.world = {}
+  Assert.notNil(GameSave.normalize(nestedBroken))
+  Assert.notNil(GameSave.metadata(nestedBroken))
 
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     return GameSave.metadata(record({ schema = "g4-field-save-v3" }))
@@ -115,89 +115,28 @@ function T.metadata_extracts_only_the_display_envelope_without_semantic_checks()
 end
 
 function T.live_weather_is_optional_for_legacy_records_and_strict_when_present()
-  Assert.isTrue(GameSave.validate(record({ weatherId = 0 })) ~= nil)
-  Assert.isTrue(GameSave.validate(record({ weatherId = 13 })) ~= nil)
-  Assert.isTrue(GameSave.validate(record({ weatherId = -1 })) == nil)
-  Assert.isTrue(GameSave.validate(record({ weatherId = 14 })) == nil)
-  Assert.isTrue(GameSave.validate(record({ weatherId = 1.5 })) == nil)
-  Assert.isTrue(GameSave.validate(record()) ~= nil)
+  Assert.isTrue(GameSave.normalize(record({ weatherId = 0 })) ~= nil)
+  Assert.isTrue(GameSave.normalize(record({ weatherId = 13 })) ~= nil)
+  Assert.isTrue(GameSave.normalize(record({ weatherId = -1 })) == nil)
+  Assert.isTrue(GameSave.normalize(record({ weatherId = 14 })) == nil)
+  Assert.isTrue(GameSave.normalize(record({ weatherId = 1.5 })) == nil)
+  Assert.isTrue(GameSave.normalize(record()) ~= nil)
 end
 
-function T.uses_injected_authoritative_bucket_validators()
-  local calls = {}
-  local opts = {
-    playerDataValidate = function(value)
-      calls.playerData = value
-      return { canonical = true }
-    end,
-    worldValidate = function(value)
-      calls.world = value
-    end,
-    scriptsValidate = function(value)
-      calls.scripts = value
-    end,
-    auxiliaryUiValidate = function(value)
-      calls.auxiliaryUi = value
-    end,
-    audioValidate = function(value)
-      calls.audio = value
-    end,
-    monsValidate = function(value)
-      calls.mons = value
-    end,
-    bagValidate = function(value)
-      calls.bag = value
-    end,
-    fieldTravelValidate = function(value)
-      calls.fieldTravel = value
-    end,
-  }
-  local valid = assert(GameSave.validate(record(), opts))
-  Assert.deepEqual(valid.playerData, { canonical = true })
-  Assert.notNil(calls.playerData)
-  Assert.notNil(calls.world)
-  Assert.notNil(calls.scripts)
-  Assert.notNil(calls.auxiliaryUi)
-  Assert.notNil(calls.audio)
-  Assert.notNil(calls.mons)
-  Assert.notNil(calls.bag)
-  Assert.notNil(calls.fieldTravel)
-end
-
-function T.rejects_non_table_and_missing_required_buckets()
+function T.rejects_non_table_and_unknown_top_level_fields()
   returnsCode("GAME_SAVE_INVALID", function()
     ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid call
-    return GameSave.validate(nil)
+    return GameSave.normalize(nil)
   end)
-  for _, key in ipairs({ "playerData", "world", "auxiliaryUi", "audio", "mons", "fieldTravel", "fashionCase" }) do
-    returnsCode("GAME_SAVE_BUCKET_INVALID", function()
-      local value = record()
-      value[key] = nil
-      return GameSave.validate(value)
-    end)
-  end
-  returnsCode("GAME_SAVE_BUCKET_INVALID", function()
-    local value = record()
-    value.mart = nil
-    return GameSave.validate(value)
-  end)
-  returnsCode("GAME_SAVE_BUCKET_INVALID", function()
-    local value = record()
-    value.bag = nil
-    return GameSave.validate(value)
-  end)
-end
-
-function T.rejects_removed_top_level_session_fields()
   for _, field in ipairs({ "scenario", "currentState" }) do
-    local valid = record({ [field] = {} })
-    local canonical, err = GameSave.validate(valid)
+    local input = record({ [field] = {} })
+    local canonical, err = GameSave.normalize(input)
     Assert.isNil(canonical)
     err = assert(err)
     Assert.equal(err.code, "GAME_SAVE_INVALID")
     Assert.equal(err.context.field, field)
   end
-  Assert.notNil(GameSave.validate(record()))
+  Assert.notNil(GameSave.normalize(record()))
 end
 
 return { tests = T }

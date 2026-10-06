@@ -1,6 +1,7 @@
 -- Defines the strict project-owned GameSave record. The storage service owns
--- publication, while PlayerData, world, scripts, UI, audio, and mons modules
--- may inject their authoritative validators at this boundary. Pure domain code.
+-- publication, GameSave owns envelope normalization and supported
+-- migrations, and each runtime domain owner restores the nested state it
+-- actually uses. Pure domain code.
 
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
@@ -162,41 +163,7 @@ local function validateLegacyShape(record, schema)
   end
 end
 
-local function validateBucket(record, key, opts, validatorKey)
-  if type(record[key]) ~= "table" then
-    Errors.raise(
-      GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
-      "game save " .. key .. " bucket is required",
-      { bucket = key }
-    )
-  end
-  local validator = opts and opts[validatorKey]
-  if validator == nil then
-    return record[key]
-  end
-  assert(type(validator) == "function", validatorKey .. " must be a function")
-  local ok, result, validationErr = pcall(validator, record[key])
-  if not ok then
-    if Errors.is(result) then
-      Errors.raise(
-        GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
-        "game save " .. key .. " bucket is invalid: " .. result.message,
-        { bucket = key, cause = result.code }
-      )
-    end
-    error(result)
-  end
-  if Errors.is(result) or result == false or (result == nil and validationErr ~= nil) then
-    local cause = Errors.is(validationErr) and validationErr.code or nil
-    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "game save " .. key .. " bucket is invalid", {
-      bucket = key,
-      cause = cause,
-    })
-  end
-  return result or record[key]
-end
-
-local function validateFieldState(record, opts)
+local function validateFieldEnvelope(record)
   if not safeComponent(record.versionId) then
     Errors.raise(
       GameSaveErrors.GAME_SAVE_VERSION_INVALID,
@@ -236,56 +203,27 @@ local function validateFieldState(record, opts)
   if not FACING[record.facing] then
     Errors.raise(GameSaveErrors.GAME_SAVE_FIELD_INVALID, "game save facing is invalid", { facing = record.facing })
   end
-  local validator = opts and opts.fieldValidate
-  if validator ~= nil then
-    assert(type(validator) == "function", "fieldValidate must be a function")
-    validator(record)
-  end
 end
 
-local function validate(record, opts, expectedSchema, requirePc, requireFashionCase)
-  expectedSchema = expectedSchema or GameSave.SCHEMA
-  if requirePc == nil then
-    requirePc = expectedSchema == GameSave.SCHEMA
-  end
-  if requireFashionCase == nil then
-    requireFashionCase = expectedSchema == GameSave.SCHEMA
-  end
-  if type(record) ~= "table" then
-    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "game save must be a table", {})
-  end
-  if record.schema ~= expectedSchema then
+-- Checks the routing and entry envelope of a current-schema record and
+-- returns a shallow copy with its avatar canonicalized. Nested buckets
+-- pass through untouched: the runtime domains that own them restore and
+-- check the state they actually use.
+local function canonicalizeCurrent(record)
+  if record.schema ~= GameSave.SCHEMA then
     Errors.raise(
       GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
       "unsupported game save schema",
       { schema = record.schema }
     )
   end
-  if expectedSchema == GameSave.LEGACY_V6_SCHEMA then
-    local hasFashionCase = record.fashionCase ~= nil
-    local hasMailbox = record.mailbox ~= nil
-    local hasPhotoAlbum = record.photoAlbum ~= nil
-    if hasFashionCase and not hasMailbox and not hasPhotoAlbum then
-      requireFashionCase = true
-    elseif not hasFashionCase and hasMailbox and hasPhotoAlbum then
-      requirePc = true
-    else
-      Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v6 save has an incomplete or mixed bucket layout", {})
-    end
-  end
   for key in pairs(record) do
     if not TOP_LEVEL_FIELDS[key] then
       Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "unknown game save field", { field = key })
     end
-    if
-      (not requirePc and (key == "mailbox" or key == "photoAlbum"))
-      or (not requireFashionCase and key == "fashionCase")
-    then
-      Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "legacy game save carries a current-only bucket", { field = key })
-    end
   end
   validateSaveIdRaised(record.saveId)
-  validateFieldState(record, opts)
+  validateFieldEnvelope(record)
   if
     not integer(record.playTimeSeconds)
     or record.playTimeSeconds < 0
@@ -297,59 +235,11 @@ local function validate(record, opts, expectedSchema, requirePc, requireFashionC
       { playTimeSeconds = record.playTimeSeconds }
     )
   end
-  local canonicalPlayerData = validateBucket(record, "playerData", opts, "playerDataValidate")
-  local world = validateBucket(record, "world", opts, "worldValidate")
-  for _, key in ipairs({ "flags", "variables", "objects", "rng" }) do
-    if type(world[key]) ~= "table" then
-      Errors.raise(
-        GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
-        "game save world bucket is incomplete",
-        { bucket = "world." .. key }
-      )
-    end
-  end
-  local canonicalScripts = validateBucket(record, "scripts", opts, "scriptsValidate")
-  local canonicalMons = validateBucket(record, "mons", opts, "monsValidate")
-  local canonicalBag = validateBucket(record, "bag", opts, "bagValidate")
-  local canonicalMart = validateBucket(record, "mart", opts, "martValidate")
-  local canonicalMailbox, canonicalPhotoAlbum
-  if requirePc then
-    local mailbox = validateBucket(record, "mailbox", opts, "mailboxValidate")
-    local photoAlbum = validateBucket(record, "photoAlbum", opts, "photoAlbumValidate")
-    Mailbox.validate(mailbox)
-    PhotoAlbum.validate(photoAlbum)
-    canonicalMailbox, canonicalPhotoAlbum = mailbox, photoAlbum
-  end
-  local canonicalFieldTravel = validateBucket(record, "fieldTravel", opts, "fieldTravelValidate")
-  local canonicalFashionCase
-  if requireFashionCase then
-    canonicalFashionCase = validateBucket(record, "fashionCase", opts, "fashionCaseValidate")
-    FashionCaseState.validate(canonicalFashionCase)
-  end
-  local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
-  local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
-  local canonicalAvatar = validateAvatar(record)
   local canonical = {}
   for key, value in pairs(record) do
     canonical[key] = value
   end
-  canonical.playerData = canonicalPlayerData
-  canonical.world = world
-  canonical.scripts = canonicalScripts
-  canonical.mons = canonicalMons
-  canonical.bag = canonicalBag
-  canonical.mart = canonicalMart
-  if requirePc then
-    canonical.mailbox = canonicalMailbox
-    canonical.photoAlbum = canonicalPhotoAlbum
-  end
-  canonical.fieldTravel = canonicalFieldTravel
-  if requireFashionCase then
-    canonical.fashionCase = canonicalFashionCase
-  end
-  canonical.auxiliaryUi = canonicalAuxiliaryUi
-  canonical.audio = canonicalAudio
-  canonical.avatar = canonicalAvatar
+  canonical.avatar = validateAvatar(record)
   return canonical
 end
 
@@ -407,16 +297,20 @@ function GameSave.migrateV4(record)
   return migrated
 end
 
--- Pure v5 -> v6 conversion. Semantic validation of the old envelope and
--- nested mon records is performed by GameSaveValidation before this copy is
--- accepted for publication.
+-- Pure v5 -> v6 conversion. Only the predecessor shape is checked: no
+-- newer bucket may already be present and the migrated mons bucket must be
+-- a record (its own migration reports malformed content). Nested state is
+-- copied, never semantically rechecked.
 function GameSave.migrateV5(record)
   assert(type(record) == "table" and record.schema == GameSave.LEGACY_V5_SCHEMA, "GameSave.migrateV5 requires v5")
-  local valid, validationError = GameSave.validateV5(record)
-  if not valid then
-    error(validationError, 0)
+  if record.fashionCase ~= nil or record.mailbox ~= nil or record.photoAlbum ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v5 save cannot contain newer buckets", {})
   end
-  assert(type(record.mons) == "table" and record.mons.schema == "g4-mons-save-v1", "v5 requires the v1 mons bucket")
+  if type(record.mons) ~= "table" then
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "v5 mons bucket is required for migration", {
+      bucket = "mons",
+    })
+  end
   local migrated = deepCopy(record)
   migrated.schema = GameSave.LEGACY_V6_SCHEMA
   migrated.fashionCase = FashionCaseState.empty()
@@ -426,12 +320,25 @@ function GameSave.migrateV5(record)
 end
 
 -- Reconciles either independently published v6 layout into the current save.
--- Each historical layout is validated before missing state is initialized.
+-- Only the top-level layout shape is checked: exactly one of the two
+-- published bucket groups must be present before the missing state is
+-- initialized. Nested state is copied, never semantically rechecked.
 function GameSave.migrateV6(record)
   assert(type(record) == "table" and record.schema == GameSave.LEGACY_V6_SCHEMA, "GameSave.migrateV6 requires v6")
-  local valid, validationError = GameSave.validateV6(record)
-  if not valid then
-    error(validationError, 0)
+  for key in pairs(record) do
+    if not TOP_LEVEL_FIELDS[key] then
+      Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "unknown game save field", { field = key })
+    end
+  end
+  local hasFashionCase = record.fashionCase ~= nil
+  local hasMailbox = record.mailbox ~= nil
+  local hasPhotoAlbum = record.photoAlbum ~= nil
+  if hasFashionCase and not hasMailbox and not hasPhotoAlbum then
+    -- Master layout: fashion case only.
+  elseif not hasFashionCase and hasMailbox and hasPhotoAlbum then
+    -- PC layout: mailbox and photo album only.
+  else
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v6 save has an incomplete or mixed bucket layout", {})
   end
   local migrated = deepCopy(record)
   migrated.schema = GameSave.SCHEMA
@@ -439,14 +346,6 @@ function GameSave.migrateV6(record)
   migrated.mailbox = migrated.mailbox or Mailbox.new():capture()
   migrated.photoAlbum = migrated.photoAlbum or PhotoAlbum.new():capture()
   return migrated
-end
-
-function GameSave.validateV5(record, opts)
-  return GameSave.validate(record, opts, GameSave.LEGACY_V5_SCHEMA, false)
-end
-
-function GameSave.validateV6(record, opts)
-  return GameSave.validate(record, opts, GameSave.LEGACY_V6_SCHEMA)
 end
 
 ---@param saveId string
@@ -539,13 +438,47 @@ function GameSave.metadata(record)
   error(envelopeOrError)
 end
 
+-- Normalizes any supported save record into the current schema: supported
+-- historical records migrate forward in order, then the current routing and
+-- entry envelope is checked. Supported schemas are table identity, safe
+-- save and version identities, entry coordinates, and bounded play time;
+-- nested buckets pass through to their owning runtime domains untouched.
+-- This boundary performs no generated-cache lookup and implies no semantic
+-- validity beyond the envelope. Never throws a validation failure:
+-- malformed input returns a structured error instead.
 ---@param record table<string, unknown>
----@param opts table<string, unknown>?
----@param expectedSchema string?
----@param requirePc boolean?
 ---@return table<string, unknown>|nil, Errors.Error?
-function GameSave.validate(record, opts, expectedSchema, requirePc)
-  local ok, result = pcall(validate, record, opts, expectedSchema, requirePc)
+function GameSave.normalize(record)
+  local ok, result = pcall(function()
+    if type(record) ~= "table" then
+      Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "game save must be a table", {})
+    end
+    assert(type(record) == "table")
+    local schema = record.schema
+    if
+      schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V6_SCHEMA
+      and schema ~= GameSave.LEGACY_V5_SCHEMA
+      and schema ~= "g4-game-save-v4"
+      and schema ~= "g4-game-save-v3"
+    then
+      Errors.raise(GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED, "unsupported game save schema", { schema = schema })
+    end
+    local current = record
+    if current.schema == "g4-game-save-v3" then
+      current = GameSave.migrateV3(current)
+    end
+    if current.schema == "g4-game-save-v4" then
+      current = GameSave.migrateV4(current)
+    end
+    if current.schema == GameSave.LEGACY_V5_SCHEMA then
+      current = GameSave.migrateV5(current)
+    end
+    if current.schema == GameSave.LEGACY_V6_SCHEMA then
+      current = GameSave.migrateV6(current)
+    end
+    return canonicalizeCurrent(current)
+  end)
   if ok then
     return result
   end

@@ -114,11 +114,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     snapshot.avatar = runtime.playerAvatar:capture()
   end
 
-  local valid, validationErr = runtime.saveValidation:validate(snapshot)
-  if not valid then
-    return nil, validationErr
-  end
-  return valid
+  return snapshot
 end
 
 ---@param self FieldSaveCoordinator

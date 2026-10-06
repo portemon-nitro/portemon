@@ -300,6 +300,7 @@ local SAVEEDITOR_ALLOWED = {
   storage = true,
   assets = true,
   mons = true,
+  items = true,
   script = true,
 }
 
@@ -487,7 +488,6 @@ function T.saveeditor_imports_stay_inside_the_declared_neutral_boundary()
     { module = "app.src.ui.ProductMenuSkin", allowed = true },
     { module = "app.src.ui.UnrelatedWidget", allowed = false },
     { module = "libs.ui.src.LayoutGeometry", allowed = true },
-    { module = "libs.hgss.src.save.GameSaveValidation", allowed = true },
     { module = "libs.storage.src.RepoFs", allowed = true },
     { module = "libs.errors.src.Errors", allowed = true },
     { module = "libs.assets.src.MonCache", allowed = true },
@@ -497,7 +497,7 @@ function T.saveeditor_imports_stay_inside_the_declared_neutral_boundary()
     { module = "game.src.Game", allowed = false },
     { module = "game.hgss.src.HgssGame", allowed = false },
     { module = "romdump.src.source.GameVersion", allowed = false },
-    { module = "libs.items.src.ItemCatalog", allowed = false },
+    { module = "libs.items.src.ItemCatalog", allowed = true },
     { module = "libs.codec.src.BinaryReader", allowed = false },
     { module = "libs.math.src.FixedPoint", allowed = false },
   }
@@ -531,7 +531,8 @@ function T.neutral_modules_resolve_without_loading_retail_code()
   table.insert(searchers, 1, gameLoadTrap)
   local ok, err = pcall(function()
     require("libs.storage.src.RepoFs")
-    require("libs.hgss.src.save.GameSaveValidation")
+    require("libs.hgss.src.save.GameSave")
+    require("libs.hgss.src.save.GameSaveStore")
     require("libs.mons.src.MonCatalog")
     require("libs.items.src.ItemCatalog")
     require("libs.script.src.ScriptSave")

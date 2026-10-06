@@ -20,7 +20,6 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
-local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local MainMenuRenderer = require("app.src.mainmenu.MainMenuRenderer")
 local MainMenuState = require("app.src.mainmenu.MainMenuState")
@@ -28,7 +27,6 @@ local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local PixelScale = require("libs.ui.src.PixelScale")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
-local RepoFs = require("libs.storage.src.RepoFs")
 local SaveFs = require("libs.storage.src.SaveFs")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
@@ -1148,14 +1146,7 @@ local function withMenu(count, width, height, fn)
   local saveFs = SaveFs.global(backend)
   local saveIds = seedRecords(saveFs, count)
   local results = {}
-  local validation = GameSaveValidation.new({
-    overrideFs = RepoFs.new(love.filesystem.getSourceBaseDirectory()),
-  })
-  local store = GameSaveStore.new(saveFs, {
-    recordValidate = function(record)
-      return validation:validate(record)
-    end,
-  })
+  local store = GameSaveStore.new(saveFs)
   local menuText = FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(versionId) })
   local menuRenderer = MainMenuRenderer.new({
     text = menuText,

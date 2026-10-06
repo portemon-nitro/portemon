@@ -652,11 +652,6 @@ function T.tests.save_capture_is_denied_while_a_field_operation_is_pending()
         return require("libs.hgss.src.save.BagSave").empty()
       end,
     },
-    saveValidation = {
-      validate = function(_, record)
-        return record
-      end,
-    },
     pokemonMenu = composition,
   }, FieldRuntime)
   runtime.saveCoordinator = FieldSaveCoordinator.new(runtime)

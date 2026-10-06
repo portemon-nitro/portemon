@@ -22,7 +22,6 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field displayContext DisplayContext? shared actual-display measurement owner (defaults to a state-owned context)
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field saveStore table<string, unknown>? global GameSaveStore
----@field saveValidation GameSaveValidation? shared version-aware GameSave validator
 ---@field audioOutput table<string, unknown>? audio-output host namespace for deterministic runtime audio
 ---@field derivedAssets table<string, function>? semantic derived-asset host
 ---@field martStockResolver (fun(descriptor: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>): table<string, unknown>)? game-root provider for live script mart stock
@@ -84,7 +83,6 @@ function FieldState.new(game, options)
     presentation = true,
     preparedEntry = options.preparedEntry,
     saveStore = options.saveStore,
-    saveValidation = options.saveValidation,
     audioOutput = options.audioOutput,
     derivedAssets = options.derivedAssets,
     martStockResolver = options.martStockResolver,
