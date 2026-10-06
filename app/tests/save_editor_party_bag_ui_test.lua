@@ -889,27 +889,44 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
     flagFilter = "All",
     flagRows = {},
   }
+  local rowTargets, indexByTarget = {}, {}
   for index = 1, 1200 do
     view.flagRows[index] = { name = "SYNTHETIC_FLAG_" .. index, value = index % 2 == 0 }
+    local targetId = "flag:SYNTHETIC_FLAG_" .. index
+    rowTargets[index] = targetId
+    indexByTarget[targetId] = index
   end
+  view.flagRowTargets = rowTargets
+  view.flagIndexByTarget = indexByTarget
 
   local layout = computeLayout(view, 800, 600)
   local middleIndex = 600
-  local previous = "flag:" .. view.flagRows[middleIndex - 1].name
   local middle = "flag:" .. view.flagRows[middleIndex].name
-  local following = "flag:" .. view.flagRows[middleIndex + 1].name
-  local middleNode = assert(layout.focusGraph[middle], "every semantic flag row has a focus node")
-
-  Assert.deepEqual(middleNode.up, { previous }, "a flag row links to its immediate semantic predecessor")
-  Assert.deepEqual(middleNode.down, { following }, "a flag row links to its immediate semantic successor")
-  local middleTarget = assert(layout.targets[middle], "every semantic flag row keeps its activation target")
-  local middleClip = assert(middleTarget.clip, "flag rows carry their viewport intersection")
-  Assert.isTrue(
-    middleTarget.rect.y + middleTarget.rect.height <= middleClip.y
-      or middleTarget.rect.y >= middleClip.y + middleClip.height,
-    "the middle synthetic row starts outside its visible viewport intersection"
+  Assert.equal(#layout.lists.flags.rowTargets, 1200, "the logical flag order stays complete")
+  Assert.equal(
+    layout.viewports.flags.rowTargets[middleIndex],
+    middle,
+    "the viewport keeps the logical index of every semantic row"
   )
-  Assert.isTrue(table.concat(layout.viewports.flags.rowTargets, "\n"):find(middle, 1, true) ~= nil)
+  Assert.isNil(layout.targets[middle], "an offscreen semantic row shares no per-frame target")
+  Assert.isNil(layout.focusGraph[middle], "an offscreen semantic row shares no per-frame focus node")
+  local visibleFirst = layout.viewports.flags.firstIndex
+  local firstTarget = rowTargets[visibleFirst]
+  local firstNode = assert(
+    layout.focusGraph[firstTarget],
+    "the first visible semantic row keeps its focus node"
+  )
+  if visibleFirst > 1 then
+    Assert.deepEqual(
+      firstNode.up,
+      {},
+      "the window edge has no offscreen neighbor inside the materialized graph"
+    )
+  end
+  Assert.isTrue(
+    table.concat(layout.viewports.flags.rowTargets, "\n"):find(middle, 1, true) ~= nil,
+    "the viewport still addresses the offscreen row by its logical identity"
+  )
 
   local scrolledView = {
     section = view.section,
@@ -918,20 +935,30 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
     dirty = view.dirty,
     flagFilter = view.flagFilter,
     flagRows = view.flagRows,
-    scrollOffsets = { flags = (middleIndex - 1) * layout.viewports.flags.rowExtent },
+    flagRowTargets = view.flagRowTargets,
+    flagIndexByTarget = view.flagIndexByTarget,
+    scrollOffsets = { flags = (middleIndex - 2) * layout.viewports.flags.rowExtent },
   }
-  Assert.notNil(
-    computeLayout(scrolledView, 800, 600).targets[middle],
-    "the same semantic row can be revealed by its viewport"
+  local scrolled = computeLayout(scrolledView, 800, 600)
+  local middleNode = assert(scrolled.focusGraph[middle], "the revealed semantic row joins the focus graph")
+  local previous = "flag:" .. view.flagRows[middleIndex - 1].name
+  local following = "flag:" .. view.flagRows[middleIndex + 1].name
+  Assert.isTrue(
+    scrolled.focusGraph[previous] ~= nil and scrolled.focusGraph[following] ~= nil,
+    "the revealed window also materializes the immediate semantic neighbors"
   )
+  Assert.deepEqual(middleNode.up, { previous }, "a revealed row links to its immediate semantic predecessor")
+  Assert.deepEqual(middleNode.down, { following }, "a revealed row links to its immediate semantic successor")
+  Assert.notNil(scrolled.targets[middle], "the same semantic row can be revealed by its viewport")
 
   local controller = Controller.new()
-  controller:setFocus("flag:" .. view.flagRows[1].name)
-  for _ = 1, middleIndex - 1 do
-    controller:moveFocus(layout.focusGraph, "down")
-  end
-  Assert.equal(controller.focus, middle, "controller movement reaches an offscreen semantic row")
-  Assert.equal(layout.viewports.flags.rowTargets[middleIndex], middle, "the viewport can reveal the focused row")
+  controller:setFocus(firstTarget)
+  controller:moveFocus(layout.focusGraph, "down")
+  Assert.equal(
+    controller.focus,
+    rowTargets[visibleFirst + 1],
+    "controller movement steps through the materialized window"
+  )
 end
 
 function T.disabled_bag_and_footer_actions_are_not_focusable_or_pointer_targets()

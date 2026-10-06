@@ -84,6 +84,8 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field activeScopeId string?
 ---@field scopeEpoch integer
 ---@field editorFeedback string?
+---@field _flagCatalog { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[]?
+---@field _flagFilter { query: string, rows: { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[], rowTargets: string[], indexByTarget: table<string, integer> }?
 local State = {}
 State.__index = State
 local FIELD_DIRECTIONS = { up = "north", down = "south", left = "west", right = "east" }
@@ -375,7 +377,10 @@ end
 function State:_snapshot()
   local session = self.session and self.session:snapshot() or nil
   local section = self.controller.section
-  local flags = session and section == "Progress" and self:_flagRows(session.flags) or {}
+  local flagRows, flagRowTargets, flagIndexByTarget = {}, {}, {}
+  if session ~= nil and section == "Progress" then
+    flagRows, flagRowTargets, flagIndexByTarget = self:_flagRows(session.flags)
+  end
   local party = session and section == "Party" and self:_partyView() or {}
   local bag = session and section == "Bag" and self:_bagView() or {}
   local numberControls, numberControlVisuals, numberPressTicks
@@ -414,7 +419,9 @@ function State:_snapshot()
     capturedTarget = self.controller.capturedTarget,
     scrollOffset = self.controller.scrollOffset,
     query = self.controller.query,
-    flagRows = flags,
+    flagRows = flagRows,
+    flagRowTargets = flagRowTargets,
+    flagIndexByTarget = flagIndexByTarget,
     valueEditor = self.valueEditor and self.valueEditor:snapshot() or nil,
     editorFeedback = self.editorFeedback,
     numberControls = numberControls,
@@ -550,22 +557,62 @@ function State:_sectionDirty(session)
   return false
 end
 
-function State:_flagRows(values)
-  local rows = {}
-  local query = self.controller.query:lower()
-  for name, flagId in pairs(FieldScriptSymbols.flagsByName) do
-    if name:sub(1, 9) ~= "FLAG_UNK_" then
-      local displayName = flagDisplayName(name)
-      local matches = query == "" or name:lower():find(query, 1, true) or displayName:lower():find(query, 1, true)
-      if matches then
-        rows[#rows + 1] = { name = name, displayName = displayName, id = flagId, value = values[flagId] == true }
+function State:_flagCatalogRows()
+  if self._flagCatalog == nil then
+    local catalog = {}
+    for name, flagId in pairs(FieldScriptSymbols.flagsByName) do
+      if name:sub(1, 9) ~= "FLAG_UNK_" then
+        catalog[#catalog + 1] = {
+          name = name,
+          displayName = flagDisplayName(name),
+          id = flagId,
+          targetId = "flag:" .. name,
+        }
       end
     end
+    table.sort(catalog, function(a, b)
+      return a.name < b.name
+    end)
+    self._flagCatalog = catalog
   end
-  table.sort(rows, function(a, b)
-    return a.name < b.name
-  end)
-  return rows
+  return assert(self._flagCatalog)
+end
+
+---@return { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[] rows
+---@return string[] rowTargets
+---@return table<string, integer> indexByTarget
+function State:_filteredFlagRows()
+  local query = self.controller.query:lower()
+  local cached = self._flagFilter
+  if cached == nil or cached.query ~= query then
+    local rows, rowTargets, indexByTarget = {}, {}, {}
+    for _, descriptor in ipairs(self:_flagCatalogRows()) do
+      if
+        query == ""
+        or descriptor.name:lower():find(query, 1, true)
+        or descriptor.displayName:lower():find(query, 1, true)
+      then
+        rows[#rows + 1] = descriptor
+        rowTargets[#rowTargets + 1] = descriptor.targetId
+        indexByTarget[descriptor.targetId] = #rows
+      end
+    end
+    cached = { query = query, rows = rows, rowTargets = rowTargets, indexByTarget = indexByTarget }
+    self._flagFilter = cached
+  end
+  return cached.rows, cached.rowTargets, cached.indexByTarget
+end
+
+---@param values table<integer, boolean>
+---@return { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[] rows
+---@return string[] rowTargets
+---@return table<string, integer> indexByTarget
+function State:_flagRows(values)
+  local rows, rowTargets, indexByTarget = self:_filteredFlagRows()
+  for _, row in ipairs(rows) do
+    row.value = values[row.id] == true
+  end
+  return rows, rowTargets, indexByTarget
 end
 
 function State:_partyView()
@@ -1032,6 +1079,10 @@ function State:_activeList(layout)
     if focus == list.targetId then
       return list, nil
     end
+    local indexByTarget = list.indexByTarget
+    if type(indexByTarget) == "table" and indexByTarget[focus] ~= nil then
+      return list, indexByTarget[focus]
+    end
     for index, targetId in ipairs(list.rowTargets) do
       if focus == targetId then
         return list, index
@@ -1071,9 +1122,18 @@ end
 ---@return string? cursor
 function State:_reconcileListCursor(list)
   local cursor = self.controller:listCursor(list.id)
-  for _, targetId in ipairs(list.rowTargets) do
-    if targetId == cursor then
-      return cursor
+  if cursor ~= nil then
+    local indexByTarget = list.indexByTarget
+    if type(indexByTarget) == "table" then
+      if indexByTarget[cursor] ~= nil then
+        return cursor
+      end
+    else
+      for _, targetId in ipairs(list.rowTargets) do
+        if targetId == cursor then
+          return cursor
+        end
+      end
     end
   end
   cursor = list.rowTargets[1]
@@ -1161,6 +1221,10 @@ function State:_syncChoiceSelection(list, targetId)
   end
 end
 
+---@param list table<string, unknown>
+---@param rowIndex integer
+---@param direction string
+---@param layout table<string, unknown>
 function State:_moveListRow(list, rowIndex, direction, layout)
   local viewport = assert(layout.viewports[list.viewportId], "list movement needs its scroll viewport")
   local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
@@ -1183,9 +1247,11 @@ function State:_moveListRow(list, rowIndex, direction, layout)
     self.controller:setFocus(target)
     return
   end
+  -- Logical movement never depends on which rows the previous layout materialized:
+  -- the cursor moves by index, the offset reveals that index, and focus is
+  -- reconciled only after a fresh layout makes the target visible.
   local target = assert(list.rowTargets[nextIndex], "list movement stays within its rows")
   self.controller:setListCursor(list.id, target)
-  self.controller:setFocus(target)
   local offset = ScrollViewport.reveal(
     viewport.offset,
     viewport.clip.height,
@@ -1193,13 +1259,8 @@ function State:_moveListRow(list, rowIndex, direction, layout)
     viewport.rowExtent
   )
   offset = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
-  if list.id == "flags" then
-    self.controller.scrollOffsets.flags = offset
-  elseif list.id == "location:map-list" then
-    self.controller.locationMapOffset = offset
-  else
-    error("unknown filterable list " .. list.id, 2)
-  end
+  self:_storeListOffset(list, offset)
+  self:_reconcileFocus(target, self:_resolve(self:_snapshot()).content.layout)
 end
 
 function State:_filterFocusedList(list, rowIndex, operation, text)
@@ -1258,6 +1319,28 @@ function State:_filterFocusedList(list, rowIndex, operation, text)
   if hadRowFocus then
     if focusLive then
       self.controller:setListCursor(fresh.id, previousFocus)
+      local viewport = assert(layout.viewports[fresh.viewportId], "filtering keeps its scroll viewport")
+      local survived = fresh.indexByTarget ~= nil and fresh.indexByTarget[previousFocus] or nil
+      if survived == nil then
+        for index, targetId in ipairs(fresh.rowTargets) do
+          if targetId == previousFocus then
+            survived = index
+            break
+          end
+        end
+      end
+      local revealed = ScrollViewport.clamp(
+        ScrollViewport.reveal(
+          viewport.offset,
+          viewport.clip.height,
+          (assert(survived, "surviving focus stays within its rows") - 1) * viewport.rowExtent,
+          viewport.rowExtent
+        ),
+        viewport.contentExtent,
+        viewport.clip.height
+      )
+      self:_storeListOffset(fresh, revealed)
+      self:_reconcileFocus(previousFocus, self:_resolve(self:_snapshot()).content.layout)
     else
       self.controller:setListCursor(fresh.id, fresh.rowTargets[1])
       self.controller:setFocus(fresh.rowTargets[1])
@@ -1288,14 +1371,15 @@ function State:_handleListConfirm(list, rowIndex, layout)
     end
   end
   self.controller:setListCursor(list.id, cursor)
-  self.controller:setFocus(cursor)
   local resolved = layout or self:_resolve(self:_snapshot()).content.layout
   local viewport = assert(resolved.viewports[list.viewportId], "list confirmation needs its scroll viewport")
-  local cursorIndex
-  for index, targetId in ipairs(list.rowTargets) do
-    if targetId == cursor then
-      cursorIndex = index
-      break
+  local cursorIndex = list.indexByTarget ~= nil and list.indexByTarget[cursor] or nil
+  if cursorIndex == nil then
+    for index, targetId in ipairs(list.rowTargets) do
+      if targetId == cursor then
+        cursorIndex = index
+        break
+      end
     end
   end
   local revealed = ScrollViewport.clamp(
@@ -1309,6 +1393,7 @@ function State:_handleListConfirm(list, rowIndex, layout)
     viewport.clip.height
   )
   self:_storeListOffset(list, revealed)
+  self:_reconcileFocus(cursor, self:_resolve(self:_snapshot()).content.layout)
 end
 
 ---@param preferred string?
@@ -2299,13 +2384,11 @@ function State:_revealFocusedRow(_)
   if section == "Bag" then
     return
   end
-  local rows = section == "Party" and view.partyRows
-    or section == "Bag" and view.bagRows
-    or section == "Progress" and view.flagRows
-    or {}
+  local rows = section == "Party" and view.partyRows or section == "Progress" and view.flagRows or {}
+  ---@cast rows { targetId: string?, name: string? }[]
   local rowIndex
-  for index, row in ipairs(rows or {}) do
-    local targetId = row.targetId or (section == "Bag" and ("bag:item:" .. row.item) or "flag:" .. row.name)
+  for index, row in ipairs(rows) do
+    local targetId = row.targetId or ("flag:" .. assert(row.name, "flag rows carry their logical name"))
     if targetId == self.controller.focus then
       rowIndex = index
       break

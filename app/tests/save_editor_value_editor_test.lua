@@ -181,6 +181,54 @@ function T.hexadecimal_high_bit_values_and_digit_edits_remain_unsigned()
   end
 end
 
+function T.large_choice_catalog_reuses_its_filtered_order_until_the_query_changes()
+  Assert.isTrue(loaded)
+  local options = {}
+  for index = 1, 10000 do
+    local key = string.format("K%05d", index)
+    options[index] = { key = key, label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K00001", options = options })
+  local opening = editor:snapshot()
+  Assert.equal(#opening.options, 10000, "the catalog exposes every logical choice")
+  Assert.isTrue(editor:snapshot().options == opening.options, "repeated snapshots reuse the cached order")
+  Assert.isTrue(editor:moveChoice(5), "browsing moves the selection")
+  Assert.isTrue(editor:snapshot().options == opening.options, "browsing never rebuilds the cached order")
+  Assert.equal(editor:snapshot().selectedKey, "K00006", "browsing still advances the selection")
+  Assert.isTrue(editor:textinput("K000"), "filtering narrows the catalog")
+  local narrowed = editor:snapshot()
+  Assert.isFalse(narrowed.options == opening.options, "a changed query rebuilds the filtered order once")
+  Assert.isTrue(#narrowed.options < 10000 and #narrowed.options > 0, "the filter narrows without emptying")
+  Assert.isTrue(editor:snapshot().options == narrowed.options, "the rebuilt filter is reused while stable")
+  Assert.isTrue(editor:press("backspace"), "backspace edits the query")
+  local widened = editor:snapshot()
+  Assert.isFalse(widened.options == narrowed.options, "query edits rebuild exactly once")
+  Assert.isTrue(editor:snapshot().options == widened.options, "the widened filter is reused while stable")
+  Assert.isTrue(editor:press("clear_search"), "clearing restores the catalog")
+  local restored = editor:snapshot()
+  Assert.equal(#restored.options, 10000, "clearing restores every logical choice")
+  Assert.isTrue(editor:snapshot().options == restored.options, "the restored order is reused while stable")
+end
+
+function T.choice_snapshot_carries_stable_row_identity_for_visible_layout()
+  Assert.isTrue(loaded)
+  local options = {}
+  for index = 1, 50 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
+  local snapshot = editor:snapshot()
+  Assert.equal(#snapshot.rowTargets, 50, "the snapshot carries the complete logical order")
+  Assert.equal(snapshot.rowTargets[1], "choice:K01", "row targets use the stable row identity")
+  Assert.equal(snapshot.indexByTarget["choice:K25"], 25, "the index map resolves stable identities")
+  Assert.isTrue(editor:snapshot().rowTargets == snapshot.rowTargets, "the row order is reused while stable")
+  Assert.isTrue(editor:snapshot().indexByTarget == snapshot.indexByTarget, "the index map is reused while stable")
+  editor:textinput("K1")
+  local narrowed = editor:snapshot()
+  Assert.isFalse(narrowed.rowTargets == snapshot.rowTargets, "a changed query rebuilds the row identity once")
+  Assert.equal(narrowed.indexByTarget[narrowed.rowTargets[1]], 1, "the rebuilt index map stays consistent")
+end
+
 function T.choice_browsing_uses_the_full_filtered_sequence()
   Assert.isTrue(loaded)
   local options = {}

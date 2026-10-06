@@ -243,6 +243,12 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
   for index = 1, 12 do
     options[index] = { key = string.format("choice-%02d", index), label = "Choice " .. index }
   end
+  local rowTargets, indexByTarget = {}, {}
+  for index, option in ipairs(options) do
+    local targetId = "choice:" .. option.key
+    rowTargets[index] = targetId
+    indexByTarget[targetId] = index
+  end
   local view = {
     section = "Player",
     status = "ready",
@@ -254,6 +260,8 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
       kind = "choice",
       purpose = "species",
       options = options,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
       selectedKey = nil,
     },
     scrollOffsets = { ["value:choice"] = 4 },
@@ -271,22 +279,27 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
   Assert.notNil(layout.focusOrder, "the plan must publish complete semantic focus order")
   Assert.isNil(layout.focusable, "the public plan has one semantic focus order")
   Assert.isNil(layout.disabledTargets, "activation state belongs to each target record")
-  for _, option in ipairs(options) do
-    local targetId = "choice:" .. option.key
-    local found = false
+  for _, targetId in ipairs(rowTargets) do
+    local visible = layout.targets[targetId] ~= nil
+    local ordered = false
     for _, focusId in ipairs(layout.focusOrder) do
       if focusId == targetId then
-        found = true
+        ordered = true
       end
     end
-    Assert.isTrue(found, "offscreen choice remains in focus order: " .. targetId)
+    Assert.equal(
+      ordered,
+      visible,
+      "focus order matches the materialized choice window: " .. targetId
+    )
   end
+  Assert.equal(#layout.lists["value:choice"].rowTargets, 12, "the logical choice order stays complete")
   Assert.isNil(layout.targets.save, "the value scope cannot publish shell targets")
   Assert.isNil(layout.targets.section, "the value scope cannot publish navigation targets")
 
   local viewport = assert(layout.viewports["value:choice"])
   Assert.notNil(viewport.clip)
-  Assert.equal(viewport.rowExtent, 30)
+  Assert.equal(viewport.rowExtent, 18)
   Assert.equal(viewport.gap, 0)
   Assert.equal(viewport.firstIndex, 1)
   Assert.isTrue(viewport.lastIndex < #options, "the short viewport must expose a strict row range")
@@ -351,6 +364,13 @@ local function progressListHarness(flagCatalog)
     return rows
   end
   local function buildView()
+    local rows = filterFlags()
+    local rowTargets, indexByTarget = {}, {}
+    for index, flag in ipairs(rows) do
+      local targetId = "flag:" .. flag.name
+      rowTargets[index] = targetId
+      indexByTarget[targetId] = index
+    end
     return {
       section = "Progress",
       status = "ready",
@@ -359,7 +379,9 @@ local function progressListHarness(flagCatalog)
       scope = { id = "section:Progress", epoch = 0, kind = "section", focusId = controller.focus },
       focus = controller.focus,
       query = controller.query,
-      flagRows = filterFlags(),
+      flagRows = rows,
+      flagRowTargets = rowTargets,
+      flagIndexByTarget = indexByTarget,
       scrollOffsets = controller.scrollOffsets,
     }
   end
@@ -493,9 +515,17 @@ function T.tests.focused_list_row_navigation_pages_and_back_returns_to_container
   controller:setFocus(rows[1])
   state:_consumeUiInput({ { type = "navigate", direction = "left" } })
   Assert.equal(controller.focus, rows[1], "paging clamps at the first row instead of wrapping")
-  controller:setFocus(rows[#rows])
+
+  local last = rows[#rows]
+  for _ = 1, 10 do
+    if controller.focus == last then
+      break
+    end
+    state:_consumeUiInput({ { type = "navigate", direction = "right" } })
+  end
+  Assert.equal(controller.focus, last, "repeated paging reaches the last row through revealed windows")
   state:_consumeUiInput({ { type = "navigate", direction = "right" } })
-  Assert.equal(controller.focus, rows[#rows], "paging clamps at the last row instead of wrapping")
+  Assert.equal(controller.focus, last, "paging clamps at the last row instead of wrapping")
 
   state:_consumeUiInput({ { type = "cancel" } })
   Assert.equal(controller.focus, "list:flags", "Back returns to the list container")
@@ -979,13 +1009,17 @@ function T.tests.choice_editor_enters_rows_and_back_returns_to_container()
   Assert.isNil(editor:result(), "entering choice rows publishes no result")
   Assert.equal(controller.focus, "choice:K01", "Confirm enters the first row")
 
-  controller:setFocus("choice:K05")
+  for _ = 1, 4 do
+    state:_consumeUiInput({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(controller.focus, "choice:K05", "repeated Down steps reveal each logical row")
   state:_consumeUiInput({ { type = "cancel" } })
   Assert.equal(controller.focus, "list:value:choice", "Back returns to the choice container")
   Assert.isNil(editor:result(), "Back from a choice row keeps the editor open")
   Assert.equal(harness.finishedCount(), 0, "Back from a choice row never finishes the editor")
 
-  controller:setFocus("choice:K05")
+  state:_consumeUiInput({ { type = "confirm" } })
+  Assert.equal(controller.focus, "choice:K05", "re-entering rows restores the cursor row")
   state:_consumeUiInput({ { type = "navigate", direction = "up" } })
   Assert.equal(controller.focus, "choice:K04", "Up moves one row")
   state:_consumeUiInput({ { type = "navigate", direction = "down" } })
@@ -993,15 +1027,15 @@ function T.tests.choice_editor_enters_rows_and_back_returns_to_container()
   local paged = harness.buildLayout()
   local viewport = assert(paged.viewports["value:choice"])
   local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
-  controller:setFocus("choice:K01")
+  Assert.notNil(paged.focusGraph[controller.focus], "paging starts from a materialized row")
   state:_consumeUiInput({ { type = "navigate", direction = "right" } })
   Assert.equal(
     controller.focus,
-    "choice:K" .. string.format("%02d", math.min(12, 1 + visibleCount)),
+    "choice:K" .. string.format("%02d", math.min(12, 5 + visibleCount)),
     "Right pages by one visible count"
   )
   state:_consumeUiInput({ { type = "navigate", direction = "left" } })
-  Assert.equal(controller.focus, "choice:K01", "Left pages back and clamps at the first row")
+  Assert.equal(controller.focus, "choice:K05", "Left pages back to the starting row")
 end
 
 function T.tests.choice_typing_reconciles_the_cursor_without_publishing()
@@ -1798,6 +1832,133 @@ function T.tests.scope_replacement_restores_remembered_focus_when_current_is_gon
   Assert.equal(resolved, "money", "replacement restores the remembered scope focus when current is gone")
   Assert.equal(controller.focus, "money", "reconciliation publishes the remembered focus")
   Assert.equal(controller.focusVisible, false, "reconciliation never shows the ring by itself")
+end
+
+function T.tests.repeated_flag_snapshots_reuse_the_filtered_catalog_until_the_query_changes()
+  local controller = Controller.new()
+  local state = setmetatable({ controller = controller }, State)
+  local opening = state:_flagRows({})
+  Assert.isTrue(#opening > 0, "the catalog exposes flag rows")
+  Assert.isTrue(state:_flagRows({}) == opening, "snapshots without query changes reuse the cached rows")
+  local sample = opening[1]
+  local values = { [sample.id] = true }
+  local refreshed = state:_flagRows(values)
+  Assert.isTrue(refreshed == opening, "value refresh never rebuilds the cached descriptors")
+  Assert.equal(refreshed[1].value, true, "refreshed rows still reflect the latest session flags")
+  local cleared = state:_flagRows({})
+  Assert.isTrue(cleared == opening, "clearing flags reuses the cached rows")
+  Assert.equal(cleared[1].value, false, "cleared flags read back as disabled")
+  controller.query = sample.name:sub(1, 8):lower()
+  local filtered = state:_flagRows({})
+  Assert.isFalse(filtered == opening, "a changed query rebuilds the filtered order once")
+  Assert.isTrue(state:_flagRows({}) == filtered, "the rebuilt filter is reused while the query is stable")
+  Assert.isTrue(#filtered < #opening, "filtering narrows the catalog")
+  for _, row in ipairs(filtered) do
+    Assert.notNil(row.targetId, "cached rows carry their stable target identity")
+  end
+end
+
+function T.tests.moving_past_the_visible_window_reveals_and_focuses_the_next_row()
+  local harness = progressListHarness(progressFlagCatalog(30))
+  local controller, state = harness.controller, harness.state
+  harness.sync()
+  local viewport = assert(harness.current.layout.viewports.flags)
+  local rows = harness.current.layout.lists.flags.rowTargets
+  controller:setFocus(rows[viewport.lastIndex])
+  state:_consumeUiInput({ { type = "navigate", direction = "down" } })
+  harness.sync()
+  local nextRow = rows[viewport.lastIndex + 1]
+  Assert.equal(controller.focus, nextRow, "Down from the last visible row focuses the next logical row")
+  local fresh = harness.current.layout
+  Assert.notNil(fresh.focusGraph[nextRow], "the revealed row joins the focus graph")
+  Assert.notNil(fresh.targets[nextRow], "the revealed row materializes its target")
+  Assert.isTrue(
+    (controller.scrollOffsets.flags or 0) > 0,
+    "the viewport offset advances to reveal the focused row"
+  )
+end
+
+function T.tests.paging_from_a_row_lands_on_a_revealed_row_outside_the_previous_window()
+  local harness = progressListHarness(progressFlagCatalog(40))
+  local controller, state = harness.controller, harness.state
+  harness.sync()
+  local rows = harness.current.layout.lists.flags.rowTargets
+  controller:setFocus(rows[1])
+  state:_consumeUiInput({ { type = "navigate", direction = "right" } })
+  harness.sync()
+  local fresh = harness.current.layout
+  Assert.isFalse(controller.focus == rows[1], "Right pages away from the first row")
+  Assert.notNil(fresh.focusGraph[controller.focus], "the paged row joins the focus graph")
+  Assert.notNil(fresh.targets[controller.focus], "the paged row materializes its target")
+end
+
+function T.tests.filtering_away_the_focused_row_reconciles_to_a_visible_live_row()
+  local harness = progressListHarness(progressFlagCatalog(30))
+  local controller, state = harness.controller, harness.state
+  harness.sync()
+  local list = harness.current.layout.lists.flags
+  local focused = list.rowTargets[5]
+  controller:setFocus(focused)
+  state:_filterFocusedList(list, 5, "append", "test_flag_02")
+  harness.sync()
+  local fresh = harness.current.layout.lists.flags
+  Assert.isTrue(#fresh.rowTargets > 0, "the filter keeps live rows")
+  Assert.notNil(
+    harness.current.layout.focusGraph[controller.focus],
+    "the reconciled focus joins the visible graph"
+  )
+  Assert.notNil(harness.current.layout.targets[controller.focus], "the reconciled focus has a target")
+  local live = false
+  for _, targetId in ipairs(fresh.rowTargets) do
+    if targetId == controller.focus then
+      live = true
+      break
+    end
+  end
+  Assert.isTrue(live, "the reconciled focus is a live filtered row")
+end
+
+function T.tests.pointer_targets_cover_only_visible_rows_and_empty_lists_stay_stable()
+  local harness = progressListHarness(progressFlagCatalog(30))
+  harness.sync()
+  local layout = harness.current.layout
+  local viewport = assert(layout.viewports.flags)
+  local rows = layout.lists.flags.rowTargets
+  local visible = layout.targets[rows[viewport.firstIndex]]
+  Assert.notNil(visible, "the first visible row has a target")
+  local rect = visible.rect
+  Assert.equal(
+    Layout.hitTest(layout, harness.current.view, rect.x + rect.width / 2, rect.y + 1),
+    rows[viewport.firstIndex],
+    "pointer input reaches the visible row"
+  )
+  Assert.isNil(
+    layout.targets[rows[#rows]],
+    "the last logical row has no target at the top offset"
+  )
+  local list = layout.lists.flags
+  harness.controller.query = ""
+  harness.state:_filterFocusedList(list, nil, "append", "zzz-no-such-flag")
+  harness.sync()
+  local empty = harness.current.layout
+  Assert.deepEqual(empty.lists.flags.rowTargets, {}, "an unmatched query leaves no logical rows")
+  local container = assert(empty.targets["list:flags"], "the empty list keeps its container target")
+  Assert.isTrue(container.focusable, "the empty container stays focusable")
+  Assert.equal(
+    Layout.hitTest(
+      empty,
+      harness.current.view,
+      container.rect.x + container.rect.width / 2,
+      container.rect.y + container.rect.height / 2
+    ),
+    "list:flags",
+    "pointer input on the empty list reaches its container"
+  )
+  harness.controller:setFocus("list:flags")
+  harness.sync()
+  harness.state:_consumeUiInput({ { type = "confirm" } })
+  Assert.equal(harness.controller.focus, "list:flags", "confirm on an empty list keeps container focus")
+  Assert.equal(#harness.activations, 0, "confirm on an empty list never activates")
 end
 
 function T.tests.scope_replacement_falls_back_to_the_explicit_default()

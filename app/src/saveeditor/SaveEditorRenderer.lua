@@ -1244,10 +1244,13 @@ local function paintPane(self, view, plan, pane)
     elseif dialog.kind == "choice" then
       local viewport = assert(layout.viewports["value:choice"])
       LogicalSurface.clip(graphics, viewport.clip, function()
-        for _, option in ipairs(dialog.options) do
-          local rect = targetRect(layout, "choice:" .. option.key)
-          if rect then
-            drawListRow(self, rect, option.label, isFocusedVisible(view, "choice:" .. option.key))
+        for index = viewport.firstIndex, viewport.lastIndex do
+          local option = dialog.options[index]
+          if option ~= nil then
+            local rect = targetRect(layout, "choice:" .. option.key)
+            if rect then
+              drawListRow(self, rect, option.label, isFocusedVisible(view, "choice:" .. option.key))
+            end
           end
         end
       end)

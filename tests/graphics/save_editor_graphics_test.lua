@@ -58,6 +58,12 @@ local function fixture(scope, width, height, topology, section, variant, version
         value = false,
       } or { name = "FLAG_TEST", displayName = "TEST", id = 1, value = false },
     },
+    flagRowTargets = {
+      variant == "long-flag" and ("flag:" .. LONG_FLAG_NAME) or "flag:FLAG_TEST",
+    },
+    flagIndexByTarget = {
+      [variant == "long-flag" and ("flag:" .. LONG_FLAG_NAME) or "flag:FLAG_TEST"] = 1,
+    },
     flagFilter = "Named",
     flagGroupLabel = "Named",
     scope = {

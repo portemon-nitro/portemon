@@ -24,6 +24,13 @@ local function rect(x, y, width, height)
   return { x = x, y = y, width = math.max(1, width), height = math.max(1, height) }
 end
 
+-- Compact list rows stay visually distinct from roomy form and action controls.
+-- The extent fits the 0.75-scale body text with a small inset; it grows only when
+-- the surrounding metrics require more room for that text.
+local function listRowExtent(metrics)
+  return math.max(18, math.ceil(metrics.lineHeight * 0.75 + 4))
+end
+
 function Layout.compute(view, width, height, metrics)
   assert(type(view) == "table" and width > 0 and height > 0)
   local scope = view.scope
@@ -78,6 +85,7 @@ function Layout.compute(view, width, height, metrics)
   local contentBottom = math.max(contentTop + 1, height - footerReserve - 2)
   local section = view.section or "Player"
   local rowHeight = math.max(30, metrics.lineHeight + 16)
+  local compactRowExtent = listRowExtent(metrics)
   local enabledSections = { "Location", "Player", "Party", "Bag", "Progress" }
   local navigation = {}
   if railWidth > 0 then
@@ -146,12 +154,8 @@ function Layout.compute(view, width, height, metrics)
   local lists = {}
   local listRowRoles = {}
   local containerClips = {}
-  local function registerList(id, viewportId, resolved, rowTargets, query)
+  local function registerList(id, viewportId, resolved, rowTargets, query, indexByTarget)
     local targetId = "list:" .. id
-    local ordered = {}
-    for index, rowTarget in ipairs(rowTargets) do
-      ordered[index] = rowTarget
-    end
     local content, header = resolved.content, resolved.header
     local rowClip =
       rect(content.x, content.y + header.height, content.width, math.max(1, content.height - header.height))
@@ -159,10 +163,13 @@ function Layout.compute(view, width, height, metrics)
       id = id,
       targetId = targetId,
       viewportId = viewportId,
-      rowTargets = ordered,
+      -- The logical order is owned by the cached data owner and shared by
+      -- reference; only visible rows below gain geometry and focus records.
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
       filterable = true,
       query = query or "",
-      empty = #ordered == 0,
+      empty = #rowTargets == 0,
       surfaceRect = resolved.surface,
       hintRect = { x = header.x, y = header.y, width = header.width, height = header.height },
     }
@@ -275,57 +282,60 @@ function Layout.compute(view, width, height, metrics)
       local mapList = SaveEditorList.resolve({
         bounds = mapBounds,
         rowCount = #maps,
-        rowHeight = rowHeight,
+        rowHeight = compactRowExtent,
         gap = 0,
         maxWidth = listWidth,
         headerHeight = metrics.lineHeight,
+        scrollOffset = mapOffset,
       })
+      mapOffset = ScrollViewport.clamp(mapOffset, mapList.contentHeight, mapList.content.height - mapList.header.height)
       listSurfaces[#listSurfaces + 1] = mapList.surface
       local mapRowTargets = {}
       for index, map in ipairs(maps) do
         mapRowTargets[index] = "location:map:" .. map.mapId
-        listRowRoles[mapRowTargets[index]] = "list"
       end
       local mapViewport = registerList("location:map-list", "location:map-list", mapList, mapRowTargets, view.query)
-      mapOffset = ScrollViewport.clamp(mapOffset, mapList.contentHeight, mapViewport.height)
-      local rowTargets = mapRowTargets
-      for index, map in ipairs(maps) do
-        local id = "location:map:" .. map.mapId
+      local mapScroll =
+        makeViewport(mapViewport, mapOffset, mapList.contentHeight, compactRowExtent, 0, #maps, mapRowTargets)
+      mapScroll.visibleTargets = {}
+      viewports["location:map-list"] = mapScroll
+      for _, row in ipairs(mapList.rows) do
+        local map = assert(maps[row.index], "visible map rows resolve to their logical payload")
+        local id = assert(mapRowTargets[row.index], "visible map rows keep their logical identity")
         listRowRoles[id] = "list"
-        local row = mapList.rows[index].rect
-        local y = row.y - mapOffset
-        targets[id] = rect(row.x, y, row.width, rowHeight - 2)
-        focusPositions[id] = rect(row.x, y, row.width, row.height)
+        local y = row.rect.y - mapOffset
+        targets[id] = rect(row.rect.x, y, row.rect.width, compactRowExtent - 2)
+        focusPositions[id] = rect(row.rect.x, y, row.rect.width, row.rect.height)
         addFocusable(id)
-        if y >= mapViewport.y and y + rowHeight <= mapViewport.y + mapViewport.height then
-          navigation[#navigation + 1] = {
-            role = "list",
-            targetId = id,
-            label = map.displayName,
-          }
-        end
+        mapScroll.visibleTargets[#mapScroll.visibleTargets + 1] = id
+        navigation[#navigation + 1] = {
+          role = "list",
+          targetId = id,
+          label = map.displayName,
+        }
       end
-      viewports["location:map-list"] =
-        makeViewport(mapViewport, mapOffset, mapList.contentHeight, rowHeight, 0, #maps, rowTargets)
     elseif page == "map-list" then
       local pickerHeight, backHeight = 26, 26
       local rowTop = contentTop + pickerHeight + 2
       local mapBounds = rect(contentX, rowTop, innerWidth, math.max(1, contentBottom - backHeight - rowTop))
+      local storedMapOffset = locationNav.mapOffset or 0
       local mapList = SaveEditorList.resolve({
         bounds = mapBounds,
         rowCount = #maps,
-        rowHeight = rowHeight,
+        rowHeight = compactRowExtent,
         gap = 0,
         maxWidth = innerWidth,
         headerHeight = metrics.lineHeight,
+        scrollOffset = storedMapOffset,
       })
+      local mapOffset =
+        ScrollViewport.clamp(storedMapOffset, mapList.contentHeight, mapList.content.height - mapList.header.height)
       listSurfaces[#listSurfaces + 1] = mapList.surface
       local rowTargets = {}
       for index, map in ipairs(maps) do
         rowTargets[index] = "location:map:" .. map.mapId
       end
       local mapViewport = registerList("location:map-list", "location:map-list", mapList, rowTargets, view.query)
-      local mapOffset = ScrollViewport.clamp(locationNav.mapOffset or 0, mapList.contentHeight, mapViewport.height)
       targets["location:map-picker"] = rect(contentX, contentTop, innerWidth, pickerHeight)
       navigation[#navigation + 1] = {
         role = "action",
@@ -333,28 +343,29 @@ function Layout.compute(view, width, height, metrics)
         label = "Change Map",
       }
       addFocusable("location:map-picker")
-      for index, map in ipairs(maps) do
-        local id = "location:map:" .. map.mapId
-        rowTargets[index] = id
+      local mapScroll =
+        makeViewport(mapViewport, mapOffset, mapList.contentHeight, compactRowExtent, 0, #maps, rowTargets)
+      mapScroll.visibleTargets = {}
+      viewports["location:map-list"] = mapScroll
+      for _, row in ipairs(mapList.rows) do
+        local map = assert(maps[row.index], "visible map rows resolve to their logical payload")
+        local id = assert(rowTargets[row.index], "visible map rows keep their logical identity")
         listRowRoles[id] = "list"
-        local row = mapList.rows[index].rect
-        local y = row.y - mapOffset
-        targets[id] = rect(row.x, y, row.width, rowHeight - 2)
+        local y = row.rect.y - mapOffset
+        targets[id] = rect(row.rect.x, y, row.rect.width, compactRowExtent - 2)
+        focusPositions[id] = rect(row.rect.x, y, row.rect.width, row.rect.height)
         addFocusable(id)
-        if y >= mapViewport.y and y + rowHeight <= mapViewport.y + mapViewport.height then
-          rows[#rows + 1] = {
-            role = "list",
-            listSurface = true,
-            targetId = id,
-            label = map.displayName,
-            value = map.section,
-            labelRect = rect(row.x + 6, y + 3, row.width * 0.58, rowHeight - 6),
-            valueRect = rect(row.x + row.width * 0.62, y + 3, row.width * 0.34, rowHeight - 6),
-          }
-        end
+        mapScroll.visibleTargets[#mapScroll.visibleTargets + 1] = id
+        rows[#rows + 1] = {
+          role = "list",
+          listSurface = true,
+          targetId = id,
+          label = map.displayName,
+          value = map.section,
+          labelRect = rect(row.rect.x + 6, y + 3, row.rect.width * 0.58, compactRowExtent - 6),
+          valueRect = rect(row.rect.x + row.rect.width * 0.62, y + 3, row.rect.width * 0.34, compactRowExtent - 6),
+        }
       end
-      viewports["location:map-list"] =
-        makeViewport(mapViewport, mapOffset, mapList.contentHeight, rowHeight, 0, #maps, rowTargets)
       targets["location:map-back"] = rect(contentX, contentBottom - backHeight, innerWidth, backHeight)
       navigation[#navigation + 1] = { role = "action", targetId = "location:map-back", label = "Back" }
       addFocusable("location:map-back")
@@ -432,42 +443,41 @@ function Layout.compute(view, width, height, metrics)
     addRow("named choice", "dialogue-frame", "Dialogue frame", "Frame " .. tostring(snapshot.frameIndex + 1))
   elseif section == "Progress" then
     local flags = view.flagRows or {}
-    local flagOffset = view.scrollOffsets and view.scrollOffsets.flags or 0
+    local flagRowTargets = assert(view.flagRowTargets, "the Progress list carries its cached logical row order")
+    assert(#flags == #flagRowTargets, "flag payloads and row order describe the same logical rows")
+    local storedFlagOffset = view.scrollOffsets and view.scrollOffsets.flags or 0
     local bodyTop = contentTop + #rows * rowHeight
     local bodyHeight = math.max(0, contentBottom - bodyTop)
     local flagList = SaveEditorList.resolve({
       bounds = rect(contentX, bodyTop, innerWidth, bodyHeight),
       rowCount = #flags,
-      rowHeight = rowHeight,
+      rowHeight = compactRowExtent,
       gap = 0,
       maxWidth = innerWidth,
       headerHeight = metrics.lineHeight,
+      scrollOffset = storedFlagOffset,
     })
+    local flagOffset =
+      ScrollViewport.clamp(storedFlagOffset, flagList.contentHeight, flagList.content.height - flagList.header.height)
     local contentExtent = flagList.contentHeight
     listSurfaces[#listSurfaces + 1] = flagList.surface
-    local rowTargets = {}
-    for index, flag in ipairs(flags) do
-      rowTargets[index] = "flag:" .. flag.name
-      listRowRoles[rowTargets[index]] = "toggle"
-    end
-    local flagViewport = registerList("flags", "flags", flagList, rowTargets, view.query)
-    flagOffset = ScrollViewport.clamp(flagOffset, contentExtent, flagViewport.height)
-    viewports.flags = makeViewport(flagViewport, flagOffset, contentExtent, rowHeight, 0, #flags, rowTargets)
-    local first, last = ScrollViewport.visibleRange(flagOffset, flagViewport.height, rowHeight, 0, #flags)
-    for index, flag in ipairs(flags) do
-      local id = "flag:" .. flag.name
+    local flagViewport = registerList("flags", "flags", flagList, flagRowTargets, view.query, view.flagIndexByTarget)
+    local flagScroll =
+      makeViewport(flagViewport, flagOffset, contentExtent, compactRowExtent, 0, #flags, flagRowTargets)
+    flagScroll.visibleTargets = {}
+    viewports.flags = flagScroll
+    for _, row in ipairs(flagList.rows) do
+      local flag = assert(flags[row.index], "visible flag rows resolve to their logical payload")
+      local id = assert(flagRowTargets[row.index], "visible flag rows keep their logical identity")
+      listRowRoles[id] = "toggle"
+      local y = row.rect.y - flagOffset
+      targets[id] = rect(row.rect.x, y, row.rect.width, compactRowExtent - 2)
+      focusPositions[id] = rect(row.rect.x, y, row.rect.width, compactRowExtent - 2)
       addFocusable(id)
-      local flagRow = flagList.rows[index].rect
-      local y = flagRow.y - flagOffset
-      targets[id] = rect(flagRow.x, y, flagRow.width, rowHeight - 2)
-      focusPositions[id] = rect(flagRow.x, y, flagRow.width, rowHeight - 2)
-      if index >= first and index <= last then
-        if y >= flagViewport.y and y + rowHeight <= flagViewport.y + flagViewport.height then
-          placeRow("toggle", id, flag.name, flag.value, true, y, rowHeight)
-          rows[#rows].listSurface = true
-          rows[#rows].displayName = flag.displayName
-        end
-      end
+      flagScroll.visibleTargets[#flagScroll.visibleTargets + 1] = id
+      placeRow("toggle", id, flag.name, flag.value, true, y, compactRowExtent)
+      rows[#rows].listSurface = true
+      rows[#rows].displayName = flag.displayName
     end
   elseif section == "Party" then
     local partyRows = view.partyRows or {}
@@ -867,44 +877,54 @@ function Layout.compute(view, width, height, metrics)
       local bodyTop = dialogTop
       local bodyBottom = contentBottom - 36
       local bodyHeight = math.max(1, bodyBottom - bodyTop)
-      local offset = view.scrollOffsets and view.scrollOffsets["value:choice"] or 0
-      local choiceList = SaveEditorList.resolve({
-        bounds = rect(contentX, bodyTop, innerWidth, bodyHeight),
-        rowCount = #dialog.options,
-        rowHeight = rowHeight,
-        gap = 0,
-        maxWidth = innerWidth,
-        headerHeight = metrics.lineHeight,
-      })
+      local storedChoiceOffset = view.scrollOffsets and view.scrollOffsets["value:choice"] or 0
+      local choiceBounds = rect(contentX, bodyTop, innerWidth, bodyHeight)
+      local function resolveChoice(offset)
+        return SaveEditorList.resolve({
+          bounds = choiceBounds,
+          rowCount = #dialog.options,
+          rowHeight = compactRowExtent,
+          gap = 0,
+          maxWidth = innerWidth,
+          headerHeight = metrics.lineHeight,
+          scrollOffset = offset,
+        })
+      end
+      local choiceList = resolveChoice(storedChoiceOffset)
+      local choiceViewportHeight = choiceList.content.height - choiceList.header.height
+      local offset = ScrollViewport.clamp(storedChoiceOffset, choiceList.contentHeight, choiceViewportHeight)
       local contentExtent = choiceList.contentHeight
       listSurfaces[#listSurfaces + 1] = choiceList.surface
-      local rowTargets = {}
-      for index, option in ipairs(dialog.options) do
-        rowTargets[index] = "choice:" .. option.key
-      end
-      for _, targetId in ipairs(rowTargets) do
-        listRowRoles[targetId] = "choice"
-      end
-      local viewport = registerList("value:choice", "value:choice", choiceList, rowTargets, dialog.query)
-      local selectedIndex
-      for index, option in ipairs(dialog.options) do
-        if option.key == dialog.selectedKey then
-          selectedIndex = index
-          break
-        end
+      local rowTargets = assert(dialog.rowTargets, "the choice dialog carries its cached logical row order")
+      assert(#dialog.options == #rowTargets, "choice payloads and row order describe the same logical rows")
+      local viewport =
+        registerList("value:choice", "value:choice", choiceList, rowTargets, dialog.query, dialog.indexByTarget)
+      local selectedIndex = dialog.index ~= 0 and dialog.index or nil
+      if selectedIndex ~= nil and dialog.selectedKey ~= nil then
+        assert(
+          rowTargets[selectedIndex] == "choice:" .. dialog.selectedKey,
+          "the cached choice order matches the cached selection"
+        )
       end
       if selectedIndex and not view.preserveChoiceScroll then
-        offset = ScrollViewport.reveal(offset, viewport.height, (selectedIndex - 1) * rowHeight, rowHeight)
+        offset =
+          ScrollViewport.reveal(offset, choiceViewportHeight, (selectedIndex - 1) * compactRowExtent, compactRowExtent)
       end
-      offset = ScrollViewport.clamp(offset, contentExtent, viewport.height)
-      viewports["value:choice"] =
-        makeViewport(viewport, offset, contentExtent, rowHeight, 0, #dialog.options, rowTargets)
-      for index, option in ipairs(dialog.options) do
-        local id = "choice:" .. option.key
+      offset = ScrollViewport.clamp(offset, contentExtent, choiceViewportHeight)
+      local resolvedOffset = ScrollViewport.clamp(storedChoiceOffset, contentExtent, choiceViewportHeight)
+      if offset ~= resolvedOffset then
+        choiceList = resolveChoice(offset)
+      end
+      local choiceScroll =
+        makeViewport(viewport, offset, contentExtent, compactRowExtent, 0, #dialog.options, rowTargets)
+      choiceScroll.visibleTargets = {}
+      viewports["value:choice"] = choiceScroll
+      for _, row in ipairs(choiceList.rows) do
+        local id = assert(rowTargets[row.index], "visible choice rows keep their logical identity")
         addFocusable(id)
-        local row = choiceList.rows[index].rect
-        focusPositions[id] = rect(row.x, row.y - offset, row.width, row.height - 1)
-        targets[id] = rect(row.x, row.y - offset, row.width, row.height - 1)
+        focusPositions[id] = rect(row.rect.x, row.rect.y - offset, row.rect.width, row.rect.height - 1)
+        targets[id] = rect(row.rect.x, row.rect.y - offset, row.rect.width, row.rect.height - 1)
+        choiceScroll.visibleTargets[#choiceScroll.visibleTargets + 1] = id
       end
       local footerWidth = math.max(1, math.floor(innerWidth / 2))
       targets.confirm = rect(contentX, contentBottom - 34, footerWidth - 2, 34)
@@ -1082,8 +1102,8 @@ function Layout.compute(view, width, height, metrics)
     scopeAllowed = { confirm = true, cancel = true }
     if editor.kind == "choice" then
       scopeAllowed["list:value:choice"] = true
-      for _, option in ipairs(editor.options) do
-        scopeAllowed["choice:" .. option.key] = true
+      for _, targetId in ipairs(assert(editor.rowTargets, "the choice dialog carries its cached logical row order")) do
+        scopeAllowed[targetId] = true
       end
     elseif editor.kind == "name" then
       for row = 1, 6 do
@@ -1133,7 +1153,7 @@ function Layout.compute(view, width, height, metrics)
     for listId, list in pairs(lists) do
       if not scopeAllowed[list.targetId] then
         lists[listId] = nil
-      else
+      elseif scope.kind == "decision" then
         local kept = {}
         for _, targetId in ipairs(list.rowTargets) do
           if scopeAllowed[targetId] then
@@ -1177,7 +1197,9 @@ function Layout.compute(view, width, height, metrics)
       list.clip and list.rowExtent and list.firstIndex and list.lastIndex and list.rowTargets,
       "scroll viewports publish logical row geometry"
     )
-    for _, targetId in ipairs(list.rowTargets) do
+    -- Geometry, hit testing, and focus records cover the materialized window;
+    -- the complete logical order stays on the list record for index navigation.
+    for _, targetId in ipairs(list.visibleTargets or list.rowTargets) do
       viewportByTarget[targetId] = viewportId
       listTargets[targetId] = true
     end
@@ -1222,7 +1244,7 @@ function Layout.compute(view, width, height, metrics)
   end
   for _, list in pairs(viewports) do
     local ordered = {}
-    for _, targetId in ipairs(list.rowTargets) do
+    for _, targetId in ipairs(list.visibleTargets or list.rowTargets) do
       if focusableSet[targetId] then
         ordered[#ordered + 1] = targetId
       end
@@ -1575,8 +1597,10 @@ function Layout.hitTest(layout, view, x, y)
         confirm = true,
         ["list:value:choice"] = true,
       }
-      for _, option in ipairs(view.valueEditor.options) do
-        allowed["choice:" .. option.key] = true
+      for _, targetId in
+        ipairs(assert(view.valueEditor.rowTargets, "the choice dialog carries its cached logical row order"))
+      do
+        allowed[targetId] = true
       end
     elseif view.valueEditor.kind == "name" then
       allowed = { confirm = true, cancel = true }

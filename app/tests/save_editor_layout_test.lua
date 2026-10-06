@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
+local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
 local T = { tests = {} }
 local function computeLayout(view, width, height)
@@ -300,6 +301,12 @@ local function progressFilterFlags()
 end
 
 local function progressFilterView(flagRows, query)
+  local rowTargets, indexByTarget = {}, {}
+  for index, flag in ipairs(flagRows) do
+    local targetId = "flag:" .. flag.name
+    rowTargets[index] = targetId
+    indexByTarget[targetId] = index
+  end
   return {
     section = "Progress",
     status = "ready",
@@ -307,7 +314,26 @@ local function progressFilterView(flagRows, query)
     dirty = true,
     scope = { id = "section:Progress", epoch = 0, kind = "section", focusId = "money" },
     flagRows = flagRows,
+    flagRowTargets = rowTargets,
+    flagIndexByTarget = indexByTarget,
     scrollOffsets = {},
+    query = query or "",
+  }
+end
+
+local function choiceDialog(options, selectedKey, query)
+  local rowTargets, indexByTarget = {}, {}
+  for index, option in ipairs(options) do
+    local targetId = "choice:" .. option.key
+    rowTargets[index] = targetId
+    indexByTarget[targetId] = index
+  end
+  return {
+    kind = "choice",
+    options = options,
+    rowTargets = rowTargets,
+    indexByTarget = indexByTarget,
+    selectedKey = selectedKey,
     query = query or "",
   }
 end
@@ -337,7 +363,7 @@ end
 
 function T.tests.progress_list_publishes_one_container_with_ordered_filterable_rows()
   local flags = progressFilterFlags()
-  local layout = computeLayout(progressFilterView(flags, ""), 256, 192)
+  local layout = computeLayout(progressFilterView(flags, ""), 256, 320)
 
   Assert.notNil(layout.lists, "the plan must publish one record per interactive list")
   local list = assert(layout.lists.flags, "the Progress flag list must publish its interaction record")
@@ -473,7 +499,7 @@ function T.tests.location_map_list_publishes_one_container_with_ordered_rows()
   end
 end
 
-function T.tests.offscreen_location_map_rows_remain_in_focus_order()
+function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible_rows_materialize()
   local maps = {}
   for index = 1, 30 do
     maps[index] = {
@@ -495,16 +521,35 @@ function T.tests.offscreen_location_map_rows_remain_in_focus_order()
     Assert.equal(#list.rowTargets, 30, "every map stays addressable (" .. label .. ")")
     local viewport = assert(layout.viewports["location:map-list"])
     Assert.isTrue(viewport.lastIndex < 30, "the map list must overflow its viewport (" .. label .. ")")
+    local visibleCount = viewport.lastIndex - viewport.firstIndex + 1
+    local materialized = 0
     for _, rowTarget in ipairs(list.rowTargets) do
-      Assert.isTrue(
-        focusOrderContains(layout.focusOrder, rowTarget),
-        "offscreen map rows stay in focus order (" .. label .. ": " .. rowTarget .. ")"
-      )
-      Assert.notNil(
-        layout.focusGraph[rowTarget],
-        "offscreen map rows stay in the focus graph (" .. label .. ": " .. rowTarget .. ")"
-      )
+      if layout.targets[rowTarget] ~= nil then
+        materialized = materialized + 1
+      end
     end
+    Assert.isTrue(
+      materialized <= visibleCount + 2,
+      "only the visible map window materializes targets (" .. label .. ")"
+    )
+    Assert.isTrue(materialized < 30, "offscreen map rows share no per-frame target (" .. label .. ")")
+    local distant = list.rowTargets[30]
+    Assert.isNil(layout.targets[distant], "the last map has no target at the top offset (" .. label .. ")")
+    Assert.isNil(layout.focusGraph[distant], "the last map has no focus node at the top offset (" .. label .. ")")
+    local revealed = (function()
+      local scrolledView = mapListView()
+      scrolledView.location.maps = maps
+      scrolledView.locationNavigation.mapOffset = (30 - viewport.lastIndex) * viewport.rowExtent
+      return computeLayout(scrolledView, size[1], size[2])
+    end)()
+    Assert.notNil(
+      revealed.targets[distant],
+      "the scrolled window materializes the last map (" .. label .. ")"
+    )
+    Assert.notNil(
+      revealed.focusGraph[distant],
+      "the scrolled window focuses the last map (" .. label .. ")"
+    )
   end
 end
 
@@ -519,7 +564,7 @@ function T.tests.choice_list_publishes_one_container_with_ordered_rows()
     ready = true,
     dirty = false,
     bagRows = {},
-    valueEditor = { kind = "choice", options = options, selectedKey = "K01" },
+    valueEditor = choiceDialog(options, "K01"),
     scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:K01" },
     scrollOffsets = {},
   }
@@ -617,21 +662,41 @@ function T.tests.save_editor_list_and_card_geometry_is_bounded_and_row_major()
     Assert.isTrue(
       list.content.x >= list.surface.x and list.content.x + list.content.width <= list.surface.x + list.surface.width
     )
-    Assert.isTrue(list.contentHeight >= 12 * 24)
-    if list.contentHeight > list.content.height then
-      Assert.isTrue(
-        list.rows[#list.rows].rect.y + list.rows[#list.rows].rect.height > list.content.y + list.content.height,
-        "the logical row geometry extends beyond the viewport for ScrollViewport clipping"
-      )
-    end
-    Assert.equal(#list.rows, 12)
-    for index, row in ipairs(list.rows) do
-      Assert.equal(row.index, index)
+    Assert.equal(list.contentHeight, 12 * 24 + 11 * 2, "the total extent still covers every logical row")
+    Assert.isTrue(list.firstIndex >= 1 and list.lastIndex <= 12, "the window stays within the logical rows")
+    Assert.isTrue(#list.rows <= 12, "only the visible window materializes row geometry")
+    Assert.equal(#list.rows, list.lastIndex - list.firstIndex + 1, "the window is densely packed")
+    for position, row in ipairs(list.rows) do
+      Assert.equal(row.index, list.firstIndex + position - 1, "visible rows keep their logical identity")
       Assert.isTrue(row.hitRect.width > 0 and row.hitRect.height > 0)
       Assert.isTrue(row.rect.y >= list.content.y)
-      if index > 1 then
-        Assert.isTrue(row.rect.y >= list.rows[index - 1].rect.y + list.rows[index - 1].rect.height + 2)
+      if position > 1 then
+        Assert.isTrue(row.rect.y >= list.rows[position - 1].rect.y + list.rows[position - 1].rect.height + 2)
       end
+    end
+
+    local scrolled = List.resolve({
+      bounds = bounds,
+      rowCount = 12,
+      rowHeight = 24,
+      gap = 2,
+      maxWidth = 480,
+      scrollOffset = 12 * (24 + 2),
+    })
+    Assert.equal(scrolled.contentHeight, list.contentHeight, "scrolling never changes the total extent")
+    Assert.equal(
+      #scrolled.rows,
+      scrolled.lastIndex - scrolled.firstIndex + 1,
+      "a scrolled window stays densely packed"
+    )
+    for position, row in ipairs(scrolled.rows) do
+      Assert.equal(row.index, scrolled.firstIndex + position - 1)
+    end
+    if list.contentHeight > list.content.height then
+      Assert.isTrue(scrolled.firstIndex > 1, "a scrolled window starts past the first logical row")
+      Assert.isTrue(#scrolled.rows < 12, "a scrolled window still materializes a bounded subset")
+    else
+      Assert.equal(scrolled.firstIndex, 1, "a fitting list keeps its first row under scroll pressure")
     end
 
     local cards = Card.resolveGrid({
@@ -721,7 +786,7 @@ function T.tests.filterable_lists_reserve_a_hint_line_above_their_rows()
     ready = true,
     dirty = false,
     bagRows = {},
-    valueEditor = { kind = "choice", options = options, selectedKey = "K01" },
+    valueEditor = choiceDialog(options, "K01"),
     scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:K01" },
     scrollOffsets = {},
   }
@@ -816,6 +881,205 @@ function T.tests.wide_buttons_stay_bounded_and_action_groups_stay_centered()
     math.abs((left - layout.content.x) - (layout.content.x + layout.content.width - right)) < 2,
     "the bounded action group stays centered instead of stretching"
   )
+end
+
+function T.tests.list_rows_use_a_compact_extent_independent_of_form_controls()
+  local flags = progressFilterFlags()
+  local layout = computeLayout(progressFilterView(flags, ""), 256, 192)
+  local viewport = assert(layout.viewports.flags, "the flag list publishes its scroll viewport")
+  Assert.equal(viewport.rowExtent, 18, "list rows use the compact list extent")
+  Assert.equal(viewport.gap, 0, "list rows have no inter-row gap")
+  local bodyTextHeight = math.ceil(14 * 0.75)
+  Assert.isTrue(viewport.rowExtent >= bodyTextHeight, "the compact extent still contains the body text")
+  local first = assert(layout.targets["flag:" .. flags[1].name]).rect
+  local second = assert(layout.targets["flag:" .. flags[2].name]).rect
+  Assert.equal(second.y - first.y, 18, "consecutive rows advance by exactly one compact extent")
+  Assert.equal(first.height, 16, "rendered rows keep a one-pixel inset inside the compact extent")
+
+  local player = computeLayout({
+    status = "ready",
+    ready = true,
+    section = "Player",
+    scope = { id = "section:Player", epoch = 0, kind = "section" },
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+  }, 256, 192)
+  local money = assert(player.targets.money).rect
+  Assert.isTrue(
+    money.height >= 28,
+    "form controls keep their roomy height while list rows stay compact"
+  )
+  Assert.isTrue(money.height > first.height, "list rows are roughly half the form control height")
+
+  local options = {}
+  for index = 1, 6 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local choice = computeLayout({
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    bagRows = {},
+    valueEditor = choiceDialog(options, "K01"),
+    scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:K01" },
+    scrollOffsets = {},
+  }, 256, 192)
+  local choiceViewport = assert(choice.viewports["value:choice"], "the choice list publishes its scroll viewport")
+  Assert.equal(choiceViewport.rowExtent, 18, "choice rows share the compact list extent")
+end
+
+local function largeFlagCatalog(count)
+  local flags, rowTargets, indexByTarget = {}, {}, {}
+  for index = 1, count do
+    local name = string.format("SYNTH_FLAG_%05d", index)
+    flags[index] = { name = name, displayName = "Synthetic flag " .. index, value = index % 2 == 0 }
+    local targetId = "flag:" .. name
+    rowTargets[index] = targetId
+    indexByTarget[targetId] = index
+  end
+  return flags, rowTargets, indexByTarget
+end
+
+local function countMatching(targets, pattern)
+  local count = 0
+  for targetId in pairs(targets) do
+    if targetId:match(pattern) ~= nil then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+local function countGraphNodes(graph, pattern)
+  local count = 0
+  for targetId in pairs(graph) do
+    if targetId:match(pattern) ~= nil then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+function T.tests.large_flag_catalog_materializes_only_its_visible_window()
+  local flags, rowTargets, indexByTarget = largeFlagCatalog(10000)
+  local viewportHeight
+  do
+    local probe = computeLayout({
+      section = "Progress",
+      status = "ready",
+      ready = true,
+      dirty = true,
+      scope = { id = "section:Progress", epoch = 0, kind = "section", focusId = "money" },
+      flagRows = flags,
+      flagRowTargets = rowTargets,
+      flagIndexByTarget = indexByTarget,
+      scrollOffsets = {},
+      query = "",
+    }, 256, 192)
+    viewportHeight = assert(probe.viewports.flags).clip.height
+  end
+  local capacity = math.ceil(viewportHeight / 18) + 2
+  Assert.isTrue(capacity < 100, "the fixture viewport fits far fewer rows than the catalog")
+  for _, case in ipairs({
+    { name = "top", offset = 0 },
+    { name = "middle", offset = 5000 * 18 },
+    { name = "end", offset = 10000 * 18 },
+  }) do
+    local layout = computeLayout({
+      section = "Progress",
+      status = "ready",
+      ready = true,
+      dirty = true,
+      scope = { id = "section:Progress", epoch = 0, kind = "section", focusId = "money" },
+      flagRows = flags,
+      flagRowTargets = rowTargets,
+      flagIndexByTarget = indexByTarget,
+      scrollOffsets = { flags = case.offset },
+      query = "",
+    }, 256, 192)
+    local viewport = assert(layout.viewports.flags)
+    local first, last = ScrollViewport.visibleRange(viewport.offset, viewport.clip.height, 18, 0, 10000)
+    local rendered = 0
+    for _, row in ipairs(layout.rows) do
+      if row.listSurface then
+        rendered = rendered + 1
+      end
+    end
+    Assert.isTrue(
+      rendered <= last - first + 1,
+      case.name .. " renders at most its visible window (" .. rendered .. " rows)"
+    )
+    Assert.isTrue(rendered < 100, case.name .. " never approaches the catalog size")
+    Assert.isTrue(
+      countMatching(layout.targets, "^flag:") <= last - first + 1,
+      case.name .. " materializes targets only for its visible window"
+    )
+    Assert.isTrue(
+      countGraphNodes(layout.focusGraph, "^flag:") <= last - first + 1,
+      case.name .. " keeps focus nodes only for its visible window"
+    )
+    Assert.equal(#layout.lists.flags.rowTargets, 10000, case.name .. " keeps the complete logical order")
+    local firstTarget = rowTargets[first]
+    local firstRect = assert(
+      layout.targets[firstTarget],
+      case.name .. " materializes the first row of its window (" .. firstTarget .. ")"
+    )
+    Assert.isTrue(
+      firstRect.rect.y >= viewport.clip.y - 18
+        and firstRect.rect.y <= viewport.clip.y + viewport.clip.height,
+      case.name .. " places its window rows inside the viewport"
+    )
+    if last < 10000 then
+      Assert.isNil(
+        layout.targets[rowTargets[last + 1]],
+        case.name .. " shares no target with the row past its window"
+      )
+    end
+  end
+end
+
+function T.tests.large_choice_catalog_materializes_only_its_visible_window()
+  local options, rowTargets, indexByTarget = {}, {}, {}
+  for index = 1, 10000 do
+    local key = string.format("K%05d", index)
+    options[index] = { key = key, label = "Choice " .. index }
+    local targetId = "choice:" .. key
+    rowTargets[index] = targetId
+    indexByTarget[targetId] = index
+  end
+  local layout = computeLayout({
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    bagRows = {},
+    valueEditor = {
+      kind = "choice",
+      options = options,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+      selectedKey = "K00001",
+      query = "",
+    },
+    scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:K00001" },
+    scrollOffsets = {},
+  }, 256, 192)
+  local viewport = assert(layout.viewports["value:choice"])
+  Assert.equal(viewport.rowExtent, 18, "choice rows share the compact list extent")
+  local capacity = viewport.lastIndex - viewport.firstIndex + 1
+  Assert.isTrue(capacity < 100, "the fixture viewport fits far fewer choices than the catalog")
+  Assert.isTrue(
+    countMatching(layout.targets, "^choice:") <= capacity,
+    "choice targets stay bounded by the visible window"
+  )
+  Assert.isTrue(
+    countGraphNodes(layout.focusGraph, "^choice:") <= capacity,
+    "choice focus nodes stay bounded by the visible window"
+  )
+  Assert.equal(#layout.lists["value:choice"].rowTargets, 10000, "the logical choice order stays complete")
+  Assert.isNil(layout.targets["choice:K10000"], "the last choice has no target at the top offset")
+  Assert.isNil(layout.focusGraph["choice:K10000"], "the last choice has no focus node at the top offset")
+  Assert.notNil(layout.targets["list:value:choice"], "the container stays focusable in a large catalog")
 end
 
 function T.tests.section_rail_marks_the_active_option_without_using_focus()
@@ -957,6 +1221,8 @@ function T.tests.normal_scopes_expose_exactly_one_back_action()
         section = "Progress",
         scope = { id = "section:Progress", epoch = 0, kind = "section" },
         flagRows = {},
+        flagRowTargets = {},
+        flagIndexByTarget = {},
         scrollOffsets = {},
         query = "",
       },
