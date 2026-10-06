@@ -405,8 +405,8 @@ DerivedAssetContract.pc = {
 -- dex mapping, and memo records. Species portraits stay in the mon class;
 -- the summary manifest references no portrait pixels.
 DerivedAssetContract.summary = {
-  cacheFormat = "g4-summary-cache-v1",
-  schema = "g4-summary-manifest-v3",
+  cacheFormat = "g4-summary-cache-v2",
+  schema = "g4-summary-manifest-v4",
 }
 
 DerivedAssetContract.audio = {

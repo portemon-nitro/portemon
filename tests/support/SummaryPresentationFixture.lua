@@ -17,7 +17,7 @@
 
 local SummaryPresentationFixture = {}
 
-SummaryPresentationFixture.SCHEMA = "g4-summary-manifest-v3"
+SummaryPresentationFixture.SCHEMA = "g4-summary-manifest-v4"
 
 SummaryPresentationFixture.WILD_LOCATION = 7
 SummaryPresentationFixture.GIFT_LOCATION = 4001

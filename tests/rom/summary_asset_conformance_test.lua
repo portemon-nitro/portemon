@@ -9,6 +9,8 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
+local HgssArchives = require("romdump.src.config.HgssArchives")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
 local PngReader = require("tests.support.PngReader")
@@ -16,7 +18,7 @@ local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
 
-local SUMMARY_SCHEMA = "g4-summary-manifest-v3"
+local SUMMARY_SCHEMA = "g4-summary-manifest-v4"
 local SUMMARY_ASSET_DIR = "assets/generated/summary/"
 local MOTION_ARCHIVE_PATH = "a/0/9/0"
 
@@ -1026,7 +1028,7 @@ end
 function T.dynamic_chrome_roles_carry_source_rasterized_animation_visuals(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = assert(bundle.manifest, "compilation publishes a manifest")
-  Assert.equal(manifest.schema, "g4-summary-manifest-v3", "the compiled manifest carries the family schema")
+  Assert.equal(manifest.schema, "g4-summary-manifest-v4", "the compiled manifest carries the family schema")
   local sprites = assert(manifest.sprites, "the compiled manifest carries its dynamic chrome")
   for _, role in ipairs({ "animations", "primaryCursor", "secondaryMoveCursor", "performance", "leaves", "ribbons" }) do
     Assert.notNil(sprites[role], "the dynamic chrome carries " .. role)
@@ -1373,6 +1375,163 @@ function T.dynamic_chrome_geometry_keeps_its_source_scalars(romFs, versionId)
   Assert.equal(ribbons.columnStep, 32, "the ribbon grid keeps its column step")
   Assert.equal(ribbons.rowStep, 40, "the ribbon grid keeps its row step")
   Assert.deepEqual(ribbons.origin, { x = 32, y = 24 }, "the ribbon grid keeps its origin")
+end
+
+-- The primary member cursor keeps one visual per presentation state, and
+-- each state is bound to its own native animation sequence and palette
+-- override: the ordinary root/member state restores sequence 2 with
+-- palette override 2, entering the move-detail-style state selects
+-- sequence 0 with override 0, and the restricted/cancel path selects
+-- sequence 1 with override 0. The selections below are pinned
+-- independently of the producer inventory: the resource set, sequences,
+-- and palette overrides are transcribed here, never read from the
+-- producer selection or the compiler output under test.
+local PINNED_CURSOR_SET = 2
+local PINNED_CURSOR_STATES = {
+  { semantic = "rootFocus", sequence = 2, paletteBank = 2 },
+  { semantic = "moveRowFocus", sequence = 0, paletteBank = 0 },
+  { semantic = "restrictedCancel", sequence = 1, paletteBank = 0 },
+}
+
+-- The pinned resdat layout the cursor resource set resolves through:
+-- the header member plus the four resource-table members.
+local PINNED_RESDAT_ARCHIVE = "NARC_data_resdat"
+local PINNED_RESDAT_HEADER = 85
+local PINNED_RESDAT_TABLES = { char = 54, palette = 55, cell = 53, animation = 52 }
+local PINNED_CHROME_ARCHIVES = { "NARC_a_1_6_2", "NARC_a_0_3_9" }
+
+-- Parses one resdat resource table into object id -> { narcId, fileId }
+-- bindings, stopping at the native terminator.
+local function pinnedTableEntries(bytes, what)
+  local _, records, terminator = tableSlices(bytes)
+  Assert.notNil(terminator, "the " .. what .. " table carries its terminator")
+  local entries = {}
+  for _, record in ipairs(records) do
+    Assert.isNil(entries[record.objectId], "the " .. what .. " table carries no duplicate resource id")
+    entries[record.objectId] = { narcId = u32le(record.raw, 0), fileId = u32le(record.raw, 4) }
+  end
+  return entries
+end
+
+-- Independently resolves and decodes the pinned cursor resource set:
+-- header words select the character/palette/cell/animation objects, the
+-- tables bind each object to its source archive member, and the members
+-- decode through the shared 2D helpers. Never touches the producer
+-- inventory or the compiler under test.
+local function pinnedCursorResources(romFs)
+  local resdat = assert(romFs:openNarc(PINNED_RESDAT_ARCHIVE))
+  local header = assert(resdat:readMember(PINNED_RESDAT_HEADER))
+  local tables = {}
+  for kind, memberId in pairs(PINNED_RESDAT_TABLES) do
+    tables[kind] = pinnedTableEntries(assert(resdat:readMember(memberId)), "pinned cursor " .. kind)
+  end
+  local base = PINNED_CURSOR_SET * 32
+  local objects = {
+    char = u32le(header, base),
+    palette = u32le(header, base + 4),
+    cell = u32le(header, base + 8),
+    animation = u32le(header, base + 12),
+  }
+  local handles = {}
+  for _, symbol in ipairs(PINNED_CHROME_ARCHIVES) do
+    local archive = assert(romFs:openNarc(symbol))
+    handles[HgssArchives.resolve(symbol).narcId] = archive
+  end
+  local members = {}
+  for kind, objectId in pairs(objects) do
+    local entry = assert(
+      tables[kind][objectId],
+      "the pinned cursor " .. kind .. " object resolves through its table"
+    )
+    local archive = handles[entry.narcId]
+    Assert.isTrue(archive ~= nil, "the pinned cursor " .. kind .. " lives in a supported archive")
+    members[kind] = assert(archive:readMember(entry.fileId))
+  end
+  local function decoded(kind, bytes, what)
+    local record = assert(G2dDecoder[kind](bytes, { label = "conformance-" .. what }), what .. " decodes")
+    return record
+  end
+  return {
+    charData = decoded("decodeChar", members.char, "the pinned cursor art"),
+    palette = decoded("decodePalette", members.palette, "the pinned cursor palette"),
+    cellData = decoded("decodeCell", members.cell, "the pinned cursor cells"),
+    animation = decoded("decodeAnimation", members.animation, "the pinned cursor motion"),
+  }
+end
+
+local function pinnedPaletteSlice(colors, bank, what)
+  Assert.isTrue(
+    bank >= 0 and (bank + 1) * 16 <= #colors,
+    what .. " resolves palette override " .. bank .. " against the decoded palette"
+  )
+  local slice = {}
+  for index = 1, 16 do
+    slice[index] = colors[bank * 16 + index]
+  end
+  return slice
+end
+
+-- Every primary-cursor state rasterizes from its own native sequence and
+-- palette override: frame census, timing, pixels, geometry, and loop
+-- origin all match an independent rasterization of the pinned
+-- selection, while the manifest keeps addressing the visuals through
+-- the semantic state names.
+function T.primary_cursor_states_match_their_native_sequence_and_palette(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = assert(bundle.manifest, "compilation publishes a manifest")
+  local sprites = assert(manifest.sprites, "the compiled manifest carries its dynamic chrome")
+  local cursor = assert(sprites.primaryCursor, "the dynamic chrome carries its primary member cursor")
+  local animations = assert(sprites.animations, "the dynamic chrome carries animation descriptors")
+  local visuals = assert(manifest.visuals, "the compiled manifest carries its visuals")
+  local decoded = pinnedCursorResources(romFs)
+  for _, state in ipairs(PINNED_CURSOR_STATES) do
+    local what = "the " .. state.semantic .. " cursor"
+    local animationName =
+      assert(cursor[state.semantic], what .. " keeps its semantic animation reference")
+    local descriptor = assert(animations[animationName], what .. " resolves to a generated descriptor")
+    local sequence = decoded.animation.anims[state.sequence + 1]
+    Assert.notNil(sequence, what .. " selects native sequence " .. state.sequence)
+    Assert.equal(#descriptor.frames, #sequence.frames, what .. " keeps its native frame census")
+    local paletteColors = pinnedPaletteSlice(decoded.palette.colors, state.paletteBank, what)
+    for frameIndex, sourceFrame in ipairs(sequence.frames) do
+      local label = what .. " frame " .. frameIndex
+      local frame = assert(descriptor.frames[frameIndex], label .. " compiles")
+      Assert.equal(frame.durationTicks, sourceFrame.duration, label .. " keeps its native timing")
+      local rendered = G2dRasterizer.renderAnimationFrame(
+        decoded.charData,
+        { colors = paletteColors },
+        decoded.cellData,
+        sequence,
+        frameIndex,
+        { role = "conformance-" .. state.semantic, frame = frameIndex - 1 },
+        0
+      )
+      local visual = assert(visuals[frame.visual], label .. " resolves to a family visual")
+      local bytes = assert(bundle.assets[visual.image], label .. " has compiled bytes")
+      if type(bytes) ~= "string" then
+        bytes = bytes:getString()
+      end
+      local width, height, rgba = PngReader.rgba(assert(bytes, label .. " decodes"))
+      Assert.equal(width, rendered.width, label .. " keeps its native width")
+      Assert.equal(height, rendered.height, label .. " keeps its native height")
+      Assert.equal(rgba, rendered.pixels, label .. " keeps its native sequence and palette pixels")
+      local offset = rendered.offset or { x = 0, y = 0 }
+      if offset.x == 0 and offset.y == 0 then
+        Assert.isNil(visual.offset, label .. " carries no raster offset")
+      else
+        Assert.deepEqual(visual.offset, { x = offset.x, y = offset.y }, label .. " keeps its raster offset")
+      end
+    end
+    Assert.equal(
+      descriptor.loopFrom,
+      sequence.loopStartFrameIdx + 1,
+      what .. " keeps its native loop origin"
+    )
+    Assert.isTrue(
+      descriptor.playback == "static" or descriptor.playback == "once" or descriptor.playback == "loop",
+      what .. " carries source playback"
+    )
+  end
 end
 
 local suite = RomSuite.fromFacts(T)

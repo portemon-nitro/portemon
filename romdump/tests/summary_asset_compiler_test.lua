@@ -10,8 +10,8 @@ local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 
 local T = {}
 
-local SUMMARY_FORMAT = "g4-summary-cache-v1"
-local SUMMARY_SCHEMA = "g4-summary-manifest-v3"
+local SUMMARY_FORMAT = "g4-summary-cache-v2"
+local SUMMARY_SCHEMA = "g4-summary-manifest-v4"
 
 local function requireSources()
   local ok, sources = pcall(require, "romdump.src.config.SummarySources")
@@ -709,7 +709,7 @@ end
 -- template records belong.
 function T.synthetic_presentation_data_mirrors_the_generated_envelope()
   local Fixture = require("tests.support.SummaryPresentationFixture")
-  Assert.equal(Fixture.SCHEMA, "g4-summary-manifest-v3", "the synthetic data tracks the generated schema")
+  Assert.equal(Fixture.SCHEMA, "g4-summary-manifest-v4", "the synthetic data tracks the generated schema")
   local manifest = Fixture.manifest()
   Assert.notNil(manifest, "the synthetic data builds a manifest")
   Assert.equal(manifest.schema, Fixture.SCHEMA, "the synthetic manifest carries the tracked schema")

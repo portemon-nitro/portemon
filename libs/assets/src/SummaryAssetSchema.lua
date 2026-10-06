@@ -18,7 +18,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class SummaryAssetSchema
 local SummaryAssetSchema = {}
 
-SummaryAssetSchema.SCHEMA = "g4-summary-manifest-v3"
+SummaryAssetSchema.SCHEMA = "g4-summary-manifest-v4"
 SummaryAssetSchema.PANE_WIDTH = 256
 SummaryAssetSchema.PANE_HEIGHT = 192
 

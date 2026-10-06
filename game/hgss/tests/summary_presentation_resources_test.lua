@@ -418,7 +418,7 @@ function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
   local Resources = requireResources()
   local setup = syntheticComposition({})
   local manifest = setup.manifest
-  Assert.equal(manifest.schema, "g4-summary-manifest-v3", "the synthetic family tracks the generated schema")
+  Assert.equal(manifest.schema, "g4-summary-manifest-v4", "the synthetic family tracks the generated schema")
   local sprites = assert(manifest.sprites, "the synthetic family carries dynamic chrome")
   for _, role in ipairs({ "animations", "primaryCursor", "secondaryMoveCursor", "performance", "leaves", "ribbons" }) do
     Assert.notNil(sprites[role], "the synthetic family carries " .. role)

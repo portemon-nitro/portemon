@@ -257,10 +257,46 @@ local function compileChromeSequence(charData, paletteColors, cellData, animatio
   return { frames = frames, loopFrom = sequence.loopStartFrameIdx + 1, playback = playback }
 end
 
+-- Resolves one semantic animation selection into its zero-based source
+-- sequence and palette bank. A bare number keeps the role-wide palette
+-- bank; a record names both explicitly and may omit the bank to keep
+-- the role default. Anything else is malformed producer input.
+---@param inventory table<string, unknown>
+---@param key string
+---@param name string
+---@param selection unknown
+---@return integer, integer
+local function resolveAnimationSelection(inventory, key, name, selection)
+  local sequence, bank = nil, nil
+  if type(selection) == "number" then
+    sequence = selection
+    bank = inventory.paletteBank
+  elseif type(selection) == "table" then
+    local record = selection --[[@as table<string, unknown>]]
+    sequence = record.sequence
+    bank = record.paletteBank
+    if bank == nil then
+      bank = inventory.paletteBank
+    end
+  else
+    sourceError("the chrome inventory carries no sequence selection", { role = key, animation = name })
+  end
+  if type(sequence) ~= "number" or sequence % 1 ~= 0 or sequence < 0 then
+    sourceError("the chrome inventory carries an invalid sequence selection", { role = key, animation = name })
+  end
+  assert(sequence ~= nil, "invalid sequence selections fail above")
+  if type(bank) ~= "number" or bank % 1 ~= 0 or bank < 0 then
+    sourceError("the chrome inventory carries an invalid palette selection", { role = key, animation = name })
+  end
+  assert(bank ~= nil, "invalid palette selections fail above")
+  return sequence, bank
+end
+
 -- Compiles the required dynamic-chrome roles from the resdat header
 -- and resource tables: resolves each role's resource set, decodes
--- its character/palette/cell/animation resources, rasterizes the
--- selected sequences, and lowers the pinned geometry with animation
+-- its character/palette/cell/animation resources, rasterizes each
+-- semantic animation with its own selected sequence and palette bank,
+-- and lowers the pinned geometry with animation
 -- references only. No source archive, member, or sequence identity
 -- reaches the published roles.
 local function compileChrome(resdatArchive, archives, dependencies, assets, visuals)
@@ -283,7 +319,10 @@ local function compileChrome(resdatArchive, archives, dependencies, assets, visu
     if type(inventory) ~= "table" then
       sourceError("the chrome inventory carries no role", { role = key })
     end
-    if type(inventory.resourceSet) ~= "number" or type(inventory.paletteBank) ~= "number" then
+    if type(inventory.resourceSet) ~= "number" then
+      sourceError("the chrome inventory carries no resource selection", { role = key })
+    end
+    if inventory.paletteBank ~= nil and type(inventory.paletteBank) ~= "number" then
       sourceError("the chrome inventory carries no resource selection", { role = key })
     end
     if type(inventory.sequences) ~= "table" or next(inventory.sequences) == nil then
@@ -294,7 +333,6 @@ local function compileChrome(resdatArchive, archives, dependencies, assets, visu
     local paletteData = decodeChromeResource(archives, resolved.palette, "palette", role, dependencies)
     local cellData = decodeChromeResource(archives, resolved.cell, "cell", role, dependencies)
     local animation = decodeChromeResource(archives, resolved.animation, "animation", role, dependencies)
-    local paletteColors = paletteSlice(paletteData.colors, inventory.paletteBank, role .. " palette")
     local names = {}
     for name in pairs(inventory.sequences) do
       names[#names + 1] = name
@@ -304,16 +342,10 @@ local function compileChrome(resdatArchive, archives, dependencies, assets, visu
       if animations[name] ~= nil then
         sourceError("the chrome inventory carries a duplicate animation", { animation = name })
       end
-      animations[name] = compileChromeSequence(
-        charData,
-        paletteColors,
-        cellData,
-        animation,
-        inventory.sequences[name],
-        name,
-        assets,
-        visuals
-      )
+      local sequence, bank = resolveAnimationSelection(inventory, key, name, inventory.sequences[name])
+      local paletteColors = paletteSlice(paletteData.colors, bank, name .. " palette")
+      animations[name] =
+        compileChromeSequence(charData, paletteColors, cellData, animation, sequence, name, assets, visuals)
     end
   end
   compileRole("primaryCursor", "primary cursor")

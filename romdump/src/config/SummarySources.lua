@@ -2169,21 +2169,32 @@ SummarySources.resdat = {
   animationTable = 52,
 }
 
--- Dynamic-role resource selection: the header-85 resource set, the local
--- object palette bank, and the animation sequences each semantic role
--- rasterizes. Sequence keys are the semantic animation names the
--- manifest publishes; values are the zero-based source sequence
--- selections. The primary member cursor keeps its three state visuals,
--- the move-reorder cursor keeps its cancel and follow visuals, the
--- performance rows keep the four star states plus the two Aprijuice
--- modifier visuals, the Shiny Leaf row keeps its leaf and crown
--- visuals, and the ribbon grid keeps its cursor plus both page-arrow
--- visuals. Unlisted sets and sequences never reach runtime.
+-- Dynamic-role resource selection: the header-85 resource set and the
+-- animation sequences each semantic role rasterizes. Sequence keys are
+-- the semantic animation names the manifest publishes. A bare number is
+-- a zero-based source sequence selection rasterized with the role-wide
+-- palette bank; a record selects both its source sequence and its
+-- palette bank for states whose native palette override differs from
+-- the role default. The primary member cursor keeps its three state
+-- visuals with the sequence and palette override each native state
+-- applies (asm/unk_02088288.s, same pin): the ordinary root/member
+-- state restores sequence 2 with override 2 (sub_0208B400), the
+-- move-detail-style state selects sequence 0 with override 0
+-- (sub_0208A564; sub_0208A9C4 applies override 0 on entry), and
+-- the restricted/cancel path selects sequence 1 with override 0
+-- (sub_0208AED4). The move-reorder cursor keeps its cancel and follow
+-- visuals, the performance rows keep the four star states plus the two
+-- Aprijuice modifier visuals, the Shiny Leaf row keeps its leaf and
+-- crown visuals, and the ribbon grid keeps its cursor plus both
+-- page-arrow visuals. Unlisted sets and sequences never reach runtime.
 SummarySources.chromeResources = {
   primaryCursor = {
     resourceSet = 2,
-    paletteBank = 0,
-    sequences = { rootFocus = 0, moveRowFocus = 1, restrictedCancel = 2 },
+    sequences = {
+      rootFocus = { sequence = 2, paletteBank = 2 },
+      moveRowFocus = { sequence = 0, paletteBank = 0 },
+      restrictedCancel = { sequence = 1, paletteBank = 0 },
+    },
   },
   secondaryMoveCursor = {
     resourceSet = 14,

@@ -12,7 +12,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 
 local T = {}
 
-local SUMMARY_SCHEMA = "g4-summary-manifest-v3"
+local SUMMARY_SCHEMA = "g4-summary-manifest-v4"
 
 -- Synthetic semantic layout with the source-pinned per-pane role census
 -- (info 2/6, skills 8/10, performance 5/3) plus one ordered memo branch:
@@ -349,6 +349,21 @@ function T.summary_publication_leaves_sibling_families_untouched()
     cache:read(PartyCache.markerPath()),
     PartyCache.marker("party-sha", "party-dep"),
     "sibling readiness survives summary work"
+  )
+end
+
+-- A marker stamped with the superseded cache format never reads ready:
+-- pixels published before the cursor correction cannot validate beside
+-- corrected output, even when the payload files are still present.
+function T.superseded_cache_markers_never_read_ready()
+  local SummaryCache = requireCache()
+  local writer = requireWriter()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = SummaryCache.marker("abc", "dep")
+  Assert.isTrue(writer.write(cache, validBundle(marker)), "publication reports success")
+  Assert.isFalse(
+    SummaryCache.isReady(cache, "g4-summary-cache-v1:abc:dep"),
+    "pixels published before the cursor correction never read ready"
   )
 end
 
