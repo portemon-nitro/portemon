@@ -65,6 +65,8 @@ local function pinched(context, holder)
   return hp * 3 <= maxHp
 end
 
+local BattleErrors = require("libs.battle.src.errors")
+
 local ABSORB_TYPE = {
   VOLT_ABSORB = "electric",
   WATER_ABSORB = "water",
@@ -211,6 +213,13 @@ end
 local function wonderGuard(instance, context)
   local moveType = resolveMoveType(context)
   if moveType == nil or moveType == "unknown" then
+    return nil
+  end
+  local power = context.movePower
+  if type(power) ~= "number" then
+    error(BattleErrors.missingBehavior("wonder guard reads its move power", { key = instance.key }))
+  end
+  if not (power > 0) then
     return nil
   end
   if context.superEffective == true then

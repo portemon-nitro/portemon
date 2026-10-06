@@ -75,6 +75,41 @@ local STAT_BOOST = {
   DEEPSEASCALE = { specialDefense = true },
 }
 
+-- Native holders for the species-locked boosters. Every other item
+-- answers for any holder; a locked item without holder facts, with an
+-- unlisted holder, or (for the origin orb) with a transformed holder
+-- stays silent instead of boosting universally.
+local SPECIES_LOCKED = {
+  SOUL_DEW = { LATIAS = true, LATIOS = true },
+  LIGHT_BALL = { PIKACHU = true },
+  THICK_CLUB = { CUBONE = true, MAROWAK = true },
+  METAL_POWDER = { DITTO = true },
+  QUICK_POWDER = { DITTO = true },
+  DEEPSEATOOTH = { CLAMPERL = true },
+  DEEPSEASCALE = { CLAMPERL = true },
+  ADAMANT_ORB = { DIALGA = true },
+  LUSTROUS_ORB = { PALKIA = true },
+  GRISEOUS_ORB = { GIRATINA = true },
+}
+
+---@param instance table<string, unknown> dispatched effect instance under handling
+---@param context table<string, unknown> checkpoint context under handling
+---@return boolean true when the holder may apply the item
+local function holderApplies(instance, context)
+  local allowed = SPECIES_LOCKED[instance.key]
+  if allowed == nil then
+    return true
+  end
+  local species = context.species
+  if type(species) ~= "string" or allowed[species] ~= true then
+    return false
+  end
+  if instance.key == "GRISEOUS_ORB" and context.transformed == true then
+    return false
+  end
+  return true
+end
+
 local CHOICE_BOOST = {
   CHOICE_BAND = "attack",
   CHOICE_SPECS = "specialAttack",
@@ -342,6 +377,9 @@ local function typeBoost(instance, context)
   if type(boosted) ~= "table" then
     return nil
   end
+  if not holderApplies(instance, context) then
+    return nil
+  end
   if type(context.moveType) ~= "string" then
     return nil
   end
@@ -359,6 +397,9 @@ end
 local function statBoost(instance, context)
   local boosted = STAT_BOOST[instance.key]
   if type(boosted) ~= "table" then
+    return nil
+  end
+  if not holderApplies(instance, context) then
     return nil
   end
   if type(context.stat) ~= "string" then

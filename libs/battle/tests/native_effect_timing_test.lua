@@ -8,6 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local SessionFixture = require("libs.battle.tests.session_fixture")
+local EffectFixture = require("libs.battle.tests.effect_fixture")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
 
 local T = {}
@@ -507,6 +508,142 @@ function T.residual_handlers_tick_the_new_countdowns()
   local flinched = tick("flinch", { version = 1, turns = 1 }, { [2] = 96 })
   Assert.isTrue(flinched.outcome.done, "the flinch pass completes")
   Assert.equal(#flinched.outcome.events, 0, "flinch expires silently")
+end
+
+---@return table<string, function> every native passive handler by source key
+local function passiveHandlers()
+  local NativePassives =
+    SessionFixture.requirePresent("libs.battle.src.gen4.behaviors.NativePassives", "native passives own the ability set")
+  local handlers = {}
+  NativePassives.register(handlers)
+  return handlers
+end
+
+---@param value unknown value under copy
+---@return unknown detached copy of the value
+local function copyValue(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local out = {}
+  for key, item in pairs(value --[[@as table<unknown, unknown>]]) do
+    out[key] = copyValue(item)
+  end
+  return out
+end
+
+---@param key string ability identity under test
+---@param timing string mechanics timing under test
+---@param facts table<string, unknown> turn and checkpoint facts under test
+---@return table dispatch outcome with its stored state and draw counts
+local function answerAbility(key, timing, facts)
+  local EffectBag =
+    SessionFixture.requirePresent("libs.battle.src.EffectBag", "scoped instances own battle state")
+  local bag = EffectBag.new()
+  local definition = EffectFixture.define({
+    key = key,
+    timings = { { timing = timing, handler = key, orderClass = "affliction" } },
+  })
+  local stored = bag:add(definition, { kind = "active", combatant = 2, activation = 7 }, { kind = "probe" }, {
+    version = 1,
+  })
+  local before = copyValue(bag:get(stored.id).state)
+  local stream = BattleRng.new(FIXED_SEED)
+  local drawsBefore = stream:capture().calls
+  local context = {
+    stream = stream,
+    health = { [2] = 100 },
+    maxHealth = { [2] = 100 },
+  }
+  for name, value in pairs(facts) do
+    context[name] = value
+  end
+  local EffectDispatch = SessionFixture.requirePresent(
+    "libs.battle.src.EffectDispatch",
+    "one dispatcher owns finite timing order"
+  )
+  local outcome = EffectDispatch.new(bag, passiveHandlers()):invoke(timing, context)
+  Assert.isTrue(outcome.done, "the ability pass runs to completion")
+  return {
+    events = outcome.events,
+    stateBefore = before,
+    stateAfter = copyValue(bag:get(stored.id).state),
+    drawsBefore = drawsBefore,
+    drawsAfter = stream:capture().calls,
+  }
+end
+
+---@param turn integer current battle turn under the probe
+---@param entry integer activation entry turn under the probe
+---@return table<string, unknown> action-gate facts for the turn
+local function actionFacts(turn, entry)
+  return { actionCheck = true, nativeTurn = turn, entryTurn = entry }
+end
+
+-- Slow Start and Truant answer from the entry clock: Slow Start halves
+-- through the fifth elapsed turn even when the holder never acts,
+-- Truant loafs on alternating source parity, and repeated reads in one
+-- turn return the same verdict without mutating instance state or
+-- drawing from the battle stream.
+function T.slow_start_and_truant_answer_from_the_entry_clock()
+  local slowedFirst = answerAbility("SLOW_START", "beforeAction", actionFacts(10, 10))
+  Assert.equal(#slowedFirst.events, 1, "the entry turn answers exactly once")
+  Assert.equal(slowedFirst.events[1].stat, "attack", "slow start halves the attack")
+  local slowedAgain = answerAbility("SLOW_START", "beforeAction", actionFacts(10, 10))
+  Assert.deepEqual(slowedAgain.events, slowedFirst.events, "a repeated read answers identically")
+  Assert.deepEqual(slowedFirst.stateAfter, slowedFirst.stateBefore, "slow start reads mutate no instance state")
+  Assert.equal(slowedFirst.drawsAfter, slowedFirst.drawsBefore, "slow start reads draw nothing")
+
+  for turn = 11, 14 do
+    local slowed = answerAbility("SLOW_START", "beforeAction", actionFacts(turn, 10))
+    Assert.equal(#slowed.events, 1, "turn " .. turn .. " still halves")
+  end
+  local expired = answerAbility("SLOW_START", "beforeAction", actionFacts(15, 10))
+  Assert.deepEqual(expired.events, {}, "the sixth elapsed turn lifts slow start without acting")
+
+  local acts = answerAbility("TRUANT", "beforeAction", actionFacts(10, 10))
+  Assert.deepEqual(acts.events, {}, "the entry turn acts")
+  local loafs = answerAbility("TRUANT", "beforeAction", actionFacts(11, 10))
+  Assert.equal(#loafs.events, 1, "the following turn loafs")
+  Assert.isTrue(loafs.events[1].loafing, "truant names its loafing turn")
+  local actsAgain = answerAbility("TRUANT", "beforeAction", actionFacts(12, 10))
+  Assert.deepEqual(actsAgain.events, {}, "parity alternates back to acting")
+  local loafsAgain = answerAbility("TRUANT", "beforeAction", actionFacts(11, 10))
+  Assert.deepEqual(loafsAgain.events, loafs.events, "a repeated read answers identically")
+  Assert.deepEqual(loafs.stateAfter, loafs.stateBefore, "truant reads mutate no instance state")
+  Assert.equal(loafs.drawsAfter, loafs.drawsBefore, "truant reads draw nothing")
+end
+
+-- A turn-clock read without its facts is malformed, never an inactive
+-- ability: contexts that reach the adjudication without both the current
+-- turn and the activation entry turn fail instead of staying silent.
+function T.turn_clock_reads_fail_without_their_facts()
+  local missingTurn = Assert.throws(function()
+    answerAbility("TRUANT", "beforeAction", { actionCheck = true, entryTurn = 10 })
+  end, "truant without its current turn fails")
+  Assert.notNil(missingTurn, "truant without its current turn fails")
+  local missingEntry = Assert.throws(function()
+    answerAbility("SLOW_START", "beforeAction", { actionCheck = true, nativeTurn = 10 })
+  end, "slow start without its entry turn fails")
+  Assert.notNil(missingEntry, "slow start without its entry turn fails")
+  local missingBoost = Assert.throws(function()
+    answerAbility("SPEED_BOOST", "residual", { turnEnd = true, nativeTurn = 6 })
+  end, "speed boost without its entry turn fails")
+  Assert.notNil(missingBoost, "speed boost without its entry turn fails")
+end
+
+-- Speed Boost skips its entry turn: the debut turn end stays silent
+-- while the next eligible turn end boosts exactly once.
+function T.speed_boost_skips_the_entry_turn()
+  ---@param turn integer current battle turn under the probe
+  ---@return table[] emitted speed events for the turn end
+  local function boostedAt(turn)
+    return answerAbility("SPEED_BOOST", "residual", { turnEnd = true, nativeTurn = turn, entryTurn = 5 }).events
+  end
+  Assert.deepEqual(boostedAt(5), {}, "the entry turn end stays silent")
+  local boosted = boostedAt(6)
+  Assert.equal(#boosted, 1, "the next turn end boosts exactly once")
+  Assert.equal(boosted[1].stat, "speed", "speed boost raises the speed")
 end
 
 return { tests = T }

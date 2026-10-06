@@ -6,6 +6,7 @@
 -- replacement keeps it. Handlers stay silent when their trigger context
 -- is absent, so inapplicable responses never look unimplemented.
 
+local BattleErrors = require("libs.battle.src.errors")
 local Status = require("libs.battle.src.gen4.Status")
 
 local ReactiveAbilities = {}
@@ -50,6 +51,34 @@ local RESIDUAL_HEAL = {
   RAIN_DISH = "rain",
   ICE_BODY = "hail",
 }
+
+-- Synchronize reflects only the major status family it shares: poison
+-- (with toxic counted as its poison family), burn, and paralysis.
+-- Sleep and freeze never reflect.
+local SYNCHRONIZE_STATUS = { poison = true, toxic = true, burn = true, paralysis = true }
+
+-- Slow Start halves through the fifth elapsed turn: turns since entry
+-- below five keep the penalty, later turns lift it.
+local SLOW_START_TURNS = 5
+
+--- Reads the turn-clock facts a turn-since-entry ability answers from.
+--- Trigger gating stays with the caller; a context that reaches this
+--- read without both facts is malformed, never an inactive ability.
+---@param context table<string, unknown> checkpoint context under handling
+---@param key string ability identity requesting the clock
+---@return integer current battle turn
+---@return integer activation entry turn
+local function clockTurns(context, key)
+  local nativeTurn = context.nativeTurn
+  local entryTurn = context.entryTurn
+  if type(nativeTurn) ~= "number" or nativeTurn % 1 ~= 0 then
+    error(BattleErrors.missingBehavior("turn-clock abilities read the current battle turn", { key = key }))
+  end
+  if type(entryTurn) ~= "number" or entryTurn % 1 ~= 0 then
+    error(BattleErrors.missingBehavior("turn-clock abilities read their activation entry turn", { key = key }))
+  end
+  return nativeTurn, entryTurn
+end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
 ---@param context table<string, unknown> post-hit context under handling
@@ -185,6 +214,10 @@ local function turnResponse(instance, context)
     if context.turnEnd ~= true and context.residual ~= true then
       return nil
     end
+    local nativeTurn, entryTurn = clockTurns(context, instance.key)
+    if entryTurn == nativeTurn then
+      return nil
+    end
     return { kind = "trigger", key = instance.key, combatant = holderOf(instance), stat = "speed", stages = "boosted" }
   end
   if instance.key == "SHED_SKIN" then
@@ -225,28 +258,15 @@ local function beforeAction(instance, context)
     return { kind = "trigger", key = instance.key, combatant = holderOf(instance), order = "last" }
   end
   if instance.key == "TRUANT" then
-    local state = instance.state
-    if type(state) ~= "table" then
-      return nil
-    end
-    local loafing = (state --[[@as table<string, boolean>]]).loafing == true
-    (state --[[@as table<string, boolean>]]).loafing = not loafing
-    if loafing then
+    local nativeTurn, entryTurn = clockTurns(context, instance.key)
+    if (entryTurn % 2) ~= (nativeTurn % 2) then
       return { kind = "trigger", key = instance.key, combatant = holderOf(instance), loafing = true }
     end
     return nil
   end
   if instance.key == "SLOW_START" then
-    local state = instance.state
-    if type(state) ~= "table" then
-      return nil
-    end
-    local spent = (state --[[@as table<string, integer>]]).actions
-    if type(spent) ~= "number" then
-      spent = 0
-    end
-    (state --[[@as table<string, integer>]]).actions = spent + 1
-    if spent < 5 then
+    local nativeTurn, entryTurn = clockTurns(context, instance.key)
+    if nativeTurn - entryTurn < SLOW_START_TURNS then
       return { kind = "trigger", key = instance.key, combatant = holderOf(instance), stat = "attack", stages = "halved" }
     end
     return nil
@@ -313,7 +333,7 @@ local function hitResponse(instance, context)
     return { kind = "trigger", key = instance.key, combatant = holderOf(instance), becomeType = context.moveType }
   end
   if instance.key == "SYNCHRONIZE" then
-    if context.inflictedStatus == nil then
+    if SYNCHRONIZE_STATUS[context.inflictedStatus] ~= true then
       return nil
     end
     return { kind = "trigger", key = instance.key, combatant = holderOf(instance), reflected = context.inflictedStatus }
