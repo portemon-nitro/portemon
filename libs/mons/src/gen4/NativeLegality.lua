@@ -1,12 +1,13 @@
 -- Strict native representability for supported production policies. The
 -- projection resolves every semantic identity to its native Generation-IV
 -- value and verifies the cross-field relationships the boxed codec depends
--- on: the ability belongs to the final form, the met level tracks the
--- experience-derived level, power points respect the source maximum, effort
--- totals fit, current health fits the derived maximum, and strings fit
--- their fixed capacities. Unknown identities are record failures; known
--- but inconsistent combinations are legality failures. The boxed codec
--- requires this projection and carries no separate permissive checks.
+-- on: the ability belongs to the final form, current level derives from
+-- experience, and historical met level remains independently representable
+-- in its native range. Power points respect the source maximum, effort totals
+-- fit, current health fits the derived maximum, and strings fit their fixed
+-- capacities. Unknown identities are record failures; known but inconsistent
+-- combinations are legality failures. The boxed codec requires this
+-- projection and carries no separate permissive checks.
 
 local Experience = require("libs.mons.src.gen4.Experience")
 local MonsErrors = require("libs.mons.src.errors")

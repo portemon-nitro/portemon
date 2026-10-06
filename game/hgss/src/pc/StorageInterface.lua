@@ -57,8 +57,8 @@ local function geometry(view, partyTouchTargets)
   end
   return modeGeometry,
     {
-      boxSlots = slots,
-      partySlots = partyTouchTargets and visibleParty or {},
+      boxSlots = editor == nil and slots or {},
+      partySlots = editor == nil and partyTouchTargets and visibleParty or {},
       editorChoices = editorChoices,
     }
 end

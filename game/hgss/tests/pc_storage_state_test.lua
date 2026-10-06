@@ -843,6 +843,84 @@ function T.cancelled_summary_and_name_children_return_to_parent()
   state:dispose()
 end
 
+function T.active_markings_editor_masks_box_slot_pointer_input()
+  local mons = monService()
+  local boxed = mons:partyMon(0)
+  boxed.markings = 5
+  local change = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 7, mon = boxed } } }))
+  change.publish()
+
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 7 } } })
+  local browsePlan = state._session:plan()
+  local boxSlot = assert(browsePlan.content.hitRegions.boxSlots[8])
+  local x, y = hostPointForRect(state, boxSlot.rect)
+  state:updateFixed({ { type = "action", action = "markings" } })
+
+  local before = state:status()
+  local partyRevision = mons:partyRevision()
+  local boxRevision = mons:boxRevision()
+  local beforeMon = mons:boxMon(0, 7)
+  local ok, failure = pcall(function()
+    state:updateFixed({
+      { type = "pointer_down", pointerId = "editor-box-slot", x = x, y = y },
+      { type = "pointer_up", pointerId = "editor-box-slot", x = x, y = y },
+    })
+  end)
+
+  Assert.isTrue(ok, "an editor masks the underlying box target: " .. tostring(failure))
+  local after = state:status()
+  Assert.equal(after.phase, "editor")
+  Assert.equal(after.editor.kind, "markings")
+  Assert.equal(after.editor.mask, before.editor.mask)
+  Assert.deepEqual(after.focus, before.focus)
+  Assert.isNil(after.carry)
+  Assert.deepEqual(mons:boxMon(0, 7), beforeMon)
+  Assert.equal(mons:partyRevision(), partyRevision)
+  Assert.equal(mons:boxRevision(), boxRevision)
+  state:dispose()
+end
+
+function T.active_editor_ignores_queued_pointer_cancellation()
+  local mons = monService()
+  local boxed = mons:partyMon(0)
+  local change = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 7, mon = boxed } } }))
+  change.publish()
+
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 7 } } })
+  state:updateFixed({ { type = "action", action = "markings" } })
+  local before = state:status()
+  local partyRevision = mons:partyRevision()
+  local boxRevision = mons:boxRevision()
+  local beforeMon = mons:boxMon(0, 7)
+  local x, y = hostPointForRect(state, { x = 10, y = 10, width = 1, height = 1 })
+  state:updateFixed({ { type = "pointer_down", pointerId = "editor-neutral", x = x, y = y } })
+  state:cancelPointerCapture()
+
+  local ok, failure = pcall(function()
+    state:updateFixed({})
+  end)
+
+  Assert.isTrue(ok, "a queued pointer cancellation is inert in editor mode: " .. tostring(failure))
+  local after = state:status()
+  Assert.equal(after.phase, "editor")
+  Assert.equal(after.editor.kind, "markings")
+  Assert.equal(after.editor.mask, before.editor.mask)
+  Assert.deepEqual(after.focus, before.focus)
+  Assert.isNil(after.carry)
+  Assert.deepEqual(mons:boxMon(0, 7), beforeMon)
+  Assert.equal(mons:partyRevision(), partyRevision)
+  Assert.equal(mons:boxRevision(), boxRevision)
+  state:dispose()
+end
+
 function T.markings_and_wallpaper_edit_as_local_source_phases()
   local mons = monService()
   local boxed = mons:partyMon(0)

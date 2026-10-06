@@ -421,15 +421,20 @@ local function _compile(romFs, idOrSymbol, opts)
     geometryArena = opts.geometryArena,
     gxScratch = opts.gxScratch,
     requiredModelMembers = resolved.map.symbol == StarterLab.mapSymbol and { StarterLab.modelMemberId } or nil,
-    semanticRolesByMember = {
-      [PcSources.terminal.candidateBuildModelMembers[1]] = "pc_terminal",
-      [PcSources.terminal.candidateBuildModelMembers[2]] = "pc_terminal",
-    },
   })
   appendUnresolved(unresolvedMaterials, { unresolved = buildingCompiled.unresolvedMaterials })
   local archiveAlias = buildingCompiled.archiveAlias
   local buildingInstances = buildingCompiled.buildingInstances
   local models = buildingCompiled.models
+  for _, placement in ipairs(buildingInstances) do
+    local descriptor = assert(models[placement.modelKey], "building placement model was compiled")
+    for _, selector in ipairs(PcSources.terminal.buildModels) do
+      if archiveAlias == selector.archiveAlias and descriptor.memberId == selector.memberId then
+        placement.semanticRole = "pc_terminal"
+        break
+      end
+    end
+  end
 
   local runtimeProps
   local starterSceneOrigin
