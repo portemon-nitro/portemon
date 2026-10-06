@@ -113,22 +113,27 @@ local function modelService(self)
     return self._service
   end
   local service = self._service
+  local function portCount()
+    return port.count()
+  end
+  local function portRevision()
+    return port.revision()
+  end
+  local function portMon(_, index)
+    return assert(port.read(index), "summary subject indexes stay occupied")
+  end
+  local function portCatalog()
+    return service:catalog()
+  end
+  local function portDerive(_, mon)
+    return service:derive(mon)
+  end
   return {
-    partyCount = function()
-      return port.count()
-    end,
-    partyRevision = function()
-      return port.revision()
-    end,
-    partyMon = function(_, index)
-      return assert(port.read(index), "summary subject indexes stay occupied")
-    end,
-    catalog = function()
-      return service:catalog()
-    end,
-    derive = function(_, mon)
-      return service:derive(mon)
-    end,
+    partyCount = portCount,
+    partyRevision = portRevision,
+    partyMon = portMon,
+    catalog = portCatalog,
+    derive = portDerive,
   }
 end
 

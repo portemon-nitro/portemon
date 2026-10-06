@@ -7,9 +7,9 @@ local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
-local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
+local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
 
 local T = {}
@@ -33,24 +33,6 @@ local function service()
   mons:setMove(0, 0, "TACKLE")
   mons:setMove(0, 1, "GROWL")
   return mons
-end
-
-local function summaryManifest()
-  local function badgeFrames()
-    return { frames = { { image = "test-badge", width = 8, height = 8, durationTicks = 1 } }, loopFrom = 1 }
-  end
-  local anchors = {}
-  for index = 1, 5 do
-    anchors[index] = { x = index * 8, y = 0 }
-  end
-  return {
-    shinyLeaves = {
-      anchors = anchors,
-      crownAnchor = { x = 0, y = 0 },
-      leaves = badgeFrames(),
-      crown = badgeFrames(),
-    },
-  }
 end
 
 local function measurement()
@@ -133,18 +115,42 @@ function T.summary_reorders_whole_entries_at_the_box_subject_address()
       return { kind = "changed" }
     end,
   }
+  local family = SummaryPresentationFixture.manifest()
+  local lease = {}
+  function lease:prepare(demand)
+    return { kind = "ready", key = demand.key, assets = { manifest = family } }
+  end
+  function lease:release() end
   local state = SummaryScreenState.new({
     mons = mons,
-    manifest = summaryManifest(),
+    manifest = family,
     measureDisplay = measurement,
     subjectPort = subjectPort,
     mode = "summary",
     initialSlot = 0,
+    context = function()
+      return SummaryPresentationFixture.context(1)
+    end,
+    readNavigation = function()
+      return nil
+    end,
+    acquirePreparation = function()
+      return lease
+    end,
   })
-  state:updateFixed({})
-  Assert.isTrue(state:status().facts.leaves.leaves[1], "initial facts belong to the selected box mon")
-  state:updateFixed({ { type = "navigate", direction = "down" } })
-  state:updateFixed({ { type = "navigate", direction = "down" } })
+  for _ = 1, 12 do
+    state:updateFixed({})
+  end
+  Assert.isTrue(state:status().facts.indicators.leaves[1], "initial facts belong to the selected box mon")
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  state:updateFixed({ { type = "confirm" } })
+  for _ = 1, 6 do
+    if state:status().phase == "move_detail" then
+      break
+    end
+    state:updateFixed({})
+  end
+  Assert.equal(state:status().phase, "move_detail", "the detail settles after its transition")
   state:updateFixed({ { type = "confirm" } })
   state:updateFixed({ { type = "navigate", direction = "down" } })
   state:updateFixed({ { type = "confirm" } })

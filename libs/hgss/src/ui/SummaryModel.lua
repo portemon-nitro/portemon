@@ -860,10 +860,6 @@ function SummaryModel.buildMon(mon, options)
   local ability = catalog:ability(abilityKey)
   local heldItem = assert(mon.heldItem, "stored mons carry their held item")
   assert(type(heldItem) == "string", "held item keys are strings")
-  local heldItemName = nil
-  if heldItem ~= "NONE" then
-    heldItemName = assert(catalog:item(heldItem).name, "held items carry a display name")
-  end
   local condition = assert(mon.condition, "stored mons carry their condition")
   local types = {}
   for _, typeKey in ipairs(assert(form.types, "catalog forms carry types")) do
@@ -886,7 +882,7 @@ function SummaryModel.buildMon(mon, options)
     abilityName = assert(ability.name, "catalog abilities carry a display name"),
     abilityDescription = assert(ability.description, "catalog abilities carry a description"),
     heldItem = heldItem,
-    heldItemName = heldItemName,
+    heldItemName = heldItemName(catalog, heldItem),
     status = PartyScreenTheme.statusKey(
       assert(condition.status, "conditions carry status bits"),
       assert(condition.currentHp, "conditions carry current health")

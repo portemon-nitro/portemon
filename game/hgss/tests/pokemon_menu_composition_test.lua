@@ -507,6 +507,8 @@ function T.tests.box_summary_moves_publish_to_the_selected_box()
     { { type = "confirm" } },
     {},
     {},
+    {},
+    {},
     { { type = "confirm" } },
     { { type = "navigate", direction = "down" } },
     { { type = "confirm" } },
