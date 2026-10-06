@@ -56,6 +56,7 @@ local function newEnv()
     auditAvailable = false,
     plansAvailable = true,
     invalidations = 0,
+    auditCalls = 0,
     publishes = 0,
     publishedIdentity = nil,
     waitCalls = 0,
@@ -395,6 +396,7 @@ local function makeFakes()
   }
   fakes.DerivedCacheAudit = {
     isAvailable = function(_, identity, plans)
+      env.auditCalls = env.auditCalls + 1
       assert(identity ~= nil and plans ~= nil, "the generation audit requires identity and inventory")
       return env.auditAvailable
     end,
@@ -670,26 +672,46 @@ function T.warm_matching_attestation_compiles_nothing()
   local report, err = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
   Assert.isNil(err)
   Assert.isTrue(report.complete, "the warm cache stays complete")
+  Assert.equal(env.auditCalls, 0, "the fast path never consults the exhaustive audit")
   Assert.equal(#env.pools, 0, "the fast path must not create a compiler pool")
   Assert.equal(#env.sessions, 0, "the fast path must not open a generation session")
   Assert.equal(env.invalidations, 0, "a current cache must not be invalidated")
   Assert.equal(env.publishes, 0, "a current cache must not be republished")
 end
 
--- Missing planning metadata bypasses the warm shortcut: the command drains
--- its session instead of reporting current, and the strict gate still
--- refuses attestation without an inventory.
-function T.missing_planning_metadata_bypasses_the_warm_shortcut()
+-- A matching attestation is the ordinary complete-cache fast path: the
+-- exhaustive audit is never consulted, so even a refusing audit double
+-- leaves the warm cache current with no session and no pool.
+function T.matching_attestation_skips_the_exhaustive_audit()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = false
+  requireScopedPreparation()
+  local report, err = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
+  Assert.notNil(report, "a matching attestation stays usable without the audit")
+  Assert.isNil(err)
+  Assert.isTrue(report.complete, "the warm cache stays complete")
+  Assert.equal(env.auditCalls, 0, "the warm path never consults the exhaustive audit")
+  Assert.equal(#env.pools, 0, "the fast path must not create a compiler pool")
+  Assert.equal(#env.sessions, 0, "the fast path must not open a generation session")
+end
+
+-- A matching attestation stays current without planning metadata: the
+-- warm path trusts attestation identity directly and never enumerates
+-- the published inventory.
+function T.matching_attestation_without_planning_metadata_stays_current()
   env = newEnv()
   env.stateMatches = true
   env.auditAvailable = true
   env.plansAvailable = false
   requireScopedPreparation()
   local report, err = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
-  Assert.isNil(report)
-  Assert.notNil(err)
-  Assert.equal(#env.sessions, 1, "missing plans run the normal session")
-  Assert.equal(env.publishes, 0, "no inventory means no attestation")
+  Assert.notNil(report, "a matching attestation stays usable without the inventory")
+  Assert.isNil(err)
+  Assert.isTrue(report.complete, "the warm cache stays complete")
+  Assert.equal(env.auditCalls, 0, "the warm path never consults the exhaustive audit")
+  Assert.equal(#env.sessions, 0, "missing plans run no session on a matching attestation")
+  Assert.equal(env.publishes, 0, "a current cache must not be republished")
 end
 
 -- An explicit development rebuild reruns only the selected ready job: its
@@ -877,34 +899,22 @@ function T.refused_uncovered_request_preserves_attestation_for_later_reuse()
   Assert.equal(#env.sessions, sessions, "later reuse opens no additional session")
 end
 
--- Freshness always outranks coverage: missing inventory, a failed audit,
--- and an explicit development rebuild each run the normal session instead
--- of any shortcut.
+-- A stale attestation and an explicit development rebuild each run the
+-- normal session instead of any shortcut: only a matching attestation is
+-- trusted, and a rebuild always invalidates first.
 function T.stale_or_explicitly_rebuilt_complete_runs_the_normal_session()
   env = newEnv()
-  env.stateMatches = true
+  env.stateMatches = false
   env.auditAvailable = true
-  env.plansAvailable = false
   requireScopedPreparation()
-  local missingReport, missingErr =
+  local staleReport, staleErr =
     CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
-  Assert.isNil(missingReport)
-  Assert.notNil(missingErr)
-  Assert.equal(#env.sessions, 1, "missing inventory runs the normal session")
-  Assert.isTrue(env.invalidations >= 1, "missing inventory invalidates before replacement work")
-  Assert.equal(env.publishes, 0, "missing inventory publishes no attestation")
-
-  env = newEnv()
-  env.stateMatches = true
-  env.auditAvailable = false
-  requireScopedPreparation()
-  local refusedReport, refusedErr =
-    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
-  Assert.isNil(refusedReport)
-  Assert.notNil(refusedErr)
-  Assert.equal(#env.sessions, 1, "a failed audit runs the normal session")
-  Assert.isTrue(env.invalidations >= 1, "a failed audit invalidates before replacement work")
-  Assert.equal(env.publishes, 0, "a failed audit publishes no attestation")
+  Assert.isNil(staleErr)
+  assert(staleReport, "a stale attestation runs the normal session to a report")
+  Assert.isTrue(staleReport.requestedReady, "the rebuilt scope is ready")
+  Assert.equal(#env.sessions, 1, "a stale attestation runs the normal session")
+  Assert.isTrue(env.invalidations >= 1, "a stale attestation invalidates before replacement work")
+  Assert.equal(env.auditCalls, 0, "replacement work publishes without a second audit")
 
   env = newEnv()
   env.stateMatches = true

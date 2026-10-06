@@ -1,14 +1,15 @@
 -- Runs fixed producer jobs inside one persistent worker VM.
 -- Each job carries its explicit source version, generation, and epoch. The
--- worker selects its cache context at job boundaries, validates the
--- published family before opening any source handle, compiles and stages
--- one prepared artifact per invalid family, and releases transient
--- geometry scratch at map job boundaries. The VM persists across jobs:
--- large compilations never retire it.
+-- worker selects its cache context at job boundaries, trusts a current
+-- receipt before opening any source handle, compiles and stages one
+-- prepared artifact per job without a current receipt, and releases
+-- transient geometry scratch at map job boundaries. The VM persists
+-- across jobs: large compilations never retire it.
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomFs = require("romdump.src.source.RomFs")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+local ArtifactState = require("romdump.src.build.ArtifactState")
 local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
 local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 
@@ -50,9 +51,9 @@ local function closeContext(context)
   end
 end
 
--- Select the version-scoped cache without opening ROM source: warm
--- validation reads published cache and producer metadata only, so most
--- reuse decisions never pay for a source handle.
+-- Select the version-scoped cache without opening ROM source: the receipt
+-- read inspects receipt identity only, so most reuse decisions never pay
+-- for a source handle.
 ---@param job table<string, unknown>
 ---@param context table<string, unknown>
 local function switchCacheContext(job, context)
@@ -71,8 +72,8 @@ local function switchCacheContext(job, context)
   assert(context.cacheFs, "worker context is incomplete")
 end
 
--- Open the ROM source lazily for compilation only. Warm validation
--- above never reaches this, so valid published output reuses without
+-- Open the ROM source lazily for compilation only. The receipt check
+-- above never reaches this, so trusted published output reuses without
 -- source work.
 ---@param job table<string, unknown>
 ---@param context table<string, unknown>
@@ -195,16 +196,17 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
         stageName = job.stageName,
         payload = job.payload,
       }
-      -- Authoritative warm validation first: a valid published family
-      -- reuses with no stage, no publication, and no source handle. Only
-      -- an invalid or missing family compiles below. A validation
-      -- failure is terminal for the job, exactly like a compile failure.
-      local validOk, reusable = xpcall(function()
-        return ArtifactJobs.validateCurrent(executeJob, context)
+      -- Receipt-only reuse first: a current receipt reuses with no
+      -- stage, no publication, no payload read, and no source handle.
+      -- Only a missing, stale, or unusable receipt compiles below. A
+      -- genuine cache backend failure is terminal for the job, exactly
+      -- like a compile failure.
+      local receiptOk, receipt = xpcall(function()
+        return ArtifactState.read(context.cacheFs, executeJob.generationId, executeJob.kind, executeJob.key)
       end, function(failure)
         return failure
       end)
-      if validOk and reusable == true then
+      if receiptOk and receipt ~= nil then
         pushCompletion(
           resultChannel,
           workerId,
@@ -216,7 +218,7 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
           wallSeconds() - startedAt
         )
       else
-        if validOk then
+        if receiptOk then
           ensureRomSource(job, context)
           local ok, result = xpcall(function()
             return CompilerWorker.execute(executeJob, context)

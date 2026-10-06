@@ -1,17 +1,18 @@
 -- Exhaustive and targeted cache preparation through the common generation
 -- session. buildVersions prepares every listed version with the complete
 -- scope; prepareVersion prepares one version with a declared closure. Both
--- drive InteractiveCacheBuild jobs and validate the requested scope. Full
--- attestation at data/generated/build.lua is published only after strict
--- exhaustive success validated by the generation-aware audit; a targeted
--- scope never attests completeness no matter its exit status.
+-- drive InteractiveCacheBuild jobs and validate the requested scope. A
+-- matching complete attestation at data/generated/build.lua is trusted
+-- for ordinary reuse without re-proving payloads; the attestation is
+-- published after strict exhaustive success, and a targeted scope never
+-- attests completeness no matter its exit status. The exhaustive audit
+-- remains an explicit manual diagnostic and never runs here.
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomFs = require("romdump.src.source.RomFs")
 local Errors = require("libs.errors.src.Errors")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
-local DerivedCacheAudit = require("romdump.src.DerivedCacheAudit")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local RawDumpContract = require("romdump.src.source.RawDumpContract")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -354,8 +355,6 @@ end
 ---@field counts table<string, integer>
 ---@field failures string[]
 ---@field exclusions string[]
----@field auditPassed boolean
----@field auditReason string|nil
 ---@field needsAttestation boolean
 ---@field isCurrent boolean
 ---@field cacheFs table<string, unknown>|nil pending publication access
@@ -425,51 +424,50 @@ local function collectVersionFacts(
   log
 )
   local stored = cacheFs:loadLua(DerivedCacheState.path)
-  local auditedCurrent = false
-  if exhaustive and #rebuildJobs == 0 and DerivedCacheState.matches(stored, identity) then
-    local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
-    local plans = ArtifactJobs.publishedPlans(cacheFs, identity)
-    if plans ~= nil then
-      local available, _ = DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
-      if available then
-        auditedCurrent = true
-        -- The audited corpus covers only its canonical inventory, so an
-        -- explicitly requested identity reuses it only as a member.
-        local uncovered = {}
-        for _, requirement in ipairs(parsed) do
-          if requirement.jobKey ~= nil then
-            uncovered[requirement.jobKey] = true
-          end
-        end
-        if next(uncovered) ~= nil then
-          for _, job in ipairs(ArtifactJobs.completeJobs(plans)) do
-            uncovered[job.jobKey] = nil
-          end
-        end
-        if next(uncovered) == nil then
-          return {
-            versionId = versionId,
-            identity = identity,
-            requestedReady = true,
-            counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 },
-            failures = {},
-            exclusions = {},
-            auditPassed = true,
-            auditReason = nil,
-            needsAttestation = false,
-            isCurrent = true,
-            cacheFs = nil,
-            primaryError = nil,
-          }
+  local matched = exhaustive and #rebuildJobs == 0 and DerivedCacheState.matches(stored, identity)
+  if matched then
+    -- The trusted corpus covers only its canonical inventory, so an
+    -- explicitly requested identity reuses it only as a member. A pure
+    -- complete scope trusts attestation identity directly and never
+    -- enumerates the published inventory.
+    local uncovered = {}
+    for _, requirement in ipairs(parsed) do
+      if requirement.jobKey ~= nil then
+        uncovered[requirement.jobKey] = true
+      end
+    end
+    if next(uncovered) ~= nil then
+      local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+      local plans = ArtifactJobs.publishedPlans(cacheFs, identity)
+      if plans ~= nil then
+        for _, job in ipairs(ArtifactJobs.completeJobs(plans)) do
+          uncovered[job.jobKey] = nil
         end
       end
     end
-  end
-  -- An audited current attestation survives an uncovered explicit request:
-  -- only stale, unverifiable, or explicitly rebuilt state is removed
-  -- before replacement work.
-  if (exhaustive and not auditedCurrent) or #rebuildJobs > 0 then
-    DerivedCacheState.invalidate(cacheFs)
+    if next(uncovered) == nil then
+      return {
+        versionId = versionId,
+        identity = identity,
+        requestedReady = true,
+        counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 },
+        failures = {},
+        exclusions = {},
+        needsAttestation = false,
+        isCurrent = true,
+        cacheFs = nil,
+        primaryError = nil,
+      }
+    end
+    -- A trusted attestation survives an uncovered explicit request:
+    -- the extra identity falls through to the normal session below
+    -- without invalidating the attestation first.
+  else
+    -- Only stale or explicitly rebuilt state is removed before
+    -- replacement work.
+    if exhaustive or #rebuildJobs > 0 then
+      DerivedCacheState.invalidate(cacheFs)
+    end
   end
   for _, job in ipairs(rebuildJobs) do
     cacheFs:remove(ArtifactState.path(job.kind, job.key))
@@ -550,8 +548,6 @@ local function collectVersionFacts(
         counts = counts,
         failures = failures,
         exclusions = exclusions,
-        auditPassed = false,
-        auditReason = nil,
         needsAttestation = false,
         isCurrent = false,
         cacheFs = nil,
@@ -584,21 +580,10 @@ local function collectVersionFacts(
     requestedReady = false
   end
   local needsAttestation = exhaustive and counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
-  local auditPassed = false
-  local auditReason = nil
-  if needsAttestation then
-    local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
-    local plans, plansReason = ArtifactJobs.publishedPlans(cacheFs, identity)
-    if plans == nil then
-      auditPassed = false
-      auditReason = plansReason
-    else
-      local available, reason = DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
-      auditPassed = available == true
-      auditReason = reason
-    end
-  end
-  local pendingFs = needsAttestation and auditPassed and cacheFs or nil
+  -- A strictly successful exhaustive session publishes its attestation
+  -- directly: successful publication is the proof, so no second
+  -- exhaustive audit runs on the ordinary path.
+  local pendingFs = needsAttestation and cacheFs or nil
   return {
     versionId = versionId,
     identity = identity,
@@ -606,8 +591,6 @@ local function collectVersionFacts(
     counts = counts,
     failures = failures,
     exclusions = exclusions,
-    auditPassed = auditPassed,
-    auditReason = auditReason,
     needsAttestation = needsAttestation,
     isCurrent = false,
     cacheFs = pendingFs,
@@ -661,16 +644,6 @@ local function interpretTargetedOutcome(record, attestationPublished, publishErr
     }
   end
   if record.needsAttestation then
-    if not record.auditPassed then
-      return {
-        complete = false,
-        error = Errors.new(
-          "CACHE_PREPARATION_FAILED",
-          "cache preparation failed: " .. tostring(record.auditReason),
-          { versionId = record.versionId }
-        ),
-      }
-    end
     if attestationPublished then
       return { complete = true }
     end
@@ -739,7 +712,7 @@ function CacheBuilder.prepareVersion(versionId, options)
   end
   local attestationPublished = false
   local publishError = nil
-  if not record.isCurrent and record.primaryError == nil and record.needsAttestation and record.auditPassed then
+  if not record.isCurrent and record.primaryError == nil and record.needsAttestation then
     local publishOk, publishErr = pcall(DerivedCacheState.publish, cacheFs, identity)
     if publishOk then
       attestationPublished = true
@@ -881,9 +854,6 @@ function CacheBuilder.buildVersions(versionIds, options)
       elseif result.counts.failed > 0 or result.counts.cancelled > 0 then
         allOk = false
       elseif result.counts.excluded > 0 and not options.allowCompileExclusions then
-        allOk = false
-      end
-      if not result.isCurrent and result.needsAttestation and not result.auditPassed then
         allOk = false
       end
     end

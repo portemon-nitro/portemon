@@ -1,11 +1,13 @@
--- Exhaustive proof that one generation's derived cache is usable. The audit
--- walks the complete canonical inventory for the exact current generation
--- and checks every expected job through the dispatcher's readiness
--- validation: a current-generation receipt plus a usable payload. Markers
--- alone prove nothing, expected membership is never inferred from whichever
--- directories happen to exist, and the full-build attestation is published
--- only after this audit passes, so it is never consulted here. Read-only:
--- the walk performs no writes.
+-- Explicit manual proof that one generation's derived cache is usable.
+-- The audit walks the complete canonical inventory for the exact current
+-- generation and checks every expected job through the dispatcher's
+-- readiness validation: a current-generation receipt plus a usable
+-- payload. Markers alone prove nothing, expected membership is never
+-- inferred from whichever directories happen to exist, and the full-build
+-- attestation is never consulted here. Ordinary warm reuse trusts
+-- current receipts and the matching attestation without running this
+-- walk; only the explicit check-derived-cache command invokes it.
+-- Read-only: the walk performs no writes.
 
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")

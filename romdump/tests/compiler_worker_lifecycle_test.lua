@@ -89,6 +89,98 @@ local function recordingChannel()
   return channel, received
 end
 
+-- A current-generation receipt settles the job as reused without reading
+-- the payload or opening ROM source: the receipt is the ordinary warm
+-- reuse authority, so an absent payload never blocks reuse.
+function T.current_receipt_reuses_without_payload_or_source()
+  local CompilerWorker = require("romdump.src.build.CompilerWorker")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local RomFs = require("romdump.src.source.RomFs")
+  local generation = "receipt-trust-generation"
+  local input = scriptedChannel({
+    {
+      kind = "field-font",
+      key = "global",
+      jobKey = "field-font:global",
+      versionId = "heartgold",
+      generationId = generation,
+      epoch = 1,
+      stageName = "font-stage",
+      sizeClass = "normal",
+      payload = {},
+      producerFingerprint = "producer",
+    },
+    { kind = "stop" },
+  })
+  local resultsChannel, received = recordingChannel()
+  local sourceOpened = false
+  local realOpen = RomFs.open
+  RomFs.open = function(_)
+    sourceOpened = true
+    error("receipt reuse must not open ROM source")
+  end
+  local runOk, runErr = withLove(fakeLove(), function()
+    local cacheFs = CacheFs.forVersion("heartgold")
+    cacheFs:writeLua(ArtifactState.path("field-font", "global"), {
+      schema = ArtifactState.RECEIPT_SCHEMA,
+      generationId = generation,
+      kind = "field-font",
+      key = "global",
+      marker = "receipt-trust-marker",
+    })
+    -- No payload is published: reuse proves receipt identity only.
+    return pcall(CompilerWorker.run, 1, input, resultsChannel)
+  end)
+  RomFs.open = realOpen
+  Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
+  Assert.equal(#received, 1, "the reused job reports once")
+  Assert.equal(received[1].status, "reused", "a current receipt reuses without payload validation")
+  Assert.isFalse(sourceOpened, "receipt reuse opens no ROM source")
+end
+
+-- A missing current receipt falls through to ordinary compilation: trust
+-- never turns absence into readiness.
+function T.missing_receipt_compiles_through_the_producer_path()
+  local CompilerWorker = require("romdump.src.build.CompilerWorker")
+  local RomFs = require("romdump.src.source.RomFs")
+  local input = scriptedChannel({
+    {
+      kind = "field-font",
+      key = "global",
+      jobKey = "field-font:global",
+      versionId = "heartgold",
+      generationId = "compile-fallback-generation",
+      epoch = 1,
+      stageName = "font-stage",
+      sizeClass = "normal",
+      payload = {},
+      producerFingerprint = "producer",
+    },
+    { kind = "stop" },
+  })
+  local resultsChannel, received = recordingChannel()
+  local sourceOpened = false
+  local realOpen = RomFs.open
+  RomFs.open = function(_)
+    sourceOpened = true
+    return { close = function(_) end }
+  end
+  local realExecute = CompilerWorker.execute
+  CompilerWorker.execute = function(_, _)
+    return { stageName = "font-stage", result = { marker = "fresh-marker" } }
+  end
+  local runOk, runErr = withLove(fakeLove(), function()
+    return pcall(CompilerWorker.run, 1, input, resultsChannel)
+  end)
+  RomFs.open = realOpen
+  CompilerWorker.execute = realExecute
+  Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
+  Assert.equal(#received, 1, "the compiled job reports once")
+  Assert.equal(received[1].status, "prepared", "a missing receipt compiles")
+  Assert.isTrue(sourceOpened, "compilation opens ROM source lazily")
+end
+
 function T.failed_source_close_emits_no_closure_acknowledgement()
   local CompilerWorker = require("romdump.src.build.CompilerWorker")
   local RomFs = require("romdump.src.source.RomFs")

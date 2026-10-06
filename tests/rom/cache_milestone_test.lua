@@ -376,10 +376,12 @@ local function completeThroughWorker(context, pool, jobKey, stageName)
       end
     end
   end
-  local ok, reused = pcall(ArtifactJobs.validateCurrent, workerJob, context)
-  if ok and reused == true then
-    -- Worker proof without compilation: warm output reuses with no
-    -- stage and no publication, exactly like the production worker.
+  local receiptOk, receipt =
+    pcall(ArtifactState.read, context.cacheFs, workerJob.generationId, workerJob.kind, workerJob.key)
+  if receiptOk and receipt ~= nil then
+    -- Receipt-only reuse without compilation: a current receipt reuses
+    -- with no stage, no publication, and no payload read, exactly like
+    -- the production worker.
     pool:markReady(jobKey)
     reusedThroughWorker[jobKey] = record.epoch
     return { reused = true }

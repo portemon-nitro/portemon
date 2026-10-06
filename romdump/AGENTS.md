@@ -43,6 +43,13 @@ and compilation into portemon assets.
   the configured source roots; release cache identity uses the explicit
   per-game release counter. Do not add a manual compiler version just to
   invalidate cache after source-code changes.
+- Trust successful publication: ordinary warm reuse trusts a current
+  per-artifact receipt, a current milestone attestation, or a matching
+  complete-build attestation by identity alone and never revalidates
+  published payloads. Keep source/compiler validation, staged readback
+  checks, and publication recovery strict; reserve family validators and
+  the exhaustive audit for producer paths and the explicit
+  `--check-derived-cache` diagnostic.
 - A real generated contract change updates the authoritative `DerivedAssetContract` identity
   in `libs/assets`; do not use contract versions as source-code revision counters.
 

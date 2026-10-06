@@ -2360,4 +2360,82 @@ function T.completion_snapshot_observes_without_admitting_work()
   Assert.isTrue(#snapshot.outcomes > 0, "captured outcomes survive retirement")
 end
 
+-- A persisted current milestone attestation answers ready on a fresh
+-- session without roster enrollment or worker dispatch: the milestone
+-- file is the restart readiness authority, not a hint for rebuilding.
+function T.persisted_milestone_answers_ready_without_worker_work()
+  local backend = FakeCache.new()
+  local generation = "milestone-restart-generation"
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  cacheFs:writeLua("data/generated/field-runtime.lua", {
+    schema = ArtifactJobs.MILESTONE_SCHEMA,
+    generationId = generation,
+    name = "field-runtime",
+    jobs = {},
+  })
+  local pool = recordingPool()
+  local session, _ = isolatedSession(generation, pool, backend)
+  local ready, failure = session:requestMilestone("field-runtime", "required")
+  Assert.isTrue(ready, "a persisted current milestone answers ready on restart")
+  Assert.isNil(failure, "a trusted milestone reports no failure")
+  for _ = 1, 4 do
+    session:update()
+  end
+  Assert.equal(#pool.submitted, 0, "trusted restart enrolls no worker work")
+  Assert.isNil(session.byKey["source-plan:global"], "trusted restart pulls no source inventory")
+  local again, againFailure = session:requestMilestone("field-runtime", "required")
+  Assert.isTrue(again, "a trusted milestone stays ready")
+  Assert.isNil(againFailure, "a trusted milestone keeps reporting no failure")
+end
+
+-- A milestone file from a previous generation never answers ready: trust
+-- applies only to the selected generation.
+function T.stale_generation_milestone_falls_back_to_normal_planning()
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  cacheFs:writeLua("data/generated/field-runtime.lua", {
+    schema = ArtifactJobs.MILESTONE_SCHEMA,
+    generationId = "previous-generation",
+    name = "field-runtime",
+    jobs = {},
+  })
+  local pool = recordingPool()
+  local session, _ = isolatedSession("milestone-stale-generation", pool, backend)
+  local ready, failure = session:requestMilestone("field-runtime", "required")
+  Assert.isFalse(ready, "a previous-generation milestone never answers ready")
+  Assert.isNil(failure, "a stale milestone reports no failure while pending")
+end
+
+-- A milestone file naming another scope never answers ready for this
+-- scope.
+function T.wrong_name_milestone_is_ignored()
+  local backend = FakeCache.new()
+  local generation = "milestone-name-generation"
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  cacheFs:writeLua("data/generated/field-runtime.lua", {
+    schema = ArtifactJobs.MILESTONE_SCHEMA,
+    generationId = generation,
+    name = "bootstrap",
+    jobs = {},
+  })
+  local pool = recordingPool()
+  local session, _ = isolatedSession(generation, pool, backend)
+  local ready, _ = session:requestMilestone("field-runtime", "required")
+  Assert.isFalse(ready, "a milestone naming another scope never answers ready")
+end
+
+-- A malformed milestone file behaves as absent: construction and request
+-- never crash merely because the file exists.
+function T.malformed_milestone_is_treated_as_absent()
+  local backend = FakeCache.new()
+  local generation = "milestone-malformed-generation"
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  cacheFs:write("data/generated/field-runtime.lua", "this is not lua {{{")
+  local pool = recordingPool()
+  local session, _ = isolatedSession(generation, pool, backend)
+  local ready, failure = session:requestMilestone("field-runtime", "required")
+  Assert.isFalse(ready, "a malformed milestone never answers ready")
+  Assert.isNil(failure, "a malformed milestone reports no failure while pending")
+end
+
 return { metadata = { capabilities = {} }, tests = T }

@@ -1,9 +1,11 @@
 -- Producer-private generation receipts for derived-cache artifacts. A receipt
 -- is a cheap per-artifact proof that its family output was published for one
--- immutable generation; the family payload and its own validator stay
--- authoritative, so a receipt alone never means ready. Receipts live at
--- data/generated/jobs/<kind>/<key>.lua and travel to the live cache inside
--- the same staged transaction as the family output they accompany.
+-- immutable generation; ordinary warm reuse trusts a current receipt
+-- without re-reading the family payload, while family validators stay
+-- authoritative for compilation staging and the explicit manual audit.
+-- Receipts live at data/generated/jobs/<kind>/<key>.lua and travel to the
+-- live cache inside the same staged transaction as the family output they
+-- accompany.
 
 local StorageErrors = require("libs.storage.src.errors")
 

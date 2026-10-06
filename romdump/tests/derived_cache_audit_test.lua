@@ -280,4 +280,47 @@ function T.a_missing_declared_leaf_is_unavailable_read_only_and_repairable()
   Assert.isTrue(accepted, "a fully receipted and validated inventory is usable")
 end
 
+-- The explicit audit stays deeper than ordinary reuse: every receipt is
+-- current so the worker would reuse each job, yet one unusable payload
+-- still fails the diagnostic without repairing anything.
+function T.a_trusted_receipt_with_an_unusable_payload_still_fails_the_explicit_audit()
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local generationId = "trusted-but-damaged-generation"
+  local identity = { versionId = "heartgold", generationId = generationId, producerId = "audit-producer" }
+  local plans = minimalPlans()
+  local jobs = assert(ArtifactJobs.completeJobs(plans))
+  local target = assert(jobs[1], "the canonical inventory is never empty")
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  for _, job in ipairs(jobs) do
+    cache:writeLua(ArtifactState.path(job.kind, job.key), {
+      schema = ArtifactState.RECEIPT_SCHEMA,
+      generationId = generationId,
+      kind = job.kind,
+      key = job.key,
+      marker = "marker-" .. job.kind .. "-" .. job.key,
+    })
+  end
+  local trusted = ArtifactState.read(cache, generationId, target.kind, target.key)
+  Assert.notNil(trusted, "ordinary reuse trusts the current receipt alone")
+  local realValidate = ArtifactJobs.validate
+  ArtifactJobs.validate = function(_, _, kind, key)
+    if kind == target.kind and key == target.key then
+      return false
+    end
+    return true
+  end
+  local before = snapshot(backend)
+  local ok, available, reason = pcall(DerivedCacheAudit.isAvailable, cache, identity, plans)
+  ArtifactJobs.validate = realValidate
+  Assert.isTrue(ok, "the explicit audit resolves: " .. tostring(available))
+  Assert.isFalse(available, "the explicit audit still detects the damaged payload")
+  Assert.isTrue(
+    reason ~= nil and reason:find(target.jobKey, 1, true) ~= nil,
+    "the refusal names the damaged leaf, got: " .. tostring(reason)
+  )
+  Assert.deepEqual(snapshot(backend), before, "a read-only audit performs no writes")
+end
+
 return { tests = T }

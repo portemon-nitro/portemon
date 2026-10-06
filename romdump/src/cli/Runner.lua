@@ -168,11 +168,13 @@ local function selectionIdentity(version)
   })
 end
 
--- Check that the current published derived artifacts are usable without
--- recompiling: the expected generation must resolve and the exhaustive
--- generation audit over the published inventory must pass. A foreign or
--- absent generation, missing planning metadata, or any damaged payload
--- fails. Read-only: performs no repair and no writes.
+-- Explicit manual check that the current published derived artifacts are
+-- usable without recompiling: the expected generation must resolve and
+-- the exhaustive generation audit over the published inventory must pass.
+-- A foreign or absent generation, missing planning metadata, or any
+-- damaged payload fails. Ordinary startup and warm reuse never invoke
+-- this walk; they trust current receipts and the matching attestation.
+-- Read-only: performs no repair and no writes.
 function Runner._runCheckDerivedCache()
   local DerivedCacheAudit = require("romdump.src.DerivedCacheAudit")
   local ArtifactJobs = require("romdump.src.build.ArtifactJobs")

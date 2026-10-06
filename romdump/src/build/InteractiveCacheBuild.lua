@@ -1,7 +1,8 @@
 -- One generation session for explicitly demanded bootstrap, field core
 -- and complete builds. Construction performs no source work: it validates
 -- its identity, recovers publication, selects the epoch and starts from
--- empty retained state plus the two source-static membership lists. Public
+-- empty retained state plus the two source-static membership lists and
+-- the trusted restart milestone facts recovered after publication. Public
 -- requests only register canonical interest and report retained answers;
 -- only update advances planning, validation, adoption, enrollment and
 -- submission, required demand first. One worker-compiled inventory, adopted
@@ -16,6 +17,7 @@
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local CacheFs = require("libs.storage.src.CacheFs")
+local StorageErrors = require("libs.storage.src.errors")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
@@ -79,6 +81,7 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field interest InteractiveCacheBuild.Interest[]
 ---@field byKey table<string, InteractiveCacheBuild.Interest>
 ---@field milestones table<string, string>
+---@field trustedMilestones table<string, boolean>
 ---@field recorded table<string, boolean>
 ---@field retired boolean
 ---@field sourceLoaded boolean worker inventory adopted
@@ -130,6 +133,40 @@ local MILESTONE_FILES = {
 -- explicit milestone request; every other name is observed only while
 -- requested. This is a closed traversal list, not an extension registry.
 local STATUS_MILESTONES = { "bootstrap", "new-game-intro", "field-planning", "field-runtime" }
+
+-- Restart trust: a persisted milestone record whose schema, generation,
+-- and name match the selected session proves its fixed scope without
+-- rebuilding it. The per-job marker list is retained for diagnostics but
+-- never rechecked here. A missing, stale, or malformed record is absent;
+-- only genuine backend failures propagate.
+---@param cacheFs table<string, unknown>
+---@param generationId string
+---@param name string
+---@return boolean
+local function loadTrustedMilestone(cacheFs, generationId, name)
+  local path = assert(MILESTONE_FILES[name], "milestone has no file: " .. name)
+  local ok, record, loadError = pcall(cacheFs.loadLua, cacheFs, path)
+  if not ok then
+    error(record, 0)
+  end
+  if record == nil then
+    if loadError ~= nil then
+      local code = type(loadError) == "table" and loadError.code or nil
+      if
+        code ~= StorageErrors.CACHE_FILE_MISSING
+        and code ~= StorageErrors.CACHE_LUA_PARSE_FAILED
+        and code ~= StorageErrors.CACHE_LUA_EVAL_FAILED
+      then
+        error(loadError, 0)
+      end
+    end
+    return false
+  end
+  return type(record) == "table"
+    and record.schema == ArtifactJobs.MILESTONE_SCHEMA
+    and record.generationId == generationId
+    and record.name == name
+end
 
 -- One update advances at most this many dependency/validation nodes, Urgent
 -- demand first; the remainder waits for the next update. A single metadata
@@ -212,6 +249,15 @@ function InteractiveCacheBuild.new(options)
 
   local cacheFs = CacheFs.forVersion(versionId)
   cacheFs:recoverPublication()
+  -- Trusted restart facts load once, only after publication recovery:
+  -- each matching persisted milestone answers its scope with no roster,
+  -- enrollment, or worker work.
+  local trustedMilestones = {}
+  for name in pairs(MILESTONE_FILES) do
+    if loadTrustedMilestone(cacheFs, generationId, name) then
+      trustedMilestones[name] = true
+    end
+  end
   assert(type(pool.selectGeneration) == "function", "generation session pool cannot select generations")
   pool:selectGeneration(identity, epoch)
   -- Only source-static membership is known here: required message banks and
@@ -239,6 +285,7 @@ function InteractiveCacheBuild.new(options)
     interest = {},
     byKey = {},
     milestones = {},
+    trustedMilestones = trustedMilestones,
     recorded = {},
     retired = false,
     sourceLoaded = false,
@@ -683,9 +730,8 @@ function InteractiveCacheBuild:_observePoolState(entry, state, details)
   if state == "ready" then
     self.submittedPending[entry.jobKey] = nil
     -- A ready reply is worker proof, not a request for controller
-    -- validation: the worker already validated warm output before
-    -- reusing it, and fresh output carries staged readback proof
-    -- through publication. Ordinary entries succeed at once. The
+    -- validation: reuse settles from current-receipt identity, and fresh
+    -- output carries staged readback proof through publication. Ordinary entries succeed at once. The
     -- source inventory is the one exception: its generation record is
     -- adopted here through one explicit validating read before source
     -- waiters wake, and a failed adoption is explicit.
@@ -1345,6 +1391,10 @@ function InteractiveCacheBuild:_retainedMilestoneAnswer(name)
   -- Retained observation only: an unbuilt roster is pending knowledge,
   -- never a vacuous success. No construction, IO or validation here.
   -- A failed roster construction settles the scope with its cause.
+  -- A trusted restart attestation answers ready without any roster.
+  if self.trustedMilestones[name] then
+    return true, nil
+  end
   if self.rosterFailure[name] ~= nil then
     return false, self.rosterFailure[name]
   end
@@ -1431,7 +1481,9 @@ function InteractiveCacheBuild:_buildPendingRosters()
   -- stay current. An unfinished enrollment keeps one live ticket so the
   -- per-update chunk resumes without a roster rebuild.
   for name, _ in pairs(self.milestones) do
-    if self.roster[name] == nil then
+    -- Trusted restart attestations never build a roster: their readiness
+    -- is already settled without enrollment or worker work.
+    if self.roster[name] == nil and not self.trustedMilestones[name] then
       self:_enqueueControl("roster", 0, name)
     end
   end
@@ -1563,11 +1615,15 @@ function InteractiveCacheBuild:_needsSourceDemand()
   if self.sweepAuthorized then
     return true
   end
-  if
-    self.milestones["new-game-intro"] ~= nil
-    or self.milestones["field-planning"] ~= nil
-    or self.milestones["field-runtime"] ~= nil
-  then
+  -- Trusted restart attestations prove their scope without the worker
+  -- inventory, so they never schedule its discovery.
+  if self.milestones["new-game-intro"] ~= nil and not self.trustedMilestones["new-game-intro"] then
+    return true
+  end
+  if self.milestones["field-planning"] ~= nil and not self.trustedMilestones["field-planning"] then
+    return true
+  end
+  if self.milestones["field-runtime"] ~= nil and not self.trustedMilestones["field-runtime"] then
     return true
   end
   return false
@@ -1703,6 +1759,12 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
   local stronger = current ~= nil and ArtifactJobs.priorityFor(urgency) < ArtifactJobs.priorityFor(current)
   if current == nil or stronger then
     self.milestones[name] = urgency
+  end
+  -- A trusted restart attestation settles the request at once: urgency
+  -- is still registered for status observation, but no source plan,
+  -- roster, enrollment, or worker work is scheduled.
+  if self.trustedMilestones[name] then
+    return true, nil
   end
   -- Record new or stronger intent and answer from retained state: roster
   -- construction, enrollment, validation, submission and publication all

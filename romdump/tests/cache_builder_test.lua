@@ -560,7 +560,7 @@ function T.batch_reports_success_and_preserves_partial_publication_failure()
   Assert.equal(identity.mode, "development")
   Assert.equal(identity.producerId, "d" .. string.rep("1", 64))
   Assert.equal(identity.romSha1, string.rep("a", 40))
-  Assert.equal(env.auditCalls[#env.auditCalls], identity.generationId, "strict success proves the generation")
+  Assert.deepEqual(env.auditCalls, {}, "a strict success publishes without a second audit")
   Assert.equal(env.shutdowns, 1, "the command shuts its pool down")
   Assert.equal(env.retires, 1, "the command retires its session")
 
@@ -596,43 +596,30 @@ function T.matching_attestation_with_available_cache_compiles_nothing()
   Assert.equal(#env.pools, 0, "the fast path creates no pool")
   Assert.deepEqual(env.invalidatedVersions, {}, "a current cache is never invalidated")
   Assert.equal(#env.publishes, 0, "a current cache is never republished")
+  Assert.deepEqual(env.auditCalls, {}, "the fast path never consults the exhaustive audit")
 end
 
--- A matching identity with a damaged cache enters repair: the stale
--- attestation is invalidated before the rebuild and the strict success
--- publishes the new identity.
-function T.damaged_cache_invalidates_before_repair_and_republishes()
+-- A matching attestation is trusted even when the exhaustive audit would
+-- refuse and even without planning metadata: ordinary reuse never
+-- re-proves published payloads, so no session opens and nothing is
+-- invalidated or republished.
+function T.matching_attestation_is_trusted_without_audit_or_inventory()
   env = newEnv()
   env.stateStored = { schema = 2, generationId = "test-generation" }
   env.stateMatches = true
   env.auditAvailable = false
+  env.plansAvailable = false
   local report, err = CacheBuilder.buildVersions(
     { "heartgold" },
     { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
   )
   Assert.isNil(err)
   Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.deepEqual(env.invalidatedVersions, { "heartgold" })
-  Assert.equal(#env.publishes, 1, "a strict repair republishes the attestation")
-end
-
--- Missing planning metadata bypasses the current shortcut even with a
--- matching attestation: the command drains its session, and with no
--- inventory the strict gate still refuses attestation.
-function T.missing_planning_metadata_bypasses_the_current_shortcut()
-  env = newEnv()
-  env.stateStored = { schema = 2, generationId = "test-generation" }
-  env.stateMatches = true
-  env.auditAvailable = true
-  env.plansAvailable = false
-  local report, err = CacheBuilder.buildVersions(
-    { "heartgold" },
-    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
-  )
-  Assert.isNil(report)
-  Assert.notNil(err)
-  Assert.equal(#env.sessions, 1, "missing plans request their normal dependency jobs")
-  Assert.equal(#env.publishes, 0, "no inventory means no attestation")
+  Assert.deepEqual(env.invalidatedVersions, {}, "a trusted cache is never invalidated")
+  Assert.equal(#env.publishes, 0, "a trusted cache is never republished")
+  Assert.equal(#env.sessions, 0, "the fast path opens no session")
+  Assert.deepEqual(env.auditCalls, {}, "the fast path never consults the exhaustive audit")
+  Assert.deepEqual(env.planCalls, {}, "the fast path never enumerates the published inventory")
 end
 
 -- Map compile failures fail the batch by default; with explicitly accepted

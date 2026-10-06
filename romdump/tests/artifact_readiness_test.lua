@@ -1,8 +1,9 @@
--- Readiness and repair for derived-cache reuse: a job is reusable only with
--- a current receipt and a usable payload, the exhaustive audit walks the
--- complete canonical inventory instead of trusting markers, and failed
--- repairs keep the last good publication. Every fixture below uses synthetic
--- data through the real family owners; no commercial bytes are committed.
+-- Readiness and repair for derived-cache reuse: ordinary reuse trusts a
+-- current receipt or a matching complete attestation without re-proving
+-- payloads, the explicit exhaustive audit still walks the complete
+-- canonical inventory to diagnose damage, and failed repairs keep the
+-- last good publication. Every fixture below uses synthetic data through
+-- the real family owners; no commercial bytes are committed.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -346,9 +347,11 @@ function T.failed_leaf_repair_keeps_the_last_good_publication()
   Assert.isNil(backend:getInfo("staging/heartgold/failed-repair-843"), "the failed stage is discarded")
 end
 
--- A matching attestation with intact markers is not a usability proof: with
--- a coarse payload deleted, common preparation must never report current.
-function T.matching_attestation_with_a_damaged_coarse_payload_is_never_current()
+-- A matching attestation is the ordinary reuse authority even with a
+-- damaged payload: common preparation reports current without re-proving
+-- payloads, while the explicit diagnostic audit still names the damaged
+-- leaf and performs no repair.
+function T.matching_attestation_trusts_a_damaged_payload_for_ordinary_reuse()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   writeMarkers(cache, { maps = {} })
@@ -379,7 +382,12 @@ function T.matching_attestation_with_a_damaged_coarse_payload_is_never_current()
     log = function() end,
   })
   builderBackend = nil
-  Assert.isTrue(report == nil or report.complete ~= true, "a damaged cache must never report current")
+  Assert.notNil(report, "a matching attestation reports without re-proving payloads")
+  Assert.isTrue(report.complete == true, "a matching attestation reports current despite the damage")
+  Assert.isTrue(
+    DerivedCacheState.matches(cache:loadLua(DerivedCacheState.path), identity),
+    "ordinary reuse preserves the matching attestation without repair"
+  )
 end
 
 -- Synthetic corpus builders below: every family publishes minimal valid

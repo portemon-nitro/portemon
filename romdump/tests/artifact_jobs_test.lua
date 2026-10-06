@@ -313,27 +313,16 @@ local function publishWarmBank(cacheFs, generation, bankId)
   })
 end
 
-function T.worker_validation_reuses_published_families_without_source()
-  local producerId = "d" .. string.rep("3", 64)
+function T.worker_receipt_identity_decides_reuse_without_source()
   local generation = "worker-validation-generation"
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   publishWarmBank(cacheFs, generation, 219)
-  local context = { cacheFs = cacheFs, versionId = "heartgold" }
-  local warm = {
-    kind = "message-bank",
-    key = "219",
-    generationId = generation,
-    producerFingerprint = producerId,
-  }
-  Assert.isTrue(ArtifactJobs.validateCurrent(warm, context) == true, "a published bank validates warm without source")
-  Assert.isNil(context.romFs, "warm validation opens no source reader")
-  local cold = {
-    kind = "message-bank",
-    key = "220",
-    generationId = generation,
-    producerFingerprint = producerId,
-  }
-  Assert.isFalse(ArtifactJobs.validateCurrent(cold, context), "a missing bank validates cold")
+  local receipt, reason = ArtifactState.read(cacheFs, generation, "message-bank", "219")
+  Assert.notNil(receipt, "a published bank carries a current receipt: " .. tostring(reason))
+  Assert.equal(receipt.marker, "worker-warm-marker-219", "the receipt carries the published marker")
+  local missing, missingReason = ArtifactState.read(cacheFs, generation, "message-bank", "220")
+  Assert.isNil(missing, "a missing bank carries no current receipt")
+  Assert.notNil(missingReason, "a missing receipt names its reason")
 end
 
 -- The worker-local source-plan memo reads the published inventory once
