@@ -141,20 +141,23 @@ function MartCache.isReady(cacheFs, expectedMarker)
   return true
 end
 
+-- Trusted runtime loads: presence plus the current schema identity is
+-- sufficient. Whole-catalog/manifest validation stays with the producer
+-- writers, schema tests, and explicit audit (see isReady).
 ---@param cacheFs CacheFs
 ---@return table<string, unknown>
 function MartCache.loadCatalog(cacheFs)
   local catalog = cacheFs:loadLua(MartCache.catalogPath())
-  MartAssetSchema.assertCatalog(catalog)
-  return assert(catalog)
+  assert(type(catalog) == "table" and catalog.schema == MartCache.CATALOG_SCHEMA, "mart catalog is unavailable")
+  return catalog
 end
 
 ---@param cacheFs CacheFs
 ---@return table<string, unknown>
 function MartCache.loadManifest(cacheFs)
   local manifest = cacheFs:loadLua(MartCache.manifestPath())
-  MartAssetSchema.assertManifest(manifest)
-  return assert(manifest)
+  assert(type(manifest) == "table" and manifest.schema == MartCache.SCHEMA, "mart manifest is unavailable")
+  return manifest
 end
 
 return MartCache

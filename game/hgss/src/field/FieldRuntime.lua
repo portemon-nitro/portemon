@@ -535,7 +535,8 @@ end
 -- to LuaJIT's 60-upvalue-per-function limit. Each phase instead takes a
 -- `boot` table holding those boot-scoped values explicitly.
 
--- Cache and generated-runtime inputs are validated before any field owner is published.
+-- Trusted published cache inputs are loaded before any field owner is published.
+-- Whole-payload validation stays with the producer pipeline and explicit audit.
 ---@param boot table<string, unknown>
 ---@param loadOptions FieldRuntimeOptions?
 function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
@@ -590,20 +591,18 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   assert(profiles.schema == FieldCameraCache.SCHEMA, "unsupported field camera cache")
   self.cameraProfiles = profiles.profiles
 
-  -- The weather catalog: fourteen fog presets and ordered override rules.
+  -- The weather catalog (fog presets and ordered override rules) and the
+  -- follower interaction catalog are trusted published artifacts: presence
+  -- through the ready cache path is sufficient, and the producer pipeline
+  -- plus explicit audit own whole-catalog validation.
   local weatherCatalog = assert(
     boot.cacheFs:loadLua(FieldWeatherCache.catalogPath()),
     "field weather cache is cold -- run `scripts/buildcache.sh` first"
   ) --[[@as FieldWeatherCache.Catalog]]
-  assert(FieldWeatherCache.validateCatalog(weatherCatalog), "field weather catalog is invalid")
   self.weatherCatalog = weatherCatalog
   local followerInteractionCatalog = assert(
     boot.cacheFs:loadLua(FollowerInteractionCache.catalogPath()),
     "follower interaction catalog is missing -- run `scripts/buildcache.sh` first"
-  )
-  assert(
-    FollowerInteractionCache.validateCatalog(followerInteractionCatalog),
-    "follower interaction catalog is invalid"
   )
   self.followerInteractionCatalog = followerInteractionCatalog
   -- The mon catalog behind the live party: loaded once per runtime

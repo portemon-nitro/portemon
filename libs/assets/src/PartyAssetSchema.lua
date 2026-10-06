@@ -4,8 +4,9 @@
 -- windows, cursor/ball/held/status/feedback visuals with source timing,
 -- shared icon-animation expectations, dpad/touch navigation tables,
 -- lowered bank-300 text, source numeric glyphs, and Shiny Leaf/crown badge
--- frames. Every loader, producer writer, and test calls these validators,
--- so no second interpretation of the shapes exists. Unknown fields, wrong
+-- frames. Producer writers, schema tests, and explicit audit call these
+-- validators, so no second interpretation of the shapes exists. Runtime
+-- trusts published artifacts and must not duplicate this validation. Unknown fields, wrong
 -- pane sizes, out-of-bounds geometry, wrong slot/digit/anchor cardinality,
 -- non-integral timing, and leaked source identities fail loudly. Modded
 -- frame counts, sizes, and palettes stay valid. Love-free and

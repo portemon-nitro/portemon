@@ -1,5 +1,5 @@
 -- Game-local retail starter-application presentation. It realizes one
--- validated starter-application manifest through the shared model stack
+-- trusted published starter-application manifest through the shared model stack
 -- (ModelDefinition/ModelInstance over a GpuAssetPool, drawn through
 -- FieldRenderer under the manifest's outside/inside camera poses), the
 -- cleared info surface, the three candidate portraits borrowed from the
@@ -32,7 +32,7 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 local FixedPoint = require("libs.math.src.FixedPoint")
 
 ---@class StarterChoicePresentation
----@field _manifest table<string, unknown> immutable validated starter-application manifest
+---@field _manifest table<string, unknown> immutable trusted starter-application manifest
 ---@field _cacheFs CacheFs generated-asset filesystem the model/texture bytes read through
 ---@field _portraits table[] per-candidate portrait descriptors ({ selector }) borrowed from state
 ---@field _frameIndex integer player-owned text-frame choice for the framed info message
@@ -150,7 +150,7 @@ end
 local ADAPTED_PORTRAIT = { x = 88, y = 16, width = 80, height = 80 }
 
 ---@class StarterChoicePresentation.Options
----@field manifest table<string, unknown> validated starter-application manifest
+---@field manifest table<string, unknown> trusted published starter-application manifest
 ---@field cacheFs CacheFs generated-asset filesystem
 ---@field portraits table[] per-candidate portrait descriptors ({ selector: string, pageId: integer })
 ---@field frameIndex integer player-owned text-frame choice for the framed info message
@@ -164,7 +164,13 @@ function StarterChoicePresentation.new(opts)
     opts.cacheFs ~= nil and type(opts.cacheFs.read) == "function",
     "starter presentation requires the asset filesystem"
   )
-  assert(StarterChoiceAssetCache.validateManifest(opts.manifest), "starter presentation requires a valid manifest")
+  -- The manifest is a trusted published artifact: the schema identity is
+  -- sufficient here, and the producer pipeline plus explicit audit own the
+  -- full contract.
+  assert(
+    type(opts.manifest) == "table" and opts.manifest.schema == StarterChoiceAssetCache.SCHEMA,
+    "starter presentation requires the current application manifest"
+  )
   assert(
     type(opts.portraits) == "table" and #opts.portraits == 3,
     "starter presentation requires three portrait descriptors"

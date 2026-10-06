@@ -2,7 +2,6 @@
 
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
-local MartAssetSchema = require("libs.assets.src.MartAssetSchema")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
@@ -56,9 +55,10 @@ function MartRenderer.new(opts)
   assert(type(opts) == "table", "mart renderer options must be a record")
   local cacheFs = assert(opts.cacheFs, "mart renderer requires its version-scoped cache")
   assert(type(cacheFs.read) == "function", "mart renderer cache can read asset bytes")
-  local manifest = assert(opts.manifest, "mart renderer requires the validated mart manifest")
-  MartAssetSchema.assertManifest(manifest)
-  local uiManifest = assert(opts.uiManifest, "mart renderer requires the validated field-UI prompt manifest")
+  -- The mart manifest is a trusted published artifact; every referenced
+  -- image is loaded (and asserted present) below, which is the actual use.
+  local manifest = assert(opts.manifest, "mart renderer requires the trusted published mart manifest")
+  local uiManifest = assert(opts.uiManifest, "mart renderer requires the trusted published field-UI prompt manifest")
   local text = assert(opts.text, "mart renderer borrows the field text renderer")
   assert(
     type(text.drawTextWithPalette) == "function" and type(text.textWidth) == "function",

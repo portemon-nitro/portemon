@@ -7,7 +7,6 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
-local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ItemCache = require("libs.assets.src.ItemCache")
 
 ---@class ItemIconAssetProvider
@@ -19,6 +18,10 @@ local ItemCache = require("libs.assets.src.ItemCache")
 local ItemIconAssetProvider = {}
 ItemIconAssetProvider.__index = ItemIconAssetProvider
 
+-- The published icon manifest arrives through the staged writer boundary,
+-- which already proved the full contract: construction only needs the
+-- manifest present with the current schema and an entry record, mirroring
+-- the mon icon provider. Per-realization bounds checks stay at the draw site.
 ---@param cacheFs CacheFs
 ---@return table<string, unknown>
 local function loadManifest(cacheFs)
@@ -30,15 +33,14 @@ local function loadManifest(cacheFs)
       { path = ItemCache.iconManifestPath() }
     )
   end
-  local ok, err = pcall(ItemAssetSchema.assertIconManifest, manifest)
-  if not ok then
+  assert(type(manifest) == "table", "the icon manifest carries its entries")
+  if manifest.schema ~= ItemCache.ICON_MANIFEST_SCHEMA or type(manifest.entries) ~= "table" then
     Errors.raise(
       FieldErrors.ITEM_ICON_MANIFEST_UNAVAILABLE,
-      "the compiled item icon manifest is invalid: " .. tostring(err),
+      "the compiled item icon manifest is invalid: " .. ItemCache.iconManifestPath(),
       { path = ItemCache.iconManifestPath() }
     )
   end
-  assert(manifest ~= nil, "the icon manifest carries validated entries")
   return manifest
 end
 

@@ -39,16 +39,17 @@ function SaveEditorComposition.open(options)
   local versionId = assert(options.versionId)
   local saveId = assert(options.saveId)
   local cacheFs = CacheFs.forVersion(versionId)
+  -- The field-UI manifest is a trusted published artifact: presence through
+  -- the ready cache path is sufficient, and the producer pipeline plus
+  -- explicit audit own whole-manifest validation.
   local fieldUiManifest, fieldUiError = cacheFs:loadLua(FieldUiAssetCache.manifestPath())
   if type(fieldUiManifest) ~= "table" then
     error(assert(fieldUiError, "field UI manifest is missing"), 0)
   end
-  local manifestValid, manifestError = FieldUiAssetCache.validateManifest(fieldUiManifest)
-  if not manifestValid then
-    error(assert(manifestError, "field UI manifest is invalid"), 0)
-  end
+  local dialogueFrames = assert(fieldUiManifest.dialogueFrames, "field UI manifest carries dialogue frames")
+  assert(type(dialogueFrames.count) == "number", "field UI manifest carries its frame count")
   local frameIndexes = {}
-  for frame = 0, fieldUiManifest.dialogueFrames.count - 1 do
+  for frame = 0, dialogueFrames.count - 1 do
     frameIndexes[frame] = true
   end
   local monRoot = MonCache.loadCatalog(cacheFs)

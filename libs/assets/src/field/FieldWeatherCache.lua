@@ -235,8 +235,9 @@ local function validateRule(rule, index, presets)
   return true
 end
 
--- Strict catalog validation: shared by the writer's readback and by runtime
--- loading. Returns true on success, false, err otherwise.
+-- Strict catalog validation: owned by the writer's readback and explicit
+-- audit. Runtime trusts the published catalog and must not call this.
+-- Returns true on success, false, err otherwise.
 ---@param catalog unknown
 ---@return boolean, Errors.Error?
 function FieldWeatherCache.validateCatalog(catalog)

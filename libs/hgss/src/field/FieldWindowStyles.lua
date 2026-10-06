@@ -118,7 +118,7 @@ local function registerBuiltins(self, manifest)
 end
 
 -- Constructs the immutable catalogue from the generated field-UI manifest
--- (the strict class the runtime already validated): the two HGSS built-ins
+-- (the strict published class the producer pipeline validated): the two HGSS built-ins
 -- only, with no external descriptor input.
 ---@param uiManifest table<string, unknown> the validated FieldUiAssetCache manifest
 ---@return FieldWindowStyles

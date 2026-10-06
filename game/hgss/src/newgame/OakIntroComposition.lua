@@ -1,6 +1,6 @@
--- Production composition for the Oak/profile introduction. It validates and
--- reads generated assets, captures generated message templates, and transfers
--- audio and presentation ownership to the constructed Oak state.
+-- Production composition for the Oak/profile introduction. It reads trusted
+-- published generated assets, captures generated message templates, and
+-- transfers audio and presentation ownership to the constructed Oak state.
 
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
@@ -103,8 +103,11 @@ function OakIntroComposition.compose(options)
   end
 
   local cacheFs = CacheFs.forVersion(options.versionId)
-  local introManifest =
-    validManifest(assert(cacheFs:loadLua(IntroAssetCache.manifestPath())), IntroAssetCache.validateManifest, "intro")
+  local introManifest = assert(cacheFs:loadLua(IntroAssetCache.manifestPath()))
+  assert(
+    type(introManifest) == "table" and introManifest.schemaVersion == IntroAssetCache.SCHEMA_VERSION,
+    "intro manifest is unavailable"
+  )
   local uiManifest = validManifest(assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath())), function(manifest)
     return type(manifest) == "table" and manifest.schema == FieldUiAssetCache.SCHEMA
   end, "field UI")

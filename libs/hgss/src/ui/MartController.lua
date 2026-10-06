@@ -3,7 +3,6 @@
 local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-local MartAssetSchema = require("libs.assets.src.MartAssetSchema")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
@@ -109,8 +108,9 @@ function MartController.new(opts)
     type(session.commit) == "function" and type(session.acknowledge) == "function",
     "mart session has transaction operations"
   )
+  -- The mart manifest is a trusted published artifact; only the sections
+  -- this controller reads are asserted below.
   local manifest = assert(opts.manifest, "mart controller requires the complete generated manifest")
-  MartAssetSchema.assertManifest(manifest)
   local fontDef = assert(opts.fontDef, "mart controller requires the generated field font")
   assert(
     type(fontDef.charmap) == "table" and type(fontDef.glyphs) == "table",

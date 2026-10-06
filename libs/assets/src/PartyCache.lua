@@ -152,9 +152,12 @@ function PartyCache.validateManifest(manifest)
   return PartyAssetSchema.assertManifest(manifest)
 end
 
+-- Trusted runtime load: presence plus the current schema identity is
+-- sufficient. Whole-manifest validation stays with the producer writers,
+-- schema tests, and explicit audit (see isReady/referencedPaths).
 function PartyCache.loadManifest(cacheFs)
   local manifest = cacheFs:loadLua(PartyCache.manifestPath())
-  PartyAssetSchema.assertManifest(manifest)
+  assert(type(manifest) == "table" and manifest.schema == PartyCache.SCHEMA, "party manifest is unavailable")
   return manifest
 end
 

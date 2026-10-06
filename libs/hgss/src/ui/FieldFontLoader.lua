@@ -1,11 +1,10 @@
 -- Loads the compiled dialogue font definition for runtime text layout. This
 -- deliberately owns no atlas or graphics objects; presentation loads those
--- separately when it creates the dialogue renderer. A loaded definition must
--- satisfy the v5 asset contract before presentation construction: the seven
--- color bands over a positive base-band stride, an atlas tall enough for every
--- band, a named semantic glyph mask atlas path, and the four 24x32 focus frames
--- with four ordered palette-slot/rect records each. It delegates schema
--- validation to the generated asset owner before presentation construction.
+-- separately when it creates the dialogue renderer. The definition is a
+-- trusted published artifact: the loader checks presence and the current
+-- schema identity, and the producer pipeline plus explicit audit own the full
+-- contract (color bands, atlas geometry, mask atlas, focus frames). Consumers
+-- assert the fields they actually read at their own use sites.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
@@ -26,14 +25,6 @@ function FieldFontLoader.load(cacheFs, fontId)
       FieldErrors.FONT_DEF_MISSING,
       "no " .. FieldFontCache.SCHEMA .. " definition at " .. path,
       { fontId = fontId, path = path }
-    )
-  end
-  local valid, reason = FieldFontCache.validateDefinition(definition --[[@as table]])
-  if not valid then
-    Errors.raise(
-      FieldErrors.FONT_DEF_INVALID,
-      FieldFontCache.SCHEMA .. " definition at " .. path .. " is malformed: " .. reason,
-      { fontId = fontId, path = path, reason = reason }
     )
   end
   return definition --[[@as FieldFontDef]]

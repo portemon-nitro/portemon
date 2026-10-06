@@ -37,8 +37,11 @@ contracts, not the Nintendo/HGSS source formats that produce them.
   bump it for compiler implementation changes; `romdump` producer fingerprinting owns those.
 - Public/mod-facing fields must have a current semantic consumer. Do not preserve source
   trivia or add optional extension slots "for mods later".
-- Keep encoders/decoders and validators authoritative. Runtime/inspectors must not grow a
-  second interpretation with slightly different semantics.
+- Keep encoders/decoders and validators authoritative for producers and explicit audit.
+  Producers validate staged output before publication; explicit audit tooling may
+  revalidate published payloads. Normal runtime trusts successfully published current
+  artifacts and must not duplicate semantic validation: loaders return trusted
+  records, and consumers assert only the fields they actually read.
 
 ## Design
 

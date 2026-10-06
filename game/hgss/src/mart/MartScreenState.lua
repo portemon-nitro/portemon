@@ -1,7 +1,6 @@
 -- Per-open purchase child binding the semantic controller to host geometry.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
-local MartAssetSchema = require("libs.assets.src.MartAssetSchema")
 local MartController = require("libs.hgss.src.ui.MartController")
 local MartInterface = require("game.hgss.src.mart.MartInterface")
 
@@ -28,8 +27,9 @@ MartScreenState.__index = MartScreenState
 ---@return MartScreenState
 function MartScreenState.new(opts)
   assert(type(opts) == "table", "mart screen options must be a record")
+  -- The mart manifest is a trusted published artifact; the controller below
+  -- asserts the sections it actually reads.
   local manifest = assert(opts.manifest, "mart screen requires the complete generated mart manifest")
-  MartAssetSchema.assertManifest(manifest)
   local uiManifest = assert(opts.uiManifest, "mart screen requires the field-UI manifest")
   local dialogue = assert(uiManifest.dialogueFrames, "field-UI manifest carries dialogue frames")
   local cursor = assert(dialogue.continueCursor, "field-UI manifest carries the source continuation cursor")

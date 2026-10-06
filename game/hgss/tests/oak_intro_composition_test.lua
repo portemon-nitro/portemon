@@ -12,6 +12,8 @@ local GameAudio = require("game.hgss.src.audio.GameAudio")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
 local OakIntroMessages = require("game.hgss.src.newgame.OakIntroMessages")
+local OakIntroState = require("game.hgss.src.newgame.OakIntroState")
+local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 
 local T = { tests = {} }
 
@@ -70,6 +72,115 @@ function T.tests.prepared_entry_collaborator_is_validated_before_cache_reads()
   Assert.isTrue(string.find(tostring(errState), "poll and dispose", 1, true) ~= nil)
 end
 
+function T.tests.composition_trusts_published_intro_manifest_without_revalidating()
+  local introCache = IntroAssetCache
+  local fieldUiCache = require("libs.assets.src.field.FieldUiAssetCache")
+  local originalValidate = introCache.validateManifest
+  local calls = 0
+  rawset(introCache, "validateManifest", function()
+    calls = calls + 1
+    error("published intro manifests must not be revalidated at composition", 0)
+  end)
+  local originalForVersion = CacheFs.forVersion
+  local originalFontLoad = FieldFontLoader.load
+  local originalProviderNew = FieldMessageProvider.new
+  local originalAudioCompose = GameAudio.compose
+  local originalTextNew = FieldTextRenderer.new
+  local originalDialogueRendererNew = FieldDialogueRenderer.new
+  local originalDialogueControllerNew = FieldDialogueController.new
+  local originalControllerNew = OakIntroController.new
+  local originalMessagesNew = OakIntroMessages.new
+  local originalStateNew = OakIntroState.new
+  local introManifest = { schemaVersion = introCache.SCHEMA_VERSION, variant = "heartgold" }
+  local fakeCache = {
+    loadLua = function(_, path)
+      if path == introCache.manifestPath() then
+        return introManifest
+      end
+      if path == fieldUiCache.manifestPath() then
+        return {
+          schema = fieldUiCache.SCHEMA,
+          dialogueFrames = { count = 0, continueCursor = { placement = {} } },
+        }
+      end
+      error("unexpected cache path " .. path)
+    end,
+  }
+  rawset(CacheFs, "forVersion", function()
+    return fakeCache
+  end)
+  rawset(FieldFontLoader, "load", function()
+    return { charmap = {} }
+  end)
+  rawset(FieldMessageProvider, "new", function()
+    return {
+      acquireBank = function()
+        return true
+      end,
+      get = function()
+        return {}
+      end,
+      releaseBank = function() end,
+    }
+  end)
+  rawset(GameAudio, "compose", function()
+    return { sound = {}, sink = { release = function() end } }
+  end)
+  rawset(FieldTextRenderer, "new", function()
+    return {}
+  end)
+  rawset(FieldDialogueRenderer, "new", function()
+    return {}
+  end)
+  rawset(FieldDialogueController, "new", function()
+    return {}
+  end)
+  rawset(OakIntroController, "new", function()
+    return {}
+  end)
+  rawset(OakIntroMessages, "new", function()
+    return {
+      format = function()
+        return {}
+      end,
+    }
+  end)
+  local composed
+  rawset(OakIntroState, "new", function(options)
+    composed = options
+    return { trusted = true }
+  end)
+
+  local ok, state = pcall(OakIntroComposition.compose, {
+    candidate = {},
+    versionId = "heartgold",
+    clock = {},
+    randomU32 = function()
+      return 1
+    end,
+    imageLoader = function()
+      return {}
+    end,
+  })
+
+  rawset(CacheFs, "forVersion", originalForVersion)
+  rawset(introCache, "validateManifest", originalValidate)
+  rawset(FieldFontLoader, "load", originalFontLoad)
+  rawset(FieldMessageProvider, "new", originalProviderNew)
+  rawset(GameAudio, "compose", originalAudioCompose)
+  rawset(FieldTextRenderer, "new", originalTextNew)
+  rawset(FieldDialogueRenderer, "new", originalDialogueRendererNew)
+  rawset(FieldDialogueController, "new", originalDialogueControllerNew)
+  rawset(OakIntroController, "new", originalControllerNew)
+  rawset(OakIntroMessages, "new", originalMessagesNew)
+  rawset(OakIntroState, "new", originalStateNew)
+
+  Assert.isTrue(ok, "a published intro manifest composes without validator proof: " .. tostring(state))
+  Assert.equal(calls, 0, "the comprehensive intro validator must not run during trusted composition")
+  Assert.equal(state.trusted, true)
+  Assert.equal(composed.manifest, introManifest, "composition retains the published intro manifest")
+end
+
 function T.tests.random_u32_provider_returns_nonconstant_uint32_values()
   local draws = { 0x1234, 0x5678 }
   local random = OakIntroComposition.randomU32({
@@ -85,8 +196,6 @@ end
 function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails()
   local modules = {
     cache = CacheFs.forVersion,
-    introValidate = require("libs.assets.src.newgame.IntroAssetCache").validateManifest,
-    fieldUiValidate = require("libs.assets.src.field.FieldUiAssetCache").validateManifest,
     fontLoad = FieldFontLoader.load,
     providerNew = FieldMessageProvider.new,
     audioCompose = GameAudio.compose,
@@ -96,17 +205,16 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
     controllerNew = OakIntroController.new,
     messagesNew = OakIntroMessages.new,
   }
-  local introCache = require("libs.assets.src.newgame.IntroAssetCache")
-  local fieldUiCache = require("libs.assets.src.field.FieldUiAssetCache")
   local calls = {}
+  local fieldUiCache = require("libs.assets.src.field.FieldUiAssetCache")
   local fontZero = { releases = 0 }
   function fontZero:release()
     self.releases = self.releases + 1
   end
   local fakeCache = {
     loadLua = function(_, path)
-      if path == introCache.manifestPath() then
-        return {}
+      if path == IntroAssetCache.manifestPath() then
+        return { schemaVersion = IntroAssetCache.SCHEMA_VERSION, variant = "heartgold" }
       end
       if path == fieldUiCache.manifestPath() then
         return {
@@ -134,12 +242,6 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
   rawset(CacheFs, "forVersion", function()
     return fakeCache
   end)
-  rawset(introCache, "validateManifest", function()
-    return true
-  end)
-  rawset(fieldUiCache, "validateManifest", function()
-    return true
-  end)
   rawset(FieldFontLoader, "load", function()
     return { charmap = {}, fontId = 0 }
   end)
@@ -165,8 +267,6 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
   end)
 
   rawset(CacheFs, "forVersion", modules.cache)
-  rawset(introCache, "validateManifest", modules.introValidate)
-  rawset(fieldUiCache, "validateManifest", modules.fieldUiValidate)
   rawset(FieldFontLoader, "load", modules.fontLoad)
   rawset(FieldMessageProvider, "new", modules.providerNew)
   rawset(GameAudio, "compose", modules.audioCompose)

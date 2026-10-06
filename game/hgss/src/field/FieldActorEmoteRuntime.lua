@@ -10,14 +10,14 @@ local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache
 local M = {}
 
 function M.load(cacheFs)
+  -- The descriptor is a trusted published artifact: presence through the
+  -- ready cache path is sufficient. The renderer asserts the schema and
+  -- fields it actually reads, and the producer pipeline plus explicit audit
+  -- own whole-descriptor validation.
   local exclamation = assert(
     cacheFs:loadLua(FieldEmoteAssetCache.exclamationDescriptorPath()),
     "field emote cache is cold -- run `scripts/buildcache.sh` first"
   )
-  local valid, err = FieldEmoteAssetCache.validateDescriptor(exclamation)
-  if not valid then
-    error(err, 0)
-  end
   return { exclamation = exclamation }
 end
 

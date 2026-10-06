@@ -1,5 +1,5 @@
 -- Modal starter-choice host for the blocking starter task. It owns the
--- pure retail controller, the validated starter-application manifest loaded
+-- pure retail controller, the trusted published starter-application manifest loaded
 -- once per open through the generated-asset cache, the per-candidate
 -- portrait descriptors resolved through the mon portrait contract, and the
 -- game-local presentation that realizes that manifest across two logical
@@ -28,7 +28,7 @@ local StarterChoicePresentation = require("game.hgss.src.starters.StarterChoiceP
 ---@field _candidates table[]|nil borrowed task-owned candidate records while open
 ---@field _names string[]|nil candidate display names while open
 ---@field _portraits table[]|nil per-candidate portrait descriptors while open
----@field _manifest table<string, unknown>? immutable validated application manifest while open
+---@field _manifest table<string, unknown>? immutable trusted application manifest while open
 ---@field _presentation StarterChoicePresentation? game-local scene presentation while open
 ---@field _frameIndex integer player-owned text-frame choice carried into the presentation
 ---@field _doneIndex integer? completed candidate once the lock settles
@@ -162,9 +162,8 @@ end
 
 -- Opens the modal on the task cursor with the three pre-created candidates.
 -- The records are borrowed read-only for presentation; the task owns
--- publication authority. A cold or invalid application cache fails loudly
--- here through the generated-cache readiness gate; there is no fallback
--- presentation.
+-- publication authority. A cold application cache fails loudly here on the
+-- marker/manifest presence gate; there is no fallback presentation.
 ---@param cursor integer zero-based opening candidate
 ---@param candidates table[] three complete semantic mon records
 function StarterChoiceState:open(cursor, candidates)
@@ -183,13 +182,15 @@ function StarterChoiceState:open(cursor, candidates)
   local cacheFs = assert(self._cacheFs, "starter choice requires the generated-asset filesystem")
   local marker = cacheFs:read(StarterChoiceAssetCache.markerPath())
   assert(marker ~= nil, "starter application cache is cold -- run `scripts/buildcache.sh` first")
-  assert(
-    StarterChoiceAssetCache.isReady(cacheFs, marker),
-    "starter application cache is incomplete -- run `scripts/buildcache.sh` first"
-  )
+  -- The manifest is a trusted published artifact: marker presence plus the
+  -- current schema identity is sufficient, and the producer pipeline plus
+  -- explicit audit own whole-manifest validation.
   local manifest =
     assert(cacheFs:loadLua(StarterChoiceAssetCache.manifestPath()), "starter application cache carries no manifest")
-  assert(StarterChoiceAssetCache.validateManifest(manifest), "starter application manifest is invalid")
+  assert(
+    type(manifest) == "table" and manifest.schema == StarterChoiceAssetCache.SCHEMA,
+    "starter application manifest is unavailable"
+  )
   local portraits = assert(
     cacheFs:loadLua(MonCache.portraitManifestPath()),
     "starter choice requires the generated mon portrait manifest"

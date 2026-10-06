@@ -1,8 +1,8 @@
--- Field font definitions are runtime data. Loading them must not allocate a
--- presentation resource, so field composition can lay out dialogue before a
--- renderer exists. The loader must also reject malformed or stale definitions
--- before presentation construction, so an earlier cache cannot
--- pass through the new color-band and focus-indicator contract.
+-- Field font definitions are trusted published data. Loading them must not
+-- allocate a presentation resource, so field composition can lay out dialogue
+-- before a renderer exists. The loader checks presence and the current schema
+-- identity; whole-definition shape rules stay with the producer pipeline and
+-- explicit audit. Consumers assert the fields they actually read.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -98,37 +98,6 @@ function T.loads_font_four_from_its_parameterized_definition_path()
   Assert.equal(loaded.fontId, 4)
 end
 
-function T.load_rejects_a_wrong_color_variant_count()
-  local definition = validDef()
-  assert(definition.colorVariants)
-  definition.colorVariants.count = FieldMessageText.COLOR_VARIANT_COUNT - 1
-  loadExpectRaised(definition, "a count that does not match the protocol color count must be rejected")
-end
-
-function T.load_rejects_a_non_positive_color_stride()
-  local definition = validDef()
-  assert(definition.colorVariants)
-  definition.colorVariants.strideY = 0
-  loadExpectRaised(definition, "a non-positive color stride must be rejected")
-end
-
-function T.load_rejects_an_atlas_too_short_for_the_color_bands()
-  local definition = validDef()
-  definition.atlas.height = definition.atlas.baseHeight * FieldMessageText.COLOR_VARIANT_COUNT - 1
-  loadExpectRaised(definition, "an atlas too short for all color bands must be rejected")
-end
-
--- The v3 contract requires a named semantic glyph mask atlas; a missing or
--- empty path is rejected before presentation construction.
-function T.load_rejects_a_missing_mask_atlas_path()
-  local definition = validDef()
-  definition.maskAtlasPath = nil
-  loadExpectRaised(definition, "a definition without maskAtlasPath must be rejected")
-  local empty = validDef()
-  empty.maskAtlasPath = ""
-  loadExpectRaised(empty, "an empty maskAtlasPath must be rejected")
-end
-
 -- The old single-rect focus definition must never pass as the layered contract.
 function T.load_rejects_a_stale_single_rect_focus_definition()
   local v3 = validDef()
@@ -144,45 +113,24 @@ function T.load_rejects_a_stale_single_rect_focus_definition()
   loadExpectRaised(v3, "a stale single-rect focus definition must be rejected")
 end
 
-function T.load_rejects_wrong_focus_count_and_rect_geometry()
-  for _, count in ipairs({ FieldMessageText.FOCUS_INDICATOR_COUNT - 1, FieldMessageText.FOCUS_INDICATOR_COUNT + 1 }) do
-    local definition = validDef()
-    definition.focusIndicators.count = count
-    loadExpectRaised(definition, "a focus count that does not match the protocol must be rejected")
-  end
-  local noFrames = validDef()
-  noFrames.focusIndicators.frames = nil
-  loadExpectRaised(noFrames, "missing focus frame layers must be rejected")
-  local badRect = validDef()
-  badRect.focusIndicators.frames[0].layers[1].rect.width = 23
-  loadExpectRaised(badRect, "a focus rect that is not exactly 24x32 must be rejected")
+function T.load_trusts_the_published_definition_without_revalidating()
+  local originalValidate = FieldFontCache.validateDefinition
+  local calls = 0
+  rawset(FieldFontCache, "validateDefinition", function()
+    calls = calls + 1
+    error("the published definition must not be revalidated at load", 0)
+  end)
+  local ok, loaded = pcall(FieldFontLoader.load, cacheWith(validDef()))
+  rawset(FieldFontCache, "validateDefinition", originalValidate)
+  Assert.isTrue(ok, "a published font definition loads without invoking the comprehensive validator")
+  Assert.equal(calls, 0, "the comprehensive font validator must not run during trusted load")
+  Assert.equal(loaded --[[@as table]].schema, FieldFontCache.SCHEMA)
 end
 
-function T.load_rejects_focus_definitions_without_all_layers()
-  local missingLayer = validDef()
-  missingLayer.focusIndicators.frames[0].layers[4] = nil
-  loadExpectRaised(missingLayer, "a frame missing a layer must be rejected")
-
-  local invalidPaletteSlot = validDef()
-  invalidPaletteSlot.focusIndicators.frames[0].layers[1].paletteSlot = 16
-  loadExpectRaised(invalidPaletteSlot, "a palette slot outside the 16-color range must be rejected")
-
-  local duplicatePaletteSlot = validDef()
-  duplicatePaletteSlot.focusIndicators.frames[0].layers[2].paletteSlot = 2
-  loadExpectRaised(duplicatePaletteSlot, "duplicate palette slots must be rejected")
-end
-
-function T.load_rejects_extra_focus_layers_and_frames()
-  local extraLayer = validDef()
-  extraLayer.focusIndicators.frames[0].layers[5] = {
-    paletteSlot = 15,
-    rect = { x = 96, y = 0, width = 24, height = 32 },
-  }
-  loadExpectRaised(extraLayer, "an extra focus layer must be rejected")
-
-  local extraFrame = validDef()
-  extraFrame.focusIndicators.frames[4] = extraFrame.focusIndicators.frames[3]
-  loadExpectRaised(extraFrame, "a focus frame outside the declared count must be rejected")
-end
+-- Whole-definition shape rules (color bands, atlas geometry, mask atlas,
+-- focus layers) stay with the producer pipeline and explicit audit: the
+-- schema tests and writer readback prove them, so trusted load needs no
+-- per-field rejection tests here. Consumers assert the fields they read at
+-- their own use sites.
 
 return { tests = T }

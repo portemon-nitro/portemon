@@ -1,7 +1,8 @@
 -- Authoritative validation for the generated mon asset class. Catalogs,
 -- class indexes, and icon/portrait manifests are plain source-independent
--- data: every loader, producer writer, and test calls these validators, so
--- no second interpretation of the shapes exists. Unknown fields, duplicate
+-- data: producer writers, schema tests, and explicit audit call these
+-- validators, so no second interpretation of the shapes exists. Runtime
+-- trusts published artifacts and must not duplicate this validation. Unknown fields, duplicate
 -- identities, out-of-range values, and dangling cross-references fail loudly.
 -- Order is significant only for level-up learnsets and evolution slots, which
 -- the source consumes positionally. Per-form checks are structural (they take

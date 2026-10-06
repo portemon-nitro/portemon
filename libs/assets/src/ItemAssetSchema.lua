@@ -2,8 +2,9 @@
 -- carries one strict definition per source native identity 0..536 plus the
 -- eight pocket definitions and their display names; the icon manifest carries
 -- the compiled atlas rectangles every catalog icon selector must resolve to.
--- Every loader, producer writer, and test calls these validators, so no
--- second interpretation of the shapes exists. Unknown fields, duplicate
+-- Producer writers, schema tests, and explicit audit call these validators,
+-- so no second interpretation of the shapes exists. Runtime trusts published
+-- artifacts and must not duplicate this validation. Unknown fields, duplicate
 -- identities, missing range members, malformed pockets, and malformed
 -- optional TM/berry data fail loudly. Love-free and filesystem-free.
 

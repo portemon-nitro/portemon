@@ -143,11 +143,14 @@ function PcCache.validateManifest(manifest)
   return PcAssetSchema.assertManifest(manifest)
 end
 
+-- Trusted runtime load: presence plus the current schema identity is
+-- sufficient. Whole-manifest validation stays with the producer writers,
+-- schema tests, and explicit audit (see isReady/referencedPaths).
 ---@param cacheFs CacheFs
 ---@return table<string, unknown>
 function PcCache.loadManifest(cacheFs)
   local manifest = cacheFs:loadLua(PcCache.manifestPath())
-  PcAssetSchema.assertManifest(manifest)
+  assert(type(manifest) == "table" and manifest.schema == PcCache.SCHEMA, "pc manifest is unavailable")
   return manifest --[[@as table<string, unknown>]]
 end
 
