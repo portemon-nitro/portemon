@@ -15,7 +15,6 @@
 -- pipeline, which receives the validated player candidate through the
 -- receipt.
 
-local HgssSendToPcStub = require("libs.hgss.src.battle.HgssSendToPcStub")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Party = require("libs.mons.src.Party")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
@@ -170,14 +169,14 @@ function HgssBattleCommitter.prepare(args)
   end
   local ownerBatch = nil
   local fitting = {}
-  local overflow = {}
   if owner ~= nil then
-    -- Scarce party slots go to the earliest captures in order; the rest
-    -- overflow to the honest handoff instead of invalidating the batch.
-    -- Party updates never change the roster size, so live capacity is the
-    -- only bound. Every record's species key is validated read-only here,
-    -- before any publication; fitting records pass full validation through
-    -- the staged batch below.
+    -- Every successful capture needs a real party destination before any
+    -- publication exists: without a storage backend a batch that exceeds
+    -- live capacity fails here instead of committing a fitting prefix or
+    -- discarding the caught mon. Party updates never change the roster
+    -- size, so live capacity is the only bound. Every record's species
+    -- key is validated read-only here, before any publication; fitting
+    -- records pass full validation through the staged batch below.
     local capacity = Party.MAX - owner:partyCount()
     for _, entry in ipairs(captures) do
       local mon = entry.mon --[[@as table<string, unknown>]]
@@ -187,11 +186,10 @@ function HgssBattleCommitter.prepare(args)
       -- Unknown species fail here, before any publication, through a
       -- read-only lookup that mutates nothing.
       owner:countSpecies(mon.species)
-      if #fitting < capacity then
-        fitting[#fitting + 1] = entry
-      else
-        overflow[#overflow + 1] = entry
-      end
+      fitting[#fitting + 1] = entry
+    end
+    if #fitting > capacity then
+      error("battle commit captures exceed free party slots without storage", 0)
     end
     local appends = {}
     for _, entry in ipairs(fitting) do
@@ -242,7 +240,6 @@ function HgssBattleCommitter.prepare(args)
     ownerBatch = ownerBatch,
     captures = captures,
     fitting = fitting,
-    overflow = overflow,
     rewards = copyValue(args.rewards),
     scriptFlags = copyValue(args.scriptFlags) or {},
     playerCandidate = playerCandidate,
@@ -261,7 +258,6 @@ end
 ---@field ownerBatch { isCurrent: fun(): boolean, publish: fun() }?
 ---@field captures table<string, unknown>[]
 ---@field fitting table<string, unknown>[]
----@field overflow table<string, unknown>[]
 ---@field rewards table<string, unknown>?
 ---@field scriptFlags table<string, unknown>
 ---@field playerCandidate table<string, unknown>?
@@ -279,20 +275,6 @@ local function checkedPublish(preparation, what)
   local publish = prep.publish
   assert(type(publish) == "function", "battle commit " .. what .. " publishes")
   return publish
-end
-
----@param owner HgssMonService
----@param entry table<string, unknown>
----@return table<string, unknown>
-local function placeUnplaced(owner, entry)
-  -- Overflow keeps its exact caught record: the handoff receives the same
-  -- mon that battle execution produced and reports that nothing is stored.
-  local placement = HgssSendToPcStub.send(entry.mon, {
-    partyCount = owner:partyCount(),
-    captureId = entry.captureId,
-  })
-  placement.captureId = entry.captureId
-  return placement
 end
 
 ---@param prepared CommitPreparation
@@ -341,27 +323,19 @@ function HgssBattleCommitter.commit(prepared)
   local placements = {}
   local owner = staged.owner
   if owner ~= nil then
-    -- Staged fitting appends land first as one contiguous tail in capture
-    -- order, so their slots are known before the overflow handoffs.
-    -- Placements follow capture order regardless of classification.
-    local overflowed = {}
-    for _, entry in ipairs(staged.overflow) do
-      overflowed[entry] = true
-    end
+    -- Preparation proved every successful capture fits, so the staged
+    -- appends land as one contiguous tail in capture order and every
+    -- placement retains its mon in the party.
     local recordSlot = owner:partyCount() - #staged.fitting
     for _, entry in ipairs(staged.captures) do
-      if overflowed[entry] then
-        placements[#placements + 1] = placeUnplaced(owner, entry)
-      else
-        placements[#placements + 1] = {
-          captureId = entry.captureId,
-          retained = true,
-          destination = "party",
-          partySlot = recordSlot,
-          reason = "retained",
-        }
-        recordSlot = recordSlot + 1
-      end
+      placements[#placements + 1] = {
+        captureId = entry.captureId,
+        retained = true,
+        destination = "party",
+        partySlot = recordSlot,
+        reason = "retained",
+      }
+      recordSlot = recordSlot + 1
     end
   end
   local receipt = {
