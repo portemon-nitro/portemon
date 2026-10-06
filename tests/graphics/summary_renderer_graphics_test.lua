@@ -1081,6 +1081,97 @@ function T.semantic_info_and_memo_use_generated_roles(scope)
   end
 end
 
+-- Generated Trainer Memo controls keep their source geometry end to end:
+-- the exercised bank template carries both line-break and color
+-- segments, so its wording must expand into one baseline per break
+-- with no newline glyph in any run, and the real main pane must draw
+-- each produced line on its own consecutive baseline. Only structure
+-- is asserted here, never generated wording.
+function T.generated_memo_controls_draw_on_consecutive_baselines(scope)
+  local versions = SummaryAcceptanceFixture.readySummaryVersions()
+  Assert.isTrue(#versions >= 1, "the prepared cache publishes the Summary family")
+  for _, versionId in ipairs(versions) do
+    local cacheFs, _, _, portraits, service = composition(scope, versionId)
+    local _, summaryManifest = SummaryAcceptanceFixture.loadSummaryManifest(versionId)
+    local context = SummaryAcceptanceFixture.displayContext(summaryManifest, service:partyCount())
+    local facts = SummaryModel.build(service, 0, context, summaryManifest)
+    local branch = nil
+    for _, candidate in
+      ipairs(assert(summaryManifest.memo.conditions, versionId .. " carries ordered memo rules"))
+    do
+      if candidate.key == facts.memo.condition then
+        branch = candidate
+      end
+    end
+    Assert.notNil(branch, versionId .. " carries the selected branch " .. tostring(facts.memo.condition))
+    assert(branch ~= nil, "branches select above")
+    local segments =
+      assert(assert(branch.dateTemplate, versionId .. " carries its date template").segments, versionId .. " carries segments")
+    local breaks, colors = 0, 0
+    for _, segment in ipairs(segments) do
+      if segment.kind == "lineBreak" then
+        breaks = breaks + 1
+      elseif segment.kind == "color" then
+        colors = colors + 1
+      end
+    end
+    Assert.isTrue(breaks >= 1, versionId .. " exercises generated line breaks")
+    Assert.isTrue(colors >= 1, versionId .. " exercises generated color controls")
+    for _, block in ipairs(assert(facts.memo.blocks, versionId .. " carries memo blocks")) do
+      for _, run in ipairs(assert(block.runs, versionId .. " carries memo runs")) do
+        Assert.isTrue(
+          type(run.text) == "string" and #run.text > 0,
+          versionId .. " publishes non-empty run text"
+        )
+        Assert.isTrue(
+          run.text:find("\n", 1, true) == nil,
+          versionId .. " keeps line breaks out of run text"
+        )
+      end
+    end
+    local base = assert(branch.lines.date, versionId .. " places its date line")
+    local inRange = 0
+    for _, block in ipairs(facts.memo.blocks) do
+      if block.line >= base and block.line <= base + breaks then
+        inRange = inRange + 1
+      end
+    end
+    Assert.equal(inRange, breaks + 1, versionId .. " opens one baseline per generated break")
+    local textCalls = {}
+    local realText = FieldTextRenderer.new({ cacheFs = cacheFs })
+    local text, _ = recordingText(realText, textCalls)
+    local renderer = SummaryRenderer.new({ text = text })
+    local bundle = readyLikeBundle(scope, cacheFs, summaryManifest, text, portraits, pictureShader(scope), {})
+    drawNativePane(renderer, scope, textCalls, nativeStatus(facts, "info"), "main", bundle)
+    local info =
+      assert(assert(summaryManifest.windows, versionId .. " carries windows").groups, versionId .. " carries groups").info
+    local rect = assert(
+      assert(assert(info, versionId .. " carries info").main, versionId .. " carries main roles").memoBody,
+      versionId .. " carries its memo body"
+    ).rect
+    assert(type(rect) == "table", "memo roles carry rects")
+    local drawnY = {}
+    for _, call in ipairs(textCalls) do
+      if
+        type(call.palette) == "table"
+        and type(call.x) == "number"
+        and type(call.y) == "number"
+        and call.x >= rect.x
+        and call.x < rect.x + rect.width
+        and call.y >= rect.y
+        and call.y < rect.y + rect.height
+      then
+        drawnY[call.y] = true
+      end
+    end
+    for offset = 0, breaks do
+      local expected = rect.y + (base + offset - 1) * SummaryRenderer.LINE_STEP
+      Assert.isTrue(drawnY[expected] == true, versionId .. " draws break " .. offset .. " on its own baseline")
+    end
+    realText:release()
+  end
+end
+
 function T.skills_moves_performance_and_ribbons_use_native_roles(scope)
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs, _, _, portraits, service = composition(scope, versionId)

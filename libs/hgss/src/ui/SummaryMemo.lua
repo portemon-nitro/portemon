@@ -311,9 +311,10 @@ local function monthKey(section, month)
 end
 
 -- The migrated branch shows the arrival region for the mon's origin game
--- instead of a met landmark. The producer binds each supported game to
--- its generated region wording; any other game fails instead of widening
--- the supported set.
+-- instead of a met landmark. The generated family binds each supported
+-- game to its region wording; the runtime only looks the origin game up
+-- in that map, so a game without generated wording fails here instead
+-- of guessing a region.
 ---@param mon table<string, unknown>
 ---@param manifest table<string, unknown>
 ---@return string
@@ -321,12 +322,11 @@ local function migrationRegionText(mon, manifest)
   local origin = assert(mon.origin, "stored mons carry their origin")
   assert(type(origin) == "table", "origins are records")
   local game = assert(origin.game, "origins carry their game")
-  assert(game == "heartgold" or game == "soulsilver", "migration covers the supported games, not " .. tostring(game))
   local regions = assert(memoSection(manifest).migrationRegions, "memo records carry migration regions")
   assert(type(regions) == "table", "migration regions are a record")
   local regionKey = regions[game]
-  assert(type(regionKey) == "string" and regionKey ~= "", "the migration region names its text")
-  return labelText(memoLabels(manifest), regionKey, "the migration region")
+  assert(type(regionKey) == "string" and regionKey ~= "", "the migration map covers origin game " .. tostring(game))
+  return labelText(memoLabels(manifest), regionKey, "the migration region for " .. tostring(game))
 end
 
 -- Maps one generated color selection to its semantic ink name. The
@@ -380,15 +380,17 @@ local function dateNumber(value, what)
 end
 
 -- Expands one generated template (a branch date template or a nature
--- template) into display-ready runs. Literal text transfers verbatim,
--- line breaks stay inside the run text, color selections change the run
--- ink, and every other segment binds a live mon field, a generated
--- month/landmark label, or the migration region. Adjacent equal-ink
--- text stays coalesced; unknown segment kinds fail.
+-- template) into one display-ready run list per source line. Literal
+-- text transfers verbatim, color selections change the run ink, and
+-- every other segment binds a live mon field, a generated
+-- month/landmark label, or the migration region. A line break finishes
+-- the current source line and opens the next one under the active ink;
+-- it never becomes drawable text. Adjacent equal-ink text stays
+-- coalesced; unknown segment kinds fail.
 ---@param mon table<string, unknown>
 ---@param manifest table<string, unknown>
 ---@param segments table[]
----@return { text: string, ink: string }[]
+---@return { text: string, ink: string }[][]
 local function expandSegments(mon, manifest, segments)
   local section = memoSection(manifest)
   local labels = memoLabels(manifest)
@@ -412,12 +414,13 @@ local function expandSegments(mon, manifest, segments)
   local eggLocation = assert(egg.location, "memo egg records carry a location")
   assert(type(eggLocation) == "number" and eggLocation % 1 == 0, "memo egg locations are integers")
   ---@cast eggLocation integer
-  local runs = {}
+  local lines = {}
+  local current = {}
   local pieces = {}
   local ink = "ordinary"
   local function flush()
     if #pieces > 0 then
-      runs[#runs + 1] = { text = table.concat(pieces), ink = ink }
+      current[#current + 1] = { text = table.concat(pieces), ink = ink }
       pieces = {}
     end
   end
@@ -433,7 +436,9 @@ local function expandSegments(mon, manifest, segments)
       assert(type(value) == "string", "memo text carries its wording")
       push(value)
     elseif kind == "lineBreak" then
-      push("\n")
+      flush()
+      lines[#lines + 1] = current
+      current = {}
     elseif kind == "color" then
       flush()
       ink = inkForColor(manifest, segment.color)
@@ -462,20 +467,26 @@ local function expandSegments(mon, manifest, segments)
     end
   end
   flush()
-  assert(#runs >= 1, "memo templates expand to text")
-  return runs
+  lines[#lines + 1] = current
+  local total = 0
+  for _, runs in ipairs(lines) do
+    total = total + #runs
+  end
+  assert(total >= 1, "memo templates expand to text")
+  return lines
 end
 
--- Resolves one generated wording reference to display-ready runs. The
--- generated family carries wording as either a plain label or a
--- template with color and break segments; templates expand through the
--- same segment interpreter as date templates, labels transfer as one
--- ordinary run. A reference carried by neither fails immediately.
+-- Resolves one generated wording reference to one display-ready run list
+-- per source line. The generated family carries wording as either a
+-- plain label or a template with color and break segments; templates
+-- expand through the same segment interpreter as date templates, labels
+-- transfer as one ordinary run on one source line. A reference carried
+-- by neither fails immediately.
 ---@param manifest table<string, unknown>
 ---@param mon table<string, unknown>
 ---@param key string
 ---@param what string
----@return { text: string, ink: string }[]
+---@return { text: string, ink: string }[][]
 local function textRuns(manifest, mon, key, what)
   local textSection = assert(manifest.text, "the summary family carries lowered text")
   assert(type(textSection) == "table", "lowered text is a record")
@@ -486,7 +497,7 @@ local function textRuns(manifest, mon, key, what)
     assert(type(segments) == "table" and #segments >= 1, what .. " carries segments")
     return expandSegments(mon, manifest, segments)
   end
-  return { { text = labelText(memoLabels(manifest), key, what), ink = "ordinary" } }
+  return { { { text = labelText(memoLabels(manifest), key, what), ink = "ordinary" } } }
 end
 
 -- Names the characteristic individual-value position: the highest value
@@ -537,6 +548,21 @@ local function eggWatchIndex(friendship, eggWatch)
   return #thresholds + 1
 end
 
+-- Adds one template expansion to the public blocks: the first expanded
+-- source line keeps the branch base line and later lines follow one per
+-- line. Authored empty lines carry no block but still advance the line
+-- numbers that follow them.
+---@param blocks { line: integer, runs: { text: string, ink: string }[] }[]
+---@param base integer branch base source line
+---@param lines { text: string, ink: string }[][] one run list per source line
+local function addBlocks(blocks, base, lines)
+  for offset, runs in ipairs(lines) do
+    if #runs >= 1 then
+      blocks[#blocks + 1] = { line = base + offset - 1, runs = runs }
+    end
+  end
+end
+
 -- Builds the authored memo value for one copied mon: the selected
 -- condition plus ordered line blocks with named text runs. Reads only the
 -- copied mon, ownership, context profile identity, and generated records.
@@ -573,14 +599,14 @@ function SummaryMemo.build(mon, isMine, context, manifest)
     -- The English name only derives the generated wording key; the
     -- displayed wording always comes from the generated family.
     local natureKey = "nature" .. HgssMonService.natureName(nature)
-    blocks[#blocks + 1] = { line = lines.nature, runs = textRuns(manifest, mon, natureKey, "the memo nature") }
+    addBlocks(blocks, lines.nature, textRuns(manifest, mon, natureKey, "the memo nature"))
   end
   if lines.date > 0 then
     local template = assert(rule.dateTemplate, "memo rules carry their date template")
     assert(type(template) == "table", "memo date templates are records")
     local segments = assert(template.segments, "memo date templates carry segments")
     assert(type(segments) == "table" and #segments >= 1, "memo date templates carry segments")
-    blocks[#blocks + 1] = { line = lines.date, runs = expandSegments(mon, manifest, segments) }
+    addBlocks(blocks, lines.date, expandSegments(mon, manifest, segments))
   end
   if lines.characteristic > 0 then
     local characteristics = assert(section.characteristics, "memo records carry characteristics")
@@ -589,8 +615,7 @@ function SummaryMemo.build(mon, isMine, context, manifest)
     local row = assert(characteristics[position], "memo characteristics cover position " .. position)
     assert(type(row) == "table", "characteristic rows are arrays")
     local key = assert(row[remainder + 1], "memo characteristics cover remainder " .. remainder)
-    blocks[#blocks + 1] =
-      { line = lines.characteristic, runs = textRuns(manifest, mon, key, "the memo characteristic") }
+    addBlocks(blocks, lines.characteristic, textRuns(manifest, mon, key, "the memo characteristic"))
   end
   if lines.flavor > 0 then
     assert(nature ~= nil, "the flavor line needs the nature")
@@ -606,7 +631,7 @@ function SummaryMemo.build(mon, isMine, context, manifest)
       local index = assert(FLAVOR_BY_STAT[up], "flavors cover raised stat " .. up)
       key = assert(byFlavor[index], "memo flavors cover flavor " .. index)
     end
-    blocks[#blocks + 1] = { line = lines.flavor, runs = textRuns(manifest, mon, key, "the memo flavor") }
+    addBlocks(blocks, lines.flavor, textRuns(manifest, mon, key, "the memo flavor"))
   end
   if lines.eggWatch > 0 then
     local eggWatch = assert(section.eggWatch, "memo records carry egg watch")
@@ -615,7 +640,7 @@ function SummaryMemo.build(mon, isMine, context, manifest)
     assert(type(templates) == "table", "egg-watch templates are an array")
     local index = eggWatchIndex(mon.friendship, eggWatch)
     local key = assert(templates[index], "egg watch covers band " .. index)
-    blocks[#blocks + 1] = { line = lines.eggWatch, runs = textRuns(manifest, mon, key, "the egg-watch text") }
+    addBlocks(blocks, lines.eggWatch, textRuns(manifest, mon, key, "the egg-watch text"))
   end
 
   table.sort(blocks, function(a, b)

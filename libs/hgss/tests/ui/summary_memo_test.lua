@@ -242,8 +242,19 @@ function T.ownership_decides_the_branch_while_the_visible_id_stays_five_digits()
   Assert.notNil(lines[branch.lines.nature], "the ordinary wild nature opens its authored line")
   Assert.notNil(lines[branch.lines.date], "the ordinary wild date block is present")
   local wildKey = manifest.memo.landmarks.wildByLocation[wildLocation(manifest)]
+  local wildSegments = assert(branch.dateTemplate, "the branch carries its date template").segments
+  local wildBreaks = 0
+  for _, segment in ipairs(wildSegments) do
+    if segment.kind == "lineBreak" then
+      wildBreaks = wildBreaks + 1
+    end
+  end
+  local wildDated = {}
+  for offset = 0, wildBreaks do
+    wildDated[#wildDated + 1] = lines[branch.lines.date + offset] or ""
+  end
   Assert.isTrue(
-    lines[branch.lines.date]:find(labelOf(manifest, wildKey), 1, true) ~= nil,
+    table.concat(wildDated, "\n"):find(labelOf(manifest, wildKey), 1, true) ~= nil,
     "the date block names the wild landmark"
   )
   Assert.notNil(lines[branch.lines.characteristic], "the characteristic keeps its authored line")
@@ -276,8 +287,19 @@ function T.link_trade_meetings_keep_the_shared_branch_when_traded()
   local giftKey = manifest.memo.landmarks.giftByLocation[locations.linkTrade]
   if giftKey ~= nil then
     local branch = findBranch(manifest, "wildGift")
+    local giftSegments = assert(branch.dateTemplate, "the branch carries its date template").segments
+    local giftBreaks = 0
+    for _, segment in ipairs(giftSegments) do
+      if segment.kind == "lineBreak" then
+        giftBreaks = giftBreaks + 1
+      end
+    end
+    local dated = {}
+    for offset = 0, giftBreaks do
+      dated[#dated + 1] = lineMap(mine.memo.blocks)[branch.lines.date + offset] or ""
+    end
     Assert.isTrue(
-      (lineMap(mine.memo.blocks)[branch.lines.date] or ""):find(labelOf(manifest, giftKey), 1, true) ~= nil,
+      table.concat(dated, "\n"):find(labelOf(manifest, giftKey), 1, true) ~= nil,
       "the gift block names the gift landmark"
     )
   end
@@ -467,18 +489,40 @@ function T.date_templates_expand_through_generated_words_breaks_and_levels()
   })
   local wild = build(service, 0, nil, manifest)
   local wildBranch = findBranch(manifest, wild.memo.condition)
-  local wildDate = lineMap(wild.memo.blocks)[wildBranch.lines.date]
+  local wildSegments = assert(wildBranch.dateTemplate, "the branch carries its date template").segments
+  local wildBreaks = 0
+  for _, segment in ipairs(wildSegments) do
+    if segment.kind == "lineBreak" then
+      wildBreaks = wildBreaks + 1
+    end
+  end
+  local wildLines = lineMap(wild.memo.blocks)
+  local wildDate = wildLines[wildBranch.lines.date]
   Assert.notNil(wildDate, "the wild date block is present")
+  -- The date template carries source line breaks, so its landmark and
+  -- level bindings live on the following source lines while no run
+  -- carries a newline glyph.
+  local dated = { wildDate }
+  for offset = 1, wildBreaks do
+    local text = wildLines[wildBranch.lines.date + offset]
+    Assert.notNil(text, "the wild date keeps its source line " .. offset)
+    dated[#dated + 1] = text
+  end
+  for _, block in ipairs(wild.memo.blocks) do
+    for _, run in ipairs(block.runs) do
+      Assert.isTrue(run.text:find("\n", 1, true) == nil, "line breaks never reach run text")
+    end
+  end
+  dated = table.concat(dated, "\n")
   local wildLandmark = labelOf(manifest, manifest.memo.landmarks.wildByLocation[wildLocation(manifest)])
-  Assert.isTrue(wildDate:find(wildLandmark, 1, true) ~= nil, "the wild date names the generated landmark")
+  Assert.isTrue(dated:find(wildLandmark, 1, true) ~= nil, "the wild date names the generated landmark")
   local metDate = CatalogFixture.metDate()
   Assert.isTrue(
     wildDate:find(labelOf(manifest, manifest.memo.months[metDate.month]), 1, true) ~= nil,
     "the wild date names the generated month"
   )
   Assert.isTrue(wildDate:find(tostring(metDate.day), 1, true) ~= nil, "the wild date names the meeting day")
-  Assert.isTrue(wildDate:find("Lv.", 1, true) ~= nil, "the wild date expands the level binding from segments")
-  Assert.isTrue(wildDate:find("\n", 1, true) ~= nil, "the wild date preserves template line breaks")
+  Assert.isTrue(dated:find("Lv.", 1, true) ~= nil, "the wild date expands the level binding from segments")
   Assert.isTrue(
     wildDate:find(tostring(service:partyMon(0).met.location), 1, true) == nil
       or wildLandmark:find(tostring(service:partyMon(0).met.location), 1, true) ~= nil,
@@ -803,6 +847,262 @@ function T.migrated_region_wording_comes_from_the_game_keyed_mapping()
     memoText(remapped.memo.blocks):find(labelOf(manifest, "synLandmarkGift"), 1, true) ~= nil,
     "the migrated region follows the game mapping, not packed ids"
   )
+end
+
+-- Generated line breaks are geometric: each one opens a new absolute
+-- memo baseline with the active ink carried over, so no published run
+-- may contain a newline glyph. The exercised wild template carries two
+-- source breaks, so its date wording must span three baselines.
+function T.date_line_breaks_open_their_own_baselines_without_newline_glyphs()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xA11CE101)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local facts = build(service, 0, nil, manifest)
+  Assert.equal(facts.memo.condition, "wildEncounter", "the ordinary wild meeting keeps its branch")
+  local branch = findBranch(manifest, facts.memo.condition)
+  local segments = assert(branch.dateTemplate, "the branch carries its date template").segments
+  Assert.isTrue(type(segments) == "table" and #segments >= 1, "the date template carries segments")
+  local breaks = 0
+  for _, segment in ipairs(segments) do
+    if segment.kind == "lineBreak" then
+      breaks = breaks + 1
+    end
+  end
+  Assert.isTrue(breaks >= 1, "the exercised template carries source line breaks")
+  for _, block in ipairs(facts.memo.blocks) do
+    for _, run in ipairs(block.runs) do
+      Assert.isTrue(type(run.text) == "string" and #run.text > 0, "runs carry single-line text")
+      Assert.isTrue(run.text:find("\n", 1, true) == nil, "line breaks never reach run text")
+    end
+  end
+  local base = assert(branch.lines.date, "the branch places its date line")
+  for offset = 0, breaks do
+    Assert.notNil(
+      blockByLine(facts.memo.blocks, base + offset),
+      "break " .. offset .. " opens its own baseline"
+    )
+  end
+end
+
+local function openServiceForGame(catalog, seed, game)
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  return HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), catalog:fingerprint()),
+    profile = CatalogFixture.profile(),
+    game = game,
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+  })
+end
+
+-- Every canonical origin game renders its generated arrival-region
+-- wording through the producer map, never through a HeartGold/SoulSilver
+-- assertion. Region classes mirror the source mapping with invented
+-- test wording; the contract proved here is lookup without a runtime
+-- game switch, plus a loud game-named failure for a missing mapping.
+function T.every_canonical_origin_renders_its_generated_migration_wording()
+  local regions = {
+    sapphire = "synRegionHoenn",
+    ruby = "synRegionHoenn",
+    emerald = "synRegionHoenn",
+    firered = "synRegionKanto",
+    leafgreen = "synRegionKanto",
+    heartgold = "synLandmarkJohto",
+    soulsilver = "synLandmarkJohto",
+    diamond = "synRegionDashes",
+    pearl = "synRegionDashes",
+    platinum = "synRegionDashes",
+    gamecube = "synRegionDistant",
+  }
+  local games = {}
+  for game in pairs(regions) do
+    Assert.notNil(CatalogFixture.GAMES[game], "the canonical domain covers " .. game)
+    games[#games + 1] = game
+  end
+  table.sort(games)
+  local catalog = CatalogFixture.makeCatalog()
+  local seed = 0xA11CE103
+  for _, game in ipairs(games) do
+    seed = seed + 1
+    local service = openServiceForGame(catalog, seed, game)
+    gift(service, "CHIKORITA")
+    local manifest = SummaryPresentationFixture.manifest()
+    manifest.text.labels["synRegionKanto"] = "SYN KANTO"
+    manifest.text.labels["synRegionHoenn"] = "SYN HOENN"
+    manifest.text.labels["synRegionDistant"] = "SYN DISTANT LAND"
+    manifest.text.labels["synRegionDashes"] = "SYN ---"
+    local mapping = {}
+    for name, key in pairs(regions) do
+      mapping[name] = key
+    end
+    manifest.memo.migrationRegions = mapping
+    applyMemoFields(manifest, service, 0, {
+      traded = false,
+      fateful = false,
+      eggLocation = "none",
+      metLocation = "palPark",
+      metLevel = 5,
+    })
+    local facts = build(service, 0, nil, manifest)
+    Assert.equal(facts.memo.condition, "migrated", game .. " reads the migrated branch")
+    Assert.isTrue(
+      memoText(facts.memo.blocks):find(labelOf(manifest, regions[game]), 1, true) ~= nil,
+      game .. " prints its generated region wording"
+    )
+  end
+  local service = openService(catalog, 0xA11CE104)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  manifest.memo.migrationRegions.heartgold = nil
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "palPark",
+    metLevel = 5,
+  })
+  local ok, err = pcall(build, service, 0, nil, manifest)
+  Assert.isFalse(ok, "a missing migration mapping fails instead of guessing")
+  Assert.isTrue(
+    tostring(err):find("heartgold", 1, true) ~= nil,
+    "the failure names the origin game"
+  )
+end
+
+-- Builds the ordinary wild meeting while swapping the branch date
+-- template for synthetic control segments, so break/color geometry is
+-- proved without depending on the fixture wording.
+local function buildWithDateSegments(service, manifest, segments)
+  for _, branch in ipairs(manifest.memo.conditions) do
+    if branch.key == "wildEncounter" then
+      branch.dateTemplate = { segments = segments }
+    end
+  end
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local facts = build(service, 0, nil, manifest)
+  Assert.equal(facts.memo.condition, "wildEncounter", "the synthetic template keeps its branch")
+  return facts.memo.blocks
+end
+
+-- Two back-to-back breaks advance two source lines: the authored empty
+-- line in the middle carries no block and no run, while the text
+-- around it lands on its own baselines.
+function T.consecutive_line_breaks_skip_an_empty_source_line_without_empty_runs()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xA11CE10A)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  local base = findBranch(manifest, "wildEncounter").lines.date
+  local blocks = buildWithDateSegments(service, manifest, {
+    { kind = "text", value = "SYN A" },
+    { kind = "lineBreak" },
+    { kind = "lineBreak" },
+    { kind = "text", value = "SYN B" },
+  })
+  Assert.isNil(blockByLine(blocks, base + 1), "the authored empty line carries no block")
+  local first = blockByLine(blocks, base)
+  Assert.notNil(first, "the text before the breaks keeps its source line")
+  Assert.equal(#first.runs, 1, "the first line carries one run")
+  Assert.equal(first.runs[1].text, "SYN A", "the first line keeps its text")
+  local last = blockByLine(blocks, base + 2)
+  Assert.notNil(last, "the text after the breaks advances two source lines")
+  Assert.equal(#last.runs, 1, "the last line carries one run")
+  Assert.equal(last.runs[1].text, "SYN B", "the last line keeps its text")
+  for _, block in ipairs(blocks) do
+    for _, run in ipairs(block.runs) do
+      Assert.isTrue(type(run.text) == "string" and #run.text > 0, "runs carry single-line text")
+      Assert.isTrue(run.text:find("\n", 1, true) == nil, "line breaks never reach run text")
+    end
+  end
+end
+
+-- The ink selected before a break stays active on the next source
+-- line: the run after the break prints through the pre-break ink.
+function T.the_active_ink_carries_over_a_line_break()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xA11CE10B)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  local base = findBranch(manifest, "wildEncounter").lines.date
+  local blocks = buildWithDateSegments(service, manifest, {
+    { kind = "text", value = "SYN A" },
+    { kind = "color", color = 7 },
+    { kind = "text", value = "SYN B" },
+    { kind = "lineBreak" },
+    { kind = "text", value = "SYN C" },
+  })
+  local first = blockByLine(blocks, base)
+  Assert.notNil(first, "the text before the break keeps its source line")
+  Assert.equal(#first.runs, 2, "the color change splits the first line")
+  Assert.equal(first.runs[2].ink, "slot7", "the color change selects its ink")
+  local second = blockByLine(blocks, base + 1)
+  Assert.notNil(second, "the text after the break opens its own source line")
+  Assert.equal(#second.runs, 1, "the second line carries one run")
+  Assert.equal(second.runs[1].text, "SYN C", "the second line keeps its text")
+  Assert.equal(second.runs[1].ink, "slot7", "the pre-break ink carries over the break")
+end
+
+-- A color change alone splits the ink without inserting text: no
+-- empty run appears on either side of the boundary.
+function T.a_color_change_alone_creates_no_empty_run()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xA11CE10C)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  local base = findBranch(manifest, "wildEncounter").lines.date
+  local blocks = buildWithDateSegments(service, manifest, {
+    { kind = "text", value = "SYN A" },
+    { kind = "color", color = 7 },
+    { kind = "text", value = "SYN B" },
+  })
+  local first = blockByLine(blocks, base)
+  Assert.notNil(first, "the one-line template keeps its source line")
+  Assert.equal(#first.runs, 2, "the color change splits one line into two runs")
+  for _, run in ipairs(first.runs) do
+    Assert.isTrue(type(run.text) == "string" and #run.text > 0, "no empty run appears at the ink boundary")
+  end
+  Assert.equal(first.runs[1].ink, "ordinary", "the text before the change keeps its ink")
+  Assert.equal(first.runs[2].ink, "slot7", "the text after the change takes the new ink")
+end
+
+-- A template without breaks keeps its previous shape exactly: one
+-- block on the branch base line with adjacent same-ink text coalesced
+-- into one run.
+function T.one_line_templates_keep_their_single_block_shape()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xA11CE10D)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  local base = findBranch(manifest, "wildEncounter").lines.date
+  local blocks = buildWithDateSegments(service, manifest, {
+    { kind = "text", value = "SYN " },
+    { kind = "metLevel" },
+    { kind = "text", value = "." },
+  })
+  local dated = blockByLine(blocks, base)
+  Assert.notNil(dated, "the one-line template produces its block")
+  Assert.equal(#dated.runs, 1, "adjacent same-ink text coalesces into one run")
+  Assert.equal(dated.runs[1].text, "SYN 5.", "the one-line template keeps its wording")
+  Assert.equal(dated.runs[1].ink, "ordinary", "the one-line template keeps its ink")
 end
 
 return { tests = T }

@@ -391,11 +391,10 @@ local function drawMemoRuns(scope, window, blocks)
         memoInk(scope, window, assert(run.ink, "memo runs carry their ink"))
       )
       graphics.setScissor()
-      local gap = 0
-      if type(text.textWidth) == "function" then
-        gap = text:textWidth(" ") or 0
-      end
-      x = x + width + gap
+      -- Adjacent ink runs share an edge: the source color control
+      -- inserts no spacing, so the next run starts exactly where the
+      -- measured width of this one ends.
+      x = x + width
     end
   end
 end

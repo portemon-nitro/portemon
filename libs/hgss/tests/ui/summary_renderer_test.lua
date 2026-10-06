@@ -1354,4 +1354,125 @@ function T.closed_statuses_draw_nothing()
   Assert.equal(#graphics.draws + #graphics.rectangles, 0, "closed panes leave no output")
 end
 
+-- Generated color controls split ink runs without inserting text, so
+-- the second run starts exactly where the first run's measured width
+-- ends. The current renderer adds one measured separator space that
+-- the source message never contained.
+function T.adjacent_color_runs_share_an_edge_without_separator_space()
+  local _, textCalls, _, portraits, shader, renderer = composition()
+  local family = manifest()
+  local text = textDouble(textCalls)
+  local bundle = readyBundle(family, text, portraits, shader, realizeVisuals(family), {})
+  local record = facts({
+    memo = {
+      condition = "syn-adjacent",
+      blocks = {
+        { line = 1, runs = { { text = "AB", ink = "ordinary" }, { text = "CD", ink = "dark" } } },
+      },
+    },
+  })
+  renderer:drawPane(openStatus(record, "info"), "main", bundle)
+  local memoBody =
+    assert(assert(assert(family.windows, "the family carries windows").groups, "windows carry groups").info, "groups carry info").main
+  local rect = assert(assert(memoBody.memoBody, "info main carries its memo body").rect, "memo roles carry rects")
+  local memoCalls = {}
+  for _, call in ipairs(textCalls) do
+    if
+      type(call.x) == "number"
+      and type(call.y) == "number"
+      and call.x >= rect.x
+      and call.x < rect.x + rect.width
+      and call.y >= rect.y
+      and call.y < rect.y + rect.height
+    then
+      memoCalls[#memoCalls + 1] = call
+    end
+  end
+  Assert.equal(#memoCalls, 2, "adjacent runs draw once each")
+  Assert.equal(memoCalls[1].value, "AB", "the first run keeps its text")
+  Assert.equal(memoCalls[2].value, "CD", "the second run keeps its text")
+  Assert.equal(memoCalls[1].x, rect.x + PAD_X, "the line keeps its source padding")
+  Assert.equal(
+    memoCalls[2].x,
+    memoCalls[1].x + memoCalls[1].width,
+    "the second run starts where the first run ends"
+  )
+end
+
+-- Produced memo lines draw on consecutive baselines: the real memo
+-- expansion feeds the real renderer through the fixture family, and
+-- every generated break moves the next run down exactly one line step.
+-- The memo window and branch placement come from the family itself;
+-- only the mon record is test input.
+function T.produced_memo_lines_draw_on_consecutive_baselines()
+  local SummaryMemo = require("libs.hgss.src.ui.SummaryMemo")
+  local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
+  local fixture = SummaryPresentationFixture.manifest()
+  local mon = {
+    isEgg = false,
+    fatefulEncounter = false,
+    personality = 0,
+    friendship = 70,
+    ivs = { hp = 1, attack = 1, defense = 1, speed = 1, specialAttack = 1, specialDefense = 1 },
+    origin = { game = "heartgold", trainerId = 1, trainerName = "RED", trainerGender = 0 },
+    egg = { location = 0 },
+    met = {
+      location = SummaryPresentationFixture.WILD_LOCATION,
+      level = 5,
+      date = { year = 2009, month = 3, day = 13 },
+    },
+  }
+  local memo = SummaryMemo.build(mon, true, SummaryPresentationFixture.context(1), fixture)
+  Assert.equal(memo.condition, "wildEncounter", "the ordinary wild meeting keeps its branch")
+  local branch = nil
+  for _, candidate in ipairs(assert(fixture.memo.conditions, "the family carries ordered memo rules")) do
+    if candidate.key == memo.condition then
+      branch = candidate
+    end
+  end
+  Assert.notNil(branch, "the family carries the selected branch")
+  assert(branch ~= nil, "branches select above")
+  local segments = assert(assert(branch.dateTemplate, "the branch carries its date template").segments, "templates carry segments")
+  local breaks = 0
+  for _, segment in ipairs(segments) do
+    if segment.kind == "lineBreak" then
+      breaks = breaks + 1
+    end
+  end
+  Assert.isTrue(breaks >= 1, "the exercised template carries source line breaks")
+  local base = assert(branch.lines.date, "the branch places its date line")
+  local _, textCalls, _, portraits, shader, renderer = composition()
+  local bundle =
+    readyBundle(fixture, textDouble(textCalls), portraits, shader, realizeVisuals(fixture), {})
+  local record = facts({
+    memo = memo,
+    pictureKey = "CHIKORITA",
+    portraitSelector = "CHIKORITA/f0/male/plain",
+  })
+  renderer:drawPane(openStatus(record, "info"), "main", bundle)
+  local memoBody =
+    assert(assert(assert(fixture.windows, "the family carries windows").groups, "windows carry groups").info, "groups carry info").main
+  local rect = assert(assert(memoBody.memoBody, "info main carries its memo body").rect, "memo roles carry rects")
+  local drawnY = {}
+  for _, call in ipairs(textCalls) do
+    if
+      type(call.x) == "number"
+      and type(call.y) == "number"
+      and call.x >= rect.x
+      and call.x < rect.x + rect.width
+      and call.y >= rect.y
+    then
+      Assert.isTrue(
+        tostring(call.value):find("\n", 1, true) == nil,
+        "no drawn run carries a newline glyph"
+      )
+      drawnY[call.y] = true
+    end
+  end
+  for offset = 0, breaks do
+    local expected = rect.y + (base + offset - 1) * LINE_STEP
+    Assert.isTrue(drawnY[expected] == true, "break " .. offset .. " draws on its own baseline")
+  end
+end
+
 return { tests = T }
