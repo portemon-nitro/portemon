@@ -527,24 +527,35 @@ function T.tests.production_party_and_bag_views_carry_retail_chrome_descriptors(
 
     state.controller:setSection("Bag")
     state:update(0)
+    local itemCatalog = assert(state.dependencies.context.itemCatalog, "ready Bag needs its item catalog")
+    local pocketKey = state:view().bagPocket
+    local probeKey
+    for _, key in ipairs(itemCatalog:itemKeys()) do
+      if key ~= "NONE" and itemCatalog:item(key).pocket == pocketKey then
+        probeKey = key
+        break
+      end
+    end
+    probeKey = assert(probeKey, "the catalog offers an item for the current pocket")
+    Assert.isTrue(
+      state.session:setBagQuantity(probeKey, 1).ok,
+      "the production session stages one probe stack"
+    )
+    state:update(0)
     local bagView = state:view()
     local pageRows = assert(bagView.bagPageRows, "the Bag view publishes its visible page rows")
-    local pocketBrowse = assert(
-      bagManifest.interactive.backgrounds.browse[bagView.bagPocket],
-      "the manifest carries browse chrome for the current pocket"
-    )
-    Assert.deepEqual(
-      assert(bagView.bagBrowseBackground, "the Bag view selects its count-specific browse background"),
-      pocketBrowse[#pageRows + 1],
-      "the background matches the current pocket and visible item count"
-    )
-    local slots = assert(bagView.bagItemSlots, "the Bag view exposes its source item slot rects")
-    Assert.deepEqual(slots, bagManifest.interactive.itemSlots.slots, "slot rects come from the composed manifest")
-    Assert.equal(#slots, 6, "the manifest carries all six browse slot rects")
-    for index, slot in ipairs(slots) do
-      local rect = assert(slot.rect, "slot " .. index .. " owns a source rectangle")
-      Assert.isTrue(rect.width > 0 and rect.height > 0, "slot " .. index .. " has positive source size")
+    Assert.isTrue(#pageRows > 0, "the production Bag page exposes its item rows")
+    for _, row in ipairs(pageRows) do
+      Assert.notNil(row.iconKey, "item rows keep their catalog icon identity")
+      Assert.notNil(row.label, "item rows keep their catalog name")
+      Assert.isTrue(row.quantity > 0, "item rows keep their staged quantity")
+      Assert.isNil(row.description, "item rows carry no card description")
     end
+    Assert.isNil(bagView.bagBrowseBackground, "the Bag view publishes no browse background")
+    Assert.isNil(bagView.bagItemSlots, "the Bag view publishes no item slot rects")
+    Assert.isNil(bagView.bagItemFocusVisual, "the Bag view publishes no item focus visual")
+    Assert.notNil(bagView.bagPocketStrip, "the pocket strip keeps its generated visual")
+    Assert.notNil(bagView.bagQuantityVisuals, "quantity controls keep their generated visuals")
   end, debug.traceback)
 
   if state then

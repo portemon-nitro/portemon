@@ -778,6 +778,7 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
       choice = state:view().valueEditor
       Assert.equal(choice.query, "POTION", "typing filters the Add catalog")
       state:keypressed("return")
+      state:keypressed("return")
       local quantity = assert(state:view().valueEditor, "choosing an item opens quantity entry")
       local expected = assert(quantity.parsedValue or quantity.value) + 1
       state:keypressed("up")
@@ -794,6 +795,7 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
 
       activateTarget(state, "bag:add")
       state:textinput("POTION")
+      state:keypressed("return")
       state:keypressed("return")
       state:keypressed("return")
       Assert.equal(

@@ -23,7 +23,6 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _icons table<string, { image: love.Image, quad: love.Quad, dimensions: { width: number, height: number } }>
 ---@field _windowRenderer FieldWindowRenderer?
 ---@field _bagImages table<string, love.Image>
----@field _bagQuads table<string, table<integer, love.Quad>>
 ---@field _partyImages table<string, love.Image>
 ---@field iconStatus string?
 ---@field iconFailure string?
@@ -125,7 +124,6 @@ function Renderer.new(options)
     _windowRenderer = nil,
     _itemIconProvider = nil,
     _bagImages = {},
-    _bagQuads = {},
     _partyImages = {},
     iconStatus = nil,
     iconFailure = nil,
@@ -155,43 +153,10 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
     end
   end
   if view.section == "Bag" then
-    if view.bagBrowseBackground ~= nil then
-      local background = assert(view.bagBrowseBackground)
-      if self._bagImages[background.image] == nil then
-        local bytes = assert(cacheFs:read(background.image), "Bag browse background bytes are required")
-        local image = self.graphics.newImage(love.filesystem.newFileData(bytes, background.image))
-        image:setFilter("nearest", "nearest")
-        self._bagImages[background.image] = image
-      end
-      local browse = assert(self._bagImages[background.image])
-      local imageWidth, imageHeight = browse:getDimensions()
-      local quads = self._bagQuads[background.image]
-      if quads == nil then
-        quads = {}
-        self._bagQuads[background.image] = quads
-      end
-      for index, slot in ipairs(assert(view.bagItemSlots, "Bag slot geometry accompanies its background")) do
-        local slotRect = assert(slot.rect or slot)
-        assert(
-          slotRect.x >= 0
-            and slotRect.y >= 0
-            and slotRect.width > 0
-            and slotRect.height > 0
-            and slotRect.x + slotRect.width <= imageWidth
-            and slotRect.y + slotRect.height <= imageHeight,
-          "Bag slot crops stay within their browse background"
-        )
-        if quads[index] == nil then
-          quads[index] =
-            self.graphics.newQuad(slotRect.x, slotRect.y, slotRect.width, slotRect.height, imageWidth, imageHeight)
-        end
-      end
-    end
     if self._itemIconProvider == nil then
       self._itemIconProvider = ItemIconAssetProvider.new(cacheFs, { graphics = self.graphics })
     end
     local paths = { assert(view.bagPocketStrip).image }
-    paths[#paths + 1] = assert(view.bagItemFocusVisual).image
     if view.bagTabFocusVisual ~= nil then
       paths[#paths + 1] = view.bagTabFocusVisual.image
     end
@@ -583,123 +548,53 @@ end
 
 local drawCenteredIcon
 
-local function overflowsWithEllipsis(line)
-  return line:sub(-3) == "…"
-end
-
-local function foldOverflowIntoSecondLine(renderer, lines, words, index, width)
-  local remainder = table.concat(words, " ", index)
-  lines[2] = fitText(renderer, lines[2] .. " " .. remainder, width)
-end
-
-local function descriptionLines(renderer, description, width)
-  local words = {}
-  for word in description:gmatch("%S+") do
-    words[#words + 1] = word
-  end
-  local lines, current, index = {}, "", 1
-  while index <= #words do
-    local word = words[index]
-    local candidate = current == "" and word or (current .. " " .. word)
-    if renderer.text:textWidth(candidate) <= width then
-      current = candidate
-      index = index + 1
-    elseif current == "" then
-      local fitted = fitText(renderer, word, width)
-      lines[#lines + 1] = fitted
-      current = ""
-      index = index + 1
-      if #lines == 2 then
-        if index <= #words and not overflowsWithEllipsis(lines[2]) then
-          foldOverflowIntoSecondLine(renderer, lines, words, index, width)
-        end
-        return lines
-      end
-    else
-      lines[#lines + 1] = current
-      current = ""
-      if #lines == 2 then
-        foldOverflowIntoSecondLine(renderer, lines, words, index, width)
-        return lines
-      end
-    end
-  end
-  if current ~= "" then
-    if #lines < 2 then
-      lines[#lines + 1] = current
-    else
-      lines[2] = fitText(renderer, lines[2] .. " " .. current, width)
-    end
-  end
-  return lines
-end
-
-local function drawBagCard(renderer, card, slotIndex, focused, view, focusVisual)
+local function drawBagCard(renderer, card, focused)
   local graphics = renderer.graphics
   local bounds = card.rect
-  local background = view.bagBrowseBackground
-  local slots = view.bagItemSlots
-  if background ~= nil and slots ~= nil then
-    local slot = slots[slotIndex]
-    local slotRect = slot ~= nil and (slot.rect or slot) or nil
-    local image = renderer._bagImages[background.image or ""]
-    if image ~= nil and slotRect ~= nil then
-      local imageWidth, imageHeight = image:getDimensions()
-      assert(
-        slotRect.x >= 0
-          and slotRect.y >= 0
-          and slotRect.width > 0
-          and slotRect.height > 0
-          and slotRect.x + slotRect.width <= imageWidth
-          and slotRect.y + slotRect.height <= imageHeight,
-        "Bag slot crops stay within their browse background"
-      )
-      local quads = renderer._bagQuads[background.image]
-      if quads == nil then
-        quads = {}
-        renderer._bagQuads[background.image] = quads
-      end
-      local quad = quads[slotIndex]
-      if quad == nil then
-        quad = graphics.newQuad(slotRect.x, slotRect.y, slotRect.width, slotRect.height, imageWidth, imageHeight)
-        quads[slotIndex] = quad
-      end
-      graphics.setColor(1, 1, 1, 1)
-      graphics.draw(image, quad, bounds.x, bounds.y, 0, bounds.width / slotRect.width, bounds.height / slotRect.height)
-    end
-  end
-  if focused and focusVisual ~= nil then
-    local descriptor = assert(focusVisual)
-    local visual = assert(renderer._bagImages[descriptor.image])
-    local offset = descriptor.offset or { x = 0, y = 0 }
-    graphics.setColor(1, 1, 1, 1)
-    graphics.draw(visual, bounds.x + bounds.width / 2 + offset.x, bounds.y + bounds.height / 2 + offset.y)
-  end
+  local colors = assert(BUTTON_COLORS.inactive, "Bag cards reuse the neutral button face")
+  local button = Button.resolve({
+    rect = bounds,
+    borderWidth = 1,
+    rimWidth = 1,
+    innerBorderWidth = 1,
+    cornerRadius = 2,
+    faceSplit = 0.5,
+    contentInsetX = 4,
+    contentInsetY = 2,
+  })
+  Button.draw(graphics, button, {
+    border = colors.border,
+    rim = colors.rim,
+    innerBorder = colors.innerBorder,
+    faceTop = colors.faceTop,
+    faceBottom = colors.faceBottom,
+  })
   local icon = card.iconKey and renderer._icons[card.iconKey]
   if icon then
     drawCenteredIcon(renderer, icon, card.iconRect)
   end
-  local text = card.textRect
+  local palette = buttonInactivePalette(renderer.skin)
   local scale = card.textScale or 1
-  local lineHeight = renderer.text.fontDef.lineHeight
   graphics.push("all")
   graphics.translate(math.floor(bounds.x + 0.5), math.floor(bounds.y + 0.5))
   graphics.scale(scale, scale)
-  local textX, textY = (text.x - bounds.x) / scale, (text.y - bounds.y) / scale
-  local textWidth = text.width / scale
-  drawText(renderer, fitText(renderer, card.label, textWidth), textX, textY)
-  local lines = descriptionLines(renderer, card.description or "", textWidth)
-  for lineIndex, line in ipairs(lines) do
-    drawText(renderer, line, textX, textY + lineHeight * lineIndex, "hint")
-  end
-  local quantity = "x" .. tostring(card.value)
+  local name = card.nameRect
+  drawText(
+    renderer,
+    fitText(renderer, card.label, name.width / scale),
+    (name.x - bounds.x) / scale,
+    (name.y - bounds.y) / scale,
+    palette
+  )
+  local quantity = "x" .. tostring(card.quantity)
   local quantityWidth = renderer.text:textWidth(quantity)
+  local slot = card.quantityRect
   drawText(
     renderer,
     quantity,
-    textX + math.max(0, textWidth - quantityWidth),
-    bounds.height / scale - lineHeight - 3,
-    "hint"
+    (slot.x - bounds.x) / scale + math.max(0, slot.width / scale - quantityWidth),
+    (slot.y - bounds.y) / scale,
+    palette
   )
   graphics.pop()
   if focused then
@@ -1018,8 +913,8 @@ local function paintPane(self, view, plan, pane)
         graphics.draw(image, strip.x + point.x + offset.x, strip.y + point.y + offset.y)
       end
     end
-    for index, card in ipairs(layout.bagGrid or {}) do
-      drawBagCard(self, card, index, isFocusedVisible(view, card.targetId), view, view.bagItemFocusVisual)
+    for _, card in ipairs(layout.bagGrid or {}) do
+      drawBagCard(self, card, isFocusedVisible(view, card.targetId))
     end
     if targetRect(layout, "bag:add") then
       drawBagPageArrow(
@@ -1562,7 +1457,6 @@ function Renderer:dispose()
     end
   end
   self._bagImages = {}
-  self._bagQuads = {}
   for _, image in pairs(self._partyImages) do
     if image.release then
       image:release()

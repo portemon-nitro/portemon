@@ -723,16 +723,17 @@ function Layout.compute(view, width, height, metrics)
       maxCellHeight = 44,
     })
     local cards = {}
+    local textScale = compactBag and 0.5 or 0.75
+    local lineHeight = math.max(1, math.floor(metrics.lineHeight * textScale + 0.5))
     for index, item in ipairs(view.bagPageRows or {}) do
       local cell = cells[index]
       local iconSize = cell.rect.height > 32 and 24 or 16
       local iconRect = rect(cell.rect.x + 4, cell.rect.y + (cell.rect.height - iconSize) / 2, iconSize, iconSize)
-      local textRect = rect(
-        cell.rect.x + 8 + iconSize,
-        cell.rect.y + 1,
-        cell.rect.x + cell.rect.width - 4 - (cell.rect.x + 8 + iconSize),
-        cell.rect.height - 1
-      )
+      local quantityWidth = math.ceil(metrics.measure("x" .. tostring(item.quantity)) * textScale) + 6
+      local textY = cell.rect.y + (cell.rect.height - lineHeight) / 2
+      local quantityRect = rect(cell.rect.x + cell.rect.width - 4 - quantityWidth, textY, quantityWidth, lineHeight)
+      local nameRect =
+        rect(iconRect.x + iconRect.width + 4, textY, quantityRect.x - 4 - (iconRect.x + iconRect.width + 4), lineHeight)
       local id = "bag:item:" .. item.item
       targets[id], focusPositions[id] = cell.rect, cell.rect
       addFocusable(id)
@@ -740,13 +741,13 @@ function Layout.compute(view, width, height, metrics)
         kind = "item",
         targetId = id,
         label = item.label,
-        value = tostring(item.quantity),
+        quantity = item.quantity,
         iconKey = item.iconKey,
-        description = item.description,
         rect = cell.rect,
         iconRect = iconRect,
-        textRect = textRect,
-        textScale = compactBag and 0.5 or 0.75,
+        nameRect = nameRect,
+        quantityRect = quantityRect,
+        textScale = textScale,
       }
     end
     local arrowWidth = math.min(pageHeight, 32)

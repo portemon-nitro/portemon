@@ -494,22 +494,18 @@ local function draw(scope, width, height, topology, name, section, variant, vers
         local card = assert(layout.bagGrid[1], name .. " exposes a compact item card")
         Assert.equal(card.textScale, 0.5, name .. " uses compact text that fits the card")
         Assert.isTrue(
-          card.rect.height >= 2 * view.textMetrics.lineHeight * card.textScale,
-          name .. " fits two readable compact text lines"
+          card.rect.height >= view.textMetrics.lineHeight * card.textScale,
+          name .. " fits one readable compact text line"
         )
         Assert.isTrue(card.iconRect.width >= 16 and card.iconRect.height >= 16, name .. " fits the provider icon")
-        Assert.isTrue(
-          card.textRect.height >= 2 * view.textMetrics.lineHeight * card.textScale,
-          name .. " reserves two lines beside the icon"
-        )
-        Assert.isTrue(card.iconRect.x + card.iconRect.width <= card.rect.x + card.rect.width)
-        Assert.isTrue(card.textRect.x + card.textRect.width <= card.rect.x + card.rect.width)
-        Assert.isTrue(
-          card.iconRect.y >= card.rect.y and card.iconRect.y + card.iconRect.height <= card.rect.y + card.rect.height
-        )
-        Assert.isTrue(
-          card.textRect.y >= card.rect.y and card.textRect.y + card.textRect.height <= card.rect.y + card.rect.height
-        )
+        for _, key in ipairs({ "iconRect", "nameRect", "quantityRect" }) do
+          local region = assert(card[key], name .. " exposes a compact " .. key)
+          Assert.isTrue(region.x + region.width <= card.rect.x + card.rect.width, name .. " " .. key .. " fits width")
+          Assert.isTrue(
+            region.y >= card.rect.y and region.y + region.height <= card.rect.y + card.rect.height,
+            name .. " " .. key .. " fits height"
+          )
+        end
       end
     end
   end
@@ -905,7 +901,7 @@ function T.bag_quantity_uses_normal_and_pressed_generated_controls(scope)
   Assert.isTrue(pressed["bag/inc-normal"], "the other retail increments keep their normal image")
 end
 
-function T.bag_cards_use_bounded_description_and_wide_centered_geometry(scope)
+function T.bag_cards_use_generic_buttons_with_name_and_quantity(scope)
   local width, height = 1280, 720
   local topology = ScreenTopology.oneDisplay({
     id = "main",
@@ -913,7 +909,8 @@ function T.bag_cards_use_bounded_description_and_wide_centered_geometry(scope)
     touch = true,
     role = "world",
   })
-  local _, renderedText, layout = draw(scope, width, height, topology, "bag-cards", "Bag", "bag-cards")
+  local _, renderedText, layout, drawn, drawnText =
+    draw(scope, width, height, topology, "bag-cards", "Bag", "bag-cards")
   local card = assert(layout.bagGrid[1])
   Assert.isTrue(
     (layout.bagGrid[2].rect.x + layout.bagGrid[2].rect.width) - card.rect.x < layout.content.width,
@@ -929,14 +926,36 @@ function T.bag_cards_use_bounded_description_and_wide_centered_geometry(scope)
     math.abs((gridLeft - layout.content.x) - (layout.content.x + layout.content.width - rightmost)) < 1,
     "the bounded wide Bag grid has symmetric side padding"
   )
-  Assert.isTrue(renderedText:find("Restores a small amount of HP", 1, true) ~= nil, "cards show item descriptions")
+  local named, counted = false, false
+  for _, value in ipairs(drawnText) do
+    if value:find("Potion", 1, true) ~= nil then
+      named = true
+    end
+    if value == "x2" then
+      counted = true
+    end
+  end
+  Assert.isTrue(named, "cards show the item name")
+  Assert.isTrue(counted, "cards show the item quantity")
+  Assert.isFalse(
+    renderedText:find("Restores a small amount", 1, true) ~= nil,
+    "cards omit item descriptions"
+  )
   Assert.isFalse(
     renderedText:find("OVERFLOW_SENTINEL", 1, true) ~= nil,
-    "descriptions stop at the card's two-line limit"
+    "long descriptions never reach the card"
   )
+  Assert.isFalse(
+    renderedText:find("Cures poison.", 1, true) ~= nil,
+    "short descriptions are omitted too"
+  )
+  Assert.isNil(drawn["bag/item-focus"], "cards draw no native focus visual")
+  Assert.isTrue(drawn["bag/items-strip"], "the pocket strip keeps its generated art")
+  Assert.isTrue(drawn["bag/dec-normal"], "Previous keeps its generated arrow")
+  Assert.isTrue(drawn["bag/inc-normal"], "Next keeps its generated arrow")
 end
 
-function T.bag_item_focus_uses_generated_visual_under_the_card_contents(scope)
+function T.bag_selected_cards_draw_no_native_focus_visual(scope)
   local width, height = 640, 480
   local topology = ScreenTopology.oneDisplay({
     id = "main",
@@ -944,7 +963,7 @@ function T.bag_item_focus_uses_generated_visual_under_the_card_contents(scope)
     touch = true,
     role = "world",
   })
-  local _, _, layout, drawn, _, _, _, drawOrder = draw(
+  local _, _, _, drawn, _, _, _, drawOrder = draw(
     scope,
     width,
     height,
@@ -958,23 +977,14 @@ function T.bag_item_focus_uses_generated_visual_under_the_card_contents(scope)
       renderer._icons.POTION = { image = iconImage, dimensions = { width = 16, height = 16 } }
     end
   )
-  local card = assert(layout.bagGrid[1])
-  Assert.isTrue(drawn["bag/item-focus"], "the selected item draws the generated Bag focus visual")
-  local focusIndex, iconIndex, focusArgs
-  for index, entry in ipairs(drawOrder) do
-    if entry.path == "bag/item-focus" then
-      focusIndex, focusArgs = index, entry.args
-    elseif entry.path == "icon:POTION" then
-      iconIndex = index
+  Assert.isNil(drawn["bag/item-focus"], "the selected item draws no native Bag focus visual")
+  local iconSeen = false
+  for _, entry in ipairs(drawOrder) do
+    if entry.path == "icon:POTION" then
+      iconSeen = true
     end
   end
-  Assert.isTrue(
-    focusIndex ~= nil and iconIndex ~= nil and focusIndex < iconIndex,
-    "Bag focus art draws beneath the item icon"
-  )
-  local focusX, focusY = focusArgs[1], focusArgs[2]
-  Assert.equal(focusX, card.rect.x + card.rect.width / 2 - 9, "focus preserves its generated horizontal offset")
-  Assert.equal(focusY, card.rect.y + card.rect.height / 2 - 6, "focus preserves its generated vertical offset")
+  Assert.isTrue(iconSeen, "the selected card still draws its item sprite")
 end
 
 function T.bag_page_controls_draw_generated_arrow_art_without_text_labels(scope)
@@ -1858,42 +1868,6 @@ function T.bag_page_arrows_expose_focus_press_and_muted_disabled(scope)
   Assert.isFalse(hasRimAt(forcedRims, previousRect), "disabled wins over focus with no rim")
 end
 
-function T.long_bag_description_marks_truncation_with_ellipsis(scope)
-  local width, height = 1280, 720
-  local topology = ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = width, height = height },
-    touch = true,
-    role = "world",
-  })
-  local _, renderedText, _, _, drawnText =
-    draw(scope, width, height, topology, "bag-cards-ellipsis", "Bag", "bag-cards")
-  Assert.isTrue(
-    renderedText:find("Restores a small amount of HP", 1, true) ~= nil,
-    "cards keep the visible description prefix"
-  )
-  Assert.isFalse(renderedText:find("OVERFLOW_SENTINEL", 1, true) ~= nil, "descriptions stop at the card two-line limit")
-  local truncated = false
-  for _, value in ipairs(drawnText) do
-    local isDescription = value:find("Restores", 1, true) ~= nil
-      or value:find("remains", 1, true) ~= nil
-      or value:find("useful", 1, true) ~= nil
-      or value:find("longer", 1, true) ~= nil
-      or value:find("description", 1, true) ~= nil
-    if isDescription and value:sub(-3) == "\226\128\166" then
-      truncated = true
-    end
-  end
-  Assert.isTrue(truncated, "a truncated description line ends with an ellipsis")
-  local shortComplete = false
-  for _, value in ipairs(drawnText) do
-    if value == "Cures poison." then
-      shortComplete = true
-    end
-  end
-  Assert.isTrue(shortComplete, "a short description renders without an ellipsis")
-end
-
 local function singleDisplay(width, height)
   return ScreenTopology.oneDisplay({
     id = "main",
@@ -2155,7 +2129,7 @@ function T.number_modal_omits_range_and_step_labels(scope)
   Assert.isTrue(renderedText:find("123", 1, true) ~= nil, "the current value stays visible near its arrows")
 end
 
-function T.bag_cards_draw_their_pocket_browse_chrome(scope)
+function T.bag_cards_draw_generic_chrome_without_browse_backgrounds(scope)
   local topology = singleDisplay(640, 480)
   local fake = love.graphics.newImage(love.image.newImageData(256, 192))
   local drawnFake = false
@@ -2182,19 +2156,10 @@ function T.bag_cards_draw_their_pocket_browse_chrome(scope)
     end
   )
   love.graphics.draw = oldDraw
-  local card = assert(layout.bagGrid[1]).rect
-  local fills = recordRectangles(function()
-    draw(scope, 640, 480, topology, "bag-browse-record", "Bag", "bag-cards")
-  end)
-  for _, call in ipairs(fills) do
-    if call.mode == "fill" then
-      Assert.isFalse(
-        call.x == card.x and call.y == card.y and call.width == card.width and call.height == card.height,
-        "Bag cards never repaint a synthetic card underneath the retail chrome"
-      )
-    end
-  end
-  Assert.isTrue(drawnFake, "item cards draw from the current pocket browse background")
+  Assert.isFalse(drawnFake, "item cards never draw the pocket browse background")
+  local card = assert(layout.bagGrid[1])
+  Assert.notNil(card.nameRect, "cards keep their generic name region without browse geometry")
+  Assert.notNil(card.quantityRect, "cards keep their generic quantity region without browse geometry")
 end
 
 function T.bag_page_arrows_point_in_opposite_directions(scope)
@@ -2488,21 +2453,66 @@ function T.fainted_party_members_use_fainted_panel_variants(scope)
   )
 end
 
-function T.bag_slot_crops_stay_within_their_background(scope)
-  local topology = singleDisplay(640, 480)
-  local fake = love.graphics.newImage(love.image.newImageData(256, 192))
-  local ok, failure = xpcall(function()
-    draw(scope, 640, 480, topology, "bag-browse-overflow", "Bag", "bag-cards", nil, function(renderer, view)
-      view.bagBrowseBackground = { image = "synthetic/browse-overflow" }
-      view.bagItemSlots = { { x = 200, y = 160, width = 128, height = 64 } }
-      renderer._bagImages["synthetic/browse-overflow"] = fake
-    end)
-  end, debug.traceback)
-  Assert.isFalse(ok, "a slot escaping its background fails loudly instead of painting garbage")
-  Assert.isTrue(
-    tostring(failure):find("within their browse background", 1, true) ~= nil,
-    "the loud failure names the crop contract"
-  )
+function T.bag_icon_preparation_needs_no_browse_or_focus_art(scope)
+  local RendererModule = require("app.src.saveeditor.SaveEditorRenderer")
+  local iconImage = scope:own(love.graphics.newImage(love.image.newImageData(16, 16)))
+  local iconQuad = scope:own(love.graphics.newQuad(0, 0, 16, 16, 16, 16))
+  local renderer = RendererModule.new({
+    versionId = "heartgold",
+    text = {
+      fontDef = { lineHeight = 14 },
+      textWidth = function()
+        return 0
+      end,
+      drawText = function() end,
+      drawTextWithPalette = function() end,
+    },
+  })
+  local visuals = {
+    decrement = { normal = { image = "bag/dec-normal" }, pressed = { image = "bag/dec-pressed" } },
+    increment = { normal = { image = "bag/inc-normal" }, pressed = { image = "bag/inc-pressed" } },
+  }
+  for _, direction in ipairs({ "decrement", "increment" }) do
+    for _, pressed in ipairs({ "normal", "pressed" }) do
+      renderer._bagImages[visuals[direction][pressed].image] =
+        scope:own(love.graphics.newImage(love.image.newImageData(12, 12)))
+    end
+  end
+  renderer._bagImages["bag/items-strip"] = scope:own(love.graphics.newImage(love.image.newImageData(256, 32)))
+  renderer._itemIconProvider = {
+    image = function()
+      return iconImage
+    end,
+    quadFor = function()
+      return iconQuad
+    end,
+    dimensions = function()
+      return { width = 16, height = 16 }
+    end,
+    release = function() end,
+  }
+  local view = {
+    section = "Bag",
+    bagPocketStrip = { image = "bag/items-strip" },
+    bagQuantityVisuals = visuals,
+  }
+  local plan = { content = { layout = { bagGrid = { { iconKey = "POTION" } } } } }
+  local cacheFs = {
+    read = function(_, path)
+      error("unexpected Bag asset read: " .. tostring(path), 2)
+    end,
+  }
+  local ok, failure = pcall(function()
+    renderer:prepareVisibleIcons(view, plan, cacheFs, {})
+  end)
+  Assert.isTrue(ok, "preparation succeeds without browse or focus art")
+  if not ok then
+    error(tostring(failure), 0)
+  end
+  Assert.notNil(renderer._icons.POTION, "visible item icons are still prepared")
+  Assert.equal(renderer.iconStatus, "ready", "icon status still resolves")
+  Assert.isNil(renderer._bagQuads, "browse slot quads are gone with the native card")
+  renderer:dispose()
 end
 
 local function recordOutlinedRectangles()
@@ -2540,6 +2550,35 @@ local function ringsSurrounding(calls, rect, tolerance)
     end
   end
   return matches
+end
+
+function T.bag_focused_cards_draw_exactly_one_keyboard_ring(scope)
+  local topology = singleDisplay(640, 480)
+  local function render(name, focusVisible)
+    local calls, restore = recordOutlinedRectangles()
+    local _, _, layout
+    local ok, failure = xpcall(function()
+      _, _, layout = draw(scope, 640, 480, topology, name, "Bag", "bag-cards", nil, function(_, view)
+        view.focus = "bag:item:POTION"
+        view.focusVisible = focusVisible
+      end)
+    end, debug.traceback)
+    restore()
+    if not ok then
+      error(failure, 0)
+    end
+    return layout, calls
+  end
+  local layout, calls = render("bag-ring-visible", true)
+  local card = assert(layout.bagGrid[1]).rect
+  Assert.equal(#ringsSurrounding(calls, card, 3), 1, "exactly one outline surrounds the keyboard-focused card")
+  local hiddenLayout, hiddenCalls = render("bag-ring-hidden", false)
+  local hiddenCard = assert(hiddenLayout.bagGrid[1]).rect
+  Assert.equal(
+    #ringsSurrounding(hiddenCalls, hiddenCard, 3),
+    0,
+    "pointer modality draws no outline around the card"
+  )
 end
 
 function T.focused_buttons_draw_geometry_matched_outlines_only_while_navigation_is_visible(scope)

@@ -809,7 +809,6 @@ function State:_bagView()
     rows[#rows + 1] = {
       item = entry.item,
       label = item.name or entry.item,
-      description = item.description,
       iconKey = item.icon,
       quantity = entry.quantity,
     }
@@ -843,15 +842,9 @@ function State:_bagView()
     bagPage0 = self.controller.bagPage0,
     bagPageCount = pageCount,
     bagAddEnabled = canAdd,
-    bagBrowseBackground = assert(
-      manifest.interactive.backgrounds.browse[self.controller.bagPocket][#pageRows + 1],
-      "Bag browse chrome follows the pocket and visible item count"
-    ),
-    bagItemSlots = assert(manifest.interactive.itemSlots.slots, "Bag item cards reuse the manifest slot geometry"),
     bagPocketTabRects = manifest.interactive.pocketTabs.rects,
     bagPocketStrip = manifest.interactive.pocketTabs.strips[self.controller.bagPocket],
     bagFocusVisuals = manifest.interactive.focus,
-    bagItemFocusVisual = manifest.interactive.focus.items.visual,
     bagTabFocusVisual = manifest.interactive.focus.tabs.visual,
     bagTabFocusTargets = manifest.interactive.focus.tabs.targets,
     bagQuantityVisuals = manifest.interactive.overlays.quantity.visuals,

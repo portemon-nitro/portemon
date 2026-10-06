@@ -156,6 +156,65 @@ function T.bag_layout_publishes_native_tabs_six_cells_and_separate_add()
   Assert.notNil(compact.targets["bag:add"], "compact screens retain separate Add")
 end
 
+local function regionsOverlap(first, second)
+  return first.x < second.x + second.width
+    and second.x < first.x + first.width
+    and first.y < second.y + second.height
+    and second.y < first.y + first.height
+end
+
+function T.bag_cards_expose_icon_name_and_quantity_regions_without_descriptions()
+  local rows = {
+    {
+      item = "POTION",
+      iconKey = "POTION",
+      label = "Potion with an intentionally long display name",
+      description = "Restores a small amount of HP.",
+      quantity = 999,
+    },
+    {
+      item = "ANTIDOTE",
+      iconKey = "ANTIDOTE",
+      label = "Antidote",
+      description = "Cures poison.",
+      quantity = 1,
+    },
+  }
+  for _, dimensions in ipairs({ { 256, 192 }, { 800, 600 } }) do
+    local layout = computeLayout(bagView(rows, 0), dimensions[1], dimensions[2])
+    Assert.equal(#layout.bagGrid, 2, "occupied cells are published")
+    for _, card in ipairs(layout.bagGrid) do
+      Assert.isNil(card.description, "cards carry no description")
+      Assert.isNil(card.textRect, "cards no longer use the shared text region")
+      local regions = {}
+      for _, key in ipairs({ "iconRect", "nameRect", "quantityRect" }) do
+        local region = assert(card[key], "cards publish " .. key)
+        Assert.isTrue(region.width > 0 and region.height > 0, key .. " stays positive")
+        Assert.isTrue(region.x >= card.rect.x, key .. " starts inside its card")
+        Assert.isTrue(
+          region.x + region.width <= card.rect.x + card.rect.width + 0.01,
+          key .. " ends inside its card"
+        )
+        Assert.isTrue(region.y >= card.rect.y, key .. " stays below the card top")
+        Assert.isTrue(
+          region.y + region.height <= card.rect.y + card.rect.height + 0.01,
+          key .. " stays above the card bottom"
+        )
+        regions[#regions + 1] = region
+      end
+      for first = 1, #regions do
+        for second = first + 1, #regions do
+          Assert.isFalse(
+            regionsOverlap(regions[first], regions[second]),
+            "card content regions never overlap"
+          )
+        end
+      end
+      Assert.notNil(layout.targets[card.targetId], "cards keep their hit targets")
+    end
+  end
+end
+
 function T.party_draft_and_remove_modals_publish_their_own_actions()
   local draft = {
     section = "Party",
