@@ -519,14 +519,13 @@ local function descriptorsAtAnchor(self, anchorX, anchorZ)
   return result
 end
 
-function FieldCoverage.new(options)
-  assert(type(options) == "table", "FieldCoverage options required")
-  assert(type(options.matrixMemberId) == "number", "field cell matrix member required")
-  assert(options.loadCell or options.cacheFs, "field coverage requires loadCell or cacheFs")
-  assert(options.index or options.cacheFs, "field coverage requires index or cacheFs")
-  local self = setmetatable({
+---@param options table<string, unknown> staged or blocking construction options
+---@param index table<string, unknown> resolved field-cell index
+---@return FieldCoverage blank owner with no committed cells
+local function blankCoverage(options, index)
+  return setmetatable({
     cacheFs = options.cacheFs,
-    index = options.index or FieldCellCache.loadIndex(options.cacheFs),
+    index = index,
     matrixMemberId = options.matrixMemberId,
     loadCell = options.loadCell,
     mapPropsFactory = options.mapPropsFactory,
@@ -546,8 +545,264 @@ function FieldCoverage.new(options)
     _prefetchDescriptors = {},
     released = false,
   }, FieldCoverage)
-  self:recenter(options.anchorX, options.anchorZ)
-  return self
+end
+
+---@class FieldCoverage.InitialTask
+---@field _coverage FieldCoverage blank owner populated atomically on publication
+---@field _descriptors table[] radius-1 committed descriptors in selector order
+---@field _anchorX integer
+---@field _anchorZ integer
+---@field _nextIndex integer one-based index of the next descriptor to stage
+---@field _ensured table<integer, boolean> per-descriptor derived-readiness record
+---@field _pending table<string, unknown>? current cell pending state owned by the task
+---@field _candidate table<string, table<string, unknown>> acquired cells awaiting publication
+---@field _ready boolean
+---@field _result FieldCoverage?
+---@field _failed unknown?
+---@field _released boolean
+---@field _transferred boolean
+local InitialCoverageTask = {}
+InitialCoverageTask.__index = InitialCoverageTask
+
+-- Cleans task-owned partial cells after a failure: the current pending
+-- cell plus every acquired candidate runtime releases exactly once. The
+-- blank coverage owner holds no committed cells, so there is nothing
+-- else to clean and nothing partial ever escapes.
+---@param task FieldCoverage.InitialTask
+---@param err unknown
+local function failInitial(task, err)
+  local pending = task._pending
+  task._pending = nil
+  if pending ~= nil then
+    releasePending(pending)
+  end
+  for _, runtime in pairs(task._candidate) do
+    if runtime.release then
+      runtime:release()
+    end
+  end
+  task._candidate = {}
+  task._failed = err
+end
+
+-- Publishes the staged candidate into the task-owned coverage once every
+-- committed cell is complete: region, origin, dependency identity, world
+-- parts, and halo prefetch are built from the same helpers synchronous
+-- replacement uses, then assigned atomically before the task goes ready.
+---@param task FieldCoverage.InitialTask
+local function publishInitial(task)
+  assert(task._pending == nil, "publication requires no outstanding pending cell")
+  local coverage = task._coverage
+  local anchorX, anchorZ = task._anchorX, task._anchorZ
+  local staged = task._candidate
+  assert(staged[key(anchorX, anchorZ)], "coverage anchor is not a generated cell")
+  local region = buildRegion(staged, { x = anchorX, z = anchorZ })
+  local origin = assert(staged[key(anchorX, anchorZ)].origin)
+  local terrainDependencyHash = dependencyIdentity(staged, coverage.matrixMemberId, anchorX, anchorZ)
+  local cellKeys, worldParts, cellPresentation = buildWorldParts(staged, origin)
+  local prefetchDescriptors = descriptorsAtAnchor(coverage, anchorX, anchorZ)
+  coverage.cells = staged
+  coverage.prefetched = {}
+  coverage.anchorX, coverage.anchorZ = anchorX, anchorZ
+  coverage.region = region
+  coverage.origin = origin
+  coverage.terrainDependencyHash = terrainDependencyHash
+  coverage._cellKeys = cellKeys
+  coverage._worldParts = worldParts
+  coverage._cellPresentation = cellPresentation
+  coverage._prefetchDescriptors = prefetchDescriptors
+  coverage:queuePrefetch(anchorX, anchorZ)
+  task._candidate = {}
+  task._result = coverage
+  task._ready = true
+end
+
+---@param maxWorkUnits integer main-thread work budget for this advance
+---@return integer consumed work units within the caller budget
+function InitialCoverageTask:advance(maxWorkUnits)
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  assert(not self._released, "initial coverage task is released")
+  if self._ready then
+    return 0
+  end
+  assert(
+    type(maxWorkUnits) == "number" and maxWorkUnits >= 0 and maxWorkUnits % 1 == 0,
+    "staged advance requires non-negative integer work units"
+  )
+  if maxWorkUnits == 0 then
+    return 0
+  end
+  local consumed = 0
+  local ok, driveErr = pcall(function()
+    while consumed < maxWorkUnits and not self._ready do
+      if self._nextIndex > #self._descriptors then
+        publishInitial(self)
+      else
+        local descriptor = self._descriptors[self._nextIndex]
+        if not self._ensured[self._nextIndex] then
+          if self._coverage.derivedAssets then
+            self._coverage.derivedAssets.ensureCell(descriptor)
+            consumed = consumed + 1
+          end
+          self._ensured[self._nextIndex] = true
+          self._pending = newPending(self._coverage, descriptor)
+          if consumed >= maxWorkUnits then
+            break
+          end
+        end
+        local pending = assert(self._pending)
+        local work = advancePending(self._coverage, pending, maxWorkUnits - consumed)
+        consumed = consumed + work
+        if pending.complete then
+          self._candidate[pending.cellKey] = assert(pending.runtime)
+          self._pending = nil
+          self._nextIndex = self._nextIndex + 1
+        elseif work == 0 then
+          break
+        end
+      end
+    end
+  end)
+  if not ok then
+    failInitial(self, driveErr)
+    error(driveErr, 0)
+  end
+  return consumed
+end
+
+---@return boolean
+function InitialCoverageTask:isReady()
+  return self._ready == true
+end
+
+---@return FieldCoverage the fully published coverage; ownership transfers once
+function InitialCoverageTask:takeResult()
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  assert(not self._released, "initial coverage task is released")
+  assert(self._ready, "initial coverage result is not ready")
+  self._transferred = true
+  return assert(self._result)
+end
+
+-- Finishes the staged transaction synchronously through the same
+-- pending-cell engine: a presentation task that makes no cooperative
+-- progress because it awaits worker data is finished through its own
+-- blocking path rather than polled.
+---@return FieldCoverage the fully published coverage
+function InitialCoverageTask:finish()
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  if not self._ready then
+    assert(not self._released, "initial coverage task is released")
+    local ok, finishErr = pcall(function()
+      while not self._ready do
+        if self._nextIndex > #self._descriptors then
+          publishInitial(self)
+        else
+          local descriptor = self._descriptors[self._nextIndex]
+          if not self._ensured[self._nextIndex] then
+            if self._coverage.derivedAssets then
+              self._coverage.derivedAssets.ensureCell(descriptor)
+            end
+            self._ensured[self._nextIndex] = true
+            self._pending = newPending(self._coverage, descriptor)
+          end
+          local pending = assert(self._pending)
+          self._pending = nil
+          local runtime = finishPendingSafely(self._coverage, pending)
+          self._candidate[pending.cellKey] = runtime
+          self._nextIndex = self._nextIndex + 1
+        end
+      end
+    end)
+    if not ok then
+      failInitial(self, finishErr)
+      error(finishErr, 0)
+    end
+  end
+  return self:takeResult()
+end
+
+-- Releases a pending initial-coverage task: the current pending cell and
+-- every acquired candidate runtime release exactly once, and no result
+-- can be taken afterwards. A published but untransferred coverage is
+-- still task-owned, so release disposes it; after transfer (or a second
+-- release, or after failure cleanup) release is a no-op.
+function InitialCoverageTask:release()
+  if self._transferred or self._released then
+    return
+  end
+  self._released = true
+  if self._failed ~= nil then
+    return
+  end
+  if self._ready then
+    self._coverage:release()
+    self._result = nil
+    return
+  end
+  local pending = self._pending
+  self._pending = nil
+  if pending ~= nil then
+    releasePending(pending)
+  end
+  for _, runtime in pairs(self._candidate) do
+    if runtime.release then
+      runtime:release()
+    end
+  end
+  self._candidate = {}
+end
+
+-- Begins staged initial committed-cell acquisition around an already
+-- resolved cell index: no cell is acquired and no coverage field is
+-- published before a positive-budget advance (or blocking finish) drives
+-- the existing pending-cell engine to completion.
+---@param options table<string, unknown> requires matrixMemberId, anchorX/anchorZ, and loadCell or cacheFs plus index or cacheFs
+---@return FieldCoverage.InitialTask
+function FieldCoverage.begin(options)
+  assert(type(options) == "table", "FieldCoverage options required")
+  assert(type(options.matrixMemberId) == "number", "field cell matrix member required")
+  assert(options.loadCell or options.cacheFs, "field coverage requires loadCell or cacheFs")
+  assert(options.index or options.cacheFs, "field coverage requires index or cacheFs")
+  assert(type(options.anchorX) == "number" and options.anchorX % 1 == 0, "initial coverage anchor x must be an integer")
+  assert(type(options.anchorZ) == "number" and options.anchorZ % 1 == 0, "initial coverage anchor z must be an integer")
+  local index = options.index or FieldCellCache.loadIndex(assert(options.cacheFs))
+  local coverage = blankCoverage(options, index)
+  local descriptors = FieldCoverage.descriptorsAt(index, options.matrixMemberId, options.anchorX, options.anchorZ)
+  return setmetatable({
+    _coverage = coverage,
+    _descriptors = descriptors,
+    _anchorX = options.anchorX,
+    _anchorZ = options.anchorZ,
+    _nextIndex = 1,
+    _ensured = {},
+    _pending = nil,
+    _candidate = {},
+    _ready = false,
+    _result = nil,
+    _failed = nil,
+    _released = false,
+    _transferred = false,
+  }, InitialCoverageTask)
+end
+
+function FieldCoverage.new(options)
+  assert(type(options) == "table", "FieldCoverage options required")
+  assert(type(options.matrixMemberId) == "number", "field cell matrix member required")
+  assert(options.loadCell or options.cacheFs, "field coverage requires loadCell or cacheFs")
+  assert(options.index or options.cacheFs, "field coverage requires index or cacheFs")
+  local resolved = {}
+  for optionKey, optionValue in pairs(options) do
+    resolved[optionKey] = optionValue
+  end
+  resolved.index = options.index or FieldCellCache.loadIndex(assert(options.cacheFs))
+  return FieldCoverage.begin(resolved):finish()
 end
 
 function FieldCoverage:recenter(anchorX, anchorZ)
