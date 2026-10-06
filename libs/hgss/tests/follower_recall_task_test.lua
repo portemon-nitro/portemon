@@ -14,21 +14,51 @@ local RecallTask = require("libs.hgss.src.script.tasks.FollowerRecallTask")
 
 local T = {}
 
-local VECTOR_Y = { 1, 2, 2, 3, 3, 2, 2, 0 }
-local VECTOR_Z = { 4, 4, 4, 2, 2, 2, 0, 0 }
+-- Native HGSS model-space increments behind state 4, kept here as the
+-- source reference. Runtime presentation offsets are in world units (one
+-- unit per tile) with 16 model units per tile, so every expectation below
+-- is normalized by 1/16 at this source/runtime seam.
+local NATIVE_Y = { 1, 2, 2, 3, 3, 2, 2, 0 }
+local NATIVE_Z = { 4, 4, 4, 2, 2, 2, 0, 0 }
+local MODEL_UNITS_PER_TILE = 16
 
+-- Independent source-to-runtime expectations: cumulative native sums divided
+-- by the tile size, written as literal fractions so the test never
+-- re-blesses the unnormalized algorithm. Final end points are x = +/-1,
+-- y = 15/16, z = -18/16 tiles.
 ---@param mirror boolean
 ---@return table<integer, { x: number, y: number, z: number }>
-local function cumulativeOffsets(mirror)
-  local offsets = {}
+local function expectedOffsets(mirror)
+  local sign = mirror and 1 or -1
+  return {
+    { x = sign * 2 / MODEL_UNITS_PER_TILE, y = 1 / MODEL_UNITS_PER_TILE, z = -4 / MODEL_UNITS_PER_TILE },
+    { x = sign * 4 / MODEL_UNITS_PER_TILE, y = 3 / MODEL_UNITS_PER_TILE, z = -8 / MODEL_UNITS_PER_TILE },
+    { x = sign * 6 / MODEL_UNITS_PER_TILE, y = 5 / MODEL_UNITS_PER_TILE, z = -12 / MODEL_UNITS_PER_TILE },
+    { x = sign * 8 / MODEL_UNITS_PER_TILE, y = 8 / MODEL_UNITS_PER_TILE, z = -14 / MODEL_UNITS_PER_TILE },
+    { x = sign * 10 / MODEL_UNITS_PER_TILE, y = 11 / MODEL_UNITS_PER_TILE, z = -16 / MODEL_UNITS_PER_TILE },
+    { x = sign * 12 / MODEL_UNITS_PER_TILE, y = 13 / MODEL_UNITS_PER_TILE, z = -18 / MODEL_UNITS_PER_TILE },
+    { x = sign * 14 / MODEL_UNITS_PER_TILE, y = 15 / MODEL_UNITS_PER_TILE, z = -18 / MODEL_UNITS_PER_TILE },
+    { x = sign * 16 / MODEL_UNITS_PER_TILE, y = 15 / MODEL_UNITS_PER_TILE, z = -18 / MODEL_UNITS_PER_TILE },
+  }
+end
+
+-- Cross-checks the literal table above against the native source sums so a
+-- transcription slip fails loudly instead of freezing a wrong constant.
+for _, mirror in ipairs({ false, true }) do
+  local sign = mirror and 1 or -1
+  local literal = expectedOffsets(mirror)
   local x, y, z = 0, 0, 0
   for index = 1, 8 do
-    x = x + (mirror and 2 or -2)
-    y = y + VECTOR_Y[index]
-    z = z - VECTOR_Z[index]
-    offsets[index] = { x = x, y = y, z = z }
+    x = x + sign * 2
+    y = y + NATIVE_Y[index]
+    z = z - NATIVE_Z[index]
+    assert(
+      literal[index].x == x / MODEL_UNITS_PER_TILE
+        and literal[index].y == y / MODEL_UNITS_PER_TILE
+        and literal[index].z == z / MODEL_UNITS_PER_TILE,
+      "recall test expectations drift from native source sums"
+    )
   end
-  return offsets
 end
 
 local function harness(options)
@@ -210,7 +240,15 @@ local function driveToShrinkWindow(mirror, nextState, walks)
     Assert.isFalse(stepped.complete, "vector updates keep blocking")
   end
   Assert.equal(state.state, 5, "eight vector updates hand off to the recall effect")
-  Assert.deepEqual(appliedOffsets(log), cumulativeOffsets(mirror), "vector offsets accumulate absolutely")
+  local traced = appliedOffsets(log)
+  Assert.deepEqual(traced, expectedOffsets(mirror), "vector offsets accumulate in runtime tiles")
+  Assert.deepEqual(traced[1], expectedOffsets(mirror)[1], "the first vector step normalizes native units to tiles")
+  local sign = mirror and 1 or -1
+  Assert.deepEqual(
+    traced[8],
+    { x = sign * 1, y = 15 / 16, z = -18 / 16 },
+    "the final vector lands on the normalized tile-scale end point"
+  )
 
   local entered = RecallTask.poll(state, ctx)
   Assert.isFalse(entered.complete, "entering the shrink window keeps blocking")
@@ -236,7 +274,7 @@ function T.visible_follower_runs_choreography_then_enters_the_shrink_window()
 
   local _, _, westLog = driveToShrinkWindow(true, 3, {})
   Assert.equal(countMovement(westLog, "startRecallMovement", "walk_west"), 0, "west branch skips the walks")
-  Assert.deepEqual(appliedOffsets(westLog), cumulativeOffsets(true), "west branch mirrors the vectors")
+  Assert.deepEqual(appliedOffsets(westLog), expectedOffsets(true), "west branch mirrors the vectors")
 
   for _, log in ipairs({ southLog, eastLog, westLog }) do
     local unpauses = 0
@@ -382,7 +420,7 @@ function T.state_validates_every_serializable_field()
       vectorIndex = 3,
       mirror = true,
       tailCount = 0,
-      offset = { x = 6, y = 6, z = -12 },
+      offset = { x = 6 / 16, y = 5 / 16, z = -12 / 16 },
     }),
     "mid-trace state validates"
   )

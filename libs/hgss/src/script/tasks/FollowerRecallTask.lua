@@ -46,7 +46,15 @@ FollowerRecallTask.version = 1
 local VECTOR_STEPS = 8
 local TAIL_TICKS = 20
 
--- Per-step render-vector increments applied cumulatively as absolute offsets.
+-- Native HGSS model-space vector increments behind state 4 (ov01_02205B14,
+-- state 4 shifts these by 0xC into the map object's FX32 position vector).
+-- Runtime presentation offsets are in world units (one unit per tile), and
+-- 16 model units make one tile, so the task normalizes each increment by
+-- 1/16 before it enters runtime presentation state. The tables stay
+-- readable as native values; the conversion is owned here at this
+-- source/runtime seam, never in the generic actor manager.
+local MODEL_UNITS_PER_TILE = 16
+local VECTOR_X_NATIVE = 2
 local VECTOR_Y = { 1, 2, 2, 3, 3, 2, 2, 0 }
 local VECTOR_Z = { 4, 4, 4, 2, 2, 2, 0, 0 }
 
@@ -137,9 +145,9 @@ function FollowerRecallTask.poll(state, ctx)
     local index = assert(state.vectorIndex, "recall vector progress is required") + 1
     assert(index >= 1 and index <= VECTOR_STEPS, "recall vector step is required")
     local offset = assert(state.offset, "recall vector offset is required")
-    offset.x = offset.x + (state.mirror == true and 2 or -2)
-    offset.y = offset.y + VECTOR_Y[index]
-    offset.z = offset.z - VECTOR_Z[index]
+    offset.x = offset.x + (state.mirror == true and VECTOR_X_NATIVE or -VECTOR_X_NATIVE) / MODEL_UNITS_PER_TILE
+    offset.y = offset.y + VECTOR_Y[index] / MODEL_UNITS_PER_TILE
+    offset.z = offset.z - VECTOR_Z[index] / MODEL_UNITS_PER_TILE
     state.vectorIndex = index
     followingMon:setRecallPresentationOffset(offset)
     if index >= VECTOR_STEPS then

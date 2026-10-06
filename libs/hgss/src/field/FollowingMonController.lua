@@ -1262,8 +1262,10 @@ end
 
 -- Apply an absolute task-owned render-vector displacement to the partner.
 -- Presentation only: logical tiles, occupancy, and map residency never move.
--- Values are copied, never retained.
----@param offset { x: number, y: number, z: number } absolute world/model-unit offset
+-- Values are copied, never retained. The offset arrives already normalized
+-- to runtime-tile/world units by the recall task (native HGSS model units
+-- divided by 16 at the task seam); this pass-through applies it unchanged.
+---@param offset { x: number, y: number, z: number } absolute runtime-tile/world-unit offset
 ---@param self FollowingMonController
 function FollowingMonController:setRecallPresentationOffset(offset)
   assert(

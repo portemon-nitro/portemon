@@ -2191,8 +2191,9 @@ function T.recall_movement_walks_and_faces_through_the_trail_owner()
 end
 
 -- Recall vectors are presentation-only: eight cumulative absolute
--- offsets never move the logical tile, and clearing zeroes the render
--- displacement.
+-- runtime-tile offsets (native HGSS model units normalized by 16 at the
+-- recall-task seam) never move the logical tile, and clearing zeroes the
+-- render displacement.
 function T.recall_offset_moves_presentation_without_touching_logic()
   local w = world({ fieldX = 4, fieldZ = 5, facing = "north" })
   w.svc:setLead(0, mon())
@@ -2202,23 +2203,42 @@ function T.recall_offset_moves_presentation_without_touching_logic()
   local actor = assert(w.mgr:getById(partnerId), "the partner actor is required")
   Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "setup holds no vector displacement")
 
-  local incrementsY = { 1, 2, 2, 3, 3, 2, 2, 0 }
-  local incrementsZ = { 4, 4, 4, 2, 2, 2, 0, 0 }
+  local nativeY = { 1, 2, 2, 3, 3, 2, 2, 0 }
+  local nativeZ = { 4, 4, 4, 2, 2, 2, 0, 0 }
   local x, y, z = 0, 0, 0
+  local first = nil
+  local fourth = nil
   for index = 1, 8 do
-    x = x - 2
-    y = y + incrementsY[index]
-    z = z - incrementsZ[index]
+    x = x - 2 / 16
+    y = y + nativeY[index] / 16
+    z = z - nativeZ[index] / 16
     w.controller:setRecallPresentationOffset({ x = x, y = y, z = z })
     Assert.deepEqual(
       actor:getPresentationOffset(),
       { x = x, y = y, z = z },
       "vector update " .. index .. " applies its absolute offset"
     )
+    if index == 1 then
+      first = { x = x, y = y, z = z }
+    end
+    if index == 4 then
+      fourth = { x = x, y = y, z = z }
+    end
     local logical = assert(w.mgr:getPosition(partnerId), "the partner position is required")
     Assert.equal(logical.fieldX, home.fieldX, "vector update " .. index .. " never moves the logical tile")
     Assert.equal(logical.fieldZ, home.fieldZ, "vector update " .. index .. " never moves the logical tile")
   end
+  Assert.deepEqual(first, { x = -2 / 16, y = 1 / 16, z = -4 / 16 }, "the first step normalizes native units to tiles")
+  Assert.deepEqual(
+    fourth,
+    { x = -8 / 16, y = 8 / 16, z = -14 / 16 },
+    "an intermediate step stays on the normalized tile scale"
+  )
+  Assert.deepEqual(
+    actor:getPresentationOffset(),
+    { x = -1, y = 15 / 16, z = -18 / 16 },
+    "the final vector lands one tile west and just under one tile up"
+  )
   Assert.equal(w.mgr:partnerId(), partnerId, "the vector sequence keeps the stable actor")
 
   w.controller:clearRecallPresentationOffset()
@@ -2235,9 +2255,13 @@ function T.final_reposition_clears_the_recall_offset()
   w.svc:setLead(0, mon())
   tick(w, 2)
   local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
-  w.controller:setRecallPresentationOffset({ x = -16, y = 15, z = -18 })
+  w.controller:setRecallPresentationOffset({ x = -1, y = 15 / 16, z = -18 / 16 })
   local actor = assert(w.mgr:getById(partnerId), "the partner actor is required")
-  Assert.deepEqual(actor:getPresentationOffset(), { x = -16, y = 15, z = -18 }, "setup holds a vector displacement")
+  Assert.deepEqual(
+    actor:getPresentationOffset(),
+    { x = -1, y = 15 / 16, z = -18 / 16 },
+    "setup holds a vector displacement"
+  )
   w.controller:repositionRelativeToPlayer(4, 0)
   Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "the snap clears the displacement")
   local placed = assert(w.mgr:getPosition(partnerId), "the partner survives the snap")
@@ -2424,11 +2448,7 @@ function T.recall_scale_stays_presentation_only_and_reaches_draw_records()
   Assert.equal(logical.fieldZ, home.fieldZ, "recall scale never moves the logical tile")
   Assert.equal(drawRecordFor(w.mgr, partnerId).presentationScale, 0.25, "the draw record carries the recall scale")
   w.controller:clearRecallPresentationScale()
-  Assert.equal(
-    drawRecordFor(w.mgr, partnerId).presentationScale,
-    1,
-    "clearing restores the identity scale"
-  )
+  Assert.equal(drawRecordFor(w.mgr, partnerId).presentationScale, 1, "clearing restores the identity scale")
   w.mgr:dispose()
 end
 
