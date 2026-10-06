@@ -1427,4 +1427,75 @@ function T.blocking_coverage_construction_returns_a_usable_committed_window()
   end
 end
 
+-- Final publication is caller-budgeted work: when the last committed
+-- cell consumes the final supplied unit, the task stays pending until a
+-- later advance supplies the publication unit.
+function T.initial_coverage_publication_consumes_one_work_unit()
+  local releases = {}
+  local task = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory(releases)(descriptor)
+    end,
+  })
+  local first = task:advance(9)
+  Assert.equal(first, 9, "nine committed cells consume nine units")
+  Assert.isFalse(task:isReady(), "publication waits for its own work unit")
+  local second = task:advance(1)
+  Assert.equal(second, 1, "publication consumes exactly one unit")
+  Assert.isTrue(task:isReady(), "the funded publication completes the task")
+  local coverage = task:takeResult()
+  Assert.equal(coverage:status().residentCount, 9, "the published coverage commits the radius-1 window")
+  coverage:release()
+end
+
+-- The published coverage transfers once: a second transfer is a
+-- programming error, and releasing the task after transfer never touches
+-- the caller-owned coverage.
+function T.initial_coverage_result_transfers_exactly_once()
+  local releases = {}
+  local task = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory(releases)(descriptor)
+    end,
+  })
+  local coverage = task:finish()
+  Assert.equal(coverage:status().residentCount, 9, "the transferred coverage commits the radius-1 window")
+  task:release()
+  Assert.isNil(next(releases), "releasing after transfer never touches caller-owned cells")
+  local ok, err = pcall(task.takeResult, task)
+  Assert.isFalse(ok, "a second ownership transfer must fail")
+  Assert.isTrue(
+    tostring(err):find("once", 1, true) ~= nil,
+    "the repeated transfer names its one-shot ownership"
+  )
+  coverage:release()
+  for cellKey, count in pairs(releases) do
+    Assert.equal(count, 1, "caller-owned cell " .. cellKey .. " releases exactly once")
+  end
+end
+
+-- A zero budget stages nothing and publishes nothing.
+function T.initial_coverage_zero_budget_advance_never_publishes()
+  local task = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  Assert.equal(task:advance(0), 0, "a zero budget consumes no work")
+  Assert.isFalse(task:isReady(), "a zero budget publishes no coverage")
+  task:release()
+end
+
 return { metadata = { capabilities = {} }, tests = T }

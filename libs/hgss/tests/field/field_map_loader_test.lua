@@ -2326,4 +2326,69 @@ function T.blocking_load_returns_a_complete_map_with_resident_identity()
   loader:release()
 end
 
+-- The destination-only demand requests exactly the destination field
+-- and logical assets: no cell request, no cell-index read, and no
+-- represented or warp enrollment.
+function T.request_map_assets_demands_only_destination_field_and_logical_assets()
+  local cache, world = outdoorPlanningFixture()
+  local loadLuaCalls = 0
+  local realLoadLua = cache.loadLua
+  cache.loadLua = function(self, path)
+    loadLuaCalls = loadLuaCalls + 1
+    return realLoadLua(self, path)
+  end
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, true, true) })
+  local ready, failure = loader:requestMapAssets(0, "required")
+  Assert.isTrue(ready, "a ready destination closure reports ready")
+  Assert.isNil(failure, "a ready destination closure reports no failure")
+  local kinds = {}
+  for _, call in ipairs(calls) do
+    kinds[#kinds + 1] = call.kind .. ":" .. tostring(call.mapId) .. ":" .. tostring(call.urgency)
+  end
+  Assert.deepEqual(kinds, { "field:0:required", "logical:0:required" })
+  Assert.equal(loadLuaCalls, 0, "destination-only demand never reads the cell index")
+  Assert.isTrue(loader:requestMapAssets("MAP_0", "required"), "symbol demand resolves the same record")
+  Assert.equal(loadLuaCalls, 0, "symbol demand never reads the cell index")
+  loader:release()
+end
+
+-- Destination-only demand shares the readiness/failure convention: a
+-- pending asset holds readiness without failing, a failing asset
+-- short-circuits with its own message, and no host stays immediately
+-- ready.
+function T.request_map_assets_shares_the_demand_readiness_convention()
+  local cache, world = outdoorPlanningFixture()
+  local pendingCalls = {}
+  local pendingLoader =
+    FieldMapLoader.new(cache, world, { derivedAssets = planningHost(pendingCalls, false, true) })
+  local ready, failure = pendingLoader:requestMapAssets(0, "required")
+  Assert.isFalse(ready, "a pending destination asset holds readiness")
+  Assert.isNil(failure, "a pending destination asset reports no failure")
+  Assert.equal(#pendingCalls, 2, "pending demand still enrolls both destination assets")
+  pendingLoader:release()
+
+  local failingLoader = FieldMapLoader.new(cache, world, {
+    derivedAssets = {
+      requestField = function()
+        return false, "field 0 is unavailable"
+      end,
+      requestLogicalField = function()
+        error("a failed destination asset must short-circuit", 0)
+      end,
+      requestCell = function()
+        error("a failed destination asset must short-circuit", 0)
+      end,
+    },
+  })
+  local failedReady, failedFailure = failingLoader:requestMapAssets(0, "required")
+  Assert.isFalse(failedReady, "a failed destination asset reports not ready")
+  Assert.equal(failedFailure, "field 0 is unavailable", "the asset failure propagates with its own message")
+  failingLoader:release()
+
+  local hostless = FieldMapLoader.new(cache, world, {})
+  Assert.isTrue(hostless:requestMapAssets(0, "required"), "no host stays immediately ready")
+  hostless:release()
+end
+
 return { tests = T }

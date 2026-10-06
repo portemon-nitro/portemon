@@ -638,7 +638,13 @@ function InitialCoverageTask:advance(maxWorkUnits)
   local ok, driveErr = pcall(function()
     while consumed < maxWorkUnits and not self._ready do
       if self._nextIndex > #self._descriptors then
+        -- Publication is task-owned work: with no budget left the task
+        -- stays pending until a later positive-budget advance funds it.
+        if consumed >= maxWorkUnits then
+          break
+        end
         publishInitial(self)
+        consumed = consumed + 1
       else
         local descriptor = self._descriptors[self._nextIndex]
         if not self._ensured[self._nextIndex] then
@@ -684,8 +690,11 @@ function InitialCoverageTask:takeResult()
   end
   assert(not self._released, "initial coverage task is released")
   assert(self._ready, "initial coverage result is not ready")
+  assert(not self._transferred, "initial coverage result transfers once")
   self._transferred = true
-  return assert(self._result)
+  local result = assert(self._result)
+  self._result = nil
+  return result
 end
 
 -- Finishes the staged transaction synchronously through the same

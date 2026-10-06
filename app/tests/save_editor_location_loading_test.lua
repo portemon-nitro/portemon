@@ -239,6 +239,16 @@ local function fakeLoader(script)
     end
     return true
   end
+  function loader:requestMapAssets(mapId, urgency)
+    self.requestCount = self.requestCount + 1
+    if self.requestError ~= nil then
+      return false, self.requestError
+    end
+    if self.requestCount <= self.readyAfterRequests then
+      return false
+    end
+    return true
+  end
   function loader:beginLoad(mapId)
     local task = stagedTask(self, mapId, script)
     self.begins[#self.begins + 1] = mapId
@@ -298,7 +308,10 @@ end
 -- A synthetic outdoor world served by the real headless loader and the
 -- real staged coverage: one 5x5 physical-cell matrix around the map
 -- origin, so a committed radius-1 window always resolves without a ROM.
-local function realOutdoorService()
+-- The optional hooks table instruments the composition: index-load
+-- counting, a holdable cell closure, and per-update staged work totals.
+local function buildRealOutdoorService(hooks)
+  hooks = hooks or {}
   local files = {}
   local world = {
     schema = MapAssetCache.WORLD_SCHEMA,
@@ -416,6 +429,9 @@ local function realOutdoorService()
   }
   local cacheFs = {}
   function cacheFs:loadLua(path)
+    if path == FieldCellCache.indexPath() then
+      hooks.indexLoads = (hooks.indexLoads or 0) + 1
+    end
     if cellFiles[path] then
       return cellFiles[path]
     end
@@ -430,19 +446,51 @@ local function realOutdoorService()
   local function alwaysReady()
     return true
   end
-  return Service.new({
+  local function cellReady()
+    return not hooks.cellPending
+  end
+  local service = Service.new({
     cacheFs = cacheFs,
     world = world,
     derivedAssets = {
       requestField = alwaysReady,
       requestLogicalField = alwaysReady,
-      requestCell = alwaysReady,
+      requestCell = cellReady,
       ensureField = alwaysReady,
       ensureLogicalField = alwaysReady,
       ensureCell = alwaysReady,
     },
     savedObjects = { actors = {} },
   })
+  local trackedLoader = service.loader
+  local function trackTask(task)
+    local taskAdvance = task.advance
+    task.advance = function(taskSelf, workUnits)
+      local consumed = taskAdvance(taskSelf, workUnits)
+      hooks.updateConsumed = (hooks.updateConsumed or 0) + consumed
+      return consumed
+    end
+    return task
+  end
+  local loaderBeginLoad = trackedLoader.beginLoad
+  trackedLoader.beginLoad = function(loaderSelf, mapId)
+    local task = loaderBeginLoad(loaderSelf, mapId)
+    hooks.mapTaskBegun = true
+    if hooks.indexLoadsAtBegin == nil then
+      hooks.indexLoadsAtBegin = hooks.indexLoads or 0
+    end
+    return trackTask(task)
+  end
+  local loaderBeginCoverage = trackedLoader.beginPhysicalCoverage
+  trackedLoader.beginPhysicalCoverage = function(loaderSelf, runtimeMap, position)
+    hooks.coverageBegun = true
+    return trackTask(loaderBeginCoverage(loaderSelf, runtimeMap, position))
+  end
+  return service
+end
+
+local function realOutdoorService()
+  return buildRealOutdoorService()
 end
 
 function T.tests.superseded_map_work_releases_exactly_once_and_never_publishes()
@@ -676,6 +724,59 @@ function T.tests.real_loader_and_coverage_need_repeated_bounded_updates()
   for _, tile in ipairs(final.tiles) do
     Assert.isTrue(tile.state ~= "pending", "real preparation classifies every visible tile")
   end
+  service:dispose()
+end
+
+function T.tests.first_outdoor_preparation_acquires_the_cell_index_inside_staged_map_work()
+  local hooks = {
+    indexLoads = 0,
+    indexLoadsAtBegin = nil,
+    mapTaskBegun = false,
+    coverageBegun = false,
+    cellPending = true,
+    updateConsumed = 0,
+  }
+  local service = buildRealOutdoorService(hooks)
+  local loader = service.loader
+
+  local assetsReady, assetsFailure = loader:requestMapAssets(0, "required")
+  Assert.isTrue(assetsReady, "destination-only demand reports ready once its assets are ready")
+  Assert.isNil(assetsFailure, "destination-only demand reports no failure")
+  Assert.equal(hooks.indexLoads, 0, "destination-only demand never reads the cell index")
+
+  service:openMap(0)
+  service:setViewport(80, 80, 1, 1)
+  hooks.updateConsumed = 0
+  service:update()
+  Assert.isTrue(hooks.mapTaskBegun, "preparation stages its map work through a loader task")
+  Assert.equal(hooks.indexLoadsAtBegin, 0, "no index load precedes staged map work")
+  Assert.isTrue(hooks.indexLoads >= 1, "staged map work acquires the cell index")
+  Assert.isFalse(hooks.coverageBegun, "no coverage begins before the map publishes")
+  Assert.isTrue(hooks.updateConsumed <= 8, "one update spends no more than the single location budget")
+
+  local guard = 0
+  while service.runtimeMap == nil and guard < 120 do
+    hooks.updateConsumed = 0
+    service:update()
+    Assert.isTrue(hooks.updateConsumed <= 8, "every map-staging update stays within budget")
+    guard = guard + 1
+  end
+  Assert.notNil(service.runtimeMap, "bounded updates publish the staged runtime map")
+  Assert.equal(service:snapshot().status.state, "pending", "a pending cell closure holds preparation pending")
+  Assert.isFalse(hooks.coverageBegun, "no coverage begins while the full closure is pending")
+
+  hooks.cellPending = false
+  guard = 0
+  while service:snapshot().status.state ~= "ready" and guard < 120 do
+    hooks.updateConsumed = 0
+    service:update()
+    Assert.isTrue(hooks.updateConsumed <= 8, "every coverage-staging update stays within budget")
+    guard = guard + 1
+  end
+  local final = service:snapshot()
+  Assert.equal(final.status.state, "ready", "repeated bounded updates finish real preparation")
+  Assert.notNil(service.coverage, "staged coverage publishes a real physical window")
+  Assert.notNil(loader:get(0), "the real loader published the prepared map")
   service:dispose()
 end
 

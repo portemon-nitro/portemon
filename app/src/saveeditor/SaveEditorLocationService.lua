@@ -599,12 +599,15 @@ function SaveEditorLocationService:_advanceStagedCoverage(fieldX, fieldZ, maxWor
 end
 
 function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
-  local ready, err = self.loader:requestLocation(self.mapId, fieldX, fieldZ, "required")
-  if err ~= nil then
-    self.status = status("failed", err)
+  -- Destination map assets first: this enrolls only the destination
+  -- field/logical demand, so first-use cell-index acquisition stays inside
+  -- the staged map driver below instead of running outside the budget.
+  local assetsReady, assetsError = self.loader:requestMapAssets(self.mapId, "required")
+  if assetsError ~= nil then
+    self.status = status("failed", assetsError)
     return false
   end
-  if not ready then
+  if not assetsReady then
     self.status = status("pending")
     return false
   end
@@ -616,6 +619,19 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
     if not mapReady then
       return false
     end
+  end
+
+  -- The full location closure only runs once the staged map published:
+  -- outdoor index acquisition already happened under the map budget, and a
+  -- pending closure below returns without spending coverage work.
+  local ready, err = self.loader:requestLocation(self.mapId, fieldX, fieldZ, "required")
+  if err ~= nil then
+    self.status = status("failed", err)
+    return false
+  end
+  if not ready then
+    self.status = status("pending")
+    return false
   end
 
   if self.runtimeMap.scene.type == "outdoor" then

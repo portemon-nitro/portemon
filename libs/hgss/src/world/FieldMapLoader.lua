@@ -1240,25 +1240,18 @@ function FieldMapLoader:globalPosition(idOrSymbol, localX, localZ)
   return { x = localX + originX, z = localZ + originZ }
 end
 
--- Nonblocking location demand: requests the destination full field
--- closure and, for a destination with physical cells, every valid
--- descriptor in the existing radius-1 committed footprint. Every loadable
--- map represented by those committed descriptors additionally enrolls its
--- logical field closure at the caller's urgency (the destination reuses
--- its own full closure instead), while non-destination maps enroll their
--- full visual closure as near prefetch only. Performs no scene, terrain,
--- or GPU acquisition. Returns ready/pending/error without blocking.
+-- Nonblocking destination-only demand: requests the destination full
+-- and logical field assets at the caller's urgency so a staged map driver
+-- can proceed. It performs no field-cell-index load, no cell request, no
+-- represented-map walk, no warp scan, and no scene, terrain, or GPU
+-- acquisition. Returns ready/pending/error without blocking.
 ---@param idOrSymbol integer|string
----@param fieldX integer
----@param fieldZ integer
 ---@param urgency string
 ---@return boolean
 ---@return string|nil
-function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
+function FieldMapLoader:requestMapAssets(idOrSymbol, urgency)
   assert(not self.released, "field map loader is released")
-  assert(type(fieldX) == "number" and fieldX % 1 == 0, "field x must be an integer")
-  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "field z must be an integer")
-  assert(type(urgency) == "string" and urgency ~= "", "location demand requires an urgency")
+  assert(type(urgency) == "string" and urgency ~= "", "map asset demand requires an urgency")
   local record = worldRecord(self.world, idOrSymbol)
   local host = self.derivedAssets
   if host == nil then
@@ -1285,6 +1278,52 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
   local destinationFailure = consume(host.requestLogicalField(record.id, urgency))
   if destinationFailure ~= nil then
     return false, destinationFailure
+  end
+  if pending then
+    return false
+  end
+  return true
+end
+
+-- Nonblocking location demand: requests the destination full field
+-- closure and, for a destination with physical cells, every valid
+-- descriptor in the existing radius-1 committed footprint. Every loadable
+-- map represented by those committed descriptors additionally enrolls its
+-- logical field closure at the caller's urgency (the destination reuses
+-- its own full closure instead), while non-destination maps enroll their
+-- full visual closure as near prefetch only. Performs no scene, terrain,
+-- or GPU acquisition. Returns ready/pending/error without blocking.
+---@param idOrSymbol integer|string
+---@param fieldX integer
+---@param fieldZ integer
+---@param urgency string
+---@return boolean
+---@return string|nil
+function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
+  assert(not self.released, "field map loader is released")
+  assert(type(fieldX) == "number" and fieldX % 1 == 0, "field x must be an integer")
+  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "field z must be an integer")
+  assert(type(urgency) == "string" and urgency ~= "", "location demand requires an urgency")
+  local record = worldRecord(self.world, idOrSymbol)
+  local host = self.derivedAssets
+  if host == nil then
+    return true
+  end
+  -- The destination-only prerequisite keeps its enrollment even while
+  -- pending so the physical/warp closure below is never narrowed.
+  local assetsReady, assetsFailure = self:requestMapAssets(idOrSymbol, urgency)
+  if assetsFailure ~= nil then
+    return false, assetsFailure
+  end
+  local pending = not assetsReady
+  local function consume(ready, failure)
+    if failure ~= nil then
+      return failure
+    end
+    if not ready then
+      pending = true
+    end
+    return nil
   end
   local seen = {}
   local matrix = record.matrix
