@@ -13,7 +13,8 @@ local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v7"
+GameSave.SCHEMA = "g4-game-save-v8"
+GameSave.LEGACY_V7_SCHEMA = "g4-game-save-v7"
 GameSave.LEGACY_V5_SCHEMA = "g4-game-save-v5"
 GameSave.LEGACY_V6_SCHEMA = "g4-game-save-v6"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
@@ -319,7 +320,7 @@ function GameSave.migrateV5(record)
   return migrated
 end
 
--- Reconciles either independently published v6 layout into the current save.
+-- Reconciles either independently published v6 layout into the v7 save.
 -- Only the top-level layout shape is checked: exactly one of the two
 -- published bucket groups must be present before the missing state is
 -- initialized. Nested state is copied, never semantically rechecked.
@@ -341,10 +342,66 @@ function GameSave.migrateV6(record)
     Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v6 save has an incomplete or mixed bucket layout", {})
   end
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V7_SCHEMA
   migrated.fashionCase = migrated.fashionCase or FashionCaseState.empty()
   migrated.mailbox = migrated.mailbox or Mailbox.new():capture()
   migrated.photoAlbum = migrated.photoAlbum or PhotoAlbum.new():capture()
+  return migrated
+end
+
+-- Pure v7 -> v8 conversion. Only the nested persisted-format delta is
+-- applied: mons v2 and scripts v1 buckets normalize into their current
+-- fingerprint-free shapes while every unrelated top-level field is
+-- preserved byte-identically. Nested buckets already at their current
+-- schemas pass through copied. No script quiescence is required: dropping
+-- obsolete fingerprints never needs an empty continuation.
+---@param record table<string, unknown> a v7 save record
+---@return table<string, unknown> the migrated v8 record
+function GameSave.migrateV7(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V7_SCHEMA, "GameSave.migrateV7 requires v7")
+  for key in pairs(record) do
+    if not TOP_LEVEL_FIELDS[key] then
+      Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "unknown game save field", { field = key })
+    end
+  end
+  if type(record.mons) ~= "table" or type(record.scripts) ~= "table" then
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "v7 mons and scripts buckets are required for migration", {})
+  end
+  assert(type(record.mons) == "table" and type(record.scripts) == "table", "v7 nested buckets are required")
+  local MonsSave = require("libs.mons.src.MonsSave")
+  local ScriptSave = require("libs.script.src.ScriptSave")
+  local monsSchema = record.mons.schema
+  local migratedMons
+  if monsSchema == MonsSave.SCHEMA then
+    migratedMons = deepCopy(record.mons)
+  elseif monsSchema == MonsSave.LEGACY_V2_SCHEMA then
+    migratedMons = MonsSave.migrateV2(record.mons)
+  else
+    Errors.raise(
+      GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
+      "v7 mons bucket schema is unsupported",
+      { schema = monsSchema }
+    )
+    error("unreachable", 0)
+  end
+  local scriptsSchema = record.scripts.schema
+  local migratedScripts
+  if scriptsSchema == ScriptSave.SCHEMA_NAME then
+    migratedScripts = deepCopy(record.scripts)
+  elseif scriptsSchema == ScriptSave.LEGACY_SCHEMA_NAME then
+    migratedScripts = ScriptSave.migrateV1(record.scripts)
+  else
+    Errors.raise(
+      GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
+      "v7 scripts bucket schema is unsupported",
+      { schema = scriptsSchema }
+    )
+    error("unreachable", 0)
+  end
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
+  migrated.mons = migratedMons
+  migrated.scripts = migratedScripts
   return migrated
 end
 
@@ -376,6 +433,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V7_SCHEMA
       and record.schema ~= GameSave.LEGACY_V6_SCHEMA
       and record.schema ~= GameSave.LEGACY_V5_SCHEMA
       and record.schema ~= "g4-game-save-v4"
@@ -457,6 +515,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V7_SCHEMA
       and schema ~= GameSave.LEGACY_V6_SCHEMA
       and schema ~= GameSave.LEGACY_V5_SCHEMA
       and schema ~= "g4-game-save-v4"
@@ -476,6 +535,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V6_SCHEMA then
       current = GameSave.migrateV6(current)
+    end
+    if current.schema == GameSave.LEGACY_V7_SCHEMA then
+      current = GameSave.migrateV7(current)
     end
     return canonicalizeCurrent(current)
   end)

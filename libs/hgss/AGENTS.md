@@ -13,8 +13,7 @@ Keep reviewer-facing mechanisms in these shallow domain subpackages:
 - `world` — maps, cells, residency, collision, terrain, zones, weather, and world facts.
 - `interaction` — event, message, signpost, choice, and interaction resolution.
 - `transition` — warps, doors, fades, entrances, and field transition semantics.
-- `script` — HGSS value/reference semantics, field-shaped script adapters, and field-script
-  compatibility.
+- `script` — HGSS value/reference semantics, field-shaped script adapters, and production task registration.
 - `audio` — HGSS audio policy composed over the NDS sound mechanisms.
 - `presentation` — field scene, camera, queue, and presentation composition.
 - `ui` — reusable HGSS runtime UI mechanisms, including HGSS input-binding authority;
@@ -44,9 +43,9 @@ application ownership into this library.
 Launcher state, the product startup Main Menu, LÖVE process composition, version selection,
 ROM provisioning, and process exit policy belong to `app`.
 Retail story flow, explicit new-game sequencing, Professor Oak intro policy, field application
-composition, and application audio belong to the concrete `game/hgss` package. Field-script
-compatibility and HGSS input semantics remain reusable mechanisms
-here. Do not move application policy into this library merely because it invokes a reusable
+composition, and application audio belong to the concrete `game/hgss` package. Field script
+platform construction, task registration, and HGSS input semantics remain reusable
+mechanisms here. Do not move application policy into this library merely because it invokes a reusable
 HGSS mechanism.
 The generic running-game lifecycle and host adapters belong to `game`; `FieldSession` is a
 field-simulation mechanism, not a game entry point.

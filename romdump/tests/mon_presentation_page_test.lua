@@ -686,7 +686,7 @@ function T.semantic_fingerprint_and_save_legality_survive_repacking()
     LuaWriter.encode(catalog):find("pageId") == nil,
     "page packing lives outside the fingerprinted semantic serialization"
   )
-  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture(), first:fingerprint())
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture())
   local ok, failure = pcall(MonsSave.validate, bucket, { catalog = second })
   Assert.isTrue(ok, "saved-mon legality survives a page repacking: " .. tostring(failure))
 end

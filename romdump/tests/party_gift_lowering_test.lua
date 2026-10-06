@@ -45,7 +45,7 @@ end
 function T.give_mon_creates_adds_and_reports_in_source_order()
   local HgssMonService = requireService()
   local catalog = CatalogFixture.makeCatalog()
-  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture(), catalog:fingerprint())
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture())
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = bucket,
@@ -86,7 +86,7 @@ local function openGiftService(catalog)
   local HgssMonService = requireService()
   return HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x33333333):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x33333333):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",

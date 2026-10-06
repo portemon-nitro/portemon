@@ -84,7 +84,7 @@ local function seedRecord(saveId, versionId)
     scripts = {},
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
-    mons = MonsSave.empty("test-catalog-fingerprint", 7),
+    mons = MonsSave.empty(7),
     bag = BagSave.empty(),
     mart = MartSave.empty(),
     mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),

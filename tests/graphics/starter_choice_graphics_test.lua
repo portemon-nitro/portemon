@@ -197,7 +197,7 @@ local function openProductionChoice(versionId, cacheFs, speciesKeys, measureDisp
   local fontDef = FieldFontLoader.load(cacheFs)
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.empty(catalog:fingerprint(), 7),
+    bucket = MonsSave.empty(7),
     profile = { name = "GOLD", gender = 0, trainerId = 1 },
     game = versionId,
     language = monRoot.version.language,

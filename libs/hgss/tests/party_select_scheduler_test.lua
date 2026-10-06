@@ -50,7 +50,7 @@ local function openService()
   local catalog = CatalogFixture.makeCatalog()
   return HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xCCCCCCCC):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xCCCCCCCC):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -248,7 +248,7 @@ function T.tests.resume_rereads_the_live_party(context)
     h.scheduler:createForeground(assert(h.composition:effective(script.id)), nil, 100)
     h.scheduler:step(100, {})
     local tick = driveToSlot(h, 100, 1)
-    local bucket = ScriptSave.capture(h.scheduler, tick, { registryFingerprint = h.registry:fingerprint() })
+    local bucket = ScriptSave.capture(h.scheduler, tick)
     Assert.equal(#bucket.tasks, 1, "the blocked selection captures one task")
     Assert.equal(bucket.tasks[1].taskType, "party_select")
     -- The live party grows between capture and restore: resume must
@@ -303,7 +303,7 @@ function T.tests.stale_shape_is_rejected(context)
     h.registry:installBase(script.id, script, "generated")
     h.scheduler:createForeground(assert(h.composition:effective(script.id)), nil, 100)
     h.scheduler:step(100, {})
-    local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+    local bucket = ScriptSave.capture(h.scheduler, 100)
     Assert.equal(#bucket.tasks, 1)
     local record = assert(bucket.tasks[1], "the blocked selection captures its task")
     Assert.equal(record.taskVersion, 2, "the capture carries the current shape")

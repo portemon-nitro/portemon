@@ -39,15 +39,15 @@ local function openService(HgssMonService, catalog, bucket)
   })
 end
 
-local function emptyBucket(catalog, seed)
-  return MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), catalog:fingerprint())
+local function emptyBucket(seed)
+  return MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture())
 end
 
 function T.capture_store_restore_preserves_semantics_and_native_bytes()
   local HgssMonService = requireService()
   local catalog = CatalogFixture.makeCatalog()
   local context = serviceContext(catalog)
-  local live = openService(HgssMonService, catalog, emptyBucket(catalog, 0x11111111))
+  local live = openService(HgssMonService, catalog, emptyBucket(0x11111111))
   live:createStarter("CHIKORITA", { location = 7, date = CatalogFixture.metDate() })
   Assert.equal(live:partyCount(), 1, "the created starter enters the live party")
 
@@ -56,7 +56,7 @@ function T.capture_store_restore_preserves_semantics_and_native_bytes()
 
   local stored = live:capture()
   Assert.isTrue(MonsSave.validate(stored, context), "the captured bucket validates before storage")
-  local restoredBucket = MonsSave.capture(stored.party, stored.rng, stored.catalogFingerprint)
+  local restoredBucket = MonsSave.capture(stored.party, stored.rng, stored.boxes)
   local resumed = openService(HgssMonService, catalog, restoredBucket)
 
   Assert.equal(resumed:partyCount(), 1, "restore republishes the party without loss")

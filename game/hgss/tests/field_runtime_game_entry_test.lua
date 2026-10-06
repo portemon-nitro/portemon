@@ -162,9 +162,6 @@ local function captureRuntime(overrides)
         end,
       },
       scheduler = {},
-      registryFingerprint = function()
-        return "registry-fingerprint"
-      end,
     },
     actors = {
       captureObjects = function()
@@ -184,7 +181,7 @@ local function captureRuntime(overrides)
     playTime = PlayTime.new(17),
     monService = {
       capture = function()
-        return require("libs.mons.src.MonsSave").empty("test-catalog-fingerprint", 7)
+        return require("libs.mons.src.MonsSave").empty(7)
       end,
     },
     mailbox = require("libs.hgss.src.save.Mailbox").new(),
@@ -215,11 +212,10 @@ function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io
   Assert.isTrue(runtime.fashionCase:tryAdd(0))
   local scriptCaptureCalls = 0
   local originalCapture = require("libs.script.src.ScriptSave").capture
-  require("libs.script.src.ScriptSave").capture = function(_, tick, options)
+  require("libs.script.src.ScriptSave").capture = function(_, tick)
     scriptCaptureCalls = scriptCaptureCalls + 1
     Assert.equal(tick, 42)
-    Assert.equal(options.registryFingerprint, "registry-fingerprint")
-    return { schema = "g4-script-save-v1", capturedAtSimulationTick = tick }
+    return { schema = "g4-script-save-v2", capturedAtSimulationTick = tick }
   end
 
   local ok, result = pcall(function()
@@ -240,7 +236,7 @@ function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io
   Assert.equal(valid.audio.fieldMusicOverride, 123)
   Assert.equal(valid.weatherId, 11)
   Assert.equal(valid.world.objects.schema, "g4-field-objects-v1")
-  Assert.equal(valid.mons.schema, "g4-mons-save-v2", "every save captures the mons bucket")
+  Assert.equal(valid.mons.schema, "g4-mons-save-v3", "every save captures the mons bucket")
   Assert.equal(valid.bag.schema, "hgss-bag-v1", "every save captures the bag bucket")
   Assert.equal(valid.fashionCase.counts[1], 1, "every save captures Fashion Case quantities")
   Assert.equal(scriptCaptureCalls, 1)
@@ -284,7 +280,7 @@ function T.captureGameSave_refuses_active_map_entry_before_snapshot_work()
   local originalScriptCapture = ScriptSave.capture
   ScriptSave.capture = function()
     snapshotCalls.scripts = snapshotCalls.scripts + 1
-    return { schema = "g4-script-save-v1", capturedAtSimulationTick = 42 }
+    return { schema = "g4-script-save-v2", capturedAtSimulationTick = 42 }
   end
   local playerMotion = runtime.session.player.motion
   local ok, snapshot, reason = pcall(function()
@@ -438,13 +434,7 @@ function T.captureGameSave_writes_the_stable_durable_avatar_state()
         counters = function()
           return { nextEnvironmentId = 0, nextInstanceId = 0, nextTaskId = 0 }
         end,
-        taskRegistryFingerprint = function()
-          return "tasks"
-        end,
       },
-      registryFingerprint = function()
-        return "registry-fingerprint"
-      end,
     },
   })
   local snapshot, reason = runtime:captureGameSave()

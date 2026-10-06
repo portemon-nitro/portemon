@@ -67,8 +67,8 @@ end
 local function newGameCandidate(saveStore, versionId)
   -- The domain catalog behind the unpublished mons bucket resolves lazily
   -- inside candidate construction, so application routing never touches
-  -- cache IO: the candidate carries the exact fingerprint the field
-  -- runtime validates against.
+  -- cache IO: the catalog gates bucket creation while the bucket itself
+  -- carries no catalog identity.
   local function loadMonCatalog()
     local cacheFs = CacheFs.forVersion(versionId)
     return MonCatalog.new(MonCache.loadCatalog(cacheFs), ItemCatalog.new(ItemCache.loadCatalog(cacheFs)))

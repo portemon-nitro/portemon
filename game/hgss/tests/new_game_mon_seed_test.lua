@@ -1,5 +1,5 @@
 -- New-game mon seed coverage: the unpublished candidate carries the
--- required empty bucket with the exact fingerprint, an explicit seed wins
+-- required fingerprint-free empty bucket, an explicit seed wins
 -- deterministically, the derived seed is stable for its inputs and never
 -- zero, and candidates without a catalog keep the legacy shape.
 
@@ -43,7 +43,7 @@ function T.explicit_seed_persists_verbatim()
   local fresh = candidate({ catalog = catalog, monSeed = 0x12345678 })
   Assert.equal(fresh.mons.rng.state, 0x12345678)
   Assert.equal(fresh.mons.rng.calls, 0)
-  Assert.equal(fresh.mons.catalogFingerprint, catalog:fingerprint())
+  Assert.isNil(fresh.mons.catalogFingerprint, "the empty bucket carries no catalog fingerprint")
   Assert.isTrue(MonsSave.validate(fresh.mons, CatalogFixture.domainContext(catalog)))
 end
 

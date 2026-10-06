@@ -1,19 +1,18 @@
 -- Script member publication contract: members stage through a worker-owned
 -- preparation, never through a live cache handle, and the generation summary
 -- activates the complete selection only after every declared member is
--- current. Registry fingerprints stay derived from published script content,
--- so an unrelated producer rotation preserves saves while a real semantic
--- edit does not.
+-- current. Registry digests stay derived from published script content, so
+-- an unrelated producer rotation preserves the digest while a real semantic
+-- edit changes it. Saved script state carries no aggregate fingerprint, so
+-- neither rotation nor edit gates a save at the envelope.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
-local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local Registry = require("libs.script.src.Registry")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
-local ScriptErrors = require("libs.script.src.errors")
 local ScriptSave = require("libs.script.src.ScriptSave")
 
 local T = {}
@@ -207,11 +206,9 @@ local function registryFromPublished(cache, generation, specs)
   return registry
 end
 
-local function saveBucket(fingerprint)
+local function saveBucket()
   return {
     schema = ScriptSave.SCHEMA_NAME,
-    registryFingerprint = fingerprint,
-    taskFingerprint = "tasks",
     capturedAtSimulationTick = 0,
     nextEnvironmentId = 0,
     nextInstanceId = 0,
@@ -372,9 +369,9 @@ function T.summary_refuses_to_activate_with_a_missing_member()
 end
 
 -- Rebuilding byte-equivalent resources under a rotated producer identity
--- keeps the content-derived registry fingerprint, so a save recorded under
--- the first generation validates unchanged under the second.
-function T.identical_content_under_two_producer_identities_keeps_the_saved_fingerprint()
+-- keeps the content-derived registry digest, and the save envelope never
+-- consults it: a current bucket validates unchanged under both generations.
+function T.identical_content_under_two_producer_identities_keeps_the_digest()
   local firstCache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishCompleteGeneration(firstCache, GENERATION_A, MARKER_A, nil, "producer-first", OUTER_GENERATION_A)
   local secondCache = CacheFs.forVersion("heartgold", FakeCache.new())
@@ -382,27 +379,20 @@ function T.identical_content_under_two_producer_identities_keeps_the_saved_finge
 
   local first = registryFromPublished(firstCache, GENERATION_A)
   local second = registryFromPublished(secondCache, GENERATION_B)
-  local firstFingerprint = first:fingerprint()
-  Assert.equal(second:fingerprint(), firstFingerprint, "producer-only rotation must not change the content fingerprint")
+  Assert.equal(second:fingerprint(), first:fingerprint(), "producer-only rotation must not change the content digest")
 
-  local saved = saveBucket(firstFingerprint)
-  Assert.isNil(
-    ScriptSave.validate(saved, { expectedRegistryFingerprint = firstFingerprint }),
-    "the save validates under its own generation"
-  )
-  Assert.isNil(
-    ScriptSave.validate(saved, { expectedRegistryFingerprint = second:fingerprint() }),
-    "the same save validates after a producer-only rebuild"
-  )
+  Assert.isNil(ScriptSave.validate(saveBucket(), {}), "the save validates under its own generation")
+  Assert.isNil(ScriptSave.validate(saveBucket(), {}), "the same save validates after a producer-only rebuild")
 end
 
--- A genuine semantic edit changes the content fingerprint, so a save
--- recorded under the old registry stays rejected with the existing
--- incompatibility error and no cache-version fallback accepts it.
-function T.changed_script_content_stays_incompatible_with_the_saved_fingerprint()
+-- A genuine semantic edit changes the content digest but no longer gates
+-- the save envelope: a quiescent save recorded under the old registry still
+-- validates under the edited one. Concrete continuations resolve at restore
+-- instead of failing an aggregate preflight.
+function T.changed_script_content_no_longer_gates_the_save_envelope()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishCompleteGeneration(cache, GENERATION_A, MARKER_A, nil, "baseline", OUTER_GENERATION_A)
-  local baselineFingerprint = registryFromPublished(cache, GENERATION_A):fingerprint()
+  local baselineDigest = registryFromPublished(cache, GENERATION_A):fingerprint()
 
   local editedCache = CacheFs.forVersion("heartgold", FakeCache.new())
   local editedPlan = planFor(GENERATION_B, MARKER_B, memberSpecs())
@@ -421,14 +411,13 @@ function T.changed_script_content_stays_incompatible_with_the_saved_fingerprint(
     OUTER_GENERATION_B
   )
   stageAndPublishSummary(editedCache, editedPlan, "edited-summary", OUTER_GENERATION_B)
-  local editedFingerprint = registryFromPublished(editedCache, GENERATION_B):fingerprint()
-  Assert.isTrue(editedFingerprint ~= baselineFingerprint, "a semantic edit must change the content fingerprint")
+  local editedDigest = registryFromPublished(editedCache, GENERATION_B):fingerprint()
+  Assert.isTrue(editedDigest ~= baselineDigest, "a semantic edit must change the content digest")
 
-  local saved = saveBucket(baselineFingerprint)
-  local err = ScriptSave.validate(saved, { expectedRegistryFingerprint = editedFingerprint })
-  Assert.isTrue(Errors.is(err), "the stale save must be rejected under the edited registry")
-  err = err --[[@as { code: string }]]
-  Assert.equal(err.code, ScriptErrors.SCRIPT_REGISTRY_FINGERPRINT_MISMATCH)
+  Assert.isNil(
+    ScriptSave.validate(saveBucket(), {}),
+    "the quiescent save still validates under the edited registry"
+  )
 end
 
 -- A summary publication interrupted after ownership begins recovers through

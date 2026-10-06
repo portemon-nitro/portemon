@@ -3,14 +3,15 @@
 -- `validate`, and may supply `cancel`/`onComplete`. The scheduler routes task
 -- creation and polling through this registry so save records can verify both
 -- the type and the version on load, and so raw-Lua handlers can only ever
--- return a task type that is registered here. The deterministic fingerprint
--- covers every registered type and version; saves store it and reject a
--- mismatch. Pure domain module: no love dependency.
+-- return a task type that is registered here. The deterministic digest
+-- covers every registered type and version for loader and registry identity
+-- checks; saves no longer store or compare it. Pure domain module: no love
+-- dependency.
 --
 -- Any change to a task's serialized-state shape (what `validate` accepts and
 -- what the save schema carries) requires a major version bump of that task
--- type: the fingerprint is a (type, version) projection, not an
--- implementation identity, so compatibility relies entirely on this manual
+-- type: the digest is a (type, version) projection, not an
+-- implementation identity, so concrete restore relies entirely on this manual
 -- versioning.
 
 local Errors = require("libs.errors.src.Errors")

@@ -43,7 +43,6 @@ local function services(boxCount)
     bucket = MonsSave.capture(
       Party.new():capture(),
       Lcrng.new(0x10203040):capture(),
-      catalog:fingerprint(),
       nil,
       { configuredCount = boxCount or 18 }
     ),

@@ -386,7 +386,7 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 
 local function monsHost()
   local catalog = CatalogFixture.makeCatalog()
-  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xEEEEEEEE):capture(), catalog:fingerprint())
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xEEEEEEEE):capture())
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = bucket,
@@ -501,7 +501,7 @@ end
 local function itemTextHost(opts)
   opts = opts or {}
   local catalog = CatalogFixture.makeCatalog()
-  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xDDDDDDDD):capture(), catalog:fingerprint())
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xDDDDDDDD):capture())
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = bucket,

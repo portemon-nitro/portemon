@@ -174,7 +174,7 @@ function T.menu_builder_survives_save_after_begin_with_a_fresh_stateless_host()
   h.scheduler:createForeground(assert(h.composition:effective(script.id)), nil, 100)
   h.scheduler:step(100, {})
 
-  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 100)
   Assert.equal(bucket.instances[1].menuBuilder.messageSource, "standard")
   Assert.equal(#bucket.instances[1].menuBuilder.items, 0)
 
@@ -293,7 +293,7 @@ function T.menu_task_restores_its_logical_selection_without_serializing_presenta
   start(h, 100)
   h.scheduler:step(100, {})
   h.scheduler:step(101, { menuEvents = { { type = "focus", itemIndex = 1 } } })
-  local bucket = ScriptSave.capture(h.scheduler, 101, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 101)
   local state = bucket.tasks[1].state
   Assert.equal(state.selectedIndex, 1)
   Assert.equal(state.pressedPointerItem, nil)
@@ -313,7 +313,7 @@ function T.menu_task_drops_an_in_progress_pointer_gesture_on_restore()
   start(h, 100)
   h.scheduler:step(100, {})
   h.scheduler:step(101, { menuEvents = { { type = "pointer_down", itemIndex = 0 } } })
-  local bucket = ScriptSave.capture(h.scheduler, 101, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 101)
 
   Assert.isNil(bucket.tasks[1].state.pressedPointerItem)
 

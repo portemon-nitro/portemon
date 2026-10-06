@@ -270,7 +270,7 @@ function T.lottery_persists_through_world_capture_and_game_save()
     scripts = { tasks = {} },
     auxiliaryUi = {},
     audio = {},
-    mons = MonsSave.empty("test-catalog-fingerprint", 7),
+    mons = MonsSave.empty(7),
     bag = BagSave.empty(),
     mart = MartSave.empty(),
     mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),

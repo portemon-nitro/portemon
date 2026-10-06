@@ -2,15 +2,17 @@
 -- bucket of the g4-field-save-v4 schema. Capture happens only at a fixed-tick
 -- phase boundary (no context in `running` status); absolute scheduling ticks
 -- become relative delays rebased at restore, so no tick is duplicated or
--- skipped. The bucket carries the registry fingerprint, the task-registry
--- fingerprint, and the id counters; restore rejects a fingerprint mismatch
--- (SCRIPT_REGISTRY_FINGERPRINT_MISMATCH) and the scheduler reattaches every
--- frame's graph through current compositions, rejecting unknown revisions
--- (SCRIPT_SAVE_REVISION_MISMATCH). Validation is the complete load
--- boundary: the whole bucket and every cross-record reference are checked
--- before any live scheduler state is constructed, and restore stages every
--- object and installs only after the entire bucket has restored. Input
--- edges are never serialized. Pure domain module: no love dependency.
+-- skipped. The bucket carries the id counters plus the environment,
+-- instance, and task records; no aggregate registry fingerprint is stored
+-- or compared. Restore resolves every saved task implementation and
+-- frame revision concretely against the current scheduler, and the
+-- scheduler reattaches every frame's graph through current compositions,
+-- rejecting unknown revisions (SCRIPT_SAVE_REVISION_MISMATCH). Validation
+-- is the complete load boundary: the whole bucket and every cross-record
+-- reference are checked before any live scheduler state is constructed,
+-- and restore stages every object and installs only after the entire
+-- bucket has restored. Input edges are never serialized. Pure domain
+-- module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
@@ -20,7 +22,8 @@ local ScriptInstance = require("libs.script.src.ScriptInstance")
 
 local ScriptSave = {}
 
-ScriptSave.SCHEMA_NAME = "g4-script-save-v1"
+ScriptSave.SCHEMA_NAME = "g4-script-save-v2"
+ScriptSave.LEGACY_SCHEMA_NAME = "g4-script-save-v1"
 
 -- True only when every saved continuation collection exists and is empty.
 -- This is a shape query, not validation of the rest of the bucket.
@@ -38,10 +41,8 @@ end
 
 ---@param scheduler Scheduler
 ---@param tick integer
----@param opts table<string, unknown>
 ---@return table<string, unknown> bucket
-function ScriptSave.capture(scheduler, tick, opts)
-  assert(opts and type(opts.registryFingerprint) == "string", "registry fingerprint required for capture")
+function ScriptSave.capture(scheduler, tick)
   for _, instance in ipairs(scheduler:liveInstances()) do
     assert(
       instance.status ~= ScriptInstance.STATUSES.running,
@@ -63,8 +64,6 @@ function ScriptSave.capture(scheduler, tick, opts)
   local counters = scheduler:counters()
   return {
     schema = ScriptSave.SCHEMA_NAME,
-    registryFingerprint = opts.registryFingerprint,
-    taskFingerprint = scheduler:taskRegistryFingerprint(),
     capturedAtSimulationTick = tick,
     nextEnvironmentId = counters.nextEnvironmentId,
     nextInstanceId = counters.nextInstanceId,
@@ -433,29 +432,6 @@ function ScriptSave.validate(bucket, opts)
       { schema = bucket.schema }
     )
   end
-  for _, field in ipairs({ "registryFingerprint", "taskFingerprint" }) do
-    if type(bucket[field]) ~= "string" or bucket[field] == "" then
-      return Errors.new(
-        ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
-        "scripts bucket fingerprint is required",
-        { field = field }
-      )
-    end
-  end
-  if opts.expectedRegistryFingerprint ~= nil and bucket.registryFingerprint ~= opts.expectedRegistryFingerprint then
-    return Errors.new(
-      ScriptErrors.SCRIPT_REGISTRY_FINGERPRINT_MISMATCH,
-      "scripts bucket registry fingerprint does not match the loaded registry",
-      { expected = opts.expectedRegistryFingerprint, actual = bucket.registryFingerprint }
-    )
-  end
-  if opts.expectedTaskFingerprint ~= nil and bucket.taskFingerprint ~= opts.expectedTaskFingerprint then
-    return Errors.new(
-      ScriptErrors.SCRIPT_REGISTRY_FINGERPRINT_MISMATCH,
-      "scripts bucket task fingerprint does not match the loaded task registry",
-      { expected = opts.expectedTaskFingerprint, actual = bucket.taskFingerprint }
-    )
-  end
   local structuralErr = adaptStructural(function()
     validateBucket(bucket)
   end)
@@ -522,14 +498,13 @@ end
 -- cross-references), then task types and versions must resolve and each task
 -- implementation must accept the serialized state; the scheduler stages
 -- every restored object and installs it only after the whole bucket has
--- restored. Raises on fingerprint mismatch, unknown task types or versions,
--- invalid task state, or unknown graph revisions.
+-- restored. Raises on unknown task types or versions, invalid task state,
+-- or unknown graph revisions. A failure anywhere before publication leaves
+-- the scheduler idle.
 ---@param bucket table<string, unknown>
 ---@param scheduler Scheduler
 ---@param restoreTick integer
----@param opts table<string, unknown>
-function ScriptSave.restore(bucket, scheduler, restoreTick, opts)
-  opts = opts or {}
+function ScriptSave.restore(bucket, scheduler, restoreTick)
   local function resolveTask(taskType, version)
     return scheduler:resolveTask(taskType, version)
   end
@@ -537,8 +512,6 @@ function ScriptSave.restore(bucket, scheduler, restoreTick, opts)
     return scheduler:resolveComposition(scriptId)
   end
   local envelopeErr = ScriptSave.validate(bucket, {
-    expectedRegistryFingerprint = opts.expectedRegistryFingerprint,
-    expectedTaskFingerprint = scheduler:taskRegistryFingerprint(),
     resolveTask = resolveTask,
     resolveComposition = resolveComposition,
   })
@@ -547,6 +520,27 @@ function ScriptSave.restore(bucket, scheduler, restoreTick, opts)
   end
 
   scheduler:restoreScriptState(bucket, restoreTick)
+end
+
+-- Pure v1 -> v2 migration: copies capture tick, id counters, and every
+-- environment, instance, and task record, and drops only the obsolete
+-- registry/task-registry fingerprints. The fingerprint values are never
+-- compared: any v1 bucket with usable continuation state migrates.
+---@param bucket table<string, unknown> a v1 scripts bucket
+---@return table<string, unknown> the fingerprint-free v2 bucket
+function ScriptSave.migrateV1(bucket)
+  if type(bucket) ~= "table" or bucket.schema ~= ScriptSave.LEGACY_SCHEMA_NAME then
+    Errors.raise(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, "legacy scripts bucket schema is invalid", {})
+  end
+  assert(type(bucket) == "table", "legacy scripts migration requires its declared schema")
+  local migrated = {}
+  for key, value in pairs(bucket) do
+    if key ~= "registryFingerprint" and key ~= "taskFingerprint" then
+      migrated[key] = value
+    end
+  end
+  migrated.schema = ScriptSave.SCHEMA_NAME
+  return migrated
 end
 
 return ScriptSave

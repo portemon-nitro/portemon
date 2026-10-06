@@ -1,7 +1,7 @@
--- Empty mons buckets fingerprinted against the warmed version cache.
--- Production-composition tests boot the real field runtime, whose live mon
--- service validates its bucket against the generated catalog; fakes build
--- the required bucket through this helper instead of synthesizing one.
+-- Empty mons buckets for production-composition tests. Buckets carry no
+-- catalog identity: the live mon service restores them against the
+-- generated catalog at runtime. Fakes build the required bucket through
+-- this helper instead of synthesizing one.
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local MonCache = require("libs.assets.src.MonCache")
@@ -27,8 +27,8 @@ end
 ---@param seedU32 integer?
 ---@return table
 function MonBucket.emptyForVersion(versionId, seedU32)
-  local catalog = MonBucket.openCatalogs(versionId)
-  return MonsSave.empty(catalog:fingerprint(), seedU32 or 7)
+  assert(type(versionId) == "string", "empty buckets are version-scoped")
+  return MonsSave.empty(seedU32 or 7)
 end
 
 return MonBucket

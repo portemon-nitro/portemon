@@ -62,6 +62,18 @@ local function v3record(overrides)
     rng = { state = 7, calls = 0 },
     party = { max = 6, mons = {} },
   }
+  value.scripts = {
+    schema = "g4-script-save-v1",
+    registryFingerprint = "legacy-registry",
+    taskFingerprint = "legacy-tasks",
+    capturedAtSimulationTick = 0,
+    nextEnvironmentId = 0,
+    nextInstanceId = 0,
+    nextTaskId = 0,
+    environments = {},
+    instances = {},
+    tasks = {},
+  }
   value.fieldTravel = nil
   value.fashionCase = nil
   value.mart = nil
@@ -92,7 +104,7 @@ end
 function T.routing_identity_and_entry_coordinates_stay_strict()
   Assert.notNil(GameSave.normalize(record()))
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
-    return GameSave.normalize(record({ schema = "g4-game-save-v8" }))
+    return GameSave.normalize(record({ schema = "g4-game-save-v9" }))
   end)
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     return GameSave.normalize(record({ schema = "g4-field-save-v3" }))
@@ -146,15 +158,17 @@ function T.supported_history_migrates_to_current_without_generated_caches()
   Assert.deepEqual(migrated.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
   Assert.deepEqual(migrated.mart, MartSave.empty())
   Assert.deepEqual(migrated.fashionCase, FashionCaseState.empty())
-  Assert.equal(migrated.mons.schema, "g4-mons-save-v2")
+  Assert.equal(migrated.mons.schema, "g4-mons-save-v3")
+  Assert.equal(migrated.scripts.schema, "g4-script-save-v2")
 end
 
 function T.historical_migration_never_repairs_nested_content()
   local input = v3record()
-  input.mons.catalogFingerprint = "drifted"
+  input.mons.rng = { state = 99, calls = 3 }
   local migrated = assert(GameSave.normalize(input))
   Assert.equal(migrated.schema, GameSave.SCHEMA)
-  Assert.equal(migrated.mons.catalogFingerprint, "drifted")
+  Assert.deepEqual(migrated.mons.rng, { state = 99, calls = 3 }, "nested state passes through unrepaired")
+  Assert.isNil(migrated.mons.catalogFingerprint, "migration drops the obsolete fingerprint without repairing state")
 end
 
 return { tests = T }

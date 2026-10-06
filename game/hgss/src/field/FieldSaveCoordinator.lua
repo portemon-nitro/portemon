@@ -99,9 +99,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     fieldTravel = assert(runtime.fieldTravel, "field runtime has no travel state"):capture(),
     fashionCase = assert(runtime.fashionCase, "field runtime has no Fashion Case state"):capture(),
     world = world,
-    scripts = ScriptSave.capture(runtime.scripts.scheduler, session.tick, {
-      registryFingerprint = runtime.scripts:registryFingerprint(),
-    }),
+    scripts = ScriptSave.capture(runtime.scripts.scheduler, session.tick),
     auxiliaryUi = runtime.auxiliaryFieldUi:capture(),
     audio = FieldAudioSave.capture(runtime.audio),
     mons = runtime.monService:capture(),

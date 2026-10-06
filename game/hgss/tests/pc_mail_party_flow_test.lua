@@ -178,7 +178,7 @@ end
 local function makeComposition(attachMail)
   local items = itemCatalog()
   local catalog = MonCatalog.new(CatalogFixture.buildAssetRoot(), items)
-  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture(), catalog:fingerprint())
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture())
   local mons = HgssMonService.new({
     catalog = catalog,
     bucket = bucket,

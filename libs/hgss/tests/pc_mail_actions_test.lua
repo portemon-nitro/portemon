@@ -87,7 +87,7 @@ local function services(mailboxSnapshot)
   local items = itemCatalog()
   local catalog = MonCatalog.new(CatalogFixture.buildAssetRoot(), items)
   local rng = Lcrng.new(0x11223344)
-  local bucket = MonsSave.capture(Party.new():capture(), rng:capture(), catalog:fingerprint())
+  local bucket = MonsSave.capture(Party.new():capture(), rng:capture())
   local mons = HgssMonService.new({
     catalog = catalog,
     bucket = bucket,

@@ -41,7 +41,7 @@ local function openMons(seed)
   local catalog = CatalogFixture.makeCatalog()
   local mons = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -626,9 +626,6 @@ function T.tests.save_capture_is_denied_while_a_field_operation_is_pending()
         end,
       },
       scheduler = {},
-      registryFingerprint = function()
-        return "registry-fingerprint"
-      end,
     },
     actors = {
       captureObjects = function()
@@ -644,7 +641,7 @@ function T.tests.save_capture_is_denied_while_a_field_operation_is_pending()
     playTime = PlayTime.new(17),
     monService = {
       capture = function()
-        return require("libs.mons.src.MonsSave").empty("test-catalog-fingerprint", 7)
+        return require("libs.mons.src.MonsSave").empty(7)
       end,
     },
     bagService = {

@@ -431,7 +431,7 @@ T["movement save resume"] = function()
   h.scheduler:step(100, nil)
   h.scheduler:step(101, nil)
   h.scheduler:step(102, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 102, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 102)
   local recorder = Diagnostics.newTraceRecorder()
   local scheduler2 = Scheduler.new({
     semantics = require("libs.hgss.src.script.RuntimeValues"),

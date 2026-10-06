@@ -1,6 +1,6 @@
 -- Ordered parties and the persisted bucket: six dense zero-based slots
 -- with explicit full handling, revision tracking, alive-lead selection,
--- canonical snapshots, and fingerprint-gated save round trips.
+-- canonical snapshots, and fingerprint-free save round trips.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -131,7 +131,7 @@ function T.party_keeps_dense_slots_revision_and_alive_lead()
   Assert.equal(brood:leadAliveSlot(), 1)
 end
 
-function T.save_bucket_round_trips_under_catalog_fingerprint()
+function T.save_bucket_round_trips_without_a_catalog_fingerprint()
   local catalog = CatalogFixture.makeCatalog()
   local context = CatalogFixture.domainContext(catalog)
   local Party = require("libs.mons.src.Party")
@@ -146,13 +146,12 @@ function T.save_bucket_round_trips_under_catalog_fingerprint()
   party:add(first)
   party:add(second)
 
-  local fingerprint = catalog:fingerprint()
   local rngCapture = args.rng:capture()
   Assert.deepEqual(rngCapture, { state = 0x05856380, calls = 8 })
 
-  local bucket = MonsSave.capture(party:capture(), rngCapture, fingerprint)
-  Assert.equal(bucket.schema, "g4-mons-save-v2")
-  Assert.equal(bucket.catalogFingerprint, fingerprint)
+  local bucket = MonsSave.capture(party:capture(), rngCapture)
+  Assert.equal(bucket.schema, "g4-mons-save-v3")
+  Assert.keySet(bucket, "boxes,party,rng,schema")
   Assert.deepEqual(bucket.rng, rngCapture)
   Assert.deepEqual(bucket.party, party:capture())
   Assert.isTrue(MonsSave.validate(bucket, context))
@@ -163,24 +162,40 @@ function T.save_bucket_round_trips_under_catalog_fingerprint()
   Assert.deepEqual(restored.party:get(1), second)
   Assert.deepEqual(restored.rng:capture(), rngCapture)
 
-  local again = MonsSave.capture(restored.party:capture(), restored.rng:capture(), fingerprint)
+  local again = MonsSave.capture(restored.party:capture(), restored.rng:capture())
   Assert.deepEqual(again, bucket)
 
   -- The restored generator continues the exact sequence.
   Assert.equal(restored.rng:nextU16(), args.rng:nextU16())
 
-  -- A bucket written against different generated content is rejected.
+  -- The catalog is a runtime dependency, not a persisted identity check:
+  -- the same bucket restores under a different catalog generation.
   local otherRoot = CatalogFixture.buildAssetRoot()
   otherRoot.species.BAYLEEF = copy(otherRoot.species.CHIKORITA)
   otherRoot.species.BAYLEEF.nativeId = 153
   otherRoot.species.BAYLEEF.name = "BAYLEEF"
   local OtherCatalog = require("libs.mons.src.MonCatalog")
   local otherCatalog = OtherCatalog.new(otherRoot, CatalogFixture.makeItemCatalog())
-  Assert.isTrue(otherCatalog:fingerprint() ~= fingerprint)
   local otherContext = CatalogFixture.domainContext(otherCatalog)
-  throwsCode("MONS_SAVE_FINGERPRINT_MISMATCH", function()
-    MonsSave.restore(bucket, otherContext)
-  end)
+  local restoredOther = MonsSave.restore(bucket, otherContext)
+  Assert.equal(restoredOther.party:count(), 2)
+  Assert.deepEqual(restoredOther.party:get(1).species, second.species)
+
+  -- A v2 predecessor bucket carries its obsolete fingerprint forward into
+  -- migration, which drops only that field and preserves all live state.
+  local predecessor = copy(bucket)
+  predecessor.schema = "g4-mons-save-v2"
+  predecessor.catalogFingerprint = "stale-catalog-fingerprint"
+  local migrated = MonsSave.migrateV2(predecessor)
+  Assert.equal(migrated.schema, "g4-mons-save-v3")
+  Assert.keySet(migrated, "boxes,party,rng,schema")
+  Assert.deepEqual(migrated.rng, rngCapture)
+  Assert.deepEqual(migrated.party, party:capture())
+  local migratedRestored = MonsSave.restore(migrated, context)
+  Assert.equal(migratedRestored.party:count(), 2)
+  Assert.deepEqual(migratedRestored.rng:capture(), rngCapture)
+  Assert.equal(predecessor.schema, "g4-mons-save-v2", "migration leaves its input untouched")
+  Assert.equal(predecessor.catalogFingerprint, "stale-catalog-fingerprint")
 
   -- Malformed buckets fail with a structured save error.
   local missing = copy(bucket)
@@ -259,8 +274,7 @@ function T.validated_copies_stay_independent_across_party_and_save_capture()
   -- Save capture of the party snapshot round-trips the untouched copy.
   local rng = Lcrng.new(0x60000000)
   local rngCapture = rng:capture()
-  local fingerprint = catalog:fingerprint()
-  local bucket = MonsSave.capture(snapshot, rngCapture, fingerprint)
+  local bucket = MonsSave.capture(snapshot, rngCapture)
   local restored = MonsSave.restore(bucket, context)
   Assert.equal(restored.party:count(), 1)
   Assert.deepEqual(restored.party:get(0), second)

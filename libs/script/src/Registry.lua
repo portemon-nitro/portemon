@@ -1,8 +1,8 @@
 -- Script resource registry : owns the vanilla base
 -- definitions (generated transcripts plus overrides). The override layer
 -- wins over the generated transcript; the composition layer folds the
--- winning base into the effective chain. The registry also stamps the
--- deterministic fingerprint used by save validation. Base layers may be
+-- winning base into the effective chain. The registry also stamps a
+-- deterministic content digest used by loader identity checks. Base layers may be
 -- installed as deferred placeholders (installBaseDeferred) that decode
 -- through an injected resource loader on first access, so a boot never
 -- needs to decode the whole generated corpus; published per-resource

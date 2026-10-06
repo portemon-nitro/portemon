@@ -81,7 +81,7 @@ local function record(saveId, overrides)
     mart = MartSave.empty(),
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
-    mons = MonsSave.empty("test-catalog-fingerprint", 7),
+    mons = MonsSave.empty(7),
     mailbox = Mailbox.new():capture(),
     photoAlbum = PhotoAlbum.new():capture(),
   }

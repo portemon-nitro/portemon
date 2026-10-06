@@ -19,7 +19,7 @@ local T = {}
 
 local function openService()
   local catalog = CatalogFixture.makeCatalog()
-  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xDDDDDDDD):capture(), catalog:fingerprint())
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xDDDDDDDD):capture())
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = bucket,

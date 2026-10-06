@@ -26,7 +26,7 @@ function T.stale_joint_preparation_cannot_duplicate_or_lose_a_mon()
   local mon = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))
   local party = Party.new()
   party:add(mon)
-  local bucket = MonsSave.capture(party:capture(), args.rng:capture(), catalog:fingerprint())
+  local bucket = MonsSave.capture(party:capture(), args.rng:capture())
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = bucket,

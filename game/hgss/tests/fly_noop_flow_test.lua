@@ -90,7 +90,7 @@ local function openMons(seed, root, items)
   local catalog = MonCatalog.new(root, items)
   return HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",

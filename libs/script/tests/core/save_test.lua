@@ -3,8 +3,8 @@
 -- rebasing: no tick is duplicated or skipped across a
 -- capture/restore boundary, completed-but-unconsumed tasks restore as
 -- completed and are never polled again, resume_pending owners preserve their
--- delay, common child contexts and caller signals survive, and fingerprint or
--- revision mismatches are attributed load errors. A
+-- delay, common child contexts and caller signals survive, and concrete task
+-- or revision mismatches are attributed load errors. A
 -- non-UI script saves and resumes with an identical per-tick node/task trace.
 
 local Assert = require("tests.support.Assert")
@@ -27,33 +27,6 @@ local Diagnostics = require("libs.script.src.Diagnostics")
 
 local T = {}
 
-T["structural validation requires both fingerprints"] = function()
-  local bucket = {
-    schema = ScriptSave.SCHEMA_NAME,
-    registryFingerprint = "registry",
-    taskFingerprint = "tasks",
-    nextEnvironmentId = 0,
-    nextInstanceId = 0,
-    nextTaskId = 0,
-    environments = {},
-    instances = {},
-    tasks = {},
-  }
-  Assert.isNil(ScriptSave.validate(bucket, {}))
-  for _, field in ipairs({ "registryFingerprint", "taskFingerprint" }) do
-    local candidate = {}
-    for key, value in pairs(bucket) do
-      candidate[key] = value
-    end
-    candidate[field] = nil
-    local err = assert(ScriptSave.validate(candidate, {}))
-    Assert.isTrue(Errors.is(err))
-    candidate[field] = ""
-    Assert.isTrue(Errors.is(assert(ScriptSave.validate(candidate, {}))))
-    candidate[field] = 7
-    Assert.isTrue(Errors.is(assert(ScriptSave.validate(candidate, {}))))
-  end
-end
 
 ---@class SaveHarness
 ---@field services FakeServices
@@ -116,7 +89,7 @@ end
 ---@return Scheduler, Diagnostics.TraceRecorder
 local function saveAndResume(h, tick, scheduler)
   scheduler = scheduler or h.scheduler
-  local bucket = ScriptSave.capture(scheduler, tick, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(scheduler, tick)
   local recorder = Diagnostics.newTraceRecorder()
   local resumed = Scheduler.new({
     semantics = require("libs.hgss.src.script.RuntimeValues"),
@@ -129,7 +102,7 @@ local function saveAndResume(h, tick, scheduler)
       return h.composition:effective(id)
     end,
   })
-  ScriptSave.restore(bucket, resumed, tick, {})
+  ScriptSave.restore(bucket, resumed, tick)
   return resumed, recorder
 end
 
@@ -184,6 +157,68 @@ local function traceSuffixMatch(resource, from, to, saveAt)
   end
 end
 
+T["current capture omits aggregate fingerprints"] = function()
+  local h = harness()
+  local h = harness()
+  startForeground(
+    h,
+    script("test.nofp", {
+      S.waitTicks({ ticks = 5 }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, nil)
+  local bucket = ScriptSave.capture(h.scheduler, 100)
+  Assert.equal(bucket.schema, ScriptSave.SCHEMA_NAME)
+  Assert.keySet(
+    bucket,
+    "capturedAtSimulationTick,environments,instances,nextEnvironmentId,nextInstanceId,nextTaskId,schema,tasks"
+  )
+  Assert.isNil(ScriptSave.validate(bucket, {}))
+end
+
+T["predecessor fingerprints never gate restore"] = function()
+  local h = harness()
+  startForeground(
+    h,
+    script("test.predfp", {
+      S.waitTicks({ ticks = 5 }),
+      S.setVar({ variable = "VAR_PRED", value = 1 }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, nil)
+  local live = ScriptSave.capture(h.scheduler, 100)
+  -- A v1 predecessor carrying fingerprints that disagree with the current
+  -- registries migrates by dropping only those fields; the continuation
+  -- restores concretely instead of failing an aggregate preflight.
+  local predecessor = {}
+  for key, value in pairs(live) do
+    predecessor[key] = value
+  end
+  predecessor.schema = "g4-script-save-v1"
+  predecessor.registryFingerprint = "stale-registry"
+  predecessor.taskFingerprint = "stale-tasks"
+  local migrated = ScriptSave.migrateV1(predecessor)
+  Assert.equal(migrated.schema, ScriptSave.SCHEMA_NAME)
+  Assert.isNil(migrated.registryFingerprint)
+  Assert.isNil(migrated.taskFingerprint)
+  local resumed = Scheduler.new({
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    services = h.services,
+    taskRegistry = h.taskRegistry,
+    resolveComposition = function(id)
+      return h.composition:effective(id)
+    end,
+  })
+  ScriptSave.restore(migrated, resumed, 100)
+  for tick = 101, 110 do
+    resumed:step(tick, nil)
+  end
+  Assert.equal(h.services.world:getVar("VAR_PRED"), 1, "the migrated continuation runs to completion")
+end
 -- 1. Deterministic capture: two captures of identical state are deep-equal.
 T["deterministic capture"] = function()
   local h = harness()
@@ -197,11 +232,12 @@ T["deterministic capture"] = function()
   )
   h.scheduler:step(100, nil)
   h.scheduler:step(101, nil)
-  local a = ScriptSave.capture(h.scheduler, 101, { registryFingerprint = h.registry:fingerprint() })
-  local b = ScriptSave.capture(h.scheduler, 101, { registryFingerprint = h.registry:fingerprint() })
+  local a = ScriptSave.capture(h.scheduler, 101)
+  local b = ScriptSave.capture(h.scheduler, 101)
   Assert.deepEqual(a, b)
   Assert.equal(a.schema, ScriptSave.SCHEMA_NAME)
-  Assert.equal(a.registryFingerprint, h.registry:fingerprint())
+  Assert.isNil(a.registryFingerprint, "current captures carry no registry fingerprint")
+  Assert.isNil(a.taskFingerprint, "current captures carry no task fingerprint")
 end
 
 -- 2. Save and resume during an active wait: the countdown continues with no
@@ -371,7 +407,7 @@ T["task version rejection"] = function()
     100
   )
   h.scheduler:step(100, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 100)
   bucket.tasks[1].taskVersion = 99
   local ok, err = pcall(
     ScriptSave.restore,
@@ -384,8 +420,7 @@ T["task version rejection"] = function()
         return h.composition:effective(id)
       end,
     }),
-    100,
-    {}
+    100
   )
   Assert.isFalse(ok)
   Assert.isTrue(Errors.is(err))
@@ -404,12 +439,10 @@ T["complete validation rejects task state before restore"] = function()
     100
   )
   h.scheduler:step(100, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 100)
   bucket.tasks[1].state.remainingTicks = -1
 
   local err = ScriptSave.validate(bucket, {
-    expectedRegistryFingerprint = h.registry:fingerprint(),
-    expectedTaskFingerprint = h.taskRegistry:fingerprint(),
     resolveTask = function(taskType, version)
       return h.taskRegistry:resolve(taskType, version)
     end,
@@ -433,12 +466,10 @@ T["complete validation rejects stale frame revision before restore"] = function(
     100
   )
   h.scheduler:step(100, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 100)
   bucket.instances[1].frames[1].graphRevision = "stale-graph"
 
   local err = ScriptSave.validate(bucket, {
-    expectedRegistryFingerprint = h.registry:fingerprint(),
-    expectedTaskFingerprint = h.taskRegistry:fingerprint(),
     resolveTask = function(taskType, version)
       return h.taskRegistry:resolve(taskType, version)
     end,
@@ -464,7 +495,7 @@ T["missing graph revision"] = function()
     100
   )
   h.scheduler:step(100, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 100)
   bucket.instances[1].frames[1].chainRevision = "deadbeef"
   local ok, err = pcall(
     ScriptSave.restore,
@@ -477,8 +508,7 @@ T["missing graph revision"] = function()
         return h.composition:effective(id)
       end,
     }),
-    100,
-    {}
+    100
   )
   Assert.isFalse(ok)
   Assert.isTrue(Errors.is(err))
@@ -486,37 +516,36 @@ T["missing graph revision"] = function()
   Assert.equal(err.code, "SCRIPT_SAVE_REVISION_MISMATCH")
 end
 
--- 10. A removed mod changes the registry fingerprint, which rejects the load.
-T["mod removed changes fingerprint"] = function()
+-- 10. Registry content drift outside the saved continuation no longer blocks
+-- restore: an unrelated script installed after capture changes the registry
+-- without touching the saved frames, and the continuation still resumes.
+T["unrelated registry change no longer blocks restore"] = function()
   local h = harness()
   startForeground(
     h,
     script("test.mod", {
       S.waitTicks({ ticks = 5 }),
+      S.setVar({ variable = "VAR_MOD", value = 1 }),
       S.stop(),
     }),
     100
   )
   h.scheduler:step(100, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
-  local ok, err = pcall(
-    ScriptSave.restore,
-    bucket,
-    Scheduler.new({
-      semantics = require("libs.hgss.src.script.RuntimeValues"),
-      services = h.services,
-      taskRegistry = h.taskRegistry,
-      resolveComposition = function(id)
-        return h.composition:effective(id)
-      end,
-    }),
-    100,
-    { expectedRegistryFingerprint = "different-registry" }
-  )
-  Assert.isFalse(ok)
-  Assert.isTrue(Errors.is(err))
-  ---@cast err Errors.Error
-  Assert.equal(err.code, "SCRIPT_REGISTRY_FINGERPRINT_MISMATCH")
+  local bucket = ScriptSave.capture(h.scheduler, 100)
+  h.registry:installBase("test.unrelated", script("test.unrelated", { S.stop() }), "generated")
+  local resumed = Scheduler.new({
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    services = h.services,
+    taskRegistry = h.taskRegistry,
+    resolveComposition = function(id)
+      return h.composition:effective(id)
+    end,
+  })
+  ScriptSave.restore(bucket, resumed, 100)
+  for tick = 101, 110 do
+    resumed:step(tick, nil)
+  end
+  Assert.equal(h.services.world:getVar("VAR_MOD"), 1, "the continuation resumes despite registry drift")
 end
 
 -- 10b. The task-registry fingerprint is order-independent: registering the
@@ -558,7 +587,7 @@ T["capture requires phase boundary"] = function()
   )
   local instance = h.scheduler:instances()[1]
   instance.status = "running"
-  local ok = pcall(ScriptSave.capture, h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local ok = pcall(ScriptSave.capture, h.scheduler, 100)
   Assert.isFalse(ok)
 end
 
@@ -636,7 +665,7 @@ T["cross-script jump pins the target revision"] = function()
   })
   startForeground(h, jumper, 100)
   h.scheduler:step(100, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 100)
 
   -- Replace the target script and restore: the pinned revision is gone.
   -- An override-layer install bumps the registry version exactly like any
@@ -659,7 +688,10 @@ T["cross-script jump pins the target revision"] = function()
       return h.composition:effective(id)
     end,
   })
-  local ok, err = pcall(ScriptSave.restore, bucket, scheduler, 100, {})
+  local ok, err = pcall(
+    ScriptSave.restore,
+bucket, scheduler,
+    100)
   Assert.isFalse(ok)
   ---@cast err Errors.Error
   Assert.equal(err.code, "SCRIPT_SAVE_REVISION_MISMATCH")
@@ -706,7 +738,7 @@ T["mid-script save restores at the production load tick"] = function()
     100
   )
   h.scheduler:step(100, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 100)
   Assert.isTrue(#bucket.tasks >= 1, "a mid-wait save holds a live task record")
 
   local resumed = Scheduler.new({
@@ -717,7 +749,7 @@ T["mid-script save restores at the production load tick"] = function()
       return h.composition:effective(id)
     end,
   })
-  local ok, err = pcall(ScriptSave.restore, bucket, resumed, 0, {})
+  local ok, err = pcall(ScriptSave.restore, bucket, resumed, 0)
   Assert.isTrue(ok, "a mid-script save must restore into a fresh boot: " .. tostring(err))
   for tick = 1, 4 do
     resumed:step(tick, nil)
@@ -929,7 +961,7 @@ T["environment records without a creation offset restore at the load boundary"] 
 end
 
 -- Bucket validation is the complete load boundary. Beyond the
--- envelope, fingerprints, and task records, the id counters, environment
+-- envelope and task records, the id counters, environment
 -- records, instance records, and cross-record references must be validated
 -- before any live scheduler state is constructed; a malformed record is a
 -- load error, never a partial install.
@@ -970,7 +1002,7 @@ local function expectCorruptBucketErrorWhole(mutate, context)
     100
   )
   h.scheduler:step(100, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 100)
   mutate(bucket)
   expectValidationError(ScriptSave.validate(bucket, {}), context)
 end
@@ -1164,7 +1196,7 @@ T["valid save with suspended caller and minimal optional fields passes validatio
   h.scheduler:step(101, nil)
   h.scheduler:step(102, nil)
   h.scheduler:step(103, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 103, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 103)
   local suspended = false
   for _, record in ipairs(bucket.instances) do
     if #record.frames > 1 then
@@ -1193,7 +1225,7 @@ T["valid save with suspended caller and minimal optional fields passes validatio
   handoff.scheduler:step(100, nil)
   handoff.scheduler:step(101, nil)
   local completedBucket =
-    ScriptSave.capture(handoff.scheduler, 101, { registryFingerprint = handoff.registry:fingerprint() })
+    ScriptSave.capture(handoff.scheduler, 101)
   local completed = false
   for _, record in ipairs(completedBucket.tasks) do
     if record.status == "completed" then
@@ -1241,7 +1273,7 @@ T["task and composition resolvers keep order and failure identity"] = function()
     100
   )
   h.scheduler:step(100, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 100)
 
   local calls = {}
   Assert.isNil(ScriptSave.validate(bucket, {
@@ -1336,13 +1368,13 @@ T["failed late validation restores nothing, valid restore preserves task ownersh
   )
   h.scheduler:step(100, nil)
   h.scheduler:step(101, nil)
-  local bucket = ScriptSave.capture(h.scheduler, 101, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 101)
   local ownerInstanceId = bucket.tasks[1].ownerInstanceId
 
   local badTask = deepCopyBucket(bucket)
   badTask.tasks[1].state.remainingTicks = -1
   local taskScheduler = freshScheduler(h)
-  local taskOk, taskErr = pcall(ScriptSave.restore, badTask, taskScheduler, 101, {})
+  local taskOk, taskErr = pcall(ScriptSave.restore, badTask, taskScheduler, 101)
   Assert.isFalse(taskOk)
   Assert.isTrue(Errors.is(taskErr))
   ---@cast taskErr Errors.Error
@@ -1352,7 +1384,7 @@ T["failed late validation restores nothing, valid restore preserves task ownersh
   local badComposition = deepCopyBucket(bucket)
   badComposition.instances[1].frames[1].graphRevision = "stale-graph"
   local compositionScheduler = freshScheduler(h)
-  local compositionOk, compositionErr = pcall(ScriptSave.restore, badComposition, compositionScheduler, 101, {})
+  local compositionOk, compositionErr = pcall(ScriptSave.restore, badComposition, compositionScheduler, 101)
   Assert.isFalse(compositionOk)
   Assert.isTrue(Errors.is(compositionErr))
   ---@cast compositionErr Errors.Error
@@ -1371,7 +1403,7 @@ T["failed late validation restores nothing, valid restore preserves task ownersh
       return h.composition:effective(id)
     end,
   })
-  local restoreOk, restoreErr = pcall(ScriptSave.restore, bucket, resumed, 0, {})
+  local restoreOk, restoreErr = pcall(ScriptSave.restore, bucket, resumed, 0)
   Assert.isTrue(restoreOk, "a valid bucket must restore at another tick: " .. tostring(restoreErr))
   Assert.equal(#resumed:tasks(), 1, "the live task must survive the restore")
   Assert.equal(resumed:tasks()[1].ownerInstanceId, ownerInstanceId, "the restored task keeps its owner")

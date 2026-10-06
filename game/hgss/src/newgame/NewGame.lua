@@ -90,18 +90,17 @@ function NewGame.createCandidate(options)
 
   -- The unpublished candidate carries the required empty mons bucket when
   -- the caller supplies the domain catalog (directly, or lazily through a
-  -- loader so application routing stays free of cache IO): the catalog
-  -- fingerprint plus the one-time generator seed persist before any save
-  -- validates. An explicit seed wins for deterministic tests; otherwise
-  -- the save identity and injected timestamp derive it. No starter exists
-  -- yet.
+  -- loader so application routing stays free of cache IO): only the
+  -- one-time generator seed persists before any save validates. An explicit
+  -- seed wins for deterministic tests; otherwise the save identity and
+  -- injected timestamp derive it. No starter exists yet. The catalog gates
+  -- bucket creation but contributes no persisted identity to the bucket.
   local mons = nil
   local catalog = options.catalog
   if catalog == nil and type(options.catalogLoader) == "function" then
     catalog = options.catalogLoader()
   end
   if catalog ~= nil then
-    assert(type(catalog.fingerprint) == "function", "NewGame mon catalog must expose its fingerprint")
     local seed = options.monSeed
     if seed == nil then
       seed = deriveMonSeed(saveId, options.nowSeconds ~= nil and options.nowSeconds or os.time())
@@ -110,7 +109,7 @@ function NewGame.createCandidate(options)
       type(seed) == "number" and seed % 1 == 0 and seed >= 0 and seed <= 0xFFFFFFFF,
       "NewGame mon seed must be an unsigned 32-bit integer"
     )
-    mons = MonsSave.empty(catalog:fingerprint(), seed)
+    mons = MonsSave.empty(seed)
   end
 
   return {

@@ -367,7 +367,7 @@ function T.tests.save_and_continue_reconstructs_the_partner()
     table.sort(keys)
     Assert.deepEqual(
       keys,
-      { "boxes", "catalogFingerprint", "party", "rng", "schema" },
+      { "boxes", "party", "rng", "schema" },
       "the saved mons bucket carries party state only, never follower presentation"
     )
     game:save()

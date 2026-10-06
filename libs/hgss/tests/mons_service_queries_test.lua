@@ -18,7 +18,7 @@ local function openService(catalog, seed, opts)
   opts = opts or {}
   return HgssMonService.new({
     catalog = catalog,
-    bucket = opts.bucket or MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), catalog:fingerprint()),
+    bucket = opts.bucket or MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -242,7 +242,7 @@ function T.native_item_identities_resolve_through_the_catalog_alone()
   local catalog = CatalogFixture.makeCatalog()
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xEEEEEEEE):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xEEEEEEEE):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",

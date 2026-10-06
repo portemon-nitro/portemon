@@ -14,6 +14,21 @@ local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 
 local T = {}
 
+local function legacyScriptsBucket()
+  return {
+    schema = "g4-script-save-v1",
+    registryFingerprint = "legacy-registry",
+    taskFingerprint = "legacy-tasks",
+    capturedAtSimulationTick = 0,
+    nextEnvironmentId = 0,
+    nextInstanceId = 0,
+    nextTaskId = 0,
+    environments = {},
+    instances = {},
+    tasks = {},
+  }
+end
+
 local function v3record(overrides)
   local value = {
     schema = "g4-game-save-v3",
@@ -32,7 +47,7 @@ local function v3record(overrides)
       options = { textFrame = 0, textSpeed = "mid" },
     },
     world = { flags = {}, variables = {}, objects = {}, rng = {} },
-    scripts = {},
+    scripts = legacyScriptsBucket(),
     auxiliaryUi = {},
     audio = {},
     mons = {
@@ -203,7 +218,9 @@ function T.v3_migrates_through_v4_v5_and_both_v6_layout_steps()
   Assert.equal(v5.schema, GameSave.LEGACY_V5_SCHEMA)
   local v6 = GameSave.migrateV5(v5)
   Assert.equal(v6.schema, GameSave.LEGACY_V6_SCHEMA)
-  local current = GameSave.migrateV6(v6)
+  local v7 = GameSave.migrateV6(v6)
+  Assert.equal(v7.schema, GameSave.LEGACY_V7_SCHEMA, "v6 reconciliation remains an explicit intermediate step")
+  local current = GameSave.migrateV7(v7)
   Assert.equal(current.schema, GameSave.SCHEMA)
   Assert.equal(current.playerData.profile.nationalDex, false)
   Assert.deepEqual(current.mart, MartSave.empty())
@@ -226,11 +243,11 @@ end
 function T.future_schemas_reject_while_known_envelopes_stay_listable()
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     local value = currentRecord()
-    value.schema = "g4-game-save-v8"
+    value.schema = "g4-game-save-v9"
     return GameSave.normalize(value)
   end)
   local envelope, envelopeErr = GameSave.metadata({
-    schema = "g4-game-save-v8",
+    schema = "g4-game-save-v9",
     saveId = "save-00000001",
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -270,7 +287,7 @@ function T.master_records_advance_with_fashion_case_and_current_mons_state()
   Assert.equal(migrated.playerData.profile.nationalDex, false)
   Assert.deepEqual(migrated.mart, MartSave.empty())
   Assert.deepEqual(migrated.world, source.world)
-  Assert.equal(migrated.mons.schema, "g4-mons-save-v2")
+  Assert.equal(migrated.mons.schema, "g4-mons-save-v3")
   Assert.deepEqual(migrated.bag, source.bag)
   -- The source stays a master record: same schema, no fashion-case state.
   Assert.equal(source.schema, "g4-game-save-v5")
@@ -294,7 +311,7 @@ function T.migrate_v6_reconciles_the_two_published_bucket_groups()
   master.photoAlbum = nil
   master.fashionCase.counts[1] = 1
   local masterFashionCase = GameSave.migrateV6(master)
-  Assert.equal(masterFashionCase.schema, GameSave.SCHEMA)
+  Assert.equal(masterFashionCase.schema, GameSave.LEGACY_V7_SCHEMA)
   Assert.deepEqual(masterFashionCase.fashionCase, master.fashionCase)
   Assert.deepEqual(masterFashionCase.mailbox, Mailbox.new():capture())
   Assert.deepEqual(masterFashionCase.photoAlbum, PhotoAlbum.new():capture())
@@ -307,7 +324,7 @@ function T.migrate_v6_reconciles_the_two_published_bucket_groups()
   pc.fashionCase = nil
   local pcMailbox, pcPhotoAlbum = pc.mailbox, pc.photoAlbum
   local pcFeatures = GameSave.migrateV6(pc)
-  Assert.equal(pcFeatures.schema, GameSave.SCHEMA)
+  Assert.equal(pcFeatures.schema, GameSave.LEGACY_V7_SCHEMA)
   Assert.deepEqual(pcFeatures.mailbox, pcMailbox)
   Assert.deepEqual(pcFeatures.photoAlbum, pcPhotoAlbum)
   Assert.deepEqual(pcFeatures.fashionCase, FashionCaseState.empty())
@@ -352,6 +369,102 @@ function T.migrate_v6_rejects_incomplete_and_mixed_bucket_groups()
     GameSave.migrateV6(unknown)
   end)
   Assert.isTrue(Errors.is(err))
+end
+
+function T.migrate_v7_advances_nested_buckets_and_drops_fingerprints_without_a_quiescence_gate()
+  local S = require("gen4.script")
+  local Registry = require("libs.script.src.Registry")
+  local Composition = require("libs.script.src.Composition")
+  local TaskRegistry = require("libs.script.src.TaskRegistry")
+  local Scheduler = require("libs.script.src.Scheduler")
+  local ScriptSave = require("libs.script.src.ScriptSave")
+  local WaitTicksTask = require("libs.script.src.tasks.WaitTicksTask")
+  local FakeServices = require("tests.support.script.FakeServices")
+  local services = FakeServices.new()
+  local registry = Registry.new()
+  local composition = Composition.new(registry)
+  local taskRegistry = TaskRegistry.new()
+  taskRegistry:register("wait_ticks", 1, WaitTicksTask)
+  local scheduler = Scheduler.new({
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    services = services,
+    taskRegistry = taskRegistry,
+    resolveComposition = function(id)
+      return composition:effective(id)
+    end,
+  })
+  local resource = S.script({
+    api = 1,
+    id = "test.migrate_live",
+    steps = {
+      S.waitTicks({ ticks = 5 }),
+      S.setVar({ variable = "VAR_MIGRATED", value = 1 }),
+      S.stop(),
+    },
+  })
+  registry:installBase(resource.id, resource, "generated")
+  scheduler:createForeground(assert(composition:effective(resource.id)), nil, 100)
+  scheduler:step(100, nil)
+  local live = ScriptSave.capture(scheduler, 100)
+  Assert.isTrue(#live.tasks >= 1, "the v7 fixture carries a live continuation")
+  local predecessor = {}
+  for key, value in pairs(live) do
+    predecessor[key] = value
+  end
+  predecessor.schema = "g4-script-save-v1"
+  predecessor.registryFingerprint = "stale-registry"
+  predecessor.taskFingerprint = "stale-tasks"
+
+  local Lcrng = require("libs.mons.src.gen4.Lcrng")
+  local Party = require("libs.mons.src.Party")
+  local Boxes = require("libs.mons.src.Boxes")
+  local v7 = v5record({
+    world = { flags = { [10] = true }, variables = {}, objects = {}, rng = { seed = 7 } },
+  })
+  v7.schema = GameSave.LEGACY_V7_SCHEMA
+  v7.fashionCase = FashionCaseState.empty()
+  v7.mailbox = Mailbox.new():capture()
+  v7.photoAlbum = PhotoAlbum.new():capture()
+  v7.mons = {
+    schema = "g4-mons-save-v2",
+    catalogFingerprint = "stale-catalog",
+    rng = Lcrng.new(0x22222222):capture(),
+    party = Party.new():capture(),
+    boxes = Boxes.new():capture(),
+  }
+  v7.scripts = predecessor
+
+  local migrated = GameSave.migrateV7(v7)
+  Assert.equal(migrated.schema, GameSave.SCHEMA)
+  Assert.equal(migrated.mons.schema, "g4-mons-save-v3")
+  Assert.isNil(migrated.mons.catalogFingerprint)
+  Assert.equal(migrated.scripts.schema, "g4-script-save-v2")
+  Assert.isNil(migrated.scripts.registryFingerprint)
+  Assert.isNil(migrated.scripts.taskFingerprint)
+  Assert.deepEqual(migrated.scripts.tasks, live.tasks, "the live continuation tasks survive migration exactly")
+  Assert.deepEqual(migrated.scripts.instances, live.instances)
+  Assert.deepEqual(migrated.world, v7.world, "unrelated top-level state is preserved")
+  Assert.deepEqual(migrated.bag, v7.bag)
+  Assert.equal(v7.schema, GameSave.LEGACY_V7_SCHEMA, "migration leaves its input untouched")
+
+  -- The normalization boundary performs the same migration automatically,
+  -- and the migrated continuation restores concretely without any
+  -- quiescent rebinding step.
+  local normalized = assert(GameSave.normalize(v7))
+  Assert.equal(normalized.schema, GameSave.SCHEMA)
+  local resumed = Scheduler.new({
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    services = services,
+    taskRegistry = taskRegistry,
+    resolveComposition = function(id)
+      return composition:effective(id)
+    end,
+  })
+  ScriptSave.restore(normalized.scripts, resumed, 0)
+  for tick = 1, 8 do
+    resumed:step(tick, nil)
+  end
+  Assert.equal(services.world:getVar("VAR_MIGRATED"), 1, "the migrated continuation runs to completion")
 end
 
 function T.version_advancement_keeps_each_historical_meaning()

@@ -31,7 +31,7 @@ local function withGame(fn)
   harness.gameFactory = function(versionId, map)
     local game = createGame(versionId, map)
     local catalog = MonBucket.openCatalogs(versionId)
-    game.mons = MonsSave.empty(catalog:fingerprint(), 7, { configuredCount = 37 })
+    game.mons = MonsSave.empty(7, { configuredCount = 37 })
     return game
   end
   local game = harness:boot({

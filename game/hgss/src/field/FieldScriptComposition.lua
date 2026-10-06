@@ -103,9 +103,7 @@ function FieldScriptComposition.compose(runtime, options)
   })
   local function restore()
     if options.loadedGame then
-      ScriptSave.restore(options.loadedGame.scripts, scripts.scheduler, 0, {
-        expectedRegistryFingerprint = scripts:registryFingerprint(),
-      })
+      ScriptSave.restore(options.loadedGame.scripts, scripts.scheduler, 0)
       scripts.worldState:restoreRng(options.loadedGame.world)
     end
   end

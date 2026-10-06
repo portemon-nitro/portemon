@@ -851,7 +851,7 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
   Assert.deepEqual(original.seen.actor.offset, { x = 2, y = 3, z = -1 })
   Assert.deepEqual(original.seen.audio.played, { 43 }, "motion sound has played once")
   Assert.equal(#original.seen.terrainEffects.emitted, 1, "the interaction turn emits grass presentation once")
-  local bucket = ScriptSave.capture(original.scheduler, 102, { registryFingerprint = original.registry:fingerprint() })
+  local bucket = ScriptSave.capture(original.scheduler, 102)
   Assert.equal(#bucket.tasks, 1, "the blocked interaction task is captured")
   Assert.equal(bucket.tasks[1].taskType, "follower_interaction")
   Assert.equal(bucket.tasks[1].taskVersion, 1)

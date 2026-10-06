@@ -25,7 +25,6 @@ local function monService(configuredCount)
     bucket = MonsSave.capture(
       Party.new():capture(),
       Lcrng.new(0x12345678):capture(),
-      catalog:fingerprint(),
       nil,
       configuredCount and { configuredCount = configuredCount } or nil
     ),
@@ -100,7 +99,6 @@ local function releaseService()
     bucket = MonsSave.capture(
       Party.new():capture(),
       Lcrng.new(0x10203040):capture(),
-      catalog:fingerprint(),
       nil,
       { configuredCount = 37 }
     ),

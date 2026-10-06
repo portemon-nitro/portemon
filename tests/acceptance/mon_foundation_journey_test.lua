@@ -698,7 +698,7 @@ function T.tests.preselection_trio_reproduces_through_the_public_creation_seam()
   local catalog = MonBucket.openCatalogs(versionId)
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.empty(catalog:fingerprint(), SEED),
+    bucket = MonsSave.empty(SEED),
     profile = { name = "GOLD", gender = 0, trainerId = 1 },
     game = versionId,
     language = MonCache.loadCatalog(cacheFs).version.language,
@@ -723,10 +723,11 @@ function T.tests.preselection_trio_reproduces_through_the_public_creation_seam()
   Assert.equal(hexes[1], expectedHex(versionId), "the first candidate equals the fixed vector")
 end
 
--- Content identity at the product boundary: a stored bucket written against
--- foreign generated content fails continue before any field state
--- publishes, and the valid record still boots afterwards.
-function T.tests.continue_rejects_a_foreign_catalog_fingerprint_before_publication()
+-- Content identity at the product boundary: a stored bucket carrying a stale
+-- fingerprint field is malformed under the current schema and fails
+-- continue at the owning mon restore, while the valid record still boots
+-- afterwards. Catalog drift alone (no shape change) never gates restore.
+function T.tests.continue_rejects_a_stale_fingerprint_field_as_malformed()
   local versionId = AcceptanceHarness.defaultVersion()
   local valid = harness():boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })
   valid:waitForFieldEntry()
@@ -744,10 +745,10 @@ function T.tests.continue_rejects_a_foreign_catalog_fingerprint_before_publicati
   local ok, err = pcall(function()
     tampered:boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })
   end)
-  Assert.isFalse(ok, "a foreign fingerprint must fail continue")
+  Assert.isFalse(ok, "a stale fingerprint field must fail continue")
   Assert.isTrue(
-    tostring(err):find("MONS_SAVE_FINGERPRINT_MISMATCH", 1, true) ~= nil,
-    "the failure names the fingerprint mismatch: " .. tostring(err):sub(1, 160)
+    tostring(err):find("MONS_SAVE_INVALID", 1, true) ~= nil,
+    "the failure names the malformed bucket: " .. tostring(err):sub(1, 160)
   )
 
   local again = harness():boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })

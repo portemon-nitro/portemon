@@ -37,7 +37,7 @@ local function openService()
   end
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xBBBBBBBB):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xBBBBBBBB):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",

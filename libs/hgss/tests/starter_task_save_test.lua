@@ -48,7 +48,7 @@ local function openService(catalog, bucket)
 end
 
 local function freshBucket(catalog)
-  return MonsSave.capture(Party.new():capture(), Lcrng.new(SEED):capture(), catalog:fingerprint())
+  return MonsSave.capture(Party.new():capture(), Lcrng.new(SEED):capture())
 end
 
 local function providerFor(species)

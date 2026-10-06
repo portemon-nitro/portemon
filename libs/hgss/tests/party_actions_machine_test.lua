@@ -23,7 +23,7 @@ local function openServices()
   local catalog = MonCatalog.new(CatalogFixture.buildAssetRoot(), itemCatalog)
   local mons = require("libs.hgss.src.mons.HgssMonService").new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x55555555):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x55555555):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",

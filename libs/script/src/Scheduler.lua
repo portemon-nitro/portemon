@@ -1391,11 +1391,6 @@ end
 
 -- --- Save hooks -----------------------------------------------------------------
 
----@return string
-function Scheduler:taskRegistryFingerprint()
-  return self._taskRegistry:fingerprint()
-end
-
 ---@param taskType string
 ---@param version integer
 ---@return TaskImplementation|nil, Errors.Error|nil
@@ -1415,8 +1410,9 @@ end
 -- The restore tick is the load boundary: the caller
 -- resumes with the first step at restoreTick + 1, so relative delays rebase
 -- exactly and no tick is duplicated or skipped. The caller is responsible
--- for the whole-bucket and registry/task-registry fingerprint checks
--- (ScriptSave.restore performs them); this method verifies every frame's
+-- for the whole-bucket checks (ScriptSave.restore performs them: record
+-- shapes, cross-record references, and concrete task/composition
+-- resolution); this method verifies every frame's
 -- graph revision against the current compositions, then stages every
 -- restored environment, instance, and task as a fresh object and installs
 -- them only after the entire bucket has restored, so a raise anywhere in

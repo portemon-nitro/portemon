@@ -27,7 +27,7 @@ local function newService(species, options)
     root.species[key] = entry
   end
   local catalog = MonCatalog.new(root, CatalogFixture.makeItemCatalog())
-  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x4321):capture(), catalog:fingerprint())
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x4321):capture())
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = bucket,

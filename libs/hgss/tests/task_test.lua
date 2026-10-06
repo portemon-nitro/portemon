@@ -512,7 +512,7 @@ T["save during dialogue"] = function()
   h.scheduler:step(100, {})
   h.scheduler:step(101, {})
   -- Capture during typing (printRemaining 1).
-  local bucket = ScriptSave.capture(h.scheduler, 101, { registryFingerprint = h.registry:fingerprint() })
+  local bucket = ScriptSave.capture(h.scheduler, 101)
   local taskRecord = bucket.tasks[1]
   Assert.equal(taskRecord.taskType, "dialogue")
   Assert.equal(taskRecord.state.mode, "say")

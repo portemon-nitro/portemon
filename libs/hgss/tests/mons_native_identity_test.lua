@@ -38,7 +38,7 @@ local CORRECTED_HEX =
 local function openService(catalog, seed, mapSection)
   return HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture()),
     profile = PROFILE,
     game = "heartgold",
     language = "english",

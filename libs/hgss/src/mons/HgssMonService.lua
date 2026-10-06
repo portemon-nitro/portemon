@@ -211,12 +211,7 @@ end
 
 ---@return table<string, unknown>
 function HgssMonService:capture()
-  return MonsSave.capture(
-    self._party:capture(),
-    self._rng:capture(),
-    self._catalog:fingerprint(),
-    self._boxes:capture()
-  )
+  return MonsSave.capture(self._party:capture(), self._rng:capture(), self._boxes:capture())
 end
 
 function HgssMonService:boxCount()

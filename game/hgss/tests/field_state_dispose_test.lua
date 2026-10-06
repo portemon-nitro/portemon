@@ -54,7 +54,7 @@ local function captureReadySession()
 end
 
 -- The scripts platform in the shape _save's capture touches: an empty
--- scheduler and the fingerprint/world capture edges.
+-- scheduler and the world capture edge.
 local function fakeScripts()
   return {
     scheduler = {
@@ -70,13 +70,7 @@ local function fakeScripts()
       counters = function()
         return {}
       end,
-      taskRegistryFingerprint = function()
-        return "task-fp"
-      end,
     },
-    registryFingerprint = function()
-      return "registry-fp"
-    end,
     worldState = {
       capture = function()
         return {}

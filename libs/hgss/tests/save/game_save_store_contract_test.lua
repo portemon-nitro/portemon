@@ -51,7 +51,7 @@ local function record(saveId, versionId, overrides)
     scripts = {},
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
-    mons = MonsSave.empty("test-catalog-fingerprint", 7),
+    mons = MonsSave.empty(7),
     bag = BagSave.empty(),
     mart = MartSave.empty(),
     mailbox = Mailbox.new():capture(),
@@ -81,6 +81,18 @@ local function v4Payload(saveId, versionId)
   value.schema = "g4-game-save-v4"
   value.playerData.profile.badges = 0
   value.fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" }
+  value.scripts = {
+    schema = "g4-script-save-v1",
+    registryFingerprint = "legacy-registry",
+    taskFingerprint = "legacy-tasks",
+    capturedAtSimulationTick = 0,
+    nextEnvironmentId = 0,
+    nextInstanceId = 0,
+    nextTaskId = 0,
+    environments = {},
+    instances = {},
+    tasks = {},
+  }
   value.mons = v1MonsBucket()
   value.mart = nil
   value.mailbox = nil
@@ -392,7 +404,7 @@ function T.metadata_listing_exposes_v4_envelopes_without_normalization()
   -- stays a v4 record on disk, and the future record stays unreadable.
   backend.files[gamePath(v4Id)] = LuaWriter.encode(v4Payload(v4Id, "heartgold"))
   local unknown = record(unknownId, "heartgold")
-  unknown.schema = "g4-game-save-v8"
+  unknown.schema = "g4-game-save-v9"
   backend.files[gamePath(unknownId)] = LuaWriter.encode(unknown)
 
   local metadata = assert(store:listMetadata())
@@ -427,7 +439,7 @@ function T.metadata_listing_distinguishes_historical_from_current_and_future_sch
   local current = record(currentId, "soulsilver")
   current.schema = GameSave.SCHEMA
   local future = record(futureId, "heartgold")
-  future.schema = "g4-game-save-v8"
+  future.schema = "g4-game-save-v9"
   store:publishFirst(record(historicalId, "heartgold"))
   store:publishFirst(current)
   store:publishFirst(record(futureId, "heartgold"))

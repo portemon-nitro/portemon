@@ -1,11 +1,12 @@
--- Persisted mons bucket. The normative g4-mons-save-v2 record carries the
--- catalog fingerprint, the exact generator state, and the party snapshot.
+-- Persisted mons bucket. The normative g4-mons-save-v3 record carries the
+-- exact generator state, the party snapshot, and the boxes snapshot.
 -- Capture copies live state into canonical records; restore rebuilds the
--- live party and generator against the current catalog. A bucket written
--- against different generated content fails with a fingerprint mismatch;
--- malformed buckets and failing mons fail with a save error that names the
--- zero-based mon slot. This module never touches the top-level save; the
--- game save injects it as a bucket validator.
+-- live party and generator against the current catalog. The catalog is a
+-- runtime dependency, not a persisted identity: no aggregate fingerprint is
+-- stored or compared. Malformed buckets and failing mons fail with a save
+-- error that names the zero-based mon slot. This module never touches the
+-- top-level save; restore validates the bucket against the current catalog
+-- before rebuilding live state.
 
 local Errors = require("libs.errors.src.Errors")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
@@ -16,12 +17,13 @@ local U32 = require("libs.codec.src.U32")
 local Boxes = require("libs.mons.src.Boxes")
 
 ---@alias MonsSave.BoxesSnapshot { schema: string, boxCount: integer, activeBox: integer, bonusUnlocks: boolean[], boxes: table[] }
----@alias MonsSave.Bucket { schema: string, catalogFingerprint: string, rng: { state: integer, calls: integer }, party: table<string, unknown>, boxes: MonsSave.BoxesSnapshot }
+---@alias MonsSave.Bucket { schema: string, rng: { state: integer, calls: integer }, party: table<string, unknown>, boxes: MonsSave.BoxesSnapshot }
 ---@alias MonsSave.Context { catalog: MonCatalog, charmap: table<string, unknown>, games: table<string, unknown>, languages: table<string, unknown>, items: table<string, unknown>, balls: table<string, unknown> }
 ---@class MonsSave
 local MonsSave = {}
 
-MonsSave.SCHEMA = "g4-mons-save-v2"
+MonsSave.SCHEMA = "g4-mons-save-v3"
+MonsSave.LEGACY_V2_SCHEMA = "g4-mons-save-v2"
 MonsSave.LEGACY_SCHEMA = "g4-mons-save-v1"
 
 ---@generic T
@@ -44,15 +46,12 @@ local function checkShape(bucket)
     MonsErrors.raise(MonsErrors.SAVE_INVALID, "mons bucket must be a record", {})
   end
   for key in pairs(bucket) do
-    if key ~= "schema" and key ~= "catalogFingerprint" and key ~= "rng" and key ~= "party" and key ~= "boxes" then
+    if key ~= "schema" and key ~= "rng" and key ~= "party" and key ~= "boxes" then
       MonsErrors.raise(MonsErrors.SAVE_INVALID, "mons bucket carries unknown field " .. tostring(key), {})
     end
   end
   if bucket.schema ~= MonsSave.SCHEMA then
     MonsErrors.raise(MonsErrors.SAVE_INVALID, "mons bucket schema must be " .. MonsSave.SCHEMA, {})
-  end
-  if type(bucket.catalogFingerprint) ~= "string" or bucket.catalogFingerprint == "" then
-    MonsErrors.raise(MonsErrors.SAVE_INVALID, "mons bucket requires a catalog fingerprint", {})
   end
   if type(bucket.rng) ~= "table" then
     MonsErrors.raise(MonsErrors.SAVE_INVALID, "mons bucket requires a generator record", {})
@@ -65,12 +64,10 @@ local function checkShape(bucket)
   end
 end
 
----@param fingerprint string
 ---@param seedU32 integer
 ---@param options { configuredCount?: integer }?
 ---@return MonsSave.Bucket
-function MonsSave.empty(fingerprint, seedU32, options)
-  assert(type(fingerprint) == "string" and fingerprint ~= "", "mons empty requires a catalog fingerprint")
+function MonsSave.empty(seedU32, options)
   assert(
     type(seedU32) == "number" and seedU32 % 1 == 0 and seedU32 >= 0 and seedU32 <= U32.MAX,
     "mons empty requires an unsigned 32-bit seed"
@@ -79,19 +76,17 @@ function MonsSave.empty(fingerprint, seedU32, options)
   if seed == 0 then
     seed = 1
   end
-  return MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), fingerprint, nil, options)
+  return MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), nil, options)
 end
 
 ---@param partySnapshot table<string, unknown>
 ---@param rngCapture { state: integer, calls: integer }
----@param fingerprint string
 ---@param boxesSnapshot table<string, unknown>?
 ---@param options { configuredCount?: integer }?
 ---@return MonsSave.Bucket
-function MonsSave.capture(partySnapshot, rngCapture, fingerprint, boxesSnapshot, options)
+function MonsSave.capture(partySnapshot, rngCapture, boxesSnapshot, options)
   assert(type(partySnapshot) == "table", "mons capture requires a party snapshot")
   assert(type(rngCapture) == "table", "mons capture requires a generator capture")
-  assert(type(fingerprint) == "string" and fingerprint ~= "", "mons capture requires a catalog fingerprint")
   local ok, failure = pcall(Lcrng.validate, rngCapture)
   if not ok then
     if Errors.is(failure) then
@@ -103,7 +98,6 @@ function MonsSave.capture(partySnapshot, rngCapture, fingerprint, boxesSnapshot,
   Boxes.validate(boxesSnapshot)
   return {
     schema = MonsSave.SCHEMA,
-    catalogFingerprint = fingerprint,
     rng = copyValue(rngCapture),
     party = copyValue(partySnapshot),
     boxes = copyValue(boxesSnapshot),
@@ -123,13 +117,6 @@ function MonsSave.validate(bucket, context)
       MonsErrors.raise(MonsErrors.SAVE_INVALID, "mons bucket generator record is malformed", {})
     end
     error(failure, 0)
-  end
-  if bucket.catalogFingerprint ~= context.catalog:fingerprint() then
-    MonsErrors.raise(
-      MonsErrors.SAVE_FINGERPRINT_MISMATCH,
-      "mons bucket was written against different generated content",
-      {}
-    )
   end
   local partyOk, partyFailure = pcall(Party.validate, bucket.party, context)
   if not partyOk then
@@ -215,11 +202,42 @@ function MonsSave.migrateV1(bucket)
   end
   local migrated = copyValue(bucket)
   migrated.schema = MonsSave.SCHEMA
+  migrated.catalogFingerprint = nil
   migrated.party = copyValue(bucket.party)
   for index, mon in ipairs(migrated.party.mons) do
     migrated.party.mons[index] = Mon.migrateV1(mon)
   end
   migrated.boxes = Boxes.new():capture()
+  return migrated
+end
+
+-- Pure v2 -> v3 migration: copies generator, party, and boxes state and
+-- drops only the obsolete catalog fingerprint. The fingerprint value itself
+-- is never compared: any v2 bucket with usable state migrates.
+---@param bucket table<string, unknown> a v2 mons bucket
+---@return MonsSave.Bucket the fingerprint-free v3 bucket
+function MonsSave.migrateV2(bucket)
+  if type(bucket) ~= "table" or bucket.schema ~= MonsSave.LEGACY_V2_SCHEMA then
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "legacy v2 mons bucket schema is invalid", {})
+  end
+  assert(type(bucket) == "table", "legacy v2 migration requires its declared schema")
+  for key in pairs(bucket) do
+    if key ~= "schema" and key ~= "catalogFingerprint" and key ~= "rng" and key ~= "party" and key ~= "boxes" then
+      MonsErrors.raise(MonsErrors.SAVE_INVALID, "legacy v2 mons bucket has an unknown field", { field = key })
+    end
+  end
+  if
+    type(bucket.catalogFingerprint) ~= "string"
+    or bucket.catalogFingerprint == ""
+    or type(bucket.rng) ~= "table"
+    or type(bucket.party) ~= "table"
+    or type(bucket.boxes) ~= "table"
+  then
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "legacy v2 mons bucket state is invalid", {})
+  end
+  local migrated = copyValue(bucket)
+  migrated.schema = MonsSave.SCHEMA
+  migrated.catalogFingerprint = nil
   return migrated
 end
 

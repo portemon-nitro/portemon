@@ -19,8 +19,9 @@ function T.v4_migration_adds_pc_state_without_changing_existing_values()
   mon.capsule = { id = 0, seals = {} }
   local party = Party.new()
   party:add(mon)
-  local originalMons = MonsSave.capture(party:capture(), args.rng:capture(), catalog:fingerprint())
+  local originalMons = MonsSave.capture(party:capture(), args.rng:capture())
   originalMons.schema = MonsSave.LEGACY_SCHEMA
+  originalMons.catalogFingerprint = "legacy-catalog"
   originalMons.boxes = nil
   originalMons.party.mons[1].schema = require("libs.mons.src.Mon").LEGACY_SCHEMA
   local v4 = {
@@ -60,16 +61,20 @@ function T.v4_migration_adds_pc_state_without_changing_existing_values()
   }
   local v5 = GameSave.migrateV4(v4)
   Assert.isTrue(type(GameSave.migrateV5) == "function", "save migration must add the new persisted PC owners")
-  local migrated = GameSave.migrateV6(GameSave.migrateV5(v5))
+  local v6 = GameSave.migrateV6(GameSave.migrateV5(v5))
+  Assert.equal(v6.schema, GameSave.LEGACY_V7_SCHEMA)
+  local migrated = GameSave.migrateV7(v6)
 
   Assert.equal(v4.schema, "g4-game-save-v4", "migration does not mutate the input")
   Assert.equal(v4.mons.schema, originalMons.schema)
   Assert.equal(migrated.schema, GameSave.SCHEMA)
   Assert.deepEqual(migrated.world, v4.world)
-  Assert.deepEqual(migrated.scripts, v4.scripts)
+  Assert.equal(migrated.scripts.schema, "g4-script-save-v2")
+  Assert.deepEqual(migrated.scripts.tasks, v4.scripts.tasks)
+  Assert.isNil(migrated.scripts.registryFingerprint)
   Assert.deepEqual(migrated.mons.rng, originalMons.rng)
   Assert.deepEqual(migrated.mons.party.mons[1], mon, "party health, nickname, markings and capsule survive")
-  Assert.equal(migrated.mons.catalogFingerprint, originalMons.catalogFingerprint)
+  Assert.isNil(migrated.mons.catalogFingerprint, "migration drops the obsolete fingerprint")
   Assert.notNil(migrated.mailbox)
   Assert.notNil(migrated.photoAlbum)
 end

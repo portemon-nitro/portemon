@@ -420,7 +420,7 @@ local function openHeadlessChoice()
   local Party = requireModule("libs.mons.src.Party", "the party owns the candidate bucket")
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",

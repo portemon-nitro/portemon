@@ -425,7 +425,7 @@ end
 -- and an isolated memory backend: no ROM, no graphics, no composed field.
 
 local function monsBucket()
-  return MonsSave.empty(CatalogFixture.makeCatalog():fingerprint(), 7)
+  return MonsSave.empty(7)
 end
 
 local function validPlayerData()
@@ -453,9 +453,7 @@ local function validRecord(saveId)
     fashionCase = FashionCaseState.empty(),
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {
-      schema = "g4-script-save-v1",
-      registryFingerprint = "registry",
-      taskFingerprint = "tasks",
+      schema = "g4-script-save-v2",
       capturedAtSimulationTick = 0,
       nextEnvironmentId = 0,
       nextInstanceId = 0,
@@ -493,6 +491,7 @@ local function v3record(saveId)
   local value = validRecord(saveId)
   value.schema = "g4-game-save-v3"
   value.mons.schema = MonsSave.LEGACY_SCHEMA
+  value.mons.catalogFingerprint = "legacy-catalog"
   value.mons.boxes = nil
   value.fieldTravel = nil
   value.fashionCase = nil
@@ -533,7 +532,7 @@ function T.tests.missing_travel_saves_while_broken_envelopes_reject_with_file_pr
   Assert.isTrue(store:save(withoutTravel), "a record without travel facts still saves; field restore owns that state")
   local before = snapshotBytes(backend, saveId)
   local envelopeBroken = validRecord(saveId)
-  envelopeBroken.schema = "g4-game-save-v8"
+  envelopeBroken.schema = "g4-game-save-v9"
   local ok, failure = pcall(function()
     return store:save(envelopeBroken)
   end)

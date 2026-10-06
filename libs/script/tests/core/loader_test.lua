@@ -452,9 +452,10 @@ T["published index hashes identify the registry regardless of index order"] = fu
   Assert.equal(scriptReads(), 0, "fingerprint acquisition must not decode generated bodies")
 end
 
--- 10c. A save captured under the decoded registry validates unchanged under
--- the published hashes, and content drift still mismatches.
-T["a save captured under decoded content validates under published hashes"] = function()
+-- 10c. Saves carry no registry identity: a current bucket validates with no
+-- fingerprint context under either construction, and content drift changes
+-- the digest without gating the save.
+T["saves validate without fingerprints under either registry construction"] = function()
   local oracle = decodedOracleFingerprint()
   local cache = hashedCache()
   local registry = ScriptLoader.buildRegistry(cache, hashedOverrideFs(), requireShim, {
@@ -465,8 +466,7 @@ T["a save captured under decoded content validates under published hashes"] = fu
   Assert.equal(seeded, oracle)
   local bucket = {
     schema = ScriptSave.SCHEMA_NAME,
-    registryFingerprint = oracle,
-    taskFingerprint = "test-tasks",
+    capturedAtSimulationTick = 0,
     nextEnvironmentId = 0,
     nextInstanceId = 0,
     nextTaskId = 0,
@@ -474,13 +474,7 @@ T["a save captured under decoded content validates under published hashes"] = fu
     instances = {},
     tasks = {},
   }
-  Assert.isNil(ScriptSave.validate(bucket, { expectedRegistryFingerprint = seeded }))
-  local mismatch = assert(
-    ScriptSave.validate(bucket, { expectedRegistryFingerprint = seeded .. "00" }),
-    "drifted content must mismatch the saved fingerprint"
-  )
-  Assert.isTrue(Errors.is(mismatch))
-  Assert.equal(mismatch.code, "SCRIPT_REGISTRY_FINGERPRINT_MISMATCH")
+  Assert.isNil(ScriptSave.validate(bucket, {}), "a current bucket needs no fingerprint context")
 end
 
 -- 9c. An explicitly empty resources array is schema-legal and installs

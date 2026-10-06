@@ -16,8 +16,10 @@ local ScriptMapsService = require("libs.hgss.src.script.ScriptMapsService")
 local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local WorldState = require("libs.hgss.src.script.WorldState")
 local Scheduler = require("libs.script.src.Scheduler")
+local Composition = require("libs.script.src.Composition")
+local ScriptLoader = require("libs.script.src.ScriptLoader")
+local TaskRegistry = require("libs.script.src.TaskRegistry")
 local HgssScript = require("libs.hgss.src.script.Composition")
-local FieldScriptCompatibility = require("libs.hgss.src.script.FieldScriptCompatibility")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MapInitScriptController = require("libs.hgss.src.field.MapInitScriptController")
 local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteractionEngine")
@@ -242,7 +244,6 @@ end
 ---@field overrideFs table<string, unknown> read-shaped filesystem for data/scripts/overrides
 ---@field taskRegistry TaskRegistry the live registered-task registry
 ---@field initController MapInitScriptController
----@field compatibility FieldScriptCompatibility
 ---@field mapSource RuntimeFieldMap the active runtime map map-scoped script state is bound to
 local FieldScripts = {}
 FieldScripts.__index = FieldScripts
@@ -272,14 +273,15 @@ function FieldScripts.new(opts)
   )
 
   -- The registry is always installed lazily: only the generated layer's
-  -- presence comes from the index, and each script decodes on first use.
-  -- The published index hashes seed the registry fingerprint, so no
-  -- gameplay pass decodes the corpus or publishes snapshots; a hashless
-  -- index is a stale cache and fails at compatibility construction. The
-  -- override layer is always loaded and validated eagerly.
-  local compatibility = FieldScriptCompatibility.new({ cacheFs = opts.cacheFs, overrideFs = opts.overrideFs })
-  local registry = compatibility.registry
-  local composition = compatibility.composition
+  -- presence comes from the index, and each script decodes on first use,
+  -- so no gameplay pass decodes the corpus up front. The override layer
+  -- is always loaded and validated eagerly.
+  local builtins = HgssScript.builtins()
+  local registry = ScriptLoader.buildRegistry(opts.cacheFs, opts.overrideFs, nil, {
+    lazy = true,
+    builtins = builtins,
+  })
+  local composition = Composition.new(registry)
   local bindings = Bindings.new()
 
   local worldState = WorldState.new({
@@ -360,7 +362,6 @@ function FieldScripts.new(opts)
   ---@class FieldScriptsPlatform: FieldScripts
   ---@field initController MapInitScriptController
   local platform = setmetatable({
-    compatibility = compatibility,
     registry = registry,
     cacheFs = opts.cacheFs,
     overrideFs = opts.overrideFs,
@@ -386,7 +387,7 @@ function FieldScripts.new(opts)
   end
 
   -- The live task registry: the scheduler routes through it.
-  local liveTaskRegistry = compatibility.taskRegistry
+  local liveTaskRegistry = HgssScript.registerTasks(TaskRegistry.new())
 
   local scheduler
   local function advanceAsync()
@@ -464,18 +465,6 @@ function FieldScripts.new(opts)
     scriptClient = platform.client,
   })
   return platform
-end
-
--- The registry fingerprint used for save validation. On a snapshot miss the
--- warm-up is finished synchronously here (the fingerprint is the save's
--- cross-boot contract and cannot be partial); a warm-up failure is a corrupt
--- cache and fails the save loudly. The digest is then persisted into the
--- keyed snapshot while the world still matches the key it was computed
--- under: a mid-session override edit skips the write, so the next boot
--- warms up again instead of trusting a stale digest.
----@return string
-function FieldScripts:registryFingerprint()
-  return self.compatibility:registryFingerprint()
 end
 
 -- Rebind every map-scoped script collaborator (maps service, script-client

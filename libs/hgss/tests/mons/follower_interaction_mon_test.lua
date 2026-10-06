@@ -10,7 +10,7 @@ local Party = require("libs.mons.src.Party")
 
 local function newService(initialMood)
   local catalog = MonCatalog.new(CatalogFixture.buildAssetRoot(), CatalogFixture.makeItemCatalog())
-  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x1234):capture(), catalog:fingerprint())
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x1234):capture())
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = bucket,

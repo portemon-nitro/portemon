@@ -333,11 +333,9 @@ function ScriptLoader.buildRegistry(cacheFs, fs, requireFn, opts)
   ScriptLoader.installGenerated(registry, cacheFs, requireFn, installOpts)
   ScriptLoader.installOverrides(registry, fs, requireFn)
   -- Seed the published canonical hashes for the generated layer at the
-  -- final mutation version: every later fingerprint uses them instead of
+  -- final mutation version: every later digest uses them instead of
   -- decoding bodies, while builtins and overrides keep their live hashes.
-  -- Entries without a published hash simply keep live hashing; readiness
-  -- and the game compatibility boundary (not the loader) reject hashless
-  -- caches as stale.
+  -- Entries without a published hash simply keep live hashing.
   if Validate.isArray(selection.index.resources) then
     for _, entry in ipairs(selection.index.resources) do
       if type(entry) == "table" and type(entry.id) == "string" and Validate.isSha256Key(entry.resourceHash) then
