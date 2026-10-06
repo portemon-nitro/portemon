@@ -156,7 +156,13 @@ function T.startBattle_runs_the_owned_lifetime_to_commit_and_return()
   local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local foe = foeRecord("TOTODILE", 4, 0x5EED0004)
   local request = { id = "launch-field-1", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(request.payload, { party = party })
+  -- The lifetime now runs through knockout rewards under the corrected
+  -- battle laws, so the scenario carries the same detached player
+  -- identity the resolution suites use.
+  local scenario = ScenarioFactory.fromEncounter(
+    request.payload,
+    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+  )
   local battle = runtime:startBattle({
     request = request,
     scenario = scenario,

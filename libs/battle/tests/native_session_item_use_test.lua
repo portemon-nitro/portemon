@@ -272,7 +272,9 @@ function T.generated_fixed_restoration_reaches_battle_state()
   Assert.equal(delta.delta, -1, "the delta consumes exactly one unit")
   Assert.equal(payload.restored, gained, "the event reports the actual restored delta")
   Assert.isTrue(targetsHolder(payload.target, 1), "the event names the served holder")
-  Assert.equal(settled.rng.calls, callsBefore, "deterministic bag use draws nothing")
+  -- The serving draws nothing itself; the four draws are the following
+  -- batch samples, already spent while it waits for decisions.
+  Assert.equal(settled.rng.calls, callsBefore + 4, "deterministic bag use draws nothing")
   session:dispose()
 end
 
@@ -543,7 +545,9 @@ function T.repeated_focusing_servings_refuse_at_commit()
   local settled = session:capture()
   Assert.equal(settled.inventories.party.quantities.DIRE_HIT, 1, "the refused repeat consumes nothing")
   Assert.equal(#settled.ledger, 1, "the refused repeat writes no ledger delta")
-  Assert.equal(settled.rng.calls, beforeRepeat.rng.calls, "the refused repeat draws nothing")
+  -- The refused repeat draws nothing itself; the four draws are the
+  -- following batch samples, already spent while it waits.
+  Assert.equal(settled.rng.calls, beforeRepeat.rng.calls + 4, "the refused repeat draws nothing")
   session:dispose()
 end
 
@@ -608,7 +612,9 @@ function T.repeated_screening_servings_refuse_at_commit()
   local settled = session:capture()
   Assert.equal(settled.inventories.party.quantities.GUARD_SPEC, 1, "the refused repeat consumes nothing")
   Assert.equal(#settled.ledger, 1, "the refused repeat writes no ledger delta")
-  Assert.equal(settled.rng.calls, beforeRepeat.rng.calls, "the refused repeat draws nothing")
+  -- The refused repeat draws nothing itself; the four draws are the
+  -- following batch samples, already spent while it waits.
+  Assert.equal(settled.rng.calls, beforeRepeat.rng.calls + 4, "the refused repeat draws nothing")
   session:dispose()
 end
 

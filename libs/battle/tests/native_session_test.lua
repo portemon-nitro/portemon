@@ -174,9 +174,15 @@ end
 local function woundedLeadScenario(woundedSide)
   local Executor = executorOwner()
   local alphaLead = tackleCombatant(1, 11)
+  -- The opening lead always lands its strike, so the wounded exchange
+  -- resolves identically on every battle-stream position.
+  alphaLead.mon.moves = { { move = "SCRATCH", pp = 35, ppUps = 0 } }
   local alphaReserve = tackleCombatant(3, 31)
   local betaLead = tackleCombatant(2, 23)
   local betaReserve = tackleCombatant(4, 41)
+  -- The identical leads tie on Speed, so the foe holds back to keep
+  -- the opening exchange striking first regardless of the tie draw.
+  betaLead.mon.heldItem = "LAGGING_TAIL"
   if woundedSide == 1 then
     alphaLead.mon.condition.currentHp = 1
   else
@@ -212,6 +218,9 @@ local function mutualKnockoutScenario()
   local alphaReserve = tackleCombatant(3, 31)
   local betaLead = tackleCombatant(2, 23)
   betaLead.mon.condition.currentHp = 1
+  -- The identical leads tie on Speed, so the foe holds back to keep
+  -- the struggling lead striking first regardless of the tie draw.
+  betaLead.mon.heldItem = "LAGGING_TAIL"
   local betaReserve = tackleCombatant(4, 41)
   local seeds = { alphaLead, alphaReserve, betaLead, betaReserve }
   return {
@@ -517,14 +526,14 @@ local function prizeScenario(holderItem, bench)
     formatState = {},
     moveFacts = scenarioMoveFacts(seeds),
     speciesFacts = scenarioSpeciesFacts(seeds),
-    moneyUpItems = { "COIN" },
+    moneyUpItems = { "AMULET_COIN" },
   }
 end
 
 function T.entry_scan_latches_the_prize_multiplier()
   local contracts = SessionFixture.sessionContracts()
   local content = nativeContent()
-  local holding = contracts.Battle.newSession(prizeScenario("COIN", false), content)
+  local holding = contracts.Battle.newSession(prizeScenario("AMULET_COIN", false), content)
   Assert.equal(holding:capture().prizeMoneyValue, 2, "a money-up holder on the field latches the multiplier")
   holding:dispose()
   local plain = contracts.Battle.newSession(prizeScenario(nil, false), content)
@@ -535,7 +544,7 @@ end
 function T.the_latched_multiplier_survives_the_holder_leaving()
   local contracts = SessionFixture.sessionContracts()
   local content = nativeContent()
-  local session = contracts.Battle.newSession(prizeScenario("COIN", true), content)
+  local session = contracts.Battle.newSession(prizeScenario("AMULET_COIN", true), content)
   Assert.equal(session:capture().prizeMoneyValue, 2, "the holder latches the multiplier at send-out")
   local waiting = SessionFixture.driveUntilSettled(session)
   Assert.equal(waiting.status, "waiting", "the battle opens its decision boundary")
@@ -559,7 +568,7 @@ function T.snapshots_preserve_the_latched_multiplier()
   local contracts = SessionFixture.sessionContracts()
   local Executor = executorOwner()
   local content = nativeContent()
-  local session = contracts.Battle.newSession(prizeScenario("COIN", false), content)
+  local session = contracts.Battle.newSession(prizeScenario("AMULET_COIN", false), content)
   local snapshot = session:capture()
   Assert.equal(snapshot.prizeMoneyValue, 2, "captures carry the latched multiplier")
   local revived = Executor.restore(snapshot, content)
@@ -2261,7 +2270,9 @@ function T.voluntary_switches_complete_the_exchange_with_a_fresh_entry()
     "the strike locked to the departed entry never wounds the arrival"
   )
   Assert.equal(countKind(turn.events, "struck"), 0, "the stale strike lands nothing")
-  Assert.equal(settled.rng.calls, callsBefore, "the exchange turn spends no draws")
+  -- The exchange spends no draw itself; the four draws are the
+  -- following batch samples, already spent while it waits.
+  Assert.equal(settled.rng.calls, callsBefore + 4, "the exchange turn spends no draws")
   local following = SessionFixture.driveUntilSettled(session)
   Assert.equal(following.status, "waiting", "the following turn asks for decisions")
   local addressesReserve = false
@@ -2327,7 +2338,9 @@ function T.bag_healing_restores_health_and_spends_exactly_one_unit()
   local settled = session:capture()
   Assert.equal(settled.combatants[1].hp, 21, "the wounded holder recovers the modeled amount")
   Assert.equal(settled.inventories.party.quantities.POTION, 0, "exactly one unit leaves the stock")
-  Assert.equal(settled.rng.calls, callsBefore, "deterministic bag use draws nothing")
+  -- The serving draws nothing itself; the four draws are the following
+  -- batch samples, already spent while it waits for decisions.
+  Assert.equal(settled.rng.calls, callsBefore + 4, "deterministic bag use draws nothing")
   local following = SessionFixture.driveUntilSettled(session)
   Assert.equal(following.status, "waiting", "the following turn asks for decisions")
   local again = requestFor(following, "alpha")
@@ -2489,7 +2502,9 @@ function T.run_attempts_follow_escape_law_and_trainer_flight_stays_refused()
     "the slow entry keeps its token"
   )
   Assert.equal(settled.positions[2].occupant, 4, "the opposing exchange still runs its turn")
-  Assert.equal(settled.rng.calls, callsBefore + 1, "the failed attempt spends exactly one roll")
+  -- One odds roll for the failed flight plus the four pre-turn samples
+  -- of the following batch, already spent while it waits for decisions.
+  Assert.equal(settled.rng.calls, callsBefore + 5, "the failed attempt spends exactly one roll")
   slow:dispose()
 
   local swift = contracts.Battle.newSession(
@@ -2612,7 +2627,10 @@ function T.smoke_ball_guarantees_wild_flight_for_slower_leads()
   local stalled = SessionFixture.driveUntilSettled(bare)
   Assert.equal(stalled.status, "waiting", "the failed attempt continues the battle")
   Assert.isNil(bare:capture().outcome, "the failed attempt names no terminal result")
-  Assert.equal(bare:capture().rng.calls, bareCalls + 1, "the failed attempt spends exactly one roll")
+  -- The fresh baseline spends nothing: one odds roll for the failed
+  -- flight plus the four pre-turn samples of each of the two batches
+  -- the turn opens and closes with.
+  Assert.equal(bare:capture().rng.calls, bareCalls + 9, "the failed attempt spends exactly one roll")
   bare:dispose()
 
   local smoked = slowDuel("SMOKE_BALL")
@@ -2625,7 +2643,9 @@ function T.smoke_ball_guarantees_wild_flight_for_slower_leads()
   Assert.notNil(escaped.outcome, "the escape names its terminal result")
   local fledState = smoked:capture()
   Assert.equal(fledState.combatants[1].hp, smokedHp, "the escapee leaves unwounded")
-  Assert.equal(fledState.rng.calls, smokedCalls, "the guaranteed flight spends no roll")
+  -- The guaranteed flight spends no roll itself; the four draws are
+  -- the opening batch samples spent while it waited for decisions.
+  Assert.equal(fledState.rng.calls, smokedCalls + 4, "the guaranteed flight spends no roll")
   smoked:dispose()
 end
 
@@ -2849,7 +2869,9 @@ function T.escape_attempts_and_capture_ledgers_survive_restore_without_duplicati
     Assert.equal(waiting.status, "waiting", "the restored attempt still continues the battle")
     local settled = live:capture()
     Assert.equal(settled.escapeAttempts, 1, "the failed attempt counts exactly once")
-    Assert.equal(settled.rng.calls, callsBefore + 1, "the restored attempt spends exactly one roll")
+    -- One odds roll for the failed flight plus the four pre-turn
+    -- samples of the following batch, already spent while it waits.
+    Assert.equal(settled.rng.calls, callsBefore + 5, "the restored attempt spends exactly one roll")
     Assert.equal(settled.positions[2].occupant, 4, "the opposing exchange still runs its turn")
   end
   Assert.deepEqual(revived:capture().escapeAttempts, slow:capture().escapeAttempts, "restore replays the counter")
@@ -3788,6 +3810,9 @@ function T.trick_room_reverses_speed_order()
     { move = "TACKLE", pp = 35, ppUps = 0 },
   }
   local betaLead = leveledCombatant(2, 23, "EEVEE", 12)
+  -- The chasing lead always lands its strike, so the order assertions
+  -- resolve identically on every battle-stream position.
+  betaLead.mon.moves = { { move = "SCRATCH", pp = 35, ppUps = 0 } }
   local scenario = withMoveFacts(actionScenario(WILD_FORMAT, { alphaLead }, { betaLead }, nil), {
     TRICK_ROOM = {
       power = 0,
@@ -3797,6 +3822,7 @@ function T.trick_room_reverses_speed_order()
       effectChance = 0,
       priority = -7,
     },
+    SCRATCH = strikeFacts(0, "normal", 35),
   })
   local session = contracts.Battle.newSession(scenario, content)
   local opening = SessionFixture.driveUntilSettled(session)
@@ -3866,9 +3892,13 @@ function T.mirror_move_copies_the_recorded_incoming_strike()
   }
   -- The defender outlevels a turn-one knockout across the full native
   -- roll range, so the copying turn always has a battle to copy in.
+  -- The copied strike skips its accuracy roll, so the copy lands
+  -- identically on every battle-stream position.
   local betaLead = leveledCombatant(2, 23, "EEVEE", 10)
+  betaLead.mon.moves = { { move = "SCRATCH", pp = 35, ppUps = 0 } }
   local scenario = withMoveFacts(actionScenario(WILD_FORMAT, { alphaLead }, { betaLead }, nil), {
     MIRROR_MOVE = handFacts(0, 0, "other", "flying", 0),
+    SCRATCH = strikeFacts(0, "normal", 35),
   })
   local session = contracts.Battle.newSession(scenario, content)
   local opening = SessionFixture.driveUntilSettled(session)
@@ -4051,6 +4081,522 @@ function T.every_nonzero_stored_mark_doubles_identically()
       expected,
       "mark " .. case.mark .. " settles its doubled yield"
     )
+    session:dispose()
+  end
+end
+
+-- Early-order holdings reorder live turns from a pre-request sample: a
+-- slower Quick Claw holder moves first when its stored sample triggers
+-- and stays last when the sample misses, with the samples already spent
+-- while the turn waits for decisions.
+function T.slower_quick_claw_holders_act_first_from_a_pre_request_sample()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+
+  ---@param seed integer battle stream seed under the claw duel
+  ---@return table live claw duel with the slower holder leading
+  local function clawDuel(seed)
+    local slow = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    slow.mon.heldItem = "QUICK_CLAW"
+    return projectionDuel(slow, singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), facts, species, seed)
+  end
+
+  local missing = clawDuel(7)
+  local waiting = SessionFixture.driveUntilSettled(missing)
+  Assert.equal(waiting.status, "waiting", "the turn asks for decisions")
+  Assert.equal(missing:capture().rng.calls, 4, "order samples are spent before requests")
+  Assert.equal(firstActor(playOpeningTurn(missing)), 2, "a missing sample keeps the slower holder last")
+  missing:dispose()
+
+  local triggering = clawDuel(164)
+  Assert.equal(firstActor(playOpeningTurn(triggering)), 1, "a triggering sample moves the slower holder first")
+  triggering:dispose()
+end
+
+-- Pinch priority answers from current health without spending order
+-- rolls: a slower Custap holder moves first at a quarter of its health,
+-- and at half health under Gluttony, while half health without Gluttony
+-- and a suppressed holder stay last with identical stream use.
+function T.pinch_priority_berries_answer_from_health_without_spending_order_rolls()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+
+  ---@param health integer holder health entering the turn
+  ---@param ability string? holder ability gating the pinch threshold
+  ---@return integer combatant identity acting first with the berry
+  ---@return integer battle draws spent with the berry
+  ---@return integer battle draws spent without the berry
+  local function pinchOrder(health, ability)
+    local holder = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    holder.mon.heldItem = "CUSTAP_BERRY"
+    holder.mon.condition.currentHp = health
+    if ability ~= nil then
+      holder.mon.ability = ability
+    end
+    local berried = projectionDuel(holder, singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), facts, species, 7)
+    local berriedFirst = firstActor(playOpeningTurn(berried))
+    local berriedCalls = berried:capture().rng.calls
+    berried:dispose()
+    local plain = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    plain.mon.condition.currentHp = health
+    local bare = projectionDuel(plain, singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), facts, species, 7)
+    local bareFirst = firstActor(playOpeningTurn(bare))
+    local bareCalls = bare:capture().rng.calls
+    bare:dispose()
+    Assert.equal(bareFirst, 2, "the bare slower holder stays last")
+    Assert.equal(berriedCalls, bareCalls, "the pinch berry spends no order roll")
+    return berriedFirst --[[@as integer]]
+  end
+
+  Assert.equal(pinchOrder(7, nil), 1, "a quarter-health holder moves first")
+  Assert.equal(pinchOrder(14, "GLUTTONY"), 1, "a half-health holder moves first under Gluttony")
+  Assert.equal(pinchOrder(14, nil), 2, "half health stays last without Gluttony")
+  Assert.equal(pinchOrder(7, "KLUTZ"), 2, "a suppressed holder stays last")
+end
+
+-- Suppressed holdings lose their ordinary effects while raw speed halving
+-- survives: a Klutz Choice Scarf holder moves last with its item still
+-- possessed, a Klutz Macho Brace holder still moves last, and a Klutz
+-- Smoke Ball holder fails its wild flight odds like a bare lead.
+function T.suppressed_holdings_lose_ordinary_effects_while_raw_speed_halving_survives()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+
+  ---@param slow table slower lead seed carrying the holding under test
+  ---@param foeSpecies string opposing species setting the speed matchup
+  ---@return integer combatant identity acting first
+  ---@return table live session after its opening turn
+  local function orderAfterTurn(slow, foeSpecies)
+    local session = projectionDuel(
+      slow,
+      singleMoveCombatant(2, 23, foeSpecies, "TACKLE"),
+      facts,
+      species,
+      7
+    )
+    local first = firstActor(playOpeningTurn(session))
+    return first --[[@as integer]], session
+  end
+
+  local swift = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+  swift.mon.heldItem = "CHOICE_SCARF"
+  local swiftFirst, swiftSession = orderAfterTurn(swift, "EEVEE")
+  Assert.equal(swiftFirst, 1, "an effective scarf moves the slower holder first")
+  swiftSession:dispose()
+
+  local gagged = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+  gagged.mon.heldItem = "CHOICE_SCARF"
+  gagged.mon.ability = "KLUTZ"
+  local gaggedFirst, gaggedSession = orderAfterTurn(gagged, "EEVEE")
+  Assert.equal(gaggedFirst, 2, "a suppressed scarf keeps the slower holder last")
+  Assert.equal(
+    gaggedSession:capture().combatants[1].mon.heldItem,
+    "CHOICE_SCARF",
+    "suppression keeps the possession on record"
+  )
+  gaggedSession:dispose()
+
+  local braced = singleMoveCombatant(1, 11, "EEVEE", "TACKLE")
+  braced.mon.heldItem = "MACHO_BRACE"
+  local bracedFirst, bracedSession = orderAfterTurn(braced, "CHIKORITA")
+  Assert.equal(bracedFirst, 2, "the raw halving drops the faster holder last")
+  bracedSession:dispose()
+
+  local shackled = singleMoveCombatant(1, 11, "EEVEE", "TACKLE")
+  shackled.mon.heldItem = "MACHO_BRACE"
+  shackled.mon.ability = "KLUTZ"
+  local shackledFirst, shackledSession = orderAfterTurn(shackled, "CHIKORITA")
+  Assert.equal(shackledFirst, 2, "the raw halving survives suppression")
+  shackledSession:dispose()
+
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local lead = leveledCombatant(1, 11, "CHIKORITA", 5)
+  lead.mon.heldItem = "SMOKE_BALL"
+  lead.mon.ability = "KLUTZ"
+  local flight = contracts.Battle.newSession(
+    actionScenario(
+      WILD_FORMAT,
+      { lead },
+      { leveledCombatant(2, 23, "EEVEE", 40), leveledCombatant(4, 41, "EEVEE", 5) },
+      nil
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(flight)
+  Assert.equal(opening.status, "waiting", "the flight turn asks for decisions")
+  local callsBefore = flight:capture().rng.calls
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local runner = assert(alpha.actors[1], "the flight request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local fled, fledErr = flight:submit(SessionFixture.replyFor(alpha, { runChoice(runner) }))
+  Assert.isTrue(fled, "the wild run is accepted")
+  Assert.isNil(fledErr, "accepted runs carry no input error")
+  local answered, answerErr =
+    flight:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  Assert.isTrue(answered, "the opposing exchange is accepted")
+  Assert.isNil(answerErr, "accepted exchanges carry no input error")
+  flight:advance(64)
+  local stalled = SessionFixture.driveUntilSettled(flight)
+  Assert.equal(stalled.status, "waiting", "the suppressed flight continues the battle")
+  Assert.isNil(flight:capture().outcome, "the suppressed flight names no terminal result")
+  -- One odds roll for the suppressed flight plus the four pre-turn
+  -- samples of the following batch, already spent while it waits.
+  Assert.equal(flight:capture().rng.calls, callsBefore + 5, "the suppressed flight spends its odds roll")
+  flight:dispose()
+end
+
+-- Live strikes carry complete critical facts to the resolver: held-item,
+-- ability, move, and species contributions raise the stage, wards negate
+-- only after the draw, and the sniping ability replaces only the
+-- surviving multiplier, all without spending extra draws.
+function T.live_strikes_carry_complete_critical_facts_to_the_resolver()
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 60),
+    RAZOR_LEAF = { power = 60, accuracy = 0, category = "physical", moveType = "normal", priority = 0 },
+    STRUGGLE = struggleFacts(),
+  }
+
+  ---@param move string striking move carried by the faster lead
+  ---@param ability string? striker ability under the check
+  ---@param item string? striker holding under the check
+  ---@param ward string? defender ability under the check
+  ---@return integer damage dealt to the defender over the opening turn
+  ---@return integer battle draws spent over the opening turn
+  local function openingDamage(move, ability, item, ward)
+    local striker = singleMoveCombatant(1, 11, "EEVEE", move)
+    if ability ~= nil then
+      striker.mon.ability = ability
+    end
+    if item ~= nil then
+      striker.mon.heldItem = item
+    end
+    local defender = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+    if ward ~= nil then
+      defender.mon.ability = ward
+    end
+    -- The critical roll is the fifth battle draw behind the four
+    -- pre-turn order samples; this seed separates a missing stage
+    -- from a raised one on that roll while the later roll never crits.
+    local session = projectionDuel(striker, defender, facts, species, 30)
+    playOpeningTurn(session)
+    local dealt = damageTaken(session, 2)
+    local calls = session:capture().rng.calls
+    session:dispose()
+    return dealt, calls
+  end
+
+  local plain, plainCalls = openingDamage("TACKLE", nil, nil, nil)
+  local lens, lensCalls = openingDamage("TACKLE", nil, "SCOPE_LENS", nil)
+  Assert.isTrue(lens > plain, "a critical holding raises the live stage")
+  local lucky, luckyCalls = openingDamage("TACKLE", "SUPER_LUCK", nil, nil)
+  Assert.isTrue(lucky > plain, "a critical ability raises the live stage")
+  local raised, raisedCalls = openingDamage("RAZOR_LEAF", nil, nil, nil)
+  Assert.isTrue(raised > plain, "a raised move carries its live stage")
+  local punch, punchCalls = openingDamage("TACKLE", nil, "LUCKY_PUNCH", nil)
+  Assert.equal(punch, plain, "a species-locked holding stays silent for the wrong holder")
+  local warded, wardedCalls = openingDamage("TACKLE", nil, "SCOPE_LENS", "BATTLE_ARMOR")
+  Assert.equal(warded, plain, "a ward negates the spent roll without touching the stream")
+  local sniping, snipingCalls = openingDamage("TACKLE", "SNIPER", "SCOPE_LENS", nil)
+  Assert.isTrue(sniping > lens, "the sniping ability replaces only the surviving multiplier")
+  for _, calls in ipairs({ lensCalls, luckyCalls, raisedCalls, punchCalls, wardedCalls, snipingCalls }) do
+    Assert.equal(calls, plainCalls, "complete facts spend no extra draw")
+  end
+end
+
+-- Canonical ability and item passives change live battle state: wards
+-- block, prevention holds, reflection answers, stat abilities reshape
+-- output, triggered holdings consume, and residual holdings recover or
+-- heal through poison, with suppression silencing only the ordinary
+-- effect while raw possession stays on record.
+function T.canonical_passives_change_live_battle_state()
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+    { species = "TOTODILE", types = { "water" } },
+    { species = "SHEDINJA", types = { "bug", "ghost" } },
+  })
+  -- Heavy strikes pipeline through bound plain strikers with test-owned
+  -- facts: unbound move names cannot execute, so the measurement uses
+  -- real handlers while power and type stay with the fixture.
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    FAINT_ATTACK = strikeFacts(0, "normal", 60),
+    WATER_GUN = strikeFacts(0, "water", 60),
+    POISON_JAB = {
+      power = 20,
+      accuracy = 0,
+      category = "physical",
+      moveType = "normal",
+      priority = 0,
+      effectChance = 100,
+    },
+    STRUGGLE = struggleFacts(),
+  }
+
+  ---@param session table live native session after its turn
+  ---@param combatant integer combatant identity under inspection
+  ---@return integer persistent conditions carried by the mon record
+  local function conditionCount(session, combatant)
+    local record = session:capture().combatants[combatant] --[[@as table<string, unknown>]]
+    local mon = record.mon --[[@as table<string, unknown>]]
+    local condition = mon.condition --[[@as table<string, unknown>]]
+    local effects = condition.effects --[[@as table<integer, unknown>]]
+    return #effects
+  end
+
+  ---@param session table live native session under inspection
+  ---@param combatant integer combatant identity under inspection
+  ---@return string? held item key carried by the mon record, absent once consumed
+  local function heldItemOf(session, combatant)
+    local record = session:capture().combatants[combatant] --[[@as table<string, unknown>]]
+    local mon = record.mon --[[@as table<string, unknown>]]
+    local held = mon.heldItem --[[@as string?]]
+    if held == "NONE" then
+      return nil
+    end
+    return held
+  end
+
+  do
+    local striker = singleMoveCombatant(1, 11, "TOTODILE", "TACKLE")
+    local guard = singleMoveCombatant(2, 23, "SHEDINJA", "TACKLE")
+    guard.mon.ability = "WONDER_GUARD"
+    local session = projectionDuel(
+      striker,
+      guard,
+      { TACKLE = strikeFacts(0, "water", 60), STRUGGLE = struggleFacts() },
+      species,
+      7
+    )
+    playOpeningTurn(session)
+    local guarded = session:capture().combatants
+    Assert.equal(
+      guarded[2].hp,
+      guarded[2].entryHp,
+      "the ward leaves the guarded holder unwounded"
+    )
+    session:dispose()
+  end
+
+  do
+    local striker = singleMoveCombatant(1, 11, "CHIKORITA", "POISON_JAB")
+    local ward = singleMoveCombatant(2, 23, "EEVEE", "TACKLE")
+    ward.mon.ability = "IMMUNITY"
+    local session = projectionDuel(striker, ward, facts, species, 7)
+    playOpeningTurn(session)
+    Assert.equal(conditionCount(session, 2), 0, "prevention keeps the warded holder clean")
+    session:dispose()
+  end
+
+  do
+    local striker = singleMoveCombatant(1, 11, "CHIKORITA", "POISON_JAB")
+    local mirror = singleMoveCombatant(2, 23, "EEVEE", "TACKLE")
+    mirror.mon.ability = "SYNCHRONIZE"
+    local session = projectionDuel(striker, mirror, facts, species, 7)
+    playOpeningTurn(session)
+    Assert.isTrue(conditionCount(session, 1) >= 1, "reflection shares the inflicted status with the user")
+    session:dispose()
+  end
+
+  ---@param ability string? defender ability reshaping the strike
+  ---@return integer damage dealt to the poisoned defender
+  local function poisonedDamage(ability)
+    local striker = singleMoveCombatant(1, 11, "EEVEE", "FAINT_ATTACK")
+    local defender = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+    defender.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+    if ability ~= nil then
+      defender.mon.ability = ability
+    end
+    local session = projectionDuel(striker, defender, facts, species, 7)
+    playOpeningTurn(session)
+    local dealt = damageTaken(session, 2)
+    session:dispose()
+    return dealt
+  end
+  Assert.isTrue(
+    poisonedDamage("MARVEL_SCALE") < poisonedDamage(nil),
+    "a statused scale holder softens the strike"
+  )
+
+  ---@param ability string? striker ability reshaping the resisted strike
+  ---@return integer damage dealt through the resisted matchup
+  local function resistedDamage(ability)
+    local striker = singleMoveCombatant(1, 11, "EEVEE", "WATER_GUN")
+    if ability ~= nil then
+      striker.mon.ability = ability
+    end
+    local session = projectionDuel(striker, singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, 7)
+    playOpeningTurn(session)
+    local dealt = damageTaken(session, 2)
+    session:dispose()
+    return dealt
+  end
+  Assert.isTrue(
+    resistedDamage("TINTED_LENS") > resistedDamage(nil),
+    "a piercing ability restores the resisted strike"
+  )
+
+  ---@param item string? striker holding answering the landed strike
+  ---@return integer striker health after dealing its strike
+  local function bellHealth(item)
+    local striker = singleMoveCombatant(1, 11, "EEVEE", "FAINT_ATTACK")
+    if item ~= nil then
+      striker.mon.heldItem = item
+    end
+    striker.mon.condition.currentHp = 21
+    local session = projectionDuel(striker, singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, 7)
+    playOpeningTurn(session)
+    local health = session:capture().combatants[1].hp
+    session:dispose()
+    return health
+  end
+  Assert.isTrue(bellHealth("SHELL_BELL") > bellHealth(nil), "a ringing holder recovers from its strike")
+
+  ---@param ability string? holder ability answering the poison
+  ---@param item string? holder item answering the turn
+  ---@param health integer holder health entering the turn
+  ---@param condition string? persistent status carried by the holder
+  ---@return integer holder health after the turn
+  ---@return string? holder item after the turn
+  local function residualHealth(ability, item, health, condition)
+    local holder = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    if ability ~= nil then
+      holder.mon.ability = ability
+    end
+    if item ~= nil then
+      holder.mon.heldItem = item
+    end
+    holder.mon.condition.currentHp = health
+    if condition ~= nil then
+      holder.mon.condition.effects = { { key = condition, version = 1, state = {} } }
+    end
+    local session = projectionDuel(holder, singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), facts, species, 7)
+    playOpeningTurn(session)
+    local after = session:capture().combatants[1].hp
+    local held = heldItemOf(session, 1)
+    session:dispose()
+    return after, held
+  end
+  local healed = residualHealth("POISON_HEAL", nil, 23, "poison")
+  local ticking = residualHealth(nil, nil, 23, "poison")
+  Assert.isTrue(healed > ticking, "a poisoned healer recovers instead of draining")
+  local berried, berriedHeld = residualHealth(nil, "SITRUS_BERRY", 14, nil)
+  local unberried = residualHealth(nil, nil, 14, nil)
+  Assert.isTrue(berried > unberried, "a pinch berry recovers its holder")
+  Assert.isNil(berriedHeld, "a triggered berry leaves the holder empty")
+  local stuffed, stuffedHeld = residualHealth(nil, "LEFTOVERS", 24, nil)
+  local unstuffed = residualHealth(nil, nil, 24, nil)
+  Assert.isTrue(stuffed > unstuffed, "a persistent holding recovers its holder")
+  Assert.equal(stuffedHeld, "LEFTOVERS", "a persistent holding stays possessed")
+  local gagged, gaggedHeld = residualHealth("KLUTZ", "LEFTOVERS", 24, nil)
+  Assert.equal(gagged, unstuffed, "a suppressed holding recovers nothing")
+  Assert.equal(gaggedHeld, "LEFTOVERS", "suppression keeps the possession on record")
+end
+
+-- Consumed holdings stay empty for later checkpoints: a pinch berry
+-- heals once and leaves, and the following turn recovers nothing more.
+function T.consumed_holdings_stay_empty_for_later_checkpoints()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+
+  ---@param item string? holder item answering the turns
+  ---@return integer holder health after the first turn
+  ---@return string? holder item after the first turn
+  ---@return integer holder health after the second turn
+  ---@return table live session after two turns
+  local function twoTurns(item)
+    local holder = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    if item ~= nil then
+      holder.mon.heldItem = item
+    end
+    holder.mon.condition.currentHp = 14
+    local session = projectionDuel(holder, singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), facts, species, 7)
+    playOpeningTurn(session)
+    local middle = session:capture().combatants[1].hp
+    local held = session:capture().combatants[1].mon.heldItem --[[@as string?]]
+    if held == "NONE" then
+      held = nil
+    end
+    playOpeningTurn(session)
+    local finish = session:capture().combatants[1].hp
+    return middle, held, finish, session
+  end
+
+  local berriedMiddle, berriedHeld, berriedFinish, berried = twoTurns("SITRUS_BERRY")
+  local bareMiddle, _, bareFinish, bare = twoTurns(nil)
+  Assert.isTrue(berriedMiddle > bareMiddle, "the berry heals on its triggering turn")
+  Assert.isNil(berriedHeld, "the consumed berry stays empty for the later turn")
+  Assert.equal(
+    berriedFinish - berriedMiddle,
+    bareFinish - bareMiddle,
+    "the later turn recovers nothing more"
+  )
+  berried:dispose()
+  bare:dispose()
+end
+
+-- A breaking striker pierces ability wards live: the same water
+-- strike stops cold on a wonder-guarded holder but wounds it when the
+-- striker carries the breaking ability.
+function T.breaking_strikes_pierce_ability_wards_live()
+  local species = typedSpeciesFacts({
+    { species = "TOTODILE", types = { "water" } },
+    { species = "SHEDINJA", types = { "bug", "ghost" } },
+  })
+  local facts = {
+    WATER_GUN = strikeFacts(0, "water", 60),
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  do
+    local striker = singleMoveCombatant(1, 11, "TOTODILE", "WATER_GUN")
+    local guard = singleMoveCombatant(2, 23, "SHEDINJA", "TACKLE")
+    guard.mon.ability = "WONDER_GUARD"
+    local session = projectionDuel(striker, guard, facts, species, 7)
+    playOpeningTurn(session)
+    local holders = session:capture().combatants
+    Assert.equal(holders[2].hp, holders[2].entryHp, "the ward leaves the guarded holder unwounded")
+    session:dispose()
+  end
+  do
+    local breaker = singleMoveCombatant(1, 11, "TOTODILE", "WATER_GUN")
+    breaker.mon.ability = "MOLD_BREAKER"
+    local guard = singleMoveCombatant(2, 23, "SHEDINJA", "TACKLE")
+    guard.mon.ability = "WONDER_GUARD"
+    local session = projectionDuel(breaker, guard, facts, species, 7)
+    playOpeningTurn(session)
+    local holders = session:capture().combatants
+    Assert.isTrue(holders[2].hp < holders[2].entryHp, "the breaking strike wounds the guarded holder")
     session:dispose()
   end
 end

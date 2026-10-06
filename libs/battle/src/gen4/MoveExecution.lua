@@ -305,6 +305,7 @@ function MoveExecution.start(inputs)
     "foeLevel",
     "abilities",
     "heldItem",
+    "userSpecies",
     "userIvs",
     "itemFacts",
     "usedMoves",

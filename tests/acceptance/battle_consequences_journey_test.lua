@@ -127,6 +127,14 @@ local function tackleOnly(record)
   return record
 end
 
+---@param service table live party owner behind the journey
+local function teachLeadSwift(service)
+  -- Swift carries native accuracy 0, which the damage owner reads as a
+  -- skipped roll that always connects, so the lead's opening slot lands
+  -- the deterministic turn-1 one-shot without pinning the live stream.
+  service:setMove(0, 0, "SWIFT")
+end
+
 ---@return table player money facts over the live player record
 local function playerFacts(game)
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -343,6 +351,11 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     -- single battle with no money-up holder, published once through the
     -- player owner with no injected prize inputs.
     local trainer = nativeTrainer(versionId)
+    -- The prize math needs a deterministic turn-1 win, and the later
+    -- 1-HP stand-in leg needs a landing hit too, so the lead opens with
+    -- the never-miss strike from here on; the attack-only driver keeps
+    -- striking with slot 0 and every money assertion stays intact.
+    teachLeadSwift(game.runtime.monService)
     local champion = enemyRecord(liveCatalog, trainer.species, trainer.level, 0x7EA00001, 1)
     local prizeRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
     local prizeLaunch =

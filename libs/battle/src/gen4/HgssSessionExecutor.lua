@@ -49,7 +49,7 @@ local ItemUse = require("libs.battle.src.gen4.ItemUse")
 local MoveExecution = require("libs.battle.src.gen4.MoveExecution")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
 local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
-local NativePassives = require("libs.battle.src.gen4.behaviors.NativePassives")
+local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 local OutcomePolicy = require("libs.battle.src.gen4.OutcomePolicy")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Progression = require("libs.battle.src.gen4.Progression")
@@ -446,6 +446,19 @@ local function buildBatch(state, admitted)
     }
     return
   end
+  -- Source-timed order randomness is sampled before decisions are
+  -- requested: four raw values in canonical battler-position order over
+  -- the fixed four-slot loop, stored as plain data on the open batch so
+  -- capture and restore replay the same order without resampling.
+  local stream = state.rng --[[@as table<string, unknown>]]
+  assert(type(stream.nextU16) == "function", "ordinary batches sample order before requests")
+  local rolls = {} ---@type table<integer, integer>
+  for position = 1, 4 do
+    rolls[position] = (
+      stream.nextU16 --[[@as fun(self: unknown, label: string, cause: table<string, unknown>): integer]]
+    )(stream, "quick_claw", { kind = "order_sample", position = position })
+  end
+  (state.pending --[[@as table<string, unknown>]]).nativeOrderRolls = rolls
   pushCheckedFrame(context, {
     kind = "round",
     version = 1,
@@ -599,58 +612,6 @@ local function combatStages(combatant)
   return record --[[@as table<string, integer>]]
 end
 
----@param state unknown candidate probe state under validation
----@return table<string, unknown> the probe state record unchanged
-local function probeState(state)
-  assert(type(state) == "table", "passive probes carry a state record")
-  return state --[[@as table<string, unknown>]]
-end
-
----@param ability unknown battle ability key carried by the mon record
----@param stat string combat stat under the checkpoint
----@param statused boolean whether the holder carries a persistent condition
----@param split string? physical/special split selecting split-gated boosts
----@return table<string, integer>? exact boost ratio, when the owned passive applies
-local function passiveStatRatio(ability, stat, statused, split)
-  if type(ability) ~= "string" or ability == "" or ability == "NONE" then
-    return nil
-  end
-  local handlers = {}
-  NativePassives.register(handlers)
-  if type(handlers[ability]) ~= "function" then
-    error(BattleErrors.missingBehavior("no native passive handler is bound for the battle ability", {
-      key = ability,
-    }))
-  end
-  local bag = EffectBag.new()
-  bag:add({
-    key = ability,
-    stateVersion = 1,
-    validateState = probeState,
-    timings = { { timing = "modifyStat", handler = ability, orderClass = "affliction" } },
-    lifecycle = { stacking = "replace", transfer = "clear" },
-  }, { kind = "field" }, { kind = "probe" }, { version = 1 })
-  local context = { stat = stat, statused = statused }
-  if split ~= nil then
-    context.split = split
-  end
-  local outcome = EffectDispatch.new(bag, handlers):invoke("modifyStat", context)
-  assert(outcome.done == true, "passive probes run to completion")
-  for _, event in ipairs(outcome.events) do
-    local record = event --[[@as table<string, unknown>]]
-    if record.key == ability and record.stages == "boosted" then
-      local ratio = record.ratio --[[@as table<string, unknown>?]]
-      if type(ratio) == "table" and type(ratio.numerator) == "number" and type(ratio.denominator) == "number" then
-        return {
-          numerator = ratio.numerator --[[@as integer]],
-          denominator = ratio.denominator --[[@as integer]],
-        }
-      end
-    end
-  end
-  return nil
-end
-
 ---@param mon unknown battle-local mon record under inspection
 ---@return string? persistent condition key, when one is present
 local function persistentCondition(mon)
@@ -697,11 +658,13 @@ end
 -- through truncating division. Ability meaning stays in the passive
 -- families; this checkpoint only orders the arithmetic.
 ---@param speed integer stage-effective Speed under adjustment
+---@param combatantId integer holder combatant under the checkpoint
 ---@param mon unknown battle-local mon record carrying ability and condition
+---@param bridge NativePassiveBridge live passive composition for the holder
 ---@return integer effective battle Speed
-local function statusAdjustedSpeed(speed, mon)
-  local ability, conditionKey = statusFacts(mon)
-  local boost = passiveStatRatio(ability, "speed", conditionKey ~= nil, nil)
+local function statusAdjustedSpeed(speed, combatantId, mon, bridge)
+  local _, conditionKey = statusFacts(mon)
+  local boost = bridge:statRatio(combatantId, "speed", conditionKey ~= nil, nil)
   if boost ~= nil then
     return math.floor((speed * boost.numerator) / boost.denominator)
   end
@@ -718,16 +681,52 @@ end
 -- post-division damage instead. Ability meaning stays in the passive
 -- families.
 ---@param attacker table<string, integer> live attacker level and battle stats under adjustment
+---@param combatantId integer holder combatant under the checkpoint
 ---@param mon unknown battle-local mon record carrying ability and condition
 ---@param category unknown executing move category selecting the split
-local function statusAdjustedAttack(attacker, mon, category)
+---@param bridge NativePassiveBridge live passive composition for the holder
+local function statusAdjustedAttack(attacker, combatantId, mon, category, bridge)
   if category ~= "physical" then
     return
   end
-  local ability, conditionKey = statusFacts(mon)
-  local boost = passiveStatRatio(ability, "attack", conditionKey ~= nil, "physical")
+  local _, conditionKey = statusFacts(mon)
+  local boost = bridge:statRatio(combatantId, "attack", conditionKey ~= nil, "physical")
   if boost ~= nil then
     attacker.attack = math.floor((attacker.attack * boost.numerator) / boost.denominator)
+  end
+end
+
+-- Applies the native defense interaction for abilities answering the
+-- defense checkpoint while statused (the scale mail being the current
+-- case): the holder keeps that passive ratio on the staged category
+-- stat. Ability meaning stays in the passive families.
+---@param defender table<string, integer> live defender level and battle stats under adjustment
+---@param combatantId integer holder combatant under the checkpoint
+---@param mon unknown battle-local mon record carrying ability and condition
+---@param category unknown executing move category selecting the split
+---@param bridge NativePassiveBridge live passive composition for the holder
+local function statusAdjustedDefense(defender, combatantId, mon, category, bridge)
+  local stat = nil
+  if category == "physical" then
+    stat = "defense"
+  elseif category == "special" then
+    stat = "specialDefense"
+  end
+  if stat == nil then
+    return
+  end
+  local _, conditionKey = statusFacts(mon)
+  local boost = bridge:statRatio(combatantId, stat --[[@as string]], conditionKey ~= nil, nil)
+  if boost ~= nil then
+    defender[
+      stat --[[@as string]]
+    ] = math.floor(
+      (
+        defender[
+          stat --[[@as string]]
+        ] * boost.numerator
+      ) / boost.denominator
+    )
   end
 end
 
@@ -745,31 +744,25 @@ local SPEED_HALVING_ITEMS = {
   POWER_WEIGHT = true,
 }
 
--- Applies the native held-item Speed interaction in source order: the
--- eight speed-halving items halve first, Choice Scarf scales by fifteen
--- over ten, and a Ditto holding Quick Powder doubles. Item meaning
--- stays in the passive families; this checkpoint only orders the
--- arithmetic ahead of the persistent-condition checkpoint.
+-- Applies the native held-item Speed interaction in source order over the
+-- split possession reads: the eight speed-halving items halve from raw
+-- possession even under suppression, while Choice Scarf and Quick Powder
+-- answer only through the effective holding. Item meaning stays in the
+-- passive families; this checkpoint only orders the arithmetic ahead of
+-- the persistent-condition checkpoint.
 ---@param speed integer stage-effective Speed under adjustment
----@param mon unknown battle mon record carrying the held item and species
+---@param rawItem string? possessed held-item key regardless of suppression
+---@param effectiveItem string? held-item key visible to ordinary effects
+---@param species string? holder species gating the powder doubling
 ---@return integer item-adjusted battle Speed
-local function itemAdjustedSpeed(speed, mon)
-  if type(mon) ~= "table" then
-    return speed
-  end
-  local record = mon --[[@as table<string, unknown>]]
-  local held = record.heldItem
-  if type(held) ~= "string" or held == "" then
-    return speed
-  end
-  local key = held --[[@as string]]
-  if SPEED_HALVING_ITEMS[key] == true then
+local function itemAdjustedSpeed(speed, rawItem, effectiveItem, species)
+  if rawItem ~= nil and SPEED_HALVING_ITEMS[rawItem] == true then
     speed = math.floor(speed / 2)
   end
-  if key == "CHOICE_SCARF" then
+  if effectiveItem == "CHOICE_SCARF" then
     speed = math.floor((speed * 15) / 10)
   end
-  if key == "QUICK_POWDER" and record.species == "DITTO" then
+  if effectiveItem == "QUICK_POWDER" and species == "DITTO" then
     speed = speed * 2
   end
   return speed
@@ -1209,8 +1202,9 @@ end
 
 ---@param combatant table<string, unknown> live combatant under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
+---@param bridge NativePassiveBridge live passive composition for the holder
 ---@return table<string, integer> live level and stage-effective battle stats for the entry
-local function projectCombatant(combatant, speciesFacts)
+local function projectCombatant(combatant, speciesFacts, bridge)
   local stats, stages = unstagedCombatant(combatant, speciesFacts)
   -- Battle maximum health travels with the projection so recovery
   -- handlers heal fractions of the true ceiling instead of guessing;
@@ -1225,9 +1219,23 @@ local function projectCombatant(combatant, speciesFacts)
   end
   -- Persistent conditions reshape effective Speed at this checkpoint:
   -- paralysis quarters unless the holder's passive answers instead.
-  -- Held items reshape it first, in native order.
-  local itemSpeed = itemAdjustedSpeed(stats.speed --[[@as integer]], combatant.mon)
-  stats.speed = statusAdjustedSpeed(itemSpeed, combatant.mon)
+  -- Held items reshape it first, in native order, over the split
+  -- possession reads.
+  assert(type(bridge) == "table", "combat projections read their passive bridge")
+  local species = nil
+  if type(combatant.mon) == "table" then
+    local monRecord = combatant.mon --[[@as table<string, unknown>]]
+    if type(monRecord.species) == "string" then
+      species = monRecord.species --[[@as string]]
+    end
+  end
+  local itemSpeed = itemAdjustedSpeed(
+    stats.speed --[[@as integer]],
+    bridge:rawHeldItem(combatant.id --[[@as integer]]),
+    bridge:effectiveHeldItem(combatant.id --[[@as integer]]),
+    species
+  )
+  stats.speed = statusAdjustedSpeed(itemSpeed, combatant.id --[[@as integer]], combatant.mon, bridge)
   return stats
 end
 
@@ -1243,7 +1251,7 @@ local function ensureEntryHealth(live, speciesFacts)
   do
     local combatant = BattleState.combatant(live, combatantId)
     if combatant.maxHp == nil and type(speciesFacts) == "table" then
-      local ok, stats = pcall(projectCombatant, combatant, speciesFacts)
+      local ok, stats = pcall(projectCombatant, combatant, speciesFacts, NativePassiveBridge.wrap(live))
       if ok and type(stats) == "table" then
         combatant.maxHp = stats.hp
       end
@@ -1257,7 +1265,8 @@ end
 ---@return integer runner effective speed
 ---@return integer opposing entry effective speed
 local function stagedEscapeSpeeds(state, combatant, speciesFacts)
-  local runner = projectCombatant(combatant, speciesFacts).speed
+  local bridge = NativePassiveBridge.wrap(state)
+  local runner = projectCombatant(combatant, speciesFacts, bridge).speed
   local runnerOwner = BattleState.participant(state, combatant.participant --[[@as integer]])
   for _, combatantId in
     ipairs(state.combatantOrder --[[@as integer[] ]])
@@ -1266,7 +1275,7 @@ local function stagedEscapeSpeeds(state, combatant, speciesFacts)
     if other.active ~= nil then
       local owner = BattleState.participant(state, other.participant --[[@as integer]])
       if owner.side ~= runnerOwner.side then
-        return runner, projectCombatant(other, speciesFacts).speed
+        return runner, projectCombatant(other, speciesFacts, bridge).speed
       end
     end
   end
@@ -1298,12 +1307,13 @@ local function sampleTimingState(state, speciesFacts)
   local occupants = {} ---@type table<integer, integer>
   local stats = {} ---@type table<integer, table<string, integer>>
   local sides = {} ---@type table<integer, integer>
+  local bridge = NativePassiveBridge.wrap(state)
   for _, combatantId in
     ipairs(state.combatantOrder --[[@as integer[] ]])
   do
     local combatant = BattleState.combatant(state, combatantId)
     if combatant.active ~= nil then
-      local projected = projectCombatant(combatant, speciesFacts)
+      local projected = projectCombatant(combatant, speciesFacts, bridge)
       health[combatantId] = combatant.hp --[[@as integer]]
       speeds[combatantId] = projected.speed
       local ceiling = combatant.maxHp
@@ -1545,11 +1555,13 @@ end
 ---@param moveName string executing move identity under the error context
 ---@return table<string, unknown> strike-local combat and law facts for the move frame
 local function strikeCombatFacts(state, combatant, defender, speciesFacts, category, moveName)
-  local attackerStats = projectCombatant(combatant, speciesFacts)
+  local bridge = NativePassiveBridge.wrap(state)
+  local attackerStats = projectCombatant(combatant, speciesFacts, bridge)
   local attackerRaw, attackerStages = unstagedCombatant(combatant, speciesFacts)
-  statusAdjustedAttack(attackerStats, combatant.mon, category)
-  local defenderStats = projectCombatant(defender, speciesFacts)
+  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, category, bridge)
+  local defenderStats = projectCombatant(defender, speciesFacts, bridge)
   local defenderRaw, defenderStages = unstagedCombatant(defender, speciesFacts)
+  statusAdjustedDefense(defenderStats, defender.id --[[@as integer]], defender.mon, category, bridge)
   local attackerAbility, attackerCondition = statusFacts(combatant.mon)
   return {
     facts = combatPair(
@@ -1639,6 +1651,43 @@ local function volatileTrapOf(state, combatantId)
   return nil
 end
 
+-- Replaces one poisoned holder's tick through the bridge when its
+-- ability answers the poison: the restoration lands on the shared
+-- battle-local health map under the ceiling. Berries and persistent
+-- holdings never answer here; the turn recovery pass below owns them,
+-- so no holding heals twice.
+---@param state table<string, unknown> live battle state under the pass
+---@param context table<string, unknown> session context owning the residual writes
+---@param health table<integer, integer> battle-local health under the pass
+---@param ceilings table<integer, integer> battle maximum health per combatant
+---@param combatantId integer holder combatant under the checkpoint
+---@return boolean true when the ability replaced the poison tick
+local function replacePoisonTick(state, context, health, ceilings, combatantId)
+  local outcome = NativePassiveBridge.wrap(state):invoke("residual", combatantId, {
+    status = "poison",
+    weather = activeWeather(state),
+  })
+  local typed = context --[[@as BattleContext]]
+  for _, event in ipairs(outcome.events) do
+    local record = event --[[@as table<string, unknown>]]
+    if type(record.restored) == "number" and record.answersPoisonTick == true then
+      local ceiling = ceilings[combatantId] --[[@as integer]]
+      local before = health[combatantId] --[[@as integer]]
+      local after = before + record.restored --[[@as integer]]
+      if after > ceiling then
+        after = ceiling
+      end
+      health[combatantId] = after
+      typed:emit("healed", { kind = "residual", key = record.key }, {
+        target = combatantId,
+        restored = after - before,
+      })
+      return true
+    end
+  end
+  return false
+end
+
 -- Ticks persistent poison, burn, and toxic through the same health map
 -- the dispatch pass consumes, walking the sampled battler order the
 -- residual owner nests instances under. Poison and burn drain one eighth of maximum
@@ -1684,7 +1733,22 @@ local function tickPersistentConditions(state, context, health, turnOrder, ceili
       local current = (effects --[[@as table<integer, table<string, unknown>>]])[1]
       if current ~= nil then
         local key = current.key --[[@as string]]
-        if key == "poison" or key == "burn" then
+        if key == "poison" then
+          -- A poisoned healer recovers through its ability instead of
+          -- draining; every other poisoned holder drains below.
+          if not replacePoisonTick(state, context, health, ceilings, combatantId) then
+            local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 8)
+            if damage < 1 then
+              damage = 1
+            end
+            health[combatantId] = health[combatantId] - damage
+            typed:emit("tick", { kind = "residual", key = key }, {
+              combatant = combatantId,
+              key = key,
+              amount = damage,
+            })
+          end
+        elseif key == "burn" then
           local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 8)
           if damage < 1 then
             damage = 1
@@ -2421,6 +2485,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     state.turnActed = {}
     local stream = state.rng --[[@as table<string, unknown>]]
     assert(type(stream.nextU16) == "function", "native turns draw ties from the battle stream")
+    -- The bridge stays function-local: the turn seam already holds the
+    -- maximum chunk references, so nested checkpoints require the
+    -- private composition beside the chunk require instead.
+    local Bridge = require("libs.battle.src.gen4.NativePassiveBridge")
+    local bridge = Bridge.wrap(state)
     local candidates = {} ---@type table<integer, table<string, unknown>>
     for ordinal, entry in ipairs(choices) do
       local choice = entry.choice --[[@as table<string, unknown>]]
@@ -2433,7 +2502,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         local moveName = resolveMove(combatant.mon, payload.moveSlot)
         priority = movePriority(moveFacts, moveName)
       end
-      local speed = projectCombatant(combatant, speciesFacts).speed
+      local speed = projectCombatant(combatant, speciesFacts, bridge).speed
       -- Tailwind doubles its side sampled speed at order time.
       local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
       if
@@ -2441,16 +2510,41 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       then
         speed = speed * 2
       end
-      -- Static ordering facts stage with the candidate: lagging holders
-      -- and Stall users sit late in their priority bracket, while
-      -- roll-gated early priority resolves at move use and never stages.
-      local monRecord = combatant.mon
-      local held = nil
-      local ability = nil
-      if type(monRecord) == "table" then
-        held = (monRecord --[[@as table<string, unknown>]]).heldItem
-        ability = (monRecord --[[@as table<string, unknown>]]).ability
+      -- Live ordering facts stage with the candidate: the stored
+      -- pre-turn sample maps through the holder position, early-order
+      -- holdings read it with no draw, pinch holdings read live
+      -- health, and a spent ordering holding is consumed here so later
+      -- checkpoints see the empty holding. Invalid sample shape fails
+      -- before sorting instead of resampling the stream.
+      local pending = state.pending --[[@as table<string, unknown>]]
+      local rolls = pending.nativeOrderRolls
+      if type(rolls) ~= "table" then
+        error(BattleErrors.incompatibleSnapshot("open batches carry their pre-turn order samples", {}))
       end
+      for index = 1, 4 do
+        local sample = (rolls --[[@as table<integer, unknown>]])[index]
+        if type(sample) ~= "number" or sample % 1 ~= 0 or sample < 0 or sample > 65535 then
+          error(BattleErrors.incompatibleSnapshot("pre-turn order samples stay raw 16-bit values", { index = index }))
+        end
+      end
+      local liveEntry = combatant.active
+      if type(liveEntry) ~= "table" then
+        error(BattleErrors.invalidState("ordering stages only entered actors", {}))
+      end
+      local position = (liveEntry --[[@as table<string, unknown>]]).position --[[@as integer]]
+      local roll = (rolls --[[@as table<integer, integer>]])[position]
+      if type(roll) ~= "number" then
+        roll = (rolls --[[@as table<integer, integer>]])[((position - 1) % 4) + 1]
+      end
+      local orderContext = { actionCheck = true, berryCheck = true, rawOrderRoll = roll }
+      if kind == "attack" then
+        orderContext.moveUse = { user = actor.combatant }
+      end
+      local order = bridge:orderFacts(actor.combatant --[[@as integer]], orderContext)
+      if order.consume == true then
+        BattleContext.wrap(state):consumeHeldItem(actor.combatant --[[@as integer]])
+      end
+      local boosted, lowered, stalled = order.first, order.last, order.stall
       candidates[#candidates + 1] = {
         id = ordinal,
         actor = { combatant = actor.combatant, activation = actor.activation },
@@ -2459,9 +2553,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         selectedOrdinal = ordinal,
         priority = priority,
         speed = speed,
-        boostedPriority = false,
-        loweredPriority = held == "LAGGING_TAIL" or held == "FULL_INCENSE",
-        stall = ability == "STALL",
+        boostedPriority = boosted,
+        loweredPriority = lowered,
+        stall = stalled,
       }
       entry.ordinal = ordinal
     end
@@ -2791,6 +2885,12 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     if type(userMon.heldItem) == "string" and userMon.heldItem ~= "" and userMon.heldItem ~= "NONE" then
       heldItem = userMon.heldItem
     end
+    -- The user species travels for species-gated holder answers behind
+    -- live strikes; readers fail closed when older frames omit it.
+    local userSpecies = nil
+    if type(userMon.species) == "string" and userMon.species ~= "" then
+      userSpecies = userMon.species
+    end
     local userIvs = nil
     if type(userMon.ivs) == "table" then
       userIvs = copyValue(userMon.ivs)
@@ -2848,6 +2948,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       foeLevel = defenderStats.level,
       abilities = { user = userMon.ability, foe = foeMon.ability },
       heldItem = heldItem,
+      userSpecies = userSpecies,
       userIvs = userIvs,
       itemFacts = itemFacts,
       usedMoves = usedMoves,
@@ -2955,13 +3056,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     if held == nil then
       held = volatileTrapOf(state, actor.combatant --[[@as integer]])
     end
-    -- Shed Shell slips trapping for the voluntary departure: the native
-    -- shell bypasses the trap check, so the flag travels beside the trap.
-    local shedShell = false
-    local departing = combatant.mon
-    if type(departing) == "table" then
-      shedShell = (departing --[[@as table<string, unknown>]]).heldItem == "SHED_SHELL"
-    end
+    -- An effective shell slips trapping for the voluntary departure:
+    -- the native shell bypasses the trap check while a suppressed one
+    -- holds, so the flag travels beside the trap.
+    local Bridge = require("libs.battle.src.gen4.NativePassiveBridge")
+    local shedShell = Bridge.wrap(state):effectiveHeldItem(actor.combatant --[[@as integer]]) == "SHED_SHELL"
     local verdict = Switching.eligible({
       position = slot,
       incoming = payload.replacement,
@@ -3138,13 +3237,22 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     if trap == nil then
       trap = volatileTrapOf(state, actor.combatant --[[@as integer]])
     end
-    -- Smoke Ball and Run Away guarantee flight outright: the native run
-    -- check answers before any trap or odds, so neither holds the runner.
+    -- Assured flight answers through the live passives before any trap
+    -- or odds: an effective Smoke Ball or the running ability leaves
+    -- outright while suppressed holdings fall back to the odds roll, so
+    -- neither holds the runner.
     local assured = false
-    local runner = combatant.mon
-    if type(runner) == "table" then
-      local runnerRecord = runner --[[@as table<string, unknown>]]
-      assured = runnerRecord.heldItem == "SMOKE_BALL" or runnerRecord.ability == "RUN_AWAY"
+    local Bridge = require("libs.battle.src.gen4.NativePassiveBridge")
+    local flight = Bridge.wrap(state):invoke("beforeAction", actor.combatant --[[@as integer]], {
+      flee = true,
+      actionCheck = true,
+    })
+    for _, event in ipairs(flight.events) do
+      if
+        (event --[[@as table<string, unknown>]]).escape == "assured"
+      then
+        assured = true
+      end
     end
     if assured then
       trap = nil
@@ -3335,6 +3443,42 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         ~= "faint"
       then
         context:emit(record.kind --[[@as string]], { kind = record.kind }, copyValue(record))
+      end
+    end
+    -- Innate recovery closes the turn in sampled battler order:
+    -- pinch holdings restore and spend, persistent holdings restore,
+    -- and every answer lands on the same health map the commit caps.
+    -- The bridge stays function-local beside the turn seam's chunk
+    -- reference ceiling.
+    local Bridge = require("libs.battle.src.gen4.NativePassiveBridge")
+    for _, combatantId in ipairs(turnOrder) do
+      if health[combatantId] ~= nil and health[combatantId] > 0 then
+        local combatant = BattleState.combatant(state, combatantId)
+        if combatant.active ~= nil then
+          local recovery = Bridge.wrap(state):invoke("residual", combatantId, {
+            status = context:statusOf(combatantId),
+            weather = activeWeather(state),
+          })
+          for _, event in ipairs(recovery.events) do
+            local record = event --[[@as table<string, unknown>]]
+            if type(record.restored) == "number" and record.recovered == true and record.answersPoisonTick ~= true then
+              local ceiling = ceilings[combatantId] --[[@as integer]]
+              local before = health[combatantId] --[[@as integer]]
+              local after = before + record.restored --[[@as integer]]
+              if after > ceiling then
+                after = ceiling
+              end
+              health[combatantId] = after
+              context:emit("healed", { kind = "residual", key = record.key }, {
+                target = combatantId,
+                restored = after - before,
+              })
+            end
+            if record.consumed == true then
+              context:consumeHeldItem(combatantId)
+            end
+          end
+        end
       end
     end
     -- Residual faint markers stay internal: committing health first lets
@@ -4617,7 +4761,9 @@ local function checkChoiceBinding(state, choice, admitted, battleKind)
       end
     end
     -- Voluntary exchanges bind through the exchange owner: trapping and
-    -- reserves that cannot fight refuse here, before anything moves.
+    -- reserves that cannot fight refuse here, before anything moves. An
+    -- effective shell slips trapping for the departure, so the flag
+    -- travels beside the trap.
     local reserves = eligibleReserves(state, combatant.participant --[[@as integer]], {})
     local heldChoice = combatant.trap
     if heldChoice == nil then
@@ -4631,6 +4777,7 @@ local function checkChoiceBinding(state, choice, admitted, battleKind)
       reserved = siblingReserves(state, payload.replacement --[[@as integer]]),
       fainted = faintedIds(state),
       trap = heldChoice,
+      shedShell = NativePassiveBridge.wrap(state):effectiveHeldItem(combatant.id --[[@as integer]]) == "SHED_SHELL",
     })
     if not verdict.ok then
       return BattleErrors.input("the exchange is not eligible", { reason = verdict.reason })

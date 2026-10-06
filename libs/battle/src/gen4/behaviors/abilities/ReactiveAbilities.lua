@@ -203,7 +203,24 @@ local function residualHeal(instance, context)
   if type(hp) ~= "number" or type(maxHp) ~= "number" or hp <= 0 or hp >= maxHp then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holder }
+  -- The announcement carries the exact restoration: an eighth of
+  -- maximum health for the poison healer, a sixteenth for the weather
+  -- dishes. A poisoned healer answers its own poison tick, so live
+  -- checkpoints replace that tick instead of supplementing it.
+  local divisor = 16
+  local answersPoisonTick = false
+  if instance.key == "POISON_HEAL" then
+    divisor = 8
+    answersPoisonTick = context.status == "poison"
+  end
+  return {
+    kind = "trigger",
+    key = instance.key,
+    combatant = holder,
+    recovered = true,
+    restored = math.floor(maxHp --[[@as integer]] / divisor),
+    answersPoisonTick = answersPoisonTick,
+  }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling

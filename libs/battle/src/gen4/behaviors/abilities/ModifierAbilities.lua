@@ -424,6 +424,9 @@ local function critGuard(instance, context)
   if CRIT_GUARD[instance.key] ~= true then
     return nil
   end
+  if moldBroken(context) then
+    return nil
+  end
   if context.critical ~= true then
     return nil
   end

@@ -317,4 +317,138 @@ function T.snapshot_validation_rejects_non_records()
   session:dispose()
 end
 
+-- Waiting order samples survive capture and restore: the captured batch
+-- already holds the spent pre-request samples, and a restored session
+-- replays the same order and stream without resampling.
+function T.waiting_order_samples_survive_capture_and_restore()
+  local Executor = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.HgssSessionExecutor",
+    "the private native lifecycle owns HGSS ruleset sessions"
+  )
+  local ContentBuilder = require("libs.content.src.ContentBuilder")
+  local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
+  local BattleContent = require("libs.battle.src.BattleContent")
+  local NativeTypeChart = require("libs.battle.src.gen4.NativeTypeChart")
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local builder = ContentBuilder.new()
+  NativeTypeChart.install(builder, "order-sample-tests")
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerRuleset(
+    Executor.RULESET,
+    { key = Executor.RULESET, chart = Executor.RULESET },
+    "order-sample-tests"
+  )
+  behaviors:registerFormat("test:native-format", { key = "test:native-format" }, "order-sample-tests")
+  local content = BattleContent.new(builder:freeze(), behaviors:freeze())
+  local catalog = CatalogFixture.makeCatalog()
+
+  ---@param id integer nonreused positive combatant identity
+  ---@param seed integer fixed generator state for the underlying mon
+  ---@param species string catalog species key
+  ---@return table combatant seed with one usable move entry
+  local function combatant(id, seed, species)
+    local factory = CatalogFixture.makeFactory(seed, catalog)
+    local mon = factory:createNormal(CatalogFixture.normalRequest({ species = species, level = 9 }))
+    mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+    return { id = id, mon = mon }
+  end
+  local slow = combatant(1, 11, "CHIKORITA")
+  slow.mon.heldItem = "QUICK_CLAW"
+  local seeds = { slow, combatant(2, 23, "EEVEE") }
+  local speciesTypes = { CHIKORITA = { "grass" }, EEVEE = { "normal" } }
+  local speciesFacts = {}
+  for _, seed in ipairs(seeds) do
+    local mon = seed.mon --[[@as table<string, unknown>]]
+    local key = mon.species --[[@as string]]
+    local record = catalog:species(key)
+    speciesFacts[key] = {
+      [0] = {
+        baseStats = catalog:form(key, 0).baseStats,
+        growthCurve = catalog:growthCurve(record.growthCurve),
+        types = speciesTypes[key],
+        levelUpMoves = {},
+        baseExpYield = record.baseExpYield,
+        evYield = record.evYield,
+      },
+    }
+  end
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = "test:native-format",
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { seeds[1] }),
+      SessionFixture.participant(2, 2, "beta", { seeds[2] }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = 164 },
+    formatState = {},
+    moveFacts = {
+      TACKLE = { power = 1, accuracy = 0, category = "physical", moveType = "normal", priority = 0 },
+      STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
+    },
+    speciesFacts = speciesFacts,
+  }
+
+  ---@param live table live headless session at a decision boundary
+  ---@return table[] turn events after answering every open request
+  local function finishTurn(live)
+    local frame = SessionFixture.driveUntilSettled(live)
+    Assert.equal(frame.status, "waiting", "open sessions wait for decisions")
+    for _, request in ipairs(frame.request.requests) do
+      local target = 2
+      if request.controller == "beta" then
+        target = 1
+      end
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+      end
+      local ok, replyErr = live:submit(SessionFixture.replyFor(request, choices))
+      Assert.isTrue(ok, "scripted answers to open requests are accepted")
+      Assert.isNil(replyErr, "accepted replies carry no input error")
+    end
+    return live:advance(64).events or {}
+  end
+
+  ---@param events table[] emitted events in execution order
+  ---@return integer? combatant identity that acted first, when one is named
+  local function firstActor(events)
+    for _, event in ipairs(events) do
+      if event.kind == "struck" or event.kind == "missed" then
+        local payload = event.payload --[[@as table<string, unknown>]]
+        if payload.target == 2 then
+          return 1
+        end
+        if payload.target == 1 then
+          return 2
+        end
+      end
+    end
+    return nil
+  end
+
+  local contracts = SessionFixture.sessionContracts()
+  local session = contracts.Battle.newSession(scenario, content)
+  local waiting = SessionFixture.driveUntilSettled(session)
+  Assert.equal(waiting.status, "waiting", "the turn asks for decisions")
+  Assert.equal(session:capture().rng.calls, 4, "order samples are spent before requests")
+  local held = session:capture()
+  SessionFixture.assertPlainData(held, "pending")
+
+  local revived = Executor.restore(held, content)
+  local firstEvents = finishTurn(session)
+  local secondEvents = finishTurn(revived)
+  Assert.deepEqual(secondEvents, firstEvents, "restored sessions replay the same order without resampling")
+  Assert.deepEqual(revived:capture(), session:capture(), "restored sessions reach the same state")
+  Assert.equal(firstActor(firstEvents), 1, "the triggering sample moves the slower holder first")
+  session:dispose()
+  revived:dispose()
+end
+
 return { tests = T }

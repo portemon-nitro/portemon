@@ -141,8 +141,10 @@ local SILENT_BERRY = {
   "BELUE_BERRY",
 }
 
---- Restores a share of health once the holder drops to half or below;
---- healthy holders keep the item without failing.
+--- Restores a quarter of maximum health once the holder drops to half
+--- or below; healthy holders keep the item without failing. The
+--- announcement carries the exact restoration and the spend, so live
+--- checkpoints apply and consume without re-reading the berry identity.
 ---@param instance table<string, unknown> dispatched effect instance under handling
 ---@param context table<string, unknown> residual context under handling
 ---@return table<string, unknown>? recovery announcement, or nil when inapplicable
@@ -159,7 +161,14 @@ local function hpBerry(instance, context)
   then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), recovered = true }
+  return {
+    kind = "trigger",
+    key = instance.key,
+    combatant = holderOf(instance),
+    recovered = true,
+    restored = math.floor(maxHp --[[@as integer]] / 4),
+    consumed = true,
+  }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -267,11 +276,19 @@ local function pinchBerry(instance, context)
       return nil
     end
     -- A disliked flavor confuses instead of healing: the native
-    -- script runs the dislike branch from personality.
+    -- script runs the dislike branch from personality. The eaten
+    -- berry is spent either way.
     if context.dislikedFlavor == true then
-      return { kind = "trigger", key = instance.key, combatant = holder, confused = true }
+      return { kind = "trigger", key = instance.key, combatant = holder, confused = true, consumed = true }
     end
-    return { kind = "trigger", key = instance.key, combatant = holder, recovered = true }
+    return {
+      kind = "trigger",
+      key = instance.key,
+      combatant = holder,
+      recovered = true,
+      restored = math.floor(maxHp --[[@as integer]] / 8),
+      consumed = true,
+    }
   end
   local stat = PINCH_STAT[instance.key]
   if stat == nil then
@@ -377,7 +394,10 @@ local function custapBerry(instance, context)
   then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), order = "first" }
+  -- The pinch berry is spent as it moves the holder first: order
+  -- checkpoints consume beside reordering, later checkpoints see the
+  -- empty holding.
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), order = "first", consumed = true }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -399,8 +419,9 @@ local function jabocaBerry(instance, context)
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), recoil = true }
 end
 
---- Recovers a share of health at the end of the turn while hurt; full
---- health stays silent without failing.
+--- Recovers a sixteenth of maximum health at the end of the turn while
+--- hurt; full health stays silent without failing. The holding
+--- persists: only the restoration travels, never a spend.
 ---@param instance table<string, unknown> dispatched effect instance under handling
 ---@param context table<string, unknown> residual context under handling
 ---@return table<string, unknown>? recovery announcement, or nil when inapplicable
@@ -414,7 +435,13 @@ local function leftovers(instance, context)
   then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), recovered = true }
+  return {
+    kind = "trigger",
+    key = instance.key,
+    combatant = holderOf(instance),
+    recovered = true,
+    restored = math.floor(maxHp --[[@as integer]] / 16),
+  }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -540,17 +567,16 @@ local function quickClaw(instance, context)
   if context.moveUse == nil then
     return nil
   end
-  local stream = context.stream
-  if not canDraw(stream) then
+  -- The live turn samples the raw order value before decisions and
+  -- hands it here: a supplied sample answers on multiples of five
+  -- with no battle draw, so the sorter replays the same order after
+  -- save and restore. A missing sample stays silent instead of
+  -- drawing late.
+  local raw = context.rawOrderRoll
+  if type(raw) ~= "number" or raw % 1 ~= 0 or raw < 0 or raw > 65535 then
     return nil
   end
-  local draw = (stream --[[@as table<string, unknown>]]).nextU16
-  local value = (draw --[[@as fun(self: unknown, label: string, cause: table<string, unknown>): integer]])(
-    stream,
-    "quick_claw",
-    { kind = "held_item", key = instance.key }
-  )
-  if value >= 13108 then
+  if raw % 5 ~= 0 then
     return nil
   end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), order = "first" }
@@ -632,16 +658,6 @@ local function razorFang(instance, context)
   return flinchChance(instance, context)
 end
 
----@param instance table<string, unknown> dispatched effect instance under handling
----@param context table<string, unknown> accuracy context under handling
----@return table<string, unknown>? claw announcement, or nil when inapplicable
-local function razorClaw(instance, context)
-  if context.criticalCheck ~= true then
-    return nil
-  end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), critical = "boosted" }
-end
-
 --- Berries with no battle hold effect stay bound and silent, so coverage
 --- distinguishes their genuine absence of effect from an unimplemented
 --- binding.
@@ -697,7 +713,6 @@ function TriggeredItems.register(owned)
   owned.DESTINY_KNOT = destinyKnot
   owned.KINGS_ROCK = flinchChance
   owned.RAZOR_FANG = razorFang
-  owned.RAZOR_CLAW = razorClaw
 end
 
 return TriggeredItems

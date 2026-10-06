@@ -356,4 +356,37 @@ function T.wonder_guard_permits_status_moves()
   Assert.notNil(missing, "missing move power never reads as damaging")
 end
 
+-- Anti-critical guards yield to breaking hits: an ordinary critical
+-- check meets the guard while a mold-breaking hit passes it by.
+function T.battle_armor_yields_to_breaking_hits()
+  local EffectBag =
+    SessionFixture.requirePresent("libs.battle.src.EffectBag", "scoped effect instances own their lifetimes")
+  local EffectDispatch = SessionFixture.requirePresent(
+    "libs.battle.src.EffectDispatch",
+    "finite timing dispatch owns collection and liveness"
+  )
+  local handlers = registeredHandlers("native passive registration owns the ability and item binding set")
+
+  ---@param facts table<string, unknown> critical facts under test
+  ---@return table[] emitted guard events for the pass
+  local function guarded(facts)
+    local bag = EffectBag.new()
+    addBoundInstance(bag, "BATTLE_ARMOR", "beforeHit", "affliction", EffectFixture.activeScope(2, 1))
+    local dispatch = EffectDispatch.new(bag, handlers)
+    local outcome = dispatch:invoke("beforeHit", dispatchContext(facts))
+    Assert.isTrue(outcome.done, "the guard pass runs to completion")
+    return outcome.events
+  end
+  Assert.equal(
+    #guarded({ critical = true, hit = { attackerAbility = "STATIC" } }),
+    1,
+    "an ordinary critical check meets the guard"
+  )
+  Assert.deepEqual(
+    guarded({ critical = true, hit = { attackerAbility = "MOLD_BREAKER" } }),
+    {},
+    "a mold-breaking hit passes the guard"
+  )
+end
+
 return { tests = T }

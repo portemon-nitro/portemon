@@ -2737,20 +2737,15 @@ function T.doubles_scratch_initializes_once_per_candidate()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
   local target = ({ 1, 2 })[(values[25] % 2) + 1]
-  local pick = values[12]
-  if target == 2 then
-    pick = values[19]
-  end
   Assert.equal(
     reply.choices[1].payload.target.position,
     target,
     "the foe tie breaks over the final draw"
   )
-  Assert.equal(
-    reply.choices[1].payload.moveSlot,
-    ({ 0, 1 })[(pick % 2) + 1],
-    "each foe pick breaks its own slot tie"
-  )
+  -- The lead candidate fields a lone leader (plain strike outscores the
+  -- setup strike outright), so its selection draw is spent but unused and
+  -- the slot stays deterministic across lawful stream shifts.
+  Assert.equal(reply.choices[1].payload.moveSlot, 0, "the lone leader keeps its plain strike")
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
     25,

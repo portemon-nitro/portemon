@@ -773,13 +773,15 @@ function T.internal_opponent_answers_advance_the_session_stream()
     { attemptId = "attempt-unified-stream", mon = foe },
     { party = party }
   )
-  scenario.random.seed = 7
+  -- Seed 1 keeps the wild miss-then-answer shape under the native
+  -- remainder-mapped damage law and pre-request order sampling.
+  scenario.random.seed = 1
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
     party = party,
-    seed = 7,
+    seed = 1,
     presentation = headlessPort(portRecord),
   })
 

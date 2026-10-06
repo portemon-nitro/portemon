@@ -17,6 +17,7 @@ local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local Critical = require("libs.battle.src.gen4.Critical")
 local Damage = require("libs.battle.src.gen4.Damage")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 local StatStages = require("libs.battle.src.gen4.StatStages")
 local StagedTypeModifiers = require("libs.battle.src.gen4.behaviors.moves.StagedTypeModifiers")
 local TypeEffectiveness = require("libs.battle.src.gen4.TypeEffectiveness")
@@ -1002,6 +1003,62 @@ local function heldItemOf(frame)
   return held --[[@as string]]
 end
 
+---@param ability unknown battle ability key carried by the strike facts
+---@return string? ability key answering live checkpoints, absent for the sentinel
+local function liveAbility(ability)
+  if type(ability) ~= "string" or ability == "" or ability == "NONE" then
+    return nil
+  end
+  return ability
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return string? user species carried by the strike facts, absent for older frames
+local function userSpeciesOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local species = locals.userSpecies
+  if species == nil then
+    return nil
+  end
+  if type(species) ~= "string" or species == "" then
+    error(BattleErrors.missingBehavior("strikes read their user species", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  return species --[[@as string]]
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param combatant integer holder combatant under the read
+---@return integer live entry token scoping the holder instances
+local function activationOf(ctx, combatant)
+  local entry = ctx:entryOf(combatant)
+  if entry.activation == nil then
+    error(BattleErrors.invalidState("live strikes scope to an entered holder", { combatant = combatant }))
+  end
+  return entry.activation --[[@as integer]]
+end
+
+-- Effective holding behind move-local item answers: the possessed item
+-- unless the striker's own ability or an active Embargo suppresses
+-- ordinary effects. Possession itself stays raw for the throw law
+-- beside this read.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param user integer user combatant owning the strike
+---@return string? effective held-item key answering the strike
+local function effectiveItemOf(ctx, frame, user)
+  local held = heldItemOf(frame)
+  if held == nil then
+    return nil
+  end
+  if abilitiesOf(frame).user == "KLUTZ" or ctx:hasBattleEffect(user, "embargo") then
+    return nil
+  end
+  return held
+end
+
 ---@param frame table<string, unknown> move frame under execution
 ---@return table<string, table<string, unknown>> immutable item facts by item key under the strike
 local function itemFactsOf(frame)
@@ -1166,11 +1223,45 @@ local function applySecondaryStatus(ctx, frame, defender, status)
     return
   end
   local record = frame --[[@as table<string, unknown>]]
+  -- Prevention answers before application through the defender
+  -- ability, while reflection answers only an inflicted status
+  -- through the same holder afterwards.
+  local foeAbility = liveAbility(abilitiesOf(frame).foe)
+  if foeAbility ~= nil then
+    local ward = NativePassiveBridge.invokeFacts({
+      combatant = defender,
+      activation = activationOf(ctx, defender),
+      ability = foeAbility,
+    }, "beforeHit", { statusAttempt = status })
+    for _, event in ipairs(ward.events) do
+      if
+        (event --[[@as table<string, unknown>]]).prevented == true
+      then
+        return
+      end
+    end
+  end
   local state = {}
   if status == "toxic" then
     state = { counter = 0 }
   end
-  ctx:applyStatus(defender, status, state, causeFor(record))
+  if not ctx:applyStatus(defender, status, state, causeFor(record)) then
+    return
+  end
+  if foeAbility ~= nil then
+    local mirror = NativePassiveBridge.invokeFacts({
+      combatant = defender,
+      activation = activationOf(ctx, defender),
+      ability = foeAbility,
+    }, "afterHit", { inflictedStatus = status })
+    for _, event in ipairs(mirror.events) do
+      if
+        type((event --[[@as table<string, unknown>]]).reflected) == "string"
+      then
+        ctx:applyStatus(userOf(frame), status, state, causeFor(record))
+      end
+    end
+  end
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -1343,11 +1434,13 @@ local function emitMissed(ctx, frame, defender)
   ctx:emit("missed", causeFor(frame), { target = defender })
 end
 
--- Native critical stages for one strike: the curated move bonus plus two
--- for a focused user. Focus energy contributes two stages and raised
--- moves contribute one. A lucky chant on the defender side negates a
--- successful roll only after it is spent, so the check still routes
--- through the resolver and consumes its native draw.
+-- Native critical stages for one strike: the curated move bonus, two
+-- for a focused user, one for the lens, the claw, and the lucky
+-- ability, and two for the species-locked pair, all through the
+-- current holder passives. The sniping ability replaces only the
+-- surviving multiplier. Wards negate a successful roll only after it
+-- is spent, so the check still routes through the resolver and
+-- consumes its native draw exactly once.
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param user integer user combatant owning the strike
@@ -1361,18 +1454,182 @@ local function strikeCritical(ctx, frame, user, defender, params, stream)
   if ctx:hasBattleEffect(user, "focusenergy") then
     stage = stage --[[@as integer]] + 2
   end
+  local abilities = abilitiesOf(frame)
+  local outcome = NativePassiveBridge.invokeFacts({
+    combatant = user,
+    activation = activationOf(ctx, user),
+    ability = liveAbility(abilities.user),
+    heldItem = effectiveItemOf(ctx, frame, user),
+    species = userSpeciesOf(frame),
+  }, "beforeHit", { criticalCheck = true, accuracyCheck = true })
+  for _, event in ipairs(outcome.events) do
+    local record = event --[[@as table<string, unknown>]]
+    if record.critical == "boosted" then
+      local bonus = record.stages
+      if type(bonus) ~= "number" then
+        bonus = 1
+      end
+      stage = stage --[[@as integer]] + bonus --[[@as integer]]
+    elseif record.accuracy == "critical" then
+      stage = stage --[[@as integer]] + 1
+    end
+  end
   ---@type table<string, boolean>?
   local blockers = nil
   if ctx:hasBattleEffect(defender, "luckychant") then
     blockers = { luckyChant = true }
   end
-  return Critical.resolve(
-    stage --[[@as integer]],
-    stream,
-    causeFor(frame),
-    abilitiesOf(frame).user == "SNIPER",
-    blockers
+  local foeAbility = liveAbility(abilities.foe)
+  if foeAbility ~= nil then
+    -- Anti-critical guards answer the recorded hit, so a breaking
+    -- attacker pierces them under the existing bypass law.
+    local ward = NativePassiveBridge.invokeFacts({
+      combatant = defender,
+      activation = activationOf(ctx, defender),
+      ability = foeAbility,
+    }, "beforeHit", { critical = true, hit = { attackerAbility = liveAbility(abilities.user) } })
+    for _, event in ipairs(ward.events) do
+      if
+        (event --[[@as table<string, unknown>]]).critical == "negated"
+      then
+        if blockers == nil then
+          blockers = {}
+        end
+        blockers.antiCriticalAbility = true
+      end
+    end
+  end
+  return Critical.resolve(stage --[[@as integer]], stream, causeFor(frame), abilities.user == "SNIPER", blockers)
+end
+
+-- Bare immunity answers block the strike: an answer carrying only its
+-- identity, holder, and kind claims no other effect, so wards stop the
+-- hit while absorbing or softening answers stay unanswered: no live
+-- checkpoint consumes them yet, and the strike continues undiminished.
+---@param event unknown dispatched passive answer under inspection
+---@param defender integer defender combatant under the strike
+---@return boolean true when the answer blocks with no other effect
+local function bareImmunity(event, defender)
+  if type(event) ~= "table" then
+    return false
+  end
+  local answer = event --[[@as table<string, unknown>]]
+  if answer.kind ~= "trigger" or answer.combatant ~= defender or answer.key == nil then
+    return false
+  end
+  local keys = 0
+  for _ in pairs(answer) do
+    keys = keys + 1
+  end
+  return keys == 3
+end
+
+-- Live immunity behind the defender ability: the canonical handler
+-- answers from the strike type, power, and effectiveness, and a bare
+-- answer stops the hit before any critical or damage draw.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the strike
+---@param power integer curated move power under the staged arithmetic
+---@param moveType string striking move type under the immunity read
+---@param effectiveness table<string, unknown> exact effectiveness rational for the strike
+---@return boolean true when the strike is warded off
+local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness)
+  local foeAbility = liveAbility(abilitiesOf(frame).foe)
+  if foeAbility == nil then
+    return false
+  end
+  -- Typeless strikes bypass ability immunities beside the chart: with
+  -- no striking type the ward has no effectiveness to answer.
+  if moveType == "typeless" then
+    return false
+  end
+  local numerator = effectiveness.numerator
+  local denominator = effectiveness.denominator
+  local superEffective = type(numerator) == "number"
+    and type(denominator) == "number"
+    and numerator --[[@as integer]]
+      > denominator --[[@as integer]]
+  -- The ward answers the recorded hit, so a breaking attacker opens
+  -- immunities under the existing bypass law.
+  local outcome = NativePassiveBridge.invokeFacts(
+    {
+      combatant = defender,
+      activation = activationOf(ctx, defender),
+      ability = foeAbility,
+    },
+    "beforeHit",
+    {
+      moveType = moveType,
+      movePower = power,
+      superEffective = superEffective,
+      hit = { attackerAbility = liveAbility(abilitiesOf(frame).user) },
+    }
   )
+  for _, event in ipairs(outcome.events) do
+    if bareImmunity(event, defender) then
+      return true
+    end
+  end
+  return false
+end
+
+-- Live resistance piercing behind the striking ability: a resisted hit
+-- whose ability answers doubles its staged power.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param user integer user combatant owning the strike
+---@param power integer curated move power under the staged arithmetic
+---@return integer staged power with the piercing answer applied
+local function tintedPower(ctx, frame, user, power)
+  local userAbility = liveAbility(abilitiesOf(frame).user)
+  if userAbility == nil then
+    return power
+  end
+  local outcome = NativePassiveBridge.invokeFacts({
+    combatant = user,
+    activation = activationOf(ctx, user),
+    ability = userAbility,
+  }, "beforeHit", { resisted = true })
+  for _, event in ipairs(outcome.events) do
+    if
+      (event --[[@as table<string, unknown>]]).power == "boosted"
+    then
+      return power * 2
+    end
+  end
+  return power
+end
+
+-- Live strike recovery behind the effective holding: a ringing holder
+-- recovers an eighth of the damage it dealt. The holding persists.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param user integer user combatant owning the strike
+---@param dealt integer damage actually dealt by the hit
+local function applyShellBell(ctx, frame, user, dealt)
+  if dealt < 1 then
+    return
+  end
+  local abilities = abilitiesOf(frame)
+  local outcome = NativePassiveBridge.invokeFacts({
+    combatant = user,
+    activation = activationOf(ctx, user),
+    ability = liveAbility(abilities.user),
+    heldItem = effectiveItemOf(ctx, frame, user),
+    species = userSpeciesOf(frame),
+  }, "afterHit", { dealtDamage = true })
+  for _, event in ipairs(outcome.events) do
+    if
+      (event --[[@as table<string, unknown>]]).recovered == true
+    then
+      local gain = math.floor(dealt / 8)
+      if gain > 0 then
+        local healed = ctx:heal(user, gain, causeFor(frame))
+        ctx:emit("healed", causeFor(frame), { target = user, restored = healed.after - healed.before })
+      end
+    end
+  end
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -1390,6 +1647,30 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   -- Strike-law facts validate before any draw: a missing fact fails
   -- without spending the critical or damage rolls.
   local burned, guts, weather, weatherSuppressed, category, moveType, solarBeam = strikeLawOf(frame, controls.moveType)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local stab, effectiveness = StagedTypeModifiers.forStrike(frame, defender, {
+    airborne = ctx:hasBattleEffect(defender, "magnetrise"),
+    foresight = ctx:hasBattleEffect(defender, "foresight"),
+    gravity = locals.gravity == true,
+  }, controls.moveType)
+  -- Wards stop the hit before any roll; a resisted hit pierces
+  -- through the striking ability before the same rolls.
+  if strikeWarded(ctx, frame, defender, power, moveType, effectiveness) then
+    return 0
+  end
+  local numerator = effectiveness.numerator
+  local denominator = effectiveness.denominator
+  if
+    type(numerator) == "number"
+    and type(denominator) == "number"
+    and numerator --[[@as integer]]
+      > 0
+    and numerator --[[@as integer]]
+      < denominator --[[@as integer]]
+  then
+    power = tintedPower(ctx, frame, userOf(frame), power)
+  end
   -- Multi-hit sequences share one critical roll across every hit: the
   -- native scripts roll CalcCrit once per move, then loop CalcDamage.
   -- The shared table memoizes the first roll, which still lands after
@@ -1403,13 +1684,6 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   else
     critical = strikeCritical(ctx, frame, userOf(frame), defender, params, stream)
   end
-  local record = frame --[[@as table<string, unknown>]]
-  local locals = record.locals --[[@as table<string, unknown>]]
-  local stab, effectiveness = StagedTypeModifiers.forStrike(frame, defender, {
-    airborne = ctx:hasBattleEffect(defender, "magnetrise"),
-    foresight = ctx:hasBattleEffect(defender, "foresight"),
-    gravity = locals.gravity == true,
-  }, controls.moveType)
   local result = Damage.calculate({
     level = combat.level,
     power = power,
@@ -1451,6 +1725,9 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   local dealt = applyHit(ctx, frame, defender, amount)
   emitStruck(ctx, frame, defender, hitIndex, dealt)
   noteStrikeDamage(ctx, frame, defender, dealt)
+  -- Strike recovery answers the inflicted amount behind the effective
+  -- holding once the hit lands.
+  applyShellBell(ctx, frame, userOf(frame), dealt)
   return dealt
 end
 

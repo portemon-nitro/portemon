@@ -290,6 +290,22 @@ local function runLeg(game, choose, budget)
   return turn
 end
 
+---@param frames table[] presented frames recorded by the headless port
+---@param combatant integer combatant identity under inspection
+---@return integer total struck damage the combatant has taken so far
+local function takenDamage(frames, combatant)
+  local total = 0
+  for _, frame in ipairs(frames) do
+    if type(frame) == "table" and frame.kind == "struck" then
+      local payload = frame.payload
+      if type(payload) == "table" and payload.target == combatant and type(payload.damage) == "number" then
+        total = total + payload.damage
+      end
+    end
+  end
+  return total
+end
+
 ---@param game table live acceptance game behind the journey
 ---@param firstEvent integer first event identity for the attempt scan
 ---@return integer attempt identity holding a prepared wild encounter
@@ -534,7 +550,12 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
     -- Second wild leg: the opener weakens nothing and falls to wild
     -- strikes, the real replacement request arrives, the veteran enters
     -- through it, heals through the live Bag, and finishes. This is the
-    -- forced-replacement witness.
+    -- forced-replacement witness. The veteran stalls its first turn with
+    -- its situational toxic: a leaf would end the frail foe outright, so
+    -- the wound the live Bag heals must come from the wild answering the
+    -- non-damaging turn. The heal fires on the first turn the wound is
+    -- observable in the presented frames, keeping the single effective
+    -- serving the leg witnesses.
     local preparedTwo = prepareWild(game, 101)
     local pendingTwo = assert(runtime.pendingEncounter, "the second preparation waits for its launch")
     local wildTwo = assert(pendingTwo.mons[1].mon, "the second preparation carries its wild mon")
@@ -570,12 +591,15 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       if actor.combatant == 1 then
         return SessionFixture.attackChoice(actor, openerGrowl, SessionFixture.positionTarget(2))
       end
-      if not healedTwo then
+      if not healedTwo and takenDamage(wildRecordTwo.frames, actor.combatant) > 0 then
         healedTwo = true
         return { actor = actor, kind = "item", payload = {
           item = "POTION",
           target = { kind = "combatant", combatant = actor.combatant },
         } }
+      end
+      if not healedTwo then
+        return SessionFixture.attackChoice(actor, veteranToxic, SessionFixture.positionTarget(2))
       end
       return SessionFixture.attackChoice(actor, veteranLeaf, SessionFixture.positionTarget(2))
     end)

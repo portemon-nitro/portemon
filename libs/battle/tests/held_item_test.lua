@@ -854,4 +854,155 @@ function T.metronome_item_scales_from_the_second_consecutive_use()
   Assert.equal(#boostedStreak(2), 1, "the second consecutive use boosts")
 end
 
+-- Quick Claw answers its supplied pre-turn sample without drawing: a
+-- triggering sample announces early priority while a missing sample stays
+-- silent, and neither consults the battle stream, so the live sorter can
+-- feed the stored sample instead of spending a late roll.
+function T.quick_claw_answers_from_a_supplied_sample_without_drawing()
+  local handlers = nativeHandlers("native passive registration owns the order item binding set")
+
+  ---@param raw integer pre-turn order sample carried by the context
+  ---@param drawn string[] draw log receiving every stream label
+  ---@return table[] emitted order events for the pass
+  local function ordered(raw, drawn)
+    local bag = bagWith("QUICK_CLAW", "beforeAction", EffectFixture.activeScope(1, 1))
+    local stream = {
+      nextU16 = function(_, label, _)
+        drawn[#drawn + 1] = label
+        return 0
+      end,
+    }
+    local outcome = runPassive(
+      bag,
+      handlers,
+      "beforeAction",
+      passiveContext({ moveUse = { user = 1 }, rawOrderRoll = raw, stream = stream })
+    )
+    Assert.isTrue(outcome.done, "the order pass runs to completion")
+    return outcome.events
+  end
+
+  local triggering = {}
+  local fired = ordered(0, triggering)
+  Assert.equal(#fired, 1, "a triggering sample announces early priority")
+  Assert.equal(fired[1].order, "first", "the announcement moves the holder first")
+  Assert.deepEqual(triggering, {}, "a triggering sample spends no battle draw")
+
+  local missing = {}
+  Assert.deepEqual(ordered(65534, missing), {}, "a missing sample stays silent")
+  Assert.deepEqual(missing, {}, "a missing sample spends no battle draw")
+end
+
+-- Species-locked critical holdings gate on their native holder and
+-- carry two stages: the punch answers for Chansey and the stick for
+-- Farfetch'd while any other holder stays silent, and the lens and
+-- the claw add one stage for any holder.
+function T.species_locked_critical_holdings_gate_and_carry_two_stages()
+  local handlers = nativeHandlers("native passive registration owns the critical holding set")
+
+  ---@param key string holding identity under test
+  ---@param species string holder species carried by the context
+  ---@return table[] emitted critical events for the pass
+  local function critical(key, species)
+    local bag = bagWith(key, "beforeHit", EffectFixture.activeScope(1, 1))
+    local outcome = runPassive(
+      bag,
+      handlers,
+      "beforeHit",
+      passiveContext({ criticalCheck = true, species = species, transformed = false })
+    )
+    Assert.isTrue(outcome.done, "the critical pass runs to completion")
+    return outcome.events
+  end
+
+  local punch = critical("LUCKY_PUNCH", "CHANSEY")
+  Assert.equal(#punch, 1, "the punch answers its native holder")
+  Assert.equal(punch[1].critical, "boosted", "the punch raises the stage")
+  Assert.equal(punch[1].stages, 2, "the punch carries two stages")
+  Assert.deepEqual(critical("LUCKY_PUNCH", "EEVEE"), {}, "the punch stays silent for other holders")
+  local stick = critical("STICK", "FARFETCH_D")
+  Assert.equal(#stick, 1, "the stick answers its native holder")
+  Assert.equal(stick[1].stages, 2, "the stick carries two stages")
+  Assert.deepEqual(critical("STICK", "EEVEE"), {}, "the stick stays silent for other holders")
+  local lens = critical("SCOPE_LENS", "EEVEE")
+  Assert.equal(#lens, 1, "the lens answers any holder")
+  Assert.equal(lens[1].stages, 1, "the lens carries one stage")
+  local claw = critical("RAZOR_CLAW", "EEVEE")
+  Assert.equal(#claw, 1, "the claw answers any holder")
+  Assert.equal(claw[1].stages, 1, "the claw carries one stage")
+end
+
+-- Embargo suppresses the effective holding through the bridge while raw
+-- possession stays: an embargoed claw holder reads empty-handed for
+-- ordinary effects and never orders first, a stale entry token never
+-- inherits the cover, and the live effect bag keeps only its finite
+-- embargo with no materialized innate instance beside it.
+function T.embargo_suppresses_the_effective_holding_through_the_bridge()
+  local Bridge = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.NativePassiveBridge",
+    "the private live composition owns effective possession"
+  )
+  local EffectBag =
+    SessionFixture.requirePresent("libs.battle.src.EffectBag", "scoped effect instances own their lifetimes")
+  local NativeEffectHandlers = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "one registration owner binds native definitions to their handlers"
+  )
+
+  ---@param activation integer entry token scoping the embargo instance
+  ---@return table live battle state carrying a claw holder under the embargo
+  local function embargoedState(activation)
+    local bag = EffectBag.new()
+    local definition = NativeEffectHandlers.definitionFor("embargo")
+    bag:add(
+      definition,
+      { kind = "active", combatant = 1, activation = activation },
+      { kind = "move", combatant = 2 },
+      definition.validateState({ version = 1, turns = 3 })
+    )
+    return {
+      round = 2,
+      effectBag = bag,
+      combatants = {
+        [1] = {
+          id = 1,
+          participant = 1,
+          mon = {
+            ability = "STATIC",
+            species = "PIKACHU",
+            heldItem = "QUICK_CLAW",
+            condition = { effects = {} },
+          },
+          active = { position = 1, activation = 7, entryTurn = 0 },
+          hp = 20,
+          maxHp = 30,
+          entryHp = 30,
+        },
+      },
+    }
+  end
+
+  local covered = embargoedState(7)
+  local bridge = Bridge.wrap(covered)
+  Assert.equal(bridge:rawHeldItem(1), "QUICK_CLAW", "suppression keeps the possession on record")
+  Assert.isNil(bridge:effectiveHeldItem(1), "an active embargo empties the effective holding")
+  local held = bridge:orderFacts(1, { moveUse = { user = 1 }, rawOrderRoll = 0 })
+  Assert.isFalse(held.first, "a suppressed claw never orders first")
+  Assert.equal(
+    #(covered.effectBag:capture()),
+    1,
+    "the live bag keeps only its finite embargo"
+  )
+
+  local stale = embargoedState(9)
+  local staleBridge = Bridge.wrap(stale)
+  Assert.equal(
+    staleBridge:effectiveHeldItem(1),
+    "QUICK_CLAW",
+    "a stale entry token never inherits the cover"
+  )
+  local freed = staleBridge:orderFacts(1, { moveUse = { user = 1 }, rawOrderRoll = 0 })
+  Assert.isTrue(freed.first, "the uncovered claw orders first again")
+end
+
 return { tests = T }

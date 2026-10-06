@@ -90,6 +90,8 @@ local SPECIES_LOCKED = {
   QUICK_POWDER = { DITTO = true },
   DEEPSEATOOTH = { CLAMPERL = true },
   DEEPSEASCALE = { CLAMPERL = true },
+  LUCKY_PUNCH = { CHANSEY = true },
+  STICK = { FARFETCH_D = true },
   ADAMANT_ORB = { DIALGA = true },
   LUSTROUS_ORB = { PALKIA = true },
   GRISEOUS_ORB = { GIRATINA = true },
@@ -119,10 +121,13 @@ local CHOICE_BOOST = {
   CHOICE_SCARF = "speed",
 }
 
-local CRIT_ITEM = {
-  SCOPE_LENS = true,
-  LUCKY_PUNCH = true,
-  STICK = true,
+-- Critical-stage contributions per holding: the lens and the claw add one
+-- stage while the species-locked pair adds two for its native holder.
+local CRIT_STAGES = {
+  SCOPE_LENS = 1,
+  RAZOR_CLAW = 1,
+  LUCKY_PUNCH = 2,
+  STICK = 2,
 }
 
 local DURATION_ITEM = {
@@ -508,13 +513,23 @@ end
 ---@param context table<string, unknown> accuracy context under handling
 ---@return table<string, unknown>? critical announcement, or nil when inapplicable
 local function critItem(instance, context)
-  if CRIT_ITEM[instance.key] ~= true then
+  local stages = CRIT_STAGES[instance.key]
+  if stages == nil then
+    return nil
+  end
+  if not holderApplies(instance, context) then
     return nil
   end
   if context.criticalCheck ~= true then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), critical = "boosted" }
+  return {
+    kind = "trigger",
+    key = instance.key,
+    combatant = holderOf(instance),
+    critical = "boosted",
+    stages = stages,
+  }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -665,7 +680,7 @@ function PassiveItems.register(owned)
   for key in pairs(CHOICE_BOOST) do
     owned[key] = choiceLock
   end
-  for key in pairs(CRIT_ITEM) do
+  for key in pairs(CRIT_STAGES) do
     owned[key] = critItem
   end
   for key in pairs(DURATION_ITEM) do
