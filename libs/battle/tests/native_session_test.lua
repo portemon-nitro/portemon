@@ -3910,4 +3910,149 @@ function T.mirror_move_copies_the_recorded_incoming_strike()
   session:dispose()
 end
 
+---@param id integer nonreused combatant identity under test
+---@param seed integer fixed generator state for the underlying mon
+---@param heldItem string carried item key under reward
+---@param mark integer stored condition byte under reward
+---@return table combatant seed earning the knockout with its stored mark
+local function markedRecipient(id, seed, heldItem, mark)
+  local entry = SessionFixture.combatant(id, seed)
+  entry.mon.heldItem = heldItem
+  entry.mon.pokerus = mark
+  entry.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return entry
+end
+
+---@param recipient table combatant seed earning the knockout under test
+---@return table detached native battle setup with a one-point foe
+local function markedRewardScenario(recipient)
+  local Executor = executorOwner()
+  local foe = tackleCombatant(2, 23)
+  foe.mon.condition.currentHp = 1
+  local seeds = { recipient, foe }
+  return {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { recipient }),
+      SessionFixture.participant(2, 2, "beta", { foe }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+end
+
+---@param session table live headless session under test
+---@return table settled battle frame once the lone knockout ends the battle
+local function settleMarkedKnockout(session)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  for _, request in ipairs(opening.request.requests) do
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(ok, "opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local ended, collected = advanceCollecting(session, 64)
+  Assert.equal(ended.status, "ended", "the lone knockout ends the battle")
+  Assert.isTrue(announcesFaint(collected, 2), "the strike knocks out the wounded foe")
+  return ended
+end
+
+---@return table<string, integer> empty six-stat effort record under reward
+local function blankReward()
+  return { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0 }
+end
+
+-- A stored mark reaches the live knockout reward: the marked recipient
+-- with empty hands banks double the defeated single-point yield.
+function T.stored_mark_reaches_the_live_knockout_reward()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(
+    markedRewardScenario(markedRecipient(1, 11, "NONE", 1)),
+    content
+  )
+  settleMarkedKnockout(session)
+  local expected = blankReward()
+  expected.specialDefense = 2
+  Assert.deepEqual(
+    session:capture().combatants[1].mon.evs,
+    expected,
+    "the marked recipient banks the doubled yield"
+  )
+  session:dispose()
+end
+
+-- The carried training item bonuses before the live doubling: the band
+-- adds four to the defeated point first, then the mark doubles the sum.
+function T.carried_training_item_bonuses_before_the_live_doubling()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(
+    markedRewardScenario(markedRecipient(1, 11, "POWER_BAND", 1)),
+    content
+  )
+  settleMarkedKnockout(session)
+  local expected = blankReward()
+  expected.specialDefense = 10
+  Assert.deepEqual(
+    session:capture().combatants[1].mon.evs,
+    expected,
+    "the band bonus stages before the live doubling"
+  )
+  session:dispose()
+end
+
+-- The carried brace multiplies after the live doubling even when the
+-- holder cannot use items in battle: the brace effect still quadruples
+-- the defeated point from the raw carried item.
+function T.carried_brace_multiplies_despite_battle_item_suppression()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local recipient = markedRecipient(1, 11, "MACHO_BRACE", 1)
+  recipient.mon.ability = "KLUTZ"
+  local session = contracts.Battle.newSession(markedRewardScenario(recipient), content)
+  settleMarkedKnockout(session)
+  local expected = blankReward()
+  expected.specialDefense = 4
+  Assert.deepEqual(
+    session:capture().combatants[1].mon.evs,
+    expected,
+    "the raw carried brace survives battle item suppression"
+  )
+  session:dispose()
+end
+
+-- Every nonzero stored mark doubles identically: an unmarked recipient
+-- banks the single point while two distinct nonzero marks each bank two.
+function T.every_nonzero_stored_mark_doubles_identically()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local cases = { { mark = 0, expected = 1 }, { mark = 1, expected = 2 }, { mark = 23, expected = 2 } }
+  for _, case in ipairs(cases) do
+    local session = contracts.Battle.newSession(
+      markedRewardScenario(markedRecipient(1, 11, "NONE", case.mark)),
+      content
+    )
+    settleMarkedKnockout(session)
+    local expected = blankReward()
+    expected.specialDefense = case.expected
+    Assert.deepEqual(
+      session:capture().combatants[1].mon.evs,
+      expected,
+      "mark " .. case.mark .. " settles its doubled yield"
+    )
+    session:dispose()
+  end
+end
+
 return { tests = T }

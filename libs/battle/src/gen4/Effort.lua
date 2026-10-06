@@ -126,10 +126,14 @@ local POWER_STAT = {
 
 --- Maps a held item key to its effort modifiers: power training items
 --- carry their bonus stat, Macho Brace carries its doubling, and
---- anything else -- empty hands included -- carries no modifier.
+--- anything else -- empty hands included -- carries no modifier. The
+--- explicit mark doubles every staged stat; only an explicit true flag
+--- sets it, so absent or loosely truthy shapes never double.
 ---@param heldItem unknown held item key under the mapping
+---@param hasPokerus boolean|nil explicit doubling mark for the award staging
 ---@return table<string, unknown> effort modifiers for the award staging
-function Effort.modifiersFor(heldItem)
+function Effort.modifiersFor(heldItem, hasPokerus)
+  local pokerus = hasPokerus == true
   if
     type(heldItem) == "string" and POWER_STAT[
       heldItem --[[@as string]]
@@ -139,14 +143,14 @@ function Effort.modifiersFor(heldItem)
       powerStat = POWER_STAT[
         heldItem --[[@as string]]
       ],
-      pokerus = false,
+      pokerus = pokerus,
       machoBrace = false,
     }
   end
   if heldItem == "MACHO_BRACE" then
-    return { powerStat = nil, pokerus = false, machoBrace = true }
+    return { powerStat = nil, pokerus = pokerus, machoBrace = true }
   end
-  return { powerStat = nil, pokerus = false, machoBrace = false }
+  return { powerStat = nil, pokerus = pokerus, machoBrace = false }
 end
 
 return Effort

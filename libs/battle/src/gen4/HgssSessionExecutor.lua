@@ -2270,6 +2270,16 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
       entryMon.hp = combatant.hp
     end
     local traded, foreign = tradeFlags(playerRewardIdentity(state, recipient.combatant), entryMon)
+    -- The stored condition byte travels as an explicit doubling mark:
+    -- only a numeric nonzero byte doubles while zero stages flat. The
+    -- carried item stays raw; battle item suppression never reaches
+    -- this post-knockout award.
+    local pokerusByte = entryMon.pokerus
+    if type(pokerusByte) ~= "number" then
+      error(BattleErrors.invalidState("effort rewards read a stored pokerus byte", {}))
+    end
+    local hasPokerus = pokerusByte ~= 0
+    local effortModifiers = RewardEffort.modifiersFor(entryMon.heldItem, hasPokerus)
     entries[#entries + 1] = {
       combatant = recipient.combatant,
       mon = entryMon,
@@ -2282,7 +2292,7 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
         traded = traded,
         foreign = foreign,
       }),
-      evAward = RewardEffort.calculate(evYield, RewardEffort.modifiersFor(entryMon.heldItem)),
+      evAward = RewardEffort.calculate(evYield, effortModifiers),
     }
   end
   return {
