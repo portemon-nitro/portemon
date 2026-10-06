@@ -250,9 +250,60 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
         ),
       },
     }
+    -- Location opens on the map list, so grid captures first narrow the
+    -- list to the staged map through the real filter path and then enter
+    -- coordinate selection through the real map-row activation path.
+    -- Only the staged map's assets are provisioned for these captures.
+    local function enterStagedGrid(context)
+      state:keypressed("delete")
+      state:keyreleased("delete")
+      local stagedMapId =
+        assert(assert(state.session, context .. " stages a session"):snapshot().location).mapId
+      local stagedName
+      local summaries =
+        assert(state.locationService, context .. " owns its location service"):mapSummaries()
+      for _, summary in ipairs(summaries) do
+        if summary.mapId == stagedMapId then
+          stagedName = assert(summary.displayName, context .. " names the staged map")
+        end
+      end
+      state:textinput(assert(stagedName, context .. " catalogs the staged map"))
+      local mapTargets = {}
+      for targetId in pairs(assert(state:view().layout).targets) do
+        if targetId:match("^location:map:%d+$") ~= nil then
+          mapTargets[targetId] = true
+        end
+      end
+      local activated = assert(
+        mapTargets["location:map:" .. stagedMapId] and "location:map:" .. stagedMapId,
+        context .. " publishes the staged map row"
+      )
+      clickTarget(state, activated)
+      state:update(0)
+      clickTarget(state, activated)
+      state:update(0)
+      for _ = 1, 120 do
+        local snapshot =
+          assert(state.locationService, context .. " owns its location service"):snapshot()
+        local classified = false
+        for _, tile in ipairs(snapshot.tiles) do
+          if tile.selectable == false then
+            classified = true
+            break
+          end
+        end
+        if classified then
+          break
+        end
+        state:update(0)
+      end
+    end
     for _, case in ipairs(cases) do
       width, height, topology = case.width, case.height, case.topology
       state.controller:setSection(case.section)
+      if case.section == "Location" then
+        enterStagedGrid(case.name)
+      end
       local captured = capture(case.name, case.width, case.height)
       if case.section == "Location" then
         local hasUnavailableTile = false
@@ -375,6 +426,9 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     clickTarget(state, "confirm")
     Assert.isTrue(state.session:isDirty(), "the leave dialog follows a real session edit")
     state.controller:setSection("Location")
+    -- Reach coordinate selection first: the first escape returns to the
+    -- map list and the second requests the leave confirmation.
+    enterStagedGrid("leave-dialog")
     state:keypressed("escape")
     state:keyreleased("escape")
     state:keypressed("escape")

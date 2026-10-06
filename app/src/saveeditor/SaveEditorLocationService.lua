@@ -130,6 +130,7 @@ local function mapList(world)
       mapId = record.id,
       symbol = record.symbol,
       section = record.mapSection,
+      displayName = (record.symbol:gsub("^MAP_", "", 1)),
     }
   end
   table.sort(result, function(left, right)
@@ -171,10 +172,11 @@ local function mapBoundsFromCells(coverage, matrixMemberId, selectedMapId, repre
 
   local bounds
   for _, descriptor in ipairs(selectedMatrix.cells) do
-    local fieldX = descriptor.x * TILE_SIZE
-    local fieldZ = descriptor.z * TILE_SIZE
-    local logicalMapId = FieldZoneIdentity.logicalZoneAt(coverage, fieldX, fieldZ, selectedMapId)
+    local header = assert(descriptor.mapHeaderId, "indexed physical cells carry their map header")
+    local logicalMapId = FieldZoneIdentity.isPhysicalOnlyCell(header) and selectedMapId or header
     if representedMapIds[logicalMapId] then
+      local fieldX = descriptor.x * TILE_SIZE
+      local fieldZ = descriptor.z * TILE_SIZE
       local cellBounds = {
         minX = fieldX,
         maxX = fieldX + TILE_SIZE - 1,
@@ -297,6 +299,25 @@ end
 function SaveEditorLocationService:listMaps()
   assert(not self.disposed, "location service is disposed")
   return copy(self.maps)
+end
+
+-- Shares the cached structural map summaries by reference. The array and
+-- its records are immutable after construction; consumers must not mutate
+-- them. Filtered views are owned by the caller.
+---@return table[] summaries
+function SaveEditorLocationService:mapSummaries()
+  assert(not self.disposed, "location service is disposed")
+  return self.maps
+end
+
+-- Releases staged tasks and published grid resources after leaving
+-- coordinate selection. Map selection memory stays in the controller, so
+-- the next grid entry re-prepares through the staged boundary.
+function SaveEditorLocationService:releaseGrid()
+  assert(not self.disposed, "location service is disposed")
+  self:_releaseMap()
+  self:_invalidate()
+  self.status = status("idle")
 end
 
 function SaveEditorLocationService:_invalidate()
@@ -815,6 +836,19 @@ end
 
 function SaveEditorLocationService:snapshot()
   assert(not self.disposed, "location service is disposed")
+  if self.mapId == nil or self.centerX == nil or self.centerZ == nil then
+    return {
+      mapId = nil,
+      map = nil,
+      symbol = nil,
+      -- The structural summaries are immutable after construction and
+      -- shared by reference, matching the prepared path below.
+      maps = self.maps,
+      generation = self.generation,
+      status = status("idle"),
+      tiles = {},
+    }
+  end
   local tiles = {}
   for _, tile in ipairs(self:_visibleTiles()) do
     local current = self.tileStatuses[tileKey(tile.fieldX, tile.fieldZ)]
@@ -827,7 +861,9 @@ function SaveEditorLocationService:snapshot()
     mapId = self.mapId,
     map = record and { mapId = record.id, symbol = record.symbol, section = record.mapSection } or nil,
     symbol = record and record.symbol or nil,
-    maps = copy(self.maps),
+    -- The structural summaries are immutable after construction and shared
+    -- by reference; only per-update tiles/status are copied below.
+    maps = self.maps,
     generation = self.generation,
     status = copy(self.status),
     tiles = tiles,

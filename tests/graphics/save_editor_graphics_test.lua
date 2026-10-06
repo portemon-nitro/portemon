@@ -245,6 +245,8 @@ local function fixture(scope, width, height, topology, section, variant, version
           section = "TEST_SECTION",
         },
       },
+      mapRowTargets = { "location:map:12" },
+      mapIndexByTarget = { ["location:map:12"] = 1 },
       generation = 1,
       status = { state = "ready" },
       original = { fieldX = 31, fieldZ = 48 },
@@ -271,23 +273,29 @@ local function fixture(scope, width, height, topology, section, variant, version
     }
     if (variant or ""):match("^map%-list%-long%-query") ~= nil then
       view.query = string.rep("very-long-search-query", 12)
-      view.focus = variant == "map-list-long-query" and "location:map-picker"
-        or variant == "map-list-long-query-back-focused" and "location:map-back"
-        or "location:grid"
+      view.focus = variant == "map-list-long-query" and "location:map:12" or "list:location:map-list"
+      view.focusVisible = variant ~= "map-list-long-query-unfocused"
     end
     view.savedLocation = { mapId = 12, fieldX = 31, fieldZ = 48 }
     view.pendingLocation = { mapId = 12, fieldX = 32, fieldZ = 48 }
   end
   if variant == "choice-list" then
     local options = {}
+    local rowTargets = {}
+    local indexByTarget = {}
     for index = 1, 12 do
       options[index] = { key = string.format("choice-%02d", index), label = "Choice " .. index }
+      rowTargets[index] = "choice:" .. options[index].key
+      indexByTarget["choice:" .. options[index].key] = index
     end
     view.focus = "choice:choice-01"
     view.valueEditor = {
       kind = "choice",
       purpose = "species",
       options = options,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+      index = 1,
       selectedKey = "choice-01",
       query = "",
     }
@@ -464,7 +472,8 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       end
     end
   elseif view.section == "Location" then
-    Assert.notNil(layout.targets["location:map-picker"], name .. " exposes Change Map")
+    Assert.isNil(layout.targets["location:map-picker"], name .. " has no picker control")
+    Assert.isNil(layout.targets["location:map-back"], name .. " has no nested Back")
     Assert.isNil(layout.targets["location:zoom-in"], name .. " has no zoom-in target")
     Assert.isNil(layout.targets["location:zoom-out"], name .. " has no zoom-out target")
     if view.locationNavigation.page == "grid" then
@@ -547,14 +556,35 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       renderedText:find("AZALEA_ILEX", 1, true) ~= nil,
       name .. " shows the prefix-clean map name within the control bounds"
     )
-    if plan.content.width >= 500 then
+    if view.locationNavigation.page == "grid" then
+      Assert.isFalse(renderedText:find("Physical only", 1, true), name .. " omits the disclaimer")
+      if plan.content.width >= 500 then
+        Assert.isTrue(
+          renderedText:find("X 33", 1, true) ~= nil and renderedText:find("Z 48", 1, true) ~= nil,
+          name .. " shows cursor coordinates when space permits"
+        )
+      end
       Assert.isTrue(
-        renderedText:find("X 32", 1, true) ~= nil and renderedText:find("Z 48", 1, true) ~= nil,
-        name .. " shows staged coordinates when space permits"
+        renderedText:find("blocked", 1, true) ~= nil,
+        name .. " reports the blocked cursor reason in the grid header"
+      )
+      local headerFound = false
+      for _, value in ipairs(drawnText) do
+        if value:find("AZALEA_ILEX", 1, true) ~= nil and value:find("X 33", 1, true) ~= nil then
+          headerFound = true
+          Assert.isTrue(
+            value:find("Z 48", 1, true) ~= nil,
+            name .. " keeps the map identity and cursor coordinates on one header line"
+          )
+        end
+      end
+      Assert.isTrue(headerFound, name .. " draws one combined map identity header line")
+    else
+      Assert.isFalse(
+        renderedText:find("blocked", 1, true),
+        name .. " shows no blocked prose while selecting a map"
       )
     end
-    Assert.isFalse(renderedText:find("Physical only", 1, true), name .. " omits the disclaimer")
-    Assert.isFalse(renderedText:find("blocked", 1, true), name .. " omits invalid-cell reason prose")
     Assert.isFalse(renderedText:find("Ready", 1, true), name .. " omits the ready label")
     Assert.isFalse(renderedText:find("Saved", 1, true), name .. " omits Saved/Pending comparison prose")
     Assert.isFalse(renderedText:find("Pending", 1, true), name .. " omits Saved/Pending comparison prose")
@@ -1179,6 +1209,32 @@ function T.location_grid_focus_cue_remains_visible_over_grid_tiles(scope)
   Assert.isTrue(red > 0.7 and green < 0.4 and blue < 0.4, "the grid surface cue stays visible over its tiles")
 end
 
+function T.location_grid_header_uses_black_single_line_chrome(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 1280, height = 720 },
+    touch = false,
+    role = "world",
+  })
+  local _, _, layout, _, _, view, _, _, paletteCalls =
+    draw(scope, 1280, 720, topology, "location-grid-header", "Location")
+  local header = assert(layout.locationHeader, "the grid publishes one header record")
+  local leftCall = assert(findPaletteCall(paletteCalls, "AZALEA_ILEX"), "the header draws its identity line")
+  local rightCall = assert(findPaletteCall(paletteCalls, "blocked"), "the header draws its blocked disclaimer")
+  Assert.equal(leftCall.y, rightCall.y, "identity and disclaimer share one header line")
+  Assert.equal(foregroundAverage(leftCall.palette), 0, "the header identity uses a black face")
+  Assert.equal(foregroundAverage(rightCall.palette), 0, "the header disclaimer uses a black face")
+  Assert.isTrue(
+    rightCall.x + view.textMetrics.measure("blocked")
+      <= header.lineRect.x + header.lineRect.width + 0.01,
+    "the disclaimer stays inside the header line"
+  )
+  Assert.isTrue(
+    rightCall.x >= header.leftRect.x + header.leftRect.width,
+    "the disclaimer never overlaps the identity"
+  )
+end
+
 function T.location_map_list_labels_fit_button_content_without_losing_map_identity(scope)
   local wide = ScreenTopology.oneDisplay({
     id = "main",
@@ -1189,7 +1245,7 @@ function T.location_map_list_labels_fit_button_content_without_losing_map_identi
   local _, renderedText, layout = draw(scope, 1280, 720, wide, "location-map-list-labels", "Location", "map-list")
   local targetId = "location:map:12"
   local found
-  for _, row in ipairs(layout.navigation) do
+  for _, row in ipairs(layout.rows) do
     if row.targetId == targetId then
       found = row
       break
@@ -1297,24 +1353,11 @@ function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scop
     draw(scope, width, height, compact, "location-map-search-unfocused", "Location", "map-list-long-query-unfocused")
   local focusedImage, focusedText, focusedLayout, _, focusedDrawnText, focusedView =
     draw(scope, width, height, compact, "location-map-search-focused", "Location", "map-list-long-query")
-  local backFocusedImage, _, backFocusedLayout =
-    draw(scope, width, height, compact, "location-map-back-focused", "Location", "map-list-long-query-back-focused")
-  local picker = assert(focusedLayout.targets["location:map-picker"]).rect
-  local back = assert(focusedLayout.targets["location:map-back"]).rect
-  local backSelected = assert(backFocusedLayout.targets["location:map-back"]).rect
-  local unfocusedTarget = assert(normalLayout.targets["location:map-picker"]).rect
-  Assert.equal(picker.x, unfocusedTarget.x, "focused and unfocused controls share geometry")
-  Assert.equal(back.x, assert(normalLayout.targets["location:map-back"]).rect.x, "Back shares stable geometry")
-  Assert.equal(back.x, backSelected.x, "focused Back shares geometry")
-  local function assertShadedAndFocused(target, focusImage, id)
-    local sampleX, sampleY = math.floor(target.x + 3), math.floor(target.y + target.height - 3)
-    local outsideX = math.floor(target.x + target.width + 2)
-    local backgroundR, backgroundG, backgroundB = normalImage:getPixel(outsideX, sampleY)
-    local interiorR, interiorG, interiorB = normalImage:getPixel(sampleX, sampleY)
-    Assert.isTrue(
-      interiorR ~= backgroundR or interiorG ~= backgroundG or interiorB ~= backgroundB,
-      id .. " fills its interior with shaded chrome rather than page background"
-    )
+  local rowTarget = assert(focusedLayout.targets["location:map:12"]).rect
+  local unfocusedRow = assert(normalLayout.targets["location:map:12"]).rect
+  Assert.equal(rowTarget.x, unfocusedRow.x, "focused and unfocused rows share geometry")
+  Assert.equal(rowTarget.y, unfocusedRow.y, "focused and unfocused rows share geometry")
+  local function assertRowFocusDistinct(target, focusImage, id)
     local differs = false
     for y = math.floor(target.y), math.floor(target.y + target.height - 1) do
       for x = math.floor(target.x), math.floor(target.x + target.width - 1) do
@@ -1325,11 +1368,11 @@ function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scop
     end
     Assert.isTrue(differs, id .. " has a visibly distinct focused state")
   end
-  assertShadedAndFocused(picker, focusedImage, "location:map-picker")
-  assertShadedAndFocused(backSelected, backFocusedImage, "location:map-back")
-  Assert.notNil(back, "Back remains a reachable target")
-  Assert.isTrue(focusedText:find("Change Map", 1, true) ~= nil, "the picker keeps its action label")
-  Assert.isTrue(normalText:find("Change Map", 1, true) ~= nil, "the unfocused picker keeps its action label")
+  assertRowFocusDistinct(rowTarget, focusedImage, "location:map:12")
+  Assert.isNil(focusedLayout.targets["location:map-picker"], "map selection offers no picker control")
+  Assert.isNil(focusedLayout.targets["location:map-back"], "map selection offers no nested Back")
+  Assert.isNil(focusedText:find("Change Map", 1, true), "no picker label is drawn")
+  Assert.isNil(normalText:find("Change Map", 1, true), "no unfocused picker label is drawn")
   local longQuery = focusedView.query
   local fittedHint
   for _, value in ipairs(focusedDrawnText) do

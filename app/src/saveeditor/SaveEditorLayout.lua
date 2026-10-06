@@ -64,7 +64,7 @@ function Layout.compute(view, width, height, metrics)
   local valueModalValue
   local valueModalError
   local decisionList
-  local locationStatus
+  local locationHeader
   local bagGrid, bagTabs, bagStripTarget, bagPageTextRect
   local listSurfaces = {}
   local partyStatsTable
@@ -270,55 +270,13 @@ function Layout.compute(view, width, height, metrics)
   elseif section == "Location" then
     local location = assert(view.location, "Location needs the headless service snapshot")
     local locationNav = assert(view.locationNavigation, "Location needs controller navigation state")
-    local maps = assert(location.maps, "Location needs copied structural map summaries")
     local page = locationNav.page
-    local wide = width >= 640
-    local listWidth = wide and math.min(200, math.max(144, math.floor(innerWidth * 0.24))) or 0
-    local gridLeft = contentX
-    if wide then
-      gridLeft = contentX + listWidth + 8
-      local mapOffset = locationNav.mapOffset or 0
-      local mapBounds = rect(contentX, contentTop, listWidth, contentBottom - contentTop)
-      local mapList = SaveEditorList.resolve({
-        bounds = mapBounds,
-        rowCount = #maps,
-        rowHeight = compactRowExtent,
-        gap = 0,
-        maxWidth = listWidth,
-        headerHeight = metrics.lineHeight,
-        scrollOffset = mapOffset,
-      })
-      mapOffset = ScrollViewport.clamp(mapOffset, mapList.contentHeight, mapList.content.height - mapList.header.height)
-      listSurfaces[#listSurfaces + 1] = mapList.surface
-      local mapRowTargets = {}
-      for index, map in ipairs(maps) do
-        mapRowTargets[index] = "location:map:" .. map.mapId
-      end
-      local mapViewport = registerList("location:map-list", "location:map-list", mapList, mapRowTargets, view.query)
-      local mapScroll =
-        makeViewport(mapViewport, mapOffset, mapList.contentHeight, compactRowExtent, 0, #maps, mapRowTargets)
-      mapScroll.visibleTargets = {}
-      viewports["location:map-list"] = mapScroll
-      for _, row in ipairs(mapList.rows) do
-        local map = assert(maps[row.index], "visible map rows resolve to their logical payload")
-        local id = assert(mapRowTargets[row.index], "visible map rows keep their logical identity")
-        listRowRoles[id] = "list"
-        local y = row.rect.y - mapOffset
-        targets[id] = rect(row.rect.x, y, row.rect.width, compactRowExtent - 2)
-        focusPositions[id] = rect(row.rect.x, y, row.rect.width, row.rect.height)
-        addFocusable(id)
-        mapScroll.visibleTargets[#mapScroll.visibleTargets + 1] = id
-        navigation[#navigation + 1] = {
-          role = "list",
-          targetId = id,
-          label = map.displayName,
-        }
-      end
-    elseif page == "map-list" then
-      local pickerHeight, backHeight = 26, 26
-      local rowTop = contentTop + pickerHeight + 2
-      local mapBounds = rect(contentX, rowTop, innerWidth, math.max(1, contentBottom - backHeight - rowTop))
+    if page == "map-list" then
+      local maps = assert(location.maps, "Location needs cached structural map summaries")
+      local mapRowTargets = assert(location.mapRowTargets, "the Location map list carries its cached logical row order")
+      assert(#maps == #mapRowTargets, "map payloads and row order describe the same logical rows")
       local storedMapOffset = locationNav.mapOffset or 0
+      local mapBounds = rect(contentX, contentTop, innerWidth, math.max(1, contentBottom - contentTop))
       local mapList = SaveEditorList.resolve({
         bounds = mapBounds,
         rowCount = #maps,
@@ -331,25 +289,21 @@ function Layout.compute(view, width, height, metrics)
       local mapOffset =
         ScrollViewport.clamp(storedMapOffset, mapList.contentHeight, mapList.content.height - mapList.header.height)
       listSurfaces[#listSurfaces + 1] = mapList.surface
-      local rowTargets = {}
-      for index, map in ipairs(maps) do
-        rowTargets[index] = "location:map:" .. map.mapId
-      end
-      local mapViewport = registerList("location:map-list", "location:map-list", mapList, rowTargets, view.query)
-      targets["location:map-picker"] = rect(contentX, contentTop, innerWidth, pickerHeight)
-      navigation[#navigation + 1] = {
-        role = "action",
-        targetId = "location:map-picker",
-        label = "Change Map",
-      }
-      addFocusable("location:map-picker")
+      local mapViewport = registerList(
+        "location:map-list",
+        "location:map-list",
+        mapList,
+        mapRowTargets,
+        view.query,
+        location.mapIndexByTarget
+      )
       local mapScroll =
-        makeViewport(mapViewport, mapOffset, mapList.contentHeight, compactRowExtent, 0, #maps, rowTargets)
+        makeViewport(mapViewport, mapOffset, mapList.contentHeight, compactRowExtent, 0, #maps, mapRowTargets)
       mapScroll.visibleTargets = {}
       viewports["location:map-list"] = mapScroll
       for _, row in ipairs(mapList.rows) do
         local map = assert(maps[row.index], "visible map rows resolve to their logical payload")
-        local id = assert(rowTargets[row.index], "visible map rows keep their logical identity")
+        local id = assert(mapRowTargets[row.index], "visible map rows keep their logical identity")
         listRowRoles[id] = "list"
         local y = row.rect.y - mapOffset
         targets[id] = rect(row.rect.x, y, row.rect.width, compactRowExtent - 2)
@@ -366,32 +320,45 @@ function Layout.compute(view, width, height, metrics)
           valueRect = rect(row.rect.x + row.rect.width * 0.62, y + 3, row.rect.width * 0.34, compactRowExtent - 6),
         }
       end
-      targets["location:map-back"] = rect(contentX, contentBottom - backHeight, innerWidth, backHeight)
-      navigation[#navigation + 1] = { role = "action", targetId = "location:map-back", label = "Back" }
-      addFocusable("location:map-back")
-    end
-
-    if page ~= "map-list" or wide then
-      local controlHeight = math.min(22, rowHeight)
-      local controlY = contentTop
-      local controlX = gridLeft
-      local gridWidth = math.max(1, contentX + innerWidth - gridLeft)
-      local pickerWidth = math.min(gridWidth * 0.55, 128)
-      targets["location:map-picker"] = rect(controlX, controlY, pickerWidth, controlHeight)
-      navigation[#navigation + 1] = {
-        role = "action",
-        targetId = "location:map-picker",
-        label = "Change Map",
+    else
+      local headerHeight = metrics.lineHeight
+      local headerRect = rect(contentX, contentTop, innerWidth, headerHeight)
+      local mapLabel = location.map and location.map.symbol:gsub("^MAP_", "", 1)
+        or ("Map " .. tostring(location.mapId or locationNav.mapId or "—"))
+      local cursor = assert(locationNav.cursor, "Location grid header needs its cursor")
+      local leftText = string.format("%s  X %d  Z %d", mapLabel, cursor.fieldX, cursor.fieldZ)
+      local rightText
+      local serviceStatus = location.status or {}
+      if serviceStatus.state == "failed" then
+        rightText = serviceStatus.reason
+      else
+        for _, tile in ipairs(location.tiles or {}) do
+          if tile.fieldX == cursor.fieldX and tile.fieldZ == cursor.fieldZ then
+            if tile.selectable == false then
+              rightText = assert(tile.reason, "blocked grid tiles carry their policy reason")
+            end
+            break
+          end
+        end
+      end
+      local leftWidth = math.min(metrics.measure(leftText), headerRect.width)
+      local leftRect = rect(headerRect.x, headerRect.y, leftWidth, headerHeight)
+      local rightWidth = 0
+      if rightText ~= nil then
+        rightWidth = math.min(metrics.measure(rightText), math.max(0, headerRect.width - leftWidth - 8))
+      end
+      local rightRect = rect(headerRect.x + headerRect.width - rightWidth, headerRect.y, rightWidth, headerHeight)
+      locationHeader = {
+        lineRect = headerRect,
+        leftText = leftText,
+        rightText = rightText,
+        leftRect = leftRect,
+        rightRect = rightRect,
       }
-      addFocusable("location:map-picker")
 
-      local lineGap = 1
-      local statusHeight = metrics.lineHeight * 2 + lineGap
-      local gridY = controlY + controlHeight + 2
-      local statusBoundsY = contentBottom - statusHeight
-      local gridStatusGap = 1
-      local gridClip = rect(gridLeft, gridY, gridWidth, statusBoundsY - gridY - gridStatusGap)
-      assert(gridClip.height > 0, "Location grid needs room above its measured status block")
+      local gridY = contentTop + headerHeight + 2
+      local gridClip = rect(contentX, gridY, innerWidth, contentBottom - gridY)
+      assert(gridClip.height > 0, "Location grid needs room below its header line")
       local tileSize = 16
       local columns = math.max(1, math.floor(gridClip.width / tileSize))
       local gridRows = math.max(1, math.floor(gridClip.height / tileSize))
@@ -412,23 +379,10 @@ function Layout.compute(view, width, height, metrics)
         renderedHeight = renderedHeight,
       }
 
-      local statusX, statusWidth = gridLeft, gridWidth
-      local mapLine = rect(statusX, statusBoundsY, statusWidth, metrics.lineHeight)
-      local summaryLine = rect(statusX, mapLine.y + metrics.lineHeight + lineGap, statusWidth, metrics.lineHeight)
-      locationStatus = {
-        mapLine = mapLine,
-        summaryLine = summaryLine,
-        bounds = rect(statusX, statusBoundsY, statusWidth, statusHeight),
-      }
-      assert(summaryLine.y + summaryLine.height == contentBottom, "Location status block ends at the content boundary")
-
       addFocusable("location:grid")
       focusPositions["location:grid"] = gridClip
-      local cursor = locationNav.cursor
-      if cursor ~= nil then
-        local id = string.format("location:tile:%d:%d", cursor.fieldX, cursor.fieldZ)
-        addFocusable(id)
-      end
+      local tileId = string.format("location:tile:%d:%d", cursor.fieldX, cursor.fieldZ)
+      addFocusable(tileId)
     end
     if locationNav.contentFocus == "map-list" then
       local viewport = viewports["location:map-list"]
@@ -1402,8 +1356,7 @@ function Layout.compute(view, width, height, metrics)
     then
       defaultFocus = "list:location:map-list"
     else
-      defaultFocus = "location:"
-        .. ((view.locationNavigation and view.locationNavigation.page == "map-list") and "map-picker" or "grid")
+      defaultFocus = "location:grid"
     end
   elseif section == "Party" and view.partyPage == "list" then
     for _, targetId in ipairs(focusOrder) do
@@ -1531,7 +1484,7 @@ function Layout.compute(view, width, height, metrics)
     partyStatsTable = partyStatsTable,
     partySummary = layoutPartySummary,
     partyHelp = layoutPartyHelp,
-    locationStatus = locationStatus,
+    locationHeader = locationHeader,
     bagGrid = bagGrid,
     bagTabs = bagTabs,
     bagStripTarget = bagStripTarget,

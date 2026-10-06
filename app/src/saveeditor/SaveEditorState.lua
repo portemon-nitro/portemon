@@ -23,7 +23,9 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 
 ---@class SaveEditorLocationService
 ---@field listMaps fun(self: SaveEditorLocationService): table[]
+---@field mapSummaries fun(self: SaveEditorLocationService): table[]
 ---@field openMap fun(self: SaveEditorLocationService, mapId: integer)
+---@field releaseGrid fun(self: SaveEditorLocationService)
 ---@field setViewport fun(self: SaveEditorLocationService, centerX: integer, centerZ: integer, widthTiles: integer, heightTiles: integer)
 ---@field update fun(self: SaveEditorLocationService)
 ---@field snapshot fun(self: SaveEditorLocationService): table<string, unknown>
@@ -86,6 +88,8 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field editorFeedback string?
 ---@field _flagCatalog { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[]?
 ---@field _flagFilter { query: string, rows: { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[], rowTargets: string[], indexByTarget: table<string, integer> }?
+---@field _mapCatalog { rows: { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[], rowTargets: string[], indexByTarget: table<string, integer> }?
+---@field _mapFilter { query: string, rows: { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[], rowTargets: string[], indexByTarget: table<string, integer> }?
 local State = {}
 State.__index = State
 local FIELD_DIRECTIONS = { up = "north", down = "south", left = "west", right = "east" }
@@ -136,10 +140,6 @@ local function filterLocationMaps(maps, query)
     end
   end
   return filtered
-end
-
-local function mapDisplayName(symbol)
-  return (symbol:gsub("^MAP_", "", 1))
 end
 
 local function flagDisplayName(symbol)
@@ -347,8 +347,6 @@ function State:update(dt)
     local originalLocation = assert(self.session:snapshot().location)
     self.controller:enterLocation(originalLocation)
     self.controller:setSection("Location")
-    self.locationService:openMap(originalLocation.mapId)
-    self.locationServiceMapId = originalLocation.mapId
     self.status, self.errorMessage = "ready", nil
     self:_resolve(self:_snapshot())
   end
@@ -434,19 +432,10 @@ function State:_snapshot()
   }
   if self.locationService then
     local location = self.locationService:snapshot()
-    local maps = self.locationService:listMaps()
-    local displayMaps = {}
-    for _, map in ipairs(maps) do
-      local displayMap = {}
-      for key, value in pairs(map) do
-        displayMap[key] = value
-      end
-      displayMap.displayName = mapDisplayName(map.symbol)
-      displayMaps[#displayMaps + 1] = displayMap
-    end
-    location.maps = self.controller.locationPage == "map-list"
-        and filterLocationMaps(displayMaps, self.controller.query)
-      or displayMaps
+    local mapRows, mapRowTargets, mapIndexByTarget = self:_mapRows()
+    location.maps = mapRows
+    location.mapRowTargets = mapRowTargets
+    location.mapIndexByTarget = mapIndexByTarget
     location.symbol = location.map and location.map.symbol or nil
     location.actionStatus = self.locationActionStatus
         and {
@@ -601,6 +590,61 @@ function State:_filteredFlagRows()
     self._flagFilter = cached
   end
   return cached.rows, cached.rowTargets, cached.indexByTarget
+end
+
+---@return { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[] rows
+---@return string[] rowTargets
+---@return table<string, integer> indexByTarget
+function State:_mapCatalogRows()
+  local cached = self._mapCatalog
+  if cached == nil then
+    local rows, rowTargets, indexByTarget = {}, {}, {}
+    local summaries = assert(self.locationService, "the map catalog needs its location service"):mapSummaries()
+    for _, summary in ipairs(summaries) do
+      local descriptor = {
+        mapId = summary.mapId,
+        symbol = summary.symbol,
+        section = summary.section,
+        displayName = summary.displayName,
+        targetId = "location:map:" .. summary.mapId,
+      }
+      rows[#rows + 1] = descriptor
+      rowTargets[#rowTargets + 1] = descriptor.targetId
+      indexByTarget[descriptor.targetId] = #rows
+    end
+    cached = { rows = rows, rowTargets = rowTargets, indexByTarget = indexByTarget }
+    self._mapCatalog = cached
+  end
+  return cached.rows, cached.rowTargets, cached.indexByTarget
+end
+
+---@return { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[] rows
+---@return string[] rowTargets
+---@return table<string, integer> indexByTarget
+function State:_filteredMapRows()
+  local query = self.controller.query:lower()
+  local cached = self._mapFilter
+  if cached == nil or cached.query ~= query then
+    local rows = filterLocationMaps(self:_mapCatalogRows(), self.controller.query)
+    local rowTargets, indexByTarget = {}, {}
+    for _, descriptor in ipairs(rows) do
+      rowTargets[#rowTargets + 1] = descriptor.targetId
+      indexByTarget[descriptor.targetId] = #rowTargets
+    end
+    cached = { query = query, rows = rows, rowTargets = rowTargets, indexByTarget = indexByTarget }
+    self._mapFilter = cached
+  end
+  return cached.rows, cached.rowTargets, cached.indexByTarget
+end
+
+---@return { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[] rows
+---@return string[] rowTargets
+---@return table<string, integer> indexByTarget
+function State:_mapRows()
+  if self.controller.locationPage == "map-list" then
+    return self:_filteredMapRows()
+  end
+  return self:_mapCatalogRows()
 end
 
 ---@param values table<integer, boolean>
@@ -1442,6 +1486,9 @@ function State:_updateLocationService()
   if mapId == nil then
     return
   end
+  if navigation.page ~= "grid" then
+    return
+  end
   if self.locationServiceMapId ~= mapId then
     service:openMap(mapId)
     self.locationServiceMapId = mapId
@@ -1695,8 +1742,6 @@ function State:_performDeferred(action)
     if action.section == "Progress" then
       self.controller.query = ""
       self.controller.focus = "list:flags"
-    elseif action.section == "Location" and self.locationService then
-      self:_updateLocationService()
     end
     self.errorMessage = nil
   elseif action.kind == "save" then
@@ -1711,16 +1756,15 @@ function State:_performDeferred(action)
       self.controller.partyPage = "list"
       self.controller.focus = "party:add"
     end
-  elseif action.kind == "location-page" then
-    if action.page == "map-list" then
-      self.controller.query = ""
-      self.controller.locationMapOffset = 0
-    end
-    self.errorMessage = nil
   elseif action.kind == "location-map-select" then
     local world = assert(self.dependencies.world)
     local record = world.maps[assert(world.byId[action.mapId], "selected map must be in structural world data")]
-    self.controller:chooseLocationMap(action.mapId, record.worldOriginX + 16, record.worldOriginZ + 16)
+    local staged = self.session and self.session:snapshot().location or nil
+    if staged ~= nil and staged.mapId == action.mapId then
+      self.controller:chooseLocationMap(action.mapId, staged.fieldX, staged.fieldZ)
+    else
+      self.controller:chooseLocationMap(action.mapId, record.worldOriginX + 16, record.worldOriginZ + 16)
+    end
     self.locationServiceMapId = nil
     self.locationViewport = nil
     self.locationActionStatus = nil
@@ -1964,10 +2008,15 @@ function State:_requestBack()
   elseif self.controller.section == "Bag" and self.controller.bagItemKey ~= nil then
     self.controller.bagItemKey = nil
     self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
-  elseif self.controller.section == "Location" and self.controller.locationPage == "map-list" then
-    self.controller.locationPage = "grid"
-    self.controller:setFocus("location:grid")
-    self.controller:cancelInteraction()
+  elseif self.controller.section == "Location" and self.controller.locationPage == "grid" then
+    self.controller:openLocationMaps()
+    if self.locationService ~= nil then
+      self.locationService:releaseGrid()
+    end
+    self.locationServiceMapId = nil
+    self.locationViewport = nil
+    self.locationActionStatus = nil
+    self.errorMessage = nil
   elseif self.session and self.session:isDirty() then
     self:requestClose("back")
   else
@@ -2309,8 +2358,7 @@ function State:_dispatchIntent(intent)
   elseif intent.kind == "action" then
     self:_activate(intent.action)
   elseif
-    intent.kind == "location-page"
-    or intent.kind == "location-map-select"
+    intent.kind == "location-map-select"
     or intent.kind == "location-cursor-move"
     or intent.kind == "location-pan"
     or intent.kind == "select_tile"

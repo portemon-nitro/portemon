@@ -550,7 +550,10 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
     state:update(0)
     withoutRendering(function()
       Assert.equal(state:view().status, "ready", "the production editor opens against the real selected save")
-      local browserMapId = assert(state:view().location.mapId)
+      local browserMapId = assert(
+        state:view().locationNavigation.mapId,
+        "the browser remembers the saved map while the section opens on the map list"
+      )
       Assert.isTrue(state.session:setLocation(placement).ok, "the existing Session stages a resolved outdoor tuple")
       local expected = state.session:captureCandidate()
       state.controller:setSection("Player")
@@ -558,7 +561,7 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       state:update(0)
       Assert.equal(recordWrites, 0, "the Save intent waits while destination data is pending")
       Assert.equal(
-        state:view().location.mapId,
+        state:view().locationNavigation.mapId,
         browserMapId,
         "a pending destination check does not replace the user's browser map"
       )
@@ -572,7 +575,11 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       end
       Assert.equal(recordWrites, 1, "one Save intent publishes exactly one save after readiness")
       Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), expected, "the authorized tuple and edits publish")
-      Assert.equal(state:view().location.mapId, browserMapId, "verification leaves the browser selection untouched")
+      Assert.equal(
+        state:view().locationNavigation.mapId,
+        browserMapId,
+        "verification leaves the browser selection untouched"
+      )
       Assert.equal(#results, 0, "Save keeps the editor open")
 
       Assert.isTrue(state.session:setLocation(assert(housePlacement)).ok)

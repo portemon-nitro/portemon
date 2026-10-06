@@ -13,29 +13,38 @@ local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 
 local T = { tests = {} }
 
-function T.tests.location_content_focus_is_restored_when_reentering_the_section()
+function T.tests.location_section_entry_always_opens_the_map_list()
   local controller = Controller.new()
   controller:setSection("Location")
   controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
-  controller:setFocus("section")
-  Assert.equal(controller:snapshot().location.contentFocus, "navigation")
-  controller:setFocus("section:Location")
-  Assert.equal(controller:snapshot().location.contentFocus, "navigation")
+  Assert.equal(controller:snapshot().location.page, "map-list", "section entry opens the map list")
+  Assert.equal(controller.focus, "list:location:map-list", "section entry focuses the map-list container")
+
+  controller:chooseLocationMap(7, 10, 12)
+  Assert.equal(controller:snapshot().location.page, "grid", "map activation enters coordinate selection")
 
   controller:setSection("Player")
   controller:setSection("Location")
-  Assert.equal(controller:snapshot().location.contentFocus, "grid")
+  Assert.equal(controller:snapshot().location.page, "map-list", "returning to the section reopens the map list")
+  Assert.equal(controller.focus, "list:location:map-list", "returning focuses the map-list container")
 end
 
-function T.tests.location_back_target_returns_focus_to_the_grid()
+function T.tests.entering_the_same_map_preserves_the_grid_while_section_entry_resets_to_the_list()
   local controller = Controller.new()
   controller:setSection("Location")
   controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
-  controller:openLocationMaps()
-  controller:setFocus("location:map-back")
-
-  Assert.equal(controller:press("confirm").kind, "location-page")
-  Assert.equal(controller:snapshot().location.contentFocus, "grid")
+  controller:chooseLocationMap(7, 10, 12)
+  controller:enterLocation({ mapId = 7, fieldX = 14, fieldZ = 18 })
+  Assert.equal(
+    controller:snapshot().location.page,
+    "grid",
+    "staged sync on the same map stays in coordinate selection"
+  )
+  Assert.deepEqual(
+    controller:snapshot().location.cursor,
+    { fieldX = 14, fieldZ = 18 },
+    "staged sync refreshes the grid cursor"
+  )
 end
 
 function T.tests.modal_scope_rejects_background_grid_and_sparse_drag_gestures()
@@ -689,6 +698,19 @@ local function locationListHarness()
     { mapId = 7, symbol = "MAP_TEST_LAKE", displayName = "TEST_LAKE", section = "TEST_OTHER" },
   }
   local function buildView()
+    local filtered = {}
+    local normalized = controller.query:lower()
+    for _, map in ipairs(maps) do
+      if
+        normalized == ""
+        or map.symbol:lower():find(normalized, 1, true)
+        or map.displayName:lower():find(normalized, 1, true)
+        or map.section:lower():find(normalized, 1, true)
+        or tostring(map.mapId):find(normalized, 1, true)
+      then
+        filtered[#filtered + 1] = map
+      end
+    end
     return {
       section = "Location",
       status = "ready",
@@ -701,7 +723,21 @@ local function locationListHarness()
         mapId = 12,
         symbol = "MAP_TEST_ROUTE",
         section = "TEST_SECTION",
-        maps = maps,
+        maps = filtered,
+        mapRowTargets = (function()
+          local targets = {}
+          for _, map in ipairs(filtered) do
+            targets[#targets + 1] = "location:map:" .. map.mapId
+          end
+          return targets
+        end)(),
+        mapIndexByTarget = (function()
+          local index = {}
+          for position, map in ipairs(filtered) do
+            index["location:map:" .. map.mapId] = position
+          end
+          return index
+        end)(),
         generation = 1,
         status = { state = "ready" },
         tiles = { { fieldX = 32, fieldZ = 48, selectable = true } },
@@ -813,6 +849,20 @@ local function overflowingLocationListHarness(width, height, count)
         symbol = "MAP_TEST_12",
         section = "TEST_SECTION",
         maps = maps,
+        mapRowTargets = (function()
+          local targets = {}
+          for _, map in ipairs(maps) do
+            targets[#targets + 1] = "location:map:" .. map.mapId
+          end
+          return targets
+        end)(),
+        mapIndexByTarget = (function()
+          local index = {}
+          for position, map in ipairs(maps) do
+            index["location:map:" .. map.mapId] = position
+          end
+          return index
+        end)(),
         generation = 1,
         status = { state = "ready" },
         tiles = { { fieldX = 32, fieldZ = 48, selectable = true } },
@@ -1084,6 +1134,7 @@ local function mapActivationHarness()
   local controller = Controller.new()
   controller:setSection("Location")
   controller:enterLocation({ mapId = 12, fieldX = 32, fieldZ = 48 })
+  controller:chooseLocationMap(12, 32, 48)
   local service = recordingLocationService()
   local resolveCount = 0
   local grid = { columns = 7, rows = 5 }
@@ -1988,6 +2039,10 @@ local function backHarness(options)
     controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
     controller:openLocationMaps()
   end
+  if options.grid then
+    controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
+    controller:chooseLocationMap(7, 10, 12)
+  end
   if options.modal then
     controller:openModal(options.modal)
   end
@@ -2019,7 +2074,9 @@ local function backHarness(options)
     session = session,
     valueEditor = options.valueEditor,
     monDraft = options.monDraft,
-    locationService = nil,
+    locationService = options.locationService,
+    locationServiceMapId = options.locationServiceMapId,
+    locationViewport = options.locationViewport,
     errorMessage = nil,
     pendingDraftAction = nil,
     onResult = function(result)
@@ -2079,13 +2136,83 @@ function T.tests.back_from_a_selected_bag_item_returns_to_its_pocket()
   Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
 end
 
-function T.tests.back_from_the_location_map_list_returns_to_coordinate_selection()
-  local harness = backHarness({ section = "Location", mapList = true })
-  Assert.equal(harness.controller.locationPage, "map-list", "the harness starts inside the map list")
+function T.tests.back_from_coordinate_selection_returns_to_the_map_list_and_releases_grid_work()
+  local releases = 0
+  local service = {
+    releaseGrid = function()
+      releases = releases + 1
+    end,
+  }
+  local harness = backHarness({ section = "Location", dirty = true, grid = true, locationService = service })
+  Assert.equal(harness.controller.locationPage, "grid", "the harness starts inside coordinate selection")
   harness.state:_requestBack()
-  Assert.equal(harness.controller.locationPage, "grid", "one Back returns to coordinate selection")
+  Assert.equal(harness.controller.locationPage, "map-list", "one Back returns to the map list")
+  Assert.equal(
+    harness.controller.focus,
+    "list:location:map-list",
+    "one Back focuses the map-list container"
+  )
+  Assert.equal(releases, 1, "abandoned grid work is released exactly once")
   Assert.isNil(harness.state.closeRequest, "Back from an inner mode never enters the leave flow")
   Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
+end
+
+function T.tests.back_from_the_map_list_root_follows_the_normal_leave_path()
+  local dirty = backHarness({ section = "Location", dirty = true, mapList = true })
+  Assert.equal(dirty.controller.locationPage, "map-list", "the harness starts at the map list root")
+  dirty.state:_requestBack()
+  Assert.equal(dirty.controller.locationPage, "map-list", "root Back stays on the map list")
+  Assert.notNil(dirty.state.closeRequest, "root Back with staged work enters the leave flow")
+  Assert.deepEqual(dirty.results, {}, "entering the leave flow never leaves the editor")
+
+  local clean = backHarness({ section = "Location", dirty = false, mapList = true })
+  clean.state:_requestBack()
+  Assert.deepEqual(clean.results, { { kind = "main_menu" } }, "root Back without work leaves the editor")
+end
+
+function T.tests.activating_the_staged_map_keeps_its_coordinates_while_other_maps_use_their_default()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:enterLocation({ mapId = 12, fieldX = 40, fieldZ = 50 })
+  controller:openLocationMaps()
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    dependencies = {
+      world = {
+        maps = {
+          { worldOriginX = 1000, worldOriginZ = 2000 },
+          { worldOriginX = 100, worldOriginZ = 200 },
+        },
+        byId = { [12] = 1, [34] = 2 },
+      },
+    },
+    session = {
+      snapshot = function()
+        return { location = { mapId = 12, fieldX = 40, fieldZ = 50 } }
+      end,
+    },
+  }, State)
+  state:_performDeferred({ kind = "location-map-select", mapId = 12 })
+  local staged = controller:locationSnapshot()
+  Assert.equal(staged.page, "grid", "activation enters coordinate selection")
+  Assert.deepEqual(staged.center, { fieldX = 40, fieldZ = 50 }, "the staged map keeps its staged coordinates")
+  state:_performDeferred({ kind = "location-map-select", mapId = 34 })
+  local other = controller:locationSnapshot()
+  Assert.deepEqual(other.center, { fieldX = 116, fieldZ = 216 }, "another map starts from its record default")
+end
+
+function T.tests.empty_map_filter_keeps_confirm_inert_on_the_container()
+  local harness = locationListHarness()
+  local controller, state = harness.controller, harness.state
+  controller:setFocus("list:location:map-list")
+  controller.query = "zzz-no-such-map"
+  local layout = harness.buildLayout()
+  local list = assert(layout.lists["location:map-list"], "the plan publishes the map list record")
+  Assert.isTrue(list.empty, "zero filtered maps mark the list empty")
+  state:_consumeUiInput({ { type = "confirm" } })
+  Assert.equal(#harness.intents, 0, "Confirm on an empty map list selects nothing")
+  Assert.equal(controller.focus, "list:location:map-list", "Confirm on an empty map list keeps container focus")
 end
 
 function T.tests.back_from_a_root_section_with_staged_work_enters_the_leave_flow()

@@ -1401,12 +1401,14 @@ drawLocation = function(self, view, layout)
   for _, tile in ipairs(location.tiles or {}) do
     tiles[string.format("%d:%d", tile.fieldX, tile.fieldZ)] = tile
   end
-  for _, targetId in ipairs({ "location:map-picker", "location:map-back" }) do
-    local target = targetRect(layout, targetId)
-    if target then
-      local label = targetId == "location:map-picker" and "Change Map" or "Back"
-      local fitted = fitText(self, label, target.width - 16)
-      drawButtonControl(self, target, fitted, false, isFocusedVisible(view, targetId), false, nil, false)
+  if grid then
+    local header = assert(layout.locationHeader, "Location grid needs its measured header")
+    local ink = textPalette(self.skin, { r = 0, g = 0, b = 0 })
+    drawText(self, fitText(self, header.leftText, header.leftRect.width), header.leftRect.x, header.leftRect.y, ink)
+    if header.rightText ~= nil and header.rightRect.width > 0 then
+      local fitted = fitText(self, header.rightText, header.rightRect.width)
+      local rightWidth = self.text:textWidth(fitted)
+      drawText(self, fitted, header.rightRect.x + header.rightRect.width - rightWidth, header.rightRect.y, ink)
     end
   end
 
@@ -1464,31 +1466,6 @@ drawLocation = function(self, view, layout)
     end
   end
 
-  if grid then
-    local statusLayout = assert(layout.locationStatus, "Location grid needs measured status geometry")
-    local mapLabel = location.map and location.map.symbol:gsub("^MAP_", "", 1)
-      or ("Map " .. tostring(location.mapId or "—"))
-    local status = location.status
-    local statusLabel = status.state == "ready" and ""
-      or status.state == "pending" and "Preparing map data"
-      or status.reason
-      or "Map unavailable"
-    local mapLine = statusLayout.mapLine
-    local statusPalette = status.state == "ready" and pagePalette(self.skin)
-      or status.state == "failed" and pageErrorPalette(self.skin)
-      or pageMutedPalette(self.skin)
-    drawText(
-      self,
-      fitText(self, mapLabel .. (statusLabel ~= "" and (" · " .. statusLabel) or ""), mapLine.width),
-      mapLine.x,
-      mapLine.y,
-      statusPalette
-    )
-    local staged = view.pendingLocation or view.savedLocation
-    local markerText = staged and string.format("X %d  Z %d", staged.fieldX, staged.fieldZ) or ""
-    local summaryLine = statusLayout.summaryLine
-    drawText(self, fitText(self, markerText, summaryLine.width), summaryLine.x, summaryLine.y, pagePalette(self.skin))
-  end
   if layout.locationFocusCue then
     local cue = layout.locationFocusCue
     setColor(graphics, { 0.86, 0.16, 0.18, 1 })

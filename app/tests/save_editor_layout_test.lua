@@ -39,6 +39,7 @@ local function locationView()
     location = {
       mapId = 12,
       symbol = "MAP_TEST_ROUTE",
+      map = { mapId = 12, symbol = "MAP_TEST_ROUTE", section = "TEST_SECTION" },
       section = "TEST_SECTION",
       maps = { { mapId = 12, symbol = "MAP_TEST_ROUTE", displayName = "TEST_ROUTE", section = "TEST_SECTION" } },
       generation = 1,
@@ -120,11 +121,15 @@ function T.tests.location_layout_uses_fixed_scale_and_omits_zoom_targets()
     Assert.equal(layout.locationGrid.tileSize, 16, "Location uses one fixed 16-pixel tile scale")
     Assert.isNil(layout.targets["location:zoom-in"], "Location does not publish zoom-in")
     Assert.isNil(layout.targets["location:zoom-out"], "Location does not publish zoom-out")
+    Assert.isNil(
+      layout.lists["location:map-list"],
+      "coordinate selection never composes the map list (" .. viewport.width .. "x" .. viewport.height .. ")"
+    )
+    Assert.isNil(
+      layout.targets["location:map-picker"],
+      "coordinate selection has no picker control (" .. viewport.width .. "x" .. viewport.height .. ")"
+    )
   end
-  local wideLayout = computeLayout(locationView(), 800, 600)
-  Assert.notNil(wideLayout.targets["location:map:12"], "logical wide layout publishes its map list")
-  Assert.notNil(wideLayout.viewports["location:map-list"], "logical wide layout owns map-list scrolling")
-  Assert.notNil(wideLayout.locationGrid, "logical wide layout keeps the grid beside the map list")
 end
 
 function T.tests.player_rows_reserve_measured_raw_value_width_in_a_separate_text_cell()
@@ -418,6 +423,18 @@ function T.tests.progress_list_publishes_one_container_with_ordered_filterable_r
 end
 
 local function mapListView()
+  local maps = {
+    { mapId = 12, symbol = "MAP_TEST_ROUTE", displayName = "TEST_ROUTE", section = "TEST_SECTION" },
+    { mapId = 34, symbol = "MAP_TEST_TOWN", displayName = "TEST_TOWN", section = "TEST_SECTION" },
+    { mapId = 47, symbol = "MAP_TEST_CAVE", displayName = "TEST_CAVE", section = "TEST_OTHER" },
+    { mapId = 7, symbol = "MAP_TEST_LAKE", displayName = "TEST_LAKE", section = "TEST_OTHER" },
+  }
+  local rowTargets = {}
+  local indexByTarget = {}
+  for position, map in ipairs(maps) do
+    rowTargets[position] = "location:map:" .. map.mapId
+    indexByTarget["location:map:" .. map.mapId] = position
+  end
   return {
     section = "Location",
     status = "ready",
@@ -444,12 +461,9 @@ local function mapListView()
       mapId = 12,
       symbol = "MAP_TEST_ROUTE",
       section = "TEST_SECTION",
-      maps = {
-        { mapId = 12, symbol = "MAP_TEST_ROUTE", displayName = "TEST_ROUTE", section = "TEST_SECTION" },
-        { mapId = 34, symbol = "MAP_TEST_TOWN", displayName = "TEST_TOWN", section = "TEST_SECTION" },
-        { mapId = 47, symbol = "MAP_TEST_CAVE", displayName = "TEST_CAVE", section = "TEST_OTHER" },
-        { mapId = 7, symbol = "MAP_TEST_LAKE", displayName = "TEST_LAKE", section = "TEST_OTHER" },
-      },
+      maps = maps,
+      mapRowTargets = rowTargets,
+      mapIndexByTarget = indexByTarget,
       generation = 1,
       status = { state = "ready" },
       tiles = {
@@ -501,6 +515,8 @@ end
 
 function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible_rows_materialize()
   local maps = {}
+  local offsetRowTargets = {}
+  local offsetIndexByTarget = {}
   for index = 1, 30 do
     maps[index] = {
       mapId = index,
@@ -508,10 +524,14 @@ function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible
       displayName = "TEST_" .. index,
       section = "TEST_SECTION",
     }
+    offsetRowTargets[index] = "location:map:" .. index
+    offsetIndexByTarget["location:map:" .. index] = index
   end
   for _, size in ipairs({ { 800, 600 }, { 256, 192 } }) do
     local view = mapListView()
     view.location.maps = maps
+    view.location.mapRowTargets = offsetRowTargets
+    view.location.mapIndexByTarget = offsetIndexByTarget
     local layout = computeLayout(view, size[1], size[2])
     local label = size[1] .. "x" .. size[2]
     local list = assert(
@@ -539,6 +559,8 @@ function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible
     local revealed = (function()
       local scrolledView = mapListView()
       scrolledView.location.maps = maps
+      scrolledView.location.mapRowTargets = offsetRowTargets
+      scrolledView.location.mapIndexByTarget = offsetIndexByTarget
       scrolledView.locationNavigation.mapOffset = (30 - viewport.lastIndex) * viewport.rowExtent
       return computeLayout(scrolledView, size[1], size[2])
     end)()
@@ -551,6 +573,104 @@ function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible
       "the scrolled window focuses the last map (" .. label .. ")"
     )
   end
+end
+
+function T.tests.location_uses_one_mode_per_layout_without_picker_controls()
+  for _, size in ipairs({ { 256, 192 }, { 360, 640 }, { 800, 600 } }) do
+    local label = size[1] .. "x" .. size[2]
+    local listLayout = computeLayout(mapListView(), size[1], size[2])
+    Assert.isNil(listLayout.locationGrid, "the map list never composes the grid (" .. label .. ")")
+    Assert.isNil(listLayout.locationHeader, "the map list never composes the grid header (" .. label .. ")")
+    Assert.notNil(
+      listLayout.lists["location:map-list"],
+      "the map list publishes its interaction record (" .. label .. ")"
+    )
+    Assert.isNil(
+      listLayout.targets["location:map-picker"],
+      "map selection has no picker control (" .. label .. ")"
+    )
+    Assert.isNil(listLayout.targets["location:map-back"], "map selection has no nested Back (" .. label .. ")")
+
+    local gridLayout = computeLayout(locationView(), size[1], size[2])
+    Assert.isNil(
+      gridLayout.lists["location:map-list"],
+      "coordinate selection never composes the map list (" .. label .. ")"
+    )
+    Assert.notNil(gridLayout.locationGrid, "coordinate selection publishes the grid (" .. label .. ")")
+    Assert.notNil(gridLayout.locationHeader, "coordinate selection publishes one header (" .. label .. ")")
+    Assert.isNil(
+      gridLayout.targets["location:map-picker"],
+      "coordinate selection has no picker control (" .. label .. ")"
+    )
+    Assert.isNil(
+      gridLayout.targets["location:map-back"],
+      "coordinate selection has no nested Back (" .. label .. ")"
+    )
+    for targetId in pairs(gridLayout.targets) do
+      Assert.isNil(
+        targetId:match("^location:map:%d+$"),
+        "coordinate selection exposes no map row (" .. label .. ")"
+      )
+    end
+  end
+end
+
+function T.tests.location_grid_header_combines_identity_coordinates_and_blocked_state_on_one_line()
+  for _, size in ipairs({ { 256, 192 }, { 800, 600 } }) do
+    local label = size[1] .. "x" .. size[2]
+    local layout = computeLayout(locationView(), size[1], size[2])
+    local header = assert(layout.locationHeader, "the grid publishes one header record (" .. label .. ")")
+    Assert.isTrue(
+      header.leftText:find("TEST_ROUTE", 1, true) ~= nil
+        and header.leftText:find("X 33", 1, true) ~= nil
+        and header.leftText:find("Z 48", 1, true) ~= nil,
+      "the header names the map and both coordinates on one line (" .. label .. ")"
+    )
+    Assert.isFalse(header.leftText:find("\n") ~= nil, "the header identity never wraps (" .. label .. ")")
+    Assert.equal(header.rightText, "blocked", "the blocked cursor reports its reason at the right (" .. label .. ")")
+    Assert.equal(header.leftRect.y, header.rightRect.y, "header halves share one line (" .. label .. ")")
+    Assert.equal(header.leftRect.height, 14, "the header occupies one text line (" .. label .. ")")
+    Assert.isTrue(
+      header.rightRect.x >= header.leftRect.x + header.leftRect.width,
+      "the disclaimer never overlaps the identity (" .. label .. ")"
+    )
+    Assert.isTrue(
+      header.rightRect.x + header.rightRect.width <= header.lineRect.x + header.lineRect.width + 0.01,
+      "the disclaimer stays inside the header line (" .. label .. ")"
+    )
+    Assert.isNil(layout.locationStatus, "the old status block is gone (" .. label .. ")")
+    for _, entry in ipairs(layout.navigation) do
+      Assert.isNil(
+        entry.label and entry.label:find("TEST_ROUTE", 1, true),
+        "the map identity is not duplicated in navigation (" .. label .. ")"
+      )
+    end
+    for _, row in ipairs(layout.rows) do
+      Assert.isNil(
+        row.label and row.label:find("TEST_ROUTE", 1, true),
+        "the map identity is not duplicated in rows (" .. label .. ")"
+      )
+    end
+  end
+
+  local openView = locationView()
+  openView.locationNavigation.cursor = { fieldX = 32, fieldZ = 48 }
+  local openLayout = computeLayout(openView, 800, 600)
+  local openHeader = assert(openLayout.locationHeader, "the grid publishes one header record")
+  Assert.isNil(openHeader.rightText, "a selectable cursor shows no disclaimer")
+end
+
+function T.tests.location_map_rows_share_their_cached_order_by_reference()
+  local view = mapListView()
+  local first = computeLayout(view, 800, 600)
+  local second = computeLayout(view, 256, 192)
+  local firstList = assert(first.lists["location:map-list"], "the map list publishes its interaction record")
+  Assert.isTrue(firstList.rowTargets == view.location.mapRowTargets, "layout shares the cached row order")
+  Assert.isTrue(firstList.indexByTarget == view.location.mapIndexByTarget, "layout shares the cached row index")
+  Assert.isTrue(
+    second.lists["location:map-list"].rowTargets == view.location.mapRowTargets,
+    "repeated layouts never copy the cached row order"
+  )
 end
 
 function T.tests.choice_list_publishes_one_container_with_ordered_rows()
@@ -1273,6 +1393,7 @@ function T.tests.normal_scopes_expose_exactly_one_back_action()
     location = {
       mapId = 12,
       symbol = "MAP_TEST_ROUTE",
+      map = { mapId = 12, symbol = "MAP_TEST_ROUTE", section = "TEST_SECTION" },
       section = "TEST_SECTION",
       maps = { { mapId = 12, symbol = "MAP_TEST_ROUTE", displayName = "TEST_ROUTE", section = "TEST_SECTION" } },
       generation = 1,

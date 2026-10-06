@@ -92,8 +92,8 @@ function Controller.new()
     bagPocket = "items",
     bagItemKey = nil,
     bagPage0 = 0,
-    locationPage = "grid",
-    locationFocus = "grid",
+    locationPage = "map-list",
+    locationFocus = "map-list",
     locationMapId = nil,
     locationCursorX = nil,
     locationCursorZ = nil,
@@ -169,14 +169,7 @@ function Controller:press(action)
       if mapId ~= nil then
         return { kind = "location-map-select", mapId = tonumber(mapId) }
       end
-      if self.focus == "location:map-picker" then
-        self:openLocationMaps()
-        return { kind = "location-page", page = "map-list" }
-      elseif self.focus == "location:map-back" then
-        self.locationPage = "grid"
-        self:setFocus("location:grid")
-        return { kind = "location-page", page = "grid" }
-      elseif self.focus == "location:grid" then
+      if self.focus == "location:grid" then
         if self.locationCursorX ~= nil and self.locationCursorZ ~= nil then
           return { kind = "select_tile", fieldX = self.locationCursorX, fieldZ = self.locationCursorZ }
         end
@@ -236,7 +229,8 @@ function Controller:setSection(section)
   elseif section == "Player" then
     self.focus = "money"
   elseif section == "Location" then
-    self:setFocus(self.locationPage == "map-list" and "list:location:map-list" or "location:grid")
+    self.locationPage = "map-list"
+    self:setFocus("list:location:map-list")
   else
     self.focus = "list:flags"
   end
@@ -268,17 +262,19 @@ function Controller:enterLocation(location)
   assert(type(mapId) == "number" and mapId % 1 == 0 and mapId >= 0)
   assert(type(fieldX) == "number" and fieldX % 1 == 0)
   assert(type(fieldZ) == "number" and fieldZ % 1 == 0)
-  if self.locationMapId ~= mapId then
-    self.locationMapId = mapId
-    self.locationPage = "grid"
-    self.locationFocus = "grid"
+  local changed = self.locationMapId ~= mapId
+  self.locationMapId = mapId
+  if changed then
     self.locationMapOffset = 0
   end
   self.locationCursorX, self.locationCursorZ = fieldX, fieldZ
   self.locationCenterX, self.locationCenterZ = fieldX, fieldZ
-  if self.section == "Location" then
-    self.locationPage = "grid"
-    self:setFocus("location:grid")
+  if changed or self.section ~= "Location" then
+    self.locationPage = "map-list"
+    self.locationFocus = "map-list"
+  end
+  if self.section == "Location" and self.locationPage == "map-list" then
+    self:setFocus("list:location:map-list")
   end
 end
 
@@ -400,12 +396,7 @@ function Controller:setFocus(targetId)
     if targetId == "location:grid" or targetId:match("^location:tile:") then
       self.locationFocus = "grid"
       self.locationPage = "grid"
-    elseif
-      targetId:match("^location:map:")
-      or targetId == "location:map-picker"
-      or targetId == "location:map-back"
-      or targetId == "list:location:map-list"
-    then
+    elseif targetId:match("^location:map:") or targetId == "list:location:map-list" then
       self.locationFocus = "map-list"
       self.locationPage = "map-list"
     elseif targetId == "section" or targetId:match("^section:") then
@@ -506,11 +497,7 @@ function Controller:pointer(event)
       self.focus = event.targetId
       if event.targetId == "location:grid" or event.targetId:match("^location:tile:") then
         self:setFocus(event.targetId)
-      elseif
-        event.targetId:match("^location:map:")
-        or event.targetId == "location:map-picker"
-        or event.targetId == "location:map-back"
-      then
+      elseif event.targetId:match("^location:map:") then
         self:setFocus(event.targetId)
       else
         self.focusByScope[self.scopeId] = event.targetId
@@ -608,14 +595,6 @@ function Controller:pointer(event)
         self:setFocus("location:grid")
         self.locationCursorX, self.locationCursorZ = tonumber(fieldX), tonumber(fieldZ)
         return { kind = "select_tile", fieldX = self.locationCursorX, fieldZ = self.locationCursorZ }
-      end
-      if target == "location:map-picker" then
-        self:openLocationMaps()
-        return { kind = "location-page", page = "map-list" }
-      elseif target == "location:map-back" then
-        self.locationPage = "grid"
-        self:setFocus("location:grid")
-        return { kind = "location-page", page = "grid" }
       end
       local mapId = target:match("^location:map:(%d+)$")
       if mapId ~= nil then

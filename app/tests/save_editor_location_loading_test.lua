@@ -84,7 +84,12 @@ local function fakeCoverage(loader, mapId, anchorX, anchorZ)
     origin = { x = anchorX * 32, z = anchorZ * 32 },
     index = {
       matrices = {
-        { matrixMemberId = 0, width = 2, height = 1, cells = { { x = 0, z = 0 }, { x = 1, z = 0 } } },
+        {
+          matrixMemberId = 0,
+          width = 2,
+          height = 1,
+          cells = { { x = 0, z = 0, mapHeaderId = mapId }, { x = 1, z = 0, mapHeaderId = mapId } },
+        },
       },
     },
     terrainDependencyHash = "fake-coverage-hash",
@@ -777,6 +782,45 @@ function T.tests.first_outdoor_preparation_acquires_the_cell_index_inside_staged
   Assert.equal(final.status.state, "ready", "repeated bounded updates finish real preparation")
   Assert.notNil(service.coverage, "staged coverage publishes a real physical window")
   Assert.notNil(loader:get(0), "the real loader published the prepared map")
+  service:dispose()
+end
+
+function T.tests.represented_bounds_derive_from_descriptor_headers_in_a_single_pass()
+  local service, loader = loadingService({ outdoor = true, taskImmediate = true, coverageImmediate = true })
+  openOutside(service, 11)
+  service:update()
+  Assert.equal(service:snapshot().status.state, "ready", "staged preparation reaches ready before recollection")
+  local coverage = assert(service.coverage, "ready outdoor preparation publishes its coverage")
+  coverage.index.matrices[1].cells = {
+    { x = 0, z = 0, mapHeaderId = 11 },
+    { x = 1, z = 0, mapHeaderId = 0 },
+    { x = 2, z = 0, mapHeaderId = 22 },
+    { x = 3, z = 0, mapHeaderId = 99 },
+    { x = 0, z = 1, mapHeaderId = 11 },
+    { x = 1, z = 1, mapHeaderId = 22 },
+  }
+  local lookups = 0
+  function coverage:mapHeaderAt()
+    lookups = lookups + 1
+    error("bounds collection must not resolve coordinates per cell", 2)
+  end
+  function coverage:committedDescriptors()
+    return { { mapHeaderId = 11 }, { mapHeaderId = 0 }, { mapHeaderId = 22 }, { mapHeaderId = 99 } }
+  end
+  function loader:loadLogical(mapId)
+    assert(mapId == 22, "only the represented neighbor loads beside the selected map")
+    local neighbor = indoorRuntime()
+    function neighbor:release() end
+    return neighbor
+  end
+  service.mapBounds = nil
+  service:_collectRepresented()
+  Assert.deepEqual(
+    service.mapBounds,
+    { minX = 0, maxX = 95, minZ = 0, maxZ = 63 },
+    "filler cells inherit the selected map and foreign cells stay outside the union"
+  )
+  Assert.equal(lookups, 0, "the whole-matrix pass performs no coordinate lookup")
   service:dispose()
 end
 
