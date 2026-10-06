@@ -16,7 +16,7 @@ local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
 
-local SUMMARY_SCHEMA = "g4-summary-manifest-v2"
+local SUMMARY_SCHEMA = "g4-summary-manifest-v3"
 local SUMMARY_ASSET_DIR = "assets/generated/summary/"
 local MOTION_ARCHIVE_PATH = "a/0/9/0"
 
@@ -600,18 +600,18 @@ function T.touch_targets_cover_every_native_control_in_source_order(romFs, versi
   end
 end
 
--- Sounds and transitions compile to their calibrated empty records: the
--- overlay selects numeric effect ids and hardcodes its sprite timing at
--- the state call sites, and no generated-family consumer resolves either
--- section yet. The envelope keeps both closed keys with their shape
--- validators so a future populated section validates; emptiness is the
--- documented complete state, not a missing population.
+-- Sounds compile to their calibrated empty record: the overlay selects
+-- numeric effect ids at its state call sites and no generated-family
+-- consumer resolves sound roles yet. Transition tracks are required
+-- content now: the nested move/ribbon states consume generated BG
+-- position traces, so the envelope keeps a populated transition section
+-- beside the empty sounds.
 function T.absent_sections_carry_the_documented_closed_excuse(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local sounds = assert(bundle.manifest.sounds, "the manifest keeps its closed sounds key")
   Assert.isTrue(next(sounds) == nil, "no sound role compiles without a resolving consumer")
   local transitions = assert(bundle.manifest.transitions, "the manifest keeps its closed transitions key")
-  Assert.isTrue(next(transitions) == nil, "no transition track compiles without a resolving consumer")
+  Assert.isTrue(next(transitions) ~= nil, "the nested detail tracks compile for their resolving consumer")
 end
 
 -- The compiled windows keep source geometry under semantic ownership:
@@ -877,6 +877,502 @@ function T.compiled_memo_templates_bind_semantic_substitutions(romFs, versionId)
   end
   Assert.isTrue(metKinds.text == true or textSeen, "memo templates retain their literal text")
   Assert.isTrue(breakSeen, "memo templates retain their line breaks")
+end
+
+-- Migrated memo wording covers the canonical origin-game domain: every
+-- game identity the mon service accepts resolves to generated wording
+-- through its source region entry. GBA groups share their region entry,
+-- both HGSS games share Johto, the D/P/Pt group resolves the source
+-- dashes entry rather than Sinnoh, and GameCube resolves Distant Land.
+function T.migrated_memo_wording_covers_every_canonical_origin_game(romFs, versionId)
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  local SummarySources = require("romdump.src.config.SummarySources")
+  local bundle = bundleFor(romFs, versionId)
+  local memo = assert(bundle.manifest.memo, "the compiled manifest carries its memo records")
+  local regions = assert(memo.migrationRegions, "the memo binds migration regions per game")
+  local canonical = {}
+  for key in pairs(HgssMonService.GAMES) do
+    canonical[#canonical + 1] = key
+  end
+  table.sort(canonical)
+  local actual = {}
+  for key in pairs(regions) do
+    actual[#actual + 1] = key
+  end
+  table.sort(actual)
+  Assert.deepEqual(actual, canonical, "the migration map covers the canonical origin-game domain")
+  local landmarks = assert(memo.landmarks, "the memo carries landmark records")
+  local giftByLocation = assert(landmarks.giftByLocation, "the memo carries gift locations")
+  local sourceLocations = SummarySources.memoLocations
+  Assert.equal(regions.ruby, giftByLocation[sourceLocations.hoenn], "ruby resolves the Hoenn wording")
+  Assert.equal(regions.sapphire, regions.ruby, "sapphire shares the Hoenn wording")
+  Assert.equal(regions.emerald, regions.ruby, "emerald shares the Hoenn wording")
+  Assert.equal(regions.firered, giftByLocation[sourceLocations.kanto], "firered resolves the Kanto wording")
+  Assert.equal(regions.leafgreen, regions.firered, "leafgreen shares the Kanto wording")
+  Assert.equal(regions.heartgold, giftByLocation[sourceLocations.johto], "heartgold resolves the Johto wording")
+  Assert.equal(regions.soulsilver, regions.heartgold, "soulsilver shares the Johto wording")
+  Assert.equal(
+    regions.diamond,
+    giftByLocation[sourceLocations.dashes],
+    "diamond resolves the source dashes wording"
+  )
+  Assert.equal(regions.pearl, regions.diamond, "pearl shares the dashes wording")
+  Assert.equal(regions.platinum, regions.diamond, "platinum shares the dashes wording")
+  Assert.isTrue(
+    regions.diamond ~= giftByLocation[sourceLocations.sinnoh],
+    "the D/P/Pt wording keeps the dashes entry instead of Sinnoh"
+  )
+  Assert.equal(
+    regions.gamecube,
+    giftByLocation[sourceLocations.distantLand],
+    "gamecube resolves the Distant Land wording"
+  )
+  local labels = assert(bundle.manifest.text, "the manifest carries lowered text").labels
+  for _, key in ipairs(canonical) do
+    local wording = regions[key]
+    Assert.isTrue(type(wording) == "string" and wording ~= "", "origin game " .. key .. " binds wording")
+    Assert.isTrue(
+      type(labels[wording]) == "string" and labels[wording] ~= "",
+      "origin game " .. key .. " names generated wording text"
+    )
+  end
+end
+
+-- Source-pinned dynamic chrome anchors, as "x,y" pairs: the six primary
+-- member/mode anchors, the secondary cancel and restricted-special
+-- anchors, the five performance rows of five star anchors, the five
+-- modifier anchors, the five leaf anchors, and the ribbon cursor plus
+-- page controls.
+local EXPECTED_SPRITE_ANCHORS = {
+  "183,55",
+  "223,63",
+  "183,87",
+  "223,95",
+  "183,119",
+  "223,127",
+  "68,168",
+  "220,176",
+  "64,48",
+  "80,48",
+  "96,48",
+  "112,48",
+  "128,48",
+  "64,80",
+  "80,80",
+  "96,80",
+  "112,80",
+  "128,80",
+  "64,112",
+  "80,112",
+  "96,112",
+  "112,112",
+  "128,112",
+  "64,144",
+  "80,144",
+  "96,144",
+  "112,144",
+  "128,144",
+  "64,176",
+  "80,176",
+  "96,176",
+  "112,176",
+  "128,176",
+  "80,32",
+  "80,64",
+  "80,96",
+  "80,128",
+  "80,160",
+  "91,182",
+  "101,182",
+  "111,182",
+  "121,182",
+  "131,182",
+  "32,24",
+  "128,32",
+  "128,96",
+}
+
+local function collectAnchorPairs(value, out, seen)
+  if type(value) ~= "table" or seen[value] then
+    return
+  end
+  seen[value] = true
+  if type(value.x) == "number" and type(value.y) == "number" then
+    local fields = 0
+    for _ in pairs(value) do
+      fields = fields + 1
+    end
+    if fields == 2 then
+      out[value.x .. "," .. value.y] = true
+    end
+  end
+  for _, child in pairs(value) do
+    collectAnchorPairs(child, out, seen)
+  end
+end
+
+local function spriteFrameBytes(bundle, path, what)
+  local bytes = assert(bundle.assets[path], what .. " has compiled bytes: " .. path)
+  if type(bytes) ~= "string" then
+    bytes = bytes:getString()
+  end
+  return assert(bytes, what .. " decodes: " .. path)
+end
+
+-- The dynamic chrome family is complete and source-backed: every required
+-- semantic role and animation descriptor is present, every frame resolves
+-- to a family-owned visual with compiled bytes, and every source-pinned
+-- anchor survives lowering. No frame points into party art.
+function T.dynamic_chrome_roles_carry_source_rasterized_animation_visuals(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = assert(bundle.manifest, "compilation publishes a manifest")
+  Assert.equal(manifest.schema, "g4-summary-manifest-v3", "the compiled manifest carries the family schema")
+  local sprites = assert(manifest.sprites, "the compiled manifest carries its dynamic chrome")
+  for _, role in ipairs({ "animations", "primaryCursor", "secondaryMoveCursor", "performance", "leaves", "ribbons" }) do
+    Assert.notNil(sprites[role], "the dynamic chrome carries " .. role)
+  end
+  local visuals = assert(manifest.visuals, "the compiled manifest carries its visuals")
+  local animations = assert(sprites.animations, "the dynamic chrome carries animation descriptors")
+  local descriptorCount = 0
+  for _ in pairs(animations) do
+    descriptorCount = descriptorCount + 1
+  end
+  Assert.isTrue(descriptorCount > 0, "the animation closure is nonempty")
+  local frameCount = 0
+  for name, descriptor in pairs(animations) do
+    local what = "animation " .. tostring(name)
+    Assert.isTrue(type(descriptor) == "table", what .. " is a descriptor record")
+    local frames = assert(descriptor.frames, what .. " carries frames")
+    Assert.isTrue(#frames > 0, what .. " carries a nonempty sequence")
+    for index, frame in ipairs(frames) do
+      local label = what .. " frame " .. index
+      Assert.isTrue(
+        type(frame.durationTicks) == "number" and frame.durationTicks % 1 == 0 and frame.durationTicks > 0,
+        label .. " carries a positive integral duration"
+      )
+      local visualName = assert(frame.visual, label .. " names its visual")
+      local visual = assert(visuals[visualName], label .. " resolves to a family visual")
+      local image = assert(visual.image, label .. " visual carries its image path")
+      Assert.equal(
+        image:sub(1, #SUMMARY_ASSET_DIR),
+        SUMMARY_ASSET_DIR,
+        label .. " art stays family-owned: " .. image
+      )
+      Assert.isTrue(image:find("party", 1, true) == nil, label .. " art never reuses party pixels")
+      local width, height = PngReader.rgba(spriteFrameBytes(bundle, image, label))
+      Assert.isTrue(width > 0 and height > 0, label .. " rasterizes to a real surface")
+      frameCount = frameCount + 1
+    end
+    Assert.isTrue(
+      descriptor.playback == "static" or descriptor.playback == "once" or descriptor.playback == "loop",
+      what .. " carries source playback"
+    )
+    Assert.isTrue(
+      type(descriptor.loopFrom) == "number"
+        and descriptor.loopFrom % 1 == 0
+        and descriptor.loopFrom >= 1
+        and descriptor.loopFrom <= #frames,
+      what .. " carries its loop origin inside its own sequence"
+    )
+  end
+  Assert.isTrue(frameCount > 0, "the animation closure references frame visuals")
+  local leaves = {}
+  stringLeaves(sprites, leaves)
+  for _, leaf in ipairs(leaves) do
+    if leaf:sub(-4) == ".png" then
+      Assert.isTrue(leaf:find("party", 1, true) == nil, "no dynamic image reuses party art: " .. leaf)
+    end
+  end
+  local anchors = {}
+  collectAnchorPairs(sprites, anchors, {})
+  for _, expected in ipairs(EXPECTED_SPRITE_ANCHORS) do
+    Assert.isTrue(anchors[expected] == true, "the dynamic chrome keeps anchor " .. expected)
+  end
+end
+
+-- Nested move/ribbon presentation moves on native BG position traces over
+-- one common backing: the generated tracks carry the source axes and
+-- positions, and the shared member-21 visual keeps its renamed role.
+function T.nested_detail_tracks_use_native_bg_positions_over_the_common_backing(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = assert(bundle.manifest, "compilation publishes a manifest")
+  local transitions = assert(manifest.transitions, "the manifest carries transition tracks")
+  Assert.keySet(transitions, "moveDetail,ribbonDetail", "exactly the two nested detail tracks compile")
+  local move = assert(transitions.moveDetail, "the move detail track compiles")
+  Assert.equal(move.pane, "sub", "the move track drives the sub pane")
+  Assert.equal(move.axis, "x", "the move track moves along X")
+  Assert.deepEqual(move.positions, { 0, 64, 128 }, "the move track keeps the native BG5 positions")
+  local ribbon = assert(transitions.ribbonDetail, "the ribbon detail track compiles")
+  Assert.equal(ribbon.pane, "sub", "the ribbon track drives the sub pane")
+  Assert.equal(ribbon.axis, "y", "the ribbon track moves along Y")
+  Assert.deepEqual(ribbon.positions, { 0, 36, 72 }, "the ribbon track keeps the native BG5 positions")
+  local visuals = assert(manifest.visuals, "the compiled manifest carries its visuals")
+  local backing = assert(visuals.detailBacking, "the common detail backing visual compiles")
+  local image = assert(backing.image, "the detail backing carries its image path")
+  Assert.equal(
+    image:sub(1, #SUMMARY_ASSET_DIR),
+    SUMMARY_ASSET_DIR,
+    "the detail backing stays family-owned"
+  )
+  Assert.notNil(bundle.assets[image], "the detail backing has compiled bytes")
+  Assert.isNil(visuals.moveBacking, "the move-only backing name does not survive the rename")
+end
+
+-- A reader that forwards every source call to the wrapped dump except
+-- the overridden archives. Corrupted members exercise the chrome
+-- resolver failure paths while the remaining closure stays real.
+local function corruptFs(romFs, overrides)
+  local wrapper = {}
+  setmetatable(wrapper, {
+    __index = function(_, key)
+      if key == "openNarc" then
+        return function(_, symbol)
+          if overrides[symbol] ~= nil then
+            return overrides[symbol]
+          end
+          return romFs:openNarc(symbol)
+        end
+      end
+      local value = romFs[key]
+      if type(value) == "function" then
+        return function(_, ...)
+          return value(romFs, ...)
+        end
+      end
+      return value
+    end,
+  })
+  return wrapper
+end
+
+local function corruptArchive(realArchive, corrupt)
+  local fake = {}
+  function fake:memberCount()
+    return realArchive:memberCount()
+  end
+  function fake:readMember(memberId)
+    if corrupt[memberId] ~= nil then
+      local replacement = corrupt[memberId]
+      if replacement == false then
+        return nil, Errors.new("ROMFS_MEMBER_MISSING", "test archive drops member " .. memberId, {
+          member = memberId,
+        })
+      end
+      return replacement
+    end
+    return realArchive:readMember(memberId)
+  end
+  return fake
+end
+
+local function u32le(bytes, offset)
+  return string.byte(bytes, offset + 1)
+    + string.byte(bytes, offset + 2) * 256
+    + string.byte(bytes, offset + 3) * 65536
+    + string.byte(bytes, offset + 4) * 16777216
+end
+
+-- Splits one resource table into its head, its 24-byte record slices
+-- keyed by object id, and its terminator slice.
+local function tableSlices(bytes)
+  local head = bytes:sub(1, 4)
+  local records, offset = {}, 4
+  local terminator = nil
+  while offset + 24 <= #bytes do
+    local slice = bytes:sub(offset + 1, offset + 24)
+    if u32le(bytes, offset) == 0xFFFFFFFE then
+      terminator = slice
+      break
+    end
+    records[#records + 1] = { objectId = u32le(bytes, offset + 12), raw = slice }
+    offset = offset + 24
+  end
+  return head, records, terminator
+end
+
+local function packU32(value)
+  return string.char(
+    value % 256,
+    math.floor(value / 256) % 256,
+    math.floor(value / 65536) % 256,
+    math.floor(value / 16777216) % 256
+  )
+end
+
+local function dropTableRecord(bytes, objectId)
+  local head, records, terminator = tableSlices(bytes)
+  assert(terminator ~= nil, "the source table carries its terminator")
+  local parts = { head }
+  for _, record in ipairs(records) do
+    if record.objectId ~= objectId then
+      parts[#parts + 1] = record.raw
+    end
+  end
+  parts[#parts + 1] = terminator
+  return table.concat(parts)
+end
+
+-- Rewrites the file word (second word) of one table record, keeping
+-- every other word verbatim.
+local function repointTableRecord(bytes, objectId, fileId)
+  local head, records, terminator = tableSlices(bytes)
+  assert(terminator ~= nil, "the source table carries its terminator")
+  local parts = { head }
+  for _, record in ipairs(records) do
+    if record.objectId ~= objectId then
+      parts[#parts + 1] = record.raw
+    else
+      parts[#parts + 1] = record.raw:sub(1, 4) .. packU32(fileId) .. record.raw:sub(9, 24)
+    end
+  end
+  parts[#parts + 1] = terminator
+  return table.concat(parts)
+end
+
+-- A chrome header that does not open fails compilation instead of
+-- publishing a family without dynamic chrome.
+function T.missing_chrome_header_member_fails_compilation(romFs, versionId)
+  local compiler = requireCompiler()
+  local catalog = compileCatalog(romFs, versionId)
+  local portraits = portraitManifest(versionId)
+  local SummarySources = require("romdump.src.config.SummarySources")
+  local realResdat = assert(romFs:openNarc(SummarySources.archives.resdat.symbol))
+  local resdat = corruptArchive(realResdat, { [SummarySources.resdat.header] = false })
+  local bundle, err =
+    compiler.compile(corruptFs(romFs, { [SummarySources.archives.resdat.symbol] = resdat }), catalog, portraits)
+  Assert.isNil(bundle, "an unreadable chrome header publishes nothing")
+  Assert.isTrue(Errors.is(err), "an unreadable chrome header fails structurally")
+  Assert.equal(err.code, "SUMMARY_SOURCE_INVALID", "the failure names its producer owner")
+end
+
+-- A chrome resource table that does not open fails compilation instead
+-- of publishing a family without dynamic chrome.
+function T.missing_chrome_table_member_fails_compilation(romFs, versionId)
+  local compiler = requireCompiler()
+  local catalog = compileCatalog(romFs, versionId)
+  local portraits = portraitManifest(versionId)
+  local SummarySources = require("romdump.src.config.SummarySources")
+  local realResdat = assert(romFs:openNarc(SummarySources.archives.resdat.symbol))
+  local resdat = corruptArchive(realResdat, { [SummarySources.resdat.animationTable] = false })
+  local bundle, err =
+    compiler.compile(corruptFs(romFs, { [SummarySources.archives.resdat.symbol] = resdat }), catalog, portraits)
+  Assert.isNil(bundle, "an unreadable chrome table publishes nothing")
+  Assert.isTrue(Errors.is(err), "an unreadable chrome table fails structurally")
+  Assert.equal(err.code, "SUMMARY_SOURCE_INVALID", "the failure names its producer owner")
+end
+
+-- A resource set whose character entry leaves its table fails
+-- compilation naming the affected role instead of rasterizing without
+-- art.
+function T.chrome_set_missing_its_table_entry_fails_compilation(romFs, versionId)
+  local compiler = requireCompiler()
+  local catalog = compileCatalog(romFs, versionId)
+  local portraits = portraitManifest(versionId)
+  local SummarySources = require("romdump.src.config.SummarySources")
+  local realResdat = assert(romFs:openNarc(SummarySources.archives.resdat.symbol))
+  local header = assert(realResdat:readMember(SummarySources.resdat.header))
+  local set = assert(SummarySources.chromeResources.primaryCursor.resourceSet, "the inventory selects its set")
+  local charObject = u32le(header, set * 32)
+  local table54 = assert(realResdat:readMember(SummarySources.resdat.charTable))
+  local resdat = corruptArchive(realResdat, { [SummarySources.resdat.charTable] = dropTableRecord(table54, charObject) })
+  local bundle, err =
+    compiler.compile(corruptFs(romFs, { [SummarySources.archives.resdat.symbol] = resdat }), catalog, portraits)
+  Assert.isNil(bundle, "a chrome set without its table entry publishes nothing")
+  Assert.isTrue(Errors.is(err), "a chrome set without its table entry fails structurally")
+  Assert.equal(err.code, "SUMMARY_SOURCE_INVALID", "the failure names its producer owner")
+end
+
+-- A chrome animation that does not decode fails compilation instead of
+-- publishing a family with blank frames. Repointing the selected
+-- animation entry at the palette member feeds non-animation bytes to
+-- the decoder.
+function T.undecodable_chrome_animation_fails_compilation(romFs, versionId)
+  local compiler = requireCompiler()
+  local catalog = compileCatalog(romFs, versionId)
+  local portraits = portraitManifest(versionId)
+  local SummarySources = require("romdump.src.config.SummarySources")
+  local realResdat = assert(romFs:openNarc(SummarySources.archives.resdat.symbol))
+  local header = assert(realResdat:readMember(SummarySources.resdat.header))
+  local set = assert(SummarySources.chromeResources.performance.resourceSet, "the inventory selects its set")
+  local animObject = u32le(header, set * 32 + 8)
+  local table52 = assert(realResdat:readMember(SummarySources.resdat.animationTable))
+  local resdat =
+    corruptArchive(realResdat, { [SummarySources.resdat.animationTable] = repointTableRecord(table52, animObject, 0) })
+  local bundle, err =
+    compiler.compile(corruptFs(romFs, { [SummarySources.archives.resdat.symbol] = resdat }), catalog, portraits)
+  Assert.isNil(bundle, "an undecodable chrome animation publishes nothing")
+  Assert.isTrue(Errors.is(err), "an undecodable chrome animation fails structurally")
+  Assert.equal(err.code, "SUMMARY_SOURCE_INVALID", "the failure names its producer owner")
+end
+
+-- Frame timing and placement survive lowering: single-frame sequences
+-- normalize to static playback without discarding their rasterizer
+-- offsets, and multi-frame sequences keep their source playback.
+function T.chrome_animation_timing_keeps_source_offsets_and_playback(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = assert(bundle.manifest, "compilation publishes a manifest")
+  local visuals = assert(manifest.visuals, "the compiled manifest carries its visuals")
+  local animations = assert(manifest.sprites.animations, "the dynamic chrome carries animation descriptors")
+  local staticOffsetSeen, multiSeen = false, false
+  for name, descriptor in pairs(animations) do
+    local frames = assert(descriptor.frames, "animation " .. tostring(name) .. " carries frames")
+    if #frames == 1 then
+      Assert.equal(descriptor.playback, "static", "single-frame " .. tostring(name) .. " rests instead of cycling")
+      local visual = assert(visuals[frames[1].visual], "single-frame " .. tostring(name) .. " resolves its visual")
+      if visual.offset ~= nil then
+        Assert.isTrue(
+          type(visual.offset.x) == "number" and type(visual.offset.y) == "number",
+          "single-frame " .. tostring(name) .. " keeps its integral raster offset"
+        )
+        staticOffsetSeen = true
+      end
+    else
+      multiSeen = true
+      Assert.isTrue(
+        descriptor.playback == "once" or descriptor.playback == "loop",
+        "multi-frame " .. tostring(name) .. " keeps its source playback"
+      )
+    end
+  end
+  Assert.isTrue(staticOffsetSeen, "single-frame normalization keeps a source raster offset")
+  Assert.isTrue(multiSeen, "multi-frame sequences keep source playback")
+end
+
+-- Dynamic-chrome placement keeps its source scalars and counts: the
+-- nested move rows, the five performance rows of five stars with
+-- modifier slots, the six member anchors, the five leaves, and the
+-- ribbon grid controls.
+function T.dynamic_chrome_geometry_keeps_its_source_scalars(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local sprites = assert(bundle.manifest.sprites, "the compiled manifest carries its dynamic chrome")
+  local secondary = assert(sprites.secondaryMoveCursor, "the dynamic chrome carries its nested move geometry")
+  Assert.equal(secondary.x, 68, "nested move rows keep their horizontal origin")
+  Assert.equal(secondary.rowBaseY, 24, "nested move rows keep their vertical origin")
+  Assert.equal(secondary.rowStep, 32, "nested move rows keep their row step")
+  Assert.equal(secondary.cancelY, 152, "the ordinary cancel row keeps its position")
+  Assert.equal(secondary.restrictedCancelY, 168, "the restricted cancel row keeps its position")
+  local rows = assert(sprites.performance.rows, "the dynamic chrome carries its performance rows")
+  Assert.equal(#rows, 5, "all five contest rows compile")
+  local stats = { "speed", "power", "skill", "stamina", "jump" }
+  local rowYs = { 48, 80, 112, 144, 176 }
+  local modifierYs = { 32, 64, 96, 128, 160 }
+  for index, row in ipairs(rows) do
+    Assert.equal(row.stat, stats[index], "performance row " .. index .. " keeps its contest")
+    Assert.equal(#row.stars, 5, "performance row " .. tostring(row.stat) .. " keeps five stars")
+    for star, anchor in ipairs(row.stars) do
+      Assert.equal(anchor.x, 64 + (star - 1) * 16, "star " .. star .. " keeps its column")
+      Assert.equal(anchor.y, rowYs[index], "star " .. star .. " keeps its row")
+    end
+    Assert.equal(row.modifier.x, 80, "the modifier slot keeps its column")
+    Assert.equal(row.modifier.y, modifierYs[index], "the modifier slot keeps its row")
+  end
+  Assert.equal(#sprites.primaryCursor.anchors, 6, "all six member anchors compile")
+  Assert.equal(#sprites.leaves.anchors, 5, "all five leaf anchors compile")
+  local ribbons = assert(sprites.ribbons, "the dynamic chrome carries its ribbon controls")
+  Assert.equal(ribbons.columns, 3, "the ribbon grid keeps three columns")
+  Assert.equal(ribbons.columnStep, 32, "the ribbon grid keeps its column step")
+  Assert.equal(ribbons.rowStep, 40, "the ribbon grid keeps its row step")
+  Assert.deepEqual(ribbons.origin, { x = 32, y = 24 }, "the ribbon grid keeps its origin")
 end
 
 local suite = RomSuite.fromFacts(T)

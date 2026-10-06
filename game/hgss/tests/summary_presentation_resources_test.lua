@@ -393,6 +393,81 @@ function T.late_completions_land_quietly_after_lease_release()
   owner:release()
 end
 
+-- Counts image-queue requests per cache-relative path from installation
+-- onward: the returned table fills as preparation issues requests, so
+-- callers install it before preparing and read per-path totals after
+-- the demand settles.
+---@param helper table<string, unknown> preparation doubles
+---@return table<string, integer> live per-path request counts
+local function countQueueRequests(helper)
+  local counts = {}
+  local queue = assert(helper.preparationQueue, "the doubles carry the image queue")
+  local inner = assert(queue.request, "the image queue issues requests")
+  queue.request = function(_, kind, path, priority)
+    counts[path] = (counts[path] or 0) + 1
+    return inner(_, kind, path, priority)
+  end
+  return counts
+end
+
+-- Dynamic chrome flows through the existing preparation owner: every
+-- animation frame image the synthetic family references is prepared once
+-- through its canonical path and resolves on the ready bundle, without
+-- introducing party art and without changing owner lifetime semantics.
+function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
+  local Resources = requireResources()
+  local setup = syntheticComposition({})
+  local manifest = setup.manifest
+  Assert.equal(manifest.schema, "g4-summary-manifest-v3", "the synthetic family tracks the generated schema")
+  local sprites = assert(manifest.sprites, "the synthetic family carries dynamic chrome")
+  for _, role in ipairs({ "animations", "primaryCursor", "secondaryMoveCursor", "performance", "leaves", "ribbons" }) do
+    Assert.notNil(sprites[role], "the synthetic family carries " .. role)
+  end
+  local animations = assert(sprites.animations, "the synthetic family carries animation descriptors")
+  local visuals = assert(manifest.visuals, "the synthetic family carries visuals")
+  local frameImages = {}
+  local seen = {}
+  for name, descriptor in pairs(animations) do
+    local frames = assert(descriptor.frames, "synthetic animation " .. tostring(name) .. " carries frames")
+    Assert.isTrue(#frames > 0, "synthetic animation " .. tostring(name) .. " is nonempty")
+    for _, frame in ipairs(frames) do
+      local visualName = assert(frame.visual, "synthetic frames name their visual")
+      local visual = assert(visuals[visualName], "synthetic frame resolves its visual")
+      local image = assert(visual.image, "synthetic frame visuals carry image paths")
+      Assert.equal(
+        image:sub(1, #"assets/generated/summary/"),
+        "assets/generated/summary/",
+        "synthetic frames stay family-owned: " .. image
+      )
+      Assert.isTrue(image:find("party", 1, true) == nil, "synthetic frames never reuse party art")
+      if seen[image] == nil then
+        seen[image] = true
+        frameImages[#frameImages + 1] = image
+      end
+    end
+  end
+  Assert.isTrue(#frameImages > 0, "the synthetic chrome references frame images")
+  local counts = countQueueRequests(setup.helper)
+  local owner = Resources.new(setup.newOptions())
+  local lease = owner:acquire()
+  local outcome = nil
+  for _ = 1, 12 do
+    outcome = assert(lease:prepare(syntheticDemand("dynamic-chrome", 1)))
+    if outcome.kind ~= "pending" then
+      break
+    end
+  end
+  Assert.equal(outcome.kind, "ready", "the dynamic chrome demand prepares")
+  local assets = assert(outcome.assets, "ready preparation carries its bundle")
+  for _, image in ipairs(frameImages) do
+    Assert.notNil(assets.imageForPath(image), "the ready bundle resolves frame " .. image)
+    Assert.equal(counts[image], 1, "frame " .. image .. " decodes once through its canonical path")
+  end
+  lease:release()
+  lease:release()
+  owner:release()
+end
+
 -- Exact-identity preparation below: the owner resolves full roster portrait
 -- identities to their own generated pages, shares canonical images by
 -- cache-relative path, and frees owned GPU state with the last live lease.

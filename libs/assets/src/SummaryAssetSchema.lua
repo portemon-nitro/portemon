@@ -1,13 +1,16 @@
 -- Authoritative validation for the generated summary presentation class.
 -- The manifest carries the canonical 256x192 panes, the three native
--- groups with their main/sub variants, semantic windows, realized visuals,
--- sprite roles, touch hitboxes, lowered text, palette roles, bar rules,
--- picture timelines with exact termination, ribbon definitions,
--- performance tables, dex mapping, memo records, sounds, and transitions.
--- Every loader, producer writer, and test calls these validators, so no
--- second interpretation of the shapes exists. Unknown fields, wrong pane
--- sizes, missing groups, non-integral timing, non-finite geometry, and
--- leaked source identities fail loudly. Love-free and filesystem-free.
+-- groups with their main/sub variants, semantic windows, realized visuals
+-- including the common nested-state backing, required dynamic-chrome
+-- animation descriptors and cursor/star/leaf/ribbon geometry, touch
+-- hitboxes, lowered text, palette roles, bar rules, picture timelines
+-- with exact termination, ribbon definitions, performance tables, dex
+-- mapping, memo records with per-origin migrated wording, sounds, and
+-- the exact nested transition tracks. Every loader, producer writer,
+-- and test calls these validators, so no second interpretation of the
+-- shapes exists. Unknown fields, wrong pane sizes, missing groups,
+-- non-integral timing, non-finite geometry, and leaked source identities
+-- fail loudly. Love-free and filesystem-free.
 
 local SchemaCheck = require("libs.assets.src.SchemaCheck")
 local Validate = require("libs.assets.src.Validate")
@@ -15,7 +18,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class SummaryAssetSchema
 local SummaryAssetSchema = {}
 
-SummaryAssetSchema.SCHEMA = "g4-summary-manifest-v2"
+SummaryAssetSchema.SCHEMA = "g4-summary-manifest-v3"
 SummaryAssetSchema.PANE_WIDTH = 256
 SummaryAssetSchema.PANE_HEIGHT = 192
 
@@ -167,6 +170,18 @@ local function checkVisual(value, context, what)
     checkInt(value.offset.x, context, what .. ".offset.x")
     checkInt(value.offset.y, context, what .. ".offset.y")
   end
+end
+
+-- One native placement: an exact integer pixel position. Records carry
+-- exactly the two axes so anchor scans never mistake a rectangle or a
+-- sized visual for a placement.
+local function checkAnchor(value, context, what)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(value, { x = true, y = true }, context, what)
+  checkInt(value.x, context, what .. ".x")
+  checkInt(value.y, context, what .. ".y")
 end
 
 local function checkPaletteBlend(value, context, what)
@@ -541,6 +556,43 @@ local function checkStatRow(value, context, what)
   end
 end
 
+-- One source-rasterized animation: a non-empty frame sequence whose
+-- visuals resolve to family-owned records, with source playback and a
+-- loop origin inside its own sequence. Frames name visuals, never
+-- native resource identities.
+local function checkAnimationDescriptor(value, context, what, visuals)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(value, { frames = true, loopFrom = true, playback = true }, context, what)
+  if type(value.frames) ~= "table" or not Validate.isArray(value.frames) or #value.frames == 0 then
+    fail(what .. " carries no frames", context)
+  end
+  for index, frame in ipairs(value.frames) do
+    local where = what .. ".frames[" .. index .. "]"
+    if type(frame) ~= "table" then
+      fail(where .. " must be a record", context)
+    end
+    checkKeys(frame, { visual = true, durationTicks = true }, context, where)
+    if type(frame.visual) ~= "string" or frame.visual == "" then
+      fail(where .. ".visual must name its visual", context)
+    end
+    if type(visuals) ~= "table" or visuals[frame.visual] == nil then
+      fail(where .. ".visual names an unknown visual " .. tostring(frame.visual), context)
+    end
+    if type(frame.durationTicks) ~= "number" or frame.durationTicks % 1 ~= 0 or frame.durationTicks <= 0 then
+      fail(where .. ".durationTicks must be a positive integer", context)
+    end
+  end
+  if value.playback ~= "static" and value.playback ~= "once" and value.playback ~= "loop" then
+    fail(what .. ".playback must be static, once, or loop", context)
+  end
+  checkInt(value.loopFrom, context, what .. ".loopFrom")
+  if value.loopFrom < 1 or value.loopFrom > #value.frames then
+    fail(what .. ".loopFrom must address a frame", context)
+  end
+end
+
 ---@param manifest table<string, unknown>
 function SummaryAssetSchema.assertManifest(manifest)
   if type(manifest) ~= "table" then
@@ -657,29 +709,207 @@ function SummaryAssetSchema.assertManifest(manifest)
   do
     checkVisual(visual, {}, "manifest.visuals." .. tostring(name))
   end
+  -- The member-21 screen backs both nested move and ribbon states
+  -- through one common visual: a family without it cannot draw the
+  -- nested detail transition, and the move-only name must not survive
+  -- the rename.
+  if type(root.visuals.detailBacking) ~= "table" then
+    fail("manifest.visuals.detailBacking carries the common nested-state backing", {})
+  end
+  if root.visuals.moveBacking ~= nil then
+    fail("manifest.visuals.moveBacking must not survive the detail-backing rename", {})
+  end
   if type(root.sprites) ~= "table" then
     fail("manifest.sprites must be a record", {})
   end
-  for name, sprite in
-    pairs(root.sprites --[[@as table<string, unknown>]])
+  local sprites = root.sprites --[[@as table<string, unknown>]]
+  -- Dynamic chrome is required content: the overlay animates cursors,
+  -- performance stars and modifiers, leaves with the crown, and ribbon
+  -- controls through these roles, so a family with an empty or partial
+  -- sprite record must not validate.
+  checkKeys(sprites, {
+    animations = true,
+    primaryCursor = true,
+    secondaryMoveCursor = true,
+    performance = true,
+    leaves = true,
+    ribbons = true,
+  }, {}, "manifest.sprites")
+  if type(sprites.animations) ~= "table" then
+    fail("manifest.sprites.animations must be a record", {})
+  end
+  local animations = sprites.animations --[[@as table<string, unknown>]]
+  if next(animations) == nil then
+    fail("manifest.sprites.animations carries no animation descriptor", {})
+  end
+  for name, descriptor in pairs(animations) do
+    checkAnimationDescriptor(descriptor, {}, "manifest.sprites.animations." .. tostring(name), root.visuals)
+  end
+  local function animationRef(name, what)
+    if type(name) ~= "string" or name == "" then
+      fail(what .. " must name its animation", {})
+    end
+    if animations[name] == nil then
+      fail(what .. " names an unknown animation " .. name, {})
+    end
+  end
+  if type(sprites.primaryCursor) ~= "table" then
+    fail("manifest.sprites.primaryCursor must be a record", {})
+  end
+  local primaryCursor = sprites.primaryCursor --[[@as table<string, unknown>]]
+  checkKeys(
+    primaryCursor,
+    { anchors = true, rootFocus = true, moveRowFocus = true, restrictedCancel = true },
+    {},
+    "manifest.sprites.primaryCursor"
+  )
+  if
+    type(primaryCursor.anchors) ~= "table"
+    or not Validate.isArray(primaryCursor.anchors --[[@as table[] ]])
+    or #primaryCursor.anchors ~= 6
+  then
+    fail("manifest.sprites.primaryCursor.anchors must carry six member anchors", {})
+  end
+  for index, anchor in
+    ipairs(primaryCursor.anchors --[[@as table[] ]])
   do
-    local what = "manifest.sprites." .. tostring(name)
-    if type(sprite) ~= "table" then
+    checkAnchor(anchor, {}, "manifest.sprites.primaryCursor.anchors[" .. index .. "]")
+  end
+  for _, field in ipairs({ "rootFocus", "moveRowFocus", "restrictedCancel" }) do
+    animationRef(primaryCursor[field], "manifest.sprites.primaryCursor." .. field)
+  end
+  if type(sprites.secondaryMoveCursor) ~= "table" then
+    fail("manifest.sprites.secondaryMoveCursor must be a record", {})
+  end
+  local secondaryMoveCursor = sprites.secondaryMoveCursor --[[@as table<string, unknown>]]
+  checkKeys(secondaryMoveCursor, {
+    x = true,
+    rowBaseY = true,
+    rowStep = true,
+    cancelY = true,
+    restrictedCancelY = true,
+    cancelAnchor = true,
+    restrictedSpecialAnchor = true,
+    moveCancel = true,
+    moveFollow = true,
+  }, {}, "manifest.sprites.secondaryMoveCursor")
+  for _, field in ipairs({ "x", "rowBaseY", "rowStep", "cancelY", "restrictedCancelY" }) do
+    checkInt(secondaryMoveCursor[field], {}, "manifest.sprites.secondaryMoveCursor." .. field)
+  end
+  checkAnchor(secondaryMoveCursor.cancelAnchor, {}, "manifest.sprites.secondaryMoveCursor.cancelAnchor")
+  checkAnchor(
+    secondaryMoveCursor.restrictedSpecialAnchor,
+    {},
+    "manifest.sprites.secondaryMoveCursor.restrictedSpecialAnchor"
+  )
+  for _, field in ipairs({ "moveCancel", "moveFollow" }) do
+    animationRef(secondaryMoveCursor[field], "manifest.sprites.secondaryMoveCursor." .. field)
+  end
+  if type(sprites.performance) ~= "table" then
+    fail("manifest.sprites.performance must be a record", {})
+  end
+  local performanceChrome = sprites.performance --[[@as table<string, unknown>]]
+  checkKeys(performanceChrome, { rows = true }, {}, "manifest.sprites.performance")
+  if
+    type(performanceChrome.rows) ~= "table"
+    or not Validate.isArray(performanceChrome.rows --[[@as table[] ]])
+    or #performanceChrome.rows ~= 5
+  then
+    fail("manifest.sprites.performance.rows must carry five contest rows", {})
+  end
+  for index, row in
+    ipairs(performanceChrome.rows --[[@as table[] ]])
+  do
+    local what = "manifest.sprites.performance.rows[" .. index .. "]"
+    if type(row) ~= "table" then
       fail(what .. " must be a record", {})
     end
-    local typed = sprite --[[@as table<string, unknown>]]
-    checkKeys(typed, { visual = true, anchor = true, order = true }, {}, what)
-    if type(typed.visual) ~= "string" or typed.visual == "" then
-      fail(what .. ".visual must name its visual", {})
+    local typed = row --[[@as table<string, unknown>]]
+    checkKeys(typed, {
+      stat = true,
+      stars = true,
+      modifier = true,
+      starBase = true,
+      starAbove = true,
+      starBelow = true,
+      starEmpty = true,
+      modifierPositive = true,
+      modifierNegative = true,
+    }, {}, what)
+    if type(typed.stat) ~= "string" or typed.stat == "" then
+      fail(what .. ".stat must name its contest row", {})
     end
-    if type(typed.anchor) ~= "table" then
-      fail(what .. ".anchor must be a record", {})
+    if
+      type(typed.stars) ~= "table"
+      or not Validate.isArray(typed.stars --[[@as table[] ]])
+      or #typed.stars ~= 5
+    then
+      fail(what .. ".stars must carry five star anchors", {})
     end
-    local anchor = typed.anchor --[[@as table<string, unknown>]]
-    checkKeys(anchor, { x = true, y = true }, {}, what .. ".anchor")
-    checkInt(anchor.x, {}, what .. ".anchor.x")
-    checkInt(anchor.y, {}, what .. ".anchor.y")
-    checkInt(typed.order, {}, what .. ".order")
+    for star, anchor in
+      ipairs(typed.stars --[[@as table[] ]])
+    do
+      checkAnchor(anchor, {}, what .. ".stars[" .. star .. "]")
+    end
+    checkAnchor(typed.modifier, {}, what .. ".modifier")
+    for _, field in ipairs({ "starBase", "starAbove", "starBelow", "starEmpty", "modifierPositive", "modifierNegative" }) do
+      animationRef(typed[field], what .. "." .. field)
+    end
+  end
+  if type(sprites.leaves) ~= "table" then
+    fail("manifest.sprites.leaves must be a record", {})
+  end
+  local leaves = sprites.leaves --[[@as table<string, unknown>]]
+  checkKeys(leaves, { anchors = true, crownAnchor = true, leaf = true, crown = true }, {}, "manifest.sprites.leaves")
+  if
+    type(leaves.anchors) ~= "table"
+    or not Validate.isArray(leaves.anchors --[[@as table[] ]])
+    or #leaves.anchors ~= 5
+  then
+    fail("manifest.sprites.leaves.anchors must carry five leaf anchors", {})
+  end
+  for index, anchor in
+    ipairs(leaves.anchors --[[@as table[] ]])
+  do
+    checkAnchor(anchor, {}, "manifest.sprites.leaves.anchors[" .. index .. "]")
+  end
+  checkAnchor(leaves.crownAnchor, {}, "manifest.sprites.leaves.crownAnchor")
+  animationRef(leaves.leaf, "manifest.sprites.leaves.leaf")
+  animationRef(leaves.crown, "manifest.sprites.leaves.crown")
+  if type(sprites.ribbons) ~= "table" then
+    fail("manifest.sprites.ribbons must be a record", {})
+  end
+  local ribbonChrome = sprites.ribbons --[[@as table<string, unknown>]]
+  checkKeys(ribbonChrome, {
+    origin = true,
+    columns = true,
+    columnStep = true,
+    rowStep = true,
+    cursor = true,
+    pagePrev = true,
+    pageNext = true,
+  }, {}, "manifest.sprites.ribbons")
+  checkAnchor(ribbonChrome.origin, {}, "manifest.sprites.ribbons.origin")
+  for _, field in ipairs({ "columns", "columnStep", "rowStep" }) do
+    checkInt(ribbonChrome[field], {}, "manifest.sprites.ribbons." .. field)
+    if
+      ribbonChrome[field] --[[@as integer]]
+      <= 0
+    then
+      fail("manifest.sprites.ribbons." .. field .. " must be positive", {})
+    end
+  end
+  animationRef(ribbonChrome.cursor, "manifest.sprites.ribbons.cursor")
+  for _, field in ipairs({ "pagePrev", "pageNext" }) do
+    local what = "manifest.sprites.ribbons." .. field
+    local control = ribbonChrome[field]
+    if type(control) ~= "table" then
+      fail(what .. " must be a record", {})
+    end
+    local typed = control --[[@as table<string, unknown>]]
+    checkKeys(typed, { anchor = true, animation = true }, {}, what)
+    checkAnchor(typed.anchor, {}, what .. ".anchor")
+    animationRef(typed.animation, what .. ".animation")
   end
   if type(root.hitboxes) ~= "table" then
     fail("manifest.hitboxes must be a record", {})
@@ -1057,15 +1287,22 @@ function SummaryAssetSchema.assertManifest(manifest)
       fail("manifest.memo." .. section .. " must be a record", {})
     end
   end
-  -- The migrated-region wording is bound per supported origin game by
-  -- the producer; runtime never resolves gift-bank packing itself.
+  -- The migrated-region wording is bound per origin game by the
+  -- producer; runtime never resolves gift-bank packing itself. The
+  -- canonical origin-game keyset is an integration contract pinned by
+  -- conformance coverage, so this schema accepts any non-empty
+  -- game-keyed wording map.
   if type(memo.migrationRegions) ~= "table" then
     fail("manifest.memo.migrationRegions must be a record", {})
   end
   local regions = memo.migrationRegions --[[@as table<string, unknown>]]
-  checkKeys(regions, { heartgold = true, soulsilver = true }, {}, "manifest.memo.migrationRegions")
-  for _, game in ipairs({ "heartgold", "soulsilver" }) do
-    local key = regions[game]
+  if next(regions) == nil then
+    fail("manifest.memo.migrationRegions carries no origin game", {})
+  end
+  for game, key in pairs(regions) do
+    if type(game) ~= "string" or game == "" then
+      fail("manifest.memo.migrationRegions must be keyed by origin game", {})
+    end
     if type(key) ~= "string" or key == "" then
       fail("manifest.memo.migrationRegions." .. game .. " names its wording", {})
     end
@@ -1073,11 +1310,11 @@ function SummaryAssetSchema.assertManifest(manifest)
   if memo.characteristics ~= nil and type(memo.characteristics) ~= "table" then
     fail("manifest.memo.characteristics must be a record", {})
   end
-  -- Calibrated absences: sounds and transitions validate empty. The
-  -- overlay resolves both at its state call sites and no
-  -- generated-family consumer reads these sections, so emptiness is the
-  -- documented complete state. The closed keys and per-entry shape
-  -- validators stay so a future populated section validates.
+  -- Calibrated absence: sounds validate empty. The overlay resolves
+  -- sound effects at its state call sites and no generated-family
+  -- consumer reads this section, so emptiness is the documented complete
+  -- state. The closed key and its shape validator stay so a future
+  -- populated section validates.
   if type(root.sounds) ~= "table" then
     fail("manifest.sounds must be a record", {})
   end
@@ -1090,23 +1327,39 @@ function SummaryAssetSchema.assertManifest(manifest)
     end
     checkKeys(sound --[[@as table<string, unknown>]], { effect = true }, {}, what)
   end
+  -- Nested-state motion is required content: the move and ribbon
+  -- detail states step the sub-pane background through their native
+  -- position traces, so a family without both tracks must not validate.
   if type(root.transitions) ~= "table" then
     fail("manifest.transitions must be a record", {})
   end
-  for name, transition in
-    pairs(root.transitions --[[@as table<string, unknown>]])
-  do
-    local what = "manifest.transitions." .. tostring(name)
-    if type(transition) ~= "table" then
+  local transitions = root.transitions --[[@as table<string, unknown>]]
+  checkKeys(transitions, { moveDetail = true, ribbonDetail = true }, {}, "manifest.transitions")
+  for _, name in ipairs({ "moveDetail", "ribbonDetail" }) do
+    local what = "manifest.transitions." .. name
+    local track = transitions[name]
+    if type(track) ~= "table" then
       fail(what .. " must be a record", {})
     end
-    checkKeys(transition --[[@as table<string, unknown>]], { durationTicks = true }, {}, what)
-    checkInt(transition.durationTicks, {}, what .. ".durationTicks")
+    local typed = track --[[@as table<string, unknown>]]
+    checkKeys(typed, { pane = true, axis = true, positions = true }, {}, what)
+    if typed.pane ~= "main" and typed.pane ~= "sub" then
+      fail(what .. ".pane must name a native pane", {})
+    end
+    if typed.axis ~= "x" and typed.axis ~= "y" then
+      fail(what .. ".axis must name a native axis", {})
+    end
     if
-      transition.durationTicks --[[@as integer]]
-      <= 0
+      type(typed.positions) ~= "table"
+      or not Validate.isArray(typed.positions --[[@as table[] ]])
+      or #typed.positions ~= 3
     then
-      fail(what .. ".durationTicks must be positive", {})
+      fail(what .. ".positions must carry three native positions", {})
+    end
+    for index, position in
+      ipairs(typed.positions --[[@as table[] ]])
+    do
+      checkInt(position, {}, what .. ".positions[" .. index .. "]")
     end
   end
   local seen = {}

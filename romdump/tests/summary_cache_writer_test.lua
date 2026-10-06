@@ -12,7 +12,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 
 local T = {}
 
-local SUMMARY_SCHEMA = "g4-summary-manifest-v2"
+local SUMMARY_SCHEMA = "g4-summary-manifest-v3"
 
 -- Synthetic semantic layout with the source-pinned per-pane role census
 -- (info 2/6, skills 8/10, performance 5/3) plus one ordered memo branch:
@@ -105,6 +105,108 @@ local function barStub(length)
   }
 end
 
+-- Minimal valid dynamic-chrome and transition sections for
+-- publication-mechanics tests. Role geometry is synthetic but
+-- shape-correct; structural detail beyond publication mechanics belongs
+-- to the compiled-output conformance coverage.
+local CHROME_ANIMATIONS = {
+  "rootFocus",
+  "moveRowFocus",
+  "restrictedCancel",
+  "moveCancel",
+  "moveFollow",
+  "starBase",
+  "starAbove",
+  "starBelow",
+  "starEmpty",
+  "modifierPositive",
+  "modifierNegative",
+  "leaf",
+  "crown",
+  "ribbonCursor",
+  "ribbonPagePrev",
+  "ribbonPageNext",
+}
+
+local function chromeVisuals()
+  local visuals = { detailBacking = { image = "assets/generated/summary/syn-detail-backing.png", width = 8, height = 8 } }
+  for _, name in ipairs(CHROME_ANIMATIONS) do
+    visuals["syn-" .. name] = { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
+  end
+  return visuals
+end
+
+local function chromeSprites()
+  local animations = {}
+  for _, name in ipairs(CHROME_ANIMATIONS) do
+    animations[name] = { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
+  end
+  local primaryAnchors = {}
+  for index = 1, 6 do
+    primaryAnchors[index] = { x = 8 * index, y = 8 }
+  end
+  local leafAnchors = {}
+  for index = 1, 5 do
+    leafAnchors[index] = { x = 8 * index, y = 16 }
+  end
+  local rows = {}
+  for index = 1, 5 do
+    local stars = {}
+    for star = 1, 5 do
+      stars[star] = { x = 8 * star, y = 8 * index }
+    end
+    rows[index] = {
+      stat = "synStat" .. index,
+      stars = stars,
+      modifier = { x = 8, y = 8 * index },
+      starBase = "starBase",
+      starAbove = "starAbove",
+      starBelow = "starBelow",
+      starEmpty = "starEmpty",
+      modifierPositive = "modifierPositive",
+      modifierNegative = "modifierNegative",
+    }
+  end
+  return {
+    animations = animations,
+    primaryCursor = {
+      anchors = primaryAnchors,
+      rootFocus = "rootFocus",
+      moveRowFocus = "moveRowFocus",
+      restrictedCancel = "restrictedCancel",
+    },
+    secondaryMoveCursor = {
+      x = 68,
+      rowBaseY = 24,
+      rowStep = 32,
+      cancelY = 152,
+      restrictedCancelY = 168,
+      cancelAnchor = { x = 68, y = 168 },
+      restrictedSpecialAnchor = { x = 220, y = 176 },
+      moveCancel = "moveCancel",
+      moveFollow = "moveFollow",
+    },
+    performance = { rows = rows },
+    leaves = { anchors = leafAnchors, crownAnchor = { x = 8, y = 16 }, leaf = "leaf", crown = "crown" },
+    ribbons = {
+      origin = { x = 32, y = 24 },
+      columns = 3,
+      columnStep = 32,
+      rowStep = 40,
+      cursor = "ribbonCursor",
+      pagePrev = { anchor = { x = 128, y = 32 }, animation = "ribbonPagePrev" },
+      pageNext = { anchor = { x = 128, y = 96 }, animation = "ribbonPageNext" },
+    },
+  }
+end
+
+local function chromeTransitions()
+  return {
+    moveDetail = { pane = "sub", axis = "x", positions = { 0, 64, 128 } },
+    ribbonDetail = { pane = "sub", axis = "y", positions = { 0, 36, 72 } },
+  }
+end
+
 local function validManifest()
   return {
     schema = SUMMARY_SCHEMA,
@@ -115,8 +217,8 @@ local function validManifest()
       performance = { main = {}, sub = {} },
     },
     windows = semanticWindows(),
-    visuals = {},
-    sprites = {},
+    visuals = chromeVisuals(),
+    sprites = chromeSprites(),
     hitboxes = {
       touch = {
         exitChrome = { top = 165, bottom = 191, left = 189, right = 250 },
@@ -149,7 +251,7 @@ local function validManifest()
     dexNumbers = {},
     memo = semanticMemo(),
     sounds = {},
-    transitions = {},
+    transitions = chromeTransitions(),
   }
 end
 

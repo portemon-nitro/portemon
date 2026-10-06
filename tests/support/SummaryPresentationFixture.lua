@@ -17,7 +17,7 @@
 
 local SummaryPresentationFixture = {}
 
-SummaryPresentationFixture.SCHEMA = "g4-summary-manifest-v2"
+SummaryPresentationFixture.SCHEMA = "g4-summary-manifest-v3"
 
 SummaryPresentationFixture.WILD_LOCATION = 7
 SummaryPresentationFixture.GIFT_LOCATION = 4001
@@ -52,6 +52,114 @@ end
 
 local function statRow(base, lo, hi)
   return { base = base, lo = lo, hi = hi }
+end
+
+-- Synthetic dynamic chrome mirroring the generated semantic roles: one
+-- single-frame animation per required role state, six member anchors,
+-- move geometry, five performance rows of five star anchors with
+-- modifier slots, five leaf anchors with the crown anchor, and ribbon
+-- grid/page controls. Animation and frame-visual names mirror the
+-- generated semantic vocabulary so preparation and schema tests
+-- exercise reference resolution.
+local CHROME_ANIMATIONS = {
+  "rootFocus",
+  "moveRowFocus",
+  "restrictedCancel",
+  "moveCancel",
+  "moveFollow",
+  "starBase",
+  "starAbove",
+  "starBelow",
+  "starEmpty",
+  "modifierPositive",
+  "modifierNegative",
+  "leaf",
+  "crown",
+  "ribbonCursor",
+  "ribbonPagePrev",
+  "ribbonPageNext",
+}
+
+local function chromeVisuals()
+  local visuals = {
+    detailBacking = { image = "assets/generated/summary/syn-detail-backing.png", width = 8, height = 8 },
+  }
+  for _, name in ipairs(CHROME_ANIMATIONS) do
+    visuals["syn-" .. name] =
+      { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
+  end
+  return visuals
+end
+
+local function chromeSprites()
+  local animations = {}
+  for _, name in ipairs(CHROME_ANIMATIONS) do
+    animations[name] = { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
+  end
+  local primaryAnchors = {}
+  for index = 1, 6 do
+    primaryAnchors[index] = { x = 8 * index, y = 8 }
+  end
+  local leafAnchors = {}
+  for index = 1, 5 do
+    leafAnchors[index] = { x = 8 * index, y = 16 }
+  end
+  local rows = {}
+  for index = 1, 5 do
+    local stars = {}
+    for star = 1, 5 do
+      stars[star] = { x = 8 * star, y = 8 * index }
+    end
+    rows[index] = {
+      stat = "synStat" .. index,
+      stars = stars,
+      modifier = { x = 8, y = 8 * index },
+      starBase = "starBase",
+      starAbove = "starAbove",
+      starBelow = "starBelow",
+      starEmpty = "starEmpty",
+      modifierPositive = "modifierPositive",
+      modifierNegative = "modifierNegative",
+    }
+  end
+  return {
+    animations = animations,
+    primaryCursor = {
+      anchors = primaryAnchors,
+      rootFocus = "rootFocus",
+      moveRowFocus = "moveRowFocus",
+      restrictedCancel = "restrictedCancel",
+    },
+    secondaryMoveCursor = {
+      x = 68,
+      rowBaseY = 24,
+      rowStep = 32,
+      cancelY = 152,
+      restrictedCancelY = 168,
+      cancelAnchor = { x = 68, y = 168 },
+      restrictedSpecialAnchor = { x = 220, y = 176 },
+      moveCancel = "moveCancel",
+      moveFollow = "moveFollow",
+    },
+    performance = { rows = rows },
+    leaves = { anchors = leafAnchors, crownAnchor = { x = 8, y = 16 }, leaf = "leaf", crown = "crown" },
+    ribbons = {
+      origin = { x = 32, y = 24 },
+      columns = 3,
+      columnStep = 32,
+      rowStep = 40,
+      cursor = "ribbonCursor",
+      pagePrev = { anchor = { x = 128, y = 32 }, animation = "ribbonPagePrev" },
+      pageNext = { anchor = { x = 128, y = 96 }, animation = "ribbonPageNext" },
+    },
+  }
+end
+
+local function chromeTransitions()
+  return {
+    moveDetail = { pane = "sub", axis = "x", positions = { 0, 64, 128 } },
+    ribbonDetail = { pane = "sub", axis = "y", positions = { 0, 36, 72 } },
+  }
 end
 
 -- Twenty-five pokathlon nature rows in source stat order
@@ -503,8 +611,8 @@ function SummaryPresentationFixture.manifest()
       performance = { main = { map = 7, locked = 8 }, sub = { normal = 9, noPerformance = 10 } },
     },
     windows = syntheticWindows(),
-    visuals = {},
-    sprites = {},
+    visuals = chromeVisuals(),
+    sprites = chromeSprites(),
     hitboxes = {
       -- Mirroring touch entries: one box per transcribed target class
       -- (tabs, exit, member, move row, ribbon cell) with synthetic
@@ -624,7 +732,7 @@ function SummaryPresentationFixture.manifest()
     },
     memo = memoSection(),
     sounds = {},
-    transitions = {},
+    transitions = chromeTransitions(),
   }
 end
 

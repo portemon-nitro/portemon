@@ -11,7 +11,7 @@ local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local T = {}
 
 local SUMMARY_FORMAT = "g4-summary-cache-v1"
-local SUMMARY_SCHEMA = "g4-summary-manifest-v2"
+local SUMMARY_SCHEMA = "g4-summary-manifest-v3"
 
 local function requireSources()
   local ok, sources = pcall(require, "romdump.src.config.SummarySources")
@@ -306,14 +306,117 @@ local function semanticMemo()
   }
 end
 
+-- Minimal valid dynamic-chrome section for schema rejection tests. Role
+-- geometry is synthetic but shape-correct; structural detail beyond the
+-- closed record shapes belongs to the compiled-output conformance
+-- coverage. The animation names mirror the generated semantic roles so
+-- reference resolution is exercised.
+local CHROME_ANIMATIONS = {
+  "rootFocus",
+  "moveRowFocus",
+  "restrictedCancel",
+  "moveCancel",
+  "moveFollow",
+  "starBase",
+  "starAbove",
+  "starBelow",
+  "starEmpty",
+  "modifierPositive",
+  "modifierNegative",
+  "leaf",
+  "crown",
+  "ribbonCursor",
+  "ribbonPagePrev",
+  "ribbonPageNext",
+}
+
+local function chromeVisuals()
+  local visuals = { detailBacking = { image = "assets/generated/summary/syn-detail-backing.png", width = 8, height = 8 } }
+  for _, name in ipairs(CHROME_ANIMATIONS) do
+    visuals["syn-" .. name] = { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
+  end
+  return visuals
+end
+
+local function chromeSprites()
+  local animations = {}
+  for _, name in ipairs(CHROME_ANIMATIONS) do
+    animations[name] = { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
+  end
+  local primaryAnchors = {}
+  for index = 1, 6 do
+    primaryAnchors[index] = { x = 8 * index, y = 8 }
+  end
+  local leafAnchors = {}
+  for index = 1, 5 do
+    leafAnchors[index] = { x = 8 * index, y = 16 }
+  end
+  local rows = {}
+  for index = 1, 5 do
+    local stars = {}
+    for star = 1, 5 do
+      stars[star] = { x = 8 * star, y = 8 * index }
+    end
+    rows[index] = {
+      stat = "synStat" .. index,
+      stars = stars,
+      modifier = { x = 8, y = 8 * index },
+      starBase = "starBase",
+      starAbove = "starAbove",
+      starBelow = "starBelow",
+      starEmpty = "starEmpty",
+      modifierPositive = "modifierPositive",
+      modifierNegative = "modifierNegative",
+    }
+  end
+  return {
+    animations = animations,
+    primaryCursor = {
+      anchors = primaryAnchors,
+      rootFocus = "rootFocus",
+      moveRowFocus = "moveRowFocus",
+      restrictedCancel = "restrictedCancel",
+    },
+    secondaryMoveCursor = {
+      x = 68,
+      rowBaseY = 24,
+      rowStep = 32,
+      cancelY = 152,
+      restrictedCancelY = 168,
+      cancelAnchor = { x = 68, y = 168 },
+      restrictedSpecialAnchor = { x = 220, y = 176 },
+      moveCancel = "moveCancel",
+      moveFollow = "moveFollow",
+    },
+    performance = { rows = rows },
+    leaves = { anchors = leafAnchors, crownAnchor = { x = 8, y = 16 }, leaf = "leaf", crown = "crown" },
+    ribbons = {
+      origin = { x = 32, y = 24 },
+      columns = 3,
+      columnStep = 32,
+      rowStep = 40,
+      cursor = "ribbonCursor",
+      pagePrev = { anchor = { x = 128, y = 32 }, animation = "ribbonPagePrev" },
+      pageNext = { anchor = { x = 128, y = 96 }, animation = "ribbonPageNext" },
+    },
+  }
+end
+
+local function chromeTransitions()
+  return {
+    moveDetail = { pane = "sub", axis = "x", positions = { 0, 64, 128 } },
+    ribbonDetail = { pane = "sub", axis = "y", positions = { 0, 36, 72 } },
+  }
+end
+
 local function skeletonManifest()
   return {
     schema = SUMMARY_SCHEMA,
     paneSize = { width = 256, height = 192 },
     groups = { info = groupShell(), skills = groupShell(), performance = groupShell() },
     windows = semanticWindows(),
-    visuals = {},
-    sprites = {},
+    visuals = chromeVisuals(),
+    sprites = chromeSprites(),
     hitboxes = {},
     text = {},
     palettes = {},
@@ -324,7 +427,7 @@ local function skeletonManifest()
     dexNumbers = {},
     memo = semanticMemo(),
     sounds = {},
-    transitions = {},
+    transitions = chromeTransitions(),
   }
 end
 
@@ -423,20 +526,21 @@ function T.schema_requires_populated_touch_targets()
   Assert.isTrue(pcall(schema.assertManifest, missing) == false, "a family without touch targets must not validate")
 end
 
--- Calibrated absences stay valid: sounds and transitions compile empty
--- until a generated-family consumer resolves them, and the closed keys
--- with their shape validators remain.
-function T.schema_accepts_the_calibrated_absent_sections()
+-- Calibrated sound absence stays valid: sounds compile empty until a
+-- generated-family consumer resolves them, and the closed key with its
+-- shape validator remains. Transition tracks are required content now:
+-- the nested move/ribbon states consume generated BG position traces.
+function T.schema_accepts_the_calibrated_absent_sounds()
   local schema = requireSchema()
   local manifest = skeletonManifest()
   manifest.hitboxes = { touch = { exitChrome = { top = 165, bottom = 191, left = 189, right = 250 } } }
   manifest.bars = { hp = validBar(48), exp = validBar(56) }
   manifest.pictures = { exemplar = finitePicture() }
-  Assert.isTrue(pcall(schema.assertManifest, manifest), "the calibrated empty sections must validate")
+  Assert.isTrue(pcall(schema.assertManifest, manifest), "the calibrated empty sounds must validate")
 end
 
 -- Minimal otherwise-valid envelope for layout/memo rejection tests.
--- Mirrors the calibrated-absence recipe so each rejection attributes to
+-- Mirrors the sounds-absence recipe so each rejection attributes to
 -- the field under test rather than to a missing required section.
 local function contractReadyManifest()
   local manifest = skeletonManifest()
@@ -563,13 +667,49 @@ function T.schema_rejects_a_missing_migration_region_mapping()
   Assert.isTrue(emptyOk == false, "an empty migration region entry must not validate")
 end
 
+-- Required dynamic chrome and transition tracks cannot be omitted: a
+-- family with an empty sprite record or an empty transition record must
+-- not validate, so the reviewed behaviors cannot silently drop out of
+-- the generated family.
+function T.schema_rejects_a_family_omitting_dynamic_chrome_or_transition_tracks()
+  local schema = requireSchema()
+  local withoutChrome = contractReadyManifest()
+  withoutChrome.sprites = {}
+  local chromeOk = pcall(schema.assertManifest, withoutChrome)
+  Assert.isFalse(chromeOk, "a family without dynamic chrome must not validate")
+  local withoutTracks = contractReadyManifest()
+  withoutTracks.transitions = {}
+  local tracksOk = pcall(schema.assertManifest, withoutTracks)
+  Assert.isFalse(tracksOk, "a family without transition tracks must not validate")
+end
+
+-- Source identities never leak into the new records: a sprite role
+-- carrying a producer archive/bank/message key must not validate.
+function T.schema_rejects_source_identities_inside_dynamic_chrome()
+  local schema = requireSchema()
+  local manifest = contractReadyManifest()
+  manifest.sprites.primaryCursor.bank = 0
+  local ok = pcall(schema.assertManifest, manifest)
+  Assert.isFalse(ok, "a source bank key must not validate inside dynamic chrome")
+end
+
+-- Animation frames resolve to family visuals: a frame naming no
+-- visual must not validate, so a dropped frame cannot read as complete.
+function T.schema_rejects_animation_frames_without_family_visuals()
+  local schema = requireSchema()
+  local manifest = contractReadyManifest()
+  manifest.sprites.animations.rootFocus.frames[1].visual = "syn-missing"
+  local ok = pcall(schema.assertManifest, manifest)
+  Assert.isFalse(ok, "a frame without its visual must not validate")
+end
+
 -- The synthetic presentation data mirrors the generated envelope: it
 -- tracks the current schema identity and carries structured memo
 -- templates, so unit tests cannot pass with label-only strings where
 -- template records belong.
 function T.synthetic_presentation_data_mirrors_the_generated_envelope()
   local Fixture = require("tests.support.SummaryPresentationFixture")
-  Assert.equal(Fixture.SCHEMA, "g4-summary-manifest-v2", "the synthetic data tracks the generated schema")
+  Assert.equal(Fixture.SCHEMA, "g4-summary-manifest-v3", "the synthetic data tracks the generated schema")
   local manifest = Fixture.manifest()
   Assert.notNil(manifest, "the synthetic data builds a manifest")
   Assert.equal(manifest.schema, Fixture.SCHEMA, "the synthetic manifest carries the tracked schema")

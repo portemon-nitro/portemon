@@ -406,7 +406,7 @@ DerivedAssetContract.pc = {
 -- the summary manifest references no portrait pixels.
 DerivedAssetContract.summary = {
   cacheFormat = "g4-summary-cache-v1",
-  schema = "g4-summary-manifest-v2",
+  schema = "g4-summary-manifest-v3",
 }
 
 DerivedAssetContract.audio = {

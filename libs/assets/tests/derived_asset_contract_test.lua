@@ -144,7 +144,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     summary = {
       cacheFormat = "g4-summary-cache-v1",
-      schema = "g4-summary-manifest-v2",
+      schema = "g4-summary-manifest-v3",
     },
     audio = {
       cacheFormat = "g4-audio-cache-v1",
@@ -218,7 +218,7 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(StarterChoiceAssetCache.SCHEMA, DerivedAssetContract.starterChoice.schema)
 end
 
-function T.summary_family_carries_the_v2_manifest_schema()
+function T.summary_family_carries_the_v3_manifest_schema()
   Assert.equal(
     DerivedAssetContract.summary.cacheFormat,
     "g4-summary-cache-v1",
@@ -226,12 +226,12 @@ function T.summary_family_carries_the_v2_manifest_schema()
   )
   Assert.equal(
     DerivedAssetContract.summary.schema,
-    "g4-summary-manifest-v2",
+    "g4-summary-manifest-v3",
     "the summary manifest carries its source-authored schema"
   )
   Assert.equal(
     DerivedAssetContract.mons.catalogSchema,
-    "g4-mon-catalog-v3",
+    "g4-mon-catalog-v4",
     "the mon sibling identity survives the summary schema change"
   )
   Assert.equal(

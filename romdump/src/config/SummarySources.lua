@@ -260,13 +260,15 @@ SummarySources.stamps = {
 -- shared palette, the full-size screens selected by map id, and the
 -- move-panel transition backing. Main screens address at most 258 tiles
 -- and resolve through the main character block; sub screens and stamps
--- address up to their block through the sub character block.
+-- address up to their block through the sub character block. The backing
+-- role is detail-scoped: the same member-21 screen backs both nested
+-- move and ribbon states, so runtime never sees a move-only name.
 SummarySources.backgrounds = {
   mainChar = 2,
   subChar = 1,
   palette = 0,
   moveChar = 20,
-  moveBacking = 21,
+  detailBacking = 21,
 }
 
 -- Dynamic gauge rules transcribed from the summary application bar
@@ -389,17 +391,15 @@ SummarySources.touch = {
 }
 
 -- Calibrated absences: sections the compiler intentionally leaves empty.
--- The overlay selects numeric sound ids at its state call sites (tab,
--- decide, move-select, and exit effects) and hardcodes its sprite timing
--- through its per-state setup routines, but no generated-family consumer
--- resolves either section yet: controller sound decisions are optional
--- feedback and transition timing stays hardcoded in the controller. The
--- manifest keeps both closed keys with their shape validators so a
--- future populated section validates; emptiness is the documented
--- complete state, never a missing population.
+-- The overlay selects numeric sound ids at its state call sites and no
+-- generated-family consumer resolves sound roles yet: controller sound
+-- decisions are optional feedback. The manifest keeps the closed sounds
+-- key with its shape validator so a future populated section validates;
+-- emptiness is the documented complete state, never a missing
+-- population. Transition tracks are no longer absent: the nested
+-- move/ribbon states consume generated BG position traces.
 SummarySources.absences = {
   sounds = "no generated-family consumer resolves sound roles",
-  transitions = "no generated-family consumer resolves transition tracks",
 }
 
 -- The front-picture anchor the summary picture setup centers on.
@@ -2132,5 +2132,159 @@ SummarySources.memoFlavors = { default = 70, byFlavor = { 65, 66, 67, 68, 69 } }
 -- Egg Watch thresholds on the remaining hatch cycles with their
 -- templates, transcribing `FormatEggWatch`.
 SummarySources.memoEggWatch = { thresholds = { 5, 10, 40 }, templates = { 105, 106, 107, 108 } }
+
+-- Origin-game to arrival-region mapping, transcribing the migrated
+-- branch of `FormatDateAndLocation_Migrated` in src/trainer_memo.c (same
+-- pin): FireRed/LeafGreen arrive from Kanto, HeartGold/SoulSilver from
+-- Johto, Ruby/Sapphire/Emerald from Hoenn, GameCube arrivals read the
+-- Distant Land entry, and Diamond/Pearl/Platinum arrivals read the
+-- dashes entry. Values name the gift-bank region keys in
+-- SummarySources.memoLocations; the compiler binds each game to the
+-- corresponding generated wording.
+SummarySources.memoMigrationRegions = {
+  sapphire = "hoenn",
+  ruby = "hoenn",
+  emerald = "hoenn",
+  firered = "kanto",
+  leafgreen = "kanto",
+  heartgold = "johto",
+  soulsilver = "johto",
+  diamond = "dashes",
+  pearl = "dashes",
+  platinum = "dashes",
+  gamecube = "distantLand",
+}
+
+-- Summary object-resource inventory, transcribing the `_02103A2C` table
+-- selection in asm/unk_0208B1AC.s (same pin): header member 85 selects
+-- one resource set per dynamic role, and members 54/55/53/52 list the
+-- character, palette, cell, and animation resources each set draws from.
+-- Records follow the same on-disk resource-table/header layout the intro
+-- compiler resolves; see the compiler helpers there for the format.
+SummarySources.resdat = {
+  header = 85,
+  charTable = 54,
+  paletteTable = 55,
+  cellTable = 53,
+  animationTable = 52,
+}
+
+-- Dynamic-role resource selection: the header-85 resource set, the local
+-- object palette bank, and the animation sequences each semantic role
+-- rasterizes. Sequence keys are the semantic animation names the
+-- manifest publishes; values are the zero-based source sequence
+-- selections. The primary member cursor keeps its three state visuals,
+-- the move-reorder cursor keeps its cancel and follow visuals, the
+-- performance rows keep the four star states plus the two Aprijuice
+-- modifier visuals, the Shiny Leaf row keeps its leaf and crown
+-- visuals, and the ribbon grid keeps its cursor plus both page-arrow
+-- visuals. Unlisted sets and sequences never reach runtime.
+SummarySources.chromeResources = {
+  primaryCursor = {
+    resourceSet = 2,
+    paletteBank = 0,
+    sequences = { rootFocus = 0, moveRowFocus = 1, restrictedCancel = 2 },
+  },
+  secondaryMoveCursor = {
+    resourceSet = 14,
+    paletteBank = 0,
+    sequences = { moveCancel = 0, moveFollow = 1 },
+  },
+  performance = {
+    resourceSet = 44,
+    paletteBank = 0,
+    sequences = {
+      starBase = 0,
+      starAbove = 1,
+      starBelow = 2,
+      starEmpty = 3,
+      modifierPositive = 4,
+      modifierNegative = 5,
+    },
+  },
+  leaves = {
+    resourceSet = 44,
+    paletteBank = 0,
+    sequences = { leaf = 6, crown = 7 },
+  },
+  ribbonControls = {
+    resourceSet = 34,
+    paletteBank = 0,
+    sequences = { ribbonCursor = 0, ribbonPagePrev = 4, ribbonPageNext = 5 },
+  },
+}
+
+-- Dynamic-chrome placement in native pixels, transcribed from the
+-- overlay object-setup routines (asm/unk_0208B1AC.s and
+-- asm/unk_02088288.s, same pin). The primary cursor visits the six
+-- party-member slots in column-major display order; nested move rows
+-- start at the row base and advance by the row step with the two cancel
+-- rows below; performance rows list in display order with five star
+-- slots per row and one modifier slot above each row; the five leaves
+-- share one baseline with the crown centered on the middle leaf; the
+-- ribbon grid starts at its origin with three columns and advances by
+-- row below the grid for paging. The compiler lowers these constants
+-- verbatim; runtime never recomputes them.
+SummarySources.chromeGeometry = {
+  primaryCursor = {
+    anchors = {
+      { x = 183, y = 55 },
+      { x = 223, y = 63 },
+      { x = 183, y = 87 },
+      { x = 223, y = 95 },
+      { x = 183, y = 119 },
+      { x = 223, y = 127 },
+    },
+  },
+  moveDetail = {
+    x = 68,
+    rowBaseY = 24,
+    rowStep = 32,
+    cancelY = 152,
+    restrictedCancelY = 168,
+    cancelAnchor = { x = 68, y = 168 },
+    restrictedSpecialAnchor = { x = 220, y = 176 },
+  },
+  performance = {
+    starXs = { 64, 80, 96, 112, 128 },
+    modifierX = 80,
+    rows = {
+      { stat = "speed", y = 48, modifierY = 32 },
+      { stat = "power", y = 80, modifierY = 64 },
+      { stat = "skill", y = 112, modifierY = 96 },
+      { stat = "stamina", y = 144, modifierY = 128 },
+      { stat = "jump", y = 176, modifierY = 160 },
+    },
+  },
+  leaves = {
+    anchors = {
+      { x = 91, y = 182 },
+      { x = 101, y = 182 },
+      { x = 111, y = 182 },
+      { x = 121, y = 182 },
+      { x = 131, y = 182 },
+    },
+    crownAnchor = { x = 111, y = 182 },
+  },
+  ribbons = {
+    origin = { x = 32, y = 24 },
+    columns = 3,
+    columnStep = 32,
+    rowStep = 40,
+    pagePrevAnchor = { x = 128, y = 32 },
+    pageNextAnchor = { x = 128, y = 96 },
+  },
+}
+
+-- Nested-state background motion, transcribing the overlay BG5 position
+-- traces (asm/unk_02088288.s, same pin): the move detail state steps
+-- the sub-pane background along X through 0/64/128 and the ribbon
+-- detail state steps it along Y through 0/36/72. The compiler lowers
+-- these traces verbatim; closing a nested state replays its trace in
+-- reverse under the consumer.
+SummarySources.transitions = {
+  moveDetail = { pane = "sub", axis = "x", positions = { 0, 64, 128 } },
+  ribbonDetail = { pane = "sub", axis = "y", positions = { 0, 36, 72 } },
+}
 
 return SummarySources

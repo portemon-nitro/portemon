@@ -1,8 +1,9 @@
 -- Compiles the generated summary presentation class: canonical group
 -- background variants, semantic windows, background/stamp/ribbon/egg
--- visuals, lowered text, palette roles, picture timelines, ribbon
--- definitions, performance tables, dex mapping, and memo records. Source
--- member selection and geometry live in
+-- visuals, dynamic-chrome animation frames with cursor/star/leaf/ribbon
+-- geometry, nested-state transition tracks, lowered text, palette roles,
+-- picture timelines, ribbon definitions, performance tables, dex mapping,
+-- and memo records. Source member selection and geometry live in
 -- romdump/src/config/SummarySources.lua; this module owns the decode,
 -- rasterization, and the normalized bundle. 2D mechanics reuse
 -- G2dDecoder/G2dRasterizer/PngWriter; front-picture pixels resolve
@@ -18,6 +19,7 @@ local Hashing = require("romdump.src.digest.Hashing")
 local PngWriter = require("libs.assets.src.PngWriter")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
+local HgssArchives = require("romdump.src.config.HgssArchives")
 local SummaryAssetSchema = require("libs.assets.src.SummaryAssetSchema")
 local SummaryCache = require("libs.assets.src.SummaryCache")
 local SummarySources = require("romdump.src.config.SummarySources")
@@ -85,6 +87,348 @@ end
 local function writePng(rendered, path, assets)
   assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
   return { image = path, width = rendered.width, height = rendered.height }
+end
+
+-- Reads one little-endian word of the resdat resource-table/header
+-- layout. Offsets are zero-based; a read past the member fails as
+-- truncated source instead of wrapping around the dump.
+local function u32le(bytes, offset, role)
+  if offset + 4 > #bytes then
+    sourceError(role .. " resource data is truncated", { sourceOffset = offset })
+  end
+  return string.byte(bytes, offset + 1)
+    + string.byte(bytes, offset + 2) * 256
+    + string.byte(bytes, offset + 3) * 65536
+    + string.byte(bytes, offset + 4) * 16777216
+end
+
+-- Parses one resdat resource table into records keyed by object id.
+-- Every record binds its source archive, its member there, and its
+-- object id; the table ends at the native terminator. A duplicate
+-- object id or a missing terminator is malformed source.
+local function parseResourceTable(bytes, role)
+  local records, offset = {}, 4
+  while true do
+    local narcId = u32le(bytes, offset, role)
+    if narcId == 0xFFFFFFFE then
+      return records
+    end
+    local fileId = u32le(bytes, offset + 4, role)
+    local objectId = u32le(bytes, offset + 12, role)
+    if records[objectId] ~= nil then
+      sourceError(role .. " resource table contains a duplicate resource id", { objectId = objectId })
+    end
+    records[objectId] = { narcId = narcId, fileId = fileId }
+    offset = offset + 24
+  end
+end
+
+-- Resolves one header-85 resource set through the four resource tables
+-- into source archive members. The header carries four object ids per
+-- 32-byte set entry (character, palette, cell, animation); each table
+-- maps its object id to the archive and member holding the resource.
+-- A missing table entry is malformed source naming the semantic role.
+local function resolveChromeSet(headerBytes, resourceSet, tables, role)
+  local headerOffset = resourceSet * 32
+  if headerOffset + 32 > #headerBytes then
+    sourceError(role .. " selects a resource set outside its header", { resourceSet = resourceSet })
+  end
+  local kinds = { "char", "palette", "cell", "animation" }
+  local resolved = {}
+  for position, kind in ipairs(kinds) do
+    local objectId = u32le(headerBytes, headerOffset + (position - 1) * 4, role .. " resource header")
+    local record = tables[kind][objectId]
+    if record == nil then
+      sourceError(role .. " " .. kind .. " resource is missing its table entry", {
+        resourceSet = resourceSet,
+        objectId = objectId,
+      })
+    end
+    assert(record ~= nil, "missing resource entries fail above")
+    resolved[kind] = record
+  end
+  return resolved
+end
+
+-- Reads and decodes one resolved resource from its source archive.
+-- Members arrive through the archive owning the table's source
+-- archive; anything outside the summary and shared archives is
+-- unsupported source for this screen.
+local function decodeChromeResource(archives, record, kind, role, dependencies)
+  local source = archives[record.narcId]
+  if source == nil then
+    sourceError(role .. " " .. kind .. " resource lives outside the supported source archives", {
+      narcId = record.narcId,
+      fileId = record.fileId,
+    })
+  end
+  assert(source ~= nil, "unsupported source archives fail above")
+  local bytes = readMember(source.handle, record.fileId, role .. "-" .. kind, dependencies, source.label)
+  if kind == "char" then
+    return decode("decodeChar", bytes, role .. "-" .. kind)
+  elseif kind == "palette" then
+    return decode("decodePalette", bytes, role .. "-" .. kind)
+  elseif kind == "cell" then
+    return decode("decodeCell", bytes, role .. "-" .. kind)
+  else
+    return decode("decodeAnimation", bytes, role .. "-" .. kind)
+  end
+end
+
+local function renderChromeFrame(charData, paletteColors, cellData, sequence, frameIndex, role)
+  local ok, rendered = pcall(
+    G2dRasterizer.renderAnimationFrame,
+    charData,
+    { colors = paletteColors },
+    cellData,
+    sequence,
+    frameIndex,
+    { role = role, frame = frameIndex - 1 },
+    0
+  )
+  if not ok then
+    if Errors.is(rendered) then
+      ---@cast rendered Errors.Error
+      sourceError(role .. " does not rasterize: " .. rendered.message, { role = role, cause = rendered.code })
+    end
+    error(rendered, 0)
+  end
+  assert(type(rendered) == "table", "sprite rasterization returns an image")
+  return rendered
+end
+
+local CHROME_PLAYBACKS = { forward = "once", forward_loop = "loop", reverse = "once", reverse_loop = "loop" }
+
+local function kebabName(name)
+  return name:gsub("%u", "-%0"):lower()
+end
+
+-- Realizes every frame of one source animation sequence, retaining
+-- source timing, rasterizer offsets, loop origin, and playback. A
+-- single-frame sequence publishes static playback; every frame keeps
+-- its source duration and offset. Frames become named family visuals;
+-- the descriptor references those names only.
+local function compileChromeSequence(charData, paletteColors, cellData, animation, sequenceNo, role, assets, visuals)
+  local sequence = animation.anims[sequenceNo + 1]
+  if sequence == nil then
+    sourceError(role .. " selects a missing animation sequence", { sequence = sequenceNo })
+  end
+  assert(sequence ~= nil, "missing animation sequences fail above")
+  local playback = CHROME_PLAYBACKS[sequence.playMode]
+  if playback == nil then
+    sourceError(role .. " carries an unsupported play mode", { sequence = sequenceNo, playMode = sequence.playMode })
+  end
+  if #sequence.frames == 1 then
+    playback = "static"
+  end
+  if
+    sequence.loopStartFrameIdx == nil
+    or sequence.loopStartFrameIdx < 0
+    or sequence.loopStartFrameIdx >= #sequence.frames
+  then
+    sourceError(role .. " carries a loop origin outside its sequence", {
+      sequence = sequenceNo,
+      loopStartFrameIdx = sequence.loopStartFrameIdx,
+    })
+  end
+  local frames = {}
+  for frameIndex, frame in ipairs(sequence.frames) do
+    if type(frame.duration) ~= "number" or frame.duration <= 0 or frame.duration % 1 ~= 0 then
+      sourceError(role .. " carries non-integral frame timing", { sequence = sequenceNo, frame = frameIndex - 1 })
+    end
+    local rendered = renderChromeFrame(charData, paletteColors, cellData, sequence, frameIndex, role)
+    local visualName = kebabName(role) .. "-" .. (frameIndex - 1)
+    if visuals[visualName] ~= nil then
+      sourceError(role .. " reuses a frame visual name", { visual = visualName })
+    end
+    assets[SummaryCache.assetDir() .. "/" .. visualName .. ".png"] =
+      PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
+    local visual = {
+      image = SummaryCache.assetDir() .. "/" .. visualName .. ".png",
+      width = rendered.width,
+      height = rendered.height,
+    }
+    if rendered.offset.x ~= 0 or rendered.offset.y ~= 0 then
+      visual.offset = { x = rendered.offset.x, y = rendered.offset.y }
+    end
+    visuals[visualName] = visual
+    frames[frameIndex] = { visual = visualName, durationTicks = frame.duration }
+  end
+  return { frames = frames, loopFrom = sequence.loopStartFrameIdx + 1, playback = playback }
+end
+
+-- Compiles the required dynamic-chrome roles from the resdat header
+-- and resource tables: resolves each role's resource set, decodes
+-- its character/palette/cell/animation resources, rasterizes the
+-- selected sequences, and lowers the pinned geometry with animation
+-- references only. No source archive, member, or sequence identity
+-- reaches the published roles.
+local function compileChrome(resdatArchive, archives, dependencies, assets, visuals)
+  local selection = SummarySources.resdat
+  local headerBytes = readMember(resdatArchive, selection.header, "chrome-header", dependencies, "resdat")
+  local tables = {}
+  for _, kind in ipairs({ "char", "palette", "cell", "animation" }) do
+    local memberId = selection[kind .. "Table"]
+    if type(memberId) ~= "number" then
+      sourceError("the chrome inventory names no " .. kind .. " table", {})
+    end
+    tables[kind] = parseResourceTable(
+      readMember(resdatArchive, memberId, "chrome-" .. kind .. "-table", dependencies, "resdat"),
+      "chrome-" .. kind
+    )
+  end
+  local animations = {}
+  local function compileRole(key, role)
+    local inventory = SummarySources.chromeResources[key]
+    if type(inventory) ~= "table" then
+      sourceError("the chrome inventory carries no role", { role = key })
+    end
+    if type(inventory.resourceSet) ~= "number" or type(inventory.paletteBank) ~= "number" then
+      sourceError("the chrome inventory carries no resource selection", { role = key })
+    end
+    if type(inventory.sequences) ~= "table" or next(inventory.sequences) == nil then
+      sourceError("the chrome inventory carries no sequence selection", { role = key })
+    end
+    local resolved = resolveChromeSet(headerBytes, inventory.resourceSet, tables, role)
+    local charData = decodeChromeResource(archives, resolved.char, "char", role, dependencies)
+    local paletteData = decodeChromeResource(archives, resolved.palette, "palette", role, dependencies)
+    local cellData = decodeChromeResource(archives, resolved.cell, "cell", role, dependencies)
+    local animation = decodeChromeResource(archives, resolved.animation, "animation", role, dependencies)
+    local paletteColors = paletteSlice(paletteData.colors, inventory.paletteBank, role .. " palette")
+    local names = {}
+    for name in pairs(inventory.sequences) do
+      names[#names + 1] = name
+    end
+    table.sort(names)
+    for _, name in ipairs(names) do
+      if animations[name] ~= nil then
+        sourceError("the chrome inventory carries a duplicate animation", { animation = name })
+      end
+      animations[name] = compileChromeSequence(
+        charData,
+        paletteColors,
+        cellData,
+        animation,
+        inventory.sequences[name],
+        name,
+        assets,
+        visuals
+      )
+    end
+  end
+  compileRole("primaryCursor", "primary cursor")
+  compileRole("secondaryMoveCursor", "secondary move cursor")
+  compileRole("performance", "performance")
+  compileRole("leaves", "leaves")
+  compileRole("ribbonControls", "ribbon controls")
+  local function anchor(point, what)
+    if type(point) ~= "table" or type(point.x) ~= "number" or type(point.y) ~= "number" then
+      sourceError("the chrome inventory carries a malformed anchor", { role = what })
+    end
+    return { x = point.x, y = point.y }
+  end
+  local geometry = SummarySources.chromeGeometry
+  local primaryAnchors = {}
+  for _, point in ipairs(assert(geometry.primaryCursor, "the chrome inventory carries primary anchors").anchors) do
+    primaryAnchors[#primaryAnchors + 1] = anchor(point, "primary cursor")
+  end
+  local move = assert(geometry.moveDetail, "the chrome inventory carries move geometry")
+  local leafAnchors = {}
+  for _, point in ipairs(assert(geometry.leaves, "the chrome inventory carries leaf anchors").anchors) do
+    leafAnchors[#leafAnchors + 1] = anchor(point, "leaves")
+  end
+  local performanceRows = {}
+  for _, row in ipairs(assert(geometry.performance, "the chrome inventory carries performance rows").rows) do
+    local stars = {}
+    for _, x in ipairs(assert(geometry.performance, "the chrome inventory carries star columns").starXs) do
+      stars[#stars + 1] = { x = x, y = row.y }
+    end
+    performanceRows[#performanceRows + 1] = {
+      stat = row.stat,
+      stars = stars,
+      modifier = { x = geometry.performance.modifierX, y = row.modifierY },
+      starBase = "starBase",
+      starAbove = "starAbove",
+      starBelow = "starBelow",
+      starEmpty = "starEmpty",
+      modifierPositive = "modifierPositive",
+      modifierNegative = "modifierNegative",
+    }
+  end
+  local ribbonGeometry = assert(geometry.ribbons, "the chrome inventory carries ribbon geometry")
+  return {
+    animations = animations,
+    primaryCursor = {
+      anchors = primaryAnchors,
+      rootFocus = "rootFocus",
+      moveRowFocus = "moveRowFocus",
+      restrictedCancel = "restrictedCancel",
+    },
+    secondaryMoveCursor = {
+      x = move.x,
+      rowBaseY = move.rowBaseY,
+      rowStep = move.rowStep,
+      cancelY = move.cancelY,
+      restrictedCancelY = move.restrictedCancelY,
+      cancelAnchor = anchor(move.cancelAnchor, "secondary move cursor"),
+      restrictedSpecialAnchor = anchor(move.restrictedSpecialAnchor, "secondary move cursor"),
+      moveCancel = "moveCancel",
+      moveFollow = "moveFollow",
+    },
+    performance = { rows = performanceRows },
+    leaves = {
+      anchors = leafAnchors,
+      crownAnchor = anchor(geometry.leaves.crownAnchor, "leaves"),
+      leaf = "leaf",
+      crown = "crown",
+    },
+    ribbons = {
+      origin = anchor(ribbonGeometry.origin, "ribbons"),
+      columns = ribbonGeometry.columns,
+      columnStep = ribbonGeometry.columnStep,
+      rowStep = ribbonGeometry.rowStep,
+      cursor = "ribbonCursor",
+      pagePrev = {
+        anchor = anchor(ribbonGeometry.pagePrevAnchor, "ribbons"),
+        animation = "ribbonPagePrev",
+      },
+      pageNext = {
+        anchor = anchor(ribbonGeometry.pageNextAnchor, "ribbons"),
+        animation = "ribbonPageNext",
+      },
+    },
+  }
+end
+
+-- Lowers the nested-state background motion verbatim: the move detail
+-- state steps the sub-pane background along X and the ribbon detail
+-- state along Y through their native position traces.
+local function compileTransitions()
+  local transitions = {}
+  for _, name in ipairs({ "moveDetail", "ribbonDetail" }) do
+    local source = SummarySources.transitions[name]
+    if type(source) ~= "table" then
+      sourceError("the transition inventory carries no track", { track = name })
+    end
+    if source.pane ~= "main" and source.pane ~= "sub" then
+      sourceError("the transition inventory names no native pane", { track = name })
+    end
+    if source.axis ~= "x" and source.axis ~= "y" then
+      sourceError("the transition inventory names no native axis", { track = name })
+    end
+    if type(source.positions) ~= "table" or #source.positions == 0 then
+      sourceError("the transition inventory carries no positions", { track = name })
+    end
+    local positions = {}
+    for _, position in ipairs(source.positions) do
+      if type(position) ~= "number" then
+        sourceError("the transition inventory carries a non-numeric position", { track = name })
+      end
+      positions[#positions + 1] = position
+    end
+    transitions[name] = { pane = source.pane, axis = source.axis, positions = positions }
+  end
+  return transitions
 end
 
 local function rasterizeScreen(charData, paletteColors, screen, role)
@@ -798,11 +1142,11 @@ local function compileBackgrounds(archive, dependencies, assets)
   end
   local backing = decode(
     "decodeScreen",
-    readMember(archive, SummarySources.backgrounds.moveBacking, "move-backing", dependencies),
-    "move-backing"
+    readMember(archive, SummarySources.backgrounds.detailBacking, "detail-backing", dependencies),
+    "detail-backing"
   )
-  local backingImage = rasterizeScreen(charMove, palette.colors, backing, "move-backing")
-  visuals.moveBacking = writePng(backingImage, SummaryCache.assetDir() .. "/move-backing.png", assets)
+  local backingImage = rasterizeScreen(charMove, palette.colors, backing, "detail-backing")
+  visuals.detailBacking = writePng(backingImage, SummaryCache.assetDir() .. "/detail-backing.png", assets)
   return visuals, palette, charMain, charSub
 end
 
@@ -1369,22 +1713,33 @@ local function compileLandmarkMaps(landmarks)
   return { wildByLocation = wildByLocation, giftByLocation = giftByLocation, fallback = fallback }
 end
 
--- Resolves the migrated-region wording per supported origin game through
--- the generated gift landmark bank: both supported games are Johto-native,
--- so both bind the source Johto region entry. The numeric gift packing
--- stops here; runtime reads the game-keyed mapping only.
+-- Resolves the migrated-region wording per origin game through the
+-- generated gift landmark bank: each game reads its source arrival
+-- region entry, so Diamond/Pearl/Platinum bind the dashes wording and
+-- GameCube binds Distant Land. The numeric gift packing stops here;
+-- runtime reads the game-keyed mapping only.
 ---@param landmarkMaps table<string, unknown>
 ---@return table<string, string>
 local function compileMigrationRegions(landmarkMaps)
   local giftByLocation = assert(landmarkMaps.giftByLocation, "the landmark closure carries gift locations")
   assert(type(giftByLocation) == "table", "gift locations are a record")
-  local johto = SummarySources.memoLocations.johto
-  local key = giftByLocation[johto]
-  if type(key) ~= "string" or key == "" then
-    sourceError("the gift bank carries no Johto migration region", { location = johto })
+  local mapping = SummarySources.memoMigrationRegions
+  if type(mapping) ~= "table" or next(mapping) == nil then
+    sourceError("the migration inventory carries no origin-game mapping", {})
   end
-  assert(type(key) == "string" and key ~= "", "missing migration regions fail above")
-  return { heartgold = key, soulsilver = key }
+  local regions = {}
+  for game, region in pairs(mapping) do
+    local location = SummarySources.memoLocations[region]
+    if location == nil then
+      sourceError("the migration inventory names an unknown region", { game = game, region = region })
+    end
+    local key = giftByLocation[location]
+    if type(key) ~= "string" or key == "" then
+      sourceError("the gift bank carries no migration region", { game = game, location = location })
+    end
+    regions[game] = key
+  end
+  return regions
 end
 
 -- Compiles the ordered memo selection rules: one entry per source
@@ -1492,6 +1847,7 @@ local function _compile(romFs, catalog, portraitManifest)
     sourceError("the summary archive carries an unexpected member census", { members = archive:memberCount() })
   end
   local sharedArchive = openArchive(romFs, SummarySources.archives.shared.symbol, "shared graphics")
+  local resdatArchive = openArchive(romFs, SummarySources.archives.resdat.symbol, "summary resdat")
   local messageArchive = openArchive(romFs, SummarySources.archives.messages.symbol, "messages")
   local performanceArchive = openArchive(romFs, SummarySources.archives.performance.symbol, "performance")
   local dexArchive = openArchive(romFs, SummarySources.archives.dexOrder.symbol, "dex order")
@@ -1517,6 +1873,17 @@ local function _compile(romFs, catalog, portraitManifest)
   for name, visual in pairs(ribbonVisuals) do
     visuals["ribbonArt_" .. name] = visual
   end
+  -- Chrome resources resolve through the summary and shared archives
+  -- only: each resource-table entry names its source archive, and the
+  -- lookup below binds those archives to their dependency labels.
+  local chromeArchives = {
+    [HgssArchives.resolve(SummarySources.archives.ui.symbol).narcId] = { handle = archive, label = "summary" },
+    [HgssArchives.resolve(SummarySources.archives.shared.symbol).narcId] = {
+      handle = sharedArchive,
+      label = "shared",
+    },
+  }
+  local sprites = compileChrome(resdatArchive, chromeArchives, dependencies, assets, visuals)
   local summaryText = compileSummaryText(messageArchive, dependencies)
   local ribbonLabels = compileRibbonText(messageArchive, dependencies)
   local months = compileMonthText(messageArchive, dependencies)
@@ -1558,7 +1925,7 @@ local function _compile(romFs, catalog, portraitManifest)
     groups = groups,
     windows = windows,
     visuals = visuals,
-    sprites = {},
+    sprites = sprites,
     hitboxes = { touch = compileTouch() },
     text = text,
     palettes = palettes,
@@ -1568,13 +1935,13 @@ local function _compile(romFs, catalog, portraitManifest)
     performance = performance,
     dexNumbers = dexNumbers,
     memo = memo,
-    -- Sounds and transition tracks stay empty by calibration: the
-    -- overlay resolves both at its state call sites and no
-    -- generated-family consumer reads these sections (see
-    -- SummarySources.absences). The closed keys and their shape
-    -- validators remain so a future populated section validates.
+    -- Sounds stay empty by calibration: the overlay resolves sound
+    -- effects at its state call sites and no generated-family consumer
+    -- reads this section (see SummarySources.absences). The closed key
+    -- and its shape validator remain so a future populated section
+    -- validates.
     sounds = {},
-    transitions = {},
+    transitions = compileTransitions(),
   }
   local ok, err = pcall(SummaryAssetSchema.assertManifest, manifest)
   if not ok then
