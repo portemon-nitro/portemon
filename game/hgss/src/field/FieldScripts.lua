@@ -380,6 +380,7 @@ function FieldScripts.new(opts)
     loader = opts.mapLoader,
     sourceMap = opts.sourceMap,
     screen = opts.screen,
+    travel = opts.travel,
   })
   local function resolveText(message)
     return dialogueHost:resolveMessage(message, {}, {})

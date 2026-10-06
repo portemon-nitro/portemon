@@ -1,11 +1,13 @@
 -- ScriptMapsService: the script-facing map/warp abstraction. Source `Warp`
 -- after a completed source screen fade must perform a covered map swap
 -- (reusing transition preparation/commit without a second ordinary fade
--- pair), and the source special-spawn setter (opcode 582) must leave
--- observable semantic state instead of vanishing as a noop.
+-- pair), and the source special-spawn setter (opcode 582) delegates to the
+-- durable travel owner instead of keeping transient scratch state.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local ScriptMapsService = require("libs.hgss.src.script.ScriptMapsService")
 
 local T = {}
@@ -24,6 +26,15 @@ end
 
 local function target()
   return { map = "MAP_NEW_BARK_ELMS_LAB_2F", warp = 0, fieldX = 12, fieldZ = 6, facing = "west" }
+end
+
+local function serviceWithTravel(travel)
+  return ScriptMapsService.new({
+    transition = { start = function() end },
+    loader = fakeLoader(),
+    sourceMap = fakeSourceMap(),
+    travel = travel,
+  })
 end
 
 function T.covered_scripted_warps_can_be_reused_after_success()
@@ -175,23 +186,102 @@ function T.a_covered_scripted_swap_without_opaque_cover_fails_explicitly()
   Assert.equal(transitionCalls, 0, "the transition remains untouched without opaque cover")
 end
 
--- Opcode 582's special-spawn setter must leave named, observable semantic
--- state on the maps service rather than disappearing as a noop.
-function T.special_spawn_setter_records_source_location_and_is_observable()
+-- Opcode 582's special-spawn setter writes the durable travel owner: the
+-- value is observable through the owner and survives its capture.
+function T.special_spawn_setter_writes_the_injected_travel_owner()
+  local travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" })
+  local service = serviceWithTravel(travel)
+  Assert.isNil(service:specialSpawn(), "no special spawn is recorded before the source setter runs")
+  local input = { map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" }
+  service:setSpecialSpawn(input)
+  Assert.deepEqual(service:specialSpawn(), input)
+  Assert.deepEqual(travel:specialSpawn(), input, "the setter writes the durable travel owner")
+  Assert.deepEqual(travel:capture().specialSpawn, input, "the delegated value survives travel capture")
+  input.map = "MAP_MUTATED"
+  Assert.equal(travel:specialSpawn().map, "MAP_NEW_BARK", "delegation copies across the boundary")
+end
+
+-- Retail opcode 582 nodes carry numeric map ids; the setter resolves them
+-- to the semantic symbol before the unchanged durable write. The stored
+-- record is a copy: mutating the caller input or the observed output
+-- leaves the owner unchanged.
+function T.numeric_map_id_resolves_to_the_semantic_record_before_the_durable_write()
+  local travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" })
+  local service = ScriptMapsService.new({
+    transition = { start = function() end },
+    loader = {
+      load = function(_, ref)
+        return { mapId = ref, coordinateOrigin = { x = 600, z = 300 } }
+      end,
+      mapSymbol = function(_, id)
+        assert(id == 60, "unexpected map id")
+        return "MAP_NEW_BARK"
+      end,
+    },
+    sourceMap = fakeSourceMap(),
+    travel = travel,
+  })
+  local input = { map = 60, fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" }
+  service:setSpecialSpawn(input)
+  local expected = { map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" }
+  Assert.deepEqual(service:specialSpawn(), expected)
+  Assert.deepEqual(travel:specialSpawn(), expected, "the resolved record reaches the durable travel owner")
+  Assert.deepEqual(travel:capture().specialSpawn, expected, "the resolved record survives travel capture")
+  input.map = 61
+  input.fieldX = 0
+  Assert.equal(
+    travel:specialSpawn().map,
+    "MAP_NEW_BARK",
+    "the write copies the resolved record, never the caller table"
+  )
+  local observed = service:specialSpawn()
+  observed.map = "MAP_MUTATED"
+  Assert.equal(travel:specialSpawn().map, "MAP_NEW_BARK", "getter results share no identity with the owner")
+end
+
+-- An unknown numeric id raises loudly with the prior travel value intact.
+function T.unknown_numeric_map_id_raises_without_changing_the_prior_value()
+  local travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" })
+  local established = { map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" }
+  local service = ScriptMapsService.new({
+    transition = { start = function() end },
+    loader = {
+      load = function(_, ref)
+        return { mapId = ref, coordinateOrigin = { x = 600, z = 300 } }
+      end,
+      mapSymbol = function(_, id)
+        if id == 60 then
+          return "MAP_NEW_BARK"
+        end
+        error(Errors.new("FIELD_MAP_UNKNOWN", "no runtime map for " .. tostring(id), { key = id }))
+      end,
+    },
+    sourceMap = fakeSourceMap(),
+    travel = travel,
+  })
+  service:setSpecialSpawn(established)
+  Assert.throws(function()
+    service:setSpecialSpawn({ map = 999, fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" })
+  end)
+  Assert.deepEqual(travel:specialSpawn(), established, "a failed numeric write preserves the prior record")
+  Assert.deepEqual(travel:capture().specialSpawn, established)
+end
+
+-- Warp-only consumers stay valid without travel; only special-spawn access
+-- faults loudly.
+function T.special_spawn_without_travel_faults_while_warp_use_stays_valid()
   local service = ScriptMapsService.new({
     transition = { start = function() end },
     loader = fakeLoader(),
     sourceMap = fakeSourceMap(),
   })
-  Assert.isNil(service:specialSpawn(), "no special spawn is recorded before the source setter runs")
-  service:setSpecialSpawn({ map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" })
-  Assert.deepEqual(service:specialSpawn(), {
-    map = "MAP_NEW_BARK",
-    fieldX = 688,
-    fieldZ = 393,
-    warpId = -1,
-    direction = "south",
-  })
+  service:startWarp(target())
+  Assert.throws(function()
+    service:setSpecialSpawn({ map = "MAP_NEW_BARK", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" })
+  end)
+  Assert.throws(function()
+    service:specialSpawn()
+  end)
 end
 
 return { tests = T }

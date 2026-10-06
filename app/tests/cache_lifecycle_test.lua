@@ -12,7 +12,6 @@ local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSave = require("libs.hgss.src.save.GameSave")
-local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
@@ -89,7 +88,6 @@ local function record(saveId, overrides)
     photoAlbum = PhotoAlbum.new():capture(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
-    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
   for key, override in pairs(overrides or {}) do
     value[key] = override

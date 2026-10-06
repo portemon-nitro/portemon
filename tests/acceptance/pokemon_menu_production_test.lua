@@ -530,10 +530,12 @@ function T.tests.save_round_trip_preserves_domain_badges_travel_and_leaves(conte
     local potionBefore = bag:quantity("POTION")
     local record = assert(runtime:captureGameSave(), "a settled field captures")
     Assert.equal(record.schema, GameSave.SCHEMA, "production capture writes the current save schema")
+
     Assert.equal(type(record.mart), "table", "production capture carries the canonical mart bucket")
     Assert.equal(record.mart.schema, "g4-mart-save-v1", "production capture uses the supported mart schema")
     Assert.equal(record.playerData.profile.nationalDex, false, "new-game profiles start without the National Dex")
-    Assert.isTrue(type(record.battleFrontier) == "table", "the current save schema captures Battle Frontier records")
+    Assert.isNil(record.battleFrontier, "the current save schema carries no Frontier bucket")
+
     Assert.isTrue(record.playerData.profile.badges > 0, "awarded badges persist in the record")
     Assert.isTrue(type(record.fieldTravel) == "table", "the record carries travel facts")
     Assert.equal(record.fieldTravel.lastHealSpawn, "SPAWN_NEW_BARK", "the mother spawn survives capture")
@@ -560,11 +562,6 @@ function T.tests.save_round_trip_preserves_domain_badges_travel_and_leaves(conte
       "reload preserves the awarded badges"
     )
     Assert.equal(fresh.fieldTravel:capture().lastHealSpawn, "SPAWN_NEW_BARK", "reload preserves the travel facts")
-    Assert.deepEqual(
-      fresh.battleFrontierRecords:bucket(),
-      record.battleFrontier,
-      "reload preserves the explicit Battle Frontier record bucket"
-    )
     Assert.equal(fresh.monService:partyMon(0).species, "GEODUDE", "reload preserves the switched order")
     Assert.deepEqual(fresh.martService:capture(), record.mart, "reload preserves the canonical mart state")
   end)

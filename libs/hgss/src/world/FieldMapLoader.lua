@@ -1332,6 +1332,17 @@ function FieldMapLoader:definesMap(idOrSymbol)
   return findRecord(self.world, idOrSymbol) ~= nil
 end
 
+-- Resolve a numeric map id or symbol to its runtime map symbol through the
+-- structural world table alone: no scene, collision, terrain, or other
+-- generated asset is read and nothing is cached. Unknown ids/symbols raise
+-- FIELD_MAP_UNKNOWN.
+---@param idOrSymbol string|integer
+---@return string
+function FieldMapLoader:mapSymbol(idOrSymbol)
+  assert(not self.released, "field map loader is released")
+  return worldRecord(self.world, idOrSymbol).symbol
+end
+
 -- Counts currently resident map entries without acquiring or releasing them.
 function FieldMapLoader:residentCount()
   local count = 0

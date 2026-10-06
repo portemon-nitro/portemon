@@ -11,7 +11,6 @@ local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
-local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 
 local GameSave = {}
 
@@ -28,7 +27,6 @@ local TOP_LEVEL_FIELDS = {
   audio = true,
   auxiliaryUi = true,
   bag = true,
-  battleFrontier = true,
   encounters = true,
   facing = true,
   fashionCase = true,
@@ -278,7 +276,6 @@ function GameSave.migrateV3(record)
   migrated.playerData = playerData
   migrated.schema = "g4-game-save-v4"
   migrated.fieldTravel = { lastHealSpawn = FieldTravelState.DEFAULT_LAST_HEAL_SPAWN }
-  migrated.battleFrontier = BattleFrontierRecords.new():bucket()
   return migrated
 end
 

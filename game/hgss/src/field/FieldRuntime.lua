@@ -203,7 +203,6 @@ end
 ---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
 ---@field dexKnowledge table<string, unknown>? the owned dex knowledge
----@field battleFrontierRecords BattleFrontierRecords the source-owned five-record Trainer Card counters
 ---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
 ---@field _lastBattleResult table<string, unknown>? latest committed battle outcome words
 ---@field bagCursor BagCursor the runtime-only field bag cursor
@@ -2050,12 +2049,6 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
     self.dexKnowledge = PokedexKnowledge.restore(loadedGame.pokedex, { species = speciesRefs })
   else
     self.dexKnowledge = PokedexKnowledge.new({ species = speciesRefs })
-  end
-  local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
-  if loadedGame ~= nil then
-    self.battleFrontierRecords = BattleFrontierRecords.restore(assert(loadedGame.battleFrontier))
-  else
-    self.battleFrontierRecords = BattleFrontierRecords.new()
   end
   self.battleRuntime = nil
   self._battleLaunch = nil

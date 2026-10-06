@@ -14,10 +14,6 @@ local MartSave = require("libs.hgss.src.save.MartSave")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
-local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
-
-
-
 
 local T = {}
 
@@ -78,7 +74,6 @@ local function v4record(overrides)
   value.fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" }
   value.encounters = EncounterSave.initial()
   value.pokedex = PokedexSave.initial()
-  value.battleFrontier = BattleFrontierRecords.new():bucket()
   return value
 end
 
@@ -153,12 +148,14 @@ end
 
 
 
+
 function T.v4_migration_adds_only_national_dex_and_mart_state()
   local source = v4record()
   source.schema = "g4-game-save-v4"
   source.scripts = {
     registryFingerprint = "pre-update-registry",
     taskFingerprint = "pre-update-tasks",
+
 
 
     nextTaskId = 7,

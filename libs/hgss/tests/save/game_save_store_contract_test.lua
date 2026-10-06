@@ -12,7 +12,6 @@ local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
-local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 local SaveFs = require("libs.storage.src.SaveFs")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
@@ -63,7 +62,6 @@ local function record(saveId, versionId, overrides)
     photoAlbum = PhotoAlbum.new():capture(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
-    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
   for key, valueOverride in pairs(overrides or {}) do
     value[key] = valueOverride
