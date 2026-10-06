@@ -67,6 +67,10 @@ local function gamePath(saveId)
   return "saves/games/" .. saveId .. ".lua"
 end
 
+local function backupPath(saveId, generation)
+  return "saves/backups/" .. saveId .. "." .. generation .. ".lua"
+end
+
 local function v1MonsBucket()
   return {
     schema = "g4-mons-save-v1",
@@ -461,16 +465,18 @@ function T.metadata_listing_distinguishes_historical_from_current_and_future_sch
   Assert.equal(assert(futureEntry.error).code, "GAME_SAVE_SCHEMA_UNSUPPORTED")
 end
 
-function T.deleted_ids_are_not_reusable_and_published_order_follows_creation()
+function T.deleted_ids_are_not_reusable_and_listing_follows_publication_order()
   local backend = FakeCache.new()
   local store = newStore(backend)
   local firstId = store:reserve()
   local secondId = store:reserve()
   store:publishFirst(record(secondId, "soulsilver"))
   store:publishFirst(record(firstId, "heartgold"))
+  -- First publication appends in publication order, and listing
+  -- enumerates that stored order newest-first.
   local entries = assert(store:list())
-  Assert.equal(entries[1].saveId, secondId)
-  Assert.equal(entries[2].saveId, firstId)
+  Assert.equal(entries[1].saveId, firstId)
+  Assert.equal(entries[2].saveId, secondId)
 
   store:delete(firstId)
   callFailure(function()
@@ -486,6 +492,164 @@ function T.hostile_save_ids_are_rejected_before_path_resolution()
   local _, err = store:load("../escape")
   Assert.notNil(err)
   Assert.equal(assert(err).code, "GAME_SAVE_SAVE_ID_INVALID")
+end
+
+function T.successive_updates_retain_three_prior_raw_payloads_and_prune_older_generations()
+  local backend = FakeCache.new()
+  local store = newStore(backend)
+  local saveId = store:reserve()
+  store:publishFirst(record(saveId, "heartgold", { playTimeSeconds = 0 }))
+  local bytesA = backend.files[gamePath(saveId)]
+  Assert.notNil(bytesA)
+  Assert.isNil(backend.files[backupPath(saveId, 1)], "first publication has no predecessor to preserve")
+
+  store:save(record(saveId, "heartgold", { playTimeSeconds = 1 }))
+  local bytesB = backend.files[gamePath(saveId)]
+  Assert.notNil(bytesB)
+  Assert.equal(backend.files[backupPath(saveId, 1)], bytesA)
+
+  store:save(record(saveId, "heartgold", { playTimeSeconds = 2 }))
+  local bytesC = backend.files[gamePath(saveId)]
+  Assert.equal(backend.files[backupPath(saveId, 1)], bytesB)
+  Assert.equal(backend.files[backupPath(saveId, 2)], bytesA)
+
+  store:save(record(saveId, "heartgold", { playTimeSeconds = 3 }))
+  local bytesD = backend.files[gamePath(saveId)]
+  Assert.equal(backend.files[backupPath(saveId, 1)], bytesC)
+  Assert.equal(backend.files[backupPath(saveId, 2)], bytesB)
+  Assert.equal(backend.files[backupPath(saveId, 3)], bytesA)
+
+  store:save(record(saveId, "heartgold", { playTimeSeconds = 4 }))
+  local bytesE = backend.files[gamePath(saveId)]
+  Assert.notNil(bytesE)
+  Assert.isTrue(bytesE ~= bytesD, "the newest snapshot becomes current")
+  Assert.equal(backend.files[backupPath(saveId, 1)], bytesD)
+  Assert.equal(backend.files[backupPath(saveId, 2)], bytesC)
+  Assert.equal(backend.files[backupPath(saveId, 3)], bytesB)
+  Assert.isNil(backend.files[backupPath(saveId, 4)], "no fourth prior generation is retained")
+  Assert.isTrue(bytesE ~= bytesA, "the oldest payload has aged out of the retained history")
+  Assert.isNil(backend.files[gamePath(saveId) .. ".tmp"], "no staged replacement lingers after success")
+
+  store:delete(saveId)
+  Assert.isNil(backend.files[gamePath(saveId)])
+  Assert.isNil(backend.files[gamePath(saveId) .. ".tmp"])
+  for generation = 1, 3 do
+    Assert.isNil(backend.files[backupPath(saveId, generation)])
+    Assert.isNil(backend.files[backupPath(saveId, generation) .. ".tmp"])
+  end
+end
+
+function T.failed_backup_rotation_leaves_prior_current_authoritative()
+  local backend = FakeCache.new()
+  local store = newStore(backend)
+  local saveId = store:reserve()
+  store:publishFirst(record(saveId, "heartgold", { playTimeSeconds = 0 }))
+  local bytesA = backend.files[gamePath(saveId)]
+  store:save(record(saveId, "heartgold", { playTimeSeconds = 1 }))
+  local bytesB = backend.files[gamePath(saveId)]
+  Assert.notNil(bytesA)
+  Assert.notNil(bytesB)
+
+  -- Destination-targeted injection: only prior-generation staging fails, so
+  -- the failure proves the current payload waits for its predecessors.
+  local originalWrite = assert(backend.write)
+  rawset(backend, "write", function(self, path, data)
+    if type(path) == "string" and path:find("backups/", 1, true) then
+      return false, "injected prior-generation staging failure"
+    end
+    return originalWrite(self, path, data)
+  end)
+  local originalReplace = assert(backend.replace)
+  rawset(backend, "replace", function(self, source, destination)
+    if type(source) == "string" and source:find("backups/", 1, true) then
+      return false, "injected prior-generation staging failure"
+    end
+    if type(destination) == "string" and destination:find("backups/", 1, true) then
+      return false, "injected prior-generation staging failure"
+    end
+    return originalReplace(self, source, destination)
+  end)
+
+  local failure = callFailure(function()
+    store:save(record(saveId, "heartgold", { playTimeSeconds = 2 }))
+  end)
+  Assert.notNil(failure)
+  Assert.equal(backend.files[gamePath(saveId)], bytesB, "the prior current payload stays authoritative")
+  Assert.isNil(backend.files[gamePath(saveId) .. ".tmp"], "the staged replacement is cleaned after failure")
+  for generation = 1, 3 do
+    local history = backend.files[backupPath(saveId, generation)]
+    if history ~= nil then
+      Assert.isTrue(
+        history == bytesA or history == bytesB,
+        "retained history holds only previously published bytes"
+      )
+    end
+    Assert.isNil(backend.files[backupPath(saveId, generation) .. ".tmp"])
+  end
+end
+
+function T.updates_persist_owner_snapshots_without_envelope_preflight()
+  local backend = FakeCache.new()
+  local generatedReads = 0
+  local reader = backend.read
+  function backend.read(self, path)
+    if type(path) == "string" and path:sub(1, 6) ~= "saves/" then
+      generatedReads = generatedReads + 1
+    end
+    return reader(self, path)
+  end
+  local store = newStore(backend)
+  local saveId = store:reserve()
+  store:publishFirst(record(saveId, "heartgold", { playTimeSeconds = 0 }))
+  -- An envelope value the read boundary rejects, still plain serializable data.
+  local update = record(saveId, "heartgold", { playTimeSeconds = 1, mapId = -1 })
+  local normalized, normalizeErr = GameSave.normalize(update)
+  Assert.isNil(normalized)
+  Assert.equal(assert(normalizeErr).code, "GAME_SAVE_FIELD_INVALID")
+
+  Assert.isTrue(store:save(update))
+  Assert.equal(generatedReads, 0, "publication performs no generated-cache reads")
+  local saveFs = SaveFs.global(backend)
+  local persisted = assert(saveFs:loadLua("games/" .. saveId .. ".lua"))
+  Assert.equal(persisted.mapId, -1, "the owner snapshot reaches durable storage byte-identically")
+  -- The read boundary still owns routing safety: a later load may reject
+  -- the same stored bytes the write boundary trusted.
+  local loadFailure = callFailure(function()
+    store:load(saveId)
+  end)
+  Assert.equal(loadFailure.code, "GAME_SAVE_FIELD_INVALID")
+end
+
+function T.relaxed_catalog_history_keeps_published_saves_reachable()
+  local backend = FakeCache.new()
+  local store = newStore(backend)
+  local firstId = store:reserve()
+  local secondId = store:reserve()
+  store:publishFirst(record(firstId, "heartgold"))
+  store:publishFirst(record(secondId, "soulsilver"))
+
+  local saveFs = SaveFs.global(backend)
+  local catalog = assert(saveFs:loadLua("catalog.lua"))
+  -- Nonessential history edits only: unknown metadata plus reordered
+  -- allocation history and stored visible order, while addressing facts
+  -- (schema, nextId above every known numeric identity, dense safe-id
+  -- arrays, unique visible entries) stay intact.
+  catalog.extraMetadata = { note = "kept" }
+  catalog.allocatedIds = { secondId, firstId }
+  catalog.saveIds = { secondId, firstId }
+  backend.files["saves/catalog.lua"] = LuaWriter.encode(catalog)
+
+  local restarted = newStore(backend)
+  local metadata = assert(restarted:listMetadata())
+  Assert.equal(#metadata, 2)
+  Assert.equal(metadata[1].saveId, firstId)
+  Assert.equal(metadata[2].saveId, secondId)
+  Assert.notNil(assert(restarted:load(firstId)))
+  Assert.notNil(assert(restarted:load(secondId)))
+  local thirdId = restarted:reserve()
+  Assert.equal(thirdId, "save-00000003")
+  local rewritten = assert(saveFs:loadLua("catalog.lua"))
+  Assert.equal(assert(rewritten.extraMetadata).note, "kept")
 end
 
 return { tests = T }

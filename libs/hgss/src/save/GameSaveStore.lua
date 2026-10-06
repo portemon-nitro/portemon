@@ -57,83 +57,46 @@ local function validateCatalog(catalog)
     catalogError("save catalog next id is invalid", { nextId = catalog.nextId })
   end
   if type(catalog.allocatedIds) ~= "table" then
-    catalogError("save catalog allocation history is required", {})
+    catalogError("save catalog id list is required", { field = "allocatedIds" })
   end
   if type(catalog.deletedIds) ~= "table" then
-    catalogError("save catalog deletion history is required", {})
+    catalogError("save catalog id list is required", { field = "deletedIds" })
   end
   if type(catalog.saveIds) ~= "table" then
-    catalogError("save catalog save ids are required", {})
+    catalogError("save catalog id list is required", { field = "saveIds" })
   end
   ---@cast catalog GameSaveCatalog
-  local allowed = { schema = true, nextId = true, allocatedIds = true, deletedIds = true, saveIds = true }
-  for key in pairs(catalog) do
-    if not allowed[key] then
-      catalogError("save catalog contains an unknown field", { field = key })
-    end
-  end
+  -- Catalog reads protect addressing and enumeration only: every id list
+  -- must be a dense array of safe save ids below nextId so the next
+  -- reservation cannot collide with a catalog-known identity, and the
+  -- visible list must not name the same save twice. Unknown catalog
+  -- fields and nonessential history relationships are preserved, never
+  -- corruption: mutations below edit the loaded table in place.
   for _, ids in ipairs({ catalog.allocatedIds, catalog.deletedIds, catalog.saveIds }) do
     for key in pairs(ids) do
       if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > #ids then
         catalogError("save catalog id lists must be contiguous arrays", {})
       end
     end
-  end
-  local allocated = {}
-  for index = 1, #catalog.allocatedIds do
-    local saveId = catalog.allocatedIds[index]
-    local valid, err = GameSave.validateSaveId(saveId)
-    if not valid then
-      error(err)
+    for index = 1, #ids do
+      local saveId = ids[index]
+      local valid, err = GameSave.validateSaveId(saveId)
+      if not valid then
+        error(err)
+      end
+      local number = numberForId(saveId)
+      if number == nil or number >= catalog.nextId then
+        catalogError("save catalog id is outside the allocated range", { saveId = saveId })
+      end
     end
-    if numberForId(saveId) ~= index or allocated[saveId] then
-      catalogError("save catalog allocation history is not monotonic", { saveId = saveId })
-    end
-    allocated[saveId] = true
-  end
-  if #catalog.allocatedIds ~= catalog.nextId - 1 then
-    catalogError("save catalog allocation history does not match next id", {})
-  end
-  local deleted = {}
-  for index = 1, #catalog.deletedIds do
-    local saveId = catalog.deletedIds[index]
-    if not allocated[saveId] or deleted[saveId] then
-      catalogError("save catalog deletion history is invalid", { saveId = saveId })
-    end
-    deleted[saveId] = true
   end
   local seen = {}
-  local previousAllocationPosition = 0
   for index = 1, #catalog.saveIds do
     local saveId = catalog.saveIds[index]
-    local valid, err = GameSave.validateSaveId(saveId)
-    if not valid then
-      error(err)
-    end
     if seen[saveId] then
       catalogError("save catalog contains a duplicate id", { saveId = saveId })
     end
-    local number = numberForId(saveId)
-    if number == nil then
-      catalogError("save catalog contains an unallocated id", { saveId = saveId })
-    end
-    if number >= catalog.nextId or not allocated[saveId] then
-      catalogError("save catalog contains an unallocated id", { saveId = saveId })
-    end
-    if deleted[saveId] then
-      catalogError("save catalog exposes a deleted id", { saveId = saveId })
-    end
-    local allocationPosition = assert(numberForId(saveId))
-    if allocationPosition <= previousAllocationPosition then
-      catalogError("save catalog ordering is not creation ordering", { saveId = saveId })
-    end
-    previousAllocationPosition = allocationPosition
     seen[saveId] = true
-  end
-  for key in pairs(catalog.saveIds) do
-    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > #catalog.saveIds then
-      catalogError("save catalog save ids must be a contiguous array", {})
-    end
   end
   return catalog
 end
@@ -141,6 +104,36 @@ end
 ---@return GameSaveCatalog
 local function emptyCatalog()
   return { schema = GameSaveStore.CATALOG_SCHEMA, nextId = 1, allocatedIds = {}, deletedIds = {}, saveIds = {} }
+end
+
+-- Retained prior payload generations per save id. Generation 1 is the
+-- newest predecessor; older than 3 is discarded.
+local ROLLBACK_GENERATIONS = 3
+
+-- Write-side identity for owner-produced snapshots. Persistence trusts the
+-- snapshot beyond storage identity: a table carrying the current schema
+-- under a safe save id. Envelope routing and nested semantics stay
+-- read-side concerns owned by GameSave.normalize and the restoring
+-- domains. Returns the record itself, never a normalized copy.
+---@param record unknown
+---@return table<string, unknown>
+local function checkWriteIdentity(record)
+  if type(record) ~= "table" then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "game save must be a table", {})
+  end
+  assert(type(record) == "table")
+  if record.schema ~= GameSave.SCHEMA then
+    Errors.raise(
+      GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
+      "unsupported game save schema",
+      { schema = record.schema }
+    )
+  end
+  local valid, err = GameSave.validateSaveId(record.saveId)
+  if not valid then
+    error(err)
+  end
+  return record
 end
 
 ---@class GameSaveStoreModule
@@ -218,9 +211,62 @@ function GameSaveStore:_payloadTempPath(saveId)
   return self:_gamePath(saveId) .. ".tmp"
 end
 
--- Normalizes one parsed payload through the canonical GameSave envelope
--- boundary. Storage enforces identity and routing safety here; nested
--- buckets travel untouched to the runtime domains that own them.
+function GameSaveStore:_backupPath(saveId, generation)
+  assert(generation >= 1 and generation <= ROLLBACK_GENERATIONS, "rollback generation is out of range")
+  return "backups/" .. saveId .. "." .. generation .. ".lua"
+end
+
+function GameSaveStore:_backupTempPath(saveId, generation)
+  return self:_backupPath(saveId, generation) .. ".tmp"
+end
+
+-- Reads the exact stored bytes that one update must preserve: the current
+-- payload followed by the prior first and second generations. Raw bytes
+-- travel untouched so history tolerates payloads the runtime no longer
+-- parses. A missing current payload for a catalog-listed save is a
+-- persistence failure; a missing prior generation only means its
+-- destination must be absent after rotation.
+---@param saveId string
+---@param payloadPath string
+---@return (string?)[]
+function GameSaveStore:_readPredecessorBytes(saveId, payloadPath)
+  local predecessors = {}
+  local sources = { payloadPath }
+  for generation = 1, ROLLBACK_GENERATIONS - 1 do
+    sources[#sources + 1] = self:_backupPath(saveId, generation)
+  end
+  for index, source in ipairs(sources) do
+    local bytes = self:_readRawOrNil(source)
+    if bytes == nil and index == 1 then
+      Errors.raise(GameSaveErrors.GAME_SAVE_NOT_PUBLISHED, "save payload is missing", { saveId = saveId })
+    end
+    predecessors[index] = bytes
+  end
+  return predecessors
+end
+
+-- Reads exact stored bytes, or nil when the file is absent. Existence is
+-- probed first because backends report a missing file either as absent or
+-- as a read error; a file that exists but cannot be read stays a
+-- structured read failure, matching the load boundary.
+---@param path string
+---@return string?
+function GameSaveStore:_readRawOrNil(path)
+  if not self.saveFs.backend:getInfo(self.saveFs:resolve(path)) then
+    return nil
+  end
+  local bytes, readErr = self.saveFs:read(path)
+  if bytes == nil then
+    Errors.raise(StorageErrors.SAVE_READ_FAILED, "save predecessor read failed", {
+      path = path,
+      cause = readErr,
+    })
+  end
+  return bytes
+end
+
+-- Read-side normalization for catalog-listed payloads. Full envelope
+-- migration and routing checks run here on load; writes never call this.
 function GameSaveStore:_normalizeRecord(record, expectedSaveId)
   local normalized, err = GameSave.normalize(record)
   if not normalized then
@@ -386,7 +432,7 @@ end
 function GameSaveStore:publishFirst(record)
   return self:_mutate(function()
     local catalog = self:_readCatalog()
-    local valid = self:_normalizeRecord(record)
+    local valid = checkWriteIdentity(record)
     if self:_isListed(catalog, valid.saveId) then
       Errors.raise(
         GameSaveErrors.GAME_SAVE_ALREADY_PUBLISHED,
@@ -397,9 +443,9 @@ function GameSaveStore:publishFirst(record)
     if not self:_isReserved(catalog, valid.saveId) then
       Errors.raise(GameSaveErrors.GAME_SAVE_NOT_RESERVED, "game save id was not reserved", { saveId = valid.saveId })
     end
-    -- A first publication has no prior checkpoint to protect. The record
-    -- is normalized before the staged payload is moved into place, and
-    -- catalog visibility is published only after that move succeeds.
+    -- A first publication has no prior checkpoint to protect. The owner
+    -- snapshot is staged before it is moved into place, and catalog
+    -- visibility is published only after that move succeeds.
     local payloadPath = self:_gamePath(valid.saveId)
     local temporaryPath = self:_payloadTempPath(valid.saveId)
     local payloadOk, payloadErr = pcall(function()
@@ -415,29 +461,9 @@ function GameSaveStore:publishFirst(record)
       end)
       error(payloadErr)
     end
-    local allocationPosition
-    for index, allocatedId in ipairs(catalog.allocatedIds) do
-      if allocatedId == valid.saveId then
-        allocationPosition = index
-        break
-      end
-    end
-    allocationPosition = assert(allocationPosition, "reserved save id is missing from allocation history")
-    local insertion = #catalog.saveIds + 1
-    for index, publishedId in ipairs(catalog.saveIds) do
-      local publishedPosition
-      for candidate, allocatedId in ipairs(catalog.allocatedIds) do
-        if allocatedId == publishedId then
-          publishedPosition = candidate
-          break
-        end
-      end
-      if publishedPosition > allocationPosition then
-        insertion = index
-        break
-      end
-    end
-    table.insert(catalog.saveIds, insertion, valid.saveId)
+    -- Visible saves enumerate in stored order: a first publication
+    -- appends its reserved id without proving any historical position.
+    table.insert(catalog.saveIds, valid.saveId)
     self:_writeCatalog(catalog)
     return true
   end)
@@ -448,7 +474,7 @@ end
 function GameSaveStore:save(record)
   return self:_mutate(function()
     local catalog = self:_readCatalog()
-    local valid = self:_normalizeRecord(record)
+    local valid = checkWriteIdentity(record)
     if not self:_isListed(catalog, valid.saveId) then
       Errors.raise(
         GameSaveErrors.GAME_SAVE_NOT_PUBLISHED,
@@ -456,15 +482,43 @@ function GameSaveStore:save(record)
         { saveId = valid.saveId }
       )
     end
-    local temporaryPath = self:_payloadTempPath(valid.saveId)
+    local saveId = valid.saveId
+    local payloadPath = self:_gamePath(saveId)
+    local temporaryPath = self:_payloadTempPath(saveId)
+    -- Stage the new current payload first so a serialization failure
+    -- cannot disturb the authoritative current or its history. Rollback
+    -- generations commit oldest-to-newest and the current replacement
+    -- moves last; any failure before that final move leaves the prior
+    -- current payload authoritative.
     local ok, err = pcall(function()
       self.saveFs:writeLua(temporaryPath, valid)
-      self.saveFs:replace(temporaryPath, self:_gamePath(valid.saveId))
+      local predecessors = self:_readPredecessorBytes(saveId, payloadPath)
+      for generation = 1, ROLLBACK_GENERATIONS do
+        if predecessors[generation] ~= nil then
+          self.saveFs:write(self:_backupTempPath(saveId, generation), assert(predecessors[generation]))
+        end
+      end
+      for generation = ROLLBACK_GENERATIONS, 1, -1 do
+        if predecessors[generation] ~= nil then
+          self.saveFs:replace(self:_backupTempPath(saveId, generation), self:_backupPath(saveId, generation))
+        else
+          self.saveFs:remove(self:_backupPath(saveId, generation))
+        end
+      end
+      self.saveFs:replace(temporaryPath, payloadPath)
     end)
     if not ok then
+      -- Best-effort temp cleanup; the originating failure propagates.
+      -- Committed rollback files already hold only previously published
+      -- bytes, never the staged snapshot.
       pcall(function()
         self.saveFs:remove(temporaryPath)
       end)
+      for generation = 1, ROLLBACK_GENERATIONS do
+        pcall(function()
+          self.saveFs:remove(self:_backupTempPath(saveId, generation))
+        end)
+      end
       error(err)
     end
     return true
@@ -491,6 +545,10 @@ function GameSaveStore:delete(saveId)
     -- payload; the cleanup error still reaches the caller.
     self.saveFs:remove(self:_gamePath(saveId))
     self.saveFs:remove(self:_payloadTempPath(saveId))
+    for generation = 1, ROLLBACK_GENERATIONS do
+      self.saveFs:remove(self:_backupPath(saveId, generation))
+      self.saveFs:remove(self:_backupTempPath(saveId, generation))
+    end
     return true
   end)
 end

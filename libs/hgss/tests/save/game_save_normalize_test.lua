@@ -162,6 +162,17 @@ function T.supported_history_migrates_to_current_without_generated_caches()
   Assert.equal(migrated.scripts.schema, "g4-script-save-v2")
 end
 
+function T.unknown_top_level_extension_metadata_survives_current_normalization()
+  local input = record({ modState = { marker = "kept" } })
+  local normalized = assert(GameSave.normalize(input))
+  Assert.equal(normalized.schema, GameSave.SCHEMA)
+  Assert.deepEqual(normalized.modState, { marker = "kept" })
+  Assert.equal(normalized.mapId, 60)
+  -- Required routing facts stay strict alongside unrelated extensions.
+  local _, routingErr = GameSave.normalize(record({ modState = { marker = "kept" }, mapId = -1 }))
+  Assert.equal(assert(routingErr).code, "GAME_SAVE_FIELD_INVALID")
+end
+
 function T.historical_migration_never_repairs_nested_content()
   local input = v3record()
   input.mons.rng = { state = 99, calls = 3 }

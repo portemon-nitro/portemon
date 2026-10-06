@@ -334,6 +334,25 @@ function T.migrate_v6_reconciles_the_two_published_bucket_groups()
   Assert.deepEqual(pc.photoAlbum, pcPhotoAlbum)
 end
 
+function T.unrelated_extension_metadata_survives_legacy_migration_steps()
+  local legacy = GameSave.migrateV5(v5record())
+  legacy.modState = { marker = "kept" }
+  local reconciled = GameSave.migrateV6(legacy)
+  Assert.equal(reconciled.schema, GameSave.LEGACY_V7_SCHEMA)
+  Assert.deepEqual(reconciled.modState, { marker = "kept" })
+  Assert.deepEqual(reconciled.fashionCase, FashionCaseState.empty())
+
+  local predecessor = GameSave.migrateV6(GameSave.migrateV5(v5record()))
+  predecessor.modState = { marker = "kept" }
+  local migrated = GameSave.migrateV7(predecessor)
+  Assert.equal(migrated.schema, GameSave.SCHEMA)
+  Assert.deepEqual(migrated.modState, { marker = "kept" })
+  -- The same legacy payload normalizes end-to-end with its extension intact.
+  local normalized = assert(GameSave.normalize(predecessor))
+  Assert.equal(normalized.schema, GameSave.SCHEMA)
+  Assert.deepEqual(normalized.modState, { marker = "kept" })
+end
+
 function T.migrate_v6_rejects_incomplete_and_mixed_bucket_groups()
   local malformed = GameSave.migrateV6(GameSave.migrateV5(v5record()))
   malformed.schema = "g4-game-save-v6"
@@ -363,12 +382,11 @@ function T.migrate_v6_rejects_incomplete_and_mixed_bucket_groups()
     Assert.isTrue(Errors.is(err))
     Assert.equal(candidate.schema, "g4-game-save-v6")
   end
-  local unknown = GameSave.migrateV5(v5record())
-  unknown.unrecognized = true
-  local err = Assert.throws(function()
-    GameSave.migrateV6(unknown)
-  end)
-  Assert.isTrue(Errors.is(err))
+  local extended = GameSave.migrateV5(v5record())
+  extended.unrecognized = true
+  local reconciled = GameSave.migrateV6(extended)
+  Assert.equal(reconciled.schema, GameSave.LEGACY_V7_SCHEMA)
+  Assert.isTrue(reconciled.unrecognized, "unrelated top-level state survives migration")
 end
 
 function T.migrate_v7_advances_nested_buckets_and_drops_fingerprints_without_a_quiescence_gate()

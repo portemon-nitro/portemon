@@ -21,6 +21,8 @@ Keep reviewer-facing mechanisms in these shallow domain subpackages:
 - `save` — HGSS save schema, envelope normalization, supported migrations,
   and persistence. Each runtime domain owner restores and checks the nested
   state it actually uses; there is no whole-save semantic preflight.
+  Persistence protects safe identity, load routing, and recovery history
+  rather than closed top-level purity or catalog-history consistency.
 - `items` — HGSS Bag inventory mechanics, field cursor, and the live Bag service.
 - `mons` — the HGSS-facing live mon/party service over the domain package; follower
   field coordination stays in `field`.

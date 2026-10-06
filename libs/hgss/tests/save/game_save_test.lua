@@ -123,18 +123,15 @@ function T.live_weather_is_optional_for_legacy_records_and_strict_when_present()
   Assert.isTrue(GameSave.normalize(record()) ~= nil)
 end
 
-function T.rejects_non_table_and_unknown_top_level_fields()
+function T.preserves_unrelated_top_level_fields_and_rejects_non_tables()
   returnsCode("GAME_SAVE_INVALID", function()
     ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid call
     return GameSave.normalize(nil)
   end)
   for _, field in ipairs({ "scenario", "currentState" }) do
     local input = record({ [field] = {} })
-    local canonical, err = GameSave.normalize(input)
-    Assert.isNil(canonical)
-    err = assert(err)
-    Assert.equal(err.code, "GAME_SAVE_INVALID")
-    Assert.equal(err.context.field, field)
+    local canonical = assert(GameSave.normalize(input))
+    Assert.deepEqual(canonical[field], {})
   end
   Assert.notNil(GameSave.normalize(record()))
 end

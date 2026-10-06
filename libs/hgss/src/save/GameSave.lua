@@ -207,9 +207,10 @@ local function validateFieldEnvelope(record)
 end
 
 -- Checks the routing and entry envelope of a current-schema record and
--- returns a shallow copy with its avatar canonicalized. Nested buckets
--- pass through untouched: the runtime domains that own them restore and
--- check the state they actually use.
+-- returns a shallow copy with its avatar canonicalized. Unrelated
+-- top-level keys survive unchanged, and nested buckets pass through
+-- untouched: the runtime domains that own them restore and check the
+-- state they actually use.
 local function canonicalizeCurrent(record)
   if record.schema ~= GameSave.SCHEMA then
     Errors.raise(
@@ -217,11 +218,6 @@ local function canonicalizeCurrent(record)
       "unsupported game save schema",
       { schema = record.schema }
     )
-  end
-  for key in pairs(record) do
-    if not TOP_LEVEL_FIELDS[key] then
-      Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "unknown game save field", { field = key })
-    end
   end
   validateSaveIdRaised(record.saveId)
   validateFieldEnvelope(record)
@@ -326,11 +322,6 @@ end
 -- initialized. Nested state is copied, never semantically rechecked.
 function GameSave.migrateV6(record)
   assert(type(record) == "table" and record.schema == GameSave.LEGACY_V6_SCHEMA, "GameSave.migrateV6 requires v6")
-  for key in pairs(record) do
-    if not TOP_LEVEL_FIELDS[key] then
-      Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "unknown game save field", { field = key })
-    end
-  end
   local hasFashionCase = record.fashionCase ~= nil
   local hasMailbox = record.mailbox ~= nil
   local hasPhotoAlbum = record.photoAlbum ~= nil
@@ -359,11 +350,6 @@ end
 ---@return table<string, unknown> the migrated v8 record
 function GameSave.migrateV7(record)
   assert(type(record) == "table" and record.schema == GameSave.LEGACY_V7_SCHEMA, "GameSave.migrateV7 requires v7")
-  for key in pairs(record) do
-    if not TOP_LEVEL_FIELDS[key] then
-      Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "unknown game save field", { field = key })
-    end
-  end
   if type(record.mons) ~= "table" or type(record.scripts) ~= "table" then
     Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "v7 mons and scripts buckets are required for migration", {})
   end
