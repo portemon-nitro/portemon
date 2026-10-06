@@ -375,8 +375,8 @@ function T.species_locked_items_stay_silent_for_invalid_holders()
     },
     {
       item = "LIGHT_BALL",
-      timing = "modifyStat",
-      facts = { stat = "attack" },
+      timing = "beforeHit",
+      facts = {},
       valid = { "PIKACHU" },
       invalid = { "MEWTWO" },
     },
@@ -487,6 +487,371 @@ function T.species_locked_items_fail_closed_without_holder_facts()
   local typeBag = bagWith("ADAMANT_ORB", "beforeHit", EffectFixture.activeScope(1, 1))
   local typeOutcome = runPassive(typeBag, handlers, "beforeHit", passiveContext({ moveType = "steel" }))
   Assert.deepEqual(typeOutcome.events, {}, "a type booster without holder facts stays silent")
+end
+
+-- Metal Coat boosts Steel strikes like the other type boosters: the
+-- evolving hold doubles as a battle booster, so Steel answers while
+-- off-type strikes stay silent.
+function T.metal_coat_boosts_steel_like_other_type_boosters()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  ---@param moveType string striking move type under test
+  ---@return table[] emitted boost events for the pass
+  local function boostedSteel(moveType)
+    local bag = bagWith("METAL_COAT", "beforeHit", EffectFixture.activeScope(1, 1))
+    local outcome = runPassive(bag, handlers, "beforeHit", passiveContext({ moveType = moveType }))
+    Assert.isTrue(outcome.done, "the item pass runs to completion")
+    return outcome.events
+  end
+
+  Assert.equal(#boostedSteel("steel"), 1, "metal coat answers steel strikes")
+  Assert.deepEqual(boostedSteel("fire"), {}, "metal coat stays silent off steel")
+end
+
+-- Light Ball doubles move power for Pikachu without touching stats: the
+-- native strike multiplies power, so the handler announces power for
+-- Pikachu and stays silent for any other holder.
+function T.light_ball_doubles_power_for_pikachu_only()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  ---@param species string holder species under test
+  ---@return table[] emitted boost events for the pass
+  local function boostedPower(species)
+    local bag = bagWith("LIGHT_BALL", "beforeHit", EffectFixture.activeScope(1, 1))
+    local outcome =
+      runPassive(bag, handlers, "beforeHit", passiveContext({ species = species, transformed = false }))
+    Assert.isTrue(outcome.done, "the item pass runs to completion")
+    return outcome.events
+  end
+
+  local pikachu = boostedPower("PIKACHU")
+  Assert.equal(#pikachu, 1, "light ball answers for pikachu")
+  Assert.equal(pikachu[1].power, "boosted", "light ball boosts power rather than stats")
+  Assert.deepEqual(boostedPower("MEWTWO"), {}, "light ball stays silent for other holders")
+end
+
+-- Big Root answers leech recovery as well as drain: the native leech
+-- boost covers stolen health beyond direct draining strikes.
+function T.big_root_answers_leech_recovery()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  ---@param extra table<string, unknown> recovery context facts under test
+  ---@return table[] emitted boost events for the pass
+  local function boostedDrain(extra)
+    local bag = bagWith("BIG_ROOT", "beforeHit", EffectFixture.activeScope(1, 1))
+    local outcome = runPassive(bag, handlers, "beforeHit", passiveContext(extra))
+    Assert.isTrue(outcome.done, "the item pass runs to completion")
+    return outcome.events
+  end
+
+  Assert.equal(#boostedDrain({ drain = true }), 1, "big root answers draining strikes")
+  Assert.equal(#boostedDrain({ leech = true }), 1, "big root answers leech recovery")
+  Assert.deepEqual(boostedDrain({}), {}, "big root stays silent without recovery")
+end
+
+-- Chilan answers normal-type hits without any effectiveness gate: the
+-- native weaken-normal script skips the super-effective check the
+-- resist family requires, so a plain normal strike eats the berry.
+function T.chilan_answers_normal_hits_without_super_effectiveness()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  ---@param key string berry identity under test
+  ---@param extra table<string, unknown> damage context facts under test
+  ---@return table[] emitted resistance events for the pass
+  local function resisted(key, extra)
+    local bag = bagWith(key, "residual", EffectFixture.activeScope(1, 1))
+    local outcome = runPassive(bag, handlers, "residual", passiveContext(extra))
+    Assert.isTrue(outcome.done, "the berry pass runs to completion")
+    return outcome.events
+  end
+
+  Assert.equal(
+    #resisted("CHILAN_BERRY", { moveType = "normal" }),
+    1,
+    "chilan answers a plain normal strike"
+  )
+  Assert.deepEqual(
+    resisted("CHILAN_BERRY", { moveType = "fire", superEffective = true }),
+    {},
+    "chilan stays silent off normal"
+  )
+  Assert.equal(
+    #resisted("OCCA_BERRY", { moveType = "fire", superEffective = true }),
+    1,
+    "the resist family still answers super-effective hits"
+  )
+  Assert.deepEqual(
+    resisted("OCCA_BERRY", { moveType = "fire" }),
+    {},
+    "the resist family still needs the super-effective gate"
+  )
+end
+
+-- Power items halve Speed like Macho Brace: every entry in the native
+-- speed-halving list answers the Speed checkpoint and stays silent for
+-- other stats.
+function T.power_items_halve_speed_like_macho_brace()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+  local halving = {
+    "MACHO_BRACE",
+    "IRON_BALL",
+    "POWER_BRACER",
+    "POWER_BELT",
+    "POWER_LENS",
+    "POWER_BAND",
+    "POWER_ANKLET",
+    "POWER_WEIGHT",
+  }
+  for _, key in ipairs(halving) do
+    local bag = bagWith(key, "modifyStat", EffectFixture.activeScope(1, 1))
+    local outcome = runPassive(bag, handlers, "modifyStat", passiveContext({ stat = "speed" }))
+    Assert.isTrue(outcome.done, "the item pass runs to completion")
+    Assert.equal(#outcome.events, 1, key .. " halves speed")
+    local offBag = bagWith(key, "modifyStat", EffectFixture.activeScope(1, 1))
+    local offOutcome = runPassive(offBag, handlers, "modifyStat", passiveContext({ stat = "attack" }))
+    Assert.deepEqual(offOutcome.events, {}, key .. " stays silent off speed")
+  end
+end
+
+-- Flavor berries confuse holders that dislike the flavor instead of
+-- healing: the native script runs the dislike branch from personality,
+-- so a disliked holder gains confusion and no health.
+function T.flavor_berries_confuse_disliked_holders_instead_of_healing()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  ---@param disliked boolean whether the holder dislikes the berry flavor
+  ---@return table[] emitted berry events for the pass
+  local function eaten(disliked)
+    local bag = bagWith("FIGY_BERRY", "residual", EffectFixture.activeScope(1, 1))
+    local outcome = runPassive(
+      bag,
+      handlers,
+      "residual",
+      passiveContext({
+        health = { [1] = 50, [2] = 30, [3] = 30 },
+        maxHealth = { [1] = 100, [2] = 30, [3] = 30 },
+        dislikedFlavor = disliked,
+      })
+    )
+    Assert.isTrue(outcome.done, "the berry pass runs to completion")
+    return outcome.events
+  end
+
+  local confused = eaten(true)
+  Assert.equal(#confused, 1, "the disliked berry still triggers")
+  Assert.isTrue(confused[1].confused, "the disliked berry confuses instead of healing")
+  Assert.isNil(confused[1].recovered, "the disliked berry restores no health")
+  local healed = eaten(false)
+  Assert.equal(#healed, 1, "the liked berry still triggers")
+  Assert.isTrue(healed[1].recovered, "the liked berry restores health")
+end
+
+-- Lum and Persim cure volatile confusion: the native scripts read the
+-- confusion volatile beside major status, so a confused holder is
+-- cured with no major condition present.
+function T.lum_and_persim_cure_volatile_confusion()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  ---@param key string berry identity under test
+  ---@param extra table<string, unknown> status context facts under test
+  ---@return table[] emitted cure events for the pass
+  local function cured(key, extra)
+    local bag = bagWith(key, "residual", EffectFixture.activeScope(1, 1))
+    local outcome = runPassive(bag, handlers, "residual", passiveContext(extra))
+    Assert.isTrue(outcome.done, "the berry pass runs to completion")
+    return outcome.events
+  end
+
+  local persim = cured("PERSIM_BERRY", { confusion = true })
+  Assert.equal(#persim, 1, "persim answers volatile confusion")
+  Assert.equal(persim[1].cured, "confusion", "persim names the cured volatile")
+  Assert.deepEqual(
+    cured("PERSIM_BERRY", { status = "paralysis" }),
+    {},
+    "persim stays silent for major status"
+  )
+  local lum = cured("LUM_BERRY", { confusion = true })
+  Assert.equal(#lum, 1, "lum answers volatile confusion")
+  Assert.equal(lum[1].cured, "confusion", "lum names the cured volatile")
+  local lumMajor = cured("LUM_BERRY", { status = "paralysis" })
+  Assert.equal(#lumMajor, 1, "lum still answers major status")
+  Assert.equal(lumMajor[1].cured, "paralysis", "lum still names the cured condition")
+end
+
+-- Pinch berries respect maxed stages and the Lansat focus gate: native
+-- stat berries refuse a maxed stat, Lansat refuses a focused holder,
+-- and Starf refuses when every stat is already maxed.
+function T.pinch_berries_respect_maxed_stages_and_focus()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  ---@param key string berry identity under test
+  ---@param extra table<string, unknown> residual context facts under test
+  ---@return table[] emitted pinch events for the pass
+  local function pinched(key, extra)
+    local bag = bagWith(key, "residual", EffectFixture.activeScope(1, 1))
+    local base = {
+      health = { [1] = 25, [2] = 30, [3] = 30 },
+      maxHealth = { [1] = 100, [2] = 30, [3] = 30 },
+    }
+    for name, value in pairs(extra) do
+      base[name] = value
+    end
+    local outcome = runPassive(bag, handlers, "residual", passiveContext(base))
+    Assert.isTrue(outcome.done, "the berry pass runs to completion")
+    return outcome.events
+  end
+
+  Assert.deepEqual(
+    pinched("LIECHI_BERRY", { statStages = { attack = 6 } }),
+    {},
+    "liechi stays silent with maxed attack"
+  )
+  Assert.equal(
+    #pinched("LIECHI_BERRY", { statStages = { attack = 5 } }),
+    1,
+    "liechi answers below the stage cap"
+  )
+  Assert.deepEqual(
+    pinched("LANSAT_BERRY", { focused = true }),
+    {},
+    "lansat stays silent for a focused holder"
+  )
+  Assert.equal(#pinched("LANSAT_BERRY", {}), 1, "lansat answers an unfocused holder")
+  Assert.deepEqual(
+    pinched("STARF_BERRY", {
+      statStages = { attack = 6, defense = 6, speed = 6, specialAttack = 6, specialDefense = 6 },
+    }),
+    {},
+    "starf stays silent when every stat is maxed"
+  )
+end
+
+-- Starf names a concrete sharply-raised stat: the native script draws
+-- the boosted stat and raises it by two, so the announcement carries
+-- the drawn stat instead of a placeholder.
+function T.starf_names_a_concrete_sharply_raised_stat()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+  local bag = bagWith("STARF_BERRY", "residual", EffectFixture.activeScope(1, 1))
+  local outcome = runPassive(
+    bag,
+    handlers,
+    "residual",
+    passiveContext({
+      health = { [1] = 25, [2] = 30, [3] = 30 },
+      maxHealth = { [1] = 100, [2] = 30, [3] = 30 },
+      stream = { nextU16 = function(_, _, _)
+        return 0
+      end },
+    })
+  )
+  Assert.isTrue(outcome.done, "the berry pass runs to completion")
+  Assert.equal(#outcome.events, 1, "starf answers at the pinch gate")
+  Assert.equal(outcome.events[1].stat, "attack", "starf names the drawn stat")
+  Assert.equal(outcome.events[1].stages, "sharply-boosted", "starf raises by two stages")
+end
+
+-- Micle marks deferred accuracy for the next move: the native flag
+-- multiplies the following accuracy check instead of boosting
+-- immediately, so the announcement defers rather than applies.
+function T.micle_marks_deferred_accuracy_for_the_next_move()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+  local bag = bagWith("MICLE_BERRY", "residual", EffectFixture.activeScope(1, 1))
+  local outcome = runPassive(
+    bag,
+    handlers,
+    "residual",
+    passiveContext({
+      health = { [1] = 25, [2] = 30, [3] = 30 },
+      maxHealth = { [1] = 100, [2] = 30, [3] = 30 },
+    })
+  )
+  Assert.isTrue(outcome.done, "the berry pass runs to completion")
+  Assert.equal(#outcome.events, 1, "micle answers at the pinch gate")
+  Assert.isTrue(outcome.events[1].accuracyNext, "micle defers its boost to the next move")
+  Assert.isNil(outcome.events[1].accuracy, "micle applies no immediate boost")
+end
+
+-- King's Rock and Razor Fang roll ten percent: the native flinch
+-- chance draws per damaging hit, so a low roll announces and a high
+-- roll -- or no stream at all -- stays silent.
+function T.kings_rock_rolls_ten_percent()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  ---@param key string flinch item identity under test
+  ---@param stream table<string, unknown>? fixed battle stream under test
+  ---@return table[] emitted flinch events for the pass
+  local function flinched(key, stream)
+    local bag = bagWith(key, "residual", EffectFixture.activeScope(1, 1))
+    local extra = { dealtDamage = true }
+    if stream ~= nil then
+      extra.stream = stream
+    else
+      extra.stream = nil
+    end
+    local context = passiveContext(extra)
+    if stream == nil then
+      context.stream = nil
+    end
+    local outcome = runPassive(bag, handlers, "residual", context)
+    Assert.isTrue(outcome.done, "the item pass runs to completion")
+    return outcome.events
+  end
+
+  local function fixedStream(value)
+    return {
+      nextU16 = function(_, _, _)
+        return value
+      end,
+    }
+  end
+
+  for _, key in ipairs({ "KINGS_ROCK", "RAZOR_FANG" }) do
+    Assert.equal(#flinched(key, fixedStream(0)), 1, key .. " announces on a low roll")
+    Assert.deepEqual(flinched(key, fixedStream(65535)), {}, key .. " stays silent on a high roll")
+    Assert.deepEqual(flinched(key, nil), {}, key .. " stays silent without a stream")
+  end
+end
+
+-- Soul Dew stays silent in frontier formats: the native boost applies
+-- outside the frontier only, so a frontier holder gains nothing.
+function T.soul_dew_stays_silent_in_frontier_formats()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  ---@param frontier boolean whether the frontier format applies
+  ---@return table[] emitted boost events for the pass
+  local function boosted(frontier)
+    local bag = bagWith("SOUL_DEW", "modifyStat", EffectFixture.activeScope(1, 1))
+    local outcome = runPassive(
+      bag,
+      handlers,
+      "modifyStat",
+      passiveContext({ stat = "specialAttack", species = "LATIAS", frontier = frontier })
+    )
+    Assert.isTrue(outcome.done, "the item pass runs to completion")
+    return outcome.events
+  end
+
+  Assert.equal(#boosted(false), 1, "soul dew answers outside the frontier")
+  Assert.deepEqual(boosted(true), {}, "soul dew stays silent in the frontier")
+end
+
+-- The metronome item scales from the second consecutive use: the first
+-- repetition multiplies by ten over ten, so only a real streak boosts.
+function T.metronome_item_scales_from_the_second_consecutive_use()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  ---@param streak integer consecutive uses under test
+  ---@return table[] emitted boost events for the pass
+  local function boostedStreak(streak)
+    local bag = bagWith("METRONOME", "beforeHit", EffectFixture.activeScope(1, 1))
+    local outcome =
+      runPassive(bag, handlers, "beforeHit", passiveContext({ consecutiveUses = streak }))
+    Assert.isTrue(outcome.done, "the item pass runs to completion")
+    return outcome.events
+  end
+
+  Assert.deepEqual(boostedStreak(1), {}, "the first use gains no boost")
+  Assert.equal(#boostedStreak(2), 1, "the second consecutive use boosts")
 end
 
 return { tests = T }

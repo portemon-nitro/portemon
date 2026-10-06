@@ -170,14 +170,79 @@ local function statusBerry(instance, context)
   if cured == nil then
     return nil
   end
+  -- Lum answers volatile confusion beside major status, and Persim
+  -- answers the confusion volatile itself: the native scripts read
+  -- the confusion flag next to the major condition.
+  if cured == "any" then
+    local status = context.status
+    if type(status) == "string" then
+      return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = status }
+    end
+    if context.confusion == true then
+      return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = "confusion" }
+    end
+    return nil
+  end
+  if cured == "confusion" then
+    if context.confusion == true or context.status == "confusion" then
+      return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = "confusion" }
+    end
+    return nil
+  end
   local status = context.status
   if type(status) ~= "string" then
     return nil
   end
-  if cured ~= "any" and status ~= cured then
+  if status ~= cured then
     return nil
   end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = status }
+end
+
+---@param context table<string, unknown> residual context under handling
+---@param stat string boosted stat under the cap check
+---@return boolean true when the stat already sits at its stage cap
+local function stageMaxed(context, stat)
+  local stages = context.statStages
+  if type(stages) ~= "table" then
+    return false
+  end
+  local stage = (stages --[[@as table<string, unknown>]])[stat]
+  return type(stage) == "number" and stage --[[@as integer]] >= 6
+end
+
+-- Pinch order behind the Starf draw: attack, defense, speed, special
+-- attack, special defense, matching the native stat-change indices.
+local PINCH_ORDER = { "attack", "defense", "speed", "specialAttack", "specialDefense" }
+
+---@param instance table<string, unknown> dispatched effect instance under handling
+---@param context table<string, unknown> residual context under handling
+---@param holder integer holder combatant under handling
+---@return table<string, unknown>? pinch announcement, or nil when inapplicable
+local function starfBerry(instance, context, holder)
+  -- Starf refuses a fully maxed holder, then draws its sharply raised
+  -- stat across the stats still below the cap.
+  local raised = {} ---@type string[]
+  for _, stat in ipairs(PINCH_ORDER) do
+    if not stageMaxed(context, stat) then
+      raised[#raised + 1] = stat
+    end
+  end
+  if #raised == 0 then
+    return nil
+  end
+  local stream = context.stream
+  if not canDraw(stream) then
+    return nil
+  end
+  local draw = (stream --[[@as table<string, unknown>]]).nextU16
+  local value = (draw --[[@as fun(self: unknown, label: string, cause: table<string, unknown>): integer]])(
+    stream,
+    "starf_stat",
+    { kind = "held_item", key = instance.key }
+  )
+  local picked = raised[(value % #raised) + 1]
+  return { kind = "trigger", key = instance.key, combatant = holder, stat = picked, stages = "sharply-boosted" }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -185,6 +250,9 @@ end
 ---@return table<string, unknown>? pinch announcement, or nil when inapplicable
 local function pinchBerry(instance, context)
   local holder = holderOf(instance)
+  if holder == nil then
+    return nil
+  end
   local hp, maxHp = holderHealth(context, holder)
   if hp == nil or maxHp == nil then
     return nil
@@ -198,6 +266,11 @@ local function pinchBerry(instance, context)
     then
       return nil
     end
+    -- A disliked flavor confuses instead of healing: the native
+    -- script runs the dislike branch from personality.
+    if context.dislikedFlavor == true then
+      return { kind = "trigger", key = instance.key, combatant = holder, confused = true }
+    end
     return { kind = "trigger", key = instance.key, combatant = holder, recovered = true }
   end
   local stat = PINCH_STAT[instance.key]
@@ -207,6 +280,20 @@ local function pinchBerry(instance, context)
   if
     hp * pinchDivisor(context) > maxHp --[[@as integer]]
   then
+    return nil
+  end
+  -- Lansat refuses a focused holder; Starf draws its sharply raised
+  -- stat; every other stat berry refuses a maxed stat.
+  if instance.key == "LANSAT_BERRY" then
+    if context.focused == true then
+      return nil
+    end
+    return { kind = "trigger", key = instance.key, combatant = holder, stat = stat, stages = "boosted" }
+  end
+  if instance.key == "STARF_BERRY" then
+    return starfBerry(instance, context, holder)
+  end
+  if stageMaxed(context, stat) then
     return nil
   end
   return { kind = "trigger", key = instance.key, combatant = holder, stat = stat, stages = "boosted" }
@@ -219,6 +306,15 @@ local function resistBerry(instance, context)
   local warded = RESIST_BERRY[instance.key]
   if warded == nil then
     return nil
+  end
+  -- Chilan answers normal-type hits with no effectiveness gate: the
+  -- native weaken-normal script skips the super-effective check the
+  -- resist family requires.
+  if instance.key == "CHILAN_BERRY" then
+    if context.moveType ~= "normal" then
+      return nil
+    end
+    return { kind = "trigger", key = instance.key, combatant = holderOf(instance), resisted = true }
   end
   if context.moveType ~= warded or context.superEffective ~= true then
     return nil
@@ -259,7 +355,10 @@ local function micleBerry(instance, context)
   then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), accuracy = "boosted" }
+  -- Micle defers its boost to the following accuracy check: the native
+  -- flag multiplies the next move, so the announcement arms the next
+  -- check rather than applying an immediate boost.
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), accuracyNext = true }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -500,8 +599,27 @@ end
 ---@param instance table<string, unknown> dispatched effect instance under handling
 ---@param context table<string, unknown> damage context under handling
 ---@return table<string, unknown>? flinch announcement, or nil when inapplicable
-local function kingsRock(instance, context)
+local function flinchChance(instance, context)
+  -- The flinch chance draws ten percent per damaging hit: a low roll
+  -- announces while a high roll -- or no stream at all -- stays silent.
   if context.dealtDamage ~= true then
+    return nil
+  end
+  local stream = context.stream
+  if not canDraw(stream) then
+    return nil
+  end
+  local label = "kings_rock"
+  if instance.key == "RAZOR_FANG" then
+    label = "razor_fang"
+  end
+  local draw = (stream --[[@as table<string, unknown>]]).nextU16
+  local value = (draw --[[@as fun(self: unknown, label: string, cause: table<string, unknown>): integer]])(
+    stream,
+    label,
+    { kind = "held_item", key = instance.key }
+  )
+  if value >= 6554 then
     return nil
   end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), flinchChance = true }
@@ -511,10 +629,7 @@ end
 ---@param context table<string, unknown> damage context under handling
 ---@return table<string, unknown>? fang announcement, or nil when inapplicable
 local function razorFang(instance, context)
-  if context.dealtDamage ~= true then
-    return nil
-  end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), flinchChance = true }
+  return flinchChance(instance, context)
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -580,7 +695,7 @@ function TriggeredItems.register(owned)
   owned.MENTAL_HERB = mentalHerb
   owned.POWER_HERB = powerHerb
   owned.DESTINY_KNOT = destinyKnot
-  owned.KINGS_ROCK = kingsRock
+  owned.KINGS_ROCK = flinchChance
   owned.RAZOR_FANG = razorFang
   owned.RAZOR_CLAW = razorClaw
 end

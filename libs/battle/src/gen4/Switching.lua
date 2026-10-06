@@ -71,7 +71,8 @@ end
 
 --- Judges whether the requested exchange may start. Trapping holds
 --- voluntary and shift departures; required replacements answer despite
---- the trap. A promised reserve is refused to sibling positions.
+--- the trap. Shed Shell slips trapping for the departure. A promised
+--- reserve is refused to sibling positions.
 ---@param query table<string, unknown> exchange request under test
 ---@return table<string, unknown> eligibility verdict carrying ok and, on refusal, reason
 function Switching.eligible(query)
@@ -89,7 +90,7 @@ function Switching.eligible(query)
       return { ok = false, reason = "ineligible_format" }
     end
   end
-  if (reason == "voluntary" or reason == "shift") and isHeld(query) then
+  if (reason == "voluntary" or reason == "shift") and isHeld(query) and query.shedShell ~= true then
     return { ok = false, reason = "trapped" }
   end
   local incoming = query.incoming
@@ -183,6 +184,7 @@ function Switching.start(seed)
     style = seed.style,
     topology = seed.topology,
     trap = seed.trap,
+    shedShell = seed.shedShell,
     reserves = seed.reserves,
     reserved = seed.reserved,
     fainted = seed.fainted,
