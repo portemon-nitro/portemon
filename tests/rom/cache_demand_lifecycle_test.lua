@@ -1,14 +1,12 @@
--- Seeded script-hash lifecycle against the real published corpus: the digest
--- computed from published hashes equals the digest computed by loading every
--- generated body, and lazy construction reads no generated bodies. Saved
--- script state carries no aggregate fingerprint: a current bucket validates
--- without one, and a predecessor bucket carrying stale fingerprints migrates
--- by dropping only those fields.
+-- Demand lifecycle against the real published corpus: lazy construction
+-- reads no generated bodies, and first access reads only its own resource.
+-- Saved script state carries no aggregate fingerprint: a current bucket
+-- validates without one, and a predecessor bucket carrying stale
+-- fingerprints migrates by dropping only those fields.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local HgssScript = require("libs.hgss.src.script.Composition")
-local Registry = require("libs.script.src.Registry")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 local ScriptSave = require("libs.script.src.ScriptSave")
@@ -28,20 +26,6 @@ end
 
 local function builtins()
   return HgssScript.builtins()
-end
-
--- The pre-change algorithm: every generated body loaded and hashed, no
--- published hash consulted. Mirrors the loader's layer composition exactly
--- except hash seeding, so any divergence names a digest break.
-local function oracleDigest(cacheFs, fs, selection)
-  local registry = Registry.new()
-  for id, script in pairs(builtins().all()) do
-    registry:installBuiltin(id, script)
-  end
-  ScriptLoader.installGenerated(registry, cacheFs, nil, { lazy = false, selection = selection })
-  ScriptLoader.installOverrides(registry, fs, nil)
-  registry:seal()
-  return registry:fingerprint()
 end
 
 local function countBodyReads(cacheFs)
@@ -73,18 +57,30 @@ local function currentBucket()
   }
 end
 
-function T.published_hashes_reproduce_the_body_loaded_digest_without_body_reads(_, versionId)
+-- Lazy construction reads no generated body; the first explicit base
+-- access then reads exactly its own resource file.
+function T.lazy_build_reads_no_bodies_and_first_access_reads_only_its_resource(_, versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local fs = overrideFs()
-  local _, selection = ScriptLoader.buildRegistry(cacheFs, fs, nil, { lazy = true, builtins = builtins() })
-  local oracle = oracleDigest(cacheFs, fs, selection)
-  local finishBodyReads = countBodyReads(cacheFs)
-  local registry = ScriptLoader.buildRegistry(cacheFs, fs, nil, { lazy = true, builtins = builtins() })
-  local digest = registry:fingerprint()
-  local bodyReads = finishBodyReads()
-  Assert.equal(digest, oracle, "seeded hashes reproduce the body-loaded registry digest")
-  Assert.equal(bodyReads, 0, "digest acquisition reads no generated bodies")
-  Assert.isTrue(#digest > 0, "the reproduced digest is non-empty")
+  local finishBuildReads = countBodyReads(cacheFs)
+  local registry, selection = ScriptLoader.buildRegistry(cacheFs, fs, nil, { lazy = true, builtins = builtins() })
+  Assert.equal(finishBuildReads(), 0, "lazy construction reads no generated bodies")
+  local builtinIds = {}
+  for id in pairs(builtins().all()) do
+    builtinIds[id] = true
+  end
+  local firstId
+  for _, entry in ipairs(selection.index.resources) do
+    if type(entry.id) == "string" and not builtinIds[entry.id] then
+      firstId = entry.id
+      break
+    end
+  end
+  assert(firstId ~= nil, "the published corpus carries generated scripts")
+  local finishAccessReads = countBodyReads(cacheFs)
+  local base = assert(registry:base(firstId))
+  Assert.equal(base.id, firstId, "first access resolves the pinned resource")
+  Assert.equal(finishAccessReads(), 1, "first access reads exactly its own body")
 end
 
 function T.current_save_bucket_validates_without_fingerprints(_, versionId)
@@ -103,8 +99,8 @@ end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 -- Reads the runner-prepared complete scope (which publishes the complete
--- script corpus with canonical sidecars) read-only; the oracle loads bodies
--- through the same cache without writing.
+-- script corpus with canonical sidecars) read-only; body reads go through
+-- the same cache without writing.
 suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = { "script-summary:global" }
 suite.metadata.tags = { "script", "save" }

@@ -1,16 +1,15 @@
 -- Script member publication contract: members stage through a worker-owned
 -- preparation, never through a live cache handle, and the generation summary
 -- activates the complete selection only after every declared member is
--- current. Registry digests stay derived from published script content, so
--- an unrelated producer rotation preserves the digest while a real semantic
--- edit changes it. Saved script state carries no aggregate fingerprint, so
--- neither rotation nor edit gates a save at the envelope.
+-- current. Published per-resource content hashes stay derived from script
+-- content, so an unrelated producer rotation preserves them while a real
+-- semantic edit changes them. Saved script state carries no aggregate
+-- fingerprint, so neither rotation nor edit gates a save at the envelope.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
-local Registry = require("libs.script.src.Registry")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local ScriptSave = require("libs.script.src.ScriptSave")
@@ -197,13 +196,13 @@ local function publishCompleteGeneration(cache, generation, marker, specs, prefi
   return plan
 end
 
-local function registryFromPublished(cache, generation, specs)
-  local registry = Registry.new()
-  for _, spec in ipairs(specs or memberSpecs()) do
-    local resource = assert(cache:loadModule(ScriptCache.scriptPath(generation, spec.memberId, spec.id)))
-    registry:installBase(spec.id, resource, "generated")
+local function publishedHashes(cache)
+  local selection = assert(ScriptCache.loadActive(cache))
+  local hashes = {}
+  for _, entry in ipairs(selection.index.resources) do
+    hashes[entry.id] = entry.resourceHash
   end
-  return registry
+  return hashes
 end
 
 local function saveBucket()
@@ -369,30 +368,35 @@ function T.summary_refuses_to_activate_with_a_missing_member()
 end
 
 -- Rebuilding byte-equivalent resources under a rotated producer identity
--- keeps the content-derived registry digest, and the save envelope never
--- consults it: a current bucket validates unchanged under both generations.
-function T.identical_content_under_two_producer_identities_keeps_the_digest()
+-- keeps the published per-resource content hashes, and the save envelope
+-- never consults them: a current bucket validates unchanged under both
+-- generations.
+function T.identical_content_under_two_producer_identities_keeps_published_hashes()
   local firstCache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishCompleteGeneration(firstCache, GENERATION_A, MARKER_A, nil, "producer-first", OUTER_GENERATION_A)
   local secondCache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishCompleteGeneration(secondCache, GENERATION_B, MARKER_B, nil, "producer-second", OUTER_GENERATION_B)
 
-  local first = registryFromPublished(firstCache, GENERATION_A)
-  local second = registryFromPublished(secondCache, GENERATION_B)
-  Assert.equal(second:fingerprint(), first:fingerprint(), "producer-only rotation must not change the content digest")
+  local first = publishedHashes(firstCache)
+  Assert.isTrue(first["stable.script"] ~= nil, "the published index carries a content hash per resource")
+  Assert.deepEqual(
+    publishedHashes(secondCache),
+    first,
+    "producer-only rotation must not change the published content hashes"
+  )
 
   Assert.isNil(ScriptSave.validate(saveBucket(), {}), "the save validates under its own generation")
   Assert.isNil(ScriptSave.validate(saveBucket(), {}), "the same save validates after a producer-only rebuild")
 end
 
--- A genuine semantic edit changes the content digest but no longer gates
--- the save envelope: a quiescent save recorded under the old registry still
--- validates under the edited one. Concrete continuations resolve at restore
--- instead of failing an aggregate preflight.
+-- A genuine semantic edit changes the published content hash but no longer
+-- gates the save envelope: a quiescent save recorded under the old registry
+-- still validates under the edited one. Concrete continuations resolve at
+-- restore instead of failing an aggregate preflight.
 function T.changed_script_content_no_longer_gates_the_save_envelope()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishCompleteGeneration(cache, GENERATION_A, MARKER_A, nil, "baseline", OUTER_GENERATION_A)
-  local baselineDigest = registryFromPublished(cache, GENERATION_A):fingerprint()
+  local baseline = publishedHashes(cache)
 
   local editedCache = CacheFs.forVersion("heartgold", FakeCache.new())
   local editedPlan = planFor(GENERATION_B, MARKER_B, memberSpecs())
@@ -411,8 +415,16 @@ function T.changed_script_content_no_longer_gates_the_save_envelope()
     OUTER_GENERATION_B
   )
   stageAndPublishSummary(editedCache, editedPlan, "edited-summary", OUTER_GENERATION_B)
-  local editedDigest = registryFromPublished(editedCache, GENERATION_B):fingerprint()
-  Assert.isTrue(editedDigest ~= baselineDigest, "a semantic edit must change the content digest")
+  local edited = publishedHashes(editedCache)
+  Assert.isTrue(
+    edited["stable.script"] ~= baseline["stable.script"],
+    "a semantic edit must change the published content hash"
+  )
+  Assert.equal(
+    edited["second.script"],
+    baseline["second.script"],
+    "an untouched script keeps its published content hash"
+  )
 
   Assert.isNil(
     ScriptSave.validate(saveBucket(), {}),

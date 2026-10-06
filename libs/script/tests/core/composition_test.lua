@@ -1,7 +1,7 @@
 -- Registry and composition tests. They pin the deterministic base model:
 -- the generated and override base layers, the override-wins precedence, the
 -- strict layer vocabulary, the effective chain, cache invalidation on
--- mutation, and the registry fingerprint. The exit criterion: the effective
+-- mutation. The exit criterion: the effective
 -- graph for a script ID is deterministic and explainable.
 
 local Assert = require("tests.support.Assert")
@@ -134,25 +134,6 @@ T["effective revision determinism"] = function()
   Assert.isFalse(a.revision == c.revision)
 end
 
--- 7. Registry fingerprint: deterministic, changes on any mutation.
-T["registry fingerprint"] = function()
-  local registry1 = Registry.new()
-  local registry2 = Registry.new()
-  registry1:installBase("new_bark.lab_sign", signScript(), "generated")
-  registry2:installBase("new_bark.lab_sign", signScript(), "generated")
-  Assert.equal(registry1:fingerprint(), registry2:fingerprint())
-  registry2:installBase(
-    "new_bark.lab_sign",
-    S.script({
-      api = 1,
-      id = "new_bark.lab_sign",
-      steps = { S.noop() },
-    }),
-    "override"
-  )
-  Assert.isFalse(registry1:fingerprint() == registry2:fingerprint())
-end
-
 -- 8. ids() is a set of installed bases.
 T["ids list installed bases"] = function()
   local registry = newRegistry()
@@ -161,18 +142,6 @@ T["ids list installed bases"] = function()
   registry:installBase("b", signScript(), "generated")
   local ids = registry:ids()
   Assert.deepEqual(ids, { "a", "b" })
-end
-
--- 9. The fingerprint changes when a script's content changes even though
--- its id stays the same.
-T["fingerprint tracks script content"] = function()
-  local registry = newRegistry()
-  registry:installBase("new_bark.lab_sign", signScript(), "generated")
-  local first = registry:fingerprint()
-  local changed = signScript()
-  changed.steps[1].sound = "SEQ_SE_DP_HEAL"
-  registry:installBase("new_bark.lab_sign", changed, "override")
-  Assert.isFalse(registry:fingerprint() == first, "a content change without an id change must change the fingerprint")
 end
 
 -- 10. Once sealed, every public install mutation is rejected: the seal is
@@ -201,19 +170,17 @@ T["sealed registry rejects every install op"] = function()
   end
 end
 
--- 11. A sealed registry's digest and composed chains are stable even when a
--- stored resource is mutated in place: the version is frozen, so the
--- memoized fingerprint and the composition cache never recompute and the
--- registry keeps reporting the state it was sealed with.
-T["fingerprint and composition are immune to stored-resource mutation"] = function()
+-- 11. A sealed registry's composed chains are stable even when a stored
+-- resource is mutated in place: the version is frozen, so the composition
+-- cache never recomputes and the registry keeps reporting the state it was
+-- sealed with.
+T["composition is immune to stored-resource mutation once sealed"] = function()
   local registry, composition = newRegistry()
   registry:installBase("new_bark.lab_sign", signScript(), "generated")
   registry:seal()
-  local fingerprint = registry:fingerprint()
   local effective = assert(composition:effective("new_bark.lab_sign"))
   local stored = assert(registry:base("new_bark.lab_sign"))
   stored.steps[1].sound = "SEQ_SE_DP_HEAL"
-  Assert.equal(registry:fingerprint(), fingerprint, "the digest must stay stable")
   Assert.equal(assert(composition:effective("new_bark.lab_sign")), effective, "the composed chain must stay stable")
   Assert.equal(registry:version(), 1, "a sealed registry never bumps its version")
 end

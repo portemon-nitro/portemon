@@ -3,21 +3,15 @@
 -- `validate`, and may supply `cancel`/`onComplete`. The scheduler routes task
 -- creation and polling through this registry so save records can verify both
 -- the type and the version on load, and so raw-Lua handlers can only ever
--- return a task type that is registered here. The deterministic digest
--- covers every registered type and version for loader and registry identity
--- checks; saves no longer store or compare it. Pure domain module: no love
+-- return a task type that is registered here. Pure domain module: no love
 -- dependency.
 --
 -- Any change to a task's serialized-state shape (what `validate` accepts and
 -- what the save schema carries) requires a major version bump of that task
--- type: the digest is a (type, version) projection, not an
--- implementation identity, so concrete restore relies entirely on this manual
--- versioning.
+-- type: concrete restore relies entirely on this manual versioning.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
-local LuaWriter = require("libs.codec.src.LuaWriter")
-local Sha256 = require("libs.script.src.Sha256")
 
 ---@class TaskImplementation
 ---@field type string
@@ -118,40 +112,6 @@ function TaskRegistry:resolveCurrent(taskType)
   end
   ---@cast currentVersion integer
   return self:resolve(taskType, currentVersion)
-end
-
--- Enumerate every registered task type, sorted by name (the order the
--- fingerprint projection uses).
----@return string[]
-function TaskRegistry:types()
-  local out = {}
-  for taskType in pairs(self._byType) do
-    out[#out + 1] = taskType
-  end
-  table.sort(out)
-  return out
-end
-
--- Deterministic fingerprint over every registered (type, version) pair; the
--- save schema stores it and load rejects a mismatch. Lookup
--- is order-independent, so the fingerprint is too: types are sorted by name.
----@return string
-function TaskRegistry:fingerprint()
-  local types = {}
-  for taskType in pairs(self._byType) do
-    types[#types + 1] = taskType
-  end
-  table.sort(types)
-  local projection = {}
-  for _, taskType in ipairs(types) do
-    local versions = {}
-    for version in pairs(self._byType[taskType]) do
-      versions[#versions + 1] = version
-    end
-    table.sort(versions)
-    projection[#projection + 1] = { type = taskType, versions = versions }
-  end
-  return Sha256.hex(LuaWriter.encode(projection))
 end
 
 return TaskRegistry

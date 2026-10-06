@@ -225,9 +225,8 @@ local function readbackResource(reader, plan, entry)
   return resource
 end
 
--- The canonical content hash: exactly what the runtime registry fingerprint
--- computes for the same decoded resource, so published hashes seed it
--- without decoding bodies again.
+-- The canonical content hash published per resource as generated-cache
+-- provenance metadata; cache readiness requires it on every index entry.
 local function canonicalResourceHash(resource)
   return Sha256.hex(LuaWriter.encode(resource))
 end

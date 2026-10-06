@@ -548,29 +548,18 @@ T["unrelated registry change no longer blocks restore"] = function()
   Assert.equal(h.services.world:getVar("VAR_MOD"), 1, "the continuation resumes despite registry drift")
 end
 
--- 10b. The task-registry fingerprint is order-independent: registering the
--- same (type, version) pairs in a different order yields the same digest.
-T["task fingerprint ignores registration order"] = function()
+-- 10b. Task resolution is order-independent: registering the same (type,
+-- version) pairs in a different order resolves the same implementations.
+T["task resolution ignores registration order"] = function()
   local a = TaskRegistry.new()
   local b = TaskRegistry.new()
   a:register("wait_ticks", 1, WaitTicksTask)
   a:register("child_script", 1, ChildScriptTask)
   b:register("child_script", 1, ChildScriptTask)
   b:register("wait_ticks", 1, WaitTicksTask)
-  Assert.equal(a:fingerprint(), b:fingerprint())
-end
-
--- 10c. A snapshot-restored fingerprint memo is reused verbatim and is
--- invalidated by any later mutation, so save validation still sees the
--- recomputed digest after a change.
-T["restored fingerprint memo is reused and invalidated on mutation"] = function()
-  local h = harness()
-  h.registry:installBase("test.memo", script("test.memo", { S.stop() }), "generated")
-  local computed = h.registry:fingerprint()
-  h.registry:restoreFingerprint(computed)
-  Assert.equal(h.registry:fingerprint(), computed, "the restored memo is reused verbatim")
-  h.registry:installBase("test.memo2", script("test.memo2", { S.stop() }), "generated")
-  Assert.isTrue(h.registry:fingerprint() ~= computed, "a later mutation invalidates the restored memo")
+  Assert.equal(assert(a:resolve("wait_ticks", 1)), WaitTicksTask)
+  Assert.equal(assert(b:resolve("wait_ticks", 1)), WaitTicksTask)
+  Assert.equal(assert(a:resolveCurrent("wait_ticks")), assert(b:resolveCurrent("wait_ticks")))
 end
 
 -- 11. Capture refuses a running context: saves occur only at fixed-tick

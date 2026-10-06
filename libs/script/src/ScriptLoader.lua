@@ -162,8 +162,7 @@ function ScriptLoader.installGenerated(registry, cacheFs, requireFn, opts)
   -- index must fail before any install, never become an empty registry. The
   -- rule matches the build-path readiness validator (ScriptCache.isReady).
   -- This checks only the index shape -- the per-resource files still decode
-  -- lazily on the deferred path, and the published hashes seed the
-  -- fingerprint without decoding.
+  -- lazily on the deferred path.
   if not Validate.isArray(index.resources) then
     Errors.raise(
       ScriptErrors.SCRIPT_LOAD_FAILED,
@@ -332,21 +331,9 @@ function ScriptLoader.buildRegistry(cacheFs, fs, requireFn, opts)
   installOpts.selection = selection
   ScriptLoader.installGenerated(registry, cacheFs, requireFn, installOpts)
   ScriptLoader.installOverrides(registry, fs, requireFn)
-  -- Seed the published canonical hashes for the generated layer at the
-  -- final mutation version: every later digest uses them instead of
-  -- decoding bodies, while builtins and overrides keep their live hashes.
-  -- Entries without a published hash simply keep live hashing.
-  if Validate.isArray(selection.index.resources) then
-    for _, entry in ipairs(selection.index.resources) do
-      if type(entry) == "table" and type(entry.id) == "string" and Validate.isSha256Key(entry.resourceHash) then
-        registry:cacheScriptHash(entry.id, "generated", entry.resourceHash)
-      end
-    end
-  end
-  -- Load finished: the registry is sealed so cached compositions and the
-  -- fingerprint memo can never describe stale data. The post-load machinery
-  -- (restoreFingerprint, cacheScriptHash, on-demand decode) is exempt from
-  -- the gate.
+  -- Load finished: the registry is sealed so cached compositions can never
+  -- describe stale data. On-demand decode of pending bases stays live
+  -- through the gate.
   registry:seal()
   return registry, selection
 end

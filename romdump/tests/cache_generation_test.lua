@@ -1,8 +1,7 @@
 -- Coarse derived-cache generation identity: development identity follows the
 -- actual producer working-tree bytes (one SHA-256 manifest over a fixed broad
 -- source-root set), release identity uses an explicit per-game counter and
--- performs no producer I/O, and the generation token never substitutes for
--- the semantic script fingerprint that guards saves. Old attestations go
+-- performs no producer I/O. Old attestations go
 -- cold without touching raw dumps, saves, or artifact roots, and any
 -- enumeration/read/validation fault aborts selection instead of falling back
 -- to another key.
@@ -15,7 +14,6 @@ local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local FakeCache = require("tests.support.FakeCache")
 local GameVersion = require("romdump.src.source.GameVersion")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
-local Registry = require("libs.script.src.Registry")
 local Schema = require("libs.script.src.Schema")
 local Sha256 = require("libs.script.src.Sha256")
 
@@ -112,12 +110,6 @@ local function releaseIdentity(overrides)
     base[key] = value
   end
   return DerivedCacheState.current(base)
-end
-
-local function registryWith(payload)
-  local registry = Registry.new()
-  registry:installBase("example.script", { id = "example.script", body = payload }, "generated")
-  return registry
 end
 
 function T.dirty_bytes_determine_the_development_digest()
@@ -240,22 +232,13 @@ function T.release_selection_reads_no_producer_files()
   )
 end
 
-function T.generation_differs_while_semantic_fingerprint_still_matches()
+function T.generation_differs_across_producer_bytes()
   local first = devIdentity("d" .. Sha256.hex("producer tree one"))
   local second = devIdentity("d" .. Sha256.hex("producer tree two"))
   Assert.isTrue(
     first.generationId ~= second.generationId,
     "different producer bytes must yield different generation tokens"
   )
-
-  local left = registryWith("same payload")
-  local right = registryWith("same payload")
-  Assert.equal(
-    left:fingerprint(),
-    right:fingerprint(),
-    "identical script content must keep the save-compatibility fingerprint"
-  )
-
 end
 
 function T.previous_attestation_is_cold_and_leaves_raw_and_saves_alone()

@@ -1,28 +1,21 @@
 -- Script resource registry : owns the vanilla base
 -- definitions (generated transcripts plus overrides). The override layer
 -- wins over the generated transcript; the composition layer folds the
--- winning base into the effective chain. The registry also stamps a
--- deterministic content digest used by loader identity checks. Base layers may be
+-- winning base into the effective chain. Base layers may be
 -- installed as deferred placeholders (installBaseDeferred) that decode
 -- through an injected resource loader on first access, so a boot never
--- needs to decode the whole generated corpus; published per-resource
--- fingerprint hashes (cacheScriptHash, seeded by the loader from the cache
--- index) let fingerprint() assemble the digest without decoding. The registry is sealed after load: the public
--- install surface raises once sealed, while the post-load machinery
--- (restoreFingerprint, cacheScriptHash, and the private `_load`
--- memoization) stays live. Pure domain module: no love dependency.
+-- needs to decode the whole generated corpus. The registry is sealed after load: the public
+-- install surface raises once sealed, while on-demand decode of pending
+-- bases through the private `_load` memoization stays live.
+-- Pure domain module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
-local LuaWriter = require("libs.codec.src.LuaWriter")
-local Sha256 = require("libs.script.src.Sha256")
 
 ---@class Registry
 ---@field private _bases table<string, table<string, unknown>> id -> layer -> script
 ---@field private _version integer
 ---@field private _sealed boolean
----@field private _fingerprintCache table<string, unknown>|nil { version: integer, value: string }
----@field private _hashCache table<string, unknown>|nil { version: integer, values: table<string, table<string, string>> }
 ---@field private _loadResource fun(id: string, layer: string): table<string, unknown>|nil, unknown?|nil
 local Registry = {}
 Registry.__index = Registry
@@ -46,17 +39,14 @@ function Registry.new(opts)
     _bases = {},
     _version = 0,
     _sealed = false,
-    _fingerprintCache = nil,
-    _hashCache = nil,
     _loadResource = opts.loadResource,
   }, Registry)
 end
 
 -- Seal the registry after load: the public install surface raises from here
--- on, so cached compositions and the fingerprint memo can never describe
--- stale data. Sealing is one-way; the post-load machinery the composition
--- wires (restoreFingerprint, cacheScriptHash, and the private `_load`
--- memoization) is exempt.
+-- on, so cached compositions can never describe stale data. Sealing is
+-- one-way; on-demand decode of pending bases through the private `_load`
+-- memoization stays live.
 function Registry:seal()
   self._sealed = true
 end
@@ -188,90 +178,6 @@ end
 ---@return integer
 function Registry:version()
   return self._version
-end
-
--- Preload the fingerprint memo from a trusted digest of the current
--- content: valid only while the registry is unmutated; any later install
--- bumps `_version` and the memo is recomputed from live content.
----@param value string
-function Registry:restoreFingerprint(value)
-  assert(type(value) == "string" and value ~= "", "restored fingerprint must be a non-empty string")
-  self._fingerprintCache = { version = self._version, value = value }
-end
-
--- Stash one base layer's fingerprint hash so fingerprint() can assemble the
--- digest without decoding that resource. Keyed on the mutation version: any
--- later install invalidates the stash and fingerprint() recomputes live.
--- The hash must be exactly what fingerprint() would compute
--- (Sha256.hex(LuaWriter.encode(resource))).
----@param id string
----@param layer string
----@param hash string
-function Registry:cacheScriptHash(id, layer, hash)
-  assert(type(id) == "string" and id ~= "", "script id required")
-  assert(BASE_LAYERS[layer] ~= nil, "base layer must be generated or override")
-  assert(type(hash) == "string" and #hash == 64, "script hash must be a 64-character hex digest")
-  local cache = self._hashCache
-  if cache == nil or cache.version ~= self._version then
-    cache = { version = self._version, values = {} }
-    self._hashCache = cache
-  end
-  local byLayer = cache.values[id]
-  if byLayer == nil then
-    byLayer = {}
-    cache.values[id] = byLayer
-  end
-  byLayer[layer] = hash
-end
-
--- Deterministic registry fingerprint over every base layer: ordering,
--- resource ids, and a content hash of each resource. The fingerprint
--- therefore changes when a script's executable content changes even when
--- its id does not. Saves record it; load rejects a mismatch. The registry is
--- immutable during gameplay, so the digest is memoized on the mutation
--- version; the game saves after every warp and on quit, and re-hashing the
--- full corpus each time made the autosave stall.
----@return string
-function Registry:fingerprint()
-  local cached = self._fingerprintCache
-  if cached ~= nil and cached.version == self._version then
-    return cached.value
-  end
-  local projection = {}
-  local hashCache = self._hashCache
-  local cachedValues
-  if hashCache ~= nil and hashCache.version == self._version then
-    cachedValues = hashCache.values
-  end
-  for _, id in ipairs(self:ids()) do
-    local entry = { id = id, bases = {} }
-    local byLayer = cachedValues and cachedValues[id] or nil
-    for layer in pairs(self._bases[id] or {}) do
-      local cachedHash = byLayer and byLayer[layer] or nil
-      if cachedHash ~= nil then
-        -- A stashed hash implies the resource was already decoded with its
-        -- id checked at load time, so the layer id equals the script id.
-        entry.bases[#entry.bases + 1] = { layer = layer, scriptId = id, scriptHash = cachedHash }
-      else
-        local script = self._bases[id][layer]
-        if script == PENDING then
-          script = self:_load(id, layer)
-        end
-        entry.bases[#entry.bases + 1] = {
-          layer = layer,
-          scriptId = script.id,
-          scriptHash = Sha256.hex(LuaWriter.encode(script)),
-        }
-      end
-    end
-    table.sort(entry.bases, function(a, b)
-      return a.layer < b.layer
-    end)
-    projection[#projection + 1] = entry
-  end
-  local value = Sha256.hex(LuaWriter.encode(projection))
-  self._fingerprintCache = { version = self._version, value = value }
-  return value
 end
 
 return Registry

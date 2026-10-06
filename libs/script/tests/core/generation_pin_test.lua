@@ -73,9 +73,11 @@ function T.registry_pins_the_generation_seen_before_activation()
   local newResource = assert(newRegistry:base(SCRIPT_ID))
   Assert.equal(newResource.metadata.generation, GENERATION_B, "a later registry observes generation B")
   Assert.isTrue(
-    oldRegistry:fingerprint() ~= newRegistry:fingerprint(),
-    "generation activation changes the registry fingerprint"
+    oldResource.metadata.generation ~= newResource.metadata.generation,
+    "generation activation changes the resolved resource generation"
   )
+  local oldAgain = assert(oldRegistry:base(SCRIPT_ID))
+  Assert.equal(oldAgain.metadata.generation, GENERATION_A, "repeat access stays pinned to generation A")
 end
 
 return { tests = T }

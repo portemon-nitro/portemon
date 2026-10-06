@@ -331,8 +331,9 @@ T["lazy build rejects an index without resources"] = function()
 end
 
 -- A generated cache whose index entries carry the published canonical hash
--- of each decoded resource: the hash is exactly what the registry
--- fingerprint would compute by decoding the body itself.
+-- of each decoded resource. The hash stays generated-cache provenance
+-- metadata: the loader installs membership from the index and decodes
+-- bodies on demand.
 local HASHED_FILES = {
   ["vanilla.hgss.scr_seq.0842.script_001"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "vanilla.hgss.scr_seq.0842.script_001", steps = { S.stop() } }\n',
   ["new_bark.lab_sign"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", steps = { S.say { message = "msg.hgss.0543.00097" }, S.stop() } }\n',
@@ -416,18 +417,10 @@ local function countScriptReads(cache)
   end
 end
 
--- The decoded oracle: an eager registry that loads and hashes every body.
-local function decodedOracleFingerprint(order)
-  local registry = ScriptLoader.buildRegistry(hashedCache(order), hashedOverrideFs(), requireShim, {
-    builtins = builtinScripts(),
-  })
-  return registry:fingerprint()
-end
-
--- 10. A registry built from published index hashes carries the exact
--- decoded identity without decoding any generated body.
-T["published index hashes identify the registry without decoding generated bodies"] = function()
-  local oracle = decodedOracleFingerprint()
+-- 10. A lazy build from published index hashes reads no generated body:
+-- membership comes from the index, content decodes on first access, and
+-- the override layer still wins without touching the generated file.
+T["lazy build from published hashes decodes on demand"] = function()
   local cache = hashedCache()
   local scriptReads = countScriptReads(cache)
   local registry = ScriptLoader.buildRegistry(cache, hashedOverrideFs(), requireShim, {
@@ -435,46 +428,74 @@ T["published index hashes identify the registry without decoding generated bodie
     builtins = builtinScripts(),
   })
   Assert.equal(scriptReads(), 0, "building from published hashes must not read generated bodies")
-  Assert.equal(registry:fingerprint(), oracle)
-  Assert.equal(scriptReads(), 0, "fingerprint acquisition must not decode generated bodies")
+  Assert.deepEqual(registry:ids(), {
+    "new_bark.lab_sign",
+    "test.builtin.ping",
+    "vanilla.hgss.scr_seq.0842.script_001",
+  })
+  local base = assert(registry:base("new_bark.lab_sign"))
+  Assert.equal(base.steps[1].op, "noop", "the override wins over the generated base")
+  Assert.equal(scriptReads(), 0, "the override wins without reading the generated body")
+  local generated = assert(registry:base("vanilla.hgss.scr_seq.0842.script_001"))
+  Assert.equal(generated.id, "vanilla.hgss.scr_seq.0842.script_001")
+  Assert.equal(generated.steps[1].op, "stop")
+  Assert.equal(scriptReads(), 1, "first generated access reads exactly its own file")
 end
 
--- 10b. The published-hash identity is stable under index enumeration order.
-T["published index hashes identify the registry regardless of index order"] = function()
-  local oracle = decodedOracleFingerprint()
-  local cache = hashedCache("reversed")
-  local scriptReads = countScriptReads(cache)
-  local registry = ScriptLoader.buildRegistry(cache, hashedOverrideFs(), requireShim, {
+-- 10b. Index enumeration order does not change resolved content: the same
+-- resources resolve identically from a reversed index.
+T["index order does not change resolved content"] = function()
+  local forward = ScriptLoader.buildRegistry(hashedCache(), hashedOverrideFs(), requireShim, {
     lazy = true,
     builtins = builtinScripts(),
   })
-  Assert.equal(registry:fingerprint(), oracle)
-  Assert.equal(scriptReads(), 0, "fingerprint acquisition must not decode generated bodies")
-end
-
--- 10c. Saves carry no registry identity: a current bucket validates with no
--- fingerprint context under either construction, and content drift changes
--- the digest without gating the save.
-T["saves validate without fingerprints under either registry construction"] = function()
-  local oracle = decodedOracleFingerprint()
-  local cache = hashedCache()
-  local registry = ScriptLoader.buildRegistry(cache, hashedOverrideFs(), requireShim, {
+  local reversed = ScriptLoader.buildRegistry(hashedCache("reversed"), hashedOverrideFs(), requireShim, {
     lazy = true,
     builtins = builtinScripts(),
   })
-  local seeded = registry:fingerprint()
-  Assert.equal(seeded, oracle)
-  local bucket = {
-    schema = ScriptSave.SCHEMA_NAME,
-    capturedAtSimulationTick = 0,
-    nextEnvironmentId = 0,
-    nextInstanceId = 0,
-    nextTaskId = 0,
-    environments = {},
-    instances = {},
-    tasks = {},
-  }
-  Assert.isNil(ScriptSave.validate(bucket, {}), "a current bucket needs no fingerprint context")
+  Assert.deepEqual(reversed:ids(), forward:ids())
+  for _, id in ipairs(forward:ids()) do
+    Assert.equal(LuaWriter.encode(assert(reversed:base(id))), LuaWriter.encode(assert(forward:base(id))))
+  end
+end
+
+-- 10c. Saves carry no registry identity: a current bucket validates with
+-- no digest context under either lazy or eager construction.
+T["saves validate without digests under either registry construction"] = function()
+  local bucket = function()
+    return {
+      schema = ScriptSave.SCHEMA_NAME,
+      capturedAtSimulationTick = 0,
+      nextEnvironmentId = 0,
+      nextInstanceId = 0,
+      nextTaskId = 0,
+      environments = {},
+      instances = {},
+      tasks = {},
+    }
+  end
+  ScriptLoader.buildRegistry(hashedCache(), hashedOverrideFs(), requireShim, {
+    lazy = true,
+    builtins = builtinScripts(),
+  })
+  Assert.isNil(ScriptSave.validate(bucket(), {}), "a current bucket needs no digest context")
+  ScriptLoader.buildRegistry(hashedCache(), hashedOverrideFs(), requireShim, {
+    builtins = builtinScripts(),
+  })
+  Assert.isNil(ScriptSave.validate(bucket(), {}), "a current bucket needs no digest context")
+end
+
+-- 10d. A built registry exposes no aggregate digest surface: construction
+-- ends at install and seal, with nothing to seed or query.
+T["built registry exposes no digest surface"] = function()
+  local registry = ScriptLoader.buildRegistry(hashedCache(), hashedOverrideFs(), requireShim, {
+    lazy = true,
+    builtins = builtinScripts(),
+  })
+  local surface = registry --[[@as table<string, unknown>]]
+  Assert.isNil(surface["fingerprint"])
+  Assert.isNil(surface["cacheScriptHash"])
+  Assert.isNil(surface["restoreFingerprint"])
 end
 
 -- 9c. An explicitly empty resources array is schema-legal and installs

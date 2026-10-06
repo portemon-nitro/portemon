@@ -1,8 +1,7 @@
 -- Lazy registry tests: deferred base layers decode through the registry's
 -- resource loader on first access, presence semantics (ids/duplicates) work
--- without decoding, and the fingerprint consumes pre-stashed per-resource
--- hashes without touching the loader. Published index hashes are seeded by
--- the loader; no gameplay pass decodes the corpus or publishes snapshots.
+-- without decoding, and construction performs no digest work. No gameplay
+-- pass decodes the corpus or publishes snapshots.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -12,7 +11,6 @@ local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 local Registry = require("libs.script.src.Registry")
-local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
 local GENERATION = string.rep("a", 40)
@@ -179,69 +177,46 @@ T["loader failure raises a load error"] = function()
   end)
 end
 
--- 6. A lazy registry's fingerprint matches the eager registry's for the same
--- content.
-T["lazy fingerprint matches the eager registry"] = function()
+-- 6. A lazy registry built by the loader resolves the same bases as the
+-- eager build: identity comes from the decoded resources themselves, and
+-- construction decodes nothing either way the caller can observe here.
+T["lazy and eager builds resolve identical bases"] = function()
   local eager = ScriptLoader.buildRegistry(scriptCache(), overrideFs(), requireShim)
   local lazy = ScriptLoader.buildRegistry(scriptCache(), overrideFs(), requireShim, { lazy = true })
-  Assert.equal(lazy:fingerprint(), eager:fingerprint())
-end
-
--- 7. Stashed per-resource hashes let the fingerprint run without decoding:
--- the loader is never called, and the pending bases still decode on demand
--- afterwards.
-T["fingerprint uses stashed hashes without decoding"] = function()
-  local cache = scriptCache()
-  local registry, calls = lazyRegistry(cache)
-  for _, id in ipairs(registry:ids()) do
-    local resource = assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim, { validate = false }))
-    registry:cacheScriptHash(id, "generated", Sha256.hex(LuaWriter.encode(resource)))
+  Assert.deepEqual(lazy:ids(), eager:ids())
+  for _, id in ipairs(eager:ids()) do
+    Assert.equal(LuaWriter.encode(assert(lazy:base(id))), LuaWriter.encode(assert(eager:base(id))))
   end
-  local fingerprint = registry:fingerprint()
-  Assert.deepEqual(calls, {}, "the stashed hashes avoided the loader")
-  Assert.notNil(registry:base("new_bark.lab_sign"))
-  Assert.deepEqual(calls, { "new_bark.lab_sign" }, "pending bases still decode on demand")
-  Assert.equal(fingerprint, registry:fingerprint(), "the memoized digest stays stable")
 end
 
--- 8. A mutation invalidates the stashed hashes: the fingerprint recomputes
--- through the loader.
-T["stashed hashes are invalidated on mutation"] = function()
+-- 7. A sealed registry still decodes pending bases on demand: the seal
+-- gates installs, not first access.
+T["sealed registry decodes pending bases on demand"] = function()
   local registry, calls = lazyRegistry(scriptCache())
-  local resource = assert(
-    ScriptLoader.loadGeneratedFrom(scriptCache(), GENERATION, 0, "new_bark.lab_sign", requireShim, { validate = false })
-  )
-  registry:cacheScriptHash("new_bark.lab_sign", "generated", Sha256.hex(LuaWriter.encode(resource)))
-  registry:installBase("new_bark.lab_sign", { id = "new_bark.lab_sign", override = true }, "override")
-  local fingerprint = registry:fingerprint()
-  Assert.isTrue(#calls > 0, "the mutation forces a live recompute")
-  Assert.equal(fingerprint, registry:fingerprint())
+  registry:seal()
+  Assert.deepEqual(calls, {}, "construction decodes nothing")
+  Assert.equal(assert(registry:base("new_bark.lab_sign")).id, "new_bark.lab_sign")
+  Assert.deepEqual(calls, { "new_bark.lab_sign" }, "first access decodes only its own resource")
+  throwsCode("SCRIPT_REGISTRY_SEALED", function()
+    registry:installBase("late.id", { id = "late.id" }, "generated")
+  end)
+end
+
+-- 8. The registry owns no aggregate digest surface: layer ownership,
+-- deferred loading, sealing, and the mutation version are the whole
+-- contract, so there is nothing to seed or query.
+T["registry owns no aggregate digest surface"] = function()
+  local registry = Registry.new()
+  local surface = registry --[[@as table<string, unknown>]]
+  Assert.isNil(surface["fingerprint"])
+  Assert.isNil(surface["cacheScriptHash"])
+  Assert.isNil(surface["restoreFingerprint"])
 end
 
 -- 13. buildRegistry returns a sealed registry: the post-load registry is
 -- immutable during gameplay.
 T["buildRegistry returns a sealed registry"] = function()
   local registry = ScriptLoader.buildRegistry(scriptCache(), overrideFs(), requireShim, { lazy = true })
-  throwsCode("SCRIPT_REGISTRY_SEALED", function()
-    registry:installBase("late.id", { id = "late.id" }, "generated")
-  end)
-end
-
--- 14. The seal exempts the post-load machinery: per-resource hash stashing,
--- the restored fingerprint memo, and on-demand decode all keep working on a
--- sealed registry, while the install surface stays shut.
-T["seal exempts the post-load machinery"] = function()
-  local cache = scriptCache()
-  local registry, calls = lazyRegistry(cache)
-  registry:seal()
-  local resource =
-    assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, "new_bark.lab_sign", requireShim, { validate = false }))
-  registry:cacheScriptHash("new_bark.lab_sign", "generated", Sha256.hex(LuaWriter.encode(resource)))
-  registry:fingerprint()
-  Assert.deepEqual(calls, { "vanilla.hgss.scr_seq.0842.script_001" }, "the stashed hash avoids the loader for its id")
-  registry:restoreFingerprint(("0"):rep(64))
-  Assert.equal(registry:fingerprint(), ("0"):rep(64), "the restored memo must stay authoritative")
-  Assert.equal(assert(registry:base("new_bark.lab_sign")).id, "new_bark.lab_sign")
   throwsCode("SCRIPT_REGISTRY_SEALED", function()
     registry:installBase("late.id", { id = "late.id" }, "generated")
   end)

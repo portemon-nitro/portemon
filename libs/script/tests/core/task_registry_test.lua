@@ -100,17 +100,7 @@ T["malformed optional callbacks rejected"] = function()
   Assert.isTrue(type(resolved.onComplete) == "function")
 end
 
--- 4. types() enumerates every registered type exactly once, sorted by
--- name, including types with multiple registered versions.
-T["types enumerates registered types"] = function()
-  local registry = TaskRegistry.new()
-  registry:register("test.z", 1, impl())
-  registry:register("test.a", 1, impl())
-  registry:register("test.z", 2, impl())
-  Assert.deepEqual(registry:types(), { "test.a", "test.z" })
-end
-
--- 5. Both optional callbacks may be omitted entirely; a minimal
+-- 4. Both optional callbacks may be omitted entirely; a minimal
 -- create/poll/validate implementation is accepted.
 T["optional callbacks omitted accepted"] = function()
   local registry = TaskRegistry.new()
@@ -130,7 +120,7 @@ T["optional callbacks omitted accepted"] = function()
   Assert.notNil(registry:resolve("test.minimal", 1))
 end
 
--- 6. resolveCurrent picks the highest registered version of a type: the
+-- 5. resolveCurrent picks the highest registered version of a type: the
 -- current implementation for creation, without a caller-supplied version.
 T["resolveCurrent picks the highest registered version"] = function()
   local registry = TaskRegistry.new()
@@ -146,7 +136,7 @@ T["resolveCurrent picks the highest registered version"] = function()
   Assert.equal(assert(registry:resolveCurrent("test.current")), latest)
 end
 
--- 7. An unknown type is attributed the same save error as resolve, never
+-- 6. An unknown type is attributed the same save error as resolve, never
 -- silently skipped.
 T["resolveCurrent attributes unknown types"] = function()
   local registry = TaskRegistry.new()
