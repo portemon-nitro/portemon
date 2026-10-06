@@ -9596,33 +9596,6 @@ function partyHistoryFactor(state, battler)
   state.scratch = math.floor(first / 32) % 8
 end
 
--- Effectiveness-scale selector for the matchup rank: the third
--- distinct used move selects threshold scaling only in band 1, zeroes
--- everything in band 0, and scales by 100 otherwise. Short histories
--- read zero scale; malformed third entries fail closed.
----@param state TrainerAiProgramState command state under execution
----@param battler integer battler identity owning the history
----@return integer 0 for zero scale, 1 for threshold scale, 2 for full scale
-local function historyScale(state, battler)
-  local facts = state.facts --[[@as table<string, unknown>]]
-  local histories = facts.usedIds --[[@as table<integer, integer[]>]]
-  local used = histories[battler] or {}
-  if #used < 3 then
-    return 0
-  end
-  local third = used[3]
-  if type(third) ~= "number" then
-    error(BattleErrors.missingBehavior("trainer evaluation reads its ordered move history", {}))
-  end
-  local band = math.floor(third / 8) % 8
-  if band == 0 then
-    return 0
-  elseif band == 1 then
-    return 1
-  end
-  return 2
-end
-
 -- Speed-halving hold effects (Macho Brace, Iron Ball, Power items).
 local SPEED_HALVING =
   { [50] = true, [106] = true, [122] = true, [117] = true, [118] = true, [121] = true, [119] = true, [120] = true }
@@ -10396,17 +10369,42 @@ local function calcPreview(state, moveId, power, moveType, category)
   return damage
 end
 
--- Effectiveness-class ranking into scratch (handler ov10_0221CD34 for
--- opcode 32): status-class moves (excluded effects, power 0/1) leave
--- zero; otherwise every slot runs the matchup preview and the current
--- slot leads-or-ties for 2, trails for 1. The history selector scales
--- by slot thresholds only in band 1, zeroes in band 0, and by 100
--- otherwise.
+-- Literal scale selection for the matchup previews (ov10_0221EF7C
+-- core behind opcodes 32/99/105): the command operand selects the
+-- stored slot threshold only for mode 1, and 100 otherwise.
 ---@param state TrainerAiProgramState command state under execution
----@return integer effectiveness class 0/1/2 under the rank
-function matchupRank(state)
+---@param scaleMode integer literal scale operand under selection
+---@param slot integer zero-based move slot under the preview
+---@return integer 100 or the slot threshold under the final multiply
+local function matchupScale(state, scaleMode, slot)
+  if scaleMode == 1 then
+    return state.thresholds[slot + 1]
+  end
+  return 100
+end
+
+-- Four-move staged preview for the battler named by the supplied facts:
+-- every slot runs the matchup preview in source slot order against the
+-- unchanged target using the literal scale rule above. No rank,
+-- eligibility, or branch decision lives here.
+---@param state TrainerAiProgramState command state under execution
+---@param scaleMode integer literal scale operand under the previews
+---@return integer[] staged matchup values for move slots 0..3 in order
+local function matchupValues(state, scaleMode)
+  local values = {}
+  for slot = 0, 3 do
+    values[slot + 1] = matchupValue(state, slot, matchupScale(state, scaleMode, slot))
+  end
+  return values
+end
+
+-- Current-move eligibility for the matchup ranks: moves outside the
+-- evaluation class (excluded effects, power 0/1) never rank and leave
+-- zero to their caller.
+---@param state TrainerAiProgramState command state under execution
+---@return boolean true while the current move enters the preview loop
+local function matchupEligible(state)
   local facts = state.facts --[[@as table<string, unknown>]]
-  local atk = facts.atk --[[@as integer]]
   local byId = facts.moveById --[[@as table<integer, table<string, unknown>>]]
   local record = byId[state.cur]
   if type(record) ~= "table" then
@@ -10418,31 +10416,32 @@ function matchupRank(state)
   local power = record.power --[[@as integer]]
   if INCLUDED_EFFECTS[effect] ~= true then
     if EXCLUDED_EFFECTS[effect] == true or power <= 1 then
-      return 0
+      return false
     end
   end
-  local scaleMode = historyScale(state, atk)
-  local values = {}
-  for slot = 0, 3 do
-    local scale = 100
-    if scaleMode == 0 then
-      scale = 0
-    elseif scaleMode == 1 then
-      scale = state.thresholds[slot + 1]
+  return true
+end
+
+-- Effectiveness-class ranking into scratch (handler ov10_0221CD34 for
+-- opcode 32): ineligible moves leave zero; otherwise every slot runs
+-- the matchup preview under the literal scale operand and the current
+-- slot leads-or-ties for 2, trails for 1.
+---@param state TrainerAiProgramState command state under execution
+---@param scaleMode integer literal scale operand under the previews
+---@return integer effectiveness class 0/1/2 under the rank
+function matchupRank(state, scaleMode)
+  if not matchupEligible(state) then
+    return 0
+  end
+  local ownValues = matchupValues(state, scaleMode)
+  -- Rank demotion is strict. Ties keep the selected move at rank 2.
+  local selected = ownValues[state.slot + 1]
+  for _, value in ipairs(ownValues) do
+    if value > selected then
+      return 1
     end
-    values[slot + 1] = matchupValue(state, slot, scale)
   end
-  local mine = values[state.slot + 1]
-  local count = 0
-  for _, value in ipairs(values) do
-    if value <= mine then
-      count = count + 1
-    end
-  end
-  if count == 4 then
-    return 2
-  end
-  return 1
+  return 2
 end
 
 --- Executes one program command at the program counter.
@@ -10543,7 +10542,7 @@ function executeCommand(state, op, pc)
     loadCurDetail(state, "power")
     return after
   elseif op == 32 then
-    state.scratch = matchupRank(state)
+    state.scratch = matchupRank(state, arg(1))
     return after
   elseif op == 33 then
     local facts = state.facts --[[@as table<string, unknown>]]
@@ -10779,7 +10778,7 @@ function executeCommand(state, op, pc)
     end
     return after
   elseif op == 105 then
-    state.scratch = allyMatchupRank(state)
+    state.scratch = allyMatchupRank(state, arg(1))
     return after
   elseif op == 106 or op == 107 then
     local target = switchInGate(state, arg(1), arg(2), op == 106)
@@ -11030,8 +11029,7 @@ end
 -- Matchup value per move slot (handler ov10_0221EF7C core behind opcodes
 -- 32/99/105): vacant slots read zero; other slots run the staged
 -- preview above for the move held in that slot, scaled by the slot
--- factor (100, or the stored threshold when the history selector
--- requests it).
+-- factor (100, or the stored threshold for literal mode 1).
 ---@param state TrainerAiProgramState command state under execution
 ---@param slot integer zero-based move slot under preview
 ---@param scale integer 100 or the slot threshold under the final multiply
@@ -11830,32 +11828,38 @@ function statCompareGate(state, selector, stat, jump, kind)
 end
 
 -- Ally-aware matchup rank (handler ov10_0221E848 for opcode 105):
--- the current slot must lead or tie every attacker move first against
--- the current target and then against that target's partner. Either
--- trailing rank answers 1; only a lead on both answers 2. Ineligible
--- moves keep the ordinary rank's zero. The partner evaluation reuses
--- the same rank through function-local facts, so shared facts and live
--- battler records stay untouched.
+-- the acting battler previews its four moves against the unchanged
+-- target first; a stronger own move demotes at once without previewing
+-- the partner. Otherwise the acting partner previews its own four
+-- moves against the same target, and any partner value strictly
+-- greater than the original acting selected value demotes. Only a lead
+-- on both answers 2. Ineligible moves keep the ordinary rank's zero.
+-- The partner evaluation reuses the same preview through a
+-- function-local facts view, so shared facts and live battler records
+-- stay untouched.
 ---@param state TrainerAiProgramState command state under execution
+---@param scaleMode integer literal scale operand under the previews
 ---@return integer effectiveness class 0/1/2 under the rank
-function allyMatchupRank(state)
-  local first = matchupRank(state)
-  if first ~= 2 then
-    return first
+function allyMatchupRank(state, scaleMode)
+  if not matchupEligible(state) then
+    return 0
   end
   local facts = state.facts --[[@as table<string, unknown>]]
-  local battlers = facts.battlers --[[@as table<integer, table<string, unknown>>]]
-  local partner = partnerOf(facts.tgt --[[@as integer]])
-  -- An absent partner slot carries no battler record and contributes no
-  -- second target, so the rank rests on the current target alone.
-  if type(battlers[partner]) ~= "table" then
-    return first
+  local ownValues = matchupValues(state, scaleMode)
+  -- Rank demotion is strict. Ties keep the selected move at rank 2.
+  local selected = ownValues[state.slot + 1]
+  for _, value in ipairs(ownValues) do
+    if value > selected then
+      return 1
+    end
   end
+  -- The partner pass changes only attacker identity.
   local partnerFacts = {}
   for key, value in pairs(facts) do
     partnerFacts[key] = value
   end
-  partnerFacts.tgt = partner
+  partnerFacts.atk = partnerOf(facts.atk --[[@as integer]])
+  -- partnerFacts.tgt remains facts.tgt
   local probe = {
     facts = partnerFacts,
     rng = state.rng,
@@ -11866,8 +11870,10 @@ function allyMatchupRank(state)
     cur = state.cur,
     scratch = state.scratch,
   }
-  if matchupRank(probe) ~= 2 then
-    return 1
+  for _, value in ipairs(matchupValues(probe, scaleMode)) do
+    if value > selected then
+      return 1
+    end
   end
   return 2
 end
@@ -11915,12 +11921,7 @@ end
 ---@return integer? jump target under the taken branch, nil to fall through
 function matchupCompareGate(state, selector, scaleMode, jump)
   local best = 0
-  for slot = 0, 3 do
-    local scale = 100
-    if scaleMode == 1 then
-      scale = state.thresholds[slot + 1]
-    end
-    local value = matchupValue(state, slot, scale)
+  for _, value in ipairs(matchupValues(state, scaleMode)) do
     if value > best then
       best = value
     end
@@ -11931,10 +11932,7 @@ function matchupCompareGate(state, selector, scaleMode, jump)
   local previousMove = lasts[previousBattler] or 0
   local previousValue = 0
   if previousMove ~= 0 then
-    local scale = 100
-    if scaleMode == 1 then
-      scale = state.thresholds[state.slot + 1]
-    end
+    local scale = matchupScale(state, scaleMode, state.slot)
     local previewFacts = {}
     for key, value in pairs(facts) do
       previewFacts[key] = value

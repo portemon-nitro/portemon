@@ -2092,10 +2092,11 @@ function T.used_move_history_records_first_use_order()
   session:dispose()
 end
 
--- The third used move drives matchup scaling: with three distinct
--- mixed-band strikes behind it, the bad-move program scores the next
--- answer instead of faulting on the unordered ledger.
-function T.third_used_move_drives_matchup_scaling()
+-- A populated use order still scores: with three distinct strikes
+-- behind it, the bad-move program scores the next answer instead of
+-- faulting on the ordered ledger, even though matchup comparison no
+-- longer reads that order.
+function T.populated_use_order_scores_without_faulting()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "CHIKORITA", 10)
   holder.mon.moves = {
@@ -2147,10 +2148,11 @@ function T.third_used_move_drives_matchup_scaling()
   session:dispose()
 end
 
--- First-use order selects the scaling band: the same three distinct
--- moves score the second slot differently depending on which identity
--- the order puts third.
-function T.first_use_order_selects_the_scaling_band()
+-- The reached literal mode selects full-scale comparison: the bad-move
+-- program carries mode zero, so the second slot resolves the same way no
+-- matter which distinct identities the use order holds third, or whether
+-- any history exists at all.
+function T.literal_mode_zero_compares_full_scale_regardless_of_use_order()
   local TrainerAi = trainerPolicy()
   local chart = nativeChart()
   local slots = {
@@ -2170,17 +2172,24 @@ function T.first_use_order_selects_the_scaling_band()
       usedIds = { [0] = order, [1] = order },
       lastMove = { [0] = 0, [1] = 0 },
     }
-    return TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 0 }, false, spyStream(FIXED_SEED), extra)
+    local stream = spyStream(FIXED_SEED)
+    return TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 0 }, false, stream, extra), stream
   end
-  Assert.equal(
-    scoredWith({ 33, 45, 64 })[2].score,
-    100,
-    "a band-zero third move zeroes the matchup scaling"
+  local first, firstStream = scoredWith({ 33, 45, 64 })
+  local second, secondStream = scoredWith({ 33, 45, 43 })
+  local fresh, freshStream = scoredWith({})
+  Assert.equal(first[2].score, 99, "the first use order compares at full scale")
+  Assert.equal(second[2].score, 99, "the second use order compares at full scale")
+  Assert.equal(fresh[2].score, 99, "an empty history compares at full scale")
+  Assert.deepEqual(
+    secondStream:drawLabels(),
+    firstStream:drawLabels(),
+    "different use orders draw identically"
   )
-  Assert.equal(
-    scoredWith({ 33, 45, 43 })[2].score,
-    99,
-    "a band-five third move scales the matchup fully"
+  Assert.deepEqual(
+    freshStream:drawLabels(),
+    firstStream:drawLabels(),
+    "an empty history draws identically"
   )
 end
 
@@ -2436,7 +2445,8 @@ end
 
 -- Doubles bids pick the highest target: the top bid answers even
 -- alone, equal bids break uniformly through one draw, and a
--- target-dependent session answers the weaker line with its strike.
+-- target-dependent session answers every tied bid with its leading
+-- strike.
 ---@param held table pre-answer capture carrying the stream snapshot
 ---@param count integer answer draws to replay in stream order
 ---@return integer[] first draw values of the trainer answer
@@ -2509,16 +2519,11 @@ function T.doubles_bids_pick_the_highest_target()
   Assert.equal(#reply.choices, 1, "the lone trainer actor answers")
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
   local target = ({ 1, 2 })[(values[16] % 2) + 1]
-  local pick = values[10]
-  if target == 2 then
-    pick = values[15]
-  end
   Assert.equal(reply.choices[1].payload.target.position, target, "the tied bid answers the drawn target")
-  Assert.equal(
-    reply.choices[1].payload.moveSlot,
-    ({ 0, 1 })[(pick % 2) + 1],
-    "the tied slots answer the drawn move"
-  )
+  -- Full-scale comparison ranks the grass strike above the normal
+  -- strike on both targets, so every bid names its leading slot while
+  -- the tied bids still break the target over the selection draw.
+  Assert.equal(reply.choices[1].payload.moveSlot, 0, "every bid answers with its leading strike")
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
     16,
@@ -3986,9 +3991,12 @@ function T.fixed_damage_strikes_run_the_staged_pipeline()
   }
   local stream = spyStream(FIXED_SEED)
   local scored = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 0 }, false, stream)
+  -- Full-scale comparison leads the fixed 20-damage strike past the
+  -- staged strike, so the trailing slot pays the rank-1 deduction while
+  -- the fixed-damage slot itself holds.
   Assert.deepEqual(
     { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
-    { 100, 100, 100, 0 },
+    { 100, 99, 100, 0 },
     "the fixed-damage slot follows the unlisted path without error"
   )
   Assert.equal(#stream:drawLabels(), 4, "the fixed-damage evaluation draws nothing extra")
@@ -4829,30 +4837,39 @@ local function previewBattler(overrides)
   return record
 end
 
--- Ally-aware ranking needs the current slot on top against both the
--- target and its partner: when another slot beats it against the partner
--- the rank drops even though the ordinary single-target rank holds, an
--- ineligible slot never draws, and the partner preview leaves shared
--- facts alone.
-function T.ally_aware_rank_needs_both_targets_to_hold_the_slot()
+-- The acting-partner pass decides the held slot: the acting move leads
+-- its own set, so a weak acting partner keeps the rank-2 continuation
+-- while one deterministic stronger acting-partner move takes the rank-1
+-- path. An ineligible slot never draws, and the partner preview leaves
+-- shared facts alone.
+function T.acting_partner_strength_decides_the_held_slot()
   local TrainerAi = trainerPolicy()
   local chart = nativeChart()
   local program = programOwner()
   local water = program.TYPE_IDS["water"] --[[@as integer]]
   local fire = program.TYPE_IDS["fire"] --[[@as integer]]
   local slots = {
-    slotWith({ key = "PROBE", id = 600, moveType = "water", power = 40, category = "special", accuracy = 100, effect = 41 }),
-    slotWith({ key = "VINE", id = 601, moveType = "grass", power = 55, category = "physical", accuracy = 100, effect = 0 }),
-    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
+    slotWith({ key = "PROBE", id = 600, moveType = "water", power = 40, category = "special", accuracy = 100, effect = 0 }),
     slotWith({ key = "TACKLE", id = 33, usable = false }),
+    slotWith({ key = "TACKLE", id = 34, usable = false }),
+    slotWith({ key = "TACKLE", id = 35, usable = false }),
   }
-  local function scoreAgainst(partnerType)
-    local attacker = previewBattler({ t1 = water, t2 = water, moves = { 600, 601, 45, 33 } })
+  local strongMoves = {
+    [602] = { effect = 0, power = 120, moveType = "water", category = "special", accuracy = 100, basePp = 5 },
+  }
+  local function scoreWith(partnerMoves)
+    local attacker = previewBattler({ t1 = water, t2 = water, moves = { 600, 33, 34, 35 } })
     local target = previewBattler({ t1 = fire, t2 = fire })
-    local partner = previewBattler({ t1 = partnerType, t2 = partnerType })
+    local targetPartner = previewBattler({ t1 = fire, t2 = fire })
+    local actingPartner = previewBattler({ t1 = water, t2 = water, moves = partnerMoves })
     local extra = {
-      doublesBattlers = { atk = 1, tgt = 0, records = { [0] = target, [1] = attacker, [2] = partner } },
+      doublesBattlers = {
+        atk = 1,
+        tgt = 0,
+        records = { [0] = target, [1] = attacker, [2] = targetPartner, [3] = actingPartner },
+      },
       usedIds = { [1] = { 0, 0, 16 } },
+      fullMoveById = strongMoves,
     }
     local stream = spyStream(FIXED_SEED)
     local scored = TrainerAi.scoreSlots(
@@ -4868,14 +4885,28 @@ function T.ally_aware_rank_needs_both_targets_to_hold_the_slot()
     )
     return scored, stream, extra
   end
-  local matched, matchedStream, matchedExtra = scoreAgainst(fire)
-  local split, splitStream = scoreAgainst(water)
-  Assert.isTrue(#matchedStream:drawLabels() > 4, "the matching partner reaches the rank region")
-  Assert.isTrue(#splitStream:drawLabels() > 4, "the splitting partner reaches the rank region")
-  local observed = (matchedExtra.doublesBattlers --[[@as table<string, unknown>]])
+  local weak, weakStream, weakExtra = scoreWith({ 0, 0, 0, 0 })
+  local strong, strongStream = scoreWith({ 602, 0, 0, 0 })
+  Assert.deepEqual(
+    weakStream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance", "program_chance" },
+    "the weak partner keeps the rank-2 continuation"
+  )
+  Assert.deepEqual(
+    strongStream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" },
+    "the stronger partner takes the rank-1 path"
+  )
+  Assert.equal(weak[1].score, 99, "the held slot scores past the rank-2 continuation")
+  Assert.equal(strong[1].score, 100, "the held slot scores past the rank-1 path")
+  local observed = (weakExtra.doublesBattlers --[[@as table<string, unknown>]])
   Assert.equal(observed.tgt, 0, "the partner preview leaves the shared target alone")
   local records = (observed.records --[[@as table<integer, table<string, unknown>>]])
-  Assert.equal(records[2].t1, fire, "the partner preview leaves the partner record alone")
+  Assert.deepEqual(
+    (records[3] --[[@as table<string, unknown>]]).moves,
+    { 0, 0, 0, 0 },
+    "the partner preview leaves the acting-partner record alone"
+  )
   local quietSlots = {
     slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
     slotWith({ key = "TACKLE", id = 33, usable = false }),
@@ -4899,25 +4930,79 @@ function T.ally_aware_rank_needs_both_targets_to_hold_the_slot()
     "an ineligible slot spends no routine draw"
   )
   Assert.equal(quiet[1].score, 100, "an ineligible slot holds the baseline")
-  -- The rank split takes different branches at the rank gate: the
-  -- leading rank-2 path spends its gate draw while the rank-1 path skips
-  -- it, and the shifted downstream draw diverges the following slot.
-  -- Neither rank branch adjusts the leading slot itself, so it holds its
-  -- score on both runs while the partner matchup still changes the run.
-  Assert.deepEqual(
-    matchedStream:drawLabels(),
-    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance", "program_chance" },
-    "the matched run spends the rank-2 gate draw"
+end
+
+-- Target-partner-only changes leave the held slot alone: with the acting
+-- battler, its partner, and the fixed target held constant, swapping
+-- the opposite-side partner record changes neither scores nor draws,
+-- and the shared battler records stay untouched.
+function T.target_partner_moves_leave_the_held_slot_alone()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local program = programOwner()
+  local water = program.TYPE_IDS["water"] --[[@as integer]]
+  local fire = program.TYPE_IDS["fire"] --[[@as integer]]
+  local grass = program.TYPE_IDS["grass"] --[[@as integer]]
+  local slots = {
+    slotWith({ key = "PROBE", id = 600, moveType = "water", power = 40, category = "special", accuracy = 100, effect = 0 }),
+    slotWith({ key = "TACKLE", id = 33, usable = false }),
+    slotWith({ key = "TACKLE", id = 34, usable = false }),
+    slotWith({ key = "TACKLE", id = 35, usable = false }),
+  }
+  local function scoreWith(targetPartner)
+    local attacker = previewBattler({ t1 = water, t2 = water, moves = { 600, 33, 34, 35 } })
+    local target = previewBattler({ t1 = fire, t2 = fire })
+    local actingPartner = previewBattler({ t1 = water, t2 = water, moves = { 0, 0, 0, 0 } })
+    local extra = {
+      doublesBattlers = {
+        atk = 1,
+        tgt = 0,
+        records = { [0] = target, [1] = attacker, [2] = targetPartner, [3] = actingPartner },
+      },
+      usedIds = { [1] = { 0, 0, 16 } },
+    }
+    local stream = spyStream(FIXED_SEED)
+    local scored = TrainerAi.scoreSlots(
+      chart,
+      slots,
+      fighterWith({ types = { "grass" } }),
+      fighterWith({ types = { "rock", "ground" } }),
+      100,
+      { 6 },
+      false,
+      stream,
+      extra
+    )
+    return scored, stream, extra
+  end
+  local before, beforeStream, beforeExtra = scoreWith(previewBattler({ t1 = fire, t2 = fire, moves = { 0, 0, 0, 0 } }))
+  local after, afterStream, afterExtra = scoreWith(
+    previewBattler({ t1 = water, t2 = water, moves = { 600, 601, 45, 33 } })
   )
+  local function pointsOf(scored)
+    local points = {}
+    for index, entry in ipairs(scored) do
+      points[index] = entry.score
+    end
+    return points
+  end
+  Assert.deepEqual(pointsOf(after), pointsOf(before), "target-partner-only changes keep every score")
   Assert.deepEqual(
-    splitStream:drawLabels(),
-    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" },
-    "the split run skips the rank-2 gate draw"
+    afterStream:drawLabels(),
+    beforeStream:drawLabels(),
+    "target-partner-only changes draw identically"
   )
-  Assert.equal(matched[1].score, 99, "the leading slot holds its score on the matched run")
-  Assert.equal(split[1].score, 99, "the leading slot holds its score on the split run")
-  Assert.equal(matched[2].score, 100, "the following slot holds baseline past the matched gate")
-  Assert.equal(split[2].score, 99, "the following slot pays past the shifted split gate")
+  for _, extra in ipairs({ beforeExtra, afterExtra }) do
+    local observed = (extra.doublesBattlers --[[@as table<string, unknown>]])
+    Assert.equal(observed.tgt, 0, "scoring leaves the shared target alone")
+    local records = (observed.records --[[@as table<integer, table<string, unknown>>]])
+    Assert.equal(records[0].t1, fire, "scoring leaves the target record alone")
+    Assert.deepEqual(
+      (records[3] --[[@as table<string, unknown>]]).moves,
+      { 0, 0, 0, 0 },
+      "scoring leaves the acting-partner record alone"
+    )
+  end
 end
 
 -- The supported surface stays bounded while decisions stay replayable:
