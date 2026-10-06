@@ -814,4 +814,25 @@ function T.tests.wide_buttons_stay_bounded_and_action_groups_stay_centered()
   )
 end
 
+function T.tests.section_rail_marks_the_active_option_without_using_focus()
+  local view = {
+    status = "ready",
+    ready = true,
+    dirty = false,
+    section = "Player",
+    focus = "money",
+    scope = { id = "section:Player", epoch = 0, kind = "section" },
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+  }
+  local layout = computeLayout(view, 640, 480)
+  local byId = {}
+  for _, item in ipairs(layout.navigation) do
+    byId[item.targetId] = item
+  end
+  Assert.notNil(byId["section:Player"], "the wide layout keeps its section rail")
+  Assert.equal(byId["section:Player"].active, true, "the current section is the active option")
+  Assert.equal(byId["section:Party"].active, false, "other sections stay inactive while focused elsewhere")
+  Assert.equal(byId["section:Bag"].active, false, "other sections stay inactive while focused elsewhere")
+end
+
 return T

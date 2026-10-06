@@ -409,6 +409,7 @@ function State:_snapshot()
     },
     modal = self.controller.modal,
     focus = self.controller.focus,
+    focusVisible = self.controller.focusVisible,
     capturedTarget = self.controller.capturedTarget,
     scrollOffset = self.controller.scrollOffset,
     query = self.controller.query,
@@ -1292,26 +1293,12 @@ end
 function State:_reconcileFocus(preferred, layout)
   local current = layout or self:_resolve(self:_snapshot()).content.layout
   local before = self.controller.focus
+  ---@type string?
   local focus = preferred or self.pendingFocusReturn or self.controller.focus
-  if focus == nil or current.focusGraph[focus] == nil then
-    if
-      self.controller.section == "Progress"
-      and self.session ~= nil
-      and #self:_flagRows(self.session:snapshot().flags) == 0
-    then
-      focus = current.defaultFocus
-    elseif
-      self.controller.section == "Location"
-      and self.controller.locationPage == "grid"
-      and self.controller.focus == "location:grid"
-      and current.focusGraph["location:grid"]
-    then
-      focus = "location:grid"
-    else
-      focus = current.defaultFocus
-    end
+  if focus ~= nil and current.focusGraph[focus] == nil then
+    focus = nil
   end
-  self.controller:setFocus(assert(focus))
+  self.controller:reconcileFocus(current.focusGraph, focus, { current.defaultFocus })
   self.pendingFocusReturn = nil
   local reconciled = current
   if self.controller.focus ~= before then
@@ -2387,6 +2374,7 @@ end
 function State:_consumeUiInput(events)
   for _, event in ipairs(events) do
     if event.type == "navigate" then
+      self.controller:markKeyboardNavigation()
       if self.controller.modal then
         local layout = self:_reconcileFocus()
         self.controller:moveFocus(layout.focusGraph, event.direction)
@@ -2522,6 +2510,7 @@ function State:keypressed(key, _, isrepeat)
         self.valueEditor:press("clear_search")
       end
     elseif key == "left" or key == "right" or key == "up" or key == "down" then
+      self.controller:markKeyboardNavigation()
       if choiceList ~= nil and editorRow ~= nil then
         self:_moveListRow(choiceList, editorRow, key, editorLayout)
       elseif choiceList ~= nil then

@@ -79,7 +79,7 @@ function Layout.compute(view, width, height, metrics)
     for index, name in ipairs(enabledSections) do
       local id = "section:" .. name
       targets[id] = rect(margin, margin + (index - 1) * railStep, railWidth, railButtonHeight)
-      navigation[#navigation + 1] = { role = "action", targetId = id, id = id, label = name }
+      navigation[#navigation + 1] = { role = "action", targetId = id, id = id, label = name, active = name == section }
       addFocusable(id)
     end
   else

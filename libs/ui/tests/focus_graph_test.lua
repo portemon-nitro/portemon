@@ -92,6 +92,73 @@ function T.rejects_a_direction_field_that_is_not_an_ordered_list()
   end, "a direction field that is not an array must fail loudly")
 end
 
+function T.reconcile_keeps_the_live_current_target()
+  local FocusGraph = focusGraphModule()
+  Assert.isTrue(type(FocusGraph.reconcile) == "function", "the reconciliation primitive is missing")
+  local graph = {
+    here = { up = {}, down = {}, left = {}, right = {} },
+    fallback = { up = {}, down = {}, left = {}, right = {} },
+  }
+  Assert.equal(FocusGraph.reconcile(graph, "here", { "fallback" }), "here")
+end
+
+function T.reconcile_selects_the_first_present_fallback()
+  local FocusGraph = focusGraphModule()
+  Assert.isTrue(type(FocusGraph.reconcile) == "function", "the reconciliation primitive is missing")
+  local graph = {
+    second = { up = {}, down = {}, left = {}, right = {} },
+    third = { up = {}, down = {}, left = {}, right = {} },
+  }
+  Assert.equal(FocusGraph.reconcile(graph, "gone", { "missing", "second", "third" }), "second")
+  Assert.equal(FocusGraph.reconcile(graph, nil, { "missing", "third" }), "third")
+end
+
+function T.reconcile_accepts_integer_node_ids()
+  local FocusGraph = focusGraphModule()
+  Assert.isTrue(type(FocusGraph.reconcile) == "function", "the reconciliation primitive is missing")
+  local graph = {
+    [1] = { up = {}, down = {}, left = {}, right = {} },
+    [3] = { up = {}, down = {}, left = {}, right = {} },
+  }
+  Assert.equal(FocusGraph.reconcile(graph, 0, { 2, 3 }), 3)
+  Assert.equal(FocusGraph.reconcile(graph, 1, { 3 }), 1)
+end
+
+function T.reconcile_rejects_malformed_inputs_and_exhausted_fallbacks()
+  local FocusGraph = focusGraphModule()
+  Assert.isTrue(type(FocusGraph.reconcile) == "function", "the reconciliation primitive is missing")
+  local graph = {
+    here = { up = {}, down = {}, left = {}, right = {} },
+  }
+  Assert.throws(function()
+    ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises a malformed graph
+    FocusGraph.reconcile(nil, "here", { "here" })
+  end, "a missing graph must fail loudly")
+  Assert.throws(function()
+    ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises a malformed fallback list
+    FocusGraph.reconcile(graph, "gone", "here")
+  end, "a fallback list that is not an array must fail loudly")
+  Assert.throws(function()
+    FocusGraph.reconcile(graph, "gone", { "missing" })
+  end, "exhausted fallbacks must fail loudly")
+  Assert.throws(function()
+    FocusGraph.reconcile(graph, nil, {})
+  end, "an empty fallback list must fail loudly")
+end
+
+function T.reconcile_never_mutates_the_graph_or_fallbacks()
+  local FocusGraph = focusGraphModule()
+  Assert.isTrue(type(FocusGraph.reconcile) == "function", "the reconciliation primitive is missing")
+  local graph = {
+    here = { up = {}, down = {}, left = {}, right = {} },
+  }
+  local fallbacks = { "missing", "here" }
+  Assert.equal(FocusGraph.reconcile(graph, "gone", fallbacks), "here")
+  Assert.deepEqual(fallbacks, { "missing", "here" }, "fallback lists must be left untouched")
+  Assert.isNil(graph["missing"], "absent candidates must not be materialized")
+  Assert.isNil(graph["gone"], "absent current ids must not be materialized")
+end
+
 function T.never_mutates_the_graph()
   local FocusGraph = focusGraphModule()
   local graph = {

@@ -77,6 +77,12 @@ local BUTTON_FACES = {
     faceTop = { 0.76, 0.78, 0.79, 1 },
     faceBottom = { 0.62, 0.65, 0.66, 1 },
   },
+  inactive = {
+    border = { 0.38, 0.4, 0.41, 1 },
+    rim = { 0.93, 0.94, 0.94, 1 },
+    faceTop = { 1, 1, 1, 1 },
+    faceBottom = { 0.87, 0.88, 0.89, 1 },
+  },
 }
 
 local BUTTON_COLORS = {}
@@ -349,6 +355,14 @@ local function buttonDisabledPalette(skin)
   return textPalette(skin, { r = 192, g = 194, b = 197 })
 end
 
+local function buttonInactivePalette(skin)
+  return textPalette(skin, { r = 0, g = 0, b = 0 })
+end
+
+local function isFocusedVisible(view, targetId)
+  return targetId == view.focus and view.focusVisible == true
+end
+
 local function actionSemantic(targetId)
   if targetId == "party:edit" or targetId == "party:apply" or targetId == "party:move:add" then
     return "primary"
@@ -400,14 +414,53 @@ local function drawText(renderer, value, x, y, role)
   ProductMenuSkin.drawText(renderer.graphics, renderer.text, skin, textRole, visibleText(renderer, value), x, y)
 end
 
-local function drawShadedControl(renderer, rect, label, selected, disabled, semantic)
-  local role = disabled and "disabled" or semantic or "navigation"
+local function drawFocusRing(renderer, rectValue, radius)
+  assert(type(radius) == "number" and radius >= 0, "focus outline radius follows its control geometry")
+  local graphics = renderer.graphics
+  local savedWidth = graphics.getLineWidth()
+  setColor(graphics, renderer.skin.cards.normal.selectedRim)
+  graphics.setLineWidth(2)
+  graphics.rectangle(
+    "line",
+    rectValue.x + 1,
+    rectValue.y + 1,
+    rectValue.width - 2,
+    rectValue.height - 2,
+    radius,
+    radius
+  )
+  graphics.setLineWidth(savedWidth)
+  graphics.setColor(1, 1, 1, 1)
+end
+
+local function optionRole(disabled, semantic, option, active)
+  if disabled then
+    return "disabled"
+  end
+  if option and not active then
+    return "inactive"
+  end
+  return semantic or "navigation"
+end
+
+local function optionLabelPalette(renderer, disabled, option, active)
+  if disabled then
+    return buttonDisabledPalette(renderer.skin)
+  end
+  if option and not active then
+    return buttonInactivePalette(renderer.skin)
+  end
+  return buttonPalette(renderer.skin)
+end
+
+local function drawShadedControl(renderer, rect, label, active, focused, disabled, semantic, option)
+  local role = optionRole(disabled, semantic, option, active)
   local colors = assert(BUTTON_COLORS[role], "unknown save editor button role: " .. tostring(role))
-  local labelPalette = disabled and buttonDisabledPalette(renderer.skin) or buttonPalette(renderer.skin)
+  local labelPalette = optionLabelPalette(renderer, disabled, option, active)
   local button = TextButton.resolve({ rect = rect, scale = 1 })
   TextButton.draw(renderer.graphics, button, {
     label = label,
-    selected = selected,
+    selected = false,
     colors = colors,
     text = {
       lineHeight = renderer.text.fontDef.lineHeight,
@@ -419,17 +472,11 @@ local function drawShadedControl(renderer, rect, label, selected, disabled, sema
       end,
     },
   })
+  if focused then
+    local border = assert(button.border, "resolved text button border is missing")
+    drawFocusRing(renderer, rect, math.max(0, assert(border.cornerRadius, "text button corner radius is missing") - 1))
+  end
   return button.contentRect
-end
-
-local function drawFocusRing(renderer, rectValue)
-  local graphics = renderer.graphics
-  local savedWidth = graphics.getLineWidth()
-  setColor(graphics, renderer.skin.cards.normal.selectedRim)
-  graphics.setLineWidth(2)
-  graphics.rectangle("line", rectValue.x + 1, rectValue.y + 1, rectValue.width - 2, rectValue.height - 2, 4, 4)
-  graphics.setLineWidth(savedWidth)
-  graphics.setColor(1, 1, 1, 1)
 end
 
 local fitText
@@ -443,8 +490,8 @@ local function drawBodyText(renderer, value, x, y, role)
   graphics.pop()
 end
 
-local function drawCompactControl(renderer, rectValue, label, selected, disabled, semantic)
-  local role = disabled and "disabled" or semantic or "navigation"
+local function drawCompactControl(renderer, rectValue, label, active, focused, disabled, semantic, option)
+  local role = optionRole(disabled, semantic, option, active)
   local colors = assert(BUTTON_COLORS[role], "unknown save editor button role: " .. tostring(role))
   local graphics = renderer.graphics
   local button = Button.resolve({
@@ -470,7 +517,7 @@ local function drawCompactControl(renderer, rectValue, label, selected, disabled
   graphics.rectangle("fill", innerRect.x, splitY - 1, innerRect.width, 2)
   local content = button.contentRect
   local fitted = fitText(renderer, label, content.width)
-  local labelPalette = disabled and buttonDisabledPalette(renderer.skin) or buttonPalette(renderer.skin)
+  local labelPalette = optionLabelPalette(renderer, disabled, option, active)
   drawText(
     renderer,
     fitted,
@@ -478,23 +525,28 @@ local function drawCompactControl(renderer, rectValue, label, selected, disabled
     content.y + (content.height - renderer.text.fontDef.lineHeight) / 2,
     labelPalette
   )
-  if selected then
-    drawFocusRing(renderer, rectValue)
+  if focused then
+    local border = assert(button.border, "resolved compact button border is missing")
+    drawFocusRing(
+      renderer,
+      rectValue,
+      math.max(0, assert(border.cornerRadius, "compact button corner radius is missing") - 1)
+    )
   end
   graphics.setColor(1, 1, 1, 1)
   return content
 end
 
-local function drawButtonControl(renderer, rectValue, label, selected, disabled, semantic)
+local function drawButtonControl(renderer, rectValue, label, active, focused, disabled, semantic, option)
   local lineHeight = renderer.text.fontDef.lineHeight
   local fitted = fitText(renderer, label, rectValue.width - 16)
   if rectValue.height >= lineHeight + 32 + 1 then
-    return drawShadedControl(renderer, rectValue, fitted, selected, disabled, semantic)
+    return drawShadedControl(renderer, rectValue, fitted, active, focused, disabled, semantic, option)
   end
-  return drawCompactControl(renderer, rectValue, fitted, selected, disabled, semantic)
+  return drawCompactControl(renderer, rectValue, fitted, active, focused, disabled, semantic, option)
 end
 
-local function drawListRow(renderer, rectValue, label, selected, value, labelRect, valueRect)
+local function drawListRow(renderer, rectValue, label, focused, value, labelRect, valueRect)
   local labelBounds = labelRect or { x = rectValue.x + 6, y = rectValue.y + 3, width = rectValue.width - 12 }
   local labelY = labelBounds.y or rectValue.y + 3
   drawBodyText(renderer, fitText(renderer, label, labelBounds.width / BODY_TEXT_SCALE), labelBounds.x, labelY)
@@ -506,8 +558,8 @@ local function drawListRow(renderer, rectValue, label, selected, value, labelRec
     local x = valueRect and bounds.x or rectValue.x + rectValue.width - fittedWidth - 6
     drawBodyText(renderer, fitted, x, bounds.y or rectValue.y + 3, "hint")
   end
-  if selected then
-    drawFocusRing(renderer, rectValue)
+  if focused then
+    drawFocusRing(renderer, rectValue, 0)
   end
 end
 
@@ -651,7 +703,11 @@ local function drawBagCard(renderer, card, slotIndex, focused, view, focusVisual
   )
   graphics.pop()
   if focused then
-    drawFocusRing(renderer, bounds)
+    drawFocusRing(
+      renderer,
+      bounds,
+      math.max(0, assert(button.border.cornerRadius, "bag button corner radius is missing") - 1)
+    )
   end
 end
 
@@ -762,7 +818,7 @@ local function drawGridCard(renderer, card, focused)
     end
     graphics.pop()
   else
-    drawButtonControl(renderer, card.rect, "+ Add", focused, false, "primary")
+    drawButtonControl(renderer, card.rect, "+ Add", false, focused, false, "primary", false)
   end
 end
 
@@ -795,9 +851,18 @@ local function paintPane(self, view, plan, pane)
         label = fitText(self, label, target.width - 22)
       end
       if navigation.role == "list" then
-        drawListRow(self, target, label, navigation.targetId == view.focus)
+        drawListRow(self, target, label, isFocusedVisible(view, navigation.targetId))
       else
-        drawButtonControl(self, target, label, navigation.targetId == ("section:" .. view.section), false)
+        drawButtonControl(
+          self,
+          target,
+          label,
+          navigation.active == true,
+          isFocusedVisible(view, navigation.targetId),
+          false,
+          nil,
+          navigation.active ~= nil
+        )
       end
     end
   end
@@ -806,7 +871,16 @@ local function paintPane(self, view, plan, pane)
       local id = "party:subpage:" .. subpage
       local target = targetRect(layout, id)
       if target then
-        drawButtonControl(self, target, subpage, view.partySubpage == subpage, false)
+        drawButtonControl(
+          self,
+          target,
+          subpage,
+          view.partySubpage == subpage,
+          isFocusedVisible(view, id),
+          false,
+          nil,
+          true
+        )
       end
     end
   end
@@ -820,7 +894,7 @@ local function paintPane(self, view, plan, pane)
             self,
             rect,
             row.displayName or row.label,
-            row.targetId == view.focus,
+            isFocusedVisible(view, row.targetId),
             row.valueText or row.value,
             row.labelRect,
             row.valueRect
@@ -832,7 +906,7 @@ local function paintPane(self, view, plan, pane)
             self,
             rect,
             row.displayName or row.label,
-            row.targetId == view.focus,
+            isFocusedVisible(view, row.targetId),
             row.valueText or row.value,
             row.labelRect,
             row.valueRect
@@ -844,9 +918,11 @@ local function paintPane(self, view, plan, pane)
             self,
             rect,
             row.displayName or row.label,
-            row.targetId == view.focus,
+            false,
+            isFocusedVisible(view, row.targetId),
             row.enabled == false,
-            row.semantic or actionSemantic(row.targetId)
+            row.semantic or actionSemantic(row.targetId),
+            false
           )
           return
         end
@@ -854,7 +930,7 @@ local function paintPane(self, view, plan, pane)
           or row.role == "bag item"
           or row.targetId:match("^party:slot:") ~= nil
           or row.targetId:match("^bag:item:") ~= nil
-        if actionable and row.targetId == view.focus then
+        if actionable and isFocusedVisible(view, row.targetId) then
           setColor(graphics, SELECTED)
           graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
         end
@@ -915,7 +991,7 @@ local function paintPane(self, view, plan, pane)
         textScale = card.textScale,
         fainted = fainted,
         chrome = chrome,
-      }, card.targetId == view.focus)
+      }, isFocusedVisible(view, card.targetId))
     end
   end
   if view.section == "Bag" then
@@ -925,7 +1001,7 @@ local function paintPane(self, view, plan, pane)
     graphics.setColor(1, 1, 1, 1)
     graphics.draw(stripImage, strip.x, strip.y)
     for _, targetId in ipairs(layout.bagTabs or {}) do
-      if targetId == view.focus and view.bagTabFocusVisual ~= nil then
+      if isFocusedVisible(view, targetId) and view.bagTabFocusVisual ~= nil then
         local tabIndex = tonumber(targetId:match("bag:pocket:(%d+)$"))
         local pocketKey = targetId:match("bag:pocket:(.+)$")
         for index, pocket in ipairs(view.bagPockets) do
@@ -943,7 +1019,7 @@ local function paintPane(self, view, plan, pane)
       end
     end
     for index, card in ipairs(layout.bagGrid or {}) do
-      drawBagCard(self, card, index, card.targetId == view.focus, view, view.bagItemFocusVisual)
+      drawBagCard(self, card, index, isFocusedVisible(view, card.targetId), view, view.bagItemFocusVisual)
     end
     if targetRect(layout, "bag:add") then
       drawBagPageArrow(
@@ -951,7 +1027,7 @@ local function paintPane(self, view, plan, pane)
         targetRect(layout, "bag:page:previous"),
         view.bagQuantityVisuals.decrement,
         math.pi / 2,
-        view.focus == "bag:page:previous",
+        isFocusedVisible(view, "bag:page:previous"),
         view.capturedTarget == "bag:page:previous",
         view.bagPage0 == 0
       )
@@ -969,7 +1045,7 @@ local function paintPane(self, view, plan, pane)
         view.bagQuantityVisuals.increment,
         -- Next uses the up/increment source arrow rotated clockwise to point right.
         math.pi / 2,
-        view.focus == "bag:page:next",
+        isFocusedVisible(view, "bag:page:next"),
         view.capturedTarget == "bag:page:next",
         view.bagPage0 + 1 >= view.bagPageCount
       )
@@ -977,9 +1053,11 @@ local function paintPane(self, view, plan, pane)
         self,
         targetRect(layout, "bag:add"),
         "Add",
-        view.focus == "bag:add",
+        false,
+        isFocusedVisible(view, "bag:add"),
         view.bagAddEnabled == false,
-        "primary"
+        "primary",
+        false
       )
     end
   end
@@ -1017,15 +1095,26 @@ local function paintPane(self, view, plan, pane)
           fieldRole
         )
         if row.editable then
-          drawButtonControl(self, row.valueRect, row.valueText or "", row.targetId == view.focus, false)
+          drawButtonControl(
+            self,
+            row.valueRect,
+            row.valueText or "",
+            false,
+            isFocusedVisible(view, row.targetId),
+            false,
+            nil,
+            false
+          )
         elseif row.role == "action" then
           drawButtonControl(
             self,
             row.layoutRect,
             row.label,
-            row.targetId == view.focus,
+            false,
+            isFocusedVisible(view, row.targetId),
             row.enabled == false,
-            row.semantic or actionSemantic(row.targetId)
+            row.semantic or actionSemantic(row.targetId),
+            false
           )
         elseif row.valueText ~= nil then
           drawBodyText(
@@ -1070,7 +1159,7 @@ local function paintPane(self, view, plan, pane)
       for _, row in ipairs(stats.rows) do
         for index, cell in ipairs(row.cells) do
           local cellRect = cell.rect
-          if cell.targetId == view.focus then
+          if isFocusedVisible(view, cell.targetId) then
             setColor(graphics, SELECTED)
             graphics.rectangle("line", cellRect.x + 1, cellRect.y + 1, cellRect.width - 2, cellRect.height - 2)
           end
@@ -1078,7 +1167,7 @@ local function paintPane(self, view, plan, pane)
         end
       end
       for _, fact in ipairs(stats.facts) do
-        if fact.targetId == view.focus then
+        if isFocusedVisible(view, fact.targetId) then
           setColor(graphics, SELECTED)
           graphics.rectangle("line", fact.rect.x + 1, fact.rect.y + 1, fact.rect.width - 2, fact.rect.height - 2)
         end
@@ -1094,7 +1183,7 @@ local function paintPane(self, view, plan, pane)
     if rect then
       local label = action.id == "save" and view.locationSave and "Cancel check" or action.label
       local role = action.id == "save" and "primary" or action.id == "discard" and "destructive" or "secondary"
-      drawButtonControl(self, rect, label, action.id == view.focus, not action.enabled, role)
+      drawButtonControl(self, rect, label, false, isFocusedVisible(view, action.id), not action.enabled, role, false)
     end
   end
   if view.valueEditor then
@@ -1128,19 +1217,37 @@ local function paintPane(self, view, plan, pane)
           target.x + (target.width - image:getWidth()) / 2,
           target.y + (target.height - image:getHeight()) / 2
         )
-        if id == view.focus then
-          drawFocusRing(self, target)
+        if isFocusedVisible(view, id) then
+          drawFocusRing(self, target, 0)
         end
       end
-      drawButtonControl(self, targetRect(layout, "confirm"), "Confirm", view.focus == "confirm", false, "primary")
-      drawButtonControl(self, targetRect(layout, "cancel"), "Cancel", view.focus == "cancel", false)
+      drawButtonControl(
+        self,
+        targetRect(layout, "confirm"),
+        "Confirm",
+        false,
+        isFocusedVisible(view, "confirm"),
+        false,
+        "primary",
+        false
+      )
+      drawButtonControl(
+        self,
+        targetRect(layout, "cancel"),
+        "Cancel",
+        false,
+        isFocusedVisible(view, "cancel"),
+        false,
+        nil,
+        false
+      )
     elseif dialog.kind == "choice" then
       local viewport = assert(layout.viewports["value:choice"])
       LogicalSurface.clip(graphics, viewport.clip, function()
         for _, option in ipairs(dialog.options) do
           local rect = targetRect(layout, "choice:" .. option.key)
           if rect then
-            drawListRow(self, rect, option.label, view.focus == ("choice:" .. option.key))
+            drawListRow(self, rect, option.label, isFocusedVisible(view, "choice:" .. option.key))
           end
         end
       end)
@@ -1151,7 +1258,16 @@ local function paintPane(self, view, plan, pane)
         local rect = targetRect(layout, id)
         assert(rect)
         local disabled = id == "confirm" and dialog.empty == true
-        drawButtonControl(self, rect, id == "cancel" and "Cancel" or "Choose", id == view.focus, disabled)
+        drawButtonControl(
+          self,
+          rect,
+          id == "cancel" and "Cancel" or "Choose",
+          false,
+          isFocusedVisible(view, id),
+          disabled,
+          nil,
+          false
+        )
       end
     elseif dialog.kind == "name" then
       local naming = dialog.naming
@@ -1212,7 +1328,16 @@ local function paintPane(self, view, plan, pane)
     local decisionList = assert(layout.decisionList)
     drawText(self, prompt, decisionList.prompt.x, decisionList.prompt.y, INK)
     for _, row in ipairs(decisionList.rows) do
-      drawButtonControl(self, row.rect, row.label, row.targetId == view.focus, row.enabled == false, row.semantic)
+      drawButtonControl(
+        self,
+        row.rect,
+        row.label,
+        false,
+        isFocusedVisible(view, row.targetId),
+        row.enabled == false,
+        row.semantic,
+        false
+      )
     end
   end
   for _, list in pairs(layout.lists or {}) do
@@ -1222,8 +1347,8 @@ local function paintPane(self, view, plan, pane)
       local hintText = query == "" and "Type to filter" or ("Filter: " .. query)
       drawBodyText(self, fitText(self, hintText, hint.width / BODY_TEXT_SCALE), hint.x, hint.y, "hint")
     end
-    if view.focus == list.targetId and list.surfaceRect ~= nil then
-      drawFocusRing(self, list.surfaceRect)
+    if isFocusedVisible(view, list.targetId) and list.surfaceRect ~= nil then
+      drawFocusRing(self, list.surfaceRect, 0)
     end
   end
   for _, viewport in pairs(layout.viewports or {}) do
@@ -1278,7 +1403,7 @@ drawLocation = function(self, view, layout)
     if target then
       local label = targetId == "location:map-picker" and "Change Map" or "Back"
       local fitted = fitText(self, label, target.width - 16)
-      drawButtonControl(self, target, fitted, targetId == view.focus, false)
+      drawButtonControl(self, target, fitted, false, isFocusedVisible(view, targetId), false, nil, false)
     end
   end
 

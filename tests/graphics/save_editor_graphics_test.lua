@@ -41,6 +41,7 @@ local function fixture(scope, width, height, topology, section, variant, version
     focus = variant == "list-selected" and "party:slot:0"
       or variant == "long-flag" and ("flag:" .. LONG_FLAG_NAME)
       or "flag:FLAG_TEST",
+    focusVisible = true,
     query = "",
     session = {
       playerName = "PLAYER",
@@ -2453,6 +2454,157 @@ function T.bag_slot_crops_stay_within_their_background(scope)
     tostring(failure):find("within their browse background", 1, true) ~= nil,
     "the loud failure names the crop contract"
   )
+end
+
+local function recordOutlinedRectangles()
+  local oldSetColor, oldRectangle = love.graphics.setColor, love.graphics.rectangle
+  local currentColor = { 1, 1, 1, 1 }
+  local calls = {}
+  love.graphics.setColor = function(r, g, b, a)
+    currentColor = { r, g, b, a }
+    return oldSetColor(r, g, b, a)
+  end
+  love.graphics.rectangle = function(mode, x, y, rectWidth, rectHeight, radiusX, radiusY, ...)
+    if mode == "line" then
+      calls[#calls + 1] = {
+        x = x,
+        y = y,
+        width = rectWidth,
+        height = rectHeight,
+        radiusX = radiusX,
+        radiusY = radiusY,
+        color = { currentColor[1], currentColor[2], currentColor[3], currentColor[4] },
+      }
+    end
+    return oldRectangle(mode, x, y, rectWidth, rectHeight, radiusX, radiusY, ...)
+  end
+  return calls, function()
+    love.graphics.setColor, love.graphics.rectangle = oldSetColor, oldRectangle
+  end
+end
+
+local function ringsSurrounding(calls, rect, tolerance)
+  local matches = {}
+  for _, call in ipairs(calls) do
+    if surrounds(call, rect, tolerance) then
+      matches[#matches + 1] = call
+    end
+  end
+  return matches
+end
+
+function T.focused_buttons_draw_geometry_matched_outlines_only_while_navigation_is_visible(scope)
+  local Button = require("libs.ui.src.Button")
+  local topology = singleDisplay(640, 480)
+  local function render(focusVisible)
+    local calls, restore = recordOutlinedRectangles()
+    local _, _, layout
+    local ok, failure = xpcall(function()
+      _, _, layout = draw(
+        scope,
+        640,
+        480,
+        topology,
+        focusVisible and "ring-visible" or "ring-hidden",
+        "Player",
+        nil,
+        nil,
+        function(_, view)
+          view.focus = "back"
+          view.focusVisible = focusVisible
+        end
+      )
+    end, debug.traceback)
+    restore()
+    if not ok then
+      error(failure, 0)
+    end
+    return layout, calls
+  end
+  local layout, calls = render(true)
+  local back = assert(layout.targets["back"], "the footer publishes its back target").rect
+  local rings = ringsSurrounding(calls, back, 3)
+  Assert.equal(#rings, 1, "exactly one outline surrounds the focused button")
+  local resolved = Button.resolve({
+    rect = back,
+    borderWidth = 1,
+    rimWidth = 1,
+    innerBorderWidth = 1,
+    cornerRadius = 2,
+    faceSplit = 0.5,
+    contentInsetX = 4,
+    contentInsetY = 2,
+  })
+  local expectedRadius = math.max(0, assert(resolved.border.cornerRadius) - 1)
+  Assert.equal(rings[1].radiusX, expectedRadius, "the outline radius follows the resolved border geometry")
+  Assert.equal(rings[1].radiusY, expectedRadius, "the outline radius follows the resolved border geometry")
+
+  local hiddenLayout, hiddenCalls = render(false)
+  local hiddenBack = assert(hiddenLayout.targets["back"], "the footer publishes its back target").rect
+  Assert.equal(
+    #ringsSurrounding(hiddenCalls, hiddenBack, 3),
+    0,
+    "pointer modality draws no outline around the focused button"
+  )
+end
+
+function T.active_section_chrome_survives_focus_movement(scope)
+  local TextButton = require("libs.ui.src.TextButton")
+  local oldDraw = TextButton.draw
+  local painted = {}
+  TextButton.draw = function(graphics, button, options)
+    painted[#painted + 1] = { label = options.label, colors = options.colors, selected = options.selected }
+    return oldDraw(graphics, button, options)
+  end
+  local calls, restoreRectangles = recordOutlinedRectangles()
+  local layout
+  local ok, failure = xpcall(function()
+    _, _, layout = draw(
+      scope,
+      1280,
+      1080,
+      singleDisplay(1280, 1080),
+      "active-chrome",
+      "Player",
+      nil,
+      nil,
+      function(_, view)
+        view.focus = "money"
+        view.focusVisible = true
+      end
+    )
+  end, debug.traceback)
+  restoreRectangles()
+  TextButton.draw = oldDraw
+  if not ok then
+    error(failure, 0)
+  end
+  Assert.notNil(layout.targets["section:Player"], "the wide layout keeps its section rail")
+  local seen = {}
+  for _, entry in ipairs(painted) do
+    if entry.label == "Player" or entry.label == "Party" or entry.label == "Bag" then
+      seen[entry.label] = entry
+      Assert.isFalse(entry.selected, "section chrome never borrows the button selected effect")
+    end
+  end
+  Assert.notNil(seen["Player"], "the active section paints its option chrome")
+  Assert.notNil(seen["Party"], "inactive sections paint their option chrome")
+  local function faceAverage(colors)
+    return ((colors.faceTop[1] + colors.faceBottom[1]) / 2 + (colors.faceTop[2] + colors.faceBottom[2]) / 2 + (colors.faceTop[3] + colors.faceBottom[3]) / 2) / 3
+  end
+  Assert.isTrue(faceAverage(seen["Player"].colors) < 0.9, "the active section keeps its colored face")
+  for _, label in ipairs({ "Party", "Bag" }) do
+    Assert.isTrue(
+      faceAverage(seen[label].colors) > 0.9,
+      "inactive sections use a near-white face while another control has focus"
+    )
+  end
+  local money = assert(layout.targets["money"], "the content publishes its focused row").rect
+  Assert.equal(#ringsSurrounding(calls, money, 3), 1, "only the truly focused row owns an outline")
+  for _, targetId in ipairs({ "section:Player", "section:Party", "section:Bag" }) do
+    local rect = assert(layout.targets[targetId], "the rail publishes " .. targetId).rect
+    Assert.equal(#ringsSurrounding(calls, rect, 3), 0, targetId .. " owns no outline while unfocused")
+  end
 end
 
 function T.graphics_state_is_restored_after_rings_and_scaled_text(scope)

@@ -19,6 +19,8 @@ end
 ---@field modal string?
 ---@field modalReturnFocus string?
 ---@field focus string
+---@field focusVisible boolean
+---@field focusByScope table<string, string?>
 ---@field capturedTarget string?
 ---@field pointerId string?
 ---@field scrollOffset number
@@ -50,6 +52,8 @@ end
 ---@field setListCursor fun(self: SaveEditorController, listId: string, targetId: string?)
 ---@field setFocus fun(self: SaveEditorController, targetId: string)
 ---@field moveFocus fun(self: SaveEditorController, focusGraph: table<string, { up: string[], down: string[], left: string[], right: string[] }>, direction: "up"|"down"|"left"|"right")
+---@field markKeyboardNavigation fun(self: SaveEditorController)
+---@field reconcileFocus fun(self: SaveEditorController, focusGraph: table<string, { up: string[], down: string[], left: string[], right: string[] }>, currentId: string?, fallbackIds: string[]): string
 ---@field selectPartySlot fun(self: SaveEditorController, slot0: integer)
 ---@field openPartyDraft fun(self: SaveEditorController, mode: "add"|"edit", slot0: integer?)
 ---@field closePartyDetail fun(self: SaveEditorController)
@@ -76,6 +80,8 @@ function Controller.new()
     modal = nil,
     modalReturnFocus = nil,
     focus = "money",
+    focusVisible = false,
+    focusByScope = {},
     capturedTarget = nil,
     pointerId = nil,
     scrollOffset = 0,
@@ -109,6 +115,7 @@ function Controller:snapshot()
     section = self.section,
     modal = self.modal,
     focus = self.focus,
+    focusVisible = self.focusVisible,
     scrollOffset = self.scrollOffset,
     query = self.query,
     sections = { "Location", "Player", "Party", "Bag", "Progress" },
@@ -361,9 +368,41 @@ function Controller:locationSnapshot()
   }
 end
 
+function Controller:markKeyboardNavigation()
+  self.focusVisible = true
+end
+
+---@param focusGraph table<string, { up: string[], down: string[], left: string[], right: string[] }>
+---@param currentId string?
+---@param fallbackIds string[]
+---@return string
+function Controller:reconcileFocus(focusGraph, currentId, fallbackIds)
+  assert(type(focusGraph) == "table", "focus reconciliation needs its replacement graph")
+  assert(type(fallbackIds) == "table", "focus reconciliation needs its ordered fallbacks")
+  local ordered = {}
+  if currentId ~= nil then
+    ordered[#ordered + 1] = currentId
+  end
+  local remembered = self.focusByScope[self.scopeId]
+  if remembered ~= nil and remembered ~= currentId then
+    ordered[#ordered + 1] = remembered
+  end
+  if self.focus ~= currentId and self.focus ~= remembered then
+    ordered[#ordered + 1] = self.focus
+  end
+  for _, fallbackId in ipairs(fallbackIds) do
+    ordered[#ordered + 1] = fallbackId
+  end
+  local resolved = FocusGraph.reconcile(focusGraph, nil, ordered)
+  assert(type(resolved) == "string", "save editor focus targets are strings")
+  self:setFocus(resolved)
+  return resolved
+end
+
 function Controller:setFocus(targetId)
   assert(type(targetId) == "string" and targetId ~= "")
   self.focus = targetId
+  self.focusByScope[self.scopeId] = targetId
   if self.section == "Location" then
     if targetId == "location:grid" or targetId:match("^location:tile:") then
       self.locationFocus = "grid"
@@ -465,6 +504,7 @@ function Controller:pointer(event)
     if event.scopeId ~= nil and event.scopeId ~= self.scopeId then
       return nil
     end
+    self.focusVisible = false
     self.capturedTarget, self.pointerId = event.targetId, event.pointerId
     self.pressFocus = self.focus
     self.capturedScopeEpoch = event.scopeEpoch
@@ -479,6 +519,8 @@ function Controller:pointer(event)
         or event.targetId == "location:map-back"
       then
         self:setFocus(event.targetId)
+      else
+        self.focusByScope[self.scopeId] = event.targetId
       end
     end
     self.locationPointerStart = {

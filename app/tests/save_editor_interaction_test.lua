@@ -1721,4 +1721,95 @@ function T.tests.location_grid_directions_keep_grid_cursor_movement()
   Assert.equal(harness.service.updateCalls, 1, "grid movement still advances loading through the service")
 end
 
+local function twoButtonGraph()
+  return {
+    money = { up = {}, down = { "dialogue-frame" }, left = {}, right = {} },
+    ["dialogue-frame"] = { up = { "money" }, down = {}, left = {}, right = {} },
+  }
+end
+
+function T.tests.directional_input_marks_visible_focus_while_pointer_down_hides_it()
+  local controller = Controller.new()
+  local graph = twoButtonGraph()
+  controller:setFocus("money")
+  Assert.equal(controller.focusVisible, false, "fresh editors hide the keyboard focus ring")
+  controller:markKeyboardNavigation()
+  controller:moveFocus(graph, "down")
+  Assert.equal(controller.focus, "dialogue-frame", "directional input moves logical focus")
+  Assert.equal(controller.focusVisible, true, "directional input marks focus visible")
+  Assert.equal(controller.section, "Player", "moving focus never activates a section")
+  Assert.isNil(
+    controller:pointer({ type = "pointer_down", pointerId = "touch:ring", targetId = "money", x = 8, y = 8 }),
+    "pointer press never activates on press"
+  )
+  Assert.equal(controller.focus, "money", "pointer selection still establishes logical focus")
+  Assert.equal(controller.focusVisible, false, "pointer selection hides the keyboard focus ring")
+  controller:markKeyboardNavigation()
+  controller:moveFocus(graph, "down")
+  Assert.equal(controller.focus, "dialogue-frame", "directional input moves focus after pointer use")
+  Assert.equal(controller.focusVisible, true, "directional input restores the ring")
+end
+
+function T.tests.pointer_down_on_the_focused_target_still_hides_visible_focus()
+  local controller = Controller.new()
+  local graph = twoButtonGraph()
+  controller:setFocus("money")
+  controller:markKeyboardNavigation()
+  controller:moveFocus(graph, "down")
+  Assert.equal(controller.focusVisible, true, "directional input marks focus visible")
+  controller:pointer({
+    type = "pointer_down",
+    pointerId = "touch:same",
+    targetId = "dialogue-frame",
+    x = 8,
+    y = 8,
+  })
+  Assert.equal(controller.focus, "dialogue-frame", "pointer keeps the already focused target")
+  Assert.equal(controller.focusVisible, false, "pointer hides the ring even without moving focus")
+end
+
+function T.tests.programmatic_section_entry_does_not_enable_visible_focus()
+  local controller = Controller.new()
+  controller:pointer({ type = "pointer_down", pointerId = "touch:entry", targetId = "money", x = 8, y = 8 })
+  Assert.equal(controller.focusVisible, false, "pointer selection hides the ring")
+  controller:setSection("Bag")
+  Assert.equal(controller.focusVisible, false, "programmatic section entry never shows the ring by itself")
+end
+
+function T.tests.merely_focusing_a_section_never_activates_it()
+  local controller = Controller.new()
+  controller:setFocus("section:Bag")
+  Assert.equal(controller.focus, "section:Bag", "focus can rest on a section option")
+  Assert.equal(controller.section, "Player", "focused section options stay inactive until activated")
+end
+
+function T.tests.scope_replacement_restores_remembered_focus_when_current_is_gone()
+  local controller = Controller.new()
+  local graph = {
+    money = { up = {}, down = {}, left = {}, right = {} },
+    ["dialogue-frame"] = { up = {}, down = {}, left = {}, right = {} },
+  }
+  controller.scopeId = "scope:one"
+  controller:setFocus("money")
+  controller.scopeId = "scope:two"
+  controller:setFocus("save")
+  controller.scopeId = "scope:one"
+  local resolved = controller:reconcileFocus(graph, "save", { "dialogue-frame" })
+  Assert.equal(resolved, "money", "replacement restores the remembered scope focus when current is gone")
+  Assert.equal(controller.focus, "money", "reconciliation publishes the remembered focus")
+  Assert.equal(controller.focusVisible, false, "reconciliation never shows the ring by itself")
+end
+
+function T.tests.scope_replacement_falls_back_to_the_explicit_default()
+  local controller = Controller.new()
+  local graph = {
+    ["dialogue-frame"] = { up = {}, down = {}, left = {}, right = {} },
+  }
+  controller.scopeId = "scope:one"
+  controller.focus = "money"
+  local resolved = controller:reconcileFocus(graph, "money", { "missing", "dialogue-frame" })
+  Assert.equal(resolved, "dialogue-frame", "replacement selects the first live ordered fallback")
+  Assert.equal(controller.focusVisible, false, "fallback reconciliation never shows the ring by itself")
+end
+
 return T
