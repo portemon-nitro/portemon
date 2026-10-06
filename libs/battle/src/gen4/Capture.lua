@@ -3,12 +3,14 @@
 -- the rate and the tenths-fixed ball multiplier stage first with
 -- left-to-right integer floors, sleep and freeze double the odds while
 -- burn, paralysis, and poison add half, full odds guarantee the catch, and
--- each shake check spends one labeled draw until the first failure. The
--- ball leaves at the throw before any shake is staged; illegal throws fail
--- before spend with zero draws spent. A landed throw returns the existing
--- target record unchanged and claims no placement: retention stays with the
--- later committer. Semantic shakes count the three staged checks; the
--- native fourth check is presentation click, not a shake.
+-- each of the four shake checks spends one labeled draw until the first
+-- failure. The ball leaves at the throw before any shake is staged; illegal
+-- throws fail before spend with zero draws spent. A landed throw returns
+-- the existing target record unchanged and claims no placement: retention
+-- stays with the later committer. Visible shakes cap at three staged
+-- checks while the catch needs all four probability checks; apricorn rate
+-- bonuses adjust the rate before the clamp, and the safari stage adjusts
+-- the rate at the throw from battle-local format state.
 
 local Errors = require("libs.errors.src.Errors")
 local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
@@ -49,7 +51,10 @@ local Capture = {}
 
 Capture.CONSUMPTION_CHECKPOINT = "capture_throw"
 Capture.SHAKE_LABEL = "capture:shake"
+--- Visible shakes reported to presentation, capped below the probability law.
 Capture.MAX_SHAKES = 3
+--- Probability checks a non-guaranteed throw must pass to land the catch.
+Capture.PROBABILITY_CHECKS = 4
 Capture.GUARANTEED_ODDS = 255
 Capture.DEFAULT_CATCH_RATE = 45
 
@@ -95,18 +100,18 @@ end
 
 ---@param attackerLevel number thrower level under staging
 ---@param targetLevel number target level under staging
----@return integer tenths-fixed level multiplier from the staged ratios
-local function levelMultiplier(attackerLevel, targetLevel)
-  if attackerLevel >= 4 * targetLevel then
-    return 80
+---@return integer staged rate factor from the floored native tiers
+local function levelRateFactor(attackerLevel, targetLevel)
+  if attackerLevel <= targetLevel then
+    return 1
   end
-  if attackerLevel >= 2 * targetLevel then
-    return 40
+  if math.floor(attackerLevel / 2) <= targetLevel then
+    return 2
   end
-  if attackerLevel > targetLevel then
-    return 20
+  if math.floor(attackerLevel / 4) <= targetLevel then
+    return 4
   end
-  return 10
+  return 8
 end
 
 ---@param weight number target weight in hectograms under staging
@@ -140,6 +145,24 @@ local function shakeThreshold(odds)
   return math.floor(0xFFFF0 / second)
 end
 
+--- Native safari catch-rate stages 0..12 as numerator/denominator pairs:
+--- bait lowers the stage toward 10/40 while rock raises it toward 40/10.
+local SAFARI_CATCH_RATE_STAGES = {
+  { 10, 40 },
+  { 10, 35 },
+  { 10, 30 },
+  { 10, 25 },
+  { 10, 20 },
+  { 10, 15 },
+  { 10, 10 },
+  { 15, 10 },
+  { 20, 10 },
+  { 25, 10 },
+  { 30, 10 },
+  { 35, 10 },
+  { 40, 10 },
+}
+
 ---@param ball string staged ball key under staging
 ---@param target table<string, unknown> staged target facts under staging
 ---@param env table<string, unknown> staged encounter facts under staging
@@ -148,6 +171,12 @@ end
 local function stageRateAndMultiplier(ball, target, env)
   local rate = target.catchRate --[[@as number]]
   local multiplier = 10
+  if ball == "SAFARI_BALL" and env.safariCatchRateStage ~= nil then
+    local stage = env.safariCatchRateStage --[[@as integer]]
+    assert(stage % 1 == 0 and stage >= 0 and stage <= 12, "safari throws carry a stage from 0 to 12")
+    local pair = SAFARI_CATCH_RATE_STAGES[stage + 1]
+    rate = math.floor((pair[1] * rate) / pair[2])
+  end
   if
     ball == "FAST_BALL"
     and target.baseSpeed --[[@as number]]
@@ -183,9 +212,9 @@ local function stageRateAndMultiplier(ball, target, env)
   then
     multiplier = 40
   elseif ball == "LEVEL_BALL" then
-    multiplier = levelMultiplier(env.attackerLevel --[[@as number]], target.level --[[@as number]])
+    rate = rate * levelRateFactor(env.attackerLevel --[[@as number]], target.level --[[@as number]])
   elseif ball == "LOVE_BALL" and target.species == env.attackerSpecies and target.gender ~= env.attackerGender then
-    multiplier = 80
+    rate = rate * 8
   end
   if rate > 0xFF then
     rate = 0xFF
@@ -345,6 +374,12 @@ local function stageThrow(attempt, battle)
     inCave = battle.inCave or false,
     backdrop = battle.backdrop or "field",
   }
+  if policy.mode == "safari" and ball == "SAFARI_BALL" then
+    local formatState = battle.formatState
+    if type(formatState) == "table" then
+      envFacts.safariCatchRateStage = (formatState --[[@as table<string, unknown>]]).safariCatchRateStage
+    end
+  end
   local context = CaptureContext.forBall(ball, targetFacts, envFacts)
   if policy.counter ~= nil and policy.specialBall == ball then
     local counter = battle[policy.counter]
@@ -396,6 +431,8 @@ end
 --- Calculates exact odds and shakes from a staged context. Guaranteed
 --- throws report full shakes with no threshold and spend no draws; other
 --- throws spend one labeled shake draw per check until the first failure.
+--- The catch needs four checks while visible shakes cap at three: passes
+--- one through three shake visibly and the fourth decides silently.
 ---@param attempt CaptureAttempt throw under calculation
 ---@param context CaptureContext staged context carrying the facts each ball reads
 ---@param stream table<string, unknown> labeled native draw stream under calculation
@@ -418,15 +455,17 @@ function Capture.calculate(attempt, context, stream)
   end
   local threshold = shakeThreshold(odds)
   local cause = { ball = ball, odds = odds, threshold = threshold }
-  local shakes = 0
-  for _ = 1, Capture.MAX_SHAKES do
+  local visibleShakes = 0
+  for check = 1, Capture.PROBABILITY_CHECKS do
     local draw = (stream --[[@as BattleRng]]):nextU16(Capture.SHAKE_LABEL, cause)
     if draw >= threshold then
-      return { success = false, shakes = shakes, reason = "broke_free", odds = odds, threshold = threshold }
+      return { success = false, shakes = visibleShakes, reason = "broke_free", odds = odds, threshold = threshold }
     end
-    shakes = shakes + 1
+    if check <= Capture.MAX_SHAKES then
+      visibleShakes = visibleShakes + 1
+    end
   end
-  return { success = true, shakes = shakes, reason = "caught", odds = odds, threshold = threshold }
+  return { success = true, shakes = visibleShakes, reason = "caught", odds = odds, threshold = threshold }
 end
 
 ---@param spent table<string, unknown> battle-owned execution state spending the throw

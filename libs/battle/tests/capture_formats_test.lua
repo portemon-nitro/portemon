@@ -153,13 +153,15 @@ end
 function T.safari_throws_spend_the_safari_counter_once()
   local Capture = captureOwner("exact catch and shake arithmetic owns thrown balls")
   local Context = contextOwner("typed capture environments own the facts each ball reads")
+  local Formats = formatsOwner("capture-only and special mechanics own their mode policies")
   local target = targetFacts({ catchRate = 255, hp = 1 })
-  local env = modeEnv("safari", { safariBalls = 1 })
+  local env = modeEnv("safari", { safariBalls = 1, safariCatchRateStage = 6 })
   local context = Context.forBall("SAFARI_BALL", target, env)
   local attempt = { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 } }
   local battle = {
     mode = "safari",
     safariBalls = 1,
+    formatState = Formats.initialState("safari"),
     inventories = { party = { quantities = { SAFARI_BALL = 0 } } },
     ledger = {},
     combatants = { [2] = { mon = { species = "PIKACHU" }, hp = 1, maxHp = 100 } },
@@ -177,16 +179,18 @@ end
 function T.exhausted_safari_counters_fail_before_any_draw()
   local Capture = captureOwner("exact catch and shake arithmetic owns thrown balls")
   local Context = contextOwner("typed capture environments own the facts each ball reads")
+  local Formats = formatsOwner("capture-only and special mechanics own their mode policies")
   local attempt = { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 } }
   local battle = {
     mode = "safari",
     safariBalls = 0,
+    formatState = Formats.initialState("safari"),
     inventories = { party = { quantities = {} } },
     ledger = {},
     combatants = { [2] = { mon = { species = "PIKACHU" }, hp = 100, maxHp = 100 } },
   }
   local stream = scriptedStream({ 0, 0, 0 })
-  local context = Context.forBall("SAFARI_BALL", targetFacts(), modeEnv("safari", { safariBalls = 0 }))
+  local context = Context.forBall("SAFARI_BALL", targetFacts(), modeEnv("safari", { safariBalls = 0, safariCatchRateStage = 6 }))
   local ok, err = pcall(Capture.execute, attempt, battle, stream)
   Assert.isFalse(ok, "an exhausted counter never throws")
   Assert.isTrue(type(err) == "table" and type(err.code) == "string", "an exhausted counter names its failure")
@@ -201,9 +205,11 @@ end
 function T.safari_without_its_counter_is_rejected()
   local Capture = captureOwner("exact catch and shake arithmetic owns thrown balls")
   local Context = contextOwner("typed capture environments own the facts each ball reads")
+  local Formats = formatsOwner("capture-only and special mechanics own their mode policies")
   local attempt = { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 } }
   local battle = {
     mode = "safari",
+    formatState = Formats.initialState("safari"),
     inventories = { party = { quantities = {} } },
     ledger = {},
     combatants = { [2] = { mon = { species = "PIKACHU" }, hp = 100, maxHp = 100 } },
@@ -324,6 +330,145 @@ function T.tutorial_throws_belong_to_the_script()
   Assert.deepEqual(stream:capture(), { used = 0 }, "a tutorial refusal spends no draw")
   Assert.equal(battle.inventories.party.quantities.POKE_BALL, 5, "a tutorial refusal spends no ball")
   Assert.deepEqual(battle.ledger, {}, "a tutorial refusal records no consumption")
+end
+
+---@param values integer[] scripted draw results in consumption order
+---@return table stream double recording labels with draw accounting
+local function labeledStream(values)
+  local used = 0
+  local labels = {} ---@type string[]
+  return {
+    nextU16 = function(self, label, cause)
+      assert(self ~= nil, "draws arrive through the stream")
+      assert(type(label) == "string" and label ~= "", "safari draws name their call site")
+      assert(type(cause) == "table", "safari draws carry their semantic cause")
+      used = used + 1
+      labels[#labels + 1] = label
+      return values[used] or 0
+    end,
+    capture = function()
+      return { used = used, labels = labels }
+    end,
+  }
+end
+
+-- Safari bait and rock mutate the native stage state with one draw each:
+-- bait spends an attempt and, on a nonzero share, lowers the catch stage,
+-- while rock raises the catch stage and, on a nonzero share, refunds an
+-- attempt. A share divisible by ten moves only the guaranteed half.
+function T.safari_bait_and_rock_move_stage_and_attempts_with_one_draw_each()
+  local Formats = formatsOwner("capture-only and special mechanics own their mode policies")
+  local fresh = Formats.initialState("safari")
+  Assert.deepEqual(
+    fresh,
+    { safariCatchRateStage = 6, safariRunAttempts = 6 },
+    "safari battles open at stage 6 with 6 attempts"
+  )
+  local baited = Formats.initialState("safari")
+  local baitStream = labeledStream({ 7 })
+  Formats.applyAction("safari", "throw_bait", baited, baitStream)
+  Assert.equal(baited.safariCatchRateStage, 5, "nonzero bait lowers the catch stage")
+  Assert.equal(baited.safariRunAttempts, 5, "bait spends an attempt")
+  Assert.deepEqual(baitStream:capture().labels, { "safari:bait" }, "bait spends one labeled draw")
+  local kept = Formats.initialState("safari")
+  local keptStream = labeledStream({ 0 })
+  Formats.applyAction("safari", "throw_bait", kept, keptStream)
+  Assert.equal(kept.safariCatchRateStage, 6, "a divisible bait share keeps the catch stage")
+  Assert.equal(kept.safariRunAttempts, 5, "a divisible bait share still spends an attempt")
+  Assert.deepEqual(keptStream:capture().labels, { "safari:bait" }, "divisible bait still spends one draw")
+  local rocked = Formats.initialState("safari")
+  local rockStream = labeledStream({ 7 })
+  Formats.applyAction("safari", "throw_rock", rocked, rockStream)
+  Assert.equal(rocked.safariCatchRateStage, 7, "nonzero rock raises the catch stage")
+  Assert.equal(rocked.safariRunAttempts, 7, "nonzero rock refunds an attempt")
+  Assert.deepEqual(rockStream:capture().labels, { "safari:rock" }, "rock spends one labeled draw")
+  local held = Formats.initialState("safari")
+  local heldStream = labeledStream({ 0 })
+  Formats.applyAction("safari", "throw_rock", held, heldStream)
+  Assert.equal(held.safariCatchRateStage, 7, "a divisible rock share still raises the catch stage")
+  Assert.equal(held.safariRunAttempts, 6, "a divisible rock share refunds no attempt")
+  Assert.deepEqual(heldStream:capture().labels, { "safari:rock" }, "divisible rock still spends one draw")
+end
+
+-- Safari stage transitions clamp at their native bounds and refuse work
+-- outside safari mode: the stage never leaves 0..12, attempts never leave
+-- 0..12, and a refused action spends no draw and mutates nothing.
+function T.safari_stage_transitions_clamp_and_refuse_outside_safari()
+  local Formats = formatsOwner("capture-only and special mechanics own their mode policies")
+  local floored = { safariCatchRateStage = 0, safariRunAttempts = 1 }
+  Formats.applyAction("safari", "throw_bait", floored, labeledStream({ 7 }))
+  Assert.equal(floored.safariCatchRateStage, 0, "bait never lowers the stage below zero")
+  Assert.equal(floored.safariRunAttempts, 0, "bait still spends an attempt at the floor")
+  local empty = { safariCatchRateStage = 6, safariRunAttempts = 0 }
+  Formats.applyAction("safari", "throw_bait", empty, labeledStream({ 7 }))
+  Assert.equal(empty.safariCatchRateStage, 5, "bait still lowers the stage with no attempts left")
+  Assert.equal(empty.safariRunAttempts, 0, "bait never spends an attempt below zero")
+  local capped = { safariCatchRateStage = 12, safariRunAttempts = 11 }
+  Formats.applyAction("safari", "throw_rock", capped, labeledStream({ 7 }))
+  Assert.equal(capped.safariCatchRateStage, 12, "rock never raises the stage above twelve")
+  Assert.equal(capped.safariRunAttempts, 12, "rock still refunds an attempt at the ceiling")
+  local full = { safariCatchRateStage = 6, safariRunAttempts = 12 }
+  Formats.applyAction("safari", "throw_rock", full, labeledStream({ 7 }))
+  Assert.equal(full.safariCatchRateStage, 7, "rock still raises the stage with full attempts")
+  Assert.equal(full.safariRunAttempts, 12, "rock never refunds an attempt above twelve")
+  local state = Formats.initialState("safari")
+  local quiet = labeledStream({ 7 })
+  local ok, err = pcall(Formats.applyAction, "wild", "throw_bait", state, quiet)
+  Assert.isFalse(ok, "bait outside safari mode never executes")
+  Assert.isTrue(type(err) == "table" and type(err.code) == "string", "a refused bait names its failure")
+  Assert.deepEqual(quiet:capture(), { used = 0, labels = {} }, "a refused bait spends no draw")
+  Assert.deepEqual(
+    state,
+    { safariCatchRateStage = 6, safariRunAttempts = 6 },
+    "a refused bait mutates nothing"
+  )
+  local loud = labeledStream({ 7 })
+  local settled, settleErr = pcall(Formats.applyAction, "safari", "attack", state, loud)
+  Assert.isFalse(settled, "a non-safari action never executes")
+  Assert.isTrue(
+    type(settleErr) == "table" and type(settleErr.code) == "string",
+    "a refused action names its failure"
+  )
+  Assert.deepEqual(loud:capture(), { used = 0, labels = {} }, "a refused action spends no draw")
+end
+
+-- Malformed safari state fails before any draw: a missing record, a
+-- missing field, or a value outside 0..12 refuses the action with the
+-- stream untouched.
+function T.malformed_safari_state_fails_before_any_draw()
+  local Formats = formatsOwner("capture-only and special mechanics own their mode policies")
+  local candidates = {
+    {},
+    { safariCatchRateStage = 6 },
+    { safariRunAttempts = 6 },
+    { safariCatchRateStage = 13, safariRunAttempts = 6 },
+    { safariCatchRateStage = -1, safariRunAttempts = 6 },
+    { safariCatchRateStage = 6.5, safariRunAttempts = 6 },
+    { safariCatchRateStage = 6, safariRunAttempts = 13 },
+    { safariCatchRateStage = 6, safariRunAttempts = "6" },
+  }
+  local function refuses(state)
+    local stream = labeledStream({ 7 })
+    local ok, err = pcall(Formats.applyAction, "safari", "throw_bait", state, stream)
+    Assert.isFalse(ok, "malformed safari state never executes")
+    Assert.isTrue(
+      type(err) == "table" and err.code == "invalid_format_state",
+      "malformed safari state names its failure"
+    )
+    Assert.deepEqual(stream:capture(), { used = 0, labels = {} }, "malformed state spends no draw")
+  end
+  refuses(nil)
+  for _, candidate in ipairs(candidates) do
+    refuses(candidate)
+  end
+  local unknown = labeledStream({ 7 })
+  local ok, err = pcall(Formats.applyAction, "deep_space", "throw_bait", {
+    safariCatchRateStage = 6,
+    safariRunAttempts = 6,
+  }, unknown)
+  Assert.isFalse(ok, "an unknown mode never executes")
+  Assert.isTrue(type(err) == "table" and type(err.code) == "string", "an unknown mode names its failure")
+  Assert.deepEqual(unknown:capture(), { used = 0, labels = {} }, "an unknown mode spends no draw")
 end
 
 return { tests = T }

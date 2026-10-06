@@ -177,12 +177,12 @@ function T.full_odds_guarantee_while_weaker_odds_keep_exact_thresholds()
   Assert.equal(great.calc.odds, 240, "the great odds are staged exactly")
   Assert.equal(great.calc.threshold, 65535, "the great threshold is staged exactly")
   Assert.isTrue(great.calc.success, "the scripted tape lands every shake")
-  Assert.equal(great.used, 3, "a shaken catch spends one draw per shake")
+  Assert.equal(great.used, 4, "a shaken catch spends one draw per check")
   local plain = calculate("POKE_BALL", target, wildEnv(), { 0, 0, 0 })
   Assert.equal(plain.calc.odds, 160, "the plain odds are staged exactly")
   Assert.equal(plain.calc.threshold, 61680, "the plain threshold is staged exactly")
   Assert.isTrue(plain.calc.success, "the scripted tape lands every shake")
-  Assert.equal(plain.used, 3, "a shaken catch spends one draw per shake")
+  Assert.equal(plain.used, 4, "a shaken catch spends one draw per check")
 end
 
 -- Odds one step below guaranteed still shake: 253 keeps the highest live
@@ -199,7 +199,7 @@ function T.near_guaranteed_odds_still_shake()
   local kind = calculate("POKE_BALL", target, wildEnv(), { 0, 0, 0 })
   Assert.isTrue(kind.calc.success, "a kind tape lands every shake")
   Assert.equal(kind.calc.shakes, 3, "a landed catch reports full shakes")
-  Assert.equal(kind.used, 3, "a landed catch spends one draw per shake")
+  Assert.equal(kind.used, 4, "a landed catch spends one draw per check")
 end
 
 -- Each shake check consumes exactly one draw until the first failure: the
@@ -216,15 +216,16 @@ function T.shake_tape_decides_each_check_in_order()
   Assert.equal(third.used, 3, "a third-check breakout spends three draws")
 end
 
--- Every shake draw names the same call site: three ordered shakes arrive
--- through one labeled shake stage.
+-- Every shake draw names the same call site: four ordered checks arrive
+-- through one labeled shake stage while reporting at most three shakes.
 function T.shake_draws_share_one_labeled_call_site()
   local outcome = calculate("POKE_BALL", targetFacts({ hp = 1 }), wildEnv(), { 0, 0, 0 })
   Assert.isTrue(outcome.calc.success, "the kind tape lands every shake")
-  Assert.equal(outcome.used, 3, "a landed catch spends one draw per shake")
-  Assert.equal(#outcome.labels, 3, "each shake draw is labeled")
+  Assert.equal(outcome.used, 4, "a landed catch spends one draw per check")
+  Assert.equal(#outcome.labels, 4, "each shake check is labeled")
   Assert.equal(outcome.labels[1], outcome.labels[2], "shake draws share one call site")
   Assert.equal(outcome.labels[2], outcome.labels[3], "shake draws share one call site")
+  Assert.equal(outcome.labels[3], outcome.labels[4], "shake draws share one call site")
 end
 
 -- Success always means three shakes and failure always means fewer: no
@@ -237,7 +238,7 @@ function T.success_means_three_shakes_and_failure_means_fewer()
     Assert.isTrue(outcome.calc.shakes <= 3, "no throw ever shakes more than three times")
     if outcome.calc.success then
       Assert.equal(outcome.calc.shakes, 3, "success always reports three shakes")
-      Assert.equal(outcome.used, 3, "success always spends three draws")
+      Assert.equal(outcome.used, 4, "success always spends four draws")
     else
       Assert.isTrue(outcome.calc.shakes < 3, "failure always reports fewer than three shakes")
       Assert.equal(outcome.used, outcome.calc.shakes + 1, "failure spends one draw per shake plus the miss")
@@ -283,13 +284,14 @@ function T.nest_ball_follows_the_level_stages()
   Assert.equal(staged.calc.threshold, 52428, "the triple-odds threshold is staged exactly")
 end
 
--- The Level Ball compares attacker and target levels at exact ratios: 8
--- times at quadruple, 4 times at double, twice when ahead, once otherwise.
+-- The Level Ball compares floored halves and quarters of the attacker
+-- level: twice at half, four times at quarter, eight times beyond, once
+-- when behind.
 function T.level_ball_compares_attacker_and_target_levels()
   local cases = {
-    { target = 10, odds = 120 },
+    { target = 10, odds = 60 },
     { target = 11, odds = 60 },
-    { target = 20, odds = 60 },
+    { target = 20, odds = 30 },
     { target = 21, odds = 30 },
     { target = 40, odds = 15 },
   }
@@ -410,7 +412,7 @@ function T.love_ball_needs_same_species_and_opposite_gender()
     wildEnv({ attackerSpecies = "PIKACHU", attackerGender = "female" }),
     { 0, 0, 0 }
   )
-  Assert.equal(pair.calc.odds, 120, "the opposite-gender pairing stages eight times")
+  Assert.equal(pair.calc.odds, 85, "the opposite-gender pairing stages eight times on the clamped rate")
   local same = calculate(
     "LOVE_BALL",
     targetFacts({ species = "PIKACHU", gender = "male" }),
