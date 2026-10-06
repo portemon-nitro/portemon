@@ -378,6 +378,59 @@ function BattleContext:removeBattleEffect(combatantId, key)
   return false
 end
 
+--- Commits a caller-owned state transition on one live combatant effect
+--- instance without touching its identity, scope, or creation order. The
+--- updater maps the current detached state to its replacement; returning
+--- nil removes the instance instead. Replacements travel the supplied
+--- definition validator before they commit, so malformed states never
+--- reach the live owner. The definition carries no behavior here: it
+--- only names the key and validates the replacement shape.
+---@param combatantId integer combatant identity owning the instance scope
+---@param definition table<string, unknown> effect definition carrying key, version, and validator
+---@param update fun(state: table<string, unknown>): table<string, unknown>? caller-owned transition over the detached state
+---@return string? transition outcome: "updated", "removed", or nil when no live instance names the key
+function BattleContext:updateBattleEffect(combatantId, definition, update)
+  assert(type(combatantId) == "number", "effect updates require their combatant")
+  assert(type(definition) == "table", "effect updates require their definition")
+  assert(type(update) == "function", "effect updates require their transition")
+  local described = definition --[[@as table<string, unknown>]]
+  local key = described.key
+  if type(key) ~= "string" or key == "" then
+    error(BattleErrors.invalidState("effect updates name their definition", { combatant = combatantId }))
+  end
+  local validate = described.validateState
+  if type(validate) ~= "function" then
+    error(BattleErrors.invalidState("effect updates validate their replacement", { key = key }))
+  end
+  local bag = liveBag(self._state)
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  for _, record in ipairs(capture(bag)) do
+    local scope = record.scope --[[@as table<string, unknown>]]
+    if record.key == key and scopeAnswersFor(self._state, combatantId, scope) then
+      local get = bag.get --[[@as fun(self: table<string, unknown>, id: integer): table<string, unknown>?]]
+      local live = get(bag, record.id --[[@as integer]])
+      if live == nil then
+        return nil
+      end
+      local current = (live --[[@as table<string, unknown>]]).state --[[@as table<string, unknown>]]
+      local replacement = update(current)
+      if replacement == nil then
+        local remove = bag.remove --[[@as fun(self: table<string, unknown>, id: integer): boolean]]
+        remove(bag, record.id --[[@as integer]])
+        return "removed"
+      end
+      local validated = (validate --[[@as fun(state: unknown): table<string, unknown>]])(replacement)
+      if type(validated) ~= "table" or validated.version ~= described.stateVersion then
+        error(BattleErrors.invalidState("effect state carries its definition version", { key = key }))
+      end
+      local commit = bag.commitState --[[@as fun(self: table<string, unknown>, id: integer, state: table<string, unknown>): boolean]]
+      commit(bag, record.id --[[@as integer]], validated)
+      return "updated"
+    end
+  end
+  return nil
+end
+
 ---@param combatantId integer combatant identity owning the instance scope
 ---@param key string definition identity under the query
 ---@return boolean true when a live instance names the key on the combatant scope
