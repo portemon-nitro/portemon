@@ -131,11 +131,47 @@ function T.fainted_eggs_and_capped_gain_nothing()
   Assert.deepEqual(before, yield({ defense = 10 }), "application never mutates the incoming record")
 end
 
--- The owner exposes exactly its two operations, so no modern per-stat
--- ceiling or alternate award path hides beside the native one.
-function T.effort_exposes_only_calculate_and_apply()
+-- Held items map to effort modifiers by key: each power training item
+-- names its bonus stat, Macho Brace names its doubling, and anything
+-- else -- empty hands included -- carries no modifier.
+function T.held_items_map_to_effort_modifiers_by_key()
   local Effort = effortOwner("knockout effort owns modifier order and caps")
-  Assert.keySet(Effort, "apply,calculate", "effort carries exactly its two operations")
+  local cases = {
+    POWER_BRACER = "attack",
+    POWER_BELT = "defense",
+    POWER_LENS = "specialAttack",
+    POWER_BAND = "specialDefense",
+    POWER_ANKLET = "speed",
+    POWER_WEIGHT = "hp",
+  }
+  for key, stat in pairs(cases) do
+    local modifiers = Effort.modifiersFor(key)
+    Assert.equal(modifiers.powerStat, stat, key .. " bonuses " .. stat)
+    Assert.isFalse(modifiers.machoBrace, key .. " doubles nothing itself")
+  end
+  local brace = Effort.modifiersFor("MACHO_BRACE")
+  Assert.isNil(brace.powerStat, "the brace bonuses no stat")
+  Assert.isTrue(brace.machoBrace, "the brace doubles")
+  for _, key in ipairs({ "NONE", "LEFTOVERS", "LUCKY_EGG" }) do
+    local plain = Effort.modifiersFor(key)
+    Assert.isNil(plain.powerStat, key .. " bonuses no stat")
+    Assert.isFalse(plain.machoBrace, key .. " doubles nothing")
+  end
+  local empty = Effort.modifiersFor(nil)
+  Assert.isNil(empty.powerStat, "an empty hand bonuses no stat")
+  Assert.isFalse(empty.machoBrace, "an empty hand doubles nothing")
+  Assert.deepEqual(
+    Effort.calculate(yield({ attack = 1 }), Effort.modifiersFor("POWER_BRACER")),
+    yield({ attack = 5 }),
+    "the mapped modifiers stage through the award"
+  )
+end
+
+-- The owner exposes exactly its three operations, so no modern per-stat
+-- ceiling or alternate award path hides beside the native one.
+function T.effort_exposes_only_calculate_apply_and_modifiers()
+  local Effort = effortOwner("knockout effort owns modifier order and caps")
+  Assert.keySet(Effort, "apply,calculate,modifiersFor", "effort carries exactly its three operations")
 end
 
 -- Malformed records fail before application: partial awards and negative

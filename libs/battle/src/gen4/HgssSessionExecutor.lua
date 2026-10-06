@@ -731,6 +731,50 @@ local function statusAdjustedAttack(attacker, mon, category)
   end
 end
 
+-- Native held items halving battle Speed: Macho Brace, Iron Ball, and
+-- all six power training items. Source reference:
+-- sSpeedHalvingItemEffects in src/battle/overlay_12_0224E4FC.c.
+local SPEED_HALVING_ITEMS = {
+  MACHO_BRACE = true,
+  IRON_BALL = true,
+  POWER_BRACER = true,
+  POWER_BELT = true,
+  POWER_LENS = true,
+  POWER_BAND = true,
+  POWER_ANKLET = true,
+  POWER_WEIGHT = true,
+}
+
+-- Applies the native held-item Speed interaction in source order: the
+-- eight speed-halving items halve first, Choice Scarf scales by fifteen
+-- over ten, and a Ditto holding Quick Powder doubles. Item meaning
+-- stays in the passive families; this checkpoint only orders the
+-- arithmetic ahead of the persistent-condition checkpoint.
+---@param speed integer stage-effective Speed under adjustment
+---@param mon unknown battle mon record carrying the held item and species
+---@return integer item-adjusted battle Speed
+local function itemAdjustedSpeed(speed, mon)
+  if type(mon) ~= "table" then
+    return speed
+  end
+  local record = mon --[[@as table<string, unknown>]]
+  local held = record.heldItem
+  if type(held) ~= "string" or held == "" then
+    return speed
+  end
+  local key = held --[[@as string]]
+  if SPEED_HALVING_ITEMS[key] == true then
+    speed = math.floor(speed / 2)
+  end
+  if key == "CHOICE_SCARF" then
+    speed = math.floor((speed * 15) / 10)
+  end
+  if key == "QUICK_POWDER" and record.species == "DITTO" then
+    speed = speed * 2
+  end
+  return speed
+end
+
 ---@param combatant table<string, unknown> live combatant under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
 ---@return string[] detached semantic types for the entry
@@ -1181,7 +1225,9 @@ local function projectCombatant(combatant, speciesFacts)
   end
   -- Persistent conditions reshape effective Speed at this checkpoint:
   -- paralysis quarters unless the holder's passive answers instead.
-  stats.speed = statusAdjustedSpeed(stats.speed --[[@as integer]], combatant.mon)
+  -- Held items reshape it first, in native order.
+  local itemSpeed = itemAdjustedSpeed(stats.speed --[[@as integer]], combatant.mon)
+  stats.speed = statusAdjustedSpeed(itemSpeed, combatant.mon)
   return stats
 end
 
@@ -2236,7 +2282,7 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
         traded = traded,
         foreign = foreign,
       }),
-      evAward = RewardEffort.calculate(evYield, {}),
+      evAward = RewardEffort.calculate(evYield, RewardEffort.modifiersFor(entryMon.heldItem)),
     }
   end
   return {
@@ -2899,6 +2945,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     if held == nil then
       held = volatileTrapOf(state, actor.combatant --[[@as integer]])
     end
+    -- Shed Shell slips trapping for the voluntary departure: the native
+    -- shell bypasses the trap check, so the flag travels beside the trap.
+    local shedShell = false
+    local departing = combatant.mon
+    if type(departing) == "table" then
+      shedShell = (departing --[[@as table<string, unknown>]]).heldItem == "SHED_SHELL"
+    end
     local verdict = Switching.eligible({
       position = slot,
       incoming = payload.replacement,
@@ -2907,6 +2960,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       reserved = reserved,
       fainted = fainted,
       trap = held,
+      shedShell = shedShell,
     })
     if not verdict.ok then
       error(BattleErrors.invalidState("committed exchanges stay eligible", { reason = verdict.reason }))
@@ -2920,6 +2974,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       reserved = reserved,
       fainted = fainted,
       trap = held,
+      shedShell = shedShell,
     })
     local stepped = Switching.step({}, frame)
     assert(stepped.done == true, "voluntary exchanges settle without interception")
@@ -3073,9 +3128,21 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     if trap == nil then
       trap = volatileTrapOf(state, actor.combatant --[[@as integer]])
     end
+    -- Smoke Ball and Run Away guarantee flight outright: the native run
+    -- check answers before any trap or odds, so neither holds the runner.
+    local assured = false
+    local runner = combatant.mon
+    if type(runner) == "table" then
+      local runnerRecord = runner --[[@as table<string, unknown>]]
+      assured = runnerRecord.heldItem == "SMOKE_BALL" or runnerRecord.ability == "RUN_AWAY"
+    end
+    if assured then
+      trap = nil
+    end
     local result = Escape.attempt({
       battleKind = battleKind,
       trapped = trap,
+      guaranteed = assured,
       speeds = { player = staged.player, enemy = staged.enemy },
       attempts = state.escapeAttempts,
       stream = state.rng,

@@ -109,6 +109,33 @@ function T.trapped_departures_fail_as_input_without_touching_state()
   Assert.deepEqual(stream:capture(), snapshot, "the refused exchange draws nothing")
 end
 
+-- Shed Shell slips a trapped voluntary departure: the native shell
+-- bypasses trapping, so a flagged holder exchanges freely while an
+-- unshelled trapped departure stays refused.
+function T.shed_shell_slips_trapped_voluntary_departures()
+  local Switching = switchingOwner("the source exchange continuation owns switch sequencing")
+  local freed = Switching.eligible({
+    position = 1,
+    incoming = 2,
+    reason = "voluntary",
+    trap = { held = true },
+    shedShell = true,
+    reserves = { 2, 3 },
+  })
+  Assert.isTrue(freed.ok, "a shelled departure exchanges despite the trap")
+  local frame = Switching.validateFrame(Switching.start(voluntarySeed({ trap = { held = true }, shedShell = true })))
+  Assert.equal(frame.incoming, 2, "the shelled exchange names its arrival")
+  local held = Switching.eligible({
+    position = 1,
+    incoming = 2,
+    reason = "voluntary",
+    trap = { held = true },
+    shedShell = false,
+    reserves = { 2, 3 },
+  })
+  Assert.isFalse(held.ok, "an unshelled trapped departure stays refused")
+end
+
 -- Forced replacement draws only from eligible reserves, repeats exactly
 -- under fixed random state, and never counts as voluntary.
 function T.forced_replacement_draws_only_eligible_reserves()

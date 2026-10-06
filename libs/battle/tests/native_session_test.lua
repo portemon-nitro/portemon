@@ -2558,6 +2558,73 @@ function T.run_attempts_follow_escape_law_and_trainer_flight_stays_refused()
   trainer:dispose()
 end
 
+-- Smoke Ball guarantees wild flight: a slower lead that fails its bare
+-- odds leaves outright holding the ball, spending no roll and taking no
+-- parting strike, while the identical bare lead fails and fights on.
+function T.smoke_ball_guarantees_wild_flight_for_slower_leads()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+
+  ---@param holderItem string? held item carried by the slow lead
+  ---@return table live wild session pairing the slow lead with its faster foe
+  local function slowDuel(holderItem)
+    local lead = leveledCombatant(1, 11, "CHIKORITA", 5)
+    if holderItem ~= nil then
+      lead.mon.heldItem = holderItem
+    end
+    return contracts.Battle.newSession(
+      actionScenario(
+        WILD_FORMAT,
+        { lead },
+        { leveledCombatant(2, 23, "EEVEE", 40), leveledCombatant(4, 41, "EEVEE", 5) },
+        nil
+      ),
+      content
+    )
+  end
+
+  ---@param session table live session at its opening decision boundary
+  ---@return table[] turn events after both sides answer
+  local function fleeTurn(session)
+    local opening = SessionFixture.driveUntilSettled(session)
+    Assert.equal(opening.status, "waiting", "the flight turn asks for decisions")
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    local runner = assert(alpha.actors[1], "the flight request addresses its lead")
+    local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+    local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { runChoice(runner) }))
+    Assert.isTrue(ok, "the wild run is accepted")
+    Assert.isNil(replyErr, "accepted runs carry no input error")
+    local answered, answerErr =
+      session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+    Assert.isTrue(answered, "the opposing exchange is accepted")
+    Assert.isNil(answerErr, "accepted exchanges carry no input error")
+    return session:advance(64).events or {}
+  end
+
+  local bare = slowDuel(nil)
+  local bareCalls = bare:capture().rng.calls
+  fleeTurn(bare)
+  local stalled = SessionFixture.driveUntilSettled(bare)
+  Assert.equal(stalled.status, "waiting", "the failed attempt continues the battle")
+  Assert.isNil(bare:capture().outcome, "the failed attempt names no terminal result")
+  Assert.equal(bare:capture().rng.calls, bareCalls + 1, "the failed attempt spends exactly one roll")
+  bare:dispose()
+
+  local smoked = slowDuel("SMOKE_BALL")
+  local smokedCalls = smoked:capture().rng.calls
+  local smokedHp = smoked:capture().combatants[1].hp
+  local smokedEvents = fleeTurn(smoked)
+  Assert.equal(countKind(smokedEvents, "struck"), 0, "the escape preempts the queued strike")
+  local escaped = SessionFixture.driveUntilSettled(smoked)
+  Assert.equal(escaped.status, "ended", "the smoked flight ends the battle")
+  Assert.notNil(escaped.outcome, "the escape names its terminal result")
+  local fledState = smoked:capture()
+  Assert.equal(fledState.combatants[1].hp, smokedHp, "the escapee leaves unwounded")
+  Assert.equal(fledState.rng.calls, smokedCalls, "the guaranteed flight spends no roll")
+  smoked:dispose()
+end
+
 -- Servings the shared stack never carried are refused before anything
 -- moves: the reply is rejected as invalid input, the declared stock
 -- stays untouched, the holder keeps its health, and the stream spends
@@ -3301,6 +3368,33 @@ function T.paralysis_quarters_speed_while_quick_feet_keeps_passive_speed()
     "a statused Quick Feet holder keeps its passive Speed instead of the quarter"
   )
   fleet:dispose()
+end
+
+-- Held items reshape effective Speed before status: a Choice Scarf
+-- holder outruns its faster foe while a Macho Brace holder drops behind
+-- its slower foe, so action order names the item adjustment. The duel
+-- pairs the same seeds as the paralysis case, hence the healthy baseline
+-- still leads with the faster combatant.
+function T.held_items_reshape_effective_speed_before_status()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  local scarfed = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+  scarfed.mon.heldItem = "CHOICE_SCARF"
+  local swift = projectionDuel(fastCombatant(11), scarfed, facts, species, PROJECTION_SEED)
+  Assert.equal(firstActor(playOpeningTurn(swift)), 2, "a scarfed slower combatant acts first")
+  swift:dispose()
+
+  local braced = fastCombatant(11)
+  braced.mon.heldItem = "MACHO_BRACE"
+  local slow = projectionDuel(braced, singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, PROJECTION_SEED)
+  Assert.equal(firstActor(playOpeningTurn(slow)), 2, "a braced faster combatant acts last")
+  slow:dispose()
 end
 
 -- Burn halves ordinary physical output while a statused Guts holder keeps

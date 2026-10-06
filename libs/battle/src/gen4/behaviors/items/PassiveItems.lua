@@ -39,6 +39,10 @@ local TYPE_BOOST = {
   DRAGON_FANG = { dragon = true },
   SILK_SCARF = { normal = true },
   SILVERPOWDER = { bug = true },
+  -- Metal Coat doubles as a Steel booster while evolving on trade:
+  -- the ROM hold effect is STRENGTHEN_STEEL, so it boosts here
+  -- instead of staying silent with the pure evolution goods.
+  METAL_COAT = { steel = true },
   SEA_INCENSE = { water = true },
   ODD_INCENSE = { psychic = true },
   ROCK_INCENSE = { rock = true },
@@ -67,7 +71,6 @@ local TYPE_BOOST = {
 
 local STAT_BOOST = {
   SOUL_DEW = { specialAttack = true, specialDefense = true },
-  LIGHT_BALL = { attack = true, specialAttack = true },
   THICK_CLUB = { attack = true },
   METAL_POWDER = { defense = true },
   QUICK_POWDER = { speed = true },
@@ -139,6 +142,14 @@ local ESCAPE_ITEM = {
 local HEAVY_ITEM = {
   MACHO_BRACE = true,
   IRON_BALL = true,
+  -- Every power training item halves Speed while held: the native
+  -- speed-halving list names all six beside Macho Brace and Iron Ball.
+  POWER_BRACER = true,
+  POWER_BELT = true,
+  POWER_LENS = true,
+  POWER_BAND = true,
+  POWER_ANKLET = true,
+  POWER_WEIGHT = true,
 }
 
 local LAGGING_ITEM = {
@@ -262,7 +273,6 @@ local EVOLUTION_GOODS = {
   "REAPER_CLOTH",
   "DRAGON_SCALE",
   "UPGRADE",
-  "METAL_COAT",
 }
 
 local CONTEST_SCARVES = {
@@ -273,14 +283,10 @@ local CONTEST_SCARVES = {
   "YELLOW_SCARF",
 }
 
-local POWER_TRAINING = {
-  "POWER_BRACER",
-  "POWER_BELT",
-  "POWER_LENS",
-  "POWER_BAND",
-  "POWER_ANKLET",
-  "POWER_WEIGHT",
-}
+-- Power training items halve Speed while held (see HEAVY_ITEM above)
+-- and add effort bonuses through the effort owner, so they carry no
+-- silent binding here: silence would overwrite their speed handler at
+-- registration.
 
 local PROGRESSION_ONLY = {
   "EXP__SHARE",
@@ -402,6 +408,11 @@ local function statBoost(instance, context)
   if not holderApplies(instance, context) then
     return nil
   end
+  -- Soul Dew answers outside the frontier only: frontier formats
+  -- suppress both the special attack and the special defense boost.
+  if instance.key == "SOUL_DEW" and context.frontier == true then
+    return nil
+  end
   if type(context.stat) ~= "string" then
     return nil
   end
@@ -417,6 +428,19 @@ local function statBoost(instance, context)
     stat = context.stat,
     stages = "boosted",
   }
+end
+
+---@param instance table<string, unknown> dispatched effect instance under handling
+---@param context table<string, unknown> damage context under handling
+---@return table<string, unknown>? boost announcement, or nil when inapplicable
+local function pikaPower(instance, context)
+  -- Light Ball doubles move power for Pikachu rather than staging
+  -- stats: the native strike multiplies power, so the handler
+  -- announces power with only the species gate.
+  if not holderApplies(instance, context) then
+    return nil
+  end
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), power = "boosted" }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -559,7 +583,9 @@ end
 ---@param context table<string, unknown> damage context under handling
 ---@return table<string, unknown>? drain announcement, or nil when inapplicable
 local function bigRoot(instance, context)
-  if context.drain ~= true then
+  -- Big Root boosts stolen health beyond direct drains: leech recovery
+  -- answers beside the draining strike through the same boost.
+  if context.drain ~= true and context.leech ~= true then
     return nil
   end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), drain = "boosted" }
@@ -569,8 +595,11 @@ end
 ---@param context table<string, unknown> damage context under handling
 ---@return table<string, unknown>? streak announcement, or nil when inapplicable
 local function metronome(instance, context)
+  -- The metronome item scales from the second consecutive use: the
+  -- first repetition multiplies ten over ten, so only a real streak
+  -- boosts.
   local streak = context.consecutiveUses
-  if type(streak) ~= "number" or streak < 1 then
+  if type(streak) ~= "number" or streak < 2 then
     return nil
   end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), power = "boosted" }
@@ -655,6 +684,7 @@ function PassiveItems.register(owned)
     owned[key] = evasionItem
   end
   owned.LIFE_ORB = lifeOrb
+  owned.LIGHT_BALL = pikaPower
   owned.EXPERT_BELT = expertBelt
   owned.MUSCLE_BAND = muscleBand
   owned.WISE_GLASSES = wiseGlasses
@@ -667,7 +697,6 @@ function PassiveItems.register(owned)
   bindGroup(owned, FIELD_ONLY, silentItem)
   bindGroup(owned, EVOLUTION_GOODS, silentItem)
   bindGroup(owned, CONTEST_SCARVES, silentItem)
-  bindGroup(owned, POWER_TRAINING, silentItem)
   bindGroup(owned, PROGRESSION_ONLY, silentItem)
   bindGroup(owned, KEY_ITEMS, silentItem)
   for machine = 1, 92 do

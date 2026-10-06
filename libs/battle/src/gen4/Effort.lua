@@ -110,4 +110,43 @@ function Effort.apply(current, award, subject)
   return banked
 end
 
+-- Held items behind knockout effort: each power training item names
+-- its bonus stat while Macho Brace names its doubling. Source
+-- reference: BattleScript_CalcEffortValues in
+-- src/battle/battle_command.c, where the power bonus stages before the
+-- Pokerus and brace doublings the calculate owner already orders.
+local POWER_STAT = {
+  POWER_BRACER = "attack",
+  POWER_BELT = "defense",
+  POWER_LENS = "specialAttack",
+  POWER_BAND = "specialDefense",
+  POWER_ANKLET = "speed",
+  POWER_WEIGHT = "hp",
+}
+
+--- Maps a held item key to its effort modifiers: power training items
+--- carry their bonus stat, Macho Brace carries its doubling, and
+--- anything else -- empty hands included -- carries no modifier.
+---@param heldItem unknown held item key under the mapping
+---@return table<string, unknown> effort modifiers for the award staging
+function Effort.modifiersFor(heldItem)
+  if
+    type(heldItem) == "string" and POWER_STAT[
+      heldItem --[[@as string]]
+    ] ~= nil
+  then
+    return {
+      powerStat = POWER_STAT[
+        heldItem --[[@as string]]
+      ],
+      pokerus = false,
+      machoBrace = false,
+    }
+  end
+  if heldItem == "MACHO_BRACE" then
+    return { powerStat = nil, pokerus = false, machoBrace = true }
+  end
+  return { powerStat = nil, pokerus = false, machoBrace = false }
+end
+
 return Effort
