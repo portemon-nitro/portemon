@@ -1329,7 +1329,9 @@ function T.move_detail_open_and_close_follow_the_generated_x_track()
   local held = nativeStep(controller, { { type = "navigate", direction = "down" } })
   Assert.equal(held.slot, 0, "transitional input moves no member")
   Assert.equal(held.group, "skills", "transitional input moves no group")
-  local offsets = {}
+  -- The transitional tick advances the motion while discarding its edge,
+  -- so the staged origin is recorded here and the trace continues below.
+  local offsets = { staged.offset }
   local status = controller:status()
   for _ = 1, 12 do
     if status.phase == "move_detail" and status.transition == nil then
@@ -1390,7 +1392,9 @@ function T.ribbon_detail_open_and_close_follow_the_generated_y_track()
   Assert.equal(staged.offset, 0, "the staged transition starts at the generated origin")
   local held = nativeStep(controller, { { type = "navigate", direction = "right" } })
   Assert.equal(held.ribbonIndex, 0, "transitional input moves no ribbon cursor")
-  local offsets = {}
+  -- The transitional tick advances the motion while discarding its edge,
+  -- so the staged origin is recorded here and the trace continues below.
+  local offsets = { staged.offset }
   local status = controller:status()
   for _ = 1, 12 do
     if status.phase == "ribbon_detail" and status.transition == nil then
@@ -1439,6 +1443,139 @@ function T.member_cursor_chrome_follows_its_explicit_capability()
   Assert.isFalse(moved.showMemberCursor, "navigation never restores the chrome")
   local shown, _ = nativeOpen()
   Assert.isTrue(nativeStep(shown, {}).showMemberCursor, "party status keeps the member cursor by default")
+end
+
+function T.opening_motion_advances_through_discarded_action_edges()
+  local manifest = SummaryPresentationFixture.manifest()
+  local controller = nativeOpen({ manifest = manifest })
+  nativeStep(controller, {})
+  nativeStep(controller, { { type = "navigate", direction = "right" } })
+  local staged = nativeStep(controller, { { type = "confirm" } })
+  Assert.equal(staged.phase, "move_opening", "confirmation stages the move transition")
+  local stagedSample = assert(staged.transition, "the staged move transition publishes its sample")
+  Assert.equal(stagedSample.offset, 0, "the staged move transition starts at the generated origin")
+  Assert.equal(staged.moveSlot, 0, "the staged move transition keeps its row")
+  local status = nativeStep(controller, { { type = "navigate", direction = "down" } })
+  local first = assert(status.transition, "action input keeps the move transition sampled")
+  Assert.equal(first.offset, 64, "navigation input advances the opening motion")
+  Assert.equal(status.phase, "move_opening", "navigation input never settles the motion early")
+  Assert.equal(status.moveSlot, 0, "transitional navigation moves no detail cursor")
+  Assert.equal(status.slot, 0, "transitional navigation moves no member")
+  Assert.equal(status.group, "skills", "transitional navigation moves no group")
+  status = nativeStep(controller, {
+    { type = "confirm" },
+    { type = "dismiss" },
+    { type = "navigate", direction = "up" },
+  })
+  local second = assert(status.transition, "a multi-edge tick keeps the move transition sampled")
+  Assert.equal(second.offset, 128, "a multi-edge tick advances the motion exactly once")
+  Assert.equal(status.phase, "move_opening", "a multi-edge tick never settles the motion early")
+  Assert.equal(status.moveSlot, 0, "a multi-edge tick arms no reorder")
+  Assert.isNil(status.reorderSource, "a multi-edge tick publishes no reorder")
+  status = nativeStep(controller, { { type = "cancel" } })
+  Assert.equal(status.phase, "move_detail", "the terminal action tick still settles into detail")
+  Assert.isNil(status.transition, "stable detail carries no transition")
+  Assert.equal(status.moveSlot, 0, "terminal input selects no new row")
+  Assert.equal(status.slot, 0, "terminal input moves no member")
+  Assert.equal(status.group, "skills", "terminal input moves no group")
+  Assert.isTrue(status.open, "terminal input never exits the summary")
+  Assert.isNil(controller:takeResult(), "discarded opening input completes nothing")
+  local ribbons = nativeOpen({
+    manifest = manifest,
+    state = nativeState({ ribbons = earnedRibbons(10) }),
+  })
+  nativeStep(ribbons, {})
+  nativeStep(ribbons, { { type = "navigate", direction = "right" } })
+  nativeStep(ribbons, { { type = "navigate", direction = "right" } })
+  local ribbonStaged = nativeStep(ribbons, { { type = "confirm" } })
+  Assert.equal(ribbonStaged.phase, "ribbon_opening", "confirmation stages the ribbon transition")
+  local ribbonSample = assert(ribbonStaged.transition, "the staged ribbon transition publishes its sample")
+  Assert.equal(ribbonSample.offset, 0, "the staged ribbon transition starts at the generated origin")
+  Assert.equal(ribbonStaged.ribbonIndex, 0, "the staged ribbon transition keeps its cell")
+  local ribbonStatus = nativeStep(ribbons, { { type = "dismiss" } })
+  local ribbonFirst = assert(ribbonStatus.transition, "action input keeps the ribbon transition sampled")
+  Assert.equal(ribbonFirst.offset, 36, "dismissal input advances the ribbon motion")
+  Assert.equal(ribbonStatus.phase, "ribbon_opening", "dismissal input never settles the motion early")
+  Assert.equal(ribbonStatus.ribbonIndex, 0, "transitional dismissal moves no ribbon cursor")
+  ribbonStatus = nativeStep(ribbons, {
+    { type = "navigate", direction = "right" },
+    { type = "cancel" },
+  })
+  local ribbonSecond = assert(ribbonStatus.transition, "a multi-edge tick keeps the ribbon transition sampled")
+  Assert.equal(ribbonSecond.offset, 72, "a multi-edge tick advances the ribbon motion exactly once")
+  Assert.equal(ribbonStatus.phase, "ribbon_opening", "a multi-edge tick never settles the ribbon early")
+  Assert.equal(ribbonStatus.ribbonIndex, 0, "a multi-edge tick moves no ribbon cursor")
+  ribbonStatus = nativeStep(ribbons, { { type = "confirm" } })
+  Assert.equal(ribbonStatus.phase, "ribbon_detail", "the terminal action tick still settles into detail")
+  Assert.isNil(ribbonStatus.transition, "stable ribbon detail carries no transition")
+  Assert.equal(ribbonStatus.ribbonIndex, 0, "terminal input selects no new cell")
+  Assert.isTrue(ribbonStatus.open, "terminal input never exits the summary")
+  Assert.isNil(ribbons:takeResult(), "discarded ribbon opening input completes nothing")
+end
+
+function T.closing_terminal_ticks_settle_without_running_their_input()
+  local manifest = SummaryPresentationFixture.manifest()
+  local controller = nativeOpen({ manifest = manifest })
+  nativeStep(controller, {})
+  nativeStep(controller, { { type = "navigate", direction = "right" } })
+  nativeStep(controller, { { type = "confirm" } })
+  settlePhase(controller, "move_detail")
+  local closing = nativeStep(controller, { { type = "cancel" } })
+  Assert.equal(closing.phase, "move_closing", "cancelling detail stages the reverse motion")
+  local closingSample = assert(closing.transition, "the staged closing transition publishes its sample")
+  Assert.equal(closingSample.offset, 128, "the staged closing transition starts at the generated end")
+  local status = nativeStep(controller, { { type = "navigate", direction = "right" } })
+  local first = assert(status.transition, "closing input keeps the reverse motion sampled")
+  Assert.equal(first.offset, 64, "navigation input advances the closing motion")
+  Assert.equal(status.phase, "move_closing", "navigation input never settles the motion early")
+  Assert.equal(status.group, "skills", "transitional navigation moves no group")
+  Assert.equal(status.slot, 0, "transitional navigation moves no member")
+  status = nativeStep(controller, { { type = "confirm" } })
+  local second = assert(status.transition, "confirmation input keeps the reverse motion sampled")
+  Assert.equal(second.offset, 0, "confirmation input advances the closing motion")
+  Assert.equal(status.phase, "move_closing", "confirmation input never settles the motion early")
+  status = nativeStep(controller, { { type = "cancel" } })
+  Assert.equal(status.phase, "root", "the terminal action tick still returns to browsing")
+  Assert.isNil(status.transition, "the root carries no transition")
+  Assert.equal(status.group, "skills", "terminal cancellation never leaves the group")
+  Assert.isTrue(status.open, "terminal cancellation never exits the summary")
+  Assert.isNil(controller:takeResult(), "discarded closing input completes nothing")
+  status = nativeStep(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(status.group, "performance", "a clean edge works after the terminal tick")
+  Assert.equal(status.phase, "root", "the clean edge browses normally")
+  local ribbonController = nativeOpen({
+    manifest = manifest,
+    state = nativeState({ ribbons = earnedRibbons(10) }),
+  })
+  nativeStep(ribbonController, {})
+  nativeStep(ribbonController, { { type = "navigate", direction = "right" } })
+  nativeStep(ribbonController, { { type = "navigate", direction = "right" } })
+  nativeStep(ribbonController, { { type = "confirm" } })
+  settlePhase(ribbonController, "ribbon_detail")
+  local ribbonClosing = nativeStep(ribbonController, { { type = "cancel" } })
+  Assert.equal(ribbonClosing.phase, "ribbon_closing", "cancelling ribbon detail stages its reverse motion")
+  local ribbonSample = assert(ribbonClosing.transition, "the staged ribbon closing publishes its sample")
+  Assert.equal(ribbonSample.offset, 72, "the staged ribbon closing starts at the generated end")
+  local ribbonStatus = nativeStep(ribbonController, { { type = "dismiss" } })
+  local ribbonFirst = assert(ribbonStatus.transition, "closing input keeps the ribbon reverse sampled")
+  Assert.equal(ribbonFirst.offset, 36, "dismissal input advances the ribbon closing")
+  Assert.equal(ribbonStatus.phase, "ribbon_closing", "dismissal input never settles the motion early")
+  ribbonStatus = nativeStep(ribbonController, {
+    { type = "navigate", direction = "left" },
+    { type = "cancel" },
+  })
+  local ribbonSecond = assert(ribbonStatus.transition, "a multi-edge tick keeps the ribbon closing sampled")
+  Assert.equal(ribbonSecond.offset, 0, "a multi-edge closing tick advances exactly once")
+  Assert.equal(ribbonStatus.phase, "ribbon_closing", "a multi-edge tick never settles the ribbon early")
+  ribbonStatus = nativeStep(ribbonController, { { type = "confirm" } })
+  Assert.equal(ribbonStatus.phase, "root", "the terminal ribbon tick still returns to browsing")
+  Assert.isNil(ribbonStatus.transition, "the ribbon root carries no transition")
+  Assert.equal(ribbonStatus.group, "performance", "terminal confirmation never reopens detail")
+  Assert.isTrue(ribbonStatus.open, "terminal confirmation never exits the summary")
+  Assert.isNil(ribbonController:takeResult(), "discarded ribbon closing input completes nothing")
+  ribbonStatus = nativeStep(ribbonController, { { type = "navigate", direction = "right" } })
+  Assert.equal(ribbonStatus.group, "info", "a clean ribbon edge works after the terminal tick")
+  Assert.equal(ribbonStatus.phase, "root", "the clean ribbon edge browses normally")
 end
 
 return { tests = T }

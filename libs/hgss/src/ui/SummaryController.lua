@@ -608,23 +608,6 @@ local function advanceTransition(self)
   return false
 end
 
--- Notes whether the tick carries an action edge the priority chain would
--- resolve. Ticks with an action edge discard it against the active
--- motion without sliding the panel; quiet ticks advance the motion.
----@param uiInput table[]
----@return boolean true when the tick carries navigation, confirmation, or dismissal
-local function hasActionEdge(uiInput)
-  for _, event in ipairs(uiInput) do
-    if type(event) == "table" then
-      local kind = event.type
-      if kind == "navigate" or kind == "confirm" or kind == "cancel" or kind == "dismiss" then
-        return true
-      end
-    end
-  end
-  return false
-end
-
 ---@param self SummaryController
 ---@param result table<string, unknown>
 local function terminate(self, result)
@@ -1132,8 +1115,11 @@ function SummaryController:updateFixed(uiInput, gates)
     return
   end
   self._spriteTick = self._spriteTick + 1
+  -- Transition motion advances on every fixed tick while active. Ticks
+  -- that started transitional discard their action edges below without
+  -- pausing the motion or replaying the edges after settlement.
   local transitional = self._transition ~= nil
-  if transitional and not hasActionEdge(uiInput) then
+  if transitional then
     advanceTransition(self)
   end
   local player = self._player
