@@ -1812,4 +1812,156 @@ function T.tests.scope_replacement_falls_back_to_the_explicit_default()
   Assert.equal(controller.focusVisible, false, "fallback reconciliation never shows the ring by itself")
 end
 
+local function backHarness(options)
+  options = options or {}
+  local controller = Controller.new()
+  controller:setSection(options.section or "Player")
+  if options.partyDetail then
+    controller:selectPartySlot(0)
+  end
+  if options.bagItem then
+    controller.bagItemKey = options.bagItem
+    controller.focus = "bag:item:" .. options.bagItem
+  end
+  if options.mapList then
+    controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
+    controller:openLocationMaps()
+  end
+  if options.modal then
+    controller:openModal(options.modal)
+  end
+  local session = {
+    dirty = options.dirty == true,
+    discardedSections = {},
+    globalDiscards = 0,
+    isDirty = function(self)
+      return self.dirty
+    end,
+    snapshot = function()
+      return { dirtySections = {}, location = { mapId = 7, fieldX = 10, fieldZ = 12 } }
+    end,
+    discardSection = function(self, section)
+      self.discardedSections[#self.discardedSections + 1] = section
+      return true
+    end,
+    discard = function(self)
+      self.globalDiscards = self.globalDiscards + 1
+      return true
+    end,
+  }
+  local results = {}
+  local state = setmetatable({
+    status = "ready",
+    disposed = false,
+    approvedExit = false,
+    controller = controller,
+    session = session,
+    valueEditor = options.valueEditor,
+    monDraft = options.monDraft,
+    locationService = nil,
+    errorMessage = nil,
+    pendingDraftAction = nil,
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  }, State)
+  return { controller = controller, session = session, state = state, results = results }
+end
+
+function T.tests.every_section_button_activates_its_section_directly()
+  local harness = backHarness({ section = "Player" })
+  for _, name in ipairs({ "Location", "Player", "Party", "Bag", "Progress" }) do
+    harness.state:_activate("section:" .. name)
+    Assert.equal(harness.controller.section, name, "the " .. name .. " button enters its section")
+  end
+end
+
+function T.tests.back_cancels_only_the_open_value_editor()
+  local canceled = 0
+  local editor = {
+    cancel = function()
+      canceled = canceled + 1
+    end,
+  }
+  local harness = backHarness({ section = "Player", dirty = true, valueEditor = editor })
+  harness.state:_requestBack()
+  Assert.equal(canceled, 1, "the value editor is canceled once")
+  Assert.isNil(harness.state.valueEditor, "the editor layer is gone")
+  Assert.isNil(harness.controller.modal, "no decision layer opens")
+  Assert.isNil(harness.state.closeRequest, "the dirty session never enters its leave flow")
+  Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
+end
+
+function T.tests.back_closes_only_the_open_decision()
+  local harness = backHarness({ section = "Player", dirty = true, modal = "remove" })
+  harness.state:_requestBack()
+  Assert.isNil(harness.controller.modal, "the decision layer is gone")
+  Assert.isNil(harness.state.closeRequest, "the dirty session never enters its leave flow")
+  Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
+end
+
+function T.tests.back_from_party_detail_returns_to_the_member_list()
+  local harness = backHarness({ section = "Party", dirty = true, partyDetail = true })
+  Assert.equal(harness.controller.partyPage, "detail", "the harness starts inside party detail")
+  harness.state:_requestBack()
+  Assert.equal(harness.controller.partyPage, "list", "one Back returns to the member list")
+  Assert.isNil(harness.state.closeRequest, "the dirty session never enters its leave flow")
+  Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
+end
+
+function T.tests.back_from_a_selected_bag_item_returns_to_its_pocket()
+  local harness = backHarness({ section = "Bag", dirty = true, bagItem = "POTION" })
+  harness.state:_requestBack()
+  Assert.isNil(harness.controller.bagItemKey, "the item layer is gone")
+  Assert.equal(harness.controller.focus, "bag:pocket:items", "focus returns to the pocket")
+  Assert.isNil(harness.state.closeRequest, "the dirty session never enters its leave flow")
+  Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
+end
+
+function T.tests.back_from_the_location_map_list_returns_to_coordinate_selection()
+  local harness = backHarness({ section = "Location", mapList = true })
+  Assert.equal(harness.controller.locationPage, "map-list", "the harness starts inside the map list")
+  harness.state:_requestBack()
+  Assert.equal(harness.controller.locationPage, "grid", "one Back returns to coordinate selection")
+  Assert.isNil(harness.state.closeRequest, "Back from an inner mode never enters the leave flow")
+  Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
+end
+
+function T.tests.back_from_a_root_section_with_staged_work_enters_the_leave_flow()
+  local harness = backHarness({ section = "Player", dirty = true })
+  harness.state:_requestBack()
+  Assert.notNil(harness.state.closeRequest, "root Back alone enters the leave flow")
+  Assert.equal(harness.controller.modal, "leave", "the leave decision opens")
+  Assert.deepEqual(harness.results, {}, "entering the leave flow never leaves the editor")
+end
+
+function T.tests.back_from_a_clean_root_section_leaves_the_editor()
+  local harness = backHarness({ section = "Player", dirty = false })
+  harness.state:_requestBack()
+  Assert.deepEqual(harness.results, { { kind = "main_menu" } }, "root Back without work leaves the editor")
+end
+
+function T.tests.footer_discard_resets_only_the_active_section()
+  local harness = backHarness({ section = "Progress", dirty = true })
+  harness.state:_activate("discard")
+  Assert.deepEqual(harness.session.discardedSections, { "Progress" }, "footer Discard resets its own section")
+  Assert.equal(harness.session.globalDiscards, 0, "footer Discard never resets the whole session")
+end
+
+function T.tests.footer_discard_abandons_a_party_draft_with_its_section()
+  local draft = {
+    mode = function()
+      return "edit"
+    end,
+    isDirty = function()
+      return true
+    end,
+  }
+  local harness = backHarness({ section = "Party", dirty = true, monDraft = draft })
+  harness.state:_activate("discard")
+  Assert.isNil(harness.state.monDraft, "the open draft is abandoned, never applied")
+  Assert.deepEqual(harness.session.discardedSections, { "Party" }, "footer Discard resets its own section")
+  Assert.equal(harness.session.globalDiscards, 0, "footer Discard never resets the whole session")
+end
+
 return T

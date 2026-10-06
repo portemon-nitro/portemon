@@ -401,6 +401,7 @@ function State:_snapshot()
     ready = session ~= nil,
     dirty = self.session ~= nil and self.session:isDirty() or self.monDraft ~= nil,
     dirtySections = session and session.dirtySections or { money = false, flags = false },
+    sectionDirty = self:_sectionDirty(session),
     section = self.controller.section,
     sections = self.controller:snapshot().sections,
     navigationRows = {
@@ -524,6 +525,29 @@ function State:_snapshot()
   view.preserveChoiceScroll = self.preserveChoiceScroll
   view.scrollOffsets = self.controller.scrollOffsets
   return view
+end
+
+function State:_sectionDirty(session)
+  if session == nil then
+    return false
+  end
+  local dirty = session.dirtySections
+  local section = self.controller.section
+  if section == "Player" then
+    return dirty.money == true or dirty.frame == true
+  elseif section == "Progress" then
+    return dirty.flags == true
+  elseif section == "Location" then
+    return dirty.location == true
+  elseif section == "Party" then
+    if self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty()) then
+      return true
+    end
+    return dirty.party == true
+  elseif section == "Bag" then
+    return dirty.bag == true
+  end
+  return false
 end
 
 function State:_flagRows(values)
@@ -1592,8 +1616,6 @@ function State:_performDeferred(action)
     self.errorMessage = nil
   elseif action.kind == "save" then
     self:_save(false)
-  elseif action.kind == "session-discard" then
-    self:_discard(false)
   elseif action.kind == "party-slot" then
     self.controller:selectPartySlot(action.slot0)
   elseif action.kind == "party-detail" then
@@ -1792,6 +1814,53 @@ function State:_discard(leave)
   end
 end
 
+function State:_discardSection()
+  self:_cancelPendingLocationSave()
+  local section = self.controller.section
+  local editorSections = {
+    money = "Player",
+    dialogue_frame = "Player",
+    party_field = "Party",
+    party_add_species = "Party",
+    party_add_move = "Party",
+    bag_add_item = "Bag",
+    bag_quantity = "Bag",
+  }
+  if self.valueEditor ~= nil and editorSections[self.valuePurpose] == section then
+    self.valueEditor:cancel()
+    self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
+    self.valueReturnFocus, self.pendingFocusReturn = nil, nil
+    self.pendingQuantity = nil
+    self.numberHold = nil
+    self.numberPressTarget = nil
+  end
+  if section == "Party" then
+    self.monDraft = nil
+    self.pendingDraftAction = nil
+    if self.controller.modal == "draft" or self.controller.modal == "remove" then
+      self.pendingRemove = nil
+      self.controller:closeModal()
+    end
+    self.controller.partyPage = "list"
+    self.controller.partySubpage = "Identity"
+    self.controller.partySlot0 = nil
+    self.controller.focus = "party:add"
+  elseif section == "Bag" then
+    if self.controller.modal == "bag-item" or self.controller.modal == "remove" then
+      self.pendingRemove = nil
+      self.pendingQuantity = nil
+      self.controller:closeModal()
+      self.controller.bagItemKey = nil
+      self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
+    end
+  end
+  self.errorMessage = nil
+  local changed = assert(self.session, "section discard needs its ready session"):discardSection(section)
+  if changed and section == "Location" then
+    self:_syncLocationToSession()
+  end
+end
+
 function State:_requestBack()
   if self.valueEditor then
     self.valueEditor:cancel()
@@ -1801,6 +1870,8 @@ function State:_requestBack()
     self.activeDraftField = nil
     self.valueReturnFocus = nil
     self.controller:cancelInteraction()
+  elseif self.controller.modal ~= nil then
+    self:_popDecision()
   elseif self.monDraft ~= nil then
     self:_requestDraftResolution({ kind = "back" })
   elseif self.controller.section == "Party" and self.controller.partyPage == "detail" then
@@ -1808,10 +1879,33 @@ function State:_requestBack()
   elseif self.controller.section == "Bag" and self.controller.bagItemKey ~= nil then
     self.controller.bagItemKey = nil
     self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
+  elseif self.controller.section == "Location" and self.controller.locationPage == "map-list" then
+    self.controller.locationPage = "grid"
+    self.controller:setFocus("location:grid")
+    self.controller:cancelInteraction()
   elseif self.session and self.session:isDirty() then
     self:requestClose("back")
   else
     self:_sendResult()
+  end
+end
+
+function State:_popDecision()
+  local modal = assert(self.controller.modal, "decision pop needs its open decision")
+  if modal == "leave" and self.closeRequest ~= nil then
+    self:_cancelPendingLocationSave()
+    local request = assert(self.closeRequest)
+    self.closeRequest = nil
+    self.controller.modal = request.previousModal
+    self.controller.modalReturnFocus = request.previousModalReturnFocus
+    self.controller.focus = request.previousFocus
+  elseif modal == "draft" then
+    self:_resolveDraftChoice("cancel")
+  else
+    if modal == "remove" then
+      self.pendingRemove = nil
+    end
+    self.controller:closeModal()
   end
 end
 
@@ -1981,17 +2075,6 @@ function State:_activate(targetId)
     return
   end
   local section = targetId:match("^section:(.+)$")
-  if targetId == "section" then
-    local sections = { "Location", "Player", "Party", "Bag", "Progress" }
-    local current = 1
-    for index, value in ipairs(sections) do
-      if value == self.controller.section then
-        current = index
-        break
-      end
-    end
-    section = sections[current % #sections + 1]
-  end
   if section ~= nil then
     self:_requestDraftResolution({ kind = "section", section = section })
     return
@@ -2034,7 +2117,7 @@ function State:_activate(targetId)
       self:_requestDraftResolution({ kind = "save" })
     end
   elseif targetId == "discard" then
-    self:_requestDraftResolution({ kind = "session-discard" })
+    self:_discardSection()
   elseif targetId == "back" then
     self:_requestBack()
   elseif targetId:match("^party:slot:") then
@@ -2190,22 +2273,6 @@ function State:_dispatchIntent(intent)
           ScrollViewport.clamp(viewport.offset + delta, viewport.contentExtent, viewport.clip.height)
       end
       self.controller:cancelInteraction()
-    elseif
-      layout.targets.section ~= nil
-      and self.controller.focus == "section"
-      and (intent.direction == "left" or intent.direction == "right")
-    then
-      local sections = { "Location", "Player", "Party", "Bag", "Progress" }
-      local current = 1
-      for index, section in ipairs(sections) do
-        if section == self.controller.section then
-          current = index
-          break
-        end
-      end
-      local offset = intent.direction == "right" and 1 or -1
-      local nextSection = sections[(current - 1 + offset) % #sections + 1]
-      self:_requestDraftResolution({ kind = "section", section = nextSection })
     else
       if layout.focusGraph[self.controller.focus] == nil then
         self.controller.focus = layout.defaultFocus

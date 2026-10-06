@@ -1323,7 +1323,7 @@ local function paintPane(self, view, plan, pane)
     elseif view.modal == "remove" then
       prompt = "Remove this entry?"
     else
-      prompt = "Save changes before leaving?"
+      prompt = "Save every section before leaving?"
     end
     local decisionList = assert(layout.decisionList)
     drawText(self, prompt, decisionList.prompt.x, decisionList.prompt.y, INK)

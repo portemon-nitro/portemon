@@ -610,7 +610,7 @@ function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(s
     Assert.isFalse(renderedText:find("Save Editor", 1, true) ~= nil, "shell has no editor title header")
     Assert.isFalse(renderedText:find("TEST-SAVE-42", 1, true) ~= nil, "shell has no save identity header")
     Assert.isFalse(renderedText:find("HEARTGOLD", 1, true) ~= nil, "shell has no version identity header")
-    for _, label in ipairs({ "Save", "Discard", "Cancel", "Save changes before leaving?" }) do
+    for _, label in ipairs({ "Save & exit", "Discard all", "Cancel", "Save every section before leaving?" }) do
       Assert.isTrue(renderedText:find(label, 1, true) ~= nil, "leave decision renders " .. label)
     end
     Assert.isNil(layout.header, "shell publishes no header geometry")

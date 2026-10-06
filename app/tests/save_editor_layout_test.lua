@@ -189,8 +189,12 @@ function T.tests.shell_content_starts_at_the_application_margin_without_a_header
     local layout = computeLayout(view, size[1], size[2])
     Assert.isNil(layout.header, "the shell does not reserve header geometry")
     if size[1] < 400 then
-      Assert.isTrue(layout.targets.section.rect.y <= 8, "compact section navigation begins at the application margin")
-      Assert.isTrue(layout.content.y <= 30, "compact player content follows its section control")
+      local strip = assert(
+        layout.targets["section:Player"],
+        "compact section navigation begins at the application margin"
+      )
+      Assert.isTrue(strip.rect.y <= 8, "compact section navigation begins at the application margin")
+      Assert.isTrue(layout.content.y <= 34, "compact player content follows its section strip")
     else
       Assert.isTrue(layout.targets["section:Location"].rect.y <= 12, "wide section navigation begins at the top margin")
       Assert.isTrue(layout.content.y <= 16, "wide player content begins at the top margin")
@@ -833,6 +837,221 @@ function T.tests.section_rail_marks_the_active_option_without_using_focus()
   Assert.equal(byId["section:Player"].active, true, "the current section is the active option")
   Assert.equal(byId["section:Party"].active, false, "other sections stay inactive while focused elsewhere")
   Assert.equal(byId["section:Bag"].active, false, "other sections stay inactive while focused elsewhere")
+end
+
+local SECTION_ORDER = { "Location", "Player", "Party", "Bag", "Progress" }
+
+local function sectionStripView(section)
+  return {
+    status = "ready",
+    ready = true,
+    dirty = false,
+    section = section,
+    focus = "money",
+    scope = { id = "section:" .. section, epoch = 0, kind = "section" },
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+  }
+end
+
+function T.tests.compact_layouts_offer_five_direct_section_controls_instead_of_a_cycler()
+  for _, size in ipairs({ { 256, 192 }, { 360, 640 } }) do
+    local label = size[1] .. "x" .. size[2]
+    local layout = computeLayout(sectionStripView("Player"), size[1], size[2])
+    Assert.isNil(layout.targets.section, "no section cycler remains (" .. label .. ")")
+    local previousRight = nil
+    for _, name in ipairs(SECTION_ORDER) do
+      local targetId = "section:" .. name
+      local target = assert(layout.targets[targetId], "the strip exposes " .. name .. " (" .. label .. ")")
+      local stripRect = target.rect
+      Assert.isTrue(stripRect.x >= 0 and stripRect.x + stripRect.width <= size[1], name .. " fits the width")
+      if previousRight ~= nil then
+        Assert.isTrue(stripRect.x >= previousRight, name .. " starts after its neighbor")
+      end
+      previousRight = stripRect.x + stripRect.width
+      local inFocusOrder = false
+      for _, focusId in ipairs(layout.focusOrder) do
+        if focusId == targetId then
+          inFocusOrder = true
+          break
+        end
+      end
+      Assert.isTrue(inFocusOrder, name .. " is keyboard/controller reachable")
+    end
+    local first = assert(layout.targets["section:Location"]).rect
+    local last = assert(layout.targets["section:Progress"]).rect
+    Assert.equal(first.y, last.y, "the five controls share one top strip")
+    Assert.isTrue(
+      layout.content.y >= first.y + first.height,
+      "section content starts below the strip (" .. label .. ")"
+    )
+    local byId = {}
+    for _, item in ipairs(layout.navigation) do
+      byId[item.targetId] = item
+    end
+    Assert.equal(byId["section:Player"].active, true, "the current section stays the active option")
+    Assert.equal(byId["section:Party"].active, false, "other sections stay inactive")
+  end
+end
+
+function T.tests.wide_shell_is_centered_and_capped_with_footer_inside()  for _, width in ipairs({ 800, 1200 }) do
+    local label = width .. "px"
+    local layout = computeLayout(sectionStripView("Player"), width, 600)
+    local shell = assert(layout.shell, "the wide layout publishes its centered shell (" .. label .. ")")
+    Assert.isTrue(shell.width <= 640, "the shell never spans the window (" .. label .. ")")
+    Assert.near(shell.x, (width - shell.width) / 2, 1.01, "the shell is horizontally centered")
+    local rail = assert(layout.targets["section:Location"], "the wide layout keeps its side rail").rect
+    Assert.isTrue(rail.x >= shell.x, "the rail lives inside the shell")
+    Assert.isTrue(
+      layout.content.x >= rail.x + rail.width,
+      "content starts right of the rail (" .. label .. ")"
+    )
+    Assert.isTrue(
+      layout.content.x + layout.content.width <= shell.x + shell.width + 1.01,
+      "content stays inside the shell (" .. label .. ")"
+    )
+    Assert.isTrue(layout.footer.x >= shell.x - 1.01, "the footer aligns to the shell")
+    Assert.isTrue(
+      layout.footer.x + layout.footer.width <= shell.x + shell.width + 1.01,
+      "the footer never stretches past the shell (" .. label .. ")"
+    )
+  end
+end
+
+local function backLabels(layout)
+  local found = {}
+  for _, item in ipairs(layout.navigation) do
+    if item.label == "Back" or item.label == "Return" then
+      found[#found + 1] = item.targetId
+    end
+  end
+  for _, row in ipairs(layout.rows) do
+    if row.label == "Back" or row.label == "Return" then
+      found[#found + 1] = row.targetId
+    end
+  end
+  for _, action in ipairs(layout.actions) do
+    if action.label == "Back" or action.label == "Return" then
+      found[#found + 1] = action.id
+    end
+  end
+  if layout.decisionList ~= nil then
+    for _, row in ipairs(layout.decisionList.rows) do
+      if row.label == "Back" or row.label == "Return" then
+        found[#found + 1] = row.targetId
+      end
+    end
+  end
+  return found
+end
+
+function T.tests.normal_scopes_expose_exactly_one_back_action()
+  local scopes = {
+    { name = "Player", view = sectionStripView("Player"), width = 256, height = 192 },
+    { name = "Player wide", view = sectionStripView("Player"), width = 800, height = 600 },
+    {
+      name = "Progress",
+      view = {
+        status = "ready",
+        ready = true,
+        dirty = false,
+        section = "Progress",
+        scope = { id = "section:Progress", epoch = 0, kind = "section" },
+        flagRows = {},
+        scrollOffsets = {},
+        query = "",
+      },
+      width = 256,
+      height = 192,
+    },
+    {
+      name = "Party list",
+      view = {
+        status = "ready",
+        ready = true,
+        dirty = false,
+        section = "Party",
+        scope = { id = "section:Party", epoch = 0, kind = "section" },
+        partyPage = "list",
+        partyCards = { { kind = "add", slot0 = 0, label = "+ Add" } },
+        partyCanAdd = true,
+      },
+      width = 256,
+      height = 192,
+    },
+    {
+      name = "error",
+      view = {
+        status = "error",
+        ready = false,
+        dirty = false,
+        section = "Player",
+        scope = { id = "section:Player", epoch = 0, kind = "section" },
+        message = "Could not open save",
+        session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+      },
+      width = 256,
+      height = 192,
+    },
+  }
+  for _, scope in ipairs(scopes) do
+    local layout = computeLayout(scope.view, scope.width, scope.height)
+    Assert.deepEqual(backLabels(layout), { "back" }, scope.name .. " keeps one footer Back and no copy")
+  end
+  local gridView = {
+    status = "ready",
+    ready = true,
+    dirty = false,
+    section = "Location",
+    scope = { id = "section:Location", epoch = 0, kind = "section" },
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+    location = {
+      mapId = 12,
+      symbol = "MAP_TEST_ROUTE",
+      section = "TEST_SECTION",
+      maps = { { mapId = 12, symbol = "MAP_TEST_ROUTE", displayName = "TEST_ROUTE", section = "TEST_SECTION" } },
+      generation = 1,
+      status = { state = "ready" },
+      tiles = { { fieldX = 32, fieldZ = 48, selectable = true } },
+      cursor = { fieldX = 32, fieldZ = 48 },
+    },
+    locationNavigation = {
+      page = "grid",
+      mapId = 12,
+      cursor = { fieldX = 32, fieldZ = 48 },
+      center = { fieldX = 32, fieldZ = 48 },
+      mapOffset = 0,
+    },
+  }
+  local gridLayout = computeLayout(gridView, 256, 192)
+  Assert.deepEqual(backLabels(gridLayout), { "back" }, "Location grid keeps one footer Back and no copy")
+end
+
+function T.tests.footer_discard_enables_only_for_the_active_section_changes()
+  local view = sectionStripView("Player")
+  view.ready, view.dirty = true, true
+  view.sectionDirty = false
+  local layout = computeLayout(view, 256, 192)
+  for _, action in ipairs(layout.actions) do
+    if action.id == "discard" then
+      Assert.isFalse(action.enabled, "a clean section keeps footer Discard disabled")
+    end
+  end
+  view.sectionDirty = true
+  layout = computeLayout(view, 256, 192)
+  for _, action in ipairs(layout.actions) do
+    if action.id == "discard" then
+      Assert.isTrue(action.enabled, "staged changes in the active section enable footer Discard")
+    end
+  end
+  view.modal = "leave"
+  view.scope = { id = "modal:leave", epoch = 1, kind = "decision", focusId = "cancel" }
+  view.sectionDirty = false
+  layout = computeLayout(view, 256, 192)
+  for _, action in ipairs(layout.actions) do
+    if action.id == "discard" then
+      Assert.isTrue(action.enabled, "the global leave decision keeps Discard all enabled")
+    end
+  end
 end
 
 return T

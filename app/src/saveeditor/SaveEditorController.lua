@@ -157,13 +157,6 @@ function Controller:press(action)
   end
   if self.section == "Location" then
     if action == "back" or action == "cancel" then
-      if self.locationFocus == "grid" then
-        self.locationFocus = "map-list"
-        self.locationPage = "map-list"
-        self:setFocus("list:location:map-list")
-        self:cancelInteraction()
-        return { kind = "location-page", page = "map-list" }
-      end
       return { kind = "back" }
     elseif action == "up" or action == "down" or action == "left" or action == "right" then
       local gridTarget = self.focus == "location:grid" or self.focus:match("^location:tile:") ~= nil

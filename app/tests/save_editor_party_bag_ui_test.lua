@@ -107,7 +107,13 @@ function T.party_layout_exposes_raw_and_readonly_fields_and_keeps_u32_edit_reach
       Assert.isTrue(sectionTargets["section:Party"], "Party must be an enabled section")
       Assert.isTrue(sectionTargets["section:Bag"], "Bag must be an enabled section")
     else
-      Assert.isTrue(sectionTargets.section, "compact screens must expose a touchable section chooser")
+      for _, name in ipairs({ "Location", "Player", "Party", "Bag", "Progress" }) do
+        Assert.isTrue(
+          sectionTargets["section:" .. name],
+          "compact screens expose " .. name .. " directly instead of a cycler"
+        )
+      end
+      Assert.isNil(sectionTargets.section, "compact screens keep no section cycler")
     end
 
     local requiredTargets = { "party:field:personality" }

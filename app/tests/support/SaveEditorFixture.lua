@@ -33,6 +33,9 @@ local function validationContext()
     audioSequenceIds = { [7] = true },
     monCatalog = CatalogFixture.makeCatalog(),
     itemCatalog = itemCatalog,
+    -- The editor never stages mart data; the untouched empty bucket only
+    -- needs a catalog shape that accepts its empty maps.
+    martCatalog = { cards = {}, apricorns = {}, seals = {} },
     scriptCompatibility = {
       validationOptions = function()
         return {
@@ -65,7 +68,7 @@ local function record(saveId)
     facing = "south",
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1234, money = 3000, badges = 5 },
+      profile = { name = "GOLD", gender = 0, trainerId = 1234, money = 3000, badges = 5, nationalDex = false },
       options = { textFrame = 1, textSpeed = "fast" },
     },
     world = {
@@ -109,6 +112,8 @@ local function record(saveId)
     audio = {},
     mons = MonsSave.empty(CatalogFixture.makeCatalog():fingerprint(), 7),
     bag = BagSave.empty(),
+    fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
+    mart = require("libs.hgss.src.save.MartSave").empty(),
     avatar = { state = "cycling" },
     weatherId = 2,
   }

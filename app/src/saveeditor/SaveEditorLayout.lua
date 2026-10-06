@@ -1,6 +1,7 @@
 -- Computes the editor's canonical logical rows and hit targets.
 
 local Layout = {}
+local PixelScale = require("libs.ui.src.PixelScale")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local SaveEditorList = require("app.src.saveeditor.SaveEditorList")
 local SaveEditorCard = require("app.src.saveeditor.SaveEditorCard")
@@ -35,14 +36,15 @@ function Layout.compute(view, width, height, metrics)
     }
   assert(type(metrics) == "table" and type(metrics.measure) == "function" and metrics.lineHeight > 0)
   local margin = width <= 280 and 4 or 12
-  local compactPartyDetails = width < 400
+  local compactParty = width < 400
     and view.section == "Party"
     and (view.partyPage == "detail" or view.partyPage == "draft")
   local compactBag = width <= 280 and view.section == "Bag"
-  local footerHeight = compactPartyDetails and width <= 280 and 38
+  local footerHeight = compactParty and width <= 280 and 38
     or compactBag and 38
     or math.max(40, metrics.lineHeight + 24)
-  local railWidth = width >= 400 and 88 or 0
+  local hasRail = width >= 400
+  local railWidth = hasRail and 88 or 0
   local railButtonHeight = 34
   local railStep = railButtonHeight + 4
   if railWidth > 0 and height >= 360 then
@@ -66,8 +68,11 @@ function Layout.compute(view, width, height, metrics)
       focusable[#focusable + 1] = targetId
     end
   end
-  local innerWidth = math.max(1, width - margin * 2 - (railWidth > 0 and railWidth + 6 or 0))
-  local contentX = margin + (railWidth > 0 and railWidth + 6 or 0)
+  local shellWidth = hasRail and math.min(width - margin * 2, 640) or width
+  local shellX = hasRail and PixelScale.snapLogical((width - shellWidth) / 2) or 0
+  local shell = rect(shellX, 0, shellWidth, height)
+  local innerWidth = math.max(1, shellWidth - margin * 2 - (railWidth > 0 and railWidth + 6 or 0))
+  local contentX = shellX + margin + (railWidth > 0 and railWidth + 6 or 0)
   local contentTop = margin
   local footerReserve = view.modal ~= nil and (margin + 2) or footerHeight
   local contentBottom = math.max(contentTop + 1, height - footerReserve - 2)
@@ -78,21 +83,20 @@ function Layout.compute(view, width, height, metrics)
   if railWidth > 0 then
     for index, name in ipairs(enabledSections) do
       local id = "section:" .. name
-      targets[id] = rect(margin, margin + (index - 1) * railStep, railWidth, railButtonHeight)
+      targets[id] = rect(shellX + margin, margin + (index - 1) * railStep, railWidth, railButtonHeight)
       navigation[#navigation + 1] = { role = "action", targetId = id, id = id, label = name, active = name == section }
       addFocusable(id)
     end
   else
-    local sectionWidth = compactPartyDetails and math.min(72, innerWidth) or innerWidth
-    targets.section = rect(margin, 0, sectionWidth, compactPartyDetails and 34 or math.max(30, metrics.lineHeight + 16))
-    navigation[#navigation + 1] = {
-      role = "action",
-      targetId = "section",
-      id = "section",
-      label = compactPartyDetails and section or ("Section: " .. section),
-    }
-    addFocusable("section")
-    contentTop = targets.section.y + targets.section.height
+    local stripHeight = math.max(30, metrics.lineHeight + 16)
+    local cellWidth = innerWidth / #enabledSections
+    for index, name in ipairs(enabledSections) do
+      local id = "section:" .. name
+      targets[id] = rect(contentX + (index - 1) * cellWidth, 0, cellWidth, stripHeight)
+      navigation[#navigation + 1] = { role = "action", targetId = id, id = id, label = name, active = name == section }
+      addFocusable(id)
+    end
+    contentTop = stripHeight
   end
   local function addRow(role, id, label, value, enabled)
     local y = contentTop + (#rows * rowHeight)
@@ -174,16 +178,16 @@ function Layout.compute(view, width, height, metrics)
 
   local partySummary
   if section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") then
-    if compactPartyDetails then
-      local summaryX = targets.section.x + targets.section.width + 4
-      local summaryWidth = contentX + innerWidth - summaryX
+    if not hasRail then
+      local summaryHeight = metrics.lineHeight + 4
       partySummary = {
         inline = true,
-        rect = rect(summaryX, targets.section.y, summaryWidth, targets.section.height),
-        iconRect = rect(summaryX, targets.section.y + 1, 32, targets.section.height - 2),
-        textRect = rect(summaryX + 36, targets.section.y + 2, summaryWidth - 38, targets.section.height - 4),
+        rect = rect(contentX, contentTop, innerWidth, summaryHeight),
+        iconRect = rect(contentX, contentTop + 1, 32, summaryHeight - 2),
+        textRect = rect(contentX + 36, contentTop + 2, innerWidth - 38, summaryHeight - 4),
       }
-    else
+      contentTop = contentTop + summaryHeight + 3
+    elseif hasRail then
       local summaryHeight = math.min(48, math.max(42, contentBottom - contentTop - rowHeight * 2))
       partySummary = {
         rect = rect(contentX, contentTop, innerWidth, summaryHeight),
@@ -202,7 +206,8 @@ function Layout.compute(view, width, height, metrics)
     local labels = view.partySubpages
     local tabX, tabY = contentX, contentTop
     local tabOffset = 0
-    if compactPartyDetails then
+    local compactTabs = width < 400
+    if compactTabs then
       local revealedSubpage = view.partySubpage
       local focusedSubpage = view.focus and view.focus:match("^party:subpage:(.+)$")
       if focusedSubpage ~= nil then
@@ -228,12 +233,12 @@ function Layout.compute(view, width, height, metrics)
       local id = "party:subpage:" .. label
       local tabWidth = math.ceil(metrics.measure(label) + 22)
       assert(tabWidth <= innerWidth, "party subpage label must fit within the available layout width")
-      if not compactPartyDetails and tabX > contentX and tabX + tabWidth > contentX + innerWidth then
+      if not compactTabs and tabX > contentX and tabX + tabWidth > contentX + innerWidth then
         tabX = contentX
         tabY = tabY + rowHeight + 2
       end
       local tab = rect(tabX - tabOffset, tabY, tabWidth, rowHeight)
-      if not compactPartyDetails or tab.x >= contentX and tab.x + tab.width <= contentX + innerWidth then
+      if not compactTabs or tab.x >= contentX and tab.x + tab.width <= contentX + innerWidth then
         targets[id] = tab
       end
       focusPositions[id] = tab
@@ -255,7 +260,6 @@ function Layout.compute(view, width, height, metrics)
   elseif view.status == "error" then
     addRow("warning", "error", "Save unavailable", view.message or "Could not open save")
     addRow("action", "retry", "Retry", "", true)
-    addRow("action", "back", "Back", "", true)
   elseif section == "Location" then
     local location = assert(view.location, "Location needs the headless service snapshot")
     local locationNav = assert(view.locationNavigation, "Location needs controller navigation state")
@@ -812,13 +816,19 @@ function Layout.compute(view, width, height, metrics)
     addRow("read-only value", "section", section, "Available in a later update")
   end
 
+  local discardEnabled
+  if view.modal ~= nil then
+    discardEnabled = view.ready == true and view.dirty == true
+  else
+    discardEnabled = view.ready == true and view.sectionDirty == true
+  end
   local actions = {
     {
       id = "save",
       label = "Save",
       enabled = view.ready == true and view.dirty == true and view.valueEditor == nil and view.unappliedDraft ~= true,
     },
-    { id = "discard", label = "Discard", enabled = view.ready == true and view.dirty == true },
+    { id = "discard", label = "Discard", enabled = discardEnabled },
     { id = "back", label = "Back", enabled = true },
   }
   local actionWidths = {
@@ -1043,6 +1053,8 @@ function Layout.compute(view, width, height, metrics)
         targetId = id,
         label = id == "bag:quantity" and "Quantity"
           or id == "bag:remove" and "Remove"
+          or view.modal == "leave" and id == "save" and "Save & exit"
+          or view.modal == "leave" and id == "discard" and "Discard all"
           or id:sub(1, 1):upper() .. id:sub(2),
         semantic = (id == "save" or id == "apply") and "primary"
           or (id == "discard" or id == "remove" or id == "bag:remove") and "destructive"
@@ -1474,8 +1486,9 @@ function Layout.compute(view, width, height, metrics)
   end
   return {
     viewport = rect(0, 0, width, height),
+    shell = shell,
     content = rect(contentX, contentTop, innerWidth, contentBottom - contentTop),
-    footer = rect(margin, height - footerHeight, innerWidth, footerHeight),
+    footer = rect(contentX, height - footerHeight, innerWidth, footerHeight),
     rows = rows,
     focusedValueHelp = focusedValueHelp,
     navigation = navigation,

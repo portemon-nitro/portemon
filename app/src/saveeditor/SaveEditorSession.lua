@@ -75,6 +75,7 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field setLocation fun(self: SaveEditorSession, placement: SaveEditorLocation): table<string, unknown>
 ---@field save fun(self: SaveEditorSession, hasUnappliedDraft: boolean?): table<string, unknown>
 ---@field discard fun(self: SaveEditorSession): boolean
+---@field discardSection fun(self: SaveEditorSession, section: string): boolean
 ---@field private _baseline table<string, unknown>
 ---@field private _entryCheckpoint table<string, unknown>
 ---@field private _money integer
@@ -856,36 +857,88 @@ function SaveEditorSession:save(hasUnappliedDraft)
   error(result)
 end
 
----@return boolean
-function SaveEditorSession:discard()
-  if self._busy then
+local SECTION_NAMES = { Location = true, Player = true, Party = true, Bag = true, Progress = true }
+
+---@param section string
+---@return boolean changed
+local function resetSection(self, section)
+  if section == "Player" then
+    local playerData = self._baseline.playerData --[[@as table<string, unknown>]]
+    local profile = playerData.profile --[[@as table<string, unknown>]]
+    local playerOptions = playerData.options --[[@as table<string, unknown>]]
+    local changed = self._money ~= profile.money or self._frameIndex ~= playerOptions.textFrame
+    self._money = profile.money --[[@as integer]]
+    self._frameIndex = playerOptions.textFrame --[[@as integer]]
+    return changed
+  elseif section == "Progress" then
+    local _, dirtyFlags = dirtyAgainst(self._baseline, self._money, self._events)
+    if dirtyFlags then
+      self._events = FieldEventState.new(eventSnapshot(self._baseline))
+      return true
+    end
+    return false
+  elseif section == "Location" then
+    if not sameLocation(self._location, locationSnapshot(self._baseline)) then
+      self._location = locationSnapshot(self._baseline)
+      return true
+    end
+    return false
+  elseif section == "Party" then
+    if not equal(self._monService:capture(), self._baseline.mons) then
+      self._monService = newMonService(self._monServiceOptions, self._baseline.mons --[[@as table<string, unknown>]])
+      return true
+    end
     return false
   end
-  local changed = self:isDirty()
-  if not changed then
-    self._drafts = setmetatable({}, { __mode = "k" })
-    return false
-  end
-  local playerData = self._baseline.playerData --[[@as table<string, unknown>]]
-  local profile = playerData.profile --[[@as table<string, unknown>]]
-  self._money = profile.money --[[@as integer]]
-  local playerOptions = playerData.options --[[@as table<string, unknown>]]
-  self._frameIndex = playerOptions.textFrame --[[@as integer]]
-  self._location = locationSnapshot(self._baseline)
-  self._events = FieldEventState.new(eventSnapshot(self._baseline))
-  if not equal(self._monService:capture(), self._baseline.mons) then
-    self._monService = newMonService(self._monServiceOptions, self._baseline.mons --[[@as table<string, unknown>]])
-    self._partyRevision = self._partyRevision + 1
-  end
+  assert(section == "Bag", "save editor section reset covers every top-level section")
   if not equal(self._bagService:capture(), self._baseline.bag) then
     self._bagService = HgssBagService.new({
       catalog = self._bagService:catalog(),
       bag = self._baseline.bag,
     })
+    return true
+  end
+  return false
+end
+
+---@return boolean
+function SaveEditorSession:discard()
+  if self._busy then
+    return false
+  end
+  if not self:isDirty() then
+    self._drafts = setmetatable({}, { __mode = "k" })
+    return false
+  end
+  local partyChanged = resetSection(self, "Party")
+  resetSection(self, "Player")
+  resetSection(self, "Progress")
+  resetSection(self, "Location")
+  resetSection(self, "Bag")
+  if partyChanged then
+    self._partyRevision = self._partyRevision + 1
   end
   self._drafts = setmetatable({}, { __mode = "k" })
   self._revision = self._revision + 1
   return true
+end
+
+---@param section string
+---@return boolean changed
+function SaveEditorSession:discardSection(section)
+  assert(SECTION_NAMES[section] == true, "unknown save editor section: " .. tostring(section))
+  if self._busy then
+    return false
+  end
+  local changed = resetSection(self, section)
+  if section == "Party" and changed then
+    self._partyRevision = self._partyRevision + 1
+    self._drafts = setmetatable({}, { __mode = "k" })
+  end
+  if changed then
+    self._revision = self._revision + 1
+  end
+  return changed
 end
 
 return SaveEditorSession
