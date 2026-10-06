@@ -226,6 +226,70 @@ function T.interruption_captures_validate_and_reject_foreign_or_live_state()
   session:dispose()
 end
 
+-- Every entry carries its immutable native turn clock: occupants seated at
+-- creation stamp the opening turn, a replacement stamps the current turn
+-- with a fresh token while leaving destroys access, and captures
+-- round-trip the marker exactly. Previous-version captures and
+-- current-version captures missing the marker reject outright.
+function T.activation_entry_clock_round_trips_and_rejects_stale_state()
+  local contracts = SessionFixture.sessionContracts()
+  local BattleState = SessionFixture.requirePresent(
+    "libs.battle.src.BattleState",
+    "activation lifetime owns the entry clock"
+  )
+  local Snapshot = contracts.Snapshot
+
+  local live = BattleState.create(SessionFixture.buildScenario(interruptible()))
+  Assert.equal(BattleState.nativeTurn(live), 0, "the opening round maps to the first native turn")
+  local first = BattleState.combatant(live, 1).active --[[@as table<string, unknown>]]
+  Assert.equal(first.entryTurn, 0, "creation entries stamp the opening turn")
+  local third = BattleState.combatant(live, 3).active --[[@as table<string, unknown>]]
+  Assert.equal(third.entryTurn, 0, "every opening occupant stamps the opening turn")
+  local firstToken = first.activation
+
+  BattleState.leave(live, 1)
+  Assert.isNil(BattleState.combatant(live, 1).active, "leaving destroys entry access")
+  live.round = 4
+  Assert.equal(BattleState.nativeTurn(live), 3, "later rounds map without off-by-one drift")
+  local token = BattleState.enter(live, 2, 1)
+  local replacement = BattleState.combatant(live, 2).active --[[@as table<string, unknown>]]
+  Assert.equal(replacement.entryTurn, 3, "replacements stamp the current native turn")
+  Assert.equal(replacement.activation, token, "replacements carry their fresh token")
+  Assert.isTrue(token ~= firstToken, "replacements never reuse a stale token")
+
+  local held = Snapshot.capture(live)
+  Assert.isTrue(Snapshot.validate(held), "entry clocks validate")
+  local combatants = held.combatants --[[@as table<integer, table<string, unknown>>]]
+  local heldActive = combatants[2].active --[[@as table<string, unknown>]]
+  Assert.equal(heldActive.entryTurn, 3, "captures carry the replacement marker")
+  local restored = Snapshot.restore(held)
+  local restoredCombatants = restored.combatants --[[@as table<integer, table<string, unknown>>]]
+  local restoredActive = restoredCombatants[2].active --[[@as table<string, unknown>]]
+  Assert.equal(restoredActive.entryTurn, 3, "restore preserves the marker exactly")
+  Assert.equal(restoredActive.activation, token, "restore preserves the fresh token")
+
+  local stale = Snapshot.capture(live)
+  stale.version = stale.version --[[@as integer]] - 1
+  Assert.throws(function()
+    Snapshot.validate(stale)
+  end, "previous-version captures never validate")
+  Assert.throws(function()
+    contracts.Session.restore(stale, SessionFixture.makeContent())
+  end, "previous-version captures never restore")
+
+  local missing = Snapshot.capture(live)
+  local missingCombatants = missing.combatants --[[@as table<integer, table<string, unknown>>]]
+  local missingActive = missingCombatants[2].active --[[@as table<string, unknown>]]
+  missingActive.entryTurn = nil
+  Assert.throws(function()
+    Snapshot.validate(missing)
+  end, "current-version captures without the marker never validate")
+  missingActive.entryTurn = "third"
+  Assert.throws(function()
+    Snapshot.validate(missing)
+  end, "non-integral markers never validate")
+end
+
 -- Rejects non-record captures before any shape check: validation is
 -- nil-safe on the way out but never accepts absent or scalar input, and
 -- restore follows the same boundary.

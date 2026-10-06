@@ -1323,6 +1323,66 @@ function T.seeded_effect_records_survive_capture_restore_exactly()
   revived:dispose()
 end
 
+-- A live turn runs field recovery before mon affliction for the same
+-- battler: the wounded ring-bearer heals before the seed drains it,
+-- regardless of the seed's earlier creation ordinal.
+function T.live_turn_residuals_heal_before_they_drain_the_same_battler()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local Executor = executorOwner()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local activation = combatantOf(session:capture(), 1).active.activation --[[@as integer]]
+  local snapshot = session:capture()
+  session:dispose()
+  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  local wounded = combatants[1].hp --[[@as integer]] - 8
+  if wounded < 1 then
+    wounded = 1
+  end
+  combatants[1].hp = wounded
+  snapshot.effects[#snapshot.effects + 1] = effectRecord(
+    "leechseed",
+    1,
+    { kind = "active", combatant = 1, activation = activation },
+    { kind = "move", combatant = 2 },
+    { version = 1 }
+  )
+  snapshot.effects[#snapshot.effects + 1] = effectRecord(
+    "aquaring",
+    2,
+    { kind = "active", combatant = 1, activation = activation },
+    { kind = "move", combatant = 1 },
+    { version = 1 }
+  )
+  local restored = Executor.restore(snapshot, content)
+  local _, events = playTurn(restored, strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  }))
+  local healedAt = nil
+  local tickAt = nil
+  for index, event in ipairs(events) do
+    local payload = event.payload --[[@as table<string, unknown>]]
+    if type(payload) == "table" then
+      if payload.key == "aquaring" and healedAt == nil then
+        healedAt = index
+      end
+      if payload.key == "leechseed" and tickAt == nil then
+        tickAt = index
+      end
+    end
+  end
+  Assert.notNil(healedAt, "the wounded ring-bearer heals")
+  Assert.notNil(tickAt, "the seed drains its host")
+  Assert.isTrue(
+    healedAt --[[@as integer]] < tickAt --[[@as integer]],
+    "recovery precedes affliction for the same battler"
+  )
+  restored:dispose()
+end
+
 -- An arrival fainted by its own entry hazard still owes its replacement:
 -- the answered replacement sends a one-health reserve into rock, the
 -- hazard kill drains through faint ownership into a second replacement,

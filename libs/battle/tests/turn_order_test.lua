@@ -15,9 +15,10 @@ local T = {}
 ---@param kind string action class under test
 ---@param priority integer move priority bracket
 ---@param speed integer effective speed already folding outside adjustments
+---@param flags table<string, boolean|string|integer>? special ordering facts under test
 ---@return table ordering candidate in plain data
-local function candidate(id, ordinal, kind, priority, speed)
-  return {
+local function candidate(id, ordinal, kind, priority, speed, flags)
+  local record = {
     id = id,
     actor = { combatant = id, activation = 1 },
     kind = kind,
@@ -26,6 +27,59 @@ local function candidate(id, ordinal, kind, priority, speed)
     priority = priority,
     speed = speed,
   }
+  if flags ~= nil then
+    for name, value in pairs(flags) do
+      record[name] = value
+    end
+  end
+  return record
+end
+
+---@param verdicts boolean[] scripted swap verdicts in consumption order
+---@return table scripted stream recording every tie label
+local function scriptedStream(verdicts)
+  local stream = { _calls = 0, _labels = {} } ---@type table<string, unknown>
+  function stream.nextU16(self, label, cause)
+    assert(type(label) == "string" and label ~= "", "tie draws name their call site")
+    assert(type(cause) == "table", "tie draws carry their semantic cause")
+    local inner = self --[[@as table<string, unknown>]]
+    local calls = inner._calls --[[@as integer]] + 1
+    inner._calls = calls
+    local labels = inner._labels --[[@as string[] ]]
+    labels[#labels + 1] = label
+    local verdict = verdicts[calls]
+    assert(verdict ~= nil, "scripted tie draws cover every comparison")
+    if verdict == true then
+      return 1
+    end
+    return 0
+  end
+  function stream.capture(self)
+    local inner = self --[[@as table<string, unknown>]]
+    return { calls = inner._calls, labels = inner._labels }
+  end
+  return stream
+end
+
+---@param ids integer[] initial identities in selection order
+---@param verdicts boolean[] swap verdicts per nested comparison
+---@return integer[] expected order after the nested pairwise comparison sequence
+local function pairwiseReference(ids, verdicts)
+  local ordered = {}
+  for _, id in ipairs(ids) do
+    ordered[#ordered + 1] = id
+  end
+  local used = 0
+  for i = 1, #ordered - 1 do
+    for j = i + 1, #ordered do
+      used = used + 1
+      assert(verdicts[used] ~= nil, "reference draws cover every comparison")
+      if verdicts[used] then
+        ordered[i], ordered[j] = ordered[j], ordered[i]
+      end
+    end
+  end
+  return ordered
 end
 
 ---@param TurnOrder table native ordering owner under test
@@ -213,6 +267,197 @@ function T.malformed_candidates_fail_without_consuming_draws()
   Assert.equal(#fresh, 1, "single candidates order alone")
   Assert.isNil(fresh[1].parentActionId, "fresh actions carry no parent linkage")
   Assert.equal(fresh[1].progress, "queued", "fresh actions wait queued")
+end
+
+function T.three_and_four_way_ties_follow_pairwise_draw_topology()
+  local TurnOrder =
+    SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "recorded traversal owns turn and action ordering")
+
+  local threeScript = { true, true, true }
+  local threeStream = scriptedStream(threeScript)
+  local three = TurnOrder.buildActions({
+    candidate(3, 3, "attack", 0, 100),
+    candidate(1, 1, "attack", 0, 100),
+    candidate(2, 2, "attack", 0, 100),
+  }, { trickRoom = false }, threeStream)
+  Assert.deepEqual(orderIds(three), { 3, 2, 1 }, "three all-swap ties reverse through pairwise comparisons")
+  local threeCalls = threeStream:capture()
+  Assert.equal(threeCalls.calls, 3, "a three-way exact tie consumes three draws")
+  Assert.deepEqual(
+    threeCalls.labels,
+    { "speed_tie", "speed_tie", "speed_tie" },
+    "action ties draw from the labeled speed-tie stream"
+  )
+
+  local alternating = { true, false, true }
+  local alternatingStream = scriptedStream(alternating)
+  local mixed = TurnOrder.buildActions({
+    candidate(1, 1, "attack", 0, 100),
+    candidate(2, 2, "attack", 0, 100),
+    candidate(3, 3, "attack", 0, 100),
+  }, { trickRoom = false }, alternatingStream)
+  Assert.deepEqual(
+    orderIds(mixed),
+    pairwiseReference({ 1, 2, 3 }, alternating),
+    "alternating verdicts match the nested comparison sequence"
+  )
+  Assert.equal(alternatingStream:capture().calls, 3, "alternating verdicts still consume three draws")
+
+  local fourScript = { true, true, true, true, true, true }
+  local fourStream = scriptedStream(fourScript)
+  local four = TurnOrder.buildActions({
+    candidate(4, 4, "attack", 0, 100),
+    candidate(3, 3, "attack", 0, 100),
+    candidate(2, 2, "attack", 0, 100),
+    candidate(1, 1, "attack", 0, 100),
+  }, { trickRoom = false }, fourStream)
+  Assert.deepEqual(orderIds(four), { 4, 3, 2, 1 }, "four all-swap ties reverse through pairwise comparisons")
+  Assert.deepEqual(
+    orderIds(four),
+    pairwiseReference({ 1, 2, 3, 4 }, fourScript),
+    "four-way order matches the nested comparison sequence"
+  )
+  Assert.equal(fourStream:capture().calls, 6, "a four-way exact tie consumes six draws")
+end
+
+function T.trick_room_reverses_only_the_plain_speed_branch()
+  local TurnOrder =
+    SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "recorded traversal owns turn and action ordering")
+
+  ---@param candidates table[] ordering candidates under the pair
+  ---@param trickRoom boolean whether the speed dimension is reversed
+  ---@return integer[] action identities in execution order
+  ---@return integer tie draws consumed
+  local function orderPair(candidates, trickRoom)
+    local stream = scriptedStream({})
+    local ordered = TurnOrder.buildActions(candidates, { trickRoom = trickRoom }, stream)
+    return orderIds(ordered), stream:capture().calls
+  end
+
+  local fastFirst, fastDraws = orderPair({
+    candidate(1, 1, "attack", 0, 90, { boostedPriority = true }),
+    candidate(2, 2, "attack", 0, 110, { boostedPriority = true }),
+  }, false)
+  Assert.deepEqual(fastFirst, { 2, 1 }, "both boosted stays faster-first without reversal")
+  Assert.equal(fastDraws, 0, "unequal boosted speeds draw nothing")
+  local fastReversed = orderPair({
+    candidate(1, 1, "attack", 0, 90, { boostedPriority = true }),
+    candidate(2, 2, "attack", 0, 110, { boostedPriority = true }),
+  }, true)
+  Assert.deepEqual(fastReversed, { 2, 1 }, "both boosted stays faster-first under reversal")
+
+  local slowFirst, slowDraws = orderPair({
+    candidate(1, 1, "attack", 0, 90, { loweredPriority = true }),
+    candidate(2, 2, "attack", 0, 110, { loweredPriority = true }),
+  }, false)
+  Assert.deepEqual(slowFirst, { 1, 2 }, "both lowered stays slower-first without reversal")
+  Assert.equal(slowDraws, 0, "unequal lowered speeds draw nothing")
+  local slowReversed = orderPair({
+    candidate(1, 1, "attack", 0, 90, { loweredPriority = true }),
+    candidate(2, 2, "attack", 0, 110, { loweredPriority = true }),
+  }, true)
+  Assert.deepEqual(slowReversed, { 1, 2 }, "both lowered stays slower-first under reversal")
+
+  local stallFirst = orderPair({
+    candidate(1, 1, "attack", 0, 90, { stall = true }),
+    candidate(2, 2, "attack", 0, 110, { stall = true }),
+  }, false)
+  Assert.deepEqual(stallFirst, { 1, 2 }, "both stalled stays slower-first without reversal")
+  local stallReversed = orderPair({
+    candidate(1, 1, "attack", 0, 90, { stall = true }),
+    candidate(2, 2, "attack", 0, 110, { stall = true }),
+  }, true)
+  Assert.deepEqual(stallReversed, { 1, 2 }, "both stalled stays slower-first under reversal")
+
+  local plain = orderPair({
+    candidate(1, 1, "attack", 0, 90),
+    candidate(2, 2, "attack", 0, 110),
+  }, false)
+  Assert.deepEqual(plain, { 2, 1 }, "plain pairs stay faster-first without reversal")
+  local plainReversed = orderPair({
+    candidate(1, 1, "attack", 0, 90),
+    candidate(2, 2, "attack", 0, 110),
+  }, true)
+  Assert.deepEqual(plainReversed, { 1, 2 }, "only plain pairs reverse under reversal")
+
+  local boostedSlow = orderPair({
+    candidate(1, 1, "attack", 0, 50, { boostedPriority = true }),
+    candidate(2, 2, "attack", 0, 200),
+  }, true)
+  Assert.deepEqual(boostedSlow, { 1, 2 }, "one boosted action wins without consulting speed")
+  local loweredSlow = orderPair({
+    candidate(1, 1, "attack", 0, 50, { loweredPriority = true }),
+    candidate(2, 2, "attack", 0, 200),
+  }, true)
+  Assert.deepEqual(loweredSlow, { 2, 1 }, "one lowered action loses without consulting reversal")
+  local stalledFast = orderPair({
+    candidate(1, 1, "attack", 0, 200, { stall = true }),
+    candidate(2, 2, "attack", 0, 50),
+  }, true)
+  Assert.deepEqual(stalledFast, { 2, 1 }, "one stalled action loses without consulting reversal")
+
+  local tiedStream = scriptedStream({ false })
+  local tied = TurnOrder.buildActions({
+    candidate(1, 1, "attack", 0, 100, { boostedPriority = true }),
+    candidate(2, 2, "attack", 0, 100, { boostedPriority = true }),
+  }, { trickRoom = true }, tiedStream)
+  Assert.equal(tiedStream:capture().calls, 1, "equal boosted speeds draw exactly once")
+  Assert.deepEqual(memberIds(tied), { 1, 2 }, "equal boosted ties keep every action")
+end
+
+function T.residual_and_entry_ties_follow_pairwise_topology()
+  local TurnOrder =
+    SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "recorded traversal owns turn and action ordering")
+
+  local residualScript = { true, true, true }
+  local residualStream = scriptedStream(residualScript)
+  local residuals = TurnOrder.orderResiduals({
+    { id = 3, speed = 100 },
+    { id = 1, speed = 100 },
+    { id = 2, speed = 100 },
+  }, { trickRoom = false }, residualStream)
+  Assert.deepEqual(orderIds(residuals), { 3, 2, 1 }, "residual all-swap ties reverse pairwise")
+  local residualCalls = residualStream:capture()
+  Assert.equal(residualCalls.calls, 3, "a three-way residual tie consumes three draws")
+  Assert.deepEqual(
+    residualCalls.labels,
+    { "residual_tie", "residual_tie", "residual_tie" },
+    "residual ties draw from the labeled residual stream"
+  )
+
+  local entryStream = scriptedStream(residualScript)
+  local entries = TurnOrder.orderEntryEffects({
+    { id = 1, speed = 100 },
+    { id = 2, speed = 100 },
+    { id = 3, speed = 100 },
+  }, { trickRoom = false }, entryStream)
+  Assert.deepEqual(orderIds(entries), pairwiseReference({ 1, 2, 3 }, residualScript), "entry ties match pairwise")
+  local entryCalls = entryStream:capture()
+  Assert.equal(entryCalls.calls, 3, "a three-way entry tie consumes three draws")
+  Assert.deepEqual(
+    entryCalls.labels,
+    { "entry_tie", "entry_tie", "entry_tie" },
+    "entry ties draw from the labeled entry stream"
+  )
+end
+
+function T.malformed_special_order_facts_fail_before_any_draw()
+  local TurnOrder =
+    SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "recorded traversal owns turn and action ordering")
+  local stream = scriptedStream({ true })
+  local boosted = candidate(1, 1, "attack", 0, 100, { boostedPriority = "yes" })
+  Assert.throws(function()
+    TurnOrder.buildActions({ boosted }, { trickRoom = false }, stream)
+  end, "boosted facts stay boolean")
+  local lowered = candidate(1, 1, "attack", 0, 100, { loweredPriority = 1 })
+  Assert.throws(function()
+    TurnOrder.buildActions({ lowered }, { trickRoom = false }, stream)
+  end, "lowered facts stay boolean")
+  local stalled = candidate(1, 1, "attack", 0, 100, { stall = 0 })
+  Assert.throws(function()
+    TurnOrder.buildActions({ stalled }, { trickRoom = false }, stream)
+  end, "stall facts stay boolean")
+  Assert.equal(stream:capture().calls, 0, "rejected special facts never reach the stream")
 end
 
 return { tests = T }

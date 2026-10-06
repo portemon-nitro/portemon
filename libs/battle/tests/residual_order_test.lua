@@ -216,10 +216,10 @@ function T.perish_count_expires_after_its_final_tick()
   local outcome = Residuals.step(dispatch, context)
   Assert.deepEqual(
     EffectFixture.eventSignatures(outcome.events),
-    { "tick:1", "expire:1", "faint:1", "tick:2" },
-    "the final tick precedes expiration, faint, and the survivor's tick"
+    { "tick:2", "tick:1", "expire:1", "faint:1" },
+    "the mon-phase tick precedes the extra-phase expiration and its faint"
   )
-  Assert.equal(context.health[2], 16, "the survivor still ticks after the faint")
+  Assert.equal(context.health[2], 16, "the survivor still ticks before the faint")
 end
 
 -- Budgeted suspension matches one unbounded run event for event, every
@@ -384,6 +384,239 @@ function T.attribution_outlives_the_source()
     bag:get(seed.id).source,
     { kind = "probe", combatant = 1, activation = 1 },
     "dispatch never rewrites stored attribution"
+  )
+end
+
+---@param bag table live effect bag under the plan
+---@param key string native definition identity under the instance
+---@param scope table<string, unknown> owner scope for the instance
+---@param state table<string, unknown> typed state for the instance
+---@return table<string, unknown> stored instance record
+local function addNative(bag, key, scope, state)
+  local Handlers = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "one registration owner binds native definitions to their handlers"
+  )
+  return bag:add(Handlers.definitionFor(key), scope, EffectFixture.cause(2, 1), state)
+end
+
+---@param events table[] emitted event records under test
+---@return string[] effect keys in emission order
+local function eventKeys(events)
+  local keys = {}
+  for _, event in ipairs(events) do
+    assert(type(event.key) == "string", "residual events name their effect")
+    keys[#keys + 1] = event.key
+  end
+  return keys
+end
+
+---@param keys string[] effect keys under the recording handlers
+---@return table<string, fun(instance: table, context: table): table> handlers emitting one keyed event
+local function recordingHandlers(keys)
+  local handlers = {}
+  for _, key in ipairs(keys) do
+    handlers[key] = function(instance, _)
+      local scope = instance.scope --[[@as table<string, unknown>]]
+      return { kind = "tick", key = instance.key, combatant = scope.combatant or 0 }
+    end
+  end
+  return handlers
+end
+
+-- End-of-turn work follows the controller state order: field conditions in
+-- source order, then every mon condition for the current battler in source
+-- order, then the field-extra states. Creation order cannot move a
+-- native-known instance out of its phase.
+function T.end_of_turn_phases_follow_controller_state_order()
+  local EffectBag = bagOwner("scoped effect instances own their lifetimes")
+  local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
+  local Residuals = residualsOwner("native residual continuation owns phase and cursor structure")
+
+  local bag = EffectBag.new()
+  -- Deliberately reversed creation order: extras first, field last.
+  addNative(bag, "trickroom", EffectFixture.fieldScope(), { version = 1, turns = 5 })
+  addNative(bag, "perishsong", EffectFixture.activeScope(1, 1), { version = 1, turns = 5 })
+  addNative(bag, "futuresight", EffectFixture.positionScope(1), { version = 1, turns = 5 })
+  bag:add(
+    testDefinition("burn", "affliction", "clear"),
+    EffectFixture.activeScope(1, 1),
+    EffectFixture.cause(2, 1),
+    { version = 1 }
+  )
+  bag:add(
+    testDefinition("poison", "affliction", "clear"),
+    EffectFixture.activeScope(1, 1),
+    EffectFixture.cause(2, 1),
+    { version = 1 }
+  )
+  addNative(bag, "leechseed", EffectFixture.activeScope(1, 1), { version = 1 })
+  addNative(bag, "ingrain", EffectFixture.activeScope(1, 1), { version = 1 })
+  addNative(bag, "sandstorm", EffectFixture.fieldScope(), { version = 1, turns = 5 })
+  addNative(bag, "wish", EffectFixture.positionScope(1), { version = 1, turns = 5 })
+  addNative(bag, "reflect", EffectFixture.sideScope(1), { version = 1, turns = 5 })
+
+  local keys =
+    { "trickroom", "perishsong", "futuresight", "burn", "poison", "leechseed", "ingrain", "sandstorm", "wish", "reflect" }
+  local dispatch = EffectDispatch.new(bag, recordingHandlers(keys))
+  local context = EffectFixture.residualContext({ [1] = 70 }, { [1] = 100 }, 7)
+  local outcome = Residuals.step(dispatch, context)
+  Assert.isTrue(outcome.done, "the phased pass completes")
+  Assert.deepEqual(
+    eventKeys(outcome.events),
+    {
+      "reflect",
+      "wish",
+      "sandstorm",
+      "ingrain",
+      "leechseed",
+      "poison",
+      "burn",
+      "futuresight",
+      "perishsong",
+      "trickroom",
+    },
+    "field states precede mon states precede extra states in source order"
+  )
+end
+
+-- The mon phase nests by battler: the faster battler's recovery and
+-- affliction both complete before the slower battler's, and a budgeted
+-- run restored halfway emits exactly the unbounded sequence with no
+-- duplicate tick.
+function T.per_battler_nesting_and_resume_match_unbounded_run()
+  local EffectBag = bagOwner("scoped effect instances own their lifetimes")
+  local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
+  local Residuals = residualsOwner("native residual continuation owns phase and cursor structure")
+
+  ---@return table bag with recovery and affliction on two battlers
+  local function buildBag()
+    local bag = EffectBag.new()
+    bag:add(
+      testDefinition("leechseed", "affliction", "clear"),
+      EffectFixture.activeScope(2, 1),
+      EffectFixture.cause(1, 1),
+      { version = 1 }
+    )
+    bag:add(
+      testDefinition("leechseed", "affliction", "clear"),
+      EffectFixture.activeScope(1, 1),
+      EffectFixture.cause(2, 1),
+      { version = 1 }
+    )
+    addNative(bag, "ingrain", EffectFixture.activeScope(2, 1), { version = 1 })
+    addNative(bag, "ingrain", EffectFixture.activeScope(1, 1), { version = 1 })
+    return bag
+  end
+  local handlers = {
+    ingrain = function(instance, context)
+      local combatant = instance.scope.combatant
+      context.health[combatant] = context.health[combatant] + 2
+      return { kind = "healed", key = "ingrain", combatant = combatant, restored = 2 }
+    end,
+    leechseed = function(instance, context)
+      local combatant = instance.scope.combatant
+      context.health[combatant] = context.health[combatant] - 4
+      return { kind = "tick", key = "leechseed", combatant = combatant, amount = 4 }
+    end,
+  }
+  local speeds = { [1] = 100, [2] = 50 }
+
+  local whole = Residuals.step(
+    EffectDispatch.new(buildBag(), handlers),
+    EffectFixture.residualContext(speeds, { [1] = 100, [2] = 100 }, 7)
+  )
+  Assert.isTrue(whole.done, "the unbounded pass completes")
+  Assert.deepEqual(
+    EffectFixture.eventSignatures(whole.events),
+    { "healed:1", "tick:1", "healed:2", "tick:2" },
+    "the faster battler's mon sequence completes before the slower's"
+  )
+
+  local steppedDispatch = EffectDispatch.new(buildBag(), handlers)
+  local steppedHealth = { [1] = 100, [2] = 100 }
+  local stepped = {}
+  local resume = nil
+  while true do
+    local context = EffectFixture.residualContext(speeds, steppedHealth, 7)
+    context.resume = resume
+    local outcome = Residuals.step(steppedDispatch, context, 1)
+    Residuals.validateFrame(outcome.frame)
+    for _, event in ipairs(outcome.events) do
+      stepped[#stepped + 1] = event
+    end
+    if outcome.done then
+      break
+    end
+    resume = outcome.frame
+  end
+  Assert.deepEqual(stepped, whole.events, "budgeted suspension preserves the nested sequence")
+
+  local bag = buildBag()
+  local dispatch = EffectDispatch.new(bag, handlers)
+  local health = { [1] = 100, [2] = 100 }
+  local firstContext = EffectFixture.residualContext(speeds, health, 7)
+  local first = Residuals.step(dispatch, firstContext, 1)
+  Assert.isFalse(first.done, "a unit budget suspends the nested pass")
+
+  local revived = EffectBag.new(bag:capture())
+  local resumedDispatch = EffectDispatch.new(revived, handlers)
+  local tailHealth = { [1] = health[1], [2] = health[2] }
+  local tail = {}
+  for _, event in ipairs(first.events) do
+    tail[#tail + 1] = event
+  end
+  local cursor = first.frame
+  while cursor ~= nil do
+    local probe = EffectFixture.residualContext(speeds, tailHealth, 7)
+    probe.resume = cursor
+    local outcome = Residuals.step(resumedDispatch, probe, 1)
+    Residuals.validateFrame(outcome.frame)
+    for _, event in ipairs(outcome.events) do
+      tail[#tail + 1] = event
+    end
+    if outcome.done then
+      break
+    end
+    SessionFixture.assertPlainData(outcome.frame, "frame")
+    cursor = outcome.frame
+  end
+  Assert.deepEqual(tail, whole.events, "restore resumes the nested pass without repeating ticks")
+  Assert.deepEqual(
+    EffectFixture.eventSignatures(tail),
+    { "healed:1", "tick:1", "healed:2", "tick:2" },
+    "no mon tick runs twice across the restore"
+  )
+end
+
+-- Instances without a native source slot trail every planned entry
+-- deterministically: a native-looking category on an unknown key never
+-- jumps ahead of a known field or mon state.
+function T.unknown_extension_instances_trail_native_order()
+  local EffectBag = bagOwner("scoped effect instances own their lifetimes")
+  local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
+  local Residuals = residualsOwner("native residual continuation owns phase and cursor structure")
+
+  local bag = EffectBag.new()
+  bag:add(
+    testDefinition("customgadget", "weather", "clear"),
+    EffectFixture.fieldScope(),
+    EffectFixture.cause(1, 1),
+    { version = 1 }
+  )
+  addNative(bag, "sandstorm", EffectFixture.fieldScope(), { version = 1, turns = 5 })
+  addNative(bag, "leechseed", EffectFixture.activeScope(1, 1), { version = 1 })
+  local dispatch = EffectDispatch.new(
+    bag,
+    recordingHandlers({ "customgadget", "sandstorm", "leechseed" })
+  )
+  local outcome =
+    Residuals.step(dispatch, EffectFixture.residualContext({ [1] = 70 }, { [1] = 100 }, 7))
+  Assert.isTrue(outcome.done, "the mixed pass completes")
+  Assert.deepEqual(
+    eventKeys(outcome.events),
+    { "sandstorm", "leechseed", "customgadget" },
+    "unknown extensions trail every native-known state"
   )
 end
 

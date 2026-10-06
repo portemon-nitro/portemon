@@ -1199,8 +1199,9 @@ function T.slower_raised_priority_strikes_first_and_faster_lowered_priority_stri
 end
 
 -- Only genuine Speed ties draw the battle stream: an unequal-Speed turn
--- consumes exactly one fewer draw than the same turn with tied Speeds, and
--- the faster combatant leads every seed without any draw to take.
+-- consumes exactly two fewer draws than the same turn with tied Speeds --
+-- one action-order tie and one residual battler-order tie -- and the
+-- faster combatant leads every seed without any draw to take.
 function T.unequal_speeds_order_without_tie_draws_while_true_ties_draw_once()
   local facts = {
     TACKLE = strikeFacts(0, "normal", 1),
@@ -1231,7 +1232,11 @@ function T.unequal_speeds_order_without_tie_draws_while_true_ties_draw_once()
   playOpeningTurn(tied)
   local tiedCalls = tied:capture().rng.calls
   tied:dispose()
-  Assert.equal(tiedCalls, mixedCalls + 1, "a genuine tie costs exactly one tie draw over its unequal control")
+  Assert.equal(
+    tiedCalls,
+    mixedCalls + 2,
+    "a genuine tie costs one action tie draw plus one residual battler tie draw"
+  )
   for seed = 1, 8 do
     local duel = projectionDuel(
       singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE"),
