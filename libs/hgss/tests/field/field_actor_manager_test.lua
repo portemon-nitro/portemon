@@ -2389,6 +2389,43 @@ function T.autonomous_pattern_probes_when_current_surface_has_no_source_id()
   mgr:dispose()
 end
 
+function T.autonomous_pattern_walks_via_an_unblocked_local_probe()
+  local objects = {
+    object({
+      objectEventId = 0,
+      movementType = "walk_east_south_west_north",
+      facingDirection = "east",
+      xRange = 2,
+      yRange = 2,
+      x = 2,
+      z = 2,
+    }),
+  }
+  local map = runtimeMap(objects)
+  map.probePhysicalCell = function()
+    return {
+      surfaceId = 0,
+      cellKey = nil,
+      sourceSurfaceId = nil,
+      worldY = 0,
+      collision = { blocked = false },
+    }
+  end
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  Assert.isNil(actor:getSourceSurfaceId())
+
+  mgr:step(1)
+
+  Assert.equal(
+    actor:currentAction(),
+    "walk",
+    "a local (non-physically-partitioned) probe with no stable identity still permits real movement"
+  )
+  mgr:dispose()
+end
+
 function T.autonomous_pattern_treats_collision_only_probe_as_blocked()
   local objects = {
     object({
@@ -2438,7 +2475,7 @@ function T.autonomous_pattern_rejects_malformed_unblocked_probe()
   end)
 
   Assert.isTrue(
-    tostring(err):match("physical probe stable surface identity is missing$") ~= nil,
+    tostring(err):match("physical probe world height is missing$") ~= nil,
     "malformed unblocked probe data remains a loud invariant failure"
   )
   mgr:dispose()

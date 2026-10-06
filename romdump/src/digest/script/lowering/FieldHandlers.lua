@@ -505,7 +505,7 @@ local function bufferPartySpeciesName(ins)
   return {
     op = "buffer_text",
     slot = Operands.operandValue(ins.operands[1]),
-    value = { text = "party_species_name", position = Operands.operandValue(ins.operands[2]) },
+    value = { text = "party_species_name", position = Operands.varRef(ins.operands[2]) },
   }
 end
 
@@ -650,7 +650,7 @@ local function bufferPartyNickname(ins)
   return {
     op = "buffer_text",
     slot = Operands.operandValue(ins.operands[1]),
-    value = { text = "party_nickname", position = Operands.operandValue(ins.operands[2]) },
+    value = { text = "party_nickname", position = Operands.varRef(ins.operands[2]) },
   }
 end
 

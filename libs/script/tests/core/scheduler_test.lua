@@ -1081,6 +1081,40 @@ T["missing actor fault"] = function()
   Assert.equal(assert(h.services.events:eventFor("script.error", instanceId)).code, "SCRIPT_ACTOR_NOT_FOUND")
 end
 
+-- A `lock_all` that never reaches its own `release_all` (here, because the
+-- very next node faults) must not strand the following mon paused forever:
+-- tearing down the faulted instance's ownership is what the source engine's
+-- "ending, cancelling, or faulting an instance releases every lock it owns"
+-- rule already promises for LOCK_AUTONOMOUS itself, and the following mon's
+-- pause must track that lock exactly, not only its own `release_all` opcode.
+T["a fault between lock_all and release_all still unpauses the following mon"] = function()
+  local h = harness()
+  local pauseCalls = {}
+  h.services.followingMon = {
+    setMovementPaused = function(_, paused)
+      pauseCalls[#pauseCalls + 1] = paused
+    end,
+    isMovementSettled = function()
+      return true
+    end,
+  }
+  local instanceId = startForeground(
+    h,
+    script("test.lockall_then_fault", {
+      S.lockAll(),
+      S.face({ actor = "nowhere", direction = "north" }),
+      S.releaseAll(),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, nil)
+  h.scheduler:step(101, nil)
+
+  Assert.equal(assert(h.services.events:eventFor("script.error", instanceId)).code, "SCRIPT_ACTOR_NOT_FOUND")
+  Assert.deepEqual(pauseCalls, { true, false }, "the fault teardown must undo lock_all's pause itself")
+end
+
 -- 33. Conditions: compare, flag, not/all/any, truthy.
 T["condition evaluation"] = function()
   local h = harness()

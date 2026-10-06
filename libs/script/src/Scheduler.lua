@@ -30,6 +30,7 @@ local ScriptTask = require("libs.script.src.ScriptTask")
 ---@field events table<string, unknown>|nil
 ---@field advanceAsync fun(tick: integer)|nil
 ---@field foreground table<string, unknown>|nil { resolve(input) -> {trigger, composed}|nil }
+---@field followingMon table<string, unknown>|nil { setMovementPaused(self, paused), isMovementSettled(self) }
 
 ---@class Scheduler
 ---@field private _services SchedulerServices
@@ -800,7 +801,18 @@ end
 function Scheduler:_releaseInstanceOwnership(instance)
   local environment = self._environments[instance.environmentId]
   if environment then
+    local wasAutonomousLocked = environment:autonomousLocked()
     environment:releaseLocksFor(instance.instanceId)
+    -- `lock_all` pauses the following mon alongside acquiring this same
+    -- lock (Runtime.handleLockAll); completion, cancellation, and faults
+    -- all release ownership through this one path, so clearing the pause
+    -- exactly when the lock itself clears keeps the two in lockstep
+    -- regardless of how the instance ended, instead of depending on it
+    -- reaching its own `release_all`.
+    local followingMon = self._services.followingMon
+    if followingMon and wasAutonomousLocked and not environment:autonomousLocked() then
+      followingMon:setMovementPaused(false)
+    end
     local movement = {}
     for _, task in ipairs(self._tasks) do
       if task.ownerInstanceId == instance.instanceId and task.taskType == "movement" and task.status == "active" then

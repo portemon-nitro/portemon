@@ -19,6 +19,7 @@ local FieldObjectMovement = require("libs.assets.src.field.FieldObjectMovement")
 local ScriptRng = require("libs.hgss.src.script.ScriptRng")
 local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
+local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local FieldActorOccupancy = require("libs.hgss.src.actors.FieldActorOccupancy")
 local FieldActorPersistence = require("libs.hgss.src.actors.FieldActorPersistence")
 local FieldActorStore = require("libs.hgss.src.actors.FieldActorStore")
@@ -353,15 +354,7 @@ function FieldActorManager.new(opts)
   return manager
 end
 
----@param plate table<string, unknown>
----@return string?, integer?
-local function sourceIdentityFromPlate(plate)
-  if plate.cellKey == nil and plate.sourceSurfaceId == nil then
-    return nil, nil
-  end
-  assert(plate.cellKey ~= nil and plate.sourceSurfaceId ~= nil, "terrain source surface identity is incomplete")
-  return plate.cellKey, plate.sourceSurfaceId
-end
+local sourceIdentityFromPlate = TerrainSurface.sourceIdentity
 
 local function stableSurfaceIdentity(runtimeMap, candidate)
   assert(type(candidate) == "table", "occupancy candidate is required")
@@ -1569,7 +1562,10 @@ local function resolveAdjacentDestination(
     if checkStepReachability and probe.collision.blocked then
       return nil, true
     end
-    assert(probe.cellKey ~= nil and probe.sourceSurfaceId ~= nil, "physical probe stable surface identity is missing")
+    assert(
+      (probe.cellKey == nil and probe.sourceSurfaceId == nil) or (probe.cellKey ~= nil and probe.sourceSurfaceId ~= nil),
+      "physical probe stable surface identity is incomplete"
+    )
     assert(type(probe.worldY) == "number", "physical probe world height is missing")
     sample = {
       surfaceId = probe.surfaceId,

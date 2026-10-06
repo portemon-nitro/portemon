@@ -156,4 +156,24 @@ function T.loan_give_and_check_defer_to_the_trade_application()
   Assert.equal(remove.op, "return_loan_mon", "removal stays a real semantic operation")
 end
 
+-- Both buffer commands' party-slot operand is a ScriptGetVar-resolved value
+-- (pret src/scrcmd_strbuf.c ScrCmd_BufferMonSpeciesName/ScrCmd_BufferPartyMonNick:
+-- `u16 party_mon_idx = ScriptGetVar(ctx)`), so a variable-typed operand must
+-- stay a deferred variable read, exactly like every sibling buffer_text
+-- command's value/quantity operand.
+function T.party_buffer_commands_keep_a_variable_slot_as_a_variable_reference()
+  local speciesName = lowerSingle(193, { 1, 0x800C })
+  Assert.equal(speciesName.op, "buffer_text")
+  Assert.equal(speciesName.slot, 1)
+  Assert.deepEqual(
+    speciesName.value,
+    { text = "party_species_name", position = { value = "var", id = 0x800C } }
+  )
+
+  local nickname = lowerSingle(199, { 1, 0x800C })
+  Assert.equal(nickname.op, "buffer_text")
+  Assert.equal(nickname.slot, 1)
+  Assert.deepEqual(nickname.value, { text = "party_nickname", position = { value = "var", id = 0x800C } })
+end
+
 return { tests = T }

@@ -4,7 +4,9 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldRegion = require("libs.hgss.src.world.FieldRegion")
+local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
@@ -709,8 +711,42 @@ local function assembleComplete(loader, ctx, sceneRuntime)
       runtimePropSelections = {},
       released = false,
     }
-    function runtimeMap:probePhysicalCell(_, _)
-      return nil
+    -- A map with no physical coverage (every indoor map, and an outdoor map
+    -- not yet composed with one) still owns real local collision/terrain,
+    -- eagerly loaded above as `region`. Autonomous actor movement always
+    -- probes regardless of an actor's physical-cell identity (see
+    -- FieldActorManager's resolveAdjacentDestination); answering from this
+    -- map's own local surface, rather than a bare `nil`, is what lets that
+    -- probe ever report an unblocked destination here.
+    function runtimeMap:probePhysicalCell(fieldX, fieldZ, context)
+      if self.collision == nil or self.terrain == nil then
+        return nil
+      end
+      local localX, localZ = FieldCoordinates.fieldToLocal(self, fieldX, fieldZ)
+      if self.collision.isBlockedLocal ~= nil and self.collision:isBlockedLocal(localX, localZ) then
+        return { collision = { blocked = true } }
+      end
+      local centerX, centerZ =
+        localX + FieldCoordinates.TILE_CENTER_OFFSET, localZ + FieldCoordinates.TILE_CENTER_OFFSET
+      local surfaceOptions = { localX = centerX, localZ = centerZ, currentY = context and context.currentY or nil }
+      if context and context.fromFieldX and context.fromFieldZ then
+        surfaceOptions.crossing = {
+          fromX = (context.fromFieldX - self.coordinateOrigin.x) + FieldCoordinates.TILE_CENTER_OFFSET,
+          fromZ = (context.fromFieldZ - self.coordinateOrigin.z) + FieldCoordinates.TILE_CENTER_OFFSET,
+          toX = centerX,
+          toZ = centerZ,
+        }
+      end
+      local sample = SurfaceResolver.new(self.terrain):resolve(surfaceOptions)
+      local plate = assert(self.terrain:plate(sample.surfaceId), "probed terrain surface is missing")
+      local cellKey, sourceSurfaceId = TerrainSurface.sourceIdentity(plate)
+      return {
+        surfaceId = sample.surfaceId,
+        cellKey = cellKey,
+        sourceSurfaceId = sourceSurfaceId,
+        worldY = sample.worldY,
+        collision = { blocked = false },
+      }
     end
     function runtimeMap:replaceRuntimeStaticProps(ownerKey, placements)
       assert(type(ownerKey) == "string" and #ownerKey > 0, "runtime prop owner key is required")

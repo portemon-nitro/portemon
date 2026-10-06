@@ -68,4 +68,18 @@ function TerrainSurface:sample(surfaceId, localX, localZ)
   }
 end
 
+-- A plate's cross-cell identity, when it has one: physically-partitioned
+-- (outdoor coverage) terrain carries both fields together; a plain local
+-- plate (most indoor terrain) carries neither, which callers treat as "this
+-- surface's identity is the local surfaceId alone".
+---@param plate table<string, unknown>
+---@return string?, integer?
+function TerrainSurface.sourceIdentity(plate)
+  if plate.cellKey == nil and plate.sourceSurfaceId == nil then
+    return nil, nil
+  end
+  assert(plate.cellKey ~= nil and plate.sourceSurfaceId ~= nil, "terrain source surface identity is incomplete")
+  return plate.cellKey, plate.sourceSurfaceId
+end
+
 return TerrainSurface
