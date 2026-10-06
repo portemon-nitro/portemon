@@ -107,7 +107,7 @@ end
 ---@param moveType string executing move type under the strike
 ---@param defenderTypes string[] semantic defender types for the strike
 ---@param immunityContext table<string, unknown> immunity context for the resolution
----@return table<string, integer> exact effectiveness rational for the staged arithmetic
+---@return table<string, unknown> exact effectiveness rational with ordered per-type factors
 local function effectivenessOf(chart, moveType, defenderTypes, immunityContext)
   local resolved = TypeEffectiveness.resolve(
     chart --[[@as table<string, unknown>]],
@@ -115,7 +115,7 @@ local function effectivenessOf(chart, moveType, defenderTypes, immunityContext)
     defenderTypes --[[@as string[] ]],
     immunityContext
   )
-  return { numerator = resolved.numerator, denominator = resolved.denominator }
+  return { numerator = resolved.numerator, denominator = resolved.denominator, factors = resolved.factors }
 end
 
 -- Strike immunity modifiers beside the chart: magnet rise grounds
@@ -164,7 +164,7 @@ end
 ---@param immunities table<string, unknown>|nil airborne, foresight, and gravity facts for the strike
 ---@param moveTypeOverride string|nil source-computed move type replacing the compiled one
 ---@return table<string, integer> exact STAB rational for the staged arithmetic
----@return table<string, integer> exact effectiveness rational for the staged arithmetic
+---@return table<string, unknown> exact effectiveness rational with ordered per-type factors
 function StagedTypeModifiers.forStrike(frame, defender, immunities, moveTypeOverride)
   local moveType = moveTypeOf(frame)
   if moveTypeOverride ~= nil then
@@ -184,7 +184,7 @@ end
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the landing
 ---@return table<string, integer> exact STAB rational for the staged arithmetic
----@return table<string, integer> exact effectiveness rational for the staged arithmetic
+---@return table<string, unknown> exact effectiveness rational with ordered per-type factors
 function StagedTypeModifiers.forDelayedImpact(frame, defender)
   local attackerTypes, defenderTypes, chart = battleFactsOf(frame, defender)
   return stabOf("typeless", attackerTypes), effectivenessOf(chart, "typeless", defenderTypes, { typeless = true })

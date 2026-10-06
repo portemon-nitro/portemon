@@ -76,6 +76,24 @@ local function chart()
   return chartCache --[[@as table<string, unknown>]]
 end
 
+--- Full strike combat facts for the probe: staged stats travel beside
+-- their raw values and signed stages so critical selection resolves.
+---@param level integer battle level under the probe
+---@param attack integer staged attack under the probe
+---@param defense integer staged defense under the probe
+---@return table<string, integer> combat facts for the probe frame
+local function probeCombat(level, attack, defense)
+  return {
+    level = level,
+    attack = attack,
+    defense = defense,
+    rawAttack = attack,
+    rawDefense = defense,
+    attackStage = 0,
+    defenseStage = 0,
+  }
+end
+
 ---@param moveKey string strike identity under the probe
 ---@param overrides table<string, unknown>|nil move-fact overrides for the probe
 ---@return table<string, table<string, unknown>> compiled-shaped facts for the probe
@@ -117,7 +135,12 @@ local function runStrike(moveKey, facts, seed, extra)
     targets = { { combatant = 2 } },
     moves = { { move = moveKey, pp = 10, ppUps = 0 } },
     moveFacts = facts,
-    combat = { level = 50, attack = 120, defense = 90 },
+    combat = probeCombat(50, 120, 90),
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -172,7 +195,7 @@ function T.high_critical_strikes_roll_the_raised_stage()
     end
   end
   Assert.notNil(seed, "a draw inside the raised-only window exists")
-  local weakCombat = { combat = { level = 5, attack = 16, defense = 16 } }
+  local weakCombat = { combat = probeCombat(5, 16, 16) }
   local slash = runStrike("SLASH", moveFacts("SLASH", { power = 70 }), seed --[[@as integer]], weakCombat)
   local slashOutcome = slash.outcome --[[@as table<string, unknown>]]
   Assert.equal(slashOutcome.result, "hit", "the raised strike connects")
@@ -208,7 +231,12 @@ function T.draining_strikes_restore_half_the_damage_dealt()
     targets = { { combatant = 2 } },
     moves = { { move = "MEGA_DRAIN", pp = 10, ppUps = 0 } },
     moveFacts = facts,
-    combat = { level = 50, attack = 120, defense = 90 },
+    combat = probeCombat(50, 120, 90),
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
     attackerTypes = { "grass" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -252,7 +280,7 @@ function T.burn_secondaries_roll_the_compiled_chance()
     "EMBER",
     moveFacts("EMBER", { power = 40, category = "special", moveType = "fire", effectChance = 10 }),
     burnSeed --[[@as integer]],
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "the burning strike connects")
@@ -310,7 +338,7 @@ function T.stage_secondaries_move_one_stage_through_the_clamp()
     "ACID",
     moveFacts("ACID", { power = 40, category = "special", moveType = "poison", effectChance = 10 }),
     seedInWindow(FIXED_SEED, 10),
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "the dropping strike connects")
@@ -325,7 +353,7 @@ function T.flinch_secondaries_mark_before_action_presence()
     "BITE",
     moveFacts("BITE", { power = 60, effectChance = 30 }),
     seedInWindow(FIXED_SEED, 30),
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "the flinching strike connects")
@@ -339,7 +367,7 @@ function T.confusion_secondaries_root_a_counted_volatile()
     "DYNAMIC_PUNCH",
     moveFacts("DYNAMIC_PUNCH", { power = 100, accuracy = 100, effectChance = 100 }),
     FIXED_SEED,
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "the confusing strike connects")
@@ -356,7 +384,7 @@ function T.binding_strikes_trap_with_a_countdown()
     "WRAP",
     moveFacts("WRAP", { power = 15, accuracy = 85, effectChance = 0 }),
     FIXED_SEED,
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "the binding strike connects")
@@ -373,7 +401,7 @@ function T.fixed_two_hit_strikes_land_twice()
     "DOUBLE_KICK",
     moveFacts("DOUBLE_KICK", { power = 30, accuracy = 100 }),
     FIXED_SEED,
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "the two-hit strike connects")
@@ -381,7 +409,7 @@ function T.fixed_two_hit_strikes_land_twice()
     "TACKLE",
     moveFacts("TACKLE", { power = 30, accuracy = 100 }),
     FIXED_SEED,
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   Assert.isTrue(
     (probe.dealt --[[@as integer]]) >= (single.dealt --[[@as integer]]),
@@ -396,7 +424,7 @@ function T.false_swipe_leaves_one_health()
     "FALSE_SWIPE",
     moveFacts("FALSE_SWIPE", { power = 40, accuracy = 100 }),
     FIXED_SEED,
-    { combat = { level = 50, attack = 120, defense = 90 } }
+    { combat = probeCombat(50, 120, 90) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "false swipe connects")
@@ -411,7 +439,7 @@ function T.pay_day_scatters_five_coins_per_level()
     "PAY_DAY",
     moveFacts("PAY_DAY", { power = 40, accuracy = 100 }),
     FIXED_SEED,
-    { combat = { level = 12, attack = 30, defense = 30 } }
+    { combat = probeCombat(12, 30, 30) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "pay day connects")
@@ -449,7 +477,12 @@ function T.brick_break_drops_the_defender_screens()
     targets = { { combatant = 2 } },
     moves = { { move = "BRICK_BREAK", pp = 10, ppUps = 0 } },
     moveFacts = facts,
-    combat = { level = 5, attack = 16, defense = 16 },
+    combat = probeCombat(5, 16, 16),
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
     attackerTypes = { "fighting" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -494,7 +527,12 @@ function T.item_taking_strikes_record_their_intent()
       targets = { { combatant = 2 } },
       moves = { { move = entry.move, pp = 10, ppUps = 0 } },
       moveFacts = facts,
-      combat = { level = 5, attack = 16, defense = 16 },
+      combat = probeCombat(5, 16, 16),
+      burned = false,
+      guts = false,
+      weather = "none",
+      weatherSuppressed = false,
+      abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
       attackerTypes = { "normal" },
       defenderTypes = { [2] = { "normal" } },
       typeChart = chart(),
@@ -559,7 +597,12 @@ function T.weather_strikes_follow_their_sky_law()
       targets = { { combatant = 2 } },
       moves = { { move = moveKey, pp = 10, ppUps = 0 } },
       moveFacts = facts,
-      combat = { level = 5, attack = 16, defense = 16 },
+      combat = probeCombat(5, 16, 16),
+      burned = false,
+      guts = false,
+      weather = "none",
+      weatherSuppressed = false,
+      abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
       attackerTypes = { "electric" },
       defenderTypes = { [2] = { "normal" } },
       typeChart = chart(),
@@ -617,7 +660,7 @@ function T.fanged_strikes_roll_both_effects()
     "FIRE_FANG",
     moveFacts("FIRE_FANG", { power = 65, accuracy = 95, moveType = "fire", effectChance = 10 }),
     seed,
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "the fanged strike connects")
@@ -638,7 +681,7 @@ function T.tri_attack_draws_one_of_three_conditions()
     "TRI_ATTACK",
     moveFacts("TRI_ATTACK", { power = 80, accuracy = 100, category = "special", moveType = "normal", effectChance = 20 }),
     seedInWindow(FIXED_SEED, 20),
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "tri attack connects")
@@ -660,7 +703,7 @@ function T.hammer_arm_drops_its_own_speed()
     "HAMMER_ARM",
     moveFacts("HAMMER_ARM", { power = 100, accuracy = 90, category = "physical", moveType = "fighting" }),
     FIXED_SEED,
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "hammer arm connects")
@@ -674,7 +717,7 @@ function T.self_raising_strikes_climb_on_their_chance()
     "CHARGE_BEAM",
     moveFacts("CHARGE_BEAM", { power = 50, accuracy = 90, category = "special", moveType = "electric", effectChance = 70 }),
     seedInWindow(FIXED_SEED, 70),
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "charge beam connects")
@@ -712,7 +755,12 @@ function T.sport_markers_halve_the_weakened_type_power()
     targets = { { combatant = 2 } },
     moves = { { move = "THUNDER_SHOCK", pp = 10, ppUps = 0 } },
     moveFacts = facts,
-    combat = { level = 5, attack = 16, defense = 16 },
+    combat = probeCombat(5, 16, 16),
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
     attackerTypes = { "electric" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -734,7 +782,7 @@ function T.sport_markers_halve_the_weakened_type_power()
     "THUNDER_SHOCK",
     moveFacts("THUNDER_SHOCK", { power = 40, accuracy = 100, category = "special", moveType = "electric" }),
     FIXED_SEED,
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   Assert.isTrue((plain.dealt --[[@as integer]]) > dealt, "the sport halves the weakened power")
 end
@@ -788,7 +836,12 @@ function T.focus_energy_raises_later_strikes_by_two_stages()
       targets = { { combatant = 2 } },
       moves = { { move = "TACKLE", pp = 10, ppUps = 0 } },
       moveFacts = facts,
-      combat = { level = 5, attack = 16, defense = 16 },
+      combat = probeCombat(5, 16, 16),
+      burned = false,
+      guts = false,
+      weather = "none",
+      weatherSuppressed = false,
+      abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
       attackerTypes = { "normal" },
       defenderTypes = { [2] = { "normal" } },
       typeChart = chart(),
@@ -849,7 +902,12 @@ function T.lucky_chant_shields_its_side_from_critical_strikes()
     targets = { { combatant = 2 } },
     moves = { { move = "SLASH", pp = 10, ppUps = 0 } },
     moveFacts = facts,
-    combat = { level = 5, attack = 16, defense = 16 },
+    combat = probeCombat(5, 16, 16),
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -870,7 +928,7 @@ function T.lucky_chant_shields_its_side_from_critical_strikes()
     "SLASH",
     moveFacts("SLASH", { power = 70, accuracy = 100 }),
     seed --[[@as integer]],
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   Assert.isTrue((plain.dealt --[[@as integer]]) > shielded, "the chant shields the raised critical")
 end
@@ -896,7 +954,12 @@ function T.flame_wheel_thaws_its_frozen_user()
     targets = { { combatant = 2 } },
     moves = { { move = "FLAME_WHEEL", pp = 10, ppUps = 0 } },
     moveFacts = facts,
-    combat = { level = 5, attack = 16, defense = 16 },
+    combat = probeCombat(5, 16, 16),
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
     attackerTypes = { "fire" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -954,7 +1017,12 @@ function T.secondaries_respect_immunities_and_substitutes()
       targets = { { combatant = 2 } },
       moves = { { move = "FLAMETHROWER", pp = 10, ppUps = 0 } },
       moveFacts = facts,
-      combat = { level = 5, attack = 16, defense = 16 },
+      combat = probeCombat(5, 16, 16),
+      burned = false,
+      guts = false,
+      weather = "none",
+      weatherSuppressed = false,
+      abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
       attackerTypes = { "fire" },
       defenderTypes = defenderTypes,
       typeChart = chart(),
@@ -983,7 +1051,7 @@ function T.feint_needs_protection_to_break()
     "FEINT",
     moveFacts("FEINT", { power = 50, accuracy = 100 }),
     FIXED_SEED,
-    { combat = { level = 5, attack = 16, defense = 16 } }
+    { combat = probeCombat(5, 16, 16) }
   )
   local refusedOutcome = refused.outcome --[[@as table<string, unknown>]]
   Assert.equal(refusedOutcome.result, "failed", "feint fails with no protection to break")
@@ -1018,7 +1086,12 @@ function T.feint_needs_protection_to_break()
     targets = { { combatant = 2 } },
     moves = { { move = "FEINT", pp = 10, ppUps = 0 } },
     moveFacts = facts,
-    combat = { level = 5, attack = 16, defense = 16 },
+    combat = probeCombat(5, 16, 16),
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),

@@ -101,6 +101,11 @@ local function calledInputs(caller, seed)
       { move = caller, pp = 10, ppUps = 0 },
     },
     moveFacts = syntheticFacts(),
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = typeFacts().attackerTypes,
     defenderTypes = typeFacts().defenderTypes,
     typeChart = typeFacts().typeChart,
@@ -310,7 +315,15 @@ function T.mirror_move_copies_the_last_move_targeting_the_caller()
   local ctx = liveContext(state)
   local inputs = calledInputs("MIRROR_MOVE", FIXED_SEED)
   inputs.copiedMove = "TACKLE"
-  inputs.combat = { level = 10, attack = 50, defense = 50 }
+  inputs.combat = {
+    level = 10,
+    attack = 50,
+    defense = 50,
+    rawAttack = 50,
+    rawDefense = 50,
+    attackStage = 0,
+    defenseStage = 0,
+  }
   local frame = Execution.validateFrame(Execution.start(inputs))
   Assert.equal(frame.executingMove, "TACKLE", "mirror move executes the copied identity")
   Assert.equal(frame.ppOwnerSlot, 0, "the copied move charges the mirror-move slot")
@@ -391,7 +404,15 @@ function T.called_execution_never_charges_a_second_ordinary_action()
     byNative[nativeId] = "TACKLE"
   end
   inputs.byNative = byNative
-  inputs.combat = { level = 10, attack = 50, defense = 50 }
+  inputs.combat = {
+    level = 10,
+    attack = 50,
+    defense = 50,
+    rawAttack = 50,
+    rawDefense = 50,
+    attackStage = 0,
+    defenseStage = 0,
+  }
   local frame = Execution.validateFrame(Execution.start(inputs))
   local outcome = frame
   for _ = 1, 32 do

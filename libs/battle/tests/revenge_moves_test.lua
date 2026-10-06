@@ -160,7 +160,20 @@ local function runStrike(moveKey, facts, duel)
     targets = { { combatant = 2 } },
     moves = { { move = moveKey, pp = 10, ppUps = 0 } },
     moveFacts = facts,
-    combat = { level = 20, attack = 60, defense = 55 },
+    combat = {
+      level = 20,
+      attack = 60,
+      defense = 55,
+      rawAttack = 60,
+      rawDefense = 55,
+      attackStage = 0,
+      defenseStage = 0,
+    },
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "fighting" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = nativeChart(content),
@@ -204,14 +217,18 @@ function T.revenge_doubles_after_the_target_struck_first()
   })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the answered revenge connects")
-  Assert.equal(probe.dealt, 82, "revenge doubles its recorded physical answer")
+  -- Doubled pre-bonus 26 rolls 98 first (floor(28*98/100) = 27) before the
+  -- same-type bonus and doubling into the target land 80.
+  Assert.equal(probe.dealt, 80, "revenge doubles its recorded physical answer")
 end
 
 function T.revenge_holds_base_power_when_unstruck()
   local probe = runStrike("REVENGE", probeMoveFacts(), freshDuel())
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the unanswered revenge connects")
-  Assert.equal(probe.dealt, 43, "revenge holds base power without an answer")
+  -- Unanswered pre-bonus 13 rolls 98 first (floor(15*98/100) = 14) before
+  -- the same-type bonus and doubling into the target land 42.
+  Assert.equal(probe.dealt, 42, "revenge holds base power without an answer")
 end
 
 function T.revenge_answers_special_strikes_from_its_target()
@@ -224,7 +241,9 @@ function T.revenge_answers_special_strikes_from_its_target()
   })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the specially answered revenge connects")
-  Assert.equal(probe.dealt, 82, "revenge doubles its recorded special answer")
+  -- The special answer doubles power exactly like the physical answer, so
+  -- the same post-roll tail lands 80.
+  Assert.equal(probe.dealt, 80, "revenge doubles its recorded special answer")
 end
 
 function T.avalanche_doubles_after_the_target_struck_first()

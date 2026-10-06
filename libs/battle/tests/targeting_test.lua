@@ -128,15 +128,28 @@ function T.spread_reduction_follows_the_sampled_target_count()
       power = 80,
       attack = 120,
       defense = 90,
+      rawAttack = 120,
+      rawDefense = 90,
+      attackStage = 0,
+      defenseStage = 0,
+      criticalMultiplier = 1,
+      category = "physical",
+      burned = false,
+      guts = false,
       stab = { numerator = 1, denominator = 1 },
       effectiveness = { numerator = 1, denominator = 1 },
+      effectivenessFactors = { { numerator = 1, denominator = 1 } },
       targetCount = count,
+      weather = "none",
+      weatherSuppressed = false,
+      moveType = "normal",
+      solarBeam = false,
       randomPercent = 100,
     }, BattleRng.new(5)).amount
   end
 
   Assert.equal(spreadAmount(1), 48, "a lone remaining target takes the full amount")
-  Assert.equal(spreadAmount(2), 36, "two sampled targets reduce the amount by one quarter")
+  Assert.equal(spreadAmount(2), 36, "two sampled targets spread the pre-bonus damage before the bonus addition")
 end
 
 return { tests = T }

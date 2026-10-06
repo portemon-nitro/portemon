@@ -711,11 +711,12 @@ local function statusAdjustedSpeed(speed, mon)
   return speed
 end
 
--- Applies the native physical-attack interaction for burn: a holder whose
--- passive answers the attack checkpoint while statused keeps that passive
--- ratio, while any other burned attacker halves through truncating
--- division. Special strikes never pay the burn penalty, and ability
--- meaning stays in the passive families.
+-- Applies the native physical-attack interaction for abilities answering
+-- the attack checkpoint while statused (the resilient boost being the
+-- current case): the holder keeps that passive ratio. Burn itself never
+-- reshapes the attack stat here; the canonical damage owner halves
+-- post-division damage instead. Ability meaning stays in the passive
+-- families.
 ---@param attacker table<string, integer> live attacker level and battle stats under adjustment
 ---@param mon unknown battle-local mon record carrying ability and condition
 ---@param category unknown executing move category selecting the split
@@ -727,10 +728,6 @@ local function statusAdjustedAttack(attacker, mon, category)
   local boost = passiveStatRatio(ability, "attack", conditionKey ~= nil, "physical")
   if boost ~= nil then
     attacker.attack = math.floor((attacker.attack * boost.numerator) / boost.denominator)
-    return
-  end
-  if conditionKey == "burn" then
-    attacker.attack = math.floor(attacker.attack / 2)
   end
 end
 
@@ -790,21 +787,45 @@ local function movePower(moveFacts, moveName)
 end
 
 ---@param attacker table<string, integer> live attacker level and battle stats
+---@param attackerRaw table<string, integer> live attacker level and raw battle stats
+---@param attackerStages table<string, integer> live attacker battle-local stages
 ---@param defender table<string, integer> live defender level and battle stats
+---@param defenderRaw table<string, integer> live defender level and raw battle stats
+---@param defenderStages table<string, integer> live defender battle-local stages
 ---@param category unknown executing move category selecting the stat pair
 ---@param moveName string executing move identity under the error context
 ---@return table<string, integer> move-frame combat facts for the staged arithmetic
-local function combatPair(attacker, defender, category, moveName)
+local function combatPair(
+  attacker,
+  attackerRaw,
+  attackerStages,
+  defender,
+  defenderRaw,
+  defenderStages,
+  category,
+  moveName
+)
   if type(category) ~= "string" then
     error(BattleErrors.missingBehavior("damage reads its move category", { key = moveName }))
   end
   -- Special strikes stage through the special pair; every other category
   -- stages through the physical pair. Non-damaging categories never reach
-  -- the staged arithmetic, so their inert pair is real but unread.
+  -- the staged arithmetic, so their inert pair is real but unread. Raw
+  -- stats and signed stages travel beside the staged pair so critical
+  -- hits can ignore unfavorable stages without a second calculator.
+  local attackKey, defenseKey = "attack", "defense"
   if category == "special" then
-    return { level = attacker.level, attack = attacker.specialAttack, defense = defender.specialDefense }
+    attackKey, defenseKey = "specialAttack", "specialDefense"
   end
-  return { level = attacker.level, attack = attacker.attack, defense = defender.defense }
+  return {
+    level = attacker.level,
+    attack = attacker[attackKey],
+    defense = defender[defenseKey],
+    rawAttack = attackerRaw[attackKey],
+    rawDefense = defenderRaw[defenseKey],
+    attackStage = attackerStages[attackKey],
+    defenseStage = defenderStages[defenseKey],
+  }
 end
 
 -- Per-strike source-law facts behind one owner so the turn closure
@@ -1102,8 +1123,9 @@ end
 
 ---@param combatant table<string, unknown> live combatant under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
----@return table<string, integer> live level and stage-effective battle stats for the entry
-local function projectCombatant(combatant, speciesFacts)
+---@return table<string, integer> live level and raw battle stats before stages
+---@return table<string, integer> battle-local stat stages for the entry
+local function unstagedCombatant(combatant, speciesFacts)
   local mon = combatant.mon
   if type(mon) ~= "table" then
     error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "mon" }))
@@ -1138,6 +1160,14 @@ local function projectCombatant(combatant, speciesFacts)
   -- Knot read kilograms. Absent weights stay absent and fail loudly in
   -- their handler instead of guessing.
   stats.weightHg = facts.weightHg
+  return stats, combatStages(combatant)
+end
+
+---@param combatant table<string, unknown> live combatant under fact sampling
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
+---@return table<string, integer> live level and stage-effective battle stats for the entry
+local function projectCombatant(combatant, speciesFacts)
+  local stats, stages = unstagedCombatant(combatant, speciesFacts)
   -- Battle maximum health travels with the projection so recovery
   -- handlers heal fractions of the true ceiling instead of guessing;
   -- it sits above the entry value whenever the entry arrived wounded.
@@ -1146,7 +1176,6 @@ local function projectCombatant(combatant, speciesFacts)
     ceiling = combatant.entryHp
   end
   stats.maxHp = ceiling --[[@as integer]]
-  local stages = combatStages(combatant)
   for _, key in ipairs(STAGED_STATS) do
     stats[key] = StatStages.effective(stats[key] --[[@as integer]], stages[key] --[[@as integer]], key)
   end
@@ -1407,6 +1436,93 @@ local function fieldActive(state, key)
     end
   end
   return false
+end
+
+-- Active field weather identity for strike damage: exactly one live
+-- field instance can name the sky, otherwise skies stay clear. The
+-- instance itself is never consumed here; suppression only neutralizes
+-- the damage law.
+---@param state table<string, unknown> live battle state under the weather read
+---@return string active weather identity for the strike facts
+local function activeWeather(state)
+  if fieldActive(state, "raindance") then
+    return "rain"
+  end
+  if fieldActive(state, "sunnyday") then
+    return "sun"
+  end
+  if fieldActive(state, "sandstorm") then
+    return "sand"
+  end
+  if fieldActive(state, "hail") then
+    return "hail"
+  end
+  return "none"
+end
+
+-- Weather suppression samples living active holders: a conscious
+-- cloud-nine or air-lock entry neutralizes damage weather for the whole
+-- field without deleting the weather instance.
+---@param state table<string, unknown> live battle state under the suppression read
+---@return boolean true when a live ability suppresses weather damage
+local function weatherSuppressed(state)
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId)
+    if
+      combatant.active ~= nil
+      and type(combatant.hp) == "number"
+      and combatant.hp --[[@as integer]]
+        > 0
+    then
+      local mon = combatant.mon --[[@as table<string, unknown>]]
+      local ability = mon.ability
+      if ability == "CLOUD_NINE" or ability == "AIR_LOCK" then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- Single strike-facts projection for one executed strike: staged and raw
+-- stats with signed stages, ability reshaping of the staged attack, and
+-- the immutable burn/resilience/weather facts the canonical damage owner
+-- applies at its own truncating checkpoints. Burn never reshapes the
+-- attack stat here; the arithmetic owner halves post-division damage.
+---@param state table<string, unknown> live battle state under fact sampling
+---@param combatant table<string, unknown> live striking combatant under sampling
+---@param defender table<string, unknown> live defending combatant under sampling
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param category unknown executing move category selecting the stat pair
+---@param moveName string executing move identity under the error context
+---@return table<string, unknown> strike-local combat and law facts for the move frame
+local function strikeCombatFacts(state, combatant, defender, speciesFacts, category, moveName)
+  local attackerStats = projectCombatant(combatant, speciesFacts)
+  local attackerRaw, attackerStages = unstagedCombatant(combatant, speciesFacts)
+  statusAdjustedAttack(attackerStats, combatant.mon, category)
+  local defenderStats = projectCombatant(defender, speciesFacts)
+  local defenderRaw, defenderStages = unstagedCombatant(defender, speciesFacts)
+  local attackerAbility, attackerCondition = statusFacts(combatant.mon)
+  return {
+    facts = combatPair(
+      attackerStats,
+      attackerRaw,
+      attackerStages,
+      defenderStats,
+      defenderRaw,
+      defenderStages,
+      category,
+      moveName
+    ),
+    attackerStats = attackerStats,
+    defenderStats = defenderStats,
+    attackerAbility = attackerAbility,
+    attackerCondition = attackerCondition,
+    weather = activeWeather(state),
+    weatherSuppressed = weatherSuppressed(state),
+  }
 end
 
 ---@param state table<string, unknown> live battle state under the effect read
@@ -2585,12 +2701,15 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local defender = BattleState.combatant(state, defenderId)
     local moveRecord = moveFacts[moveName]
     local category = type(moveRecord) == "table" and (moveRecord --[[@as table<string, unknown>]]).category or nil
-    local attackerStats = projectCombatant(combatant, speciesFacts)
-    -- Burn reshapes physical attack at this checkpoint: the penalty
-    -- applies unless the attacker's passive answers instead.
-    statusAdjustedAttack(attackerStats, combatant.mon, category)
-    local defenderStats = projectCombatant(defender, speciesFacts)
-    local facts = combatPair(attackerStats, defenderStats, category, moveName)
+    -- One strike-facts projection keeps the turn closure inside its
+    -- upvalue budget: raw and staged stats, ability reshaping, burn,
+    -- resilience, and field weather arrive together.
+    local strike = strikeCombatFacts(state, combatant, defender, speciesFacts, category, moveName)
+    local facts = strike.facts
+    local attackerStats = strike.attackerStats
+    local defenderStats = strike.defenderStats
+    local attackerAbility = strike.attackerAbility
+    local attackerCondition = strike.attackerCondition
     local defenderTypes = {} ---@type table<integer, string[]>
     defenderTypes[defenderId] = combatantTypes(defender, speciesFacts)
     local moves = combatant
@@ -2652,6 +2771,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       moves = moves,
       moveFacts = moveFacts,
       combat = facts,
+      burned = attackerCondition == "burn",
+      guts = attackerAbility == "GUTS",
+      weather = strike.weather,
+      weatherSuppressed = strike.weatherSuppressed,
       attackerTypes = combatantTypes(combatant, speciesFacts),
       defenderTypes = defenderTypes,
       typeChart = chart,

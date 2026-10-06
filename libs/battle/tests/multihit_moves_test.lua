@@ -114,7 +114,19 @@ local function runStrike(moveKey, extra)
       TRIPLE_KICK = strikeFacts("TRIPLE_KICK", 0),
       BEAT_UP = strikeFacts("BEAT_UP", 0),
     },
-    combat = { level = 50, attack = 120, defense = 110 },
+    combat = {
+      level = 50,
+      attack = 120,
+      defense = 110,
+      rawAttack = 120,
+      rawDefense = 110,
+      attackStage = 0,
+      defenseStage = 0,
+    },
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = nativeChart(content),
@@ -153,7 +165,9 @@ function T.sampled_sequences_deal_staged_damage_per_hit()
   local probe = runStrike("FURY_ATTACK", {})
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the sampled sequence connects")
-  Assert.equal(probe.dealt, 72, "the sampled sequence deals four staged hits")
+  -- Pre-bonus 12 rolls 99/85/85/88 across the four hits (13/11/11/12)
+  -- before the same-type bonus lands 19/16/16/18 for 69 total.
+  Assert.equal(probe.dealt, 69, "the sampled sequence deals four staged hits")
   Assert.equal(probe.strikes, 4, "the pinned seed samples four hits")
 end
 
@@ -161,7 +175,9 @@ function T.skill_link_strikes_five_times()
   local probe = runStrike("FURY_ATTACK", { abilities = { user = "SKILL_LINK", foe = "NONE" } })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the skill-link sequence connects")
-  Assert.equal(probe.dealt, 92, "skill link deals five staged hits")
+  -- Pre-bonus 12 rolls 98/99/85/85/88 (13/13/11/11/12) before the
+  -- same-type bonus lands 19/19/16/16/18 for 88 total.
+  Assert.equal(probe.dealt, 88, "skill link deals five staged hits")
   Assert.equal(probe.strikes, 5, "skill link always strikes five times")
 end
 
@@ -169,7 +185,9 @@ function T.fixed_doubles_land_twice()
   local probe = runStrike("DOUBLE_HIT", {})
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the fixed double connects")
-  Assert.equal(probe.dealt, 39, "the fixed double lands twice")
+  -- Pre-bonus 12 rolls 98 then 93 (13/13) before the same-type bonus
+  -- lands 19 per hit for 38 total.
+  Assert.equal(probe.dealt, 38, "the fixed double lands twice")
   Assert.equal(probe.strikes, 2, "fixed doubles strike exactly twice")
 end
 
@@ -177,7 +195,9 @@ function T.twineedle_poisons_through_the_usual_gates()
   local probe = runStrike("TWINEEDLE", {})
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the twineedle connects")
-  Assert.equal(probe.dealt, 40, "twineedle lands twice")
+  -- Pre-bonus 12 rolls 98 then 99 (13/13) before the same-type bonus
+  -- lands 19 per hit for 38 total.
+  Assert.equal(probe.dealt, 38, "twineedle lands twice")
   Assert.equal(probe.strikes, 2, "twineedle strikes exactly twice")
   local ctx = probe.ctx
   Assert.equal(ctx:statusOf(2), "poison", "twineedle poisons its target")
@@ -187,7 +207,9 @@ function T.triple_kick_climbs_ten_per_kick()
   local probe = runStrike("TRIPLE_KICK", {})
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the triple kick connects")
-  Assert.equal(probe.dealt, 43, "triple kick climbs ten per kick")
+  -- Powers 10/20/30 run pre-bonus 4/9/14, roll 98/99/85 (5/10/13), and
+  -- the same-type bonus lands 7/15/19 for 41 total.
+  Assert.equal(probe.dealt, 41, "triple kick climbs ten per kick")
   Assert.equal(probe.strikes, 3, "triple kick lands three kicks")
 end
 

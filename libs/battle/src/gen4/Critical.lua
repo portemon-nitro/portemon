@@ -3,11 +3,13 @@
 -- roll: stage 0 crits below 4096 (one in sixteen), rising through the
 -- native stage table to a coin flip at the cap. Negative stages behave as
 -- stage 0 and stages above the table behave as the cap. The result carries
--- the threshold it was tested against so damage-stage exceptions stay
--- independently testable from this roll.
+-- the threshold it was tested against and the native damage multiplier
+-- (double, or triple for the sniping ability) so damage-stage exceptions
+-- stay independently testable from this roll.
 
 ---@class CriticalResult
 ---@field critical boolean
+---@field multiplier integer
 ---@field stage integer
 ---@field threshold integer
 local Critical = {}
@@ -18,8 +20,9 @@ Critical.MAX_STAGE = 4
 ---@param stage integer critical stage before clamping
 ---@param stream BattleRng labeled native battle stream
 ---@param cause table<string, unknown> semantic reason that ordered the draw
+---@param sniper boolean? whether the striker carries the triple-damage critical ability
 ---@return CriticalResult staged critical outcome
-function Critical.resolve(stage, stream, cause)
+function Critical.resolve(stage, stream, cause, sniper)
   assert(type(stage) == "number" and stage % 1 == 0, "critical checks read an integer stage")
   assert(type(stream) == "table" and type(stream.nextU16) == "function", "critical checks draw from the battle stream")
   assert(type(cause) == "table", "critical checks carry their semantic cause")
@@ -32,7 +35,15 @@ function Critical.resolve(stage, stream, cause)
   local threshold = Critical.THRESHOLDS[clamped]
   assert(type(threshold) == "number", "critical stages map to an exact threshold")
   local draw = stream:nextU16("critical_check", cause)
-  return { critical = draw < threshold, stage = stage, threshold = threshold }
+  -- The ability only replaces the damage multiplier after a successful
+  -- roll: probability and draw count stay identical with or without it.
+  if draw >= threshold then
+    return { critical = false, multiplier = 1, stage = stage, threshold = threshold }
+  end
+  if sniper == true then
+    return { critical = true, multiplier = 3, stage = stage, threshold = threshold }
+  end
+  return { critical = true, multiplier = 2, stage = stage, threshold = threshold }
 end
 
 return Critical

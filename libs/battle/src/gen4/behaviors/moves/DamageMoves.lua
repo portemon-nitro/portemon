@@ -631,9 +631,18 @@ local function combatOf(frame)
     error(BattleErrors.missingBehavior("damage reads its real combat facts", { key = key, fact = "combat" }))
   end
   local combat = facts --[[@as table<string, unknown>]]
-  for _, fact in ipairs({ "level", "attack", "defense" }) do
+  -- Raw stats and signed stages travel beside the staged pair so the
+  -- arithmetic owner can ignore unfavorable stages on critical hits;
+  -- nothing here pre-folds that selection into a rounded scalar.
+  for _, fact in ipairs({ "level", "attack", "defense", "rawAttack", "rawDefense" }) do
     local value = combat[fact]
     if type(value) ~= "number" or value % 1 ~= 0 or value < 1 then
+      error(BattleErrors.missingBehavior("damage reads its real combat facts", { key = key, fact = fact }))
+    end
+  end
+  for _, fact in ipairs({ "attackStage", "defenseStage" }) do
+    local value = combat[fact]
+    if type(value) ~= "number" or value % 1 ~= 0 or value < -6 or value > 6 then
       error(BattleErrors.missingBehavior("damage reads its real combat facts", { key = key, fact = fact }))
     end
   end
@@ -641,7 +650,63 @@ local function combatOf(frame)
     level = combat.level --[[@as integer]],
     attack = combat.attack --[[@as integer]],
     defense = combat.defense --[[@as integer]],
+    rawAttack = combat.rawAttack --[[@as integer]],
+    rawDefense = combat.rawDefense --[[@as integer]],
+    attackStage = combat.attackStage --[[@as integer]],
+    defenseStage = combat.defenseStage --[[@as integer]],
   }
+end
+
+-- Strike-law facts the executor projects beside the staged pair: attacker
+-- burn and resilience, active field weather with its live suppression,
+-- and the striking move category and type. Every fact is validated before
+-- the critical draw so a missing fact never spends stream draws.
+---@param frame table<string, unknown> move frame under execution
+---@param moveTypeOverride string|nil source-computed move type replacing the compiled one
+---@return boolean whether the attacker carries burn
+---@return boolean whether the attacker carries the resilient ability
+---@return string active field weather identity
+---@return boolean whether a live ability suppresses weather damage
+---@return string striking move category
+---@return string striking move type under weather law
+---@return boolean whether the strike is the charging grass special case
+local function strikeLawOf(frame, moveTypeOverride)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  for _, fact in ipairs({ "burned", "guts", "weather", "weatherSuppressed" }) do
+    if locals[fact] == nil then
+      error(BattleErrors.missingBehavior("damage reads its real combat facts", { key = key, fact = fact }))
+    end
+  end
+  if type(locals.burned) ~= "boolean" or type(locals.guts) ~= "boolean" then
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", { key = key, fact = "burn" }))
+  end
+  if type(locals.weather) ~= "string" or locals.weather == "" or type(locals.weatherSuppressed) ~= "boolean" then
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", { key = key, fact = "weather" }))
+  end
+  local move = locals.move --[[@as table<string, unknown>]]
+  if type(move) ~= "table" then
+    error(BattleErrors.missingBehavior("damage reads its immutable move facts", { key = key, fact = "move" }))
+  end
+  local category = move.category
+  if category ~= "physical" and category ~= "special" then
+    error(BattleErrors.missingBehavior("damage reads its immutable move facts", { key = key, fact = "category" }))
+  end
+  local moveType = move.moveType
+  if moveTypeOverride ~= nil then
+    moveType = moveTypeOverride
+  end
+  if type(moveType) ~= "string" or moveType == "" then
+    error(BattleErrors.missingBehavior("damage reads its immutable move facts", { key = key, fact = "moveType" }))
+  end
+  return locals.burned, --[[@as boolean]]
+    locals.guts, --[[@as boolean]]
+    locals.weather, --[[@as string]]
+    locals.weatherSuppressed, --[[@as boolean]]
+    category, --[[@as string]]
+    moveType, --[[@as string]]
+    record.executingMove == "SOLAR_BEAM"
 end
 
 ---@param frame table<string, unknown> move frame under execution
@@ -1275,13 +1340,13 @@ end
 local function strikeCritical(ctx, frame, user, defender, params, stream)
   local controls = params or {}
   if ctx:hasBattleEffect(defender, "luckychant") then
-    return { critical = false, stage = 0, threshold = Critical.THRESHOLDS[0] }
+    return { critical = false, multiplier = 1, stage = 0, threshold = Critical.THRESHOLDS[0] }
   end
   local stage = controls.critStage or 0
   if ctx:hasBattleEffect(user, "focusenergy") then
     stage = stage --[[@as integer]] + 2
   end
-  return Critical.resolve(stage --[[@as integer]], stream, causeFor(frame))
+  return Critical.resolve(stage --[[@as integer]], stream, causeFor(frame), abilitiesOf(frame).user == "SNIPER")
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -1296,6 +1361,9 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   local controls = params or {}
   local combat = combatOf(frame)
   local stream = checkStream(frame.stream)
+  -- Strike-law facts validate before any draw: a missing fact fails
+  -- without spending the critical or damage rolls.
+  local burned, guts, weather, weatherSuppressed, category, moveType, solarBeam = strikeLawOf(frame, controls.moveType)
   -- Multi-hit sequences share one critical roll across every hit: the
   -- native scripts roll CalcCrit once per move, then loop CalcDamage.
   -- The shared table memoizes the first roll, which still lands after
@@ -1321,10 +1389,22 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
     power = power,
     attack = combat.attack,
     defense = combat.defense,
+    rawAttack = combat.rawAttack,
+    rawDefense = combat.rawDefense,
+    attackStage = combat.attackStage,
+    defenseStage = combat.defenseStage,
+    criticalMultiplier = critical.multiplier,
+    category = category,
+    burned = burned,
+    guts = guts,
     stab = stab,
-    effectiveness = effectiveness,
+    effectiveness = { numerator = effectiveness.numerator, denominator = effectiveness.denominator },
+    effectivenessFactors = effectiveness.factors,
     targetCount = targetCount,
-    critical = critical.critical,
+    weather = weather,
+    weatherSuppressed = weatherSuppressed,
+    moveType = moveType,
+    solarBeam = solarBeam,
   }, stream)
   local amount = result.amount
   if controls.leaveOne == true then

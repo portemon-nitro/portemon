@@ -164,7 +164,20 @@ local function runStrike(moveKey, extra, setup, foeHp, foeTypes, seed)
     targets = { { combatant = 2 } },
     moves = { { move = moveKey, pp = 10, ppUps = 0 } },
     moveFacts = probeMoveFacts(),
-    combat = { level = 50, attack = 120, defense = 110 },
+    combat = {
+      level = 50,
+      attack = 120,
+      defense = 110,
+      rawAttack = 120,
+      rawDefense = 110,
+      attackStage = 0,
+      defenseStage = 0,
+    },
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
     attackerTypes = { "normal" },
     defenderTypes = { [2] = foeTypes or { "normal" } },
     typeChart = nativeChart(content),
@@ -243,7 +256,9 @@ function T.present_strikes_forty_on_its_low_branch()
   local probe = runStrike("PRESENT", {}, nil, nil, nil, 1)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the present connects")
-  Assert.equal(probe.dealt, 26, "forty-power presents strike at forty")
+  -- Pre-bonus 19 rolls 86 first (floor(21*86/100) = 18) and then takes
+  -- the same-type bonus for 27.
+  Assert.equal(probe.dealt, 27, "forty-power presents strike at forty")
 end
 
 function T.present_strikes_eighty_on_its_middle_branch()
@@ -257,7 +272,9 @@ function T.present_strikes_one_twenty_on_its_high_branch()
   local probe = runStrike("PRESENT", {}, nil, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the present connects")
-  Assert.equal(probe.dealt, 80, "one-twenty-power presents strike at one-twenty")
+  -- Pre-bonus 57 rolls 92 first (floor(59*92/100) = 54) and then takes
+  -- the same-type bonus for 81.
+  Assert.equal(probe.dealt, 81, "one-twenty-power presents strike at one-twenty")
 end
 
 function T.snore_demands_sleep()
@@ -307,7 +324,9 @@ function T.wake_up_slap_doubles_and_wakes_sleepers()
   end)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the slap connects")
-  Assert.equal(probe.dealt, 103, "slaps double and wake sleepers")
+  -- Doubled pre-bonus 57 rolls 92 first (floor(59*92/100) = 51) and then
+  -- doubles into the sleeping target for 102.
+  Assert.equal(probe.dealt, 102, "slaps double and wake sleepers")
   local ctx = probe.ctx
   Assert.isNil(ctx:statusOf(2), "the slap wakes its target")
 end
@@ -360,7 +379,9 @@ function T.weather_ball_holds_base_power_without_weather()
   local probe = runStrike("WEATHER_BALL", {})
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the plain weather ball connects")
-  Assert.equal(probe.dealt, 34, "calm weather balls hold base power")
+  -- Pre-bonus 24 rolls 88 first (floor(26*88/100) = 22) and then takes
+  -- the same-type bonus for 33.
+  Assert.equal(probe.dealt, 33, "calm weather balls hold base power")
 end
 
 function T.natural_gift_throws_the_held_berry_and_spends_it()
