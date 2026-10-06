@@ -478,6 +478,9 @@ local function openStatus(record, group, extra)
       visible = true,
     },
     transition = nil,
+    -- Party selections address the root member cursor anchors; detached
+    -- selections override this capability explicitly.
+    showMemberCursor = true,
   }
   if extra ~= nil then
     for key, value in pairs(extra) do
@@ -1526,6 +1529,37 @@ function T.member_focus_follows_the_generated_party_anchors()
   Assert.equal(second[1].x, anchors[2].x, "the cursor follows the displayed member")
   Assert.equal(second[1].y, anchors[2].y, "the cursor follows the displayed member")
   Assert.equal(#cursorAt(0, "move_pick"), 0, "the restricted picker hides the member cursor")
+end
+
+function T.selections_past_party_range_draw_no_member_cursor()
+  local family, sourced = sourcedFamily()
+  local cursors =
+    assert(assert(family.sprites, "the family carries sprite roles").primaryCursor, "roles carry the primary cursor")
+  local focusAnimation = assert(cursors.rootFocus, "the cursor names its root animation")
+  local roster = {}
+  for slot = 0, 6 do
+    roster[#roster + 1] = {
+      slot = slot,
+      isEgg = false,
+      iconKey = "SYNM/f0",
+      portraitSelector = "SYNM/f0/male/plain",
+    }
+  end
+  local record = facts({ roster = roster, slotCount = 7, slot = 6 })
+  local graphics, textCalls, _, portraits, shader, renderer = composition()
+  local realized = realizeVisuals(family)
+  local status = openStatus(record, "info", { slot = 6, spriteTick = 5, showMemberCursor = false })
+  local bundle = readyBundle(family, textDouble(textCalls), portraits, shader, realized, {})
+  local ok, err = pcall(renderer.drawPane, renderer, status, "sub", bundle)
+  Assert.isTrue(ok, "a selection past party range draws without party member chrome: " .. tostring(err))
+  local cursorImage = frameImage(sourced, realized, focusAnimation)
+  local found = 0
+  for _, draw in ipairs(graphics.draws) do
+    if draw.image == cursorImage then
+      found = found + 1
+    end
+  end
+  Assert.equal(found, 0, "no party member cursor draws without party member chrome")
 end
 
 function T.performance_stars_and_modifier_markers_follow_their_facts()

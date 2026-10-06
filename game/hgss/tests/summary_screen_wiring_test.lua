@@ -449,6 +449,15 @@ local function openNativeSummary(service, summaryManifest, context, class, opts)
   opts = opts or {}
   local measured = opts.measured or measurementFor(class)
   local lease, calls = leaseDouble(summaryManifest)
+  -- Drawing through production presenters needs the production ready
+  -- bundle; callers that draw pass the field owner lease explicitly
+  -- while plan-only scenarios keep the lightweight manifest double.
+  local acquirePreparation = opts.acquirePreparation
+  if acquirePreparation == nil then
+    acquirePreparation = function()
+      return lease
+    end
+  end
   local state = SummaryScreenState.new({
     mons = service,
     manifest = summaryManifest,
@@ -464,9 +473,7 @@ local function openNativeSummary(service, summaryManifest, context, class, opts)
     readNavigation = function()
       return nil
     end,
-    acquirePreparation = function()
-      return lease
-    end,
+    acquirePreparation = acquirePreparation,
   })
   return state, calls
 end
@@ -1160,7 +1167,16 @@ function T.production_presenters_draw_summary_without_a_test_renderer()
   local service = openService(catalog, 0x5EED0003)
   gift(service, "CHIKORITA")
   local context = SummaryAcceptanceFixture.displayContext(summaryManifest, service:partyCount())
-  local state = openNativeSummary(service, summaryManifest, context, "nativeLike")
+  -- The drawn bundle comes from the production field owner, never the
+  -- manifest-only double: the production renderer resolves every named
+  -- visual through the ready bundle providers.
+  local helper = SummaryAcceptanceFixture.preparationDoubles({})
+  local owner = requireOwner(versionId, helper)
+  local state = openNativeSummary(service, summaryManifest, context, "nativeLike", {
+    acquirePreparation = function()
+      return ownerLease(owner)
+    end,
+  })
   local status = activeStatus(state)
   local graphics = FakeGraphics.new({})
   withRealPresenters(versionId, graphics, function(resources)
@@ -1192,6 +1208,7 @@ function T.production_presenters_draw_summary_without_a_test_renderer()
     Assert.isTrue(bagOk, "the sibling Bag branch keeps its dispatch: " .. tostring(bagErr))
   end)
   state:dispose()
+  owner:release()
 end
 
 return {

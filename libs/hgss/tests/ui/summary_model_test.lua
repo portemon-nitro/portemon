@@ -926,4 +926,49 @@ function T.performance_rows_publish_their_signed_aprijuice_modifier()
   end
 end
 
+function T.detached_subject_sets_share_the_rich_projection_without_per_member_rows()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x12345678)
+  gift(service, "CHIKORITA", 5)
+  local subject = service:partyMon(0)
+  local subjects = {}
+  for index = 1, 7 do
+    subjects[index] = subject
+  end
+  local seen = {}
+  local reader = {
+    partyCount = function()
+      return #subjects
+    end,
+    partyRevision = function()
+      return 41
+    end,
+    partyMon = function(_, index)
+      seen[#seen + 1] = index
+      return assert(subjects[index + 1], "detached reads stay inside the occupied set")
+    end,
+    catalog = function()
+      return catalog
+    end,
+    derive = function(_, mon)
+      return service:derive(mon)
+    end,
+  }
+  -- One context row for seven subjects: detached sets carry no
+  -- per-subject aprijuice state, so the projection resolves the generated
+  -- zero modifiers instead of demanding a padded row per member.
+  local facts =
+    SummaryModel.build(reader, 6, SummaryPresentationFixture.context(1), SummaryPresentationFixture.manifest())
+  Assert.equal(facts.slot, 6, "the selected dense index addresses the seventh subject")
+  Assert.equal(facts.slotCount, 7, "the detached set spans every occupied subject")
+  Assert.equal(#facts.roster, 7, "navigation facts cover the whole detached set")
+  Assert.equal(facts.identity.species, "CHIKORITA", "the selected subject projects through the rich path")
+  local performance = assert(facts.performance, "performance stays available without per-member rows")
+  Assert.equal(#performance, 5, "performance exposes five named rows")
+  for _, row in ipairs(performance) do
+    Assert.equal(row.modifier, 0, "detached subjects resolve the zero modifier")
+  end
+  Assert.isTrue(#seen >= 7, "the projection reads through the subject set")
+end
+
 return { tests = T }

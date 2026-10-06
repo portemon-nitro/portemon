@@ -79,7 +79,6 @@ local function nativeModel(state)
         contextKey = state.contextKey or "day13|regional",
         pictureKey = spec.isEgg == true and "EGG" or "CHIKORITA",
         identity = { species = spec.isEgg == true and "EGG" or "CHIKORITA", personality = 4242 },
-        bodyLineEstimate = 4,
       }
     end,
   }
@@ -110,6 +109,7 @@ local function nativeOpen(opts)
     allowReorder = opts.allowReorder,
     initialSlot = opts.initialSlot,
     allowCancel = opts.allowCancel,
+    showMemberCursor = opts.showMemberCursor,
   }
   if opts.readNavigation ~= nil then
     controllerOpts.readNavigation = opts.readNavigation
@@ -1427,6 +1427,18 @@ function T.ribbon_detail_open_and_close_follow_the_generated_y_track()
   Assert.equal(status.group, "performance", "closing keeps the ribbons group")
   Assert.isTrue(status.open, "closing the ribbon pane never exits the summary")
   Assert.isNil(controller:takeResult(), "nested transitions complete nothing")
+end
+
+function T.member_cursor_chrome_follows_its_explicit_capability()
+  local concealed, _ = nativeOpen({ showMemberCursor = false })
+  local status = nativeStep(concealed, {})
+  Assert.isFalse(status.showMemberCursor, "detached status hides the party member cursor")
+  nativeStep(concealed, { { type = "navigate", direction = "down" } })
+  local moved = concealed:status()
+  Assert.equal(moved.slot, 1, "navigation still scans members without the chrome")
+  Assert.isFalse(moved.showMemberCursor, "navigation never restores the chrome")
+  local shown, _ = nativeOpen()
+  Assert.isTrue(nativeStep(shown, {}).showMemberCursor, "party status keeps the member cursor by default")
 end
 
 return { tests = T }

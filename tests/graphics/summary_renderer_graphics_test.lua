@@ -149,6 +149,8 @@ local function nativeStatus(facts, group)
     group = group,
     phase = "root",
     slot = facts.slot,
+    -- Party facts address the root member cursor anchors.
+    showMemberCursor = true,
     facts = facts,
     pictureEpoch = 0,
     picture = {

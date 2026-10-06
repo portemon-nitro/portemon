@@ -186,18 +186,31 @@ function T.tests.prepared_native_family_drives_facts(context)
     local wildLines = lineMap(mine.memo.blocks)
     Assert.isTrue(#(wildLines[wildRule.lines.nature] or "") > 0, "the wild nature line carries text")
     local wildLandmark = labelOf(manifest, manifest.memo.landmarks.wildByLocation[7])
+    local dateTemplate = assert(wildRule.dateTemplate, "the wild rule carries its date template")
+    local dateSegments = assert(dateTemplate.segments, "wild date templates carry segments")
+    local dateSpan = 1
+    for _, segment in ipairs(dateSegments) do
+      if segment.kind == "lineBreak" then
+        dateSpan = dateSpan + 1
+      end
+    end
+    local dateParts = {}
+    for offset = 0, dateSpan - 1 do
+      dateParts[#dateParts + 1] = wildLines[wildRule.lines.date + offset] or ""
+    end
+    local wildDateText = table.concat(dateParts, "\n")
     Assert.isTrue(
-      (wildLines[wildRule.lines.date] or ""):find(wildLandmark, 1, true) ~= nil,
+      wildDateText:find(wildLandmark, 1, true) ~= nil,
       "the wild date block names the prepared landmark"
     )
     local metDate = CatalogFixture.metDate()
     local monthLabel = labelOf(manifest, manifest.memo.months[metDate.month])
     Assert.isTrue(
-      (wildLines[wildRule.lines.date] or ""):find(monthLabel, 1, true) ~= nil,
+      wildDateText:find(monthLabel, 1, true) ~= nil,
       "the wild date block names the prepared month"
     )
     Assert.isTrue(
-      (wildLines[wildRule.lines.date] or ""):find("Lv.", 1, true) ~= nil,
+      wildDateText:find("Lv.", 1, true) ~= nil,
       "the wild date expands its level binding from segments"
     )
     local characteristics = {}

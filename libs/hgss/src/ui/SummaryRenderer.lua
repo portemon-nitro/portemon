@@ -841,6 +841,12 @@ end
 ---@param status table<string, unknown>
 ---@param tick integer non-negative animation tick
 local function drawMemberCursor(scope, status, tick)
+  -- Detached subjects never address the six Party cursor anchors: the
+  -- controller reports the chrome capability explicitly and the renderer
+  -- never infers it from the numeric slot.
+  if status.showMemberCursor ~= true then
+    return
+  end
   if status.mode ~= "summary" or status.phase ~= "root" then
     return
   end

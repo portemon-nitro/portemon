@@ -21,41 +21,6 @@ local SummaryModel = {}
 
 SummaryModel.LEAF_COUNT = 5
 SummaryModel.CROWN_BIT = 32
-SummaryModel.WRAP_WIDTH_CHARS = 38
-
--- Splits text into word-aware lines of at most widthChars characters: a
--- conservative layout hint for scroll decisions. Measured pagination owns
--- the drawn truth; this estimate never shortens or invents content.
----@param text string
----@param widthChars integer
----@return string[]
-function SummaryModel.wrapLines(text, widthChars)
-  assert(type(text) == "string", "wrapping needs the source text")
-  assert(
-    type(widthChars) == "number" and widthChars % 1 == 0 and widthChars >= 1,
-    "wrapping needs a positive character width"
-  )
-  local lines = {}
-  local line = ""
-  for word in text:gmatch("%S+") do
-    local candidate = line == "" and word or (line .. " " .. word)
-    if #candidate <= widthChars then
-      line = candidate
-    else
-      if line ~= "" then
-        lines[#lines + 1] = line
-      end
-      line = word
-    end
-  end
-  if line ~= "" then
-    lines[#lines + 1] = line
-  end
-  if #lines == 0 then
-    lines[1] = ""
-  end
-  return lines
-end
 
 -- Source stat order for the daily performance calculation.
 local SOURCE_INDEX = { power = 0, stamina = 1, skill = 2, jump = 3, speed = 4 }
@@ -214,8 +179,7 @@ local function projectMarkings(markings)
 end
 
 ---@param context table<string, unknown>
----@param slotCount integer
-local function checkContext(context, slotCount)
+local function checkContext(context)
   assert(type(context) == "table", "the summary needs its display context")
   local profile = assert(context.profile, "the display context carries the trainer profile")
   assert(type(profile) == "table", "the trainer profile is a record")
@@ -240,10 +204,14 @@ local function checkContext(context, slotCount)
     "the display context names its dex display mode"
   )
   assert(type(context.performanceEnabled) == "boolean", "the display context enables performance explicitly")
+  -- Aprijuice rows stay decoupled from subject-set cardinality: Party
+  -- selections read their own row while detached subjects without a
+  -- per-subject row resolve the generated zero modifiers at projection
+  -- time, so an arbitrary-size box never needs a padded row per member.
   local aprijuiceBySlot = assert(context.aprijuiceBySlot, "the display context carries aprijuice modifiers")
   assert(type(aprijuiceBySlot) == "table", "aprijuice modifiers are a dense slot array")
-  assert(#aprijuiceBySlot == slotCount, "aprijuice modifiers match the party size")
-  for slot = 1, slotCount do
+  assert(#aprijuiceBySlot >= 1, "the display context carries at least one aprijuice row")
+  for slot = 1, #aprijuiceBySlot do
     local row = aprijuiceBySlot[slot]
     assert(type(row) == "table", "aprijuice row " .. slot .. " is a record")
     for _, key in ipairs(APRIJUICE_KEYS) do
@@ -374,22 +342,6 @@ local function projectMoves(catalog, moves)
 end
 
 ---@param mon table<string, unknown>
----@return table<string, unknown>?
-local function eggFacts(mon)
-  if not mon.isEgg then
-    return nil
-  end
-  local egg = assert(mon.egg, "eggs carry their origin record")
-  local met = assert(mon.met, "eggs carry their met record")
-  return {
-    location = assert(egg.location, "eggs carry their location"),
-    date = egg.date,
-    metLocation = assert(met.location, "eggs carry their met location"),
-    metLevel = assert(met.level, "eggs carry their met level"),
-  }
-end
-
----@param mon table<string, unknown>
 ---@param context table<string, unknown>
 ---@param manifest table<string, unknown>
 ---@return table[]
@@ -484,12 +436,40 @@ local function pidDigit(value, position)
   return math.floor(value / (10 ^ position)) % 10
 end
 
+--- Resolves the signed aprijuice modifier for the selected subject: the
+--- context row at the selected index when the subject set carries one,
+--- otherwise the generated zero modifiers. Detached subjects carry no
+--- per-subject aprijuice state and the generated family fixes the zero
+--- row, so coverage never depends on padding rows per box member.
+---@param context table<string, unknown>
+---@param slot0 integer zero-based selected subject index
+---@param manifest table<string, unknown> validated summary family
+---@return table<string, integer> the selected signed modifier row
+local function selectedModifier(context, slot0, manifest)
+  local rows = assert(context.aprijuiceBySlot, "the context carries aprijuice modifiers")
+  assert(type(rows) == "table", "aprijuice modifiers are an array")
+  local juice = rows[slot0 + 1]
+  if juice == nil then
+    local section = assert(manifest.performance, "the summary family carries performance tables")
+    assert(type(section) == "table", "performance tables are a record")
+    juice = assert(section.zeroAprijuice, "performance tables carry the zero modifiers")
+  end
+  assert(type(juice) == "table", "aprijuice modifiers cover the selected subject")
+  for _, key in ipairs(APRIJUICE_KEYS) do
+    assert(
+      type(juice[key]) == "number" and juice[key] % 1 == 0 and juice[key] >= -128 and juice[key] <= 127,
+      "the selected aprijuice row carries a signed modifier for " .. key
+    )
+  end
+  return juice
+end
+
 ---@param mon table<string, unknown>
----@param slot0 integer
+---@param juice table<string, integer> the explicit selected aprijuice modifier
 ---@param context table<string, unknown>
 ---@param manifest table<string, unknown>
 ---@return table[]?
-local function projectPerformance(mon, slot0, context, manifest)
+local function projectPerformance(mon, juice, context, manifest)
   if context.performanceEnabled ~= true then
     return nil
   end
@@ -514,10 +494,7 @@ local function projectPerformance(mon, slot0, context, manifest)
   assert(type(modifiers) == "table", "nature modifiers cover nature " .. nature)
   local day = assert(context.dayOfMonth, "the display context carries the day of the month")
   assert(type(day) == "number", "the day of the month is numeric")
-  local aprijuiceBySlot = assert(context.aprijuiceBySlot, "the context carries aprijuice modifiers")
-  assert(type(aprijuiceBySlot) == "table", "aprijuice modifiers are an array")
-  local juice = aprijuiceBySlot[slot0 + 1]
-  assert(type(juice) == "table", "aprijuice modifiers cover the selected slot")
+  assert(type(juice) == "table", "performance consumes the selected aprijuice modifier")
   local rows = {}
   for _, stat in ipairs(DISPLAY_ORDER) do
     local sourceIndex = assert(SOURCE_INDEX[stat], "performance covers stat " .. stat)
@@ -551,46 +528,59 @@ local function projectPerformance(mon, slot0, context, manifest)
   return rows
 end
 
--- Builds one immutable facts record for the mon in zero-based slot0 from
--- the live service, the explicit read-only display context, and the
--- validated summary family. Reading never writes the domain, consumes no
--- generator draws, and loads no images. A changed party revision aborts
--- the refresh instead of assembling mixed-generation facts.
----@param service HgssMonService the live mon service (partyCount/partyRevision/partyMon/derive/catalog)
----@param slot0 integer
+---@class SummarySubjectReader
+---@field count fun(): integer subject count
+---@field revision fun(): integer source revision
+---@field read fun(index: integer): table<string, unknown> copied subject reads
+
+-- The single rich projection core over a read-only subject reader: Party
+-- and detached subject sets share every semantic value below. The reader
+-- supplies count, revision, and copied reads while catalog text and stat
+-- derivation arrive beside it; publication stays out of the projection.
+-- Builds one immutable facts record for the subject in zero-based slot0
+-- from the explicit read-only display context and the validated summary
+-- family. Reading never writes the domain, consumes no generator draws,
+-- and loads no images. A changed source revision aborts the refresh
+-- instead of assembling mixed-generation facts.
+---@param reader SummarySubjectReader the read-only subject set
+---@param slot0 integer zero-based selected subject index
 ---@param context table<string, unknown> explicit read-only display context
 ---@param manifest table<string, unknown> validated summary family
+---@param catalog MonCatalog the mon catalog
+---@param derive fun(mon: table<string, unknown>): table<string, unknown> the derived-stat projection
 ---@return table<string, unknown>
-function SummaryModel.build(service, slot0, context, manifest)
-  assert(type(service) == "table", "the summary needs the live mon service")
-  assert(type(service.partyCount) == "function", "the summary needs the party count")
-  assert(type(service.partyRevision) == "function", "the summary needs the party revision")
-  assert(type(service.partyMon) == "function", "the summary needs party reads")
-  assert(type(service.derive) == "function", "the summary needs the derived-stat projection")
-  assert(type(service.catalog) == "function", "the summary needs the mon catalog")
+local function buildRich(reader, slot0, context, manifest, catalog, derive)
+  assert(type(reader) == "table", "the summary needs its subject reader")
+  assert(type(reader.count) == "function", "the summary needs the subject count")
+  assert(type(reader.revision) == "function", "the summary needs the source revision")
+  assert(type(reader.read) == "function", "the summary needs subject reads")
+  assert(type(catalog) == "table", "the summary needs the mon catalog")
+  assert(type(derive) == "function", "the summary needs the derived-stat projection")
   assert(type(manifest) == "table", "the summary needs the summary family")
   SummaryAssetSchema.assertManifest(manifest)
-  local slotCount = service:partyCount()
-  assert(type(slotCount) == "number" and slotCount % 1 == 0 and slotCount >= 1, "the summary needs a nonempty party")
+  local slotCount = reader.count()
+  assert(
+    type(slotCount) == "number" and slotCount % 1 == 0 and slotCount >= 1,
+    "the summary needs a nonempty subject list"
+  )
   assert(
     type(slot0) == "number" and slot0 % 1 == 0 and slot0 >= 0 and slot0 < slotCount,
-    "the summary needs an occupied party slot"
+    "the summary needs an occupied subject slot"
   )
   assert(type(context) == "table", "the summary needs its display context")
-  checkContext(context, slotCount)
+  checkContext(context)
   local dexNumbers, labels, hpLength, expLength = checkManifestRoles(manifest)
   local pictures = assert(manifest.pictures, "the summary family carries pictures")
   assert(type(pictures) == "table", "pictures are a record")
 
-  local revision = service:partyRevision()
-  local catalog = service:catalog()
-  local mon = service:partyMon(slot0)
+  local revision = reader.revision()
+  local mon = reader.read(slot0)
   local owned = isMine(mon, context)
   local memo = SummaryMemo.build(mon, owned, context, manifest)
 
   local roster = {}
   for slot = 0, slotCount - 1 do
-    local member = service:partyMon(slot)
+    local member = reader.read(slot)
     local memberIsEgg = member.isEgg == true
     local iconKey = nil
     local portraitSelector = nil
@@ -702,7 +692,7 @@ function SummaryModel.build(service, slot0, context, manifest)
     local personality = assert(mon.personality, "stored mons carry their personality")
     local gender = Personality.gender(assert(species.genderRatio, "catalog species carry a gender ratio"), personality)
     local shiny = Personality.shiny(trainerId, personality)
-    local derived = service:derive(mon)
+    local derived = derive(mon)
     local level = assert(derived.level, "derivation carries the level")
     local maxHp = assert(derived.maxHp, "derivation carries maximum health")
     local condition = assert(mon.condition, "stored mons carry their condition")
@@ -805,7 +795,7 @@ function SummaryModel.build(service, slot0, context, manifest)
       },
       moves = projectMoves(catalog, assert(mon.moves, "stored mons carry their moves")),
       ribbons = projectRibbons(mon, context, manifest),
-      performance = projectPerformance(mon, slot0, context, manifest),
+      performance = projectPerformance(mon, selectedModifier(context, slot0, manifest), context, manifest),
       indicators = nil,
     }
     local mask = assert(mon.shinyLeaves, "stored mons carry their leaf mask")
@@ -821,114 +811,42 @@ function SummaryModel.build(service, slot0, context, manifest)
   end
 
   assert(pictures[snapshot.pictureKey] ~= nil, "the picture selection exists in the summary family")
-  local closing = service:partyRevision()
-  assert(closing == revision, "the party revision moved during a read-only refresh")
+  local closing = reader.revision()
+  assert(closing == revision, "the source revision moved during a read-only refresh")
   snapshot.revision = closing
   return snapshot
 end
 
--- Projects one detached occupied subject through the same catalog and
--- derivation used for party summaries. The caller owns address selection.
----@param mon table<string, unknown>
----@param options { revision: integer, index: integer, count: integer, catalog: MonCatalog, derive: fun(mon: table<string, unknown>): table<string, unknown> }
+-- Projects the subject in zero-based slot0 from a party-shaped service:
+-- the thin Party entrypoint over the shared rich core. Detached subject
+-- ports reach the same core through the identical read shape, so Party
+-- and boxed subjects share one facts contract.
+---@param service HgssMonService the live mon service (partyCount/partyRevision/partyMon/derive/catalog)
+---@param slot0 integer zero-based selected subject index
+---@param context table<string, unknown> explicit read-only display context
+---@param manifest table<string, unknown> validated summary family
 ---@return table<string, unknown>
-function SummaryModel.buildMon(mon, options)
-  assert(type(mon) == "table", "the summary subject is a copied mon")
-  assert(type(options) == "table", "the summary projection needs subject facts")
-  assert(type(options.revision) == "number" and options.revision % 1 == 0, "summary revisions are integers")
-  assert(
-    type(options.index) == "number" and options.index % 1 == 0 and options.index >= 0,
-    "subject indexes are zero-based"
-  )
-  assert(
-    type(options.count) == "number" and options.count % 1 == 0 and options.count > options.index,
-    "summary subjects are occupied"
-  )
-  assert(type(options.derive) == "function", "the summary projection needs service derivation")
-  local catalog = assert(options.catalog, "the summary projection needs the mon catalog")
-  local mask = assert(mon.shinyLeaves, "stored mons carry their leaf mask")
-  assert(type(mask) == "number", "leaf masks are numeric")
-  local species = catalog:species(assert(mon.species, "stored mons carry their species"))
-  local form = catalog:form(mon.species, assert(mon.form, "stored mons carry their form"))
-  local origin = assert(mon.origin, "stored mons carry their origin")
-  local trainerId = assert(origin.trainerId, "origins carry the trainer identity")
-  local personality = assert(mon.personality, "stored mons carry their personality")
-  local gender = Personality.gender(assert(species.genderRatio, "catalog species carry a gender ratio"), personality)
-  local shiny = Personality.shiny(trainerId, personality)
-  local abilityKey = assert(mon.ability, "stored mons carry their ability")
-  assert(type(abilityKey) == "string", "ability keys are strings")
-  local ability = catalog:ability(abilityKey)
-  local heldItem = assert(mon.heldItem, "stored mons carry their held item")
-  assert(type(heldItem) == "string", "held item keys are strings")
-  local condition = assert(mon.condition, "stored mons carry their condition")
-  local types = {}
-  for _, typeKey in ipairs(assert(form.types, "catalog forms carry types")) do
-    types[#types + 1] = typeKey
+function SummaryModel.build(service, slot0, context, manifest)
+  assert(type(service) == "table", "the summary needs the live mon service")
+  assert(type(service.partyCount) == "function", "the summary needs the party count")
+  assert(type(service.partyRevision) == "function", "the summary needs the party revision")
+  assert(type(service.partyMon) == "function", "the summary needs party reads")
+  assert(type(service.derive) == "function", "the summary needs the derived-stat projection")
+  assert(type(service.catalog) == "function", "the summary needs the mon catalog")
+  local function readerCount()
+    return service:partyCount()
   end
-  local facts = {
-    revision = options.revision,
-    slot = options.index,
-    slotCount = options.count,
-    isEgg = mon.isEgg == true,
-    displayName = Mon.displayName(mon, catalog),
-    speciesName = assert(species.name, "catalog species carry a display name"),
-    gender = gender,
-    shiny = shiny,
-    types = types,
-    otName = assert(origin.trainerName, "origins carry the trainer name"),
-    otVisibleId = trainerId % 65536,
-    nature = Personality.nature(personality),
-    ability = abilityKey,
-    abilityName = assert(ability.name, "catalog abilities carry a display name"),
-    abilityDescription = assert(ability.description, "catalog abilities carry a description"),
-    heldItem = heldItem,
-    heldItemName = heldItemName(catalog, heldItem),
-    status = PartyScreenTheme.statusKey(
-      assert(condition.status, "conditions carry status bits"),
-      assert(condition.currentHp, "conditions carry current health")
-    ),
-    currentHp = condition.currentHp,
-    leaves = projectLeaves(mask),
-    portraitSelector = nil,
-    iconKey = MonCache.iconSelector(mon.species, mon.form, mon.isEgg == true),
-    stats = nil,
-    experience = nil,
-    expToNext = nil,
-    moves = {},
-    egg = nil,
-    level = nil,
-    maxHp = nil,
-    bodyLineEstimate = 0,
-  }
-  if facts.isEgg then
-    facts.egg = eggFacts(mon)
-    return facts
+  local function readerRevision()
+    return service:partyRevision()
   end
-  local derived = options.derive(mon)
-  facts.level = assert(derived.level, "derivation carries the level")
-  facts.maxHp = assert(derived.maxHp, "derivation carries maximum health")
-  facts.stats = {
-    attack = assert(derived.attack, "derivation carries attack"),
-    defense = assert(derived.defense, "derivation carries defense"),
-    speed = assert(derived.speed, "derivation carries speed"),
-    specialAttack = assert(derived.specialAttack, "derivation carries special attack"),
-    specialDefense = assert(derived.specialDefense, "derivation carries special defense"),
-  }
-  local experience = assert(mon.experience, "stored mons carry experience")
-  assert(type(experience) == "number", "experience is numeric")
-  facts.experience = experience
-  if facts.level < 100 then
-    local curve = catalog:growthCurve(assert(species.growthCurve, "catalog species carry a growth curve"))
-    facts.expToNext = Experience.expFor(curve, facts.level + 1) - experience
+  local function readerRead(index)
+    return service:partyMon(index)
   end
-  facts.moves = projectMoves(catalog, assert(mon.moves, "stored mons carry their moves"))
-  local portraitGender = gender
-  if portraitGender == "genderless" then
-    portraitGender = "male"
+  local function derive(mon)
+    return service:derive(mon)
   end
-  facts.portraitSelector = MonCache.portraitSelector(mon.species, mon.form, portraitGender, shiny)
-  facts.bodyLineEstimate = #SummaryModel.wrapLines(facts.abilityDescription, SummaryModel.WRAP_WIDTH_CHARS)
-  return facts
+  local reader = { count = readerCount, revision = readerRevision, read = readerRead }
+  return buildRich(reader, slot0, context, manifest, service:catalog(), derive)
 end
 
 return SummaryModel

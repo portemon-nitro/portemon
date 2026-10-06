@@ -23,6 +23,7 @@ local SummaryPicturePlayer = require("libs.hgss.src.ui.SummaryPicturePlayer")
 ---@field _readNavigation fun(): table<string, unknown>?
 ---@field _allowReorder boolean
 ---@field _cancellable boolean
+---@field _showMemberCursor boolean whether the root member cursor chrome is meaningful
 ---@field _slot integer
 ---@field _group string
 ---@field _phase string
@@ -71,6 +72,7 @@ SummaryController.ENTRY_CRY_WINDOW_TICKS = 3
 ---@field allowReorder boolean?
 ---@field initialSlot integer?
 ---@field allowCancel boolean?
+---@field showMemberCursor boolean? root member cursor chrome, default true for Party sources
 
 ---@param groups table<string, unknown>?
 ---@return string[]
@@ -126,6 +128,11 @@ function SummaryController.new(opts)
     cancellable = true
   end
   assert(type(cancellable) == "boolean", "cancel permission must be a boolean")
+  local showMemberCursor = opts.showMemberCursor
+  if showMemberCursor == nil then
+    showMemberCursor = true
+  end
+  assert(type(showMemberCursor) == "boolean", "member cursor chrome must be a boolean")
   local manifestGroups = nil
   if type(opts.manifest) == "table" then
     manifestGroups = opts.manifest.groups
@@ -146,6 +153,7 @@ function SummaryController.new(opts)
     _readNavigation = opts.readNavigation,
     _allowReorder = allowReorder,
     _cancellable = cancellable,
+    _showMemberCursor = showMemberCursor,
     _slot = opts.initialSlot or 0,
     _group = opts.mode == "move_pick" and "skills" or "info",
     _phase = "root",
@@ -1296,6 +1304,7 @@ function SummaryController:status()
     transition = transition,
     allowCancel = self._cancellable,
     allowReorder = self._allowReorder,
+    showMemberCursor = self._showMemberCursor,
   }
 end
 

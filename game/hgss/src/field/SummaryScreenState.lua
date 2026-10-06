@@ -222,6 +222,9 @@ function SummaryScreenState.new(opts)
     manifest = manifest,
     readNavigation = readNavigation,
     initialSlot = initialSlot,
+    -- Only Party selections address the six root member cursor anchors;
+    -- detached box indexes carry no Party slot identity.
+    showMemberCursor = subjectPort == nil,
   }
   if opts.mode == "summary" then
     local function reorderThroughCommand(slot, a, b, revision)
@@ -449,10 +452,13 @@ function SummaryScreenState:refreshPresentation(view)
   return self._session:resolve(self:_measured(), view or self:_view())
 end
 
--- Builds the bounded demand behind the current roster: one full portrait
--- identity per non-egg member in slot order with the roster icon keys,
--- qualified by revision and picture epoch so a stale worker result can
--- never satisfy a newer selection.
+-- Builds the bounded demand behind the current selection. Party demand
+-- carries one full portrait identity per non-egg roster member in slot
+-- order with the roster icon keys. Detached demand carries only the
+-- selected subject: a box can hold more subjects than the bounded page
+-- contract allows, so whole-box portraits never enter preparation.
+-- Demand stays qualified by source revision, selection, and picture epoch
+-- so a stale worker result can never satisfy a newer selection.
 ---@return table<string, unknown>? demand when facts build
 ---@return string? build failure when facts do not build
 local function currentDemand(self)
@@ -462,9 +468,33 @@ local function currentDemand(self)
   end
   local source = modelService(self)
   local manifest = self._manifest
-  local buildOk, facts = pcall(SummaryModel.build, source, 0, context, manifest)
+  local status = self._controller:status()
+  local selected = 0
+  local slot = status.slot
+  if type(slot) == "number" and slot % 1 == 0 and slot >= 0 then
+    selected = slot
+  end
+  local buildOk, facts = pcall(SummaryModel.build, source, selected, context, manifest)
   if not buildOk then
     return nil, tostring(facts)
+  end
+  local revision = source:partyRevision()
+  local pictureEpoch = status.pictureEpoch or 0
+  if self._subjectPort ~= nil then
+    local selectors = {}
+    if facts.isEgg ~= true then
+      local portraitSelector = assert(facts.portraitSelector, "non-egg subjects carry their portrait identity")
+      selectors[1] = portraitSelector
+    end
+    local iconKey = assert(facts.iconKey, "subjects carry their icon key")
+    local key = string.format("%d:%d:%d", revision, selected, pictureEpoch)
+    return {
+      key = key,
+      revision = revision,
+      pictureEpoch = pictureEpoch,
+      portraitSelectors = selectors,
+      iconKeys = { iconKey },
+    }
   end
   local selectors = {}
   local iconKeys = {}
@@ -474,12 +504,11 @@ local function currentDemand(self)
       selectors[#selectors + 1] = assert(row.portraitSelector, "non-egg roster rows carry their portrait identity")
     end
   end
-  local status = self._controller:status()
-  local key = string.format("%d:%d", source:partyRevision(), status.pictureEpoch or 0)
+  local key = string.format("%d:%d", revision, pictureEpoch)
   return {
     key = key,
-    revision = source:partyRevision(),
-    pictureEpoch = status.pictureEpoch or 0,
+    revision = revision,
+    pictureEpoch = pictureEpoch,
     portraitSelectors = selectors,
     iconKeys = iconKeys,
   }
