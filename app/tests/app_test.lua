@@ -1040,8 +1040,12 @@ function T.unknown_generation_waits_without_demands_then_transfers_on_validation
     Assert.equal(#result.menus, 1, "the validated completion transfers to the app menu")
     Assert.deepEqual(
       requests,
-      { { requestKind = "milestone", name = "new-game-intro", urgency = "near" } },
-      "menu installation requests only its one speculative intro prefetch"
+      {
+        { requestKind = "milestone", name = "new-game-intro", urgency = "near" },
+        { requestKind = "milestone", name = "field-planning", urgency = "near" },
+        { requestKind = "milestone", name = "field-runtime", urgency = "near" },
+      },
+      "menu installation requests its intro prefetch and both field closures"
     )
     Assert.deepEqual(
       result.firstPlayPublished,
@@ -1231,6 +1235,27 @@ function T.fresh_import_first_play_stays_on_the_import_surface_until_the_menu()
     if not ok then
       error(err, 0)
     end
+  end)
+end
+
+function T.menu_installation_requests_intro_and_field_closures_at_near_urgency()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    local requests = recordServiceRequests(result)
+    App._bootExisting()
+    Assert.equal(#result.menus, 1, "selection installs the product menu")
+    local names, urgencies = requestedMilestones(requests)
+    Assert.deepEqual(
+      names,
+      { "bootstrap", "field-planning", "field-runtime", "new-game-intro" },
+      "menu installation demands the intro and both field closures alongside the bootstrap check"
+    )
+    for _, name in ipairs({ "new-game-intro", "field-planning", "field-runtime" }) do
+      Assert.equal(urgencies[name], "near", "idle menu demand stays speculative for " .. name)
+    end
+    Assert.equal(urgencies.bootstrap, "required", "the bootstrap check stays mandatory")
+    Assert.equal(result.warmups, 1, "menu installation still authorizes background completion once")
   end)
 end
 

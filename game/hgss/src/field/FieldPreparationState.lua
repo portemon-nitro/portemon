@@ -3,23 +3,23 @@ local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 -- Pending field-entry ownership for Continue and the New Game handoff.
 -- It tracks three independent readiness interests instead of one global
 -- gate: entry planning, the static field runtime, and the entry target
--- location. New Game derives and demands its target as soon as planning
--- is ready even while the runtime is still pending, and transfers only
--- once both the target and the runtime are ready. Continue validates
--- through the existing store boundary (the unchanged strict load) once
--- its runtime prerequisite is ready, then demands its target location
--- through the borrowed metadata-only loader, and transfers to the
--- already-composed field exactly once. Failures are visible and
--- cancellable; no invalid candidate or save is repaired or published,
--- and cancellation publishes nothing.
+-- location. Continue loads its saved record on the first update without
+-- waiting for either closure, then demands its target location through
+-- the borrowed metadata-only loader as soon as entry planning is ready,
+-- even while the static runtime is still pending. New Game derives and
+-- demands its target the same way, and both entries transfer to the
+-- already-composed field exactly once, only when the target and the
+-- runtime are both ready. Failures are visible and cancellable; no
+-- invalid candidate or save is repaired or published, and cancellation
+-- publishes nothing.
 
 ---@class FieldPreparationOptions
 ---@field kind "continue"|"newgame"
----@field saveId string? Continue only: the catalog-visible save to load after runtime readiness
+---@field saveId string? Continue only: the catalog-visible save to load on the first update
 ---@field candidate table<string, unknown>? New Game only: the finalized Oak candidate
 ---@field versionId string selected game version, carried for diagnostics
 ---@field derivedAssets table<string, function> semantic derived-asset host
----@field saveStore table<string, unknown>? Continue only: the strict save store
+---@field saveStore table<string, unknown>? Continue only: the normalizing save store
 ---@field createLoader fun(): table<string, unknown> loader factory owned by the HGSS composition
 ---@field enterField fun(record: table<string, unknown>, extraOptions: table<string, unknown>?) ownership transfer
 ---@field onCancel fun()? return to the owning menu
@@ -35,9 +35,10 @@ local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 ---@field loader table<string, unknown>? retained planning loader, built once planning is ready
 ---@field enterField fun(record: table<string, unknown>, extraOptions: table<string, unknown>?)
 ---@field onCancel fun()?
----@field phase "planning"|"location"|"done"|"failed"
+---@field phase "assets"|"location"|"done"|"failed"
 ---@field planningReady boolean entry planning observed ready
 ---@field runtimeReady boolean static field runtime observed ready
+---@field loadAttempted boolean Continue only: the one-shot save load already ran
 ---@field record table<string, unknown>?
 ---@field target { idOrSymbol: integer|string, fieldX: integer, fieldZ: integer }?
 ---@field error unknown?
@@ -72,9 +73,10 @@ function FieldPreparationState.new(options)
     loader = nil,
     enterField = options.enterField,
     onCancel = options.onCancel,
-    phase = "planning",
+    phase = "assets",
     planningReady = false,
     runtimeReady = false,
+    loadAttempted = false,
     record = nil,
     target = nil,
     error = nil,
@@ -115,30 +117,9 @@ function FieldPreparationState:_pollMilestone(name, kind)
   end
 end
 
-function FieldPreparationState:_buildAndAim()
-  if self.kind == "continue" then
-    -- Continue keeps strict validation after its runtime prerequisite:
-    -- the persisted fingerprint it validates against needs the runtime.
-    if not (self.planningReady and self.runtimeReady) then
-      return
-    end
-  elseif not self.planningReady then
-    return
-  end
-  if not self:_ensureLoader() then
-    return
-  end
-  if self.kind == "continue" then
-    self:_strictLoad()
-  else
-    self:_planNewGameTarget()
-  end
-end
-
 function FieldPreparationState:_ensureLoader()
-  -- The planning loader is legal once entry planning is ready (Continue
-  -- additionally waits for its runtime prerequisite in _buildAndAim):
-  -- build it exactly once, then reuse the retained loader for every later
+  -- The planning loader is legal once entry planning is ready: build
+  -- it exactly once, then reuse the retained loader for every later
   -- update. A failed build is a visible preparation failure, never a
   -- retried probe.
   if self.loader ~= nil then
@@ -154,7 +135,11 @@ function FieldPreparationState:_ensureLoader()
   return true
 end
 
-function FieldPreparationState:_strictLoad()
+function FieldPreparationState:_loadContinue()
+  -- The normalized store record carries its own destination: one direct
+  -- load on the first update, independent of closure readiness, with no
+  -- retry and no semantic revalidation beyond the destination envelope.
+  self.loadAttempted = true
   local store = assert(self.saveStore, "Continue preparation requires the save store")
   local saveId = assert(self.saveId, "Continue preparation requires a saveId")
   local ok, recordOrError = pcall(store.load, store, saveId)
@@ -173,7 +158,6 @@ function FieldPreparationState:_strictLoad()
   end
   self.record = record
   self.target = { idOrSymbol = record.mapId, fieldX = record.fieldX, fieldZ = record.fieldZ }
-  self.phase = "location"
 end
 
 function FieldPreparationState:_planNewGameTarget()
@@ -220,8 +204,8 @@ function FieldPreparationState:_pollGeometry()
     return
   end
   if not self.runtimeReady then
-    -- New Game demands its target while the runtime is still pending, but
-    -- the transfer waits until both closures are ready.
+    -- Either entry demands its destination while the runtime is still
+    -- pending, but the transfer waits until both closures are ready.
     return
   end
   local record = assert(self.record, "field transfer requires its record")
@@ -244,6 +228,12 @@ function FieldPreparationState:update(_)
   if self.transferred or self.cancelled or self.phase == "failed" or self.phase == "done" then
     return
   end
+  if self.kind == "continue" and not self.loadAttempted then
+    self:_loadContinue()
+    if self.phase == "failed" then
+      return
+    end
+  end
   if not self.planningReady then
     self:_pollMilestone("field-planning", "planning")
     if self.phase == "failed" then
@@ -256,11 +246,28 @@ function FieldPreparationState:update(_)
       return
     end
   end
+  if self.loader == nil then
+    -- The loader needs entry planning, and for Continue the loaded
+    -- record: neither entry waits for the static runtime to start
+    -- destination work.
+    local canBuild = self.planningReady and (self.kind ~= "continue" or self.record ~= nil)
+    if not canBuild then
+      return
+    end
+    if not self:_ensureLoader() then
+      return
+    end
+  end
   if self.target == nil then
-    self:_buildAndAim()
+    if self.kind == "continue" then
+      return
+    end
+    self:_planNewGameTarget()
     if self.phase == "failed" or self.target == nil then
       return
     end
+  end
+  if self.phase ~= "location" then
     self.phase = "location"
   end
   self:_pollGeometry()

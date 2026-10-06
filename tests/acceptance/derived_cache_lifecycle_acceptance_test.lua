@@ -168,7 +168,7 @@ function T.tests.fixture_records_carry_independently_owned_bag_state()
   Assert.isTrue(first.bag.registered ~= second.bag.registered, "fixture records never share bag registration")
 end
 
-function T.tests.continue_waits_for_readiness_then_validates_before_field()
+function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
   local versionId = AcceptanceHarness.defaultVersion()
   local store = isolatedStore()
   local saveId = store:reserve()
@@ -183,7 +183,7 @@ function T.tests.continue_waits_for_readiness_then_validates_before_field()
 
   local fieldCalls = {}
   local entered = nil
-  local entryReady, geometryReady = false, false
+  local planningReady, runtimeReady, geometryReady = false, false, false
   local requestedMaps = {}
   local requestedMilestones = {}
   local host = {
@@ -191,17 +191,17 @@ function T.tests.continue_waits_for_readiness_then_validates_before_field()
       requestedMilestones[#requestedMilestones + 1] = name
       if name == "new-game-intro" then
         -- Menu-installed speculative prefetch stays pending here: Continue
-        -- must reach field on entry readiness alone.
+        -- must reach field on entry planning and runtime readiness alone.
         return false
       end
       Assert.isTrue(
         name == "field-planning" or name == "field-runtime",
         "Continue awaits only entry planning and the field runtime"
       )
-      if entryReady then
-        return true
+      if name == "field-planning" then
+        return planningReady
       end
-      return false
+      return runtimeReady
     end,
     requestField = function(mapId, urgency)
       requestedMaps[#requestedMaps + 1] = { mapId = mapId, urgency = urgency }
@@ -239,27 +239,31 @@ function T.tests.continue_waits_for_readiness_then_validates_before_field()
       derivedAssets = host,
     })
     local ok, err = pcall(function()
-      Assert.equal(#fieldCalls, 0, "Continue waits for entry readiness before strict load")
-      Assert.deepEqual(loads, {}, "strict load runs only after entry readiness")
+      Assert.equal(#fieldCalls, 0, "Continue enters field only through the running state")
+      Assert.deepEqual(loads, {}, "nothing loads before the first update")
       pumpGame(game, 5)
-      Assert.equal(#fieldCalls, 0, "pending readiness does not enter field")
-      Assert.deepEqual(loads, {}, "pumping never loads before entry readiness")
-      Assert.equal(loaderBuilds(), 0, "pending readiness never constructs the production planning loader")
-      entryReady = true
+      Assert.deepEqual(loads, { saveId }, "the save loads once on early updates while entry planning is still pending")
+      Assert.equal(#fieldCalls, 0, "pending entry planning does not enter field")
+      Assert.equal(loaderBuilds(), 0, "pending entry planning never constructs the production planning loader")
+      pumpGame(game, 5)
+      Assert.deepEqual(loads, { saveId }, "pending updates never reload the save")
+      Assert.equal(#fieldCalls, 0, "pending entry planning still does not enter field")
+      planningReady = true
       local waited = 0
-      while #loads == 0 and waited < 60 do
+      while loaderBuilds() == 0 and waited < 60 do
         game:update(1 / 60)
         waited = waited + 1
       end
-      Assert.deepEqual(loads, { saveId }, "exactly one strict load follows entry readiness")
-      Assert.equal(loaderBuilds(), 1, "readiness constructs the production planning loader exactly once")
-      Assert.equal(#fieldCalls, 0, "field begins only after location geometry is current")
+      Assert.equal(loaderBuilds(), 1, "entry planning constructs the production planning loader exactly once")
+      Assert.deepEqual(loads, { saveId }, "planning readiness never reloads the save")
+      Assert.equal(#fieldCalls, 0, "field begins only after location geometry and runtime are both ready")
       waited = 0
       while #requestedMaps == 0 and waited < 60 do
         game:update(1 / 60)
         waited = waited + 1
       end
-      Assert.isTrue(#requestedMaps >= 1, "the saved location geometry is requested once entry is ready")
+      Assert.isTrue(#requestedMaps >= 1, "the saved location geometry is requested once entry planning is ready")
+      Assert.equal(#fieldCalls, 0, "the demanded destination waits while the field runtime is still pending")
       local requiredIds, nearIds = {}, {}
       for _, demand in ipairs(requestedMaps) do
         if demand.urgency == "required" then
@@ -279,13 +283,14 @@ function T.tests.continue_waits_for_readiness_then_validates_before_field()
       end
       Assert.isTrue(nearCount <= 8, "neighbor visuals stay a bounded halo, never a corpus walk")
       geometryReady = true
+      runtimeReady = true
       waited = 0
       while #fieldCalls == 0 and waited < 60 do
         game:update(1 / 60)
         waited = waited + 1
       end
-      Assert.equal(#fieldCalls, 1, "field entry commits once geometry is current")
-      Assert.equal(fieldCalls[1].saveId, saveId, "field receives the strictly loaded record")
+      Assert.equal(#fieldCalls, 1, "field entry commits once geometry and runtime are both ready")
+      Assert.equal(fieldCalls[1].saveId, saveId, "field receives the early loaded record")
       Assert.equal(game.state, entered, "the committed field becomes the running state")
       Assert.deepEqual(store:list(), listedBefore, "Continue mutates neither the catalog nor any payload")
       Assert.equal(loaderBuilds(), 1, "settling never rebuilds the production planning loader")

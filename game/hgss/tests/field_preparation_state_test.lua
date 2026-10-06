@@ -144,7 +144,7 @@ function T.construction_builds_no_loader_while_readiness_is_pending()
       return readyGeometryLoader({})
     end,
   }))
-  Assert.equal(state.phase, "planning")
+  Assert.equal(state.phase, "assets")
   settle(state)
   Assert.equal(builds, 0, "pending core never builds the planning loader")
   pending = false
@@ -439,6 +439,170 @@ function T.location_failure_is_visible_before_transfer()
     "the location cause is preserved"
   )
   Assert.equal(calls.transfers or 0, 0, "a failed location never transfers")
+  state:dispose()
+end
+
+local function continueGatedOptions(gates, log, storeCalls, loaderCalls, behavior, storeBehavior)
+  return continueOptions({
+    derivedAssets = gatedHost(gates, log),
+    saveStore = {
+      load = function(_, _)
+        storeCalls.loads = (storeCalls.loads or 0) + 1
+        if storeBehavior ~= nil and storeBehavior.failure ~= nil then
+          error(storeBehavior.failure, 0)
+        end
+        return { mapId = 60, fieldX = 684, fieldZ = 393 }
+      end,
+    },
+    createLoader = function()
+      loaderCalls.builds = (loaderCalls.builds or 0) + 1
+      return gatedLoader(loaderCalls, behavior)
+    end,
+    enterField = function()
+      loaderCalls.transfers = (loaderCalls.transfers or 0) + 1
+    end,
+  })
+end
+
+local function recordPreparationDraw(draw)
+  local calls = { prints = {} }
+  local previousLove = rawget(_G, "love")
+  rawset(_G, "love", {
+    graphics = {
+      setColor = function() end,
+      print = function(text, _, _)
+        calls.prints[#calls.prints + 1] = tostring(text)
+      end,
+      printf = function(text, _, _, _)
+        calls.prints[#calls.prints + 1] = tostring(text)
+      end,
+      getWidth = function()
+        return 640
+      end,
+    },
+  })
+  local ok, err = pcall(draw)
+  rawset(_G, "love", previousLove)
+  return { ok = ok, err = err, prints = calls.prints }
+end
+
+local function printedMatching(prints, pattern)
+  for _, text in ipairs(prints) do
+    if text:find(pattern) ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+function T.continue_loads_the_saved_record_while_both_closures_are_still_pending()
+  local log = {}
+  local storeCalls = {}
+  local loaderCalls = {}
+  local gates = { planning = false, runtime = false }
+  local state = FieldPreparationState.new(continueGatedOptions(gates, log, storeCalls, loaderCalls, { ready = false }))
+  settle(state)
+  Assert.equal(storeCalls.loads or 0, 1, "the saved record loads once while both closures are pending")
+  Assert.notNil(state.record, "the loaded record is retained while closures are pending")
+  Assert.notNil(state.target, "the destination is known while closures are pending")
+  Assert.equal(loaderCalls.builds or 0, 0, "no loader is built before the entry closure is ready")
+  Assert.equal(loaderCalls.transfers or 0, 0, "nothing transfers while closures are pending")
+  settle(state)
+  Assert.equal(storeCalls.loads, 1, "repeated updates never reload the saved record")
+  state:dispose()
+end
+
+function T.continue_demands_its_destination_while_runtime_is_still_pending()
+  local log = {}
+  local storeCalls = {}
+  local loaderCalls = {}
+  local gates = { planning = true, runtime = false }
+  local behavior = { ready = false }
+  local state = FieldPreparationState.new(continueGatedOptions(gates, log, storeCalls, loaderCalls, behavior))
+  settle(state)
+  Assert.equal(storeCalls.loads or 0, 1, "the saved record loads without waiting for the runtime")
+  Assert.isTrue((loaderCalls.requests or 0) >= 1, "entry-closure readiness starts destination demand")
+  Assert.equal(loaderCalls.transfers or 0, 0, "a pending runtime never transfers early")
+  Assert.equal(state.phase, "location", "the state waits on the destination while runtime is pending")
+  behavior.ready = true
+  gates.runtime = true
+  settle(state)
+  Assert.equal(loaderCalls.transfers or 0, 1, "the transfer runs once destination and runtime are ready")
+  Assert.equal(state.phase, "done")
+  settle(state)
+  Assert.equal(loaderCalls.transfers or 0, 1, "settling never transfers twice")
+  Assert.equal(storeCalls.loads, 1, "the transfer path never reloads the saved record")
+  state:dispose()
+end
+
+function T.continue_save_failure_fails_while_closures_are_still_pending()
+  local log = {}
+  local storeCalls = {}
+  local loaderCalls = {}
+  local gates = { planning = false, runtime = false }
+  local state = FieldPreparationState.new(
+    continueGatedOptions(gates, log, storeCalls, loaderCalls, { ready = false }, { failure = "injected save failure" })
+  )
+  settle(state)
+  Assert.equal(state.phase, "failed", "a save failure fails preparation even while closures are pending")
+  Assert.isTrue(
+    string.find(tostring(state.error), "injected save failure", 1, true) ~= nil,
+    "the save cause is preserved"
+  )
+  Assert.equal(loaderCalls.transfers or 0, 0, "a failed save never transfers")
+  Assert.equal(storeCalls.loads or 0, 1, "the failed load ran exactly once")
+  settle(state)
+  Assert.equal(storeCalls.loads, 1, "a failed load is never retried")
+  state:dispose()
+end
+
+function T.cancelled_continue_never_transfers_on_late_readiness()
+  local log = {}
+  local storeCalls = {}
+  local loaderCalls = {}
+  local gates = { planning = false, runtime = false }
+  local behavior = { ready = false }
+  local state = FieldPreparationState.new(continueGatedOptions(gates, log, storeCalls, loaderCalls, behavior))
+  settle(state)
+  Assert.equal(storeCalls.loads or 0, 1, "the saved record loads before cancellation")
+  Assert.equal(loaderCalls.transfers or 0, 0, "nothing transfers while both closures are pending")
+  state:keypressed("escape")
+  gates.planning = true
+  gates.runtime = true
+  behavior.ready = true
+  settle(state)
+  Assert.equal(loaderCalls.transfers or 0, 0, "late readiness never transfers a cancelled preparation")
+  state:dispose()
+end
+
+function T.preparation_draw_names_pending_closures_and_destination_truthfully()
+  local log = {}
+  local storeCalls = {}
+  local loaderCalls = {}
+  local gates = { planning = false, runtime = false }
+  local behavior = { ready = false }
+  local state = FieldPreparationState.new(continueGatedOptions(gates, log, storeCalls, loaderCalls, behavior))
+  settle(state)
+  local pending = recordPreparationDraw(function()
+    state:draw()
+  end)
+  Assert.isTrue(pending.ok, "drawing while closures are pending never fails: " .. tostring(pending.err))
+  Assert.isFalse(
+    printedMatching(pending.prints, "planning"),
+    "the closure wait never claims the entry-closure name"
+  )
+  Assert.isTrue(printedMatching(pending.prints, "assets"), "the closure wait names the pending closures")
+  gates.planning = true
+  settle(state)
+  local destined = recordPreparationDraw(function()
+    state:draw()
+  end)
+  Assert.isTrue(destined.ok, "drawing while the destination is pending never fails: " .. tostring(destined.err))
+  Assert.isFalse(
+    printedMatching(destined.prints, "planning"),
+    "the destination wait never claims the entry-closure name"
+  )
+  Assert.isTrue(printedMatching(destined.prints, "location"), "the destination wait names the destination")
   state:dispose()
 end
 

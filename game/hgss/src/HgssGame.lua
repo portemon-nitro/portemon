@@ -244,8 +244,9 @@ local function installRoutes(options, game, saveStore, versionId)
   if options.entry.kind == "new_game" then
     startNewGame()
   else
-    -- Continue remains an intent until field planning and strict validation
-    -- have completed in the existing preparation state.
+    -- Continue enters preparation immediately: the preparation state
+    -- loads the saved record at once and overlaps destination demand
+    -- with static runtime readiness.
     enterPreparation({ kind = "continue", saveId = options.entry.saveId })
   end
 end

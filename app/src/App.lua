@@ -123,7 +123,10 @@ end
 function App._launchMenuWithProvisioner(versionId)
   local provisioner = assert(App.provisioner, "selection has no provisioner")
   installMenu(versionId)
-  provisioner:gameHost().requestMilestone("new-game-intro", "near")
+  local host = provisioner:gameHost()
+  host.requestMilestone("new-game-intro", "near")
+  host.requestMilestone("field-planning", "near")
+  host.requestMilestone("field-runtime", "near")
   provisioner:startBackgroundWarmup()
 end
 
