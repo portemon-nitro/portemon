@@ -326,7 +326,7 @@ function T.tests.nurse_joy_heals_through_the_blocking_common_script_flow()
     local flowCompleteTick = nil
     local commonInstanceId = nil
     local observedScriptTaskTypes = {}
-    local followerAppearanceCompletedAtTick = nil
+    local recallCompletedAtTick = nil
     local ended = false
     local elapsed = 0
     local function observeFlow()
@@ -387,8 +387,8 @@ function T.tests.nurse_joy_heals_through_the_blocking_common_script_flow()
           end
         end
         for _, record in ipairs(game:recordsNamed("script.task_ended")) do
-          if record.payload.instanceId == commonInstanceId and record.payload.taskType == "follower_appearance" then
-            followerAppearanceCompletedAtTick = record.payload.completedAtTick
+          if record.payload.instanceId == commonInstanceId and record.payload.taskType == "follower_recall" then
+            recallCompletedAtTick = record.payload.completedAtTick
           end
         end
       end
@@ -461,13 +461,19 @@ function T.tests.nurse_joy_heals_through_the_blocking_common_script_flow()
     Assert.isTrue(firstNurseBowTick < dialogueAfterBowTick, "Nurse Joy bows before the post-healing dialogue")
     Assert.isTrue(observedScriptTaskTypes.movement, "scheduler records include the common script movement tasks")
     Assert.isTrue(
-      observedScriptTaskTypes.follower_appearance,
-      "the common Nurse Joy script waits on the follower-appearance task"
+      observedScriptTaskTypes.follower_recall,
+      "the common Nurse Joy script waits on the follower-recall task"
     )
-    Assert.notNil(followerAppearanceCompletedAtTick, "the common follower-appearance task completes")
+    Assert.notNil(recallCompletedAtTick, "the common follower-recall task completes")
     Assert.isTrue(
-      followerAppearanceCompletedAtTick < spawnTicks[1],
-      "the common script finishes follower appearance before the healing sequence begins"
+      recallCompletedAtTick < spawnTicks[1],
+      "the common script finishes the follower recall before the healing sequence begins"
+    )
+    local follower = game.runtime.followingMon
+    Assert.notNil(follower, "the production field runtime owns the follower controller")
+    Assert.isFalse(
+      follower:isPartnerVisible(),
+      "the completed recall leaves the follower hidden; no transition reveals it mid-script"
     )
     local commonEndIndex, localEndIndex = nil, nil
     for index, record in ipairs(game:recordsNamed("script.ended")) do

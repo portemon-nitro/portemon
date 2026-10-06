@@ -73,6 +73,7 @@ local BLOCKING_OPS = {
   pc_open = true,
   pc_hof_open = true,
   follower_appearance = true,
+  follower_recall = true,
 }
 
 -- Operations that end the run phase: yield boundaries and stops.

@@ -27,6 +27,7 @@ local FieldActorDraw = {}
 ---@field poseTick integer?
 ---@field gesturePose string?
 ---@field gestureTick integer?
+---@field presentationScale number? transient billboard scalar, identity when omitted
 ---@field visible boolean?
 
 ---@class FieldActorDraw.Entry
@@ -141,10 +142,33 @@ local function writeItem(record, entry, partIndex, item)
     billboardCenter[2] = billboardBase[14]
     billboardCenter[3] = billboardBase[15]
     item.billboardCenter = billboardCenter
-    item.billboardScale = assert(
+    local baseScale = assert(
       entry.billboardScales and entry.billboardScales[geometry],
       "resident billboard visual is missing its precomputed scale"
     )
+    local recordScale = record.presentationScale
+    if recordScale == nil then
+      recordScale = 1
+    end
+    assert(
+      type(recordScale) == "number"
+        and recordScale == recordScale
+        and recordScale ~= math.huge
+        and recordScale ~= -math.huge
+        and recordScale > 0,
+      "actor record presentation scale must be a positive finite scalar"
+    )
+    -- The item owns its scaled vector: the resident cached base is read
+    -- but never mutated or aliased, so actors sharing one visual keep
+    -- independent scales.
+    local itemScale = item.billboardScale
+    if type(itemScale) ~= "table" or itemScale == baseScale then
+      itemScale = {}
+      item.billboardScale = itemScale
+    end
+    itemScale[1] = baseScale[1] * recordScale
+    itemScale[2] = baseScale[2] * recordScale
+    itemScale[3] = baseScale[3] * recordScale
   else
     item.bounds = nil
     if not item.transform then

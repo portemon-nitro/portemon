@@ -1210,7 +1210,7 @@ Schema.OPERATIONS = {
     },
   },
   follower_transition = { fields = {} },
-  follower_appearance = { fields = {} },
+  follower_recall = { fields = {} },
   unsupported = {
     fields = {
       command = { type = "integer", required = true },

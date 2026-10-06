@@ -1177,12 +1177,17 @@ function FieldRuntime:_composeFieldServices(boot)
     end
     return self.mapLoader:get(mapId)
   end
+  -- The one follower-transition owner: composed before the following-mon
+  -- controller so the controller can hold it as its required
+  -- recall-transition collaborator.
+  self:_composeFollowerTransition(boot.cacheFs)
   self.followingMon = FollowingMonController.new({
     service = self.monService,
     catalog = self.monCatalog,
     actors = self.actors,
     playerOf = currentPlayer,
     mapOf = currentMap,
+    transition = self.followingMonTransition,
   })
   self.starterBalls = composeStarterBalls(self)
   self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
@@ -1212,13 +1217,6 @@ function FieldRuntime:_composeFieldServices(boot)
     sourcePolicy = self.pokemonMenu.pcManifest.terminal,
     resolveTerminalProp = resolveTerminalProp,
   })
-  -- The one follower-transition owner: the transient visual the
-  -- nonblocking transition command starts, advanced once per fixed tick
-  -- after the follower reconciles. A missing or malformed generated
-  -- definition fails the boot loudly instead of silently dropping the
-  -- visual. The headless factory keeps deterministic timing without GPU
-  -- state; presentation replaces it with renderer-backed instances.
-  self:_composeFollowerTransition(boot.cacheFs)
   self:_composePokemonCenterHeal(boot.audioService)
   local scriptComposition = require("game.hgss.src.field.FieldScriptComposition").compose(self, {
     cacheFs = boot.cacheFs,

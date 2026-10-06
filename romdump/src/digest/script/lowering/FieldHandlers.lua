@@ -444,9 +444,9 @@ local function followerTransition()
   return { op = "follower_transition" }
 end
 
-local function followerAppearance()
+local function followerRecall()
   -- Retail opcode 599 starts a TaskManager child and blocks until it settles.
-  return { op = "follower_appearance" }
+  return { op = "follower_recall" }
 end
 
 local function placeStarterBalls()
@@ -1578,7 +1578,7 @@ local FieldHandlers = {
   [581] = lockLastTalkedActor,
   [582] = setSpecialSpawn,
   [596] = followerPartnerState,
-  [599] = followerAppearance,
+  [599] = followerRecall,
   [601] = followerFacePlayer,
   [602] = followerSetPaused,
   [603] = followerWait,
