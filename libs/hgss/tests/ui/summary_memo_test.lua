@@ -985,6 +985,32 @@ end
 -- Builds the ordinary wild meeting while swapping the branch date
 -- template for synthetic control segments, so break/color geometry is
 -- proved without depending on the fixture wording.
+local function setMeetingYear(service, slot, year)
+  setMon(service, slot, function(mon)
+    mon.met.date.year = year
+  end)
+end
+
+-- A year-bearing arrival template mirroring the migrated date shape
+-- (month, day, year substitution, then the arrival region), so the
+-- arrival branch selection stays production while the year substitution
+-- is isolated exactly like the wild and hatched templates isolate it.
+local function arrivalYearSegments()
+  return {
+    { kind = "text", value = "SYN " },
+    { kind = "metMonth" },
+    { kind = "text", value = " SYN " },
+    { kind = "metDay" },
+    { kind = "text", value = ", 20" },
+    { kind = "metYear" },
+    { kind = "lineBreak" },
+    { kind = "migrationRegion" },
+    { kind = "lineBreak" },
+    { kind = "text", value = "SYN arrived at Lv. " },
+    { kind = "metLevel" },
+    { kind = "text", value = "." },
+  }
+end
 local function buildWithDateSegments(service, manifest, segments)
   for _, branch in ipairs(manifest.memo.conditions) do
     if branch.key == "wildEncounter" then
@@ -1103,6 +1129,172 @@ function T.one_line_templates_keep_their_single_block_shape()
   Assert.equal(#dated.runs, 1, "adjacent same-ink text coalesces into one run")
   Assert.equal(dated.runs[1].text, "SYN 5.", "the one-line template keeps its wording")
   Assert.equal(dated.runs[1].ink, "ordinary", "the one-line template keeps its ink")
+end
+
+-- Encounter dates render the stored year as a two-character
+-- zero-padded value: the century prefix in the template wording stays
+-- literal while the substitution carries only the stored year offset.
+-- The stored meeting date keeps its full canonical year.
+function T.encounter_years_render_as_two_digit_values_while_the_stored_date_keeps_full_years()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xE40701)
+  gift(service, "CHIKORITA")
+  gift(service, "TOTODILE")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  applyMemoFields(manifest, service, 1, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local monthWord = labelOf(manifest, manifest.memo.months[9])
+  local cases = {
+    { slot = 0, year = 2009, suffix = "09" },
+    { slot = 1, year = 2026, suffix = "26" },
+  }
+  for _, kase in ipairs(cases) do
+    setMeetingYear(service, kase.slot, kase.year)
+    local facts = build(service, kase.slot, nil, manifest)
+    Assert.equal(facts.memo.condition, "wildEncounter", "the ordinary meeting keeps its branch")
+    local branch = findBranch(manifest, facts.memo.condition)
+    local lines = lineMap(facts.memo.blocks)
+    Assert.equal(
+      lines[branch.lines.date],
+      "SYN " .. monthWord .. " SYN 13, 20" .. kase.suffix,
+      "the meeting year renders its two-digit value"
+    )
+    Assert.isTrue(
+      (lines[branch.lines.date] or ""):find(", 20" .. kase.year, 1, true) == nil,
+      "the full stored year never reaches the memo text"
+    )
+    local dated = blockByLine(facts.memo.blocks, branch.lines.date)
+    Assert.notNil(dated, "the date line keeps its authored position")
+    for _, run in ipairs(dated.runs) do
+      Assert.equal(run.ink, "ordinary", "the date line keeps its ink")
+    end
+    Assert.isTrue(
+      memoText(facts.memo.blocks):find("SYN met at Lv. 5.", 1, true) ~= nil,
+      "the surrounding level wording stays unchanged"
+    )
+    Assert.equal(
+      service:partyMon(kase.slot).met.date.year,
+      kase.year,
+      "the stored meeting date keeps its full year"
+    )
+  end
+end
+
+-- Hatched and arrival dates share the same two-digit year rule: the egg
+-- substitution and the arrival meeting substitution both render the
+-- stored year offset with a leading zero, while each record keeps its
+-- own branch and the stored dates keep full years.
+function T.hatched_and_arrival_years_share_the_two_digit_rule_without_changing_branches()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xE40702)
+  gift(service, "CHIKORITA")
+  gift(service, "TOTODILE")
+  local manifest = SummaryPresentationFixture.manifest()
+  for _, branch in ipairs(manifest.memo.conditions) do
+    if branch.key == "migrated" then
+      branch.dateTemplate = { segments = arrivalYearSegments() }
+    end
+  end
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "giftSet",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  applyMemoFields(manifest, service, 1, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "palPark",
+    metLevel = 5,
+  })
+  local monthWord = labelOf(manifest, manifest.memo.months[9])
+  setMeetingYear(service, 0, 2000)
+  local hatched = build(service, 0, nil, manifest)
+  Assert.equal(hatched.memo.condition, "eggHatchedGift", "the hatched gift keeps its branch")
+  local hatchedBranch = findBranch(manifest, hatched.memo.condition)
+  local hatchedLines = lineMap(hatched.memo.blocks)
+  Assert.equal(
+    hatchedLines[hatchedBranch.lines.date],
+    "SYN " .. monthWord .. " SYN 13, 2000",
+    "the hatched year renders its two-digit value"
+  )
+  Assert.isTrue(
+    (hatchedLines[hatchedBranch.lines.date] or ""):find(", 202000", 1, true) == nil,
+    "the full stored year never reaches the hatched text"
+  )
+  Assert.equal(service:partyMon(0).met.date.year, 2000, "the stored hatched date keeps its full year")
+  setMeetingYear(service, 1, 2009)
+  local arrived = build(service, 1, nil, manifest)
+  Assert.equal(arrived.memo.condition, "migrated", "the arrival keeps its branch")
+  local arrivedBranch = findBranch(manifest, arrived.memo.condition)
+  local arrivedLines = lineMap(arrived.memo.blocks)
+  Assert.equal(
+    arrivedLines[arrivedBranch.lines.date],
+    "SYN " .. monthWord .. " SYN 13, 2009",
+    "the arrival year renders its two-digit value"
+  )
+  Assert.isTrue(
+    (arrivedLines[arrivedBranch.lines.date] or ""):find(", 202009", 1, true) == nil,
+    "the full stored year never reaches the arrival text"
+  )
+  Assert.isTrue(
+    memoText(arrived.memo.blocks):find(labelOf(manifest, manifest.memo.migrationRegions.heartgold), 1, true)
+      ~= nil,
+    "the arrival region wording stays unchanged"
+  )
+  Assert.equal(service:partyMon(1).met.date.year, 2009, "the stored arrival date keeps its full year")
+end
+
+-- Year suffixes stay exact across the century edges: early, recent, and
+-- late offsets keep two digits with leading zeros, while offsets past
+-- two digits keep their full width instead of wrapping the century.
+function T.year_suffixes_keep_their_width_across_the_century_edges()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xE40703)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local monthWord = labelOf(manifest, manifest.memo.months[9])
+  local cases = {
+    { year = 2000, suffix = "00" },
+    { year = 2009, suffix = "09" },
+    { year = 2010, suffix = "10" },
+    { year = 2026, suffix = "26" },
+    { year = 2099, suffix = "99" },
+    { year = 2100, suffix = "100" },
+  }
+  for _, kase in ipairs(cases) do
+    setMeetingYear(service, 0, kase.year)
+    local facts = build(service, 0, nil, manifest)
+    Assert.equal(facts.memo.condition, "wildEncounter", "the ordinary meeting keeps its branch")
+    local branch = findBranch(manifest, facts.memo.condition)
+    Assert.equal(
+      lineMap(facts.memo.blocks)[branch.lines.date],
+      "SYN " .. monthWord .. " SYN 13, 20" .. kase.suffix,
+      "stored year " .. kase.year .. " renders its offset"
+    )
+    Assert.equal(service:partyMon(0).met.date.year, kase.year, "the stored date keeps its full year")
+  end
 end
 
 return { tests = T }

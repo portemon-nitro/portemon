@@ -379,6 +379,18 @@ local function dateNumber(value, what)
   return value
 end
 
+-- Renders a canonical meeting year in the stored-year form used by the
+-- encounter memo: the semantic record keeps the full year while the
+-- memo text carries the year offset from 2000 with minimum width 2
+-- and leading zeros. Offsets past two digits keep their full width.
+---@param year unknown
+---@return string
+local function formatNativeYear(year)
+  local canonical = dateNumber(year, "memo years")
+  assert(canonical >= 2000 and canonical <= 2255, "memo years stay in 2000..2255")
+  return string.format("%02d", canonical - 2000)
+end
+
 -- Expands one generated template (a branch date template or a nature
 -- template) into one display-ready run list per source line. Literal
 -- text transfers verbatim, color selections change the run ink, and
@@ -443,7 +455,7 @@ local function expandSegments(mon, manifest, segments)
       flush()
       ink = inkForColor(manifest, segment.color)
     elseif kind == "metYear" then
-      push(tostring(dateNumber(metDate.year, "memo years")))
+      push(formatNativeYear(metDate.year))
     elseif kind == "metMonth" then
       push(labelText(labels, monthKey(section, metDate.month), "the memo month"))
     elseif kind == "metDay" then
@@ -453,7 +465,7 @@ local function expandSegments(mon, manifest, segments)
     elseif kind == "metLocation" then
       push(labelText(labels, landmarkKey(manifest, metLocation), "the memo landmark"))
     elseif kind == "eggYear" then
-      push(tostring(dateNumber(eggDate.year, "memo years")))
+      push(formatNativeYear(eggDate.year))
     elseif kind == "eggMonth" then
       push(labelText(labels, monthKey(section, eggDate.month), "the memo month"))
     elseif kind == "eggDay" then
