@@ -42,7 +42,6 @@ local NATIVE_KEYS = {
 }
 
 Status.PARALYSIS_PERCENT = 25
-Status.THAW_PERCENT = 20
 Status.ROLL_MODULUS = 65536
 
 ---@param mon unknown
@@ -188,9 +187,8 @@ function Status.beforeAction(mon, stream, cause)
     return { acts = true, event = nil }
   end
   if key == "freeze" then
-    local threshold = math.floor((Status.THAW_PERCENT * Status.ROLL_MODULUS) / 100)
     local draw = drawGate(stream, cause, "freeze_thaw")
-    if draw < threshold then
+    if draw % 5 == 0 then
       checked.condition.effects = {}
       return { acts = true, event = { key = "freeze", outcome = "thawed" } }
     end

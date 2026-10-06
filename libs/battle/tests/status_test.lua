@@ -224,4 +224,51 @@ function T.transient_effects_never_enter_persistent_records()
   Assert.equal(StatusCodec.project(poisoned), 0x8, "persistent records project back exactly")
 end
 
+-- The freeze gate thaws on the exact native predicate: one labeled draw
+-- thaws exactly when draw % 5 == 0. Draws 0 and 5 thaw while adjacent
+-- draws 1, 4, 6 and 65534 stay frozen, and every case consumes exactly
+-- one draw at the freeze site. The maximum draw 65535 is itself a
+-- multiple of 5 (5 x 13107), so it thaws under the same predicate.
+function T.freeze_gate_thaws_on_the_modulo_five_draw()
+  local Status = statusOwner("native major status law owns application and replacement resets")
+
+  local cases = {
+    { draw = 0, thaws = true },
+    { draw = 1, thaws = false },
+    { draw = 4, thaws = false },
+    { draw = 5, thaws = true },
+    { draw = 6, thaws = false },
+    { draw = 65534, thaws = false },
+    { draw = 65535, thaws = true },
+  }
+  for _, case in ipairs(cases) do
+    local mon = freshMon()
+    Assert.isTrue(Status.apply(mon, "freeze", EffectFixture.cause(2, 1), {}), "freeze applies")
+    local calls = 0
+    local labels = {}
+    local stream = {}
+    function stream:nextU16(label, cause)
+      calls = calls + 1
+      assert(type(label) == "string" and label ~= "", "the thaw gate names its draw site")
+      assert(type(cause) == "table", "the thaw gate carries its semantic cause")
+      labels[#labels + 1] = label
+      return case.draw
+    end
+    local result = Status.beforeAction(mon, stream, EffectFixture.cause(1, 1))
+    if case.thaws then
+      Assert.isTrue(result.acts, "draw " .. case.draw .. " thaws the frozen combatant")
+      Assert.notNil(result.event, "thawing emits its event")
+      Assert.equal(result.event.outcome, "thawed", "draw " .. case.draw .. " reports its thaw")
+      Assert.deepEqual(mon.condition.effects, {}, "thawing clears the condition record")
+    else
+      Assert.isFalse(result.acts, "draw " .. case.draw .. " leaves the ice intact")
+      Assert.notNil(result.event, "a blocked gate names its condition")
+      Assert.equal(result.event.outcome, "blocked", "draw " .. case.draw .. " blocks without thawing")
+      Assert.equal(#mon.condition.effects, 1, "the gate never cures the condition it checks")
+    end
+    Assert.equal(calls, 1, "draw " .. case.draw .. " consumes exactly one thaw draw")
+    Assert.deepEqual(labels, { "freeze_thaw" }, "the thaw gate draws at its labeled site")
+  end
+end
+
 return { tests = T }

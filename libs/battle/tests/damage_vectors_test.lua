@@ -192,18 +192,18 @@ function T.traced_and_untraced_calculations_share_one_draw_stream()
 end
 
 -- Stat stages are exact ratios: attack +2 is 4/2, attack -1 is 2/3,
--- accuracy +1 is 4/3; effective stats floor at application; deltas clamp.
+-- accuracy +1 is 133/100; effective stats floor at application; deltas clamp.
 function T.stage_ratios_clamp_and_floor_exactly()
   local StatStages =
     SessionFixture.requirePresent("libs.battle.src.gen4.StatStages", "source stage clamps own stat ratios")
 
   Assert.deepEqual(StatStages.multiplier(2, "attack"), { numerator = 4, denominator = 2 }, "attack +2 doubles")
   Assert.deepEqual(StatStages.multiplier(-1, "attack"), { numerator = 2, denominator = 3 }, "attack -1 is two thirds")
-  Assert.deepEqual(StatStages.multiplier(1, "accuracy"), { numerator = 4, denominator = 3 }, "accuracy +1 is four thirds")
+  Assert.deepEqual(StatStages.multiplier(1, "accuracy"), { numerator = 133, denominator = 100 }, "accuracy +1 is 133/100")
   Assert.deepEqual(
     StatStages.multiplier(-1, "evasion"),
-    { numerator = 3, denominator = 4 },
-    "evasion -1 on the target is three quarters"
+    { numerator = 75, denominator = 100 },
+    "evasion -1 on the target is 75/100"
   )
   Assert.equal(StatStages.effective(100, 2, "attack"), 200, "doubled 100 stays exact")
   Assert.equal(StatStages.effective(100, -1, "attack"), 66, "two thirds of 100 floors to 66")
