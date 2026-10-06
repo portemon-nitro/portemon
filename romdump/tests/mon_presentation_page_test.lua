@@ -1,7 +1,7 @@
 -- Bounded mon presentation pages: the semantic catalog stages without touching
 -- pixel decoders, selector layout packs at most sixteen two-frame visuals per
 -- fixed page with aliases sharing one slot, the layout is deterministic, page
--- repacking leaves the semantic fingerprint and saved-mon legality alone, and
+-- repacking leaves the semantic catalog and saved-mon legality alone, and
 -- partial page sets report staged readiness levels without reading as a
 -- complete family. Fixtures below drive the real production entry points with
 -- a synthetic source filesystem, so planning, paging, and staging are proved
@@ -637,7 +637,7 @@ function T.page_layout_is_deterministic_across_enumeration_orders()
   assertPagedManifest(first.portraits, PORTRAIT_PAGE_WIDTH, PORTRAIT_PAGE_HEIGHT, "portrait")
 end
 
-function T.semantic_fingerprint_and_save_legality_survive_repacking()
+function T.semantic_catalog_and_save_legality_survive_repacking()
   Assert.equal(type(MonPresentationCompiler.plan), "function", "selector layout plans without pixels")
   local catalog, romFs = compileCatalog()
   local planned = assert(MonPresentationCompiler.plan(romFs, catalog))
@@ -679,15 +679,13 @@ function T.semantic_fingerprint_and_save_legality_survive_repacking()
   MonAssetSchema.assertIconManifest(repacked)
   Assert.isTrue(#repacked.pageIds > 1, "the repack keeps more than one page")
   local ItemFixture = require("libs.items.tests.item_fixture")
-  local first = MonCatalog.new(catalog, ItemFixture.makeCatalog())
-  local second = MonCatalog.new(catalog, ItemFixture.makeCatalog())
-  Assert.equal(first:fingerprint(), second:fingerprint(), "the semantic fingerprint ignores page packing")
+  local live = MonCatalog.new(catalog, ItemFixture.makeCatalog())
   Assert.isTrue(
     LuaWriter.encode(catalog):find("pageId") == nil,
-    "page packing lives outside the fingerprinted semantic serialization"
+    "page packing lives outside the semantic catalog serialization"
   )
   local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture())
-  local ok, failure = pcall(MonsSave.validate, bucket, { catalog = second })
+  local ok, failure = pcall(MonsSave.validate, bucket, { catalog = live })
   Assert.isTrue(ok, "saved-mon legality survives a page repacking: " .. tostring(failure))
 end
 

@@ -2,7 +2,7 @@
 -- actual producer working-tree bytes (one SHA-256 manifest over a fixed broad
 -- source-root set), release identity uses an explicit per-game counter and
 -- performs no producer I/O, and the generation token never substitutes for
--- the semantic script/mon fingerprints that guard saves. Old attestations go
+-- the semantic script fingerprint that guards saves. Old attestations go
 -- cold without touching raw dumps, saves, or artifact roots, and any
 -- enumeration/read/validation fault aborts selection instead of falling back
 -- to another key.
@@ -14,8 +14,6 @@ local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local FakeCache = require("tests.support.FakeCache")
 local GameVersion = require("romdump.src.source.GameVersion")
-local MonCatalog = require("libs.mons.src.MonCatalog")
-local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local Registry = require("libs.script.src.Registry")
 local Schema = require("libs.script.src.Schema")
@@ -242,7 +240,7 @@ function T.release_selection_reads_no_producer_files()
   )
 end
 
-function T.generation_differs_while_semantic_fingerprints_still_match()
+function T.generation_differs_while_semantic_fingerprint_still_matches()
   local first = devIdentity("d" .. Sha256.hex("producer tree one"))
   local second = devIdentity("d" .. Sha256.hex("producer tree two"))
   Assert.isTrue(
@@ -258,13 +256,6 @@ function T.generation_differs_while_semantic_fingerprints_still_match()
     "identical script content must keep the save-compatibility fingerprint"
   )
 
-  local leftCatalog = MonCatalog.new(CatalogFixture.buildAssetRoot(), CatalogFixture.makeItemCatalog())
-  local rightCatalog = MonCatalog.new(CatalogFixture.buildAssetRoot(), CatalogFixture.makeItemCatalog())
-  Assert.equal(
-    leftCatalog:fingerprint(),
-    rightCatalog:fingerprint(),
-    "identical mon content must keep the save-compatibility fingerprint"
-  )
 end
 
 function T.previous_attestation_is_cold_and_leaves_raw_and_saves_alone()

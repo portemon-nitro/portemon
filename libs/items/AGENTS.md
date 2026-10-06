@@ -13,8 +13,9 @@ HGSS field, script, mon, or presentation knowledge.
   `libs.ui`, `game`, `app`, `romdump`, or `love`.
 - Semantic item keys are primary. Native numeric identities stay only because
   exact native encoding gives them current use.
-- The generated item catalog root is validated through the owned asset
-  schema; pocket definitions are the schema-owned source contract.
+- The generated item catalog root arrives comprehensively validated by
+  producer/audit paths; pocket definitions are the schema-owned source
+  contract.
 
 ## Contracts
 
@@ -23,7 +24,8 @@ HGSS field, script, mon, or presentation knowledge.
   TM/berry data fail loudly with structured package errors; programming
   invariants use `assert`.
 - `ItemCatalog` is immutable after construction and copies its input root.
-  Records are immutable by convention.
+  The constructor trusts the current canonical root and builds its own
+  copied indexes. Records are immutable by convention.
 - Native item IDs cross runtime boundaries only for native/script/codec
   compatibility; every normal runtime lookup resolves through `ItemCatalog`.
 - Icon selection names a generated manifest entry; no source member identity

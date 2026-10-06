@@ -15,12 +15,14 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 local FollowerInteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
+local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ItemCache = require("libs.assets.src.ItemCache")
-local ItemCatalog = require("libs.items.src.ItemCatalog")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MartCache = require("libs.assets.src.MartCache")
+local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local MonCache = require("libs.assets.src.MonCache")
-local MonCatalog = require("libs.mons.src.MonCatalog")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local ItemFixture = require("libs.items.tests.item_fixture")
 
 local T = {}
 
@@ -80,16 +82,23 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
   local followerCatalog = { schema = FollowerInteractionCache.SCHEMA, version = "heartgold" }
   cache:writeLua(FollowerInteractionCache.catalogPath(), followerCatalog)
 
+  -- Real published roots at their real cache paths. They are built before
+  -- the comprehensive validators below are replaced with throwing doubles,
+  -- because fixture construction itself proves the canonical root contract.
+  local monRoot = CatalogFixture.buildAssetRoot()
+  local itemRoot = ItemFixture.buildAssetRoot()
+  cache:writeLua(MonCache.catalogPath(), monRoot)
+  cache:writeLua(ItemCache.catalogPath(), itemRoot)
+
   local weatherCalls, followerCalls = 0, 0
+  local monValidatorCalls, itemValidatorCalls = 0, 0
   local originals = {
     forVersion = CacheFs.forVersion,
     fontLoad = FieldFontLoader.load,
     weatherValidate = FieldWeatherCache.validateCatalog,
     followerValidate = FollowerInteractionCache.validateCatalog,
-    monLoad = MonCache.loadCatalog,
-    itemLoad = ItemCache.loadCatalog,
-    itemNew = ItemCatalog.new,
-    monNew = MonCatalog.new,
+    monValidate = MonAssetSchema.assertCatalog,
+    itemValidate = ItemAssetSchema.assertCatalog,
     martLoad = MartCache.loadCatalog,
     entranceLoad = FieldEntranceIndicatorRuntime.load,
     emoteLoad = FieldActorEmoteRuntime.load,
@@ -108,17 +117,16 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
     followerCalls = followerCalls + 1
     error("published follower catalogs must not be revalidated at runtime", 0)
   end)
-  rawset(MonCache, "loadCatalog", function()
-    return { version = { language = "heartgold" } }
+  -- The cache loaders and catalog constructors under test stay real: the
+  -- phase must prove the production loader-to-constructor chain reaches
+  -- live catalogs without comprehensive validation.
+  rawset(MonAssetSchema, "assertCatalog", function()
+    monValidatorCalls = monValidatorCalls + 1
+    error("published mon catalogs must not be revalidated at runtime", 0)
   end)
-  rawset(ItemCache, "loadCatalog", function()
-    return {}
-  end)
-  rawset(ItemCatalog, "new", function()
-    return {}
-  end)
-  rawset(MonCatalog, "new", function()
-    return {}
+  rawset(ItemAssetSchema, "assertCatalog", function()
+    itemValidatorCalls = itemValidatorCalls + 1
+    error("published item catalogs must not be revalidated at runtime", 0)
   end)
   rawset(MartCache, "loadCatalog", function()
     return {}
@@ -140,10 +148,8 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
   rawset(FieldFontLoader, "load", originals.fontLoad)
   rawset(FieldWeatherCache, "validateCatalog", originals.weatherValidate)
   rawset(FollowerInteractionCache, "validateCatalog", originals.followerValidate)
-  rawset(MonCache, "loadCatalog", originals.monLoad)
-  rawset(ItemCache, "loadCatalog", originals.itemLoad)
-  rawset(ItemCatalog, "new", originals.itemNew)
-  rawset(MonCatalog, "new", originals.monNew)
+  rawset(MonAssetSchema, "assertCatalog", originals.monValidate)
+  rawset(ItemAssetSchema, "assertCatalog", originals.itemValidate)
   rawset(MartCache, "loadCatalog", originals.martLoad)
   rawset(FieldEntranceIndicatorRuntime, "load", originals.entranceLoad)
   rawset(FieldActorEmoteRuntime, "load", originals.emoteLoad)
@@ -151,6 +157,19 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
   Assert.isTrue(ok, "trusted published catalogs must boot without validator proof: " .. tostring(phaseErr))
   Assert.equal(weatherCalls, 0, "the comprehensive weather validator must not run during trusted boot")
   Assert.equal(followerCalls, 0, "the comprehensive follower validator must not run during trusted boot")
+  Assert.equal(monValidatorCalls, 0, "the comprehensive mon validator must not run during trusted boot")
+  Assert.equal(itemValidatorCalls, 0, "the comprehensive item validator must not run during trusted boot")
+  Assert.equal(
+    runtime.monCatalog:species("CHIKORITA").nativeId,
+    152,
+    "the runtime keeps the live mon catalog behind the trusted load"
+  )
+  Assert.equal(
+    runtime.itemCatalog:item("POKE_BALL").nativeId,
+    4,
+    "the runtime keeps the live item catalog behind the trusted load"
+  )
+  Assert.equal(runtime.monLanguage, "english", "the runtime keeps the published mon language")
   Assert.deepEqual(runtime.weatherCatalog, weatherCatalog, "the runtime retains the published weather catalog")
   Assert.deepEqual(
     runtime.followerInteractionCatalog,

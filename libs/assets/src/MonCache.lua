@@ -348,9 +348,12 @@ function MonCache.loadIndex(cacheFs)
   return index
 end
 
+-- Trusted runtime load: presence plus the current schema identity is
+-- sufficient. Whole-catalog validation stays with the producer writers,
+-- schema tests, and explicit audit (see isReady).
 function MonCache.loadCatalog(cacheFs)
   local catalog = cacheFs:loadLua(MonCache.catalogPath())
-  MonAssetSchema.assertCatalog(catalog)
+  assert(type(catalog) == "table" and catalog.schema == MonCache.CATALOG_SCHEMA, "mon catalog is unavailable")
   return catalog
 end
 

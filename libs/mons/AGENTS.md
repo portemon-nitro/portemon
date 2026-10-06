@@ -12,8 +12,7 @@ LÖVE, source ROM, game, HGSS field, script, or presentation knowledge.
 - They must not import `libs.nds`, `libs.script`, `libs.hgss`, `libs.ui`,
   `game`, `app`, `romdump`, or `love`.
 - Item identity is never copied here: `MonCatalog` delegates item lookups to
-  the injected `ItemCatalog`, and the mon fingerprint excludes the external
-  item catalog.
+  the injected `ItemCatalog`.
 - Generation-specific algorithms and formats live under `src/gen4`; the
   top-level modules own the semantic record, catalog, party, and save bucket.
 - Semantic keys are primary. Native numeric identities stay only because
@@ -29,6 +28,9 @@ LÖVE, source ROM, game, HGSS field, script, or presentation knowledge.
   identities, unencodable text, and inconsistent derivations fail loudly with
   structured package errors; programming invariants use `assert`.
 - `MonCatalog` is immutable after construction and copies its input root.
+- Published generated roots arrive comprehensively validated by
+  producer/audit paths; the constructor trusts the current canonical root
+  and builds its own copied indexes.
 - `Party` owns dense zero-based slots, copies, and revision; callers never
   mutate the internal array.
 - Creation goes through named policies only; there is no free-form

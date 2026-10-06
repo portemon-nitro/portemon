@@ -1,6 +1,5 @@
--- Catalog ownership: immutable indexed definitions with deterministic
--- fingerprints, native-identity lookups, and presentation selection through
--- the selected form.
+-- Catalog ownership: immutable indexed definitions, native-identity
+-- lookups, and presentation selection through the selected form.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -61,18 +60,8 @@ function T.catalog_indexes_definitions_and_selects_presentations()
     catalog:speciesKeyByNativeId(9999)
   end)
 
-  -- The fingerprint is deterministic for an unchanged root and moves with
-  -- any mon content change.
-  local again = CatalogFixture.makeCatalog()
-  Assert.equal(again:fingerprint(), catalog:fingerprint())
-  local altered = CatalogFixture.buildAssetRoot()
-  altered.species.BAYLEEF = copy(altered.species.CHIKORITA)
-  altered.species.BAYLEEF.nativeId = 153
-  altered.species.BAYLEEF.name = "BAYLEEF"
-  local OtherCatalog = require("libs.mons.src.MonCatalog")
-  Assert.isTrue(OtherCatalog.new(altered, CatalogFixture.makeItemCatalog()):fingerprint() ~= catalog:fingerprint())
-
   -- Later callers cannot replace the indexed maps through the input root.
+  local OtherCatalog = require("libs.mons.src.MonCatalog")
   local root = CatalogFixture.buildAssetRoot()
   local frozen = OtherCatalog.new(root, CatalogFixture.makeItemCatalog())
   root.species.CHIKORITA = nil
@@ -85,6 +74,19 @@ function T.catalog_indexes_definitions_and_selects_presentations()
   Assert.throws(function()
     OtherCatalog.new(doubled, CatalogFixture.makeItemCatalog())
   end)
+end
+
+function T.catalog_keeps_copied_indexed_lookups_without_an_aggregate_digest()
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  Assert.isNil(MonCatalog.fingerprint, "the catalog exposes no aggregate compatibility digest")
+  local root = CatalogFixture.buildAssetRoot()
+  local catalog = MonCatalog.new(root, CatalogFixture.makeItemCatalog())
+  Assert.isNil(catalog.fingerprint, "a constructed catalog carries no aggregate digest")
+  Assert.isNil(rawget(catalog, "_fingerprint"), "a constructed catalog retains no digest state")
+  root.species.CHIKORITA = nil
+  Assert.equal(catalog:species("CHIKORITA").nativeId, 152)
+  Assert.equal(catalog:speciesKeyByNativeId(158), "TOTODILE")
+  Assert.equal(catalog:move("TACKLE").nativeId, 33)
 end
 
 function T.catalog_delegates_item_identities_to_the_shared_catalog()
@@ -108,20 +110,6 @@ function T.catalog_delegates_item_identities_to_the_shared_catalog()
     catalog:itemKeyByNativeId(9999)
   end)
   Assert.equal(nativeErr.code, "ITEM_RECORD_INVALID")
-end
-
-function T.catalog_fingerprint_excludes_the_external_item_catalog()
-  local catalog = CatalogFixture.makeCatalog()
-  local ItemFixture = require("libs.items.tests.item_fixture")
-  local alteredRoot = ItemFixture.buildAssetRoot()
-  alteredRoot.items.POTION.description = "a changed description"
-  alteredRoot.items.POTION.nameIndefinite = "a changed Potion"
-  local ItemCatalog = require("libs.items.src.ItemCatalog")
-  local alteredItems = ItemCatalog.new(alteredRoot)
-  Assert.isTrue(alteredItems:item("POTION").description ~= CatalogFixture.makeItemCatalog():item("POTION").description)
-  local OtherCatalog = require("libs.mons.src.MonCatalog")
-  local relinked = OtherCatalog.new(CatalogFixture.buildAssetRoot(), alteredItems)
-  Assert.equal(relinked:fingerprint(), catalog:fingerprint())
 end
 
 return { tests = T }

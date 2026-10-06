@@ -79,9 +79,12 @@ function ItemCache.loadIndex(cacheFs)
   return index
 end
 
+-- Trusted runtime load: presence plus the current schema identity is
+-- sufficient. Whole-catalog validation stays with the producer writers,
+-- schema tests, and explicit audit (see isReady).
 function ItemCache.loadCatalog(cacheFs)
   local catalog = cacheFs:loadLua(ItemCache.catalogPath())
-  ItemAssetSchema.assertCatalog(catalog)
+  assert(type(catalog) == "table" and catalog.schema == ItemCache.CATALOG_SCHEMA, "item catalog is unavailable")
   return catalog
 end
 

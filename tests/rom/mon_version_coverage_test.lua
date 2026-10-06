@@ -36,8 +36,6 @@ function T.ready_versions_build_valid_starter_capable_catalogs(romFs, versionId)
   local root = MonCache.loadCatalog(cacheFs)
   Assert.equal(root.version.id, versionId, "the cache catalog is keyed to its version, never a shared fallback")
   local catalog = MonBucket.openCatalogs(versionId)
-  local fingerprint = catalog:fingerprint()
-  Assert.isTrue(type(fingerprint) == "string" and fingerprint ~= "", "the catalog carries a usable fingerprint")
 
   local labId =
     assert(MapResolver.resolve(romFs, "MAP_NEW_BARK_ELMS_LAB_1F").map.id, "the lab map resolves in this version")
