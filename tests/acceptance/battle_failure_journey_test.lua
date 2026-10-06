@@ -2,9 +2,9 @@
 -- swap, a repeated completion reuses its receipt instead of republishing,
 -- refused presentation readiness publishes nothing, invalid replies return
 -- typed errors without consuming the battle, a scenario-free lifecycle
--- ends without a result, and a full party reports its capture handoff
--- explicitly instead of storing the mon anywhere. Failing operations
--- leave revisions, quantities, order, and files unchanged.
+-- ends without a result, and a full party refuses the capture batch
+-- before any publication instead of storing the mon anywhere. Failing
+-- operations leave revisions, quantities, order, and files unchanged.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -17,7 +17,6 @@ local Party = require("libs.mons.src.Party")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local COMMITTER_MODULE = "libs.hgss.src.battle.HgssBattleCommitter"
-local STUB_MODULE = "libs.hgss.src.battle.HgssSendToPcStub"
 local BATTLE_RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 
@@ -336,8 +335,8 @@ function T.tests.invalid_replies_return_typed_errors_and_the_battle_still_comple
   Assert.isNil(love.filesystem.getInfo(namespace), "teardown removes the isolated save namespace")
 end
 
-function T.tests.full_party_capture_reports_an_explicit_unretained_handoff()
-  local Stub = requirePresent(STUB_MODULE, "explicit party-overflow handoff without storage")
+function T.tests.full_party_capture_fails_before_any_publication()
+  local Committer = requirePresent(COMMITTER_MODULE, "cross-owner result publication without hidden storage")
   local party = newPartyOwner()
   local species = { "CHIKORITA", "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" }
   local catalog = CatalogFixture.makeCatalog()
@@ -347,17 +346,19 @@ function T.tests.full_party_capture_reports_an_explicit_unretained_handoff()
       Assert.isTrue(party:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = name }))))
     end
   end
-  Assert.equal(party:partyCount(), 6, "the handoff needs a genuinely full party")
+  Assert.equal(party:partyCount(), 6, "the refusal needs a genuinely full party")
   local revisionBefore = party:partyRevision()
   local caught = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE", level = 4 }))
 
-  local handoff = Stub.send(caught, { partyCount = party:partyCount(), captureId = 41 })
-  Assert.isFalse(handoff.retained, "a full party never claims storage")
-  Assert.equal(handoff.destination, "pc", "the handoff names where the mon would go")
-  Assert.equal(handoff.reason, "pc_unimplemented", "the handoff states its limitation explicitly")
-  Assert.equal(handoff.captureId, 41, "the handoff keeps the capture identity")
-  Assert.equal(party:partyCount(), 6, "the handoff stores the mon nowhere")
-  Assert.equal(party:partyRevision(), revisionBefore, "the handoff moves no live revision")
+  local ok, err = pcall(Committer.prepare, {
+    outcome = { id = "outcome-full-party-refused", result = "capture" },
+    partyOwner = party,
+    captures = { { captureId = 41, ball = "POKE_BALL", success = true, mon = caught } },
+  })
+  Assert.isFalse(ok, "a capture without retention never stages: " .. tostring(err))
+  Assert.equal(party:partyCount(), 6, "the refusal stores the mon nowhere")
+  Assert.equal(party:partyRevision(), revisionBefore, "the refusal moves no live revision")
+  Assert.isNil(Committer.receipt("outcome-full-party-refused"), "a refused batch records no receipt")
 end
 
 return T

@@ -277,9 +277,11 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
         strongest = derived.level
       end
     end
-    local Rewards = require("libs.hgss.src.battle.HgssBattleRewards")
     local badges = game.runtime.playerData.profile.badges or 0
-    local expectedDebit = math.min(moneyBefore, strongest * Rewards.BLACKOUT_PER_LEVEL * (2 ^ badges))
+    Assert.equal(badges, 0, "the fresh profile settles the loss without badges")
+    -- Without badges the native penalty is 2, so the debit is the
+    -- strongest live level times the base factor 4 times 2.
+    local expectedDebit = math.min(moneyBefore, strongest * 8)
     Assert.equal(rewards.level, strongest, "the loss plans from the live lead level")
     Assert.equal(rewards.amount, expectedDebit, "the debit scales the live lead level without badges")
     Assert.equal(settledProfile.money, moneyBefore - expectedDebit, "the receipt carries the debited money candidate")

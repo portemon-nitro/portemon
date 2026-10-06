@@ -68,7 +68,6 @@ local DOMAINS = {
     "HgssOpponentControllers",
     "HgssBattleCommitter",
     "HgssBattleRewards",
-    "HgssSendToPcStub",
     "HgssBattleScenarioFactory",
     "TrainerBattleTrigger",
   },

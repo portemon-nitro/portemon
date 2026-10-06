@@ -333,7 +333,11 @@ function T.capture_stages_party_dex_and_bag_through_the_committer()
   battle:dispose()
 end
 
-function T.full_party_capture_stays_an_honest_noop_while_consuming_the_ball()
+-- With no storage behind a full party, the capture batch fails the commit
+-- preparation before any owner publishes: the resolution reports the
+-- failure instead of a receipt, and the live party, dex knowledge, and
+-- bag stay exactly as they were.
+function T.full_party_capture_fails_without_publishing_any_consequence()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
 
@@ -343,7 +347,7 @@ function T.full_party_capture_stays_an_honest_noop_while_consuming_the_ball()
   local species = { "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" }
   for _, key in ipairs(species) do
     local record = factory:createNormal(CatalogFixture.normalRequest({ species = key }))
-    Assert.isTrue(party:addMon(record), "the no-op case needs a full party")
+    Assert.isTrue(party:addMon(record), "the refused case needs a full party")
   end
   Assert.equal(party:partyCount(), 6, "the party starts full")
   local bag = newBagOwner()
@@ -363,16 +367,12 @@ function T.full_party_capture_stays_an_honest_noop_while_consuming_the_ball()
     captures = { { captureId = 22, ball = "POKE_BALL", success = true, mon = caught } },
   })
   driveToSettlement(battle, scenario)
-  Assert.equal(battle:status().phase, "complete", "answered decisions finish the full-party battle")
-  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
-  Assert.isTrue(receipt.committed, "the full-party batch commits")
-  Assert.equal(#receipt.placements, 1, "the capture reports its placement")
-  Assert.isFalse(receipt.placements[1].retained, "a full party retains nothing")
-  Assert.equal(receipt.placements[1].destination, "pc", "the placement names the unimplemented backend")
-  Assert.equal(receipt.placements[1].reason, "pc_unimplemented", "the placement stays honest")
+  Assert.equal(battle:status().phase, "failed", "the capture without retention fails the resolution")
+  Assert.isNil(battle:status().outcomeReceipt, "a refused batch carries no commit receipt")
+  Assert.notNil(battle:status().error, "the failure names its missing retention")
   Assert.equal(party:partyCount(), 6, "the live party is unchanged")
-  Assert.isTrue(dex:isCaught("EEVEE"), "the capture still registers caught knowledge")
-  Assert.equal(bag:quantity("POKE_BALL"), 4, "the ball stays consumed")
+  Assert.isFalse(dex:isCaught("EEVEE"), "the refused batch registers no caught knowledge")
+  Assert.equal(bag:quantity("POKE_BALL"), 5, "the refused batch consumes no ball")
   battle:dispose()
 end
 
@@ -572,8 +572,8 @@ end
 -- Captures shaped by the throw owner commit through the runtime mapping
 -- without reconstruction: the generated record carries no hand-written
 -- species or level, yet the party keeps the exact mon, dex knowledge
--- lands, and the ball stays consumed; a full party keeps the honest
--- no-op placement while still consuming the ball and the knowledge.
+-- lands, and the ball stays consumed; a full party fails the batch
+-- before any publication instead.
 function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
@@ -638,16 +638,11 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
     captures = { thrownCapture() },
   })
   driveToSettlement(fullBattle, fullScenario)
-  Assert.equal(fullBattle:status().phase, "complete", "answered decisions finish the full-party battle")
-  local fullReceipt = assert(fullBattle:status().outcomeReceipt, "completion carries its commit receipt")
-  Assert.isTrue(fullReceipt.committed, "the full-party batch commits")
-  Assert.equal(#fullReceipt.placements, 1, "the capture reports its placement")
-  Assert.isFalse(fullReceipt.placements[1].retained, "a full party retains nothing")
-  Assert.equal(fullReceipt.placements[1].destination, "pc", "the placement names the unimplemented backend")
-  Assert.equal(fullReceipt.placements[1].reason, "pc_unimplemented", "the placement stays honest")
+  Assert.equal(fullBattle:status().phase, "failed", "the capture without retention fails the resolution")
+  Assert.isNil(fullBattle:status().outcomeReceipt, "a refused batch carries no commit receipt")
   Assert.equal(fullParty:partyCount(), 6, "the live party is unchanged")
-  Assert.isTrue(fullDex:isCaught("TOTODILE"), "the capture still registers caught knowledge")
-  Assert.equal(fullBag:quantity("GREAT_BALL"), 0, "the ball stays consumed")
+  Assert.isFalse(fullDex:isCaught("TOTODILE"), "the refused batch registers no caught knowledge")
+  Assert.equal(fullBag:quantity("GREAT_BALL"), 1, "the refused batch consumes no ball")
   fullBattle:dispose()
 end
 

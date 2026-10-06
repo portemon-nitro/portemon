@@ -150,13 +150,56 @@ function T.blackout_debit_scales_with_badges_and_never_overdraws()
   local Rewards = requirePresent(REWARDS_MODULE, "native blackout planning")
   local plain = Rewards.planLoss({ money = 1200, partyLevels = { 9 } })
   Assert.equal(plain.amount, 72, "the debit scales the strongest level without badges")
+  -- Two badges carry penalty 6, so level 9 debits 9 * 4 * 6: the native
+  -- steps are not powers of two.
   local badged = Rewards.planLoss({ money = 100000, partyLevels = { 9 }, badges = 2 })
-  Assert.equal(badged.amount, 288, "each badge doubles the debit")
+  Assert.equal(badged.amount, 216, "each badge follows the native penalty step")
   local broke = Rewards.planLoss({ money = 50, partyLevels = { 60 }, badges = 8 })
   Assert.equal(broke.amount, 50, "the debit never takes more than the pocket holds")
   Assert.isFalse(
     pcall(Rewards.planLoss, { money = -5, partyLevels = { 9 } }),
     "a negative pocket never plans"
+  )
+end
+
+-- Blackout loss follows the native badge-penalty table: the debit is the
+-- strongest own party level times a base factor of 4 times the penalty
+-- for min(badges, 8), where the penalties run 2, 4, 6, 9, 12, 16, 20,
+-- 25, 30 across badge counts 0 through 8. Saved badge counts above
+-- eight stay valid and share the eight-badge penalty.
+function T.blackout_uses_the_native_badge_penalty_table()
+  local Rewards = requirePresent(REWARDS_MODULE, "native blackout planning")
+  local cases = {
+    { badges = 0, amount = 80 },
+    { badges = 1, amount = 160 },
+    { badges = 2, amount = 240 },
+    { badges = 3, amount = 360 },
+    { badges = 7, amount = 1000 },
+    { badges = 8, amount = 1200 },
+    { badges = 16, amount = 1200 },
+  }
+  for _, case in ipairs(cases) do
+    local loss = Rewards.planLoss({ money = 100000, partyLevels = { 10 }, badges = case.badges })
+    Assert.equal(loss.amount, case.amount, "badge count " .. case.badges .. " debits the native penalty")
+    Assert.equal(loss.badges, case.badges, "the plan keeps the presented badge count")
+  end
+end
+
+function T.blackout_caps_the_corrected_debit_to_money_on_hand()
+  local Rewards = requirePresent(REWARDS_MODULE, "native blackout planning")
+  local loss = Rewards.planLoss({ money = 50, partyLevels = { 10 }, badges = 8 })
+  Assert.equal(loss.amount, 50, "the corrected debit never takes more than the pocket holds")
+  Assert.isFalse(
+    pcall(Rewards.planLoss, { money = -1, partyLevels = { 10 }, badges = 8 }),
+    "a negative pocket never plans"
+  )
+  Assert.isFalse(
+    pcall(Rewards.planLoss, { money = 50, partyLevels = {}, badges = 8 }),
+    "an empty level array never plans"
+  )
+  Assert.isFalse(
+    pcall(Rewards.planLoss, { money = 50, partyLevels = { 10 }, badges = 17 }),
+    "a badge count past sixteen never plans"
   )
 end
 

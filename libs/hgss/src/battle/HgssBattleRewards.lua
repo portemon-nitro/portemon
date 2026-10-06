@@ -21,8 +21,12 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@class HgssBattleRewards
 local HgssBattleRewards = {}
 
--- Base blackout debit per opposing level before the badge scaling applies.
-HgssBattleRewards.BLACKOUT_PER_LEVEL = 8
+-- Native blackout penalty by earned badge count, capped at eight badges:
+-- badge counts 0 through 8 scale the debit by 2, 4, 6, 9, 12, 16, 20,
+-- 25, 30. The table is indexed by min(badges, 8); the base factor below
+-- multiplies the strongest own party level before the penalty applies.
+local BLACKOUT_BASE_PER_LEVEL = 4
+local BLACKOUT_BADGE_PENALTY = { 2, 4, 6, 9, 12, 16, 20, 25, 30 }
 
 ---@param levels unknown
 ---@return integer
@@ -162,7 +166,9 @@ function HgssBattleRewards.planLoss(args)
     error("blackout planning requires a badge count in 0..16", 0)
   end
   local strongest = checkLevels(args.partyLevels)
-  local debit = strongest * HgssBattleRewards.BLACKOUT_PER_LEVEL * (2 ^ badges)
+  local penalty = BLACKOUT_BADGE_PENALTY[math.min(badges, 8) + 1]
+  assert(penalty ~= nil, "the badge penalty covers every capped badge count")
+  local debit = strongest * BLACKOUT_BASE_PER_LEVEL * penalty
   return {
     kind = "loss",
     level = strongest,
