@@ -166,6 +166,9 @@ local function world()
     playerOf = function()
       return player
     end,
+    transition = { start = function()
+      return true
+    end },
   })
   return { mgr = mgr, map = map, player = player, svc = svc, controller = controller }
 end

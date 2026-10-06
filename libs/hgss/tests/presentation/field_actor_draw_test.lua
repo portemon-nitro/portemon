@@ -282,6 +282,60 @@ function T.gesture_draw_selects_strict_clip_and_applies_fixed_offset_once()
   Assert.near(warpItem.billboardBase[14], 1.5 + 5 + 6 / 16, 1e-9, "dynamic Y offset stays in world, not doubled")
 end
 
+function T.per_record_scale_multiplies_the_billboard_without_touching_the_cached_base()
+  local asset = entry(99)
+  asset.billboardScales[asset.visual.render.geometry] = { 2, 4, 8 }
+  local scaled = FieldActorDraw.item(record({ presentationScale = 0.25 }), asset)
+  Assert.deepEqual(scaled.billboardScale, { 0.5, 1, 2 }, "the item scale is the cached base times the record scalar")
+  Assert.deepEqual(
+    asset.billboardScales[asset.visual.render.geometry],
+    { 2, 4, 8 },
+    "applying a record scale never mutates the resident cached base"
+  )
+  local identity = FieldActorDraw.item(record(), asset)
+  Assert.deepEqual(identity.billboardScale, { 2, 4, 8 }, "a record without a scale keeps the cached base")
+end
+
+function T.scaled_actors_sharing_one_visual_keep_independent_scales()
+  local asset = entry(99)
+  local storage = { items = {}, actorSlots = {}, generation = 0 } --[[@as FieldActorDrawStorage]]
+  local records = {
+    record({ actorId = "map:61:object:0", presentationScale = 0.5 }),
+    record({ actorId = "map:61:object:1", presentationScale = 1 }),
+  }
+  local items = FieldActorDraw.itemsInto(records, function()
+    return asset
+  end, storage)
+  Assert.equal(#items, 2)
+  Assert.deepEqual(items[1].billboardScale, { 0.5, 0.5, 0.5 })
+  Assert.deepEqual(items[2].billboardScale, { 1, 1, 1 })
+  Assert.isTrue(items[1].billboardScale ~= items[2].billboardScale, "scaled items never alias one shared vector")
+  Assert.isTrue(
+    items[1].billboardScale ~= asset.billboardScales[asset.visual.render.geometry],
+    "a scaled item never aliases the cached base"
+  )
+  Assert.deepEqual(
+    asset.billboardScales[asset.visual.render.geometry],
+    { 1, 1, 1 },
+    "sharing a visual never mutates the cached base"
+  )
+  records[1].presentationScale = 1
+  local rescaled = FieldActorDraw.itemsInto(records, function()
+    return asset
+  end, storage)
+  Assert.deepEqual(rescaled[1].billboardScale, { 1, 1, 1 }, "one actor update does not leak into another actor")
+  Assert.deepEqual(rescaled[2].billboardScale, { 1, 1, 1 })
+end
+
+function T.non_positive_or_non_finite_record_scale_is_fatal()
+  for _, scale in ipairs({ 0, -1, 0 / 0 }) do
+    local err = Assert.throws(function()
+      FieldActorDraw.item(record({ presentationScale = scale }), entry(99))
+    end)
+    Assert.notNil(err, "scale " .. tostring(scale) .. " must fail loudly")
+  end
+end
+
 function T.missing_gesture_clip_in_draw_is_fatal_and_warp_needs_no_clip()
   local visual = FieldActorFixture.visual(99, { frameCount = 8 })
   visual.gestures = {}

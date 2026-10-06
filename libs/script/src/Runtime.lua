@@ -1160,8 +1160,8 @@ do
     return Runtime.OUTCOME_CONTINUE
   end
 
-  local function handleFollowerAppearance(_, run)
-    return blockOnTask(run, "follower_appearance", {})
+  local function handleFollowerRecall(_, run)
+    return blockOnTask(run, "follower_recall", {})
   end
 
   HANDLERS.follower_is_active = handleFollowerIsActive
@@ -1173,7 +1173,7 @@ do
   HANDLERS.follower_reposition = handleFollowerReposition
   HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
   HANDLERS.follower_transition = handleFollowerTransition
-  HANDLERS.follower_appearance = handleFollowerAppearance
+  HANDLERS.follower_recall = handleFollowerRecall
 end
 
 local function handlePlaceStarterBalls(_, run)

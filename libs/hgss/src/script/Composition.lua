@@ -35,7 +35,7 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.FieldMoveTask",
   "libs.hgss.src.script.tasks.ActorOscillationTask",
   "libs.hgss.src.script.tasks.FollowerWaitTask",
-  "libs.hgss.src.script.tasks.FollowerAppearanceTask",
+  "libs.hgss.src.script.tasks.FollowerRecallTask",
   "libs.hgss.src.script.tasks.OverworldLifecycleTask",
   "libs.hgss.src.script.tasks.PropAnimationWaitTask",
   "libs.hgss.src.script.tasks.PokemonCenterHealTask",

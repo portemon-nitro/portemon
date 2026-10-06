@@ -42,6 +42,8 @@ FollowingMonController.__index = FollowingMonController
 ---@field _consumedStep table<string, unknown>?
 ---@field _queue table<string, unknown>[]
 ---@field _paused boolean
+---@field _transition table<string, unknown> required follower-transition collaborator { start }
+---@field _recallTransitionPending boolean one-shot recall-transition latch for the next actual walk
 ---@field _movementType string persistent follower map-object movement mode
 ---@field _lastFollowerCommand { direction: string, speed: string }? last real follower walk; descriptive only, never an obligation
 ---@field _action { progress: integer, duration: integer }?
@@ -59,10 +61,15 @@ FollowingMonController.__index = FollowingMonController
 ---@field isMovementSettled fun(self: FollowingMonController): boolean
 ---@field settleMovement fun(self: FollowingMonController)
 ---@field isPartnerVisible fun(self: FollowingMonController): boolean
----@field classifyAppearanceGeometry fun(self: FollowingMonController): { mirror: boolean, nextState: integer }
----@field startAppearanceMovement fun(self: FollowingMonController, kind: string)
----@field setAppearancePresentationOffset fun(self: FollowingMonController, offset: { x: number, y: number, z: number })
----@field clearAppearancePresentationOffset fun(self: FollowingMonController)
+---@field classifyRecallGeometry fun(self: FollowingMonController): { mirror: boolean, nextState: integer }
+---@field startRecallMovement fun(self: FollowingMonController, kind: string)
+---@field setRecallPresentationOffset fun(self: FollowingMonController, offset: { x: number, y: number, z: number })
+---@field clearRecallPresentationOffset fun(self: FollowingMonController)
+---@field setRecallPresentationScale fun(self: FollowingMonController, scale: number)
+---@field clearRecallPresentationScale fun(self: FollowingMonController)
+---@field hideForRecall fun(self: FollowingMonController)
+---@field showForRecall fun(self: FollowingMonController)
+---@field armRecallTransition fun(self: FollowingMonController)
 ---@field setMovementType fun(self: FollowingMonController, movementType: string)
 ---@field repositionRelativeToPlayer fun(self: FollowingMonController, offsetSelector: integer, directionRaw: integer)
 ---@field facePlayer fun(self: FollowingMonController)
@@ -140,9 +147,9 @@ local ZERO_OFFSET = { x = 0, z = 0 }
 -- 1 south, 2 west, 3 east.
 local FACING_BY_RAW = { [0] = "north", [1] = "south", [2] = "west", [3] = "east" }
 
--- The closed appearance movement vocabulary: two normal-speed walks; the
+-- The closed recall movement vocabulary: two normal-speed walks; the
 -- facing snap is handled separately. Raw movement ids never reach that seam.
-local APPEARANCE_WALK_DIRECTIONS = { walk_west = "west", walk_north = "north" }
+local RECALL_WALK_DIRECTIONS = { walk_west = "west", walk_north = "north" }
 
 ---@param value unknown
 ---@return boolean
@@ -169,6 +176,7 @@ local KNOWN_TRIGGER_KINDS = { [1] = true, [2] = true }
 ---@field catalog MonCatalog mon catalog { species, followerSelection }
 ---@field actors FieldActorManager
 ---@field playerOf fun(): FieldPlayer player anchor source { movementRevision, committedAnchor }
+---@field transition table<string, unknown> required follower-transition collaborator { start }
 ---@field mapOf (fun(mapId: integer): table<string, unknown>?)? read-only runtime map metadata lookup
 
 ---@param opts FollowingMonControllerOptions
@@ -179,6 +187,10 @@ function FollowingMonController.new(opts)
   assert(opts.catalog and opts.catalog.followerSelection, "following controller requires the mon catalog")
   assert(opts.actors and opts.actors.installPartner, "following controller requires the partner actor seam")
   assert(type(opts.playerOf) == "function", "following controller requires the player anchor source")
+  assert(
+    type(opts.transition) == "table" and type(opts.transition.start) == "function",
+    "following controller requires the transition controller"
+  )
   if opts.mapOf ~= nil then
     assert(type(opts.mapOf) == "function", "following controller map lookup must be a function")
   end
@@ -212,6 +224,8 @@ function FollowingMonController.new(opts)
     _consumedStep = nil,
     _queue = {},
     _paused = false,
+    _transition = opts.transition,
+    _recallTransitionPending = false,
     _movementType = "follow_player",
     _lastFollowerCommand = nil,
     _action = nil,
@@ -562,6 +576,7 @@ function FollowingMonController:_suppress()
   self._published = nil
   self._pendingHiddenLead = nil
   self._lastFollowerCommand = nil
+  self._recallTransitionPending = false
 end
 
 -- Cancel in-flight presentation, drop the queue and the actor, and forget
@@ -588,6 +603,7 @@ function FollowingMonController:_discontinuity(mapId)
   self._published = nil
   self._pendingHiddenLead = nil
   self._lastFollowerCommand = nil
+  self._recallTransitionPending = false
   if self._lead ~= nil and self:_permitted(mapId) then
     local anchor = self._playerOf():committedAnchor()
     if anchor.mapId == mapId then
@@ -612,6 +628,7 @@ function FollowingMonController:_handleMapChange(mapId)
   self._action = nil
   self._movementType = "follow_player"
   self._lastFollowerCommand = nil
+  self._recallTransitionPending = false
   self._published = nil
   self._pendingHiddenLead = nil
   self._lastPlayerRevision = nil
@@ -680,6 +697,10 @@ end
 ---@param speed string
 ---@return boolean
 function FollowingMonController:_beginActorWalk(mapId, direction, speed)
+  if self._recallTransitionPending then
+    assert(self._transition:start(), "pending follower transition start must be accepted")
+    self._recallTransitionPending = false
+  end
   local partnerId = assert(self._actors:partnerId(), "follower walk requires the partner actor")
   self._actors:setFacing(partnerId, direction)
   local ok, err = pcall(
@@ -1057,6 +1078,7 @@ function FollowingMonController:handleMapExit()
   self._queue = {}
   self._movementType = "follow_player"
   self._lastFollowerCommand = nil
+  self._recallTransitionPending = false
   self._actors:clearPartner()
   self._published = nil
   self._pendingHiddenLead = nil
@@ -1135,7 +1157,7 @@ end
 
 -- Whether the installed partner actor is currently rendered visible. This is
 -- the actor visibility flag, not the map-permission visibility answered by
--- isVisible: a mid-map lead birth installs hidden until the appearance
+-- isVisible: a mid-map lead birth installs hidden until the recall
 -- choreography reveals it. Absence reads hidden.
 ---@return boolean
 ---@param self FollowingMonController
@@ -1147,19 +1169,19 @@ function FollowingMonController:isPartnerVisible()
   return self._actors:isVisible(partnerId)
 end
 
--- Classify the committed follower/player tile geometry for the appearance
+-- Classify the committed follower/player tile geometry for the recall
 -- choreography: south-of-player mirrors into the walk pair, east/west of
 -- player skip straight to facing. Answers a fresh value table, never live
 -- actor state. Anything else fails loudly rather than guessing a branch.
 ---@return { mirror: boolean, nextState: integer }
 ---@param self FollowingMonController
-function FollowingMonController:classifyAppearanceGeometry()
+function FollowingMonController:classifyRecallGeometry()
   local partnerId = self._actors:partnerId()
   local position = partnerId ~= nil and self._actors:getPosition(partnerId) or nil
   if position == nil then
-    Errors.raise(FieldErrors.ACTOR_PARTNER_NOT_INSTALLED, "appearance geometry requires the installed partner", {})
+    Errors.raise(FieldErrors.ACTOR_PARTNER_NOT_INSTALLED, "recall geometry requires the installed partner", {})
   end
-  assert(position ~= nil, "appearance geometry requires the partner position")
+  assert(position ~= nil, "recall geometry requires the partner position")
   local anchor = self._playerOf():committedAnchor()
   local dx = position.fieldX - anchor.fieldX
   local dz = position.fieldZ - anchor.fieldZ
@@ -1173,27 +1195,27 @@ function FollowingMonController:classifyAppearanceGeometry()
     return { mirror = true, nextState = 3 }
   end
   Errors.raise(
-    FieldErrors.FOLLOWER_APPEARANCE_GEOMETRY_INVALID,
-    "unsupported follower appearance geometry",
+    FieldErrors.FOLLOWER_RECALL_GEOMETRY_INVALID,
+    "unsupported follower recall geometry",
     { fieldX = position.fieldX, fieldZ = position.fieldZ, playerX = anchor.fieldX, playerZ = anchor.fieldZ }
   )
-  error("unreachable after unsupported appearance geometry")
+  error("unreachable after unsupported recall geometry")
 end
 
--- Start one appearance movement step through the existing follower walk
+-- Start one recall movement step through the existing follower walk
 -- owner, so placement rejection reconciles exactly like ordinary follow.
 -- The kind is one of walk_west, walk_north, or face_north.
 ---@param kind string
 ---@param self FollowingMonController
-function FollowingMonController:startAppearanceMovement(kind)
-  local partnerId = assert(self._actors:partnerId(), "appearance movement requires the partner actor")
+function FollowingMonController:startRecallMovement(kind)
+  local partnerId = assert(self._actors:partnerId(), "recall movement requires the partner actor")
   if kind == "face_north" then
     self._actors:setFacing(partnerId, "north")
     return
   end
-  local direction = APPEARANCE_WALK_DIRECTIONS[kind]
-  assert(direction ~= nil, "unknown appearance movement " .. tostring(kind))
-  local mapId = assert(self._actors.currentMapId, "appearance movement requires the follower map")
+  local direction = RECALL_WALK_DIRECTIONS[kind]
+  assert(direction ~= nil, "unknown recall movement " .. tostring(kind))
+  local mapId = assert(self._actors.currentMapId, "recall movement requires the follower map")
   self:_beginActorWalk(mapId, direction, "normal")
 end
 
@@ -1202,24 +1224,78 @@ end
 -- Values are copied, never retained.
 ---@param offset { x: number, y: number, z: number } absolute world/model-unit offset
 ---@param self FollowingMonController
-function FollowingMonController:setAppearancePresentationOffset(offset)
+function FollowingMonController:setRecallPresentationOffset(offset)
   assert(
     type(offset) == "table" and isFiniteNumber(offset.x) and isFiniteNumber(offset.y) and isFiniteNumber(offset.z),
-    "appearance offset requires finite x, y, z"
+    "recall offset requires finite x, y, z"
   )
-  local partnerId = assert(self._actors:partnerId(), "appearance offset requires the partner actor")
+  local partnerId = assert(self._actors:partnerId(), "recall offset requires the partner actor")
   self._actors:setPresentationOffset(partnerId, { x = offset.x, y = offset.y, z = offset.z })
 end
 
 -- Clear the task-owned render-vector displacement. Absence is a no-op so
 -- cancellation and settle paths stay safe when the partner is gone.
 ---@param self FollowingMonController
-function FollowingMonController:clearAppearancePresentationOffset()
+function FollowingMonController:clearRecallPresentationOffset()
   local partnerId = self._actors:partnerId()
   if partnerId == nil or self._actors:getById(partnerId) == nil then
     return
   end
   self._actors:clearPresentationOffset(partnerId)
+end
+
+-- Apply the task-owned recall billboard scale to the live partner.
+-- Presentation only: logical tiles, occupancy, and map residency never
+-- move. The recall task calls this only while the partner is live.
+---@param scale number strictly positive finite billboard scalar
+---@param self FollowingMonController
+function FollowingMonController:setRecallPresentationScale(scale)
+  assert(
+    type(scale) == "number" and scale == scale and scale ~= math.huge and scale ~= -math.huge and scale > 0,
+    "recall presentation scale must be a positive finite scalar"
+  )
+  local partnerId = assert(self._actors:partnerId(), "recall scale requires the partner actor")
+  self._actors:setBillboardPresentationScale(partnerId, scale)
+end
+
+-- Clear the task-owned recall billboard scale. Absence is a no-op so
+-- cancellation and settle paths stay safe when the partner is gone.
+---@param self FollowingMonController
+function FollowingMonController:clearRecallPresentationScale()
+  local partnerId = self._actors:partnerId()
+  if partnerId == nil or self._actors:getById(partnerId) == nil then
+    return
+  end
+  self._actors:clearBillboardPresentationScale(partnerId)
+end
+
+-- Hide the live partner for the recall effect. Absence is a no-op so
+-- cancellation paths stay safe when the partner is gone.
+---@param self FollowingMonController
+function FollowingMonController:hideForRecall()
+  local partnerId = self._actors:partnerId()
+  if partnerId == nil or self._actors:getById(partnerId) == nil then
+    return
+  end
+  self._actors:hide(partnerId)
+end
+
+-- Restore visibility the recall task itself removed. Absence is a no-op so
+-- cancellation paths stay safe when the partner is gone.
+---@param self FollowingMonController
+function FollowingMonController:showForRecall()
+  local partnerId = self._actors:partnerId()
+  if partnerId == nil or self._actors:getById(partnerId) == nil then
+    return
+  end
+  self._actors:show(partnerId)
+end
+
+-- Arm the one-shot recall transition. Only the next actual follower walk
+-- consumes it; lifecycle destruction clears it.
+---@param self FollowingMonController
+function FollowingMonController:armRecallTransition()
+  self._recallTransitionPending = true
 end
 
 -- Event-trigger check for known trigger kinds: an idle installed partner on
@@ -1295,6 +1371,7 @@ function FollowingMonController:dispose()
   self._actors:clearPartner()
   self._lead = nil
   self._lastFollowerCommand = nil
+  self._recallTransitionPending = false
   self._published = nil
   self._pendingHiddenLead = nil
   self._lastMapId = nil

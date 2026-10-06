@@ -67,7 +67,7 @@ local BLOCKING_OPS = {
   trainer_tips_print = true,
   wait_signpost = true,
   follower_wait = true,
-  follower_appearance = true,
+  follower_recall = true,
 }
 
 -- Operations that end the run phase: yield boundaries and stops.

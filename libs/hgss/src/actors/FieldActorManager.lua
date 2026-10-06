@@ -147,6 +147,8 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field setAnimationPaused fun(self: FieldActorManager, actorId: string, paused: boolean)
 ---@field setPresentationOffset fun(self: FieldActorManager, actorId: string, offset: { x: number, y: number, z: number })
 ---@field clearPresentationOffset fun(self: FieldActorManager, actorId: string)
+---@field setBillboardPresentationScale fun(self: FieldActorManager, actorId: string, scale: number)
+---@field clearBillboardPresentationScale fun(self: FieldActorManager, actorId: string)
 ---@field isVisible fun(self: FieldActorManager, actorId: string): boolean
 ---@field numericId fun(self: FieldActorManager, actorId: string): integer?
 ---@field cameraTargetId fun(self: FieldActorManager): string?
@@ -216,6 +218,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field gesturePose string?
 ---@field gestureTick integer?
 ---@field activeEmoteKind string?
+---@field presentationScale number transient billboard scale, identity unless a presentation effect owns it
 ---@field visible boolean
 
 -- The physical-projection input for one action endpoint: logical field
@@ -2027,6 +2030,7 @@ function FieldActorManager:drawRecords(alpha)
           facing = actor.facing,
           pose = actor.pose,
           poseTick = state.poseTick,
+          presentationScale = 1,
           visible = state.visible == 1,
         }
         self._drawRecordByActorId[actor.actorId] = record
@@ -2050,6 +2054,7 @@ function FieldActorManager:drawRecords(alpha)
       record.gesturePose = presentation.gesturePose
       record.gestureTick = presentation.gestureTick
       record.activeEmoteKind = actor.activeEmoteKind
+      record.presentationScale = actor:getPresentationScale()
       record.visible = state.visible == 1
       records[count] = record
       ::continue::
@@ -2710,6 +2715,25 @@ end
 ---@param self FieldActorManager
 function FieldActorManager:clearPresentationOffset(actorId)
   self:setPresentationOffset(actorId, { x = 0, y = 0, z = 0 })
+end
+
+-- Transient billboard-only scale for presentation effects. The value must
+-- be a strictly positive finite scalar; anything else is a programming
+-- error. Never persisted and never reflected in world coordinates,
+-- collision, occupancy, or save capture.
+---@param actorId string
+---@param scale number
+---@param self FieldActorManager
+function FieldActorManager:setBillboardPresentationScale(actorId, scale)
+  local actor = requireActor(self, actorId)
+  actor:setPresentationScale(scale)
+end
+
+---@param actorId string
+---@param self FieldActorManager
+function FieldActorManager:clearBillboardPresentationScale(actorId)
+  local actor = requireActor(self, actorId)
+  actor:setPresentationScale(1)
 end
 
 -- --- Scripted motion presentation (manager owns occupancy/terrain) -------
