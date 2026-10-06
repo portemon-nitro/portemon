@@ -214,7 +214,11 @@ DerivedAssetContract.fieldMapData = {
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.
-  spawnIndexSchema = "g4-field-spawn-index-v2",
+  -- The death namespace carries the interior relocation destinations, and
+  -- the special namespace carries the setter-written relocation records
+  -- (unset warp id, standard arrival facing); the three namespaces stay
+  -- independent even where values coincide.
+  spawnIndexSchema = "g4-field-spawn-index-v3",
 }
 
 DerivedAssetContract.messages = {

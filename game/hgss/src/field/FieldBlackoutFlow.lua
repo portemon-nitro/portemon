@@ -29,6 +29,7 @@ local FADE_STEPS = { 0, 2, 4, 6, 8, 10, 12, 14, 16 }
 ---@field sourceMap fun(): table<string, unknown>
 ---@field world table<string, unknown>
 ---@field mons table<string, unknown>
+---@field travel table<string, unknown> the durable travel owner receiving the special record
 ---@field audio table<string, unknown>
 ---@field overworld table<string, unknown>
 ---@field resolveMessage fun(message: string, bindings: table<integer, unknown>, textArgs: table<integer, unknown>): table<string, unknown>
@@ -37,7 +38,17 @@ FieldBlackoutFlow.__index = FieldBlackoutFlow
 
 function FieldBlackoutFlow.new(opts)
   assert(type(opts) == "table", "blackout flow options are required")
-  for _, name in ipairs({ "cacheFs", "loader", "transition", "world", "mons", "audio", "overworld", "resolveMessage" }) do
+  for _, name in ipairs({
+    "cacheFs",
+    "loader",
+    "transition",
+    "world",
+    "mons",
+    "travel",
+    "audio",
+    "overworld",
+    "resolveMessage",
+  }) do
     assert(opts[name] ~= nil, "blackout flow requires " .. name)
   end
   return setmetatable({
@@ -47,6 +58,7 @@ function FieldBlackoutFlow.new(opts)
     sourceMap = opts.sourceMap,
     world = opts.world,
     mons = opts.mons,
+    travel = opts.travel,
     audio = opts.audio,
     overworld = opts.overworld,
     resolveMessage = opts.resolveMessage,
@@ -69,15 +81,31 @@ function FieldBlackoutFlow:start(spawnKey)
       { spawn = spawnKey }
     )
   end
-  if phase == "present" then
-    self.overworld:requestLeave()
-    phase = "leaving"
-  elseif phase ~= "absent" then
+  local special = FieldMapDataCache.specialSpawnDestination(self.cacheFs, spawnKey)
+  if special == nil then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_UNKNOWN,
+      "blackout spawn has no generated special destination",
+      { spawn = spawnKey }
+    )
+  end
+  if phase ~= "present" and phase ~= "absent" then
     Errors.raise(
       FieldErrors.FIELD_OVERWORLD_LIFECYCLE_INVALID,
       "blackout cannot start during an overworld transition",
       { phase = phase }
     )
+  end
+  -- Initialization runs once here, before relocation completes: the durable
+  -- special record lands in travel state, follower state clears, and the
+  -- party heals. A later relocation failure keeps these effects.
+  self.travel:setSpecialSpawn(special)
+  self.world:clearFlag(FieldScriptSymbols.flagsByName.FLAG_HAVE_FOLLOWER)
+  self.world:setVar(FieldScriptSymbols.variablesByName.VAR_FOLLOWER_TRAINER_NUM, 0)
+  self.mons:healParty()
+  if phase == "present" then
+    self.overworld:requestLeave()
+    phase = "leaving"
   end
   self.nextId = self.nextId + 1
   self.active = {
@@ -113,9 +141,6 @@ function FieldBlackoutFlow:updateFixed(input)
       if run.swap:error() ~= nil then
         run.error = run.swap:error()
       else
-        self.world:clearFlag(FieldScriptSymbols.flagsByName.FLAG_HAVE_FOLLOWER)
-        self.world:setVar(FieldScriptSymbols.variablesByName.VAR_FOLLOWER_TRAINER_NUM, 0)
-        self.mons:healParty()
         self.audio:fadeMusicOut({ target = 0, durationTicks = 20 })
         run.phase = "fade_music"
       end

@@ -543,9 +543,11 @@ end
 
 -- The teleport landing index: cited spawn-keyed outdoor arrivals
 -- projected from the producer source facts into the family-level
--- generated record. Needs no ROM read: the entries are frozen source
--- data, so the only failure is a malformed producer table. The marker
--- binds the ROM identity and the content hash like every family bundle.
+-- generated record, alongside the interior death destinations and the
+-- setter-written special records. Needs no ROM read: the entries are
+-- frozen source data, so the only failure is a malformed producer table.
+-- The marker binds the ROM identity and the content hash like every
+-- family bundle.
 function FieldMapDataCompiler.compileSpawnDestinations(romFs, hashLua)
   assert(romFs and type(romFs.metadata) == "function", "spawn destinations need the ROM identity for their marker")
   hashLua = hashLua or Hashing.hashLua
@@ -574,20 +576,44 @@ function FieldMapDataCompiler.compileSpawnDestinations(romFs, hashLua)
     assert(entry.facing == "north", "retail death destinations face north")
     blackoutSpawns[key] = { map = entry.map, fieldX = entry.fieldX, fieldZ = entry.fieldZ, facing = entry.facing }
   end
+  local specialSpawns = {}
+  for key, entry in pairs(FieldMoveSources.SPECIAL_SPAWN_DESTINATIONS) do
+    assert(type(key) == "string" and key ~= "", "special destinations key on spawn names")
+    assert(type(entry) == "table", "special destinations carry records")
+    assert(type(entry.map) == "string" and entry.map ~= "", "special destinations name a map")
+    assert(type(entry.fieldX) == "number" and entry.fieldX % 1 == 0 and entry.fieldX >= 0, "special x is a tile")
+    assert(type(entry.fieldZ) == "number" and entry.fieldZ % 1 == 0 and entry.fieldZ >= 0, "special z is a tile")
+    assert(entry.warpId == -1, "special destinations carry the unset warp id")
+    assert(entry.direction == "south", "special destinations use the standard arrival facing")
+    specialSpawns[key] = {
+      map = entry.map,
+      fieldX = entry.fieldX,
+      fieldZ = entry.fieldZ,
+      warpId = entry.warpId,
+      direction = entry.direction,
+    }
+  end
   local index = {
     schema = FieldMapDataCache.SPAWN_INDEX_SCHEMA,
     spawns = spawns,
     blackoutSpawns = blackoutSpawns,
+    specialSpawns = specialSpawns,
   }
   assert(FieldMapDataCache.hasSpawnDestinations(index.spawns), "compiled spawn destinations satisfy the family record")
   assert(
     FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns),
     "compiled blackout destinations satisfy the family record"
   )
+  assert(
+    FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns),
+    "compiled special destinations satisfy the family record"
+  )
   local metadata = romFs:metadata()
   assert(type(metadata) == "table" and type(metadata.sha1) == "string", "spawn marker needs the ROM sha")
-  local marker =
-    FieldMapDataCache.spawnIndexMarker(metadata.sha1, hashLua({ spawns = spawns, blackoutSpawns = blackoutSpawns }))
+  local marker = FieldMapDataCache.spawnIndexMarker(
+    metadata.sha1,
+    hashLua({ spawns = spawns, blackoutSpawns = blackoutSpawns, specialSpawns = specialSpawns })
+  )
   return { index = index, marker = marker }
 end
 
