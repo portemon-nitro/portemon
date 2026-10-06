@@ -1344,10 +1344,10 @@ local function emitMissed(ctx, frame, defender)
 end
 
 -- Native critical stages for one strike: the curated move bonus plus two
--- for a focused user, suppressed entirely under a lucky chant. Stages
--- follow TryCriticalHit in src/battle/overlay_12_0224E4FC.c, where focus
--- energy contributes two, raised moves contribute one, and the chant
--- blocks the roll on the defender side.
+-- for a focused user. Focus energy contributes two stages and raised
+-- moves contribute one. A lucky chant on the defender side negates a
+-- successful roll only after it is spent, so the check still routes
+-- through the resolver and consumes its native draw.
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param user integer user combatant owning the strike
@@ -1357,14 +1357,22 @@ end
 ---@return CriticalResult staged critical outcome for the strike
 local function strikeCritical(ctx, frame, user, defender, params, stream)
   local controls = params or {}
-  if ctx:hasBattleEffect(defender, "luckychant") then
-    return { critical = false, multiplier = 1, stage = 0, threshold = Critical.THRESHOLDS[0] }
-  end
   local stage = controls.critStage or 0
   if ctx:hasBattleEffect(user, "focusenergy") then
     stage = stage --[[@as integer]] + 2
   end
-  return Critical.resolve(stage --[[@as integer]], stream, causeFor(frame), abilitiesOf(frame).user == "SNIPER")
+  ---@type table<string, boolean>?
+  local blockers = nil
+  if ctx:hasBattleEffect(defender, "luckychant") then
+    blockers = { luckyChant = true }
+  end
+  return Critical.resolve(
+    stage --[[@as integer]],
+    stream,
+    causeFor(frame),
+    abilitiesOf(frame).user == "SNIPER",
+    blockers
+  )
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -1859,8 +1867,7 @@ local function stepBeatUp(ctx, frame)
     if critical.critical then
       amount = amount * 2
     end
-    local percent = Damage.ROLL_MIN
-      + math.floor((stream:nextU16("damage_roll", causeFor(record)) * Damage.ROLL_SPAN) / Damage.ROLL_MODULUS)
+    local percent = 100 - (stream:nextU16("damage_roll", causeFor(record)) % 16)
     amount = math.floor((amount * percent) / 100)
     if amount < 1 then
       amount = 1

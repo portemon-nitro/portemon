@@ -223,7 +223,9 @@ function T.tests.wild_and_trainer_battles_run_the_production_path_and_return()
 
     -- Then a trainer battle on the same live field: the trainer fields
     -- real records and answers through its bound selection program while
-    -- the player keeps answering real decisions.
+    -- the player keeps answering real decisions. The staged entry carries
+    -- the trainer's class, ordered party levels, and pinned class rate so
+    -- a player win plans the native prize instead of failing reward facts.
     local foe = tackleOnly(enemyRecord(liveCatalog, "TOTODILE", 4, 0x5EED0001))
     Assert.equal(foe.species, "TOTODILE", "the trainer fields its own record")
     local trainerRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
@@ -233,7 +235,10 @@ function T.tests.wild_and_trainer_battles_run_the_production_path_and_return()
       trainers = {
         {
           id = "rival-early",
+          class = 2,
           party = { foe },
+          partyLevels = { 4 },
+          prizeMoney = { trainerClass = 2, classRate = 4 },
           program = {
             key = "rival_opening",
             revision = "native-1",

@@ -180,8 +180,9 @@ function T.ordinary_strikes_deal_staged_damage()
 end
 
 -- High-critical strikes roll the raised native stage: with a stream draw
--- inside the raised-only window, the raised strike crits where the
--- ordinary strike on the same stream does not.
+-- that lands the raised-only remainder window (a multiple of 8 that is
+-- not a multiple of 16), the raised strike crits where the ordinary
+-- strike on the same stream does not.
 function T.high_critical_strikes_roll_the_raised_stage()
   damageOwner("raised strikes own their critical stage")
   local seed = nil
@@ -189,7 +190,7 @@ function T.high_critical_strikes_roll_the_raised_stage()
     local probe = BattleRng.new(candidate)
     probe:nextU16("accuracy_check", { kind = "probe" })
     local draw = probe:nextU16("critical_check", { kind = "probe" })
-    if draw >= 4096 and draw < 8192 then
+    if draw % 8 == 0 and draw % 16 ~= 0 then
       seed = candidate
       break
     end
@@ -787,8 +788,9 @@ function T.sport_markers_halve_the_weakened_type_power()
   Assert.isTrue((plain.dealt --[[@as integer]]) > dealt, "the sport halves the weakened power")
 end
 
--- Focus energy raises later strikes by two stages: with a draw inside
--- the raised window, the focused strike crits.
+-- Focus energy raises later strikes by two stages: with a draw in the
+-- focused-only remainder window (a multiple of 4 that is not a multiple
+-- of 16), the focused strike crits.
 function T.focus_energy_raises_later_strikes_by_two_stages()
   damageOwner("focus energy owns its critical stages")
   local NativeEffectHandlers = SessionFixture.requirePresent(
@@ -804,7 +806,7 @@ function T.focus_energy_raises_later_strikes_by_two_stages()
     local probe = BattleRng.new(candidate)
     probe:nextU16("accuracy_check", { kind = "probe" })
     local draw = probe:nextU16("critical_check", { kind = "probe" })
-    if draw >= 8192 and draw < 16384 then
+    if draw % 4 == 0 and draw % 16 ~= 0 then
       seed = candidate
       break
     end
@@ -876,7 +878,7 @@ function T.lucky_chant_shields_its_side_from_critical_strikes()
     local probe = BattleRng.new(candidate)
     probe:nextU16("accuracy_check", { kind = "probe" })
     local draw = probe:nextU16("critical_check", { kind = "probe" })
-    if draw < 4096 then
+    if draw % 8 == 0 then
       seed = candidate
       break
     end

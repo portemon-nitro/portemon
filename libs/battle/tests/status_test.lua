@@ -271,4 +271,55 @@ function T.freeze_gate_thaws_on_the_modulo_five_draw()
   end
 end
 
+-- Full paralysis blocks on remainder arithmetic: one labeled draw blocks
+-- exactly when raw % 4 == 0. Healthy combatants act without drawing.
+function T.paralysis_gate_blocks_on_remainder_four_draws()
+  local Status = statusOwner("native major status law owns its action gate")
+
+  local cases = {
+    { draw = 0, acts = false },
+    { draw = 1, acts = true },
+    { draw = 4, acts = false },
+    { draw = 65535, acts = true },
+  }
+  for _, case in ipairs(cases) do
+    local mon = freshMon()
+    Assert.isTrue(Status.apply(mon, "paralysis", EffectFixture.cause(2, 1), {}), "paralysis applies")
+    local calls = 0
+    local labels = {}
+    local stream = {}
+    function stream:nextU16(label, cause)
+      calls = calls + 1
+      assert(type(label) == "string" and label ~= "", "the paralysis gate names its draw site")
+      assert(type(cause) == "table", "the paralysis gate carries its semantic cause")
+      labels[#labels + 1] = label
+      return case.draw
+    end
+    local result = Status.beforeAction(mon, stream, EffectFixture.cause(1, 1))
+    if case.acts then
+      Assert.isTrue(result.acts, "draw " .. case.draw .. " lets the paralyzed combatant act")
+      Assert.isNil(result.event, "draw " .. case.draw .. " emits nothing when it acts")
+    else
+      Assert.isFalse(result.acts, "draw " .. case.draw .. " blocks the paralyzed combatant")
+      Assert.notNil(result.event, "draw " .. case.draw .. " names its condition")
+      Assert.equal(result.event.outcome, "blocked", "draw " .. case.draw .. " blocks without ending the condition")
+    end
+    Assert.equal(calls, 1, "draw " .. case.draw .. " consumes exactly one paralysis draw")
+    Assert.deepEqual(labels, { "paralysis_check" }, "the paralysis gate draws at its labeled site")
+    Assert.equal(#mon.condition.effects, 1, "the gate never cures the condition it checks")
+  end
+
+  local healthy = freshMon()
+  local healthyCalls = 0
+  local healthyStream = {}
+  function healthyStream:nextU16(_label, _cause)
+    healthyCalls = healthyCalls + 1
+    return 0
+  end
+  local healthyResult = Status.beforeAction(healthy, healthyStream, EffectFixture.cause(1, 1))
+  Assert.isTrue(healthyResult.acts, "health never blocks")
+  Assert.isNil(healthyResult.event, "health emits no gate event")
+  Assert.equal(healthyCalls, 0, "health draws nothing from the stream")
+end
+
 return { tests = T }

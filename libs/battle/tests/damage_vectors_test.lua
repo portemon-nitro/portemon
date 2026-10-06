@@ -235,8 +235,8 @@ function T.resisted_hits_deal_at_least_one()
   Assert.equal(chip.amount, 1, "positive hits never round down to zero")
 end
 
--- First draw of seed 0 is the recorded literal 0, mapping to roll 85 via
--- 85 + floor(draw*16/65536); both calculation modes must agree exactly.
+-- First draw of seed 0 is the recorded literal 0, mapping to roll 100 via
+-- 100 - draw % 16; both calculation modes must agree exactly.
 function T.traced_and_untraced_calculations_share_one_draw_stream()
   local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
   local BattleRng =
@@ -266,12 +266,12 @@ function T.traced_and_untraced_calculations_share_one_draw_stream()
   }
   local plainStream = BattleRng.new(0)
   local plain = Damage.calculate(spec, plainStream)
-  Assert.equal(plain.amount, 60, "the recorded zero draw rolls the 85 minimum")
+  Assert.equal(plain.amount, 72, "the recorded zero draw rolls the 100 maximum")
   Assert.equal(plainStream:capture().calls, 1, "the roll consumes exactly one labeled draw")
 
   local tracedStream = BattleRng.new(0)
   local traced = Damage.trace(spec, tracedStream)
-  Assert.equal(traced.amount, 60, "traced calculation matches the untraced result")
+  Assert.equal(traced.amount, 72, "traced calculation matches the untraced result")
   Assert.equal(tracedStream:capture().calls, 1, "tracing never moves the shared stream")
   Assert.isTrue(type(traced.stages) == "table" and #traced.stages > 0, "traces record their staged intermediates")
   for _, stage in ipairs(traced.stages) do
@@ -303,8 +303,8 @@ function T.stage_ratios_clamp_and_floor_exactly()
   Assert.equal(StatStages.change(-5, -2), -6, "deltas clamp at the lower bound")
 end
 
--- Critical stages are exact thresholds of the 16-bit draw: stage 0 crits
--- below 4096 (65536/16). Seed 0 opens with the recorded draw 0, seed 1
+-- Critical stages are exact divisors of the 16-bit draw: stage 0 crits
+-- on multiples of 16. Seed 0 opens with the recorded draw 0, seed 1
 -- opens with the recorded draw 16838.
 function T.critical_stages_gate_exact_draw_thresholds()
   local Critical =
@@ -318,7 +318,7 @@ function T.critical_stages_gate_exact_draw_thresholds()
   Assert.equal(low:capture().calls, 1, "critical checks consume exactly one labeled draw")
 
   local high = BattleRng.new(1)
-  Assert.isFalse(Critical.resolve(0, high, cause).critical, "draw 16838 clears the stage-0 threshold of 4096")
+  Assert.isFalse(Critical.resolve(0, high, cause).critical, "draw 16838 misses the stage-0 divisor of 16")
   Assert.equal(high:capture().calls, 1, "missed critical checks still advance the stream")
 end
 
@@ -678,9 +678,238 @@ function T.fixed_damage_uses_its_own_path()
   local BattleRng =
     SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
 
-  local stream = BattleRng.new(9)
-  Assert.equal(Damage.fixed({ amount = 40 }, stream).amount, 40, "fixed amounts pass through unmodified")
-  Assert.equal(stream:capture().calls, 0, "fixed damage draws nothing from the stream")
+  local fixedStream = BattleRng.new(9)
+  Assert.equal(Damage.fixed({ amount = 40 }, fixedStream).amount, 40, "fixed amounts pass through unmodified")
+  Assert.equal(fixedStream:capture().calls, 0, "fixed damage draws nothing from the stream")
+end
+
+-- The live random roll maps one raw draw with remainder arithmetic:
+-- 100 - raw % 16, so draws 0 and 16 land the maximum while draw 15 lands
+-- the minimum. Each live calculation spends exactly one labeled roll, and
+-- an explicit percentage stays draw-free for arithmetic-only estimates.
+function T.random_roll_maps_raw_draws_with_remainder_arithmetic()
+  local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+
+  local function liveSpec()
+    return {
+      level = 50,
+      power = 80,
+      attack = 120,
+      defense = 90,
+      rawAttack = 120,
+      rawDefense = 90,
+      attackStage = 0,
+      defenseStage = 0,
+      criticalMultiplier = 1,
+      category = "physical",
+      burned = false,
+      guts = false,
+      stab = { numerator = 1, denominator = 1 },
+      effectiveness = { numerator = 1, denominator = 1 },
+      effectivenessFactors = { { numerator = 1, denominator = 1 } },
+      targetCount = 1,
+      weather = "none",
+      weatherSuppressed = false,
+      moveType = "normal",
+      solarBeam = false,
+    }
+  end
+
+  local function scriptedStream(raw, log)
+    local stream = {}
+    function stream:nextU16(label, cause)
+      assert(type(label) == "string" and label ~= "", "the roll names its draw site")
+      assert(type(cause) == "table", "the roll carries its semantic cause")
+      log.calls = log.calls + 1
+      log.labels[#log.labels + 1] = label
+      return raw
+    end
+    function stream:capture()
+      return { calls = log.calls }
+    end
+    return stream
+  end
+
+  -- Pre-bonus 46 takes +2 to 48, so the maximum roll lands 48 and the
+  -- minimum roll lands floor(48*85/100) = 40.
+  local cases = {
+    { raw = 0, amount = 48 },
+    { raw = 15, amount = 40 },
+    { raw = 16, amount = 48 },
+    { raw = 65535, amount = 40 },
+  }
+  for _, case in ipairs(cases) do
+    local log = { calls = 0, labels = {} }
+    local dealt = Damage.calculate(liveSpec(), scriptedStream(case.raw, log))
+    Assert.equal(dealt.amount, case.amount, "raw draw " .. case.raw .. " rolls its remainder-mapped damage")
+    Assert.equal(log.calls, 1, "raw draw " .. case.raw .. " spends exactly one roll")
+    Assert.deepEqual(log.labels, { "damage_roll" }, "the roll draws at its labeled site")
+  end
+
+  local tracedLog = { calls = 0, labels = {} }
+  local traced = Damage.trace(liveSpec(), scriptedStream(0, tracedLog))
+  Assert.equal(traced.amount, 48, "the traced maximum roll matches the untraced result")
+  local rolled = nil
+  for _, stage in ipairs(traced.stages) do
+    if stage.name == "random" then
+      rolled = stage
+    end
+  end
+  Assert.notNil(rolled, "the trace records the random roll")
+  Assert.equal(rolled.input, 48, "the roll reads the post-bonus damage")
+  Assert.equal(rolled.output, 48, "the maximum raw draw keeps the full post-bonus damage")
+
+  local estimatedStream = BattleRng.new(3)
+  local estimated = liveSpec()
+  estimated.randomPercent = 100
+  Assert.equal(Damage.calculate(estimated, estimatedStream).amount, 48, "the explicit percentage estimates the maximum")
+  Assert.equal(estimatedStream:capture().calls, 0, "explicit percentages draw nothing from the stream")
+end
+
+-- Critical stages roll remainder checks against the native divisors
+-- 16/8/4/3/2: a draw crits exactly when raw % divisor == 0. Stages below
+-- the table behave as stage 0 and stages above as stage 4, and every
+-- check spends exactly one labeled draw while reporting its divisor.
+function T.critical_stages_roll_remainder_checks_against_native_divisors()
+  local Critical =
+    SessionFixture.requirePresent("libs.battle.src.gen4.Critical", "native critical checks own their roll")
+  local cause = { kind = "probe", combatant = 1, activation = 1 }
+
+  local function scriptedStream(raw, log)
+    local stream = {}
+    function stream:nextU16(label, checkCause)
+      assert(type(label) == "string" and label ~= "", "the check names its draw site")
+      assert(type(checkCause) == "table", "the check carries its semantic cause")
+      log.calls = log.calls + 1
+      log.labels[#log.labels + 1] = label
+      return raw
+    end
+    return stream
+  end
+
+  local cases = {
+    { stage = 0, divisor = 16, raw = 32, critical = true },
+    { stage = 0, divisor = 16, raw = 17, critical = false },
+    { stage = 1, divisor = 8, raw = 24, critical = true },
+    { stage = 1, divisor = 8, raw = 17, critical = false },
+    { stage = 2, divisor = 4, raw = 20, critical = true },
+    { stage = 2, divisor = 4, raw = 18, critical = false },
+    { stage = 3, divisor = 3, raw = 21846, critical = true },
+    { stage = 3, divisor = 3, raw = 21845, critical = false },
+    { stage = 4, divisor = 2, raw = 65534, critical = true },
+    { stage = 4, divisor = 2, raw = 65535, critical = false },
+    { stage = -2, divisor = 16, raw = 32, critical = true },
+    { stage = -2, divisor = 16, raw = 17, critical = false },
+    { stage = 7, divisor = 2, raw = 65534, critical = true },
+    { stage = 7, divisor = 2, raw = 65535, critical = false },
+  }
+  for _, case in ipairs(cases) do
+    local log = { calls = 0, labels = {} }
+    local result = Critical.resolve(case.stage, scriptedStream(case.raw, log), cause)
+    if case.critical then
+      Assert.isTrue(result.critical, "stage " .. case.stage .. " crits on raw draw " .. case.raw)
+      Assert.equal(result.multiplier, 2, "stage " .. case.stage .. " doubles raw draw " .. case.raw)
+    else
+      Assert.isFalse(result.critical, "stage " .. case.stage .. " misses on raw draw " .. case.raw)
+      Assert.equal(result.multiplier, 1, "stage " .. case.stage .. " never multiplies raw draw " .. case.raw)
+    end
+    Assert.equal(result.divisor, case.divisor, "stage " .. case.stage .. " reports its native divisor")
+    Assert.equal(log.calls, 1, "stage " .. case.stage .. " spends exactly one check")
+    Assert.deepEqual(log.labels, { "critical_check" }, "the check draws at its labeled site")
+  end
+end
+
+-- Anti-critical protection negates a successful roll after it is spent: a
+-- blocked success still advances the stream exactly once, the unblocked
+-- twin crits, and the sniping ability only replaces the multiplier on a
+-- surviving critical.
+function T.blocked_critical_rolls_still_spend_their_draw()
+  local Critical =
+    SessionFixture.requirePresent("libs.battle.src.gen4.Critical", "native critical checks own their roll")
+  local cause = { kind = "probe", combatant = 1, activation = 1 }
+
+  local function check(stage, raw, sniper, blockers)
+    local log = { calls = 0, labels = {} }
+    local stream = {}
+    function stream:nextU16(label, checkCause)
+      assert(type(label) == "string" and label ~= "", "the check names its draw site")
+      assert(type(checkCause) == "table", "the check carries its semantic cause")
+      log.calls = log.calls + 1
+      log.labels[#log.labels + 1] = label
+      return raw
+    end
+    return Critical.resolve(stage, stream, cause, sniper, blockers), log
+  end
+
+  local shielded, shieldedLog = check(0, 32, false, { antiCriticalAbility = true })
+  Assert.isFalse(shielded.critical, "the ability-warded success stays non-critical")
+  Assert.equal(shielded.multiplier, 1, "the ability-warded success never multiplies")
+  Assert.equal(shieldedLog.calls, 1, "the ability-warded roll still spends its draw")
+  Assert.deepEqual(shieldedLog.labels, { "critical_check" }, "the warded check draws at its labeled site")
+
+  local chanted, chantedLog = check(0, 32, false, { luckyChant = true })
+  Assert.isFalse(chanted.critical, "the chanted success stays non-critical")
+  Assert.equal(chanted.multiplier, 1, "the chanted success never multiplies")
+  Assert.equal(chantedLog.calls, 1, "the chanted roll still spends its draw")
+  Assert.deepEqual(chantedLog.labels, { "critical_check" }, "the chanted check draws at its labeled site")
+
+  local open, openLog = check(0, 32, false, nil)
+  Assert.isTrue(open.critical, "the unblocked twin crits")
+  Assert.equal(open.multiplier, 2, "the unblocked twin doubles")
+  Assert.equal(openLog.calls, 1, "the unblocked check spends exactly one draw")
+
+  local sniping, snipingLog = check(0, 32, true, nil)
+  Assert.isTrue(sniping.critical, "the sniping twin crits")
+  Assert.equal(sniping.multiplier, 3, "the sniping twin triples the surviving critical")
+  Assert.equal(snipingLog.calls, 1, "the sniping check spends exactly one draw")
+
+  local snipingShielded, snipingShieldedLog = check(0, 32, true, { antiCriticalAbility = true })
+  Assert.isFalse(snipingShielded.critical, "protection still negates the sniping success")
+  Assert.equal(snipingShielded.multiplier, 1, "the negated sniping success never multiplies")
+  Assert.equal(snipingShieldedLog.calls, 1, "the negated sniping roll still spends its draw")
+end
+
+-- Malformed critical inputs fail before the stream moves: a non-integer
+-- stage, a missing stream, a missing cause, and a misshapen blocker
+-- record each spend zero draws, so a later mechanics checkpoint still
+-- reads the same stream head it would have read.
+function T.malformed_critical_inputs_fail_before_the_draw()
+  local Critical =
+    SessionFixture.requirePresent("libs.battle.src.gen4.Critical", "native critical checks own their roll")
+  local cause = { kind = "probe", combatant = 1, activation = 1 }
+
+  local function scriptedStream(log)
+    local stream = {}
+    function stream:nextU16(label, checkCause)
+      assert(type(label) == "string" and label ~= "", "the check names its draw site")
+      assert(type(checkCause) == "table", "the check carries its semantic cause")
+      log.calls = log.calls + 1
+      return 0
+    end
+    return stream
+  end
+
+  local cases = {
+    { stage = 1.5, stream = true, cause = cause, blockers = nil },
+    { stage = "1", stream = true, cause = cause, blockers = nil },
+    { stage = 0, stream = false, cause = cause, blockers = nil },
+    { stage = 0, stream = true, cause = nil, blockers = nil },
+    { stage = 0, stream = true, cause = cause, blockers = { luckyChant = "yes" } },
+    { stage = 0, stream = true, cause = cause, blockers = { unknownWard = true } },
+  }
+  for index, case in ipairs(cases) do
+    local log = { calls = 0 }
+    local stream = nil
+    if case.stream then
+      stream = scriptedStream(log)
+    end
+    Assert.throws(function()
+      Critical.resolve(case.stage, stream, case.cause, false, case.blockers)
+    end, "malformed critical input " .. index .. " fails loudly")
+    Assert.equal(log.calls, 0, "malformed critical input " .. index .. " spends no draw")
+  end
 end
 
 return { tests = T }

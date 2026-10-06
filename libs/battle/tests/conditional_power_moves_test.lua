@@ -193,82 +193,82 @@ function T.brine_holds_base_power_against_a_healthy_target()
   local probe = runStrike("BRINE", {}, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the brine connects")
-  Assert.equal(probe.dealt, 28, "brine holds base power against a healthy target")
+  Assert.equal(probe.dealt, 32, "brine holds base power against a healthy target")
 end
 
 function T.facade_doubles_through_burn()
   -- The frame mirrors the burned live entry, so the doubled power still
   -- pays the burn checkpoint: pre-bonus 67 halves to 33, adds 2 for 35,
-  -- rolls 87 for 30, and the same-type bonus lands 45.
+  -- rolls 98 or better for 34, and the same-type bonus lands 51.
   local probe = runStrike("FACADE", { burned = true }, nil, nil, "burn")
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the facade connects")
-  Assert.equal(probe.dealt, 45, "facade doubles through burn")
+  Assert.equal(probe.dealt, 51, "facade doubles through burn")
 end
 
 function T.facade_holds_base_power_when_healthy()
   local probe = runStrike("FACADE", {}, nil, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the facade connects")
-  Assert.equal(probe.dealt, 45, "facade holds base power when healthy")
+  Assert.equal(probe.dealt, 51, "facade holds base power when healthy")
 end
 
 function T.eruption_falls_off_with_user_health()
   local probe = runStrike("ERUPTION", {}, 30, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the eruption connects")
-  Assert.equal(probe.dealt, 9, "eruption falls off with user health")
+  Assert.equal(probe.dealt, 10, "eruption falls off with user health")
 end
 
 function T.water_spout_falls_off_with_user_health()
   local probe = runStrike("WATER_SPOUT", {}, 30, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the spout connects")
-  Assert.equal(probe.dealt, 9, "water spout falls off with user health")
+  Assert.equal(probe.dealt, 10, "water spout falls off with user health")
 end
 
 function T.flail_climbs_the_low_health_ladder()
   local probe = runStrike("FLAIL", {}, 5, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the flail connects")
-  Assert.equal(probe.dealt, 127, "flail climbs the low-health ladder")
+  Assert.equal(probe.dealt, 144, "flail climbs the low-health ladder")
 end
 
 function T.reversal_climbs_the_low_health_ladder()
   local probe = runStrike("REVERSAL", {}, 5, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the reversal connects")
-  Assert.equal(probe.dealt, 170, "reversal climbs the low-health ladder")
+  Assert.equal(probe.dealt, 192, "reversal climbs the low-health ladder")
 end
 
 function T.wring_out_scales_with_defender_health()
   local probe = runStrike("WRING_OUT", {}, nil, 40, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the wring out connects")
-  Assert.equal(probe.dealt, 15, "wring out scales with defender health")
+  Assert.equal(probe.dealt, 16, "wring out scales with defender health")
 end
 
 function T.gyro_ball_scales_with_the_speed_ratio()
   local probe = runStrike("GYRO_BALL", { speeds = { user = 40, foe = 200 } }, nil, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the gyro ball connects")
-  Assert.equal(probe.dealt, 53, "gyro ball scales with the speed ratio")
+  Assert.equal(probe.dealt, 60, "gyro ball scales with the speed ratio")
 end
 
 function T.low_kick_climbs_the_weight_ladder()
   local probe = runStrike("LOW_KICK", { foeWeightHg = 900 }, nil, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the low kick connects")
-  -- Ninety kilograms strike at power 80: pre-bonus 38 rolls 87 first
-  -- (floor(40*87/100) = 34) before doubling into the target for 68.
-  Assert.equal(probe.dealt, 68, "low kick climbs the weight ladder")
+  -- Ninety kilograms strike at power 80: pre-bonus 38 rolls 98 or
+  -- better (floor(40*98/100) = 39) before doubling into the target for 78.
+  Assert.equal(probe.dealt, 78, "low kick climbs the weight ladder")
 end
 
 function T.grass_knot_climbs_the_weight_ladder()
   local probe = runStrike("GRASS_KNOT", { foeWeightHg = 3000 }, nil, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the grass knot connects")
-  Assert.equal(probe.dealt, 51, "grass knot climbs the weight ladder")
+  Assert.equal(probe.dealt, 57, "grass knot climbs the weight ladder")
 end
 
 return { tests = T }

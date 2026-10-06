@@ -165,9 +165,9 @@ function T.sampled_sequences_deal_staged_damage_per_hit()
   local probe = runStrike("FURY_ATTACK", {})
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the sampled sequence connects")
-  -- Pre-bonus 12 rolls 99/85/85/88 across the four hits (13/11/11/12)
-  -- before the same-type bonus lands 19/16/16/18 for 69 total.
-  Assert.equal(probe.dealt, 69, "the sampled sequence deals four staged hits")
+  -- The native remainder-mapped rolls stage four hits landing
+  -- 19/19/18/19 after the same-type bonus, for 75 total.
+  Assert.equal(probe.dealt, 75, "the sampled sequence deals four staged hits")
   Assert.equal(probe.strikes, 4, "the pinned seed samples four hits")
 end
 
@@ -175,9 +175,9 @@ function T.skill_link_strikes_five_times()
   local probe = runStrike("FURY_ATTACK", { abilities = { user = "SKILL_LINK", foe = "NONE" } })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the skill-link sequence connects")
-  -- Pre-bonus 12 rolls 98/99/85/85/88 (13/13/11/11/12) before the
-  -- same-type bonus lands 19/19/16/16/18 for 88 total.
-  Assert.equal(probe.dealt, 88, "skill link deals five staged hits")
+  -- The native remainder-mapped rolls stage five hits landing
+  -- 19/19/19/18/19 after the same-type bonus, for 94 total.
+  Assert.equal(probe.dealt, 94, "skill link deals five staged hits")
   Assert.equal(probe.strikes, 5, "skill link always strikes five times")
 end
 
@@ -185,9 +185,9 @@ function T.fixed_doubles_land_twice()
   local probe = runStrike("DOUBLE_HIT", {})
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the fixed double connects")
-  -- Pre-bonus 12 rolls 98 then 93 (13/13) before the same-type bonus
-  -- lands 19 per hit for 38 total.
-  Assert.equal(probe.dealt, 38, "the fixed double lands twice")
+  -- The native remainder-mapped rolls stage two hits landing 19/18
+  -- after the same-type bonus, for 37 total.
+  Assert.equal(probe.dealt, 37, "the fixed double lands twice")
   Assert.equal(probe.strikes, 2, "fixed doubles strike exactly twice")
 end
 
@@ -207,9 +207,10 @@ function T.triple_kick_climbs_ten_per_kick()
   local probe = runStrike("TRIPLE_KICK", {})
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the triple kick connects")
-  -- Powers 10/20/30 run pre-bonus 4/9/14, roll 98/99/85 (5/10/13), and
-  -- the same-type bonus lands 7/15/19 for 41 total.
-  Assert.equal(probe.dealt, 41, "triple kick climbs ten per kick")
+  -- Powers 10/20/30 run pre-bonus 5/10/14 under the native
+  -- remainder-mapped rolls, and the same-type bonus lands 7/15/21
+  -- for 43 total.
+  Assert.equal(probe.dealt, 43, "triple kick climbs ten per kick")
   Assert.equal(probe.strikes, 3, "triple kick lands three kicks")
 end
 

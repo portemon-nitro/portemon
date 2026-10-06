@@ -220,7 +220,7 @@ function T.hidden_power_derives_dark_seventy_from_all_ones()
   local probe = runStrike("HIDDEN_POWER", { userIvs = ALL_ONES_IVS })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the hidden power connects")
-  Assert.equal(probe.dealt, 30, "all set bits derive dark seventy")
+  Assert.equal(probe.dealt, 29, "all set bits derive dark seventy")
 end
 
 function T.hidden_power_fighting_fails_against_ghosts()
@@ -244,7 +244,7 @@ function T.hidden_power_derives_fighting_thirty_from_all_zeroes()
   })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the hidden power connects")
-  Assert.equal(probe.dealt, 28, "all clear bits derive fighting thirty")
+  Assert.equal(probe.dealt, 26, "all clear bits derive fighting thirty")
 end
 
 function T.present_heals_on_its_top_branch()
@@ -259,32 +259,32 @@ function T.present_strikes_forty_on_its_low_branch()
   local probe = runStrike("PRESENT", {}, nil, nil, nil, 1)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the present connects")
-  -- Pre-bonus 19 rolls 86 first (floor(21*86/100) = 18) and then takes
-  -- the same-type bonus for 27.
-  Assert.equal(probe.dealt, 27, "forty-power presents strike at forty")
+  -- The remainder-mapped roll stages 19 pre-bonus and the same-type
+  -- bonus lands 28.
+  Assert.equal(probe.dealt, 28, "forty-power presents strike at forty")
 end
 
 function T.present_strikes_eighty_on_its_middle_branch()
   local probe = runStrike("PRESENT", {}, nil, nil, nil, 3)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the present connects")
-  Assert.equal(probe.dealt, 60, "eighty-power presents strike at eighty")
+  Assert.equal(probe.dealt, 57, "eighty-power presents strike at eighty")
 end
 
 function T.present_strikes_one_twenty_on_its_high_branch()
   local probe = runStrike("PRESENT", {}, nil, nil, nil)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the present connects")
-  -- Pre-bonus 57 rolls 92 first (floor(59*92/100) = 54) and then takes
-  -- the same-type bonus for 81.
-  Assert.equal(probe.dealt, 81, "one-twenty-power presents strike at one-twenty")
+  -- Pre-bonus 59 rolls full under the remainder-mapped roll
+  -- (floor(59*100/100) = 59) and then takes the same-type bonus for 88.
+  Assert.equal(probe.dealt, 88, "one-twenty-power presents strike at one-twenty")
 end
 
 function T.snore_demands_sleep()
   local probe = runStrike("SNORE", { userAsleep = true })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the sleeping snore connects")
-  Assert.equal(probe.dealt, 27, "sleeping snores connect at full power")
+  Assert.equal(probe.dealt, 25, "sleeping snores connect at full power")
 end
 
 function T.snore_fails_while_awake()
@@ -311,14 +311,14 @@ function T.stomp_doubles_against_minimizing_targets()
   end)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the stomp connects")
-  Assert.equal(probe.dealt, 84, "stomps double against minimizing targets")
+  Assert.equal(probe.dealt, 81, "stomps double against minimizing targets")
 end
 
 function T.stomp_holds_base_power_otherwise()
   local probe = runStrike("STOMP", {})
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the stomp connects")
-  Assert.equal(probe.dealt, 43, "stomps hold base power otherwise")
+  Assert.equal(probe.dealt, 42, "stomps hold base power otherwise")
 end
 
 function T.wake_up_slap_doubles_and_wakes_sleepers()
@@ -327,9 +327,9 @@ function T.wake_up_slap_doubles_and_wakes_sleepers()
   end)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the slap connects")
-  -- Doubled pre-bonus 57 rolls 92 first (floor(59*92/100) = 51) and then
-  -- doubles into the sleeping target for 102.
-  Assert.equal(probe.dealt, 102, "slaps double and wake sleepers")
+  -- The remainder-mapped roll stages 50 and the sleeping-target double
+  -- lands 100.
+  Assert.equal(probe.dealt, 100, "slaps double and wake sleepers")
   local ctx = probe.ctx
   Assert.isNil(ctx:statusOf(2), "the slap wakes its target")
 end
@@ -338,7 +338,7 @@ function T.wake_up_slap_holds_base_power_when_awake()
   local probe = runStrike("WAKE_UP_SLAP", {})
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the slap connects")
-  Assert.equal(probe.dealt, 52, "slaps hold base power when awake")
+  Assert.equal(probe.dealt, 50, "slaps hold base power when awake")
 end
 
 function T.last_resort_demands_every_other_known_move_used()
@@ -348,7 +348,7 @@ function T.last_resort_demands_every_other_known_move_used()
   })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the earned last resort connects")
-  Assert.equal(probe.dealt, 84, "earned last resorts connect at full power")
+  Assert.equal(probe.dealt, 81, "earned last resorts connect at full power")
 end
 
 function T.last_resort_fails_with_an_unused_move()
@@ -375,7 +375,7 @@ function T.weather_ball_answers_rain()
   end)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the rain weather ball connects")
-  Assert.equal(probe.dealt, 44, "rain doubles weather ball into water typing")
+  Assert.equal(probe.dealt, 42, "rain doubles weather ball into water typing")
 end
 
 function T.weather_ball_holds_base_power_without_weather()
@@ -396,7 +396,7 @@ function T.natural_gift_throws_the_held_berry_and_spends_it()
   end)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the natural gift connects")
-  Assert.equal(probe.dealt, 26, "the berry gift strikes at berry power")
+  Assert.equal(probe.dealt, 25, "the berry gift strikes at berry power")
   Assert.equal(probe.held, "NONE", "the gift spends its berry")
 end
 
@@ -415,7 +415,7 @@ function T.fling_throws_the_held_item_for_toxic_and_spends_it()
   end)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the fling connects")
-  Assert.equal(probe.dealt, 14, "the orb fling strikes at fling power")
+  Assert.equal(probe.dealt, 13, "the orb fling strikes at fling power")
   Assert.equal(probe.held, "NONE", "the fling spends its item")
   local ctx = probe.ctx
   Assert.equal(ctx:statusOf(2), "toxic", "the orb fling badly poisons its target")

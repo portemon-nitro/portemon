@@ -57,9 +57,6 @@ local Damage = {}
 
 Damage.SPREAD_NUMERATOR = 3072
 Damage.SPREAD_DENOMINATOR = 4096
-Damage.ROLL_MIN = 85
-Damage.ROLL_SPAN = 16
-Damage.ROLL_MODULUS = 65536
 
 ---@param value integer value under test
 ---@param name string value being read
@@ -242,7 +239,7 @@ local function runStages(spec, stream, stages)
   local percent = spec.randomPercent
   if percent == nil then
     local draw = stream:nextU16("damage_roll", { kind = "damage_roll" })
-    percent = Damage.ROLL_MIN + math.floor((draw * Damage.ROLL_SPAN) / Damage.ROLL_MODULUS)
+    percent = 100 - (draw % 16)
   end
   local rolled = math.floor((current * percent) / 100)
   recordStage(rolled, stages, "random", current, "floor(damage*rollPercent/100) with roll 85..100")

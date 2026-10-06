@@ -1259,6 +1259,10 @@ end
 -- doubled matchup hits harder than a halved one with the same stats, and a
 -- chart immunity deals nothing where a neutral matchup wounds.
 function T.matching_types_and_matchup_ratios_reshape_ordinary_strikes()
+  -- The cross-duel comparisons below share one stream seed, so a critical
+  -- flip in either duel would mask the matchup under test; this seed keeps
+  -- both opening strikes non-critical under the native divisor law.
+  local MATCHUP_SEED = 11
   local leaf = {
     MAGICAL_LEAF = strikeFacts(0, "grass", 60),
     STRUGGLE = struggleFacts(),
@@ -1274,7 +1278,7 @@ function T.matching_types_and_matchup_ratios_reshape_ordinary_strikes()
     singleMoveCombatant(2, 23, "EEVEE", "MAGICAL_LEAF"),
     leaf,
     honest,
-    PROJECTION_SEED
+    MATCHUP_SEED
   )
   playOpeningTurn(stabbed)
   local stabbedDamage = damageTaken(stabbed, 2)
@@ -1284,7 +1288,7 @@ function T.matching_types_and_matchup_ratios_reshape_ordinary_strikes()
     singleMoveCombatant(2, 23, "EEVEE", "MAGICAL_LEAF"),
     leaf,
     honest,
-    PROJECTION_SEED
+    MATCHUP_SEED
   )
   playOpeningTurn(unstabbed)
   local plainDamage = damageTaken(unstabbed, 2)
@@ -1300,7 +1304,7 @@ function T.matching_types_and_matchup_ratios_reshape_ordinary_strikes()
     singleMoveCombatant(2, 23, "CHIKORITA", "AERIAL_ACE"),
     fire,
     honest,
-    PROJECTION_SEED
+    MATCHUP_SEED
   )
   playOpeningTurn(intoGrass)
   local grassDamage = damageTaken(intoGrass, 2)
@@ -1310,7 +1314,7 @@ function T.matching_types_and_matchup_ratios_reshape_ordinary_strikes()
     singleMoveCombatant(2, 23, "TOTODILE", "AERIAL_ACE"),
     fire,
     honest,
-    PROJECTION_SEED
+    MATCHUP_SEED
   )
   playOpeningTurn(intoWater)
   local waterDamage = damageTaken(intoWater, 2)
@@ -1326,7 +1330,7 @@ function T.matching_types_and_matchup_ratios_reshape_ordinary_strikes()
     singleMoveCombatant(2, 23, "SHEDINJA", "TACKLE"),
     heavy,
     honest,
-    PROJECTION_SEED
+    MATCHUP_SEED
   )
   playOpeningTurn(intoGhost)
   local ghostDamage = damageTaken(intoGhost, 2)
@@ -1336,7 +1340,7 @@ function T.matching_types_and_matchup_ratios_reshape_ordinary_strikes()
     singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
     heavy,
     honest,
-    PROJECTION_SEED
+    MATCHUP_SEED
   )
   playOpeningTurn(intoPlain)
   local plainTackle = damageTaken(intoPlain, 2)
@@ -3860,7 +3864,9 @@ function T.mirror_move_copies_the_recorded_incoming_strike()
     { move = "TACKLE", pp = 35, ppUps = 0 },
     { move = "MIRROR_MOVE", pp = 10, ppUps = 0 },
   }
-  local betaLead = leveledCombatant(2, 23, "EEVEE", 5)
+  -- The defender outlevels a turn-one knockout across the full native
+  -- roll range, so the copying turn always has a battle to copy in.
+  local betaLead = leveledCombatant(2, 23, "EEVEE", 10)
   local scenario = withMoveFacts(actionScenario(WILD_FORMAT, { alphaLead }, { betaLead }, nil), {
     MIRROR_MOVE = handFacts(0, 0, "other", "flying", 0),
   })

@@ -41,9 +41,6 @@ local NATIVE_KEYS = {
   toxic = true,
 }
 
-Status.PARALYSIS_PERCENT = 25
-Status.ROLL_MODULUS = 65536
-
 ---@param mon unknown
 ---@return MonStatusView
 local function checkMon(mon)
@@ -179,9 +176,8 @@ function Status.beforeAction(mon, stream, cause)
     return { acts = false, event = { key = "sleep", outcome = "blocked" } }
   end
   if key == "paralysis" then
-    local threshold = math.floor((Status.PARALYSIS_PERCENT * Status.ROLL_MODULUS) / 100)
     local draw = drawGate(stream, cause, "paralysis_check")
-    if draw < threshold then
+    if draw % 4 == 0 then
       return { acts = false, event = { key = "paralysis", outcome = "blocked" } }
     end
     return { acts = true, event = nil }
