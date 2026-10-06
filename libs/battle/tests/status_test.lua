@@ -204,6 +204,29 @@ function T.switch_keeps_the_condition_and_restarts_the_toxic_count()
   )
 end
 
+-- Refused reapplications keep the toxic count: a second toxic and an
+-- incompatible burn both fail loudly while the first toxic keeps its
+-- counter and health exactly.
+function T.refused_reapplications_keep_the_toxic_count()
+  local Status = statusOwner("native major status law owns application and replacement resets")
+
+  local toxic = freshMon()
+  local hpBefore = toxic.condition.currentHp
+  Assert.isTrue(Status.apply(toxic, "toxic", EffectFixture.cause(2, 1), { counter = 2 }), "toxic applies mid-count")
+  Assert.throws(function()
+    Status.apply(toxic, "toxic", EffectFixture.cause(2, 1), { counter = 5 })
+  end)
+  Assert.throws(function()
+    Status.apply(toxic, "burn", EffectFixture.cause(2, 1), {})
+  end)
+  Assert.deepEqual(
+    toxic.condition.effects,
+    { { key = "toxic", version = 1, state = { counter = 2 } } },
+    "refused applications leave the counter untouched"
+  )
+  Assert.equal(toxic.condition.currentHp, hpBefore, "refused applications never touch health")
+end
+
 -- The mon domain already owns the persistent vocabulary: battle-transient
 -- keys can never enter a canonical record, and native words round-trip.
 -- This guards the boundary these suites consume rather than new behavior.

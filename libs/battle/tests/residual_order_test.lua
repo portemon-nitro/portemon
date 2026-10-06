@@ -676,6 +676,123 @@ function T.weather_recovery_and_affliction_share_one_stable_order()
   Assert.equal(runContext.health[1], 16, "weather, affliction, and recovery all apply their ticks")
 end
 
+-- A suspended pass that loses its nested progress must fail instead of
+-- replaying: dropping the dispatch continuation while health already
+-- carries the committed heal resumes as a fresh pass today, healing
+-- twice and emitting a duplicate tick.
+function T.suspended_frames_without_nested_progress_fail_instead_of_replaying()
+  local EffectBag = bagOwner("scoped effect instances own their lifetimes")
+  local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
+  local Residuals = residualsOwner("native residual continuation owns phase and cursor structure")
+
+  ---@return table bag with one recovery and two afflictions across three battlers
+  local function buildBag()
+    local bag = EffectBag.new()
+    bag:add(
+      testDefinition("ingrain", "recovery", "clear"),
+      EffectFixture.activeScope(1, 1),
+      EffectFixture.cause(2, 1),
+      { version = 1 }
+    )
+    for combatant = 2, 3 do
+      bag:add(
+        testDefinition("toxic", "affliction", "clear"),
+        EffectFixture.activeScope(combatant, 1),
+        EffectFixture.cause(1, 1),
+        { version = 1 }
+      )
+    end
+    return bag
+  end
+  local handlers = {
+    ingrain = function(instance, context)
+      local combatant = instance.scope.combatant
+      context.health[combatant] = context.health[combatant] + 2
+      return { kind = "healed", key = "ingrain", combatant = combatant, restored = 2 }
+    end,
+    toxic = fixedDamage(4),
+  }
+  local speeds = { [1] = 100, [2] = 50, [3] = 60 }
+
+  local uninterrupted = Residuals.step(
+    EffectDispatch.new(buildBag(), handlers),
+    EffectFixture.residualContext(speeds, { [1] = 10, [2] = 20, [3] = 20 }, 7)
+  )
+  Assert.isTrue(uninterrupted.done, "the unbounded pass completes")
+  Assert.deepEqual(
+    EffectFixture.eventSignatures(uninterrupted.events),
+    { "healed:1", "tick:3", "tick:2" },
+    "recovery for the fastest battler commits before the afflictions"
+  )
+
+  local bag = buildBag()
+  local dispatch = EffectDispatch.new(bag, handlers)
+  local health = { [1] = 10, [2] = 20, [3] = 20 }
+  local first = Residuals.step(dispatch, EffectFixture.residualContext(speeds, health, 7), 1)
+  Assert.isFalse(first.done, "a unit budget suspends behind the committed heal")
+  Assert.equal(health[1], 12, "the committed heal already lands in battle-local health")
+
+  local revived = EffectBag.new(bag:capture())
+  local resumedDispatch = EffectDispatch.new(revived, handlers)
+  local resumedHealth = { [1] = health[1], [2] = health[2], [3] = health[3] }
+  local forged = {
+    kind = first.frame.kind,
+    version = first.frame.version,
+    checkpoint = nil,
+    fainted = first.frame.fainted,
+  }
+  local forgedContext = EffectFixture.residualContext(speeds, resumedHealth, 7)
+  forgedContext.resume = forged
+  local ok = pcall(Residuals.step, resumedDispatch, forgedContext)
+  Assert.isFalse(ok, "resuming without the nested progress fails instead of replaying the heal")
+end
+
+-- Foreign frames and future versions fail before running: the validator
+-- names the identity and the version it understands, and a well-formed
+-- frame still validates.
+function T.foreign_frames_and_future_versions_fail_before_running()
+  local Residuals = residualsOwner("native residual continuation owns phase and cursor structure")
+
+  Assert.throws(function()
+    Residuals.validateFrame({ kind = "other:residuals", version = 1, checkpoint = nil, fainted = {} })
+  end)
+  Assert.throws(function()
+    Residuals.validateFrame({ kind = Residuals.KIND, version = 9999, checkpoint = nil, fainted = {} })
+  end)
+  local frame = Residuals.validateFrame({ kind = Residuals.KIND, version = 1, checkpoint = nil, fainted = {} })
+  Assert.equal(frame.version, 1, "the current version still validates")
+end
+
+-- Empty passes stay deterministic under any budget: unbounded and
+-- stepwise runs agree exactly and repeat runs match event for event.
+function T.empty_passes_stay_deterministic_under_any_budget()
+  local EffectBag = bagOwner("scoped effect instances own their lifetimes")
+  local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
+  local Residuals = residualsOwner("native residual continuation owns phase and cursor structure")
+
+  local speeds = { [1] = 100, [2] = 50 }
+  local health = { [1] = 20, [2] = 20 }
+  local function run()
+    return Residuals.step(
+      EffectDispatch.new(EffectBag.new(), {}),
+      EffectFixture.residualContext(speeds, { [1] = health[1], [2] = health[2] }, 7)
+    )
+  end
+  local first = run()
+  local second = run()
+  Assert.isTrue(first.done and second.done, "quiet passes complete")
+  Assert.deepEqual(first.events, {}, "quiet passes emit nothing")
+  Assert.deepEqual(second.events, first.events, "repeated quiet passes match exactly")
+  Assert.deepEqual(second.frame, first.frame, "repeated quiet passes leave identical frames")
+
+  local steppedDispatch = EffectDispatch.new(EffectBag.new(), {})
+  local steppedHealth = { [1] = 20, [2] = 20 }
+  local steppedContext = EffectFixture.residualContext(speeds, steppedHealth, 7)
+  local stepped = Residuals.step(steppedDispatch, steppedContext, 1)
+  Assert.isTrue(stepped.done, "a budgeted quiet pass still completes")
+  Assert.deepEqual(stepped.events, first.events, "budgeted quiet passes match the unbounded run")
+end
+
 -- The native registries cover every residual family with well-formed
 -- definitions: volatile branches on one side, weather, screens, hazards,
 -- and delayed slot effects on the other.

@@ -1651,135 +1651,276 @@ local function volatileTrapOf(state, combatantId)
   return nil
 end
 
--- Replaces one poisoned holder's tick through the bridge when its
--- ability answers the poison: the restoration lands on the shared
--- battle-local health map under the ceiling. Berries and persistent
--- holdings never answer here; the turn recovery pass below owns them,
--- so no holding heals twice.
+-- Checkpoint facts shared by one holder's innate answers: the entry
+-- token and species materialize the ephemeral instances while the clock,
+-- live health, condition, sky, and ability travel as handler facts.
 ---@param state table<string, unknown> live battle state under the pass
 ---@param context table<string, unknown> session context owning the residual writes
 ---@param health table<integer, integer> battle-local health under the pass
 ---@param ceilings table<integer, integer> battle maximum health per combatant
 ---@param combatantId integer holder combatant under the checkpoint
----@return boolean true when the ability replaced the poison tick
-local function replacePoisonTick(state, context, health, ceilings, combatantId)
-  local outcome = NativePassiveBridge.wrap(state):invoke("residual", combatantId, {
-    status = "poison",
-    weather = activeWeather(state),
-  })
-  local typed = context --[[@as BattleContext]]
-  for _, event in ipairs(outcome.events) do
-    local record = event --[[@as table<string, unknown>]]
-    if type(record.restored) == "number" and record.answersPoisonTick == true then
-      local ceiling = ceilings[combatantId] --[[@as integer]]
-      local before = health[combatantId] --[[@as integer]]
-      local after = before + record.restored --[[@as integer]]
-      if after > ceiling then
-        after = ceiling
-      end
-      health[combatantId] = after
-      typed:emit("healed", { kind = "residual", key = record.key }, {
-        target = combatantId,
-        restored = after - before,
-      })
-      return true
-    end
+---@return table<string, unknown> holder facts with the handler checkpoint
+local function innateFactsFor(state, context, health, ceilings, combatantId)
+  local combatant = BattleState.combatant(state, combatantId)
+  local active = combatant.active
+  if type(active) ~= "table" or type(combatant.mon) ~= "table" then
+    error(BattleErrors.invalidState("innate answers scope to an entered holder", { combatant = combatantId }))
   end
-  return false
+  local entry = active --[[@as table<string, unknown>]]
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local species = mon.species
+  if type(species) ~= "string" or species == "" then
+    species = nil
+  end
+  local typed = context --[[@as BattleContext]]
+  return {
+    activation = entry.activation,
+    species = species,
+    checkpoint = {
+      nativeTurn = BattleState.nativeTurn(state),
+      entryTurn = entry.entryTurn,
+      health = { [combatantId] = health[combatantId] },
+      maxHealth = { [combatantId] = ceilings[combatantId] },
+      status = typed:statusOf(combatantId),
+      weather = activeWeather(state),
+      ability = mon.ability,
+    },
+  }
 end
 
--- Ticks persistent poison, burn, and toxic through the same health map
--- the dispatch pass consumes, walking the sampled battler order the
--- residual owner nests instances under. Poison and burn drain one eighth of maximum
--- health; toxic increments its owned counter first (capped at the
--- native fifteen) and drains one sixteenth per counter point. Every
--- tick floors at a minimum of one. Sleep, freeze, and paralysis carry
--- no residual damage; their law lives at the before-action gate.
----@param state table<string, unknown> live battle state under the pass
----@param context table<string, unknown> session context owning status writes
 ---@param health table<integer, integer> battle-local health under the pass
----@param turnOrder integer[] sampled battler order for the pass
 ---@param ceilings table<integer, integer> battle maximum health per combatant
-local function tickPersistentConditions(state, context, health, turnOrder, ceilings)
-  -- Status ticks walk the same sampled battler order the residual owner
-  -- nests instances under. The identity-ordered tail only covers health
-  -- entries missing from the sampled order, so the pass never depends
-  -- on hash iteration order.
-  local sequenced = {} ---@type integer[]
-  local seen = {}
-  for _, combatantId in ipairs(turnOrder) do
-    if health[combatantId] ~= nil and seen[combatantId] == nil then
-      seen[combatantId] = true
-      sequenced[#sequenced + 1] = combatantId
-    end
+---@param combatantId integer holder combatant under the checkpoint
+---@param restored integer restoration announced by the answer
+---@return integer applied restoration under the ceiling
+local function applyInnateRestoration(health, ceilings, combatantId, restored)
+  local ceiling = ceilings[combatantId] --[[@as integer]]
+  local before = health[combatantId] --[[@as integer]]
+  local after = before + restored
+  if after > ceiling then
+    after = ceiling
   end
-  local tail = {} ---@type integer[]
-  for combatantId in pairs(health) do
-    if type(combatantId) == "number" and seen[combatantId] == nil then
-      tail[#tail + 1] = combatantId
-    end
+  health[combatantId] = after
+  return after - before
+end
+
+-- Answers one holder's ability phase through the live passive owner:
+-- the restoration lands on the shared battle-local health map under
+-- the ceiling, and an answer naming the poison tick suppresses that
+-- tick when its phase arrives. Holders without a battle ability carry
+-- no phase.
+---@param state table<string, unknown> live battle state under the pass
+---@param context table<string, unknown> session context owning the residual writes
+---@param health table<integer, integer> battle-local health under the pass
+---@param ceilings table<integer, integer> battle maximum health per combatant
+---@param answeredPoison table<integer, boolean> holders whose ability replaced their poison tick
+---@param combatantId integer holder combatant under the checkpoint
+---@return table<string, unknown>? work record with the phase events, nil when the holder carries no ability
+local function answerAbilityPhase(state, context, health, ceilings, answeredPoison, combatantId)
+  local combatant = BattleState.combatant(state, combatantId)
+  if combatant.active == nil then
+    return nil
   end
-  table.sort(tail)
-  for _, combatantId in ipairs(tail) do
-    seen[combatantId] = true
-    sequenced[#sequenced + 1] = combatantId
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local ability = mon.ability
+  if type(ability) ~= "string" or ability == "" or ability == NativePassiveBridge.SENTINEL_ABILITY then
+    return nil
   end
-  local typed = context --[[@as BattleContext]]
-  for _, combatantId in ipairs(sequenced) do
-    if health[combatantId] > 0 then
-      local combatant = BattleState.combatant(state, combatantId)
-      local mon = combatant.mon --[[@as table<string, unknown>]]
-      local effects = (mon.condition --[[@as table<string, unknown>]]).effects
-      local current = (effects --[[@as table<integer, table<string, unknown>>]])[1]
-      if current ~= nil then
-        local key = current.key --[[@as string]]
-        if key == "poison" then
-          -- A poisoned healer recovers through its ability instead of
-          -- draining; every other poisoned holder drains below.
-          if not replacePoisonTick(state, context, health, ceilings, combatantId) then
-            local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 8)
-            if damage < 1 then
-              damage = 1
-            end
-            health[combatantId] = health[combatantId] - damage
-            typed:emit("tick", { kind = "residual", key = key }, {
-              combatant = combatantId,
-              key = key,
-              amount = damage,
-            })
-          end
-        elseif key == "burn" then
-          local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 8)
-          if damage < 1 then
-            damage = 1
-          end
-          health[combatantId] = health[combatantId] - damage
-          typed:emit("tick", { kind = "residual", key = key }, {
-            combatant = combatantId,
-            key = key,
-            amount = damage,
-          })
-        elseif key == "toxic" then
-          local counter = (current.state --[[@as table<string, unknown>]]).counter --[[@as integer]] + 1
-          if counter > 15 then
-            counter = 15
-          end
-          current.state = { counter = counter }
-          local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 16) * counter
-          if damage < 1 then
-            damage = 1
-          end
-          health[combatantId] = health[combatantId] - damage
-          typed:emit("tick", { kind = "residual", key = key }, {
-            combatant = combatantId,
-            key = key,
-            amount = damage,
-          })
-        end
+  local facts = innateFactsFor(state, context, health, ceilings, combatantId)
+  local outcome = NativePassiveBridge.invokeFacts({
+    combatant = combatantId,
+    activation = facts.activation,
+    ability = ability --[[@as string]],
+    species = facts.species,
+  }, "residual", facts.checkpoint)
+  local events = {}
+  for _, event in ipairs(outcome.events) do
+    local answer = event --[[@as table<string, unknown>]]
+    if type(answer.restored) == "number" and answer.recovered == true then
+      local applied = applyInnateRestoration(health, ceilings, combatantId, answer.restored --[[@as integer]])
+      events[#events + 1] = {
+        origin = "innate",
+        kind = "healed",
+        key = answer.key,
+        target = combatantId,
+        restored = applied,
+      }
+      if answer.answersPoisonTick == true then
+        answeredPoison[combatantId] = true
       end
     end
   end
+  return { events = events }
 end
+
+-- Answers one holder's consumable holding phase: only spent answers
+-- heal here, so a persistent holding never heals twice. Consumption
+-- rewrites possession at once and stays visible to later phases.
+---@param state table<string, unknown> live battle state under the pass
+---@param context table<string, unknown> session context owning the residual writes
+---@param health table<integer, integer> battle-local health under the pass
+---@param ceilings table<integer, integer> battle maximum health per combatant
+---@param combatantId integer holder combatant under the checkpoint
+---@return table<string, unknown>? work record with the phase events, nil when no effective holding answers
+local function answerConsumablePhase(state, context, health, ceilings, combatantId)
+  local combatant = BattleState.combatant(state, combatantId)
+  if combatant.active == nil then
+    return nil
+  end
+  local effective = NativePassiveBridge.wrap(state):effectiveHeldItem(combatantId)
+  if effective == nil then
+    return nil
+  end
+  local facts = innateFactsFor(state, context, health, ceilings, combatantId)
+  local outcome = NativePassiveBridge.invokeFacts({
+    combatant = combatantId,
+    activation = facts.activation,
+    heldItem = effective,
+    species = facts.species,
+  }, "residual", facts.checkpoint)
+  local typed = context --[[@as BattleContext]]
+  local events = {}
+  for _, event in ipairs(outcome.events) do
+    local answer = event --[[@as table<string, unknown>]]
+    if answer.consumed == true and type(answer.restored) == "number" and answer.recovered == true then
+      local applied = applyInnateRestoration(health, ceilings, combatantId, answer.restored --[[@as integer]])
+      typed:consumeHeldItem(combatantId)
+      events[#events + 1] = {
+        origin = "innate",
+        kind = "healed",
+        key = answer.key,
+        target = combatantId,
+        restored = applied,
+      }
+    end
+  end
+  return { events = events }
+end
+
+-- Answers one holder's gradual holding phase: persistent recovery heals
+-- without spending, while spent consumables never answer twice.
+---@param state table<string, unknown> live battle state under the pass
+---@param context table<string, unknown> session context owning the residual writes
+---@param health table<integer, integer> battle-local health under the pass
+---@param ceilings table<integer, integer> battle maximum health per combatant
+---@param combatantId integer holder combatant under the checkpoint
+---@return table<string, unknown>? work record with the phase events, nil when no effective holding answers
+local function answerGradualPhase(state, context, health, ceilings, combatantId)
+  local combatant = BattleState.combatant(state, combatantId)
+  if combatant.active == nil then
+    return nil
+  end
+  local effective = NativePassiveBridge.wrap(state):effectiveHeldItem(combatantId)
+  if effective == nil then
+    return nil
+  end
+  local facts = innateFactsFor(state, context, health, ceilings, combatantId)
+  local outcome = NativePassiveBridge.invokeFacts({
+    combatant = combatantId,
+    activation = facts.activation,
+    heldItem = effective,
+    species = facts.species,
+  }, "residual", facts.checkpoint)
+  local events = {}
+  for _, event in ipairs(outcome.events) do
+    local answer = event --[[@as table<string, unknown>]]
+    if answer.consumed ~= true and type(answer.restored) == "number" and answer.recovered == true then
+      local applied = applyInnateRestoration(health, ceilings, combatantId, answer.restored --[[@as integer]])
+      events[#events + 1] = {
+        origin = "innate",
+        kind = "healed",
+        key = answer.key,
+        target = combatantId,
+        restored = applied,
+      }
+    end
+  end
+  return { events = events }
+end
+
+-- Ticks one holder's canonical affliction at its own phase. Poison and
+-- burn drain one eighth of maximum health; toxic increments its owned
+-- counter first (capped at the native fifteen) and drains one sixteenth
+-- per counter point. Every tick floors at a minimum of one. A cure
+-- earlier in the pass leaves another key here and the phase stays
+-- silent; an ability answer earlier suppresses the poison tick.
+-- Sleep, freeze, and paralysis carry no residual damage; their law
+-- lives at the before-action gate.
+---@param state table<string, unknown> live battle state under the pass
+---@param health table<integer, integer> battle-local health under the pass
+---@param ceilings table<integer, integer> battle maximum health per combatant
+---@param answeredPoison table<integer, boolean> holders whose ability replaced their poison tick
+---@param combatantId integer holder combatant under the checkpoint
+---@param key string affliction key owning this phase
+---@return table<string, unknown>? work record with the phase events, nil when the holder carries another key
+local function answerConditionPhase(state, health, ceilings, answeredPoison, combatantId, key)
+  local hp = health[combatantId]
+  if type(hp) ~= "number" or hp <= 0 then
+    return nil
+  end
+  local combatant = BattleState.combatant(state, combatantId)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local effects = (mon.condition --[[@as table<string, unknown>]]).effects
+  local current = (effects --[[@as table<integer, table<string, unknown>>]])[1]
+  if current == nil or current.key ~= key then
+    return nil
+  end
+  if key == "poison" then
+    -- A poisoned healer recovered through its ability instead of
+    -- draining; every other poisoned holder drains below.
+    if answeredPoison[combatantId] == true then
+      return nil
+    end
+    local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 8)
+    if damage < 1 then
+      damage = 1
+    end
+    health[combatantId] = health[combatantId] - damage
+    return {
+      events = {
+        { origin = "condition", kind = "tick", key = key, combatant = combatantId, amount = damage },
+      },
+    }
+  elseif key == "burn" then
+    local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 8)
+    if damage < 1 then
+      damage = 1
+    end
+    health[combatantId] = health[combatantId] - damage
+    return {
+      events = {
+        { origin = "condition", kind = "tick", key = key, combatant = combatantId, amount = damage },
+      },
+    }
+  elseif key == "toxic" then
+    local counter = (current.state --[[@as table<string, unknown>]]).counter --[[@as integer]] + 1
+    if counter > 15 then
+      counter = 15
+    end
+    current.state = { counter = counter }
+    local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 16) * counter
+    if damage < 1 then
+      damage = 1
+    end
+    health[combatantId] = health[combatantId] - damage
+    return {
+      events = {
+        { origin = "condition", kind = "tick", key = key, combatant = combatantId, amount = damage },
+      },
+    }
+  end
+  return nil
+end
+
+-- One seam-level handle behind the residual ability, holding, and
+-- condition phases: the turn seam below already sits at the upvalue
+-- limit, so it reaches the answers through this table instead of
+-- capturing each answer as another upvalue.
+local ResidualAnswers = {}
+ResidualAnswers.ability = answerAbilityPhase
+ResidualAnswers.consumable = answerConsumablePhase
+ResidualAnswers.gradual = answerGradualPhase
+ResidualAnswers.condition = answerConditionPhase
 
 ---@param state table<string, unknown> live battle state under reserve inspection
 ---@return table<integer, integer> living benched roster members pooled across participants
@@ -3389,10 +3530,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     end
     local stream = state.rng --[[@as table<string, unknown>]]
     assert(type(stream.nextU16) == "function", "native residuals draw from the battle stream")
-    -- The per-battler mon phase walks this sampled order: persistent
-    -- conditions tick through it below, and the residual owner nests
-    -- battle-local instances under it, so both paths share one speed
-    -- sequence without spending a second tie draw.
+    -- The per-battler mon phase walks this sampled order: the unified
+    -- residual frame freezes it once, and finite instances, innate
+    -- answers, and condition ticks all nest under it without spending a
+    -- second tie draw.
     local turnEntries = {} ---@type table<integer, { id: integer, speed: integer }>
     for combatant, speed in pairs(speeds) do
       turnEntries[#turnEntries + 1] = { id = combatant, speed = speed }
@@ -3404,10 +3545,6 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       turnOrder[#turnOrder + 1] = entry.id
     end
     local context = BattleContext.wrap(state)
-    -- Persistent conditions tick first in sampled turn order through
-    -- the status owner; battle-local instances follow through the
-    -- shared finite dispatch over the same health map.
-    tickPersistentConditions(state, context, health, turnOrder, ceilings)
     -- The dispatch owner serves the residual view through named
     -- collection and invocation: the view contract is duck-typed, so
     -- the session adapts method calls to plain view functions.
@@ -3428,64 +3565,75 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         budget --[[@as integer?]]
       )
     end
-    local outcome = Residuals.step({ collect = collectResiduals, invoke = invokeResiduals }, {
-      speeds = speeds,
-      health = health,
-      stream = stream,
-      turnOrder = turnOrder,
-      trickRoom = fieldActive(state, "trickroom"),
-      nativeTurn = BattleState.nativeTurn(state),
-    })
-    for _, event in ipairs(outcome.events) do
-      local record = event --[[@as table<string, unknown>]]
-      if
-        record.kind --[[@as string]]
-        ~= "faint"
-      then
-        context:emit(record.kind --[[@as string]], { kind = record.kind }, copyValue(record))
-      end
+    -- Live battler answers behind the ability, holding, and condition
+    -- phases read current holder state, so a spend or cure earlier in
+    -- the pass is already visible. Poison answers persist across steps
+    -- of the same pass.
+    local answeredPoison = {} ---@type table<integer, boolean>
+    local function liveAbility(combatantId)
+      return ResidualAnswers.ability(state, context, health, ceilings, answeredPoison, combatantId)
     end
-    -- Innate recovery closes the turn in sampled battler order:
-    -- pinch holdings restore and spend, persistent holdings restore,
-    -- and every answer lands on the same health map the commit caps.
-    -- The bridge stays function-local beside the turn seam's chunk
-    -- reference ceiling.
-    local Bridge = require("libs.battle.src.gen4.NativePassiveBridge")
-    for _, combatantId in ipairs(turnOrder) do
-      if health[combatantId] ~= nil and health[combatantId] > 0 then
-        local combatant = BattleState.combatant(state, combatantId)
-        if combatant.active ~= nil then
-          local recovery = Bridge.wrap(state):invoke("residual", combatantId, {
-            status = context:statusOf(combatantId),
-            weather = activeWeather(state),
+    local function liveHeldItem(combatantId)
+      return ResidualAnswers.consumable(state, context, health, ceilings, combatantId)
+    end
+    local function liveLeftovers(combatantId)
+      return ResidualAnswers.gradual(state, context, health, ceilings, combatantId)
+    end
+    local function liveCondition(combatantId, key)
+      return ResidualAnswers.condition(state, health, ceilings, answeredPoison, combatantId, key)
+    end
+    local live = {
+      ability = liveAbility,
+      heldItem = liveHeldItem,
+      leftovers = liveLeftovers,
+      condition = liveCondition,
+    }
+    -- One unified residual frame drives the pass a phase at a time:
+    -- each committed phase settles through the existing faint owner
+    -- before any later phase runs, and holders that left the field
+    -- never answer again. The pass still completes synchronously, so
+    -- no continuation survives the turn and capture only ever sees
+    -- settled state.
+    local resume = nil ---@type table<string, unknown>?
+    while true do
+      local outcome = Residuals.step({ collect = collectResiduals, invoke = invokeResiduals }, {
+        speeds = speeds,
+        health = health,
+        stream = stream,
+        turnOrder = turnOrder,
+        trickRoom = fieldActive(state, "trickroom"),
+        nativeTurn = BattleState.nativeTurn(state),
+        live = live,
+        resume = resume,
+      }, 1)
+      for _, event in ipairs(outcome.events) do
+        local record = event --[[@as table<string, unknown>]]
+        if record.kind == "faint" then
+          -- Residual faint markers stay internal: committing health
+          -- first lets faint settlement emit the single canonical
+          -- faint per knockout.
+        elseif record.origin == "innate" then
+          context:emit("healed", { kind = "residual", key = record.key }, {
+            target = record.target,
+            restored = record.restored,
           })
-          for _, event in ipairs(recovery.events) do
-            local record = event --[[@as table<string, unknown>]]
-            if type(record.restored) == "number" and record.recovered == true and record.answersPoisonTick ~= true then
-              local ceiling = ceilings[combatantId] --[[@as integer]]
-              local before = health[combatantId] --[[@as integer]]
-              local after = before + record.restored --[[@as integer]]
-              if after > ceiling then
-                after = ceiling
-              end
-              health[combatantId] = after
-              context:emit("healed", { kind = "residual", key = record.key }, {
-                target = combatantId,
-                restored = after - before,
-              })
-            end
-            if record.consumed == true then
-              context:consumeHeldItem(combatantId)
-            end
-          end
+        elseif record.origin == "condition" then
+          context:emit("tick", { kind = "residual", key = record.key }, {
+            combatant = record.combatant,
+            key = record.key,
+            amount = record.amount,
+          })
+        else
+          context:emit(record.kind --[[@as string]], { kind = record.kind }, copyValue(record))
         end
       end
+      commitTimingHealth(state, health, ceilings)
+      sweepFaints(state)
+      if outcome.done then
+        break
+      end
+      resume = outcome.frame
     end
-    -- Residual faint markers stay internal: committing health first lets
-    -- faint settlement emit the single canonical faint per knockout.
-    -- The pass runs to completion synchronously, so no continuation
-    -- survives the turn and capture only ever sees settled state.
-    commitTimingHealth(state, health, ceilings)
     sweepExpiredEffects(state)
     sweepFaints(state)
   end

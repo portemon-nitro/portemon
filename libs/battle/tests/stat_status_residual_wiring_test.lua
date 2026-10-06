@@ -1699,4 +1699,441 @@ function T.burn_halves_physical_strikes_and_spares_special_ones()
   Assert.equal(burnedSpecial, plainSpecial, "burn spares the special strike")
 end
 
+---@param events table[] emitted events under inspection
+---@return table[] only healed/tick/faint events in sequence order
+local function residualSlice(events)
+  local kept = {}
+  for _, event in ipairs(events) do
+    if event.kind == "healed" or event.kind == "tick" or event.kind == "faint" then
+      kept[#kept + 1] = event
+    end
+  end
+  return kept
+end
+
+---@param event table<string, unknown> emitted event under inspection
+---@return string effect identity behind the event
+local function residualKey(event)
+  local payload = event.payload
+  if type(payload) == "table" and type(payload.key) == "string" then
+    return payload.key --[[@as string]]
+  end
+  local cause = event.cause
+  if type(cause) == "table" and type(cause.key) == "string" then
+    return cause.key --[[@as string]]
+  end
+  return "?"
+end
+
+---@param event table<string, unknown> emitted event under inspection
+---@return integer combatant behind the event, or -1 when it names none
+local function residualWho(event)
+  local payload = event.payload
+  if type(payload) == "table" and type(payload.combatant) == "number" then
+    return payload.combatant --[[@as integer]]
+  end
+  if type(payload) == "table" and type(payload.target) == "number" then
+    return payload.target --[[@as integer]]
+  end
+  return -1
+end
+
+---@param events table[] emitted events under inspection
+---@param combatant integer holder under inspection
+---@return string[] kind:key signatures for the holder in sequence order
+local function holderSequence(events, combatant)
+  local signatures = {}
+  for _, event in ipairs(residualSlice(events)) do
+    if residualWho(event) == combatant then
+      signatures[#signatures + 1] = event.kind .. ":" .. residualKey(event)
+    end
+  end
+  return signatures
+end
+
+---@param makeScenario fun(): table<string, unknown> fresh scenario builder under the probe
+---@return table<integer, integer> battle maximum health per combatant identity
+local function ceilingsOf(makeScenario)
+  local contracts = SessionFixture.sessionContracts()
+  local session = contracts.Battle.newSession(makeScenario(), nativeContent())
+  local snapshot = session:capture()
+  local ceilings = {}
+  for id, combatant in pairs(snapshot.combatants --[[@as table<integer, table<string, unknown>>]]) do
+    local ceiling = combatant.maxHp
+    Assert.isTrue(type(ceiling) == "number" and ceiling > 0, "the probe carries a battle maximum")
+    ceilings[id] = ceiling --[[@as integer]]
+  end
+  session:dispose()
+  return ceilings
+end
+
+---@param session table live headless session under seeding
+---@param content table frozen battle content for the restored session
+---@param key string native definition identity under seeding
+---@param id integer stable instance identity for the seeded record
+---@param combatantId integer holder combatant for the seeded instance
+---@param sourceCombatant integer causal combatant for the seeded instance
+---@return table restored session carrying the seeded record
+local function restoreWithNative(session, content, key, id, combatantId, sourceCombatant)
+  local activation = combatantOf(session:capture(), combatantId).active.activation --[[@as integer]]
+  return restoreWithEffects(session, content, {
+    effectRecord(
+      key,
+      id,
+      { kind = "active", combatant = combatantId, activation = activation },
+      { kind = "move", combatant = sourceCombatant },
+      { version = 1 }
+    ),
+  })
+end
+
+---@param answer fun(request: table): table[] choices per pending request
+---@return fun(request: table): table[] splash-only turn for both controllers
+local function splashOnly()
+  return strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  })
+end
+
+-- Gradual recovery lands before the affliction tick: a poisoned holder
+-- whose poison alone is lethal survives when its persistent holding
+-- heals first, with the heal ordered ahead of the tick.
+function T.recovery_before_affliction_decides_survival()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  ---@return table detached native battle setup record over fresh seeds
+  local function makeScenario()
+    local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+    return duelScenario({ alpha, beta }, {}, { reserve })
+  end
+  local ceiling = ceilingsOf(makeScenario)[2]
+  local restored = math.floor(ceiling / 16)
+  Assert.isTrue(restored >= 1, "the fixture ceiling carries a nonzero gradual recovery")
+
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  beta.mon.heldItem = "LEFTOVERS"
+  beta.mon.condition.effects = { { key = "toxic", version = 1, state = { counter = 0 } } }
+  beta.mon.condition.currentHp = 1
+  local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, { reserve }), content)
+
+  local frame, events = playTurn(session, splashOnly())
+  Assert.equal(frame.status, "waiting", "the battle continues past the residual turn")
+  Assert.deepEqual(
+    holderSequence(events, 2),
+    { "healed:LEFTOVERS", "tick:toxic" },
+    "the persistent holding heals before the toxic tick"
+  )
+  Assert.equal(combatantOf(session:capture(), 2).hp, 1, "the holder survives on the recovery-first margin")
+  session:dispose()
+end
+
+-- A killing drain settles before later afflictions: the seeded holder
+-- faints to its drain with exactly one faint boundary, no later poison
+-- tick, while the surviving holder keeps its own recovery phase.
+function T.lethal_seed_suppresses_the_later_affliction()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  ---@return table detached native battle setup record over fresh seeds
+  local function makeScenario()
+    local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+    return duelScenario({ alpha, beta }, {}, { reserve })
+  end
+  local ceilings = ceilingsOf(makeScenario)
+
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "LEFTOVERS"
+  alpha.mon.condition.currentHp = ceilings[1] - math.floor(ceilings[1] / 4)
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  beta.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  beta.mon.condition.currentHp = 1
+  local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, { reserve }), content)
+  local restored = restoreWithNative(session, content, "leechseed", 901, 2, 1)
+
+  local frame, events = playTurn(restored, splashOnly())
+  Assert.equal(frame.status, "waiting", "the battle continues past the faint replacement")
+  local slice = residualSlice(events)
+  local faints = 0
+  local drained = false
+  for _, event in ipairs(slice) do
+    if event.kind == "faint" then
+      faints = faints + 1
+      Assert.equal(residualWho(event), 2, "the faint names the drained holder")
+    end
+    if event.kind == "tick" and residualKey(event) == "leechseed" then
+      Assert.equal(residualWho(event), 2, "the drain names its victim")
+      drained = true
+    end
+    Assert.isTrue(
+      not (event.kind == "tick" and residualKey(event) == "poison"),
+      "the fainted holder takes no later poison tick"
+    )
+  end
+  Assert.isTrue(drained, "the killing drain ticks before settlement")
+  Assert.equal(faints, 1, "exactly one faint boundary follows the killing phase")
+  Assert.deepEqual(
+    holderSequence(events, 1),
+    { "healed:LEFTOVERS" },
+    "the surviving holder keeps its own recovery phase"
+  )
+  restored:dispose()
+end
+
+-- Residual work nests by battler before phase: each holder completes
+-- its own recovery-then-affliction sequence before the next holder
+-- begins, instead of grouping every affliction ahead of every recovery.
+function T.residual_work_nests_by_battler_before_phase()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  ---@return table detached native battle setup record over fresh seeds
+  local function makeScenario()
+    local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    return duelScenario({ alpha, beta }, {}, {})
+  end
+  local ceilings = ceilingsOf(makeScenario)
+
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  alpha.mon.condition.currentHp = math.floor(ceilings[1] * 3 / 4)
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  beta.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  beta.mon.condition.currentHp = math.floor(ceilings[2] * 3 / 4)
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local seeded = restoreWithNative(session, content, "ingrain", 901, 1, 1)
+  local activationTwo = combatantOf(seeded:capture(), 2).active.activation --[[@as integer]]
+  local rooted = restoreWithEffects(seeded, content, {
+    effectRecord(
+      "ingrain",
+      902,
+      { kind = "active", combatant = 2, activation = activationTwo },
+      { kind = "move", combatant = 2 },
+      { version = 1 }
+    ),
+  })
+
+  local frame, events = playTurn(rooted, splashOnly())
+  Assert.equal(frame.status, "waiting", "the battle continues past the nested pass")
+  local slice = residualSlice(events)
+  Assert.isTrue(#slice == 4, "each holder heals and ticks exactly once")
+  local first = residualWho(slice[1])
+  Assert.isTrue(first == 1 or first == 2, "the pass opens on a live battler")
+  local second = 3 - first
+  Assert.deepEqual(holderSequence(events, first), { "healed:ingrain", "tick:poison" }, "the opening holder finishes before the next begins")
+  Assert.deepEqual(holderSequence(events, second), { "healed:ingrain", "tick:poison" }, "the trailing holder keeps the same phase order")
+  local order = {}
+  for _, event in ipairs(slice) do
+    order[#order + 1] = residualWho(event)
+  end
+  Assert.deepEqual(order, { first, first, second, second }, "no later-battler phase interleaves")
+  rooted:dispose()
+end
+
+-- Innate answers keep their relative positions: the rooted ability
+-- heals ahead of the persistent holding on the same holder, and the
+-- consumable holding heals and spends ahead of the later affliction
+-- on its own holder.
+function T.innate_answers_keep_their_relative_positions()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  ---@return table detached native battle setup record over fresh seeds
+  local function makeScenario()
+    local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+    return duelScenario({ alpha, beta }, {}, { reserve })
+  end
+  local ceilings = ceilingsOf(makeScenario)
+  Assert.isTrue(ceilings[1] >= 16, "the fixture ceiling leaves headroom for three stacked recoveries")
+  local betaDamage = math.floor(ceilings[2] / 8)
+  local betaRestore = math.floor(ceilings[2] / 4)
+  Assert.isTrue(betaDamage >= 2 and betaRestore >= 2, "the fixture ceiling carries the consumable margin")
+
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "POISON_HEAL"
+  alpha.mon.heldItem = "LEFTOVERS"
+  alpha.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  alpha.mon.condition.currentHp = ceilings[1] - math.floor(ceilings[1] / 4)
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  beta.mon.heldItem = "SITRUS_BERRY"
+  beta.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  beta.mon.condition.currentHp = betaDamage - 1
+  local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, { reserve }), content)
+  local rooted = restoreWithNative(session, content, "ingrain", 901, 1, 1)
+
+  local frame, events = playTurn(rooted, splashOnly())
+  Assert.equal(frame.status, "waiting", "the battle continues past the answering pass")
+  Assert.deepEqual(
+    holderSequence(events, 1),
+    { "healed:ingrain", "healed:POISON_HEAL", "healed:LEFTOVERS" },
+    "rooting, ability, and gradual holding answer in position"
+  )
+  Assert.deepEqual(
+    holderSequence(events, 2),
+    { "healed:SITRUS_BERRY", "tick:poison" },
+    "the consumable holding spends ahead of the later affliction"
+  )
+  local snapshot = rooted:capture()
+  Assert.equal(
+    combatantOf(snapshot, 2).hp,
+    betaDamage - 1 + betaRestore - betaDamage,
+    "the consumable margin decides survival"
+  )
+  Assert.equal(
+    (combatantOf(snapshot, 2).mon --[[@as table<string, unknown>]]).heldItem,
+    "NONE",
+    "the spent holding is visible to later phases"
+  )
+  rooted:dispose()
+end
+
+-- The toxic count advances exactly once per completed pass: three
+-- quiet turns raise the counter by one each and deal the exact
+-- counter-scaled fraction.
+function T.toxic_count_advances_once_per_completed_pass()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  ---@return table detached native battle setup record over fresh seeds
+  local function makeScenario()
+    local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    return duelScenario({ alpha, beta }, {}, {})
+  end
+  local ceiling = ceilingsOf(makeScenario)[2]
+
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  beta.mon.condition.effects = { { key = "toxic", version = 1, state = { counter = 0 } } }
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  for turn = 1, 3 do
+    local before = combatantOf(session:capture(), 2).hp --[[@as integer]]
+    local frame, _ = playTurn(session, splashOnly())
+    Assert.equal(frame.status, "waiting", "the battle continues across the sampled passes")
+    local effects = conditionOf(session:capture(), 2).effects --[[@as table<integer, table<string, unknown>>]]
+    Assert.equal(#effects, 1, "the holder carries exactly its toxic")
+    local counter = effects[1].state.counter
+    Assert.equal(counter, turn, "the count advances exactly once per pass")
+    local expected = math.floor(ceiling / 16) * turn
+    if expected < 1 then
+      expected = 1
+    end
+    Assert.equal(before - combatantOf(session:capture(), 2).hp --[[@as integer]], expected, "the tick deals the exact scaled fraction")
+  end
+  session:dispose()
+end
+
+-- Fainting ahead of the toxic phase freezes the count: the seeded
+-- holder dies to its drain with no toxic tick and the counter it
+-- carried into the turn.
+function T.faint_before_the_toxic_phase_freezes_the_count()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  ---@return table detached native battle setup record over fresh seeds
+  local function makeScenario()
+    local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+    return duelScenario({ alpha, beta }, {}, { reserve })
+  end
+  ceilingsOf(makeScenario)
+
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  beta.mon.condition.effects = { { key = "toxic", version = 1, state = { counter = 2 } } }
+  beta.mon.condition.currentHp = 1
+  local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, { reserve }), content)
+  local seeded = restoreWithNative(session, content, "leechseed", 901, 2, 1)
+
+  local frame, events = playTurn(seeded, splashOnly())
+  Assert.equal(frame.status, "waiting", "the battle continues past the faint replacement")
+  local faints = 0
+  for _, event in ipairs(residualSlice(events)) do
+    if event.kind == "faint" then
+      faints = faints + 1
+    end
+    Assert.isTrue(
+      not (event.kind == "tick" and residualKey(event) == "toxic"),
+      "no toxic tick follows the killing drain"
+    )
+  end
+  Assert.equal(faints, 1, "exactly one faint boundary follows the killing phase")
+  local effects = conditionOf(seeded:capture(), 2).effects --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(#effects, 1, "the fainted holder still carries its toxic record")
+  Assert.equal(effects[1].state.counter, 0, "faint settlement restarts the departed holder's count")
+  seeded:dispose()
+end
+
+-- Restored sessions replay committed turns exactly once: a twin
+-- restored across a consumable spend and a mid-count toxic reaches
+-- the same events, health, holdings, counts, and random continuation
+-- as its uninterrupted sibling.
+function T.restored_sessions_replay_committed_turns_exactly_once()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = nativeContent()
+  ---@return table detached native battle setup record over fresh seeds
+  local function makeScenario()
+    local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    return duelScenario({ alpha, beta }, {}, {})
+  end
+  local ceilings = ceilingsOf(makeScenario)
+
+  ---@return table<string, unknown> fresh live session over damaging setup
+  local function makeSession()
+    local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+    alpha.mon.ability = "NONE"
+    alpha.mon.heldItem = "SITRUS_BERRY"
+    alpha.mon.condition.currentHp = math.floor(ceilings[1] * 2 / 5)
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    beta.mon.ability = "NONE"
+    beta.mon.condition.effects = { { key = "toxic", version = 1, state = { counter = 2 } } }
+    beta.mon.condition.currentHp = ceilings[2] - math.floor(ceilings[2] / 8)
+    return contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  end
+  local session = makeSession()
+  local snapshot = session:capture()
+  SessionFixture.assertPlainData(snapshot)
+  local revived = Executor.restore(snapshot, content)
+
+  local firstTrace = {}
+  local secondTrace = {}
+  for _ = 1, 2 do
+    local firstFrame, firstEvents = playTurn(session, splashOnly())
+    local secondFrame, secondEvents = playTurn(revived, splashOnly())
+    for _, event in ipairs(firstEvents) do
+      firstTrace[#firstTrace + 1] = event
+    end
+    for _, event in ipairs(secondEvents) do
+      secondTrace[#secondTrace + 1] = event
+    end
+    Assert.equal(firstFrame.status, "waiting", "the uninterrupted battle continues")
+    Assert.equal(secondFrame.status, "waiting", "the restored battle continues identically")
+  end
+  Assert.deepEqual(secondTrace, firstTrace, "restored sessions replay the committed turns exactly once")
+  Assert.deepEqual(revived:capture(), session:capture(), "restored sessions reach the same live state")
+  session:dispose()
+  revived:dispose()
+end
+
 return { tests = T }
