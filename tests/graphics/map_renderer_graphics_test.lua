@@ -3885,12 +3885,10 @@ end
 
 
 -- The production field-path regression: the same overlapping same-ID draws
--- rendered once through an owned FieldRenderer (no explicit mode) must
--- reproduce the exact DS rejection above instead of the approximate
--- accumulated result. While the field wrapper inherits the approximate
--- backend default this renders doubled alpha with a green tint.
+-- rendered once through an owned FieldRenderer in exact mode must reproduce
+-- the exact DS rejection above instead of the approximate accumulated result.
 function T.field_path_same_translucent_id_rejects_the_second_blend(scope)
-  local fieldRenderer = scope:own(FieldRenderer.new({}))
+  local fieldRenderer = scope:own(FieldRenderer.new({ translucencyMode = GxRenderer.TRANSLUCENCY_EXACT }))
   local camera = fixedCamera()
   camera.zoom = 1
   local first6, second6 = { 51, 17, 17 }, { 17, 51, 17 }

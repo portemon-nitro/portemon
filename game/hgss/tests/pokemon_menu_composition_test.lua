@@ -395,8 +395,15 @@ function T.tests.flow_factories_open_through_the_borrowed_manifests(context)
   end
 end
 
-function T.tests.box_summary_moves_publish_to_the_selected_box()
-  local versionId = "heartgold"
+function T.tests.box_summary_moves_publish_to_the_selected_box(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("box summary moves need a ready versioned cache", 0)
+  end
+  local versionId = versions[1]
   local cacheFs = CacheFs.forVersion(versionId)
   local mons = openMons(0xC00517)
   Assert.isTrue(

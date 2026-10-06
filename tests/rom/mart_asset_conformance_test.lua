@@ -229,7 +229,7 @@ function T.compiled_presentation_is_complete_and_cache_readiness_checks_every_im
 
   local paths = MartCache.referencedPaths(manifest)
   Assert.isTrue(#paths > 0, "the presentation references its realized images")
-  backend:remove("heartgold/" .. paths[1])
+  backend:remove(romFs:version() .. "/" .. paths[1])
   Assert.isFalse(MartCache.isReady(cache, bundle.marker), "readiness fails when a referenced image is missing")
 end
 
@@ -435,7 +435,7 @@ function T.failed_rebuild_and_truncated_manifest_leave_no_usable_partial_family(
   local originalWrite = backend.write
   local stagedWriteAttempts = 0
   backend.write = function(self, path, data)
-    if path:match("^staging/heartgold/") then
+    if path:match("^staging/" .. romFs:version() .. "/") then
       stagedWriteAttempts = stagedWriteAttempts + 1
       return false
     end

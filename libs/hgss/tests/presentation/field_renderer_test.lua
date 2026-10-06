@@ -337,10 +337,9 @@ function T.owning_wrapper_releases_its_constructed_backend_exactly_once()
 end
 
 -- The HGSS field wrapper owns the backend translucency policy: an owned
--- backend with no explicit mode must select the exact DS compositor, while an
--- explicit approximate choice and the reusable backend default stay
--- approximate. The backend already publishes its resolved mode, so no new
--- product seam is needed to observe it.
+-- backend with no explicit mode inherits the reusable approximate default,
+-- while an explicit exact choice still wins. The backend already publishes
+-- its resolved mode, so no new product seam is needed to observe it.
 local function headlessBackendOptions(extra)
   local options = {
     graphics = {
