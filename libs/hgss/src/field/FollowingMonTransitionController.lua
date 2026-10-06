@@ -4,9 +4,6 @@
 -- partner exactly once, advances the source clip to completion, and retires.
 -- Instances advance in fixed simulation ticks and never touch save state.
 
----@class FollowingMonAppearanceOwner
----@field repositionRelativeToPlayer fun(self: FollowingMonAppearanceOwner, offsetSelector: integer, directionRaw: integer)
-
 ---@class FollowingMonTransitionController
 ---@field actors table<string, unknown>
 ---@field definition table<string, unknown>
@@ -17,8 +14,6 @@
 ---@field modelFactory fun(part: string, descriptor: table<string, unknown>): table<string, unknown>
 ---@field instances table<string, unknown>[]
 ---@field _pendingStart boolean accepted request retained until a partner is published
----@field _pendingTailTicks integer tail updates for a pending appearance request
----@field _pendingCompletion fun()|nil source-owned operation after the appearance tail
 local FollowingMonTransitionController = {}
 FollowingMonTransitionController.__index = FollowingMonTransitionController
 
@@ -95,8 +90,6 @@ function FollowingMonTransitionController.new(options)
     modelFactory = options.modelFactory,
     instances = {},
     _pendingStart = false,
-    _pendingTailTicks = 0,
-    _pendingCompletion = nil,
   }, FollowingMonTransitionController)
 end
 
@@ -137,10 +130,8 @@ end
 -- is available; model allocation failures propagate after releasing partial
 -- state, exactly as the public start observes them.
 ---@param self FollowingMonTransitionController
----@param tailTicks integer
----@param onComplete fun()|nil
 ---@return boolean
-local function tryStartOnCurrentPartner(self, tailTicks, onComplete)
+local function tryStartOnCurrentPartner(self)
   local partnerId = self.actors:partnerId()
   if partnerId == nil then
     return false
@@ -181,9 +172,6 @@ local function tryStartOnCurrentPartner(self, tailTicks, onComplete)
     animatedActive = false,
     frame = 0,
     frameCount = self.frameCount,
-    tailTicks = tailTicks,
-    tailAge = 0,
-    onComplete = onComplete,
   }
   if liveTarget(self, instance) == nil then
     release(instance)
@@ -204,49 +192,18 @@ function FollowingMonTransitionController:start()
     self._pendingStart = true
     return true
   end
-  return tryStartOnCurrentPartner(self, 0, nil)
-end
-
--- Starts the source's asynchronous follower appearance: the generated
--- transition clip completes, holds for twenty fixed updates, then asks the
--- following-mon owner to snap/settle the live partner.
----@param follower FollowingMonAppearanceOwner
----@return boolean
-function FollowingMonTransitionController:startAppearance(follower)
-  assert(type(follower) == "table" and type(follower.repositionRelativeToPlayer) == "function")
-  local function onComplete()
-    follower:repositionRelativeToPlayer(4, 0)
-  end
-  local partnerId = self.actors:partnerId()
-  if partnerId == nil or self.actors:getById(partnerId) == nil then
-    self._pendingTailTicks = 20
-    self._pendingCompletion = onComplete
-    return true
-  end
-  return tryStartOnCurrentPartner(self, 20, onComplete)
+  return tryStartOnCurrentPartner(self)
 end
 
 function FollowingMonTransitionController:updateFixed()
   if self._pendingStart and self.actors:partnerId() ~= nil then
-    local ok, bound = pcall(tryStartOnCurrentPartner, self, 0, nil)
+    local ok, bound = pcall(tryStartOnCurrentPartner, self)
     if not ok then
       self._pendingStart = false
       error(bound, 0)
     end
     if bound then
       self._pendingStart = false
-    end
-  end
-  if self._pendingCompletion ~= nil and self.actors:partnerId() ~= nil then
-    local ok, bound = pcall(tryStartOnCurrentPartner, self, self._pendingTailTicks, self._pendingCompletion)
-    if not ok then
-      self._pendingTailTicks = 0
-      self._pendingCompletion = nil
-      error(bound, 0)
-    end
-    if bound then
-      self._pendingTailTicks = 0
-      self._pendingCompletion = nil
     end
   end
   for index = #self.instances, 1, -1 do
@@ -260,17 +217,7 @@ function FollowingMonTransitionController:updateFixed()
       instance.fieldX = tracked.fieldX
       instance.fieldZ = tracked.fieldZ
       instance.worldY = current:getWorldPosition().y
-      if instance.phase == "tail" then
-        instance.tailAge = instance.tailAge + 1
-        if instance.tailAge >= instance.tailTicks then
-          local ok, err = pcall(instance.onComplete)
-          release(instance)
-          table.remove(self.instances, index)
-          if not ok then
-            error(err, 0)
-          end
-        end
-      elseif instance.phase == "prelude" then
+      if instance.phase == "prelude" then
         instance.preludeAge = instance.preludeAge + 1
         if instance.preludeAge >= self.preludeTicks then
           instance.phase = "animated"
@@ -284,12 +231,8 @@ function FollowingMonTransitionController:updateFixed()
         instance.animatedInstance:updateFixed()
         instance.frame = instance.frame + 1
         if instance.animatedInstance:isComplete() then
-          if instance.tailTicks > 0 then
-            instance.phase = "tail"
-          else
-            release(instance)
-            table.remove(self.instances, index)
-          end
+          release(instance)
+          table.remove(self.instances, index)
         end
       end
     end
@@ -318,35 +261,8 @@ function FollowingMonTransitionController:status()
   return { instances = instances }
 end
 
----@return boolean
-function FollowingMonTransitionController:isAppearanceSettled()
-  if self._pendingCompletion ~= nil then
-    return false
-  end
-  for _, instance in ipairs(self.instances) do
-    if instance.onComplete ~= nil then
-      return false
-    end
-  end
-  return true
-end
-
-function FollowingMonTransitionController:cancelAppearance()
-  self._pendingTailTicks = 0
-  self._pendingCompletion = nil
-  for index = #self.instances, 1, -1 do
-    local instance = self.instances[index]
-    if instance.onComplete ~= nil then
-      release(instance)
-      table.remove(self.instances, index)
-    end
-  end
-end
-
 function FollowingMonTransitionController:clear()
   self._pendingStart = false
-  self._pendingTailTicks = 0
-  self._pendingCompletion = nil
   for index = #self.instances, 1, -1 do
     release(self.instances[index])
     self.instances[index] = nil
