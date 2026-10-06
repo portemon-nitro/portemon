@@ -245,6 +245,8 @@ function StorageScreenState:_updateEditor(events)
     if event.type == "cancel" then
       self._editor = nil
       return
+    elseif event.type == "pointer_cancel" then
+      -- Pointer capture cancellation does not change the local draft.
     elseif event.type == "submit" then
       submit()
       if self._editor == nil then

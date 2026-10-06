@@ -108,7 +108,10 @@ PcSources.mailboxUiMembers = { character = 7, palette = 10, cell = 8, animation 
 PcSources.photoAlbumSpriteMembers = { character = 1, palette = 0, cell = 2, animation = 3 }
 -- Source prop policy from overlay_02_02248728.s and src/unk_02054648.c.
 PcSources.terminal = {
-  candidateBuildModelMembers = { 33, 138 },
+  buildModels = {
+    { archiveAlias = "interior_build_models", memberId = 33 },
+    { archiveAlias = "interior_build_models", memberId = 138 },
+  },
   slots = {
     [0] = { role = "terminal.on", playMode = "forward" },
     [1] = { role = "terminal.off", playMode = "forward" },

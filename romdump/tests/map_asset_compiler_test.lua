@@ -36,6 +36,7 @@ local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
 local MapRomFixture = require("tests.support.MapRomFixture")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
+local PcSources = require("romdump.src.config.PcSources")
 local NB = require("tests.support.NitroBuilder")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
 local PngWriter = require("libs.assets.src.PngWriter")
@@ -1018,6 +1019,32 @@ function T.canonical_map_is_ready_for_its_precomputed_marker()
     "published map is ready for the marker used to compile it"
   )
   Assert.equal(bundle.marker, plan.expectedMarker)
+end
+
+function T.pc_terminal_role_requires_the_source_building_archive()
+  local terminalSelector = assert(PcSources.terminal.buildModels[1])
+  Assert.equal("interior_build_models", terminalSelector.archiveAlias)
+  local terminalMemberId = terminalSelector.memberId
+
+  local romFs, members = MapRomFixture.build({
+    areaTypeRaw = 1,
+    buildings = LandDataBuilder.buildingRecord(terminalMemberId),
+  })
+  members.exterior_build_models = {
+    [terminalMemberId] = members.interior_build_models[MapRomFixture.BUILDING_MODEL_MEMBER_ID],
+    [MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID] = members.interior_build_models[MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID],
+  }
+  members.exterior_build_anim_list = {
+    [terminalMemberId] = members.interior_build_anim_list[MapRomFixture.BUILDING_MODEL_MEMBER_ID],
+    [MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID] = members.interior_build_anim_list[MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID],
+  }
+
+  local bundle = assert(MapAssetCompiler.compile(romFs, MapRomFixture.MAP_SYMBOL))
+  Assert.equal("exterior_build_models", bundle.dependencies.buildingArchive)
+  local placement = assert(bundle.scene.buildingInstances[1])
+  local descriptor = assert(bundle.models[placement.modelKey])
+  Assert.equal(terminalMemberId, descriptor.memberId)
+  Assert.isNil(placement.semanticRole, "the same member number from the outdoor archive is not a PC terminal")
 end
 
 function T.indoor_map_compilation_keeps_its_existing_readiness_path()

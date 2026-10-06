@@ -18,14 +18,17 @@ function T.real_map_compilation_marks_pc_terminal_placements_by_semantic_role(ro
     MapAssetCompiler.compile(romFs, "MAP_CHERRYGROVE_POKECENTER_1F"),
     "the source Pokecenter map compiles"
   )
-  local candidates = {}
-  for _, memberId in ipairs(PcSources.terminal.candidateBuildModelMembers) do
-    candidates[memberId] = true
-  end
   local matched = 0
   for _, placement in ipairs(bundle.scene.buildingInstances) do
     local descriptor = assert(bundle.models[placement.modelKey], "the placement model was compiled")
-    if candidates[descriptor.memberId] then
+    local isTerminal = false
+    for _, selector in ipairs(PcSources.terminal.buildModels) do
+      if bundle.dependencies.buildingArchive == selector.archiveAlias and descriptor.memberId == selector.memberId then
+        isTerminal = true
+        break
+      end
+    end
+    if isTerminal then
       matched = matched + 1
       Assert.equal(
         placement.semanticRole,
@@ -59,7 +62,7 @@ function T.real_source_compiles_all_wallpaper_and_stationery_variants(romFs, _)
     end
   end
   Assert.isFalse(PcAssetSchema.isValidManifest(withoutTerminal), "the schema requires source terminal metadata")
-  Assert.isNil(manifest.terminal.candidateBuildModelMembers, "source model selectors remain producer-side")
+  Assert.isNil(manifest.terminal.buildModels, "source model selectors remain producer-side")
   local bank279 = assert(manifest.text.banks[279], "the full source landmark text bank is published")
   Assert.isTrue(type(manifest.text.banks[0]) == "table", "the Photo Album UI source text bank is published")
   Assert.isTrue(PcAssetSchema.isValidManifest(manifest), "the complete PC family passes its strict schema")
