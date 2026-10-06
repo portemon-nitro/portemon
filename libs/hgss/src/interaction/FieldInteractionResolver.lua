@@ -55,7 +55,7 @@ FieldInteractionResolver.__index = FieldInteractionResolver
 ---@field targetFieldZ integer
 ---@field playerFacing FieldDirection
 ---@field scriptBankId integer?
----@field scriptId integer
+---@field scriptId integer|string
 ---@field object InteractionObjectIdentity?
 ---@field background InteractionBackgroundIdentity?
 ---@field tick integer

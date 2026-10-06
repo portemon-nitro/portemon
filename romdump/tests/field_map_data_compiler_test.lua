@@ -214,6 +214,50 @@ function T.normalizes_retail_unbound_script_markers()
   Assert.equal(bundle.field.events.objects[1].scriptId, 0)
 end
 
+function T.canonicalizes_std_script_sentinels_to_their_global_identity_regardless_of_the_map_script_bank()
+  local member = Builder.build({
+    backgroundEvents = {
+      {
+        scriptId = 2800, -- _std_apricorn_tree (src/script_manager.c sScriptBankMapping)
+        type = 1,
+        x = 0,
+        z = 0,
+        y = 0,
+        direction = 4,
+      },
+    },
+    objectEvents = {
+      {
+        objectEventId = 8,
+        spriteId = 87,
+        movement = 0,
+        type = 0,
+        eventFlag = 1081,
+        scriptId = 7000, -- std_itemball_r29_potion (src/script_manager.c sScriptBankMapping)
+        facingDirection = 0,
+        param0 = 0,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 0,
+        z = 0,
+        y = 0,
+      },
+    },
+  })
+  local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, function()
+    return "hash"
+  end, function()
+    return "dependency"
+  end))
+  -- The map's own scriptBankId (60's scriptsMemberId) must play no part: a std
+  -- sentinel addresses a different, global scr_seq member than the map's own.
+  Assert.equal(bundle.field.events.background[1].scriptId, "common.apricorn_tree")
+  Assert.equal(bundle.field.events.objects[1].scriptId, "common.itemball_r29_potion")
+end
+
 function T.publishes_semantic_object_movement_without_raw_source_movement()
   local member = Builder.build({
     objectEvents = {

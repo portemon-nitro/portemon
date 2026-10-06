@@ -1,6 +1,10 @@
 -- Runtime interaction bindings derive ordinary map script identities from
 -- the generated map's script bank and raw source script id. The raw id is
 -- one-based; the shared project formatter receives the zero-based index.
+-- A std-script sentinel (one that addresses a global scr_seq member
+-- unrelated to the map's own bank) arrives already canonicalized to its
+-- public id by the field-map producer, so a string intent script id is
+-- passed through rather than re-derived.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
@@ -24,6 +28,16 @@ end
 ---@return string|nil
 local function scriptIdFor(intent)
   local rawScriptId = intent.scriptId
+  if type(rawScriptId) == "string" then
+    if rawScriptId == "" then
+      Errors.raise(
+        INVALID_INTENT,
+        "interactable intent has an empty already-resolved script id",
+        { mapId = intent.mapId }
+      )
+    end
+    return rawScriptId
+  end
   if rawScriptId == 0 then
     return Bindings.CANONICAL_INERT_SCRIPT
   end

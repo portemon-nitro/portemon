@@ -20,14 +20,24 @@ local HgssSoundplate = require("romdump.src.digest.field.HgssSoundplate")
 local Hashing = require("romdump.src.digest.Hashing")
 local fieldAudio = require("romdump.src.reference.hgss.field_audio")
 local ScriptHeader = require("romdump.src.digest.script.ScriptHeader")
+local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 
 local FieldMapDataCompiler = {}
 
+local STANDARD_SCRIPTS = SourceCatalog.catalog()
+
 -- The retail zone-event format uses 0xFFFF as a second unbound script
 -- marker. Generated field data uses zero as its single no-script value so
 -- runtime binding and interaction audits do not need to interpret ROM data.
+--
+-- A raw event script id in a std-script sentinel range (`src/script_manager.c`
+-- `sScriptBankMapping`, e.g. item balls, apricorn trees) addresses a global
+-- scr_seq member unrelated to this map's own scriptsMemberId. Canonicalizing
+-- it to its public `common.<name>` id here means runtime interaction binding
+-- never derives a script identity from a raw source number for these events,
+-- and never needs the decomp-derived std-script catalog to resolve one.
 local NO_SCRIPT_ID = 0xFFFF
 
 ---@param decoded table<string, unknown> decoded zone-event member
@@ -36,6 +46,8 @@ local function normalizeUnboundScripts(decoded)
     for _, event in ipairs(events) do
       if event.scriptId == NO_SCRIPT_ID then
         event.scriptId = 0
+      elseif STANDARD_SCRIPTS.namesById[event.scriptId] ~= nil then
+        event.scriptId = SourceCatalog.commonPublicId(STANDARD_SCRIPTS, event.scriptId)
       end
     end
   end

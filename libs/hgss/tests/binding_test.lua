@@ -103,6 +103,19 @@ T["zero raw script id resolves to the inert script"] = function()
   Assert.equal(resolved.scriptId, Bindings.CANONICAL_INERT_SCRIPT)
 end
 
+-- A std-script sentinel (item ball, apricorn tree, ...) addresses a global
+-- scr_seq member unrelated to the map's own bank, so the field-map producer
+-- hands the binding layer an already-resolved canonical id; the binding
+-- layer passes it through rather than re-deriving it from the map's bank.
+T["already-canonical std script id intent passes through unchanged"] = function()
+  local bindings = Bindings.new()
+  local hit = assert(
+    bindings:resolveIntent(objectIntent(60, "obj_T29_itemball1", "north", "common.itemball_r29_potion"), "north")
+  )
+  Assert.equal(hit.trigger.scriptId, "common.itemball_r29_potion")
+  Assert.equal(hit.scriptId, "common.itemball_r29_potion")
+end
+
 -- 10. The interaction client starts a bound script in the trigger tick.
 T["client starts script in trigger tick"] = function()
   local p = platform()
