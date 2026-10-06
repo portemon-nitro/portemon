@@ -1016,6 +1016,32 @@ function State:_activeList(layout)
   return nil
 end
 
+---@param lists table<string, unknown>
+---@param targetId string
+---@return table<string, unknown>?
+local function findListByRowTarget(lists, targetId)
+  for _, list in pairs(lists) do
+    for _, rowTarget in ipairs(list.rowTargets) do
+      if rowTarget == targetId then
+        return list
+      end
+    end
+  end
+  return nil
+end
+
+---@param lists table<string, unknown>
+---@param viewportId string
+---@return table<string, unknown>?
+local function findListByViewportId(lists, viewportId)
+  for _, list in pairs(lists) do
+    if list.viewportId == viewportId then
+      return list
+    end
+  end
+  return nil
+end
+
 ---@param list table<string, unknown>
 ---@return string? cursor
 function State:_reconcileListCursor(list)
@@ -1028,6 +1054,54 @@ function State:_reconcileListCursor(list)
   cursor = list.rowTargets[1]
   self.controller:setListCursor(list.id, cursor)
   return cursor
+end
+
+---@param list table<string, unknown>
+---@param offset number
+function State:_storeListOffset(list, offset)
+  if list.id == "location:map-list" then
+    self.controller.locationMapOffset = offset
+  elseif list.id == "flags" or list.id == "value:choice" then
+    if list.id == "value:choice" then
+      self.preserveChoiceScroll = true
+    end
+    self.controller.scrollOffsets[list.id] = offset
+  else
+    error("unknown generic list " .. tostring(list.id), 2)
+  end
+end
+
+---@param list table<string, unknown>
+---@param viewport table<string, unknown>
+---@param offset number
+---@return string? cursor
+function State:_clampListCursorToVisible(list, viewport, offset)
+  if #list.rowTargets == 0 then
+    self.controller:setListCursor(list.id, nil)
+    return nil
+  end
+  local firstIndex, lastIndex =
+    ScrollViewport.visibleRange(offset, viewport.clip.height, viewport.rowExtent, viewport.gap, #list.rowTargets)
+  local cursor = self.controller:listCursor(list.id)
+  local cursorIndex
+  for index, targetId in ipairs(list.rowTargets) do
+    if targetId == cursor then
+      cursorIndex = index
+      break
+    end
+  end
+  if cursorIndex ~= nil and firstIndex <= lastIndex then
+    if cursorIndex < firstIndex then
+      cursorIndex = firstIndex
+    elseif cursorIndex > lastIndex then
+      cursorIndex = lastIndex
+    end
+  elseif cursorIndex == nil then
+    cursorIndex = firstIndex <= lastIndex and firstIndex or 1
+  end
+  local target = assert(list.rowTargets[assert(cursorIndex)], "visible cursor stays within its rows")
+  self.controller:setListCursor(list.id, target)
+  return target
 end
 
 function State:_syncChoiceSelection(list, targetId)
@@ -1168,7 +1242,10 @@ function State:_filterFocusedList(list, rowIndex, operation, text)
   end
 end
 
-function State:_handleListConfirm(list, rowIndex)
+---@param list table<string, unknown>
+---@param rowIndex integer?
+---@param layout table<string, unknown>?
+function State:_handleListConfirm(list, rowIndex, layout)
   if rowIndex ~= nil then
     self:_dispatchIntent(self.controller:press("confirm"))
     return
@@ -1187,6 +1264,26 @@ function State:_handleListConfirm(list, rowIndex)
   end
   self.controller:setListCursor(list.id, cursor)
   self.controller:setFocus(cursor)
+  local resolved = layout or self:_resolve(self:_snapshot()).content.layout
+  local viewport = assert(resolved.viewports[list.viewportId], "list confirmation needs its scroll viewport")
+  local cursorIndex
+  for index, targetId in ipairs(list.rowTargets) do
+    if targetId == cursor then
+      cursorIndex = index
+      break
+    end
+  end
+  local revealed = ScrollViewport.clamp(
+    ScrollViewport.reveal(
+      viewport.offset,
+      viewport.clip.height,
+      (assert(cursorIndex, "entered cursor stays within its rows") - 1) * viewport.rowExtent,
+      viewport.rowExtent
+    ),
+    viewport.contentExtent,
+    viewport.clip.height
+  )
+  self:_storeListOffset(list, revealed)
 end
 
 ---@param preferred string?
@@ -1535,42 +1632,6 @@ function State:_performDeferred(action)
     self.locationActionStatus = nil
     self.errorMessage = nil
     return
-  elseif action.kind == "location-map-move" then
-    local view = self:_snapshot()
-    local plan = self:_resolve(view)
-    local layout = plan.content.layout
-    local maps = assert(view.location).maps
-    if #maps == 0 then
-      self.controller:setFocus("location:map-picker")
-      return
-    end
-    if action.direction == "up" or action.direction == "down" then
-      local currentIndex
-      for index, map in ipairs(maps) do
-        if self.controller.focus == "location:map:" .. map.mapId then
-          currentIndex = index
-          break
-        end
-      end
-      local delta = action.direction == "down" and 1 or -1
-      if currentIndex == nil then
-        currentIndex = delta > 0 and 0 or (#maps + 1)
-      end
-      currentIndex = math.max(1, math.min(#maps, currentIndex + delta))
-      self.controller:setListCursor("location:map-list", "location:map:" .. maps[currentIndex].mapId)
-      self.controller:setFocus("location:map:" .. maps[currentIndex].mapId)
-      local viewport = assert(layout.viewports["location:map-list"])
-      self.controller.locationMapOffset = ScrollViewport.clamp(
-        ScrollViewport.reveal(
-          viewport.offset,
-          viewport.clip.height,
-          (currentIndex - 1) * viewport.rowExtent,
-          viewport.rowExtent
-        ),
-        viewport.contentExtent,
-        viewport.clip.height
-      )
-    end
   elseif action.kind == "location-cursor-move" then
     local width, height = self:_locationGridSize()
     self.controller:moveLocationCursor(action.direction, width, height)
@@ -2095,7 +2156,6 @@ function State:_dispatchIntent(intent)
   elseif
     intent.kind == "location-page"
     or intent.kind == "location-map-select"
-    or intent.kind == "location-map-move"
     or intent.kind == "location-cursor-move"
     or intent.kind == "location-pan"
     or intent.kind == "select_tile"
@@ -2234,6 +2294,15 @@ function State:_pointer(events)
       end
     end
     local intent = self.controller:pointer(event)
+    if event.type == "pointer_down" and event.targetId ~= nil and self.controller.focus == event.targetId then
+      local lists = plan.content.layout.lists
+      if type(lists) == "table" then
+        local list = findListByRowTarget(lists, event.targetId)
+        if list ~= nil then
+          self.controller:setListCursor(list.id, event.targetId)
+        end
+      end
+    end
     if not (event.type == "pointer_up" and heldNumberTarget ~= nil) then
       self:_dispatchIntent(intent)
     end
@@ -2366,7 +2435,7 @@ function State:_consumeUiInput(events)
         end
       elseif self:_activeList(currentLayout) ~= nil then
         local list, rowIndex = self:_activeList(currentLayout)
-        self:_handleListConfirm(assert(list), rowIndex)
+        self:_handleListConfirm(assert(list), rowIndex, currentLayout)
       elseif self.valueEditor then
         local confirmTarget = currentLayout.targets.confirm
         if self.valueEditor:snapshot().kind == "choice" and confirmTarget and not confirmTarget.activationEnabled then
@@ -2427,7 +2496,7 @@ function State:keypressed(key, _, isrepeat)
     local choiceList = editorList ~= nil and editorList.id == "value:choice" and editorList or nil
     if key == "return" or key == "kpenter" then
       if choiceList ~= nil then
-        self:_handleListConfirm(choiceList, editorRow)
+        self:_handleListConfirm(choiceList, editorRow, editorLayout)
       else
         local submitted, reason = self.valueEditor:submit()
         self.editorFeedback = submitted and nil or reason
@@ -2592,30 +2661,22 @@ function State:_setScrollOffset(view, layout, viewportId, offset)
   assert(layout.scrollOwner == viewportId, "scroll intent must belong to the active owner")
   local viewport = assert(layout.viewports[viewportId], "active scroll owner needs a published viewport")
   local clamped = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
-  if viewportId == "location:map-list" then
+  local list
+  if type(layout.lists) == "table" then
+    list = findListByViewportId(layout.lists, viewportId)
+  end
+  if list ~= nil then
+    self:_storeListOffset(list, clamped)
+    self:_clampListCursorToVisible(list, viewport, clamped)
+  elseif viewportId == "location:map-list" then
     self.controller.locationMapOffset = clamped
-    local wideLocation = layout.locationGrid ~= nil and layout.viewports["location:map-list"] ~= nil
-    if self.controller.section == "Location" and wideLocation then
-      local firstIndex = ScrollViewport.visibleRange(
-        clamped,
-        viewport.clip.height,
-        viewport.rowExtent,
-        viewport.gap,
-        #view.location.maps
-      )
-      local targetId = viewport.rowTargets[firstIndex]
-      if targetId ~= nil then
-        self.controller:setListCursor("location:map-list", targetId)
-        self.controller:setFocus(targetId)
-      end
+  else
+    if viewportId == "value:choice" then
+      self.preserveChoiceScroll = true
     end
-    return
+    local purpose = assert(scrollPurpose(viewportId, view))
+    self.controller.scrollOffsets[purpose] = clamped
   end
-  if viewportId == "value:choice" then
-    self.preserveChoiceScroll = true
-  end
-  local purpose = assert(scrollPurpose(viewportId, view))
-  self.controller.scrollOffsets[purpose] = clamped
 end
 
 function State:wheelmoved(_, y)

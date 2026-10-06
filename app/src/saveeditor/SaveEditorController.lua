@@ -159,13 +159,7 @@ function Controller:press(action)
       end
       return { kind = "back" }
     elseif action == "up" or action == "down" or action == "left" or action == "right" then
-      local mapListTarget = self.focus:match("^location:map:") ~= nil
-        or self.focus == "location:map-picker"
-        or self.focus == "location:map-back"
       local gridTarget = self.focus == "location:grid" or self.focus:match("^location:tile:") ~= nil
-      if self.locationFocus == "map-list" and mapListTarget and (action == "up" or action == "down") then
-        return { kind = "location-map-move", direction = action }
-      end
       if self.locationFocus == "grid" and gridTarget then
         return { kind = "location-cursor-move", direction = action }
       end
