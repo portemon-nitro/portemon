@@ -6,6 +6,7 @@ local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local Experience = require("libs.mons.src.gen4.Experience")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
+local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 
 ---@class SaveEditorMonDraftOptions
 ---@field mode "edit"|"add"
@@ -34,6 +35,18 @@ local Stats = require("libs.mons.src.gen4.Stats")
 ---@field private _projectionCache { revision: integer, value: SaveEditorMonProjection }?
 local SaveEditorMonDraft = {}
 SaveEditorMonDraft.__index = SaveEditorMonDraft
+
+-- The single app-local Gen4 PP-allowance formula: base plus one fifth of base
+-- per PP Up. Legality ceilings live in the domain owner; this helper only
+-- bounds what the always-editing UI offers and stores.
+---@param definition table<string, unknown>
+---@param ppUps integer
+---@return integer
+function SaveEditorMonDraft.maxMovePp(definition, ppUps)
+  assert(type(definition) == "table" and type(definition.basePp) == "number")
+  assert(type(ppUps) == "number" and ppUps % 1 == 0 and ppUps >= 0 and ppUps <= 3)
+  return definition.basePp + math.floor(definition.basePp * ppUps / 5)
+end
 
 local UINT8_MAX = 255
 local UINT16_MAX = 65535
@@ -145,6 +158,22 @@ local function condition(record)
   return record.condition --[[@as table<string, unknown>]]
 end
 
+local projectRecord
+
+-- Current derived maximum HP through the draft projection, or nil while the
+-- candidate cannot project (another field still needs correction). Callers
+-- skip health adjustment in that case instead of clamping from guessed stats.
+---@param record table<string, unknown>
+---@param context table<string, unknown>
+---@return integer?
+local function projectedMaxHp(record, context)
+  local projection = projectRecord(record, context)
+  if projection.stats == nil then
+    return nil
+  end
+  return projection.stats.hp
+end
+
 ---@param fieldId string
 ---@return string?
 local function dateField(fieldId)
@@ -220,10 +249,75 @@ function SaveEditorMonDraft:creationCandidate()
   return copy(self._creationCandidate) --[[@as table<string, unknown>?]]
 end
 
+---@param record table<string, unknown>
+---@param context table<string, unknown>
+---@param oldMaxHp integer?
+local function refreshHp(record, context, oldMaxHp)
+  local values = record.condition
+  if type(values) ~= "table" then
+    return
+  end
+  local currentHp = values.currentHp
+  if type(currentHp) ~= "number" or currentHp % 1 ~= 0 then
+    return
+  end
+  local newMaxHp = projectedMaxHp(record, context)
+  if oldMaxHp == nil or newMaxHp == nil then
+    return
+  end
+  if currentHp < 0 or currentHp > oldMaxHp then
+    return
+  end
+  values.currentHp = HgssMonService.adjustHpForMaxChange(oldMaxHp, newMaxHp, currentHp)
+end
+
+---@param context table<string, unknown>
+---@param speciesKey string
+---@return table<string, unknown>?
+local function catalogSpecies(context, speciesKey)
+  local ok, species = pcall(context.catalog.species, context.catalog, speciesKey)
+  if not ok then
+    if Errors.is(species) then
+      return nil
+    end
+    error(species, 0)
+  end
+  return species
+end
+
+---@param form table<string, unknown>
+---@param personality integer
+---@return string?
+local function fallbackAbility(form, personality)
+  local abilities = form.abilities
+  if type(abilities) ~= "table" or #abilities == 0 then
+    return nil
+  end
+  if #abilities > 2 then
+    return abilities[1]
+  end
+  return abilities[Personality.abilitySlot(#abilities, personality)]
+end
+
+---@param record table<string, unknown>
+---@param form table<string, unknown>
+---@return boolean
+local function abilityPermitted(record, form)
+  for _, key in ipairs(form.abilities) do
+    if key == record.ability then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param fieldId string
 ---@param value unknown
 ---@return boolean
 function SaveEditorMonDraft:setScalar(fieldId, value)
+  if fieldId == "experience" then
+    return self:setExperience(value)
+  end
   local kind = SCALAR_TYPES[fieldId]
   if kind == nil or not hasPrimitiveType(value, kind) then
     return false
@@ -246,6 +340,164 @@ function SaveEditorMonDraft:setScalar(fieldId, value)
   return true
 end
 
+-- Level is represented solely by canonical cumulative EXP: the threshold of
+-- the requested level on the current growth curve. Met level tracks the
+-- edited level so the candidate stays coherent.
+---@param level integer
+---@return boolean
+function SaveEditorMonDraft:setLevel(level)
+  if type(level) ~= "number" or level % 1 ~= 0 or level < 1 or level > Stats.MAX_LEVEL then
+    return false
+  end
+  local species = catalogSpecies(self._context, self._record.species)
+  if species == nil then
+    return false
+  end
+  local ok, curve = pcall(self._context.catalog.growthCurve, self._context.catalog, species.growthCurve)
+  if not ok then
+    if Errors.is(curve) then
+      return false
+    end
+    error(curve, 0)
+  end
+  local threshold = Experience.expFor(curve, level)
+  if self._record.experience == threshold and self._record.met.level == level then
+    return true
+  end
+  local oldMaxHp = projectedMaxHp(self._record, self._context)
+  self._record.experience = threshold
+  self._record.met.level = level
+  refreshHp(self._record, self._context, oldMaxHp)
+  self:_changed()
+  return true
+end
+
+-- Direct EXP edits keep health coherent and track met level while the new
+-- total still maps to a level; beyond the level-100 entry the candidate
+-- stays invalid until corrected.
+---@param value unknown
+---@return boolean
+function SaveEditorMonDraft:setExperience(value)
+  if not hasPrimitiveType(value, "u32") then
+    return false
+  end
+  local species = catalogSpecies(self._context, self._record.species)
+  if species == nil then
+    return false
+  end
+  local ok, curve = pcall(self._context.catalog.growthCurve, self._context.catalog, species.growthCurve)
+  if not ok then
+    if Errors.is(curve) then
+      return false
+    end
+    error(curve, 0)
+  end
+  if self._record.experience == value then
+    return true
+  end
+  local oldMaxHp = projectedMaxHp(self._record, self._context)
+  self._record.experience = value
+  if value <= curve[Stats.MAX_LEVEL] then
+    self._record.met.level = Experience.level(curve, value)
+  end
+  refreshHp(self._record, self._context, oldMaxHp)
+  self:_changed()
+  return true
+end
+
+-- Species edits preserve the exact numeric EXP and repair form/ability
+-- validity for the new species; met level and health track the preserved
+-- total under the new growth curve and base stats.
+---@param speciesKey string
+---@return boolean
+function SaveEditorMonDraft:setSpecies(speciesKey)
+  if type(speciesKey) ~= "string" then
+    return false
+  end
+  local species = catalogSpecies(self._context, speciesKey)
+  if species == nil then
+    return false
+  end
+  local formIds = {}
+  for formId in pairs(species.forms) do
+    formIds[#formIds + 1] = formId
+  end
+  if #formIds == 0 then
+    return false
+  end
+  table.sort(formIds)
+  local record = self._record
+  local old = { species = record.species, form = record.form, ability = record.ability }
+  local oldMaxHp = projectedMaxHp(record, self._context)
+  record.species = speciesKey
+  local formKept = false
+  for _, formId in ipairs(formIds) do
+    if formId == record.form then
+      formKept = true
+      break
+    end
+  end
+  if not formKept then
+    record.form = formIds[1]
+  end
+  local formOk, form = pcall(self._context.catalog.form, self._context.catalog, speciesKey, record.form)
+  if not formOk then
+    if Errors.is(form) then
+      record.species, record.form, record.ability = old.species, old.form, old.ability
+      return false
+    end
+    error(form, 0)
+  end
+  if not abilityPermitted(record, form) then
+    local repaired = fallbackAbility(form, record.personality)
+    if repaired == nil then
+      record.species, record.form, record.ability = old.species, old.form, old.ability
+      return false
+    end
+    record.ability = repaired
+  end
+  local curveOk, curve = pcall(self._context.catalog.growthCurve, self._context.catalog, species.growthCurve)
+  if curveOk and type(record.experience) == "number" and record.experience <= curve[Stats.MAX_LEVEL] then
+    record.met.level = Experience.level(curve, record.experience)
+  end
+  refreshHp(record, self._context, oldMaxHp)
+  self:_changed()
+  return true
+end
+
+---@param formId integer
+---@return boolean
+function SaveEditorMonDraft:setForm(formId)
+  if type(formId) ~= "number" or formId % 1 ~= 0 then
+    return false
+  end
+  local formOk, form = pcall(self._context.catalog.form, self._context.catalog, self._record.species, formId)
+  if not formOk then
+    if Errors.is(form) then
+      return false
+    end
+    error(form, 0)
+  end
+  if self._record.form == formId and abilityPermitted(self._record, form) then
+    return true
+  end
+  local oldForm, oldAbility = self._record.form, self._record.ability
+  local oldMaxHp = projectedMaxHp(self._record, self._context)
+  self._record.form = formId
+  if not abilityPermitted(self._record, form) then
+    local repaired = fallbackAbility(form, self._record.personality)
+    if repaired == nil then
+      self._record.form = oldForm
+      self._record.ability = oldAbility
+      return false
+    end
+    self._record.ability = repaired
+  end
+  refreshHp(self._record, self._context, oldMaxHp)
+  self:_changed()
+  return true
+end
+
 ---@param stat string
 ---@param value unknown
 ---@return boolean
@@ -253,10 +505,18 @@ function SaveEditorMonDraft:setIV(stat, value)
   if not STAT_FIELDS[stat] or not hasPrimitiveType(value, "u8") or value > 31 then
     return false
   end
-  if self._record.ivs[stat] ~= value then
-    self._record.ivs[stat] = value
-    self:_changed()
+  if self._record.ivs[stat] == value then
+    return true
   end
+  local oldMaxHp
+  if stat == "hp" then
+    oldMaxHp = projectedMaxHp(self._record, self._context)
+  end
+  self._record.ivs[stat] = value
+  if stat == "hp" then
+    refreshHp(self._record, self._context, oldMaxHp)
+  end
+  self:_changed()
   return true
 end
 
@@ -267,13 +527,33 @@ function SaveEditorMonDraft:setEV(stat, value)
   if not STAT_FIELDS[stat] or not hasPrimitiveType(value, "u8") then
     return false
   end
-  if self._record.evs[stat] ~= value then
-    self._record.evs[stat] = value
-    self:_changed()
+  if self._record.evs[stat] == value then
+    return true
   end
+  local total = value
+  for key, current in pairs(self._record.evs) do
+    if key ~= stat then
+      total = total + current
+    end
+  end
+  if total > Stats.EV_TOTAL_CAP then
+    return false
+  end
+  local oldMaxHp
+  if stat == "hp" then
+    oldMaxHp = projectedMaxHp(self._record, self._context)
+  end
+  self._record.evs[stat] = value
+  if stat == "hp" then
+    refreshHp(self._record, self._context, oldMaxHp)
+  end
+  self:_changed()
   return true
 end
 
+-- Move components stay mutually coherent: replacing a move resets its
+-- allowance, PP never exceeds the current allowance, and lowering PP Ups
+-- clamps current PP down to the new maximum.
 ---@param slot0 integer
 ---@param component string
 ---@param value unknown
@@ -282,18 +562,59 @@ function SaveEditorMonDraft:setMove(slot0, component, value)
   if type(slot0) ~= "number" or slot0 % 1 ~= 0 or slot0 < 0 or slot0 >= #self._record.moves then
     return false
   end
-  local allowed = component == "move" and type(value) == "string"
-    or component == "pp" and hasPrimitiveType(value, "u8")
-    or component == "ppUps" and hasPrimitiveType(value, "u8") and value <= 3
-  if not allowed then
-    return false
-  end
   local move = self._record.moves[slot0 + 1]
-  if move[component] ~= value then
-    move[component] = value
+  if component == "move" then
+    if type(value) ~= "string" then
+      return false
+    end
+    local ok, definition = pcall(self._context.catalog.move, self._context.catalog, value)
+    if not ok then
+      if Errors.is(definition) then
+        return false
+      end
+      error(definition, 0)
+    end
+    if move.move == value then
+      return true
+    end
+    move.move, move.ppUps, move.pp = value, 0, definition.basePp
     self:_changed()
+    return true
   end
-  return true
+  local ok, definition = pcall(self._context.catalog.move, self._context.catalog, move.move)
+  if not ok then
+    if Errors.is(definition) then
+      return false
+    end
+    error(definition, 0)
+  end
+  if component == "pp" then
+    if not hasPrimitiveType(value, "u8") then
+      return false
+    end
+    if value > SaveEditorMonDraft.maxMovePp(definition, move.ppUps) then
+      return false
+    end
+    if move.pp == value then
+      return true
+    end
+    move.pp = value
+    self:_changed()
+    return true
+  end
+  if component == "ppUps" then
+    if not hasPrimitiveType(value, "u8") or value > 3 then
+      return false
+    end
+    if move.ppUps == value then
+      return true
+    end
+    move.ppUps = value
+    move.pp = math.min(move.pp, SaveEditorMonDraft.maxMovePp(definition, value))
+    self:_changed()
+    return true
+  end
+  return false
 end
 
 ---@param moveKey string
@@ -310,17 +631,6 @@ function SaveEditorMonDraft:addMove(moveKey)
     error(definition, 0)
   end
   self._record.moves[#self._record.moves + 1] = { move = moveKey, pp = definition.basePp, ppUps = 0 }
-  self:_changed()
-  return true
-end
-
----@param slot0 integer
----@return boolean
-function SaveEditorMonDraft:removeMove(slot0)
-  if type(slot0) ~= "number" or slot0 % 1 ~= 0 or slot0 < 0 or slot0 >= #self._record.moves then
-    return false
-  end
-  table.remove(self._record.moves, slot0 + 1)
   self:_changed()
   return true
 end
@@ -366,7 +676,7 @@ end
 ---@param record table<string, unknown>
 ---@param context table<string, unknown>
 ---@return SaveEditorMonProjection
-local function projectRecord(record, context)
+projectRecord = function(record, context)
   local projection = {}
   local species, form
   if type(record.species) == "string" then

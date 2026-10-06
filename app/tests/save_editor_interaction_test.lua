@@ -1346,83 +1346,6 @@ function T.tests.resize_republishes_the_location_viewport_on_the_next_refresh()
   Assert.equal(harness.service.updateCalls, 1, "the refresh still advances loading after a resize")
 end
 
-function T.tests.read_only_party_detail_scrolls_by_keyboard_without_activation()
-  local controller = Controller.new()
-  controller:setSection("Party")
-  local partyRows = {}
-  for index = 1, 30 do
-    partyRows[index] = {
-      role = "read-only value",
-      targetId = "party:readonly:field-" .. index,
-      id = "field-" .. index,
-      label = "Field " .. index,
-      value = index,
-    }
-  end
-  local metrics = {
-    lineHeight = 14,
-    measure = function(text)
-      return #text * 7
-    end,
-  }
-  local view = {
-    section = "Party",
-    status = "ready",
-    ready = true,
-    dirty = false,
-    partyPage = "detail",
-    partySlot0 = 0,
-    partySubpage = "Identity",
-    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
-    partyRows = partyRows,
-    scrollOffsets = controller.scrollOffsets,
-  }
-  local function buildLayout()
-    return Layout.compute(view, 256, 192, metrics)
-  end
-  local layout = buildLayout()
-  local viewport = assert(layout.viewports.party, "the detail page publishes its scroll viewport")
-  Assert.isTrue(
-    viewport.contentExtent > viewport.clip.height,
-    "the long read-only detail overflows its viewport"
-  )
-  local region = assert(
-    layout.targets["party:detail-scroll"],
-    "an overflowing read-only detail publishes its keyboard scroll region"
-  )
-  Assert.isTrue(region.focusable, "the scroll region accepts keyboard and controller focus")
-
-  local activations = {}
-  local state = setmetatable({
-    status = "ready",
-    controller = controller,
-    _snapshot = function()
-      return view
-    end,
-    _resolve = function()
-      return { content = { layout = buildLayout() } }
-    end,
-    _activate = function(_, targetId)
-      activations[#activations + 1] = targetId
-    end,
-  }, State)
-  controller:setFocus("party:detail-scroll")
-  state:_dispatchIntent(controller:press("down"))
-  local downOffset = controller.scrollOffsets["party:detail:Identity"]
-  Assert.notNil(downOffset, "scrolling the detail region moves its viewport offset")
-  Assert.isTrue(downOffset > 0, "Down reveals later detail lines")
-  Assert.equal(controller.focus, "party:detail-scroll", "scrolling keeps the scroll region focused")
-  Assert.deepEqual(activations, {}, "scrolling never activates a detail row")
-
-  state:_dispatchIntent(controller:press("right"))
-  Assert.isTrue(
-    controller.scrollOffsets["party:detail:Identity"] >= downOffset,
-    "Right pages the detail viewport without editing"
-  )
-  Assert.equal(controller.focus, "party:detail-scroll", "paging keeps the scroll region focused")
-  Assert.deepEqual(activations, {}, "paging never activates a detail row")
-end
-
 local function installPointerPassThrough(state)
   state.presentation = {
     mapInput = function(_, events)
@@ -2048,6 +1971,12 @@ local function backHarness(options)
   end
   local session = {
     dirty = options.dirty == true,
+    partyRevision = function()
+      return 0
+    end,
+    partySnapshot = function()
+      return { revision = 0, members = {} }
+    end,
     discardedSections = {},
     globalDiscards = 0,
     isDirty = function(self)
@@ -2118,13 +2047,199 @@ function T.tests.back_closes_only_the_open_decision()
   Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
 end
 
-function T.tests.back_from_party_detail_returns_to_the_member_list()
-  local harness = backHarness({ section = "Party", dirty = true, partyDetail = true })
-  Assert.equal(harness.controller.partyPage, "detail", "the harness starts inside party detail")
+local function livePartyHarness(memberCount)
+  local Fixture = require("app.tests.support.SaveEditorFixture")
+  local fixture = Fixture.new()
+  local Session = require("app.src.saveeditor.SaveEditorSession")
+  local session = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  for _ = 1, memberCount or 0 do
+    local draft = assert(session:beginMonAdd("CHIKORITA", {
+      location = 7,
+      date = { year = 2000, month = 1, day = 1 },
+    }))
+    Assert.isTrue(session:applyMonDraft(draft).ok, "harness members apply cleanly")
+  end
+  local controller = Controller.new()
+  controller:setSection("Party")
+  local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
+  local state = setmetatable({
+    status = "ready",
+    disposed = false,
+    approvedExit = false,
+    controller = controller,
+    session = session,
+    dependencies = { context = fixture.context },
+    partyView = PartyView.new(fixture.context),
+    monDraft = nil,
+    valueEditor = nil,
+    valuePurpose = nil,
+    activeDraftField = nil,
+    valueReturnFocus = nil,
+    pendingFocusReturn = nil,
+    pendingDraftAction = nil,
+    errorMessage = nil,
+    dateProvider = function()
+      return { year = 2000, month = 1, day = 1 }
+    end,
+    onResult = function() end,
+  }, State)
+  return { state = state, controller = controller, session = session }
+end
+
+function T.tests.entering_party_selects_the_first_member_with_an_edit_draft()
+  local harness = livePartyHarness(3)
+  Assert.isNil(harness.controller.partySlot0, "section entry alone selects no member")
+  harness.state:_ensurePartyDraft()
+  Assert.equal(harness.controller.partySlot0, 0, "the first member is selected by default")
+  Assert.equal(harness.controller.partyTab, "Stats", "the default page is Stats")
+  local draft = harness.state.monDraft
+  Assert.notNil(draft, "selecting a member opens its edit draft without an Edit action")
+  Assert.equal(draft:mode(), "edit")
+  Assert.equal(draft:slot0(), 0)
+
+  local empty = livePartyHarness(0)
+  empty.state:_ensurePartyDraft()
+  Assert.isNil(empty.controller.partySlot0, "an empty party selects no member")
+  Assert.isNil(empty.state.monDraft, "an empty party opens no draft")
+end
+
+function T.tests.switching_members_applies_a_valid_dirty_draft()
+  local harness = livePartyHarness(2)
+  harness.state:_ensurePartyDraft()
+  Assert.isTrue(harness.state.monDraft:setScalar("friendship", 200))
+  harness.state:_activate("party:slot:1")
+  Assert.equal(harness.controller.partySlot0, 1, "selection moves after the draft applies")
+  Assert.equal(harness.session:partySnapshot().members[1].mon.friendship, 200)
+  Assert.equal(harness.state.monDraft:slot0(), 1, "the new member context owns a fresh draft")
+  Assert.isNil(harness.state.errorMessage)
+end
+
+function T.tests.invalid_draft_blocks_leaving_the_member()
+  local harness = livePartyHarness(2)
+  harness.state:_ensurePartyDraft()
+  local draft = harness.state.monDraft
+  Assert.isTrue(draft:setScalar("currentHp", 9999), "the invalid value stages in the draft")
+  harness.state:_activate("party:slot:1")
+  Assert.equal(harness.controller.partySlot0, 0, "selection stays on the invalid member")
+  Assert.equal(harness.state.monDraft, draft, "the invalid draft is preserved")
+  Assert.notNil(harness.state.errorMessage, "the validation error is shown")
+  Assert.equal(harness.session:partySnapshot().members[1].mon.condition.currentHp ~= 9999, true)
+end
+
+function T.tests.paging_preserves_the_open_draft_without_applying()
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  local draft = harness.state.monDraft
+  local revision = harness.session:partyRevision()
+  Assert.isTrue(draft:setScalar("friendship", 150))
+  harness.state:_activate("party:page:next")
+  Assert.equal(harness.controller.partyTab, "Moves", "next advances Stats to Moves")
+  Assert.equal(harness.state.monDraft, draft, "paging never recreates the draft")
+  harness.state:_activate("party:page:next")
+  Assert.equal(harness.controller.partyTab, "Details", "next advances Moves to Details")
+  harness.state:_activate("party:page:next")
+  Assert.equal(harness.controller.partyTab, "Details", "next is disabled on Details")
+  harness.state:_activate("party:page:previous")
+  Assert.equal(harness.controller.partyTab, "Moves", "previous returns to Moves")
+  harness.state:_activate("party:page:previous")
+  Assert.equal(harness.controller.partyTab, "Stats", "previous returns to Stats")
+  harness.state:_activate("party:page:previous")
+  Assert.equal(harness.controller.partyTab, "Stats", "previous is disabled on Stats")
+  Assert.equal(harness.session:partyRevision(), revision, "paging never publishes the draft")
+  Assert.isTrue(harness.state.monDraft:isDirty(), "the dirty draft survives paging")
+end
+
+function T.tests.section_switch_applies_the_open_draft()
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  Assert.isTrue(harness.state.monDraft:setScalar("friendship", 77))
+  harness.state:_activate("section:Player")
+  Assert.equal(harness.controller.section, "Player", "the section switch proceeds")
+  Assert.equal(harness.session:partySnapshot().members[1].mon.friendship, 77)
+  Assert.isNil(harness.state.monDraft, "the applied draft is retired")
+end
+
+function T.tests.member_switch_applies_a_provisional_add_on_a_full_strip()
+  local harness = livePartyHarness(5)
+  local provisional = assert(harness.session:beginMonAdd("CHIKORITA", {
+    location = 7,
+    date = { year = 2000, month = 1, day = 1 },
+  }))
+  harness.state.monDraft = provisional
+  harness.controller.partySlot0 = #harness.session:partySnapshot().members
+  local selector = assert(harness.state:_partyView().partySelector, "Party publishes its member strip")
+  local kinds = {}
+  for _, slot in ipairs(selector.slots) do
+    kinds[#kinds + 1] = slot.kind
+  end
+  Assert.deepEqual(
+    kinds,
+    { "member", "member", "member", "member", "member", "member" },
+    "the provisional add occupies the final strip position with no room left for Add"
+  )
+  harness.state:_activate("party:slot:0")
+  Assert.equal(#harness.session:partySnapshot().members, 6, "the member switch applies the provisional add")
+  Assert.equal(harness.controller.partySlot0, 0, "selection follows the requested member")
+  Assert.equal(harness.state.monDraft:mode(), "edit", "the new member context owns a fresh edit draft")
+  Assert.isNil(harness.state.errorMessage)
+end
+
+function T.tests.move_slot_opens_a_three_action_overlay_returning_from_its_children()
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  harness.state:_activate("party:page:next")
+  Assert.equal(harness.controller.partyTab, "Moves")
+  harness.state:_activate("party:move:0")
+  Assert.equal(harness.controller.modal, "party-move", "an occupied slot opens its move overlay")
+  Assert.equal(harness.state.pendingMoveSlot, 0)
+  harness.state:_activate("party-move:pp-ups")
+  Assert.notNil(harness.state.valueEditor, "the component opens a child editor")
+  Assert.isNil(harness.controller.modal, "the child editor sits above the suspended overlay")
+  Assert.isTrue(harness.state.valueEditor:press("confirm"), "the unchanged value confirms")
+  harness.state:_finishValueEditor()
+  Assert.isNil(harness.state.valueEditor, "the child editor retires")
+  Assert.equal(harness.controller.modal, "party-move", "a finished child returns to its parent overlay")
   harness.state:_requestBack()
-  Assert.equal(harness.controller.partyPage, "list", "one Back returns to the member list")
-  Assert.isNil(harness.state.closeRequest, "the dirty session never enters its leave flow")
-  Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
+  Assert.isNil(harness.controller.modal, "Back pops the parent overlay")
+  Assert.equal(harness.controller.partyTab, "Moves", "Back lands on the Moves page")
+  Assert.isNil(harness.state.closeRequest, "popping the overlay never enters the leave flow")
+end
+
+function T.tests.member_removal_has_no_party_path()
+  local harness = livePartyHarness(2)
+  harness.state:_ensurePartyDraft()
+  harness.state:_activate("party:remove")
+  Assert.isNil(harness.controller.modal, "no removal decision opens")
+  Assert.equal(#harness.session:partySnapshot().members, 2, "no member is removed")
+  Assert.equal(harness.controller.partySlot0, 0, "selection is untouched")
+end
+
+function T.tests.back_from_party_applies_a_valid_draft_before_the_leave_flow()
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  Assert.isTrue(harness.state.monDraft:setScalar("friendship", 42))
+  harness.state:_requestBack()
+  Assert.equal(harness.session:partySnapshot().members[1].mon.friendship, 42)
+  Assert.notNil(harness.state.closeRequest, "root Back with staged work enters the leave flow")
+  Assert.equal(harness.controller.modal, "leave", "the leave decision opens")
+end
+
+function T.tests.back_from_party_with_an_invalid_draft_stays_put()
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  local draft = harness.state.monDraft
+  Assert.isTrue(draft:setScalar("currentHp", 9999))
+  harness.state:_requestBack()
+  Assert.equal(harness.state.monDraft, draft, "the invalid draft is preserved")
+  Assert.notNil(harness.state.errorMessage, "the validation error is shown")
+  Assert.isNil(harness.state.closeRequest, "an invalid draft never enters the leave flow")
 end
 
 function T.tests.back_from_a_selected_bag_item_returns_to_its_pocket()
@@ -2237,19 +2352,21 @@ function T.tests.footer_discard_resets_only_the_active_section()
 end
 
 function T.tests.footer_discard_abandons_a_party_draft_with_its_section()
-  local draft = {
-    mode = function()
-      return "edit"
-    end,
-    isDirty = function()
-      return true
-    end,
-  }
-  local harness = backHarness({ section = "Party", dirty = true, monDraft = draft })
+  local harness = livePartyHarness(2)
+  Assert.isTrue(harness.session:save(false).ok, "the harness roster persists before staging edits")
+  harness.state:_ensurePartyDraft()
+  Assert.isTrue(harness.state.monDraft:setScalar("friendship", 199))
+  Assert.isTrue(harness.session:setMoney(3100).ok, "money stages in another section")
   harness.state:_activate("discard")
-  Assert.isNil(harness.state.monDraft, "the open draft is abandoned, never applied")
-  Assert.deepEqual(harness.session.discardedSections, { "Party" }, "footer Discard resets its own section")
-  Assert.equal(harness.session.globalDiscards, 0, "footer Discard never resets the whole session")
+  Assert.isTrue(harness.session:snapshot().dirtySections.money, "other sections stay staged")
+  Assert.isFalse(
+    harness.session:snapshot().dirtySections.party,
+    "the Party baseline is restored without applying"
+  )
+  Assert.equal(harness.controller.partySlot0, 0, "the same slot stays selected")
+  local fresh = harness.state.monDraft
+  Assert.notNil(fresh, "a fresh draft opens for the restored member")
+  Assert.isFalse(fresh:isDirty(), "the fresh draft starts clean")
 end
 
 return T

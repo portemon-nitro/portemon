@@ -208,20 +208,69 @@ function T.tests.shell_content_starts_at_the_application_margin_without_a_header
   end
 end
 
+local function partyEditorView(tab, focus)
+  local selector = { slots = {} }
+  selector.slots[1] = { kind = "member", slot0 = 0, iconKey = "a", label = "A", level = 9, active = true }
+  selector.slots[2] = { kind = "member", slot0 = 1, iconKey = "b", label = "B", level = 5, active = false }
+  selector.slots[3] = { kind = "add", slot0 = 2 }
+  selector.slots[4] = { kind = "empty" }
+  selector.slots[5] = { kind = "empty" }
+  selector.slots[6] = { kind = "empty" }
+  local statsRows = {}
+  for _, pair in ipairs({
+    { "hp", "HP" }, { "attack", "Attack" }, { "defense", "Defense" },
+    { "speed", "Speed" }, { "specialAttack", "Sp. Atk" }, { "specialDefense", "Sp. Def" },
+  }) do
+    statsRows[#statsRows + 1] = {
+      key = pair[1],
+      label = pair[2],
+      iv = 1,
+      ivEditor = { targetId = "party:field:iv:" .. pair[1], editor = { kind = "integer" } },
+      ev = 2,
+      evEditor = { targetId = "party:field:ev:" .. pair[1], editor = { kind = "integer" } },
+    }
+  end
+  return {
+    status = "ready",
+    ready = true,
+    section = "Party",
+    scope = { id = "section:Party", epoch = 0 },
+    focus = focus or "party:slot:0",
+    partyTab = tab,
+    partySlot0 = 0,
+    partySelector = selector,
+    partyStats = {
+      header = {
+        { id = "level", label = "Level", value = 9, targetId = "party:field:level", editor = { kind = "integer" } },
+        { id = "experience", label = "Exp", value = 100, targetId = "party:field:experience", editor = { kind = "integer" } },
+        { id = "friendship", label = "Friendship", value = 70, targetId = "party:field:friendship", editor = { kind = "integer" } },
+        { id = "currentHp", label = "HP", value = "20/20", targetId = "party:field:currentHp", editor = { kind = "integer" } },
+        { id = "status", label = "Status", value = "OK", targetId = "party:readonly:status" },
+      },
+      rows = statsRows,
+    },
+    partyMoves = {
+      slots = {
+        { kind = "move", slot0 = 0, label = "Tackle 35/35", targetId = "party:move:0" },
+        { kind = "move", slot0 = 1, label = "Growl 40/40", targetId = "party:move:1" },
+        { kind = "add", label = "+ Add", targetId = "party:move:add" },
+        { kind = "empty" },
+      },
+    },
+    partyDetails = {
+      rows = {
+        { role = "named choice", targetId = "party:field:species", id = "species", label = "Species", value = "A", editor = { kind = "choice" } },
+        { role = "named choice", targetId = "party:field:ability", id = "ability", label = "Ability", value = "X", editor = { kind = "choice" } },
+      },
+    },
+  }
+end
+
 function T.tests.action_control_geometry_fits_labels_with_padding_on_compact_and_wide_layouts()
   for _, size in ipairs({ { 256, 192 }, { 640, 480 } }) do
-    local view = {
-      status = "ready",
-      ready = true,
-      dirty = true,
-      section = "Party",
-      scope = { id = "section:Party", epoch = 0 },
-      session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
-      partyPage = "draft",
-      partyValid = true,
-      partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
-      partyRows = {},
-    }
+    local view = partyEditorView("Stats")
+    view.session = { playerName = "PLAYER", money = 3000, frameIndex = 0 }
+    view.dirty = true
     local metrics = {
       lineHeight = 14,
       measure = function(text)
@@ -234,55 +283,118 @@ function T.tests.action_control_geometry_fits_labels_with_padding_on_compact_and
       Assert.isTrue(rect.height >= metrics.lineHeight + 16, action.label .. " has vertical text padding")
       Assert.isTrue(rect.width >= metrics.measure(action.label) + 16, action.label .. " has horizontal text padding")
     end
-    for _, id in ipairs({ "party:apply", "party:discard", "party:cancel" }) do
-      local row = assert(layout.targets[id], "draft action is visible: " .. id)
-      Assert.isTrue(row.rect.height >= metrics.lineHeight + 16, id .. " has vertical text padding")
-    end
+    Assert.isNil(layout.targets["party:apply"], "no Party-local Apply bar remains")
+    Assert.isNil(layout.targets["party:discard"], "no Party-local Discard bar remains")
+    Assert.isNil(layout.targets["party:cancel"], "no Party-local Return bar remains")
   end
 end
 
-function T.tests.party_subpage_controls_remain_reachable_without_truncating_their_labels()
-  local metrics = {
-    lineHeight = 14,
-    measure = function(text)
-      return #text * 7
-    end,
-  }
-  local view = {
+
+local function partyEditorView(tab, focus)
+  local selector = { slots = {} }
+  selector.slots[1] = { kind = "member", slot0 = 0, iconKey = "a", label = "A", level = 9, active = true }
+  selector.slots[2] = { kind = "member", slot0 = 1, iconKey = "b", label = "B", level = 5, active = false }
+  selector.slots[3] = { kind = "add", slot0 = 2 }
+  selector.slots[4] = { kind = "empty" }
+  selector.slots[5] = { kind = "empty" }
+  selector.slots[6] = { kind = "empty" }
+  local statsRows = {}
+  for _, pair in ipairs({
+    { "hp", "HP" }, { "attack", "Attack" }, { "defense", "Defense" },
+    { "speed", "Speed" }, { "specialAttack", "Sp. Atk" }, { "specialDefense", "Sp. Def" },
+  }) do
+    statsRows[#statsRows + 1] = {
+      key = pair[1],
+      label = pair[2],
+      iv = 1,
+      ivEditor = { targetId = "party:field:iv:" .. pair[1], editor = { kind = "integer" } },
+      ev = 2,
+      evEditor = { targetId = "party:field:ev:" .. pair[1], editor = { kind = "integer" } },
+    }
+  end
+  return {
     status = "ready",
     ready = true,
     section = "Party",
     scope = { id = "section:Party", epoch = 0 },
-    partyPage = "detail",
-    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
+    focus = focus or "party:slot:0",
+    partyTab = tab,
+    partySlot0 = 0,
+    partySelector = selector,
+    partyStats = {
+      header = {
+        { id = "level", label = "Level", value = 9, targetId = "party:field:level", editor = { kind = "integer" } },
+        { id = "experience", label = "Exp", value = 100, targetId = "party:field:experience", editor = { kind = "integer" } },
+        { id = "friendship", label = "Friendship", value = 70, targetId = "party:field:friendship", editor = { kind = "integer" } },
+        { id = "currentHp", label = "HP", value = "20/20", targetId = "party:field:currentHp", editor = { kind = "integer" } },
+        { id = "status", label = "Status", value = "OK", targetId = "party:readonly:status" },
+      },
+      rows = statsRows,
+    },
+    partyMoves = {
+      slots = {
+        { kind = "move", slot0 = 0, label = "Tackle 35/35", targetId = "party:move:0" },
+        { kind = "move", slot0 = 1, label = "Growl 40/40", targetId = "party:move:1" },
+        { kind = "add", label = "+ Add", targetId = "party:move:add" },
+        { kind = "empty" },
+      },
+    },
+    partyDetails = {
+      rows = {
+        { role = "named choice", targetId = "party:field:species", id = "species", label = "Species", value = "A", editor = { kind = "choice" } },
+        { role = "named choice", targetId = "party:field:ability", id = "ability", label = "Ability", value = "X", editor = { kind = "choice" } },
+      },
+    },
   }
+end
 
-  for _, size in ipairs({ { 256, 192 }, { 720, 1280 } }) do
-    local layout = Layout.compute(view, size[1], size[2], metrics)
-    local tabs = {}
-    for _, label in ipairs(view.partySubpages) do
-      local id = "party:subpage:" .. label
-      Assert.isTrue(layout.focusGraph[id] ~= nil, label .. " remains reachable by directional focus")
-      if size[1] == 256 then
-        view.focus = id
-        layout = Layout.compute(view, size[1], size[2], metrics)
-      end
-      local tab = assert(layout.targets[id], label .. " is revealed as a complete control")
-      Assert.isTrue(tab.rect.width >= metrics.measure(label) + 22, label .. " fits inside its shaded control")
-      tabs[#tabs + 1] = tab.rect
-    end
-    if size[1] ~= 256 then
-      for firstIndex, first in ipairs(tabs) do
-        for laterIndex = firstIndex + 1, #tabs do
-          local later = tabs[laterIndex]
-          Assert.isTrue(
-            first.y ~= later.y or first.x + first.width <= later.x or later.x + later.width <= first.x,
-            "subpage controls do not overlap"
-          )
-        end
+function T.tests.party_editor_publishes_a_strip_pager_and_exactly_three_pages()
+  for _, size in ipairs({ { 256, 192 }, { 800, 600 } }) do
+    for _, tab in ipairs({ "Stats", "Moves", "Details" }) do
+      local layout = computeLayout(partyEditorView(tab), size[1], size[2])
+      Assert.notNil(layout.targets["party:slot:0"], "the first member stays selectable")
+      Assert.notNil(layout.targets["party:slot:1"], "the second member stays selectable")
+      Assert.notNil(layout.targets["party:add"], "the first empty position offers + Add")
+      Assert.isNil(layout.targets["party:slot:2"], "later empty positions stay non-focusable")
+      Assert.notNil(layout.targets["party:page:previous"], "the pager offers previous")
+      Assert.notNil(layout.targets["party:page:next"], "the pager offers next")
+      Assert.notNil(layout.partyPageLabel, "the pager names its current page")
+      Assert.equal(layout.partyPageLabel.text, tab, "the pager names " .. tab)
+      Assert.notNil(layout.viewports.party, "the page body scrolls through its viewport")
+      for _, targetId in ipairs({
+        "party:subpage:Identity", "party:subpage:Training", "party:subpage:Stats", "party:subpage:Moves",
+        "party:subpage:Origin", "party:edit", "party:remove", "party:back", "party:apply",
+        "party:discard", "party:cancel", "party:move:remove:0", "party:clear-nickname",
+      }) do
+        Assert.isNil(layout.targets[targetId], "obsolete Party target is gone: " .. targetId)
+        Assert.isNil(layout.focusGraph[targetId], "obsolete Party target leaves the graph: " .. targetId)
       end
     end
   end
+  local statsLayout = computeLayout(partyEditorView("Stats"), 800, 600)
+  Assert.notNil(statsLayout.targets["party:field:level"], "Stats exposes its level editor")
+  Assert.notNil(statsLayout.targets["party:field:iv:attack"], "Stats exposes its IV editors")
+  Assert.notNil(statsLayout.targets["party:field:ev:attack"], "Stats exposes its EV editors")
+  Assert.notNil(statsLayout.partyStatsTable, "Stats keeps its IV/EV table")
+  Assert.equal(#statsLayout.partyStatsTable.headers, 3, "the table has exactly Stat/IV/EV columns")
+  Assert.equal(#statsLayout.partyStatsTable.rows, 6, "the table keeps one row per battle stat")
+  Assert.isFalse(statsLayout.targets["party:page:previous"].activationEnabled, "previous is disabled on Stats")
+  local movesLayout = computeLayout(partyEditorView("Moves", "party:move:0"), 800, 600)
+  Assert.notNil(movesLayout.targets["party:move:0"], "occupied slots stay activatable")
+  Assert.notNil(movesLayout.targets["party:move:1"], "every occupied slot stays activatable")
+  Assert.notNil(movesLayout.targets["party:move:add"], "the first empty move slot offers + Add")
+  Assert.isNil(movesLayout.targets["party:move:3"], "later empty move slots stay inert")
+  Assert.equal(#movesLayout.partyMoves.slots, 4, "the Moves page spans four slots")
+  local detailsLayout = computeLayout(partyEditorView("Details", "party:field:species"), 800, 600)
+  Assert.notNil(detailsLayout.targets["party:field:species"], "Details exposes its fields")
+  Assert.notNil(detailsLayout.targets["party:field:ability"], "Details exposes its ability choice")
+  Assert.isFalse(detailsLayout.targets["party:page:next"].activationEnabled, "next is disabled on Details")
+  local compactDetails = computeLayout(partyEditorView("Details", "party:field:species"), 256, 192)
+  Assert.notNil(compactDetails.viewports.party, "compact Details keeps its scroll viewport")
+  Assert.notNil(
+    compactDetails.viewports.party.contentExtent > compactDetails.viewports.party.clip.height,
+    "compact Details overflows and scrolls"
+  )
 end
 
 local function filterMetrics()
@@ -936,25 +1048,15 @@ end
 
 function T.tests.adjacent_action_controls_keep_a_minimum_gap_without_overlap()
   local metrics = filterMetrics()
-  local draft = {
-    section = "Party",
-    status = "ready",
-    ready = true,
-    dirty = true,
-    partyPage = "draft",
-    partyDirty = true,
-    partyValid = true,
-    partySubpage = "Identity",
-    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
-    partyRows = {},
-  }
+  local draft = partyEditorView("Stats")
+  draft.dirty = true
   for _, size in ipairs({ { 256, 192 }, { 800, 600 } }) do
     local layout = Layout.compute(draft, size[1], size[2], metrics)
-    local apply = assert(layout.targets["party:apply"]).rect
-    local discard = assert(layout.targets["party:discard"]).rect
+    local apply = assert(layout.targets["save"]).rect
+    local discard = assert(layout.targets["discard"]).rect
     Assert.isTrue(
       discard.x - (apply.x + apply.width) >= 4,
-      size[1] .. "px draft actions keep at least 4px between neighbors"
+      size[1] .. "px footer actions keep at least 4px between neighbors"
     )
     local rects = {}
     for _, target in pairs(layout.targets) do
@@ -977,21 +1079,11 @@ end
 
 function T.tests.wide_buttons_stay_bounded_and_action_groups_stay_centered()
   local metrics = filterMetrics()
-  local draft = {
-    section = "Party",
-    status = "ready",
-    ready = true,
-    dirty = true,
-    partyPage = "draft",
-    partyDirty = true,
-    partyValid = true,
-    partySubpage = "Identity",
-    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
-    partyRows = {},
-  }
+  local draft = partyEditorView("Stats")
+  draft.dirty = true
   local layout = Layout.compute(draft, 1280, 720, metrics)
   local left, right = nil, nil
-  for _, id in ipairs({ "party:apply", "party:discard", "party:cancel" }) do
+  for _, id in ipairs({ "save", "discard", "back" }) do
     local rect = assert(layout.targets[id]).rect
     Assert.isTrue(rect.width <= 128, id .. " never stretches with a large viewport")
     left = left == nil and rect.x or math.min(left, rect.x)
@@ -1350,17 +1442,8 @@ function T.tests.normal_scopes_expose_exactly_one_back_action()
       height = 192,
     },
     {
-      name = "Party list",
-      view = {
-        status = "ready",
-        ready = true,
-        dirty = false,
-        section = "Party",
-        scope = { id = "section:Party", epoch = 0, kind = "section" },
-        partyPage = "list",
-        partyCards = { { kind = "add", slot0 = 0, label = "+ Add" } },
-        partyCanAdd = true,
-      },
+      name = "Party",
+      view = partyEditorView("Stats"),
       width = 256,
       height = 192,
     },

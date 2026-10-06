@@ -66,7 +66,6 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field beginMonEdit fun(self: SaveEditorSession, slot0: integer): SaveEditorMonDraft?, Errors.Error?
 ---@field beginMonAdd fun(self: SaveEditorSession, species: string, options: { location: integer, date: table<string, unknown> }): SaveEditorMonDraft?, Errors.Error?
 ---@field applyMonDraft fun(self: SaveEditorSession, draft: SaveEditorMonDraft): table<string, unknown>
----@field removePartyMon fun(self: SaveEditorSession, slot0: integer): table<string, unknown>
 ---@field swapPartyMons fun(self: SaveEditorSession, left0: integer, right0: integer): table<string, unknown>
 ---@field setBagQuantity fun(self: SaveEditorSession, itemKey: string, quantity: integer): table<string, unknown>
 ---@field setMoney fun(self: SaveEditorSession, value: unknown): table<string, unknown>
@@ -563,21 +562,6 @@ function SaveEditorSession:applyMonDraft(draft)
   end
 
   self._drafts[draft] = nil
-  self._partyRevision = self._partyRevision + 1
-  self._revision = self._revision + 1
-  return success(true)
-end
-
----@param slot0 integer
----@return table<string, unknown>
-function SaveEditorSession:removePartyMon(slot0)
-  if self._busy then
-    return failure(BUSY, "A save operation is already in progress.", {})
-  end
-  if not finiteInteger(slot0) or slot0 < 0 or slot0 >= self._monService:partyCount() then
-    return failure(VALUE_INVALID, "Choose an existing party slot.", { slot = slot0 })
-  end
-  self._monService:removeMon(slot0)
   self._partyRevision = self._partyRevision + 1
   self._revision = self._revision + 1
   return success(true)

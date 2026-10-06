@@ -23,7 +23,6 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _icons table<string, { image: love.Image, quad: love.Quad, dimensions: { width: number, height: number } }>
 ---@field _windowRenderer FieldWindowRenderer?
 ---@field _bagImages table<string, love.Image>
----@field _partyImages table<string, love.Image>
 ---@field iconStatus string?
 ---@field iconFailure string?
 ---@field metrics fun(self: SaveEditorRenderer): { lineHeight: number, measure: fun(value: string): number }
@@ -124,7 +123,6 @@ function Renderer.new(options)
     _windowRenderer = nil,
     _itemIconProvider = nil,
     _bagImages = {},
-    _partyImages = {},
     iconStatus = nil,
     iconFailure = nil,
   }, Renderer)
@@ -190,33 +188,16 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
     self.iconStatus, self.iconFailure = nil, nil
     return
   end
-  for _, card in ipairs(view.partyCards or {}) do
-    if card.kind == "member" and card.chrome ~= nil then
-      for _, variant in ipairs({ "normal", "selected", "fainted", "selectedFainted" }) do
-        local path = assert(card.chrome[variant], "Party panels carry their focus chrome variant").image
-        if self._partyImages[path] == nil then
-          local bytes = assert(cacheFs:read(path), "Party panel chrome bytes are required")
-          local image = self.graphics.newImage(love.filesystem.newFileData(bytes, path))
-          image:setFilter("nearest", "nearest")
-          self._partyImages[path] = image
-        end
-      end
-    end
-  end
   local iconKeys = {}
   for _, row in ipairs(assert(plan.content.layout).rows) do
     if row.iconKey ~= nil then
       iconKeys[#iconKeys + 1] = row.iconKey
     end
   end
-  for _, card in ipairs(assert(plan.content.layout).partyGrid or {}) do
-    if card.iconKey ~= nil then
-      iconKeys[#iconKeys + 1] = card.iconKey
+  for _, slot in ipairs((assert(plan.content.layout).partyStrip or {}).slots or {}) do
+    if slot.iconKey ~= nil then
+      iconKeys[#iconKeys + 1] = slot.iconKey
     end
-  end
-  local summary = plan.content.layout.partySummary
-  if summary ~= nil and view.partySummary and view.partySummary.iconKey ~= nil then
-    iconKeys[#iconKeys + 1] = view.partySummary.iconKey
   end
   if #iconKeys == 0 then
     self.iconStatus, self.iconFailure = nil, nil
@@ -329,17 +310,10 @@ local function isFocusedVisible(view, targetId)
 end
 
 local function actionSemantic(targetId)
-  if targetId == "party:edit" or targetId == "party:apply" or targetId == "party:move:add" then
+  if targetId == "party:move:add" then
     return "primary"
-  elseif
-    targetId == "party:remove"
-    or targetId == "party:discard"
-    or targetId == "party:clear-nickname"
-    or targetId:match("^party:move:remove:") ~= nil
-  then
+  elseif targetId == "party:use-species-name" then
     return "destructive"
-  elseif targetId == "party:back" or targetId == "party:cancel" then
-    return "secondary"
   end
   return "navigation"
 end
@@ -677,44 +651,30 @@ drawCenteredIcon = function(renderer, icon, bounds)
   end
 end
 
-local function drawGridCard(renderer, card, focused)
-  if card.kind == "member" then
-    local chrome = card.chrome
-    if chrome ~= nil then
-      local variant = card.fainted == true and (focused and "selectedFainted" or "fainted")
-        or (focused and "selected" or "normal")
-      local descriptor = assert(chrome[variant], "Party member panels carry their focus chrome variant")
-      local image =
-        assert(renderer._partyImages[assert(descriptor.image)], "Party panel chrome is prepared before drawing")
-      local imageWidth, imageHeight = image:getDimensions()
-      renderer.graphics.setColor(1, 1, 1, 1)
-      renderer.graphics.draw(
-        image,
-        card.rect.x,
-        card.rect.y,
-        0,
-        card.rect.width / imageWidth,
-        card.rect.height / imageHeight
-      )
-    end
-    local icon = card.iconKey and renderer._icons[card.iconKey]
-    if icon then
-      drawCenteredIcon(renderer, icon, card.iconRect)
-    end
-    local graphics = renderer.graphics
-    local lineHeight = renderer.text.fontDef.lineHeight
-    graphics.push("all")
-    graphics.translate(math.floor(card.textRect.x + 0.5), math.floor(card.textRect.y + 0.5))
-    graphics.scale(BODY_TEXT_SCALE, BODY_TEXT_SCALE)
-    local textWidth = card.textRect.width / BODY_TEXT_SCALE
-    drawText(renderer, fitText(renderer, card.label, textWidth), 0, 0)
-    if card.value ~= nil then
-      drawText(renderer, fitText(renderer, card.value, textWidth), 0, lineHeight, "hint")
-    end
-    graphics.pop()
-  else
-    drawButtonControl(renderer, card.rect, "+ Add", false, focused, false, "primary", false)
+local function drawStripSlot(renderer, slot, focused)
+  if slot.kind == "empty" then
+    return
   end
+  if slot.kind == "add" then
+    drawButtonControl(renderer, slot.rect, "+ Add", false, focused, false, "primary", false)
+    return
+  end
+  drawButtonControl(renderer, slot.rect, "", slot.active == true, focused, false, nil, true)
+  local icon = slot.iconKey and renderer._icons[slot.iconKey]
+  if icon then
+    drawCenteredIcon(renderer, icon, slot.iconRect)
+  end
+  local graphics = renderer.graphics
+  local lineHeight = renderer.text.fontDef.lineHeight
+  graphics.push("all")
+  graphics.translate(math.floor(slot.textRect.x + 0.5), math.floor(slot.textRect.y + 0.5))
+  graphics.scale(BODY_TEXT_SCALE, BODY_TEXT_SCALE)
+  local textWidth = slot.textRect.width / BODY_TEXT_SCALE
+  drawText(renderer, fitText(renderer, slot.label or "", textWidth), 0, 0)
+  if slot.level ~= nil then
+    drawText(renderer, fitText(renderer, "Lv. " .. tostring(slot.level), textWidth), 0, lineHeight, "hint")
+  end
+  graphics.pop()
 end
 
 local drawLocation
@@ -757,24 +717,6 @@ local function paintPane(self, view, plan, pane)
           false,
           nil,
           navigation.active ~= nil
-        )
-      end
-    end
-  end
-  if view.section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") then
-    for _, subpage in ipairs(view.partySubpages or {}) do
-      local id = "party:subpage:" .. subpage
-      local target = targetRect(layout, id)
-      if target then
-        drawButtonControl(
-          self,
-          target,
-          subpage,
-          view.partySubpage == subpage,
-          isFocusedVisible(view, id),
-          false,
-          nil,
-          true
         )
       end
     end
@@ -856,37 +798,9 @@ local function paintPane(self, view, plan, pane)
       end)
     end
   end
-  if view.section == "Party" and layout.partyGrid ~= nil then
-    local viewCards = {}
-    for _, viewCard in ipairs(view.partyCards or {}) do
-      viewCards[viewCard.kind == "member" and ("party:slot:" .. viewCard.slot0) or "party:add"] = viewCard
-    end
-    for _, card in ipairs(layout.partyGrid) do
-      local cardRow
-      for _, row in ipairs(layout.rows) do
-        if row.targetId == card.targetId then
-          cardRow = row
-          break
-        end
-      end
-      local viewCard = viewCards[card.targetId]
-      local chrome, fainted = card.chrome, card.fainted
-      if viewCard ~= nil then
-        chrome, fainted = viewCard.chrome, viewCard.fainted
-      end
-      drawGridCard(self, {
-        kind = card.kind,
-        targetId = card.targetId,
-        label = card.label,
-        value = card.value,
-        iconKey = cardRow and cardRow.iconKey or card.iconKey,
-        rect = card.rect,
-        iconRect = cardRow and cardRow.iconRect or card.iconRect,
-        textRect = cardRow and cardRow.labelRect or card.textRect,
-        textScale = card.textScale,
-        fainted = fainted,
-        chrome = chrome,
-      }, isFocusedVisible(view, card.targetId))
+  if view.section == "Party" and layout.partyStrip ~= nil then
+    for _, slot in ipairs(layout.partyStrip.slots) do
+      drawStripSlot(self, slot, isFocusedVisible(view, slot.targetId))
     end
   end
   if view.section == "Bag" then
@@ -956,26 +870,44 @@ local function paintPane(self, view, plan, pane)
       )
     end
   end
-  if view.section == "Party" and layout.partySummary ~= nil and view.partySummary ~= nil then
-    local summary = assert(view.partySummary)
-    local icon = summary.iconKey and self._icons[summary.iconKey]
-    if icon then
-      drawCenteredIcon(self, icon, layout.partySummary.iconRect)
-    end
-    local textRect = layout.partySummary.textRect
-    if layout.partySummary.inline then
-      local identity = summary.species .. "  Lv. " .. tostring(summary.level)
-      drawText(self, fitText(self, identity, textRect.width), textRect.x, textRect.y + 1, pagePalette(self.skin))
-    else
-      drawText(self, fitText(self, summary.label, textRect.width), textRect.x, textRect.y, pagePalette(self.skin))
-      drawText(
-        self,
-        fitText(self, summary.species .. "  Lv. " .. tostring(summary.level), textRect.width),
-        textRect.x,
-        textRect.y + self.text.fontDef.lineHeight,
-        pageMutedPalette(self.skin)
-      )
-    end
+  if
+    view.section == "Party"
+    and layout.partyPageLabel ~= nil
+    and targetRect(layout, "party:page:previous") ~= nil
+    and targetRect(layout, "party:page:next") ~= nil
+  then
+    local previous = assert(targetRect(layout, "party:page:previous"))
+    local next = assert(targetRect(layout, "party:page:next"))
+    local label = layout.partyPageLabel
+    local previousDisabled = layout.targets["party:page:previous"].activationEnabled == false
+    local nextDisabled = layout.targets["party:page:next"].activationEnabled == false
+    drawButtonControl(
+      self,
+      previous,
+      "<",
+      false,
+      isFocusedVisible(view, "party:page:previous"),
+      previousDisabled,
+      "navigation",
+      false
+    )
+    drawText(
+      self,
+      fitText(self, label.text, label.rect.width),
+      label.rect.x + math.max(0, (label.rect.width - self.text:textWidth(label.text)) / 2),
+      label.rect.y + 1,
+      pagePalette(self.skin)
+    )
+    drawButtonControl(
+      self,
+      next,
+      ">",
+      false,
+      isFocusedVisible(view, "party:page:next"),
+      nextDisabled,
+      "navigation",
+      false
+    )
   end
   if view.section == "Party" then
     for _, row in ipairs(layout.rows) do
@@ -1022,15 +954,6 @@ local function paintPane(self, view, plan, pane)
         end
       end
     end
-    if layout.partyHelp then
-      drawBodyText(
-        self,
-        fitText(self, layout.partyHelp.text, layout.partyHelp.rect.width / BODY_TEXT_SCALE),
-        layout.partyHelp.rect.x,
-        layout.partyHelp.rect.y,
-        "hint"
-      )
-    end
     if layout.partyStatsTable ~= nil then
       local stats = layout.partyStatsTable
       local headerColor = self.skin.cards.normal.border
@@ -1052,21 +975,30 @@ local function paintPane(self, view, plan, pane)
         drawCellText(header.label, header.rect)
       end
       for _, row in ipairs(stats.rows) do
-        for index, cell in ipairs(row.cells) do
+        for _, cell in ipairs(row.cells) do
           local cellRect = cell.rect
           if isFocusedVisible(view, cell.targetId) then
             setColor(graphics, SELECTED)
             graphics.rectangle("line", cellRect.x + 1, cellRect.y + 1, cellRect.width - 2, cellRect.height - 2)
           end
-          drawCellText(cell.label, cellRect, index == 4 and "hint" or "normal")
+          drawCellText(cell.label, cellRect, "normal")
         end
       end
-      for _, fact in ipairs(stats.facts) do
-        if isFocusedVisible(view, fact.targetId) then
-          setColor(graphics, SELECTED)
-          graphics.rectangle("line", fact.rect.x + 1, fact.rect.y + 1, fact.rect.width - 2, fact.rect.height - 2)
+    end
+    if layout.partyMoves ~= nil then
+      for _, slot in ipairs(layout.partyMoves.slots) do
+        if slot.kind ~= "empty" then
+          drawButtonControl(
+            self,
+            slot.rect,
+            slot.label or "",
+            false,
+            isFocusedVisible(view, slot.targetId),
+            false,
+            slot.kind == "add" and "primary" or nil,
+            false
+          )
         end
-        drawCellText(fact.label .. " " .. fact.value, fact.rect, fact.editable and "normal" or "hint")
       end
     end
   end
@@ -1216,8 +1148,6 @@ local function paintPane(self, view, plan, pane)
     local prompt
     if view.modal == "bag-item" then
       prompt = tostring(view.bagSelectedLabel or view.bagSelectedItem) .. "  × " .. tostring(view.bagSelectedQuantity)
-    elseif view.modal == "draft" then
-      prompt = "Apply party changes?"
     elseif view.modal == "remove" then
       prompt = "Remove this entry?"
     else
@@ -1457,12 +1387,6 @@ function Renderer:dispose()
     end
   end
   self._bagImages = {}
-  for _, image in pairs(self._partyImages) do
-    if image.release then
-      image:release()
-    end
-  end
-  self._partyImages = {}
   if self._iconQueue then
     self._iconQueue:release()
     self._iconQueue = nil

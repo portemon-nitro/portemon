@@ -79,99 +79,145 @@ local function fixture(scope, width, height, topology, section, variant, version
     view.scope = { id = "modal:leave", epoch = 2, kind = "decision", focusId = "cancel" }
   end
   if section == "Party" then
-    view.partyPage = variant
-    if variant == "draft-summary" or variant == "stats-table" then
-      view.partyPage = "draft"
-    elseif variant == "list-selected" then
-      view.partyPage = "list"
-    elseif variant == nil then
-      view.partyPage = "list"
-    end
-    if view.partyPage == "list" then
-      view.partyCanAdd = true
-      view.partyMemberCount = 1
-      view.partyCards = {
-        { kind = "member", slot0 = 0, label = "Pikachu", species = "Pikachu", level = 25 },
-        { kind = "add", slot0 = 1, label = "Add Pokemon" },
-      }
+    local tab = variant == "Moves" and "Moves" or variant == "Details" and "Details" or "Stats"
+    local empty = variant == "empty"
+    view.partyTab = tab
+    view.partySlot0 = empty and nil or 0
+    view.focus = variant == "Moves" and "party:move:0"
+      or variant == "party-move" and "party-move:move"
+      or empty and "party:add"
+      or "party:slot:0"
+    view.focusVisible = true
+    view.query = ""
+    local slots
+    if empty then
+      slots = { { kind = "add", slot0 = 0 } }
+      for _ = 2, 6 do
+        slots[#slots + 1] = { kind = "empty" }
+      end
     else
-      view.partyDirty = true
-      view.partyValid = false
-      view.partySubpage = variant == "stats-table" and "Stats" or "Identity"
-      view.partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" }
-      view.partyRows = {
-        {
-          role = "named choice",
-          targetId = "party:field:species",
-          id = "species",
-          label = "Species",
-          value = "PIKACHU",
-        },
-        {
-          role = "integer value",
-          targetId = "party:field:personality",
-          id = "personality",
-          label = "Personality",
-          value = 123456789,
-        },
-        {
-          role = "read-only value",
-          targetId = "party:readonly:nature",
-          id = "nature",
-          label = "Nature",
-          value = "Hardy",
-        },
-        { role = "warning", targetId = "party:validation", label = "HP exceeds calculated maximum" },
+      slots = {
+        { kind = "member", slot0 = 0, iconKey = "party/chikorita", label = "Chikorita", level = 5, active = true },
+        { kind = "member", slot0 = 1, iconKey = "party/totodile", label = "Totodile", level = 7, active = false },
+        { kind = "add", slot0 = 2 },
+        { kind = "empty" },
+        { kind = "empty" },
+        { kind = "empty" },
       }
-      if variant == "draft-nested-actions" then
-        view.partyPage = "draft"
-        view.partySubpage = "Moves"
-        local nestedActions = {
-          { role = "action", targetId = "party:move:remove:0", label = "Remove move 1", semantic = "destructive" },
-          { role = "action", targetId = "party:move:add", label = "Add move", semantic = "primary" },
+    end
+    view.partySelector = { slots = slots }
+    view.partyMemberCount = empty and 0 or 2
+    view.partyEmpty = empty
+    if not empty then
+      view.partyStats = {
+        header = {
+          {
+            id = "level",
+            label = "Level",
+            value = 5,
+            targetId = "party:field:level",
+            editor = { kind = "integer" },
+          },
+          {
+            id = "experience",
+            label = "Exp",
+            value = 135,
+            targetId = "party:field:experience",
+            editor = { kind = "integer" },
+          },
+          {
+            id = "friendship",
+            label = "Friendship",
+            value = 70,
+            targetId = "party:field:friendship",
+            editor = { kind = "integer" },
+          },
+          {
+            id = "currentHp",
+            label = "HP",
+            value = variant == "fainted" and 0 or 12,
+            display = variant == "fainted" and "0/19" or "12/19",
+            maxHp = 19,
+            targetId = "party:field:currentHp",
+            editor = { kind = "integer" },
+          },
+          {
+            id = "status",
+            label = "Status",
+            value = variant == "fainted" and "FNT" or "OK",
+            targetId = "party:readonly:status",
+          },
+        },
+        rows = {},
+      }
+      for _, pair in ipairs({
+        { "hp", "HP" },
+        { "attack", "Attack" },
+        { "defense", "Defense" },
+        { "speed", "Speed" },
+        { "specialAttack", "Sp. Atk" },
+        { "specialDefense", "Sp. Def" },
+      }) do
+        local key, label = pair[1], pair[2]
+        view.partyStats.rows[#view.partyStats.rows + 1] = {
+          key = key,
+          label = label,
+          iv = 1,
+          ivEditor = { targetId = "party:field:iv:" .. key, editor = { kind = "integer" } },
+          ev = 2,
+          evEditor = { targetId = "party:field:ev:" .. key, editor = { kind = "integer" } },
         }
-        for _, action in ipairs(view.partyRows) do
-          nestedActions[#nestedActions + 1] = action
-        end
-        view.partyRows = nestedActions
       end
-      if variant == "draft-summary" then
-        view.partySummary = {
-          label = "Chikorita",
-          species = "Chikorita",
-          level = 5,
-          iconKey = "party/chikorita",
-        }
-      end
-      if variant == "stats-table" then
-        view.focus = "party:field:iv:attack"
-        view.statsTable = { rows = {}, facts = {} }
-        for index, pair in ipairs({
-          { "hp", "HP" },
-          { "attack", "Attack" },
-          { "defense", "Defense" },
-          { "speed", "Speed" },
-          { "specialAttack", "Sp. Atk" },
-          { "specialDefense", "Sp. Def" },
-        }) do
-          local key, label = pair[1], pair[2]
-          view.statsTable.rows[index] = {
-            key = key,
-            label = label,
-            iv = index,
-            ivEditor = { targetId = "party:field:iv:" .. key, editor = { kind = "integer" } },
-            ev = index * 2,
-            evEditor = { targetId = "party:field:ev:" .. key, editor = { kind = "integer" } },
-            derived = index * 10,
-          }
-        end
-        view.statsTable.facts = {
-          { id = "currentHp", label = "Current HP", value = 12, editor = { kind = "integer" } },
-          { id = "status", label = "Status", value = 0, editor = { kind = "integer" } },
-          { id = "ev-total", label = "EV total", value = 42 },
-          { id = "ev-limit", label = "EV limit", value = "510" },
-        }
-      end
+      view.partyMoves = {
+        slots = {
+          { kind = "move", slot0 = 0, label = "Tackle 35/35", targetId = "party:move:0" },
+          { kind = "move", slot0 = 1, label = "Growl 40/40", targetId = "party:move:1" },
+          { kind = "add", label = "+ Add", targetId = "party:move:add" },
+          { kind = "empty" },
+        },
+      }
+      view.partyDetails = {
+        rows = {
+          {
+            role = "named choice",
+            targetId = "party:field:species",
+            id = "species",
+            label = "Species",
+            value = "CHIKORITA",
+            editor = { kind = "choice" },
+            enabled = true,
+          },
+          {
+            role = "action",
+            targetId = "party:field:nickname",
+            id = "nickname",
+            label = "Nickname",
+            value = "Chikorita",
+            editor = { kind = "name" },
+            enabled = true,
+          },
+          {
+            role = "action",
+            targetId = "party:use-species-name",
+            id = "use-species-name",
+            label = "Use species name",
+            enabled = true,
+          },
+          {
+            role = "read-only value",
+            targetId = "party:readonly:nature",
+            id = "nature",
+            label = "Nature",
+            value = "Hardy",
+          },
+        },
+      }
+    end
+    view.scope = { id = "section:Party", epoch = 1, kind = "section", focusId = view.focus }
+    view.textMetrics = realTextMetrics(scope)
+    if variant == "party-move" then
+      view.modal = "party-move"
+      view.scope = { id = "decision:party-move", epoch = 2, kind = "decision", focusId = view.focus }
     end
   elseif section == "Bag" then
     view.focus = variant == "bag-cards" and "bag:item:POTION" or "bag:pocket:items"
@@ -423,7 +469,11 @@ local function draw(scope, width, height, topology, name, section, variant, vers
 
   local layout = Layout.compute(view, plan.content.width, plan.content.height, view.textMetrics)
   local visibleActions = view.valueEditor and {}
-    or (view.modal and { "save", "discard", "cancel" } or { "save", "discard", "back" })
+    or (
+      view.modal == "party-move" and { "party-move:move", "party-move:pp", "party-move:pp-ups", "cancel" }
+      or view.modal and { "save", "discard", "cancel" }
+      or { "save", "discard", "back" }
+    )
   for _, targetId in ipairs(visibleActions) do
     local target = assert(layout.targets[targetId], name .. " must publish " .. targetId)
     local rect = target.rect
@@ -437,38 +487,36 @@ local function draw(scope, width, height, topology, name, section, variant, vers
     local rect = row.rect
     Assert.isTrue(rect.y >= layout.content.y and rect.y + rect.height <= layout.content.y + layout.content.height)
   elseif view.section == "Party" then
-    if view.partyPage == "list" then
+    Assert.notNil(layout.partyStrip, name .. " publishes its member strip")
+    Assert.equal(#layout.partyStrip.slots, 6, name .. " spans six strip positions")
+    if variant == "party-move" then
+      -- A decision scope prunes background targets; only the overlay stays.
+      for _, targetId in ipairs({ "party-move:move", "party-move:pp", "party-move:pp-ups", "cancel" }) do
+        Assert.notNil(layout.targets[targetId], name .. " exposes its move overlay action " .. targetId)
+      end
+    else
+      if variant ~= "empty" then
+        Assert.notNil(layout.targets["party:slot:0"], name .. " exposes the occupied slot")
+      end
       Assert.notNil(layout.targets["party:add"], name .. " keeps Add visible")
-      Assert.notNil(layout.targets["party:slot:0"], name .. " exposes the occupied slot")
-    elseif variant == "stats-table" then
-      Assert.notNil(layout.partyStatsTable, name .. " paints the structured Stats table")
-      Assert.equal(#layout.partyStatsTable.rows, 6)
-      Assert.notNil(layout.targets["party:field:iv:attack"])
-      Assert.notNil(layout.targets["party:field:ev:attack"])
-      Assert.isNil(layout.targets["party:readonly:stat:attack"])
-    elseif variant ~= "draft-summary" then
-      Assert.notNil(layout.targets["party:field:personality"], name .. " exposes raw identity")
-      local nature = false
-      for _, row in ipairs(layout.rows) do
-        if row.targetId == "party:readonly:nature" and row.role == "read-only value" then
-          nature = true
-        end
-      end
-      if not nature then
-        local viewport = layout.viewports and layout.viewports.party
-        for _, row in ipairs(view.partyRows or {}) do
-          if row.targetId == "party:readonly:nature" and row.role == "read-only value" then
-            nature = viewport ~= nil and viewport.contentExtent > viewport.clip.height
-          end
-        end
-      end
-      Assert.isTrue(nature, name .. " explains derived nature without making it focusable")
-      if view.partyPage == "detail" then
-        Assert.notNil(layout.targets["party:edit"], name .. " exposes the nested Edit decision")
-        Assert.notNil(layout.targets["party:back"], name .. " exposes the nested Back decision")
+      Assert.notNil(layout.targets["party:page:previous"], name .. " publishes its pager")
+      Assert.notNil(layout.targets["party:page:next"], name .. " publishes its pager")
+      Assert.notNil(layout.partyPageLabel, name .. " names its current page")
+      if variant == "empty" then
+        Assert.isNil(layout.targets["party:slot:0"], name .. " selects no member while empty")
+      elseif variant == "Moves" then
+        Assert.notNil(layout.targets["party:move:0"], name .. " exposes its occupied move slots")
+        Assert.notNil(layout.targets["party:move:add"], name .. " exposes its move Add slot")
+      elseif variant == "Details" then
+        Assert.notNil(layout.targets["party:field:species"], name .. " exposes its Details fields")
+      elseif plan.content.height >= 340 then
+        Assert.notNil(layout.partyStatsTable, name .. " paints the structured Stats table")
+        Assert.equal(#layout.partyStatsTable.rows, 6)
+        Assert.notNil(layout.targets["party:field:level"], name .. " exposes its level editor")
+        Assert.notNil(layout.targets["party:field:iv:attack"])
+        Assert.notNil(layout.targets["party:field:ev:attack"])
       else
-        Assert.notNil(layout.targets["party:apply"], name .. " exposes the nested Apply decision")
-        Assert.notNil(layout.targets["party:cancel"], name .. " exposes the nested Cancel decision")
+        Assert.notNil(layout.viewports.party, name .. " scrolls its compact Stats body")
       end
     end
   elseif view.section == "Location" then
@@ -870,6 +918,7 @@ function T.party_and_bag_render_on_compact_and_wide_surfaces(scope)
     role = "world",
   })
   draw(scope, 256, 192, compact, "party-compact", "Party")
+  draw(scope, 256, 192, compact, "party-compact-empty", "Party", "empty")
   draw(scope, 256, 192, compact, "bag-compact", "Bag")
   local wide = ScreenTopology.oneDisplay({
     id = "main",
@@ -878,10 +927,11 @@ function T.party_and_bag_render_on_compact_and_wide_surfaces(scope)
     role = "world",
   })
   draw(scope, 1280, 720, wide, "party-wide", "Party")
-  draw(scope, 1280, 720, wide, "party-raw-wide", "Party", "draft")
+  draw(scope, 1280, 720, wide, "party-moves-wide", "Party", "Moves")
+  draw(scope, 1280, 720, wide, "party-details-wide", "Party", "Details")
+  draw(scope, 1280, 720, wide, "party-move-overlay", "Party", "party-move")
   draw(scope, 1280, 720, wide, "bag-wide", "Bag")
 end
-
 function T.bag_quantity_uses_normal_and_pressed_generated_controls(scope)
   local topology = ScreenTopology.oneDisplay({
     id = "main",
@@ -1003,14 +1053,14 @@ function T.bag_page_controls_draw_generated_arrow_art_without_text_labels(scope)
 end
 
 function T.party_icons_center_from_distinct_provider_dimensions(scope)
-  local size, height = 800, 600
+  local size, height = 1280, 720
   local topology = ScreenTopology.oneDisplay({
     id = "main",
     rect = { x = 0, y = 0, width = size, height = height },
     touch = true,
     role = "world",
   })
-  local view, presentation, plan = fixture(scope, size, height, topology, "Party", "list")
+  local view, presentation, plan = fixture(scope, size, height, topology, "Party", "Stats")
   local RendererModule = require("app.src.saveeditor.SaveEditorRenderer")
   local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
   local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
@@ -1066,21 +1116,19 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     AssetPreparationQueue.new = function()
       return { release = function() end }
     end
-    local rowsById = {}
-    for _, row in ipairs(plan.content.layout.rows) do
-      rowsById[row.targetId] = row
+    local strip = assert(plan.content.layout.partyStrip, "Party layout publishes its member strip")
+    for _, slot in ipairs(strip.slots) do
+      slot.iconKey = nil
     end
-    plan.content.layout.partyGrid[1].value = "Neutral"
     local iconSpecs = {
-      { targetId = "party:slot:0", key = "small", rect = { x = 20, y = 72, width = 28, height = 24 } },
-      { targetId = "party:slot:0", key = "large", rect = { x = 86, y = 72, width = 32, height = 28 } },
+      { slot = 1, key = "small", rect = { x = 20, y = 72, width = 28, height = 24 } },
+      { slot = 1, key = "large", rect = { x = 86, y = 72, width = 32, height = 28 } },
     }
     for _, spec in ipairs(iconSpecs) do
-      local row = assert(rowsById[spec.targetId], "Party layout exposes the card icon target " .. spec.targetId)
-      row.iconKey = spec.key
-      row.iconRect = spec.rect
+      local slot = assert(strip.slots[spec.slot], "the strip exposes its member position " .. spec.slot)
+      slot.iconKey = spec.key
+      slot.iconRect = spec.rect
       iconRects[spec.key] = spec.rect
-      view.partyRows = { { role = "action", targetId = spec.targetId, label = spec.key } }
       renderer:prepareVisibleIcons(view, plan, {}, {})
       love.graphics.draw = function(drawable, drawQuad, x, y, ...)
         if drawable == image then
@@ -1101,15 +1149,13 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
       touch = false,
       role = "world",
     })
-    local compactView, compactPresentation, compactPlan = fixture(scope, 256, 192, compact, "Party", "list")
-    local compactRow
-    for _, row in ipairs(compactPlan.content.layout.rows) do
-      if row.targetId == "party:slot:0" then
-        compactRow = row
-        row.iconKey = "oversized"
-      end
+    local compactView, compactPresentation, compactPlan = fixture(scope, 256, 192, compact, "Party", "Stats")
+    local compactStrip = assert(compactPlan.content.layout.partyStrip)
+    for _, slot in ipairs(compactStrip.slots) do
+      slot.iconKey = nil
     end
-    compactRow = assert(compactRow, "compact Party layout exposes its occupied card")
+    local compactSlot = assert(compactStrip.slots[1])
+    compactSlot.iconKey = "oversized"
     renderer:prepareVisibleIcons(compactView, compactPlan, {}, {})
     local compactDraw
     love.graphics.draw = function(drawable, drawQuad, x, y, _, scaleX, scaleY, ...)
@@ -1124,8 +1170,8 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     renderer:draw(compactView, compactPlan)
     love.graphics.setCanvas()
     compactPresentation:dispose()
-    iconRects.oversized = compactRow.iconRect
-    iconRects.text = compactRow.labelRect
+    iconRects.oversized = compactSlot.iconRect
+    iconRects.text = compactSlot.textRect
     draws.oversized = compactDraw
   end, debug.traceback)
   love.graphics.draw = oldDraw
@@ -1136,7 +1182,7 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     error(failure, 0)
   end
 
-  Assert.equal(#draws, 2, "both occupied and Add cards draw their prepared icons")
+  Assert.equal(#draws, 2, "both strip members draw their prepared icons")
   for _, color in ipairs(iconColors) do
     Assert.near(color[1], 1, 0.001, "party icon red tint is reset")
     Assert.near(color[2], 1, 0.001, "party icon green tint is reset")
@@ -1156,12 +1202,12 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     Assert.near(draws[index].y, point.y, 0.01, "icon y uses provider-reported height and layout icon bounds")
   end
   Assert.isTrue(
-    table.concat(drawnText, " "):find("Neutral", 1, true) ~= nil,
-    "grid-card painter renders the projected value string without domain formatting"
+    table.concat(drawnText, " "):find("Chikorita", 1, true) ~= nil,
+    "strip slots render their member identity beside the icon"
   )
-  local compactDraw = assert(draws.oversized, "compact Party card draws its prepared icon")
+  local compactDraw = assert(draws.oversized, "compact strip draws its prepared icon")
   local compactBounds = iconRects.oversized
-  Assert.isTrue(compactDraw.scaleX < 1 and compactDraw.scaleY < 1, "compact cards scale a full-size icon to fit")
+  Assert.isTrue(compactDraw.scaleX < 1 and compactDraw.scaleY < 1, "compact slots scale a full-size icon to fit")
   Assert.isTrue(
     compactDraw.x >= compactBounds.x
       and compactDraw.y >= compactBounds.y
@@ -1171,10 +1217,9 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
   )
   Assert.isTrue(
     compactDraw.x + dimensions.oversized.width * compactDraw.scaleX <= iconRects.text.x,
-    "scaled icon stays beside the card label"
+    "scaled icon stays beside the slot label"
   )
 end
-
 function T.location_grid_shows_status_and_controls_on_compact_wide_tall_and_dual_touch(scope)
   local compact = ScreenTopology.oneDisplay({
     id = "main",
@@ -1299,22 +1344,26 @@ function T.compact_progress_fits_a_real_long_flag_inside_separate_row_cells(scop
   )
 end
 
-function T.add_draft_summary_is_rendered_in_its_reserved_party_region(scope)
-  local width, height = 800, 600
+function T.selected_member_renders_identity_in_strip_and_stats_header(scope)
+  local width, height = 1280, 720
   local wide = ScreenTopology.oneDisplay({
     id = "main",
     rect = { x = 0, y = 0, width = width, height = height },
     touch = false,
     role = "world",
   })
-  local _, renderedText, layout = draw(scope, width, height, wide, "party-draft-summary", "Party", "draft-summary")
-  Assert.notNil(layout.partySummary, "Party draft layout reserves a summary region")
-  Assert.isTrue(renderedText:find("Chikorita", 1, true) ~= nil, "the draft summary renders its identity")
-  Assert.isTrue(renderedText:find("Lv. 5", 1, true) ~= nil, "the draft summary renders its level")
+  local _, renderedText, layout =
+    draw(scope, width, height, wide, "party-selected-member", "Party", "Stats")
+  local strip = assert(layout.partyStrip, "the Party layout publishes its member strip")
+  Assert.equal(#strip.slots, 6, "the strip spans six positions")
+  Assert.isTrue(strip.slots[1].active, "the first member stays selected")
+  Assert.isTrue(renderedText:find("Chikorita", 1, true) ~= nil, "the strip renders the member identity")
+  Assert.isTrue(renderedText:find("Lv. 5", 1, true) ~= nil, "the strip renders the member level")
+  Assert.isTrue(renderedText:find("Level", 1, true) ~= nil, "the Stats header renders its level fact")
+  Assert.isTrue(renderedText:find("Stats", 1, true) ~= nil, "the pager names the current page")
 end
-
 function T.party_stats_table_renders_distinct_aligned_columns(scope)
-  local width, height = 800, 600
+  local width, height = 1280, 720
   local topology = ScreenTopology.oneDisplay({
     id = "main",
     rect = { x = 0, y = 0, width = width, height = height },
@@ -1322,16 +1371,17 @@ function T.party_stats_table_renders_distinct_aligned_columns(scope)
     role = "world",
   })
   local _, renderedText, layout, _, _, view =
-    draw(scope, width, height, topology, "party-stats-table", "Party", "stats-table")
+    draw(scope, width, height, topology, "party-stats-table", "Party", "Stats")
   Assert.isTrue(renderedText:find("Stat", 1, true) ~= nil, "the table names the stat column")
   Assert.isTrue(renderedText:find("IV", 1, true) ~= nil, "the table names the IV column")
   Assert.isTrue(renderedText:find("EV", 1, true) ~= nil, "the table names the EV column")
-  Assert.isTrue(renderedText:find("Derived", 1, true) ~= nil, "the table distinguishes derived values")
+  Assert.isNil(renderedText:find("Derived", 1, true), "computed stat values are omitted")
   Assert.isTrue(renderedText:find("Attack", 1, true) ~= nil, "the stat label is rendered")
-  Assert.isTrue(renderedText:find("HP", 1, true) ~= nil, "the compact editable HP fact remains visible")
-  Assert.isTrue(renderedText:find("12", 1, true) ~= nil, "the editable HP value remains visible")
+  Assert.isTrue(renderedText:find("HP", 1, true) ~= nil, "the header HP fact remains visible")
+  Assert.isTrue(renderedText:find("12/19", 1, true) ~= nil, "the header shows current and maximum HP")
   Assert.notNil(layout.partyStatsTable)
-  Assert.equal(view.focus, "party:field:iv:attack")
+  Assert.equal(#layout.partyStatsTable.headers, 3, "the table keeps exactly Stat/IV/EV columns")
+  Assert.equal(view.focus, "party:slot:0")
 
   local compactTopology = ScreenTopology.oneDisplay({
     id = "main",
@@ -1340,17 +1390,10 @@ function T.party_stats_table_renders_distinct_aligned_columns(scope)
     role = "world",
   })
   local _, compactText, compactLayout =
-    draw(scope, 256, 192, compactTopology, "party-stats-table-compact", "Party", "stats-table")
-  for _, header in ipairs({ "Stat", "IV", "EV", "Derived" }) do
-    Assert.isTrue(compactText:find(header, 1, true) ~= nil, "compact Stats retains " .. header)
-  end
-  local lastFact = compactLayout.partyStatsTable.facts[3].rect
-  Assert.isTrue(
-    lastFact.y + lastFact.height <= compactLayout.targets["party:apply"].rect.y,
-    "compact facts do not overlap the draft actions"
-  )
+    draw(scope, 256, 192, compactTopology, "party-stats-table-compact", "Party", "Stats")
+  Assert.isTrue(compactText:find("Level", 1, true) ~= nil, "compact Stats keeps its header facts")
+  Assert.notNil(compactLayout.viewports.party, "compact Stats keeps its scroll viewport")
 end
-
 function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scope)
   local width, height = 256, 192
   local compact = ScreenTopology.oneDisplay({
@@ -1677,11 +1720,11 @@ function T.surface_text_and_party_action_hierarchy_follow_surface_role(scope)
       touch = true,
       role = "world",
     })
-    -- Detail and draft pages are captured once each; every action on the same
-    -- page shares its capture instead of re-rendering an identical page.
+    -- Party pages are captured once each; every action on the same page
+    -- shares its capture instead of re-rendering an identical page.
     local captures = {}
     local function assertActionFaceAndLabel(name, targetId, label)
-      local variant = (targetId == "party:discard" or targetId == "party:apply") and "draft" or "detail"
+      local variant = targetId == "party:move:add" and "Moves" or "Details"
       local cached = captures[variant]
       if cached == nil then
         rectangleCalls = {}
@@ -1701,26 +1744,15 @@ function T.surface_text_and_party_action_hierarchy_follow_surface_role(scope)
       Assert.isTrue(average > 150, targetId .. " label uses light control ink")
       return { red, green, blue }
     end
-    local editFace = assertActionFaceAndLabel("hierarchy-party-detail", "party:edit", "Edit")
-    local removeFace = assertActionFaceAndLabel("hierarchy-party-detail", "party:remove", "Remove")
-    local backFace = assertActionFaceAndLabel("hierarchy-party-detail", "party:back", "Back")
+    local addFace = assertActionFaceAndLabel("hierarchy-party-moves", "party:move:add", "+ Add")
+    local clearFace = assertActionFaceAndLabel("hierarchy-party-details", "party:use-species-name", "Use species name")
     Assert.isTrue(
-      editFace[1] ~= removeFace[1] or editFace[2] ~= removeFace[2] or editFace[3] ~= removeFace[3],
-      "primary edit and destructive remove use different faces"
-    )
-    Assert.isTrue(
-      backFace[1] ~= removeFace[1] or backFace[2] ~= removeFace[2] or backFace[3] ~= removeFace[3],
-      "secondary back and destructive remove use different faces"
-    )
-    local applyFace = assertActionFaceAndLabel("hierarchy-party-draft", "party:apply", "Apply")
-    local discardFace = assertActionFaceAndLabel("hierarchy-party-draft", "party:discard", "Discard")
-    Assert.isTrue(
-      applyFace[1] ~= discardFace[1] or applyFace[2] ~= discardFace[2] or applyFace[3] ~= discardFace[3],
-      "draft apply and discard use different faces"
+      addFace[1] ~= clearFace[1] or addFace[2] ~= clearFace[2] or addFace[3] ~= clearFace[3],
+      "primary add and destructive species-name reset use different faces"
     )
 
     rectangleCalls = {}
-    local _, _, _, _, _, _, _, _, listPalettes = draw(scope, 800, 600, topology, "hierarchy-party-add", "Party", "list")
+    local _, _, _, _, _, _, _, _, listPalettes = draw(scope, 800, 600, topology, "hierarchy-party-add", "Party", "Stats")
     local addCall = assert(findPaletteCall(listPalettes, "+ Add"), "Add button label records its palette")
     Assert.isTrue(
       assert(foregroundAverage(addCall.palette), "Add card has a foreground") > 150,
@@ -2054,25 +2086,26 @@ function T.explicit_frames_use_integer_aligned_geometry(scope)
   end
 end
 
-function T.party_list_uses_retail_panels_with_a_small_add_button(scope)
+function T.party_strip_uses_generic_chrome_without_retail_panels(scope)
   local topology = singleDisplay(800, 600)
-  local _, renderedText, layout = draw(scope, 800, 600, topology, "party-retail", "Party", "list")
+  local _, renderedText, layout = draw(scope, 800, 600, topology, "party-strip", "Party", "Stats")
   local member = assert(layout.targets["party:slot:0"]).rect
+  local painted = false
   local fills = recordRectangles(function()
-    draw(scope, 800, 600, topology, "party-retail-record", "Party", "list")
+    draw(scope, 800, 600, topology, "party-strip-record", "Party", "Stats")
   end)
   for _, call in ipairs(fills) do
     if call.mode == "fill" then
-      Assert.isFalse(
-        call.x == member.x and call.y == member.y and call.width == member.width and call.height == member.height,
-        "member cells never repaint a synthetic card underneath the retail panel"
-      )
+      painted = true
     end
   end
+  Assert.isTrue(painted, "member cells paint generic button chrome instead of retail panel art")
   Assert.isTrue(renderedText:find("+ Add", 1, true) ~= nil, "the Add action is a small labeled button")
-  Assert.isFalse(renderedText:find("Add Pokemon", 1, true) ~= nil, "no large filled Add card remains")
+  Assert.isTrue(
+    member.width <= layout.content.width / 6 + 1,
+    "strip positions share the strip width instead of card panels"
+  )
 end
-
 function T.overflowing_viewports_show_a_scroll_cue_and_quiet_ones_do_not(scope)
   local _, _, longLayout = draw(scope, 256, 192, singleDisplay(256, 192), "scroll-overflow", "Player", "choice-list")
   local viewport = assert(longLayout.viewports["value:choice"], "the long choice list publishes its scroll viewport")
@@ -2224,40 +2257,30 @@ function T.framed_lists_draw_their_frame_after_their_content(scope)
 end
 
 function T.nested_party_actions_use_semantic_button_faces(scope)
-  local TextButton = require("libs.ui.src.TextButton")
-  local oldDraw = TextButton.draw
-  local faces = {}
-  TextButton.draw = function(graphics, button, options)
-    faces[#faces + 1] = { label = options.label, colors = options.colors }
-    return oldDraw(graphics, button, options)
-  end
-  local ok, failure = xpcall(function()
-    draw(scope, 1280, 720, singleDisplay(1280, 720), "nested-actions", "Party", "draft-nested-actions")
-  end, debug.traceback)
-  TextButton.draw = oldDraw
-  if not ok then
-    error(failure, 0)
-  end
-  local function faceFor(label)
-    for _, face in ipairs(faces) do
-      if face.label == label then
-        return face.colors
-      end
-    end
-    return nil
-  end
-  local remove = assert(faceFor("Remove move 1"), "the nested remove action paints through the button seam")
-  local add = assert(faceFor("Add move"), "the nested add action paints through the button seam")
+  local width, height = 1280, 720
+  local topology = singleDisplay(width, height)
+  local _, renderedText, layout, _, _, _, _, _, palettes =
+    draw(scope, width, height, topology, "nested-actions", "Party", "Moves")
+  Assert.notNil(layout.targets["party:move:add"], "the first empty move slot stays activatable")
+  local addCall = assert(findPaletteCall(palettes, "+ Add"), "the move Add label records its palette")
   Assert.isTrue(
-    remove.faceTop[1] > 0.8 and remove.faceTop[2] < 0.7,
-    "removing a move uses the destructive face instead of navigation"
+    assert(foregroundAverage(addCall.palette), "move Add has a foreground") > 150,
+    "adding a move uses light primary ink"
   )
+  local _, overlayText, overlayLayout =
+    draw(scope, width, height, topology, "nested-overlay", "Party", "party-move")
+  for _, label in ipairs({ "Move", "Current PP", "PP Ups" }) do
+    Assert.isTrue(overlayText:find(label, 1, true) ~= nil, "the move overlay exposes " .. label)
+  end
+  for _, targetId in ipairs({ "party-move:move", "party-move:pp", "party-move:pp-ups" }) do
+    Assert.notNil(overlayLayout.targets[targetId], "the overlay keeps " .. targetId .. " activatable")
+  end
   Assert.isTrue(
-    add.faceTop[2] > 0.7 and add.faceTop[1] < 0.7,
-    "adding a move uses the primary face instead of navigation"
+    overlayText:find("Remove", 1, true) == nil,
+    "the move overlay offers no removal action"
   )
+  Assert.isTrue(renderedText:find("Remove", 1, true) == nil, "the Moves page offers no removal action")
 end
-
 function T.framed_modals_draw_their_frame_after_their_content(scope)
   local events = {}
   local oldPrint = love.graphics.print
@@ -2322,135 +2345,44 @@ local function solidPanel(scope, red, green, blue)
   return love.graphics.newImage(data)
 end
 
-local function proofImages(scope)
-  return {
-    normal = solidPanel(scope, 0.2, 0.3, 0.9),
-    selected = solidPanel(scope, 0.9, 0.2, 0.2),
-    fainted = solidPanel(scope, 0.35, 0.35, 0.35),
-    selectedFainted = solidPanel(scope, 0.9, 0.55, 0.15),
-  }
-end
-
-local function injectPartyPanels(renderer, view, images, fainted)
-  local chrome = {}
-  for variant, path in pairs({
-    normal = "party/proof-normal",
-    selected = "party/proof-selected",
-    fainted = "party/proof-fainted",
-    selectedFainted = "party/proof-selected-fainted",
-  }) do
-    chrome[variant] = { image = path }
-    renderer._partyImages[path] = images[variant]
-  end
-  for _, card in ipairs(view.partyCards) do
-    if card.kind == "member" then
-      card.fainted = fainted
-      card.chrome = chrome
-    end
-  end
-end
-
-local function panelPixel(data, view, layout, targetId)
-  local member = assert(layout.targets[targetId]).rect
-  local pane = assert(view.presentation.panes[1])
-  local hostX, hostY =
-    LayoutGeometry.logicalToHost(pane.placement, member.x + 4, member.y + member.height / 2)
-  return data:getPixel(math.floor(hostX), math.floor(hostY))
-end
-
-function T.party_member_panels_select_focus_variants_without_synthetic_cards(scope)
+function T.selected_member_marks_active_chrome_without_focus_ring(scope)
   local topology = singleDisplay(800, 600)
-  local focusedData, focusedText, focusedLayout, _, _, focusedView = draw(
-    scope,
-    800,
-    600,
-    topology,
-    "party-panel-focused",
-    "Party",
-    "list",
-    nil,
-    function(renderer, view)
-      view.focus = "party:slot:0"
-      injectPartyPanels(renderer, view, proofImages(scope), false)
-    end
-  )
-  local red, green, blue = panelPixel(focusedData, focusedView, focusedLayout, "party:slot:0")
-  Assert.isTrue(red > 0.7 and green < 0.4 and blue < 0.4, "a focused member draws its selected panel")
-  Assert.isTrue(focusedText:find("+ Add", 1, true) ~= nil, "the Add action is a small labeled button")
-  Assert.isFalse(focusedText:find("Add Pokemon", 1, true) ~= nil, "no large filled Add card remains")
-  local add = assert(focusedLayout.targets["party:add"]).rect
-  Assert.isTrue(add.width <= 72 and add.height <= 28, "Add stays a compact control")
+  draw(scope, 800, 600, topology, "party-strip-focused", "Party", "Stats")
+  local member = nil
   local fills = recordRectangles(function()
-    draw(scope, 800, 600, topology, "party-panel-focused-record", "Party", "list", nil, function(renderer, view)
-      view.focus = "party:slot:0"
-      injectPartyPanels(renderer, view, proofImages(scope), false)
+    local _, _, layout = draw(scope, 800, 600, topology, "party-strip-focused-record", "Party", "Stats")
+    member = assert(layout.targets["party:slot:0"]).rect
+  end)
+  local function ringAt(calls)
+    for _, call in ipairs(calls) do
+      if
+        call.mode == "line"
+        and call.x == member.x + 1
+        and call.y == member.y + 1
+        and call.width == member.width - 2
+        and call.height == member.height - 2
+      then
+        return true
+      end
+    end
+    return false
+  end
+  Assert.isTrue(ringAt(fills), "keyboard focus draws its ring around the focused strip member")
+
+  local quietFills = recordRectangles(function()
+    draw(scope, 800, 600, topology, "party-strip-quiet-record", "Party", "Stats", nil, function(_, view)
+      view.focus = "party:add"
     end)
   end)
-  local member = assert(focusedLayout.targets["party:slot:0"]).rect
-  for _, call in ipairs(fills) do
-    if call.mode == "fill" then
-      Assert.isFalse(
-        call.x == member.x and call.y == member.y and call.width == member.width and call.height == member.height,
-        "member cells never repaint a synthetic card underneath the retail panel"
-      )
-    end
-  end
-
-  local quietData, _, quietLayout, _, _, quietView = draw(
-    scope,
-    800,
-    600,
-    topology,
-    "party-panel-quiet",
-    "Party",
-    "list",
-    nil,
-    function(renderer, view)
-      view.focus = "party:add"
-      injectPartyPanels(renderer, view, proofImages(scope), false)
-    end
-  )
-  local quietRed, quietGreen, quietBlue = panelPixel(quietData, quietView, quietLayout, "party:slot:0")
-  Assert.isTrue(quietBlue > 0.7 and quietRed < 0.4, "an unfocused member draws its normal panel")
+  Assert.isFalse(ringAt(quietFills), "the selected member draws no focus ring while another control has focus")
 end
-
-function T.fainted_party_members_use_fainted_panel_variants(scope)
-  local topology = singleDisplay(800, 600)
-  local focusedData, _, focusedLayout, _, _, focusedView = draw(
-    scope,
-    800,
-    600,
-    topology,
-    "party-panel-fainted-focused",
-    "Party",
-    "list",
-    nil,
-    function(renderer, view)
-      view.focus = "party:slot:0"
-      injectPartyPanels(renderer, view, proofImages(scope), true)
-    end
-  )
-  local red, green, blue = panelPixel(focusedData, focusedView, focusedLayout, "party:slot:0")
-  Assert.isTrue(red > 0.7 and green > 0.4 and green < 0.7 and blue < 0.4, "a focused fainted member draws its selected fainted panel")
-  local quietData, _, quietLayout, _, _, quietView = draw(
-    scope,
-    800,
-    600,
-    topology,
-    "party-panel-fainted-quiet",
-    "Party",
-    "list",
-    nil,
-    function(renderer, view)
-      view.focus = "party:add"
-      injectPartyPanels(renderer, view, proofImages(scope), true)
-    end
-  )
-  local faintedRed, faintedGreen, faintedBlue = panelPixel(quietData, quietView, quietLayout, "party:slot:0")
-  Assert.isTrue(
-    math.abs(faintedRed - faintedGreen) < 0.1 and math.abs(faintedGreen - faintedBlue) < 0.1,
-    "an unfocused fainted member draws its fainted panel"
-  )
+function T.fainted_party_members_show_fainted_status(scope)
+  local topology = singleDisplay(1280, 720)
+  local _, renderedText, layout =
+    draw(scope, 1280, 720, topology, "party-fainted-status", "Party", "fainted")
+  Assert.notNil(layout.targets["party:field:currentHp"], "a fainted member keeps its HP editor")
+  Assert.isTrue(renderedText:find("0/19", 1, true) ~= nil, "a fainted member shows zero current HP")
+  Assert.isTrue(renderedText:find("FNT", 1, true) ~= nil, "a fainted member shows its fainted status")
 end
 
 function T.bag_icon_preparation_needs_no_browse_or_focus_art(scope)

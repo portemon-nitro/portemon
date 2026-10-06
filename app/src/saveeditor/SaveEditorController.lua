@@ -25,9 +25,8 @@ end
 ---@field pointerId string?
 ---@field scrollOffset number
 ---@field query string
----@field partyPage string
 ---@field partySlot0 integer?
----@field partySubpage string
+---@field partyTab "Stats"|"Moves"|"Details"
 ---@field bagPocket string
 ---@field bagItemKey string?
 ---@field bagPage0 integer
@@ -55,9 +54,8 @@ end
 ---@field markKeyboardNavigation fun(self: SaveEditorController)
 ---@field reconcileFocus fun(self: SaveEditorController, focusGraph: table<string, { up: string[], down: string[], left: string[], right: string[] }>, currentId: string?, fallbackIds: string[]): string
 ---@field selectPartySlot fun(self: SaveEditorController, slot0: integer)
----@field openPartyDraft fun(self: SaveEditorController, mode: "add"|"edit", slot0: integer?)
----@field closePartyDetail fun(self: SaveEditorController)
----@field selectPartySubpage fun(self: SaveEditorController, subpage: string)
+---@field selectPartyTab fun(self: SaveEditorController, tab: "Stats"|"Moves"|"Details")
+---@field stepPartyTab fun(self: SaveEditorController, direction: "previous"|"next"): string?
 ---@field selectBagPocket fun(self: SaveEditorController, pocket: string)
 ---@field setBagPage fun(self: SaveEditorController, page0: integer)
 ---@field selectBagItem fun(self: SaveEditorController, itemKey: string)
@@ -86,9 +84,8 @@ function Controller.new()
     pointerId = nil,
     scrollOffset = 0,
     query = "",
-    partyPage = "list",
     partySlot0 = nil,
-    partySubpage = "Identity",
+    partyTab = "Stats",
     bagPocket = "items",
     bagItemKey = nil,
     bagPage0 = 0,
@@ -119,9 +116,8 @@ function Controller:snapshot()
     scrollOffset = self.scrollOffset,
     query = self.query,
     sections = { "Location", "Player", "Party", "Bag", "Progress" },
-    partyPage = self.partyPage,
     partySlot0 = self.partySlot0,
-    partySubpage = self.partySubpage,
+    partyTab = self.partyTab,
     bagPocket = self.bagPocket,
     bagItemKey = self.bagItemKey,
     bagPage0 = self.bagPage0,
@@ -221,9 +217,9 @@ function Controller:setSection(section)
   self:closeModal()
   self.capturedTarget, self.pointerId = nil, nil
   if section == "Party" then
-    self.partyPage = "list"
+    self.partyTab = "Stats"
     self.partySlot0 = nil
-    self.focus = "party:add"
+    self.focus = "party:slot:0"
   elseif section == "Bag" then
     self.focus = "bag:pocket:" .. self.bagPocket
   elseif section == "Player" then
@@ -411,42 +407,34 @@ function Controller:moveFocus(focusGraph, direction)
   self:setFocus(FocusGraph.move(focusGraph, self.focus, direction))
 end
 
+local PARTY_TABS = { Stats = "Moves", Moves = "Details" }
+local PARTY_TABS_REVERSE = { Moves = "Stats", Details = "Moves" }
+
 function Controller:selectPartySlot(slot0)
   assert(type(slot0) == "number" and slot0 % 1 == 0 and slot0 >= 0 and slot0 < 6)
   self.partySlot0 = slot0
-  self.partyPage = "detail"
-  self.partySubpage = "Identity"
-  self.focus = "party:field:species"
+  self.focus = "party:slot:" .. slot0
   self:cancelInteraction()
 end
 
-function Controller:openPartyDraft(mode, slot0)
-  assert(mode == "add" or mode == "edit", "party draft mode is explicit")
-  if mode == "add" then
-    assert(slot0 == nil, "an Add draft has no party slot")
-  else
-    assert(type(slot0) == "number" and slot0 % 1 == 0 and slot0 >= 0 and slot0 < 6, "an Edit draft has a party slot")
+function Controller:selectPartyTab(tab)
+  assert(tab == "Stats" or tab == "Moves" or tab == "Details", "unknown party page: " .. tostring(tab))
+  self.partyTab = tab
+  self:cancelInteraction()
+end
+
+---@param direction "previous"|"next"
+---@return string? stepped the newly selected page, or nil at a disabled end
+function Controller:stepPartyTab(direction)
+  assert(direction == "previous" or direction == "next")
+  local tabs = direction == "next" and PARTY_TABS or PARTY_TABS_REVERSE
+  local stepped = tabs[self.partyTab]
+  if stepped ~= nil then
+    self.partyTab = stepped
+    self.focus = direction == "next" and "party:page:next" or "party:page:previous"
   end
-  self.partySlot0 = slot0
-  self.partyPage = "draft"
-  self.focus = "party:apply"
   self:cancelInteraction()
-end
-
-function Controller:closePartyDetail()
-  self.partyPage = "list"
-  self.focus = self.partySlot0 and ("party:slot:" .. self.partySlot0) or "party:add"
-  self.partySlot0 = nil
-  self:cancelInteraction()
-end
-
-function Controller:selectPartySubpage(subpage)
-  assert(
-    subpage == "Identity" or subpage == "Training" or subpage == "Stats" or subpage == "Moves" or subpage == "Origin"
-  )
-  self.partySubpage = subpage
-  self.focus = "party:subpage:" .. subpage
-  self:cancelInteraction()
+  return stepped
 end
 
 function Controller:selectBagPocket(pocket)
@@ -492,7 +480,7 @@ function Controller:pointer(event)
     self.capturedTarget, self.pointerId = event.targetId, event.pointerId
     self.pressFocus = self.focus
     self.capturedScopeEpoch = event.scopeEpoch
-    self.pointerScope = table.concat({ self.modal or "", self.section, self.partyPage, self.locationPage }, ":")
+    self.pointerScope = table.concat({ self.modal or "", self.section, self.partyTab, self.locationPage }, ":")
     if event.targetId ~= nil then
       self.focus = event.targetId
       if event.targetId == "location:grid" or event.targetId:match("^location:tile:") then
@@ -552,7 +540,7 @@ function Controller:pointer(event)
     return nil
   elseif event.type == "pointer_up" then
     local target = event.targetId
-    local currentScope = table.concat({ self.modal or "", self.section, self.partyPage, self.locationPage }, ":")
+    local currentScope = table.concat({ self.modal or "", self.section, self.partyTab, self.locationPage }, ":")
     if self.pointerScope ~= nil and self.pointerScope ~= currentScope then
       self:cancelInteraction()
       return nil

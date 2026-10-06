@@ -357,53 +357,58 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     clickTarget(state, "party:add")
     local speciesKey = assert(state.valueEditor:snapshot().selectedKey)
     clickTarget(state, "choice:" .. speciesKey)
-    clickTarget(state, "party:subpage:Stats")
+    Assert.equal(state.controller.partyTab, "Stats", "a new member opens on the Stats page")
     topology = cases[3].topology
     capture("tall-party-stats", 720, 1280)
     topology = cases[1].topology
-    clickTarget(state, "party:subpage:Moves")
+    clickTarget(state, "party:page:next")
+    Assert.equal(state.controller.partyTab, "Moves", "the pager advances to the Moves page")
     capture("compact-party-moves", 256, 192)
     topology = cases[2].topology
     width, height = 1280, 720
-    clickTarget(state, "party:subpage:Identity")
+    clickTarget(state, "party:page:next")
+    Assert.equal(state.controller.partyTab, "Details", "the pager advances to the Details page")
     clickTarget(state, "party:field:nickname")
     local keyboard = capture("naming-keyboard", width, height)
     Assert.equal(keyboard.valueEditor.kind, "name", "the naming keyboard comes from the production draft editor")
 
     clickTarget(state, "cancel")
-    clickTarget(state, "party:field:personality")
-    state:textinput("NOT A PID")
-    local invalidPid = capture("invalid-pid", width, height)
-    Assert.equal(invalidPid.valueEditor.parsedValue, nil, "the invalid PID remains visible in the active editor")
+    clickTarget(state, "party:page:previous")
+    clickTarget(state, "party:page:previous")
+    Assert.equal(state.controller.partyTab, "Stats", "the pager returns to the Stats page")
+    clickTarget(state, "party:field:level")
+    state:textinput("NOT A LEVEL")
+    local invalidLevel = capture("invalid-level", width, height)
+    Assert.equal(invalidLevel.valueEditor.parsedValue, nil, "the invalid level remains visible in the active editor")
 
     clickTarget(state, "cancel")
-    clickTarget(state, "party:discard")
-
     clickTarget(state, "party:add")
-    local selectedSpecies = assert(state:view().valueEditor.options[1].key)
-    clickTarget(state, "choice:" .. selectedSpecies)
-    clickTarget(state, "party:apply")
-    clickTarget(state, "party:back")
-    for _ = 2, 6 do
-      clickTarget(state, "party:add")
+    for index = 2, 6 do
       local species = assert(state:view().valueEditor.options[1].key)
       clickTarget(state, "choice:" .. species)
-      clickTarget(state, "party:apply")
-      clickTarget(state, "party:back")
+      if index < 6 then
+        clickTarget(state, "party:add")
+      end
     end
+    clickTarget(state, "party:slot:0")
+    clickTarget(state, "party:slot:5")
     local crowdedParty = capture("crowded-party", width, height)
-    Assert.equal(#crowdedParty.partyCards, 6, "the production Party view contains six applied members")
-    Assert.equal(#crowdedParty.layout.partyGrid, 6, "the production renderer receives all six Party card layouts")
+    Assert.equal(crowdedParty.partyMemberCount, 6, "the production Party view contains six applied members")
+    Assert.equal(
+      #assert(crowdedParty.layout.partyStrip).slots,
+      6,
+      "the production renderer receives all six strip positions"
+    )
     local iconProvider = assert(state.renderer._iconProvider, "the selected ROM supplied the real Mon icon provider")
     local centeredIcons = 0
-    for _, row in ipairs(crowdedParty.layout.rows) do
-      if row.iconKey ~= nil then
-        local rect = assert(row.iconRect, "Party geometry publishes each icon's content rectangle")
-        local iconDimensions = iconProvider:dimensions(row.iconKey)
+    for _, slot in ipairs(assert(crowdedParty.layout.partyStrip).slots) do
+      if slot.iconKey ~= nil then
+        local rect = assert(slot.iconRect, "Party geometry publishes each icon's content rectangle")
+        local iconDimensions = iconProvider:dimensions(slot.iconKey)
         local icon = assert(
-          state.renderer._icons[row.iconKey],
+          state.renderer._icons[slot.iconKey],
           "the real provider prepared "
-            .. row.iconKey
+            .. slot.iconKey
             .. " with status "
             .. tostring(state.renderer.iconStatus)
             .. " and failure "
@@ -413,8 +418,14 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
         Assert.notNil(icon.quad, "the selected ROM supplies the Party icon frame")
         Assert.equal(icon.dimensions.width, iconDimensions.width, "the renderer retains provider width")
         Assert.equal(icon.dimensions.height, iconDimensions.height, "the renderer retains provider height")
-        Assert.isTrue(rect.width >= iconDimensions.width, "Party icon bounds fit the real icon width")
-        Assert.isTrue(rect.height >= iconDimensions.height, "Party icon bounds fit the real icon height")
+        local scale =
+          math.min(1, rect.width / iconDimensions.width, rect.height / iconDimensions.height)
+        Assert.isTrue(scale > 0 and scale <= 1, "strip icons never upscale beyond provider pixels")
+        Assert.isTrue(
+          iconDimensions.width * scale <= rect.width + 0.001
+            and iconDimensions.height * scale <= rect.height + 0.001,
+          "the scaled real icon fits its strip cell"
+        )
         centeredIcons = centeredIcons + 1
       end
     end
@@ -431,7 +442,6 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     enterStagedGrid("leave-dialog")
     state:keypressed("escape")
     state:keyreleased("escape")
-    state:keypressed("escape")
     local leaveDialog = capture("leave-dialog", width, height)
     Assert.equal(leaveDialog.modal, "leave", "the leave confirmation is the production modal")
   end, debug.traceback)
@@ -448,7 +458,7 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
   end
 end
 
-function T.tests.production_party_and_bag_views_carry_retail_chrome_descriptors(scope)
+function T.tests.production_party_uses_generic_selector_without_retail_manifest(scope)
   local fixture = AcceptanceFixture.new()
   local originalGlobal = SaveFs.global
   local state
@@ -485,45 +495,26 @@ function T.tests.production_party_and_bag_views_carry_retail_chrome_descriptors(
 
     local dependencies = assert(state.dependencies, "ready composition publishes its manifests")
     local bagManifest = assert(dependencies.bagManifest, "the Bag manifest is already composed")
-    local partyManifest =
-      assert(dependencies.partyManifest, "composition publishes the Party manifest beside the Bag manifest")
-    Assert.equal(#partyManifest.panels, 6, "the composed Party manifest carries all six member panels")
-    for slot0 = 0, 5 do
-      local chrome = assert(
-        partyManifest.panels[slot0 + 1].chrome,
-        "panel " .. slot0 .. " carries its retail chrome variants"
-      )
-      for _, variant in ipairs({ "normal", "selected", "fainted", "selectedFainted" }) do
-        Assert.notNil(chrome[variant], "panel " .. slot0 .. " carries the " .. variant .. " chrome")
-        Assert.notNil(chrome[variant].image, "panel " .. slot0 .. " " .. variant .. " names its pixels")
-      end
-    end
+    Assert.isNil(
+      dependencies.partyManifest,
+      "composition no longer publishes the retail Party manifest to the editor"
+    )
 
     state.controller:setSection("Party")
     state:update(0)
     clickTarget(state, "party:add")
     local species = assert(state:view().valueEditor.options[1].key)
     clickTarget(state, "choice:" .. species)
-    clickTarget(state, "party:apply")
-    clickTarget(state, "party:back")
     local partyView = state:view()
     local member = nil
-    for _, card in ipairs(assert(partyView.partyCards, "the Party list publishes its member cards")) do
-      if card.kind == "member" then
-        member = card
+    for _, slot in ipairs(assert(partyView.partySelector, "Party publishes its member strip").slots) do
+      if slot.kind == "member" then
+        member = slot
       end
     end
-    member = assert(member, "the applied member appears in the production Party list")
-    Assert.isTrue(
-      member.fainted == true or member.fainted == false,
-      "member cards expose their fainted state"
-    )
-    local memberChrome = assert(member.chrome, "member cards carry their retail panel chrome descriptor")
-    Assert.deepEqual(
-      memberChrome,
-      partyManifest.panels[member.slot0 + 1].chrome,
-      "the member uses its own slot panel chrome from the composed manifest"
-    )
+    member = assert(member, "the added member appears in the production member strip")
+    Assert.notNil(member.iconKey, "the strip member carries its sprite identity")
+    Assert.isNil(member.chrome, "strip members carry no retail panel chrome descriptor")
 
     state.controller:setSection("Bag")
     state:update(0)
