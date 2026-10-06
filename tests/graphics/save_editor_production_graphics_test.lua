@@ -132,14 +132,6 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     local function capture(name, captureWidth, captureHeight)
       state:resize(captureWidth, captureHeight)
       state:update(0)
-      if state.controller.section == "Party" then
-        for _ = 1, 240 do
-          if state.renderer.iconStatus == "ready" then
-            break
-          end
-          state:update(0)
-        end
-      end
       local view = state:view()
       Assert.equal(view.status, "ready", name .. " uses the production editor state")
       local frameCount = #frameDraws

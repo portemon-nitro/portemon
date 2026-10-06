@@ -61,7 +61,10 @@ local SaveEditorLocationPolicy = require("app.src.saveeditor.SaveEditorLocationP
 ---@field loader FieldMapLoader
 ---@field loadTask FieldMapLoader.StagedTask?
 ---@field loadTaskMapId integer?
----@field loadTaskGeneration integer?
+---@field coverageTask FieldCoverage.InitialTask?
+---@field coverageTaskMapId integer?
+---@field coverageTaskAnchorX integer?
+---@field coverageTaskAnchorZ integer?
 ---@field maps table[]
 ---@field mapId integer?
 ---@field runtimeMap RuntimeFieldMap?
@@ -269,7 +272,10 @@ function SaveEditorLocationService.new(options)
     loader = FieldMapLoader.new(options.cacheFs, options.world, { derivedAssets = options.derivedAssets }),
     loadTask = nil,
     loadTaskMapId = nil,
-    loadTaskGeneration = nil,
+    coverageTask = nil,
+    coverageTaskMapId = nil,
+    coverageTaskAnchorX = nil,
+    coverageTaskAnchorZ = nil,
     maps = mapList(options.world),
     mapId = nil,
     runtimeMap = nil,
@@ -302,7 +308,17 @@ function SaveEditorLocationService:_releaseLoadTask()
   local task = self.loadTask
   self.loadTask = nil
   self.loadTaskMapId = nil
-  self.loadTaskGeneration = nil
+  if task ~= nil then
+    task:release()
+  end
+end
+
+function SaveEditorLocationService:_releaseCoverageTask()
+  local task = self.coverageTask
+  self.coverageTask = nil
+  self.coverageTaskMapId = nil
+  self.coverageTaskAnchorX = nil
+  self.coverageTaskAnchorZ = nil
   if task ~= nil then
     task:release()
   end
@@ -310,6 +326,7 @@ end
 
 function SaveEditorLocationService:_releaseMap()
   self:_releaseLoadTask()
+  self:_releaseCoverageTask()
   if self.coverage then
     self.coverage:release()
     self.coverage = nil
@@ -321,13 +338,15 @@ function SaveEditorLocationService:_releaseMap()
   self.runtimeMap = nil
   self.mapBounds = nil
   self.representedMapIds = nil
+  self.objectEvents = nil
+  self.warpEvents = nil
+  self.coordinateEvents = nil
 end
 
 function SaveEditorLocationService:openMap(mapId)
   assert(not self.disposed, "location service is disposed")
   assertInteger("mapId", mapId)
   local record = assert(recordById(self.world, mapId), "location browser map is not in the structural world")
-  self:_releaseLoadTask()
   if self.mapId ~= mapId then
     self:_releaseMap()
     self.mapId = mapId
@@ -411,37 +430,42 @@ function SaveEditorLocationService:_failStaged(err)
   self.status = status("failed", Errors.format(err))
 end
 
--- Advances the outstanding staged map load without blocking and publishes
--- the runtime map once the loader task is ready. Returns true when the
--- runtime map is available for coverage and classification work.
-function SaveEditorLocationService:_advanceStagedMap()
-  if self.loadTask ~= nil and (self.loadTaskMapId ~= self.mapId or self.loadTaskGeneration ~= self.generation) then
+-- Advances the outstanding staged map load under the caller's work budget
+-- and publishes the runtime map once the loader task is ready. The pending
+-- task is keyed by map identity only: viewport changes never restart it.
+-- Returns the consumed work units and whether the runtime map is available.
+function SaveEditorLocationService:_advanceStagedMap(maxWorkUnits)
+  if self.loadTask ~= nil and self.loadTaskMapId ~= self.mapId then
     self:_releaseLoadTask()
   end
   if self.loadTask == nil then
     local begun, taskOrError = pcall(self.loader.beginLoad, self.loader, self.mapId)
     if not begun then
       self:_failStaged(taskOrError)
-      return false
+      return 0, false
     end
     self.loadTask = taskOrError
     self.loadTaskMapId = self.mapId
-    self.loadTaskGeneration = self.generation
   end
   local task = assert(self.loadTask, "staged map task is required")
-  local advanced, advanceError = pcall(task.advance, task, LOAD_WORK_UNITS)
+  local advanced, consumedOrError = pcall(task.advance, task, maxWorkUnits)
   if not advanced then
-    self:_failStaged(advanceError)
-    return false
+    self:_failStaged(consumedOrError)
+    return 0, false
   end
+  local consumed = assert(consumedOrError, "staged map advance returned no work-unit count")
+  assert(
+    finiteInteger(consumed) and consumed >= 0 and consumed <= maxWorkUnits,
+    "staged map task consumed an invalid work-unit count"
+  )
   if not task:isReady() then
     self.status = status("pending")
-    return false
+    return consumed, false
   end
-  if self.loadTaskMapId ~= self.mapId or self.loadTaskGeneration ~= self.generation then
+  if self.loadTaskMapId ~= self.mapId then
     self:_releaseLoadTask()
     self.status = status("pending")
-    return false
+    return consumed, false
   end
   local taken, runtimeOrError = pcall(function()
     local runtime = task:takeResult()
@@ -450,14 +474,128 @@ function SaveEditorLocationService:_advanceStagedMap()
   end)
   if not taken then
     self:_failStaged(runtimeOrError)
-    return false
+    return consumed, false
   end
   self.loadTask = nil
   self.loadTaskMapId = nil
-  self.loadTaskGeneration = nil
   self.runtimeMap = runtimeOrError
   self.preparedMapId = self.mapId
-  return true
+  return consumed, true
+end
+
+function SaveEditorLocationService:_failCoverageTask(err)
+  self:_releaseCoverageTask()
+  if not Errors.is(err) then
+    error(err, 0)
+  end
+  self.status = status("failed", Errors.format(err))
+end
+
+-- Whether the requested outdoor position still needs staged coverage work:
+-- a pending replacement task, a missing window, or a window anchored
+-- elsewhere. A settled window on the requested anchor needs no work.
+function SaveEditorLocationService:_needsCoverageFor(fieldX, fieldZ)
+  local runtimeMap = self.runtimeMap
+  if runtimeMap == nil or runtimeMap.scene.type ~= "outdoor" then
+    return false
+  end
+  if self.coverageTask ~= nil then
+    return true
+  end
+  if self.coverage == nil then
+    return true
+  end
+  local anchorX, anchorZ = math.floor(fieldX / TILE_SIZE), math.floor(fieldZ / TILE_SIZE)
+  return self.coverage.anchorX ~= anchorX or self.coverage.anchorZ ~= anchorZ
+end
+
+-- Advances the one staged outdoor coverage replacement under the caller's
+-- remaining work budget. The pending task is keyed by map plus physical
+-- anchor; a settled window on the requested anchor is reused without new
+-- work. Returns the consumed work units and whether the current window
+-- matches the requested anchor.
+function SaveEditorLocationService:_advanceStagedCoverage(fieldX, fieldZ, maxWorkUnits)
+  local anchorX, anchorZ = math.floor(fieldX / TILE_SIZE), math.floor(fieldZ / TILE_SIZE)
+  local runtimeMap = assert(self.runtimeMap, "staged coverage requires a prepared runtime map")
+  if self.coverage ~= nil and self.coverage.anchorX == anchorX and self.coverage.anchorZ == anchorZ then
+    self:_releaseCoverageTask()
+    return 0, true
+  end
+  if
+    self.coverageTask ~= nil
+    and (
+      self.coverageTaskMapId ~= self.mapId
+      or self.coverageTaskAnchorX ~= anchorX
+      or self.coverageTaskAnchorZ ~= anchorZ
+    )
+  then
+    self:_releaseCoverageTask()
+  end
+  if self.coverageTask == nil then
+    if maxWorkUnits <= 0 then
+      self.status = status("pending")
+      return 0, false
+    end
+    local begun, taskOrError =
+      pcall(self.loader.beginPhysicalCoverage, self.loader, runtimeMap, { fieldX = fieldX, fieldZ = fieldZ })
+    if not begun then
+      self:_failCoverageTask(taskOrError)
+      return 0, false
+    end
+    self.coverageTask = taskOrError
+    self.coverageTaskMapId = self.mapId
+    self.coverageTaskAnchorX = anchorX
+    self.coverageTaskAnchorZ = anchorZ
+  end
+  local task = assert(self.coverageTask, "staged coverage task is required")
+  local advanced, consumedOrError = pcall(task.advance, task, maxWorkUnits)
+  if not advanced then
+    self:_failCoverageTask(consumedOrError)
+    return 0, false
+  end
+  local consumed = assert(consumedOrError, "staged coverage advance returned no work-unit count")
+  assert(
+    finiteInteger(consumed) and consumed >= 0 and consumed <= maxWorkUnits,
+    "staged coverage task consumed an invalid work-unit count"
+  )
+  if not task:isReady() then
+    self.status = status("pending")
+    return consumed, false
+  end
+  if
+    self.coverageTaskMapId ~= self.mapId
+    or self.coverageTaskAnchorX ~= anchorX
+    or self.coverageTaskAnchorZ ~= anchorZ
+  then
+    self:_releaseCoverageTask()
+    self.status = status("pending")
+    return consumed, false
+  end
+  local taken, candidateOrError = pcall(task.takeResult, task)
+  if not taken then
+    self:_failCoverageTask(candidateOrError)
+    return consumed, false
+  end
+  local candidate = candidateOrError
+  local previous = self.coverage
+  self.coverage = candidate
+  local published, metadataError = pcall(self._collectRepresented, self)
+  if not published then
+    self.coverage = previous
+    self:_releaseCoverageTask()
+    candidate:release()
+    if not Errors.is(metadataError) then
+      error(metadataError, 0)
+    end
+    self.status = status("failed", Errors.format(metadataError))
+    return consumed, false
+  end
+  self:_releaseCoverageTask()
+  if previous ~= nil then
+    previous:release()
+  end
+  self:_invalidate()
+  return consumed, true
 end
 
 function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
@@ -471,46 +609,49 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
     return false
   end
 
-  if self.runtimeMap == nil and not self:_advanceStagedMap() then
-    return false
+  local remaining = LOAD_WORK_UNITS
+  if self.runtimeMap == nil then
+    local consumed, mapReady = self:_advanceStagedMap(remaining)
+    remaining = remaining - consumed
+    if not mapReady then
+      return false
+    end
   end
 
-  local prepared, prepareError = pcall(function()
-    if self.runtimeMap.scene.type == "outdoor" then
-      local anchorX, anchorZ = math.floor(fieldX / TILE_SIZE), math.floor(fieldZ / TILE_SIZE)
-      if self.coverage == nil then
-        self.coverage = self.loader:createPhysicalCoverage(self.runtimeMap, { fieldX = fieldX, fieldZ = fieldZ })
-        self:_invalidate()
-        self:_collectRepresented()
-      elseif self.coverage.anchorX ~= anchorX or self.coverage.anchorZ ~= anchorZ then
-        self.coverage:recenter(anchorX, anchorZ)
-        self:_invalidate()
-        self:_collectRepresented()
-      elseif self.objectEvents == nil then
-        self:_collectRepresented()
-      end
-    elseif self.coverage ~= nil or self.mapBounds == nil then
+  if self.runtimeMap.scene.type == "outdoor" then
+    -- Do not begin/advance coverage after the budget is exhausted.
+    if remaining == 0 and self:_needsCoverageFor(fieldX, fieldZ) then
+      self.status = status("pending")
+      return false
+    end
+    local _, coverageReady = self:_advanceStagedCoverage(fieldX, fieldZ, remaining)
+    if not coverageReady then
+      return false
+    end
+  elseif self.coverage ~= nil or self.mapBounds == nil then
+    local prepared, prepareError = pcall(function()
       self:_releaseCoverage()
       self:_collectRepresented()
+    end)
+    if not prepared then
+      self.objectEvents = nil
+      self.warpEvents = nil
+      self.coordinateEvents = nil
+      self.representedMapIds = nil
+      self.mapBounds = nil
+      if not Errors.is(prepareError) then
+        error(prepareError, 0)
+      end
+      self.status = status("failed", Errors.format(prepareError))
+      return false
     end
-  end)
-  if not prepared then
-    self.objectEvents = nil
-    self.warpEvents = nil
-    self.coordinateEvents = nil
-    self.representedMapIds = nil
-    self.mapBounds = nil
-    if not Errors.is(prepareError) then
-      error(prepareError, 0)
-    end
-    self.status = status("failed", Errors.format(prepareError))
-    return false
   end
   self.status = status("ready")
   return true
 end
 
 function SaveEditorLocationService:_releaseCoverage()
+  self:_releaseCoverageTask()
   if self.coverage then
     self.coverage:release()
     self.coverage = nil
@@ -706,9 +847,19 @@ function SaveEditorLocationService:resolve(mapId, fieldX, fieldZ, expectedGenera
     return nil, status("pending")
   end
 
-  local failure = self:_prepareAt(fieldX, fieldZ)
-  if not failure then
+  -- Resolution only observes preparation the update loop already published;
+  -- it never starts or advances staged map/coverage work itself.
+  if self.status.state == "failed" then
     return nil, copy(self.status)
+  end
+  if self.runtimeMap == nil or self.loadTask ~= nil then
+    return nil, status("pending")
+  end
+  if self.runtimeMap.scene.type == "outdoor" and (self.coverageTask ~= nil or self.coverage == nil) then
+    return nil, status("pending")
+  end
+  if self.mapBounds == nil or self.objectEvents == nil then
+    return nil, status("pending")
   end
 
   local result = self:_classify(fieldX, fieldZ)
