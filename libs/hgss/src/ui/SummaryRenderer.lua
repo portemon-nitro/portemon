@@ -428,6 +428,126 @@ local function imageForPath(scope, path)
   return image
 end
 
+-- Samples one generated frame sequence at a controller animation tick:
+-- single-frame playbacks hold their first frame, one-shot playbacks
+-- rest on their final frame, and looping playbacks run their prefix
+-- once before cycling from their loop origin over summed frame
+-- durations. Ticks count fixed summary updates, never wall-clock time.
+---@param sequence table<string, unknown> generated animation descriptor
+---@param tick integer non-negative animation tick
+---@return table<string, unknown> the visible frame
+local function frameAt(sequence, tick)
+  assert(type(tick) == "number" and tick % 1 == 0 and tick >= 0, "animation ticks stay non-negative")
+  local frames = assert(sequence.frames, "animations carry their frames")
+  assert(type(frames) == "table" and #frames >= 1, "animations carry at least one frame")
+  local playback = assert(sequence.playback, "animations carry their playback")
+  if playback == "static" then
+    return assert(frames[1], "single-frame animations carry their frame")
+  end
+  local loopFrom = assert(sequence.loopFrom, "animations carry their loop origin")
+  assert(
+    type(loopFrom) == "number" and loopFrom % 1 == 0 and loopFrom >= 1 and loopFrom <= #frames,
+    "loop origins address a frame"
+  )
+  local start = 1
+  if playback == "loop" then
+    local prefixDuration = 0
+    for index = 1, loopFrom - 1 do
+      prefixDuration = prefixDuration + assert(frames[index].durationTicks, "animation frames carry their duration")
+    end
+    if tick < prefixDuration then
+      local elapsed = tick
+      for index = 1, loopFrom - 1 do
+        local duration = assert(frames[index].durationTicks, "animation frames carry their duration")
+        if elapsed < duration then
+          return frames[index]
+        end
+        elapsed = elapsed - duration
+      end
+    end
+    local loopDuration = 0
+    for index = loopFrom, #frames do
+      loopDuration = loopDuration + assert(frames[index].durationTicks, "animation frames carry their duration")
+    end
+    assert(loopDuration > 0, "looping animations carry loop duration")
+    tick = (tick - prefixDuration) % loopDuration
+    start = loopFrom
+  end
+  local elapsed = tick
+  for index = start, #frames do
+    local duration = assert(frames[index].durationTicks, "animation frames carry their duration")
+    if elapsed < duration then
+      return frames[index]
+    end
+    elapsed = elapsed - duration
+  end
+  if playback == "once" then
+    return frames[#frames]
+  end
+  error("animation sequences use static, once, or loop playback", 0)
+end
+
+-- Resolves one named animation descriptor through the sprite roles. A
+-- name the family does not publish is a generated-contract failure;
+-- the owner names the chrome that needed it.
+---@param manifest table<string, unknown> validated summary family
+---@param name string generated animation name
+---@param owner string chrome needing the animation for failure diagnostics
+---@return table<string, unknown> the generated animation descriptor
+local function animationFor(manifest, name, owner)
+  local sprites = assert(manifest.sprites, owner .. " needs its sprite roles")
+  assert(type(sprites) == "table", "sprite roles arrive as a record")
+  local animations = assert(sprites.animations, "sprite roles carry their animations")
+  assert(type(animations) == "table", "sprite animations arrive as a record")
+  local sequence = animations[name]
+  assert(type(sequence) == "table", "the family publishes animation " .. tostring(name) .. " for " .. owner)
+  return sequence
+end
+
+---@param status table<string, unknown> stable controller status
+---@return integer the animation tick, defaulting to the first frame
+local function animationTick(status)
+  local tick = status.spriteTick
+  if tick == nil then
+    return 0
+  end
+  assert(type(tick) == "number" and tick % 1 == 0 and tick >= 0, "animation ticks stay non-negative")
+  return tick
+end
+
+-- Draws one named animation frame at its semantic anchor plus the
+-- compiled visual offset at native scale. The frame visual resolves
+-- through the ready bundle; a published animation whose visual was
+-- never prepared fails loudly instead of substituting art.
+---@param scope SummaryRenderer.DrawScope
+---@param name string generated animation name
+---@param owner string chrome needing the animation for failure diagnostics
+---@param anchor table<string, integer> semantic draw position
+---@param tick integer non-negative animation tick
+local function drawAnimation(scope, name, owner, anchor, tick)
+  assert(type(anchor) == "table", "animation anchors are records")
+  local anchorX = assert(anchor.x, "animation anchors carry x")
+  local anchorY = assert(anchor.y, "animation anchors carry y")
+  assert(type(anchorX) == "number" and type(anchorY) == "number", "animation anchors stay numeric")
+  local frame = frameAt(animationFor(scope.manifest, name, owner), tick)
+  local visual = assert(frame.visual, "animation frames name their visual")
+  assert(type(visual) == "string" and visual ~= "", "animation frames name their visual")
+  local visuals = assert(scope.manifest.visuals, "the summary family carries its visuals")
+  assert(type(visuals) == "table", "summary visuals arrive as a record")
+  local record = assert(visuals[visual], "the family publishes visual " .. tostring(visual))
+  assert(type(record) == "table", "summary visuals are records")
+  local image = visualImage(scope, visual)
+  assert(image ~= nil, "no prepared image for animation " .. tostring(name))
+  local shiftX, shiftY = 0, 0
+  if record.offset ~= nil then
+    assert(type(record.offset) == "table", "visual offsets are records")
+    shiftX = assert(record.offset.x, "visual offsets carry x")
+    shiftY = assert(record.offset.y, "visual offsets carry y")
+    assert(type(shiftX) == "number" and type(shiftY) == "number", "visual offsets stay numeric")
+  end
+  scope.graphics.draw(image, anchorX + shiftX, anchorY + shiftY)
+end
+
 -- Draws the pane backing: the condition-selected backdrop over the whole
 -- native surface. A backdrop role the family leaves unmapped skips its
 -- layer while the manifest selection itself stays strict.
@@ -714,6 +834,130 @@ local function drawSkills(scope, facts)
   )
 end
 
+-- The ordinary member focus: the primary cursor at the displayed
+-- member's anchor on the sub pane. Picker launches keep the member
+-- cursor hidden while nested states show their own row chrome instead.
+---@param scope SummaryRenderer.DrawScope
+---@param status table<string, unknown>
+---@param tick integer non-negative animation tick
+local function drawMemberCursor(scope, status, tick)
+  if status.mode ~= "summary" or status.phase ~= "root" then
+    return
+  end
+  local sprites = assert(scope.manifest.sprites, "member focus needs its sprite roles")
+  assert(type(sprites) == "table", "sprite roles arrive as a record")
+  local cursor = assert(sprites.primaryCursor, "sprite roles carry the member cursor")
+  assert(type(cursor) == "table", "member cursors arrive as records")
+  local anchors = assert(cursor.anchors, "the member cursor carries its member anchors")
+  assert(type(anchors) == "table", "member anchors arrive as an array")
+  local slot = assert(status.slot, "open summaries carry their member slot")
+  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0, "member slots stay non-negative")
+  local anchor = assert(anchors[slot + 1], "the member cursor covers member slot " .. tostring(slot))
+  local animation = assert(cursor.rootFocus, "the member cursor names its focus animation")
+  assert(type(animation) == "string" and animation ~= "", "member cursors name their focus animation")
+  drawAnimation(scope, animation, "member focus", anchor, tick)
+end
+
+-- Resolves one move-row anchor from the nested move geometry: owned
+-- rows hang off the first-row origin by the row step, while the
+-- picker-only extra row uses its dedicated cancel anchor.
+---@param geometry table<string, unknown> generated nested move geometry
+---@param row integer zero-based move row
+---@return table<string, integer> the semantic row anchor
+local function moveRowAnchor(geometry, row)
+  assert(type(row) == "number" and row % 1 == 0 and row >= 0, "move rows stay non-negative")
+  if row < SummaryRenderer.MOVE_ROWS then
+    local column = assert(geometry.x, "move geometry carries its column")
+    local baseY = assert(geometry.rowBaseY, "move geometry carries its first row")
+    local step = assert(geometry.rowStep, "move geometry carries its row step")
+    assert(
+      type(column) == "number" and type(baseY) == "number" and type(step) == "number",
+      "move geometry stays numeric"
+    )
+    return { x = column, y = baseY + row * step }
+  end
+  local anchor = assert(geometry.cancelAnchor, "move geometry carries its cancel anchor")
+  assert(type(anchor) == "table", "cancel anchors are records")
+  return anchor
+end
+
+-- The nested move cursors on the sub pane: the primary cursor follows
+-- the pointed row in detail, reorder, and sliding states as well as in
+-- picker browsing, while reordering adds the secondary cursor on the
+-- held source row.
+---@param scope SummaryRenderer.DrawScope
+---@param status table<string, unknown>
+---@param tick integer non-negative animation tick
+local function drawMoveCursors(scope, status, tick)
+  local nested = status.phase == "move_detail"
+    or status.phase == "move_reorder"
+    or status.phase == "move_opening"
+    or status.phase == "move_closing"
+  local picking = status.mode == "move_pick" and status.phase == "root"
+  if not nested and not picking then
+    return
+  end
+  if status.moveSlot == nil then
+    return
+  end
+  local cursor = assert(status.moveSlot, "move states carry their pointed row")
+  assert(type(cursor) == "number" and cursor % 1 == 0 and cursor >= 0, "move rows stay non-negative")
+  local sprites = assert(scope.manifest.sprites, "move focus needs its sprite roles")
+  assert(type(sprites) == "table", "sprite roles arrive as a record")
+  local primary = assert(sprites.primaryCursor, "sprite roles carry the move cursor")
+  assert(type(primary) == "table", "move cursors arrive as records")
+  local geometry = assert(sprites.secondaryMoveCursor, "sprite roles carry the nested move geometry")
+  assert(type(geometry) == "table", "move geometry arrives as a record")
+  local focus = assert(primary.moveRowFocus, "the move cursor names its row animation")
+  assert(type(focus) == "string" and focus ~= "", "move cursors name their row animation")
+  if cursor >= SummaryRenderer.MOVE_ROWS then
+    focus = assert(primary.restrictedCancel, "the move cursor names its cancel animation")
+    assert(type(focus) == "string" and focus ~= "", "move cursors name their cancel animation")
+  end
+  drawAnimation(scope, focus, "move focus", moveRowAnchor(geometry, cursor), tick)
+  if nested and status.phase == "move_reorder" and status.reorderSource ~= nil then
+    local source = assert(status.reorderSource, "reorder states carry their held row")
+    assert(type(source) == "number" and source % 1 == 0 and source >= 0, "held rows stay non-negative")
+    local follow = assert(geometry.moveFollow, "move geometry names its reorder animation")
+    assert(type(follow) == "string" and follow ~= "", "move geometry names its reorder animation")
+    drawAnimation(scope, follow, "move reorder", moveRowAnchor(geometry, source), tick)
+  end
+end
+
+-- Draws the common nested-state backing translated along its generated
+-- axis: the live transition offset while sliding, the terminal generated
+-- offset once detail holds. The visual is translated, never wrapped or
+-- stretched; pane clipping applies as usual.
+---@param scope SummaryRenderer.DrawScope
+---@param status table<string, unknown>
+---@param key string "moveDetail" or "ribbonDetail"
+local function drawDetailBacking(scope, status, key)
+  local manifest = scope.manifest
+  local transitions = assert(manifest.transitions, "the summary family carries its nested positions")
+  assert(type(transitions) == "table", "nested positions arrive as a record")
+  local track = assert(transitions[key], "the summary family carries its " .. key .. " positions")
+  assert(type(track) == "table", "nested positions arrive as records")
+  local positions = assert(track.positions, "nested positions carry their offsets")
+  assert(type(positions) == "table" and #positions > 0, "nested positions carry at least one offset")
+  local terminal = assert(positions[#positions], "nested positions carry their terminal offset")
+  assert(type(terminal) == "number", "nested offsets stay numeric")
+  local offset = terminal
+  local transition = status.transition
+  if type(transition) == "table" and transition.kind == key then
+    offset = assert(transition.offset, "nested transitions carry their offset")
+    assert(type(offset) == "number", "nested offsets stay numeric")
+  end
+  local axis = assert(track.axis, "nested positions carry their axis")
+  assert(axis == "x" or axis == "y", "nested positions run along x or y")
+  local image = visualImage(scope, "detailBacking")
+  assert(image ~= nil, "no prepared image for the nested detail backing")
+  if axis == "x" then
+    scope.graphics.draw(image, offset, 0)
+  else
+    scope.graphics.draw(image, 0, offset)
+  end
+end
+
 -- Formats one learned move row from its generated name and power
 -- points: the generated points label separates the current and maximum
 -- counts with spacing, never punctuation the generated family does not
@@ -740,7 +984,8 @@ end
 ---@param scope SummaryRenderer.DrawScope
 ---@param status table<string, unknown>
 ---@param facts table<string, unknown>
-local function drawMoves(scope, status, facts)
+---@param tick integer non-negative animation tick
+local function drawMoves(scope, status, facts, tick)
   local manifest = scope.manifest
   local moves = assert(facts.moves, "facts carry their move rows")
   assert(#moves == SummaryRenderer.MOVE_ROWS, "move facts carry four logical rows")
@@ -766,18 +1011,13 @@ local function drawMoves(scope, status, facts)
       )
     end
   end
-  if status.phase == "move_detail" or status.phase == "move_reorder" or status.phase == "move_opening" then
-    -- The move-detail backing scrolls under the detail rows: one full
-    -- native-scale copy per frame, wrapping across the transition ticks
-    -- so repeated draws cycle instead of stretching.
-    local backing = visualImage(scope, "moveBacking")
-    if backing ~= nil then
-      local shift = 0
-      if type(status.transition) == "table" and type(status.transition.ticksLeft) == "number" then
-        shift = (status.transition.ticksLeft * 32) % SummaryRenderer.PANE_WIDTH
-      end
-      scope.graphics.draw(backing, -shift, 0)
-    end
+  if
+    status.phase == "move_detail"
+    or status.phase == "move_reorder"
+    or status.phase == "move_opening"
+    or status.phase == "move_closing"
+  then
+    drawDetailBacking(scope, status, "moveDetail")
     local selected = moves[(status.moveSlot or 0) + 1]
     if selected ~= nil and selected.kind == "move" then
       drawWindowLine(
@@ -821,16 +1061,55 @@ local function drawMoves(scope, status, facts)
       drawWindowLine(scope, footer, moveSummaryText(manifest, held), "left")
     end
   end
+  drawMoveCursors(scope, status, tick)
+end
+
+-- The INFO main-pane markers: the crown alone when earned, otherwise
+-- one marker per earned leaf at its anchor. Marker facts arrive
+-- crown-suppressed from the projection; a crown alongside true leaves
+-- still draws the crown only. Other panes and groups draw no markers.
+---@param scope SummaryRenderer.DrawScope
+---@param facts table<string, unknown>
+---@param tick integer non-negative animation tick
+local function drawLeafCrown(scope, facts, tick)
+  local indicators = assert(facts.indicators, "facts carry their indicators")
+  assert(type(indicators) == "table", "indicators arrive as a record")
+  local sprites = assert(scope.manifest.sprites, "leaf markers need their sprite roles")
+  assert(type(sprites) == "table", "sprite roles arrive as a record")
+  local roles = assert(sprites.leaves, "sprite roles carry leaf markers")
+  assert(type(roles) == "table", "leaf markers arrive as records")
+  local anchors = assert(roles.anchors, "leaf markers carry their anchors")
+  assert(type(anchors) == "table", "leaf anchors arrive as an array")
+  if indicators.crown == true then
+    local crown = assert(roles.crown, "leaf markers name the crown")
+    assert(type(crown) == "string" and crown ~= "", "leaf markers name the crown")
+    local crownAnchor = assert(roles.crownAnchor, "leaf markers carry the crown anchor")
+    drawAnimation(scope, crown, "crown marker", crownAnchor, tick)
+    return
+  end
+  local leaf = assert(roles.leaf, "leaf markers name their leaf")
+  assert(type(leaf) == "string" and leaf ~= "", "leaf markers name their leaf")
+  local leaves = assert(indicators.leaves, "indicators carry their leaf slots")
+  assert(type(leaves) == "table", "leaf slots arrive as an array")
+  for index, earned in ipairs(leaves) do
+    if earned then
+      local anchor = assert(anchors[index], "leaf markers cover leaf slot " .. tostring(index))
+      drawAnimation(scope, leaf, "leaf marker", anchor, tick)
+    end
+  end
 end
 
 -- The PERFORMANCE main pane: one generated name per contest row in
--- presentation order. Star and state visuals have no mapped image role,
--- so rows print names only and never numeric debug text. A locked
--- screen (no computed rows) keeps its locked backing and draws no
--- invented values.
+-- presentation order, then five star positions per row plus the
+-- signed modifier marker. Positions past the row maximum draw
+-- nothing; unfilled positions up to the maximum draw empty; filled
+-- positions draw the row tone; a zero modifier draws no marker. A
+-- locked screen (no computed rows) keeps its locked backing and draws
+-- no invented values.
 ---@param scope SummaryRenderer.DrawScope
 ---@param facts table<string, unknown>
-local function drawPerformance(scope, facts)
+---@param tick integer non-negative animation tick
+local function drawPerformance(scope, facts, tick)
   local rows = facts.performance
   if rows == nil then
     return
@@ -845,6 +1124,123 @@ local function drawPerformance(scope, facts)
       "left"
     )
   end
+  local sprites = assert(manifest.sprites, "performance stars need their sprite roles")
+  assert(type(sprites) == "table", "sprite roles arrive as a record")
+  local chrome = assert(sprites.performance, "sprite roles carry performance rows")
+  assert(type(chrome) == "table", "performance chrome arrives as a record")
+  local generated = assert(chrome.rows, "performance chrome carries its rows")
+  assert(type(generated) == "table", "performance rows arrive as an array")
+  for index, row in ipairs(rows) do
+    assert(type(row) == "table", "performance rows are records")
+    local generatedRow = assert(generated[index], "performance chrome covers row " .. tostring(index))
+    assert(type(generatedRow) == "table", "performance rows are records")
+    local starAnchors = assert(generatedRow.stars, "performance rows carry star anchors")
+    assert(type(starAnchors) == "table", "star anchors arrive as an array")
+    local max = assert(row.max, "performance rows carry their maximum")
+    local stars = assert(row.stars, "performance rows carry their stars")
+    local tone = assert(row.tone, "performance rows carry their tone")
+    assert(type(max) == "number" and type(stars) == "number", "performance bounds stay numeric")
+    assert(tone == "base" or tone == "above" or tone == "below", "performance tones stay in their set")
+    for i = 0, 4 do
+      local anchor = assert(starAnchors[i + 1], "performance rows carry five star anchors")
+      if i > max then
+        -- Positions past the row maximum draw nothing.
+      elseif i > stars then
+        local empty = assert(generatedRow.starEmpty, "performance rows name their empty state")
+        assert(type(empty) == "string" and empty ~= "", "performance rows name their empty state")
+        drawAnimation(scope, empty, "performance stars", anchor, tick)
+      elseif tone == "above" then
+        local above = assert(generatedRow.starAbove, "performance rows name their raised state")
+        assert(type(above) == "string" and above ~= "", "performance rows name their raised state")
+        drawAnimation(scope, above, "performance stars", anchor, tick)
+      elseif tone == "below" then
+        local below = assert(generatedRow.starBelow, "performance rows name their lowered state")
+        assert(type(below) == "string" and below ~= "", "performance rows name their lowered state")
+        drawAnimation(scope, below, "performance stars", anchor, tick)
+      else
+        local base = assert(generatedRow.starBase, "performance rows name their base state")
+        assert(type(base) == "string" and base ~= "", "performance rows name their base state")
+        drawAnimation(scope, base, "performance stars", anchor, tick)
+      end
+    end
+    local modifier = assert(row.modifier, "performance rows carry their modifier")
+    assert(type(modifier) == "number" and modifier % 1 == 0, "performance modifiers stay integral")
+    local modifierAnchor = assert(generatedRow.modifier, "performance rows carry modifier anchors")
+    if modifier > 0 then
+      local positive = assert(generatedRow.modifierPositive, "performance rows name their positive marker")
+      assert(type(positive) == "string" and positive ~= "", "performance rows name their positive marker")
+      drawAnimation(scope, positive, "performance modifier", modifierAnchor, tick)
+    elseif modifier < 0 then
+      local negative = assert(generatedRow.modifierNegative, "performance rows name their negative marker")
+      assert(type(negative) == "string" and negative ~= "", "performance rows name their negative marker")
+      drawAnimation(scope, negative, "performance modifier", modifierAnchor, tick)
+    end
+  end
+end
+
+-- The ribbon grid cursor and page controls on the sub pane: the
+-- cursor marks the page-local cell of the selected earned ribbon from
+-- the grid origin and steps, the previous control shows only past the
+-- first page, and the next control shows only while another earned
+-- page exists.
+---@param scope SummaryRenderer.DrawScope
+---@param status table<string, unknown>
+---@param ribbons table<string, unknown>[] earned ribbon facts
+---@param tick integer non-negative animation tick
+local function drawRibbonChrome(scope, status, ribbons, tick)
+  local selected = status.ribbonIndex
+  if selected == nil then
+    return
+  end
+  assert(type(selected) == "number" and selected % 1 == 0 and selected >= 0, "ribbon selections stay non-negative")
+  local sprites = assert(scope.manifest.sprites, "ribbon controls need their sprite roles")
+  assert(type(sprites) == "table", "sprite roles arrive as a record")
+  local roles = assert(sprites.ribbons, "sprite roles carry ribbon controls")
+  assert(type(roles) == "table", "ribbon controls arrive as records")
+  local origin = assert(roles.origin, "ribbon controls carry their grid origin")
+  local columnStep = assert(roles.columnStep, "ribbon controls carry their column step")
+  local rowStep = assert(roles.rowStep, "ribbon controls carry their row step")
+  assert(type(origin) == "table", "grid origins are records")
+  assert(type(columnStep) == "number" and type(rowStep) == "number", "grid steps stay numeric")
+  local cell = selected % 9
+  local cursor = {
+    x = assert(origin.x, "grid origins carry x") + (cell % 3) * columnStep,
+    y = assert(origin.y, "grid origins carry y") + math.floor(cell / 3) * rowStep,
+  }
+  local cursorAnimation = assert(roles.cursor, "ribbon controls name their cursor")
+  assert(type(cursorAnimation) == "string" and cursorAnimation ~= "", "ribbon controls name their cursor")
+  drawAnimation(scope, cursorAnimation, "ribbon cursor", cursor, tick)
+  local page = status.ribbonPage
+  if page == nil then
+    page = math.floor(selected / 9)
+  end
+  assert(type(page) == "number" and page % 1 == 0 and page >= 0, "ribbon pages stay non-negative")
+  if page > 0 then
+    local previous = assert(roles.pagePrev, "ribbon controls carry the previous control")
+    assert(type(previous) == "table", "page controls arrive as records")
+    local previousAnimation = assert(previous.animation, "page controls name their animation")
+    assert(type(previousAnimation) == "string" and previousAnimation ~= "", "page controls name animations")
+    drawAnimation(
+      scope,
+      previousAnimation,
+      "ribbon page control",
+      assert(previous.anchor, "page controls carry anchors"),
+      tick
+    )
+  end
+  if (page + 1) * 9 < #ribbons then
+    local following = assert(roles.pageNext, "ribbon controls carry the next control")
+    assert(type(following) == "table", "page controls arrive as records")
+    local followingAnimation = assert(following.animation, "page controls name their animation")
+    assert(type(followingAnimation) == "string" and followingAnimation ~= "", "page controls name animations")
+    drawAnimation(
+      scope,
+      followingAnimation,
+      "ribbon page control",
+      assert(following.anchor, "page controls carry anchors"),
+      tick
+    )
+  end
 end
 
 -- The RIBBONS sub pane: one 3x3 page of earned ribbon art above the
@@ -857,10 +1253,14 @@ end
 ---@param scope SummaryRenderer.DrawScope
 ---@param status table<string, unknown>
 ---@param facts table<string, unknown>
-local function drawRibbons(scope, status, facts)
+---@param tick integer non-negative animation tick
+local function drawRibbons(scope, status, facts, tick)
   local manifest = scope.manifest
   local ribbons = facts.ribbons or {}
   assert(type(ribbons) == "table", "ribbon records arrive as an array")
+  if status.phase == "ribbon_opening" or status.phase == "ribbon_detail" or status.phase == "ribbon_closing" then
+    drawDetailBacking(scope, status, "ribbonDetail")
+  end
   local nameWindow = groupWindow(manifest, "performance", "sub", "ribbonName")
   drawWindowLine(scope, groupWindow(manifest, "performance", "sub", "ribbonCount"), tostring(#ribbons), "left")
   local selected = nil
@@ -901,44 +1301,7 @@ local function drawRibbons(scope, status, facts)
     tostring(assert(selected.description, "ribbons carry a description")),
     "left"
   )
-end
-
--- Draws the producer-authored sprite roles at their anchors, in role
--- order. A sprite role whose visual the family leaves unmapped skips
--- its layer; mapped roles resolve through the ready bundle. Member and
--- focus chrome comes from these roles alone, never from touch boxes or
--- party-family presentation.
----@param scope SummaryRenderer.DrawScope
-local function drawChrome(scope)
-  local sprites = assert(scope.manifest.sprites, "the summary family carries its sprite roles")
-  assert(type(sprites) == "table", "sprite roles arrive as a record")
-  local ordered = {}
-  for name, sprite in pairs(sprites) do
-    assert(type(sprite) == "table", "sprite roles are records")
-    local order = assert(sprite.order, "sprite roles carry their order")
-    assert(type(order) == "number", "sprite orders stay numeric")
-    ordered[#ordered + 1] = { name = name, sprite = sprite, order = order }
-  end
-  table.sort(ordered, function(a, b)
-    if a.order ~= b.order then
-      return a.order < b.order
-    end
-    return tostring(a.name) < tostring(b.name)
-  end)
-  for _, entry in ipairs(ordered) do
-    local sprite = entry.sprite
-    local visual = assert(sprite.visual, "sprite roles name their visual")
-    assert(type(visual) == "string", "sprite visuals are names")
-    local image = visualImage(scope, visual)
-    if image ~= nil then
-      local anchor = assert(sprite.anchor, "sprite roles carry their anchor")
-      assert(type(anchor) == "table", "sprite anchors are records")
-      local x = assert(anchor.x, "sprite anchors carry x")
-      local y = assert(anchor.y, "sprite anchors carry y")
-      assert(type(x) == "number" and type(y) == "number", "sprite anchors stay numeric")
-      scope.graphics.draw(image, x, y)
-    end
-  end
+  drawRibbonChrome(scope, status, ribbons, tick)
 end
 
 -- Draws one native pane: the condition-selected backdrop, the pane role
@@ -976,23 +1339,25 @@ function SummaryRenderer:drawPane(status, pane, assets)
     graphics.rectangle("fill", 0, 0, SummaryRenderer.PANE_WIDTH, SummaryRenderer.PANE_HEIGHT)
     graphics.setColor(red, green, blue, alpha)
     drawBackdrop(scope, backdropIndex(variants, pane, facts))
+    local tick = animationTick(status)
     if pane == "main" then
       drawPicture(scope, status)
       if group == "info" then
         drawMemo(scope, facts)
+        drawLeafCrown(scope, facts, tick)
       elseif group == "skills" then
         drawSkills(scope, facts)
       else
-        drawPerformance(scope, facts)
+        drawPerformance(scope, facts, tick)
       end
     else
       if group == "info" then
         drawInfo(scope, facts)
-        drawChrome(scope)
+        drawMemberCursor(scope, status, tick)
       elseif group == "skills" then
-        drawMoves(scope, status, facts)
+        drawMoves(scope, status, facts, tick)
       else
-        drawRibbons(scope, status, facts)
+        drawRibbons(scope, status, facts, tick)
       end
     end
   end)

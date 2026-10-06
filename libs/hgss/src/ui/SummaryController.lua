@@ -45,7 +45,8 @@ local SummaryPicturePlayer = require("libs.hgss.src.ui.SummaryPicturePlayer")
 ---@field _player SummaryPicturePlayer?
 ---@field _playerFresh boolean?
 ---@field _pressId string?
----@field _transition integer?
+---@field _transition table<string, unknown>?
+---@field _spriteTick integer
 ---@field _navTick integer?
 ---@field _repeatStart integer?
 ---@field _repeatLast integer?
@@ -55,7 +56,6 @@ SummaryController.__index = SummaryController
 SummaryController.GROUPS = { "info", "skills", "performance" }
 SummaryController.REPEAT_START_TICKS = 8
 SummaryController.REPEAT_INTERVAL_TICKS = 4
-SummaryController.TRANSITION_TICKS = 2
 SummaryController.ENTRY_CRY_WINDOW_TICKS = 3
 -- Delay-zero cries drain within a bounded post-entry window instead of on the
 -- entry tick: silent while the entry settles, then exactly once.
@@ -168,6 +168,7 @@ function SummaryController.new(opts)
     _player = nil,
     _pressId = nil,
     _transition = nil,
+    _spriteTick = 0,
     _navTick = nil,
     _repeatStart = nil,
     _repeatLast = nil,
@@ -477,11 +478,54 @@ local function nextExisting(moves, from, direction)
   return occupied[(at - 1 + direction) % #occupied + 1]
 end
 
+--- Reads one nested-state position sequence from the generated family:
+-- the axis and every visited offset come from the manifest, never from
+-- a duration-derived constant. A missing sequence is a generated-contract
+-- failure, not a skippable transition.
+---@param self SummaryController
+---@param key string "moveDetail" or "ribbonDetail"
+---@return table<string, unknown> the generated nested-state sequence
+local function transitionTrack(self, key)
+  local manifest = assert(self._manifest, "nested states read their generated positions")
+  assert(type(manifest) == "table", "the summary manifest arrives as a record")
+  local transitions = assert(manifest.transitions, "the summary family carries its nested positions")
+  assert(type(transitions) == "table", "nested positions arrive as a record")
+  local track = assert(transitions[key], "the summary family carries its " .. key .. " positions")
+  assert(type(track) == "table", "nested positions arrive as records")
+  local positions = assert(track.positions, "nested positions carry their offsets")
+  assert(type(positions) == "table" and #positions > 0, "nested positions carry at least one offset")
+  for index, offset in ipairs(positions) do
+    assert(type(offset) == "number" and offset % 1 == 0, "nested offset " .. index .. " stays integral")
+  end
+  local axis = assert(track.axis, "nested positions carry their axis")
+  assert(axis == "x" or axis == "y", "nested positions run along x or y")
+  return track
+end
+
+-- Stages one nested-state motion: openings start at the first generated
+-- offset, closings at the last. The fixed update advances the index;
+-- the first and terminal offsets both stay observable in status.
+---@param self SummaryController
+---@param kind string "moveDetail" or "ribbonDetail"
+---@param direction string "open" or "close"
+---@param phase string the staged controller phase
+local function beginTransition(self, kind, direction, phase)
+  assert(direction == "open" or direction == "close", "transitions open or close")
+  local track = transitionTrack(self, kind)
+  local positions = assert(track.positions, "nested positions carry their offsets")
+  assert(type(positions) == "table", "nested positions carry their offsets")
+  local index = 1
+  if direction == "close" then
+    index = #positions
+  end
+  self._transition = { kind = kind, direction = direction, index = index }
+  self._phase = phase
+end
+
 ---@param self SummaryController
 ---@param row integer?
 local function openMoveDetail(self, row)
-  self._phase = "move_opening"
-  self._transition = SummaryController.TRANSITION_TICKS
+  beginTransition(self, "moveDetail", "open", "move_opening")
   self._detailEntry = row
   self._moveSlot = row
   self._ribbonIndex = nil
@@ -491,8 +535,7 @@ end
 ---@param self SummaryController
 ---@param index integer
 local function openRibbonDetail(self, index)
-  self._phase = "ribbon_opening"
-  self._transition = SummaryController.TRANSITION_TICKS
+  beginTransition(self, "ribbonDetail", "open", "ribbon_opening")
   self._ribbonIndex = index
   self._moveSlot = nil
   self._notice = nil
@@ -509,6 +552,69 @@ local function closeToRoot(self)
   self._sourceIdentity = nil
   self._ribbonIndex = nil
   self._notice = nil
+end
+
+--- Advances one active nested-state motion by a single generated offset.
+-- The terminal offset stays observable for one status read before the
+-- phase settles: openings land in their detail phase, closings return
+-- to root browsing through the existing cleanup. Returns false when no
+-- transition was active.
+---@param self SummaryController
+---@return boolean true while a transition sample stays published
+local function advanceTransition(self)
+  local active = self._transition
+  if active == nil then
+    return false
+  end
+  local kind = assert(active.kind, "transitions name their generated positions")
+  assert(type(kind) == "string", "transitions name their generated positions")
+  local direction = assert(active.direction, "transitions carry their direction")
+  assert(direction == "open" or direction == "close", "transitions open or close")
+  local track = transitionTrack(self, kind)
+  local positions = assert(track.positions, "nested positions carry their offsets")
+  assert(type(positions) == "table", "nested positions carry their offsets")
+  local count = #positions
+  local index = assert(active.index, "transitions carry their position index")
+  assert(
+    type(index) == "number" and index % 1 == 0 and index >= 1 and index <= count,
+    "transitions stay on their generated positions"
+  )
+  if direction == "open" and index < count then
+    active.index = index + 1
+    return true
+  end
+  if direction == "close" and index > 1 then
+    active.index = index - 1
+    return true
+  end
+  self._transition = nil
+  if self._phase == "move_opening" then
+    self._phase = "move_detail"
+  elseif self._phase == "ribbon_opening" then
+    self._phase = "ribbon_detail"
+  elseif self._phase == "move_closing" or self._phase == "ribbon_closing" then
+    closeToRoot(self)
+  else
+    error("a transition settled outside its opening or closing phase", 0)
+  end
+  return false
+end
+
+-- Notes whether the tick carries an action edge the priority chain would
+-- resolve. Ticks with an action edge discard it against the active
+-- motion without sliding the panel; quiet ticks advance the motion.
+---@param uiInput table[]
+---@return boolean true when the tick carries navigation, confirmation, or dismissal
+local function hasActionEdge(uiInput)
+  for _, event in ipairs(uiInput) do
+    if type(event) == "table" then
+      local kind = event.type
+      if kind == "navigate" or kind == "confirm" or kind == "cancel" or kind == "dismiss" then
+        return true
+      end
+    end
+  end
+  return false
 end
 
 ---@param self SummaryController
@@ -529,7 +635,7 @@ local function cancel(self)
   end
   if self._phase == "move_detail" then
     self._group = "skills"
-    closeToRoot(self)
+    beginTransition(self, "moveDetail", "close", "move_closing")
     return
   end
   if self._phase == "move_reorder" then
@@ -541,7 +647,7 @@ local function cancel(self)
   end
   if self._phase == "ribbon_detail" then
     self._group = "performance"
-    closeToRoot(self)
+    beginTransition(self, "ribbonDetail", "close", "ribbon_closing")
     return
   end
   if self._mode == "move_pick" then
@@ -1017,19 +1123,10 @@ function SummaryController:updateFixed(uiInput, gates)
   if not reconcile(self) then
     return
   end
+  self._spriteTick = self._spriteTick + 1
   local transitional = self._transition ~= nil
-  if transitional then
-    local remaining = assert(self._transition, "transitions count their ticks")
-    if remaining <= 1 then
-      self._transition = nil
-      if self._phase == "move_opening" then
-        self._phase = "move_detail"
-      elseif self._phase == "ribbon_opening" then
-        self._phase = "ribbon_detail"
-      end
-    else
-      self._transition = remaining - 1
-    end
+  if transitional and not hasActionEdge(uiInput) then
+    advanceTransition(self)
   end
   local player = self._player
   if playback and player ~= nil then
@@ -1158,8 +1255,24 @@ function SummaryController:status()
     }
   end
   local transition = nil
-  if self._transition ~= nil then
-    transition = { phase = self._phase, ticksLeft = self._transition }
+  local active = self._transition
+  if active ~= nil then
+    local kind = assert(active.kind, "transitions name their generated positions")
+    assert(type(kind) == "string", "transitions name their generated positions")
+    local track = transitionTrack(self, kind)
+    local positions = assert(track.positions, "nested positions carry their offsets")
+    assert(type(positions) == "table", "nested positions carry their offsets")
+    local index = assert(active.index, "transitions carry their position index")
+    assert(
+      type(index) == "number" and index % 1 == 0 and index >= 1 and index <= #positions,
+      "transitions stay on their generated positions"
+    )
+    transition = {
+      kind = kind,
+      direction = active.direction,
+      axis = assert(track.axis, "nested positions carry their axis"),
+      offset = assert(positions[index], "transitions stay on their generated positions"),
+    }
   end
   local ribbonPage = nil
   if self._ribbonIndex ~= nil then
@@ -1179,6 +1292,7 @@ function SummaryController:status()
     facts = self._view,
     pictureEpoch = self._pictureEpoch,
     picture = picture,
+    spriteTick = self._spriteTick,
     transition = transition,
     allowCancel = self._cancellable,
     allowReorder = self._allowReorder,
@@ -1212,6 +1326,7 @@ function SummaryController:dispose()
   self._result = nil
   self._effects = {}
   self._pressId = nil
+  self._transition = nil
   local player = self._player
   if player ~= nil then
     player:dispose()

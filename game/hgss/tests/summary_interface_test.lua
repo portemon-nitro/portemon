@@ -129,8 +129,32 @@ local function openSummary(service, class)
     return { width = 80, height = 80 }
   end
   local lease = {}
+  local images = {}
   function lease:prepare(demand)
-    return { kind = "ready", key = demand.key, assets = { manifest = family, portraits = portraits } }
+    local assets = { manifest = family, portraits = portraits }
+    -- The ready bundle resolves every mapped visual through the
+    -- production lookup shape: callers below draw real chrome, so the
+    -- double hands out one stub image per compiled visual and path.
+    function assets.visualImage(name)
+      assert(type(name) == "string" and name ~= "", "visual reads name their record")
+      assert(family.visuals[name] ~= nil, "the summary family carries visual " .. tostring(name))
+      local image = images[name]
+      if image == nil then
+        image = { id = "interface-visual:" .. name }
+        images[name] = image
+      end
+      return image
+    end
+    function assets.imageForPath(path)
+      assert(type(path) == "string" and path ~= "", "path reads name their cache-relative path")
+      local image = images[path]
+      if image == nil then
+        image = { id = "interface-path:" .. tostring(path) }
+        images[path] = image
+      end
+      return image
+    end
+    return { kind = "ready", key = demand.key, assets = assets }
   end
   function lease:release()
   end

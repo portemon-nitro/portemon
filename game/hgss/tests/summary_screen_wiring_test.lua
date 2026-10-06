@@ -172,8 +172,13 @@ function T.reorder_publishes_whole_entries_and_preserves_the_rest()
   settle(state)
   state:updateFixed({ { type = "navigate", direction = "right" } })
   state:updateFixed({ { type = "confirm" } })
-  state:updateFixed({})
-  state:updateFixed({})
+  for _ = 1, 6 do
+    if state:status().phase == "move_detail" then
+      break
+    end
+    state:updateFixed({})
+  end
+  Assert.equal(state:status().phase, "move_detail", "the detail settles after its transition")
   state:updateFixed({ { type = "confirm" } })
   state:updateFixed({ { type = "navigate", direction = "down" } })
   state:updateFixed({ { type = "confirm" } })
@@ -789,6 +794,12 @@ function T.native_touches_follow_the_compiled_hitboxes()
   Assert.equal(detail.phase, "move_detail", "move detail settles on the touched row")
   Assert.equal(detail.moveSlot, occupiedRow, "move detail keeps the touched row")
   state:updateFixed({ { type = "cancel" } })
+  for _ = 1, 6 do
+    if state:status().phase == "root" then
+      break
+    end
+    state:updateFixed({})
+  end
   local rooted = state:status()
   Assert.equal(rooted.phase, "root", "cancelling detail returns to browsing")
   Assert.equal(rooted.group, "skills", "cancelling detail keeps the skills group")
@@ -804,6 +815,12 @@ function T.native_touches_follow_the_compiled_hitboxes()
   Assert.equal(ribboned2.phase, "ribbon_detail", "touch on an earned cell opens ribbon detail")
   Assert.equal(ribboned2.ribbonIndex, 0, "ribbon detail keeps the touched cell")
   state:updateFixed({ { type = "cancel" } })
+  for _ = 1, 6 do
+    if state:status().phase == "root" then
+      break
+    end
+    state:updateFixed({})
+  end
   Assert.equal(state:status().phase, "root", "cancelling ribbon detail returns to browsing")
   press("ribbonCell1")
   local blankCell = state:status()
@@ -1091,6 +1108,12 @@ function T.parent_round_trips_restore_selection_with_both_pane_fades()
   end
   Assert.equal(flowChild(rig).phase, "move_detail", "confirming a move row opens its detail")
   flow:updateFixed({ { type = "cancel" } })
+  for _ = 1, 12 do
+    if flowChild(rig).phase == "root" then
+      break
+    end
+    flow:updateFixed({})
+  end
   local rooted = flowChild(rig)
   Assert.equal(rooted.phase, "root", "detail cancellation returns to browsing")
   Assert.equal(rooted.group, "skills", "detail cancellation keeps its native group")

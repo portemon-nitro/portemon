@@ -11,6 +11,7 @@
 
 local Assert = require("tests.support.Assert")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
 
 local T = {}
@@ -177,7 +178,7 @@ end
 
 ---@return table<string, unknown> the semantic test family in produced shape
 local function manifest()
-  return {
+  local family = {
     schema = "g4-summary-manifest-v2",
     paneSize = { width = 256, height = 192 },
     groups = {
@@ -291,6 +292,16 @@ local function manifest()
     sounds = {},
     transitions = {},
   }
+  -- Animated cursors, stars, markers, and panel offsets read the same
+  -- generated shapes production consumes, grafted here so every pane
+  -- draws through the current contract instead of an empty stand-in.
+  local sourced = SummaryPresentationFixture.manifest()
+  family.sprites = assert(sourced.sprites, "the sourced family carries its sprite roles")
+  family.transitions = assert(sourced.transitions, "the sourced family carries its transition tracks")
+  for name, record in pairs(assert(sourced.visuals, "the sourced family carries its visuals")) do
+    family.visuals[name] = record
+  end
+  return family
 end
 
 ---@return table<string, unknown>[] four logical move rows with two learned moves
@@ -430,11 +441,11 @@ end
 ---@return table<string, unknown>[] five performance rows in display order
 local function performanceRows()
   return {
-    { stat = "speed", base = 5, min = 0, max = 10, stars = 7, tone = "above" },
-    { stat = "power", base = 5, min = 0, max = 10, stars = 5, tone = "base" },
-    { stat = "skill", base = 5, min = 0, max = 10, stars = 3, tone = "below" },
-    { stat = "stamina", base = 5, min = 0, max = 10, stars = 6, tone = "above" },
-    { stat = "jump", base = 5, min = 0, max = 10, stars = 4, tone = "below" },
+    { stat = "speed", base = 5, min = 0, max = 10, stars = 7, tone = "above", modifier = 0 },
+    { stat = "power", base = 5, min = 0, max = 10, stars = 5, tone = "base", modifier = 0 },
+    { stat = "skill", base = 5, min = 0, max = 10, stars = 3, tone = "below", modifier = 0 },
+    { stat = "stamina", base = 5, min = 0, max = 10, stars = 6, tone = "above", modifier = 0 },
+    { stat = "jump", base = 5, min = 0, max = 10, stars = 4, tone = "below", modifier = 0 },
   }
 end
 
@@ -984,60 +995,6 @@ function T.performance_and_ribbons_render_paged_source_state()
   Assert.isTrue(drawnImages["ribbon:SYN-RIBBON-01"] == nil, "off-page art never draws")
 end
 
-function T.chrome_draws_only_proved_roles_at_producer_anchors()
-  local graphics, textCalls, _, portraits, shader, renderer = composition()
-  local family = manifest()
-  family.sprites = {
-    memberSlot0 = { visual = "memberDot", anchor = { x = 170, y = 40 }, order = 1 },
-    memberSlot1 = { visual = "memberDot", anchor = { x = 210, y = 48 }, order = 2 },
-    memberSlot2 = { visual = "memberDot", anchor = { x = 190, y = 70 }, order = 3 },
-    futureSlot = { visual = "futureChrome", anchor = { x = 150, y = 90 }, order = 4 },
-  }
-  family.visuals.memberDot = { image = "syn/member-dot.png", width = 16, height = 16 }
-  local roster = {}
-  for slot = 0, 5 do
-    roster[#roster + 1] = {
-      slot = slot,
-      isEgg = false,
-      iconKey = "SYNM/f0",
-      portraitSelector = "SYNM/f0/male/plain",
-    }
-  end
-  local record = facts({ roster = roster, slotCount = 6 })
-  local realized = realizeVisuals(family)
-  local lookups = {}
-  local bundle = readyBundle(family, textDouble(textCalls), portraits, shader, realized, lookups)
-  renderer:drawPane(openStatus(record, "info"), "sub", bundle)
-  local dots = {}
-  for _, draw in ipairs(graphics.draws) do
-    if draw.image == realized.memberDot then
-      dots[#dots + 1] = draw
-    end
-  end
-  Assert.equal(#dots, 3, "proved member visuals draw once each")
-  local anchors = { { x = 170, y = 40 }, { x = 210, y = 48 }, { x = 190, y = 70 } }
-  for index, draw in ipairs(dots) do
-    Assert.equal(draw.x, anchors[index].x, "member visuals use their producer anchor")
-    Assert.equal(draw.y, anchors[index].y, "member visuals use their producer anchor")
-  end
-  local touch = assert(assert(family.hitboxes, "the family carries hitboxes").touch, "hitboxes carry touch")
-  for _, draw in ipairs(graphics.draws) do
-    Assert.isTrue(draw.y ~= 160, "member visuals never form the invented one-row strip")
-    for _, box in pairs(touch) do
-      assert(type(box) == "table", "touch targets are records")
-      local matchesTouch = draw.x == box.left and draw.y == box.top
-      Assert.isFalse(matchesTouch, "render anchors never come from touch boxes")
-    end
-  end
-  local unmappedLookups = 0
-  for _, lookup in ipairs(lookups) do
-    if lookup.name == "futureChrome" then
-      unmappedLookups = unmappedLookups + 1
-    end
-  end
-  Assert.isTrue(unmappedLookups <= 1, "unmapped roles resolve without invented substitutes")
-end
-
 function T.portrait_draw_uses_the_exact_supplied_selector()
   local _, textCalls, portraitCalls, portraits, shader, renderer = composition()
   local family = manifest()
@@ -1473,6 +1430,507 @@ function T.produced_memo_lines_draw_on_consecutive_baselines()
     local expected = rect.y + (base + offset - 1) * LINE_STEP
     Assert.isTrue(drawnY[expected] == true, "break " .. offset .. " draws on its own baseline")
   end
+end
+
+-- Generated dynamic-chrome vocabulary grafted onto the local synthetic
+-- family: windows, labels, bars, and pictures stay exactly as the
+-- surrounding coverage shapes them, while sprite roles, transition
+-- tracks, and frame visuals take the generated semantic shapes the
+-- runtime consumes. Frame visuals resolve through the same realized
+-- bundle as every other visual.
+local function sourcedFamily()
+  local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
+  local sourced = SummaryPresentationFixture.manifest()
+  local family = manifest()
+  family.sprites = assert(sourced.sprites, "the sourced family carries its sprite roles")
+  family.transitions = assert(sourced.transitions, "the sourced family carries its transition tracks")
+  local visuals = assert(sourced.visuals, "the sourced family carries its visuals")
+  for name, record in pairs(visuals) do
+    family.visuals[name] = record
+  end
+  return family, sourced
+end
+
+---@param sourced table<string, unknown> generated-shape family
+---@param realized table<string, table<string, unknown>> realized images
+---@param animation string animation role name
+---@return table<string, unknown> realized frame image
+local function frameImage(sourced, realized, animation)
+  local sprites = assert(sourced.sprites, "the sourced family carries sprite roles")
+  local animations = assert(sprites.animations, "sprite roles carry animations")
+  local descriptor = assert(animations[animation], "the family carries animation " .. animation)
+  local frames = assert(descriptor.frames, "animations carry frames")
+  local first = assert(frames[1], "animations carry at least one frame")
+  local visual = assert(first.visual, "frames name their visual")
+  return assert(realized[visual], "frame visual " .. visual .. " is prepared")
+end
+
+---@param family table<string, unknown> grafted test family
+---@param record table<string, unknown> display facts
+---@param group string native group
+---@param pane string "main" or "sub"
+---@param extra table<string, unknown>? controller-shaped overrides
+---@param extraRealized table<string, table<string, unknown>>? additional prepared images by path
+---@return table<string, unknown> recording graphics
+---@return table<string, table<string, unknown>> realized images backing the draw
+local function drawWithChrome(family, record, group, pane, extra, extraRealized)
+  local graphics, textCalls, _, portraits, shader, renderer = composition()
+  local realized = realizeVisuals(family)
+  if extraRealized ~= nil then
+    for key, image in pairs(extraRealized) do
+      realized[key] = image
+    end
+  end
+  local status = openStatus(record, group, extra)
+  local bundle = readyBundle(family, textDouble(textCalls), portraits, shader, realized, {})
+  local ok, err = pcall(renderer.drawPane, renderer, status, pane, bundle)
+  Assert.isTrue(ok, "dynamic chrome draws through generated roles: " .. tostring(err))
+  return graphics, realized
+end
+
+function T.member_focus_follows_the_generated_party_anchors()
+  local family, sourced = sourcedFamily()
+  local cursors =
+    assert(assert(family.sprites, "the family carries sprite roles").primaryCursor, "roles carry the primary cursor")
+  local anchors = assert(cursors.anchors, "the primary cursor carries its member anchors")
+  local focusAnimation = assert(cursors.rootFocus, "the cursor names its root animation")
+  local roster = {}
+  for slot = 0, 1 do
+    roster[#roster + 1] = {
+      slot = slot,
+      isEgg = false,
+      iconKey = "SYNM/f0",
+      portraitSelector = "SYNM/f0/male/plain",
+    }
+  end
+  local record = facts({ roster = roster, slotCount = 2, slot = 0 })
+  local function cursorAt(slot, mode)
+    record.slot = slot
+    local graphics, realized =
+      drawWithChrome(family, record, "info", "sub", { slot = slot, spriteTick = 5, mode = mode or "summary" })
+    local cursorImage = frameImage(sourced, realized, focusAnimation)
+    local found = {}
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == cursorImage then
+        found[#found + 1] = draw
+      end
+    end
+    return found
+  end
+  local first = cursorAt(0)
+  Assert.equal(#first, 1, "one member cursor draws for the displayed member")
+  Assert.equal(first[1].x, anchors[1].x, "the cursor uses its generated anchor")
+  Assert.equal(first[1].y, anchors[1].y, "the cursor uses its generated anchor")
+  local second = cursorAt(1)
+  Assert.equal(#second, 1, "one member cursor draws after switching members")
+  Assert.equal(second[1].x, anchors[2].x, "the cursor follows the displayed member")
+  Assert.equal(second[1].y, anchors[2].y, "the cursor follows the displayed member")
+  Assert.equal(#cursorAt(0, "move_pick"), 0, "the restricted picker hides the member cursor")
+end
+
+function T.performance_stars_and_modifier_markers_follow_their_facts()
+  local family, sourced = sourcedFamily()
+  local rows = {
+    { stat = "speed", base = 5, min = 0, max = 10, stars = 7, tone = "above", modifier = 2 },
+    { stat = "power", base = 5, min = 0, max = 10, stars = 5, tone = "base", modifier = 0 },
+    { stat = "skill", base = 5, min = 0, max = 10, stars = 3, tone = "below", modifier = -1 },
+    { stat = "stamina", base = 5, min = 0, max = 3, stars = 2, tone = "below", modifier = 0 },
+    { stat = "jump", base = 5, min = 0, max = 10, stars = 0, tone = "below", modifier = 0 },
+  }
+  local record = facts({ performance = rows })
+  local graphics, realized = drawWithChrome(family, record, "performance", "main", { spriteTick = 5 })
+  local sprows = assert(
+    assert(family.sprites, "the family carries sprite roles").performance,
+    "roles carry performance rows"
+  ).rows
+  local toneKey = { base = "starBase", above = "starAbove", below = "starBelow" }
+  local expected = {}
+  for index, row in ipairs(rows) do
+    local sprow = assert(sprows[index], "the family carries performance row " .. index)
+    local starAnchors = assert(sprow.stars, "performance rows carry star anchors")
+    for i = 0, 4 do
+      local anchor = assert(starAnchors[i + 1], "star positions carry anchors")
+      if i > row.max then
+        -- positions past the row maximum draw nothing.
+      elseif i > row.stars then
+        expected[#expected + 1] = {
+          image = frameImage(sourced, realized, assert(sprow.starEmpty, "rows carry their empty state")),
+          x = anchor.x,
+          y = anchor.y,
+          what = row.stat .. " empty " .. i,
+        }
+      else
+        local key = assert(toneKey[row.tone], "tones select their star state")
+        expected[#expected + 1] = {
+          image = frameImage(sourced, realized, assert(sprow[key], "rows carry their filled states")),
+          x = anchor.x,
+          y = anchor.y,
+          what = row.stat .. " filled " .. i,
+        }
+      end
+    end
+    local modifierAnchor = assert(sprow.modifier, "performance rows carry modifier anchors")
+    if row.modifier > 0 then
+      expected[#expected + 1] = {
+        image = frameImage(sourced, realized, assert(sprow.modifierPositive, "rows carry positive markers")),
+        x = modifierAnchor.x,
+        y = modifierAnchor.y,
+        what = row.stat .. " positive",
+      }
+    elseif row.modifier < 0 then
+      expected[#expected + 1] = {
+        image = frameImage(sourced, realized, assert(sprow.modifierNegative, "rows carry negative markers")),
+        x = modifierAnchor.x,
+        y = modifierAnchor.y,
+        what = row.stat .. " negative",
+      }
+    end
+  end
+  Assert.isTrue(#expected > 0, "the exercised facts expect star draws")
+  for _, want in ipairs(expected) do
+    local count = 0
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == want.image and draw.x == want.x and draw.y == want.y then
+        count = count + 1
+      end
+    end
+    Assert.equal(count, 1, want.what .. " draws exactly once at its generated anchor")
+  end
+  local wanted = {}
+  for _, want in ipairs(expected) do
+    wanted[want.image] = wanted[want.image] or {}
+    wanted[want.image][want.x .. "," .. want.y] = true
+  end
+  for _, draw in ipairs(graphics.draws) do
+    local positions = wanted[draw.image]
+    if positions ~= nil then
+      Assert.isTrue(positions[draw.x .. "," .. draw.y] == true, "every star draw lands on a generated anchor")
+    end
+  end
+end
+
+function T.shiny_leaves_and_crown_render_on_the_info_main_pane_only()
+  local family, sourced = sourcedFamily()
+  local leafRoles = assert(assert(family.sprites, "the family carries sprite roles").leaves, "roles carry leaves")
+  local leafAnchors = assert(leafRoles.anchors, "leaves carry their anchors")
+  local crownAnchor = assert(leafRoles.crownAnchor, "leaves carry the crown anchor")
+  local function indicatorsWith(crown, slots)
+    return {
+      status = "SYN-OK",
+      pokerus = "none",
+      markings = { false, false, false, false, false, false },
+      leaves = slots,
+      crown = crown,
+      shiny = false,
+    }
+  end
+  local function chromeDraws(record, group, pane)
+    local graphics, realized = drawWithChrome(family, record, group, pane, { spriteTick = 5 })
+    local leafImage = frameImage(sourced, realized, assert(leafRoles.leaf, "leaves name their animation"))
+    local crownImage = frameImage(sourced, realized, assert(leafRoles.crown, "leaves name the crown"))
+    local found = {}
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == leafImage or draw.image == crownImage then
+        found[#found + 1] = draw
+      end
+    end
+    return found, leafImage, crownImage
+  end
+  local leafy = facts({ indicators = indicatorsWith(false, { true, false, true, false, false }) })
+  local leafDraws, leafImage = chromeDraws(leafy, "info", "main")
+  Assert.equal(#leafDraws, 2, "each true leaf draws once")
+  local positions = {}
+  for _, draw in ipairs(leafDraws) do
+    Assert.equal(draw.image, leafImage, "leaf slots use the leaf animation")
+    positions[draw.x .. "," .. draw.y] = true
+  end
+  Assert.isTrue(
+    positions[leafAnchors[1].x .. "," .. leafAnchors[1].y] == true,
+    "the first true leaf uses its generated anchor"
+  )
+  Assert.isTrue(
+    positions[leafAnchors[3].x .. "," .. leafAnchors[3].y] == true,
+    "the second true leaf uses its generated anchor"
+  )
+  local crowned = facts({ indicators = indicatorsWith(true, { true, false, false, false, false }) })
+  local crownDraws, _, crownImage = chromeDraws(crowned, "info", "main")
+  Assert.equal(#crownDraws, 1, "the crown draws alone")
+  Assert.equal(crownDraws[1].image, crownImage, "the crown uses the crown animation")
+  Assert.equal(crownDraws[1].x, crownAnchor.x, "the crown uses its generated anchor")
+  Assert.equal(crownDraws[1].y, crownAnchor.y, "the crown uses its generated anchor")
+  Assert.equal(#chromeDraws(leafy, "skills", "main"), 0, "leaves never leave the info pane")
+  Assert.equal(#chromeDraws(leafy, "info", "sub"), 0, "leaves never move to the sub pane")
+end
+
+function T.move_reorder_and_ribbon_controls_follow_native_geometry()
+  local family, sourced = sourcedFamily()
+  local sprites = assert(family.sprites, "the family carries sprite roles")
+  local secondary = assert(sprites.secondaryMoveCursor, "roles carry nested move geometry")
+  local rowBaseY = assert(secondary.rowBaseY, "move geometry carries its first row")
+  local rowStep = assert(secondary.rowStep, "move geometry carries its row step")
+  local record = facts()
+  local reorder, realized = drawWithChrome(family, record, "skills", "sub", {
+    phase = "move_reorder",
+    moveSlot = 2,
+    reorderSource = 0,
+    spriteTick = 5,
+  })
+  local chromeSet = {}
+  for name in pairs(assert(sourced.visuals, "the sourced family carries its visuals")) do
+    if name ~= "detailBacking" then
+      chromeSet[assert(realized[name], "chrome visual " .. name .. " is prepared")] = true
+    end
+  end
+  local rowSet = {}
+  for row = 0, 3 do
+    rowSet[rowBaseY + row * rowStep] = true
+  end
+  local rowHits = {}
+  for _, draw in ipairs(reorder.draws) do
+    if chromeSet[draw.image] and rowSet[draw.y] then
+      rowHits[#rowHits + 1] = draw.y
+    end
+  end
+  table.sort(rowHits)
+  Assert.deepEqual(
+    rowHits,
+    { rowBaseY, rowBaseY + 2 * rowStep },
+    "source and target cursors occupy generated row anchors"
+  )
+  local ribbonRoles = assert(sprites.ribbons, "roles carry ribbon controls")
+  local origin = assert(ribbonRoles.origin, "ribbon controls carry their grid origin")
+  local columnStep = assert(ribbonRoles.columnStep, "ribbon controls carry their column step")
+  local ribbonRowStep = assert(ribbonRoles.rowStep, "ribbon controls carry their row step")
+  local cursorAnimation = assert(ribbonRoles.cursor, "ribbon controls name their cursor")
+  local prevControl = assert(ribbonRoles.pagePrev, "ribbon controls carry the previous control")
+  local nextControl = assert(ribbonRoles.pageNext, "ribbon controls carry the next control")
+  local earned = earnedRibbons(20)
+  local ribbonArt = {}
+  for _, ribbon in ipairs(earned) do
+    local art = assert(ribbon.art, "ribbons carry art")
+    ribbonArt[assert(art.image, "ribbon art carries its image")] = { id = "ribbon:" .. tostring(ribbon.key) }
+  end
+  local cases = {
+    { index = 0, page = 0, prev = false, next = true },
+    { index = 10, page = 1, prev = true, next = true },
+    { index = 19, page = 2, prev = true, next = false },
+  }
+  for _, case in ipairs(cases) do
+    local ribbonRecord = facts({ ribbons = earned })
+    local graphics, realizedRibbons = drawWithChrome(family, ribbonRecord, "performance", "sub", {
+      phase = "ribbon_detail",
+      ribbonIndex = case.index,
+      ribbonPage = case.page,
+      spriteTick = 5,
+    }, ribbonArt)
+    local cell = case.index % 9
+    local cursorX = origin.x + (cell % 3) * columnStep
+    local cursorY = origin.y + math.floor(cell / 3) * ribbonRowStep
+    local cursorImage = frameImage(sourced, realizedRibbons, cursorAnimation)
+    local prevAnchor = assert(prevControl.anchor, "page controls carry anchors")
+    local nextAnchor = assert(nextControl.anchor, "page controls carry anchors")
+    local prevImage =
+      frameImage(sourced, realizedRibbons, assert(prevControl.animation, "page controls name animations"))
+    local nextImage =
+      frameImage(sourced, realizedRibbons, assert(nextControl.animation, "page controls name animations"))
+    local cursorHits, prevHits, nextHits = 0, 0, 0
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == cursorImage and draw.x == cursorX and draw.y == cursorY then
+        cursorHits = cursorHits + 1
+      end
+      if draw.image == prevImage and draw.x == prevAnchor.x and draw.y == prevAnchor.y then
+        prevHits = prevHits + 1
+      end
+      if draw.image == nextImage and draw.x == nextAnchor.x and draw.y == nextAnchor.y then
+        nextHits = nextHits + 1
+      end
+    end
+    Assert.equal(cursorHits, 1, "the ribbon cursor marks earned ribbon " .. case.index)
+    Assert.equal(prevHits > 0, case.prev, "the previous control shows only past the first page")
+    Assert.equal(nextHits > 0, case.next, "the next control shows only before the last page")
+  end
+end
+
+function T.move_detail_backing_follows_the_generated_x_offsets()
+  local family, sourced = sourcedFamily()
+  local track = assert(
+    assert(sourced.transitions, "the sourced family carries transition tracks").moveDetail,
+    "tracks carry the move detail"
+  )
+  Assert.equal(track.axis, "x", "the move track runs along x")
+  local positions = assert(track.positions, "tracks carry positions")
+  local terminal = positions[#positions]
+  local record = facts()
+  local cases = {
+    {
+      phase = "move_opening",
+      transition = { kind = "moveDetail", direction = "open", axis = "x", offset = positions[1] },
+      x = positions[1],
+    },
+    {
+      phase = "move_opening",
+      transition = { kind = "moveDetail", direction = "open", axis = "x", offset = positions[2] },
+      x = positions[2],
+    },
+    { phase = "move_detail", transition = nil, x = terminal },
+    {
+      phase = "move_closing",
+      transition = { kind = "moveDetail", direction = "close", axis = "x", offset = positions[2] },
+      x = positions[2],
+    },
+  }
+  for _, case in ipairs(cases) do
+    local graphics, realized = drawWithChrome(family, record, "skills", "sub", {
+      phase = case.phase,
+      moveSlot = 0,
+      spriteTick = 5,
+      transition = case.transition,
+    })
+    local backing = assert(realized["detailBacking"], "the detail backing is prepared")
+    local hits = 0
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == backing then
+        hits = hits + 1
+        Assert.equal(draw.x, case.x, "the detail backing translates along x by the generated offset")
+      end
+    end
+    Assert.equal(hits, 1, "the detail backing draws exactly once")
+  end
+end
+
+function T.ribbon_detail_backing_follows_the_generated_y_offsets()
+  local family, sourced = sourcedFamily()
+  local track = assert(
+    assert(sourced.transitions, "the sourced family carries transition tracks").ribbonDetail,
+    "tracks carry the ribbon detail"
+  )
+  Assert.equal(track.axis, "y", "the ribbon track runs along y")
+  local positions = assert(track.positions, "tracks carry positions")
+  local terminal = positions[#positions]
+  local earned = earnedRibbons(3)
+  local ribbonArt = {}
+  for _, ribbon in ipairs(earned) do
+    local art = assert(ribbon.art, "ribbons carry art")
+    ribbonArt[assert(art.image, "ribbon art carries its image")] = { id = "ribbon:" .. tostring(ribbon.key) }
+  end
+  local record = facts({ ribbons = earned })
+  local cases = {
+    {
+      phase = "ribbon_opening",
+      transition = { kind = "ribbonDetail", direction = "open", axis = "y", offset = positions[1] },
+      y = positions[1],
+    },
+    {
+      phase = "ribbon_opening",
+      transition = { kind = "ribbonDetail", direction = "open", axis = "y", offset = positions[2] },
+      y = positions[2],
+    },
+    { phase = "ribbon_detail", transition = nil, y = terminal },
+    {
+      phase = "ribbon_closing",
+      transition = { kind = "ribbonDetail", direction = "close", axis = "y", offset = positions[2] },
+      y = positions[2],
+    },
+  }
+  for _, case in ipairs(cases) do
+    local graphics, realized = drawWithChrome(family, record, "performance", "sub", {
+      phase = case.phase,
+      ribbonIndex = 0,
+      ribbonPage = 0,
+      spriteTick = 5,
+      transition = case.transition,
+    }, ribbonArt)
+    local backing = assert(realized["detailBacking"], "the detail backing is prepared")
+    local hits = 0
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == backing then
+        hits = hits + 1
+        Assert.equal(draw.y, case.y, "the detail backing translates along y by the generated offset")
+      end
+    end
+    Assert.equal(hits, 1, "the detail backing draws exactly once")
+  end
+end
+
+function T.sampled_frames_hold_prefix_and_loop_origins_with_visual_offsets()
+  local family = sourcedFamily()
+  local sprites = assert(family.sprites, "the family carries sprite roles")
+  local animations = assert(sprites.animations, "sprite roles carry animations")
+  animations.looped = {
+    frames = {
+      { visual = "syn-rootFocus", durationTicks = 2 },
+      { visual = "syn-moveRowFocus", durationTicks = 1 },
+      { visual = "syn-restrictedCancel", durationTicks = 1 },
+    },
+    loopFrom = 2,
+    playback = "loop",
+  }
+  animations.single = {
+    frames = {
+      { visual = "syn-rootFocus", durationTicks = 1 },
+      { visual = "syn-moveRowFocus", durationTicks = 1 },
+    },
+    loopFrom = 1,
+    playback = "once",
+  }
+  family.visuals["syn-moveRowFocus"].offset = { x = 3, y = -2 }
+  local cursors = assert(sprites.primaryCursor, "roles carry the primary cursor")
+  local anchor =
+    assert(assert(cursors.anchors, "the cursor carries anchors")[1], "the cursor covers slot 0")
+  local record = facts()
+  local function cursorAt(animation, tick)
+    cursors.rootFocus = animation
+    local graphics, realized = drawWithChrome(family, record, "info", "sub", { slot = 0, spriteTick = tick })
+    local first = assert(realized["syn-rootFocus"], "the first frame visual is prepared")
+    local second = assert(realized["syn-moveRowFocus"], "the second frame visual is prepared")
+    local third = assert(realized["syn-restrictedCancel"], "the third frame visual is prepared")
+    local found = {}
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == first or draw.image == second or draw.image == third then
+        found[#found + 1] = draw
+      end
+    end
+    Assert.equal(#found, 1, "one cursor frame draws at tick " .. tick)
+    return found[1], first, second, third
+  end
+  local loopedFrames = { "first", "first", "second", "third", "second", "third" }
+  for tick = 0, 5 do
+    local draw, first, second, third = cursorAt("looped", tick)
+    local want = loopedFrames[tick + 1]
+    if want == "first" then
+      Assert.equal(draw.image, first, "the looped prefix holds tick " .. tick)
+      Assert.equal(draw.x, anchor.x, "unoffset frames keep their anchor at tick " .. tick)
+      Assert.equal(draw.y, anchor.y, "unoffset frames keep their anchor at tick " .. tick)
+    elseif want == "second" then
+      Assert.equal(draw.image, second, "the looped cycle reaches its origin at tick " .. tick)
+      Assert.equal(draw.x, anchor.x + 3, "frame visuals apply their compiled x offset")
+      Assert.equal(draw.y, anchor.y - 2, "frame visuals apply their compiled y offset")
+    else
+      Assert.equal(draw.image, third, "the looped cycle advances past its origin at tick " .. tick)
+      Assert.equal(draw.x, anchor.x, "unoffset frames keep their anchor at tick " .. tick)
+      Assert.equal(draw.y, anchor.y, "unoffset frames keep their anchor at tick " .. tick)
+    end
+  end
+  for _, tick in ipairs({ 0, 1, 9 }) do
+    local draw, first, second = cursorAt("single", tick)
+    if tick == 0 then
+      Assert.equal(draw.image, first, "one-shot playback starts on its first frame")
+    else
+      Assert.equal(draw.image, second, "one-shot playback rests on its final frame")
+    end
+  end
+  cursors.rootFocus = "leaf"
+  local heldGraphics, heldRealized = drawWithChrome(family, record, "info", "sub", { slot = 0, spriteTick = 50 })
+  local leafImage = assert(heldRealized["syn-leaf"], "the leaf frame visual is prepared")
+  local leafHits = 0
+  for _, draw in ipairs(heldGraphics.draws) do
+    if draw.image == leafImage then
+      leafHits = leafHits + 1
+      Assert.equal(draw.x, anchor.x, "single-frame playbacks hold their anchor")
+      Assert.equal(draw.y, anchor.y, "single-frame playbacks hold their anchor")
+    end
+  end
+  Assert.equal(leafHits, 1, "single-frame playbacks draw once at any tick")
 end
 
 return { tests = T }

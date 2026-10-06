@@ -901,4 +901,29 @@ function T.selected_facts_carry_source_display_values()
   )
 end
 
+function T.performance_rows_publish_their_signed_aprijuice_modifier()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xD03D0301)
+  gift(service, "CHIKORITA", 5)
+  setMon(service, 0, function(mon)
+    mon.personality = 12345
+  end)
+  local manifest = SummaryPresentationFixture.manifest()
+  local juice = { power = 40, stamina = -128, skill = 0, jump = 127, speed = -1 }
+  local context = SummaryPresentationFixture.context(1, { dayOfMonth = 13 })
+  context.aprijuiceBySlot[1] = juice
+  local facts = buildFacts(service, 0, context, manifest)
+  Assert.equal(#facts.performance, 5, "performance exposes five named rows")
+  for _, stat in ipairs(DISPLAY_ORDER) do
+    local expected = expectedRow(manifest, "CHIKORITA/f0", stat, 12345, 13, juice[stat])
+    local row = performanceRow(facts, stat)
+    Assert.equal(row.base, expected.base, stat .. " keeps its source base under aprijuice")
+    Assert.equal(row.min, expected.min, stat .. " keeps its source minimum under aprijuice")
+    Assert.equal(row.max, expected.max, stat .. " keeps its source maximum under aprijuice")
+    Assert.equal(row.stars, expected.stars, stat .. " keeps its converted stars under aprijuice")
+    Assert.equal(row.tone, expected.tone, stat .. " keeps its tone under aprijuice")
+    Assert.equal(row.modifier, juice[stat], stat .. " publishes its signed aprijuice modifier")
+  end
+end
+
 return { tests = T }

@@ -546,7 +546,7 @@ local function projectPerformance(mon, slot0, context, manifest)
     elseif stars > base then
       tone = "above"
     end
-    rows[#rows + 1] = { stat = stat, base = base, min = lo, max = hi, stars = stars, tone = tone }
+    rows[#rows + 1] = { stat = stat, base = base, min = lo, max = hi, stars = stars, tone = tone, modifier = extra }
   end
   return rows
 end

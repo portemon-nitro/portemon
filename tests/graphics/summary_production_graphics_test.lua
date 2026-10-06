@@ -146,7 +146,7 @@ end
 ---@param summaryManifest table<string, unknown> validated Summary family
 ---@param class string host layout class under test
 ---@return table<string, unknown> rig driving the production party flow
-local function openProductionPartyFlow(versionId, summaryManifest, class)
+local function openProductionPartyFlow(versionId, summaryManifest, class, species)
   local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
   local BagCursor = require("libs.hgss.src.items.BagCursor")
   local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -156,8 +156,9 @@ local function openProductionPartyFlow(versionId, summaryManifest, class)
   local helper = SummaryAcceptanceFixture.preparationDoubles({})
   local Owner = requireOwner(versionId, helper)
   local service = openService(realCatalog(cacheFs), 0x5EED5001)
-  SummaryAcceptanceFixture.gift(service, "CHIKORITA", 12)
-  SummaryAcceptanceFixture.gift(service, "TOTODILE", 12)
+  for _, name in ipairs(species or { "CHIKORITA", "TOTODILE" }) do
+    SummaryAcceptanceFixture.gift(service, name, 12)
+  end
   local context = SummaryAcceptanceFixture.displayContext(summaryManifest, service:partyCount())
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local leases = 0
@@ -1088,6 +1089,58 @@ function T.production_summary_draws_through_the_ready_bundle_without_party_graft
   local again = drawNativePane(scope, renderer, active, "sub", bundle)
   Assert.equal(paneDifference(sub, again), 0, "the production child repeats its sub pane identically")
   text:release()
+  rig.flow:dispose()
+  rig.owner:release()
+end
+
+-- The live production Summary draws its member focus chrome through the
+-- ready bundle: switching between identical members moves Summary-owned
+-- cursor pixels on the sub pane while every other pixel stays stable,
+-- and the journey holds one preparation lease before returning to the
+-- party.
+function T.production_summary_moves_member_chrome_through_its_ready_bundle(scope)
+  local versionId = readyVersion()
+  local cacheFs = CacheFs.forVersion(versionId)
+  local _, summaryManifest = SummaryAcceptanceFixture.loadSummaryManifest(versionId)
+  local rig = openProductionPartyFlow(versionId, summaryManifest, "nativeLike", { "CHIKORITA", "CHIKORITA" })
+  local active = openNestedSummary(rig)
+  for _ = 1, 30 do
+    if active.facts ~= nil and active.group ~= nil then
+      break
+    end
+    rig.flow:updateFixed({})
+    active = flowChild(rig)
+  end
+  Assert.notNil(active.facts, "the nested Summary publishes its display facts")
+  Assert.equal(active.group, "info", "the nested Summary opens on its first native group")
+  local text = FieldTextRenderer.new({ cacheFs = cacheFs })
+  local renderer = SummaryRenderer.new({ text = text })
+  local assets =
+    readyLikeBundle(scope, cacheFs, summaryManifest, text, portraitProvider(scope, cacheFs), pictureShader(scope))
+  local main = drawNativePane(scope, renderer, active, "main", assets)
+  local first = drawNativePane(scope, renderer, active, "sub", assets)
+  Assert.isTrue(
+    paneDifference(main, first) > 1000,
+    "the production child draws distinct main and sub surfaces"
+  )
+  rig.flow:updateFixed({ { type = "navigate", direction = "down" } })
+  active = flowChild(rig)
+  Assert.equal(active.slot, 1, "vertical input reaches the second member")
+  local second = drawNativePane(scope, renderer, active, "sub", assets)
+  Assert.isTrue(
+    paneDifference(first, second) > 20,
+    "switching members moves the member focus chrome"
+  )
+  text:release()
+  rig.flow:updateFixed({ { type = "cancel" } })
+  for _ = 1, 24 do
+    if rig.flow:status().page == "party_browse" then
+      break
+    end
+    rig.flow:updateFixed({})
+  end
+  Assert.equal(rig.flow:status().page, "party_browse", "closing the Summary returns to the party")
+  Assert.equal(rig.leases(), 1, "the journey holds one preparation lease for its Summary")
   rig.flow:dispose()
   rig.owner:release()
 end

@@ -512,7 +512,8 @@ function T.ribbon_detail_opens_only_with_earned_ribbons_and_cancel_returns_to_th
   Assert.equal(status.ribbonIndex, 0, "the ribbon pane starts on the first earned ribbon")
   Assert.equal(status.ribbonPage, 0, "the ribbon pane starts on the first page")
   status = nativeStep(controller, { { type = "cancel" } })
-  Assert.equal(status.phase, "root", "ribbon cancellation returns to browsing")
+  Assert.equal(status.phase, "ribbon_closing", "ribbon cancellation stages its reverse motion")
+  status = settlePhase(controller, "root")
   Assert.equal(status.group, "performance", "ribbon cancellation keeps the ribbons group")
   Assert.isTrue(status.open, "ribbon cancellation never exits the summary")
   Assert.isNil(controller:takeResult(), "ribbon cancellation completes nothing")
@@ -746,7 +747,8 @@ function T.detail_cancel_returns_to_skills_and_reorder_cancel_disarms()
   nativeStep(controller, { { type = "confirm" } })
   settlePhase(controller, "move_detail")
   local status = nativeStep(controller, { { type = "cancel" } })
-  Assert.equal(status.phase, "root", "detail cancellation closes the pane")
+  Assert.equal(status.phase, "move_closing", "detail cancellation stages its reverse motion")
+  status = settlePhase(controller, "root")
   Assert.equal(status.group, "skills", "detail cancellation keeps skills, not info")
   Assert.isNil(controller:takeResult(), "detail cancellation completes nothing")
   nativeStep(controller, { { type = "confirm" } })
@@ -1077,7 +1079,8 @@ function T.detail_cancel_steps_back_to_skills_before_closing()
   settlePhase(controller, "move_detail")
   local status = nativeStep(controller, { { type = "cancel" } })
   Assert.isTrue(status.open, "detail cancellation steps back first")
-  Assert.equal(status.phase, "root", "detail cancellation closes the pane")
+  Assert.equal(status.phase, "move_closing", "detail cancellation stages its reverse motion")
+  status = settlePhase(controller, "root")
   Assert.equal(status.group, "skills", "detail cancellation keeps skills")
   Assert.isNil(controller:takeResult(), "stepping back reports no terminal result")
   nativeStep(controller, { { type = "cancel" } })
@@ -1244,7 +1247,9 @@ function T.empty_details_carry_no_cursor_and_arm_nothing()
   status = nativeStep(controller, { { type = "navigate", direction = "down" } })
   Assert.isNil(status.moveSlot, "empty navigation finds no row")
   status = nativeStep(controller, { { type = "cancel" } })
-  Assert.equal(status.phase, "root", "empty detail still closes")
+  Assert.equal(status.phase, "move_closing", "empty detail still stages its reverse motion")
+  status = settlePhase(controller, "root")
+  Assert.equal(status.group, "skills", "empty detail keeps skills")
   Assert.isNil(controller:takeResult(), "empty browsing completes nothing")
 end
 
@@ -1303,6 +1308,125 @@ function T.picture_blend_reaches_status_by_value_detached_by_identity()
     firstSample.paletteBlend,
     "idle ticks keep the blend"
   )
+end
+
+function T.move_detail_open_and_close_follow_the_generated_x_track()
+  local manifest = SummaryPresentationFixture.manifest()
+  local track = assert(manifest.transitions.moveDetail, "the family carries the move detail track")
+  Assert.equal(track.axis, "x", "the move track runs along x")
+  Assert.deepEqual(track.positions, { 0, 64, 128 }, "the move track carries its source positions")
+  local controller = nativeOpen({ manifest = manifest })
+  nativeStep(controller, {})
+  nativeStep(controller, { { type = "navigate", direction = "right" } })
+  local opening = nativeStep(controller, { { type = "confirm" } })
+  Assert.equal(opening.phase, "move_opening", "confirmation stages the move transition")
+  local staged = assert(opening.transition, "the staged transition publishes its sample")
+  Assert.equal(staged.kind, "moveDetail", "the staged transition names its track")
+  Assert.equal(staged.direction, "open", "the staged transition opens")
+  Assert.equal(staged.axis, "x", "the staged transition runs along the generated axis")
+  Assert.equal(staged.offset, 0, "the staged transition starts at the generated origin")
+  Assert.isTrue(type(opening.spriteTick) == "number", "the staged status carries its animation tick")
+  local held = nativeStep(controller, { { type = "navigate", direction = "down" } })
+  Assert.equal(held.slot, 0, "transitional input moves no member")
+  Assert.equal(held.group, "skills", "transitional input moves no group")
+  local offsets = {}
+  local status = controller:status()
+  for _ = 1, 12 do
+    if status.phase == "move_detail" and status.transition == nil then
+      break
+    end
+    local sample = assert(status.transition, "the opening transition stays sampled until stable detail")
+    Assert.equal(sample.kind, "moveDetail", "opening samples name their track")
+    Assert.equal(sample.direction, "open", "opening samples keep their direction")
+    Assert.equal(sample.axis, "x", "opening samples run along the generated axis")
+    offsets[#offsets + 1] = sample.offset
+    status = nativeStep(controller, {})
+  end
+  Assert.equal(status.phase, "move_detail", "the opening trace settles into detail")
+  Assert.isNil(status.transition, "stable detail carries no transition")
+  Assert.deepEqual(offsets, { 0, 64, 128 }, "opening exposes every generated position in order")
+  Assert.isTrue(
+    type(status.spriteTick) == "number" and status.spriteTick > (opening.spriteTick or -1),
+    "fixed updates advance the animation tick"
+  )
+  local closing = nativeStep(controller, { { type = "cancel" } })
+  Assert.equal(closing.phase, "move_closing", "cancelling detail stages the reverse transition")
+  local returning = {}
+  status = closing
+  for _ = 1, 12 do
+    if status.phase == "root" and status.transition == nil then
+      break
+    end
+    local sample = assert(status.transition, "the closing transition stays sampled until the root")
+    Assert.equal(sample.kind, "moveDetail", "closing samples name their track")
+    Assert.equal(sample.direction, "close", "closing samples keep their direction")
+    Assert.equal(sample.axis, "x", "closing samples run along the generated axis")
+    returning[#returning + 1] = sample.offset
+    status = nativeStep(controller, {})
+  end
+  Assert.equal(status.phase, "root", "the closing trace returns to browsing")
+  Assert.isNil(status.transition, "the root carries no transition")
+  Assert.deepEqual(returning, { 128, 64, 0 }, "closing reverses the generated positions")
+  Assert.equal(status.group, "skills", "closing keeps the skills group")
+  Assert.isNil(controller:takeResult(), "nested transitions complete nothing")
+end
+
+function T.ribbon_detail_open_and_close_follow_the_generated_y_track()
+  local manifest = SummaryPresentationFixture.manifest()
+  local track = assert(manifest.transitions.ribbonDetail, "the family carries the ribbon detail track")
+  Assert.equal(track.axis, "y", "the ribbon track runs along y")
+  Assert.deepEqual(track.positions, { 0, 36, 72 }, "the ribbon track carries its source positions")
+  local controller =
+    nativeOpen({ manifest = manifest, state = nativeState({ ribbons = earnedRibbons(10) }) })
+  nativeStep(controller, {})
+  nativeStep(controller, { { type = "navigate", direction = "right" } })
+  nativeStep(controller, { { type = "navigate", direction = "right" } })
+  local opening = nativeStep(controller, { { type = "confirm" } })
+  Assert.equal(opening.phase, "ribbon_opening", "confirmation stages the ribbon transition")
+  local staged = assert(opening.transition, "the staged transition publishes its sample")
+  Assert.equal(staged.kind, "ribbonDetail", "the staged transition names its track")
+  Assert.equal(staged.direction, "open", "the staged transition opens")
+  Assert.equal(staged.axis, "y", "the staged transition runs along the generated axis")
+  Assert.equal(staged.offset, 0, "the staged transition starts at the generated origin")
+  local held = nativeStep(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(held.ribbonIndex, 0, "transitional input moves no ribbon cursor")
+  local offsets = {}
+  local status = controller:status()
+  for _ = 1, 12 do
+    if status.phase == "ribbon_detail" and status.transition == nil then
+      break
+    end
+    local sample = assert(status.transition, "the opening transition stays sampled until stable detail")
+    Assert.equal(sample.kind, "ribbonDetail", "opening samples name their track")
+    Assert.equal(sample.direction, "open", "opening samples keep their direction")
+    Assert.equal(sample.axis, "y", "opening samples run along the generated axis")
+    offsets[#offsets + 1] = sample.offset
+    status = nativeStep(controller, {})
+  end
+  Assert.equal(status.phase, "ribbon_detail", "the opening trace settles into detail")
+  Assert.isNil(status.transition, "stable detail carries no transition")
+  Assert.deepEqual(offsets, { 0, 36, 72 }, "opening exposes every generated position in order")
+  local closing = nativeStep(controller, { { type = "cancel" } })
+  Assert.equal(closing.phase, "ribbon_closing", "cancelling detail stages the reverse transition")
+  local returning = {}
+  status = closing
+  for _ = 1, 12 do
+    if status.phase == "root" and status.transition == nil then
+      break
+    end
+    local sample = assert(status.transition, "the closing transition stays sampled until the root")
+    Assert.equal(sample.kind, "ribbonDetail", "closing samples name their track")
+    Assert.equal(sample.direction, "close", "closing samples keep their direction")
+    Assert.equal(sample.axis, "y", "closing samples run along the generated axis")
+    returning[#returning + 1] = sample.offset
+    status = nativeStep(controller, {})
+  end
+  Assert.equal(status.phase, "root", "the closing trace returns to browsing")
+  Assert.isNil(status.transition, "the root carries no transition")
+  Assert.deepEqual(returning, { 72, 36, 0 }, "closing reverses the generated positions")
+  Assert.equal(status.group, "performance", "closing keeps the ribbons group")
+  Assert.isTrue(status.open, "closing the ribbon pane never exits the summary")
+  Assert.isNil(controller:takeResult(), "nested transitions complete nothing")
 end
 
 return { tests = T }

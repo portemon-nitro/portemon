@@ -597,6 +597,10 @@ function T.tests.move_reorder_swaps_whole_entries_and_rejects_stale_gestures()
     Assert.isNil(flow:takeResult(), "a drifted gesture reports no terminal result")
 
     status = drive(flow, { { type = "cancel" } })
+    status = driveUntil(flow, "the browsed root", 12, function(current)
+      local child = current.child
+      return child ~= nil and child.phase == "root"
+    end)
     Assert.equal(summaryPhase(flow), "root", "detail cancellation returns to browsing")
     status = drive(flow, { { type = "cancel" } })
     status = driveUntil(flow, "the party browse page", 30, function(current)
