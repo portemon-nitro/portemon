@@ -4,11 +4,13 @@
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
+local GameSave = require("libs.hgss.src.save.GameSave")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local MonsSave = require("libs.mons.src.MonsSave")
 local MartSave = require("libs.hgss.src.save.MartSave")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 
@@ -45,7 +47,7 @@ end
 
 local function record(saveId, versionId, playerData)
   return {
-    schema = "g4-game-save-v6",
+    schema = GameSave.SCHEMA,
     saveId = saveId,
     versionId = versionId,
     playTimeSeconds = 0,
@@ -76,8 +78,39 @@ local function record(saveId, versionId, playerData)
     mons = monsBucket(),
     bag = BagSave.empty(),
     mart = MartSave.empty(),
+    fashionCase = FashionCaseState.empty(),
     mailbox = Mailbox.new():capture(),
     photoAlbum = PhotoAlbum.new():capture(),
+  }
+end
+
+local function mailRecord()
+  return {
+    schema = "g4-mail-v1",
+    type = 2,
+    author = { trainerId = 1, name = "GOLD", gender = 0, language = 2, game = 7 },
+    icons = { { species = "CHIKORITA", form = 0, palette = 0 }, false, false },
+    lines = { { template = "GREET", words = { "GOLD", false } }, false, false },
+  }
+end
+
+local function photoRecord()
+  return {
+    schema = "g4-photo-v1",
+    icon = 0,
+    playerName = "GOLD",
+    playerGender = 0,
+    leadNickname = "CHIKORITA",
+    avatarState = "walking",
+    mapSymbol = "MAP_NEW_BARK_TOWN",
+    fieldX = 1,
+    fieldZ = 2,
+    date = { year = 2026, month = 10, day = 4, weekday = 0 },
+    hour = 12,
+    minute = 30,
+    party = { { species = "CHIKORITA", form = 0, gender = 0, shiny = false }, false, false, false, false, false },
+    sourcePartyCount = 1,
+    hiddenPropModels = { false, false },
   }
 end
 
@@ -154,7 +187,7 @@ function T.full_record_validation_is_shared_and_version_context_is_cached()
   local second = assert(service:validate(record("save-00000002", "heartgold", validPlayerData)))
   Assert.equal(first.saveId, "save-00000001")
   Assert.equal(second.saveId, "save-00000002")
-  Assert.equal(first.schema, "g4-game-save-v6")
+  Assert.equal(first.schema, GameSave.SCHEMA)
   Assert.equal(first.fashionCase.schema, "hgss-fashion-case-v1")
   Assert.equal(loads, 1)
   local invalid, err = service:validate(record("save-00000003", "heartgold", { options = {} }))
@@ -192,6 +225,76 @@ function T.v5_fashion_case_is_required_and_strict_while_v4_migrates()
   invalid, err = service:validate(invalidV4)
   Assert.isNil(invalid)
   Assert.isTrue(Errors.is(err))
+end
+
+function T.both_historical_v6_layouts_migrate_without_losing_their_owned_buckets()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local fashionV6 = record("save-00000033", "heartgold", validPlayerData)
+  fashionV6.schema = GameSave.LEGACY_V6_SCHEMA
+  fashionV6.mailbox = nil
+  fashionV6.photoAlbum = nil
+  fashionV6.fashionCase.counts[1] = 1
+  local fashionBefore = copy(fashionV6.fashionCase)
+  local withPcBuckets = assert(service:validate(fashionV6))
+  Assert.equal(withPcBuckets.schema, GameSave.SCHEMA)
+  Assert.deepEqual(withPcBuckets.fashionCase, fashionBefore)
+  Assert.deepEqual(withPcBuckets.mailbox, Mailbox.new():capture())
+  Assert.deepEqual(withPcBuckets.photoAlbum, PhotoAlbum.new():capture())
+  Assert.equal(fashionV6.schema, GameSave.LEGACY_V6_SCHEMA)
+  Assert.isNil(fashionV6.mailbox)
+  Assert.isNil(fashionV6.photoAlbum)
+
+  local pcV6 = record("save-00000034", "heartgold", validPlayerData)
+  pcV6.schema = GameSave.LEGACY_V6_SCHEMA
+  pcV6.fashionCase = nil
+  pcV6.mailbox.slots[8] = mailRecord()
+  pcV6.photoAlbum.slots[36] = photoRecord()
+  local mailboxBefore, photoAlbumBefore = copy(pcV6.mailbox), copy(pcV6.photoAlbum)
+  local withFashionCase = assert(service:validate(pcV6))
+  Assert.equal(withFashionCase.schema, GameSave.SCHEMA)
+  Assert.deepEqual(withFashionCase.mailbox, mailboxBefore)
+  Assert.deepEqual(withFashionCase.photoAlbum, photoAlbumBefore)
+  Assert.deepEqual(withFashionCase.fashionCase, FashionCaseState.empty())
+  Assert.equal(pcV6.schema, GameSave.LEGACY_V6_SCHEMA)
+  Assert.isNil(pcV6.fashionCase)
+  Assert.deepEqual(pcV6.mailbox, mailboxBefore)
+  Assert.deepEqual(pcV6.photoAlbum, photoAlbumBefore)
+end
+
+function T.v6_migration_rejects_mixed_or_incomplete_feature_groups()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local malformed = record("save-00000035", "heartgold", validPlayerData)
+  malformed.schema = GameSave.LEGACY_V6_SCHEMA
+  local cases = {
+    function(_) end,
+    function(value)
+      value.photoAlbum = nil
+    end,
+    function(value)
+      value.mailbox = nil
+    end,
+    function(value)
+      value.fashionCase = nil
+      value.mailbox = nil
+      value.photoAlbum = nil
+    end,
+  }
+  for _, damage in ipairs(cases) do
+    local candidate = copy(malformed)
+    damage(candidate)
+    local invalid, err = service:validate(candidate)
+    Assert.isNil(invalid)
+    Assert.isTrue(Errors.is(err))
+    Assert.equal(candidate.schema, GameSave.LEGACY_V6_SCHEMA)
+  end
 end
 
 function T.version_context_failure_does_not_borrow_another_version()
@@ -253,10 +356,15 @@ function T.quiescent_v4_saves_rebind_stale_fingerprints_and_preserve_state()
   local candidate = record("save-00000018", "heartgold", v4playerData())
   candidate.schema = "g4-game-save-v4"
   candidate.mart = nil
+  candidate.fashionCase = nil
+  candidate.mailbox = nil
+  candidate.photoAlbum = nil
   markPreUpdateFingerprints(candidate)
   candidate.world.flags = { [12] = true }
   candidate.world.rng = { state = 91, calls = 37 }
   candidate.mons = monsBucket()
+  candidate.mons.schema = MonsSave.LEGACY_SCHEMA
+  candidate.mons.boxes = nil
   local sourceWorld = copy(candidate.world)
   local sourcePlayerData = copy(candidate.playerData)
   local sourceFieldTravel = copy(candidate.fieldTravel)
@@ -265,7 +373,7 @@ function T.quiescent_v4_saves_rebind_stale_fingerprints_and_preserve_state()
   local sourceScripts = copy(candidate.scripts)
 
   local valid = assert(service:validate(candidate))
-  Assert.equal(valid.schema, "g4-game-save-v6")
+  Assert.equal(valid.schema, GameSave.SCHEMA)
   Assert.equal(valid.fashionCase.schema, "hgss-fashion-case-v1")
   Assert.equal(valid.scripts.registryFingerprint, "registry")
   Assert.equal(valid.scripts.taskFingerprint, "tasks")
@@ -278,7 +386,7 @@ function T.quiescent_v4_saves_rebind_stale_fingerprints_and_preserve_state()
   sourcePlayerData.profile.nationalDex = false
   Assert.deepEqual(valid.playerData, sourcePlayerData)
   Assert.deepEqual(valid.fieldTravel, sourceFieldTravel)
-  Assert.deepEqual(valid.mons, sourceMons)
+  Assert.deepEqual(valid.mons, MonsSave.migrateV1(sourceMons))
   Assert.deepEqual(valid.bag, sourceBag)
   Assert.equal(candidate.schema, "g4-game-save-v4")
   Assert.equal(candidate.scripts.registryFingerprint, "pre-update-registry")
@@ -439,7 +547,7 @@ function T.complete_validation_canonicalizes_a_missing_avatar_to_walking()
   Assert.isNil(candidate.avatar)
   local valid = assert(service:validate(candidate))
   Assert.deepEqual(valid.avatar, { state = "walking" }, "a legacy record without avatar state loads as walking")
-  Assert.equal(valid.schema, "g4-game-save-v6", "legacy records migrate to the current schema")
+  Assert.equal(valid.schema, GameSave.SCHEMA, "legacy records migrate to the current schema")
 end
 
 function T.complete_validation_round_trips_every_durable_avatar_state()
@@ -506,6 +614,7 @@ local function v3record(saveId, playerData, scripts)
   local value = record(saveId, "heartgold", playerData)
   value.schema = "g4-game-save-v3"
   value.fieldTravel = nil
+  value.fashionCase = nil
   value.mailbox = nil
   value.photoAlbum = nil
   value.mart = nil
@@ -543,7 +652,7 @@ function T.quiescent_v3_saves_migrate_without_losing_history()
   local candidate = v3record("save-00000015", validPlayerData, quiescentScripts())
   candidate.mart = nil
   local valid = assert(service:validate(candidate))
-  Assert.equal(valid.schema, "g4-game-save-v6")
+  Assert.equal(valid.schema, GameSave.SCHEMA)
   Assert.equal(valid.fashionCase.schema, "hgss-fashion-case-v1")
   Assert.equal(valid.playerData.profile.badges, 0)
   Assert.equal(valid.playerData.profile.nationalDex, false)
@@ -610,7 +719,7 @@ function T.quiescent_historical_records_advance_stepwise_to_the_current_schema()
   local v3 = v3record("save-00000301", validPlayerData, quiescentScripts())
   v3.world.flags = { [12] = true }
   local fromV3 = assert(service:validate(v3))
-  Assert.equal(fromV3.schema, "g4-game-save-v6")
+  Assert.equal(fromV3.schema, GameSave.SCHEMA)
   Assert.equal(fromV3.playerData.profile.badges, 0)
   Assert.equal(fromV3.playerData.profile.nationalDex, false)
   Assert.deepEqual(fromV3.mart, MartSave.empty())
@@ -625,10 +734,15 @@ function T.quiescent_historical_records_advance_stepwise_to_the_current_schema()
   local v4 = record("save-00000302", "heartgold", v4playerData())
   v4.schema = "g4-game-save-v4"
   v4.mart = nil
+  v4.fashionCase = nil
+  v4.mailbox = nil
+  v4.photoAlbum = nil
+  v4.mons.schema = MonsSave.LEGACY_SCHEMA
+  v4.mons.boxes = nil
   markPreUpdateFingerprints(v4)
   local v4scripts = copy(v4.scripts)
   local fromV4 = assert(service:validate(v4))
-  Assert.equal(fromV4.schema, "g4-game-save-v6")
+  Assert.equal(fromV4.schema, GameSave.SCHEMA)
   Assert.equal(fromV4.playerData.profile.badges, 0)
   Assert.equal(fromV4.playerData.profile.nationalDex, false)
   Assert.deepEqual(fromV4.mart, MartSave.empty())
@@ -648,19 +762,27 @@ function T.quiescent_master_records_advance_to_current_without_mutating_source()
     end,
   })
   local candidate = record("save-00000303", "heartgold", validPlayerData)
+  candidate.schema = GameSave.LEGACY_V5_SCHEMA
+  candidate.fashionCase = nil
+  candidate.mailbox = nil
+  candidate.photoAlbum = nil
+  candidate.mons.schema = MonsSave.LEGACY_SCHEMA
+  candidate.mons.boxes = nil
   markPreUpdateFingerprints(candidate)
   candidate.world.flags = { [12] = true }
   local before = copy(candidate)
 
   local valid = assert(service:validate(candidate))
-  Assert.equal(valid.schema, "g4-game-save-v6")
+  Assert.equal(valid.schema, GameSave.SCHEMA)
   Assert.equal(valid.playerData.profile.nationalDex, false)
   Assert.deepEqual(valid.mart, MartSave.empty())
   Assert.equal(valid.fashionCase.schema, "hgss-fashion-case-v1")
+  Assert.deepEqual(valid.mailbox, Mailbox.new():capture())
+  Assert.deepEqual(valid.photoAlbum, PhotoAlbum.new():capture())
   Assert.deepEqual(valid.world.flags, { [12] = true })
   Assert.equal(valid.scripts.registryFingerprint, "registry")
   Assert.equal(valid.scripts.taskFingerprint, "tasks")
-  Assert.equal(candidate.schema, "g4-game-save-v5")
+  Assert.equal(candidate.schema, GameSave.LEGACY_V5_SCHEMA)
   Assert.isNil(candidate.fashionCase)
   Assert.deepEqual(candidate, before)
 end

@@ -160,11 +160,12 @@ function GameSaveValidation:validate(record, context)
       return GameSave.validate(record)
     end
     local selected = context or self:contextForVersion(record.versionId)
-    -- Explicit v3 -> v4 -> v5 -> v6 migration before canonical validation.
+    -- Explicit v3 -> v4 -> v5 -> v6 -> v7 migration before canonical validation.
     -- Quiescent old script buckets rebind once to the current fingerprints
     -- (counters and world/RNG data preserved); an incompatible active graph
     -- is rejected with the save bytes untouched, never cleared or rewritten.
     local effective = record
+    local migrationScriptOptions
     if
       type(record) == "table"
       and (
@@ -190,10 +191,7 @@ function GameSaveValidation:validate(record, context)
       if candidate.schema == "g4-game-save-v4" then
         candidate = GameSave.migrateV4(candidate)
       end
-      if candidate.schema == "g4-game-save-v5" then
-        candidate = GameSave.migrateV5(candidate)
-      end
-      candidate.scripts = rebindScripts(record.scripts, options)
+      migrationScriptOptions = options
       effective = candidate
     end
     local function playerDataValidate(value)
@@ -317,16 +315,31 @@ function GameSaveValidation:validate(record, context)
       fashionCaseValidate = fashionCaseValidate,
     }
     if type(effective) == "table" and effective.schema == GameSave.LEGACY_V5_SCHEMA then
+      local candidate = effective
       local oldOptions = {}
       for key, value in pairs(validationOptions) do
         oldOptions[key] = value
       end
+      if migrationScriptOptions ~= nil then
+        candidate = {}
+        for key, value in pairs(effective) do
+          candidate[key] = value
+        end
+        candidate.scripts = rebindScripts(effective.scripts, migrationScriptOptions)
+      end
       oldOptions.monsValidate = legacyMonsValidate
-      local validatedV5, validationError = GameSave.validateV5(effective, oldOptions)
+      local validatedV5, validationError = GameSave.validateV5(candidate, oldOptions)
       if not validatedV5 then
         return nil, validationError
       end
       effective = GameSave.migrateV5(validatedV5)
+    end
+    if type(effective) == "table" and effective.schema == GameSave.LEGACY_V6_SCHEMA then
+      local validatedV6, validationError = GameSave.validateV6(effective, validationOptions)
+      if not validatedV6 then
+        return nil, validationError
+      end
+      effective = GameSave.migrateV6(validatedV6)
     end
     return GameSave.validate(effective, validationOptions)
   end)

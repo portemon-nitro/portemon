@@ -12,8 +12,9 @@ local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v6"
+GameSave.SCHEMA = "g4-game-save-v7"
 GameSave.LEGACY_V5_SCHEMA = "g4-game-save-v5"
+GameSave.LEGACY_V6_SCHEMA = "g4-game-save-v6"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local FACING = { north = true, south = true, west = true, east = true }
@@ -111,7 +112,7 @@ local function validateLegacyShape(record, schema)
   assert(type(record) == "table" and record.schema == schema, "legacy migration requires its declared schema")
   local allowed = {}
   for key, value in pairs(TOP_LEVEL_FIELDS) do
-    if key ~= "mart" and key ~= "mailbox" and key ~= "photoAlbum" then
+    if key ~= "fashionCase" and key ~= "mart" and key ~= "mailbox" and key ~= "photoAlbum" then
       allowed[key] = value
     end
   end
@@ -242,10 +243,13 @@ local function validateFieldState(record, opts)
   end
 end
 
-local function validate(record, opts, expectedSchema, requirePc)
+local function validate(record, opts, expectedSchema, requirePc, requireFashionCase)
   expectedSchema = expectedSchema or GameSave.SCHEMA
   if requirePc == nil then
     requirePc = expectedSchema == GameSave.SCHEMA
+  end
+  if requireFashionCase == nil then
+    requireFashionCase = expectedSchema == GameSave.SCHEMA
   end
   if type(record) ~= "table" then
     Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "game save must be a table", {})
@@ -257,11 +261,26 @@ local function validate(record, opts, expectedSchema, requirePc)
       { schema = record.schema }
     )
   end
+  if expectedSchema == GameSave.LEGACY_V6_SCHEMA then
+    local hasFashionCase = record.fashionCase ~= nil
+    local hasMailbox = record.mailbox ~= nil
+    local hasPhotoAlbum = record.photoAlbum ~= nil
+    if hasFashionCase and not hasMailbox and not hasPhotoAlbum then
+      requireFashionCase = true
+    elseif not hasFashionCase and hasMailbox and hasPhotoAlbum then
+      requirePc = true
+    else
+      Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v6 save has an incomplete or mixed bucket layout", {})
+    end
+  end
   for key in pairs(record) do
     if not TOP_LEVEL_FIELDS[key] then
       Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "unknown game save field", { field = key })
     end
-    if not requirePc and (key == "mailbox" or key == "photoAlbum") then
+    if
+      (not requirePc and (key == "mailbox" or key == "photoAlbum"))
+      or (not requireFashionCase and key == "fashionCase")
+    then
       Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "legacy game save carries a current-only bucket", { field = key })
     end
   end
@@ -303,8 +322,9 @@ local function validate(record, opts, expectedSchema, requirePc)
   end
   local canonicalFieldTravel = validateBucket(record, "fieldTravel", opts, "fieldTravelValidate")
   local canonicalFashionCase
-  if expectedSchema == GameSave.SCHEMA then
+  if requireFashionCase then
     canonicalFashionCase = validateBucket(record, "fashionCase", opts, "fashionCaseValidate")
+    FashionCaseState.validate(canonicalFashionCase)
   end
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
   local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
@@ -324,7 +344,7 @@ local function validate(record, opts, expectedSchema, requirePc)
     canonical.photoAlbum = canonicalPhotoAlbum
   end
   canonical.fieldTravel = canonicalFieldTravel
-  if canonicalFashionCase ~= nil then
+  if requireFashionCase then
     canonical.fashionCase = canonicalFashionCase
   end
   canonical.auxiliaryUi = canonicalAuxiliaryUi
@@ -382,7 +402,6 @@ function GameSave.migrateV4(record)
   local migrated = deepCopy(record)
   local profile = migrated.playerData.profile
   profile.nationalDex = false
-  migrated.schema = "g4-game-save-v5"
   migrated.mart = MartSave.empty()
   migrated.schema = GameSave.LEGACY_V5_SCHEMA
   return migrated
@@ -399,17 +418,35 @@ function GameSave.migrateV5(record)
   end
   assert(type(record.mons) == "table" and record.mons.schema == "g4-mons-save-v1", "v5 requires the v1 mons bucket")
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V6_SCHEMA
   migrated.fashionCase = FashionCaseState.empty()
   local MonsSave = require("libs.mons.src.MonsSave")
   migrated.mons = MonsSave.migrateV1(migrated.mons)
-  migrated.mailbox = Mailbox.new():capture()
-  migrated.photoAlbum = PhotoAlbum.new():capture()
+  return migrated
+end
+
+-- Reconciles either independently published v6 layout into the current save.
+-- Each historical layout is validated before missing state is initialized.
+function GameSave.migrateV6(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V6_SCHEMA, "GameSave.migrateV6 requires v6")
+  local valid, validationError = GameSave.validateV6(record)
+  if not valid then
+    error(validationError, 0)
+  end
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
+  migrated.fashionCase = migrated.fashionCase or FashionCaseState.empty()
+  migrated.mailbox = migrated.mailbox or Mailbox.new():capture()
+  migrated.photoAlbum = migrated.photoAlbum or PhotoAlbum.new():capture()
   return migrated
 end
 
 function GameSave.validateV5(record, opts)
   return GameSave.validate(record, opts, GameSave.LEGACY_V5_SCHEMA, false)
+end
+
+function GameSave.validateV6(record, opts)
+  return GameSave.validate(record, opts, GameSave.LEGACY_V6_SCHEMA)
 end
 
 ---@param saveId string
@@ -440,6 +477,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V6_SCHEMA
       and record.schema ~= GameSave.LEGACY_V5_SCHEMA
       and record.schema ~= "g4-game-save-v4"
       and record.schema ~= "g4-game-save-v3"

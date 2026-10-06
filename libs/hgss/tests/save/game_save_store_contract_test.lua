@@ -13,10 +13,11 @@ local MartSave = require("libs.hgss.src.save.MartSave")
 local SaveFs = require("libs.storage.src.SaveFs")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+local GameSave = require("libs.hgss.src.save.GameSave")
 
 local T = {}
 
-local GAME_SCHEMA = "g4-game-save-v6"
+local GAME_SCHEMA = GameSave.SCHEMA
 
 local function newStore(backend, opts)
   local loaded, GameSaveStore = pcall(require, "libs.hgss.src.save.GameSaveStore")
@@ -384,7 +385,7 @@ function T.metadata_listing_exposes_v4_envelopes_without_deep_validation()
   store:publishFirst(v4)
   store:publishFirst(record(currentId, "soulsilver"))
   local unknown = record(unknownId, "heartgold")
-  unknown.schema = "g4-game-save-v7"
+  unknown.schema = "g4-game-save-v8"
   store:publishFirst(unknown)
   Assert.equal(validations, 3)
 
@@ -419,10 +420,10 @@ function T.metadata_listing_distinguishes_historical_from_current_and_future_sch
   historical.fashionCase = nil
   store:publishFirst(historical)
   local current = record(currentId, "soulsilver")
-  current.schema = "g4-game-save-v6"
+  current.schema = GameSave.SCHEMA
   store:publishFirst(current)
   local future = record(futureId, "heartgold")
-  future.schema = "g4-game-save-v7"
+  future.schema = "g4-game-save-v8"
   store:publishFirst(future)
 
   local metadata = assert(store:listMetadata())

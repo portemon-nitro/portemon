@@ -8,7 +8,9 @@ local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
 local MartSave = require("libs.hgss.src.save.MartSave")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 
 local T = {}
 
@@ -57,7 +59,7 @@ end
 
 local function currentRecord(overrides)
   local value = v4record(overrides)
-  return GameSave.migrateV5(GameSave.migrateV4(value))
+  return GameSave.migrateV6(GameSave.migrateV5(GameSave.migrateV4(value)))
 end
 
 -- Master-era v5: v4 state plus the national Dex flag and mart state, with
@@ -103,12 +105,12 @@ function T.migration_preserves_party_bag_leaves_world_and_rng()
 end
 
 function T.current_validation_requires_travel_and_rejects_old_schemas()
-  local current = GameSave.migrateV5(v5record())
+  local current = GameSave.migrateV6(GameSave.migrateV5(v5record()))
   Assert.notNil(GameSave.validate(current))
   returnsCode("GAME_SAVE_BUCKET_INVALID", function()
     local value = currentRecord()
     value.fieldTravel = nil
-    return GameSave.validateV5(value)
+    return GameSave.validate(value)
   end)
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     return GameSave.validate(v3record())
@@ -164,7 +166,7 @@ function T.v4_migration_rejects_a_bucket_that_did_not_exist_in_v4()
 end
 
 function T.migrated_records_validate_with_a_travel_validator()
-  local migrated = GameSave.migrateV5(GameSave.migrateV4(GameSave.migrateV3(v3record())))
+  local migrated = GameSave.migrateV6(GameSave.migrateV5(GameSave.migrateV4(GameSave.migrateV3(v3record()))))
   local opts = {
     fieldTravelValidate = function(value)
       Assert.deepEqual(value, { lastHealSpawn = "SPAWN_NEW_BARK" })
@@ -196,19 +198,21 @@ function T.v4_migration_adds_only_the_declared_state_and_does_not_mutate_input()
   Assert.isNil(input.mart)
 end
 
-function T.v3_migrates_through_literal_v4_before_v5_defaults_are_added()
+function T.v3_migrates_through_v4_v5_and_both_v6_layout_steps()
   local first = GameSave.migrateV3(v3record())
   Assert.equal(first.schema, "g4-game-save-v4", "v3 migration remains an explicit intermediate step")
   local v5 = GameSave.migrateV4(first)
   Assert.equal(v5.schema, GameSave.LEGACY_V5_SCHEMA)
-  local current = GameSave.migrateV5(v5)
+  local v6 = GameSave.migrateV5(v5)
+  Assert.equal(v6.schema, GameSave.LEGACY_V6_SCHEMA)
+  local current = GameSave.migrateV6(v6)
   Assert.equal(current.schema, GameSave.SCHEMA)
   Assert.equal(current.playerData.profile.nationalDex, false)
   Assert.deepEqual(current.mart, MartSave.empty())
 end
 
 function T.malformed_current_economy_and_v4_input_are_not_repaired_in_place()
-  local malformed = GameSave.migrateV5(v5record())
+  local malformed = GameSave.migrateV6(GameSave.migrateV5(v5record()))
   malformed.mart.dailyPurchasedMask = 4096
   returnsCode("GAME_SAVE_BUCKET_INVALID", function()
     return GameSave.validate(malformed, { martValidate = function(value)
@@ -225,11 +229,11 @@ end
 function T.future_schemas_reject_while_known_envelopes_stay_listable()
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     local value = currentRecord()
-    value.schema = "g4-game-save-v7"
+    value.schema = "g4-game-save-v8"
     return GameSave.validate(value)
   end)
   local envelope, envelopeErr = GameSave.metadata({
-    schema = "g4-game-save-v7",
+    schema = "g4-game-save-v8",
     saveId = "save-00000001",
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -238,6 +242,14 @@ function T.future_schemas_reject_while_known_envelopes_stay_listable()
   Assert.isNil(envelope)
   Assert.isTrue(Errors.is(envelopeErr))
   Assert.equal(envelopeErr.code, "GAME_SAVE_SCHEMA_UNSUPPORTED")
+  local historicalV6 = assert(GameSave.metadata({
+    schema = GameSave.LEGACY_V6_SCHEMA,
+    saveId = "save-00000002",
+    versionId = "heartgold",
+    playTimeSeconds = 0,
+    playerData = { profile = { name = "GOLD" } },
+  }))
+  Assert.equal(historicalV6.versionId, "heartgold")
   local historical = assert(GameSave.metadata({
     schema = "g4-game-save-v5",
     saveId = "save-00000001",
@@ -248,15 +260,12 @@ function T.future_schemas_reject_while_known_envelopes_stay_listable()
   Assert.equal(historical.versionId, "heartgold")
 end
 
-function T.master_records_advance_only_by_empty_fashion_case_state()
+function T.master_records_advance_with_fashion_case_and_current_mons_state()
   Assert.isTrue(
     type(GameSave.migrateV5) == "function",
     "master records advance through a dedicated migration step"
   )
-  local source = v5record({
-    world = { flags = { [10] = true }, variables = {}, objects = {}, rng = { seed = 7 } },
-    mons = { fingerprint = "mon-fp" },
-  })
+  local source = v5record({ world = { flags = { [10] = true }, variables = {}, objects = {}, rng = { seed = 7 } } })
   local migrated = GameSave.migrateV5(source)
   Assert.notNil(migrated)
   Assert.equal(migrated.schema, "g4-game-save-v6")
@@ -264,7 +273,7 @@ function T.master_records_advance_only_by_empty_fashion_case_state()
   Assert.equal(migrated.playerData.profile.nationalDex, false)
   Assert.deepEqual(migrated.mart, MartSave.empty())
   Assert.deepEqual(migrated.world, source.world)
-  Assert.deepEqual(migrated.mons, source.mons)
+  Assert.equal(migrated.mons.schema, "g4-mons-save-v2")
   Assert.deepEqual(migrated.bag, source.bag)
   -- The source stays a master record: same schema, no fashion-case state.
   Assert.equal(source.schema, "g4-game-save-v5")
@@ -278,6 +287,74 @@ function T.master_records_advance_only_by_empty_fashion_case_state()
   end)
   Assert.isTrue(Errors.is(err))
   Assert.notNil(inconsistent.fashionCase, "rejection leaves the inconsistent source untouched")
+end
+
+function T.migrate_v6_reconciles_the_two_published_bucket_groups()
+  Assert.isTrue(type(GameSave.migrateV6) == "function", "v6 has an explicit reconciliation step")
+  local master = GameSave.migrateV5(v5record())
+  master.schema = "g4-game-save-v6"
+  master.mailbox = nil
+  master.photoAlbum = nil
+  master.fashionCase.counts[1] = 1
+  local masterFashionCase = GameSave.migrateV6(master)
+  Assert.equal(masterFashionCase.schema, GameSave.SCHEMA)
+  Assert.deepEqual(masterFashionCase.fashionCase, master.fashionCase)
+  Assert.deepEqual(masterFashionCase.mailbox, Mailbox.new():capture())
+  Assert.deepEqual(masterFashionCase.photoAlbum, PhotoAlbum.new():capture())
+  Assert.equal(master.schema, "g4-game-save-v6")
+  Assert.isNil(master.mailbox)
+  Assert.equal(master.fashionCase.counts[1], 1)
+
+  local pc = GameSave.migrateV6(GameSave.migrateV5(v5record()))
+  pc.schema = "g4-game-save-v6"
+  pc.fashionCase = nil
+  local pcMailbox, pcPhotoAlbum = pc.mailbox, pc.photoAlbum
+  local pcFeatures = GameSave.migrateV6(pc)
+  Assert.equal(pcFeatures.schema, GameSave.SCHEMA)
+  Assert.deepEqual(pcFeatures.mailbox, pcMailbox)
+  Assert.deepEqual(pcFeatures.photoAlbum, pcPhotoAlbum)
+  Assert.deepEqual(pcFeatures.fashionCase, FashionCaseState.empty())
+  Assert.equal(pc.schema, "g4-game-save-v6")
+  Assert.isNil(pc.fashionCase)
+  Assert.deepEqual(pc.mailbox, pcMailbox)
+  Assert.deepEqual(pc.photoAlbum, pcPhotoAlbum)
+end
+
+function T.migrate_v6_rejects_incomplete_and_mixed_bucket_groups()
+  local malformed = GameSave.migrateV6(GameSave.migrateV5(v5record()))
+  malformed.schema = "g4-game-save-v6"
+  local cases = {
+    function(_) end,
+    function(value)
+      value.photoAlbum = nil
+    end,
+    function(value)
+      value.mailbox = nil
+    end,
+    function(value)
+      value.fashionCase = nil
+      value.mailbox = nil
+      value.photoAlbum = nil
+    end,
+  }
+  for _, damage in ipairs(cases) do
+    local candidate = {}
+    for key, value in pairs(malformed) do
+      candidate[key] = value
+    end
+    damage(candidate)
+    local err = Assert.throws(function()
+      GameSave.migrateV6(candidate)
+    end)
+    Assert.isTrue(Errors.is(err))
+    Assert.equal(candidate.schema, "g4-game-save-v6")
+  end
+  local unknown = GameSave.migrateV5(v5record())
+  unknown.unrecognized = true
+  local err = Assert.throws(function()
+    GameSave.migrateV6(unknown)
+  end)
+  Assert.isTrue(Errors.is(err))
 end
 
 function T.version_advancement_keeps_each_historical_meaning()
