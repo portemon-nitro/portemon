@@ -1723,7 +1723,7 @@ end
 
 function T.launcher_background_follows_the_active_game_version()
   local heartgold = versionedBackgroundDraw("heartgold")
-  Assert.isTrue(hasRimColor(heartgold, { 255 / 255, 214 / 255, 148 / 255 }), "heartgold must own its backdrop fill")
+  Assert.isTrue(hasRimColor(heartgold, { 195 / 255, 130 / 255, 48 / 255 }), "heartgold must own its backdrop fill")
   local soulsilver = versionedBackgroundDraw("soulsilver")
   Assert.isTrue(hasRimColor(soulsilver, { 97 / 255, 97 / 255, 251 / 255 }), "soulsilver must own its backdrop fill")
 end

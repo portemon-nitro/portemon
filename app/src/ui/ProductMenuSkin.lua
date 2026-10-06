@@ -25,7 +25,7 @@ local ProductMenuSkin = {}
 ---@field text { normal:ProductMenuSkin.TextPalette, information:ProductMenuSkin.TextPalette, hint:ProductMenuSkin.TextPalette, error:ProductMenuSkin.TextPalette }
 
 local BACKGROUNDS = {
-  heartgold = { 0xFF / 255, 0xD6 / 255, 0x94 / 255 },
+  heartgold = { 0xC3 / 255, 0x82 / 255, 0x30 / 255 },
   soulsilver = { 0x61 / 255, 0x61 / 255, 0xFB / 255 },
 }
 

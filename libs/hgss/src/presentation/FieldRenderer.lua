@@ -39,9 +39,6 @@ function FieldRenderer.new(opts)
     for key, value in pairs(opts) do
       backendOpts[key] = value
     end
-    if backendOpts.translucencyMode == nil then
-      backendOpts.translucencyMode = GxRenderer.TRANSLUCENCY_EXACT
-    end
     gxRenderer = GxRenderer.new(backendOpts)
   end
   return setmetatable({

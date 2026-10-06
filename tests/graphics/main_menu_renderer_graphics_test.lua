@@ -188,9 +188,9 @@ function T.cards_are_clipped_to_the_save_viewport_and_scissor_is_restored(scope)
   lg.setCanvas()
   local pixels = scope:own(canvas:newImageData())
   local r, g, b = pixels:getPixel(20, 100)
-  Assert.near(r, 0xFF / 255, 1 / 255)
-  Assert.near(g, 0xD6 / 255, 1 / 255)
-  Assert.near(b, 0x94 / 255, 1 / 255)
+  Assert.near(r, 0xC3 / 255, 1 / 255)
+  Assert.near(g, 0x82 / 255, 1 / 255)
+  Assert.near(b, 0x30 / 255, 1 / 255)
 end
 
 function T.catalog_errors_are_drawn_inside_the_returned_error_rectangle(scope)
@@ -349,7 +349,7 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
   end
 
   local function isBackground(r, g, b)
-    return math.abs(r - 0xFF / 255) < 0.05 and math.abs(g - 0xD6 / 255) < 0.05 and math.abs(b - 0x94 / 255) < 0.05
+    return math.abs(r - 0xC3 / 255) < 0.05 and math.abs(g - 0x82 / 255) < 0.05 and math.abs(b - 0x30 / 255) < 0.05
   end
 
   local function isSelectedRed(r, g, b)
@@ -719,9 +719,9 @@ function T.inset_actions_use_the_face_color_for_the_inner_border(scope)
   nearByte(b, 0xFB, 4)
 end
 
-function T.version_backgrounds_use_the_bright_launcher_field(scope)
+function T.version_backgrounds_use_the_configured_launcher_field(scope)
   local cases = {
-    heartgold = { 0xFF, 0xD6, 0x94 },
+    heartgold = { 0xC3, 0x82, 0x30 },
     soulsilver = { 0x61, 0x61, 0xFB },
   }
   for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
