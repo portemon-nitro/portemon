@@ -1,9 +1,10 @@
 -- Source stage clamps and ratios. Battle stat stages are signed semantic
 -- deltas in [-6, 6]: the attack family (attack, defense, speed, special
 -- attack, special defense) scales on halves of the materialized battle
--- stat, while accuracy and evasion scale on thirds. Ratios stay exact
--- integer pairs and apply with a truncating floor, so halved odd stats
--- round down exactly as the native division does.
+-- stat, while accuracy and evasion resolve through a literal 13-entry
+-- hit-chance lookup. Ratios stay exact integer pairs and apply with a
+-- truncating floor, so halved odd stats round down exactly as the native
+-- division does.
 
 ---@class StatStages
 ---@field attack integer
@@ -18,6 +19,25 @@ local StatStages = {}
 
 StatStages.MIN = -6
 StatStages.MAX = 6
+
+--- Literal hit-chance factor per clamped signed stage. The paired values
+--- are the exact source table entries, so callers must never re-derive
+--- them from stage thirds.
+local ACCURACY_RATIOS = {
+  [-6] = { numerator = 33, denominator = 100 },
+  [-5] = { numerator = 36, denominator = 100 },
+  [-4] = { numerator = 43, denominator = 100 },
+  [-3] = { numerator = 50, denominator = 100 },
+  [-2] = { numerator = 60, denominator = 100 },
+  [-1] = { numerator = 75, denominator = 100 },
+  [0] = { numerator = 1, denominator = 1 },
+  [1] = { numerator = 133, denominator = 100 },
+  [2] = { numerator = 166, denominator = 100 },
+  [3] = { numerator = 2, denominator = 1 },
+  [4] = { numerator = 233, denominator = 100 },
+  [5] = { numerator = 133, denominator = 50 },
+  [6] = { numerator = 3, denominator = 1 },
+}
 
 ---@class StatStageRatio
 ---@field numerator integer
@@ -52,10 +72,14 @@ function StatStages.multiplier(stage, key)
   requireStage(stage, "stage")
   assert(type(key) == "string", "stage ratios name their stat")
   if key == "accuracy" or key == "evasion" then
-    if stage >= 0 then
-      return { numerator = 3 + stage, denominator = 3 }
+    local clamped = stage
+    if clamped > StatStages.MAX then
+      clamped = StatStages.MAX
+    elseif clamped < StatStages.MIN then
+      clamped = StatStages.MIN
     end
-    return { numerator = 3, denominator = 3 - stage }
+    local ratio = ACCURACY_RATIOS[clamped]
+    return { numerator = ratio.numerator, denominator = ratio.denominator }
   end
   assert(
     key == "attack" or key == "defense" or key == "speed" or key == "specialAttack" or key == "specialDefense",

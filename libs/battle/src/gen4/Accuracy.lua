@@ -5,9 +5,11 @@
 -- full accuracy still rolls its check while a missing accuracy simply
 -- hits. Battle-local accuracy and evasion stages merge into one effective
 -- stage (accuracy minus evasion), clamp to [-6, +6], and reshape the
--- percentage through a single native thirds ratio, so a missing stage
+-- percentage through the canonical stage ratio, so a missing stage
 -- reads as flat. Every outcome names a distinct reason so callers never conflate a
 -- rolled miss with protection, an unreachable target, or a skipped check.
+
+local StatStages = require("libs.battle.src.gen4.StatStages")
 
 ---@class HitTarget
 ---@field kind string
@@ -57,16 +59,6 @@ local function requireQuery(query)
   end
 end
 
----@param stage integer signed stage delta under the thirds law
----@return integer numerator of the exact native ratio
----@return integer denominator of the exact native ratio
-local function thirdsRatio(stage)
-  if stage >= 0 then
-    return 3 + stage, 3
-  end
-  return 3, 3 - stage
-end
-
 ---@param query AccuracyQuery hit query under test
 ---@param stream BattleRng labeled native battle stream
 ---@return HitResolution prevention outcome with its exact draw count
@@ -93,8 +85,8 @@ function Accuracy.resolve(query, stream)
   elseif effectiveStage < -6 then
     effectiveStage = -6
   end
-  local numerator, denominator = thirdsRatio(effectiveStage)
-  local chance = math.floor((query.accuracy * numerator) / denominator)
+  local ratio = StatStages.multiplier(effectiveStage, "accuracy")
+  local chance = math.floor((query.accuracy * ratio.numerator) / ratio.denominator)
   local draw = stream:nextU16("accuracy_check", query.cause)
   local roll = (draw % Accuracy.ROLL_MODULUS) + 1
   if roll <= chance then
