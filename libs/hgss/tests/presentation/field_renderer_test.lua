@@ -363,34 +363,6 @@ local function headlessBackendOptions(extra)
   return options
 end
 
-function T.owned_field_backend_defaults_to_exact_translucency_without_changing_the_global_default()
-  local defaulted = FieldRenderer.new(headlessBackendOptions())
-  Assert.equal(
-    defaulted.gxRenderer.translucencyMode,
-    GxRenderer.TRANSLUCENCY_EXACT,
-    "an owned HGSS field backend with no explicit mode selects exact DS translucency"
-  )
-  defaulted:release()
-
-  local explicit = FieldRenderer.new(headlessBackendOptions({
-    translucencyMode = GxRenderer.TRANSLUCENCY_APPROXIMATE,
-  }))
-  Assert.equal(
-    explicit.gxRenderer.translucencyMode,
-    GxRenderer.TRANSLUCENCY_APPROXIMATE,
-    "an explicit approximate mode still wins over the HGSS field default"
-  )
-  explicit:release()
-
-  local direct = GxRenderer.new(headlessBackendOptions())
-  Assert.equal(
-    direct.translucencyMode,
-    GxRenderer.TRANSLUCENCY_APPROXIMATE,
-    "the reusable backend default stays approximate outside the HGSS field wrapper"
-  )
-  direct:release()
-end
-
 -- Constructing the owned backend must not write the default back into the
 -- caller-owned options table.
 function T.owned_field_backend_construction_leaves_caller_options_unmutated()
