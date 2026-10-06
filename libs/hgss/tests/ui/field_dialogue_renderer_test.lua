@@ -234,6 +234,12 @@ function T.clips_to_the_dialogue_bounds_and_restores_the_callers_scissor()
       requested = { 37, 11, 219, 37 },
       effective = { 40, 11, 20, 14 },
     },
+    {
+      -- Text always draws under the text-window clip so scrolling lines
+      -- never overpaint the frame tiles.
+      requested = { 16, 8, 216, 32 },
+      effective = { 40, 11, 20, 14 },
+    },
   }, "dialogue clips against both its host bounds and the caller scissor")
   FieldDialogueFixture.assertRestoredState(lg, canvas, shader, { 40, 5, 20, 20 })
   renderer:release()
@@ -252,6 +258,65 @@ function T.clips_to_the_dialogue_bounds_and_restores_the_callers_scissor()
   Assert.equal(#failing.scissorIntersections, 1, "the failed draw clips before emitting pixels")
   FieldDialogueFixture.assertRestoredState(failing, canvas, shader, { 40, 5, 20, 20 })
   failingRenderer:release()
+end
+
+-- Scrolling text must stay inside the content window: the upward-moving
+-- lines clip to the text rect instead of overpainting the frame tiles.
+function T.scrolling_text_is_clipped_to_the_text_window()
+  local function glyph(text, code)
+    return { kind = "glyph", code = code, text = text, raw = { code } }
+  end
+  local pages = {
+    {
+      lines = {
+        { tokens = { glyph("A", 1) }, width = 0 },
+        { tokens = { glyph("B", 2) }, width = 0 },
+      },
+      breakKind = "page",
+    },
+    { lines = { { tokens = { glyph("C", 1) }, width = 0 } }, breakKind = "eos" },
+  }
+  local controller = FieldDialogueController.new({
+    layout = function()
+      return { pages = pages, warnings = {}, lineHeight = 16, lineSpacing = 0 }
+    end,
+    policy = TextSpeedPolicy.forSpeed("fastest"),
+    continueCursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 },
+  })
+  controller:open({
+    id = "scroll-clip",
+    message = { bankId = 543, messageId = 5, text = "AB", tokens = {}, hadUnresolvedSubstitutions = false },
+    frameIndex = 0,
+    allowCancel = false,
+  })
+  local guard = 0
+  while controller:status().state == "OPENING" or controller:status().state == "REVEALING" do
+    controller:step({})
+    guard = guard + 1
+    Assert.isTrue(guard < 20, "first page reveals promptly")
+  end
+  Assert.equal(controller:status().state, "WAITING_BOUNDARY", "first page waits at its page break")
+  controller:step({ actionPressed = true })
+  Assert.equal(controller:status().state, "SCROLLING", "a confirmed page break scrolls")
+
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
+  local renderer = FieldDialogueRenderer.new({
+    cacheFs = uiCache(),
+    manifest = MANIFEST,
+    text = withTextRenderer(uiCache(), lg),
+    graphics = lg,
+  })
+  local presentation = presentationAtFieldScale(1)
+  renderer:draw(controller, presentation)
+  Assert.equal(#lg.scissorIntersections, 2, "scrolling text adds a nested content clip")
+  Assert.deepEqual(lg.scissorIntersections[2].requested, {
+    presentation.text.x,
+    presentation.text.y,
+    presentation.text.width,
+    presentation.text.height,
+  }, "scrolling text clips to the text window")
+  Assert.equal(lg.pushDepth(), 0, "the nested clip pops exactly once")
+  renderer:release()
 end
 
 -- The former nine-slice window is gone: the renderer owns only the frame

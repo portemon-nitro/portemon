@@ -271,14 +271,19 @@ function FieldDialogueRenderer:draw(controller, presentation)
     -- screen-mapped rects, so nothing is scaled twice.
     LogicalSurface.draw(lg, placement, function()
       self:_drawFrame(status, layout)
-      local lines = status.scrollLines or status.visibleLines
-      local scrollOffset = status.scrollLines and status.scrollOffsetY or 0
-      local lineY = layout.text.y - scrollOffset
-      for _, line in ipairs(lines) do
-        local tokens = line.tokens or line
-        self._text:drawLine(tokens, layout.text.x, lineY)
-        lineY = lineY + status.lineHeight + status.lineSpacing
-      end
+      -- Scrolling lines travel above the content origin, so text always
+      -- draws under the text-window clip; the frame, focus indicator, and
+      -- continuation cursor stay outside it.
+      LogicalSurface.clip(lg, layout.text, function()
+        local lines = status.scrollLines or status.visibleLines
+        local scrollOffset = status.scrollLines and status.scrollOffsetY or 0
+        local lineY = layout.text.y - scrollOffset
+        for _, line in ipairs(lines) do
+          local tokens = line.tokens or line
+          self._text:drawLine(tokens, layout.text.x, lineY)
+          lineY = lineY + status.lineHeight + status.lineSpacing
+        end
+      end)
       self:_drawFocusIndicator(status, layout)
       self:_drawCursor(status, layout)
     end)
