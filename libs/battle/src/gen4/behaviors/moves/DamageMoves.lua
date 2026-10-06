@@ -1632,6 +1632,52 @@ local function applyShellBell(ctx, frame, user, dealt)
   end
 end
 
+-- Defending-side screen facts behind staged strikes: the physical
+-- guard answers physical strikes and the special guard answers special
+-- ones, so applicability arrives pre-resolved by category here. The
+-- half versus two-thirds mode reads live side occupancy, never the
+-- spread target count, and shattering strikes bypass the guard through
+-- the existing screen-removing move path. Reads stay read-only; the
+-- arithmetic owner keeps every truncation.
+local SCREEN_BY_CATEGORY = { physical = "reflect", special = "lightscreen" }
+
+local SCREEN_REMOVING = { BRICK_BREAK = true }
+
+---@param ctx BattleContext mechanics context under execution
+---@param side integer defending side identity under the read
+---@return integer active combatants standing on the side
+local function sideOccupancy(ctx, side)
+  local count = 0
+  for _, combatant in ipairs(ctx:activeCombatants()) do
+    if ctx:entryOf(combatant).side == side then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the hit
+---@param category string striking move category
+---@return boolean whether the category-matching guard screens the strike
+---@return string half or two-thirds reduction selected by side occupancy
+---@return boolean whether the strike shatters screens instead of meeting them
+local function screenLawOf(ctx, frame, defender, category)
+  local record = frame --[[@as table<string, unknown>]]
+  local guard = SCREEN_BY_CATEGORY[category]
+  local side = ctx:entryOf(defender).side
+  local applies = guard ~= nil and ctx:sideEffect(side, guard) ~= nil
+  local reduction = "half"
+  if sideOccupancy(ctx, side) > 1 then
+    reduction = "two_thirds"
+  end
+  local removes = SCREEN_REMOVING[
+    record.executingMove --[[@as string]]
+  ] == true
+  return applies, reduction, removes
+end
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the strike
@@ -1647,6 +1693,7 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   -- Strike-law facts validate before any draw: a missing fact fails
   -- without spending the critical or damage rolls.
   local burned, guts, weather, weatherSuppressed, category, moveType, solarBeam = strikeLawOf(frame, controls.moveType)
+  local screenApplies, screenReduction, removesScreens = screenLawOf(ctx, frame, defender, category)
   local record = frame --[[@as table<string, unknown>]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local stab, effectiveness = StagedTypeModifiers.forStrike(frame, defender, {
@@ -1705,6 +1752,9 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
     weatherSuppressed = weatherSuppressed,
     moveType = moveType,
     solarBeam = solarBeam,
+    screenApplies = screenApplies,
+    screenReduction = screenReduction,
+    removesScreens = removesScreens,
   }, stream)
   local amount = result.amount
   if controls.leaveOne == true then

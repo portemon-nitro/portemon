@@ -1314,4 +1314,186 @@ function T.breaking_the_doll_mid_sequence_opens_the_body()
   Assert.isTrue(brokeAnnounced(probe.state), "the mid-sequence break is announced")
 end
 
+-- Small live-strike combat for the barrier probes: level 5, attack 120,
+-- defense 90 keeps every dealt total below the fixture defender health,
+-- so exact deltas never clip at a faint boundary.
+---@return table<string, integer> staged combat facts for the barrier probes
+local function smallCombat()
+  return {
+    level = 5,
+    attack = 120,
+    defense = 90,
+    rawAttack = 120,
+    rawDefense = 90,
+    attackStage = 0,
+    defenseStage = 0,
+  }
+end
+
+---@param ctx table genuine mechanics context under preparation
+---@param key string side barrier under preparation
+local function raiseBarrier(ctx, key)
+  local NativeEffectHandlers = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "native definitions resolve for typed battle-local writes"
+  )
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor(key),
+    { kind = "side", side = 2 },
+    { kind = "move", combatant = 2 },
+    { version = 1, turns = 5 }
+  )
+end
+
+-- A raised physical barrier halves a live physical strike: power 40 at
+-- the small combat runs a pre-bonus 4, so the open strike lands 7 after
+-- the fixed roll and bonus-type stages while the screened strike chains
+-- floor(4/2) = 2 into 4 on the identical stream.
+function T.reflect_halves_live_physical_strike_damage()
+  damageOwner("barriers own their live damage reduction")
+  local open = runPreparedStrike(
+    "TACKLE",
+    moveFacts("TACKLE", { power = 40, accuracy = 100, category = "physical", moveType = "normal" }),
+    FIXED_SEED,
+    { combat = smallCombat() },
+    nil
+  )
+  Assert.equal(open.outcome.result, "hit", "the open strike connects")
+  Assert.equal(open.dealt, 7, "the open strike deals full staged damage")
+  local screened = runPreparedStrike(
+    "TACKLE",
+    moveFacts("TACKLE", { power = 40, accuracy = 100, category = "physical", moveType = "normal" }),
+    FIXED_SEED,
+    { combat = smallCombat() },
+    function(_, ctx)
+      raiseBarrier(ctx, "reflect")
+    end
+  )
+  Assert.equal(screened.outcome.result, "hit", "the screened strike connects")
+  Assert.equal(screened.dealt, 4, "the raised barrier halves the live strike")
+end
+
+-- A raised special barrier halves a live special strike and spares
+-- physical strikes: the screened water strike lands 3 against the open
+-- 5 while the physical strike lands 7 with or without the barrier.
+function T.light_screen_halves_live_special_strikes_but_spares_physical()
+  damageOwner("barriers answer only their matching category")
+  local waterFacts = function()
+    return moveFacts("WATER_GUN", { power = 40, accuracy = 100, category = "special", moveType = "water" })
+  end
+  local open = runPreparedStrike("WATER_GUN", waterFacts(), FIXED_SEED, { combat = smallCombat() }, nil)
+  Assert.equal(open.outcome.result, "hit", "the open special strike connects")
+  Assert.equal(open.dealt, 5, "the open special strike deals full staged damage")
+  local screened = runPreparedStrike("WATER_GUN", waterFacts(), FIXED_SEED, { combat = smallCombat() }, function(_, ctx)
+    raiseBarrier(ctx, "lightscreen")
+  end)
+  Assert.equal(screened.outcome.result, "hit", "the screened special strike connects")
+  Assert.equal(screened.dealt, 3, "the raised barrier halves the live special strike")
+  local physical = runPreparedStrike(
+    "TACKLE",
+    moveFacts("TACKLE", { power = 40, accuracy = 100, category = "physical", moveType = "normal" }),
+    FIXED_SEED,
+    { combat = smallCombat() },
+    function(_, ctx)
+      raiseBarrier(ctx, "lightscreen")
+    end
+  )
+  Assert.equal(physical.outcome.result, "hit", "the physical strike connects through the special barrier")
+  Assert.equal(physical.dealt, 7, "the special barrier spares the physical strike")
+end
+
+-- Critical hits and barrier-shattering strikes ignore live barriers: the
+-- ordinary screened strike is halved to 4, the forced critical lands 16
+-- with or without the barrier, and brick break lands its full 18 while
+-- dropping both defender barriers.
+function T.critical_and_brick_break_strikes_ignore_live_barriers()
+  damageOwner("barrier bypasses own their live exceptions")
+  local tackleFacts = function()
+    return moveFacts("TACKLE", { power = 40, accuracy = 100, category = "physical", moveType = "normal" })
+  end
+  local ordinary = runPreparedStrike("TACKLE", tackleFacts(), FIXED_SEED, { combat = smallCombat() }, function(_, ctx)
+    raiseBarrier(ctx, "reflect")
+  end)
+  Assert.equal(ordinary.outcome.result, "hit", "the ordinary screened strike connects")
+  Assert.equal(ordinary.dealt, 4, "the ordinary screened strike is halved first")
+  -- Seed 7 draws the stage-zero critical window after its accuracy draw
+  -- and then rolls 99 for damage, so the critical strike lands 16.
+  local openCrit = runPreparedStrike("TACKLE", tackleFacts(), 7, { combat = smallCombat() }, nil)
+  Assert.equal(openCrit.outcome.result, "hit", "the open critical strike connects")
+  Assert.equal(openCrit.dealt, 16, "the open critical strike doubles past staging")
+  local screenedCrit = runPreparedStrike("TACKLE", tackleFacts(), 7, { combat = smallCombat() }, function(_, ctx)
+    raiseBarrier(ctx, "reflect")
+  end)
+  Assert.equal(screenedCrit.outcome.result, "hit", "the screened critical strike connects")
+  Assert.equal(screenedCrit.dealt, 16, "the critical strike ignores the raised barrier")
+  local breaker = runPreparedStrike(
+    "BRICK_BREAK",
+    moveFacts("BRICK_BREAK", { power = 75, accuracy = 100, category = "physical", moveType = "fighting" }),
+    FIXED_SEED,
+    { combat = smallCombat() },
+    function(_, ctx)
+      raiseBarrier(ctx, "reflect")
+      raiseBarrier(ctx, "lightscreen")
+    end
+  )
+  Assert.equal(breaker.outcome.result, "hit", "the shattering strike connects")
+  Assert.equal(breaker.dealt, 18, "the shattering strike lands its full staged damage")
+  Assert.isFalse(breaker.ctx:hasBattleEffect(2, "reflect"), "the shattering strike drops the physical barrier")
+  Assert.isFalse(breaker.ctx:hasBattleEffect(2, "lightscreen"), "the shattering strike drops the special barrier")
+end
+
+-- Live spread strikes apply the barrier before the spread reduction: the
+-- two-target open strike lands 12 while the screened strike chains the
+-- halved 2 into the spread floor(2*3072/4096) = 1 per hit for 6 total,
+-- so the spread stage reads the screened intermediate on real health.
+function T.live_spread_strikes_apply_the_barrier_first()
+  damageOwner("barriers precede live spread reduction")
+  local tackleFacts = function()
+    return moveFacts("TACKLE", { power = 40, accuracy = 100, category = "physical", moveType = "normal" })
+  end
+  local spreadExtra = function()
+    return {
+      combat = smallCombat(),
+      targets = { { combatant = 2 }, { combatant = 2 } },
+    }
+  end
+  local open = runPreparedStrike("TACKLE", tackleFacts(), FIXED_SEED, spreadExtra(), nil)
+  Assert.equal(open.outcome.result, "hit", "the open spread strike connects")
+  Assert.equal(open.dealt, 12, "the open spread strike lands both hits")
+  local screened = runPreparedStrike("TACKLE", tackleFacts(), FIXED_SEED, spreadExtra(), function(_, ctx)
+    raiseBarrier(ctx, "reflect")
+  end)
+  Assert.equal(screened.outcome.result, "hit", "the screened spread strike connects")
+  Assert.equal(screened.dealt, 6, "spread follows the live barrier on both hits")
+end
+
+-- A stilled sky spares the live charging grass strike: power 120 at the
+-- small combat runs a pre-bonus 12, so the strike lands 7 under
+-- answering rain, sand, and hail, 12 when the sky is stilled, and 12
+-- under sun and clear skies on the identical charge stream.
+function T.suppressed_skies_spare_the_live_charging_grass_strike()
+  damageOwner("the sky guard owns the live grass penalty")
+  local beamFacts = function()
+    return moveFacts("SOLAR_BEAM", { power = 120, accuracy = 100, category = "special", moveType = "grass" })
+  end
+  ---@param weather string active field weather identity under the probe
+  ---@param weatherSuppressed boolean whether a live ability stills the sky
+  ---@return integer damage dealt by the live charging strike
+  local function beamDealt(weather, weatherSuppressed)
+    local probe = runPreparedStrike("SOLAR_BEAM", beamFacts(), 11, {
+      combat = smallCombat(),
+      weather = weather,
+      weatherSuppressed = weatherSuppressed,
+    }, nil)
+    Assert.equal(probe.outcome.result, "hit", "the charging grass strike connects under " .. weather)
+    return probe.dealt --[[@as integer]]
+  end
+  for _, weather in ipairs({ "rain", "sand", "hail" }) do
+    Assert.equal(beamDealt(weather, false), 7, "the charging grass strike halves under answering " .. weather)
+    Assert.equal(beamDealt(weather, true), 12, "the stilled sky spares the charging strike under " .. weather)
+  end
+  Assert.equal(beamDealt("sun", false), 12, "the charging grass strike holds under sun")
+  Assert.equal(beamDealt("none", false), 12, "the charging grass strike holds under clear skies")
+end
+
 return { tests = T }

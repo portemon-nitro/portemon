@@ -1,8 +1,9 @@
 -- Exact phased damage arithmetic. The staged order is base damage, the
--- burn halving, the multi-target spread reduction, field weather and the
--- charging grass special case, the bonus addition, the critical
--- multiplier, the random roll, STAB, one effectiveness truncation per
--- distinct defending type, and the minimum-damage clamp. Every stage
+-- burn halving, the defending-side screen reduction, the multi-target
+-- spread reduction, field weather and the charging grass special case,
+-- the bonus addition, the critical multiplier, the random roll, STAB,
+-- one effectiveness truncation per distinct defending type, and the
+-- minimum-damage clamp. Every stage
 -- truncates on its own intermediate with integer floor division, so a
 -- collapsed single-rounding port computes different answers at spread,
 -- burn, random, and dual-type boundaries. Supplying an explicit random
@@ -31,6 +32,9 @@
 ---@field stab DamageRational
 ---@field effectiveness DamageRational aggregate immunity and classification pair
 ---@field effectivenessFactors DamageRational[] ordered per-type factors in declared defender order
+---@field screenApplies boolean? whether the category-matching side screen guards the strike
+---@field screenReduction string? half for a lone guard, two_thirds for a paired-battle guard
+---@field removesScreens boolean? whether the strike shatters side screens instead of meeting them
 ---@field targetCount integer?
 ---@field weather string? active field weather identity
 ---@field weatherSuppressed boolean? whether a live ability suppresses weather damage
@@ -111,6 +115,24 @@ local function requireSpec(spec)
   for _, factor in ipairs(spec.effectivenessFactors) do
     requireRational(factor, "type factor")
   end
+  if spec.screenApplies ~= nil then
+    assert(type(spec.screenApplies) == "boolean", "strikes name their guarding screen")
+  end
+  if spec.screenReduction ~= nil then
+    assert(
+      spec.screenReduction == "half" or spec.screenReduction == "two_thirds",
+      "screen reductions stay half or two thirds"
+    )
+  end
+  if spec.screenApplies == true then
+    assert(
+      spec.screenReduction == "half" or spec.screenReduction == "two_thirds",
+      "guarded strikes name their half or two-thirds reduction"
+    )
+  end
+  if spec.removesScreens ~= nil then
+    assert(type(spec.removesScreens) == "boolean", "strikes name their screen-shattering case")
+  end
   if spec.targetCount ~= nil then
     requirePositiveInteger(spec.targetCount, "target count")
   end
@@ -182,6 +204,21 @@ local function runStages(spec, stream, stages)
     current = burned
   end
 
+  -- The category-matching side screen halves post-burn damage for a
+  -- lone guard and keeps two thirds for a paired-battle guard.
+  -- Critical hits and screen-shattering strikes skip the stage.
+  if spec.screenApplies == true and spec.criticalMultiplier == 1 and spec.removesScreens ~= true then
+    if spec.screenReduction == "two_thirds" then
+      local screened = math.floor((current * 2) / 3)
+      recordStage(screened, stages, "screen", current, "floor(damage*2/3) behind a paired-battle guard")
+      current = screened
+    else
+      local screened = math.floor(current / 2)
+      recordStage(screened, stages, "screen", current, "floor(damage/2) behind a lone guard")
+      current = screened
+    end
+  end
+
   if targetCount > 1 then
     local spread = math.floor((current * Damage.SPREAD_NUMERATOR) / Damage.SPREAD_DENOMINATOR)
     recordStage(spread, stages, "spread", current, "floor(damage*3072/4096) across sampled targets")
@@ -189,7 +226,8 @@ local function runStages(spec, stream, stages)
   end
 
   -- Rain halves fire and boosts water by 15/10; sun inverts the pair.
-  -- Suppressed weather reads neutral without deleting the field state.
+  -- Suppressed weather reads neutral without deleting the field state,
+  -- and the charging grass penalty shares that guard.
   if not spec.weatherSuppressed then
     if spec.weather == "rain" then
       if spec.moveType == "fire" then
@@ -212,12 +250,11 @@ local function runStages(spec, stream, stages)
         current = shone
       end
     end
-  end
-
-  if spec.solarBeam == true and NO_SUN_WEATHER[spec.weather] == true then
-    local beamed = math.floor(current / 2)
-    recordStage(beamed, stages, "solarbeam", current, "floor(damage/2) for the charging grass strike off sun")
-    current = beamed
+    if spec.solarBeam == true and NO_SUN_WEATHER[spec.weather] == true then
+      local beamed = math.floor(current / 2)
+      recordStage(beamed, stages, "solarbeam", current, "floor(damage/2) for the charging grass strike off sun")
+      current = beamed
+    end
   end
 
   local bonused = current + 2

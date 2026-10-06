@@ -912,4 +912,297 @@ function T.malformed_critical_inputs_fail_before_the_draw()
   end
 end
 
+-- Shared barrier-probe combat: level 50, power 80, attack 120, defense
+-- 90 runs a pre-bonus 46 and a post-bonus 48 at the fixed maximum roll,
+-- so the halving checkpoint answers 25 and the unscreened strike answers
+-- 48. Barrier facts arrive pre-resolved from the live side: the barrier
+-- applies to the strike, the reduction names the half versus two-thirds
+-- mode, and the removal flag marks strikes that shatter the barrier.
+---@param overrides table<string, unknown>|nil staged spec overrides for the probe
+---@return table staged damage spec carrying the barrier facts
+local function screenSpec(overrides)
+  local spec = {
+    level = 50,
+    power = 80,
+    attack = 120,
+    defense = 90,
+    rawAttack = 120,
+    rawDefense = 90,
+    attackStage = 0,
+    defenseStage = 0,
+    criticalMultiplier = 1,
+    category = "physical",
+    burned = false,
+    guts = false,
+    stab = { numerator = 1, denominator = 1 },
+    effectiveness = { numerator = 1, denominator = 1 },
+    effectivenessFactors = { { numerator = 1, denominator = 1 } },
+    targetCount = 1,
+    weather = "none",
+    weatherSuppressed = false,
+    moveType = "normal",
+    solarBeam = false,
+    screenApplies = false,
+    screenReduction = "half",
+    removesScreens = false,
+    randomPercent = 100,
+  }
+  for key, value in pairs(overrides or {}) do
+    spec[key] = value
+  end
+  return spec
+end
+
+---@param traced table traced staged result under inspection
+---@return string[] stage names in recorded order
+local function stageNames(traced)
+  local names = {}
+  for _, stage in ipairs(traced.stages) do
+    names[#names + 1] = stage.name
+  end
+  return names
+end
+
+---@param traced table traced staged result under inspection
+---@param name string stage operation under lookup
+---@return table the first recorded stage carrying the name
+local function stageNamed(traced, name)
+  for _, stage in ipairs(traced.stages) do
+    if stage.name == name then
+      return stage
+    end
+  end
+  error("the trace records a " .. name .. " stage")
+end
+
+-- The physical barrier halves after base division and burn: the plain
+-- strike holds 48 while the screened strike lands floor(46/2)+2 = 25.
+-- A burned attacker chains floor(46/2) = 23 into floor(23/2) = 11 before
+-- the bonus lands 13, so burn precedes the barrier at its own stage.
+function T.reflect_halves_physical_damage_between_burn_and_spread()
+  local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+
+  local plain = Damage.calculate(screenSpec(), BattleRng.new(3))
+  Assert.equal(plain.amount, 48, "the unscreened strike holds the post-bonus damage")
+
+  local screened = Damage.calculate(screenSpec({ screenApplies = true }), BattleRng.new(3))
+  Assert.equal(screened.amount, 25, "the physical barrier halves the pre-bonus damage")
+
+  local burned = Damage.calculate(screenSpec({ screenApplies = true, burned = true }), BattleRng.new(3))
+  Assert.equal(burned.amount, 13, "burn halves before the barrier halves")
+
+  local traced = Damage.trace(screenSpec({ screenApplies = true, burned = true }), BattleRng.new(3))
+  Assert.deepEqual(
+    stageNames(traced),
+    { "base", "burn", "screen", "bonus", "random", "stab", "effectiveness" },
+    "the barrier stage sits between burn and the bonus"
+  )
+  local screen = stageNamed(traced, "screen")
+  Assert.equal(screen.input, 23, "the barrier reads the burned intermediate")
+  Assert.equal(screen.output, 11, "the barrier floors its own halving")
+end
+
+-- The special barrier halves special strikes and leaves physical strikes
+-- alone: the screened special strike lands 25 while both unscreened
+-- controls hold 48. Applicability is pre-resolved by the live side, so a
+-- non-matching barrier arrives as not applying and changes nothing.
+function T.light_screen_halves_special_damage_only()
+  local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+
+  local screened = Damage.calculate(screenSpec({ category = "special", screenApplies = true }), BattleRng.new(3))
+  Assert.equal(screened.amount, 25, "the special barrier halves the pre-bonus damage")
+
+  local specialPlain = Damage.calculate(screenSpec({ category = "special" }), BattleRng.new(3))
+  Assert.equal(specialPlain.amount, 48, "the unscreened special strike holds the post-bonus damage")
+
+  local mismatched = Damage.calculate(screenSpec({ category = "physical", screenApplies = false }), BattleRng.new(3))
+  Assert.equal(mismatched.amount, 48, "a non-matching barrier leaves the physical strike alone")
+end
+
+-- Critical hits and barrier-shattering strikes skip the barrier stage
+-- without disturbing the draw stream: the ordinary screened strike is
+-- halved to 25 first, the critical screened strike doubles the
+-- post-bonus 48 to 96, the shattering strike holds 48, and the critical
+-- calculation still spends exactly its one damage draw.
+function T.critical_and_screen_removing_strikes_skip_the_barrier_stage()
+  local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+
+  local ordinary = Damage.calculate(screenSpec({ screenApplies = true }), BattleRng.new(0))
+  Assert.equal(ordinary.amount, 25, "the ordinary screened strike is halved first")
+
+  local stream = BattleRng.new(0)
+  -- The draw-count case runs live: clearing the pinned estimate lets the
+  -- bypass spend exactly its one native damage draw (seed 0 rolls 100).
+  local liveSpec = screenSpec({ screenApplies = true, criticalMultiplier = 2 })
+  liveSpec.randomPercent = nil
+  local critical = Damage.calculate(liveSpec, stream)
+  Assert.equal(critical.amount, 96, "the critical strike doubles past the barrier")
+  Assert.equal(stream:capture().calls, 1, "the bypassing strike still spends its one damage draw")
+
+  local traced = Damage.trace(screenSpec({ screenApplies = true, criticalMultiplier = 2 }), BattleRng.new(0))
+  Assert.deepEqual(
+    stageNames(traced),
+    { "base", "bonus", "critical", "random", "stab", "effectiveness" },
+    "the critical trace records no barrier stage"
+  )
+
+  local shattering =
+    Damage.calculate(screenSpec({ screenApplies = true, removesScreens = true }), BattleRng.new(3))
+  Assert.equal(shattering.amount, 48, "the shattering strike ignores the raised barrier")
+  local shattered = Damage.trace(screenSpec({ screenApplies = true, removesScreens = true }), BattleRng.new(3))
+  Assert.deepEqual(
+    stageNames(shattered),
+    { "base", "bonus", "random", "stab", "effectiveness" },
+    "the shattering trace records no barrier stage"
+  )
+end
+
+-- The paired-battle barrier reduction is an explicit fact, never inferred
+-- from the spread target count: two-thirds lands floor(46*2/3) = 30
+-- before the bonus for 32, while the half mode under two targets chains
+-- floor(46/2) = 23 into the spread floor(23*3072/4096) = 17 for 19, and
+-- the two-thirds mode under two targets chains 30 into
+-- floor(30*3072/4096) = 22 for 24. Spread always follows the barrier.
+function T.doubles_barrier_reduction_uses_two_thirds_before_spread()
+  local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+
+  local paired = Damage.calculate(
+    screenSpec({ screenApplies = true, screenReduction = "two_thirds" }),
+    BattleRng.new(3)
+  )
+  Assert.equal(paired.amount, 32, "the paired-battle barrier keeps two thirds")
+
+  local singleSpread = Damage.calculate(
+    screenSpec({ screenApplies = true, screenReduction = "half", targetCount = 2 }),
+    BattleRng.new(3)
+  )
+  Assert.equal(singleSpread.amount, 19, "the half barrier still halves under two targets")
+
+  local pairedSpread = Damage.calculate(
+    screenSpec({ screenApplies = true, screenReduction = "two_thirds", targetCount = 2 }),
+    BattleRng.new(3)
+  )
+  Assert.equal(pairedSpread.amount, 24, "spread follows the two-thirds barrier at its own stage")
+
+  local traced = Damage.trace(
+    screenSpec({ screenApplies = true, screenReduction = "two_thirds", targetCount = 2 }),
+    BattleRng.new(3)
+  )
+  Assert.deepEqual(
+    stageNames(traced),
+    { "base", "screen", "spread", "bonus", "random", "stab", "effectiveness" },
+    "spread follows the barrier in trace order"
+  )
+  local screen = stageNamed(traced, "screen")
+  Assert.equal(screen.input, 46, "the barrier reads the pre-spread damage")
+  Assert.equal(screen.output, 30, "the barrier keeps two thirds before spread")
+  local spread = stageNamed(traced, "spread")
+  Assert.equal(spread.input, 30, "spread reads the screened intermediate")
+  Assert.equal(spread.output, 22, "spread truncates on the screened intermediate")
+end
+
+-- The charging grass strike halves under rain, sand, and hail only while
+-- the sky answers: unsuppressed bad weather lands floor(46/2)+2 = 25
+-- while suppression holds 48, and sun and clear skies hold 48 either
+-- way. The penalty shares the suppression guard with the other sky
+-- modifiers instead of sitting outside it.
+function T.adverse_weather_grass_penalty_shares_the_suppression_guard()
+  local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+
+  ---@param weather string active field weather identity under the probe
+  ---@param weatherSuppressed boolean whether a live ability stills the sky
+  ---@return integer damage at the fixed maximum roll
+  local function grassStrike(weather, weatherSuppressed)
+    return Damage.calculate(
+      screenSpec({
+        category = "special",
+        moveType = "grass",
+        weather = weather,
+        weatherSuppressed = weatherSuppressed,
+        solarBeam = true,
+      }),
+      BattleRng.new(11)
+    ).amount
+  end
+
+  for _, weather in ipairs({ "rain", "sand", "hail" }) do
+    Assert.equal(grassStrike(weather, false), 25, "the charging grass strike halves under " .. weather)
+    Assert.equal(grassStrike(weather, true), 48, "the stilled sky spares the charging grass strike")
+  end
+  Assert.equal(grassStrike("sun", false), 48, "the charging grass strike holds under sun")
+  Assert.equal(grassStrike("sun", true), 48, "suppression changes nothing under sun")
+  Assert.equal(grassStrike("none", false), 48, "the charging grass strike holds under clear skies")
+
+  local traced = Damage.trace(
+    screenSpec({ category = "special", moveType = "grass", weather = "rain", solarBeam = true }),
+    BattleRng.new(11)
+  )
+  Assert.deepEqual(
+    stageNames(traced),
+    { "base", "solarbeam", "bonus", "random", "stab", "effectiveness" },
+    "the grass penalty sits with the sky stages before the bonus"
+  )
+end
+
+-- The full pre-bonus order truncates stage by stage: base 46, burn 23,
+-- barrier 11, spread floor(11*3072/4096) = 8, rain on fire floor(8/2) =
+-- 4, bonus 6, and the roll, bonus-type, and effectiveness stages follow.
+function T.trace_orders_barrier_after_burn_and_before_spread()
+  local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+
+  local traced = Damage.trace(
+    screenSpec({
+      burned = true,
+      screenApplies = true,
+      targetCount = 2,
+      weather = "rain",
+      moveType = "fire",
+    }),
+    BattleRng.new(11)
+  )
+  Assert.equal(traced.amount, 6, "every pre-bonus stage truncates in order")
+  Assert.deepEqual(
+    stageNames(traced),
+    { "base", "burn", "screen", "spread", "weather", "bonus", "random", "stab", "effectiveness" },
+    "traced stages follow base, burn, barrier, spread, sky, bonus, roll, bonus-type, effectiveness"
+  )
+end
+
+-- Barrier facts validate before the damage draw: an unknown reduction
+-- mode and a missing reduction mode both fail loudly without spending
+-- the roll, so malformed live facts never silently halve or pass.
+function T.malformed_barrier_facts_fail_before_the_damage_draw()
+  local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+
+  local cases = {
+    screenSpec({ screenApplies = true, screenReduction = "sideways" }),
+    (function()
+      local spec = screenSpec({ screenApplies = true })
+      spec.screenReduction = nil
+      return spec
+    end)(),
+  }
+  for index, spec in ipairs(cases) do
+    local stream = BattleRng.new(0)
+    Assert.throws(function()
+      Damage.calculate(spec, stream)
+    end, "malformed barrier facts " .. index .. " fail loudly")
+    Assert.equal(stream:capture().calls, 0, "malformed barrier facts " .. index .. " spend no draw")
+  end
+end
+
 return { tests = T }
