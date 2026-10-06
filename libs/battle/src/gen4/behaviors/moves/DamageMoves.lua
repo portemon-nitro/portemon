@@ -54,7 +54,6 @@ local STRIKERS = {
   VOLT_TACKLE = { recoil = "third" },
   WOOD_HAMMER = { recoil = "third" },
   HEAD_SMASH = { recoil = "half" },
-  STRUGGLE = { recoil = "quarter" },
   EXPLOSION = { selfKo = true },
   SELFDESTRUCT = { selfKo = true },
   FAINT_ATTACK = {},
@@ -76,7 +75,6 @@ local STRIKERS = {
   VITAL_THROW = {},
   RAPID_SPIN = {},
   FOCUS_PUNCH = {},
-  DREAM_EATER = {},
   -- Ordinary trainer strikes with a plain damage secondary identity.
   AQUA_TAIL = {},
   CUT = {},
@@ -768,16 +766,6 @@ local function targetOf(entry)
 end
 
 ---@param ctx BattleContext mechanics context under execution
----@param defender integer defender combatant under the hit
----@return boolean true when a marked substitute absorbed the hit
-local function substituteAbsorbs(ctx, defender)
-  if ctx:removeBattleEffect(defender, "substitute") then
-    return true
-  end
-  return false
-end
-
----@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the hit
 ---@param amount integer staged damage amount under application
@@ -794,6 +782,36 @@ end
 ---@param amount integer staged damage amount under application
 local function emitStruck(ctx, frame, defender, hitIndex, amount)
   ctx:emit("struck", causeFor(frame), { target = defender, hitIndex = hitIndex, damage = amount })
+end
+
+-- Landed hits bill the live doll before touching health: only connecting
+-- damage reaches the doll, so misses never deplete it. A surviving doll
+-- keeps its decremented health, a breaking hit removes it without
+-- spilling overkill into the body, and later hits in the same sequence
+-- re-read the live effect and may reach the opened body.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the hit
+---@param amount integer staged damage amount under application
+---@param hitIndex integer ordinal of the hit in the sequence
+---@return boolean true when a live doll absorbed the hit
+local function substituteTakesHit(ctx, frame, defender, amount, hitIndex)
+  local outcome = ctx:updateBattleEffect(defender, NativeEffectHandlers.definitionFor("substitute"), function(state)
+    local remaining = state.hp --[[@as integer]] - amount
+    if remaining > 0 then
+      return { version = 1, hp = remaining }
+    end
+    return nil
+  end)
+  if outcome == nil then
+    return false
+  end
+  if outcome == "removed" then
+    ctx:emit("substitute-broke", causeFor(frame), { target = defender, hitIndex = hitIndex })
+  else
+    emitStruck(ctx, frame, defender, hitIndex, amount)
+  end
+  return true
 end
 
 -- Secondary effect gating shared by every chance-based strike
@@ -1416,6 +1434,12 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
       end
     end
   end
+  -- Doll damage still counts as dealt for the strike follow-ups: drain
+  -- and recoil answer the inflicted amount, while only bodily harm arms
+  -- the revenge ledger.
+  if substituteTakesHit(ctx, frame, defender, amount, hitIndex) then
+    return amount
+  end
   local dealt = applyHit(ctx, frame, defender, amount)
   emitStruck(ctx, frame, defender, hitIndex, dealt)
   noteStrikeDamage(ctx, frame, defender, dealt)
@@ -1487,6 +1511,13 @@ end
 ---@param dealt integer total damage dealt by the strike
 ---@param fraction string recoil fraction name under application
 local function applyRecoil(ctx, frame, dealt, fraction)
+  -- Ordinary recoil answers its source guards: rock head and magic
+  -- guard suppress the hit-derived backlash. Struggle never reaches
+  -- this owner; it backlashes from user maximum health instead.
+  local guards = abilitiesOf(frame)
+  if guards.user == "ROCK_HEAD" or guards.user == "MAGIC_GUARD" then
+    return
+  end
   local divisor = 4
   if fraction == "third" then
     divisor = 3
@@ -1577,10 +1608,7 @@ local function runStriker(ctx, frame, params)
   local connected, dealtTotal = false, 0
   for hitIndex = 1, #targets do
     local defender = targetOf(targets[hitIndex])
-    if substituteAbsorbs(ctx, defender) then
-      ctx:emit("substitute-broke", causeFor(frame), { target = defender, hitIndex = hitIndex })
-      connected = true
-    elseif accuracyGate(ctx, frame, defender, accuracy) then
+    if accuracyGate(ctx, frame, defender, accuracy) then
       for _ = 1, hits --[[@as integer]] do
         dealtTotal = dealtTotal + stagedHit(ctx, frame, defender, power, hitIndex, #targets, owned)
         applySecondaries(ctx, frame, defender, owned.secondaries --[[@as table<integer, table<string, unknown>>?]])
@@ -1663,7 +1691,7 @@ local function runFixed(ctx, frame, amount)
   local targets = record.targets --[[@as table<integer, unknown>]]
   for hitIndex = 1, #targets do
     local defender = targetOf(targets[hitIndex])
-    if not substituteAbsorbs(ctx, defender) then
+    if not substituteTakesHit(ctx, record, defender, result.amount, hitIndex) then
       local dealt = applyHit(ctx, record, defender, result.amount)
       emitStruck(ctx, record, defender, hitIndex, dealt)
       noteStrikeDamage(ctx, record, defender, dealt)
@@ -1690,12 +1718,12 @@ local function stepSuperFang(ctx, frame)
   local targets = record.targets --[[@as table<integer, unknown>]]
   for hitIndex = 1, #targets do
     local defender = targetOf(targets[hitIndex])
-    if not substituteAbsorbs(ctx, defender) then
-      local probe = ctx:damage(defender, 0, causeFor(record))
-      local amount = math.floor(probe.before / 2)
-      if amount < 1 then
-        amount = 1
-      end
+    local probe = ctx:damage(defender, 0, causeFor(record))
+    local amount = math.floor(probe.before / 2)
+    if amount < 1 then
+      amount = 1
+    end
+    if not substituteTakesHit(ctx, record, defender, amount, hitIndex) then
       local dealt = applyHit(ctx, record, defender, amount)
       emitStruck(ctx, record, defender, hitIndex, dealt)
       noteStrikeDamage(ctx, record, defender, dealt)
@@ -1739,14 +1767,12 @@ local function runFriendship(ctx, frame, power)
   local connected = false
   for hitIndex = 1, #targets do
     local defender = targetOf(targets[hitIndex])
-    if not substituteAbsorbs(ctx, defender) then
-      local resolution = Accuracy.resolve(query, stream)
-      if resolution.kind == "hit" then
-        connected = true
-        stagedHit(ctx, record, defender, power, hitIndex, #targets)
-      else
-        emitMissed(ctx, record, defender)
-      end
+    local resolution = Accuracy.resolve(query, stream)
+    if resolution.kind == "hit" then
+      connected = true
+      stagedHit(ctx, record, defender, power, hitIndex, #targets)
+    else
+      emitMissed(ctx, record, defender)
     end
   end
   if not connected then
@@ -1821,27 +1847,25 @@ local function stepBeatUp(ctx, frame)
   do
     local striker = member --[[@as table<string, unknown>]]
     local target = targetOf(targets[((hitIndex - 1) % #targets) + 1])
-    if substituteAbsorbs(ctx, target) then
-      ctx:emit("substitute-broke", causeFor(record), { target = target, hitIndex = hitIndex })
-    else
-      local level = striker.level --[[@as integer]]
-      local amount = math.floor(
-        (
-          striker.attack --[[@as integer]]
-          * strike.power
-          * math.floor(level * 2 / 5 + 2)
-        ) / party.defense --[[@as integer]]
-      )
-      amount = math.floor(amount / 50) + 2
-      if critical.critical then
-        amount = amount * 2
-      end
-      local percent = Damage.ROLL_MIN
-        + math.floor((stream:nextU16("damage_roll", causeFor(record)) * Damage.ROLL_SPAN) / Damage.ROLL_MODULUS)
-      amount = math.floor((amount * percent) / 100)
-      if amount < 1 then
-        amount = 1
-      end
+    local level = striker.level --[[@as integer]]
+    local amount = math.floor(
+      (
+        striker.attack --[[@as integer]]
+        * strike.power
+        * math.floor(level * 2 / 5 + 2)
+      ) / party.defense --[[@as integer]]
+    )
+    amount = math.floor(amount / 50) + 2
+    if critical.critical then
+      amount = amount * 2
+    end
+    local percent = Damage.ROLL_MIN
+      + math.floor((stream:nextU16("damage_roll", causeFor(record)) * Damage.ROLL_SPAN) / Damage.ROLL_MODULUS)
+    amount = math.floor((amount * percent) / 100)
+    if amount < 1 then
+      amount = 1
+    end
+    if not substituteTakesHit(ctx, record, target, amount, hitIndex) then
       local dealt = applyHit(ctx, record, target, amount)
       emitStruck(ctx, record, target, hitIndex, dealt)
       noteStrikeDamage(ctx, record, target, dealt)
@@ -1891,10 +1915,7 @@ local function stepTripleKick(ctx, frame)
   local connected = false
   local controls = { shareCritical = true }
   for kick = 1, 3 do
-    if substituteAbsorbs(ctx, defender) then
-      ctx:emit("substitute-broke", causeFor(record), { target = defender, hitIndex = kick })
-      connected = true
-    elseif accuracyGate(ctx, record, defender, strike.accuracy) then
+    if accuracyGate(ctx, record, defender, strike.accuracy) then
       stagedHit(ctx, record, defender, 10 * kick, kick, 1, controls)
       connected = true
     end
@@ -2158,11 +2179,11 @@ local function makeReaction(category)
     end
     local noted = answer --[[@as table<string, unknown>]]
     local defender = noted.attacker --[[@as integer]]
-    if substituteAbsorbs(ctx, defender) then
-      ctx:emit("substitute-broke", causeFor(record), { target = defender, hitIndex = 1 })
+    local backlash = noted.amount --[[@as integer]] * 2
+    if substituteTakesHit(ctx, record, defender, backlash, 1) then
       return { kind = "complete", result = "hit" }
     end
-    local dealt = applyHit(ctx, record, defender, noted.amount --[[@as integer]] * 2)
+    local dealt = applyHit(ctx, record, defender, backlash)
     emitStruck(ctx, record, defender, 1, dealt)
     noteStrikeDamage(ctx, record, defender, dealt)
     return { kind = "complete", result = "hit" }
@@ -2205,11 +2226,10 @@ local function stepOhko(ctx, frame)
       return { kind = "complete", result = "missed" }
     end
   end
-  if substituteAbsorbs(ctx, defender) then
-    ctx:emit("substitute-broke", causeFor(record), { target = defender, hitIndex = 1 })
+  local remaining = ctx:damage(defender, 0, causeFor(record)).before
+  if substituteTakesHit(ctx, record, defender, remaining, 1) then
     return { kind = "complete", result = "hit" }
   end
-  local remaining = ctx:damage(defender, 0, causeFor(record)).before
   local dealt = applyHit(ctx, record, defender, remaining)
   emitStruck(ctx, record, defender, 1, dealt)
   noteStrikeDamage(ctx, record, defender, dealt)
@@ -2423,26 +2443,23 @@ local function stepStomp(ctx, frame)
 end
 
 -- Wake-up slap doubles against sleeping targets and wakes them on a
--- connecting strike; substitutes take the plain strike without waking.
--- Source reference: files/battledata/script/effect_script/
--- effect_script_0217.s.
+-- connecting strike; a live doll absorbs the doubled strike as an HP
+-- pool without waking. Source reference:
+-- files/battledata/script/effect_script/effect_script_0217.s.
 local function stepWakeUpSlap(ctx, frame)
   assert(type(ctx) == "table", "damage steps through the battle context")
   assert(type(frame) == "table", "damage steps from its move frame")
   local record = frame --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   local strike = strikeFactsOf(record)
-  if substituteAbsorbs(ctx, defender) then
-    ctx:emit("substitute-broke", causeFor(record), { target = defender, hitIndex = 1 })
-    return { kind = "complete", result = "hit" }
-  end
   local sleeping = ctx:statusOf(defender) == "sleep"
+  local walled = ctx:hasBattleEffect(defender, "substitute")
   local power = strike.power
   if sleeping then
     power = power * 2
   end
   local outcome = runStriker(ctx, record, { power = power })
-  if outcome.result == "hit" and sleeping then
+  if outcome.result == "hit" and sleeping and not walled then
     ctx:cureStatus(defender, "sleep", causeFor(record))
   end
   return outcome
@@ -2621,11 +2638,65 @@ local function stepFling(ctx, frame)
   return outcome
 end
 
+-- Dream Eater only reaches sleeping targets without a live doll: the
+-- source gate fails before any critical or damage work, and the
+-- successful strike drains half dealt through the shared drain.
+-- Source reference:
+-- files/battledata/script/effect_script/effect_script_0008.s.
+local function stepDreamEater(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if ctx:hasBattleEffect(defender, "substitute") then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:statusOf(defender) ~= "sleep" then
+    return { kind = "complete", result = "failed" }
+  end
+  return runStriker(ctx, record, { drain = true })
+end
+
+-- Struggle backlashes a quarter of user maximum health with no ability
+-- suppression: the source computes from attacker maximum, never from
+-- dealt damage, and performs no guard check. Source reference:
+-- files/battledata/script/subscript/subscript_0043_Struggle.s.
+local function stepStruggle(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local outcome = runStriker(ctx, record, {})
+  if outcome.result ~= "hit" then
+    return outcome
+  end
+  local user = userOf(record)
+  local ceiling = ctx:entryOf(user).maxHp
+  if type(ceiling) ~= "number" or ceiling % 1 ~= 0 or ceiling < 1 then
+    error(BattleErrors.missingBehavior("struggle reads its battle maximum health", {
+      key = record.executingMove --[[@as string]],
+      fact = "maxHp",
+    }))
+  end
+  local recoil = math.floor(ceiling --[[@as integer]] / 4)
+  if recoil < 1 then
+    recoil = 1
+  end
+  ctx:damage(user, recoil, causeFor(record))
+  ctx:emit("recoil", causeFor(record), { target = user, damage = recoil })
+  return outcome
+end
+
 ---@param key string damage move identity under binding
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> distinct per-move handler for the registry
 local function bodyFor(key)
   if key == "BEAT_UP" then
     return bind(stepBeatUp)
+  end
+  if key == "DREAM_EATER" then
+    return bind(stepDreamEater)
+  end
+  if key == "STRUGGLE" then
+    return bind(stepStruggle)
   end
   if key == "LAST_RESORT" then
     return bind(stepLastResort)

@@ -86,6 +86,9 @@ local function probeMoveFacts()
     WEATHER_BALL = strikeFacts("WEATHER_BALL", 50, "normal", "special", 100, 0),
     NATURAL_GIFT = strikeFacts("NATURAL_GIFT", 1, "normal", "physical", 100, 0),
     FLING = strikeFacts("FLING", 1, "dark", "physical", 100, 0),
+    DREAM_EATER = strikeFacts("DREAM_EATER", 100, "psychic", "special", 100, 0),
+    STRUGGLE = strikeFacts("STRUGGLE", 50, "normal", "physical", 100, 0),
+    TAKE_DOWN = strikeFacts("TAKE_DOWN", 90, "normal", "physical", 100, 0),
     CLOSE_COMBAT = strikeFacts("CLOSE_COMBAT", 120, "fighting", "physical", 100, 0),
     SUPERPOWER = strikeFacts("SUPERPOWER", 120, "fighting", "physical", 100, 0),
     DRACO_METEOR = strikeFacts("DRACO_METEOR", 140, "dragon", "special", 90, 100),
@@ -469,6 +472,193 @@ function T.overheat_drops_special_attack_twice_on_a_hit()
   local ctx = probe.ctx
   local stages = ctx:entryOf(1).stages --[[@as table<string, integer>]]
   Assert.equal(stages.specialAttack, -2, "overheat drops special attack twice")
+end
+
+---@param seed integer fixed generator state for the recording stream
+---@param labels table<integer, string> draw labels recorded in stream order
+---@return table recording battle stream proxy over the native generator
+local function recordingStream(seed, labels)
+  local inner = BattleRng.new(seed)
+  local proxy = {}
+  setmetatable(proxy, {
+    __index = function(_, key)
+      if key == "nextU16" then
+        return function(_, label, cause)
+          labels[#labels + 1] = label
+          return inner:nextU16(label, cause)
+        end
+      end
+      local value = inner[key]
+      if type(value) == "function" then
+        return function(_, ...)
+          return value(inner, ...)
+        end
+      end
+      return value
+    end,
+  })
+  return proxy
+end
+
+---@param live table live battle state under preparation
+---@param combatantId integer combatant receiving the health projection
+---@param maxHp integer battle maximum health under the probe
+---@param hp integer current health under the probe
+local function seedHealth(live, combatantId, maxHp, hp)
+  local state = SessionFixture.requirePresent("libs.battle.src.BattleState", "live battle state owns the probe")
+  local combatant = state.combatant(live, combatantId)
+  combatant.maxHp = maxHp
+  combatant.hp = hp
+end
+
+-- Dream Eater fails outright against awake targets: no damage lands, no
+-- health returns, and no critical or damage-family draw is consumed.
+function T.dream_eater_fails_against_awake_targets_without_damage_draws()
+  local labels = {}
+  local beforeUser = nil
+  local probe = runStrike("DREAM_EATER", { stream = recordingStream(HANDLER_SEED, labels) }, function(live, ctx)
+    seedHealth(live, 1, 200, 150)
+    beforeUser = ctx:damage(1, 0, { kind = "probe" }).before
+  end)
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "failed", "the dream eater fails against awake targets")
+  Assert.equal(probe.dealt, 0, "awake targets take no dream damage")
+  local afterUser = probe.ctx:damage(1, 0, { kind = "probe" }).before
+  Assert.equal(afterUser, beforeUser, "no health returns from an awake target")
+  for _, label in ipairs(labels) do
+    Assert.isTrue(
+      label ~= "critical_check" and label ~= "damage_roll",
+      "awake dream eater spends no critical or damage draw"
+    )
+  end
+end
+
+-- Dream Eater strikes sleeping targets for ordinary staged damage and
+-- restores half the damage dealt, rounded down.
+function T.dream_eater_drains_half_against_sleeping_targets()
+  local beforeUser = nil
+  local probe = runStrike("DREAM_EATER", {}, function(live, ctx)
+    seedCondition(live, 2, "sleep")
+    seedHealth(live, 1, 200, 150)
+    beforeUser = ctx:damage(1, 0, { kind = "probe" }).before
+  end)
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "hit", "the dream eater connects against sleepers")
+  Assert.isTrue(probe.dealt > 0, "sleeping targets take dream damage")
+  local afterUser = probe.ctx:damage(1, 0, { kind = "probe" }).before
+  Assert.equal(afterUser - beforeUser --[[@as integer]], math.floor(probe.dealt / 2), "dream eater restores half dealt")
+end
+
+-- A live doll keeps Dream Eater from reaching its sleeping target: the
+-- body takes nothing and the doll itself is untouched.
+function T.dream_eater_cannot_reach_behind_a_doll()
+  local probe = runStrike("DREAM_EATER", {}, function(live, ctx)
+    seedCondition(live, 2, "sleep")
+    local NativeEffects = SessionFixture.requirePresent(
+      "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+      "typed battle-local writes own volatile definitions"
+    )
+    local entry = ctx:entryOf(2)
+    ctx:addBattleEffect(
+      NativeEffects.definitionFor("substitute"),
+      { kind = "active", combatant = 2, activation = entry.activation },
+      { kind = "move", combatant = 2 },
+      { version = 1, hp = 10 }
+    )
+  end)
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "failed", "the doll blocks the dream eater")
+  Assert.equal(probe.dealt, 0, "the shielded body takes no dream damage")
+  Assert.isTrue(probe.ctx:hasBattleEffect(2, "substitute"), "the doll survives the blocked dream")
+end
+
+-- Struggle recoil follows user maximum health, not dealt damage: two
+-- materially different blows cost the same quarter, and tiny maxima
+-- still cost at least one.
+function T.struggle_recoil_follows_user_maximum_health()
+  ---@param defense integer staged defender defense under the probe
+  ---@return integer recoil paid after the successful struggle
+  ---@return integer damage dealt to the defender by the struggle
+  local function recoilAfter(defense)
+    local probe = runStrike("STRUGGLE", {
+      combat = {
+        level = 50,
+        attack = 120,
+        defense = defense,
+        rawAttack = 120,
+        rawDefense = defense,
+        attackStage = 0,
+        defenseStage = 0,
+      },
+    }, function(live, _)
+      seedHealth(live, 1, 100, 100)
+    end)
+    local outcome = probe.outcome --[[@as table<string, unknown>]]
+    Assert.equal(outcome.result, "hit", "the struggle connects")
+    return 100 - probe.ctx:damage(1, 0, { kind = "probe" }).before, probe.dealt
+  end
+  local soft, softDealt = recoilAfter(50)
+  local hard, hardDealt = recoilAfter(200)
+  Assert.isTrue(softDealt > hardDealt, "the two struggles deal materially different damage")
+  Assert.equal(soft, 25, "soft-target struggles cost quarter maximum")
+  Assert.equal(hard, 25, "hard-target struggles cost quarter maximum")
+  local tiny = runStrike("STRUGGLE", {}, function(live, _)
+    seedHealth(live, 1, 3, 3)
+  end)
+  local tinyOutcome = tiny.outcome --[[@as table<string, unknown>]]
+  Assert.equal(tinyOutcome.result, "hit", "the tiny struggle connects")
+  Assert.equal(3 - tiny.ctx:damage(1, 0, { kind = "probe" }).before, 1, "tiny maxima still cost one")
+end
+
+-- Ordinary recoil answers Rock Head and Magic Guard: the unguarded
+-- control pays while both guarded strikers pay nothing.
+function T.ordinary_recoil_yields_to_rock_head_and_magic_guard()
+  ---@param ability string|nil attacker ability under the probe
+  ---@return integer recoil paid after the connecting take-down
+  local function recoilAfter(ability)
+    local probe = runStrike("TAKE_DOWN", { abilities = { user = ability, foe = "ADAPTABILITY" } }, function(live, _)
+      seedHealth(live, 1, 200, 200)
+    end)
+    local outcome = probe.outcome --[[@as table<string, unknown>]]
+    Assert.equal(outcome.result, "hit", "the take-down connects")
+    Assert.isTrue(probe.dealt > 0, "the take-down deals damage")
+    return 200 - probe.ctx:damage(1, 0, { kind = "probe" }).before
+  end
+  Assert.isTrue(recoilAfter("ADAPTABILITY") > 0, "unguarded recoil is paid")
+  Assert.equal(recoilAfter("ROCK_HEAD"), 0, "rock head suppresses ordinary recoil")
+  Assert.equal(recoilAfter("MAGIC_GUARD"), 0, "magic guard suppresses ordinary recoil")
+end
+
+-- Unguarded ordinary recoil keeps its dealt-derived fraction: a quarter
+-- of the inflicted damage with a minimum of one.
+function T.unguarded_recoil_keeps_quarter_dealt_minimum_one()
+  local probe = runStrike("TAKE_DOWN", { abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" } }, function(live, _)
+    seedHealth(live, 1, 200, 200)
+  end)
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "hit", "the take-down connects")
+  local expected = math.floor(probe.dealt / 4)
+  if expected < 1 then
+    expected = 1
+  end
+  Assert.equal(200 - probe.ctx:damage(1, 0, { kind = "probe" }).before, expected, "unguarded recoil bills quarter dealt")
+end
+
+-- Struggle recoil ignores both guards: the source performs no ability
+-- check on its maximum-health backlash.
+function T.struggle_recoil_ignores_rock_head_and_magic_guard()
+  ---@param ability string attacker ability under the probe
+  ---@return integer recoil paid after the successful struggle
+  local function recoilAfter(ability)
+    local probe = runStrike("STRUGGLE", { abilities = { user = ability, foe = "ADAPTABILITY" } }, function(live, _)
+      seedHealth(live, 1, 100, 100)
+    end)
+    local outcome = probe.outcome --[[@as table<string, unknown>]]
+    Assert.equal(outcome.result, "hit", "the guarded struggle connects")
+    return 100 - probe.ctx:damage(1, 0, { kind = "probe" }).before
+  end
+  Assert.equal(recoilAfter("ROCK_HEAD"), 25, "rock head cannot stop struggle backlash")
+  Assert.equal(recoilAfter("MAGIC_GUARD"), 25, "magic guard cannot stop struggle backlash")
 end
 
 return { tests = T }

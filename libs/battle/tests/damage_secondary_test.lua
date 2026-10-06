@@ -979,7 +979,7 @@ function T.flame_wheel_thaws_its_frozen_user()
 end
 
 -- Secondaries respect immunities and substitutes: fire defenders never
--- burn and marked dolls absorb the follow-up.
+-- burn and a standing doll absorbs the follow-up.
 function T.secondaries_respect_immunities_and_substitutes()
   damageOwner("secondaries own their gates")
   local Execution = SessionFixture.requirePresent(
@@ -1002,7 +1002,9 @@ function T.secondaries_respect_immunities_and_substitutes()
         NativeEffectHandlers.definitionFor("substitute"),
         { kind = "active", combatant = 2, activation = entry.activation },
         { kind = "move", combatant = 2 },
-        { version = 1, hp = 10 }
+        -- The doll must survive the strike to prove the standing block:
+        -- a broken doll exposes the body to the follow-up by design.
+        { version = 1, hp = 500 }
       )
     end
     local facts =
@@ -1107,6 +1109,207 @@ function T.feint_needs_protection_to_break()
   end
   local finished = node --[[@as table<string, unknown>]]
   Assert.equal(finished.result, "hit", "feint breaks protection and lands")
+end
+
+---@param moveKey string strike identity under execution
+---@param facts table<string, table<string, unknown>> compiled-shaped move facts
+---@param seed integer fixed seed for the probe stream
+---@param extra table<string, unknown>|nil extra frame inputs for the probe
+---@param setup fun(state: table, ctx: table)|nil battle preparation under the probe
+---@return table terminal execution step plus observed health and context
+local function runPreparedStrike(moveKey, facts, seed, extra, setup)
+  local Execution = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.MoveExecution",
+    "the shared move continuation owns native hit progression"
+  )
+  local state = liveState()
+  local ctx = liveContext(state)
+  if setup ~= nil then
+    setup(state, ctx)
+  end
+  local beforeFoe = ctx:damage(2, 0, { kind = "probe" }).before
+  local inputs = {
+    actionId = 901,
+    actor = { combatant = 1 },
+    requestedMove = moveKey,
+    executingMove = moveKey,
+    ppOwnerSlot = 0,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = { { move = moveKey, pp = 10, ppUps = 0 } },
+    moveFacts = facts,
+    combat = probeCombat(50, 120, 90),
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+    attackerTypes = { "normal" },
+    defenderTypes = { [2] = { "normal" } },
+    typeChart = chart(),
+    friendship = 255,
+    stream = BattleRng.new(seed),
+  }
+  for key, value in pairs(extra or {}) do
+    inputs[key] = value
+  end
+  local node = Execution.start(inputs)
+  for _ = 1, 8 do
+    node = Execution.step(ctx, node)
+    local record = node --[[@as table<string, unknown>]]
+    if record.kind == "complete" and record.frame == nil then
+      break
+    end
+  end
+  local finished = node --[[@as table<string, unknown>]]
+  assert(finished.kind == "complete" and finished.frame == nil, "the strike settles")
+  return {
+    outcome = finished,
+    dealt = beforeFoe - ctx:damage(2, 0, { kind = "probe" }).before,
+    ctx = ctx,
+    state = state,
+  }
+end
+
+---@param ctx table genuine mechanics context under preparation
+---@param defender integer defender combatant receiving the doll
+---@param hp integer doll health under the probe
+local function seedDoll(ctx, defender, hp)
+  local NativeEffects = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "native definitions resolve for typed battle-local writes"
+  )
+  local entry = ctx:entryOf(defender)
+  ctx:addBattleEffect(
+    NativeEffects.definitionFor("substitute"),
+    { kind = "active", combatant = defender, activation = entry.activation },
+    { kind = "move", combatant = defender },
+    { version = 1, hp = hp }
+  )
+end
+
+---@param state table live battle state under inspection
+---@return boolean true when a break announcement names the defender
+local function brokeAnnounced(state)
+  for _, event in ipairs(state.outbox --[[@as table<integer, unknown>]]) do
+    local record = event --[[@as table<string, unknown>]]
+    if record.kind == "substitute-broke" then
+      return true
+    end
+  end
+  return false
+end
+
+-- Landed strikes bill the doll first: a surviving doll stands with the
+-- body untouched, and only a breaking hit removes it — never spilling
+-- overkill into health.
+function T.landed_strikes_bill_the_doll_before_touching_health()
+  damageOwner("doll depletion owns the landed-hit boundary")
+  local facts = moveFacts("SONIC_BOOM", { power = 40, accuracy = 100, category = "physical", moveType = "normal" })
+  local survived = runPreparedStrike("SONIC_BOOM", facts, FIXED_SEED, nil, function(_, ctx)
+    seedDoll(ctx, 2, 25)
+  end)
+  local survivedOutcome = survived.outcome --[[@as table<string, unknown>]]
+  Assert.equal(survivedOutcome.result, "hit", "the absorbed strike still connects")
+  Assert.equal(survived.dealt, 0, "the surviving doll shields the body")
+  Assert.isTrue(survived.ctx:hasBattleEffect(2, "substitute"), "the surviving doll stands")
+  Assert.isFalse(brokeAnnounced(survived.state), "survival announces no break")
+  local broke = runPreparedStrike("SONIC_BOOM", facts, FIXED_SEED, nil, function(_, ctx)
+    seedDoll(ctx, 2, 20)
+  end)
+  local brokeOutcome = broke.outcome --[[@as table<string, unknown>]]
+  Assert.equal(brokeOutcome.result, "hit", "the breaking strike still connects")
+  Assert.equal(broke.dealt, 0, "breaking overkill never spills into health")
+  Assert.isFalse(broke.ctx:hasBattleEffect(2, "substitute"), "the broken doll is gone")
+  Assert.isTrue(brokeAnnounced(broke.state), "the break is announced")
+end
+
+-- Repeated strikes drain the same doll across hits: a second fixed blow
+-- breaks what the first merely dented, proving the decremented health
+-- persisted on the effect instead of resetting.
+function T.repeated_strikes_drain_the_doll_across_hits()
+  damageOwner("doll depletion owns the landed-hit boundary")
+  local Execution = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.MoveExecution",
+    "the shared move continuation owns native hit progression"
+  )
+  local state = liveState()
+  local ctx = liveContext(state)
+  seedDoll(ctx, 2, 25)
+  local beforeFoe = ctx:damage(2, 0, { kind = "probe" }).before
+  local facts = moveFacts("SONIC_BOOM", { power = 40, accuracy = 100, category = "physical", moveType = "normal" })
+  for _ = 1, 2 do
+    local node = Execution.start({
+      actionId = 901,
+      actor = { combatant = 1 },
+      requestedMove = "SONIC_BOOM",
+      executingMove = "SONIC_BOOM",
+      ppOwnerSlot = 0,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = "SONIC_BOOM", pp = 10, ppUps = 0 } },
+      moveFacts = facts,
+      combat = probeCombat(50, 120, 90),
+      burned = false,
+      guts = false,
+      weather = "none",
+      weatherSuppressed = false,
+      abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+      attackerTypes = { "normal" },
+      defenderTypes = { [2] = { "normal" } },
+      typeChart = chart(),
+      friendship = 255,
+      stream = BattleRng.new(FIXED_SEED),
+    })
+    for _ = 1, 8 do
+      node = Execution.step(ctx, node)
+      local record = node --[[@as table<string, unknown>]]
+      if record.kind == "complete" and record.frame == nil then
+        break
+      end
+    end
+  end
+  Assert.isFalse(ctx:hasBattleEffect(2, "substitute"), "two fixed blows empty the doll")
+  Assert.equal(ctx:damage(2, 0, { kind = "probe" }).before, beforeFoe, "the dented-then-broken sequence never touches the body")
+end
+
+-- Missed strikes never touch the doll: the accuracy failure settles
+-- before any depletion.
+function T.missed_strikes_leave_the_doll_untouched()
+  damageOwner("doll depletion owns the landed-hit boundary")
+  local seed = nil
+  for candidate = 1, 500 do
+    local probe = BattleRng.new(candidate)
+    if probe:nextU16("accuracy_check", { kind = "probe" }) % 100 >= 30 then
+      seed = candidate
+      break
+    end
+  end
+  Assert.notNil(seed, "a missing accuracy draw exists")
+  local facts = moveFacts("TACKLE", { power = 40, accuracy = 30, category = "physical", moveType = "normal" })
+  local probe = runPreparedStrike("TACKLE", facts, seed --[[@as integer]], nil, function(_, ctx)
+    seedDoll(ctx, 2, 10)
+  end)
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "missed", "the strike misses")
+  Assert.isTrue(probe.ctx:hasBattleEffect(2, "substitute"), "the missed doll stands untouched")
+  Assert.isFalse(brokeAnnounced(probe.state), "the miss announces no break")
+end
+
+-- Breaking the doll mid-sequence opens the body: the first fixed hit of
+-- a two-hit strike breaks a one-health doll and the second hit lands
+-- on health.
+function T.breaking_the_doll_mid_sequence_opens_the_body()
+  damageOwner("doll depletion owns the landed-hit boundary")
+  local facts = moveFacts("BONEMERANG", { power = 25, accuracy = 100, category = "physical", moveType = "ground" })
+  local probe = runPreparedStrike("BONEMERANG", facts, FIXED_SEED, nil, function(_, ctx)
+    seedDoll(ctx, 2, 1)
+  end)
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "hit", "the sequence connects")
+  Assert.isFalse(probe.ctx:hasBattleEffect(2, "substitute"), "the first hit breaks the doll")
+  Assert.isTrue(probe.dealt > 0, "the later hit reaches the opened body")
+  Assert.isTrue(brokeAnnounced(probe.state), "the mid-sequence break is announced")
 end
 
 return { tests = T }

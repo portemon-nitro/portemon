@@ -326,4 +326,63 @@ function T.self_destruct_and_recoil_follow_the_source_sequence()
   Assert.isTrue(#kinds > 0, "the sequence emits its ordered events")
 end
 
+-- Substitute charges a quarter of user maximum health and raises the
+-- live doll: affordable health pays exactly, exact-cost health fails
+-- with no charge, and an existing doll refuses without double-charging.
+function T.substitute_charges_quarter_maximum_and_raises_a_live_doll()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local Sequence = sequenceOwner("charging and delayed sequences own the multi-turn path")
+  Assert.isTrue(type(Sequence.register) == "function", "the sequence family registers its bindings")
+  ---@param hp integer current user health under the attempt
+  ---@param seedDoll boolean true when a live doll already stands
+  ---@return table terminal execution step for the attempt
+  ---@return table live battle state under the attempt
+  ---@return table genuine mechanics context under the attempt
+  local function attempt(hp, seedDoll)
+    local state = liveState()
+    local user = combatantOf(state, 1)
+    user.maxHp = 100
+    user.hp = hp
+    local ctx = liveContext(state)
+    if seedDoll then
+      local NativeEffects = SessionFixture.requirePresent(
+        "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+        "typed battle-local writes own volatile definitions"
+      )
+      local entry = ctx:entryOf(1)
+      ctx:addBattleEffect(
+        NativeEffects.definitionFor("substitute"),
+        { kind = "active", combatant = 1, activation = entry.activation },
+        { kind = "move", combatant = 1 },
+        { version = 1, hp = 25 }
+      )
+    end
+    local frame = Execution.validateFrame(Execution.start(frameInputs("SUBSTITUTE", 0)))
+    local settled = frame
+    for _ = 1, 16 do
+      local outcome = Execution.step(ctx, settled)
+      if outcome.kind == "complete" then
+        settled = outcome
+        break
+      end
+      settled = outcome.frame or outcome
+    end
+    return settled, state, ctx
+  end
+  local paid, paidState, paidCtx = attempt(26, false)
+  Assert.equal(paid.kind, "complete", "the affordable substitute settles")
+  Assert.equal(paid.result, "hit", "the affordable substitute succeeds")
+  Assert.equal(combatantOf(paidState, 1).hp, 1, "the doll costs exactly quarter maximum")
+  Assert.isTrue(paidCtx:hasBattleEffect(1, "substitute"), "success raises the live doll")
+  Assert.isFalse(paidCtx:hasBattleEffect(1, "SUBSTITUTE"), "success raises no inert marker")
+  local exact, exactState, exactCtx = attempt(25, false)
+  Assert.equal(exact.result, "failed", "exact-cost health refuses the doll")
+  Assert.equal(combatantOf(exactState, 1).hp, 25, "refusal charges nothing")
+  Assert.isFalse(exactCtx:hasBattleEffect(1, "substitute"), "refusal raises no doll")
+  local second, secondState, secondCtx = attempt(100, true)
+  Assert.equal(second.result, "failed", "an existing doll refuses a second")
+  Assert.equal(combatantOf(secondState, 1).hp, 100, "a refused second doll charges nothing")
+  Assert.isTrue(secondCtx:hasBattleEffect(1, "substitute"), "the original doll stands")
+end
+
 return { tests = T }

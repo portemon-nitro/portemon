@@ -309,6 +309,55 @@ local function markVolatile(ctx, combatant, key)
   )
 end
 
+-- Substitute charges a quarter of user maximum health and raises the
+-- live doll on the current activation: an existing doll or health that
+-- cannot cover the cost refuses with no charge, and exact-cost health
+-- fails. The cost keeps a minimum of one for positive maxima, matching
+-- the native division. Source reference: BtlCmd_TrySubstitute in
+-- src/battle/battle_command.c.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, unknown> terminal execution step for the doll
+local function stepSubstitute(ctx, frame)
+  assert(type(ctx) == "table", "sequences step through the battle context")
+  assert(type(frame) == "table", "sequences step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local user = userOf(record)
+  local entry = ctx:entryOf(user)
+  if entry.activation == nil then
+    error("substitute scopes to a live entry")
+  end
+  local maxHp = entry.maxHp
+  if type(maxHp) ~= "number" or maxHp % 1 ~= 0 or maxHp < 1 then
+    error(BattleErrors.missingBehavior("substitute reads its battle maximum health", { key = key, fact = "maxHp" }))
+  end
+  local hp = entry.hp
+  if type(hp) ~= "number" or hp % 1 ~= 0 or hp < 0 then
+    error(BattleErrors.missingBehavior("substitute reads its battle health", { key = key, fact = "hp" }))
+  end
+  local cost = math.floor(maxHp --[[@as integer]] / 4)
+  if cost < 1 then
+    cost = 1
+  end
+  if
+    ctx:hasBattleEffect(user, "substitute")
+    or hp --[[@as integer]]
+      <= cost
+  then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:damage(user, cost, causeFor(record))
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("substitute"),
+    { kind = "active", combatant = user, activation = entry.activation },
+    { kind = "move", combatant = user },
+    { version = 1, hp = cost }
+  )
+  ctx:emit("move-used", causeFor(record), { targets = 1 })
+  return { kind = "complete", result = "hit" }
+end
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param defender integer defender combatant receiving the live flinch
 local function markFlinch(ctx, defender)
@@ -690,7 +739,10 @@ local function bodyFor(key)
   if key == "PROTECT" or key == "DETECT" then
     return bind(makeProtection(true))
   end
-  if key == "ENDURE" or key == "SUBSTITUTE" then
+  if key == "SUBSTITUTE" then
+    return bind(stepSubstitute)
+  end
+  if key == "ENDURE" then
     return bind(makeProtection(false))
   end
   if key == "MAGIC_COAT" or key == "SNATCH" then
