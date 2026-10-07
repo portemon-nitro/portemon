@@ -34,6 +34,12 @@ local T = {
       "map:33",
       "map:63",
       "audio-bank:730",
+      "field-cell:0-534",
+      "field-cell:0-538",
+      "field-cell:0-581",
+      "field-cell:0-585",
+      "field-cell:0-628",
+      "field-cell:0-632",
     },
     tags = { "save-editor", "location", "production" },
   },
@@ -152,7 +158,7 @@ local function resolvedHousePlacement(graph, fixture, host)
   local ok, placement = xpcall(function()
     service:openMap(houseMapId)
     service:setViewport(4, 5, 1, 1)
-    for _ = 1, 8 do
+    for _ = 1, 5000 do
       service:update()
       local view = service:snapshot()
       if view.status.state == "ready" then
@@ -183,7 +189,7 @@ local function resolvedHousePlacement(graph, fixture, host)
     service:openMap(mapId)
     service:setViewport(fieldX, fieldZ, 1, 1)
     local view
-    for _ = 1, 8 do
+    for _ = 1, 5000 do
       service:update()
       view = service:snapshot()
       if view.status.state == "ready" then
@@ -245,7 +251,7 @@ local function resolvedOutdoorPlacement(graph, service)
   service:openMap(mapId)
   service:setViewport(viewportX, viewportZ, 1, 1)
   local view
-  for _ = 1, 8 do
+  for _ = 1, 5000 do
     service:update()
     view = service:snapshot()
     if view.status.state == "ready" then
@@ -567,11 +573,11 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       )
 
       destinationReady = true
-      for _ = 1, 8 do
+      local updates = 0
+      while recordWrites == 0 do
+        updates = updates + 1
+        Assert.isTrue(updates <= 5000, "the ready destination publishes the pending save")
         state:update(0)
-        if recordWrites > 0 then
-          break
-        end
       end
       Assert.equal(recordWrites, 1, "one Save intent publishes exactly one save after readiness")
       Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), expected, "the authorized tuple and edits publish")
@@ -597,11 +603,11 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       Assert.equal(recordWrites, 2, "the canonical save changes through the real store")
 
       destinationReady = true
-      for _ = 1, 8 do
+      local updates = 0
+      while state:view().locationSave ~= nil do
+        updates = updates + 1
+        Assert.isTrue(updates <= 5000, "the ready verifier completes the final save attempt")
         state:update(0)
-        if state:view().locationSave == nil then
-          break
-        end
       end
       local failureView = state:view()
       Assert.isNil(failureView.locationSave, "the ready verifier is disposed after the final save attempt")
@@ -941,6 +947,166 @@ function T.tests.party_stats_edit_uses_number_modal_and_keeps_draft_staged()
       )
     end)
   end, debug.traceback)
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changing_the_save()
+  local fixture = Fixture.new()
+  local State = require("app.src.saveeditor.SaveEditorState")
+  local originalGlobal = SaveFs.global
+  local state
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor must use the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+
+  local ok, err = xpcall(function()
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 640,
+      height = 480,
+      derivedAssets = readyHost(),
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+
+    withoutRendering(function()
+      local openingView = state:view()
+      Assert.equal(
+        openingView.status,
+        "ready",
+        "production Save Editor composition opens the selected save: " .. tostring(openingView.errorMessage)
+      )
+      local originalLocation = copy(state.session:snapshot().location)
+      local world = assert(state.dependencies.world)
+      local selectedMaps = {
+        assert(world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_1F),
+        assert(world.bySymbol.MAP_ROUTE_29),
+      }
+
+      local firstMap = assert(world.maps[assert(world.byId[selectedMaps[1]])])
+      state.controller:chooseLocationMap(
+        selectedMaps[1],
+        firstMap.worldOriginX + 16,
+        firstMap.worldOriginZ + 16
+      )
+      state:update(0)
+      Assert.equal(
+        assert(state:view().location).status.state,
+        "pending",
+        "the first browse request remains cancellable while its preparation is pending"
+      )
+      local replacementMap = assert(world.maps[assert(world.byId[selectedMaps[2]])])
+      state.controller:chooseLocationMap(
+        selectedMaps[2],
+        replacementMap.worldOriginX + 16,
+        replacementMap.worldOriginZ + 16
+      )
+      state:update(0)
+      Assert.equal(
+        assert(state:view().location).mapId,
+        selectedMaps[2],
+        "a replacement browse request owns the service after cancellation"
+      )
+      state.controller:chooseLocationMap(
+        selectedMaps[1],
+        firstMap.worldOriginX + 16,
+        firstMap.worldOriginZ + 16
+      )
+      state:update(0)
+      Assert.equal(
+        assert(state:view().location).mapId,
+        selectedMaps[1],
+        "the canceled map can be re-entered without accepting a stale result"
+      )
+
+      local finalSuggestion
+      for mapIndex, mapId in ipairs(selectedMaps) do
+        state:_performDeferred({ kind = "location-map-select", mapId = mapId })
+        state:update(0)
+
+        local beforeMove = assert(state:view().locationNavigation.cursor)
+        if mapIndex > 1 then
+          state:keypressed("right")
+          state:keyreleased("right")
+          Assert.equal(
+            assert(state:view().locationNavigation.cursor).fieldX,
+            beforeMove.fieldX + 1,
+            "map browsing continues to accept input between bounded service updates"
+          )
+        end
+
+        local updates = 0
+        local view = assert(state:view().location)
+        local requestGeneration = assert(view.initialCursor).generation
+        while view.status.state == "pending" do
+          updates = updates + 1
+          Assert.isTrue(updates <= 5000, "map preparation reaches a semantic ready or failure state")
+          state:update(0)
+          view = assert(state:view().location)
+        end
+        Assert.equal(view.status.state, "ready", "the selected source map is prepared: " .. tostring(view.status.reason))
+
+        local suggestion = view.initialCursor
+        Assert.notNil(suggestion, "real map browsing publishes its surveyed initial cursor")
+        Assert.equal(suggestion.state, "ready", "the survey finds a selectable tile in the selected map")
+        Assert.equal(suggestion.mapId, mapId, "the suggestion remains bound to the selected map")
+        Assert.equal(suggestion.generation, requestGeneration, "the suggestion remains bound to the active browse request")
+        local resolved, resolution = state.locationService:resolve(
+          mapId,
+          assert(suggestion.fieldX),
+          assert(suggestion.fieldZ),
+          view.generation
+        )
+        Assert.notNil(resolved, "the surveyed coordinate passes the production placement classifier")
+        Assert.equal(resolution.state, "ready", "the suggestion is fully prepared for explicit selection")
+        if mapIndex == 1 then
+          Assert.deepEqual(
+            assert(state:view().locationNavigation.cursor),
+            { fieldX = suggestion.fieldX, fieldZ = suggestion.fieldZ },
+            "the production browse flow centers the cursor on its valid-tile suggestion"
+          )
+          beforeMove = assert(state:view().locationNavigation.cursor)
+          state:keypressed("right")
+          state:keyreleased("right")
+          Assert.equal(
+            assert(state:view().locationNavigation.cursor).fieldX,
+            beforeMove.fieldX + 1,
+            "the centered grid remains responsive to movement"
+          )
+        end
+        Assert.deepEqual(
+          state.session:snapshot().location,
+          originalLocation,
+          "browsing and surveying never stage or mutate the saved destination"
+        )
+        finalSuggestion = suggestion
+      end
+
+      local accepted = assert(finalSuggestion, "the final browse request publishes a suggestion")
+      state.controller:chooseLocationMap(accepted.mapId, assert(accepted.fieldX), assert(accepted.fieldZ))
+      state:update(0)
+      state:_performDeferred({ kind = "select_tile", fieldX = accepted.fieldX, fieldZ = accepted.fieldZ })
+      local stagedLocation = assert(state.session:snapshot().location)
+      Assert.equal(stagedLocation.mapId, accepted.mapId, "explicit activation accepts the surveyed map")
+      Assert.equal(stagedLocation.fieldX, accepted.fieldX, "explicit activation accepts the surveyed x coordinate")
+      Assert.equal(stagedLocation.fieldZ, accepted.fieldZ, "explicit activation accepts the surveyed z coordinate")
+      Assert.isTrue(state.session:snapshot().locationChanged, "acceptance stages the destination only after activation")
+    end)
+  end, debug.traceback)
+
   if state then
     pcall(function()
       state:dispose()

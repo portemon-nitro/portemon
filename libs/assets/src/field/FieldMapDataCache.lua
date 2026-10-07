@@ -133,42 +133,105 @@ end
 -- consumers that read field records validate
 -- against this single rule; a record that fails it is malformed generated
 -- data, never an empty feature.
+---@class FieldMapDataCache.RequiredEventsValidation
+---@field _events unknown
+---@field _collectionIndex integer
+---@field _key unknown
+---@field _count integer
+---@field _max integer
+---@field _valid boolean
+---@field _complete boolean
+---@field advance fun(self: FieldMapDataCache.RequiredEventsValidation, workUnits: integer): integer, boolean, boolean
+
+---@param events unknown
+---@return FieldMapDataCache.RequiredEventsValidation
+function FieldMapDataCache.beginRequiredEventsValidation(events)
+  local validation = {
+    _events = events,
+    _collectionIndex = 1,
+    _key = nil,
+    _count = 0,
+    _max = 0,
+    _valid = type(events) == "table",
+    _complete = false,
+  }
+  function validation:advance(workUnits)
+    assert(type(workUnits) == "number" and workUnits >= 0 and workUnits % 1 == 0)
+    local consumed = 0
+    while self._valid and not self._complete do
+      local collectionKey = EVENT_COLLECTIONS[self._collectionIndex]
+      if collectionKey == nil then
+        self._complete = true
+        break
+      end
+      local fieldEvents = self._events
+      if type(fieldEvents) ~= "table" then
+        self._valid = false
+        break
+      end
+      local collection = fieldEvents[collectionKey]
+      if type(collection) ~= "table" then
+        self._valid = false
+        break
+      end
+      local key, value = next(collection, self._key)
+      if key == nil then
+        if self._count ~= self._max then
+          self._valid = false
+          break
+        end
+        self._collectionIndex = self._collectionIndex + 1
+        self._key = nil
+        self._count = 0
+        self._max = 0
+      else
+        if consumed >= workUnits then
+          break
+        end
+        consumed = consumed + 1
+        self._key = key
+        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+          self._valid = false
+        elseif key > self._max then
+          self._max = key
+        end
+        self._count = self._count + 1
+        if self._valid and collectionKey == "background" then
+          if type(value) ~= "table" or type(value.hiddenItem) ~= "boolean" then
+            self._valid = false
+          else
+            local flagId = value.hiddenItemFlagId
+            if value.hiddenItem then
+              self._valid = Validate.isNonNegativeInteger(flagId) and flagId >= 800 and flagId <= 1799
+            elseif flagId ~= nil then
+              self._valid = false
+            end
+          end
+        elseif self._valid and collectionKey == "objects" then
+          self._valid = type(value) == "table"
+            and value.movement == nil
+            and FieldObjectMovement.isType(value.movementType)
+            and isMovementRange(value.xRange)
+            and isMovementRange(value.yRange)
+        end
+      end
+    end
+    if self._collectionIndex > #EVENT_COLLECTIONS then
+      self._complete = true
+    end
+    return consumed, self._complete, self._valid
+  end
+  return validation
+end
+
 ---@param events unknown
 ---@return boolean
 function FieldMapDataCache.hasRequiredEvents(events)
-  if type(events) ~= "table" then
-    return false
+  local validation = FieldMapDataCache.beginRequiredEventsValidation(events)
+  while not validation._complete and validation._valid do
+    validation:advance(128)
   end
-  for _, key in ipairs(EVENT_COLLECTIONS) do
-    if not Validate.isArray(events[key]) then
-      return false
-    end
-  end
-  for _, event in ipairs(events.background) do
-    if type(event) ~= "table" or type(event.hiddenItem) ~= "boolean" then
-      return false
-    end
-    local flagId = event.hiddenItemFlagId
-    if event.hiddenItem then
-      if not Validate.isNonNegativeInteger(flagId) or flagId < 800 or flagId > 1799 then
-        return false
-      end
-    elseif flagId ~= nil then
-      return false
-    end
-  end
-  for _, object in ipairs(events.objects) do
-    if
-      type(object) ~= "table"
-      or object.movement ~= nil
-      or not FieldObjectMovement.isType(object.movementType)
-      or not isMovementRange(object.xRange)
-      or not isMovementRange(object.yRange)
-    then
-      return false
-    end
-  end
-  return true
+  return validation._complete and validation._valid
 end
 
 -- The normalized renderer environment the current field-map schema always

@@ -27,7 +27,7 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@class SaveEditorLocationService
 ---@field listMaps fun(self: SaveEditorLocationService): table[]
 ---@field mapSummaries fun(self: SaveEditorLocationService): table[]
----@field openMap fun(self: SaveEditorLocationService, mapId: integer)
+---@field openMap fun(self: SaveEditorLocationService, mapId: integer, request: { purpose: "browse"|"verify" }?)
 ---@field releaseGrid fun(self: SaveEditorLocationService)
 ---@field setViewport fun(self: SaveEditorLocationService, centerX: integer, centerZ: integer, widthTiles: integer, heightTiles: integer)
 ---@field update fun(self: SaveEditorLocationService)
@@ -1548,7 +1548,7 @@ function State:_updateLocationService()
     return
   end
   if self.locationServiceMapId ~= mapId then
-    service:openMap(mapId)
+    service:openMap(mapId, { purpose = "browse" })
     self.locationServiceMapId = mapId
     self.locationViewport = nil
   end
@@ -1570,8 +1570,27 @@ function State:_updateLocationService()
   then
     service:setViewport(viewport.centerX, viewport.centerZ, viewport.widthTiles, viewport.heightTiles)
     self.locationViewport = viewport
+    local token = self.locationAutoCenterToken
+    if token ~= nil and token.mapId == mapId then
+      token.generation = service:snapshot().generation
+    end
   end
   service:update()
+  local token = self.locationAutoCenterToken
+  if token ~= nil and token.mapId == mapId then
+    local view = service:snapshot()
+    local result = view.initialCursor
+    if
+      view.status.state == "ready"
+      and result ~= nil
+      and result.state == "ready"
+      and result.mapId == token.mapId
+      and result.generation == token.generation
+    then
+      self.controller:setLocationCursor(result.fieldX, result.fieldZ)
+      self.locationAutoCenterToken = nil
+    end
+  end
 end
 
 function State:_syncLocationToSession()
