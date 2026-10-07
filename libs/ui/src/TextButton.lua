@@ -16,6 +16,9 @@ local FOCUS_OUTER_WIDTH = 5
 local FOCUS_INNER_WIDTH = 3
 local FOCUS_PATH_INSET = 1
 
+-- Shared immutable default palette, borrowed by reference on every paint.
+-- Draw callers either omit colors or supply one complete palette; paint
+-- never copies or merges this record.
 local DEFAULT_COLORS = {
   border = { 66 / 255, 66 / 255, 66 / 255, 1 },
   rim = { 230 / 255, 230 / 255, 222 / 255, 1 },
@@ -26,57 +29,12 @@ local DEFAULT_COLORS = {
   focusInner = { 1, 0, 0, 1 },
 }
 
-local ALLOWED_COLOR_KEYS = {
-  border = true,
-  rim = true,
-  innerBorder = true,
-  faceTop = true,
-  faceBottom = true,
-  focusOuter = true,
-  focusInner = true,
-}
-
 local function finite(value)
   return type(value) == "number" and value == value and value > -math.huge and value < math.huge
 end
 
 local function assertFinitePositiveScale(value)
   assert(finite(value) and value > 0, "text button scale must be a finite positive number")
-end
-
-local function copyColor(value)
-  local result = {}
-  for index = 1, #value do
-    result[index] = value[index]
-  end
-  return result
-end
-
-local function mergeColors(overrides)
-  local result = {}
-  for key, value in pairs(DEFAULT_COLORS) do
-    result[key] = copyColor(value)
-  end
-  if overrides ~= nil then
-    assert(type(overrides) == "table", "text button colors must be a table")
-    for key, value in pairs(overrides) do
-      assert(ALLOWED_COLOR_KEYS[key], "text button unknown color role: " .. tostring(key))
-      assert(type(value) == "table", "text button color role must be a table: " .. tostring(key))
-      assert(#value == 3 or #value == 4, "text button color role must have three or four components: " .. tostring(key))
-      for index = 1, #value do
-        assert(finite(value[index]), "text button color must be finite: " .. tostring(key))
-      end
-      local copy = {}
-      for index = 1, #value do
-        copy[index] = value[index]
-      end
-      if #copy == 3 then
-        copy[4] = 1
-      end
-      result[key] = copy
-    end
-  end
-  return result
 end
 
 local function rectangle(value, name)
@@ -118,27 +76,24 @@ function TextButton.resolve(spec)
 end
 
 local function drawFaceDivider(graphics, button, colors)
-  local scale = assert(button.scale, "text button scale is missing")
-  local innerBorder = assert(button.innerBorder, "text button inner border is missing")
-  local innerRect = assert(innerBorder.rect, "text button inner border rectangle is missing")
-  local face = assert(button.face, "text button face is missing")
-  local splitY = assert(face.splitY, "text button face split is missing")
-  graphics.setColor(colors.innerBorder[1], colors.innerBorder[2], colors.innerBorder[3], colors.innerBorder[4])
-  local dividerHeight = 2 * scale
-  graphics.rectangle("fill", innerRect.x, splitY - scale, innerRect.width, dividerHeight)
+  local scale = button.scale
+  local innerRect = button.innerBorder.rect
+  local splitY = button.face.splitY
+  local divider = colors.innerBorder
+  graphics.setColor(divider[1], divider[2], divider[3], divider[4])
+  graphics.rectangle("fill", innerRect.x, splitY - scale, innerRect.width, 2 * scale)
 end
 
 local function drawFocusOutline(graphics, button, colors)
-  local scale = assert(button.scale, "text button scale is missing")
-  local outlineRect = assert(button.rect, "text button rectangle is missing")
-  local border = assert(button.border, "text button border is missing")
-  local resolvedRadius = assert(border.cornerRadius, "text button corner radius is missing")
+  local scale = button.scale
+  local outlineRect = button.rect
+  local resolvedRadius = button.border.cornerRadius
   local outerWidth = FOCUS_OUTER_WIDTH * scale
   local innerWidth = FOCUS_INNER_WIDTH * scale
   local inset = FOCUS_PATH_INSET * scale
   local radius = math.max(0, resolvedRadius - outerWidth / 2)
-  local outer = assert(colors.focusOuter, "text button focus outer color is missing")
-  local inner = assert(colors.focusInner, "text button focus inner color is missing")
+  local outer = colors.focusOuter
+  local inner = colors.focusInner
   graphics.setColor(outer[1], outer[2], outer[3], outer[4])
   graphics.setLineWidth(outerWidth)
   graphics.rectangle(
@@ -185,47 +140,23 @@ function TextButton.visualBounds(button, selected)
   }
 end
 
+-- Paints the resolved text button with its palette. The button record is
+-- already resolved and the palette is either the shared default or a
+-- caller-supplied complete palette, both borrowed by reference: paint
+-- performs no color copying, merging, label-fit validation, or failure
+-- cleanup. The borrowed line width is restored on success; a text failure
+-- is terminal and propagates immediately.
 ---@param graphics table<string, unknown>
----@param button table<string, unknown>
+---@param button table<string, unknown> the resolved text button
 ---@param spec { label: string, selected: boolean, text: TextAdapter, colors?: table<string, unknown> }
 function TextButton.draw(graphics, button, spec)
-  assert(type(graphics) == "table", "text button graphics is required")
-  assert(type(graphics.setColor) == "function", "text button graphics setColor is required")
-  assert(type(graphics.rectangle) == "function", "text button graphics rectangle is required")
-  assert(type(graphics.getLineWidth) == "function", "text button graphics getLineWidth is required")
-  assert(type(graphics.setLineWidth) == "function", "text button graphics setLineWidth is required")
-  assert(type(graphics.push) == "function", "text button graphics push is required")
-  assert(type(graphics.pop) == "function", "text button graphics pop is required")
-  assert(type(graphics.translate) == "function", "text button graphics translate is required")
-  assert(type(graphics.scale) == "function", "text button graphics scale is required")
-  assert(type(button) == "table" and type(button.rect) == "table", "resolved text button is required")
-  assert(type(spec) == "table", "text button spec is required")
-  assert(type(spec.label) == "string", "text button label is required")
-  assert(type(spec.selected) == "boolean", "text button selected flag is required")
-  assert(type(spec.text) == "table", "text button text adapter is required")
-  assert(type(spec.text.measure) == "function", "text button text measure is required")
-  assert(
-    finite(spec.text.lineHeight) and spec.text.lineHeight > 0,
-    "text button lineHeight must be a finite positive number"
-  )
-  assert(type(spec.text.draw) == "function", "text button text draw is required")
-  if spec.colors ~= nil then
-    assert(type(spec.colors) == "table", "text button colors must be a table")
-  end
-
-  local scale = assert(button.scale, "text button scale is missing")
+  local scale = button.scale
   local content = button.contentRect
-  assert(type(content) == "table", "text button content rectangle is missing")
-
   local labelWidth = spec.text.measure(spec.label)
-  assert(finite(labelWidth) and labelWidth >= 0, "text button label width must be a finite non-negative number")
   local lineHeight = spec.text.lineHeight
   local sourceContentWidth = content.width / scale
   local sourceContentHeight = content.height / scale
-  assert(labelWidth <= sourceContentWidth + 1e-6, "text button label does not fit inside content rectangle")
-  assert(lineHeight <= sourceContentHeight + 1e-6, "text button label height does not fit inside content rectangle")
-
-  local colors = mergeColors(spec.colors)
+  local colors = spec.colors or DEFAULT_COLORS
 
   local palette = {
     border = colors.border,
@@ -248,20 +179,9 @@ function TextButton.draw(graphics, button, spec)
   graphics.push()
   graphics.translate(content.x, content.y)
   graphics.scale(scale, scale)
-
-  local textXSource = (sourceContentWidth - labelWidth) / 2
-  local textYSource = (sourceContentHeight - lineHeight) / 2
-
-  local ok, err = pcall(function()
-    spec.text.draw(spec.label, textXSource, textYSource)
-  end)
-
+  spec.text.draw(spec.label, (sourceContentWidth - labelWidth) / 2, (sourceContentHeight - lineHeight) / 2)
   graphics.pop()
   graphics.setLineWidth(savedLineWidth)
-
-  if not ok then
-    error(err, 0)
-  end
 end
 
 return TextButton

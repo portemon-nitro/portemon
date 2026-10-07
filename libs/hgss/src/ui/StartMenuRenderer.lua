@@ -25,7 +25,6 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@class StartMenuRenderer
@@ -291,11 +290,11 @@ function StartMenuRenderer:draw(presentation, placement)
     "the start menu surface requires the placement record"
   )
   local lg = assert(self._graphics)
-  FieldDrawState.protectedDraw(lg, function()
-    LogicalSurface.draw(lg, placement, function()
-      self:_drawSurface(presentation)
-    end)
+  lg.push("all")
+  LogicalSurface.draw(lg, placement, function()
+    self:_drawSurface(presentation)
   end)
+  lg.pop()
 end
 
 -- The source draws in canonical coordinates: validation first (a rejected

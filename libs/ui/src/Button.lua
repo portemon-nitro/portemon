@@ -96,20 +96,9 @@ function Button.resolve(spec)
   }
 end
 
-local function color(palette, name)
-  local value = palette[name]
-  assert(type(value) == "table", "button palette role is required: " .. name)
-  assert(#value == 3 or #value == 4, "button palette role must have three or four components: " .. name)
-  for index = 1, #value do
-    assert(finite(value[index]), "button palette role must contain finite numbers: " .. name)
-  end
-  return value[1], value[2], value[3], value[4] or 1
-end
-
 local function drawRoundedShape(graphics, descriptor)
   local rectValue = descriptor.rect
   local radius = descriptor.cornerRadius
-  assert(radius ~= nil, "button corner radius is required")
   if radius == 0 then
     graphics.rectangle("fill", rectValue.x, rectValue.y, rectValue.width, rectValue.height)
     return
@@ -118,7 +107,6 @@ local function drawRoundedShape(graphics, descriptor)
 end
 
 local function drawRoundedTopPortion(graphics, rectValue, radius, splitY)
-  assert(radius ~= nil, "button corner radius is required")
   if radius == 0 then
     graphics.rectangle("fill", rectValue.x, rectValue.y, rectValue.width, splitY - rectValue.y)
     return
@@ -133,21 +121,18 @@ local function drawRoundedTopPortion(graphics, rectValue, radius, splitY)
   end
 end
 
+-- Paints the resolved button with its resolved palette. Both records arrive
+-- already resolved and are borrowed by reference: no palette role is copied
+-- or validated here. A paint failure is terminal and propagates immediately.
 ---@param graphics table<string, unknown>
----@param button table<string, unknown>
----@param palette table<string, unknown>
+---@param button table<string, unknown> the resolved button
+---@param palette table<string, unknown> the resolved palette, borrowed by reference
 function Button.draw(graphics, button, palette)
-  assert(type(graphics) == "table", "button graphics is required")
-  assert(type(graphics.setColor) == "function", "button graphics setColor is required")
-  assert(type(graphics.rectangle) == "function", "button graphics rectangle is required")
-  assert(type(button) == "table", "resolved button is required")
-  assert(type(palette) == "table", "button palette is required")
-
-  local border = { color(palette, "border") }
-  local rim = { color(palette, "rim") }
-  local innerBorder = { color(palette, "innerBorder") }
-  local faceTop = { color(palette, "faceTop") }
-  local faceBottom = { color(palette, "faceBottom") }
+  local border = palette.border
+  local rim = palette.rim
+  local innerBorder = palette.innerBorder
+  local faceTop = palette.faceTop
+  local faceBottom = palette.faceBottom
 
   graphics.setColor(border[1], border[2], border[3], border[4])
   drawRoundedShape(graphics, button.border)
@@ -157,14 +142,12 @@ function Button.draw(graphics, button, palette)
   -- intermediate color, then the split face tones are drawn inside it.
   graphics.setColor(innerBorder[1], innerBorder[2], innerBorder[3], innerBorder[4])
   drawRoundedShape(graphics, button.innerBorder)
-  local faceShape = assert(button.face, "resolved button face is required")
-  local splitY = assert(faceShape.splitY, "resolved button face split is required")
+  local faceShape = button.face
+  local splitY = faceShape.splitY
   graphics.setColor(faceBottom[1], faceBottom[2], faceBottom[3], faceBottom[4])
   drawRoundedShape(graphics, button.face)
   graphics.setColor(faceTop[1], faceTop[2], faceTop[3], faceTop[4])
-  local faceRect = assert(faceShape.rect, "resolved button face rectangle is required")
-  local faceRadius = assert(faceShape.cornerRadius, "button face corner radius is required")
-  drawRoundedTopPortion(graphics, faceRect, faceRadius, splitY)
+  drawRoundedTopPortion(graphics, faceShape.rect, faceShape.cornerRadius, splitY)
 end
 
 ---@param button table<string, unknown>

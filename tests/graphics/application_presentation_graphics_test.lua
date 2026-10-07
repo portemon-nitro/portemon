@@ -1,9 +1,11 @@
 -- Real-driver proof for shared presentation drawing: a settled plan leaves
 -- fade regions untouched while invoking the chosen render callback, a
 -- static framed plan carries border-only geometry while leaving outside
--- pixels untouched, and borrowed graphics state survives callback failure.
--- Plans resolve through the real Start Menu interface and session; only
--- solid fills are compared, with every painted edge on whole host pixels.
+-- pixels untouched, and borrowed graphics state is restored after successful
+-- draws. A draw failure is terminal: the original error propagates without
+-- generic state restoration. Plans resolve through the real Start Menu
+-- interface and session; only solid fills are compared, with every painted
+-- edge on whole host pixels.
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -477,29 +479,31 @@ function T.real_frame_keying_removes_fill_but_preserves_patterned_overlay(scope,
   love.graphics.setCanvas()
 end
 
-function T.callback_failure_restores_state_and_propagates(scope)
+function T.callback_failure_propagates_without_generic_restore(scope)
   local lg = love.graphics
   local session = startMenuSession()
   local plan = session:resolve(measurementFor(640, 480), {})
   local marker = {}
   plan.render = function()
+    lg.setColor(1, 0, 0, 1)
     error(marker, 0)
   end
-  local before = captureState(lg)
   local canvas = scope:own(lg.newCanvas(640, 480))
   lg.setCanvas(canvas)
   local ok, err = pcall(function()
     ApplicationPresentation.draw(lg, {}, {}, plan)
   end)
-  lg.setCanvas()
   Assert.isFalse(ok, "the callback failure must propagate")
   Assert.isTrue(err == marker, "the original error object propagates unwrapped")
-  assertStateRestored(before, lg, "failed draw")
+  local r, g, b, a = lg.getColor()
+  Assert.deepEqual({ r, g, b, a }, { 1, 0, 0, 1 }, "no generic unwind restores state after the failure")
+  lg.pop()
+  lg.setCanvas()
   local depthOk = pcall(function()
     lg.push("all")
     lg.pop()
   end)
-  Assert.isTrue(depthOk, "the graphics stack stays balanced after failure")
+  Assert.isTrue(depthOk, "the test-owned cleanup pop rebalances the graphics stack")
 end
 
 return GraphicsSmoke.suite(T)

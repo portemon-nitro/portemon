@@ -1029,15 +1029,22 @@ function T.graphics_state_is_restored_after_semantic_draw()
   draw:release()
 end
 
-function T.draw_failure_restores_the_pane_transform_stack()
+-- A pane composition failure is terminal: the error propagates unwrapped
+-- without generic state restoration, so the two unpopped scopes (renderer
+-- and surface) stay on the stack for the host to observe.
+function T.draw_failure_propagates_without_generic_restore()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
   local record = status()
   record.visibleSlots[1].registrationSlot = 3
-  Assert.throws(function()
+  local err = Assert.throws(function()
     draw:draw(record, plan(true), { icons = icons() })
   end, "an invalid cell fails during pane composition")
-  Assert.equal(graphics.pushDepth(), 0, "a failed pane draw restores every transform scope")
+  Assert.isTrue(
+    tostring(err):find("occupied cells carry a registration slot of 1, 2, or nil", 1, true) ~= nil,
+    "the invalid cell fails at its own dereference"
+  )
+  Assert.equal(graphics.pushDepth(), 2, "the failed draw leaks exactly its two unpopped scopes (renderer and surface)")
   draw:release()
 end
 
@@ -3470,10 +3477,14 @@ function T.unknown_interactive_state_is_a_composition_error()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  Assert.throws(function()
+  local err = Assert.throws(function()
     draw:draw(status({ state = "nebula" }), plan(true), { icons = icons() })
   end, "an unknown lower-pane state fails instead of borrowing another screen")
-  Assert.equal(graphics.pushDepth(), 0, "a failed pane draw restores every transform scope")
+  Assert.isTrue(
+    tostring(err):find("the bag renderer draws a known lower-pane state", 1, true) ~= nil,
+    "the unknown state fails at its own policy lookup"
+  )
+  Assert.equal(graphics.pushDepth(), 2, "the failed draw leaks exactly its two unpopped scopes (renderer and surface)")
   draw:release()
 end
 

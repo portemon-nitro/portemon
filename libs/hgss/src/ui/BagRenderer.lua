@@ -18,7 +18,6 @@
 -- renderer. Draw advances no simulation state and restores every graphics
 -- state it touches.
 
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local BagSave = require("libs.hgss.src.save.BagSave")
@@ -1364,27 +1363,27 @@ function BagRenderer:draw(presentation, plan, collaborators)
   local interactive = assert(interactivePane, "every plan places the interactive pane")
   local graphics = self._graphics
   local palettes = self:_palettes()
-  FieldDrawState.protectedDraw(graphics, function()
-    if heroPane ~= nil then
-      local hero = assert(heroPane.placement, "the hero pane carries its placement")
-      LogicalSurface.draw(graphics, hero, function()
-        self:_drawHeroBackground(presentation)
-      end)
-      local heroRenderer = assert(self._heroRenderer, "the hero pane borrows its model renderer")
-      heroRenderer:draw(
-        assert(presentation.heroGender, "the bag presentation names its hero gender"),
-        assert(presentation.hero, "the bag presentation carries its hero status"),
-        hero
-      )
-      LogicalSurface.draw(graphics, hero, function()
-        self:_drawHeroForeground(presentation, palettes.description)
-      end)
-    end
-    local placement = assert(interactive.placement, "the interactive pane carries its placement")
-    LogicalSurface.draw(graphics, placement, function()
-      self:_drawInteractive(presentation, icons, content, palettes)
+  graphics.push("all")
+  if heroPane ~= nil then
+    local hero = assert(heroPane.placement, "the hero pane carries its placement")
+    LogicalSurface.draw(graphics, hero, function()
+      self:_drawHeroBackground(presentation)
     end)
+    local heroRenderer = assert(self._heroRenderer, "the hero pane borrows its model renderer")
+    heroRenderer:draw(
+      assert(presentation.heroGender, "the bag presentation names its hero gender"),
+      assert(presentation.hero, "the bag presentation carries its hero status"),
+      hero
+    )
+    LogicalSurface.draw(graphics, hero, function()
+      self:_drawHeroForeground(presentation, palettes.description)
+    end)
+  end
+  local placement = assert(interactive.placement, "the interactive pane carries its placement")
+  LogicalSurface.draw(graphics, placement, function()
+    self:_drawInteractive(presentation, icons, content, palettes)
   end)
+  graphics.pop()
 end
 
 function BagRenderer:release()

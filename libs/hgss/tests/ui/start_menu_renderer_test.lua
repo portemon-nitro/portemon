@@ -11,15 +11,15 @@
 -- hit testing maps through -- so rendering and hit testing share one
 -- transform and there is never a second set of scaled rectangles; the
 -- surface uses only the generated images -- no generic field-menu theme
--- colors or primitives -- and a draw that raises must still balance the
--- transform stack and restore every captured graphics state. The
+-- colors or primitives -- and a draw that raises propagates immediately
+-- without generic state restoration, while a successful draw restores every
+-- captured graphics state. The
 -- real-context smokes live in start_menu_renderer_graphics_test.lua.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
-local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local PixelScale = require("libs.ui.src.PixelScale")
@@ -559,9 +559,10 @@ function T.rejects_a_missing_or_partial_placement_record()
   renderer:release()
 end
 
--- A failure between graphics.push() and graphics.pop() must still pop the
--- transform stack and restore every captured graphics state exactly.
-function T.draw_failure_balances_transform_stack_and_restores_state()
+-- A draw failure is terminal: the error propagates unwrapped without generic
+-- state restoration, so the two unpopped scopes (renderer and surface) stay
+-- on the stack for the host to observe.
+function T.draw_failure_propagates_without_generic_restore()
   local canvas, shader = {}, {}
   local lg = fakeGraphics({
     canvas = canvas,
@@ -591,8 +592,7 @@ function T.draw_failure_balances_transform_stack_and_restores_state()
     }, canonicalPlacement())
   end)
   Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil, "rethrows the draw failure")
-  Assert.equal(lg.pushDepth(), 0, "the transform stack is balanced after a failed draw")
-  FieldDialogueFixture.assertRestoredState(lg, canvas, shader)
+  Assert.equal(lg.pushDepth(), 2, "the failed draw leaks exactly its two unpopped scopes (renderer and surface)")
   renderer:release()
 end
 

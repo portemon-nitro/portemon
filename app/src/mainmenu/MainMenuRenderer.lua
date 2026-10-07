@@ -118,7 +118,8 @@ function MainMenuRenderer:draw(view, plan)
   ---@param variant ProductMenuSkin.CardVariant
   ---@param focused boolean
   local function drawSkinCard(rect, variant, focused)
-    ProductMenuSkin.drawCard(graphics, skin, rect, variant, focused, false)
+    local chromed = rect --[[@as { button: table<string, unknown> }]]
+    ProductMenuSkin.drawCard(graphics, skin, chromed.button, variant, focused, false)
   end
   ---@param role ProductMenuSkin.TextRole
   ---@param value string

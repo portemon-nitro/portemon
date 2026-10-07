@@ -491,26 +491,20 @@ function ApplicationPresentation:dispose()
 end
 
 -- Draws the published plan with borrowed graphics by invoking only the
--- leaf render callback. Fade coverage is transition metadata and never
--- paints here; settled pixels outside panes remain whatever the host
--- already rendered. Callback failures propagate with graphics state
--- restored.
+-- leaf render callback. The plan is already validated and published by
+-- resolve; drawing performs no contract checks and offers no failure
+-- cleanup. Fade coverage is transition metadata and never paints here;
+-- settled pixels outside panes remain whatever the host already rendered.
+-- A render failure is terminal and propagates immediately, leaving the
+-- pushed scope unpopped for the host to observe.
 ---@param graphics love.graphics
 ---@param resources table<string, unknown> borrowed application resource record
 ---@param view table<string, unknown>
----@param plan ApplicationPlan
+---@param plan ApplicationPlan the already-resolved published plan
 function ApplicationPresentation.draw(graphics, resources, view, plan)
-  assert(type(graphics) == "table", "presentation drawing requires its graphics namespace")
-  assert(type(resources) == "table", "presentation drawing requires its borrowed resources")
-  assertValidPlan(plan)
   graphics.push("all")
-  local ok, err = pcall(function()
-    plan.render(resources, view, plan)
-  end)
+  plan.render(resources, view, plan)
   graphics.pop()
-  if not ok then
-    error(err, 0)
-  end
 end
 
 return ApplicationPresentation

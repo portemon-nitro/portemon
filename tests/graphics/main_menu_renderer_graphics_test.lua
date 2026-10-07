@@ -8,6 +8,7 @@ local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 local MainMenuLayout = require("app.src.mainmenu.MainMenuLayout")
 local MainMenuRenderer = require("app.src.mainmenu.MainMenuRenderer")
+local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
 local PixelScale = require("libs.ui.src.PixelScale")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 
@@ -128,11 +129,17 @@ local function renderer(scope, versionId)
 end
 
 local function view(content, errorText)
+  local frame = { x = 16, y = 80, width = 128, height = 64 }
+  frame.button = ProductMenuSkin.resolveCard(frame)
+  local overflow = { x = 96, y = 88, width = 40, height = 32 }
+  overflow.button = ProductMenuSkin.resolveCard(overflow)
   local card = {
-    frame = { x = 16, y = 80, width = 128, height = 64 },
+    frame = frame,
     body = { x = 16, y = 80, width = 72, height = 64 },
-    overflow = { x = 96, y = 88, width = 40, height = 32 },
+    overflow = overflow,
   }
+  local newGame = { x = 16, y = 32, width = 128, height = 40 }
+  newGame.button = ProductMenuSkin.resolveCard(newGame)
   return {
     focusedId = "new-game",
     focus = { region = "global", actionId = "new-game" },
@@ -143,7 +150,7 @@ local function view(content, errorText)
       viewport = { x = 0, y = 0, width = 160, height = 120 },
       global = {
         region = { x = 16, y = 32, width = 128, height = 40 },
-        actions = { ["new-game"] = { x = 16, y = 32, width = 128, height = 40 } },
+        actions = { ["new-game"] = newGame },
       },
       saves = {
         viewport = content,
@@ -170,7 +177,9 @@ function T.cards_are_clipped_to_the_save_viewport_and_scissor_is_restored(scope)
   }
   current.focus = { region = "saves", saveId = "save-1", lane = "body" }
   current.focusedId = "save-1"
-  current.layout.global.actions["new-game"] = { x = 16, y = 32, width = 128, height = 40 }
+  local newGameAction = { x = 16, y = 32, width = 128, height = 40 }
+  newGameAction.button = ProductMenuSkin.resolveCard(newGameAction)
+  current.layout.global.actions["new-game"] = newGameAction
 
   local lg = love.graphics
   local canvas = scope:own(lg.newCanvas(160, 120))
@@ -224,9 +233,11 @@ function T.unavailable_catalog_rows_without_delete_actions_are_renderable(scope)
   }
   current.focus = { region = "saves", saveId = "unavailable-save-1", lane = "body" }
   current.focusedId = "unavailable-save-1"
+  local unavailableFrame = { x = 16, y = 80, width = 128, height = 40 }
+  unavailableFrame.button = ProductMenuSkin.resolveCard(unavailableFrame)
   current.layout.saves.cards = {
     ["unavailable-save-1"] = {
-      frame = { x = 16, y = 80, width = 128, height = 40 },
+      frame = unavailableFrame,
       body = { x = 16, y = 80, width = 128, height = 40 },
     },
   }
@@ -247,10 +258,14 @@ function T.focus_lanes_have_distinct_visual_regions(scope)
       badgeCount = 0,
     },
   }
+  local laneFrame = { x = 16, y = 80, width = 128, height = 64 }
+  laneFrame.button = ProductMenuSkin.resolveCard(laneFrame)
+  local laneOverflow = { x = 96, y = 88, width = 40, height = 32 }
+  laneOverflow.button = ProductMenuSkin.resolveCard(laneOverflow)
   current.layout.saves.cards["save-1"] = {
-    frame = { x = 16, y = 80, width = 128, height = 64 },
+    frame = laneFrame,
     body = { x = 16, y = 80, width = 72, height = 64 },
-    overflow = { x = 96, y = 88, width = 40, height = 32 },
+    overflow = laneOverflow,
   }
   local lg = love.graphics
   local canvas = scope:own(lg.newCanvas(160, 120))

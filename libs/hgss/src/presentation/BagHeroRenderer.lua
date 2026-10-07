@@ -9,7 +9,6 @@
 -- No gameplay state is stored here: pocket and frame stay with the presenter.
 
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local Matrix4 = require("libs.math.src.Matrix4")
@@ -401,80 +400,85 @@ function BagHeroRenderer:_ensureGender(gender)
   end
 end
 
----@param graphics love.graphics
----@param scissor number[]?
-local function restoreScissor(graphics, scissor)
-  if scissor ~= nil then
-    graphics.setScissor(scissor[1], scissor[2], scissor[3], scissor[4])
-  else
-    graphics.setScissor()
-  end
-end
-
+-- This leaf mutates depth, cull, and wireframe state the native "all" stack
+-- does not cover, so it saves those three explicitly and restores them on
+-- the successful path. Every other touched state rides the native stack. A
+-- draw failure is terminal and propagates immediately with no cleanup.
 ---@param self BagHeroRenderer
 ---@param realized BagHeroRealization
 ---@param placement table<string, unknown> the complete hero placement selecting the full frame and visible clip
 local function drawCanonicalModel(self, realized, placement)
   local graphics = graphicsFor(self)
   local target = assert(self._modelCanvas)
-  local state = FieldDrawState.save(graphics)
-  local ok, err = pcall(function()
-    graphics.setCanvas(target)
-    graphics.setScissor()
-    graphics.setShader()
-    graphics.setDepthMode()
-    graphics.setColor(1, 1, 1, 1)
-    graphics.clear(0, 0, 0, 0)
-    local view = self._view
-    local projection = self._projection
-    ---@return number[]
-    local function cameraView()
-      return view
-    end
-    ---@return number[]
-    local function cameraProjection()
-      return projection
-    end
-    ---@return number[]
-    local function cameraBillboardProjection()
-      return projection
-    end
-    assert(self._renderer, "the hero renderer is realized before drawing"):draw(
-      self._sceneRuntime,
-      {
-        far = self._cameraFar,
-        zoom = 1,
-        view = cameraView,
-        projection = cameraProjection,
-        billboardProjection = cameraBillboardProjection,
-      },
-      { realized.instance:drawItems(realized.renderMeshes) },
-      nil,
-      {
-        worldViewport = { x = 0, y = 0, width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT },
-        referenceFrame = { x = 0, y = 0, width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT },
-      },
-      1
-    )
-
-    graphics.setCanvas(state.canvas)
-    graphics.setShader()
-    graphics.setDepthMode()
-    graphics.setWireframe(false)
-    graphics.setBlendMode("alpha", "alphamultiply")
-    graphics.setColor(1, 1, 1, 1)
-    restoreScissor(graphics, state.scissor --[[@as number[]?]])
-    -- One host composite at the full frame under the visible clip: the
-    -- source-sized raster maps through the placement once, so neither the
-    -- camera nor the 2D transform compensates for the crop.
-    LogicalSurface.draw(graphics, placement, function()
-      graphics.draw(target, 0, 0)
-    end)
-  end)
-  FieldDrawState.restore(graphics, state)
-  if not ok then
-    error(err, 0)
+  local callerCanvas = graphics.getCanvas()
+  local outerSX, outerSY, outerSW, outerSH = graphics.getScissor()
+  local depthMode, depthWrite = graphics.getDepthMode()
+  local cullMode = graphics.getMeshCullMode()
+  local wireframe = graphics.isWireframe()
+  graphics.push("all")
+  graphics.setCanvas(target)
+  graphics.setScissor()
+  graphics.setShader()
+  graphics.setDepthMode()
+  graphics.setColor(1, 1, 1, 1)
+  graphics.clear(0, 0, 0, 0)
+  local view = self._view
+  local projection = self._projection
+  ---@return number[]
+  local function cameraView()
+    return view
   end
+  ---@return number[]
+  local function cameraProjection()
+    return projection
+  end
+  ---@return number[]
+  local function cameraBillboardProjection()
+    return projection
+  end
+  assert(self._renderer, "the hero renderer is realized before drawing"):draw(
+    self._sceneRuntime,
+    {
+      far = self._cameraFar,
+      zoom = 1,
+      view = cameraView,
+      projection = cameraProjection,
+      billboardProjection = cameraBillboardProjection,
+    },
+    { realized.instance:drawItems(realized.renderMeshes) },
+    nil,
+    {
+      worldViewport = { x = 0, y = 0, width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT },
+      referenceFrame = { x = 0, y = 0, width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT },
+    },
+    1
+  )
+
+  graphics.setCanvas(callerCanvas)
+  graphics.setShader()
+  graphics.setDepthMode()
+  graphics.setWireframe(false)
+  graphics.setBlendMode("alpha", "alphamultiply")
+  graphics.setColor(1, 1, 1, 1)
+  if outerSX ~= nil then
+    graphics.setScissor(outerSX, outerSY, outerSW, outerSH)
+  else
+    graphics.setScissor()
+  end
+  -- One host composite at the full frame under the visible clip: the
+  -- source-sized raster maps through the placement once, so neither the
+  -- camera nor the 2D transform compensates for the crop.
+  LogicalSurface.draw(graphics, placement, function()
+    graphics.draw(target, 0, 0)
+  end)
+  if depthMode then
+    graphics.setDepthMode(depthMode, depthWrite)
+  end
+  if cullMode then
+    graphics.setMeshCullMode(cullMode)
+  end
+  graphics.setWireframe(wireframe)
+  graphics.pop()
 end
 
 -- Restart the active clips for a new semantic state (or a backward frame):

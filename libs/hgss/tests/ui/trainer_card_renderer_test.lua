@@ -380,14 +380,18 @@ function T.draw_restores_every_graphics_state_it_touches()
   Assert.equal(sh, 16)
 end
 
-function T.draw_error_balances_the_transform_stack()
+-- A draw failure is terminal: the error propagates unwrapped without generic
+-- state restoration, so the two unpopped scopes (renderer and surface) stay
+-- on the stack for the host to observe.
+function T.draw_error_propagates_without_generic_restore()
   local graphics = renderedGraphics({ failOnDrawCall = 1 })
   local renderer = cardRenderer(graphics)
-  local ok = pcall(function()
+  local ok, err = pcall(function()
     renderer:draw(presentation(), CANONICAL_PLACEMENT)
   end)
   Assert.isFalse(ok, "the draw failure must propagate")
-  Assert.equal(graphics.pushDepth(), 0, "a draw error must not leave the transform stack unbalanced")
+  Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil, "rethrows the draw failure")
+  Assert.equal(graphics.pushDepth(), 2, "the failed draw leaks exactly its two unpopped scopes (renderer and surface)")
 end
 
 function T.clips_the_card_to_the_placement_clip_without_changing_origin()

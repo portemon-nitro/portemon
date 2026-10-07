@@ -24,7 +24,6 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 
 ---@class FieldDialogueRenderer
 ---@field _theme FieldDialogueTheme
@@ -265,29 +264,29 @@ function FieldDialogueRenderer:draw(controller, presentation)
     logicalHeight = outer.height / layout.scale,
     clipRect = { x = clipX, y = clipY, width = clipFarX - clipX, height = clipFarY - clipY },
   }
-  FieldDrawState.protectedDraw(lg, function()
-    -- Everything draws in reference-canvas coordinates under one
-    -- translate(origin) + scale transform; the theme never returns
-    -- screen-mapped rects, so nothing is scaled twice.
-    LogicalSurface.draw(lg, placement, function()
-      self:_drawFrame(status, layout)
-      -- Scrolling lines travel above the content origin, so text always
-      -- draws under the text-window clip; the frame, focus indicator, and
-      -- continuation cursor stay outside it.
-      LogicalSurface.clip(lg, layout.text, function()
-        local lines = status.scrollLines or status.visibleLines
-        local scrollOffset = status.scrollLines and status.scrollOffsetY or 0
-        local lineY = layout.text.y - scrollOffset
-        for _, line in ipairs(lines) do
-          local tokens = line.tokens or line
-          self._text:drawLine(tokens, layout.text.x, lineY)
-          lineY = lineY + status.lineHeight + status.lineSpacing
-        end
-      end)
-      self:_drawFocusIndicator(status, layout)
-      self:_drawCursor(status, layout)
+  lg.push("all")
+  -- Everything draws in reference-canvas coordinates under one
+  -- translate(origin) + scale transform; the theme never returns
+  -- screen-mapped rects, so nothing is scaled twice.
+  LogicalSurface.draw(lg, placement, function()
+    self:_drawFrame(status, layout)
+    -- Scrolling lines travel above the content origin, so text always
+    -- draws under the text-window clip; the frame, focus indicator, and
+    -- continuation cursor stay outside it.
+    LogicalSurface.clip(lg, layout.text, function()
+      local lines = status.scrollLines or status.visibleLines
+      local scrollOffset = status.scrollLines and status.scrollOffsetY or 0
+      local lineY = layout.text.y - scrollOffset
+      for _, line in ipairs(lines) do
+        local tokens = line.tokens or line
+        self._text:drawLine(tokens, layout.text.x, lineY)
+        lineY = lineY + status.lineHeight + status.lineSpacing
+      end
     end)
+    self:_drawFocusIndicator(status, layout)
+    self:_drawCursor(status, layout)
   end)
+  lg.pop()
 end
 
 function FieldDialogueRenderer:release()

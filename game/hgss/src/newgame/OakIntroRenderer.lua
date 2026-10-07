@@ -5,7 +5,6 @@
 local TextButton = require("libs.ui.src.TextButton")
 local ImageButton = require("libs.ui.src.ImageButton")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local PixelScale = require("libs.ui.src.PixelScale")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 
@@ -440,21 +439,21 @@ function OakIntroRenderer:draw(view, overlay)
   local surface = view.pixelSurface
   self:_ensureLogicalCanvas(surface)
   local graphics = self.graphics
-  FieldDrawState.protectedDraw(graphics, function()
-    local callerCanvas = graphics.getCanvas()
-    graphics.setCanvas(self.logicalCanvas)
-    self:_draw(view)
-    if overlay then
-      overlay()
-    end
-    graphics.setCanvas(callerCanvas)
-    local placement = surface.placement
-    setCompositeScissor(graphics, placement.frame)
-    graphics.setShader(nil)
-    graphics.setColor(1, 1, 1, 1)
-    graphics.setBlendMode("replace", "premultiplied")
-    graphics.draw(self.logicalCanvas, placement.origin.x, placement.origin.y, 0, placement.scale, placement.scale)
-  end)
+  graphics.push("all")
+  local callerCanvas = graphics.getCanvas()
+  graphics.setCanvas(self.logicalCanvas)
+  self:_draw(view)
+  if overlay then
+    overlay()
+  end
+  graphics.setCanvas(callerCanvas)
+  local placement = surface.placement
+  setCompositeScissor(graphics, placement.frame)
+  graphics.setShader(nil)
+  graphics.setColor(1, 1, 1, 1)
+  graphics.setBlendMode("replace", "premultiplied")
+  graphics.draw(self.logicalCanvas, placement.origin.x, placement.origin.y, 0, placement.scale, placement.scale)
+  graphics.pop()
   -- The reusable naming child composites outside the already-scaled Oak
   -- root at exactly one host scale: the parent-owned plan carries its own
   -- placement, so parent and child output scales never multiply.

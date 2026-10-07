@@ -494,15 +494,9 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
   rawset(love.graphics, "getDimensions", function()
     return viewportWidth, viewportHeight
   end)
-  local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
-  local savedProtected = FieldDrawState.protectedDraw
-  FieldDrawState.protectedDraw = function(_, fn)
-    fn()
-  end
   local ok, err = pcall(function()
     state:draw()
   end)
-  FieldDrawState.protectedDraw = savedProtected
   love.graphics.getDimensions = oldGetDimensions
   Assert.isTrue(ok, "FieldState draw should not throw: " .. tostring(err))
   return fieldScale, dialogueCalls, signpostScales, yesNoDraws, choiceContext

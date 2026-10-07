@@ -5,7 +5,6 @@
 -- window background and default ink/shadow pair the dialogue uses) instead
 -- of border-art slots that can match the fill and hide the shadows.
 
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@alias FieldYesNoRenderer.Color { r: integer, g: integer, b: integer }
@@ -115,23 +114,23 @@ function FieldYesNoRenderer:draw(status, layout)
   local box = assert(layout.content)
   local presentation = assert(layout.presentation)
   assert(presentation == "source" or presentation == "adapted", "yes/no layout has an unknown presentation")
-  FieldDrawState.protectedDraw(self._graphics, function()
-    LogicalSurface.draw(self._graphics, assert(layout.placement), function()
-      local colors
-      if presentation == "source" then
-        local palette = self._window:standardFramePalette()
-        self._window:drawStandardWindow(box, windowFill(palette))
-        colors = textPalette(palette)
-      else
-        local frameIndex = assert(status.frameIndex, "adapted yes/no choice has no dialogue frame index")
-        self._window:drawWindow(box, frameIndex, self._text:windowBackgroundColor())
-        colors = dialogueTextPalette(self._text)
-      end
-      self._text:drawTextWithPalette("‣", box.x, box.y + status.selectedIndex * 16, colors)
-      self._text:drawTextWithPalette(assert(status.yesText), box.x + 8, box.y, colors)
-      self._text:drawTextWithPalette(assert(status.noText), box.x + 8, box.y + 16, colors)
-    end)
+  self._graphics.push("all")
+  LogicalSurface.draw(self._graphics, assert(layout.placement), function()
+    local colors
+    if presentation == "source" then
+      local palette = self._window:standardFramePalette()
+      self._window:drawStandardWindow(box, windowFill(palette))
+      colors = textPalette(palette)
+    else
+      local frameIndex = assert(status.frameIndex, "adapted yes/no choice has no dialogue frame index")
+      self._window:drawWindow(box, frameIndex, self._text:windowBackgroundColor())
+      colors = dialogueTextPalette(self._text)
+    end
+    self._text:drawTextWithPalette("‣", box.x, box.y + status.selectedIndex * 16, colors)
+    self._text:drawTextWithPalette(assert(status.yesText), box.x + 8, box.y, colors)
+    self._text:drawTextWithPalette(assert(status.noText), box.x + 8, box.y + 16, colors)
   end)
+  self._graphics.pop()
 end
 
 function FieldYesNoRenderer:release() end

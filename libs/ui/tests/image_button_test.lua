@@ -103,41 +103,27 @@ function T.same_rim_geometry_selection_changes_only_color()
   Assert.equal(button.scale, 2)
 end
 
-function T.image_bounds_validation()
+function T.image_draws_through_the_given_rect_without_bounds_checks()
   local ImageButton = imageButtonModule()
   local button = ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1 })
   local g, _ = graphicsFake()
   local contained = { x = button.contentRect.x, y = button.contentRect.y, width = 10, height = 10 }
   local called = 0
+  local seen = nil
   ImageButton.draw(g, button, {
     selected = false,
     colors = { face = { 0, 0, 0, 1 } },
     imageRect = contained,
-    drawImage = function()
+    drawImage = function(rectValue)
       called = called + 1
+      seen = rectValue
     end,
   })
   Assert.equal(called, 1)
-  local out = { x = button.contentRect.x - 1, y = button.contentRect.y, width = 10, height = 10 }
-  Assert.throws(function()
-    ImageButton.draw(
-      g,
-      button,
-      { selected = false, colors = { face = { 0, 0, 0, 1 } }, imageRect = out, drawImage = function() end }
-    )
-  end)
-  local tooBig =
-    { x = button.contentRect.x, y = button.contentRect.y, width = button.contentRect.width + 1, height = 10 }
-  Assert.throws(function()
-    ImageButton.draw(
-      g,
-      button,
-      { selected = false, colors = { face = { 0, 0, 0, 1 } }, imageRect = tooBig, drawImage = function() end }
-    )
-  end)
+  Assert.isTrue(seen == contained, "the image rectangle is drawn as given, by reference")
 end
 
-function T.color_overrides_and_unknown_keys_rejected()
+function T.color_overrides_borrowed_by_reference_and_missing_face_fails_at_use()
   local ImageButton = imageButtonModule()
   local button = ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1 })
   local g, calls = graphicsFake()
@@ -150,16 +136,8 @@ function T.color_overrides_and_unknown_keys_rejected()
   })
   Assert.near(calls.setColor[1][1], 0)
   Assert.throws(function()
-    ImageButton.draw(g, button, {
-      selected = false,
-      colors = { face = { 1, 1, 1, 1 }, unknown = { 1, 0, 0, 1 } },
-      imageRect = ir,
-      drawImage = function() end,
-    })
-  end)
-  Assert.throws(function()
     ImageButton.draw(g, button, { selected = false, colors = {}, imageRect = ir, drawImage = function() end })
-  end)
+  end, "a missing face color fails where paint dereferences it")
 end
 
 function T.invalid_scale_rejected()

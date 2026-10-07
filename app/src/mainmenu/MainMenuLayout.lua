@@ -1,8 +1,12 @@
 -- Pure logical Main Menu geometry shared by drawing and hit testing. All
 -- dimensions are logical pixels: the single presentation transform lives
--- at the outer draw/input boundary, never inside these metrics.
+-- at the outer draw/input boundary, never inside these metrics. Every
+-- rectangle the renderer chromes as a card also carries its resolved button
+-- beside the hit rectangle; hit testing reads only the rectangles, while
+-- paint renders the resolved record directly without resolving again.
 
 local PixelScale = require("libs.ui.src.PixelScale")
+local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
 local MainMenuLayout = {}
@@ -118,6 +122,7 @@ function MainMenuLayout.compute(
     width = contentWidth,
     height = newGameHeight,
   }
+  newGame.button = ProductMenuSkin.resolveCard(newGame)
   local saveViewport = {
     x = contentX,
     y = margin,
@@ -160,6 +165,10 @@ function MainMenuLayout.compute(
       bodyWidth = frame.width - overflowSize - overflowInset * 2
     end
     local body = { x = frame.x, y = frame.y, width = math.max(1, bodyWidth), height = frame.height }
+    frame.button = ProductMenuSkin.resolveCard(frame)
+    if overflow ~= nil then
+      overflow.button = ProductMenuSkin.resolveCard(overflow)
+    end
     cards[id] = { frame = frame, body = body, overflow = overflow }
   end
 
@@ -228,6 +237,13 @@ function MainMenuLayout.compute(
     if hasDelete then
       actions.delete = { x = box.x + inset, y = y, width = actionWidth, height = actionHeight }
     end
+    box.button = ProductMenuSkin.resolveCard(box)
+    if actions.edit ~= nil then
+      actions.edit.button = ProductMenuSkin.resolveCard(actions.edit)
+    end
+    if actions.delete ~= nil then
+      actions.delete.button = ProductMenuSkin.resolveCard(actions.delete)
+    end
     result.popup = {
       box = box,
       actions = actions,
@@ -247,10 +263,15 @@ function MainMenuLayout.compute(
     local actionWidth = math.max(1, math.floor((box.width - inset * 2 - gap) / 2))
     local actionY = math.max(box.y + inset, box.y + box.height - BASE_CONFIRM_BOTTOM_OFFSET)
     actionY = math.min(actionY, math.max(box.y + inset, box.y + box.height - actionHeight))
+    box.button = ProductMenuSkin.resolveCard(box)
+    local cancel = { x = box.x + inset, y = actionY, width = actionWidth, height = actionHeight }
+    local delete = { x = box.x + inset + actionWidth + gap, y = actionY, width = actionWidth, height = actionHeight }
+    cancel.button = ProductMenuSkin.resolveCard(cancel)
+    delete.button = ProductMenuSkin.resolveCard(delete)
     result.confirmation = {
       box = box,
-      cancel = { x = box.x + inset, y = actionY, width = actionWidth, height = actionHeight },
-      delete = { x = box.x + inset + actionWidth + gap, y = actionY, width = actionWidth, height = actionHeight },
+      cancel = cancel,
+      delete = delete,
     }
   end
   return result

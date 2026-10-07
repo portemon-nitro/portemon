@@ -158,7 +158,8 @@ function T.preserves_focus_and_supports_one_role_override()
   Assert.equal(lineRects[1].x, lineRects[2].x)
   Assert.equal(lineRects[1].y, lineRects[2].y)
 
-  -- Override only faceTop
+  -- A complete caller palette is borrowed by reference: the overridden
+  -- faceTop paints the top portion while the sibling roles paint as given.
   local g3, calls3 = recordingGraphics()
   local text3 = {
     measure = function()
@@ -167,7 +168,20 @@ function T.preserves_focus_and_supports_one_role_override()
     lineHeight = 16,
     draw = function() end,
   }
-  TextButton.draw(g3, button, { label = "Yes", selected = true, text = text3, colors = { faceTop = { 0, 0, 1, 1 } } })
+  TextButton.draw(g3, button, {
+    label = "Yes",
+    selected = true,
+    text = text3,
+    colors = {
+      border = { 66 / 255, 66 / 255, 66 / 255, 1 },
+      rim = { 230 / 255, 230 / 255, 222 / 255, 1 },
+      innerBorder = { 25 / 255, 189 / 255, 197 / 255, 1 },
+      faceTop = { 0, 0, 1, 1 },
+      faceBottom = { 8 / 255, 156 / 255, 165 / 255, 1 },
+      focusOuter = { 1, 1, 1, 1 },
+      focusInner = { 1, 0, 0, 1 },
+    },
+  })
   Assert.equal(calls3.setColor[5][3], 1)
   Assert.equal(calls3.setColor[1][1], 66 / 255)
 end
@@ -203,23 +217,7 @@ function T.text_is_centered_and_callback_invoked_once()
   Assert.equal(g._calls.transforms[2][2], 1)
 end
 
-function T.unknown_color_keys_are_rejected()
-  local TextButton = textButtonModule()
-  local button = TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1 })
-  local g, _ = recordingGraphics()
-  local text = {
-    measure = function()
-      return 10
-    end,
-    lineHeight = 16,
-    draw = function() end,
-  }
-  Assert.throws(function()
-    TextButton.draw(g, button, { label = "Yes", selected = false, text = text, colors = { unknown = { 1, 0, 0, 1 } } })
-  end)
-end
-
-function T.invalid_scale_and_non_fitting_label_are_rejected()
+function T.invalid_scales_are_rejected_at_resolve()
   local TextButton = textButtonModule()
   Assert.throws(function()
     TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 0 })
@@ -227,58 +225,34 @@ function T.invalid_scale_and_non_fitting_label_are_rejected()
   Assert.throws(function()
     TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = -1 })
   end)
-  local button = TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1 })
-  local g, _ = recordingGraphics()
-  Assert.throws(function()
-    TextButton.draw(g, button, {
-      label = "Yes",
-      selected = false,
-      text = {
-        measure = function()
-          return 200
-        end,
-        lineHeight = 16,
-        draw = function() end,
-      },
-    })
-  end)
-  Assert.throws(function()
-    TextButton.draw(g, button, {
-      label = "Yes",
-      selected = false,
-      text = {
-        measure = function()
-          return 10
-        end,
-        lineHeight = 100,
-        draw = function() end,
-      },
-    })
-  end)
 end
 
-function T.callback_failure_restores_transform_stack_and_line_width()
+function T.callback_failure_propagates_without_generic_restore()
   local TextButton = textButtonModule()
   local button = TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1 })
   local g, _ = recordingGraphics()
   g._state.lineWidth = 7
+  local marker = {}
   local text = {
     measure = function()
       return 10
     end,
     lineHeight = 16,
     draw = function()
-      error("boom")
+      error(marker, 0)
     end,
   }
-  Assert.throws(function()
-    TextButton.draw(g, button, { label = "Yes", selected = true, text = text })
-  end)
-  Assert.equal(g._calls.pushCount, g._calls.popCount)
-  Assert.equal(g._state.lineWidth, 7)
+  local ok, err = pcall(TextButton.draw, g, button, { label = "Yes", selected = true, text = text })
+  Assert.isFalse(ok, "a text failure reaches the caller")
+  Assert.isTrue(err == marker, "the original error object propagates unwrapped")
+  Assert.equal(g._calls.pushCount, g._calls.popCount + 1, "a failed text scope leaks exactly its own push")
+  Assert.equal(g._state.lineWidth, 3, "no generic unwind restores the focus line width after failure")
 end
 
-function T.label_fit_is_invariant_under_host_scale()
+-- Paint owns centering, not fit: labels draw centered at every scale from
+-- the resolved content rectangle, and even an oversized label paints (fit
+-- belongs to the layout owner, never to the paint path).
+function T.label_centering_is_invariant_under_host_scale()
   local TextButton = textButtonModule()
   local scales = { 0.5, 1, 2 }
   local fittingWidth = 50
@@ -307,37 +281,40 @@ function T.label_fit_is_invariant_under_host_scale()
     Assert.equal(g._calls.pushCount, 1, "push once at scale " .. tostring(scale))
     Assert.equal(g._calls.popCount, 1, "pop once at scale " .. tostring(scale))
 
-    -- Oversized width should fail at every scale
+    -- Oversized labels still paint: fit is layout-owned, never paint-proven.
     local g2, _ = recordingGraphics()
-    Assert.throws(function()
-      TextButton.draw(g2, button, {
-        label = "Yes",
-        selected = false,
-        text = {
-          measure = function()
-            return oversizedWidth
-          end,
-          lineHeight = fittingHeight,
-          draw = function() end,
-        },
-      })
-    end, "oversized width rejected at scale " .. tostring(scale))
+    local oversizedDraws = 0
+    TextButton.draw(g2, button, {
+      label = "Yes",
+      selected = false,
+      text = {
+        measure = function()
+          return oversizedWidth
+        end,
+        lineHeight = fittingHeight,
+        draw = function()
+          oversizedDraws = oversizedDraws + 1
+        end,
+      },
+    })
+    Assert.equal(oversizedDraws, 1, "oversized width still paints at scale " .. tostring(scale))
 
-    -- Oversized height should fail at every scale
     local g3, _ = recordingGraphics()
-    Assert.throws(function()
-      TextButton.draw(g3, button, {
-        label = "Yes",
-        selected = false,
-        text = {
-          measure = function()
-            return fittingWidth
-          end,
-          lineHeight = oversizedHeight,
-          draw = function() end,
-        },
-      })
-    end, "oversized height rejected at scale " .. tostring(scale))
+    local tallDraws = 0
+    TextButton.draw(g3, button, {
+      label = "Yes",
+      selected = false,
+      text = {
+        measure = function()
+          return fittingWidth
+        end,
+        lineHeight = oversizedHeight,
+        draw = function()
+          tallDraws = tallDraws + 1
+        end,
+      },
+    })
+    Assert.equal(tallDraws, 1, "oversized height still paints at scale " .. tostring(scale))
   end
 end
 
@@ -611,7 +588,12 @@ function T.selected_outline_honors_focus_color_overrides()
     selected = true,
     text = text,
     colors = {
-      focusOuter = { 0, 0, 1 },
+      border = { 66 / 255, 66 / 255, 66 / 255, 1 },
+      rim = { 230 / 255, 230 / 255, 222 / 255, 1 },
+      innerBorder = { 25 / 255, 189 / 255, 197 / 255, 1 },
+      faceTop = { 49 / 255, 222 / 255, 230 / 255, 1 },
+      faceBottom = { 8 / 255, 156 / 255, 165 / 255, 1 },
+      focusOuter = { 0, 0, 1, 1 },
       focusInner = { 0, 1, 0, 0.5 },
     },
   })
@@ -622,8 +604,8 @@ function T.selected_outline_honors_focus_color_overrides()
     end
   end
   Assert.equal(#lines, 2, "overridden focus still draws exactly two lines")
-  Assert.deepEqual(lines[1].color, { 0, 0, 1, 1 }, "three-component override defaults alpha to opaque")
-  Assert.deepEqual(lines[2].color, { 0, 1, 0, 0.5 }, "four-component override preserves alpha")
+  Assert.deepEqual(lines[1].color, { 0, 0, 1, 1 }, "the focus outer override paints as given")
+  Assert.deepEqual(lines[2].color, { 0, 1, 0, 0.5 }, "the focus inner override paints as given")
   Assert.equal(lines[1].lineWidth, 5)
   Assert.equal(lines[2].lineWidth, 3)
   Assert.equal(lines[1].x, 1)

@@ -34,14 +34,15 @@ end
 function T.tests.card_variants_focus_and_disabled_roles_draw_through_image_button()
   local skin = ProductMenuSkin.forVersion("heartgold")
   local rect = { x = 4, y = 8, width = 80, height = 32 }
+  local card = ProductMenuSkin.resolveCard(rect)
   for _, variant in ipairs({ "normal", "inset", "overflow" }) do
     local graphics = FakeGraphics.new()
-    ProductMenuSkin.drawCard(graphics, skin, rect, variant, false, false)
+    ProductMenuSkin.drawCard(graphics, skin, card, variant, false, false)
     Assert.isTrue(#graphics.rectangles > 0, variant .. " card variant draws its chrome")
   end
 
   local focusedGraphics = FakeGraphics.new()
-  ProductMenuSkin.drawCard(focusedGraphics, skin, rect, "normal", true, false)
+  ProductMenuSkin.drawCard(focusedGraphics, skin, card, "normal", true, false)
   Assert.deepEqual(
     focusedGraphics.rectangles[2].color,
     skin.cards.normal.selectedRim,
@@ -49,7 +50,7 @@ function T.tests.card_variants_focus_and_disabled_roles_draw_through_image_butto
   )
 
   local disabledGraphics = FakeGraphics.new()
-  ProductMenuSkin.drawCard(disabledGraphics, skin, rect, "normal", false, true)
+  ProductMenuSkin.drawCard(disabledGraphics, skin, card, "normal", false, true)
   Assert.deepEqual(
     disabledGraphics.rectangles[2].color,
     skin.cards.disabled.normal.rim,

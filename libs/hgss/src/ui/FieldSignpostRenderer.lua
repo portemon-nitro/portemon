@@ -32,7 +32,6 @@ local FieldSignpostTheme = require("libs.hgss.src.ui.FieldSignpostTheme")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 
 -- The frame/palette bank used when a window is shown without a source
 -- appearance (a bare SHOW): a degenerate script state the engine's own
@@ -321,7 +320,8 @@ function FieldSignpostRenderer:draw(controller, viewport, alpha, presentationSca
     "FieldSignpostRenderer:draw requires a positive integer presentation scale"
   )
   local lg = assert(self._graphics)
-  FieldDrawState.protectedDraw(lg, function()
+  lg.push("all")
+  do
     -- Everything draws in reference-canvas coordinates under one
     -- translate(origin) + scale transform; the per-type geometry from the
     -- style catalogue is already reference-space, so nothing is scaled twice.
@@ -384,7 +384,8 @@ function FieldSignpostRenderer:draw(controller, viewport, alpha, presentationSca
       lineY = lineY + FieldSignpostTheme.LINE_HEIGHT
     end
     self:_drawFocusIndicator(status, contentGeometry, wipe, typeEntry.palette)
-  end)
+  end
+  lg.pop()
 end
 
 -- Draws the source screen-focus indicator (the YESNO printer control

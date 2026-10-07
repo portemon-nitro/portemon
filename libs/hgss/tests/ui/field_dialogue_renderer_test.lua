@@ -5,8 +5,9 @@
 -- UI manifest or frame strip is a typed error, and the player's selected
 -- frame index resolves the manifest strip rect (frame 0 vs frame 1 sample
 -- different rows, both composed by the canonical frame tilemap). A draw that
--- raises must still balance the transform stack and restore every captured
--- graphics state. The real-context smokes live in
+-- raises propagate immediately without generic state restoration, while a
+-- successful draw restores every captured graphics state. The real-context
+-- smokes live in
 -- field_dialogue_renderer_graphics_test.lua.
 
 local Assert = require("tests.support.Assert")
@@ -158,9 +159,10 @@ function T.text_renderer_missing_atlas_is_a_typed_error()
   Assert.equal(#lg.images, 0, "no image was created before the atlas read failed")
 end
 
--- A failure between graphics.push() and graphics.pop() must still pop the
--- transform stack and restore every captured graphics state exactly.
-function T.draw_failure_balances_transform_stack_and_restores_state()
+-- A draw failure is terminal: the error propagates unwrapped without generic
+-- state restoration, so the two unpopped scopes (renderer and surface) stay
+-- on the stack for the host to observe.
+function T.draw_failure_propagates_without_generic_restore()
   local canvas, shader = {}, {}
   local lg = fakeGraphics({
     canvas = canvas,
@@ -188,8 +190,7 @@ function T.draw_failure_balances_transform_stack_and_restores_state()
     renderer:draw(controller, presentationAtFieldScale(fieldScale))
   end)
   Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil, "rethrows the draw failure")
-  Assert.equal(lg.pushDepth(), 0, "the transform stack is balanced after a failed draw")
-  FieldDialogueFixture.assertRestoredState(lg, canvas, shader)
+  Assert.equal(lg.pushDepth(), 2, "the failed draw leaks exactly its two unpopped scopes (renderer and surface)")
 
   renderer:release()
 end
@@ -256,7 +257,7 @@ function T.clips_to_the_dialogue_bounds_and_restores_the_callers_scissor()
   end)
   Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil)
   Assert.equal(#failing.scissorIntersections, 1, "the failed draw clips before emitting pixels")
-  FieldDialogueFixture.assertRestoredState(failing, canvas, shader, { 40, 5, 20, 20 })
+  Assert.equal(failing.pushDepth(), 2, "the failed draw leaks exactly its two unpopped scopes (renderer and surface)")
   failingRenderer:release()
 end
 

@@ -639,9 +639,10 @@ function T.an_unknown_style_id_is_a_programming_error()
   r:release()
 end
 
--- A failure between graphics.push() and graphics.pop() must still pop the
--- transform stack and restore every captured graphics state exactly.
-function T.draw_failure_balances_transform_stack_and_restores_state()
+-- A draw failure is terminal: the error propagates unwrapped without generic
+-- state restoration, so the unpopped renderer scope stays on the stack for
+-- the host to observe.
+function T.draw_failure_propagates_without_generic_restore()
   local canvas, shader = {}, {}
   local lg = fakeGraphics({
     canvas = canvas,
@@ -664,8 +665,7 @@ function T.draw_failure_balances_transform_stack_and_restores_state()
     r:draw(controller, viewport, nil, 1)
   end)
   Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil, "rethrows the draw failure")
-  Assert.equal(lg.pushDepth(), 0, "the transform stack is balanced after a failed draw")
-  FieldDialogueFixture.assertRestoredState(lg, canvas, shader)
+  Assert.equal(lg.pushDepth(), 1, "the failed draw leaks exactly its one unpopped renderer scope")
   r:release()
 end
 

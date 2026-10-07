@@ -524,7 +524,7 @@ function T.adapted_choice_width_follows_measured_labels()
   renderer:release()
 end
 
-function T.graphics_state_is_restored_when_nested_menu_drawing_fails()
+function T.nested_menu_drawing_failure_propagates_without_generic_restore()
   local graphics = require("tests.support.FakeGraphics").new({
     canvas = {},
     shader = {},
@@ -537,16 +537,6 @@ function T.graphics_state_is_restored_when_nested_menu_drawing_fails()
     color = { 0.4, 0.3, 0.2, 0.1 },
     scissor = { 5, 6, 7, 8 },
   })
-  local before = {
-    canvas = graphics.getCanvas(),
-    shader = graphics.getShader(),
-    color = { graphics.getColor() },
-    blend = { graphics.getBlendMode() },
-    depth = { graphics.getDepthMode() },
-    wireframe = graphics.isWireframe(),
-    cull = graphics.getMeshCullMode(),
-    scissor = { graphics.getScissor() },
-  }
   local rendererModule = loadYesNoRenderer()
   local palette = { [1] = { r = 1, g = 2, b = 3 }, [2] = { r = 4, g = 5, b = 6 }, [15] = { r = 7, g = 8, b = 9 } }
   local renderer = rendererModule.new({
@@ -583,15 +573,7 @@ function T.graphics_state_is_restored_when_nested_menu_drawing_fails()
   local ok, err = pcall(renderer.draw, renderer, choice, layout)
   Assert.isFalse(ok)
   Assert.isTrue(tostring(err):find("injected window failure", 1, true) ~= nil)
-  Assert.equal(graphics.pushDepth(), 0)
-  Assert.equal(graphics.getCanvas(), before.canvas)
-  Assert.equal(graphics.getShader(), before.shader)
-  Assert.deepEqual({ graphics.getColor() }, before.color)
-  Assert.deepEqual({ graphics.getBlendMode() }, before.blend)
-  Assert.deepEqual({ graphics.getDepthMode() }, before.depth)
-  Assert.equal(graphics.isWireframe(), before.wireframe)
-  Assert.equal(graphics.getMeshCullMode(), before.cull)
-  Assert.deepEqual({ graphics.getScissor() }, before.scissor)
+  Assert.equal(graphics.pushDepth(), 2, "the failed draw leaks exactly its two unpopped scopes (renderer and surface)")
   renderer:release()
 end
 

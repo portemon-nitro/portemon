@@ -109,27 +109,35 @@ function ProductMenuSkin.forVersion(versionId)
   }
 end
 
+-- Resolves one card's button geometry from its layout rectangle. Layout and
+-- plan construction own this call; paint renders the returned record
+-- directly without resolving again.
+---@param rect { x:number, y:number, width:number, height:number } the layout rectangle
+---@return table<string, unknown> the resolved card button
+function ProductMenuSkin.resolveCard(rect)
+  return ImageButton.resolve({
+    rect = rect,
+    scale = 1,
+    cornerRadius = CARD_RADIUS,
+    innerBorderWidth = CARD_INNER_WIDTH,
+  })
+end
+
 ---@param graphics love.graphics
 ---@param skin ProductMenuSkin
----@param rect { x:number, y:number, width:number, height:number }
+---@param button table<string, unknown> the card button resolved from the layout rectangle
 ---@param variant ProductMenuSkin.CardVariant
 ---@param focused boolean
 ---@param disabled boolean
-function ProductMenuSkin.drawCard(graphics, skin, rect, variant, focused, disabled)
+function ProductMenuSkin.drawCard(graphics, skin, button, variant, focused, disabled)
   assert(type(skin) == "table" and type(skin.cards) == "table", "product menu card needs a skin")
   assert(variant == "normal" or variant == "inset" or variant == "overflow", "unknown product menu card variant")
   assert(type(focused) == "boolean", "product menu focus state must be boolean")
   assert(type(disabled) == "boolean", "product menu disabled state must be boolean")
   local styles = disabled and skin.cards.disabled or skin.cards
   local colors = assert(styles[variant], "product menu skin is missing a card variant")
-  local resolved = ImageButton.resolve({
-    rect = rect,
-    scale = 1,
-    cornerRadius = CARD_RADIUS,
-    innerBorderWidth = CARD_INNER_WIDTH,
-  })
-  local content = assert(resolved.contentRect)
-  ImageButton.draw(graphics, resolved, {
+  local content = button.contentRect
+  ImageButton.draw(graphics, button, {
     selected = focused,
     colors = colors,
     imageRect = { x = content.x, y = content.y, width = content.width, height = content.height },

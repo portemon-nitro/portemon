@@ -22,7 +22,6 @@
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@class TrainerCardRenderer
@@ -146,27 +145,26 @@ function TrainerCardRenderer:draw(presentation, placement)
     placement ~= nil and type(placement.frame) == "table" and type(placement.scale) == "number",
     "the card surface requires the placement record"
   )
-  FieldDrawState.protectedDraw(lg, function()
-    LogicalSurface.draw(lg, placement, function()
-      lg.setColor(1, 1, 1, 1)
-      lg.draw(assert(self._cardImage), assert(self._cardQuad), self.card.front.x, self.card.front.y)
-      for _, anchor in ipairs(TrainerCardRenderer.LABEL_ANCHORS) do
-        self._text:drawText(anchor.text, anchor.x, anchor.y)
-      end
-      local name = presentation.name
-      self._text:drawText(name, TrainerCardRenderer.NAME_RIGHT_EDGE - self._text:textWidth(name), 24)
-      local money = tostring(presentation.money)
-      self._text:drawText(money, 152 - self._text:textWidth(money), 48)
-      local totalMinutes = math.floor(presentation.playTimeSeconds / 60)
-      local hours = math.floor(totalMinutes / 60)
-      local minutes = totalMinutes % 60
-      local playTime = string.format("%d:%02d", hours, minutes)
-      self._text:drawText(playTime, 240 - self._text:textWidth(playTime), 128)
-      local trainerId =
-        string.format("%0" .. TrainerCardRenderer.TRAINER_ID_DIGITS .. "d", presentation.visibleTrainerId)
-      self._text:drawText(trainerId, TrainerCardRenderer.TRAINER_ID_RIGHT_EDGE - self._text:textWidth(trainerId), 24)
-    end)
+  lg.push("all")
+  LogicalSurface.draw(lg, placement, function()
+    lg.setColor(1, 1, 1, 1)
+    lg.draw(assert(self._cardImage), assert(self._cardQuad), self.card.front.x, self.card.front.y)
+    for _, anchor in ipairs(TrainerCardRenderer.LABEL_ANCHORS) do
+      self._text:drawText(anchor.text, anchor.x, anchor.y)
+    end
+    local name = presentation.name
+    self._text:drawText(name, TrainerCardRenderer.NAME_RIGHT_EDGE - self._text:textWidth(name), 24)
+    local money = tostring(presentation.money)
+    self._text:drawText(money, 152 - self._text:textWidth(money), 48)
+    local totalMinutes = math.floor(presentation.playTimeSeconds / 60)
+    local hours = math.floor(totalMinutes / 60)
+    local minutes = totalMinutes % 60
+    local playTime = string.format("%d:%02d", hours, minutes)
+    self._text:drawText(playTime, 240 - self._text:textWidth(playTime), 128)
+    local trainerId = string.format("%0" .. TrainerCardRenderer.TRAINER_ID_DIGITS .. "d", presentation.visibleTrainerId)
+    self._text:drawText(trainerId, TrainerCardRenderer.TRAINER_ID_RIGHT_EDGE - self._text:textWidth(trainerId), 24)
   end)
+  lg.pop()
 end
 
 function TrainerCardRenderer:release()

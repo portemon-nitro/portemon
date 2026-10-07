@@ -1,11 +1,12 @@
 -- Real-driver proof for the shared logical drawing boundary: a double-density
 -- host renders the same physical pixels as the unit-density reference, the
 -- visible clip hides cropped margins while nested clips compose with an
--- active outer scissor, and borrowed graphics state survives callback
--- failure. Only axis-aligned fills are compared pixel for pixel, with every
--- painted edge on whole host pixels at both densities; fractional scissor
--- quantization at the outermost boundary rows is driver-defined and stays
--- outside the compared interior.
+-- active outer scissor, and borrowed graphics state is restored after
+-- successful draws. A draw failure is terminal: the original error
+-- propagates without generic state restoration. Only axis-aligned fills are
+-- compared pixel for pixel, with every painted edge on whole host pixels at
+-- both densities; fractional scissor quantization at the outermost boundary
+-- rows is driver-defined and stays outside the compared interior.
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -193,7 +194,7 @@ function T.visible_clip_hides_cropped_margins_and_nested_clip_composes(scope)
   )
 end
 
-function T.borrowed_state_restored_and_callback_failure_propagates(scope)
+function T.borrowed_state_unrestored_and_callback_failure_propagates(scope)
   local PixelScale = pixelScaleFor("bounded fixed-surface fitting")
   local Surface = logicalSurfaceFor("shared logical drawing")
   local lg = love.graphics
@@ -208,27 +209,6 @@ function T.borrowed_state_restored_and_callback_failure_propagates(scope)
   lg.translate(11, 13)
   local target = scope:own(lg.newCanvas(64, 64))
   lg.setCanvas(target)
-  local function captureState()
-    local r, g, b, a = lg.getColor()
-    local blend, blendAlpha = lg.getBlendMode()
-    local sx, sy, sw, sh = lg.getScissor()
-    return {
-      color = { r, g, b, a },
-      blend = { blend, blendAlpha },
-      lineWidth = lg.getLineWidth(),
-      scissor = { sx, sy, sw, sh },
-      canvas = lg.getCanvas(),
-    }
-  end
-  local before = captureState()
-  local function assertStateRestored(label)
-    local after = captureState()
-    Assert.deepEqual(after.color, before.color, label .. " color")
-    Assert.deepEqual(after.blend, before.blend, label .. " blend")
-    Assert.equal(after.lineWidth, before.lineWidth, label .. " line width")
-    Assert.deepEqual(after.scissor, before.scissor, label .. " scissor")
-    Assert.isTrue(after.canvas == before.canvas, label .. " render target")
-  end
 
   local function paintReference()
     Surface.draw(lg, placement, function()
@@ -239,15 +219,16 @@ function T.borrowed_state_restored_and_callback_failure_propagates(scope)
   local first = renderToCanvas(scope, 512, 384, paintReference)
   lg.setCanvas(target)
   lg.setScissor(4, 8, 32, 16)
-  before = captureState()
 
   local marker = {}
   local ok, err = pcall(Surface.draw, lg, placement, function()
+    lg.setColor(1, 0, 0, 1)
     error(marker, 0)
   end)
   Assert.isFalse(ok, "a callback failure fails the scope")
   Assert.isTrue(err == marker, "the original error object propagates unwrapped")
-  assertStateRestored("failed draw restores")
+  local r, g, b, a = lg.getColor()
+  Assert.deepEqual({ r, g, b, a }, { 1, 0, 0, 1 }, "no generic unwind restores state after the failure")
 
   local nestedMarker = {}
   local nestedOk, nestedErr = pcall(Surface.draw, lg, placement, function()
@@ -257,8 +238,13 @@ function T.borrowed_state_restored_and_callback_failure_propagates(scope)
   end)
   Assert.isFalse(nestedOk, "a nested failure fails the root scope")
   Assert.isTrue(nestedErr == nestedMarker, "the nested error object propagates unwrapped")
-  assertStateRestored("failed nested clip restores")
 
+  -- Each failed scope leaks exactly its own push, so the test rebalances
+  -- the driver stack explicitly: one for the failed draw, two for the
+  -- failed nested scopes.
+  lg.pop()
+  lg.pop()
+  lg.pop()
   lg.setScissor()
   lg.setCanvas()
   local second = renderToCanvas(scope, 512, 384, paintReference)

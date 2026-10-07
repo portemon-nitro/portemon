@@ -1,6 +1,5 @@
 -- Source-layered mart painting; all simulation data is borrowed read-only.
 
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
@@ -342,16 +341,16 @@ function MartRenderer:draw(status, plan, collaborators)
     end
   end
   assert(lowerPane, "the mart plan always includes the lower interaction pane")
-  FieldDrawState.protectedDraw(self._graphics, function()
-    if upperPane ~= nil then
-      LogicalSurface.draw(self._graphics, upperPane.placement, function()
-        self:_drawUpper(status, icons)
-      end)
-    end
-    LogicalSurface.draw(self._graphics, lowerPane.placement, function()
-      self:_drawLower(status, icons)
+  self._graphics.push("all")
+  if upperPane ~= nil then
+    LogicalSurface.draw(self._graphics, upperPane.placement, function()
+      self:_drawUpper(status, icons)
     end)
+  end
+  LogicalSurface.draw(self._graphics, lowerPane.placement, function()
+    self:_drawLower(status, icons)
   end)
+  self._graphics.pop()
 end
 
 function MartRenderer:release()

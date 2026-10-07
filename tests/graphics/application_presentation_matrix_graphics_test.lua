@@ -1,7 +1,7 @@
 -- Integrated render matrix for the shared presentation boundary: exact
 -- integer magnification, bounded cropping, DPI equivalence, translated
--- origins, fractional fallback visibility, and failure restoration through
--- one logical-surface contract; every migrated interface resolving its
+-- origins, fractional fallback visibility, and terminal failure propagation
+-- through one logical-surface contract; every migrated interface resolving its
 -- real plans across representative hosts with matched geometry; real
 -- party readability through the borrowed text renderer; and single
 -- magnification for the hosted naming child. Per-application suites own
@@ -270,27 +270,30 @@ function T.fractional_fallback_keeps_everything_visible(scope)
   assertPixelNear(data, 197, 147, 0.9, 0.9, 0.1, 1, "the far corner stays visible")
 end
 
--- A failing draw callback unwinds the shared scope and rethrows the
--- original error; the next draw is unaffected.
-function T.callback_failure_restores_scope_and_propagates(scope)
+-- A failing draw callback propagates the original error without generic
+-- state restoration; the test rebalances its own leaked scope before the
+-- next draw paints cleanly.
+function T.callback_failure_propagates_without_generic_restore(scope)
   local lg = love.graphics
   local placement = assert(
     PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 256, 192),
     "640x480 must place its surface"
   )
   local marker = {}
-  local before = captureState(lg)
   local canvas = scope:own(lg.newCanvas(640, 480))
   lg.setCanvas(canvas)
   local ok, err = pcall(function()
     LogicalSurface.draw(lg, placement, function()
+      lg.setColor(1, 0, 0, 1)
       error(marker, 0)
     end)
   end)
-  lg.setCanvas()
   Assert.isFalse(ok, "the callback failure must propagate")
   Assert.isTrue(err == marker, "the original error object must propagate unwrapped")
-  assertStateRestored(before, lg, "failed draw")
+  local r, g, b, a = lg.getColor()
+  Assert.deepEqual({ r, g, b, a }, { 1, 0, 0, 1 }, "no generic unwind restores state after the failure")
+  lg.pop()
+  lg.setCanvas()
   local repaint = renderToCanvas(scope, 640, 480, function()
     LogicalSurface.draw(lg, placement, paintSolid({ 0.3, 0.3, 0.9, 1 }, 256, 192))
   end)
