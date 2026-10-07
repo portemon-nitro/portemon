@@ -351,6 +351,8 @@ local function fixture(scope, width, height, topology, section, variant, version
       },
       mapRowTargets = { "location:map:12" },
       mapIndexByTarget = { ["location:map:12"] = 1 },
+      mapListId = "location:group:1",
+      breadcrumb = "TEST_SECTION",
       generation = 1,
       status = { state = "ready" },
       original = { fieldX = 31, fieldZ = 48 },
@@ -365,8 +367,9 @@ local function fixture(scope, width, height, topology, section, variant, version
       scale = 16,
     }
     view.locationNavigation = {
-      page = (variant == "map-list" or (variant or ""):match("^map%-list%-long%-query") ~= nil) and "map-list"
+      page = (variant == "map-list" or (variant or ""):match("^map%-list%-long%-query") ~= nil) and "group"
         or "grid",
+      groupId = "location:group:1",
       contentFocus = (variant == "map-list" or (variant or ""):match("^map%-list%-long%-query") ~= nil) and "map-list"
         or "grid",
       mapId = 12,
@@ -375,9 +378,47 @@ local function fixture(scope, width, height, topology, section, variant, version
       scale = 16,
       mapOffset = 0,
     }
+    if variant == "location-long-blocked-header"
+      or variant == "location-policy-event"
+      or variant == "location-policy-actor"
+      or variant == "location-policy-surface"
+      or variant == "location-pending-after-blocked"
+    then
+      view.location.symbol = "A_VERY_LONG_SOURCE_MAP_NAME_WITH_A_VISIBLE_POLICY_REASON"
+      view.location.map.symbol = "MAP_A_VERY_LONG_SOURCE_MAP_NAME_WITH_A_VISIBLE_POLICY_REASON"
+      view.location.displayName = "A_VERY_LONG_SOURCE_MAP_NAME_WITH_A_VISIBLE_POLICY_REASON"
+    end
+    if variant == "location-policy-event" then
+      view.location.cursor = { fieldX = 32, fieldZ = 48 }
+      view.location.tiles = {
+        { fieldX = 32, fieldZ = 48, selectable = false, reason = "coordinate_trigger" },
+        { fieldX = 33, fieldZ = 48, selectable = false, reason = "blocked" },
+      }
+      view.locationNavigation.cursor = { fieldX = 32, fieldZ = 48 }
+    elseif variant == "location-policy-actor" then
+      view.location.tiles[1] = { fieldX = 32, fieldZ = 48, selectable = false, reason = "possible_actor" }
+      view.location.cursor = { fieldX = 32, fieldZ = 48 }
+      view.locationNavigation.cursor = { fieldX = 32, fieldZ = 48 }
+    elseif variant == "location-policy-surface" then
+      view.location.tiles[1] = { fieldX = 32, fieldZ = 48, selectable = false, reason = "no_surface" }
+      view.location.cursor = { fieldX = 32, fieldZ = 48 }
+      view.locationNavigation.cursor = { fieldX = 32, fieldZ = 48 }
+    elseif variant == "location-pending-after-blocked" then
+      view.location.tiles = {
+        { fieldX = 32, fieldZ = 48, selectable = false, reason = "blocked" },
+      }
+      view.location.status = { state = "preparing" }
+      view.location.cursor = { fieldX = 34, fieldZ = 48 }
+      view.locationNavigation.cursor = { fieldX = 34, fieldZ = 48 }
+    elseif variant == "location-pending" then
+      view.location.status = { state = "preparing" }
+      view.location.tiles = {}
+      view.location.cursor = { fieldX = 32, fieldZ = 48 }
+      view.locationNavigation.cursor = { fieldX = 32, fieldZ = 48 }
+    end
     if (variant or ""):match("^map%-list%-long%-query") ~= nil then
       view.query = string.rep("very-long-search-query", 12)
-      view.focus = variant == "map-list-long-query" and "location:map:12" or "list:location:map-list"
+      view.focus = variant == "map-list-long-query" and "location:map:12" or "list:location:group:1"
       view.focusVisible = variant ~= "map-list-long-query-unfocused"
     end
     view.savedLocation = { mapId = 12, fieldX = 31, fieldZ = 48 }
@@ -477,7 +518,7 @@ local function fixture(scope, width, height, topology, section, variant, version
       rowAt = view.flagRowAt,
     }
   end
-  if section == "Location" and view.locationNavigation.page == "map-list" then
+  if section == "Location" and (view.locationNavigation.page == "root" or view.locationNavigation.page == "group") then
     local maps, rowTargets, indexByTarget =
       view.location.maps, view.location.mapRowTargets, view.location.mapIndexByTarget
     view.location.mapModel = {
@@ -768,34 +809,51 @@ local function draw(scope, width, height, topology, name, section, variant, vers
     Assert.isTrue(hintFound, name .. " shows the visible search hint")
   end
   if view.section == "Location" then
-    Assert.isFalse(renderedText:find("MAP_", 1, true), name .. " hides the map symbol prefix")
-    Assert.isTrue(
-      renderedText:find("AZALEA_ILEX", 1, true) ~= nil,
-      name .. " shows the prefix-clean map name within the control bounds"
-    )
+    local hasLongHeader = variant == "location-long-blocked-header"
+      or variant == "location-policy-event"
+      or variant == "location-policy-actor"
+      or variant == "location-policy-surface"
+      or variant == "location-pending-after-blocked"
+    if hasLongHeader then
+      Assert.isTrue(renderedText:find("A_VERY_LONG_SOURCE", 1, true) ~= nil)
+    else
+      Assert.isFalse(renderedText:find("MAP_", 1, true), name .. " hides the map symbol prefix")
+      Assert.isTrue(
+        renderedText:find("AZALEA_ILEX", 1, true) ~= nil,
+        name .. " shows the prefix-clean map name within the control bounds"
+      )
+    end
     if view.locationNavigation.page == "grid" then
       Assert.isFalse(renderedText:find("Physical only", 1, true), name .. " omits the disclaimer")
       if plan.content.width >= 500 then
+        local cursor = view.locationNavigation.cursor
         Assert.isTrue(
-          renderedText:find("X 33", 1, true) ~= nil and renderedText:find("Z 48", 1, true) ~= nil,
+          renderedText:find("X " .. cursor.fieldX, 1, true) ~= nil
+            and renderedText:find("Z " .. cursor.fieldZ, 1, true) ~= nil,
           name .. " shows cursor coordinates when space permits"
         )
       end
-      Assert.isTrue(
-        renderedText:find("blocked", 1, true) ~= nil,
-        name .. " reports the blocked cursor reason in the grid header"
-      )
-      local headerFound = false
+      local header = assert(layout.locationHeader)
+      local longIdentity = variant == "location-long-blocked-header"
+        or variant == "location-policy-event"
+        or variant == "location-policy-actor"
+        or variant == "location-policy-surface"
+        or variant == "location-pending-after-blocked"
+      local identity = longIdentity and "A_VERY_LONG" or "AZALEA_ILEX"
+      local mapNameDrawn = false
+      local coordinatesDrawn = false
       for _, value in ipairs(drawnText) do
-        if value:find("AZALEA_ILEX", 1, true) ~= nil and value:find("X 33", 1, true) ~= nil then
-          headerFound = true
-          Assert.isTrue(
-            value:find("Z 48", 1, true) ~= nil,
-            name .. " keeps the map identity and cursor coordinates on one header line"
-          )
-        end
+        mapNameDrawn = mapNameDrawn or value:find(identity, 1, true) ~= nil
+        coordinatesDrawn = coordinatesDrawn
+          or value:find("X " .. view.locationNavigation.cursor.fieldX, 1, true) ~= nil
+            and value:find("Z " .. view.locationNavigation.cursor.fieldZ, 1, true) ~= nil
       end
-      Assert.isTrue(headerFound, name .. " draws one combined map identity header line")
+      Assert.isTrue(mapNameDrawn, name .. " draws the map name")
+      Assert.isTrue(coordinatesDrawn, name .. " preserves cursor coordinates separately")
+      Assert.isTrue(
+        header.coordinatesText:find("X " .. view.locationNavigation.cursor.fieldX, 1, true) ~= nil,
+        name .. " publishes separate cursor coordinates"
+      )
     else
       Assert.isFalse(renderedText:find("blocked", 1, true), name .. " shows no blocked prose while selecting a map")
     end
@@ -1445,6 +1503,125 @@ function T.location_grid_focus_cue_remains_visible_over_grid_tiles(scope)
   Assert.isTrue(red > 0.7 and green < 0.4 and blue < 0.4, "the grid surface cue stays visible over its tiles")
 end
 
+function T.location_grid_reserves_room_for_the_current_policy_reason(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = false,
+    role = "world",
+  })
+  local _, renderedText, layout, _, _, view = draw(
+    scope,
+    256,
+    192,
+    topology,
+    "location-long-blocked-header",
+    "Location",
+    "location-long-blocked-header"
+  )
+  local header = assert(layout.locationHeader)
+  Assert.equal(header.rightText, "Impassable tile", "collision policy is explained in plain language")
+  Assert.isTrue(header.rightRect.width > 0, "the compact header reserves space for the actual reason")
+  Assert.isTrue(header.leftText:find("X 33", 1, true) ~= nil, "coordinates remain visible before map-name truncation")
+  Assert.isTrue(header.leftText:find("Z 48", 1, true) ~= nil, "both coordinates remain visible")
+  Assert.isTrue(renderedText:find("Impassable tile", 1, true) ~= nil)
+  Assert.isTrue(view.location.map.symbol:find("VERY_LONG", 1, true) ~= nil, "the fixture has a long map identity")
+end
+
+function T.location_header_explains_focused_policy_causes_and_clears_stale_reason(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 1280, height = 720 },
+    touch = false,
+    role = "world",
+  })
+  for _, scenario in ipairs({
+    { variant = "location-policy-event", reason = "Event tile" },
+    { variant = "location-policy-actor", reason = "Possible actor" },
+    { variant = "location-policy-surface", reason = "No walkable surface" },
+    { variant = "location-pending-after-blocked", reason = "Preparing…" },
+  }) do
+    local _, renderedText, layout = draw(
+      scope,
+      1280,
+      720,
+      topology,
+      scenario.variant,
+      "Location",
+      scenario.variant
+    )
+    local header = assert(layout.locationHeader)
+    Assert.equal(header.rightText, scenario.reason, scenario.variant .. " maps the focused tile cause")
+    Assert.isTrue(renderedText:find(scenario.reason, 1, true) ~= nil)
+    if scenario.variant == "location-pending-after-blocked" then
+      Assert.isFalse(renderedText:find("Impassable tile", 1, true), "pending focus clears the previous collision reason")
+    end
+    Assert.isTrue(header.coordinatesText:find("X ", 1, true) ~= nil, "reason changes preserve the coordinates")
+  end
+end
+
+function T.location_pending_grid_is_flat_gray_without_internal_tile_borders(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 1280, height = 720 },
+    touch = false,
+    role = "world",
+  })
+  local data, _, layout, _, _, view, _, _, _, plan = draw(
+    scope,
+    1280,
+    720,
+    topology,
+    "location-pending-grid",
+    "Location",
+    "location-pending"
+  )
+  Assert.equal(view.location.status.state, "preparing", "the fixture represents an unfinished map")
+  local grid = assert(layout.locationGrid)
+  local boundaryX = grid.originX + grid.tileSize
+  local sampleY = grid.originY + math.floor(grid.tileSize / 2)
+  local leftR, leftG, leftB = pixelAtLogical(data, plan, boundaryX - 2, sampleY)
+  local edgeR, edgeG, edgeB = pixelAtLogical(data, plan, boundaryX, sampleY)
+  local rightR, rightG, rightB = pixelAtLogical(data, plan, boundaryX + 2, sampleY)
+  for _, channel in ipairs({ { leftR, leftG, leftB }, { edgeR, edgeG, edgeB }, { rightR, rightG, rightB } }) do
+    Assert.near(channel[1], 168 / 255, 0.015, "pending terrain is solid neutral gray")
+    Assert.near(channel[2], 168 / 255, 0.015, "pending terrain has no internal horizontal stroke")
+    Assert.near(channel[3], 168 / 255, 0.015, "pending terrain has no internal vertical stroke")
+  end
+
+  local mixedData, _, mixedLayout, _, _, mixedView, _, _, _, mixedPlan = draw(
+    scope,
+    1280,
+    720,
+    topology,
+    "location-mixed-known-pending",
+    "Location"
+  )
+  local mixedGrid = assert(mixedLayout.locationGrid)
+  local knownColumn = 33 - mixedGrid.firstFieldX
+  local pendingColumn = 34 - mixedGrid.firstFieldX
+  local centerRow = 48 - mixedGrid.firstFieldZ
+  local knownRed, knownGreen, knownBlue = pixelAtLogical(
+    mixedData,
+    mixedPlan,
+    mixedGrid.originX + knownColumn * mixedGrid.tileSize + 4,
+    mixedGrid.originY + centerRow * mixedGrid.tileSize + 6
+  )
+  Assert.near(knownRed, 0.73, 0.02, "known blocked terrain keeps its distinct fill")
+  Assert.near(knownGreen, 0.75, 0.02, "known blocked terrain keeps its distinct fill")
+  Assert.near(knownBlue, 0.75, 0.02, "known blocked terrain keeps its distinct fill")
+  local pendingRed, pendingGreen, pendingBlue = pixelAtLogical(
+    mixedData,
+    mixedPlan,
+    mixedGrid.originX + pendingColumn * mixedGrid.tileSize + 4,
+    mixedGrid.originY + centerRow * mixedGrid.tileSize + 6
+  )
+  Assert.near(pendingRed, 168 / 255, 0.015, "unrepresented cells remain neutral gray beside known cells")
+  Assert.near(pendingGreen, 168 / 255, 0.015, "unrepresented cells have no fill inferred from neighbors")
+  Assert.near(pendingBlue, 168 / 255, 0.015, "unrepresented cells remain distinct from blocked terrain")
+  Assert.equal(mixedView.location.tiles[2].reason, "blocked", "fixture includes known and pending cells")
+end
+
 function T.location_grid_header_uses_black_single_line_chrome(scope)
   local topology = ScreenTopology.oneDisplay({
     id = "main",
@@ -1456,12 +1633,12 @@ function T.location_grid_header_uses_black_single_line_chrome(scope)
     draw(scope, 1280, 720, topology, "location-grid-header", "Location")
   local header = assert(layout.locationHeader, "the grid publishes one header record")
   local leftCall = assert(findPaletteCall(paletteCalls, "AZALEA_ILEX"), "the header draws its identity line")
-  local rightCall = assert(findPaletteCall(paletteCalls, "blocked"), "the header draws its blocked disclaimer")
+  local rightCall = assert(findPaletteCall(paletteCalls, "Impassable tile"), "the header draws its collision reason")
   Assert.equal(leftCall.y, rightCall.y, "identity and disclaimer share one header line")
   Assert.equal(foregroundAverage(leftCall.palette), 0, "the header identity uses a black face")
   Assert.equal(foregroundAverage(rightCall.palette), 0, "the header disclaimer uses a black face")
   Assert.isTrue(
-    rightCall.x + view.textMetrics.measure("blocked") <= header.lineRect.x + header.lineRect.width + 0.01,
+    rightCall.x + view.textMetrics.measure("Impassable tile") <= header.lineRect.x + header.lineRect.width + 0.01,
     "the disclaimer stays inside the header line"
   )
   Assert.isTrue(rightCall.x >= header.leftRect.x + header.leftRect.width, "the disclaimer never overlaps the identity")
@@ -1605,12 +1782,12 @@ function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scop
   local longQuery = focusedView.query
   local fittedHint
   for _, value in ipairs(focusedDrawnText) do
-    if value:find("Filter:", 1, true) == 1 then
+    if value:find("Filter:", 1, true) ~= nil then
       fittedHint = value
     end
   end
   Assert.notNil(fittedHint, "the focused map list renders its inline filter hint")
-  local hintRect = assert(focusedLayout.lists["location:map-list"].hintRect, "the map list reserves its hint line")
+  local hintRect = assert(focusedLayout.lists["location:group:1"].hintRect, "the map list reserves its hint line")
   Assert.isTrue(
     focusedView.textMetrics.measure(fittedHint) * 0.75 <= hintRect.width + 0.01,
     "hint text fits the reserved line at body scale"
@@ -1618,12 +1795,12 @@ function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scop
   Assert.isNil(focusedText:find(longQuery, 1, true), "the full query is not emitted")
   local unfocusedHint
   for _, value in ipairs(normalDrawnText) do
-    if value:find("Filter:", 1, true) == 1 then
+    if value:find("Filter:", 1, true) ~= nil then
       unfocusedHint = value
     end
   end
   Assert.notNil(unfocusedHint, "the unfocused map list renders its inline filter hint")
-  local normalHintRect = assert(normalLayout.lists["location:map-list"].hintRect)
+  local normalHintRect = assert(normalLayout.lists["location:group:1"].hintRect)
   Assert.isTrue(
     normalView.textMetrics.measure(unfocusedHint) * 0.75 <= normalHintRect.width + 0.01,
     "unfocused hint text also fits"
@@ -2571,7 +2748,7 @@ function T.overflowing_viewports_show_a_scroll_cue_and_quiet_ones_do_not(scope)
   Assert.isTrue(cue.height <= clip.height, "the scrollbar thumb never exceeds its track")
 
   local _, _, quietLayout = draw(scope, 256, 192, singleDisplay(256, 192), "scroll-quiet", "Location", "map-list")
-  local quiet = assert(quietLayout.viewports["location:map-list"], "the short map list publishes its viewport")
+  local quiet = assert(quietLayout.viewports["location:group:1"], "the short map list publishes its viewport")
   Assert.isFalse(quiet.contentExtent > quiet.clip.height, "the single-map list fits without scrolling")
   local quietClip = quiet.clip
   local quietFills = recordRectangles(function()

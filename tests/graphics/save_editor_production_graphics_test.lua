@@ -268,33 +268,61 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
         ),
       },
     }
-    -- Location opens on the map list, so grid captures first narrow the
-    -- list to the staged map through the real filter path and then enter
-    -- coordinate selection through the real map-row activation path.
+    -- Location opens on its section list, so grid captures filter to the
+    -- staged map, enter its section, and activate the real map-row path.
     -- Only the staged map's assets are provisioned for these captures.
     local function enterStagedGrid(context)
       state:keypressed("delete")
       state:keyreleased("delete")
       local stagedMapId = assert(assert(state.session, context .. " stages a session"):snapshot().location).mapId
       local stagedName
+      local stagedSectionId
       local summaries = assert(state.locationService, context .. " owns its location service"):mapSummaries()
       for _, summary in ipairs(summaries) do
         if summary.mapId == stagedMapId then
           stagedName = assert(summary.displayName, context .. " names the staged map")
+          stagedSectionId = summary.mapSectionNativeId
         end
       end
       state:textinput(assert(stagedName, context .. " catalogs the staged map"))
       local stagedMapTarget = "location:map:" .. stagedMapId
+      local stagedGroupTarget = "location:group:" .. assert(stagedSectionId, context .. " groups the staged map")
       local activated
       for _ = 1, 120 do
-        if assert(state:view().layout).targets[stagedMapTarget] ~= nil then
-          activated = stagedMapTarget
+        local currentView = state:view()
+        if currentView.layout.targets[stagedGroupTarget] ~= nil and not currentView.location.mapModel.pending then
+          activated = stagedGroupTarget
           break
         end
         state:update(0)
       end
-      assert(activated, context .. " eventually publishes the staged map row")
+      assert(activated, context .. " eventually publishes the staged map section")
       clickTarget(state, activated)
+      state:update(0)
+      for _ = 1, 120 do
+        local currentView = state:view()
+        if currentView.layout.targets[stagedMapTarget] ~= nil and not currentView.location.mapModel.pending then
+          break
+        end
+        state:update(0)
+      end
+      local groupView = state:view()
+      assert(
+        groupView.layout.targets[stagedMapTarget] ~= nil,
+        context
+          .. " carries the filter to its map section (query="
+          .. groupView.query
+          .. ", group="
+          .. tostring(groupView.location.breadcrumb)
+          .. ", page="
+          .. groupView.locationNavigation.page
+          .. ", focus="
+          .. groupView.focus
+          .. ", count="
+          .. tostring(groupView.location.mapModel.count)
+          .. ")"
+      )
+      clickTarget(state, stagedMapTarget)
       state:update(0)
       for _ = 1, 120 do
         local snapshot = assert(state.locationService, context .. " owns its location service"):snapshot()

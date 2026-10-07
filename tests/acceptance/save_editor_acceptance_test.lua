@@ -1112,6 +1112,74 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
             beforeMove.fieldX + 1,
             "the centered grid remains responsive to movement"
           )
+        elseif mapIndex == 2 then
+          local navigation = assert(state:view().locationNavigation)
+          local originalCenter = copy(navigation.center)
+          local originalCursor = copy(navigation.cursor)
+          local moves = 0
+          while state:view().locationNavigation.center.fieldX == originalCenter.fieldX
+            and state:view().locationNavigation.center.fieldZ == originalCenter.fieldZ
+          do
+            moves = moves + 1
+            Assert.isTrue(moves <= 100, "manual grid navigation pans the real map viewport")
+            state:keypressed("right")
+            state:keyreleased("right")
+            state:update(0)
+          end
+          local remembered = assert(state:view().locationNavigation)
+          Assert.isFalse(
+            remembered.cursor.fieldX == originalCursor.fieldX
+              and remembered.cursor.fieldZ == originalCursor.fieldZ,
+            "manual navigation changes the preview cursor"
+          )
+          Assert.isFalse(
+            remembered.center.fieldX == originalCenter.fieldX
+              and remembered.center.fieldZ == originalCenter.fieldZ,
+            "manual navigation changes the preview viewport"
+          )
+
+          local previousGeneration = assert(state:view().location).generation
+          state:_requestBack()
+          state:update(0)
+          Assert.isFalse(
+            state:view().locationNavigation.page == "grid",
+            "Back leaves coordinate selection before the same map is re-entered"
+          )
+          state:_performDeferred({ kind = "location-map-select", mapId = mapId })
+          state:update(0)
+          local reentered = assert(state:view().location)
+          Assert.isFalse(
+            reentered.generation == previousGeneration,
+            "re-entering the same map starts a new C05 browse generation"
+          )
+          local reentryUpdates = 0
+          while reentered.status.state == "pending" do
+            reentryUpdates = reentryUpdates + 1
+            Assert.isTrue(reentryUpdates <= 5000, "the re-entered map completes C05 preparation")
+            state:update(0)
+            reentered = assert(state:view().location)
+          end
+          Assert.equal(reentered.status.state, "ready", "C05 revalidates the remembered preview point")
+          local _, revalidation = state.locationService:resolve(
+            mapId,
+            remembered.cursor.fieldX,
+            remembered.cursor.fieldZ,
+            reentered.generation
+          )
+          Assert.isTrue(
+            revalidation.state == "ready" or revalidation.state == "unavailable",
+            "C05 classifies the restored preview point for the active generation"
+          )
+          Assert.deepEqual(
+            state:view().locationNavigation.cursor,
+            remembered.cursor,
+            "point revalidation does not replace the user's preview cursor"
+          )
+          Assert.deepEqual(
+            state:view().locationNavigation.center,
+            remembered.center,
+            "point revalidation does not replace the user's viewport center"
+          )
         end
         Assert.deepEqual(
           state.session:snapshot().location,

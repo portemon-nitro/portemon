@@ -20,8 +20,10 @@ Controller.__index = Controller
 ---@field bagPocket string
 ---@field bagItemKey string?
 ---@field bagPage0 integer
----@field locationPage "grid"|"map-list"
+---@field locationPage "root"|"group"|"grid"
 ---@field locationFocus "grid"|"map-list"|"navigation"
+---@field locationGroupId string?
+---@field locationMemory { root: { query: string, cursor: string?, scroll: number }, groups: table<string, { query: string, cursor: string?, scroll: number }> }
 ---@field locationMapId integer?
 ---@field locationCursorX integer?
 ---@field locationCursorZ integer?
@@ -50,9 +52,13 @@ Controller.__index = Controller
 ---@field selectBagItem fun(self: SaveEditorController, itemKey: string)
 ---@field enterLocation fun(self: SaveEditorController, location: table<string, unknown>)
 ---@field openLocationMaps fun(self: SaveEditorController)
+---@field enterLocationGroup fun(self: SaveEditorController, groupId: string, carriedQuery: string?)
+---@field backLocation fun(self: SaveEditorController): boolean
+---@field rememberLocationDestination fun(self: SaveEditorController, groupId: string, mapTargetId: string)
 ---@field chooseLocationMap fun(self: SaveEditorController, mapId: integer, centerX: integer, centerZ: integer)
 ---@field moveLocationCursor fun(self: SaveEditorController, direction: string, visibleWidth: integer, visibleHeight: integer)
 ---@field panLocation fun(self: SaveEditorController, direction: string, visibleWidth: integer, visibleHeight: integer)
+---@field setLocationCursor fun(self: SaveEditorController, fieldX: integer, fieldZ: integer)
 ---@field locationSnapshot fun(self: SaveEditorController): table<string, unknown>
 ---@field snapshot fun(self: SaveEditorController): table<string, unknown>
 ---@field press fun(self: SaveEditorController, action: string): table<string, unknown>?
@@ -79,8 +85,10 @@ function Controller.new()
     bagPocket = "items",
     bagItemKey = nil,
     bagPage0 = 0,
-    locationPage = "map-list",
+    locationPage = "root",
     locationFocus = "map-list",
+    locationGroupId = nil,
+    locationMemory = { root = { query = "", cursor = nil, scroll = 0 }, groups = {} },
     locationMapId = nil,
     locationCursorX = nil,
     locationCursorZ = nil,
@@ -167,6 +175,12 @@ function Controller:setSection(section)
   assert(
     section == "Location" or section == "Player" or section == "Progress" or section == "Party" or section == "Bag"
   )
+  if section == self.section then
+    return
+  end
+  if self.section == "Location" then
+    self:_rememberLocationLevel()
+  end
   self.section = section
   self:closeModal()
   self.capturedTarget, self.pointerId = nil, nil
@@ -179,9 +193,14 @@ function Controller:setSection(section)
   elseif section == "Player" then
     self:setFocus("money")
   elseif section == "Location" then
-    self.locationPage = "map-list"
+    local memory = self.locationMemory.root
+    self.locationPage = "root"
+    self.locationGroupId = nil
     self.locationFocus = "map-list"
-    self:setFocus("list:location:map-list")
+    self.query = memory.query
+    self.locationMapOffset = memory.scroll
+    self.scrollOffset = memory.scroll
+    self:setFocus(memory.cursor or "list:location:root")
   else
     self:setFocus("list:flags")
   end
@@ -221,26 +240,142 @@ function Controller:enterLocation(location)
   self.locationCursorX, self.locationCursorZ = fieldX, fieldZ
   self.locationCenterX, self.locationCenterZ = fieldX, fieldZ
   if changed or self.section ~= "Location" then
-    self.locationPage = "map-list"
+    if self.locationPage == "grid" then
+      self:_rememberLocationLevel()
+    end
+    self.locationPage = "root"
+    self.locationGroupId = nil
     self.locationFocus = "map-list"
   end
-  if self.section == "Location" and self.locationPage == "map-list" then
-    self:setFocus("list:location:map-list")
+  if self.section == "Location" and self.locationPage == "root" then
+    self:setFocus("list:location:root")
   end
 end
 
 function Controller:openLocationMaps()
   assert(self.section == "Location")
-  self.locationPage = "map-list"
-  self.locationMapOffset = 0
-  self:setFocus("list:location:map-list")
+  if self.locationPage == "grid" then
+    self:backLocation()
+    return
+  end
+  self.locationPage = "root"
+  self.locationGroupId = nil
+  local memory = self.locationMemory.root
+  self.query = memory.query
+  self.locationMapOffset = memory.scroll
+  self:setFocus(memory.cursor or "list:location:root")
   self:cancelInteraction()
+end
+
+function Controller:rememberLocationDestination(groupId, mapTargetId)
+  assert(type(groupId) == "string" and groupId ~= "")
+  assert(type(mapTargetId) == "string" and mapTargetId ~= "")
+  if self.locationMemory.root.cursor == nil then
+    self.locationMemory.root.cursor = groupId
+  end
+  if self.locationMemory.groups[groupId] == nil then
+    self.locationMemory.groups[groupId] = { query = "", cursor = mapTargetId, scroll = 0 }
+  elseif self.locationMemory.groups[groupId].cursor == nil then
+    self.locationMemory.groups[groupId].cursor = mapTargetId
+  end
+  if self.section == "Location" and self.locationPage == "root" and self.focus == "list:location:root" then
+    self:setFocus(self.locationMemory.root.cursor)
+  end
+end
+
+function Controller:_rememberLocationLevel()
+  local memory
+  local listId
+  if self.locationPage == "root" then
+    memory = self.locationMemory.root
+    listId = "location:root"
+  elseif self.locationPage == "group" then
+    local groupId = assert(self.locationGroupId, "a map group page owns its group identity")
+    self.locationMemory.groups[groupId] = self.locationMemory.groups[groupId]
+      or { query = "", cursor = nil, scroll = 0 }
+    memory = self.locationMemory.groups[groupId]
+    listId = groupId
+  else
+    return
+  end
+  memory.query = self.query
+  memory.cursor = self.focus
+  memory.scroll = self.scrollOffset
+  if self.listCursors[listId] ~= nil then
+    memory.cursor = self.listCursors[listId]
+  end
+end
+
+function Controller:_restoreLocationLevel(memory, listId)
+  self.query = memory.query
+  self.locationMapOffset = memory.scroll
+  self.scrollOffset = memory.scroll
+  self.focus = memory.cursor or ("list:" .. listId)
+  self.focusByScope[self.scopeId] = self.focus
+end
+
+function Controller:enterLocationGroup(groupId, carriedQuery)
+  assert(self.section == "Location", "map sections are entered from Location")
+  assert(type(groupId) == "string" and groupId ~= "", "map section identity is stable")
+  if self.locationPage == "group" and self.locationGroupId == groupId then
+    return
+  end
+  if self.locationPage == "root" or self.locationPage == "group" then
+    self:_rememberLocationLevel()
+  end
+  local memory = self.locationMemory.groups[groupId]
+  if carriedQuery ~= nil then
+    memory = { query = carriedQuery, cursor = nil, scroll = 0 }
+    self.locationMemory.groups[groupId] = memory
+  elseif memory == nil then
+    memory = { query = "", cursor = nil, scroll = 0 }
+    self.locationMemory.groups[groupId] = memory
+  end
+  self.locationPage = "group"
+  self.locationGroupId = groupId
+  self.locationFocus = "map-list"
+  self.query = memory.query
+  self.locationMapOffset = memory.scroll
+  self.scrollOffset = memory.scroll
+  self.focus = memory.cursor or ("list:" .. groupId)
+  self.focusByScope[self.scopeId] = self.focus
+  self:cancelInteraction()
+end
+
+function Controller:backLocation()
+  assert(self.section == "Location", "Location Back requires its active section")
+  if self.locationPage == "grid" then
+    self:_rememberLocationLevel()
+    local groupId = self.locationGroupId
+    if groupId ~= nil then
+      self.locationPage = "group"
+      self:_restoreLocationLevel(assert(self.locationMemory.groups[groupId]), groupId)
+    else
+      self.locationPage = "root"
+      self:_restoreLocationLevel(self.locationMemory.root, "location:root")
+    end
+    self.locationFocus = "map-list"
+    self:cancelInteraction()
+    return true
+  elseif self.locationPage == "group" then
+    self:_rememberLocationLevel()
+    self.locationPage = "root"
+    self.locationGroupId = nil
+    self:_restoreLocationLevel(self.locationMemory.root, "location:root")
+    self.locationFocus = "map-list"
+    self:cancelInteraction()
+    return true
+  end
+  return false
 end
 
 function Controller:chooseLocationMap(mapId, centerX, centerZ)
   assert(type(mapId) == "number" and mapId % 1 == 0 and mapId >= 0)
   assert(type(centerX) == "number" and centerX % 1 == 0)
   assert(type(centerZ) == "number" and centerZ % 1 == 0)
+  if self.locationPage == "group" then
+    self:_rememberLocationLevel()
+  end
   self.locationMapId = mapId
   self.locationPage = "grid"
   self.locationCursorX, self.locationCursorZ = centerX, centerZ
@@ -297,9 +432,17 @@ function Controller:panLocation(direction, visibleWidth, visibleHeight)
     math.max(0, math.min(65535, self.locationCenterZ + dz * math.max(1, math.floor(visibleHeight / 2))))
 end
 
+function Controller:setLocationCursor(fieldX, fieldZ)
+  assert(type(fieldX) == "number" and fieldX % 1 == 0)
+  assert(type(fieldZ) == "number" and fieldZ % 1 == 0)
+  self.locationCursorX, self.locationCursorZ = fieldX, fieldZ
+  self.locationCenterX, self.locationCenterZ = fieldX, fieldZ
+end
+
 function Controller:locationSnapshot()
   return {
     page = self.locationPage,
+    groupId = self.locationGroupId,
     contentFocus = self.locationFocus,
     mapId = self.locationMapId,
     cursor = self.locationCursorX and { fieldX = self.locationCursorX, fieldZ = self.locationCursorZ } or nil,
@@ -334,7 +477,11 @@ function Controller:setFocus(targetId)
   if self.section == "Location" then
     if targetId == "location:grid" or targetId:match("^location:tile:") then
       self.locationFocus = "grid"
-    elseif targetId:match("^location:map:") or targetId == "list:location:map-list" then
+    elseif
+      targetId:match("^location:map:")
+      or targetId:match("^location:group:")
+      or targetId:match("^list:location:")
+    then
       self.locationFocus = "map-list"
     elseif targetId:match("^section:") then
       self.locationFocus = "navigation"

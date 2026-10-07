@@ -26,7 +26,7 @@ local function computeLayout(view, width, height)
   end
   if
     view.locationNavigation ~= nil
-    and view.locationNavigation.page == "map-list"
+    and (view.locationNavigation.page == "root" or view.locationNavigation.page == "group")
     and view.location
     and view.location.maps ~= nil
     and view.location.mapModel == nil
@@ -202,7 +202,7 @@ function T.tests.location_layout_uses_fixed_scale_and_omits_zoom_targets()
     Assert.isNil(layout.targets["location:zoom-in"], "Location does not publish zoom-in")
     Assert.isNil(layout.targets["location:zoom-out"], "Location does not publish zoom-out")
     Assert.isNil(
-      layout.lists["location:map-list"],
+      layout.lists["location:group:1"],
       "coordinate selection never composes the map list (" .. viewport.width .. "x" .. viewport.height .. ")"
     )
     Assert.isNil(
@@ -684,6 +684,8 @@ local function mapListView()
       },
     },
     location = {
+      mapListId = "location:group:1",
+      breadcrumb = "TEST_SECTION",
       mapId = 12,
       symbol = "MAP_TEST_ROUTE",
       section = "TEST_SECTION",
@@ -698,7 +700,8 @@ local function mapListView()
       cursor = { fieldX = 32, fieldZ = 48 },
     },
     locationNavigation = {
-      page = "map-list",
+      page = "group",
+      groupId = "location:group:1",
       contentFocus = "map-list",
       mapId = 12,
       cursor = { fieldX = 32, fieldZ = 48 },
@@ -715,21 +718,21 @@ function T.tests.location_map_list_publishes_one_container_with_ordered_rows()
     local label = size[1] .. "x" .. size[2]
     Assert.notNil(layout.lists, "the plan must publish one record per interactive list (" .. label .. ")")
     local list = assert(
-      layout.lists["location:map-list"],
+      layout.lists["location:group:1"],
       "the Location map list must publish its interaction record (" .. label .. ")"
     )
-    Assert.equal(list.id, "location:map-list")
-    Assert.equal(list.targetId, "list:location:map-list")
-    Assert.equal(list.viewportId, "location:map-list")
+    Assert.equal(list.id, "location:group:1")
+    Assert.equal(list.targetId, "list:location:group:1")
+    Assert.equal(list.viewportId, "location:group:1")
     Assert.isTrue(list.filterable, "the map list accepts direct typing while focused (" .. label .. ")")
     Assert.deepEqual(list.rowTargets, expectedRows)
     Assert.isFalse(list.empty, "a populated map list is not empty (" .. label .. ")")
     Assert.notNil(
-      layout.targets["list:location:map-list"],
+      layout.targets["list:location:group:1"],
       "the map list owns one screen-level container target (" .. label .. ")"
     )
     Assert.isTrue(
-      focusOrderContains(layout.focusOrder, "list:location:map-list"),
+      focusOrderContains(layout.focusOrder, "list:location:group:1"),
       "the container belongs to the screen-level focus order (" .. label .. ")"
     )
     Assert.isFalse(
@@ -761,11 +764,11 @@ function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible
     local layout = computeLayout(view, size[1], size[2])
     local label = size[1] .. "x" .. size[2]
     local list = assert(
-      layout.lists["location:map-list"],
+      layout.lists["location:group:1"],
       "the Location map list must publish its interaction record (" .. label .. ")"
     )
     Assert.equal(#list.rowTargets, 30, "every map stays addressable (" .. label .. ")")
-    local viewport = assert(layout.viewports["location:map-list"])
+    local viewport = assert(layout.viewports["location:group:1"])
     Assert.isTrue(viewport.lastIndex < 30, "the map list must overflow its viewport (" .. label .. ")")
     local visibleCount = viewport.lastIndex - viewport.firstIndex + 1
     local materialized = 0
@@ -808,7 +811,7 @@ function T.tests.location_uses_one_mode_per_layout_without_picker_controls()
     Assert.isNil(listLayout.locationGrid, "the map list never composes the grid (" .. label .. ")")
     Assert.isNil(listLayout.locationHeader, "the map list never composes the grid header (" .. label .. ")")
     Assert.notNil(
-      listLayout.lists["location:map-list"],
+      listLayout.lists["location:group:1"],
       "the map list publishes its interaction record (" .. label .. ")"
     )
     Assert.isNil(
@@ -819,7 +822,7 @@ function T.tests.location_uses_one_mode_per_layout_without_picker_controls()
 
     local gridLayout = computeLayout(locationView(), size[1], size[2])
     Assert.isNil(
-      gridLayout.lists["location:map-list"],
+      gridLayout.lists["location:group:1"],
       "coordinate selection never composes the map list (" .. label .. ")"
     )
     Assert.notNil(gridLayout.locationGrid, "coordinate selection publishes the grid (" .. label .. ")")
@@ -858,7 +861,11 @@ function T.tests.location_grid_header_combines_identity_coordinates_and_blocked_
       "the header names the map and both coordinates on one line (" .. label .. ")"
     )
     Assert.isFalse(header.leftText:find("\n") ~= nil, "the header identity never wraps (" .. label .. ")")
-    Assert.equal(header.rightText, "blocked", "the blocked cursor reports its reason at the right (" .. label .. ")")
+    Assert.equal(
+      header.rightText,
+      "Impassable tile",
+      "the blocked cursor reports its cause at the right (" .. label .. ")"
+    )
     Assert.equal(header.leftRect.y, header.rightRect.y, "header halves share one line (" .. label .. ")")
     Assert.equal(header.leftRect.height, 14, "the header occupies one text line (" .. label .. ")")
     Assert.isTrue(
@@ -895,11 +902,11 @@ function T.tests.location_map_rows_share_their_cached_order_by_reference()
   local view = mapListView()
   local first = computeLayout(view, 800, 600)
   local second = computeLayout(view, 256, 192)
-  local firstList = assert(first.lists["location:map-list"], "the map list publishes its interaction record")
+  local firstList = assert(first.lists["location:group:1"], "the map list publishes its interaction record")
   Assert.isTrue(firstList.rowTargets == view.location.mapRowTargets, "layout shares the cached row order")
   Assert.isTrue(firstList.indexByTarget == view.location.mapIndexByTarget, "layout shares the cached row index")
   Assert.isTrue(
-    second.lists["location:map-list"].rowTargets == view.location.mapRowTargets,
+    second.lists["location:group:1"].rowTargets == view.location.mapRowTargets,
     "repeated layouts never copy the cached row order"
   )
 end

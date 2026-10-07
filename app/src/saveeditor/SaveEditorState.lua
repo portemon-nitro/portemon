@@ -24,6 +24,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
+local MapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog")
 
 ---@class SaveEditorBagItemMetadata
 ---@field item string
@@ -168,6 +169,7 @@ end
 ---@field mapSummaries fun(self: SaveEditorLocationService): table[]
 ---@field openMap fun(self: SaveEditorLocationService, mapId: integer, request: { purpose: "browse"|"verify" }?)
 ---@field releaseGrid fun(self: SaveEditorLocationService)
+---@field cancelInitialSurvey fun(self: SaveEditorLocationService)
 ---@field setViewport fun(self: SaveEditorLocationService, centerX: integer, centerZ: integer, widthTiles: integer, heightTiles: integer)
 ---@field update fun(self: SaveEditorLocationService)
 ---@field snapshot fun(self: SaveEditorLocationService): table<string, unknown>
@@ -183,6 +185,10 @@ end
 ---@field mapId integer?
 ---@field id integer?
 ---@field value boolean?
+---@field kind "group"|"map"?
+---@field mapSectionNativeId integer?
+---@field groupId string?
+---@field maps SaveEditorMapCatalogRow[]?
 
 ---@class SaveEditorIndexedListCache
 ---@field query string
@@ -191,6 +197,7 @@ end
 ---@field rows SaveEditorListFilterRow[]
 ---@field rowTargets string[]
 ---@field indexByTarget table<string, integer>
+---@field source SaveEditorListFilterRow[]?
 
 ---@class SaveEditorIndexedListProjection
 ---@field revision integer
@@ -210,6 +217,7 @@ end
 ---@field queryRevision integer
 ---@field revision integer
 ---@field cursor integer
+---@field groupMapCursor integer?
 ---@field source SaveEditorListFilterRow[]
 ---@field rows SaveEditorListFilterRow[]
 ---@field rowTargets string[]
@@ -240,6 +248,8 @@ end
 ---@field locationService SaveEditorLocationService?
 ---@field locationViewport table<string, number>?
 ---@field locationServiceMapId integer?
+---@field locationPreviewMemory table<integer, { cursor: { fieldX: integer, fieldZ: integer }, center: { fieldX: integer, fieldZ: integer } }>
+---@field locationAutoCenterToken { mapId: integer, generation: integer? }?
 ---@field locationGridWidthTiles integer?
 ---@field locationGridHeightTiles integer?
 ---@field errorMessage string?
@@ -274,6 +284,8 @@ end
 ---@field _flagCatalog { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[]?
 ---@field _flagFilter SaveEditorIndexedListCache?
 ---@field _mapCatalog SaveEditorIndexedListCache?
+---@field _locationMapCatalog SaveEditorMapCatalog?
+---@field _locationListCaches table<string, SaveEditorIndexedListCache>
 ---@field _mapFilter SaveEditorIndexedListCache?
 ---@field _pendingChoiceCursor { targetId: string?, index: integer? }?
 ---@field _listFilterTask SaveEditorListFilterTask?
@@ -330,7 +342,16 @@ local function scrollPurpose(viewportId, view)
   elseif viewportId == "value:choice" then
     return "value:choice"
   end
-  assert(viewportId == "location:map-list", "unknown save editor scroll viewport " .. viewportId)
+  assert(viewportId:match("^location:"), "unknown save editor scroll viewport " .. viewportId)
+  return nil
+end
+
+local function locationListId(navigation)
+  if navigation.page == "root" then
+    return "location:root"
+  elseif navigation.page == "group" then
+    return assert(navigation.groupId, "a map group list has a stable group ID")
+  end
   return nil
 end
 
@@ -451,6 +472,9 @@ function State.new(options)
     locationService = nil,
     locationViewport = nil,
     locationServiceMapId = nil,
+    locationPreviewMemory = {},
+    locationAutoCenterToken = nil,
+    _locationListCaches = {},
     locationGridWidthTiles = nil,
     locationGridHeightTiles = nil,
     locationSave = nil,
@@ -516,6 +540,13 @@ end
 function State:update(dt)
   if self.disposed then
     return
+  end
+  if
+    self.locationService ~= nil
+    and self.controller.section == "Location"
+    and (self.controller.locationPage == "root" or self.controller.locationPage == "group")
+  then
+    self:_locationListCache(assert(locationListId(self.controller:locationSnapshot())))
   end
   self.tickRemainder = self.tickRemainder + (dt or 0) * 60
   if self.tickRemainder >= 1 then
@@ -608,9 +639,15 @@ function State:update(dt)
       derivedAssets = self.derivedAssets,
       savedObjects = assert(graphOrError.savedObjects),
     })
+    self._locationMapCatalog = MapCatalog.new(self.locationService:mapSummaries())
+    self:_prepareLocationListCaches()
     local originalLocation = assert(self.session:snapshot().location)
     self.controller:enterLocation(originalLocation)
     self.controller:setSection("Location")
+    local initialGroup = self._locationMapCatalog:groupForMap(originalLocation.mapId)
+    if initialGroup ~= nil then
+      self.controller:rememberLocationDestination(initialGroup, "location:map:" .. tostring(originalLocation.mapId))
+    end
     self.status, self.errorMessage = "ready", nil
     self:_settleScope()
     self:_resolve(self:_snapshot())
@@ -795,8 +832,13 @@ function State:_snapshot()
   }
   if self.locationService then
     local location = self.locationService:snapshot()
+    ---@type SaveEditorIndexedListProjection
     local mapModel = self:_mapProjection()
     location.mapModel = mapModel
+    location.mapListId = locationListId(self.controller:locationSnapshot())
+    location.breadcrumb = self.controller.locationPage == "group"
+        and assert(self.controller.locationGroupId, "map breadcrumb needs its section identity")
+      or nil
     location.maps = mapModel.rowTargets
     location.mapRowTargets = mapModel.rowTargets
     location.mapIndexByTarget = mapModel.indexByTarget
@@ -986,6 +1028,9 @@ local function matchesListQuery(listId, descriptor, query)
     return descriptor.name:lower():find(query, 1, true) ~= nil
       or descriptor.displayName:lower():find(query, 1, true) ~= nil
   end
+  if descriptor.kind == "group" then
+    return descriptor.displayName:lower():find(query, 1, true) ~= nil
+  end
   return descriptor.symbol:lower():find(query, 1, true) ~= nil
     or descriptor.displayName:lower():find(query, 1, true) ~= nil
     or descriptor.section:lower():find(query, 1, true) ~= nil
@@ -1016,13 +1061,35 @@ function State:_advanceListFilter(budget)
   local visited = 0
   while task.cursor <= #task.source and visited < budget do
     local descriptor = task.source[task.cursor]
-    if matchesListQuery(task.listId, descriptor, task.foldedQuery) then
+    local matches
+    if task.groupMapCursor ~= nil then
+      local map = descriptor.maps[task.groupMapCursor]
+      visited = visited + 1
+      if map.displayName:lower():find(task.foldedQuery, 1, true) ~= nil then
+        matches = true
+      else
+        task.groupMapCursor = task.groupMapCursor + 1
+        if task.groupMapCursor > #descriptor.maps then
+          task.groupMapCursor = nil
+          task.cursor = task.cursor + 1
+        end
+      end
+    else
+      visited = visited + 1
+      matches = matchesListQuery(task.listId, descriptor, task.foldedQuery)
+      if not matches and descriptor.kind == "group" and task.foldedQuery ~= "" and #descriptor.maps > 0 then
+        task.groupMapCursor = 1
+      elseif not matches then
+        task.cursor = task.cursor + 1
+      end
+    end
+    if matches then
       task.rows[#task.rows + 1] = descriptor
       task.rowTargets[#task.rowTargets + 1] = descriptor.targetId
       task.indexByTarget[descriptor.targetId] = #task.rows
+      task.groupMapCursor = nil
+      task.cursor = task.cursor + 1
     end
-    task.cursor = task.cursor + 1
-    visited = visited + 1
   end
   if task.cursor > #task.source then
     local cache = {
@@ -1032,9 +1099,12 @@ function State:_advanceListFilter(budget)
       rows = task.rows,
       rowTargets = task.rowTargets,
       indexByTarget = task.indexByTarget,
+      source = task.source,
     }
     if task.listId == "flags" then
       self._flagFilter = cache
+    elseif task.listId:match("^location:") then
+      self._locationListCaches[task.listId] = cache
     else
       self._mapFilter = cache
     end
@@ -1049,8 +1119,11 @@ function State:_activeFilterListId()
     return nil
   elseif self.controller.section == "Progress" then
     return "flags"
-  elseif self.controller.section == "Location" and self.controller.locationPage == "map-list" then
-    return "location:map-list"
+  elseif
+    self.controller.section == "Location"
+    and (self.controller.locationPage == "root" or self.controller.locationPage == "group")
+  then
+    return locationListId(self.controller:locationSnapshot())
   end
   return nil
 end
@@ -1092,105 +1165,83 @@ function State:_filteredFlagRows()
   return cached.rows, cached.rowTargets, cached.indexByTarget
 end
 
----@return { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[] rows
----@return string[] rowTargets
----@return table<string, integer> indexByTarget
-function State:_mapCatalogRows()
-  local cached = self._mapCatalog
-  if cached == nil then
-    local rows, rowTargets, indexByTarget = {}, {}, {}
-    local summaries = assert(self.locationService, "the map catalog needs its location service"):mapSummaries()
-    for _, summary in ipairs(summaries) do
-      local descriptor = {
-        mapId = summary.mapId,
-        symbol = summary.symbol,
-        section = summary.section,
-        displayName = summary.displayName,
-        targetId = "location:map:" .. summary.mapId,
-      }
-      rows[#rows + 1] = descriptor
-      rowTargets[#rowTargets + 1] = descriptor.targetId
-      indexByTarget[descriptor.targetId] = #rows
-    end
-    cached = {
-      query = "",
-      revision = 1,
-      queryRevision = 0,
-      rows = rows,
-      rowTargets = rowTargets,
-      indexByTarget = indexByTarget,
-    }
-    self._mapCatalog = cached
-  end
-  return cached.rows, cached.rowTargets, cached.indexByTarget
-end
-
----@return { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[] rows
----@return string[] rowTargets
----@return table<string, integer> indexByTarget
-function State:_filteredMapRows()
-  local query = self.controller.query:lower()
-  local cached = self._mapFilter
-  if cached == nil then
-    local rows, rowTargets, indexByTarget = self:_mapCatalogRows()
-    cached = {
-      query = "",
-      revision = 1,
-      queryRevision = 0,
-      rows = rows,
-      rowTargets = rowTargets,
-      indexByTarget = indexByTarget,
-    }
-    self._mapFilter = cached
-  end
-  if self._listFilterTask ~= nil and self._listFilterTask.listId == "location:map-list" and cached.query == query then
-    self._listFilterTask = nil
-    self._pendingListCursor = nil
+---@return SaveEditorIndexedListProjection
+function State:_mapProjection()
+  assert(self._locationMapCatalog, "the hierarchy catalog is prepared during opening")
+  local navigation = self.controller:locationSnapshot()
+  local listId = locationListId(navigation) or navigation.groupId or "location:root"
+  local cache = assert(self._locationListCaches[listId], "map list projections are prepared during opening")
+  local filteringActive = self.controller.section == "Location"
+    and (navigation.page == "root" or navigation.page == "group")
+  local query = filteringActive and self.controller.query:lower() or cache.query
+  if not filteringActive then
+    return makeListProjection(cache, cache.revision, cache.queryRevision, false, function(index)
+      return cache.rows[index]
+    end)
   end
   if
-    cached.query ~= query
-    and (
-      self._listFilterTask == nil
-      or self._listFilterTask.listId ~= "location:map-list"
-      or self._listFilterTask.query ~= query
-    )
+    cache.query ~= query
+    and (self._listFilterTask == nil or self._listFilterTask.listId ~= listId or self._listFilterTask.query ~= query)
   then
-    local rows = self:_mapCatalogRows()
-    self:_beginListFilter("location:map-list", query, rows, cached)
-  end
-  return cached.rows, cached.rowTargets, cached.indexByTarget
-end
-
----@return { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[] rows
----@return string[] rowTargets
----@return table<string, integer> indexByTarget
-function State:_mapRows()
-  if self.controller.locationPage == "map-list" then
-    return self:_filteredMapRows()
-  end
-  return self:_mapCatalogRows()
-end
-
-function State:_mapProjection()
-  local isMapList = self.controller.section == "Location" and self.controller.locationPage == "map-list"
-  local cache
-  if isMapList then
-    self:_filteredMapRows()
-    cache = assert(self._mapFilter)
-  else
-    self:_mapCatalogRows()
-    cache = assert(self._mapCatalog)
+    self:_beginListFilter(listId, query, cache.source, cache)
   end
   local task = self._listFilterTask
-  local pending = isMapList and task ~= nil and task.listId == "location:map-list"
+  local pending = task ~= nil and task.listId == listId
   local queryRevision = cache.queryRevision
   if pending then
-    queryRevision = assert(task).queryRevision
+    queryRevision = assert(task, "active list filtering owns a query revision").queryRevision
   end
-  local projection = makeListProjection(cache, cache.revision, queryRevision, pending, function(index)
+  return makeListProjection(cache, cache.revision, queryRevision, pending, function(index)
     return cache.rows[index]
   end)
-  return projection
+end
+
+---@param listId string
+---@return SaveEditorIndexedListCache
+function State:_locationListCache(listId)
+  local cached = self._locationListCaches[listId]
+  if cached ~= nil then
+    return cached
+  end
+  local catalog = self._locationMapCatalog
+  if catalog == nil then
+    catalog = MapCatalog.new(assert(self.locationService):mapSummaries())
+    self._locationMapCatalog = catalog
+  end
+  local base
+  if listId == "location:root" then
+    base = catalog:groups("")
+  else
+    assert(listId:match("^location:group:"), "Location list identity is a root or source group")
+    base = catalog:maps(listId, "")
+  end
+  local rows, rowTargets, indexByTarget = {}, {}, {}
+  for index = 1, base.count do
+    local row = assert(base.rowAt(index), "catalog projections contain each in-range row")
+    rows[index] = row
+    rowTargets[index] = assert(base.idAt(index))
+    indexByTarget[rowTargets[index]] = index
+  end
+  cached = {
+    query = "",
+    revision = 1,
+    queryRevision = 0,
+    rows = rows,
+    rowTargets = rowTargets,
+    indexByTarget = indexByTarget,
+    source = rows,
+  }
+  self._locationListCaches[listId] = cached
+  return cached
+end
+
+function State:_prepareLocationListCaches()
+  local catalog = assert(self._locationMapCatalog, "map list preparation needs its structural catalog")
+  self:_locationListCache("location:root")
+  local groups = catalog:groups("")
+  for index = 1, groups.count do
+    self:_locationListCache(assert(groups.idAt(index), "each map section has a stable list identity"))
+  end
 end
 
 function State:_flagProjection(values)
@@ -1836,8 +1887,14 @@ end
 ---@param list table<string, unknown>
 ---@param offset number
 function State:_storeListOffset(list, offset)
-  if list.id == "location:map-list" then
+  if list.id:match("^location:") then
     self.controller.locationMapOffset = offset
+    self.controller.scrollOffset = offset
+    local memory = list.id == "location:root" and self.controller.locationMemory.root
+      or self.controller.locationMemory.groups[list.id]
+    if memory ~= nil then
+      memory.scroll = offset
+    end
   elseif list.id == "flags" or list.id == "value:choice" then
     if list.id == "value:choice" then
       self.preserveChoiceScroll = true
@@ -1923,8 +1980,9 @@ function State:_filterFocusedList(list, rowIndex, operation, text)
     end
     if list.id == "flags" then
       self.controller.scrollOffsets.flags = 0
-    elseif list.id == "location:map-list" then
+    elseif list.id:match("^location:") then
       self.controller.locationMapOffset = 0
+      self.controller.scrollOffset = 0
     else
       error("unknown filterable list " .. list.id, 2)
     end
@@ -2195,7 +2253,7 @@ end
 
 function State:_updateLocationService()
   local service = self.locationService
-  if service == nil then
+  if service == nil or self.controller.section ~= "Location" then
     return
   end
   local navigation = self.controller:locationSnapshot()
@@ -2207,9 +2265,16 @@ function State:_updateLocationService()
     return
   end
   if self.locationServiceMapId ~= mapId then
-    service:openMap(mapId, { purpose = "browse" })
+    local remembered = self.locationPreviewMemory[mapId]
+    service:openMap(mapId, {
+      purpose = "browse",
+      rememberedCursor = remembered and remembered.cursor or nil,
+    })
     self.locationServiceMapId = mapId
     self.locationViewport = nil
+    if self.locationAutoCenterToken and self.locationAutoCenterToken.mapId == mapId then
+      self.locationAutoCenterToken.generation = assert(service:snapshot().initialCursor).generation
+    end
   end
 
   local center = assert(navigation.center, "Location viewport needs a center")
@@ -2231,7 +2296,7 @@ function State:_updateLocationService()
     self.locationViewport = viewport
     local token = self.locationAutoCenterToken
     if token ~= nil and token.mapId == mapId then
-      token.generation = service:snapshot().generation
+      token.generation = assert(service:snapshot().initialCursor).generation
     end
   end
   service:update()
@@ -2255,6 +2320,7 @@ end
 function State:_syncLocationToSession()
   local current = assert(self.session:snapshot().location)
   self.controller:enterLocation(current)
+  self.locationAutoCenterToken = nil
   self.locationActionStatus = nil
   self.locationServiceMapId = nil
   self.locationViewport = nil
@@ -2503,7 +2569,19 @@ function State:_performDeferred(action)
       self:_sendResult()
     end
   elseif action.kind == "section" then
+    local leavingGrid = self.controller.section == "Location"
+      and self.controller.locationPage == "grid"
+      and action.section ~= "Location"
+    if leavingGrid then
+      self:_rememberLocationPreview()
+    end
     self.controller:setSection(action.section)
+    if leavingGrid and self.locationService then
+      self.locationAutoCenterToken = nil
+      self.locationService:releaseGrid()
+      self.locationServiceMapId = nil
+      self.locationViewport = nil
+    end
     if action.section == "Progress" then
       self.controller.query = ""
       self.controller:setFocus("list:flags")
@@ -2518,26 +2596,43 @@ function State:_performDeferred(action)
   elseif action.kind == "party-slot" then
     self.controller:selectPartySlot(action.slot0)
     self:_ensurePartyDraft()
+  elseif action.kind == "location-group-select" then
+    local projection = self:_mapProjection()
+    local index = assert(projection.indexOf(action.groupId), "selected map section belongs to the current projection")
+    local group = assert(projection.rowAt(index), "selected map section has catalog metadata")
+    local query = self.controller.query
+    local foldedQuery = query:lower()
+    local carriedQuery = group.displayName:lower():find(foldedQuery, 1, true) == nil and query ~= "" and query or nil
+    self.controller:enterLocationGroup(action.groupId, carriedQuery)
+    return
   elseif action.kind == "location-map-select" then
     local world = assert(self.dependencies.world)
     local record = world.maps[assert(world.byId[action.mapId], "selected map must be in structural world data")]
+    local remembered = self.locationPreviewMemory[action.mapId]
     local staged = self.session and self.session:snapshot().location or nil
-    if staged ~= nil and staged.mapId == action.mapId then
+    if remembered ~= nil then
+      self.controller:chooseLocationMap(action.mapId, remembered.cursor.fieldX, remembered.cursor.fieldZ)
+      self.controller.locationCenterX = remembered.center.fieldX
+      self.controller.locationCenterZ = remembered.center.fieldZ
+    elseif staged ~= nil and staged.mapId == action.mapId then
       self.controller:chooseLocationMap(action.mapId, staged.fieldX, staged.fieldZ)
     else
       self.controller:chooseLocationMap(action.mapId, record.worldOriginX + 16, record.worldOriginZ + 16)
     end
     self.locationServiceMapId = nil
     self.locationViewport = nil
+    self.locationAutoCenterToken = remembered == nil and { mapId = action.mapId } or nil
     self.locationActionStatus = nil
     self.errorMessage = nil
     self:_settleScope()
     return
   elseif action.kind == "location-cursor-move" then
+    self.locationAutoCenterToken = nil
     local width, height = self:_locationGridSize()
     self.controller:moveLocationCursor(action.direction, width, height)
     self:_updateLocationService()
   elseif action.kind == "location-pan" then
+    self.locationAutoCenterToken = nil
     if action.centerX ~= nil and action.centerZ ~= nil then
       self.controller.locationCenterX = action.centerX
       self.controller.locationCenterZ = action.centerZ
@@ -2771,20 +2866,36 @@ function State:_requestBack()
   elseif self.controller.section == "Bag" and self.controller.bagItemKey ~= nil then
     self.controller.bagItemKey = nil
     self.controller:setFocus("bag:pocket:" .. self.controller.bagPocket)
-  elseif self.controller.section == "Location" and self.controller.locationPage == "grid" then
-    self.controller:openLocationMaps()
-    if self.locationService ~= nil then
-      self.locationService:releaseGrid()
+  elseif self.controller.section == "Location" and self.controller.locationPage ~= "root" then
+    local wasGrid = self.controller.locationPage == "grid"
+    if wasGrid then
+      self:_rememberLocationPreview()
     end
-    self.locationServiceMapId = nil
-    self.locationViewport = nil
-    self.locationActionStatus = nil
+    self.locationAutoCenterToken = nil
+    self.controller:backLocation()
+    if wasGrid and self.locationService ~= nil then
+      self.locationService:releaseGrid()
+      self.locationServiceMapId = nil
+      self.locationViewport = nil
+      self.locationActionStatus = nil
+    end
     self.errorMessage = nil
   elseif self.session and self.session:isDirty() then
     self:requestClose("back")
   else
     self:_sendResult()
   end
+end
+
+function State:_rememberLocationPreview()
+  local navigation = self.controller:locationSnapshot()
+  if navigation.page ~= "grid" or navigation.mapId == nil or navigation.cursor == nil or navigation.center == nil then
+    return
+  end
+  self.locationPreviewMemory[navigation.mapId] = {
+    cursor = { fieldX = navigation.cursor.fieldX, fieldZ = navigation.cursor.fieldZ },
+    center = { fieldX = navigation.center.fieldX, fieldZ = navigation.center.fieldZ },
+  }
 end
 
 function State:_popDecision()
@@ -3090,6 +3201,11 @@ function State:_activate(targetId)
     return
   end
   if self.controller.section == "Location" then
+    local groupId = targetId:match("^location:group:%d+$")
+    if groupId ~= nil then
+      self:_performDeferred({ kind = "location-group-select", groupId = groupId })
+      return
+    end
     local mapId = targetId:match("^location:map:(%d+)$")
     if mapId ~= nil then
       self:_performDeferred({ kind = "location-map-select", mapId = assert(tonumber(mapId)) })
@@ -3308,6 +3424,18 @@ function State:_navigate(layout, direction)
   if focus == nil then
     focus = assert(logicalFocus(layout, layout.defaultFocus), "default focus belongs to a published region")
   end
+  if
+    self.controller.modal == nil
+    and self.valueEditor == nil
+    and self.controller.section == "Location"
+    and self.controller.locationPage == "grid"
+    and self.controller.locationFocus == "grid"
+    and (self.controller.focus == "location:grid" or self.controller.focus:match("^location:tile:") ~= nil)
+  then
+    self:_performDeferred({ kind = "location-cursor-move", direction = direction })
+    self.controller:markKeyboardNavigation()
+    return
+  end
   local place, arrow = focus.targetId:match("^number:place:(%d+):([^:]+)$")
   if self.valueEditor ~= nil and place ~= nil then
     local selected = assert(tonumber(place))
@@ -3396,6 +3524,15 @@ function State:_pointer(events)
       end
     end
     local intent = self.controller:pointer(event)
+    local pointerStart = self.controller.locationPointerStart
+    if
+      event.type == "pointer_move"
+      and self.controller.locationDragging
+      and pointerStart ~= nil
+      and pointerStart.grid ~= nil
+    then
+      self:_takeLocationCursorOwnership()
+    end
     if event.type == "pointer_down" and event.targetId ~= nil and self.controller.focus == event.targetId then
       local lists = plan.content.layout.lists
       if type(lists) == "table" then
@@ -3789,8 +3926,9 @@ function State:_setScrollOffset(view, layout, viewportId, offset)
   end
   if list ~= nil then
     self:_storeListOffset(list, clamped)
-  elseif viewportId == "location:map-list" then
+  elseif viewportId:match("^location:") then
     self.controller.locationMapOffset = clamped
+    self.controller.scrollOffset = clamped
   else
     if viewportId == "value:choice" then
       self.preserveChoiceScroll = true

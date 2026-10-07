@@ -1442,7 +1442,8 @@ local function paintListHints(ctx)
     local hint = list.hintRect
     if hint ~= nil and hint.height > 0 then
       local query = list.query or ""
-      local hintText = list.pending and "Filtering…" or query == "" and "Type to filter" or ("Filter: " .. query)
+      local filterText = list.pending and "Filtering…" or query == "" and "Type to filter" or ("Filter: " .. query)
+      local hintText = list.breadcrumb and (list.breadcrumb .. "  ·  " .. filterText) or filterText
       drawBodyText(renderer, fitText(renderer, hintText, hint.width / BODY_TEXT_SCALE), hint.x, hint.y, "hint")
     end
   end
@@ -1525,7 +1526,6 @@ end
 drawLocation = function(self, view, layout)
   local graphics = self.graphics
   local BORDER = self.skin.cards.normal.border
-  local tileMuted = self.skin.text.hint.foreground
   local location = assert(view.location)
   local navigation = assert(view.locationNavigation)
   local grid = layout.locationGrid
@@ -1536,7 +1536,20 @@ drawLocation = function(self, view, layout)
   if grid then
     local header = assert(layout.locationHeader, "Location grid needs its measured header")
     local ink = textPalette(self.skin, { r = 0, g = 0, b = 0 })
-    drawText(self, fitText(self, header.leftText, header.leftRect.width), header.leftRect.x, header.leftRect.y, ink)
+    drawText(
+      self,
+      fitText(self, header.mapNameText, header.mapNameRect.width),
+      header.mapNameRect.x,
+      header.mapNameRect.y,
+      ink
+    )
+    drawText(
+      self,
+      fitText(self, header.coordinatesText, header.coordinatesRect.width),
+      header.coordinatesRect.x,
+      header.coordinatesRect.y,
+      ink
+    )
     if header.rightText ~= nil and header.rightRect.width > 0 then
       local fitted = fitText(self, header.rightText, header.rightRect.width)
       local rightWidth = self.text:textWidth(fitted)
@@ -1546,7 +1559,7 @@ drawLocation = function(self, view, layout)
 
   if grid then
     local clip = grid.clip
-    setColor(graphics, { 0.84, 0.87, 0.84, 1 })
+    setColor(graphics, { 168 / 255, 168 / 255, 168 / 255, 1 })
     graphics.rectangle("fill", clip.x, clip.y, clip.width, clip.height)
     local saved = view.savedLocation
     local pending = view.pendingLocation
@@ -1559,6 +1572,9 @@ drawLocation = function(self, view, layout)
         local x = grid.originX + column * grid.tileSize
         local y = grid.originY + row * grid.tileSize
         LogicalSurface.clip(graphics, { x = x, y = y, width = grid.tileSize, height = grid.tileSize }, function()
+          if tile == nil or tile.state == "pending" then
+            return
+          end
           if tile and tile.selectable == true then
             setColor(graphics, { 0.75, 0.87, 0.7, 1 })
             graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
@@ -1572,11 +1588,6 @@ drawLocation = function(self, view, layout)
             setColor(graphics, { 0.38, 0.42, 0.44, 1 })
             graphics.line(x + 3, y + 3, x + grid.tileSize - 3, y + grid.tileSize - 3)
             graphics.line(x + grid.tileSize - 3, y + 3, x + 3, y + grid.tileSize - 3)
-          else
-            setColor(graphics, { 0.89, 0.9, 0.87, 1 })
-            graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
-            setColor(graphics, tileMuted)
-            graphics.line(x + 2, y + grid.tileSize - 2, x + grid.tileSize - 2, y + 2)
           end
           setColor(graphics, BORDER)
           graphics.rectangle("line", x, y, grid.tileSize, grid.tileSize)

@@ -21,16 +21,231 @@ function T.tests.location_section_entry_always_opens_the_map_list()
   local controller = Controller.new()
   controller:setSection("Location")
   controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
-  Assert.equal(controller:snapshot().location.page, "map-list", "section entry opens the map list")
-  Assert.equal(controller.focus, "list:location:map-list", "section entry focuses the map-list container")
+  Assert.equal(controller:snapshot().location.page, "root", "section entry opens the map-section root")
+  Assert.equal(controller.focus, "list:location:root", "section entry focuses the map-section container")
 
   controller:chooseLocationMap(7, 10, 12)
   Assert.equal(controller:snapshot().location.page, "grid", "map activation enters coordinate selection")
 
   controller:setSection("Player")
   controller:setSection("Location")
-  Assert.equal(controller:snapshot().location.page, "map-list", "returning to the section reopens the map list")
-  Assert.equal(controller.focus, "list:location:map-list", "returning focuses the map-list container")
+  Assert.equal(controller:snapshot().location.page, "root", "returning to the section reopens the hierarchy root")
+  Assert.equal(controller.focus, "list:location:root", "returning focuses the hierarchy root container")
+end
+
+function T.tests.activating_the_current_section_does_not_reset_coordinate_selection()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:chooseLocationMap(7, 10, 12)
+  controller:setSection("Location")
+  Assert.equal(controller:locationSnapshot().page, "grid", "the active section button is a no-op")
+end
+
+function T.tests.location_section_starts_at_map_hierarchy_root_without_choosing_a_map()
+  local controller = Controller.new()
+  controller:setSection("Location")
+
+  local location = controller:locationSnapshot()
+  Assert.equal(location.page, "root", "Location opens at the map-section root")
+  Assert.isNil(location.groupId, "opening the root does not choose a map section")
+  Assert.isNil(location.mapId, "opening the root does not activate a map")
+end
+
+function T.tests.saved_destination_seeds_root_group_and_first_leaf_focus()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:rememberLocationDestination("location:group:9", "location:map:72")
+
+  Assert.equal(
+    controller.locationMemory.root.cursor,
+    "location:group:9",
+    "the root starts at the saved map's source section"
+  )
+  controller:enterLocationGroup("location:group:9")
+  Assert.equal(controller.focus, "location:map:72", "the first visit starts at the saved map leaf")
+
+  controller:backLocation()
+  controller:enterLocationGroup("location:group:9")
+  Assert.equal(controller.focus, "location:map:72", "group memory remains the cursor owner on later visits")
+end
+
+function T.tests.carried_root_query_overrides_stale_group_filter_memory()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:enterLocationGroup("location:group:9")
+  controller.query = "PREVIOUS"
+  controller:backLocation()
+  controller.query = "CHILD_ONLY_MATCH"
+
+  controller:enterLocationGroup("location:group:9", "CHILD_ONLY_MATCH")
+
+  Assert.equal(controller.query, "CHILD_ONLY_MATCH", "a root child match filters the entered group")
+end
+
+function T.tests.map_hierarchy_filtering_can_switch_queries_after_a_completed_filter()
+  local state = setmetatable({
+    controller = Controller.new(),
+    locationService = {
+      mapSummaries = function()
+        return {
+          {
+            mapId = 7,
+            mapSectionNativeId = 1,
+            symbol = "MAP_ALPHA",
+            section = "ALPHA_SECTION",
+            displayName = "ALPHA_ROUTE",
+          },
+          {
+            mapId = 8,
+            mapSectionNativeId = 2,
+            symbol = "MAP_BETA",
+            section = "BETA_SECTION",
+            displayName = "BETA_ROUTE",
+          },
+        }
+      end,
+    },
+    _locationListCaches = {},
+    _listFilterTask = nil,
+    _listQueryRevision = 0,
+  }, State)
+  state._locationMapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog").new(state.locationService:mapSummaries())
+  state:_prepareLocationListCaches()
+  state.controller:setSection("Location")
+  state.controller.query = "ALPHA"
+  state:_mapProjection()
+  state:_advanceListFilter(10)
+  Assert.deepEqual(
+    state:_mapProjection().rowTargets,
+    { "location:group:1" },
+    "the first query filters the complete section catalog"
+  )
+
+  state.controller.query = "BETA"
+  state:_mapProjection()
+  state:_advanceListFilter(10)
+  Assert.deepEqual(
+    state:_mapProjection().rowTargets,
+    { "location:group:2" },
+    "a later query still filters the complete section catalog"
+  )
+end
+
+function T.tests.map_group_entry_uses_projections_prepared_before_navigation()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
+  local state = setmetatable({
+    controller = controller,
+    locationService = {
+      mapSummaries = function()
+        return {
+          {
+            mapId = 7,
+            mapSectionNativeId = 1,
+            symbol = "MAP_ALPHA",
+            section = "ALPHA_SECTION",
+            displayName = "ALPHA_ROUTE",
+          },
+          {
+            mapId = 8,
+            mapSectionNativeId = 2,
+            symbol = "MAP_BETA",
+            section = "BETA_SECTION",
+            displayName = "BETA_ROUTE",
+          },
+        }
+      end,
+    },
+    _locationListCaches = {},
+    _listFilterTask = nil,
+    _listQueryRevision = 0,
+  }, State)
+  state._locationMapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog").new(state.locationService:mapSummaries())
+  state:_locationListCache("location:root")
+
+  local catalog = assert(state._locationMapCatalog)
+  local mapProjectionCalls = 0
+  local projectMaps = catalog.maps
+  catalog.maps = function(_, groupId, query)
+    mapProjectionCalls = mapProjectionCalls + 1
+    return projectMaps(catalog, groupId, query)
+  end
+  state:_performDeferred({ kind = "location-group-select", groupId = "location:group:1" })
+  Assert.equal(mapProjectionCalls, 0, "group entry never prepares a cold map projection in the input path")
+  Assert.isNil(state._locationListCaches["location:group:1"], "entry does not materialize the group list synchronously")
+
+  controller:backLocation()
+  state:_prepareLocationListCaches()
+  local preparedCalls = mapProjectionCalls
+  state:_performDeferred({ kind = "location-group-select", groupId = "location:group:1" })
+  Assert.equal(mapProjectionCalls, preparedCalls, "readiness preparation leaves group entry projection-free")
+  Assert.notNil(state._locationListCaches["location:group:1"], "group entry reuses its prepared indexed rows")
+  Assert.equal(controller:locationSnapshot().page, "group", "preparation preserves group navigation")
+end
+
+function T.tests.location_hierarchy_back_restores_each_level_query_cursor_and_scroll()
+  local groupId, mapId, leafTargetId = "test-group", 41, "location:map:41"
+  local controller = Controller.new()
+  controller:setSection("Location")
+
+  Assert.equal(controller:locationSnapshot().page, "root", "Location starts at the source-section root")
+  controller.query = "Shared"
+  controller:setFocus(groupId)
+  controller.scrollOffset = 6
+  local rootMemory = {
+    query = controller.query,
+    cursor = controller.focus,
+    scroll = controller.scrollOffset,
+  }
+  local groupEntry = controller:press("confirm")
+  Assert.deepEqual(groupEntry, { kind = "activate", targetId = groupId }, "confirm activates the focused group")
+  Assert.isTrue(type(controller.enterLocationGroup) == "function", "Controller enters a selected source group")
+  controller:enterLocationGroup(groupId)
+  Assert.equal(controller:locationSnapshot().page, "group", "group activation opens its map leaves")
+
+  controller.query = "ALPHA"
+  controller:setFocus(leafTargetId)
+  controller.scrollOffset = 3
+  local groupMemory = {
+    query = controller.query,
+    cursor = controller.focus,
+    scroll = controller.scrollOffset,
+  }
+  local leafActivation = controller:press("confirm")
+  Assert.deepEqual(
+    leafActivation,
+    { kind = "activate", targetId = leafTargetId },
+    "confirm activates a focused leaf"
+  )
+  controller:chooseLocationMap(mapId, 12, 18)
+  Assert.equal(controller:locationSnapshot().page, "grid", "leaf activation enters coordinate selection")
+
+  Assert.isTrue(type(controller.backLocation) == "function", "Controller exposes one Location Back transition")
+  controller:backLocation()
+  Assert.equal(controller:locationSnapshot().page, "group", "first Back returns from grid to the group list")
+  Assert.deepEqual(
+    { query = controller.query, cursor = controller.focus, scroll = controller.scrollOffset },
+    groupMemory,
+    "Back restores the group query, leaf cursor, and scroll"
+  )
+  controller:backLocation()
+  Assert.equal(controller:locationSnapshot().page, "root", "second Back returns to the root")
+  Assert.deepEqual(
+    { query = controller.query, cursor = controller.focus, scroll = controller.scrollOffset },
+    rootMemory,
+    "Back restores the root query, group cursor, and scroll"
+  )
+
+  controller:enterLocationGroup(groupId)
+  Assert.deepEqual(
+    { query = controller.query, cursor = controller.focus, scroll = controller.scrollOffset },
+    groupMemory,
+    "re-entering a group restores its independent list memory"
+  )
+  controller.query = "no matching maps"
+  controller:backLocation()
+  Assert.equal(controller:locationSnapshot().page, "root", "Back escapes an empty filtered group")
 end
 
 function T.tests.entering_the_same_map_preserves_the_grid_while_section_entry_resets_to_the_list()
@@ -770,7 +985,8 @@ local function locationListHarness()
   local controller = Controller.new()
   controller:setSection("Location")
   controller:enterLocation({ mapId = 12, fieldX = 32, fieldZ = 48 })
-  controller:openLocationMaps()
+  controller:enterLocationGroup("location:group:1")
+  local listId = "location:group:1"
   local metrics = interactionMetrics()
   local maps = {
     { mapId = 12, symbol = "MAP_TEST_ROUTE", displayName = "TEST_ROUTE", section = "TEST_SECTION" },
@@ -798,10 +1014,12 @@ local function locationListHarness()
       status = "ready",
       ready = true,
       dirty = false,
-      scope = { id = "section:Location:map-list", epoch = 0, kind = "section", focusId = controller.focus },
+      scope = { id = "section:Location:group", epoch = 0, kind = "section", focusId = controller.focus },
       focus = controller.focus,
       query = controller.query,
       location = {
+        mapListId = listId,
+        breadcrumb = "TEST_SECTION",
         mapId = 12,
         symbol = "MAP_TEST_ROUTE",
         section = "TEST_SECTION",
@@ -815,7 +1033,8 @@ local function locationListHarness()
         cursor = { fieldX = 32, fieldZ = 48 },
       },
       locationNavigation = {
-        page = "map-list",
+        page = "group",
+        groupId = "location:group:1",
         contentFocus = "map-list",
         mapId = 12,
         cursor = { fieldX = 32, fieldZ = 48 },
@@ -866,10 +1085,10 @@ function T.tests.location_map_rows_browse_without_committing_the_map()
   local controller, state = harness.controller, harness.state
   local layout = harness.buildLayout()
   Assert.notNil(layout.lists, "the plan must publish one record per interactive list")
-  local list = assert(layout.lists["location:map-list"], "map rows belong to one generic list record")
+  local list = assert(layout.lists["location:group:1"], "map rows belong to one generic list record")
   Assert.deepEqual(list.rowTargets, { "location:map:12", "location:map:34", "location:map:47", "location:map:7" })
 
-  controller:setFocus("list:location:map-list")
+  controller:setFocus("list:location:group:1")
   state:_reconcileFocus()
   Assert.equal(#harness.intents, 0, "focusing map rows never starts map work")
   Assert.equal(controller.focus, "location:map:12", "the map list opens on its first row")
@@ -894,7 +1113,7 @@ local function overflowingLocationListHarness(width, height, count)
   local controller = Controller.new()
   controller:setSection("Location")
   controller:enterLocation({ mapId = 12, fieldX = 32, fieldZ = 48 })
-  controller:openLocationMaps()
+  controller:enterLocationGroup("location:group:1")
   local metrics = interactionMetrics()
   local maps = {}
   for index = 1, count do
@@ -916,6 +1135,8 @@ local function overflowingLocationListHarness(width, height, count)
       focus = controller.focus,
       query = controller.query,
       location = {
+        mapListId = "location:group:1",
+        breadcrumb = "TEST_SECTION",
         mapId = 12,
         symbol = "MAP_TEST_12",
         section = "TEST_SECTION",
@@ -929,7 +1150,8 @@ local function overflowingLocationListHarness(width, height, count)
         cursor = { fieldX = 32, fieldZ = 48 },
       },
       locationNavigation = {
-        page = "map-list",
+        page = "group",
+        groupId = "location:group:1",
         contentFocus = "map-list",
         mapId = 12,
         cursor = { fieldX = 32, fieldZ = 48 },
@@ -1002,10 +1224,10 @@ function T.tests.location_map_row_navigation_keeps_offscreen_identity()
     local label = size[1] .. "x" .. size[2]
     local harness = overflowingLocationListHarness(size[1], size[2], 30)
     local controller, state = harness.controller, harness.state
-    local viewport = assert(harness.buildLayout().viewports["location:map-list"])
+    local viewport = assert(harness.buildLayout().viewports["location:group:1"])
     Assert.isTrue(viewport.lastIndex < 30, "the map list must overflow its viewport (" .. label .. ")")
 
-    controller:setFocus("list:location:map-list")
+    controller:setFocus("list:location:group:1")
     state:_reconcileFocus()
     Assert.equal(controller.focus, "location:map:1", "the map list opens on its first row (" .. label .. ")")
 
@@ -1020,7 +1242,7 @@ function T.tests.location_map_row_navigation_keeps_offscreen_identity()
     Assert.equal(controller.locationMapId, 12, "scrolling rows never changes the committed map (" .. label .. ")")
     Assert.equal(#harness.intents, 0, "scrolling rows never starts map work (" .. label .. ")")
     Assert.equal(
-      controller:listCursor("location:map-list"),
+      controller:listCursor("location:group:1"),
       "location:map:30",
       "the cursor tracks row focus past the viewport (" .. label .. ")"
     )
@@ -1196,6 +1418,7 @@ local function recordingLocationService()
     openMaps = {},
     updateCalls = 0,
     viewportCalls = {},
+    releaseGridCalls = 0,
   }
   function stub:openMap(mapId)
     self.openMaps[#self.openMaps + 1] = mapId
@@ -1211,8 +1434,18 @@ local function recordingLocationService()
   function stub:update()
     self.updateCalls = self.updateCalls + 1
   end
+  function stub:releaseGrid()
+    self.releaseGridCalls = self.releaseGridCalls + 1
+  end
+  function stub:cancelInitialSurvey()
+    self.cancelInitialSurveyCalls = (self.cancelInitialSurveyCalls or 0) + 1
+  end
   function stub:snapshot()
-    return { generation = 3, status = { state = "pending" } }
+    return {
+      generation = 3,
+      status = { state = "pending" },
+      initialCursor = { state = "pending", mapId = 34, generation = 3, factsRevision = 1 },
+    }
   end
   return stub
 end
@@ -1262,7 +1495,7 @@ end
 function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_work()
   local harness = locationListHarness()
   local controller, state = harness.controller, harness.state
-  controller:setFocus("list:location:map-list")
+  controller:setFocus("list:location:group:1")
   state:_reconcileFocus()
   Assert.equal(controller.focus, "location:map:12", "the map list opens on its first row")
 
@@ -1339,6 +1572,430 @@ function T.tests.confirming_a_map_row_publishes_the_map_without_loading_in_the_i
 end
 
 function T.tests.steady_update_prepares_icons_from_the_published_selection()
+function T.tests.location_grid_direction_moves_the_cursor_without_a_list_viewport()
+  local harness = mapActivationHarness()
+  harness.state.locationAutoCenterToken = { mapId = 12 }
+  local before = assert(harness.controller:locationSnapshot().cursor)
+  harness.state:_navigate({
+    defaultFocus = "location:grid",
+    focusNavigation = {
+      regions = {
+        {
+          id = "body",
+          kind = "spatial",
+          order = 1,
+          defaultId = "location:grid",
+          rect = { x = 0, y = 0, width = 40, height = 40 },
+        },
+      },
+      controls = {
+        {
+          id = "location:grid",
+          regionId = "body",
+          order = 1,
+          eligible = true,
+          rect = { x = 0, y = 0, width = 40, height = 40 },
+        },
+      },
+    },
+    viewports = {},
+  }, "right")
+  local after = assert(harness.controller:locationSnapshot().cursor)
+
+  Assert.equal(after.fieldX, before.fieldX + 1, "directional grid input moves the location cursor one tile")
+  Assert.equal(after.fieldZ, before.fieldZ, "horizontal grid input preserves the row")
+  Assert.isNil(harness.state.locationAutoCenterToken, "manual grid movement takes ownership from the suggestion")
+  Assert.equal(harness.service.cancelInitialSurveyCalls or 0, 0, "manual grid movement does not cancel survey readiness")
+end
+
+function T.tests.pointer_pan_takes_location_cursor_ownership_before_the_next_update()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:chooseLocationMap(12, 32, 48)
+  local canceled = 0
+  local state = stateHarness({
+    controller = controller,
+    locationAutoCenterToken = { mapId = 12, generation = 3 },
+    locationService = {
+      cancelInitialSurvey = function()
+        canceled = canceled + 1
+      end,
+    },
+    presentation = {
+      mapInput = function(_, events)
+        return events
+      end,
+    },
+    _snapshot = function()
+      return {}
+    end,
+    _resolve = function()
+      return { content = { layout = { lists = {} } } }
+    end,
+    _reconcileFocus = function() end,
+    _syncScope = function() end,
+    _dispatchIntent = function() end,
+  })
+
+  state:_pointer({ {
+    type = "pointer_down",
+    pointerId = "touch:grid-pan",
+    targetId = "location:grid",
+    grid = { tileSize = 16 },
+    x = 10,
+    y = 10,
+    scopeId = controller.scopeId,
+    scopeEpoch = controller.scopeEpoch,
+  } })
+  state:_pointer({ {
+    type = "pointer_move",
+    pointerId = "touch:grid-pan",
+    x = 30,
+    y = 10,
+    scopeId = controller.scopeId,
+    scopeEpoch = controller.scopeEpoch,
+  } })
+
+  Assert.isNil(state.locationAutoCenterToken, "manual map panning owns the preview before an update can recenter it")
+  Assert.equal(canceled, 1, "starting a pointer pan cancels the automatic survey")
+end
+
+function T.tests.location_grid_page_only_moves_its_cursor_when_grid_has_focus()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:chooseLocationMap(12, 32, 48)
+  local function target(id, regionId, order, x, y, width, height)
+    return {
+      id = id,
+      regionId = regionId,
+      order = order,
+      eligible = true,
+      rect = { x = x, y = y, width = width, height = height },
+    }
+  end
+  local layout = {
+    scopeId = controller.scopeId,
+    scopeEpoch = controller.scopeEpoch,
+    defaultFocus = "location:grid",
+    viewports = {},
+    focusNavigation = {
+      regions = {
+        {
+          id = "sections",
+          kind = "column",
+          order = 1,
+          rect = { x = 0, y = 0, width = 20, height = 20 },
+          defaultId = "section:Location",
+          exits = {
+            right = { kind = "region", id = "body", entry = "spatial", fallback = "auto" },
+          },
+        },
+        {
+          id = "body",
+          kind = "spatial",
+          order = 2,
+          rect = { x = 32, y = 32, width = 40, height = 40 },
+          defaultId = "location:grid",
+        },
+        {
+          id = "global-footer",
+          kind = "row",
+          order = 3,
+          rect = { x = 32, y = 80, width = 40, height = 20 },
+          defaultId = "back",
+          exits = {
+            up = { kind = "region", id = "body", entry = "spatial", fallback = "auto" },
+          },
+        },
+      },
+      controls = {
+        target("section:Location", "sections", 1, 0, 0, 20, 20),
+        target("location:grid", "body", 2, 32, 32, 40, 40),
+        target("back", "global-footer", 3, 32, 80, 40, 20),
+      },
+    },
+  }
+  local cursorMoves = 0
+  local state = setmetatable({
+    controller = controller,
+    valueEditor = nil,
+    _performDeferred = function(_, intent)
+      if intent.kind == "location-cursor-move" then
+        cursorMoves = cursorMoves + 1
+      end
+    end,
+  }, State)
+  local initialCursor = controller:locationSnapshot().cursor
+
+  controller:setFocus("section:Location")
+  state:_navigate(layout, "right")
+  Assert.equal(controller.focus, "location:grid", "the section rail enters the grid through focus navigation")
+  Assert.equal(cursorMoves, 0, "section-rail focus does not move the grid cursor")
+
+  controller:setFocus("location:grid")
+  controller:setFocus("back")
+  Assert.equal(controller.locationFocus, "grid", "footer focus leaves the grid mode remembered")
+  state:_navigate(layout, "up")
+  Assert.equal(controller.focus, "location:grid", "the footer enters the grid through focus navigation")
+  Assert.equal(cursorMoves, 0, "global-footer focus does not move the grid cursor")
+  Assert.deepEqual(controller:locationSnapshot().cursor, initialCursor, "off-grid focus preserves the preview cursor")
+end
+
+function T.tests.map_hierarchy_focus_and_group_entry_wait_for_leaf_browse_activation()
+  local groupId = "test-group"
+  local harness = mapActivationHarness()
+  local controller, state, service = harness.controller, harness.state, harness.service
+  controller:backLocation()
+  controller:setFocus(groupId)
+  state:_updateLocationService()
+  Assert.isTrue(type(controller.enterLocationGroup) == "function", "Controller enters an explicit map section")
+  controller:enterLocationGroup(groupId)
+  controller:setFocus(groupId)
+  state:_updateLocationService()
+  Assert.deepEqual(service.openMaps, {}, "root and group focus do not start map preparation")
+  Assert.equal(service.updateCalls, 0, "root and group navigation do not advance location work")
+
+  controller:chooseLocationMap(34, 12, 18)
+  Assert.deepEqual(service.openMaps, {}, "publishing the coordinate page does not run a loader synchronously")
+  state:_updateLocationService()
+  Assert.deepEqual(service.openMaps, { 34 }, "the next owned update starts one browse request for the leaf")
+  state:_updateLocationService()
+  Assert.deepEqual(service.openMaps, { 34 }, "repeated grid refreshes reuse the active browse request")
+end
+
+function T.tests.ready_map_suggestion_centers_the_preview_without_committing_the_destination()
+  local harness = mapActivationHarness()
+  local writes = 0
+  harness.state.session = {
+    snapshot = function()
+      return { location = { mapId = 12, fieldX = 32, fieldZ = 48 } }
+    end,
+    setLocation = function()
+      writes = writes + 1
+      return { ok = true }
+    end,
+  }
+  harness.service.snapshot = function()
+    return {
+      generation = 3,
+      status = { state = "ready" },
+      initialCursor = {
+        state = "ready",
+        mapId = 34,
+        generation = 3,
+        fieldX = 121,
+        fieldZ = 223,
+      },
+    }
+  end
+
+  harness.state:_performDeferred({ kind = "location-map-select", mapId = 34 })
+  harness.state:_updateLocationService()
+
+  local navigation = harness.controller:locationSnapshot()
+  Assert.deepEqual(navigation.cursor, { fieldX = 121, fieldZ = 223 }, "the matching survey result centers the cursor")
+  Assert.deepEqual(navigation.center, { fieldX = 121, fieldZ = 223 }, "the matching survey result centers the viewport")
+
+  harness.state:_performDeferred({ kind = "location-pan", direction = "right" })
+  local manuallyPanned = harness.controller:locationSnapshot()
+  harness.state:_updateLocationService()
+  Assert.deepEqual(
+    harness.controller:locationSnapshot().center,
+    manuallyPanned.center,
+    "a later service publication cannot take ownership back from manual panning"
+  )
+  Assert.equal(writes, 0, "a cursor suggestion does not stage a save destination")
+end
+
+function T.tests.first_viewport_generation_keeps_the_initial_map_suggestion_current()
+  local harness = mapActivationHarness()
+  local generation = 0
+  local requestGeneration = 0
+  local initialCursor
+  function harness.service:openMap(mapId)
+    self.openMaps[#self.openMaps + 1] = mapId
+    generation = generation + 1
+    requestGeneration = requestGeneration + 1
+    initialCursor = { state = "pending", mapId = mapId, generation = requestGeneration }
+  end
+  function harness.service:setViewport()
+    generation = generation + 1
+  end
+  function harness.service:update()
+    self.updateCalls = self.updateCalls + 1
+    initialCursor = {
+      state = "ready",
+      mapId = 34,
+      generation = requestGeneration,
+      fieldX = 121,
+      fieldZ = 223,
+    }
+  end
+  function harness.service:snapshot()
+    return {
+      generation = generation,
+      status = { state = "ready" },
+      initialCursor = initialCursor,
+    }
+  end
+
+  harness.state:_performDeferred({ kind = "location-map-select", mapId = 34 })
+  harness.state:_updateLocationService()
+
+  Assert.equal(generation, 2, "the first viewport publication advances the browse generation")
+  Assert.deepEqual(
+    harness.controller:locationSnapshot().cursor,
+    { fieldX = 121, fieldZ = 223 },
+    "the state consumes a valid suggestion from its browse-request generation"
+  )
+  Assert.isNil(harness.state.locationAutoCenterToken, "consuming the current suggestion clears its token")
+end
+
+function T.tests.map_suggestion_waits_for_the_service_to_be_ready_before_centering()
+  local harness = mapActivationHarness()
+  local generation, status, initialCursor = 0, "pending", nil
+  function harness.service:openMap(mapId)
+    self.openMaps[#self.openMaps + 1] = mapId
+    generation = generation + 1
+    initialCursor = { state = "pending", mapId = mapId, generation = generation }
+  end
+  function harness.service:setViewport()
+    generation = generation + 1
+    initialCursor.generation = generation
+  end
+  function harness.service:update()
+    self.updateCalls = self.updateCalls + 1
+    if self.updateCalls == 1 then
+      initialCursor = { state = "ready", mapId = 34, generation = generation, fieldX = 16, fieldZ = 24 }
+    else
+      status = "ready"
+      initialCursor = { state = "ready", mapId = 34, generation = generation, fieldX = 121, fieldZ = 223 }
+    end
+  end
+  function harness.service:snapshot()
+    return { generation = generation, status = { state = status }, initialCursor = initialCursor }
+  end
+
+  harness.state:_performDeferred({ kind = "location-map-select", mapId = 34 })
+  harness.state:_updateLocationService()
+
+  Assert.notNil(harness.state.locationAutoCenterToken, "an early suggestion cannot consume the pending center request")
+  Assert.deepEqual(
+    harness.controller:locationSnapshot().cursor,
+    { fieldX = 116, fieldZ = 216 },
+    "a ready survey result does not move the preview while map preparation is pending"
+  )
+
+  harness.state:_updateLocationService()
+
+  Assert.deepEqual(
+    harness.controller:locationSnapshot().cursor,
+    { fieldX = 121, fieldZ = 223 },
+    "the final suggestion centers the preview after service readiness"
+  )
+  Assert.isNil(harness.state.locationAutoCenterToken, "the completed suggestion consumes its center request")
+end
+
+function T.tests.leaving_location_disarms_a_late_map_suggestion_and_releases_grid_work()
+  local harness = mapActivationHarness()
+  harness.service.snapshot = function()
+    return {
+      generation = 3,
+      status = { state = "ready" },
+      initialCursor = {
+        state = "ready",
+        mapId = 12,
+        generation = 3,
+        fieldX = 41,
+        fieldZ = 55,
+      },
+    }
+  end
+  local updatesBeforeExit = harness.service.updateCalls
+
+  harness.state:_performDeferred({ kind = "section", section = "Player" })
+  harness.state:_updateLocationService()
+
+  Assert.equal(harness.controller.section, "Player", "the user leaves Location")
+  Assert.equal(harness.service.releaseGridCalls, 1, "leaving the coordinate page releases browse work")
+  Assert.equal(harness.service.updateCalls, updatesBeforeExit, "a late result cannot advance after leaving the page")
+  Assert.deepEqual(
+    harness.controller:locationSnapshot().cursor,
+    { fieldX = 32, fieldZ = 48 },
+    "a late suggestion cannot move the preview after leaving Location"
+  )
+end
+
+function T.tests.late_suggestion_from_replaced_map_cannot_move_or_commit_the_new_preview()
+  local harness = mapActivationHarness()
+  harness.state.dependencies.world = {
+    maps = {
+      { worldOriginX = 100, worldOriginZ = 200 },
+      { worldOriginX = 300, worldOriginZ = 400 },
+    },
+    byId = { [12] = 1, [34] = 2 },
+  }
+  local writes = 0
+  harness.state.session = {
+    snapshot = function()
+      return { location = { mapId = 12, fieldX = 32, fieldZ = 48 } }
+    end,
+    setLocation = function()
+      writes = writes + 1
+      return { ok = true }
+    end,
+  }
+  local serviceView = { generation = 3, status = { state = "pending" } }
+  harness.service.openMap = function(self, mapId)
+    self.openMaps[#self.openMaps + 1] = mapId
+    serviceView = {
+      generation = serviceView.generation + 1,
+      status = { state = "pending" },
+      initialCursor = { state = "pending", mapId = mapId, generation = serviceView.generation + 1 },
+    }
+  end
+  harness.service.snapshot = function()
+    return serviceView
+  end
+
+  harness.state:_performDeferred({ kind = "location-map-select", mapId = 12 })
+  harness.state:_updateLocationService()
+  Assert.deepEqual(harness.service.openMaps, { 12 }, "map A starts the first browse request")
+
+  harness.state:_performDeferred({ kind = "location-map-select", mapId = 34 })
+  serviceView = { generation = 4, status = { state = "pending" } }
+  harness.state:_updateLocationService()
+  Assert.deepEqual(harness.service.openMaps, { 12, 34 }, "map B replaces the pending browse request")
+  local mapBPreview = harness.controller:locationSnapshot()
+
+  serviceView = {
+    generation = 3,
+    status = { state = "ready" },
+    initialCursor = {
+      state = "ready",
+      mapId = 12,
+      generation = 3,
+      fieldX = 41,
+      fieldZ = 55,
+    },
+  }
+  harness.state:_updateLocationService()
+
+  Assert.equal(harness.controller:locationSnapshot().mapId, 34, "the replacement map keeps page ownership")
+  Assert.deepEqual(
+    harness.controller:locationSnapshot().cursor,
+    mapBPreview.cursor,
+    "map A's late suggestion cannot move map B's preview cursor"
+  )
+  Assert.deepEqual(
+    harness.controller:locationSnapshot().center,
+    mapBPreview.center,
+    "map A's late suggestion cannot recenter map B's viewport"
+  )
+  Assert.equal(writes, 0, "a stale survey result never writes the staged destination")
+end
+
+function T.tests.steady_update_never_prepares_icons()
   local harness = mapActivationHarness()
   harness.state.locationViewport = { centerX = 32, centerZ = 48, widthTiles = 7, heightTiles = 5 }
   local iconPrepCalls = 0
@@ -1612,7 +2269,7 @@ function T.tests.wheel_scroll_preserves_the_logical_row_focus()
 
   local maps = overflowingLocationListHarness(800, 600, 30)
   local mapController, mapState = maps.controller, maps.state
-  mapController:setFocus("list:location:map-list")
+  mapController:setFocus("list:location:group:1")
   mapState:_reconcileFocus()
   local mapFocus = mapController.focus
   mapState:wheelmoved(0, -30)
@@ -1688,7 +2345,7 @@ function T.tests.pointer_row_activation_and_scope_exit_preserve_logical_identity
   local maps = locationListHarness()
   local mapController, mapState = maps.controller, maps.state
   installPointerPassThrough(mapState)
-  mapController:setFocus("list:location:map-list")
+  mapController:setFocus("list:location:group:1")
   mapState:_reconcileFocus()
   Assert.equal(mapController.focus, "location:map:12", "map browsing starts on a logical row")
   mapState:_pointer({
@@ -1703,7 +2360,7 @@ function T.tests.pointer_row_activation_and_scope_exit_preserve_logical_identity
   mapState:_consumeUiInput({ { type = "cancel" } })
   Assert.equal(mapController.focus, "location:map:47", "Back preserves the focused map row")
   Assert.equal(
-    mapController:listCursor("location:map-list"),
+    mapController:listCursor("location:group:1"),
     "location:map:47",
     "pointer focus synchronizes the map cursor"
   )
@@ -1725,23 +2382,23 @@ end
 function T.tests.location_map_keyboard_navigation_uses_logical_rows_without_selecting()
   local harness = overflowingLocationListHarness(256, 192, 30)
   local controller, state = harness.controller, harness.state
-  local rows = harness.buildLayout().lists["location:map-list"].rowTargets
+  local rows = harness.buildLayout().lists["location:group:1"].rowTargets
   Assert.equal(#rows, 30, "the long map list exposes every row in display order")
-  local viewport = assert(harness.buildLayout().viewports["location:map-list"])
+  local viewport = assert(harness.buildLayout().viewports["location:group:1"])
   local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
   Assert.isTrue(visibleCount < #rows, "the fixture list is longer than one viewport")
 
-  controller:setFocus("list:location:map-list")
+  controller:setFocus("list:location:group:1")
   state:_reconcileFocus()
   Assert.equal(controller.focus, rows[1], "the map list opens on its first row")
-  Assert.equal(controller:listCursor("location:map-list"), rows[1], "opening the region sets its cursor")
+  Assert.equal(controller:listCursor("location:group:1"), rows[1], "opening the region sets its cursor")
 
   state:_consumeUiInput({ { type = "navigate", direction = "down" } })
   Assert.equal(controller.focus, rows[2], "Down moves one map row")
-  Assert.equal(controller:listCursor("location:map-list"), rows[2], "the cursor follows row focus")
+  Assert.equal(controller:listCursor("location:group:1"), rows[2], "the cursor follows row focus")
   state:_consumeUiInput({ { type = "navigate", direction = "up" } })
   Assert.equal(controller.focus, rows[1], "Up moves one map row")
-  Assert.equal(controller:listCursor("location:map-list"), rows[1], "the cursor follows row focus upward")
+  Assert.equal(controller:listCursor("location:group:1"), rows[1], "the cursor follows row focus upward")
 
   state:_consumeUiInput({ { type = "navigate", direction = "left" } })
   Assert.isTrue(controller.focus ~= rows[2], "Left leaves the map list instead of paging rows")
@@ -1750,7 +2407,7 @@ function T.tests.location_map_keyboard_navigation_uses_logical_rows_without_sele
     state:_consumeUiInput({ { type = "navigate", direction = "down" } })
     Assert.equal(controller.focus, rows[index], "Down keeps walking rows (row " .. index .. ")")
     Assert.equal(
-      controller:listCursor("location:map-list"),
+      controller:listCursor("location:group:1"),
       rows[index],
       "the cursor tracks focus (row " .. index .. ")"
     )
@@ -1794,7 +2451,7 @@ function T.tests.location_grid_directions_share_the_common_navigation_intent()
   Assert.isFalse(before.fieldX == after.fieldX and before.fieldZ == after.fieldZ, "grid movement moves the cursor")
   Assert.equal(controller.locationFocus, "grid", "grid movement stays in grid focus")
   Assert.isNil(controller:listCursor("flags"), "grid movement touches no flag cursor")
-  Assert.isNil(controller:listCursor("location:map-list"), "grid movement touches no map-list cursor")
+  Assert.isNil(controller:listCursor("location:group:1"), "grid movement touches no map-list cursor")
   Assert.isNil(controller:listCursor("value:choice"), "grid movement touches no choice cursor")
 
   local harness = mapActivationHarness()
@@ -1807,6 +2464,60 @@ function T.tests.location_grid_directions_share_the_common_navigation_intent()
     "the deferred grid branch moves the cursor"
   )
   Assert.equal(harness.service.updateCalls, 1, "grid movement still advances loading through the service")
+end
+
+function T.tests.modal_navigation_does_not_move_the_underlying_location_grid()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:enterLocation({ mapId = 7, fieldX = 40, fieldZ = 50 })
+  controller:chooseLocationMap(7, 40, 50)
+  controller:openModal("leave")
+  local updateCalls = 0
+  local service = {
+    setViewport = function() end,
+    update = function()
+      updateCalls = updateCalls + 1
+    end,
+  }
+  local token = { mapId = 7, generation = 4 }
+  local state = setmetatable({
+    controller = controller,
+    locationService = service,
+    locationServiceMapId = 7,
+    locationViewport = { centerX = 40, centerZ = 50, widthTiles = 1, heightTiles = 1 },
+    locationAutoCenterToken = token,
+    locationGridWidthTiles = 1,
+    locationGridHeightTiles = 1,
+  }, State)
+  local cursorBefore = controller:locationSnapshot().cursor
+  local layout = {
+    scopeId = controller.scopeId,
+    scopeEpoch = controller.scopeEpoch,
+    defaultFocus = "cancel",
+    viewports = {},
+    focusNavigation = {
+      regions = { { id = "modal:leave", order = 1, kind = "spatial" } },
+      controls = {
+        {
+          id = "cancel",
+          regionId = "modal:leave",
+          order = 1,
+          eligible = true,
+          rect = { x = 0, y = 0, width = 10, height = 10 },
+        },
+      },
+    },
+  }
+
+  state:_navigate(layout, "right")
+
+  Assert.deepEqual(
+    controller:locationSnapshot().cursor,
+    cursorBefore,
+    "modal navigation leaves the grid cursor unchanged"
+  )
+  Assert.equal(updateCalls, 0, "modal navigation never advances LocationService")
+  Assert.equal(state.locationAutoCenterToken, token, "modal navigation preserves the pending auto-center token")
 end
 
 function T.tests.directional_input_marks_visible_focus_while_pointer_down_hides_it()
@@ -2125,13 +2836,15 @@ end
 function T.tests.map_filter_publishes_bounded_c02_generations()
   local controller = Controller.new()
   controller:setSection("Location")
-  controller.locationPage = "map-list"
+  controller.locationPage = "group"
+  controller.locationGroupId = "location:group:1"
   local summaries = {}
   for index = 1, 1000 do
     summaries[index] = {
       mapId = index,
       symbol = string.format("MAP_TEST_%04d", index),
       section = "TEST_SECTION",
+      mapSectionNativeId = 1,
       displayName = string.format("Test map %04d", index),
     }
   end
@@ -2144,12 +2857,15 @@ function T.tests.map_filter_publishes_bounded_c02_generations()
     scopeEpoch = 0,
     numberPressUntilTick = 0,
     preserveChoiceScroll = false,
+    _locationListCaches = {},
     locationService = {
       mapSummaries = function()
         return summaries
       end,
     },
   }, State)
+  state._locationMapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog").new(summaries)
+  state:_prepareLocationListCaches()
   local initial = state:_mapProjection()
   Assert.equal(initial.count, #summaries, "the initial indexed map projection covers the catalog")
   Assert.equal(initial.idAt(1), "location:map:1", "the map projection resolves stable row identity")
@@ -2172,6 +2888,44 @@ function T.tests.map_filter_publishes_bounded_c02_generations()
   Assert.isFalse(published.pending, "a completed map generation publishes atomically")
   Assert.equal(published.count, 0, "the published map query contains only matching rows")
   Assert.equal(published.revision, initial.revision + 1, "map publication advances the revision once")
+end
+
+function T.tests.map_filter_charges_each_group_child_label_to_its_budget()
+  local controller = Controller.new()
+  local maps = {}
+  for index = 1, 2000 do
+    maps[index] = { displayName = string.format("Test map %04d", index) }
+  end
+  local state = setmetatable({
+    controller = controller,
+    _locationListCaches = {},
+    _listFilterTask = nil,
+    _listQueryRevision = 0,
+  }, State)
+  local listId = "location:group:1"
+  state:_beginListFilter(listId, "not-found", {
+    {
+      kind = "group",
+      targetId = "location:group:1",
+      displayName = "Test section",
+      maps = maps,
+    },
+  }, nil)
+
+  local visited = state:_advanceListFilter(256)
+  Assert.equal(visited, 256, "every group and child-label check consumes one unit of the bounded work budget")
+  Assert.equal(state._listFilterTask.cursor, 1, "the group remains unpublished while child labels are pending")
+  Assert.equal(state._listFilterTask.groupMapCursor, 256, "the child cursor records exactly the labels already checked")
+  Assert.isNil(state._locationListCaches[listId], "an incomplete child scan never publishes a partial group projection")
+
+  while state._listFilterTask ~= nil do
+    state:_advanceListFilter(256)
+  end
+  Assert.equal(
+    #state._locationListCaches[listId].rows,
+    0,
+    "the group is excluded after all child labels fail to match"
+  )
 end
 
 function T.tests.moving_past_the_visible_window_reveals_and_focuses_the_next_row()
@@ -2805,7 +3559,7 @@ function T.tests.back_from_a_selected_bag_item_returns_to_its_pocket()
   Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
 end
 
-function T.tests.back_from_coordinate_selection_returns_to_the_map_list_and_releases_grid_work()
+function T.tests.back_from_coordinate_selection_returns_to_the_root_and_releases_grid_work()
   local releases = 0
   local service = {
     releaseGrid = function()
@@ -2815,8 +3569,8 @@ function T.tests.back_from_coordinate_selection_returns_to_the_map_list_and_rele
   local harness = backHarness({ section = "Location", dirty = true, grid = true, locationService = service })
   Assert.equal(harness.controller.locationPage, "grid", "the harness starts inside coordinate selection")
   harness.state:_requestBack()
-  Assert.equal(harness.controller.locationPage, "map-list", "one Back returns to the map list")
-  Assert.equal(harness.controller.focus, "list:location:map-list", "one Back focuses the map-list container")
+  Assert.equal(harness.controller.locationPage, "root", "one Back returns to the hierarchy root")
+  Assert.equal(harness.controller.focus, "list:location:root", "one Back focuses the hierarchy root container")
   Assert.equal(releases, 1, "abandoned grid work is released exactly once")
   Assert.isNil(harness.state.closeRequest, "Back from an inner mode never enters the leave flow")
   Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
@@ -2824,9 +3578,9 @@ end
 
 function T.tests.back_from_the_map_list_root_follows_the_normal_leave_path()
   local dirty = backHarness({ section = "Location", dirty = true, mapList = true })
-  Assert.equal(dirty.controller.locationPage, "map-list", "the harness starts at the map list root")
+  Assert.equal(dirty.controller.locationPage, "root", "the harness starts at the hierarchy root")
   dirty.state:_requestBack()
-  Assert.equal(dirty.controller.locationPage, "map-list", "root Back stays on the map list")
+  Assert.equal(dirty.controller.locationPage, "root", "root Back stays at the hierarchy root")
   Assert.notNil(dirty.state.closeRequest, "root Back with staged work enters the leave flow")
   Assert.deepEqual(dirty.results, {}, "entering the leave flow never leaves the editor")
 
@@ -2872,14 +3626,14 @@ end
 function T.tests.empty_map_filter_keeps_confirm_inert_on_the_container()
   local harness = locationListHarness()
   local controller, state = harness.controller, harness.state
-  controller:setFocus("list:location:map-list")
+  controller:setFocus("list:location:group:1")
   controller.query = "zzz-no-such-map"
   local layout = harness.buildLayout()
-  local list = assert(layout.lists["location:map-list"], "the plan publishes the map list record")
+  local list = assert(layout.lists["location:group:1"], "the plan publishes the map list record")
   Assert.isTrue(list.empty, "zero filtered maps mark the list empty")
   state:_consumeUiInput({ { type = "confirm" } })
   Assert.equal(#harness.intents, 0, "Confirm on an empty map list selects nothing")
-  Assert.equal(controller.focus, "list:location:map-list", "Confirm on an empty map list keeps container focus")
+  Assert.equal(controller.focus, "list:location:group:1", "Confirm on an empty map list keeps container focus")
 end
 
 function T.tests.back_from_a_root_section_with_staged_work_enters_the_leave_flow()

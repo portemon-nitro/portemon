@@ -9,6 +9,19 @@ local SaveEditorList = require("app.src.saveeditor.SaveEditorList")
 local SaveEditorCard = require("app.src.saveeditor.SaveEditorCard")
 local SaveEditorNumberLayout = require("app.src.saveeditor.SaveEditorNumberLayout")
 
+local LOCATION_REASONS = {
+  blocked = "Impassable tile",
+  wrong_logical_map = "Another map",
+  no_surface = "No walkable surface",
+  ambiguous_surface = "Ambiguous surface",
+  possible_actor = "Possible actor",
+  actor_motion_active = "Actor in motion",
+  outside_map = "Outside map",
+  warp = "Warp destination",
+  coordinate_trigger = "Event tile",
+  special_terrain = "Special terrain",
+}
+
 local function makeViewport(clip, offset, contentExtent, rowExtent, gap, count, rowTargets)
   local firstIndex, lastIndex = ScrollViewport.visibleRange(offset, clip.height, rowExtent, gap, count)
   return {
@@ -32,6 +45,11 @@ end
 -- the surrounding metrics require more room for that text.
 local function listRowExtent(metrics)
   return math.max(18, math.ceil(metrics.lineHeight * 0.75 + 4))
+end
+
+local function locationReason(reason)
+  assert(type(reason) == "string" and reason ~= "", "unavailable tiles carry a policy reason")
+  return LOCATION_REASONS[reason] or reason:gsub("_", " ")
 end
 
 -- One compute invocation owns a single context holding shell metrics, geometry
@@ -247,7 +265,8 @@ local function buildShell(ctx)
     ctx.contentTop = stripHeight
     if
       ctx.section == "Progress"
-      or ctx.section == "Location" and ctx.view.locationNavigation.page == "map-list"
+      or ctx.section == "Location"
+        and (ctx.view.locationNavigation.page == "root" or ctx.view.locationNavigation.page == "group")
     then
       ctx.contentTop = ctx.contentTop + ApplicationLayout.applicationFrameInsets().top + 8
     end
@@ -283,6 +302,7 @@ local function buildLocationMapList(ctx)
   local location = assert(view.location, "Location needs the headless service snapshot")
   local locationNav = assert(view.locationNavigation, "Location needs controller navigation state")
   local mapModel = assert(location.mapModel, "Location needs its indexed map projection")
+  local listId = assert(location.mapListId, "hierarchy list has a stable page identity")
   local mapRowTargets = mapModel.rowTargets
   local storedMapOffset = locationNav.mapOffset or 0
   local mapBounds = rect(contentX, contentTop, innerWidth, math.max(1, contentBottom - contentTop))
@@ -300,18 +320,19 @@ local function buildLocationMapList(ctx)
   ctx.listSurfaces[#ctx.listSurfaces + 1] = mapList.surface
   local mapViewport = registerList(
     ctx,
-    "location:map-list",
-    "location:map-list",
+    listId,
+    listId,
     mapList,
     mapRowTargets,
     view.query,
     mapModel.indexByTarget
   )
-  ctx.lists["location:map-list"].pending = mapModel.pending
+  ctx.lists[listId].pending = mapModel.pending
   local mapScroll =
     makeViewport(mapViewport, mapOffset, mapList.contentHeight, compactRowExtent, 0, mapModel.count, mapRowTargets)
   mapScroll.visibleTargets = {}
-  ctx.viewports["location:map-list"] = mapScroll
+  ctx.lists[listId].breadcrumb = location.breadcrumb
+  ctx.viewports[listId] = mapScroll
   for _, row in ipairs(mapList.rows) do
     local map = assert(mapModel.rowAt(row.index), "visible map rows resolve to their logical payload")
     local id = assert(mapModel.idAt(row.index), "visible map rows keep their logical identity")
@@ -331,7 +352,7 @@ local function buildLocationMapList(ctx)
       listSurface = true,
       targetId = id,
       label = map.displayName,
-      value = map.section,
+      value = map.kind == "group" and "›" or map.section,
       labelRect = ctx.rowLabelRects[id],
       valueRect = rect(row.rect.x + row.rect.width * 0.62, y + 3, row.rect.width * 0.34, compactRowExtent - 6),
       muted = mapModel.pending,
@@ -355,12 +376,12 @@ local function buildLocationGrid(ctx)
   local rightText
   local serviceStatus = location.status or {}
   if serviceStatus.state == "failed" then
-    rightText = serviceStatus.reason
+    rightText = locationReason(assert(serviceStatus.reason, "failed preparation carries its cause"))
   else
     for _, tile in ipairs(location.tiles or {}) do
       if tile.fieldX == cursor.fieldX and tile.fieldZ == cursor.fieldZ then
         if tile.selectable == false then
-          rightText = assert(tile.reason, "blocked grid tiles carry their policy reason")
+          rightText = locationReason(assert(tile.reason, "blocked grid tiles carry their policy reason"))
         end
         break
       end
@@ -411,14 +432,15 @@ local function buildLocationGrid(ctx)
 end
 
 local function buildLocation(ctx)
+  local location = assert(ctx.view.location)
   local locationNav = assert(ctx.view.locationNavigation, "Location needs controller navigation state")
-  if locationNav.page == "map-list" then
+  if locationNav.page == "root" or locationNav.page == "group" then
     buildLocationMapList(ctx)
   else
     buildLocationGrid(ctx)
   end
   if locationNav.contentFocus == "map-list" then
-    local viewport = ctx.viewports["location:map-list"]
+    local viewport = location.mapListId and ctx.viewports[location.mapListId]
     ctx.locationFocusCue = viewport and viewport.clip or nil
   elseif locationNav.contentFocus == "grid" then
     ctx.locationFocusCue = ctx.locationGrid and ctx.locationGrid.clip or nil
@@ -1429,10 +1451,10 @@ local function defaultFocusFor(ctx)
   elseif section == "Location" then
     if
       view.locationNavigation
-      and view.locationNavigation.page == "map-list"
-      and ctx.viewports["location:map-list"] ~= nil
+      and (view.locationNavigation.page == "root" or view.locationNavigation.page == "group")
+      and ctx.viewports[view.location.mapListId] ~= nil
     then
-      defaultFocus = "list:location:map-list"
+      defaultFocus = "list:" .. view.location.mapListId
     else
       defaultFocus = "location:grid"
     end
@@ -1466,8 +1488,8 @@ local function scrollOwnerFor(ctx)
       if view.valueEditor.kind == "choice" and ctx.viewports["value:choice"] ~= nil then
         return "value:choice"
       end
-    elseif section == "Location" and ctx.viewports["location:map-list"] ~= nil then
-      return "location:map-list"
+    elseif section == "Location" and view.location.mapListId ~= nil and ctx.viewports[view.location.mapListId] ~= nil then
+      return view.location.mapListId
     elseif section == "Party" and ctx.viewports.party ~= nil then
       return "party"
     elseif section == "Bag" and ctx.viewports.bag ~= nil then
@@ -1725,7 +1747,8 @@ function Layout.hitTest(layout, view, x, y)
     and view.valueEditor == nil
     and view.section == "Location"
     and view.locationNavigation
-    and view.locationNavigation.page ~= "map-list"
+    and view.locationNavigation.page ~= "root"
+    and view.locationNavigation.page ~= "group"
   then
     local grid = layout.locationGrid
     if grid then
