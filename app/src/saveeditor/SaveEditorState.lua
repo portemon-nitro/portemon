@@ -14,6 +14,7 @@ local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local Decisions = require("app.src.saveeditor.SaveEditorDecisions")
 local LocationSave = require("app.src.saveeditor.SaveEditorLocationSave")
+local SaveEditorNavigation = require("app.src.saveeditor.SaveEditorNavigation")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
@@ -74,6 +75,7 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field activeDraftField table<string, unknown>?
 ---@field valuePurpose string?
 ---@field dateProvider fun(): table<string, integer>
+---@field navigationDebug boolean
 ---@field iconStatus string?
 ---@field iconFailure string?
 ---@field locationSave SaveEditorLocationSave?
@@ -86,6 +88,7 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field inputTick integer
 ---@field tickRemainder number
 ---@field activeScopeId string?
+---@field activeScopeRevision string?
 ---@field scopeEpoch integer
 ---@field editorFeedback string?
 ---@field _flagCatalog { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[]?
@@ -162,6 +165,64 @@ local function scrollPurpose(viewportId, view)
   return nil
 end
 
+local function navigationSnapshot(layout, controller, editor)
+  local remembered = {}
+  for regionId, targetId in pairs(controller.focusByRegion[layout.scopeId] or {}) do
+    remembered[regionId] = targetId
+  end
+  for listId, targetId in pairs(controller.listCursors) do
+    remembered[listId] = targetId
+  end
+  return {
+    scope = { id = layout.scopeId, epoch = layout.scopeEpoch },
+    regions = layout.focusNavigation.regions,
+    controls = layout.focusNavigation.controls,
+    remembered = remembered,
+    editor = editor,
+  }
+end
+
+local function navigationSnapshotForState(state, layout)
+  local editorKind = state.valueEditor and state.valueEditor:snapshot().kind or nil
+  local editor
+  if editorKind == "name" or editorKind == "number" then
+    editor = { engaged = true, consumes = { up = true, down = true, left = true, right = true } }
+  end
+  return navigationSnapshot(layout, state.controller, editor)
+end
+
+local function logicalFocusIndex(logical, targetId)
+  if logical.matrix ~= nil then
+    for _, row in ipairs(logical.matrix) do
+      for _, id in ipairs(row) do
+        if id == targetId then
+          return true
+        end
+      end
+    end
+    return false
+  end
+  return logical.indexOf ~= nil and logical.indexOf(targetId) ~= nil
+end
+
+local function logicalFocus(layout, targetId)
+  local publication = layout.focusNavigation
+  if publication == nil then
+    return nil
+  end
+  for _, control in ipairs(publication.controls) do
+    if control.id == targetId then
+      return { scopeId = layout.scopeId, regionId = control.regionId, targetId = targetId }
+    end
+  end
+  for _, region in ipairs(publication.regions) do
+    if region.logical and logicalFocusIndex(region.logical, targetId) then
+      return { scopeId = layout.scopeId, regionId = region.id, targetId = targetId }
+    end
+  end
+  return nil
+end
+
 local function makeText(versionId)
   return FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(versionId) })
 end
@@ -207,6 +268,7 @@ function State.new(options)
     derivedAssets = options.derivedAssets,
     repositoryRoot = options.repositoryRoot,
     onResult = options.onResult,
+    navigationDebug = options.navigationDebug == true,
     displayContext = options.displayContext or DisplayContext.new({}),
     controller = Controller.new(),
     renderer = assert(rendererOrError),
@@ -251,6 +313,7 @@ function State.new(options)
     inputTick = 0,
     tickRemainder = 0,
     activeScopeId = nil,
+    activeScopeRevision = nil,
     scopeEpoch = 0,
     editorFeedback = nil,
   }, State)
@@ -919,7 +982,7 @@ function State:_finishValueEditor()
       local pending = assert(self.pendingQuantity)
       self.pendingQuantity = nil
       if pending.returnModal then
-        self.controller.focus = "bag:item:" .. pending.itemKey
+        self.controller:setFocus("bag:item:" .. pending.itemKey)
         self.controller:openModal(pending.returnModal)
       end
     end
@@ -1018,7 +1081,7 @@ function State:_beginMonAdd(species)
   end
   self.monDraft = draft
   self.controller.partySlot0 = #self.session:partySnapshot().members
-  self.controller.focus = "party:slot:" .. self.controller.partySlot0
+  self.controller:setFocus("party:slot:" .. self.controller.partySlot0)
   self.controller:cancelInteraction()
   self.errorMessage = nil
   return true
@@ -1081,7 +1144,7 @@ function State:_publishBagQuantity(itemKey, quantity)
         if row.item == itemKey then
           self.controller.bagPage0 = math.floor((index - 1) / 6)
           self.controller.bagItemKey = itemKey
-          self.controller.focus = "bag:item:" .. itemKey
+          self.controller:setFocus("bag:item:" .. itemKey)
           break
         end
       end
@@ -1260,48 +1323,6 @@ function State:_syncChoiceSelection(list, targetId)
   end
 end
 
----@param list table<string, unknown>
----@param rowIndex integer
----@param direction string
----@param layout table<string, unknown>
-function State:_moveListRow(list, rowIndex, direction, layout)
-  local viewport = assert(layout.viewports[list.viewportId], "list movement needs its scroll viewport")
-  local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
-  local delta = direction == "up" and -1
-    or direction == "down" and 1
-    or direction == "left" and -visibleCount
-    or direction == "right" and visibleCount
-    or error("list movement needs a cardinal direction", 2)
-  local nextIndex = math.max(1, math.min(#list.rowTargets, rowIndex + delta))
-  if list.id == "value:choice" then
-    local editor = assert(self.valueEditor, "choice rows need their value editor")
-    self.preserveChoiceScroll = false
-    self:_syncChoiceSelection(list, list.rowTargets[rowIndex])
-    if nextIndex ~= rowIndex then
-      editor:moveChoice(nextIndex - rowIndex)
-    end
-    local selected = assert(editor:snapshot().selectedKey, "choice movement keeps a selected row")
-    local target = "choice:" .. selected
-    self.controller:setListCursor(list.id, target)
-    self.controller:setFocus(target)
-    return
-  end
-  -- Logical movement never depends on which rows the previous layout materialized:
-  -- the cursor moves by index, the offset reveals that index, and focus is
-  -- reconciled only after a fresh layout makes the target visible.
-  local target = assert(list.rowTargets[nextIndex], "list movement stays within its rows")
-  self.controller:setListCursor(list.id, target)
-  local offset = ScrollViewport.reveal(
-    viewport.offset,
-    viewport.clip.height,
-    (nextIndex - 1) * viewport.rowExtent,
-    viewport.rowExtent
-  )
-  offset = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
-  self:_storeListOffset(list, offset)
-  self:_reconcileFocus(target, self:_resolve(self:_snapshot()).content.layout)
-end
-
 function State:_filterFocusedList(list, rowIndex, operation, text)
   assert(list.filterable, "filtering needs a filterable list")
   local previousFocus = self.controller.focus
@@ -1381,8 +1402,22 @@ function State:_filterFocusedList(list, rowIndex, operation, text)
       self:_storeListOffset(fresh, revealed)
       self:_reconcileFocus(previousFocus, self:_resolve(self:_snapshot()).content.layout)
     else
-      self.controller:setListCursor(fresh.id, fresh.rowTargets[1])
-      self.controller:setFocus(fresh.rowTargets[1])
+      local nearestIndex = math.min(assert(rowIndex, "focused rows have a logical index"), #fresh.rowTargets)
+      local nearestTarget = fresh.rowTargets[nearestIndex]
+      self.controller:setListCursor(fresh.id, nearestTarget)
+      local viewport = assert(layout.viewports[fresh.viewportId], "filtering keeps its scroll viewport")
+      local revealed = ScrollViewport.clamp(
+        ScrollViewport.reveal(
+          viewport.offset,
+          viewport.clip.height,
+          (nearestIndex - 1) * viewport.rowExtent,
+          viewport.rowExtent
+        ),
+        viewport.contentExtent,
+        viewport.clip.height
+      )
+      self:_storeListOffset(fresh, revealed)
+      self:_reconcileFocus(nearestTarget, self:_resolve(self:_snapshot()).content.layout)
     end
   else
     self:_reconcileListCursor(fresh)
@@ -1400,14 +1435,6 @@ function State:_handleListConfirm(list, rowIndex, layout)
   local cursor = self:_reconcileListCursor(list)
   if cursor == nil then
     return
-  end
-  if list.id == "value:choice" then
-    self:_syncChoiceSelection(list, cursor)
-    local editor = assert(self.valueEditor, "choice rows need their value editor")
-    local selected = editor:snapshot().selectedKey
-    if selected ~= nil then
-      cursor = "choice:" .. selected
-    end
   end
   self.controller:setListCursor(list.id, cursor)
   local resolved = layout or self:_resolve(self:_snapshot()).content.layout
@@ -1443,21 +1470,57 @@ function State:_reconcileFocus(preferred, layout)
   local before = self.controller.focus
   ---@type string?
   local focus = preferred or self.pendingFocusReturn or self.controller.focus
-  if focus ~= nil and current.focusGraph[focus] == nil then
-    focus = nil
+  local logical = focus ~= nil and logicalFocus(current, focus) or nil
+  local rememberedFocus = self.controller.focusByScope[current.scopeId]
+  local fallbackTargets = {}
+  local defaultFocus = current.defaultFocus
+  local defaultLogical = defaultFocus ~= nil and logicalFocus(current, defaultFocus) or nil
+  if logical == nil and defaultLogical == nil then
+    -- A page default can be a geometry sentinel without a published eligible
+    -- control. Return to the active section before using the first eligible
+    -- control in layout order.
+    fallbackTargets[#fallbackTargets + 1] = "section:" .. self.controller.section
+    for _, control in ipairs(current.focusNavigation.controls) do
+      if control.eligible then
+        fallbackTargets[#fallbackTargets + 1] = control.id
+        break
+      end
+    end
+  else
+    if rememberedFocus ~= nil then
+      fallbackTargets[#fallbackTargets + 1] = rememberedFocus
+    end
+    if defaultFocus ~= nil then
+      fallbackTargets[#fallbackTargets + 1] = defaultFocus
+    end
+    if logical == nil and rememberedFocus == nil then
+      logical = defaultLogical
+    end
   end
-  self.controller:reconcileFocus(current.focusGraph, focus, { current.defaultFocus })
+  local reconciled = SaveEditorNavigation.reconcile(
+    navigationSnapshot(current, self.controller),
+    logical or { scopeId = current.scopeId, regionId = "", targetId = focus or "" },
+    fallbackTargets
+  )
+  self.controller:setFocus(reconciled.targetId)
+  self.controller:rememberRegionFocus(reconciled.regionId, reconciled.targetId)
+  for _, region in ipairs(current.focusNavigation.regions) do
+    if region.id == reconciled.regionId and region.kind == "list" then
+      self.controller:setListCursor(region.id, reconciled.targetId)
+      break
+    end
+  end
   self.pendingFocusReturn = nil
-  local reconciled = current
+  local freshLayout = current
   if self.controller.focus ~= before then
-    reconciled = self:_resolve(self:_snapshot()).content.layout
+    freshLayout = self:_resolve(self:_snapshot()).content.layout
   end
-  if reconciled.lists ~= nil then
-    for _, list in pairs(reconciled.lists) do
+  if freshLayout.lists ~= nil then
+    for _, list in pairs(freshLayout.lists) do
       self:_reconcileListCursor(list)
     end
   end
-  return reconciled
+  return freshLayout
 end
 
 ---@param editor SaveEditorValueEditor
@@ -1765,7 +1828,7 @@ function State:_performDeferred(action)
     self.controller:setSection(action.section)
     if action.section == "Progress" then
       self.controller.query = ""
-      self.controller.focus = "list:flags"
+      self.controller:setFocus("list:flags")
     elseif action.section == "Location" and self.locationService then
       self:_updateLocationService()
     elseif action.section == "Party" then
@@ -1829,7 +1892,7 @@ function State:_confirmRemoval()
   local rows = self.session:bagSnapshot(self.controller.bagPocket)
   self.controller.bagPage0 = math.min(self.controller.bagPage0, math.max(0, math.ceil(#rows / 6) - 1))
   local focusRow = rows[math.min(oldIndex, #rows)]
-  self.controller.focus = focusRow and "bag:item:" .. focusRow.item or "bag:add"
+  self.controller:setFocus(focusRow and "bag:item:" .. focusRow.item or "bag:add")
 end
 
 -- Reports whether a destination verification is currently pending.
@@ -1920,9 +1983,9 @@ function State:_discard(leave)
   self.controller.partySlot0 = nil
   self.controller.bagItemKey = nil
   if self.controller.section == "Party" then
-    self.controller.focus = "party:add"
+    self.controller:setFocus("party:add")
   elseif self.controller.section == "Bag" then
-    self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
+    self.controller:setFocus("bag:pocket:" .. self.controller.bagPocket)
   end
   if leave then
     self.controller.modal = nil
@@ -1981,7 +2044,7 @@ function State:_discardSection()
       slot0 = #members > 0 and members[1].slot0 or nil
       self.controller.partySlot0 = slot0
     end
-    self.controller.focus = slot0 ~= nil and ("party:slot:" .. slot0) or "party:add"
+    self.controller:setFocus(slot0 ~= nil and ("party:slot:" .. slot0) or "party:add")
     self:_ensurePartyDraft()
     return
   elseif section == "Bag" then
@@ -1990,7 +2053,7 @@ function State:_discardSection()
       self.pendingQuantity = nil
       self.controller:closeModal()
       self.controller.bagItemKey = nil
-      self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
+      self.controller:setFocus("bag:pocket:" .. self.controller.bagPocket)
     end
   end
   self.errorMessage = nil
@@ -2033,7 +2096,7 @@ function State:_requestBack()
     end
   elseif self.controller.section == "Bag" and self.controller.bagItemKey ~= nil then
     self.controller.bagItemKey = nil
-    self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
+    self.controller:setFocus("bag:pocket:" .. self.controller.bagPocket)
   elseif self.controller.section == "Location" and self.controller.locationPage == "grid" then
     self.controller:openLocationMaps()
     if self.locationService ~= nil then
@@ -2058,7 +2121,7 @@ function State:_popDecision()
     self.closeRequest = nil
     self.controller.modal = request.previousModal
     self.controller.modalReturnFocus = request.previousModalReturnFocus
-    self.controller.focus = request.previousFocus
+    self.controller:setFocus(request.previousFocus)
   elseif modal == "party-move" then
     self.pendingMoveSlot = nil
     self.controller:closeModal()
@@ -2084,7 +2147,7 @@ function State:_showMoveOverlay(slot0, focusTarget)
   self.moveChildAction = nil
   self.controller:openModal("party-move")
   self.controller.modalReturnFocus = "party:move:" .. slot0
-  self.controller.focus = focusTarget or "party-move:move"
+  self.controller:setFocus(focusTarget or "party-move:move")
 end
 
 function State:_openMoveChild(action)
@@ -2334,6 +2397,29 @@ function State:_activate(targetId)
     end
     return
   end
+  if self.controller.section == "Location" then
+    local mapId = targetId:match("^location:map:(%d+)$")
+    if mapId ~= nil then
+      self:_performDeferred({ kind = "location-map-select", mapId = assert(tonumber(mapId)) })
+      return
+    end
+    local fieldX, fieldZ = targetId:match("^location:tile:(%-?%d+):(%-?%d+)$")
+    if fieldX ~= nil then
+      self:_performDeferred({
+        kind = "select_tile",
+        fieldX = assert(tonumber(fieldX)),
+        fieldZ = assert(tonumber(fieldZ)),
+      })
+      return
+    end
+    if targetId == "location:grid" then
+      local cursor = self.controller:locationSnapshot().cursor
+      if cursor ~= nil then
+        self:_performDeferred({ kind = "select_tile", fieldX = cursor.fieldX, fieldZ = cursor.fieldZ })
+      end
+      return
+    end
+  end
   local section = targetId:match("^section:(.+)$")
   if section ~= nil then
     self:_requestDraftResolution({ kind = "section", section = section })
@@ -2455,6 +2541,22 @@ function State:_activate(targetId)
   end
 end
 
+function State:_activateControl(targetId, layout)
+  local control
+  for _, candidate in ipairs(layout.focusNavigation.controls) do
+    if candidate.id == targetId then
+      control = candidate
+      break
+    end
+  end
+  if control == nil or not control.eligible then
+    return
+  end
+  local action = assert(control.action, "active controls publish an action record")
+  assert(action.kind == "target", "unknown Save Editor control action")
+  self:_activate(action.targetId)
+end
+
 function State:_dispatchIntent(intent)
   if intent == nil then
     return
@@ -2462,9 +2564,9 @@ function State:_dispatchIntent(intent)
   if intent.kind == "back" then
     self:_requestBack()
   elseif intent.kind == "activate" then
-    self:_activate(intent.targetId)
+    self:_activateControl(intent.targetId, self:_reconcileFocus())
   elseif intent.kind == "action" then
-    self:_activate(intent.action)
+    self:_activateControl(intent.action, self:_reconcileFocus())
   elseif
     intent.kind == "location-map-select"
     or intent.kind == "location-cursor-move"
@@ -2479,7 +2581,7 @@ function State:_dispatchIntent(intent)
       self.closeRequest = nil
       self.controller.modal = request.previousModal
       self.controller.modalReturnFocus = request.previousModalReturnFocus
-      self.controller.focus = request.previousFocus
+      self.controller:setFocus(request.previousFocus)
     elseif self.valueEditor then
       self.valueEditor:cancel()
       self:_finishValueEditor()
@@ -2502,56 +2604,67 @@ function State:_dispatchIntent(intent)
   elseif intent.kind == "move" then
     local plan = self:_resolve(self:_snapshot())
     local layout = assert(plan.content.layout)
-    if layout.focusGraph[self.controller.focus] == nil then
-      self.controller.focus = layout.defaultFocus
-    end
-    self.controller:moveFocus(layout.focusGraph, intent.direction)
-    if
-      self.controller.section == "Party"
-      or self.controller.section == "Bag"
-      or self.controller.section == "Progress"
-    then
-      self:_revealFocusedRow(layout.focusOrder)
-    end
+    self:_navigate(layout, intent.direction)
     self.controller:cancelInteraction()
   end
 end
 
-function State:_revealFocusedRow(_)
-  local view = self:_snapshot()
-  local section = self.controller.section
-  if section == "Bag" then
+function State:_navigate(layout, direction)
+  assert(layout.focusNavigation, "Save Editor layout publishes navigation regions")
+  local focus = logicalFocus(layout, self.controller.focus)
+  if focus == nil then
+    focus = assert(logicalFocus(layout, layout.defaultFocus), "default focus belongs to a published region")
+  end
+  local snapshot = navigationSnapshotForState(self, layout)
+  local resolved = SaveEditorNavigation.resolve(snapshot, focus, direction)
+  self.controller:markKeyboardNavigation()
+  if resolved.kind == "edit" then
+    assert(self.valueEditor, "an editing result requires an active native editor")
+    self.valueEditor:press(direction)
+  elseif resolved.kind == "move" then
+    self:_applyNavigationMove(layout, resolved)
+  end
+end
+
+---@param layout table<string, unknown>
+---@param resolved table<string, unknown>
+function State:_applyNavigationMove(layout, resolved)
+  local targetId = assert(resolved.targetId)
+  local regionId = assert(resolved.regionId)
+  self.controller:setFocus(targetId)
+  self.controller:rememberRegionFocus(regionId, targetId)
+  if resolved.reveal == nil then
     return
   end
-  if section == "Party" and (view.partyTab ~= "Details" or view.partyDetails == nil) then
-    return
-  end
-  local rows = section == "Party" and view.partyDetails.rows or section == "Progress" and view.flagRows or {}
-  ---@cast rows { targetId: string?, name: string? }[]
-  local rowIndex
-  for index, row in ipairs(rows) do
-    local targetId = row.targetId or ("flag:" .. assert(row.name, "flag rows carry their logical name"))
-    if targetId == self.controller.focus then
-      rowIndex = index
+  for _, region in ipairs(layout.focusNavigation.regions) do
+    if region.id == regionId and region.kind == "list" then
+      self.controller:setListCursor(region.id, targetId)
       break
     end
   end
-  if rowIndex == nil then
-    return
-  end
-  local layout = assert(self:_resolve(view).content.layout)
-  local viewportId = section == "Party" and "party" or section == "Bag" and "bag" or "flags"
-  local viewport = assert(layout.viewports[viewportId])
+  local reveal = resolved.reveal
+  local viewport = assert(layout.viewports[reveal.viewportId], "logical focus reveal has a published viewport")
   local offset = ScrollViewport.reveal(
     viewport.offset,
     viewport.clip.height,
-    (rowIndex - 1) * viewport.rowExtent,
+    (reveal.index - 1) * viewport.rowExtent,
     viewport.rowExtent
   )
-  local purpose = section == "Party" and ("party:" .. tostring(view.partyTab))
-    or section == "Bag" and ("bag:" .. tostring(view.bagPocket))
-    or "flags"
-  self.controller.scrollOffsets[purpose] = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
+  self:_setScrollOffset(self:_snapshot(), layout, reveal.viewportId, offset)
+end
+
+---@param layout table<string, unknown>
+---@param direction "previous"|"next"
+function State:_navigateTab(layout, direction)
+  local focus = logicalFocus(layout, self.controller.focus)
+  if focus == nil then
+    focus = assert(logicalFocus(layout, layout.defaultFocus), "default focus belongs to a published region")
+  end
+  local resolved = SaveEditorNavigation.resolveTab(navigationSnapshotForState(self, layout), focus, direction)
+  self.controller:markKeyboardNavigation()
+  if resolved.kind == "move" then
+    self:_applyNavigationMove(layout, resolved)
+  end
 end
 
 function State:_pointer(events)
@@ -2639,6 +2752,55 @@ function State:draw()
     view,
     view.presentation
   )
+  self:_drawNavigationDebug(view)
+end
+
+function State:_drawNavigationDebug(view)
+  if not self.navigationDebug or view.layout == nil then
+    return
+  end
+  local layout = view.layout
+  local focus = logicalFocus(layout, self.controller.focus)
+  if focus == nil then
+    return
+  end
+  local control
+  for _, candidate in ipairs(layout.focusNavigation.controls) do
+    if candidate.id == focus.targetId then
+      control = candidate
+      break
+    end
+  end
+  local region
+  for _, candidate in ipairs(layout.focusNavigation.regions) do
+    if candidate.id == focus.regionId then
+      region = candidate
+      break
+    end
+  end
+  local graphics = self.renderer.graphics
+  local rect = control and control.rect or region and region.rect
+  graphics.push("all")
+  graphics.setColor(1, 0.85, 0.2, 1)
+  if rect ~= nil then
+    graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
+  end
+  local lines = { focus.regionId .. " / " .. focus.targetId }
+  local snapshot = navigationSnapshotForState(self, layout)
+  for _, direction in ipairs({ "up", "down", "left", "right" }) do
+    local resolved = SaveEditorNavigation.resolve(snapshot, focus, direction)
+    lines[#lines + 1] = direction
+      .. ": "
+      .. resolved.reason
+      .. (resolved.targetId and (" → " .. resolved.targetId) or "")
+  end
+  graphics.setColor(0, 0, 0, 0.9)
+  graphics.rectangle("fill", 4, 4, 250, #lines * 14 + 8)
+  graphics.setColor(1, 1, 1, 1)
+  for index, line in ipairs(lines) do
+    graphics.print(line, 8, 8 + (index - 1) * 14)
+  end
+  graphics.pop()
 end
 
 function State:resize(width, height)
@@ -2672,51 +2834,14 @@ function State:_consumeUiInput(events)
   self:_settleScope()
   for _, event in ipairs(events) do
     if event.type == "navigate" then
-      self.controller:markKeyboardNavigation()
-      if self.controller.modal then
-        local layout = self:_reconcileFocus()
-        self.controller:moveFocus(layout.focusGraph, event.direction)
-      elseif self.valueEditor then
-        local snapshot = self.valueEditor:snapshot()
-        if snapshot.kind == "choice" then
-          local layout = self:_reconcileFocus()
-          local list, rowIndex = self:_activeList(layout)
-          if list ~= nil and list.id == "value:choice" and rowIndex ~= nil then
-            self:_moveListRow(list, rowIndex, event.direction, layout)
-            self.controller:cancelInteraction()
-          elseif list ~= nil and list.id == "value:choice" then
-            self.controller:moveFocus(layout.focusGraph, event.direction)
-            self.controller:cancelInteraction()
-          else
-            self.preserveChoiceScroll = false
-            if event.direction == "up" or event.direction == "down" then
-              self.valueEditor:moveChoice(event.direction == "up" and -1 or 1)
-            else
-              local viewport = assert(layout.viewports["value:choice"])
-              local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
-              self.valueEditor:moveChoice((event.direction == "left" and -1 or 1) * visibleCount)
-            end
-            local selected = self.valueEditor:snapshot().selectedKey
-            self.controller.focus = selected and ("choice:" .. selected) or "cancel"
-          end
-        elseif snapshot.kind == "name" or snapshot.kind == "number" then
-          self.valueEditor:press(event.direction)
-        end
-      else
-        local layout = self:_reconcileFocus()
-        local list, rowIndex = self:_activeList(layout)
-        if list ~= nil and rowIndex ~= nil then
-          self:_moveListRow(list, rowIndex, event.direction, layout)
-          self.controller:cancelInteraction()
-        else
-          self:_dispatchIntent(self.controller:press(event.direction))
-        end
-      end
+      local layout = self:_reconcileFocus()
+      self:_navigate(layout, event.direction)
+      self.controller:cancelInteraction()
     elseif event.type == "confirm" then
       local currentLayout = self:_reconcileFocus()
       if self.controller.modal then
         local target = currentLayout.targets[self.controller.focus]
-        if target and target.activationEnabled and currentLayout.focusGraph[self.controller.focus] then
+        if target and target.focusable and target.activationEnabled then
           self:_dispatchIntent(self.controller:press("confirm"))
         end
       elseif self:_activeList(currentLayout) ~= nil then
@@ -2740,17 +2865,11 @@ function State:_consumeUiInput(events)
     elseif event.type == "cancel" then
       if self.controller.modal then
         self:_dispatchIntent(self.controller:press("cancel"))
+      elseif self.valueEditor then
+        self.valueEditor:cancel()
+        self:_finishValueEditor()
       else
-        local layout = self:_resolve(self:_snapshot()).content.layout
-        local list, rowIndex = self:_activeList(layout)
-        if list ~= nil and rowIndex ~= nil then
-          self.controller:setFocus(list.targetId)
-        elseif self.valueEditor then
-          self.valueEditor:cancel()
-          self:_finishValueEditor()
-        else
-          self:_dispatchIntent(self.controller:press("cancel"))
-        end
+        self:_dispatchIntent(self.controller:press("cancel"))
       end
     end
   end
@@ -2760,6 +2879,13 @@ end
 
 function State:keypressed(key, _, isrepeat)
   if self.disposed or isrepeat or self.status == "opening" then
+    return
+  end
+  if key == "tab" then
+    local layout = self:_resolve(self:_snapshot()).content.layout
+    local direction = love.keyboard.isDown("lshift", "rshift") and "previous" or "next"
+    self:_navigateTab(layout, direction)
+    self.controller:cancelInteraction()
     return
   end
   if self.controller.modal then
@@ -2790,12 +2916,8 @@ function State:keypressed(key, _, isrepeat)
         self:_finishValueEditor()
       end
     elseif key == "escape" then
-      if choiceList ~= nil and editorRow ~= nil then
-        self.controller:setFocus(choiceList.targetId)
-      else
-        self.valueEditor:cancel()
-        self:_finishValueEditor()
-      end
+      self.valueEditor:cancel()
+      self:_finishValueEditor()
     elseif key == "backspace" then
       if choiceList ~= nil then
         self:_filterFocusedList(choiceList, editorRow, "backspace")
@@ -2810,17 +2932,7 @@ function State:keypressed(key, _, isrepeat)
       end
     elseif key == "left" or key == "right" or key == "up" or key == "down" then
       self.controller:markKeyboardNavigation()
-      if choiceList ~= nil and editorRow ~= nil then
-        self:_moveListRow(choiceList, editorRow, key, editorLayout)
-      elseif choiceList ~= nil then
-        self.controller:moveFocus(editorLayout.focusGraph, key)
-      elseif self.valueEditor:snapshot().kind == "choice" and (key == "left" or key == "right") then
-        local viewport = assert(editorLayout.viewports["value:choice"])
-        local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
-        self.valueEditor:moveChoice((key == "left" and -1 or 1) * visibleCount)
-      else
-        self.valueEditor:press(key)
-      end
+      self:_navigate(editorLayout, key)
     end
     self:_reconcileFocus()
     self:_settleScope()
@@ -2835,6 +2947,13 @@ function State:keypressed(key, _, isrepeat)
       self:_settleScope()
     end
     return
+  end
+  if isPrintableKeyName(key) then
+    local layout = self:_resolve(self:_snapshot()).content.layout
+    local list = self:_activeList(layout)
+    if list ~= nil and list.filterable then
+      return
+    end
   end
   if self.controller.section == "Progress" and isPrintableKeyName(key) then
     return
@@ -2959,7 +3078,6 @@ function State:_setScrollOffset(view, layout, viewportId, offset)
   end
   if list ~= nil then
     self:_storeListOffset(list, clamped)
-    self:_clampListCursorToVisible(list, viewport, clamped)
   elseif viewportId == "location:map-list" then
     self.controller.locationMapOffset = clamped
   else
@@ -2972,6 +3090,9 @@ function State:_setScrollOffset(view, layout, viewportId, offset)
 end
 
 function State:wheelmoved(_, y)
+  if y ~= 0 then
+    self.controller:markPointerModality()
+  end
   local view = self:_snapshot()
   local layout = assert(self:_resolve(view).content.layout)
   local viewportId = layout.scrollOwner

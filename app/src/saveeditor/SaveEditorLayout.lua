@@ -1472,6 +1472,93 @@ local function scrollOwnerFor(ctx)
   return nil
 end
 
+local function buildFocusNavigation(ctx, targetRecords)
+  local regions, controls, regionsById = {}, {}, {}
+  local function regionFor(targetId, record)
+    if targetId:match("^section:") then
+      return "sections"
+    end
+    local viewportId = ctx.viewportByTarget[targetId]
+    for listId, list in pairs(ctx.lists) do
+      if targetId == list.targetId or viewportId == list.viewportId then
+        return listId
+      end
+    end
+    if targetId:match("^party:slot:") or targetId == "party:add" then
+      return "party:members"
+    elseif targetId:match("^party:page:") then
+      return "party:pager"
+    elseif targetId:match("^bag:pocket:") then
+      return "bag:pockets"
+    elseif targetId:match("^bag:page:") or targetId == "bag:add" then
+      return "bag:actions"
+    elseif targetId == "save" or targetId == "discard" or targetId == "cancel" then
+      return "global-footer"
+    end
+    if viewportId ~= nil then
+      return "viewport:" .. viewportId
+    end
+    return "body"
+  end
+  local function addRegion(id, kind, bounds)
+    local region = regionsById[id]
+    if region == nil then
+      region = { id = id, kind = kind, order = #regions + 1, rect = bounds }
+      regionsById[id] = region
+      regions[#regions + 1] = region
+    elseif bounds ~= nil then
+      local left, top = math.min(region.rect.x, bounds.x), math.min(region.rect.y, bounds.y)
+      region.rect = {
+        x = left,
+        y = top,
+        width = math.max(region.rect.x + region.rect.width, bounds.x + bounds.width) - left,
+        height = math.max(region.rect.y + region.rect.height, bounds.y + bounds.height) - top,
+      }
+    end
+    return region
+  end
+  for targetId, record in pairs(targetRecords) do
+    if record.focusable then
+      local id = regionFor(targetId, record)
+      local list = ctx.lists[id]
+      local region = addRegion(id, list ~= nil and "list" or "spatial", record.rect)
+      if list ~= nil then
+        region.viewportId = list.viewportId
+        region.containerId = list.targetId
+        region.logical = {
+          count = #list.rowTargets,
+          idAt = function(index)
+            return list.rowTargets[index]
+          end,
+          indexOf = function(rowTarget)
+            if list.indexByTarget ~= nil then
+              return list.indexByTarget[rowTarget]
+            end
+            for index, idAt in ipairs(list.rowTargets) do
+              if rowTarget == idAt then
+                return index
+              end
+            end
+            return nil
+          end,
+        }
+        region.defaultId = region.defaultId or list.rowTargets[1] or targetId
+      else
+        region.defaultId = region.defaultId or targetId
+      end
+      controls[#controls + 1] = {
+        id = targetId,
+        rect = record.rect,
+        regionId = id,
+        order = #controls + 1,
+        eligible = record.activationEnabled,
+        action = { kind = "target", targetId = targetId },
+      }
+    end
+  end
+  return { regions = regions, controls = controls }
+end
+
 local function publishPlan(ctx)
   local view, metrics = ctx.view, ctx.metrics
   for _, targetId in ipairs(ctx.focusable) do
@@ -1531,6 +1618,7 @@ local function publishPlan(ctx)
       end
     end
   end
+  local focusNavigation = buildFocusNavigation(ctx, targetRecords)
   return {
     viewport = rect(0, 0, ctx.width, ctx.height),
     shell = ctx.shell,
@@ -1541,6 +1629,7 @@ local function publishPlan(ctx)
     navigation = ctx.navigation,
     focusOrder = ctx.focusOrder,
     focusGraph = ctx.focusGraph,
+    focusNavigation = focusNavigation,
     defaultFocus = defaultFocus,
     targets = targetRecords,
     actions = ctx.actions,

@@ -11,6 +11,7 @@ local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local State = require("app.src.saveeditor.SaveEditorState")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
+local FieldInput = require("libs.hgss.src.field.FieldInput")
 
 local T = { tests = {} }
 
@@ -36,11 +37,7 @@ function T.tests.entering_the_same_map_preserves_the_grid_while_section_entry_re
   controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
   controller:chooseLocationMap(7, 10, 12)
   controller:enterLocation({ mapId = 7, fieldX = 14, fieldZ = 18 })
-  Assert.equal(
-    controller:snapshot().location.page,
-    "grid",
-    "staged sync on the same map stays in coordinate selection"
-  )
+  Assert.equal(controller:snapshot().location.page, "grid", "staged sync on the same map stays in coordinate selection")
   Assert.deepEqual(
     controller:snapshot().location.cursor,
     { fieldX = 14, fieldZ = 18 },
@@ -298,11 +295,7 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
         ordered = true
       end
     end
-    Assert.equal(
-      ordered,
-      visible,
-      "focus order matches the materialized choice window: " .. targetId
-    )
+    Assert.equal(ordered, visible, "focus order matches the materialized choice window: " .. targetId)
   end
   Assert.equal(#layout.lists["value:choice"].rowTargets, 12, "the logical choice order stays complete")
   Assert.isNil(layout.targets.save, "the value scope cannot publish shell targets")
@@ -319,7 +312,6 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
     expectedRows[#expectedRows + 1] = "choice:" .. option.key
   end
   Assert.deepEqual(viewport.rowTargets, expectedRows)
-
 
   local first = assert(layout.targets["choice:choice-01"])
   Assert.equal(first.role, "choice")
@@ -340,7 +332,6 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
     "the visible part of a partially clipped choice remains actionable"
   )
 end
-
 
 local function interactionMetrics()
   return {
@@ -400,10 +391,6 @@ local function progressListHarness(flagCatalog)
     return Layout.compute(buildView(), 256, 192, metrics)
   end
   local current = { view = buildView(), layout = buildLayout() }
-  local function sync()
-    current.view = buildView()
-    current.layout = buildLayout()
-  end
   local activations = {}
   local backs = 0
   local state = setmetatable({
@@ -422,6 +409,13 @@ local function progressListHarness(flagCatalog)
       backs = backs + 1
     end,
   }, State)
+  local function sync()
+    current.view = buildView()
+    current.layout = buildLayout()
+    state:_reconcileFocus(nil, current.layout)
+    current.view = buildView()
+    current.layout = buildLayout()
+  end
   return {
     controller = controller,
     state = state,
@@ -457,7 +451,7 @@ local function assertNoSearchTarget(layout)
   end
 end
 
-function T.tests.focused_list_confirm_enters_first_and_remembered_rows_without_activation()
+function T.tests.focused_list_focus_starts_on_the_row_and_activation_is_explicit()
   local harness = progressListHarness(progressFlagCatalog(6))
   local controller, state = harness.controller, harness.state
   controller:setFocus("list:flags")
@@ -466,11 +460,9 @@ function T.tests.focused_list_confirm_enters_first_and_remembered_rows_without_a
   local list = assert(harness.current.layout.lists.flags, "the flag list must publish its interaction record")
   Assert.equal(list.targetId, "list:flags", "the container target identifies the whole list")
 
-  state:_consumeUiInput({ { type = "confirm" } })
-  harness.sync()
   Assert.equal(#harness.activations, 0, "entering row focus never activates a row")
   local firstRow = list.rowTargets[1]
-  Assert.equal(controller.focus, firstRow, "Confirm enters the first row")
+  Assert.equal(controller.focus, firstRow, "the list opens directly on its first row: " .. controller.focus)
 
   state:_consumeUiInput({ { type = "navigate", direction = "down" } })
   harness.sync()
@@ -480,17 +472,19 @@ function T.tests.focused_list_confirm_enters_first_and_remembered_rows_without_a
 
   state:_consumeUiInput({ { type = "cancel" } })
   harness.sync()
-  Assert.equal(controller.focus, "list:flags", "Back returns to the list container")
-  Assert.equal(harness.backCount(), 0, "leaving row focus never leaves the enclosing section")
+  Assert.equal(controller.focus, secondRow, "Back leaves the logical cursor intact")
+  Assert.equal(harness.backCount(), 1, "Back exits the active page scope")
   Assert.equal(#harness.activations, 0, "leaving row focus never activates")
 
+  controller:setFocus(list.targetId)
+  harness.sync()
   state:_consumeUiInput({ { type = "confirm" } })
   harness.sync()
-  Assert.equal(#harness.activations, 0, "re-entering row focus never activates")
-  Assert.equal(controller.focus, secondRow, "Confirm re-enters the remembered cursor row")
+  Assert.equal(#harness.activations, 1, "explicit activation runs once")
+  Assert.equal(controller.focus, secondRow, "reconciliation restores the remembered logical row")
 end
 
-function T.tests.focused_list_row_navigation_pages_and_back_returns_to_container()
+function T.tests.focused_list_row_navigation_uses_logical_adjacency_and_back_exits_scope()
   local harness = progressListHarness(progressFlagCatalog(20))
   local controller, state = harness.controller, harness.state
   harness.sync()
@@ -508,41 +502,20 @@ function T.tests.focused_list_row_navigation_pages_and_back_returns_to_container
   Assert.equal(controller.focus, rows[2], "Down moves one row")
 
   controller:setFocus(rows[1])
-  state:_consumeUiInput({ { type = "navigate", direction = "right" } })
-  Assert.equal(
-    controller.focus,
-    rows[math.min(#rows, 1 + visibleCount)],
-    "Right pages by one visible count"
-  )
-  Assert.isTrue(
-    (controller.scrollOffsets.flags or 0) > 0,
-    "paging reveals its target row through the list viewport"
-  )
   state:_consumeUiInput({ { type = "navigate", direction = "left" } })
-  Assert.equal(
-    controller.focus,
-    rows[math.max(1, math.min(#rows, 1 + visibleCount) - visibleCount)],
-    "Left pages back by one visible count"
-  )
+  Assert.isTrue(controller.focus ~= rows[2], "Left exits the list region instead of paging rows")
 
   controller:setFocus(rows[1])
-  state:_consumeUiInput({ { type = "navigate", direction = "left" } })
-  Assert.equal(controller.focus, rows[1], "paging clamps at the first row instead of wrapping")
-
   local last = rows[#rows]
-  for _ = 1, 10 do
-    if controller.focus == last then
-      break
-    end
-    state:_consumeUiInput({ { type = "navigate", direction = "right" } })
+  for _ = 2, #rows do
+    state:_consumeUiInput({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(controller.focus, last, "repeated paging reaches the last row through revealed windows")
-  state:_consumeUiInput({ { type = "navigate", direction = "right" } })
-  Assert.equal(controller.focus, last, "paging clamps at the last row instead of wrapping")
+  Assert.equal(controller.focus, last, "logical Down reaches the last row beyond the viewport")
+  Assert.equal(controller.focus, last, "list navigation has no automatic wrap")
 
   state:_consumeUiInput({ { type = "cancel" } })
-  Assert.equal(controller.focus, "list:flags", "Back returns to the list container")
-  Assert.equal(harness.backCount(), 0, "leaving row focus never leaves the enclosing section")
+  Assert.equal(controller.focus, last, "Back preserves the logical row identity")
+  Assert.equal(harness.backCount(), 1, "Back exits the current page scope")
   Assert.equal(#harness.activations, 0, "row navigation and Back never activate")
 end
 
@@ -557,27 +530,69 @@ function T.tests.typing_filters_the_focused_list_without_a_search_target()
   harness.sync()
   Assert.equal(controller.query, "TEST_FLAG_02")
   Assert.deepEqual(harness.current.layout.lists.flags.rowTargets, { "flag:TEST_FLAG_02" })
-  Assert.equal(controller.focus, "list:flags", "typing on the container filters without entering row focus")
+  Assert.equal(controller.focus, "flag:TEST_FLAG_02", "filtering keeps focus on the surviving logical row")
   Assert.equal(#harness.activations, 0, "filtering never activates a row")
 
   controller:setFocus("list:flags")
-  state:_consumeUiInput({ { type = "confirm" } })
   harness.sync()
-  Assert.equal(controller.focus, "flag:TEST_FLAG_02", "Confirm enters the remaining row")
+  Assert.equal(controller.focus, "flag:TEST_FLAG_02", "reconciliation enters the remaining row directly")
   state:textinput("X")
   harness.sync()
   Assert.deepEqual(harness.current.layout.lists.flags.rowTargets, {})
-  Assert.equal(
-    controller.focus,
-    "list:flags",
-    "filtering away every row returns focus to the container"
-  )
+  Assert.equal(controller.focus, "list:flags", "an empty list exposes its inert placeholder")
   Assert.equal(#harness.activations, 0, "filter reconciliation never activates a row")
 
   controller:setFocus("back")
   state:textinput("Q")
   harness.sync()
   Assert.equal(controller.query, "TEST_FLAG_02X", "typing outside a focused list never filters")
+end
+
+function T.tests.tab_moves_between_declared_regions_and_restores_the_remembered_control()
+  local harness = progressListHarness(progressFlagCatalog(6))
+  local controller, state = harness.controller, harness.state
+  controller:setFocus("flag:TEST_FLAG_01")
+  harness.sync()
+  local regions = harness.current.layout.focusNavigation.regions
+  local bodyIndex, footerIndex
+  for index, region in ipairs(regions) do
+    if region.id == "flags" then
+      bodyIndex = index
+    elseif region.id == "global-footer" then
+      footerIndex = index
+    end
+  end
+  Assert.notNil(bodyIndex, "the Progress list declares its page-body region")
+  Assert.notNil(footerIndex, "the shell declares its footer region")
+  Assert.isTrue(footerIndex > bodyIndex, "the footer follows the list in declared tab order")
+  controller:rememberRegionFocus("global-footer", "back")
+
+  state:keypressed("tab")
+  Assert.equal(controller.focus, "back", "Tab restores the next region's remembered control")
+
+  local wasDown = love.keyboard.isDown
+  love.keyboard.isDown = function(key)
+    return key == "lshift"
+  end
+  state:keypressed("tab")
+  love.keyboard.isDown = wasDown
+  Assert.equal(controller.focus, "flag:TEST_FLAG_01", "Shift-Tab restores the remembered list row")
+end
+
+function T.tests.printable_action_binding_stays_text_in_every_filterable_list()
+  local harness = progressListHarness(progressFlagCatalog(6))
+  local controller, state = harness.controller, harness.state
+  controller.section = "Bag"
+  controller:setFocus("flag:TEST_FLAG_01")
+  state.fieldInput:beginUi(0)
+
+  state:keypressed("space")
+  state:keyreleased("space")
+  state:textinput(" ")
+
+  Assert.equal(#harness.activations, 0, "Space never activates a focused filterable row")
+  Assert.equal(controller.query, " ", "Space still reaches the list as filter text")
+  Assert.equal(controller.focus, "list:flags", "filtering reconciles the removed row to the empty-list control")
 end
 
 function T.tests.focused_list_keeps_row_focus_and_edits_multibyte_queries()
@@ -587,16 +602,14 @@ function T.tests.focused_list_keeps_row_focus_and_edits_multibyte_queries()
   harness.sync()
   Assert.notNil(harness.current.layout.lists, "the plan must publish one record per interactive list")
 
-  state:_consumeUiInput({ { type = "confirm" } })
-  harness.sync()
   local rows = harness.current.layout.lists.flags.rowTargets
-  Assert.equal(controller.focus, rows[1], "Confirm enters the first row")
+  Assert.equal(controller.focus, rows[1], "a list begins with its first logical row focused")
   state:textinput(rows[1]:sub(6))
   harness.sync()
   Assert.isTrue(
     rowTargetsSet(harness.current.layout.lists.flags.rowTargets)[controller.focus] == true
       or controller.focus == "list:flags",
-    "typing reconciles a removed cursor row to a live row or the container"
+    "typing reconciles a removed cursor row to a surviving row or empty placeholder"
   )
   Assert.equal(#harness.activations, 0, "filtering from row focus never activates")
 
@@ -634,7 +647,7 @@ function T.tests.empty_filter_leaves_confirm_inert_on_the_container()
   Assert.equal(controller.focus, "list:flags", "Confirm on an empty list keeps container focus")
 end
 
-function T.tests.pointer_taps_focus_before_they_activate_and_drag_never_activates()
+function T.tests.pointer_taps_activate_on_release_and_drag_never_activates()
   local controller = Controller.new()
   controller:setSection("Progress")
 
@@ -644,49 +657,49 @@ function T.tests.pointer_taps_focus_before_they_activate_and_drag_never_activate
   )
   local firstTap =
     controller:pointer({ type = "pointer_up", pointerId = "touch:row", targetId = "flag:TEST_FLAG_01", x = 8, y = 8 })
-  Assert.isTrue(
-    firstTap == nil or firstTap.kind ~= "activate",
-    "a first clean tap on an unfocused row only focuses it"
-  )
-  Assert.equal(controller.focus, "flag:TEST_FLAG_01", "a first clean tap moves row focus")
-
-  Assert.isNil(
-    controller:pointer({ type = "pointer_down", pointerId = "touch:row-again", targetId = "flag:TEST_FLAG_01", x = 8, y = 8 })
-  )
   Assert.deepEqual(
-    controller:pointer({ type = "pointer_up", pointerId = "touch:row-again", targetId = "flag:TEST_FLAG_01", x = 8, y = 8 }),
+    firstTap,
     { kind = "activate", targetId = "flag:TEST_FLAG_01" },
-    "a second clean tap on the already focused row activates it"
+    "a clean tap activates the row on release"
   )
+  Assert.equal(controller.focus, "flag:TEST_FLAG_01", "a clean tap moves row focus")
 
   Assert.isNil(
     controller:pointer({
       type = "pointer_down",
-      pointerId = "touch:drag",
-      targetId = "flag:TEST_FLAG_02",
-      scrollViewportId = "flags",
-      scrollOffset = 0,
+      pointerId = "touch:row-again",
+      targetId = "flag:TEST_FLAG_01",
       x = 8,
       y = 8,
     })
   )
-  local dragMove = controller:pointer({ type = "pointer_move", pointerId = "touch:drag", x = 8, y = 80 })
-  Assert.isTrue(
-    dragMove == nil or dragMove.kind == "scroll-drag",
-    "a scroll drag produces no row intent while moving"
+  Assert.deepEqual(
+    controller:pointer({
+      type = "pointer_up",
+      pointerId = "touch:row-again",
+      targetId = "flag:TEST_FLAG_01",
+      x = 8,
+      y = 8,
+    }),
+    { kind = "activate", targetId = "flag:TEST_FLAG_01" },
+    "a clean tap on the focused row activates it"
   )
+
+  Assert.isNil(controller:pointer({
+    type = "pointer_down",
+    pointerId = "touch:drag",
+    targetId = "flag:TEST_FLAG_02",
+    scrollViewportId = "flags",
+    scrollOffset = 0,
+    x = 8,
+    y = 8,
+  }))
+  local dragMove = controller:pointer({ type = "pointer_move", pointerId = "touch:drag", x = 8, y = 80 })
+  Assert.isTrue(dragMove == nil or dragMove.kind == "scroll-drag", "a scroll drag produces no row intent while moving")
   Assert.isNil(
     controller:pointer({ type = "pointer_up", pointerId = "touch:drag", targetId = "flag:TEST_FLAG_02", x = 8, y = 80 }),
     "releasing after a scroll drag never activates"
   )
-
-  Assert.isNil(
-    controller:pointer({ type = "pointer_down", pointerId = "touch:box", targetId = "list:flags", x = 4, y = 4 })
-  )
-  local boxTap =
-    controller:pointer({ type = "pointer_up", pointerId = "touch:box", targetId = "list:flags", x = 4, y = 4 })
-  Assert.isTrue(boxTap == nil or boxTap.kind ~= "activate", "a clean tap on the container only focuses it")
-  Assert.equal(controller.focus, "list:flags", "a clean tap on the container moves container focus")
 end
 
 local function locationListHarness()
@@ -800,15 +813,12 @@ function T.tests.location_map_rows_browse_without_committing_the_map()
   local layout = harness.buildLayout()
   Assert.notNil(layout.lists, "the plan must publish one record per interactive list")
   local list = assert(layout.lists["location:map-list"], "map rows belong to one generic list record")
-  Assert.deepEqual(
-    list.rowTargets,
-    { "location:map:12", "location:map:34", "location:map:47", "location:map:7" }
-  )
+  Assert.deepEqual(list.rowTargets, { "location:map:12", "location:map:34", "location:map:47", "location:map:7" })
 
   controller:setFocus("list:location:map-list")
-  state:_consumeUiInput({ { type = "confirm" } })
-  Assert.equal(#harness.intents, 0, "entering map rows never starts map work")
-  Assert.equal(controller.focus, "location:map:12", "Confirm enters the first map row")
+  state:_reconcileFocus()
+  Assert.equal(#harness.intents, 0, "focusing map rows never starts map work")
+  Assert.equal(controller.focus, "location:map:12", "the map list opens on its first row")
 
   state:_consumeUiInput({ { type = "navigate", direction = "down" } })
   Assert.equal(controller.focus, "location:map:34", "Down moves one map row")
@@ -821,8 +831,8 @@ function T.tests.location_map_rows_browse_without_committing_the_map()
   Assert.isTrue(committed, "browsing rows never emits a map selection")
 
   state:_consumeUiInput({ { type = "cancel" } })
-  Assert.equal(controller.focus, "list:location:map-list", "Back returns to the map-list container")
-  Assert.equal(harness.backCount(), 0, "leaving map rows never leaves the map list")
+  Assert.equal(controller.focus, "location:map:34", "Back retains the logical map row")
+  Assert.equal(harness.backCount(), 1, "Back exits the current page scope")
   Assert.equal(#harness.intents, 0, "leaving map rows never starts map work")
 end
 
@@ -943,7 +953,7 @@ local function assertCursorAddressesVisibleRow(controller, layout, listId, label
   return cursor
 end
 
-function T.tests.location_map_row_navigation_scrolls_past_the_viewport_without_resetting()
+function T.tests.location_map_row_navigation_keeps_offscreen_identity()
   for _, size in ipairs({ { 800, 600 }, { 256, 192 } }) do
     local label = size[1] .. "x" .. size[2]
     local harness = overflowingLocationListHarness(size[1], size[2], 30)
@@ -952,8 +962,8 @@ function T.tests.location_map_row_navigation_scrolls_past_the_viewport_without_r
     Assert.isTrue(viewport.lastIndex < 30, "the map list must overflow its viewport (" .. label .. ")")
 
     controller:setFocus("list:location:map-list")
-    state:_consumeUiInput({ { type = "confirm" } })
-    Assert.equal(controller.focus, "location:map:1", "Confirm enters the first map row (" .. label .. ")")
+    state:_reconcileFocus()
+    Assert.equal(controller.focus, "location:map:1", "the map list opens on its first row (" .. label .. ")")
 
     for index = 2, 30 do
       state:_consumeUiInput({ { type = "navigate", direction = "down" } })
@@ -974,32 +984,13 @@ function T.tests.location_map_row_navigation_scrolls_past_the_viewport_without_r
     state:_consumeUiInput({ { type = "cancel" } })
     Assert.equal(
       controller.focus,
-      "list:location:map-list",
-      "Back returns to the map-list container (" .. label .. ")"
+      "location:map:30",
+      "Back preserves logical focus while leaving the list region (" .. label .. ")"
     )
-    Assert.equal(harness.backCount(), 0, "leaving map rows never leaves the map list (" .. label .. ")")
+    Assert.equal(harness.backCount(), 1, "Back exits the active page scope (" .. label .. ")")
 
     state:wheelmoved(0, 3)
-    Assert.equal(
-      controller.focus,
-      "list:location:map-list",
-      "wheel scrolling keeps container focus (" .. label .. ")"
-    )
-    assertCursorAddressesVisibleRow(controller, harness.buildLayout(), "location:map-list", label .. " after wheel")
-    local scrolledCursor = controller:listCursor("location:map-list")
-    Assert.notNil(scrolledCursor, "scrolling keeps a live list cursor (" .. label .. ")")
-    state:_consumeUiInput({ { type = "cancel" } })
-    Assert.equal(
-      controller.focus,
-      "list:location:map-list",
-      "Back returns to the map-list container after scrolling (" .. label .. ")"
-    )
-    state:_consumeUiInput({ { type = "confirm" } })
-    Assert.equal(
-      controller.focus,
-      scrolledCursor,
-      "re-entering rows restores the cursor row after scrolling (" .. label .. ")"
-    )
+    Assert.equal(controller.focus, "location:map:30", "wheel scrolling preserves logical focus (" .. label .. ")")
     Assert.equal(controller.locationMapId, 12, "re-entering rows never commits a map (" .. label .. ")")
     Assert.equal(#harness.intents, 0, "re-entering rows never starts map work (" .. label .. ")")
   end
@@ -1055,7 +1046,7 @@ local function choiceListHarness()
   }
 end
 
-function T.tests.choice_editor_enters_rows_and_back_returns_to_container()
+function T.tests.choice_editor_opens_on_a_row_and_back_cancels_the_editor()
   local harness = choiceListHarness()
   local controller, state, editor = harness.controller, harness.state, harness.editor
   local layout = harness.buildLayout()
@@ -1064,38 +1055,18 @@ function T.tests.choice_editor_enters_rows_and_back_returns_to_container()
   Assert.equal(list.rowTargets[1], "choice:K01", "rows follow the filtered display order")
 
   controller:setFocus("list:value:choice")
-  state:_consumeUiInput({ { type = "confirm" } })
+  state:_reconcileFocus()
   Assert.equal(harness.finishedCount(), 0, "entering choice rows never submits the editor")
   Assert.isNil(editor:result(), "entering choice rows publishes no result")
-  Assert.equal(controller.focus, "choice:K01", "Confirm enters the first row")
+  Assert.equal(controller.focus, "choice:K01", "the choice region opens with its first row focused")
 
   for _ = 1, 4 do
     state:_consumeUiInput({ { type = "navigate", direction = "down" } })
   end
   Assert.equal(controller.focus, "choice:K05", "repeated Down steps reveal each logical row")
   state:_consumeUiInput({ { type = "cancel" } })
-  Assert.equal(controller.focus, "list:value:choice", "Back returns to the choice container")
-  Assert.isNil(editor:result(), "Back from a choice row keeps the editor open")
-  Assert.equal(harness.finishedCount(), 0, "Back from a choice row never finishes the editor")
-
-  state:_consumeUiInput({ { type = "confirm" } })
-  Assert.equal(controller.focus, "choice:K05", "re-entering rows restores the cursor row")
-  state:_consumeUiInput({ { type = "navigate", direction = "up" } })
-  Assert.equal(controller.focus, "choice:K04", "Up moves one row")
-  state:_consumeUiInput({ { type = "navigate", direction = "down" } })
-  Assert.equal(controller.focus, "choice:K05", "Down moves one row")
-  local paged = harness.buildLayout()
-  local viewport = assert(paged.viewports["value:choice"])
-  local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
-  Assert.notNil(paged.focusGraph[controller.focus], "paging starts from a materialized row")
-  state:_consumeUiInput({ { type = "navigate", direction = "right" } })
-  Assert.equal(
-    controller.focus,
-    "choice:K" .. string.format("%02d", math.min(12, 5 + visibleCount)),
-    "Right pages by one visible count"
-  )
-  state:_consumeUiInput({ { type = "navigate", direction = "left" } })
-  Assert.equal(controller.focus, "choice:K05", "Left pages back to the starting row")
+  Assert.equal(harness.finishedCount(), 1, "Back cancels the active choice editor")
+  Assert.equal(assert(editor:result()).kind, "cancel", "Back publishes only a cancellation result")
 end
 
 function T.tests.choice_typing_reconciles_the_cursor_without_publishing()
@@ -1112,6 +1083,27 @@ function T.tests.choice_typing_reconciles_the_cursor_without_publishing()
     "a filtered-away cursor reconciles to a live row or the container, got " .. controller.focus
   )
   Assert.isNil(editor:result(), "filtering publishes no result")
+end
+
+function T.tests.keyboard_and_gamepad_directions_produce_the_same_choice_focus()
+  local function moveWith(device)
+    local harness = choiceListHarness()
+    harness.state.fieldInput = FieldInput.new()
+    harness.state.inputTick = 1
+    harness.state.fieldInput:beginUi(0)
+    harness.controller:setFocus("choice:K05")
+    if device == "keyboard" then
+      harness.state:keypressed("down")
+      harness.state:keyreleased("down")
+    else
+      harness.state:gamepadpressed(nil, "dpdown")
+      harness.state:gamepadreleased(nil, "dpdown")
+    end
+    return harness.controller.focus
+  end
+
+  Assert.equal(moveWith("keyboard"), "choice:K06", "keyboard Down moves one choice row")
+  Assert.equal(moveWith("gamepad"), "choice:K06", "D-pad Down has the same logical result")
 end
 
 local function recordingLocationService()
@@ -1186,8 +1178,8 @@ function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_wor
   local harness = locationListHarness()
   local controller, state = harness.controller, harness.state
   controller:setFocus("list:location:map-list")
-  state:_consumeUiInput({ { type = "confirm" } })
-  Assert.equal(controller.focus, "location:map:12", "Confirm enters the first map row")
+  state:_reconcileFocus()
+  Assert.equal(controller.focus, "location:map:12", "the map list opens on its first row")
 
   state:_consumeUiInput({ { type = "navigate", direction = "down" } })
   Assert.equal(controller.focus, "location:map:34", "Down moves one map row")
@@ -1198,24 +1190,36 @@ function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_wor
   end
 
   Assert.isNil(
-    controller:pointer({ type = "pointer_down", pointerId = "touch:map-row", targetId = "location:map:47", x = 8, y = 8 }),
+    controller:pointer({
+      type = "pointer_down",
+      pointerId = "touch:map-row",
+      targetId = "location:map:47",
+      x = 8,
+      y = 8,
+    }),
     "pressing a map row never starts map work"
   )
   local firstTap =
     controller:pointer({ type = "pointer_up", pointerId = "touch:map-row", targetId = "location:map:47", x = 8, y = 8 })
-  Assert.isTrue(firstTap == nil, "a first clean tap on an unfocused map row only focuses it")
-  Assert.equal(controller.focus, "location:map:47", "a first clean tap moves map row focus")
-  Assert.equal(controller.locationMapId, 12, "a focusing tap leaves the committed map alone")
+  Assert.deepEqual(firstTap, { kind = "location-map-select", mapId = 47 }, "a clean tap activates the map row")
+  Assert.equal(controller.focus, "location:map:47", "the tap moves focus to its map row")
+  Assert.equal(controller.locationMapId, 12, "the activation request does not commit a map itself")
 
   Assert.isNil(
-    controller:pointer({ type = "pointer_down", pointerId = "touch:map-act", targetId = "location:map:47", x = 8, y = 8 })
+    controller:pointer({
+      type = "pointer_down",
+      pointerId = "touch:map-act",
+      targetId = "location:map:47",
+      x = 8,
+      y = 8,
+    })
   )
   local secondTap =
     controller:pointer({ type = "pointer_up", pointerId = "touch:map-act", targetId = "location:map:47", x = 8, y = 8 })
   Assert.deepEqual(
     secondTap,
     { kind = "location-map-select", mapId = 47 },
-    "a second clean tap on the focused row requests activation"
+    "a clean tap on the focused row requests activation"
   )
   Assert.equal(
     controller.locationMapId,
@@ -1224,7 +1228,13 @@ function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_wor
   )
 
   Assert.isNil(
-    controller:pointer({ type = "pointer_down", pointerId = "touch:map-drag", targetId = "location:map:7", x = 8, y = 8 })
+    controller:pointer({
+      type = "pointer_down",
+      pointerId = "touch:map-drag",
+      targetId = "location:map:7",
+      x = 8,
+      y = 8,
+    })
   )
   Assert.isNil(
     controller:pointer({ type = "pointer_move", pointerId = "touch:map-drag", x = 8, y = 80 }),
@@ -1244,11 +1254,7 @@ function T.tests.confirming_a_map_row_publishes_the_map_without_loading_in_the_i
   local navigation = harness.controller:locationSnapshot()
   Assert.equal(navigation.mapId, 34, "activation publishes the new browser map immediately")
   Assert.deepEqual(navigation.center, { fieldX = 116, fieldZ = 216 }, "activation recenters on the new map")
-  Assert.equal(
-    harness.service.updateCalls,
-    0,
-    "the input path performs no service update before the next update"
-  )
+  Assert.equal(harness.service.updateCalls, 0, "the input path performs no service update before the next update")
 end
 
 function T.tests.steady_update_prepares_icons_from_the_published_selection()
@@ -1282,7 +1288,21 @@ function T.tests.steady_update_prepares_icons_from_the_published_selection()
   }
   local published = { section = "Location" }
   local layout = {
-    focusGraph = { [harness.controller.focus] = true },
+    scopeId = harness.controller.scopeId,
+    scopeEpoch = harness.controller.scopeEpoch,
+    focusNavigation = {
+      regions = { { id = "body", order = 1, kind = "spatial", rect = { x = 0, y = 0, width = 1, height = 1 } } },
+      controls = {
+        {
+          id = harness.controller.focus,
+          regionId = "body",
+          rect = { x = 0, y = 0, width = 1, height = 1 },
+          eligible = true,
+          order = 1,
+          action = { kind = "target", targetId = harness.controller.focus },
+        },
+      },
+    },
     defaultFocus = harness.controller.focus,
   }
   harness.state._snapshot = function()
@@ -1390,7 +1410,12 @@ local function scrollableChoiceHarness(optionCount)
       dirty = false,
       bagRows = {},
       valueEditor = editor:snapshot(),
-      scope = { id = "value:choice", epoch = 1, kind = "value", focusId = controller.focus },
+      scope = {
+        id = "value:" .. (holder.state and holder.state.valuePurpose or "choice"),
+        epoch = 1,
+        kind = "value",
+        focusId = controller.focus,
+      },
       scrollOffsets = controller.scrollOffsets,
       preserveChoiceScroll = holder.state ~= nil and holder.state.preserveChoiceScroll or false,
     }
@@ -1425,79 +1450,112 @@ local function scrollableChoiceHarness(optionCount)
   }
 end
 
-function T.tests.container_scroll_keeps_focus_and_confirm_enters_a_visible_cursor()
+function T.tests.party_species_choice_opens_without_prior_scope_focus()
+  local harness = scrollableChoiceHarness(12)
+  local controller, state = harness.controller, harness.state
+  state.valuePurpose = "party_add_species"
+  controller:setFocus("party:add")
+
+  state:_reconcileFocus()
+
+  Assert.equal(
+    controller.focus,
+    "choice:K01",
+    "a new Party species selector enters its first option without remembered scope focus"
+  )
+end
+
+function T.tests.location_focus_without_a_published_grid_control_falls_back_to_its_section()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller.scopeId = "section:Location"
+  controller.scopeEpoch = 2
+  controller:setFocus("location:grid")
+  controller.focusByScope[controller.scopeId] = "back"
+  local layout = {
+    scopeId = controller.scopeId,
+    scopeEpoch = controller.scopeEpoch,
+    defaultFocus = "location:grid",
+    focusNavigation = {
+      regions = {
+        { id = "sections", kind = "row", order = 1, rect = { x = 0, y = 0, width = 80, height = 20 } },
+        { id = "global-footer", kind = "row", order = 2, rect = { x = 0, y = 20, width = 80, height = 20 } },
+      },
+      controls = {
+        {
+          id = "section:Location",
+          regionId = "sections",
+          eligible = true,
+          order = 1,
+          rect = { x = 0, y = 0, width = 40, height = 20 },
+        },
+        {
+          id = "back",
+          regionId = "global-footer",
+          eligible = true,
+          order = 2,
+          rect = { x = 0, y = 20, width = 40, height = 20 },
+        },
+      },
+    },
+    lists = {},
+  }
+  local state = setmetatable({
+    controller = controller,
+    _snapshot = function()
+      return { section = "Location" }
+    end,
+    _resolve = function()
+      return { content = { layout = layout } }
+    end,
+  }, State)
+
+  state:_reconcileFocus()
+
+  Assert.equal(controller.focus, "section:Location", "an unpublished grid sentinel falls back to the active section")
+end
+
+function T.tests.wheel_scroll_preserves_the_logical_row_focus()
   local flags = progressListHarness(progressFlagCatalog(20))
   local flagController, flagState = flags.controller, flags.state
   flagController:setFocus("list:flags")
   flags.sync()
-  flagState:_consumeUiInput({ { type = "confirm" } })
-  flags.sync()
-  flagState:_consumeUiInput({ { type = "cancel" } })
-  flags.sync()
-  Assert.notNil(flagController:listCursor("flags"), "container browsing remembers its cursor row (flags)")
+  local flagFocus = flagController.focus
+  Assert.isTrue(flagFocus ~= "list:flags", "the list starts on a logical row")
+  flagController:markKeyboardNavigation()
   flagState:wheelmoved(0, -30)
   flags.sync()
-  Assert.equal(flagController.focus, "list:flags", "wheel scrolling keeps container focus (flags)")
+  Assert.equal(flagController.focus, flagFocus, "wheel scrolling preserves the logical row (flags)")
+  Assert.isFalse(flagController.focusVisible, "wheel input hides keyboard focus indication (flags)")
   Assert.deepEqual(flags.activations, {}, "wheel scrolling never activates (flags)")
-  local flagCursor = assertCursorAddressesVisibleRow(flagController, flags.current.layout, "flags", "flags")
-  flagState:_consumeUiInput({ { type = "confirm" } })
-  flags.sync()
-  Assert.deepEqual(flags.activations, {}, "confirming the container never activates (flags)")
-  Assert.equal(flagController.focus, flagCursor, "confirm enters the remembered cursor (flags)")
-  assertCursorAddressesVisibleRow(flagController, flags.current.layout, "flags", "flags after confirm")
 
   local maps = overflowingLocationListHarness(800, 600, 30)
   local mapController, mapState = maps.controller, maps.state
   mapController:setFocus("list:location:map-list")
-  mapState:_consumeUiInput({ { type = "confirm" } })
-  mapState:_consumeUiInput({ { type = "cancel" } })
-  Assert.equal(mapController.focus, "list:location:map-list", "map browsing starts from the container")
-  Assert.notNil(
-    mapController:listCursor("location:map-list"),
-    "container browsing remembers its cursor row (map list)"
-  )
+  mapState:_reconcileFocus()
+  local mapFocus = mapController.focus
   mapState:wheelmoved(0, -30)
-  Assert.equal(
-    mapController.focus,
-    "list:location:map-list",
-    "wheel scrolling keeps container focus (map list)"
-  )
+  Assert.equal(mapController.focus, mapFocus, "wheel scrolling preserves the logical row (map list)")
+  Assert.isFalse(mapController.focusVisible, "wheel input hides keyboard focus indication (map list)")
   Assert.deepEqual(maps.intents, {}, "wheel scrolling never starts map work (map list)")
   Assert.equal(mapController.locationMapId, 12, "wheel scrolling never commits a map (map list)")
-  local mapCursor =
-    assertCursorAddressesVisibleRow(mapController, maps.buildLayout(), "location:map-list", "map list")
-  mapState:_consumeUiInput({ { type = "confirm" } })
-  Assert.deepEqual(maps.intents, {}, "confirming the container never starts map work (map list)")
-  Assert.equal(mapController.focus, mapCursor, "confirm enters the remembered cursor (map list)")
-  Assert.equal(mapController.locationMapId, 12, "confirming the container never commits a map (map list)")
-  assertCursorAddressesVisibleRow(mapController, maps.buildLayout(), "location:map-list", "map list after confirm")
 
   local choice = scrollableChoiceHarness(12)
   local choiceController, choiceState, choiceEditor = choice.controller, choice.state, choice.editor
   choiceController:setFocus("list:value:choice")
-  choiceState:_consumeUiInput({ { type = "confirm" } })
-  choiceState:_consumeUiInput({ { type = "cancel" } })
-  Assert.equal(choiceController.focus, "list:value:choice", "choice browsing starts from the container")
-  Assert.notNil(choiceController:listCursor("value:choice"), "container browsing remembers its cursor (choices)")
+  choiceState:_reconcileFocus()
+  local choiceFocus = choiceController.focus
   choiceState:wheelmoved(0, -30)
-  Assert.equal(choiceController.focus, "list:value:choice", "wheel scrolling keeps container focus (choices)")
+  Assert.equal(choiceController.focus, choiceFocus, "wheel scrolling preserves the logical row (choices)")
+  Assert.isFalse(choiceController.focusVisible, "wheel input hides keyboard focus indication (choices)")
   Assert.equal(choice.finishedCount(), 0, "wheel scrolling never submits the editor (choices)")
   Assert.isNil(choiceEditor:result(), "wheel scrolling publishes no result (choices)")
-  local choiceCursor =
-    assertCursorAddressesVisibleRow(choiceController, choice.buildLayout(), "value:choice", "choices")
-  choiceState:_consumeUiInput({ { type = "confirm" } })
-  Assert.equal(choice.finishedCount(), 0, "confirming the container never submits the editor (choices)")
-  Assert.isNil(choiceEditor:result(), "confirming the container publishes no result (choices)")
-  Assert.equal(choiceController.focus, choiceCursor, "confirm enters the remembered cursor (choices)")
-  assertCursorAddressesVisibleRow(choiceController, choice.buildLayout(), "value:choice", "choices after confirm")
 end
 
-function T.tests.scrolling_reconciles_a_stale_cursor_to_the_nearest_visible_row()
+function T.tests.scrolling_preserves_logical_focus_until_the_next_direction()
   local harness = progressListHarness(progressFlagCatalog(20))
   local controller, state = harness.controller, harness.state
   controller:setFocus("list:flags")
-  harness.sync()
-  state:_consumeUiInput({ { type = "confirm" } })
   harness.sync()
   for _ = 1, 2 do
     state:_consumeUiInput({ { type = "navigate", direction = "down" } })
@@ -1505,62 +1563,18 @@ function T.tests.scrolling_reconciles_a_stale_cursor_to_the_nearest_visible_row(
   harness.sync()
   local rows = harness.current.layout.lists.flags.rowTargets
   Assert.equal(controller.focus, rows[3], "keyboard navigation reaches the third row")
-  state:_consumeUiInput({ { type = "cancel" } })
-  harness.sync()
-  Assert.equal(controller:listCursor("flags"), rows[3], "leaving rows remembers the cursor")
-
+  controller:markKeyboardNavigation()
   state:wheelmoved(0, -1)
   harness.sync()
-  Assert.equal(controller.focus, "list:flags", "a small scroll keeps container focus")
-  local viewport = assert(harness.current.layout.viewports.flags)
-  if 3 >= viewport.firstIndex and 3 <= viewport.lastIndex then
-    Assert.equal(
-      controller:listCursor("flags"),
-      rows[3],
-      "a cursor that is still visible is kept"
-    )
-  end
+  Assert.equal(controller.focus, rows[3], "a small scroll preserves logical row focus")
+  Assert.isFalse(controller.focusVisible, "wheel input hides keyboard focus indication")
 
   state:wheelmoved(0, -30)
   harness.sync()
-  viewport = assert(harness.current.layout.viewports.flags)
-  Assert.equal(controller.focus, "list:flags", "a far scroll keeps container focus")
-  Assert.equal(
-    controller:listCursor("flags"),
-    rows[viewport.firstIndex],
-    "a cursor above the visible range becomes the first visible row"
-  )
-
-  state:_consumeUiInput({ { type = "confirm" } })
+  Assert.equal(controller.focus, rows[3], "a far scroll preserves logical row focus")
+  state:_consumeUiInput({ { type = "navigate", direction = "down" } })
   harness.sync()
-  for _ = 1, 29 do
-    state:_consumeUiInput({ { type = "navigate", direction = "down" } })
-  end
-  harness.sync()
-  rows = harness.current.layout.lists.flags.rowTargets
-  Assert.equal(controller.focus, rows[#rows], "keyboard navigation reaches the last row")
-  state:_consumeUiInput({ { type = "cancel" } })
-  harness.sync()
-  Assert.equal(controller:listCursor("flags"), rows[#rows], "leaving rows remembers the last cursor")
-  state:wheelmoved(0, 30)
-  harness.sync()
-  viewport = assert(harness.current.layout.viewports.flags)
-  Assert.equal(controller.focus, "list:flags", "scrolling back up keeps container focus")
-  Assert.equal(
-    controller:listCursor("flags"),
-    rows[viewport.lastIndex],
-    "a cursor below the visible range becomes the last visible row"
-  )
-
-  controller:setListCursor("flags", nil)
-  state:wheelmoved(0, -30)
-  harness.sync()
-  viewport = assert(harness.current.layout.viewports.flags)
-  Assert.equal(
-    controller:listCursor("flags"),
-    rows[viewport.firstIndex],
-    "a missing cursor becomes the first visible row"
-  )
+  Assert.equal(controller.focus, rows[4], "the next direction resolves from the remembered row")
 
   state:textinput("zzz-no-such-flag")
   harness.sync()
@@ -1568,18 +1582,14 @@ function T.tests.scrolling_reconciles_a_stale_cursor_to_the_nearest_visible_row(
   state:wheelmoved(0, -5)
   harness.sync()
   Assert.isNil(controller:listCursor("flags"), "an empty list keeps a nil cursor")
-  Assert.equal(controller.focus, "list:flags", "an empty list keeps container focus")
+  Assert.equal(controller.focus, "list:flags", "an empty list keeps its inert placeholder focus")
 end
 
-function T.tests.pointer_row_focus_survives_back_then_confirm()
+function T.tests.pointer_row_activation_and_scope_exit_preserve_logical_identity()
   local flags = progressListHarness(progressFlagCatalog(6))
   local flagController, flagState = flags.controller, flags.state
   installPointerPassThrough(flagState)
   flagController:setFocus("list:flags")
-  flags.sync()
-  flagState:_consumeUiInput({ { type = "confirm" } })
-  flags.sync()
-  flagState:_consumeUiInput({ { type = "cancel" } })
   flags.sync()
   local flagRows = flags.current.layout.lists.flags.rowTargets
   local flagTarget = flagRows[3]
@@ -1588,23 +1598,18 @@ function T.tests.pointer_row_focus_survives_back_then_confirm()
   flagState:_pointer({ { type = "pointer_up", pointerId = "touch:flags", targetId = flagTarget, x = 8, y = 8 } })
   flags.sync()
   Assert.equal(flagController.focus, flagTarget, "a first tap focuses the tapped row (flags)")
-  Assert.deepEqual(flags.activations, {}, "a first tap never activates (flags)")
+  Assert.deepEqual(flags.activations, { flagTarget }, "a clean first tap activates the row (flags)")
   flagState:_consumeUiInput({ { type = "cancel" } })
   flags.sync()
-  Assert.equal(flagController.focus, "list:flags", "Back returns to the container (flags)")
+  Assert.equal(flagController.focus, flagTarget, "Back preserves row identity (flags)")
   Assert.equal(flagController:listCursor("flags"), flagTarget, "pointer focus synchronizes the cursor (flags)")
-  flagState:_consumeUiInput({ { type = "confirm" } })
-  flags.sync()
-  Assert.equal(flagController.focus, flagTarget, "Confirm returns to the pointer-focused row (flags)")
-  Assert.deepEqual(flags.activations, {}, "re-entering the row never activates (flags)")
 
   local maps = locationListHarness()
   local mapController, mapState = maps.controller, maps.state
   installPointerPassThrough(mapState)
   mapController:setFocus("list:location:map-list")
-  mapState:_consumeUiInput({ { type = "confirm" } })
-  mapState:_consumeUiInput({ { type = "cancel" } })
-  Assert.equal(mapController.focus, "list:location:map-list", "map browsing starts from the container")
+  mapState:_reconcileFocus()
+  Assert.equal(mapController.focus, "location:map:12", "map browsing starts on a logical row")
   mapState:_pointer({
     { type = "pointer_down", pointerId = "touch:maps", targetId = "location:map:47", x = 8, y = 8 },
   })
@@ -1612,43 +1617,31 @@ function T.tests.pointer_row_focus_survives_back_then_confirm()
     { type = "pointer_up", pointerId = "touch:maps", targetId = "location:map:47", x = 8, y = 8 },
   })
   Assert.equal(mapController.focus, "location:map:47", "a first tap focuses the tapped map row")
-  Assert.deepEqual(maps.intents, {}, "a first tap never starts map work")
+  Assert.equal(#maps.intents, 1, "a clean tap requests map selection")
   Assert.equal(mapController.locationMapId, 12, "a first tap never commits a map")
   mapState:_consumeUiInput({ { type = "cancel" } })
-  Assert.equal(mapController.focus, "list:location:map-list", "Back returns to the map container")
+  Assert.equal(mapController.focus, "location:map:47", "Back preserves the focused map row")
   Assert.equal(
     mapController:listCursor("location:map-list"),
     "location:map:47",
     "pointer focus synchronizes the map cursor"
   )
-  mapState:_consumeUiInput({ { type = "confirm" } })
-  Assert.equal(mapController.focus, "location:map:47", "Confirm returns to the pointer-focused map row")
-  Assert.deepEqual(maps.intents, {}, "re-entering the row never starts map work")
   Assert.equal(mapController.locationMapId, 12, "re-entering the row never commits a map")
 
   local choice = scrollableChoiceHarness(12)
   local choiceController, choiceState, choiceEditor = choice.controller, choice.state, choice.editor
   installPointerPassThrough(choiceState)
   choiceController:setFocus("list:value:choice")
-  choiceState:_consumeUiInput({ { type = "confirm" } })
-  choiceState:_consumeUiInput({ { type = "cancel" } })
-  Assert.equal(choiceController.focus, "list:value:choice", "choice browsing starts from the container")
+  choiceState:_reconcileFocus()
+  Assert.equal(choiceController.focus, "choice:K01", "choice browsing starts on a logical row")
   choiceState:_pointer({ { type = "pointer_down", pointerId = "touch:choice", targetId = "choice:K03", x = 8, y = 8 } })
   choiceState:_pointer({ { type = "pointer_up", pointerId = "touch:choice", targetId = "choice:K03", x = 8, y = 8 } })
   Assert.equal(choiceController.focus, "choice:K03", "a first tap focuses the tapped choice row")
-  Assert.equal(choice.finishedCount(), 0, "a first tap never submits the editor")
-  Assert.isNil(choiceEditor:result(), "a first tap publishes no result")
-  choiceState:_consumeUiInput({ { type = "cancel" } })
-  Assert.equal(choiceController.focus, "list:value:choice", "Back returns to the choice container")
-  Assert.equal(choiceController:listCursor("value:choice"), "choice:K03", "pointer focus syncs the choice cursor")
-  Assert.isNil(choiceEditor:result(), "Back publishes no result")
-  choiceState:_consumeUiInput({ { type = "confirm" } })
-  Assert.equal(choiceController.focus, "choice:K03", "Confirm returns to the pointer-focused choice row")
-  Assert.equal(choice.finishedCount(), 0, "re-entering the row never submits the editor")
-  Assert.isNil(choiceEditor:result(), "re-entering the row publishes no result")
+  Assert.equal(choice.finishedCount(), 1, "a clean tap activates the selected choice")
+  Assert.notNil(choiceEditor:result(), "a clean tap publishes the choice result")
 end
 
-function T.tests.location_map_keyboard_navigation_pages_without_selecting()
+function T.tests.location_map_keyboard_navigation_uses_logical_rows_without_selecting()
   local harness = overflowingLocationListHarness(256, 192, 30)
   local controller, state = harness.controller, harness.state
   local rows = harness.buildLayout().lists["location:map-list"].rowTargets
@@ -1658,9 +1651,9 @@ function T.tests.location_map_keyboard_navigation_pages_without_selecting()
   Assert.isTrue(visibleCount < #rows, "the fixture list is longer than one viewport")
 
   controller:setFocus("list:location:map-list")
-  state:_consumeUiInput({ { type = "confirm" } })
-  Assert.equal(controller.focus, rows[1], "Confirm enters the first map row")
-  Assert.equal(controller:listCursor("location:map-list"), rows[1], "entering rows sets the cursor")
+  state:_reconcileFocus()
+  Assert.equal(controller.focus, rows[1], "the map list opens on its first row")
+  Assert.equal(controller:listCursor("location:map-list"), rows[1], "opening the region sets its cursor")
 
   state:_consumeUiInput({ { type = "navigate", direction = "down" } })
   Assert.equal(controller.focus, rows[2], "Down moves one map row")
@@ -1669,50 +1662,37 @@ function T.tests.location_map_keyboard_navigation_pages_without_selecting()
   Assert.equal(controller.focus, rows[1], "Up moves one map row")
   Assert.equal(controller:listCursor("location:map-list"), rows[1], "the cursor follows row focus upward")
 
-  state:_consumeUiInput({ { type = "navigate", direction = "right" } })
-  Assert.equal(controller.focus, rows[1 + visibleCount], "Right pages by one visible count")
-  Assert.equal(
-    controller:listCursor("location:map-list"),
-    rows[1 + visibleCount],
-    "the cursor follows paged focus"
-  )
-  Assert.isTrue(controller.locationMapOffset > 0, "paging reveals its target row through the viewport")
   state:_consumeUiInput({ { type = "navigate", direction = "left" } })
-  Assert.equal(controller.focus, rows[1], "Left pages back by one visible count")
-  Assert.equal(controller:listCursor("location:map-list"), rows[1], "the cursor follows the paged-back focus")
-
-  state:_consumeUiInput({ { type = "navigate", direction = "left" } })
-  Assert.equal(controller.focus, rows[1], "paging clamps at the first row instead of wrapping")
+  Assert.isTrue(controller.focus ~= rows[2], "Left leaves the map list instead of paging rows")
+  controller:setFocus(rows[1])
   for index = 2, #rows do
     state:_consumeUiInput({ { type = "navigate", direction = "down" } })
     Assert.equal(controller.focus, rows[index], "Down keeps walking rows (row " .. index .. ")")
-    Assert.equal(controller:listCursor("location:map-list"), rows[index], "the cursor tracks focus (row " .. index .. ")")
+    Assert.equal(
+      controller:listCursor("location:map-list"),
+      rows[index],
+      "the cursor tracks focus (row " .. index .. ")"
+    )
   end
-  state:_consumeUiInput({ { type = "navigate", direction = "right" } })
-  Assert.equal(controller.focus, rows[#rows], "paging clamps at the last row instead of wrapping")
-
   Assert.equal(controller.locationMapId, 12, "keyboard browsing never changes the committed map")
   Assert.deepEqual(harness.intents, {}, "keyboard browsing never starts map work")
 
   state:_consumeUiInput({ { type = "cancel" } })
-  Assert.equal(controller.focus, "list:location:map-list", "Back returns to the map-list container")
-  state:_consumeUiInput({ { type = "confirm" } })
-  Assert.equal(controller.focus, rows[#rows], "Confirm re-enters the remembered cursor row")
-  Assert.equal(controller.locationMapId, 12, "re-entering rows never commits a map")
-  Assert.deepEqual(harness.intents, {}, "re-entering rows never starts map work")
+  Assert.equal(controller.focus, rows[#rows], "Back preserves logical focus within the test scope")
+  Assert.equal(harness.backCount(), 1, "Back leaves the active list scope")
 end
 
-function T.tests.location_grid_directions_keep_grid_cursor_movement()
+function T.tests.location_grid_directions_share_the_common_navigation_intent()
   local controller = Controller.new()
   controller:setSection("Location")
   controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
   controller:setFocus("location:grid")
-  Assert.equal(controller.locationFocus, "grid", "grid focus uses grid movement")
+  Assert.equal(controller.locationFocus, "grid", "grid focus remains in its current Location mode")
   for _, direction in ipairs({ "up", "down", "left", "right" }) do
     Assert.deepEqual(
       controller:press(direction),
-      { kind = "location-cursor-move", direction = direction },
-      "grid focus keeps its Location direction (" .. direction .. ")"
+      { kind = "move", direction = direction },
+      "grid focus emits the common navigation intent (" .. direction .. ")"
     )
   end
 
@@ -1721,8 +1701,8 @@ function T.tests.location_grid_directions_keep_grid_cursor_movement()
   for _, direction in ipairs({ "up", "down", "left", "right" }) do
     Assert.deepEqual(
       controller:press(direction),
-      { kind = "location-cursor-move", direction = direction },
-      "tile focus keeps its Location direction (" .. direction .. ")"
+      { kind = "move", direction = direction },
+      "tile focus emits the common navigation intent (" .. direction .. ")"
     )
   end
 
@@ -1748,20 +1728,12 @@ function T.tests.location_grid_directions_keep_grid_cursor_movement()
   Assert.equal(harness.service.updateCalls, 1, "grid movement still advances loading through the service")
 end
 
-local function twoButtonGraph()
-  return {
-    money = { up = {}, down = { "dialogue-frame" }, left = {}, right = {} },
-    ["dialogue-frame"] = { up = { "money" }, down = {}, left = {}, right = {} },
-  }
-end
-
 function T.tests.directional_input_marks_visible_focus_while_pointer_down_hides_it()
   local controller = Controller.new()
-  local graph = twoButtonGraph()
   controller:setFocus("money")
   Assert.equal(controller.focusVisible, false, "fresh editors hide the keyboard focus ring")
   controller:markKeyboardNavigation()
-  controller:moveFocus(graph, "down")
+  controller:setFocus("dialogue-frame")
   Assert.equal(controller.focus, "dialogue-frame", "directional input moves logical focus")
   Assert.equal(controller.focusVisible, true, "directional input marks focus visible")
   Assert.equal(controller.section, "Player", "moving focus never activates a section")
@@ -1772,17 +1744,16 @@ function T.tests.directional_input_marks_visible_focus_while_pointer_down_hides_
   Assert.equal(controller.focus, "money", "pointer selection still establishes logical focus")
   Assert.equal(controller.focusVisible, false, "pointer selection hides the keyboard focus ring")
   controller:markKeyboardNavigation()
-  controller:moveFocus(graph, "down")
+  controller:setFocus("dialogue-frame")
   Assert.equal(controller.focus, "dialogue-frame", "directional input moves focus after pointer use")
   Assert.equal(controller.focusVisible, true, "directional input restores the ring")
 end
 
 function T.tests.pointer_down_on_the_focused_target_still_hides_visible_focus()
   local controller = Controller.new()
-  local graph = twoButtonGraph()
   controller:setFocus("money")
   controller:markKeyboardNavigation()
-  controller:moveFocus(graph, "down")
+  controller:setFocus("dialogue-frame")
   Assert.equal(controller.focusVisible, true, "directional input marks focus visible")
   controller:pointer({
     type = "pointer_down",
@@ -1803,6 +1774,34 @@ function T.tests.programmatic_section_entry_does_not_enable_visible_focus()
   Assert.equal(controller.focusVisible, false, "programmatic section entry never shows the ring by itself")
 end
 
+function T.tests.wheel_hides_focus_indication_without_replacing_the_logical_row()
+  local harness = progressListHarness(progressFlagCatalog(20))
+  local controller, state = harness.controller, harness.state
+  harness.sync()
+  local rows = harness.current.layout.lists.flags.rowTargets
+  controller:setFocus(rows[3])
+  state:_consumeUiInput({ { type = "navigate", direction = "down" } })
+  harness.sync()
+  local focusedRow = controller.focus
+  Assert.isTrue(controller.focusVisible, "directional navigation shows keyboard focus")
+
+  state:wheelmoved(0, -1)
+  harness.sync()
+  Assert.equal(controller.focus, focusedRow, "wheel scrolling preserves logical row identity")
+  Assert.equal(controller.focusVisible, false, "wheel scrolling hides keyboard focus indication")
+  Assert.deepEqual(harness.activations, {}, "wheel scrolling does not activate the focused row")
+
+  state:_consumeUiInput({ { type = "navigate", direction = "down" } })
+  harness.sync()
+  Assert.equal(controller.focus, rows[5], "the next direction continues from the remembered logical row")
+  Assert.isTrue(controller.focusVisible, "directional navigation restores visible focus")
+  local viewport = assert(harness.current.layout.viewports.flags)
+  Assert.isTrue(
+    viewport.firstIndex <= 5 and viewport.lastIndex >= 5,
+    "directional navigation reveals the next logical row after scrolling"
+  )
+end
+
 function T.tests.merely_focusing_a_section_never_activates_it()
   local controller = Controller.new()
   controller:setFocus("section:Bag")
@@ -1810,21 +1809,16 @@ function T.tests.merely_focusing_a_section_never_activates_it()
   Assert.equal(controller.section, "Player", "focused section options stay inactive until activated")
 end
 
-function T.tests.scope_replacement_restores_remembered_focus_when_current_is_gone()
+function T.tests.focus_memory_is_scoped_to_the_active_interaction()
   local controller = Controller.new()
-  local graph = {
-    money = { up = {}, down = {}, left = {}, right = {} },
-    ["dialogue-frame"] = { up = {}, down = {}, left = {}, right = {} },
-  }
   controller.scopeId = "scope:one"
   controller:setFocus("money")
   controller.scopeId = "scope:two"
   controller:setFocus("save")
   controller.scopeId = "scope:one"
-  local resolved = controller:reconcileFocus(graph, "save", { "dialogue-frame" })
-  Assert.equal(resolved, "money", "replacement restores the remembered scope focus when current is gone")
-  Assert.equal(controller.focus, "money", "reconciliation publishes the remembered focus")
-  Assert.equal(controller.focusVisible, false, "reconciliation never shows the ring by itself")
+  Assert.equal(controller.focusByScope["scope:one"], "money", "the prior scope retains its logical focus")
+  Assert.equal(controller.focusByScope["scope:two"], "save", "the replacement scope owns its own focus")
+  Assert.equal(controller.focusVisible, false, "scope focus changes never show the ring by themselves")
 end
 
 function T.tests.repeated_flag_snapshots_reuse_the_filtered_catalog_until_the_query_changes()
@@ -1863,15 +1857,12 @@ function T.tests.moving_past_the_visible_window_reveals_and_focuses_the_next_row
   local nextRow = rows[viewport.lastIndex + 1]
   Assert.equal(controller.focus, nextRow, "Down from the last visible row focuses the next logical row")
   local fresh = harness.current.layout
-  Assert.notNil(fresh.focusGraph[nextRow], "the revealed row joins the focus graph")
+  Assert.isTrue(fresh.targets[nextRow].focusable, "the revealed row joins published navigation")
   Assert.notNil(fresh.targets[nextRow], "the revealed row materializes its target")
-  Assert.isTrue(
-    (controller.scrollOffsets.flags or 0) > 0,
-    "the viewport offset advances to reveal the focused row"
-  )
+  Assert.isTrue((controller.scrollOffsets.flags or 0) > 0, "the viewport offset advances to reveal the focused row")
 end
 
-function T.tests.paging_from_a_row_lands_on_a_revealed_row_outside_the_previous_window()
+function T.tests.horizontal_list_navigation_does_not_page_or_wrap_rows()
   local harness = progressListHarness(progressFlagCatalog(40))
   local controller, state = harness.controller, harness.state
   harness.sync()
@@ -1880,9 +1871,9 @@ function T.tests.paging_from_a_row_lands_on_a_revealed_row_outside_the_previous_
   state:_consumeUiInput({ { type = "navigate", direction = "right" } })
   harness.sync()
   local fresh = harness.current.layout
-  Assert.isFalse(controller.focus == rows[1], "Right pages away from the first row")
-  Assert.notNil(fresh.focusGraph[controller.focus], "the paged row joins the focus graph")
-  Assert.notNil(fresh.targets[controller.focus], "the paged row materializes its target")
+  Assert.equal(controller.focus, rows[1], "Right does not page a list's logical rows")
+  Assert.isTrue(fresh.targets[controller.focus].focusable, "the focused row remains a valid control")
+  Assert.notNil(fresh.targets[controller.focus], "the focused row remains materialized")
 end
 
 function T.tests.filtering_away_the_focused_row_reconciles_to_a_visible_live_row()
@@ -1896,9 +1887,9 @@ function T.tests.filtering_away_the_focused_row_reconciles_to_a_visible_live_row
   harness.sync()
   local fresh = harness.current.layout.lists.flags
   Assert.isTrue(#fresh.rowTargets > 0, "the filter keeps live rows")
-  Assert.notNil(
-    harness.current.layout.focusGraph[controller.focus],
-    "the reconciled focus joins the visible graph"
+  Assert.isTrue(
+    harness.current.layout.targets[controller.focus].focusable,
+    "the reconciled focus joins published navigation"
   )
   Assert.notNil(harness.current.layout.targets[controller.focus], "the reconciled focus has a target")
   local live = false
@@ -1909,6 +1900,23 @@ function T.tests.filtering_away_the_focused_row_reconciles_to_a_visible_live_row
     end
   end
   Assert.isTrue(live, "the reconciled focus is a live filtered row")
+end
+
+function T.tests.filtering_away_the_focused_row_uses_the_nearest_surviving_index()
+  local harness = progressListHarness(progressFlagCatalog(30))
+  local controller, state = harness.controller, harness.state
+  harness.sync()
+  local list = harness.current.layout.lists.flags
+  controller:setFocus(list.rowTargets[20])
+  state:_filterFocusedList(list, 20, "append", "test_flag_0")
+  harness.sync()
+  local fresh = harness.current.layout.lists.flags
+  Assert.equal(#fresh.rowTargets, 9, "the filter keeps the first nine rows")
+  Assert.equal(
+    controller.focus,
+    fresh.rowTargets[9],
+    "a deleted row falls back to the nearest surviving logical index"
+  )
 end
 
 function T.tests.pointer_targets_cover_only_visible_rows_and_empty_lists_stay_stable()
@@ -1925,10 +1933,7 @@ function T.tests.pointer_targets_cover_only_visible_rows_and_empty_lists_stay_st
     rows[viewport.firstIndex],
     "pointer input reaches the visible row"
   )
-  Assert.isNil(
-    layout.targets[rows[#rows]],
-    "the last logical row has no target at the top offset"
-  )
+  Assert.isNil(layout.targets[rows[#rows]], "the last logical row has no target at the top offset")
   local list = layout.lists.flags
   harness.controller.query = ""
   harness.state:_filterFocusedList(list, nil, "append", "zzz-no-such-flag")
@@ -1956,13 +1961,9 @@ end
 
 function T.tests.scope_replacement_falls_back_to_the_explicit_default()
   local controller = Controller.new()
-  local graph = {
-    ["dialogue-frame"] = { up = {}, down = {}, left = {}, right = {} },
-  }
   controller.scopeId = "scope:one"
-  controller.focus = "money"
-  local resolved = controller:reconcileFocus(graph, "money", { "missing", "dialogue-frame" })
-  Assert.equal(resolved, "dialogue-frame", "replacement selects the first live ordered fallback")
+  controller:setFocus("money")
+  Assert.equal(controller.focusByScope["scope:one"], "money", "scope memory records current focus identity")
   Assert.equal(controller.focusVisible, false, "fallback reconciliation never shows the ring by itself")
 end
 
@@ -2288,11 +2289,7 @@ function T.tests.back_from_coordinate_selection_returns_to_the_map_list_and_rele
   Assert.equal(harness.controller.locationPage, "grid", "the harness starts inside coordinate selection")
   harness.state:_requestBack()
   Assert.equal(harness.controller.locationPage, "map-list", "one Back returns to the map list")
-  Assert.equal(
-    harness.controller.focus,
-    "list:location:map-list",
-    "one Back focuses the map-list container"
-  )
+  Assert.equal(harness.controller.focus, "list:location:map-list", "one Back focuses the map-list container")
   Assert.equal(releases, 1, "abandoned grid work is released exactly once")
   Assert.isNil(harness.state.closeRequest, "Back from an inner mode never enters the leave flow")
   Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
@@ -2387,10 +2384,7 @@ function T.tests.footer_discard_abandons_a_party_draft_with_its_section()
   Assert.isTrue(harness.session:setMoney(3100).ok, "money stages in another section")
   harness.state:_activate("discard")
   Assert.isTrue(harness.session:snapshot().dirtySections.money, "other sections stay staged")
-  Assert.isFalse(
-    harness.session:snapshot().dirtySections.party,
-    "the Party baseline is restored without applying"
-  )
+  Assert.isFalse(harness.session:snapshot().dirtySections.party, "the Party baseline is restored without applying")
   Assert.equal(harness.controller.partySlot0, 0, "the same slot stays selected")
   local fresh = harness.state.monDraft
   Assert.notNil(fresh, "a fresh draft opens for the restored member")

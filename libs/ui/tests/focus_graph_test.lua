@@ -173,4 +173,82 @@ function T.never_mutates_the_graph()
   Assert.isNil(graph["missing"], "absent candidates must not be materialized")
 end
 
+function T.spatial_candidate_prefers_a_beam_neighbor_to_a_closer_diagonal()
+  local FocusGraph = focusGraphModule()
+  Assert.isTrue(type(FocusGraph.spatialCandidate) == "function", "spatial rectangle ranking is missing")
+
+  local result = FocusGraph.spatialCandidate({ x = 0, y = 0, width = 10, height = 10 }, {
+    { id = "diagonal", rect = { x = 11, y = 11, width = 2, height = 2 }, order = 1 },
+    { id = "beam", rect = { x = 14, y = 2, width = 8, height = 6 }, order = 2 },
+  }, "right")
+  Assert.equal(result, "beam", "perpendicular beam overlap outranks a closer diagonal")
+end
+
+function T.spatial_candidate_uses_edge_distance_then_declaration_order()
+  local FocusGraph = focusGraphModule()
+  Assert.isTrue(type(FocusGraph.spatialCandidate) == "function", "spatial rectangle ranking is missing")
+
+  local source = { x = 0, y = 0, width = 10, height = 10 }
+  local candidates = {
+    { id = "far", rect = { x = 24, y = 1, width = 2, height = 8 }, order = 1 },
+    { id = "first-tie", rect = { x = 12, y = 1, width = 2, height = 8 }, order = 3 },
+    { id = "near", rect = { x = 15, y = 1, width = 2, height = 8 }, order = 2 },
+    { id = "second-tie", rect = { x = 12, y = 1, width = 2, height = 8 }, order = 4 },
+  }
+  Assert.equal(
+    FocusGraph.spatialCandidate(source, candidates, "right"),
+    "first-tie",
+    "edge gap wins first and declaration order resolves an exact tie"
+  )
+end
+
+function T.spatial_candidate_is_directional_and_invariant_under_translation_and_scale()
+  local FocusGraph = focusGraphModule()
+  Assert.isTrue(type(FocusGraph.spatialCandidate) == "function", "spatial rectangle ranking is missing")
+
+  local candidates = {
+    { id = "up", rect = { x = 12, y = 0, width = 10, height = 8 }, order = 1 },
+    { id = "down", rect = { x = 12, y = 24, width = 10, height = 8 }, order = 2 },
+    { id = "left", rect = { x = 0, y = 12, width = 8, height = 10 }, order = 3 },
+    { id = "right", rect = { x = 24, y = 12, width = 8, height = 10 }, order = 4 },
+  }
+  local source = { x = 10, y = 10, width = 10, height = 10 }
+  for _, direction in ipairs({ "up", "down", "left", "right" }) do
+    Assert.equal(FocusGraph.spatialCandidate(source, candidates, direction), direction)
+  end
+
+  local translatedSource = { x = 1010, y = -490, width = 10, height = 10 }
+  local translated = {}
+  for index, candidate in ipairs(candidates) do
+    translated[index] = {
+      id = candidate.id,
+      order = candidate.order,
+      rect = {
+        x = candidate.rect.x + 1000,
+        y = candidate.rect.y - 500,
+        width = candidate.rect.width,
+        height = candidate.rect.height,
+      },
+    }
+  end
+  Assert.equal(FocusGraph.spatialCandidate(translatedSource, translated, "right"), "right")
+
+  local scaledSource = { x = 20, y = 20, width = 20, height = 20 }
+  local scaled = {}
+  for index, candidate in ipairs(candidates) do
+    scaled[index] = {
+      id = candidate.id,
+      order = candidate.order,
+      rect = {
+        x = candidate.rect.x * 2,
+        y = candidate.rect.y * 2,
+        width = candidate.rect.width * 2,
+        height = candidate.rect.height * 2,
+      },
+    }
+  end
+  Assert.equal(FocusGraph.spatialCandidate(scaledSource, scaled, "right"), "right")
+  Assert.isNil(FocusGraph.spatialCandidate(source, {}, "left"), "no forward candidate returns nil")
+end
+
 return { tests = T }

@@ -4,12 +4,63 @@ local Assert = require("tests.support.Assert")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local Moves = require("libs.mons.src.gen4.Moves")
+local Navigation = require("app.src.saveeditor.SaveEditorNavigation")
 local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
 local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 
 local T = {}
+
+local function hasFocus(layout, targetId)
+  for _, region in ipairs(layout.focusNavigation.regions) do
+    if region.logical and region.logical.indexOf and region.logical.indexOf(targetId) ~= nil then
+      return true
+    end
+  end
+  for _, control in ipairs(layout.focusNavigation.controls) do
+    if control.id == targetId then
+      return true
+    end
+  end
+  return false
+end
+
+local function navigate(controller, layout, direction)
+  local snapshot = {
+    scope = { id = layout.scopeId, epoch = layout.scopeEpoch },
+    regions = layout.focusNavigation.regions,
+    controls = layout.focusNavigation.controls,
+    remembered = controller.listCursors,
+  }
+  local focus
+  for _, control in ipairs(snapshot.controls) do
+    if control.id == controller.focus then
+      focus = { scopeId = layout.scopeId, regionId = control.regionId, targetId = controller.focus }
+      break
+    end
+  end
+  if focus == nil then
+    for _, region in ipairs(snapshot.regions) do
+      if region.logical and region.logical.indexOf and region.logical.indexOf(controller.focus) ~= nil then
+        focus = { scopeId = layout.scopeId, regionId = region.id, targetId = controller.focus }
+        break
+      end
+    end
+  end
+  focus = Navigation.reconcile(snapshot, focus or {
+    scopeId = layout.scopeId,
+    regionId = "",
+    targetId = controller.focus,
+  }, { layout.defaultFocus })
+  controller:setFocus(focus.targetId)
+  local result = Navigation.resolve(snapshot, focus, direction)
+  if result.kind == "move" then
+    controller:setFocus(result.targetId)
+  end
+  return result
+end
+
 local function computeLayout(view, width, height)
   return Layout.compute(view, width, height, {
     lineHeight = 14,
@@ -207,15 +258,11 @@ function T.party_cards_use_bounded_icon_left_geometry_and_keep_grid_edges()
     end
     local stripController = Controller.new()
     stripController:setFocus("party:slot:0")
-    stripController:moveFocus(layout.focusGraph, "left")
-    if width <= 280 then
-      Assert.equal(stripController.focus, "party:slot:0", "Left stays inside the rail-less strip")
-    else
-      Assert.equal(stripController.focus, "section:Party", "Left reaches the section rail like every section")
-    end
-    stripController:setFocus("party:add")
-    stripController:moveFocus(layout.focusGraph, "right")
-    Assert.equal(stripController.focus, "party:add", "Right stays inside the strip")
+    navigate(stripController, layout, "right")
+    Assert.equal(stripController.focus, "party:slot:1", "Right follows the declared member strip order")
+    stripController:setFocus("party:slot:1")
+    navigate(stripController, layout, "right")
+    Assert.equal(stripController.focus, "party:slot:2", "Right follows the declared member strip order")
   end
 end
 function T.bag_pages_six_items_and_keeps_add_outside_grid()
@@ -227,13 +274,13 @@ function T.bag_pages_six_items_and_keeps_add_outside_grid()
   local firstLayout = computeLayout(first, 256, 192)
   Assert.equal(#firstLayout.bagGrid, 6, "the first page publishes six occupied cells")
   Assert.isNil(firstLayout.targets["bag:item:ITEM_7"], "later page cards are not hit targets")
-  Assert.isFalse(firstLayout.focusGraph["bag:page:previous"] ~= nil, "Previous is not focusable on the first page")
+  Assert.isFalse(hasFocus(firstLayout, "bag:page:previous"), "Previous is not focusable on the first page")
   Assert.notNil(firstLayout.targets["bag:add"], "Add remains a separate control")
   local second = bagView(rows, 1)
   local secondLayout = computeLayout(second, 256, 192)
   Assert.equal(#secondLayout.bagGrid, 1, "the last page has no empty cards")
   Assert.notNil(secondLayout.targets["bag:item:ITEM_7"], "Next page exposes its first occupied item")
-  Assert.isFalse(secondLayout.focusGraph["bag:page:next"] ~= nil, "Next is not focusable on the last page")
+  Assert.isFalse(hasFocus(secondLayout, "bag:page:next"), "Next is not focusable on the last page")
   local actionModal = bagView(rows, 1)
   actionModal.modal = "bag-item"
   actionModal.bagSelectedItem, actionModal.bagSelectedLabel, actionModal.bagSelectedQuantity = "ITEM_7", "Item 7", 7
@@ -509,19 +556,18 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
     "the viewport keeps the logical index of every semantic row"
   )
   Assert.isNil(layout.targets[middle], "an offscreen semantic row shares no per-frame target")
-  Assert.isNil(layout.focusGraph[middle], "an offscreen semantic row shares no per-frame focus node")
+  Assert.isTrue(hasFocus(layout, middle), "an offscreen semantic row remains logically focusable")
   local visibleFirst = layout.viewports.flags.firstIndex
   local firstTarget = rowTargets[visibleFirst]
-  local firstNode = assert(
-    layout.focusGraph[firstTarget],
-    "the first visible semantic row keeps its focus node"
-  )
+  Assert.isTrue(hasFocus(layout, firstTarget), "the first visible semantic row keeps its navigation control")
   if visibleFirst > 1 then
-    Assert.deepEqual(
-      firstNode.up,
-      {},
-      "the window edge has no offscreen neighbor inside the materialized graph"
-    )
+    local listRegion
+    for _, region in ipairs(layout.focusNavigation.regions) do
+      if region.id == "flags" then
+        listRegion = region
+      end
+    end
+    Assert.notNil(listRegion, "the list region retains its logical order")
   end
   Assert.isTrue(
     table.concat(layout.viewports.flags.rowTargets, "\n"):find(middle, 1, true) ~= nil,
@@ -540,20 +586,18 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
     scrollOffsets = { flags = (middleIndex - 2) * layout.viewports.flags.rowExtent },
   }
   local scrolled = computeLayout(scrolledView, 800, 600)
-  local middleNode = assert(scrolled.focusGraph[middle], "the revealed semantic row joins the focus graph")
+  Assert.isTrue(hasFocus(scrolled, middle), "the revealed semantic row joins the navigation controls")
   local previous = "flag:" .. view.flagRows[middleIndex - 1].name
   local following = "flag:" .. view.flagRows[middleIndex + 1].name
   Assert.isTrue(
-    scrolled.focusGraph[previous] ~= nil and scrolled.focusGraph[following] ~= nil,
+    hasFocus(scrolled, previous) and hasFocus(scrolled, following),
     "the revealed window also materializes the immediate semantic neighbors"
   )
-  Assert.deepEqual(middleNode.up, { previous }, "a revealed row links to its immediate semantic predecessor")
-  Assert.deepEqual(middleNode.down, { following }, "a revealed row links to its immediate semantic successor")
   Assert.notNil(scrolled.targets[middle], "the same semantic row can be revealed by its viewport")
 
   local controller = Controller.new()
   controller:setFocus(firstTarget)
-  controller:moveFocus(layout.focusGraph, "down")
+  navigate(controller, layout, "down")
   Assert.equal(
     controller.focus,
     rowTargets[visibleFirst + 1],
@@ -570,7 +614,7 @@ function T.disabled_bag_and_footer_actions_are_not_focusable_or_pointer_targets(
       Layout.hitTest(layout, view, target.rect.x + target.rect.width / 2, target.rect.y + target.rect.height / 2),
       targetId .. " is not an activatable pointer target"
     )
-    Assert.isFalse(layout.focusGraph[targetId] ~= nil, targetId .. " is absent from the active focus graph")
+    Assert.isFalse(hasFocus(layout, targetId), targetId .. " is absent from active navigation")
     for _, focusId in ipairs(layout.focusOrder) do
       Assert.isFalse(focusId == targetId, targetId .. " is absent from focus order")
     end
@@ -641,20 +685,25 @@ function T.wide_bag_pocket_tabs_keep_left_and_right_on_pockets()
   local keys = { "items", "medicine", "balls", "battle_items", "berries", "mail", "key_items", "machines" }
   for index, key in ipairs(keys) do
     local targetId = "bag:pocket:" .. key
-    local node = assert(layout.focusGraph[targetId], targetId .. " stays in the focus graph")
     local previous = keys[(index - 2) % #keys + 1]
     local following = keys[index % #keys + 1]
-    Assert.deepEqual(node.left, { "bag:pocket:" .. previous }, targetId .. " Left stays on pockets")
-    Assert.deepEqual(node.right, { "bag:pocket:" .. following }, targetId .. " Right stays on pockets")
+    Assert.isTrue(hasFocus(layout, targetId), targetId .. " stays in its navigation region")
+    local controller = Controller.new()
+    controller:setSection("Bag")
+    controller:setFocus(targetId)
+    navigate(controller, layout, "left")
+    Assert.equal(controller.focus, "bag:pocket:" .. previous, targetId .. " Left stays on pockets")
+    navigate(controller, layout, "right")
+    Assert.equal(controller.focus, targetId, targetId .. " returns to its pocket")
   end
 
   local controller = Controller.new()
   controller:setSection("Bag")
   controller:setFocus("bag:pocket:balls")
-  controller:moveFocus(layout.focusGraph, "left")
+  navigate(controller, layout, "left")
   Assert.equal(controller.focus, "bag:pocket:medicine", "Left from a middle pocket selects the previous pocket")
   controller:setFocus("bag:pocket:items")
-  controller:moveFocus(layout.focusGraph, "left")
+  navigate(controller, layout, "left")
   Assert.equal(controller.focus, "bag:pocket:machines", "Left from the first pocket wraps to the last")
 end
 

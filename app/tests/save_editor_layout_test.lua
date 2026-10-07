@@ -3,7 +3,9 @@
 local Assert = require("tests.support.Assert")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
+local Navigation = require("app.src.saveeditor.SaveEditorNavigation")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
+local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
 local T = { tests = {} }
@@ -14,6 +16,44 @@ local function computeLayout(view, width, height)
       return #text * 7
     end,
   })
+end
+
+local function navigationFocus(layout, targetId)
+  for _, control in ipairs(layout.focusNavigation.controls) do
+    if control.id == targetId then
+      return { scopeId = layout.scopeId, regionId = control.regionId, targetId = targetId }
+    end
+  end
+  for _, region in ipairs(layout.focusNavigation.regions) do
+    if region.logical and region.logical.indexOf and region.logical.indexOf(targetId) ~= nil then
+      return { scopeId = layout.scopeId, regionId = region.id, targetId = targetId }
+    end
+  end
+  return nil
+end
+
+local function navigate(controller, layout, direction)
+  local snapshot = {
+    scope = { id = layout.scopeId, epoch = layout.scopeEpoch },
+    regions = layout.focusNavigation.regions,
+    controls = layout.focusNavigation.controls,
+    remembered = controller.listCursors,
+  }
+  local focus = Navigation.reconcile(snapshot, navigationFocus(layout, controller.focus) or {
+    scopeId = layout.scopeId,
+    regionId = "",
+    targetId = controller.focus,
+  }, { layout.defaultFocus })
+  controller:setFocus(focus.targetId)
+  local result = Navigation.resolve(snapshot, focus, direction)
+  if result.kind == "move" then
+    controller:setFocus(result.targetId)
+  end
+  return result
+end
+
+local function hasNavigationControl(layout, targetId)
+  return navigationFocus(layout, targetId) ~= nil
 end
 
 local function locationView()
@@ -368,7 +408,7 @@ function T.tests.party_editor_publishes_a_strip_pager_and_exactly_three_pages()
         "party:discard", "party:cancel", "party:move:remove:0", "party:clear-nickname",
       }) do
         Assert.isNil(layout.targets[targetId], "obsolete Party target is gone: " .. targetId)
-        Assert.isNil(layout.focusGraph[targetId], "obsolete Party target leaves the graph: " .. targetId)
+        Assert.isFalse(hasNavigationControl(layout, targetId), "obsolete Party target leaves navigation: " .. targetId)
       end
     end
   end
@@ -396,6 +436,30 @@ function T.tests.party_editor_publishes_a_strip_pager_and_exactly_three_pages()
     compactDetails.viewports.party.contentExtent > compactDetails.viewports.party.clip.height,
     "compact Details overflows and scrolls"
   )
+end
+
+function T.tests.live_stats_navigation_preserves_the_iv_ev_column()
+  local controller = Controller.new()
+  controller:setSection("Party")
+  local view = partyEditorView("Stats")
+  local layout = computeLayout(view, 800, 600)
+  controller.scopeId, controller.scopeEpoch = layout.scopeId, layout.scopeEpoch
+  controller:setFocus("party:field:iv:attack")
+  local state = {
+    controller = controller,
+    valueEditor = nil,
+    _snapshot = function()
+      return {}
+    end,
+    _setScrollOffset = function()
+    end,
+  }
+
+  SaveEditorState._navigate(state, layout, "down")
+
+  Assert.equal(controller.focus, "party:field:iv:defense", "Down preserves the IV column in the live Stats table")
+  SaveEditorState._navigate(state, layout, "right")
+  Assert.equal(controller.focus, "party:field:ev:defense", "Right moves to the EV column in the live Stats table")
 end
 
 local function filterMetrics()
@@ -519,20 +583,13 @@ function T.tests.progress_list_publishes_one_container_with_ordered_filterable_r
   for _, rowTarget in ipairs(expectedRows) do
     rowSet[rowTarget] = true
   end
-  for _, direction in ipairs({ "up", "down", "left", "right" }) do
-    controller:setFocus("list:flags")
-    controller:moveFocus(layout.focusGraph, direction)
-    Assert.isFalse(
-      rowSet[controller.focus] == true,
-      "directional input from the container never lands on a list row: " .. direction
-    )
-  end
-  controller:setFocus("list:flags")
-  controller:moveFocus(layout.focusGraph, "down")
-  Assert.isTrue(
-    controller.focus == "save" or controller.focus == "discard" or controller.focus == "back",
-    "down from the flag container reaches a neighboring screen-level control, got " .. controller.focus
-  )
+  local entered = Navigation.reconcile({
+    scope = { id = layout.scopeId, epoch = layout.scopeEpoch },
+    regions = layout.focusNavigation.regions,
+    controls = layout.focusNavigation.controls,
+    remembered = controller.listCursors,
+  }, navigationFocus(layout, "list:flags"), { layout.defaultFocus })
+  Assert.isTrue(rowSet[entered.targetId] == true, "the list region immediately focuses its first logical row")
 end
 
 local function mapListView()
@@ -668,7 +725,7 @@ function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible
     Assert.isTrue(materialized < 30, "offscreen map rows share no per-frame target (" .. label .. ")")
     local distant = list.rowTargets[30]
     Assert.isNil(layout.targets[distant], "the last map has no target at the top offset (" .. label .. ")")
-    Assert.isNil(layout.focusGraph[distant], "the last map has no focus node at the top offset (" .. label .. ")")
+    Assert.notNil(navigationFocus(layout, distant), "the last map remains logically addressable (" .. label .. ")")
     local revealed = (function()
       local scrolledView = mapListView()
       scrolledView.location.maps = maps
@@ -682,7 +739,7 @@ function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible
       "the scrolled window materializes the last map (" .. label .. ")"
     )
     Assert.notNil(
-      revealed.focusGraph[distant],
+      navigationFocus(revealed, distant),
       "the scrolled window focuses the last map (" .. label .. ")"
     )
   end
@@ -710,6 +767,11 @@ function T.tests.location_uses_one_mode_per_layout_without_picker_controls()
       "coordinate selection never composes the map list (" .. label .. ")"
     )
     Assert.notNil(gridLayout.locationGrid, "coordinate selection publishes the grid (" .. label .. ")")
+    Assert.notNil(gridLayout.targets["location:grid"], "the grid publishes its focus surface (" .. label .. ")")
+    Assert.notNil(
+      navigationFocus(gridLayout, "location:grid"),
+      "the grid remains in the logical focus graph (" .. label .. ")"
+    )
     Assert.notNil(gridLayout.locationHeader, "coordinate selection publishes one header (" .. label .. ")")
     Assert.isNil(
       gridLayout.targets["location:map-picker"],
@@ -826,16 +888,12 @@ function T.tests.choice_list_publishes_one_container_with_ordered_rows()
     "choice filtering needs no standalone search target"
   )
 
-  local controller = Controller.new()
-  controller:setFocus("list:value:choice")
-  for _, direction in ipairs({ "up", "down", "left", "right" }) do
-    controller:setFocus("list:value:choice")
-    controller:moveFocus(layout.focusGraph, direction)
-    Assert.isFalse(
-      controller.focus:match("^choice:") ~= nil,
-      "directional input from the container never lands on a choice row: " .. direction
-    )
-  end
+  local entered = Navigation.reconcile({
+    scope = { id = layout.scopeId, epoch = layout.scopeEpoch },
+    regions = layout.focusNavigation.regions,
+    controls = layout.focusNavigation.controls,
+  }, navigationFocus(layout, "list:value:choice"), { layout.defaultFocus })
+  Assert.isTrue(entered.targetId:match("^choice:") ~= nil, "the choice region immediately focuses its first row")
 end
 
 function T.tests.modal_scope_omits_background_list_rows_and_containers()
@@ -1163,16 +1221,6 @@ local function countMatching(targets, pattern)
   return count
 end
 
-local function countGraphNodes(graph, pattern)
-  local count = 0
-  for targetId in pairs(graph) do
-    if targetId:match(pattern) ~= nil then
-      count = count + 1
-    end
-  end
-  return count
-end
-
 function T.tests.large_flag_catalog_materializes_only_its_visible_window()
   local flags, rowTargets, indexByTarget = largeFlagCatalog(10000)
   local viewportHeight
@@ -1228,8 +1276,14 @@ function T.tests.large_flag_catalog_materializes_only_its_visible_window()
       case.name .. " materializes targets only for its visible window"
     )
     Assert.isTrue(
-      countGraphNodes(layout.focusGraph, "^flag:") <= last - first + 1,
-      case.name .. " keeps focus nodes only for its visible window"
+      countMatching((function()
+        local ids = {}
+        for _, control in ipairs(layout.focusNavigation.controls) do
+          ids[control.id] = true
+        end
+        return ids
+      end)(), "^flag:") <= last - first + 1,
+      case.name .. " keeps navigation controls only for its visible window"
     )
     Assert.equal(#layout.lists.flags.rowTargets, 10000, case.name .. " keeps the complete logical order")
     local firstTarget = rowTargets[first]
@@ -1286,12 +1340,18 @@ function T.tests.large_choice_catalog_materializes_only_its_visible_window()
     "choice targets stay bounded by the visible window"
   )
   Assert.isTrue(
-    countGraphNodes(layout.focusGraph, "^choice:") <= capacity,
-    "choice focus nodes stay bounded by the visible window"
+    countMatching((function()
+      local ids = {}
+      for _, control in ipairs(layout.focusNavigation.controls) do
+        ids[control.id] = true
+      end
+      return ids
+    end)(), "^choice:") <= capacity,
+    "choice controls stay bounded by the visible window"
   )
   Assert.equal(#layout.lists["value:choice"].rowTargets, 10000, "the logical choice order stays complete")
   Assert.isNil(layout.targets["choice:K10000"], "the last choice has no target at the top offset")
-  Assert.isNil(layout.focusGraph["choice:K10000"], "the last choice has no focus node at the top offset")
+  Assert.notNil(navigationFocus(layout, "choice:K10000"), "the last choice stays logically addressable")
   Assert.notNil(layout.targets["list:value:choice"], "the container stays focusable in a large catalog")
 end
 
