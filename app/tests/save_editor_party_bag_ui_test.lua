@@ -6,12 +6,24 @@ local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local Moves = require("libs.mons.src.gen4.Moves")
 local Navigation = require("app.src.saveeditor.SaveEditorNavigation")
 local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
+local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
 local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 
 local T = {}
+
+local function modalStackWith(kind)
+  local stack = ModalStack.new()
+  stack:push({
+    id = "test:" .. kind,
+    kind = kind,
+    payload = {},
+    opener = { controlId = "test:opener", regionId = "test", scrollAnchor = 0 },
+  })
+  return stack
+end
 
 local function hasFocus(layout, targetId)
   for _, region in ipairs(layout.focusNavigation.regions) do
@@ -328,9 +340,14 @@ function T.nickname_blank_and_clear_have_distinct_raw_results()
       result = function()
         return { kind = "confirm", value = "" }
       end,
+      snapshot = function()
+        return { kind = "name" }
+      end,
+      dispose = function() end,
     },
     activeDraftField = nickname.editor,
     monDraft = draft,
+    modalStack = modalStackWith("name"),
   }, SaveEditorState)
   blankState:_finishValueEditor()
   Assert.equal(assignedField, "nickname")
@@ -456,6 +473,8 @@ function T.close_cancel_restores_an_open_removal_decision_without_resolving_it()
   }
   local state = setmetatable({
     controller = controller,
+    modalStack = modalStackWith("bag-remove"),
+    modalLayerSequence = 0,
     session = session,
     monDraft = draft,
     valueEditor = valueEditor,

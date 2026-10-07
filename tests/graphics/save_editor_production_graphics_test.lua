@@ -63,8 +63,7 @@ local function clickTarget(state, targetId)
     local layout = assert(view.layout)
     local target = assert(layout.targets[targetId], "the visible editor publishes " .. targetId)
     local rect = target.rect or target.hitRect or target
-    local x, y =
-      LayoutGeometry.logicalToHost(assert(pane.placement), rect.x + rect.width / 2, rect.y + rect.height / 2)
+    local x, y = LayoutGeometry.logicalToHost(assert(pane.placement), rect.x + rect.width / 2, rect.y + rect.height / 2)
     state:mousepressed(x, y, 1, false)
     state:mousereleased(x, y, 1, false)
   end
@@ -158,9 +157,36 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       local pane = assert(view.presentation.panes[1], name .. " publishes the interactive pane")
       local x, y = LayoutGeometry.logicalToHost(assert(pane.placement), 1, 1)
       local red, green, blue = actual:getPixel(x, y)
-      Assert.near(red, state.renderer.skin.background[1], 1 / 255, name .. " uses the editor palette red")
-      Assert.near(green, state.renderer.skin.background[2], 1 / 255, name .. " uses the editor palette green")
-      Assert.near(blue, state.renderer.skin.background[3], 1 / 255, name .. " uses the editor palette blue")
+      local scrimCount = 0
+      for _, layer in ipairs(view.modalLayers or {}) do
+        if layer.kind == "leave" or layer.kind == "bag-item" or layer.kind == "bag-remove" or layer.kind == "move" then
+          scrimCount = scrimCount + 1
+        end
+      end
+      if view.valueEditor ~= nil then
+        scrimCount = scrimCount + 1
+      end
+      local backgroundScale = (1 - 0.42) ^ scrimCount
+      local backgroundLabel = scrimCount == 0 and "uses the editor palette" or "uses the modal-dimmed editor palette"
+      local tolerance = scrimCount == 0 and 1 / 255 or 2 / 255
+      Assert.near(
+        red,
+        state.renderer.skin.background[1] * backgroundScale,
+        tolerance,
+        name .. " " .. backgroundLabel .. " red"
+      )
+      Assert.near(
+        green,
+        state.renderer.skin.background[2] * backgroundScale,
+        tolerance,
+        name .. " " .. backgroundLabel .. " green"
+      )
+      Assert.near(
+        blue,
+        state.renderer.skin.background[3] * backgroundScale,
+        tolerance,
+        name .. " " .. backgroundLabel .. " blue"
+      )
       local explicit = {}
       for _, surface in ipairs(view.layout.listSurfaces or {}) do
         explicit[#explicit + 1] = surface
@@ -179,19 +205,11 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
           local frameHeight = math.floor(surface.height / 8) * 8
           local frameX = math.floor(surface.x + (surface.width - frameWidth) / 2 + 0.5)
           local frameY = math.floor(surface.y + (surface.height - frameHeight) / 2 + 0.5)
-          if
-            frame.x == frameX
-            and frame.y == frameY
-            and frame.width == frameWidth
-            and frame.height == frameHeight
-          then
+          if frame.x == frameX and frame.y == frameY and frame.width == frameWidth and frame.height == frameHeight then
             owned = true
           end
         end
-        Assert.isTrue(
-          owned,
-          name .. " draws only explicit list/modal frames without a blanket content frame"
-        )
+        Assert.isTrue(owned, name .. " draws only explicit list/modal frames without a blanket content frame")
       end
       if #frameDraws - frameCount > 0 then
         Assert.equal(
@@ -257,11 +275,9 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     local function enterStagedGrid(context)
       state:keypressed("delete")
       state:keyreleased("delete")
-      local stagedMapId =
-        assert(assert(state.session, context .. " stages a session"):snapshot().location).mapId
+      local stagedMapId = assert(assert(state.session, context .. " stages a session"):snapshot().location).mapId
       local stagedName
-      local summaries =
-        assert(state.locationService, context .. " owns its location service"):mapSummaries()
+      local summaries = assert(state.locationService, context .. " owns its location service"):mapSummaries()
       for _, summary in ipairs(summaries) do
         if summary.mapId == stagedMapId then
           stagedName = assert(summary.displayName, context .. " names the staged map")
@@ -281,8 +297,7 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       clickTarget(state, activated)
       state:update(0)
       for _ = 1, 120 do
-        local snapshot =
-          assert(state.locationService, context .. " owns its location service"):snapshot()
+        local snapshot = assert(state.locationService, context .. " owns its location service"):snapshot()
         local classified = false
         for _, tile in ipairs(snapshot.tiles) do
           if tile.selectable == false then
@@ -424,12 +439,10 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
         Assert.notNil(icon.quad, "the selected ROM supplies the Party icon frame")
         Assert.equal(icon.dimensions.width, iconDimensions.width, "the renderer retains provider width")
         Assert.equal(icon.dimensions.height, iconDimensions.height, "the renderer retains provider height")
-        local scale =
-          math.min(1, rect.width / iconDimensions.width, rect.height / iconDimensions.height)
+        local scale = math.min(1, rect.width / iconDimensions.width, rect.height / iconDimensions.height)
         Assert.isTrue(scale > 0 and scale <= 1, "strip icons never upscale beyond provider pixels")
         Assert.isTrue(
-          iconDimensions.width * scale <= rect.width + 0.001
-            and iconDimensions.height * scale <= rect.height + 0.001,
+          iconDimensions.width * scale <= rect.width + 0.001 and iconDimensions.height * scale <= rect.height + 0.001,
           "the scaled real icon fits its strip cell"
         )
         centeredIcons = centeredIcons + 1
@@ -501,10 +514,7 @@ function T.tests.production_party_uses_generic_selector_without_retail_manifest(
 
     local dependencies = assert(state.dependencies, "ready composition publishes its manifests")
     local bagManifest = assert(dependencies.bagManifest, "the Bag manifest is already composed")
-    Assert.isNil(
-      dependencies.partyManifest,
-      "composition no longer publishes the retail Party manifest to the editor"
-    )
+    Assert.isNil(dependencies.partyManifest, "composition no longer publishes the retail Party manifest to the editor")
 
     state.controller:setSection("Party")
     state:update(0)
@@ -534,10 +544,7 @@ function T.tests.production_party_uses_generic_selector_without_retail_manifest(
       end
     end
     probeKey = assert(probeKey, "the catalog offers an item for the current pocket")
-    Assert.isTrue(
-      state.session:setBagQuantity(probeKey, 1).ok,
-      "the production session stages one probe stack"
-    )
+    Assert.isTrue(state.session:setBagQuantity(probeKey, 1).ok, "the production session stages one probe stack")
     state:update(0)
     local bagView = state:view()
     local pageRows = assert(bagView.bagPageRows, "the Bag view publishes its visible page rows")

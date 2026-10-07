@@ -222,7 +222,28 @@ local function fixture(scope, width, height, topology, section, variant, version
     view.textMetrics = realTextMetrics(scope)
     if variant == "party-move" then
       view.modal = "party-move"
+      view.modalTitle = "Edit move: Tackle"
       view.scope = { id = "decision:party-move", epoch = 2, kind = "decision", focusId = view.focus }
+    elseif variant == "party-move-child" then
+      view.numberControls = {
+        { delta = 100, role = "increment", hitRect = { x = 120, y = 88, width = 32, height = 24 } },
+        { delta = 10, role = "increment", hitRect = { x = 152, y = 88, width = 32, height = 24 } },
+        { delta = 1, role = "increment", hitRect = { x = 184, y = 88, width = 32, height = 24 } },
+        { delta = -100, role = "decrement", hitRect = { x = 120, y = 136, width = 32, height = 24 } },
+        { delta = -10, role = "decrement", hitRect = { x = 152, y = 136, width = 32, height = 24 } },
+        { delta = -1, role = "decrement", hitRect = { x = 184, y = 136, width = 32, height = 24 } },
+      }
+      view.numberControlVisuals = {
+        increment = { normal = { image = "bag/inc-normal" }, pressed = { image = "bag/inc-pressed" } },
+        decrement = { normal = { image = "bag/dec-normal" }, pressed = { image = "bag/dec-pressed" } },
+      }
+      view.valueEditor = { kind = "number", buffer = "12", parsedValue = 12, minimum = 0, maximum = 99 }
+      view.focus = "confirm"
+      view.scope = { id = "value:move-pp", epoch = 3, kind = "value", focusId = view.focus }
+      view.modalLayers = {
+        { id = "move:0", kind = "move", payload = { title = "Edit move: Tackle" } },
+        { id = "number:move-pp", kind = "number", payload = { purpose = "move_pp", snapshot = view.valueEditor } },
+      }
     end
   elseif section == "Bag" then
     view.focus = variant == "bag-cards" and "bag:item:POTION" or "bag:pocket:items"
@@ -394,8 +415,12 @@ local function fixture(scope, width, height, topology, section, variant, version
       count = #rowTargets,
       rowTargets = rowTargets,
       indexByTarget = indexByTarget,
-      idAt = function(index) return rowTargets[index] end,
-      indexOf = function(targetId) return indexByTarget[targetId] end,
+      idAt = function(index)
+        return rowTargets[index]
+      end,
+      indexOf = function(targetId)
+        return indexByTarget[targetId]
+      end,
       rowAt = view.flagRowAt,
     }
   end
@@ -409,9 +434,15 @@ local function fixture(scope, width, height, topology, section, variant, version
       count = #rowTargets,
       rowTargets = rowTargets,
       indexByTarget = indexByTarget,
-      idAt = function(index) return rowTargets[index] end,
-      indexOf = function(targetId) return indexByTarget[targetId] end,
-      rowAt = function(index) return maps[index] end,
+      idAt = function(index)
+        return rowTargets[index]
+      end,
+      indexOf = function(targetId)
+        return indexByTarget[targetId]
+      end,
+      rowAt = function(index)
+        return maps[index]
+      end,
     }
   end
   local context = DisplayContext.new({
@@ -582,6 +613,9 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       for _, targetId in ipairs({ "party-move:move", "party-move:pp", "party-move:pp-ups", "cancel" }) do
         Assert.notNil(layout.targets[targetId], name .. " exposes its move overlay action " .. targetId)
       end
+    elseif variant == "party-move-child" then
+      Assert.notNil(layout.targets.confirm, name .. " exposes the child editor action")
+      Assert.notNil(layout.targets.cancel, name .. " exposes the child cancel action")
     else
       if variant ~= "empty" then
         Assert.notNil(layout.targets["party:slot:0"], name .. " exposes the occupied slot")
@@ -712,10 +746,7 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       end
       Assert.isTrue(headerFound, name .. " draws one combined map identity header line")
     else
-      Assert.isFalse(
-        renderedText:find("blocked", 1, true),
-        name .. " shows no blocked prose while selecting a map"
-      )
+      Assert.isFalse(renderedText:find("blocked", 1, true), name .. " shows no blocked prose while selecting a map")
     end
     Assert.isFalse(renderedText:find("Ready", 1, true), name .. " omits the ready label")
     Assert.isFalse(renderedText:find("Saved", 1, true), name .. " omits Saved/Pending comparison prose")
@@ -723,7 +754,28 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   end
   renderer:dispose()
   presentation:dispose()
-  return data, renderedText, layout, bagDrawn, drawnText, view, renderer.skin.background, bagDrawOrder, paletteCalls
+  return data,
+    renderedText,
+    layout,
+    bagDrawn,
+    drawnText,
+    view,
+    renderer.skin.background,
+    bagDrawOrder,
+    paletteCalls,
+    plan
+end
+
+local function pixelAtLogical(data, plan, x, y)
+  local pane
+  for _, candidate in ipairs(plan.panes) do
+    if candidate.interactive then
+      pane = candidate
+      break
+    end
+  end
+  local hostX, hostY = LayoutGeometry.logicalToHost(assert(pane).placement, x, y)
+  return data:getPixel(math.floor(hostX), math.floor(hostY))
 end
 
 -- Local helpers for presentation-feedback coverage. They interpret recorded
@@ -833,8 +885,7 @@ function T.choice_and_decision_lists_render_as_white_framed_surfaces(scope)
     else
       local decision = assert(layout.decisionList, "the leave decision publishes its framed surface")
       local firstRow = assert(decision.rows[1], "the leave decision exposes its actions").rect
-      local x, y =
-        LayoutGeometry.logicalToHost(pane.placement, firstRow.x - 6, firstRow.y + firstRow.height / 2)
+      local x, y = LayoutGeometry.logicalToHost(pane.placement, firstRow.x - 6, firstRow.y + firstRow.height / 2)
       local red, green, blue = data:getPixel(math.floor(x), math.floor(y))
       Assert.near(red, 1, 0.05, "modal content has a white surface beside its action buttons")
       Assert.near(green, 1, 0.05, "modal content has a white surface beside its action buttons")
@@ -1075,18 +1126,9 @@ function T.bag_cards_use_generic_buttons_with_name_and_quantity(scope)
   end
   Assert.isTrue(named, "cards show the item name")
   Assert.isTrue(counted, "cards show the item quantity")
-  Assert.isFalse(
-    renderedText:find("Restores a small amount", 1, true) ~= nil,
-    "cards omit item descriptions"
-  )
-  Assert.isFalse(
-    renderedText:find("OVERFLOW_SENTINEL", 1, true) ~= nil,
-    "long descriptions never reach the card"
-  )
-  Assert.isFalse(
-    renderedText:find("Cures poison.", 1, true) ~= nil,
-    "short descriptions are omitted too"
-  )
+  Assert.isFalse(renderedText:find("Restores a small amount", 1, true) ~= nil, "cards omit item descriptions")
+  Assert.isFalse(renderedText:find("OVERFLOW_SENTINEL", 1, true) ~= nil, "long descriptions never reach the card")
+  Assert.isFalse(renderedText:find("Cures poison.", 1, true) ~= nil, "short descriptions are omitted too")
   Assert.isNil(drawn["bag/item-focus"], "cards draw no native focus visual")
   Assert.isTrue(drawn["bag/items-strip"], "the pocket strip keeps its generated art")
   Assert.isTrue(drawn["bag/dec-normal"], "Previous keeps its generated arrow")
@@ -1368,14 +1410,10 @@ function T.location_grid_header_uses_black_single_line_chrome(scope)
   Assert.equal(foregroundAverage(leftCall.palette), 0, "the header identity uses a black face")
   Assert.equal(foregroundAverage(rightCall.palette), 0, "the header disclaimer uses a black face")
   Assert.isTrue(
-    rightCall.x + view.textMetrics.measure("blocked")
-      <= header.lineRect.x + header.lineRect.width + 0.01,
+    rightCall.x + view.textMetrics.measure("blocked") <= header.lineRect.x + header.lineRect.width + 0.01,
     "the disclaimer stays inside the header line"
   )
-  Assert.isTrue(
-    rightCall.x >= header.leftRect.x + header.leftRect.width,
-    "the disclaimer never overlaps the identity"
-  )
+  Assert.isTrue(rightCall.x >= header.leftRect.x + header.leftRect.width, "the disclaimer never overlaps the identity")
 end
 
 function T.location_map_list_labels_fit_button_content_without_losing_map_identity(scope)
@@ -1440,8 +1478,7 @@ function T.selected_member_renders_identity_in_strip_and_stats_header(scope)
     touch = false,
     role = "world",
   })
-  local _, renderedText, layout =
-    draw(scope, width, height, wide, "party-selected-member", "Party", "Stats")
+  local _, renderedText, layout = draw(scope, width, height, wide, "party-selected-member", "Party", "Stats")
   local strip = assert(layout.partyStrip, "the Party layout publishes its member strip")
   Assert.equal(#strip.slots, 6, "the strip spans six positions")
   Assert.isTrue(strip.slots[1].active, "the first member stays selected")
@@ -1705,12 +1742,7 @@ function T.ordinary_page_keeps_themed_background_without_extra_frame(scope)
       local frameHeight = math.floor(surface.height / 8) * 8
       local frameX = math.floor(surface.x + (surface.width - frameWidth) / 2 + 0.5)
       local frameY = math.floor(surface.y + (surface.height - frameHeight) / 2 + 0.5)
-      if
-        frame.x == frameX
-        and frame.y == frameY
-        and frame.width == frameWidth
-        and frame.height == frameHeight
-      then
+      if frame.x == frameX and frame.y == frameY and frame.width == frameWidth and frame.height == frameHeight then
         owned = true
       end
     end
@@ -1841,7 +1873,8 @@ function T.surface_text_and_party_action_hierarchy_follow_surface_role(scope)
     )
 
     rectangleCalls = {}
-    local _, _, _, _, _, _, _, _, listPalettes = draw(scope, 800, 600, topology, "hierarchy-party-add", "Party", "Stats")
+    local _, _, _, _, _, _, _, _, listPalettes =
+      draw(scope, 800, 600, topology, "hierarchy-party-add", "Party", "Stats")
     local addCall = assert(findPaletteCall(listPalettes, "+ Add"), "Add button label records its palette")
     Assert.isTrue(
       assert(foregroundAverage(addCall.palette), "Add card has a foreground") > 150,
@@ -2142,15 +2175,8 @@ function T.wide_host_resizes_keep_the_content_column_clamped_and_hits_inside_it(
   }
   for _, case in ipairs(cases) do
     local topology = singleDisplay(case.width, case.height)
-    local _, _, layout, _, _, view = draw(
-      scope,
-      case.width,
-      case.height,
-      topology,
-      "shell-host-" .. case.width,
-      "Player",
-      nil
-    )
+    local _, _, layout, _, _, view =
+      draw(scope, case.width, case.height, topology, "shell-host-" .. case.width, "Player", nil)
     local pane = assert(view.presentation.panes[1], "the host publishes its interactive pane")
     local placement = assert(pane.placement, "the pane carries the resolved host transform")
     local plan = assert(view.presentation)
@@ -2160,7 +2186,11 @@ function T.wide_host_resizes_keep_the_content_column_clamped_and_hits_inside_it(
       Assert.isTrue(content.width <= 384, case.width .. "-pixel host keeps the content at or below 384 logical pixels")
       Assert.isTrue(
         rail.x + rail.width <= content.x,
-        "the rail stays left of the content (rail right " .. tostring(rail.x + rail.width) .. ", content left " .. tostring(content.x) .. ")"
+        "the rail stays left of the content (rail right "
+          .. tostring(rail.x + rail.width)
+          .. ", content left "
+          .. tostring(content.x)
+          .. ")"
       )
       Assert.isTrue(content.x >= 8, "wide content keeps its outer left margin")
       Assert.isTrue(
@@ -2188,24 +2218,21 @@ function T.wide_host_resizes_keep_the_content_column_clamped_and_hits_inside_it(
       navigationRect.y + navigationRect.height / 2
     )
     local logicalX, logicalY = LayoutGeometry.hostToLogical(placement, hitX, hitY)
-    local mapped = assert(plan.mapInput({ type = "pointer_down", pointerId = "d04", x = logicalX, y = logicalY }, view, plan))
+    local mapped =
+      assert(plan.mapInput({ type = "pointer_down", pointerId = "d04", x = logicalX, y = logicalY }, view, plan))
     Assert.equal(mapped.targetId, "section:Location", "the transformed host point resolves to the same section target")
     local footer = assert(layout.targets.back, "the host publishes the Back hit target").rect
     Assert.isTrue(footer.x >= content.x, "the Back hit target stays inside the content column")
-    Assert.isTrue(footer.x + footer.width <= content.x + content.width, "the Back hit target is not stretched beyond content")
+    Assert.isTrue(
+      footer.x + footer.width <= content.x + content.width,
+      "the Back hit target is not stretched beyond content"
+    )
   end
 end
 
 function T.section_labels_reuse_party_game_font_and_body_scale(scope)
   local width, height = 1280, 720
-  local view, _, plan = fixture(
-    scope,
-    width,
-    height,
-    singleDisplay(width, height),
-    "Party",
-    "Stats"
-  )
+  local view, _, plan = fixture(scope, width, height, singleDisplay(width, height), "Party", "Stats")
   local cache = FieldUiFixture.cacheWithFontAndFrames()
   local text = scope:own(FieldTextRenderer.new({ cacheFs = cache, graphics = love.graphics }))
   local renderer = Renderer.new({ text = text, versionId = view.versionId })
@@ -2364,11 +2391,15 @@ function T.action_buttons_use_reference_faces_and_resolved_focus_radius(scope)
     local lower = (case.id == "save" or case.id == "confirm") and { 40, 121, 113 } or { 48, 89, 195 }
     for _, point in ipairs({
       { y = rect.y + 4, color = expected[case.id], name = "upper" },
-      { y = rect.y + rect.height / 2, color = {
-        (expected[case.id][1] + ((case.id == "save" or case.id == "confirm") and 40 or 48)) / 2,
-        (expected[case.id][2] + ((case.id == "save" or case.id == "confirm") and 121 or 89)) / 2,
-        (expected[case.id][3] + ((case.id == "save" or case.id == "confirm") and 113 or 195)) / 2,
-      }, name = "middle" },
+      {
+        y = rect.y + rect.height / 2,
+        color = {
+          (expected[case.id][1] + ((case.id == "save" or case.id == "confirm") and 40 or 48)) / 2,
+          (expected[case.id][2] + ((case.id == "save" or case.id == "confirm") and 121 or 89)) / 2,
+          (expected[case.id][3] + ((case.id == "save" or case.id == "confirm") and 113 or 195)) / 2,
+        },
+        name = "middle",
+      },
       { y = rect.y + rect.height - 4, color = lower, name = "lower" },
     }) do
       local _, hostY = LayoutGeometry.logicalToHost(placement, rect.x, point.y)
@@ -2509,8 +2540,7 @@ function T.overflowing_viewports_show_a_scroll_cue_and_quiet_ones_do_not(scope)
 end
 
 function T.number_modal_omits_range_and_step_labels(scope)
-  local _, renderedText =
-    draw(scope, 640, 480, singleDisplay(640, 480), "number-compact", "Player", "number-modal")
+  local _, renderedText = draw(scope, 640, 480, singleDisplay(640, 480), "number-compact", "Player", "number-modal")
   Assert.isNil(renderedText:find("Range", 1, true), "the compact modal omits range prose")
   for _, step in ipairs({ "+100", "+10", "+1", "-100", "-10", "-1" }) do
     Assert.isNil(renderedText:find(step, 1, true), "the compact modal omits step labels: " .. step)
@@ -2523,27 +2553,17 @@ function T.bag_cards_draw_generic_chrome_without_browse_backgrounds(scope)
   local fake = love.graphics.newImage(love.image.newImageData(256, 192))
   local drawnFake = false
   local oldDraw = love.graphics.draw
-  local _, _, layout = draw(
-    scope,
-    640,
-    480,
-    topology,
-    "bag-browse",
-    "Bag",
-    "bag-cards",
-    nil,
-    function(renderer, view)
-      view.bagBrowseBackground = { image = "synthetic/browse-3" }
-      view.bagItemSlots = { { x = 0, y = 0, width = 128, height = 32 } }
-      renderer._bagImages["synthetic/browse-3"] = fake
-      love.graphics.draw = function(drawable, ...)
-        if drawable == fake then
-          drawnFake = true
-        end
-        return oldDraw(drawable, ...)
+  local _, _, layout = draw(scope, 640, 480, topology, "bag-browse", "Bag", "bag-cards", nil, function(renderer, view)
+    view.bagBrowseBackground = { image = "synthetic/browse-3" }
+    view.bagItemSlots = { { x = 0, y = 0, width = 128, height = 32 } }
+    renderer._bagImages["synthetic/browse-3"] = fake
+    love.graphics.draw = function(drawable, ...)
+      if drawable == fake then
+        drawnFake = true
       end
+      return oldDraw(drawable, ...)
     end
-  )
+  end)
   love.graphics.draw = oldDraw
   Assert.isFalse(drawnFake, "item cards never draw the pocket browse background")
   local card = assert(layout.bagGrid[1])
@@ -2576,24 +2596,14 @@ function T.framed_lists_draw_their_frame_after_their_content(scope)
     return oldPrint(...)
   end
   local ok, failure = xpcall(function()
-    draw(
-      scope,
-      640,
-      480,
-      singleDisplay(640, 480),
-      "frame-order",
-      "Player",
-      "choice-list",
-      nil,
-      function(renderer)
-        local windowRenderer = assert(renderer._windowRenderer)
-        local drawApplicationFrame = windowRenderer.drawApplicationFrame
-        windowRenderer.drawApplicationFrame = function(self, box, frameIndex)
-          events[#events + 1] = "frame"
-          return drawApplicationFrame(self, box, frameIndex)
-        end
+    draw(scope, 640, 480, singleDisplay(640, 480), "frame-order", "Player", "choice-list", nil, function(renderer)
+      local windowRenderer = assert(renderer._windowRenderer)
+      local drawApplicationFrame = windowRenderer.drawApplicationFrame
+      windowRenderer.drawApplicationFrame = function(self, box, frameIndex)
+        events[#events + 1] = "frame"
+        return drawApplicationFrame(self, box, frameIndex)
       end
-    )
+    end)
   end, debug.traceback)
   love.graphics.print = oldPrint
   if not ok then
@@ -2623,20 +2633,147 @@ function T.nested_party_actions_use_semantic_button_faces(scope)
     assert(foregroundAverage(addCall.palette), "move Add has a foreground") > 150,
     "adding a move uses light primary ink"
   )
-  local _, overlayText, overlayLayout =
-    draw(scope, width, height, topology, "nested-overlay", "Party", "party-move")
+  local _, overlayText, overlayLayout = draw(scope, width, height, topology, "nested-overlay", "Party", "party-move")
   for _, label in ipairs({ "Move", "Current PP", "PP Ups" }) do
     Assert.isTrue(overlayText:find(label, 1, true) ~= nil, "the move overlay exposes " .. label)
   end
   for _, targetId in ipairs({ "party-move:move", "party-move:pp", "party-move:pp-ups" }) do
     Assert.notNil(overlayLayout.targets[targetId], "the overlay keeps " .. targetId .. " activatable")
   end
-  Assert.isTrue(
-    overlayText:find("Remove", 1, true) == nil,
-    "the move overlay offers no removal action"
-  )
+  Assert.isTrue(overlayText:find("Remove", 1, true) == nil, "the move overlay offers no removal action")
   Assert.isTrue(renderedText:find("Remove", 1, true) == nil, "the Moves page offers no removal action")
 end
+
+function T.party_move_dialog_keeps_the_page_and_uses_its_own_title(scope)
+  local width, height = 640, 480
+  local _, renderedText =
+    draw(scope, width, height, singleDisplay(width, height), "party-move-layer", "Party", "party-move")
+  Assert.isTrue(
+    renderedText:find("Edit move: Tackle", 1, true) ~= nil,
+    "the move dialog title names the selected move instead of showing the leave prompt"
+  )
+  for _, label in ipairs({ "Move", "Current PP", "PP Ups", "Back" }) do
+    Assert.isTrue(renderedText:find(label, 1, true) ~= nil, "the move dialog shows " .. label)
+  end
+  Assert.isNil(renderedText:find("Save every section before leaving", 1, true))
+end
+
+function T.party_move_dialog_retains_and_composites_the_page(scope)
+  local width, height = 640, 480
+  local baseData, _, baseLayout, _, _, _, _, _, _, basePlan =
+    draw(scope, width, height, singleDisplay(width, height), "party-move-base", "Party", "Moves")
+  local data, _, layout, _, _, _, _, _, _, plan =
+    draw(scope, width, height, singleDisplay(width, height), "party-move-layers", "Party", "party-move")
+  local uncovered = assert(baseLayout.partyStrip and baseLayout.partyStrip.slots[1]).rect
+  local modal = assert(layout.decisionList and layout.decisionList.surface)
+  local foundOpaque = false
+  for y = modal.y + 4, modal.y + modal.height - 4, 4 do
+    for x = modal.x + 4, modal.x + modal.width - 4, 4 do
+      local red, green, blue = pixelAtLogical(data, plan, x, y)
+      foundOpaque = foundOpaque or (red > 0.95 and green > 0.95 and blue > 0.95)
+    end
+  end
+  Assert.isTrue(foundOpaque, "the modal interior paints an opaque fill over the Party page")
+
+  local dimmedPagePixel = false
+  for y = uncovered.y + 2, uncovered.y + uncovered.height - 2, 3 do
+    for x = uncovered.x + 2, uncovered.x + uncovered.width - 2, 3 do
+      local baseR, baseG, baseB = pixelAtLogical(baseData, basePlan, x, y)
+      local modalR, modalG, modalB = pixelAtLogical(data, plan, x, y)
+      if baseR + baseG + baseB - modalR - modalG - modalB > 0.08 then
+        dimmedPagePixel = true
+      end
+    end
+  end
+  Assert.isTrue(dimmedPagePixel, "at least one painted member-strip pixel is dimmed outside the move dialog")
+  Assert.isTrue(
+    type(layout.renderLayers) == "table" and #layout.renderLayers >= 2,
+    "the layout retains both the Party page and the move dialog as render layers"
+  )
+
+  local nestedData, _, nestedLayout, _, _, _, _, _, _, nestedPlan =
+    draw(scope, width, height, singleDisplay(width, height), "party-move-child-layers", "Party", "party-move-child")
+  local parentLayer = assert(nestedLayout.renderLayers[2])
+  local childLayer = assert(nestedLayout.renderLayers[3])
+  local parentSurface = assert(parentLayer.layout.decisionList).surface
+  local childSurface = assert(childLayer.layout.valueModal)
+  Assert.equal(parentLayer.kind, "move", "the move stays below its nested editor")
+  Assert.equal(childLayer.kind, "number", "the nested number editor stays on top")
+  local occludedParentText = false
+  for y = parentSurface.y, parentSurface.y + parentSurface.height do
+    for x = parentSurface.x, parentSurface.x + parentSurface.width do
+      if
+        x >= childSurface.x
+        and x < childSurface.x + childSurface.width
+        and y >= childSurface.y
+        and y < childSurface.y + childSurface.height
+      then
+        local parentR, parentG, parentB = pixelAtLogical(data, plan, x, y)
+        local childR, childG, childB = pixelAtLogical(nestedData, nestedPlan, x, y)
+        if parentR + parentG + parentB < 2.7 and childR > 0.95 and childG > 0.95 and childB > 0.95 then
+          occludedParentText = true
+        end
+      end
+    end
+  end
+  Assert.isTrue(occludedParentText, "the nested editor covers parent title pixels with its opaque surface")
+  local exposedParent = false
+  for y = parentSurface.y + 2, parentSurface.y + parentSurface.height - 2, 2 do
+    for x = parentSurface.x + 2, parentSurface.x + parentSurface.width - 2, 2 do
+      local outsideChild = x < childSurface.x
+        or x >= childSurface.x + childSurface.width
+        or y < childSurface.y
+        or y >= childSurface.y + childSurface.height
+      if outsideChild then
+        local parentR, parentG, parentB = pixelAtLogical(data, plan, x, y)
+        local nestedR, nestedG, nestedB = pixelAtLogical(nestedData, nestedPlan, x, y)
+        local baseR, baseG, baseB = pixelAtLogical(baseData, basePlan, x, y)
+        exposedParent = exposedParent
+          or parentR > 0.95
+            and parentG > 0.95
+            and parentB > 0.95
+            and nestedR < 0.8
+            and nestedG < 0.8
+            and nestedB < 0.8
+            and nestedR + nestedG + nestedB > baseR + baseG + baseB + 0.1
+      end
+    end
+  end
+  Assert.isTrue(exposedParent, "uncovered parent modal content remains visible under the child")
+end
+function T.number_editor_dims_the_retained_page(scope)
+  local width, height = 640, 480
+  local baseData, _, baseLayout, _, _, _, _, _, _, basePlan =
+    draw(scope, width, height, singleDisplay(width, height), "number-base", "Player", nil)
+  local modalData, _, layout, _, _, _, _, _, _, modalPlan =
+    draw(scope, width, height, singleDisplay(width, height), "number-modal", "Player", "number-modal")
+  local modal = assert(layout.valueModal)
+  local content = assert(baseLayout.content)
+  local dimmedPage = false
+  for y = content.y + 2, content.y + content.height - 2, 3 do
+    for x = content.x + 2, content.x + content.width - 2, 3 do
+      local outsideModal = x < modal.x
+        or x >= modal.x + modal.width
+        or y < modal.y
+        or y >= modal.y + modal.height
+      if outsideModal then
+        local baseR, baseG, baseB = pixelAtLogical(baseData, basePlan, x, y)
+        local modalR, modalG, modalB = pixelAtLogical(modalData, modalPlan, x, y)
+        local expectedR, expectedG, expectedB = baseR * 0.58, baseG * 0.58, baseB * 0.58
+        if
+          baseR + baseG + baseB > 0.6
+          and math.abs(modalR - expectedR) < 0.04
+          and math.abs(modalG - expectedG) < 0.04
+          and math.abs(modalB - expectedB) < 0.04
+        then
+          dimmedPage = true
+        end
+      end
+    end
+  end
+  Assert.isTrue(dimmedPage, "the number layer dims retained page pixels outside its opaque body")
+end
+
 function T.framed_modals_draw_their_frame_after_their_content(scope)
   local events = {}
   local oldPrint = love.graphics.print
@@ -2686,10 +2823,7 @@ function T.framed_modals_draw_their_frame_after_their_content(scope)
       framePositions[#framePositions + 1] = index
     end
   end
-  Assert.isTrue(
-    framePositions[#framePositions] > lastText,
-    "the modal frame overlays the content it surrounds"
-  )
+  Assert.isTrue(framePositions[#framePositions] > lastText, "the modal frame overlays the content it surrounds")
   Assert.notNil(modal, "the leave decision publishes its framed surface")
 end
 
@@ -2734,8 +2868,7 @@ function T.selected_member_marks_active_chrome_without_focus_ring(scope)
 end
 function T.fainted_party_members_show_fainted_status(scope)
   local topology = singleDisplay(1280, 720)
-  local _, renderedText, layout =
-    draw(scope, 1280, 720, topology, "party-fainted-status", "Party", "fainted")
+  local _, renderedText, layout = draw(scope, 1280, 720, topology, "party-fainted-status", "Party", "fainted")
   Assert.notNil(layout.targets["party:field:currentHp"], "a fainted member keeps its HP editor")
   Assert.isTrue(renderedText:find("0/19", 1, true) ~= nil, "a fainted member shows zero current HP")
   Assert.isTrue(renderedText:find("FNT", 1, true) ~= nil, "a fainted member shows its fainted status")
@@ -2862,11 +2995,7 @@ function T.bag_focused_cards_draw_exactly_one_keyboard_ring(scope)
   Assert.equal(#ringsSurrounding(calls, card, 3), 1, "exactly one outline surrounds the keyboard-focused card")
   local hiddenLayout, hiddenCalls = render("bag-ring-hidden", false)
   local hiddenCard = assert(hiddenLayout.bagGrid[1]).rect
-  Assert.equal(
-    #ringsSurrounding(hiddenCalls, hiddenCard, 3),
-    0,
-    "pointer modality draws no outline around the card"
-  )
+  Assert.equal(#ringsSurrounding(hiddenCalls, hiddenCard, 3), 0, "pointer modality draws no outline around the card")
 end
 
 function T.focused_buttons_draw_geometry_matched_outlines_only_while_navigation_is_visible(scope)
@@ -2966,7 +3095,11 @@ function T.active_section_chrome_survives_focus_movement(scope)
   Assert.notNil(seen["Player"], "the active section paints its option chrome")
   Assert.notNil(seen["Party"], "inactive sections paint their option chrome")
   local function faceAverage(colors)
-    return ((colors.faceTop[1] + colors.faceBottom[1]) / 2 + (colors.faceTop[2] + colors.faceBottom[2]) / 2 + (colors.faceTop[3] + colors.faceBottom[3]) / 2) / 3
+    return (
+      (colors.faceTop[1] + colors.faceBottom[1]) / 2
+      + (colors.faceTop[2] + colors.faceBottom[2]) / 2
+      + (colors.faceTop[3] + colors.faceBottom[3]) / 2
+    ) / 3
   end
   Assert.isTrue(faceAverage(seen["Player"].colors) < 0.9, "the active section keeps its colored face")
   for _, label in ipairs({ "Party", "Bag" }) do

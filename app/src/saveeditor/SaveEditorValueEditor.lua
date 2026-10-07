@@ -48,6 +48,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _nameKind "player"|"pokemon"|nil
 ---@field _nameMaxLength integer?
 ---@field _nameCharmap table<string, integer>?
+---@field _disposed boolean
+---@field dispose fun(self: SaveEditorValueEditor)
 ---@field retry fun(self: SaveEditorValueEditor): boolean
 local SaveEditorValueEditor = {}
 SaveEditorValueEditor.__index = SaveEditorValueEditor
@@ -73,7 +75,7 @@ end
 ---@return SaveEditorValueEditor
 function SaveEditorValueEditor.new(options)
   assert(type(options) == "table", "value editor options are required")
-  local self = setmetatable({ _kind = options.kind, _result = nil }, SaveEditorValueEditor)
+  local self = setmetatable({ _kind = options.kind, _result = nil, _disposed = false }, SaveEditorValueEditor)
   if options.kind == "integer" then
     assert(type(options.value) == "number" and options.value % 1 == 0)
     assert(type(options.min) == "number" and type(options.max) == "number" and options.min <= options.max)
@@ -329,7 +331,7 @@ function SaveEditorValueEditor:activateTarget(targetId)
 end
 
 function SaveEditorValueEditor:submit()
-  if self._result ~= nil then
+  if self._disposed or self._result ~= nil then
     return false
   end
   if self._kind == "integer" then
@@ -361,15 +363,24 @@ function SaveEditorValueEditor:submit()
 end
 
 function SaveEditorValueEditor:cancel()
-  if self._result then
+  if self._disposed or self._result then
     return false
   end
   self._result = { kind = "cancel" }
   return true
 end
 
+function SaveEditorValueEditor:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  self._filterTask = nil
+  self._result = nil
+end
+
 function SaveEditorValueEditor:retry()
-  if self._result == nil or self._result.kind ~= "confirm" then
+  if self._disposed or self._result == nil or self._result.kind ~= "confirm" then
     return false
   end
   if self._kind == "name" then
@@ -413,6 +424,9 @@ end
 ---@param rowBudget integer
 ---@return integer visited
 function SaveEditorValueEditor:update(rowBudget)
+  if self._disposed then
+    return 0
+  end
   assert(type(rowBudget) == "number" and rowBudget >= 0 and rowBudget % 1 == 0)
   if self._kind ~= "choice" or self._filterTask == nil then
     return 0

@@ -23,6 +23,7 @@ local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
+local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
 
 ---@class SaveEditorBagItemMetadata
 ---@field item string
@@ -228,6 +229,8 @@ end
 ---@field onResult fun(result: { kind: string })
 ---@field displayContext DisplayContext
 ---@field controller SaveEditorController
+---@field modalStack SaveEditorModalStack
+---@field modalLayerSequence integer
 ---@field renderer SaveEditorRenderer?
 ---@field presentation ApplicationPresentation?
 ---@field status string
@@ -249,8 +252,6 @@ end
 ---@field monDraft SaveEditorMonDraft?
 ---@field partyView SaveEditorPartyView?
 ---@field pendingMoveSlot integer?
----@field moveChildReturn integer?
----@field moveChildAction string?
 ---@field activeDraftField table<string, unknown>?
 ---@field valuePurpose string?
 ---@field dateProvider fun(): table<string, integer>
@@ -439,6 +440,8 @@ function State.new(options)
     navigationDebug = options.navigationDebug == true,
     displayContext = options.displayContext or DisplayContext.new({}),
     controller = Controller.new(),
+    modalStack = ModalStack.new(),
+    modalLayerSequence = 0,
     renderer = assert(rendererOrError),
     presentation = assert(presentationOrError),
     status = "opening",
@@ -465,8 +468,6 @@ function State.new(options)
     monDraft = nil,
     partyView = nil,
     pendingMoveSlot = nil,
-    moveChildReturn = nil,
-    moveChildAction = nil,
     activeDraftField = nil,
     valuePurpose = nil,
     dateProvider = dateProvider,
@@ -717,8 +718,29 @@ function State:_snapshot()
   end
   local party = session and section == "Party" and self:_partyView() or {}
   local bag = session and section == "Bag" and self:_bagView() or {}
+  local modalTitle
+  if self.controller.modal == "party-move" then
+    local slot0 = assert(self.pendingMoveSlot, "move dialog owns its selected move slot")
+    local record = assert(self.monDraft, "move dialog owns the active member draft"):record()
+    local move = assert(record.moves[slot0 + 1], "move dialog owns an occupied move")
+    local catalog = assert(self.dependencies).context.monCatalog
+    local moveName = catalog:move(move.move).name or move.move
+    modalTitle = "Edit move: " .. moveName
+  end
+  local modalLayers = self.modalStack:layers()
+  local valueEditorSnapshot = self.valueEditor and self.valueEditor:snapshot() or nil
+  if valueEditorSnapshot ~= nil then
+    local layerKind = valueEditorSnapshot.kind == "number" and "number" or valueEditorSnapshot.kind
+    for index = #modalLayers, 1, -1 do
+      local layer = modalLayers[index]
+      if layer.kind == layerKind then
+        layer.payload.snapshot = valueEditorSnapshot
+        break
+      end
+    end
+  end
   local numberControls, numberControlVisuals, numberPressTicks
-  if self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number" then
+  if valueEditorSnapshot ~= nil and valueEditorSnapshot.kind == "number" then
     local dependencies = assert(self.dependencies, "number editor requires its presentation manifest")
     local numberPresentation = assert(dependencies.bagManifest).interactive.overlays.quantity
     numberControls = numberPresentation.controls
@@ -734,8 +756,8 @@ function State:_snapshot()
     versionId = self.versionId,
     saveId = self.saveId,
     session = session,
-    framePreviewIndex = self.valuePurpose == "dialogue_frame" and self.valueEditor ~= nil and tonumber(
-      self.valueEditor:snapshot().selectedKey
+    framePreviewIndex = self.valuePurpose == "dialogue_frame" and valueEditorSnapshot ~= nil and tonumber(
+      valueEditorSnapshot.selectedKey
     ) or nil,
     ready = session ~= nil,
     dirty = self.session ~= nil
@@ -751,6 +773,8 @@ function State:_snapshot()
       { role = "action", id = "section:Progress", targetId = "section:Progress", label = "Progress" },
     },
     modal = self.controller.modal,
+    modalTitle = modalTitle,
+    modalLayers = modalLayers,
     focus = self.controller.focus,
     focusVisible = self.controller.focusVisible,
     capturedTarget = self.controller.capturedTarget,
@@ -761,7 +785,7 @@ function State:_snapshot()
     flagIndexByTarget = flagIndexByTarget,
     flagModel = flagModel,
     flagRowAt = flagModel and flagModel.rowAt or nil,
-    valueEditor = self.valueEditor and self.valueEditor:snapshot() or nil,
+    valueEditor = valueEditorSnapshot,
     editorFeedback = self.editorFeedback,
     numberControls = numberControls,
     numberControlVisuals = numberControlVisuals,
@@ -1550,17 +1574,17 @@ function State:_finishValueEditor()
     self.numberHold = nil
     self.numberPressTarget = nil
     self.pendingFocusReturn = self.valueReturnFocus
+    local removedLayer = self:_popValueLayer(editor)
     self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.valueReturnFocus = nil
-    if self.moveChildReturn ~= nil then
-      local slot0, action = assert(self.moveChildReturn), assert(self.moveChildAction)
-      self:_showMoveOverlay(slot0, action)
-    elseif purpose == "bag_quantity" then
+    local parentMove = self:_restoreMoveParent(removedLayer)
+    if not parentMove and purpose == "bag_quantity" then
       local pending = assert(self.pendingQuantity)
       self.pendingQuantity = nil
       if pending.returnModal then
         self.controller:setFocus("bag:item:" .. pending.itemKey)
-        self.controller:openModal(pending.returnModal)
+        assert(self.modalStack:top() and self.modalStack:top().kind == "bag-item")
+        self.controller.modal = pending.returnModal
       end
     end
     return true
@@ -1605,13 +1629,15 @@ function State:_finishValueEditor()
     self.pendingFocusReturn = nil
     self.numberHold = nil
     self.numberPressTarget = nil
+    local removedLayer = self:_popValueLayer(editor)
     self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.valueReturnFocus = nil
-    self:_showMoveOverlay(slot0, assert(self.moveChildAction))
+    self:_restoreMoveParent(removedLayer)
     return true
   elseif purpose == "bag_add_item" then
     self.numberHold = nil
     self.numberPressTarget = nil
+    self:_popValueLayer(editor)
     self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.controller:selectBagItem(result.value)
     self.valueReturnFocus = "bag:add"
@@ -1622,6 +1648,9 @@ function State:_finishValueEditor()
     if not self:_publishBagQuantity(pending.itemKey, result.value) then
       editor:retry()
       return false
+    end
+    if pending.returnModal then
+      self.controller.modal = pending.returnModal
     end
     self.pendingQuantity = nil
   elseif descriptor ~= nil and self.monDraft ~= nil then
@@ -1638,6 +1667,7 @@ function State:_finishValueEditor()
   self.pendingFocusReturn = self.valueReturnFocus
   self.numberHold = nil
   self.numberPressTarget = nil
+  self:_popValueLayer(editor)
   self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
   self.valueReturnFocus = nil
   return true
@@ -2092,7 +2122,76 @@ function State:_installValueEditor(editor, purpose, returnFocus)
   self.valueReturnFocus = returnFocus or self.controller.focus
   self.valueEditor = editor
   self.valuePurpose = purpose
+  local editorKind = editor:snapshot().kind
+  self:_pushModalLayer(editorKind == "number" and "number" or editorKind, { purpose = purpose })
   self.preserveChoiceScroll = false
+end
+
+function State:_pushModalLayer(kind, payload)
+  self.modalLayerSequence = self.modalLayerSequence + 1
+  local scopeId = self.controller.scopeId
+  local regionId = scopeId
+  for candidateRegion, targetId in pairs(self.controller.focusByRegion[scopeId] or {}) do
+    if targetId == self.controller.focus then
+      regionId = candidateRegion
+      break
+    end
+  end
+  self.modalStack:push({
+    id = kind .. ":" .. tostring(self.modalLayerSequence),
+    kind = kind,
+    payload = payload,
+    opener = {
+      controlId = self.controller.focus,
+      regionId = regionId,
+      scrollAnchor = self.controller.scrollOffsets[scopeId] or self.controller.scrollOffset,
+    },
+  })
+end
+
+function State:_popModalLayer(kind)
+  local layer = assert(self.modalStack:top(), "modal layer stack is empty")
+  assert(layer.kind == kind, "modal layers must be removed in LIFO order")
+  return assert(self.modalStack:pop())
+end
+
+function State:_popValueLayer(editor)
+  local kind = editor:snapshot().kind
+  local layer = self:_popModalLayer(kind == "number" and "number" or kind)
+  editor:dispose()
+  return layer
+end
+
+function State:_restoreMoveParent(childLayer)
+  local parent = self.modalStack:top()
+  if parent == nil or parent.kind ~= "move" then
+    return false
+  end
+  local targetId = assert(childLayer.opener.controlId, "move child remembers its opening action")
+  assert(
+    targetId == "party-move:move" or targetId == "party-move:pp" or targetId == "party-move:pp-ups",
+    "move child opener is one of the component actions"
+  )
+  self:_showMoveOverlay(assert(parent.payload.slot0), targetId)
+  return true
+end
+
+function State:_openDecision(kind, payload)
+  local layerKind = kind == "party-move" and "move" or kind == "remove" and "bag-remove" or kind
+  self:_pushModalLayer(layerKind, payload or { decision = kind })
+  self.controller:openModal(kind)
+end
+
+function State:_closeDecision()
+  local kind = assert(self.controller.modal, "a decision layer is active")
+  local layerKind = kind == "party-move" and "move" or kind == "remove" and "bag-remove" or kind
+  self:_popModalLayer(layerKind)
+  local focus = self.controller:closeModal()
+  local parent = self.modalStack:top()
+  self.controller.modal = parent and parent.kind == "bag-item" and "bag-item"
+    or parent and parent.kind == "move" and "party-move"
+    or nil
+  return focus
 end
 
 function State:_updateLocationService()
@@ -2458,7 +2557,10 @@ function State:_confirmRemoval()
   local pending = assert(self.pendingRemove)
   assert(pending.kind == "bag", "only bag removal keeps a confirmation path")
   self.pendingRemove = nil
-  self.controller:closeModal()
+  self:_closeDecision()
+  if self.controller.modal == "bag-item" then
+    self:_closeDecision()
+  end
   local oldRows = self.session:bagSnapshot(self.controller.bagPocket)
   local oldIndex = 1
   for index, row in ipairs(oldRows) do
@@ -2525,6 +2627,7 @@ function State:_save(leave)
   if leave then
     local request = self.closeRequest
     self.closeRequest = nil
+    self.modalStack:dispose()
     self.controller.modal = nil
     if request ~= nil and request.reason == "quit" then
       self.approvedExit = true
@@ -2541,6 +2644,8 @@ function State:_discard(leave)
   local request = self.closeRequest
   if self.valueEditor then
     self.valueEditor:cancel()
+    self.valueEditor:dispose()
+    self.modalStack:dispose()
     self.valueEditor = nil
   end
   self.valuePurpose, self.activeDraftField = nil, nil
@@ -2553,8 +2658,6 @@ function State:_discard(leave)
   end
   self.monDraft = nil
   self.pendingMoveSlot = nil
-  self.moveChildReturn = nil
-  self.moveChildAction = nil
   self.closeRequest = nil
   self.pendingRemove = nil
   self.pendingQuantity = nil
@@ -2568,6 +2671,7 @@ function State:_discard(leave)
     self.controller:setFocus("bag:pocket:" .. self.controller.bagPocket)
   end
   if leave then
+    self.modalStack:dispose()
     self.controller.modal = nil
     if request ~= nil and request.reason == "quit" then
       self.approvedExit = true
@@ -2595,6 +2699,7 @@ function State:_discardSection()
   }
   if self.valueEditor ~= nil and editorSections[self.valuePurpose] == section then
     self.valueEditor:cancel()
+    self:_popValueLayer(self.valueEditor)
     self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.valueReturnFocus, self.pendingFocusReturn = nil, nil
     self.pendingQuantity = nil
@@ -2604,10 +2709,9 @@ function State:_discardSection()
   if section == "Party" then
     self.monDraft = nil
     self.pendingMoveSlot = nil
-    self.moveChildReturn = nil
-    self.moveChildAction = nil
-    if self.controller.modal == "party-move" then
-      self.controller:closeModal()
+    if self.modalStack:top() and self.modalStack:top().kind == "move" then
+      self:_popModalLayer("move")
+      self.controller.modal = nil
     end
     self.errorMessage = nil
     assert(self.session, "section discard needs its ready session"):discardSection(section)
@@ -2628,10 +2732,17 @@ function State:_discardSection()
     self:_ensurePartyDraft()
     return
   elseif section == "Bag" then
-    if self.controller.modal == "bag-item" or self.controller.modal == "remove" then
+    local layer = self.modalStack:top()
+    if layer and (layer.kind == "bag-item" or layer.kind == "bag-remove") then
       self.pendingRemove = nil
       self.pendingQuantity = nil
-      self.controller:closeModal()
+      while
+        self.modalStack:top()
+        and (self.modalStack:top().kind == "bag-item" or self.modalStack:top().kind == "bag-remove")
+      do
+        self:_popModalLayer(self.modalStack:top().kind)
+      end
+      self.controller.modal = nil
       self.controller.bagItemKey = nil
       self.controller:setFocus("bag:pocket:" .. self.controller.bagPocket)
     end
@@ -2645,24 +2756,8 @@ end
 
 function State:_requestBack()
   if self.valueEditor then
-    if self.moveChildReturn ~= nil then
-      self.valueEditor:cancel()
-      self.valueEditor = nil
-      self.valuePurpose = nil
-      self.activeDraftField = nil
-      self.valueReturnFocus = nil
-      self.pendingFocusReturn = nil
-      local slot0, action = assert(self.moveChildReturn), assert(self.moveChildAction)
-      self:_showMoveOverlay(slot0, action)
-    else
-      self.valueEditor:cancel()
-      self.pendingFocusReturn = self.valueReturnFocus
-      self.valueEditor = nil
-      self.valuePurpose = nil
-      self.activeDraftField = nil
-      self.valueReturnFocus = nil
-      self.controller:cancelInteraction()
-    end
+    self.valueEditor:cancel()
+    self:_finishValueEditor()
   elseif self.controller.modal ~= nil then
     self:_popDecision()
   elseif self.monDraft ~= nil then
@@ -2697,6 +2792,7 @@ function State:_popDecision()
   local modal = assert(self.controller.modal, "decision pop needs its open decision")
   if modal == "leave" and self.closeRequest ~= nil then
     self:_cancelPendingLocationSave()
+    self:_popModalLayer("leave")
     local request = assert(self.closeRequest)
     self.closeRequest = nil
     self.controller.modal = request.previousModal
@@ -2704,12 +2800,12 @@ function State:_popDecision()
     self.controller:setFocus(request.previousFocus)
   elseif modal == "party-move" then
     self.pendingMoveSlot = nil
-    self.controller:closeModal()
+    self:_closeDecision()
   else
     if modal == "remove" then
       self.pendingRemove = nil
     end
-    self.controller:closeModal()
+    self:_closeDecision()
   end
 end
 
@@ -2723,9 +2819,16 @@ function State:_showMoveOverlay(slot0, focusTarget)
     "a move overlay needs its occupied slot"
   )
   self.pendingMoveSlot = slot0
-  self.moveChildReturn = nil
-  self.moveChildAction = nil
-  self.controller:openModal("party-move")
+  if self.modalStack:top() == nil or self.modalStack:top().kind ~= "move" then
+    local entry = assert(draft:record().moves[slot0 + 1])
+    local catalog = assert(self.dependencies.context.monCatalog)
+    self:_openDecision("party-move", {
+      slot0 = slot0,
+      title = "Edit move: " .. (catalog:move(entry.move).name or entry.move),
+    })
+  else
+    self.controller.modal = "party-move"
+  end
   self.controller.modalReturnFocus = "party:move:" .. slot0
   self.controller:setFocus(focusTarget or "party-move:move")
 end
@@ -2735,8 +2838,7 @@ function State:_openMoveChild(action)
   local draft = assert(self.monDraft, "a move component editor needs its member draft")
   local entry = assert(draft:record().moves[slot0 + 1], "a move component editor needs its occupied slot")
   local catalog = assert(self.dependencies.context.monCatalog)
-  self.moveChildReturn = slot0
-  self.moveChildAction = action
+  self.controller:setFocus(action)
   self.controller.modal = nil
   self.controller.modalReturnFocus = nil
   if action == "party-move:move" then
@@ -2800,7 +2902,7 @@ function State:requestClose(reason)
       previousModalReturnFocus = self.controller.modalReturnFocus,
       previousFocus = self.controller.focus,
     }
-    self.controller:openModal("leave")
+    self:_openDecision("leave")
     return true
   elseif reason == "back" then
     self:_sendResult()
@@ -2863,6 +2965,7 @@ function State:_performDecisionCommand(kind, command, id)
   if command == "cancel" then
     if kind == "leave" and self.closeRequest ~= nil then
       self:_cancelPendingLocationSave()
+      self:_popModalLayer("leave")
       local request = assert(self.closeRequest)
       self.closeRequest = nil
       self.controller.modal = request.previousModal
@@ -2870,15 +2973,15 @@ function State:_performDecisionCommand(kind, command, id)
       self.controller.focus = request.previousFocus
     elseif kind == "party-move" then
       self.pendingMoveSlot = nil
-      self.controller:closeModal()
+      self:_closeDecision()
     elseif kind == "remove" then
       self.pendingRemove = nil
-      self.controller:closeModal()
+      self:_closeDecision()
       if self.controller.section == "Bag" and self.controller.bagItemKey then
         self.controller.focus = "bag:item:" .. self.controller.bagItemKey
       end
     elseif kind == "bag-item" then
-      self.controller:closeModal()
+      self:_closeDecision()
     else
       error("unknown cancelled decision kind " .. tostring(kind), 0)
     end
@@ -2889,7 +2992,7 @@ function State:_performDecisionCommand(kind, command, id)
       self:_openBagQuantity("set")
     elseif command == "bag_remove" then
       self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
-      self.controller:openModal("remove")
+      self:_openDecision("remove")
     else
       error("unknown bag decision command " .. tostring(command), 0)
     end
@@ -3111,7 +3214,7 @@ function State:_activate(targetId)
     self.controller:selectBagPocket(pocket)
   elseif targetId:match("^bag:item:") then
     self.controller:selectBagItem(assert(targetId:match("^bag:item:(.+)$")))
-    self.controller:openModal("bag-item")
+    self:_openDecision("bag-item")
   elseif targetId == "bag:page:previous" or targetId == "bag:page:next" then
     self.controller:setBagPage(math.max(0, self.controller.bagPage0 + (targetId == "bag:page:next" and 1 or -1)))
   elseif targetId == "bag:add" then
@@ -3121,7 +3224,7 @@ function State:_activate(targetId)
     self:_openBagQuantity("set")
   elseif targetId == "bag:remove" then
     self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
-    self.controller:openModal("remove")
+    self:_openDecision("remove")
   end
 end
 
@@ -3161,6 +3264,7 @@ function State:_dispatchIntent(intent)
   elseif intent.kind == "cancel" then
     if intent.modal == "leave" and self.closeRequest ~= nil then
       self:_cancelPendingLocationSave()
+      self:_popModalLayer("leave")
       local request = assert(self.closeRequest)
       self.closeRequest = nil
       self.controller.modal = request.previousModal
@@ -3171,12 +3275,12 @@ function State:_dispatchIntent(intent)
       self:_finishValueEditor()
     elseif intent.modal == "party-move" then
       self.pendingMoveSlot = nil
-      self.controller:closeModal()
+      self:_closeDecision()
     elseif intent.modal == "remove" then
       self.pendingRemove = nil
       self.controller.modalReturnFocus = nil
     else
-      self.controller:closeModal()
+      self:_closeDecision()
     end
   elseif intent.kind == "scroll-drag" then
     local view = self:_snapshot()
@@ -3705,6 +3809,10 @@ function State:dispose()
   if self.renderer then
     self.renderer:dispose()
     self.renderer = nil
+  end
+  self.modalStack:dispose()
+  if self.valueEditor then
+    self.valueEditor:dispose()
   end
   self.valueEditor = nil
   self.session = nil

@@ -347,7 +347,9 @@ function T.choice_selection_uses_index_membership_without_submitting_or_scanning
       end
       scans = scans + 1
       return index, value[index]
-    end, value, 0
+    end,
+      value,
+      0
   end
   local ok, failure = xpcall(function()
     Assert.isTrue(type(editor.selectChoice) == "function", "choice owners expose direct indexed selection")
@@ -594,6 +596,23 @@ function T.name_variant_uses_naming_snapshot_and_submits_real_text()
   })
   Assert.isTrue(cancelEditor:cancel())
   Assert.deepEqual(cancelEditor:result(), { kind = "cancel" })
+end
+
+function T.disposal_cancels_pending_choice_work_and_is_idempotent()
+  local options = {}
+  for index = 1, 500 do
+    options[index] = { key = string.format("K%03d", index), label = "Choice " .. tostring(index) }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K001", options = options })
+  Assert.isTrue(editor:textinput("unmatched"), "typing starts choice filtering")
+  Assert.isTrue(editor:snapshot().pending, "the test owns pending sliced work")
+
+  editor:dispose()
+  editor:dispose()
+
+  Assert.equal(editor:update(256), 0, "disposed filtering cannot advance or publish")
+  Assert.isFalse(editor:submit(), "disposed editors cannot submit late input")
+  Assert.isFalse(editor:cancel(), "disposed editors cannot accept late cancellation")
 end
 
 function T.number_modal_uses_native_source_control_geometry_in_a_compact_frame()

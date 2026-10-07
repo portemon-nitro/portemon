@@ -1659,6 +1659,22 @@ local function publishPlan(ctx)
     end
   end
   local focusNavigation = buildFocusNavigation(ctx, targetRecords)
+  local renderLayers = { { id = "page:" .. tostring(ctx.section), kind = "page" } }
+  for index, layer in ipairs(view.modalLayers or {}) do
+    renderLayers[#renderLayers + 1] = {
+      id = layer.id,
+      kind = layer.kind,
+      payload = layer.payload,
+      top = index == #(view.modalLayers or {}),
+    }
+  end
+  if #renderLayers == 1 and (view.modal ~= nil or view.valueEditor ~= nil) then
+    renderLayers[2] = {
+      id = view.modal and ("modal:" .. view.modal) or ("value:" .. view.valueEditor.kind),
+      kind = view.modal or view.valueEditor.kind,
+      top = true,
+    }
+  end
   return {
     viewport = rect(0, 0, ctx.width, ctx.height),
     shell = ctx.shell,
@@ -1700,6 +1716,8 @@ local function publishPlan(ctx)
     scopeId = ctx.scope.id,
     scopeEpoch = ctx.scope.epoch,
     metrics = metrics,
+    renderLayers = renderLayers,
+    inputLayerId = renderLayers[#renderLayers].id or scope.id,
   }
 end
 

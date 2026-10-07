@@ -11,6 +11,7 @@ local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local State = require("app.src.saveeditor.SaveEditorState")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
+local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 
@@ -367,9 +368,15 @@ local function indexedMapModel(maps)
     count = #maps,
     rowTargets = rowTargets,
     indexByTarget = indexByTarget,
-    idAt = function(index) return rowTargets[index] end,
-    indexOf = function(targetId) return indexByTarget[targetId] end,
-    rowAt = function(index) return maps[index] end,
+    idAt = function(index)
+      return rowTargets[index]
+    end,
+    indexOf = function(targetId)
+      return indexByTarget[targetId]
+    end,
+    rowAt = function(index)
+      return maps[index]
+    end,
   }
 end
 
@@ -425,9 +432,15 @@ local function progressListHarness(flagCatalog)
         count = #rows,
         rowTargets = rowTargets,
         indexByTarget = indexByTarget,
-        idAt = function(index) return rowTargets[index] end,
-        indexOf = function(targetId) return indexByTarget[targetId] end,
-        rowAt = function(index) return rows[index] end,
+        idAt = function(index)
+          return rowTargets[index]
+        end,
+        indexOf = function(targetId)
+          return indexByTarget[targetId]
+        end,
+        rowAt = function(index)
+          return rows[index]
+        end,
       },
       scrollOffsets = controller.scrollOffsets,
     }
@@ -709,15 +722,13 @@ function T.tests.pointer_taps_activate_on_release_and_drag_never_activates()
   )
   Assert.equal(controller.focus, "flag:TEST_FLAG_01", "a clean tap moves row focus")
 
-  Assert.isNil(
-    controller:pointer({
-      type = "pointer_down",
-      pointerId = "touch:row-again",
-      targetId = "flag:TEST_FLAG_01",
-      x = 8,
-      y = 8,
-    })
-  )
+  Assert.isNil(controller:pointer({
+    type = "pointer_down",
+    pointerId = "touch:row-again",
+    targetId = "flag:TEST_FLAG_01",
+    x = 8,
+    y = 8,
+  }))
   Assert.deepEqual(
     controller:pointer({
       type = "pointer_up",
@@ -1097,10 +1108,7 @@ function T.tests.large_choice_filtering_is_sliced_and_cannot_submit_stale_rows()
   local ok, failure = xpcall(function()
     controller:setFocus("choice:K05")
     state:textinput("Choice 1")
-    Assert.isTrue(
-      visits <= 256,
-      string.format("one input event visited %d of 10000 choices", visits)
-    )
+    Assert.isTrue(visits <= 256, string.format("one input event visited %d of 10000 choices", visits))
     local pending = editor:snapshot()
     Assert.isTrue(pending.pending, "a large query remains pending after its first bounded slice")
     Assert.equal(pending.query, "Choice 1", "the newest query is visible while its model is pending")
@@ -1274,15 +1282,13 @@ function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_wor
   Assert.equal(controller.focus, "location:map:47", "the tap moves focus to its map row")
   Assert.equal(controller.locationMapId, 12, "the activation request does not commit a map itself")
 
-  Assert.isNil(
-    controller:pointer({
-      type = "pointer_down",
-      pointerId = "touch:map-act",
-      targetId = "location:map:47",
-      x = 8,
-      y = 8,
-    })
-  )
+  Assert.isNil(controller:pointer({
+    type = "pointer_down",
+    pointerId = "touch:map-act",
+    targetId = "location:map:47",
+    x = 8,
+    y = 8,
+  }))
   local secondTap =
     controller:pointer({ type = "pointer_up", pointerId = "touch:map-act", targetId = "location:map:47", x = 8, y = 8 })
   Assert.deepEqual(
@@ -1296,15 +1302,13 @@ function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_wor
     "the activation request alone never commits the map; only explicit handling does"
   )
 
-  Assert.isNil(
-    controller:pointer({
-      type = "pointer_down",
-      pointerId = "touch:map-drag",
-      targetId = "location:map:7",
-      x = 8,
-      y = 8,
-    })
-  )
+  Assert.isNil(controller:pointer({
+    type = "pointer_down",
+    pointerId = "touch:map-drag",
+    targetId = "location:map:7",
+    x = 8,
+    y = 8,
+  }))
   Assert.isNil(
     controller:pointer({ type = "pointer_move", pointerId = "touch:map-drag", x = 8, y = 80 }),
     "a map-list scroll drag produces no map intent while moving"
@@ -1977,6 +1981,8 @@ function T.tests.flag_value_reads_are_limited_to_the_visible_window()
     preserveChoiceScroll = false,
     session = session,
     _flagCatalog = catalog,
+    modalStack = ModalStack.new(),
+    modalLayerSequence = 0,
   }, State)
   local view = state:_snapshot()
   view.scope = { id = "section:Progress", epoch = 1, kind = "section", focusId = controller.focus }
@@ -2130,7 +2136,11 @@ function T.tests.map_filter_publishes_bounded_c02_generations()
     scopeEpoch = 0,
     numberPressUntilTick = 0,
     preserveChoiceScroll = false,
-    locationService = { mapSummaries = function() return summaries end },
+    locationService = {
+      mapSummaries = function()
+        return summaries
+      end,
+    },
   }, State)
   local initial = state:_mapProjection()
   Assert.equal(initial.count, #summaries, "the initial indexed map projection covers the catalog")
@@ -2223,11 +2233,7 @@ function T.tests.filtering_away_the_focused_row_uses_the_nearest_surviving_index
   harness.sync()
   local fresh = harness.current.layout.lists.flags
   Assert.equal(#fresh.rowTargets, 9, "the filter keeps the first nine rows")
-  Assert.equal(
-    controller.focus,
-    fresh.rowTargets[9],
-    "a deleted row falls back to the nearest surviving logical index"
-  )
+  Assert.equal(controller.focus, fresh.rowTargets[9], "a deleted row falls back to the nearest surviving logical index")
 end
 
 function T.tests.pointer_targets_cover_only_visible_rows_and_empty_lists_stay_stable()
@@ -2300,6 +2306,25 @@ local function backHarness(options)
   if options.modal then
     controller:openModal(options.modal)
   end
+  local modalStack = ModalStack.new()
+  if options.modal then
+    local kind = options.modal == "party-move" and "move" or options.modal == "remove" and "bag-remove" or options.modal
+    modalStack:push({
+      id = "test:" .. kind,
+      kind = kind,
+      payload = {},
+      opener = { controlId = controller.focus, regionId = controller.scopeId, scrollAnchor = 0 },
+    })
+  end
+  if options.valueEditor then
+    local kind = options.valueEditor:snapshot().kind
+    modalStack:push({
+      id = "test:value",
+      kind = kind,
+      payload = {},
+      opener = { controlId = controller.focus, regionId = controller.scopeId, scrollAnchor = 0 },
+    })
+  end
   local session = {
     dirty = options.dirty == true,
     partyRevision = function()
@@ -2334,6 +2359,8 @@ local function backHarness(options)
     disposed = false,
     approvedExit = false,
     controller = controller,
+    modalStack = modalStack,
+    modalLayerSequence = 0,
     session = session,
     valueEditor = options.valueEditor,
     monDraft = options.monDraft,
@@ -2362,6 +2389,13 @@ end
 function T.tests.back_cancels_only_the_open_value_editor()
   local canceled = 0
   local editor = {
+    snapshot = function()
+      return { kind = "number" }
+    end,
+    dispose = function() end,
+    result = function()
+      return { kind = "cancel" }
+    end,
     cancel = function()
       canceled = canceled + 1
     end,
@@ -2381,6 +2415,31 @@ function T.tests.back_closes_only_the_open_decision()
   Assert.isNil(harness.controller.modal, "the decision layer is gone")
   Assert.isNil(harness.state.closeRequest, "the dirty session never enters its leave flow")
   Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
+end
+
+function T.tests.leave_save_keeps_invalid_value_editable_and_discard_remains_explicit()
+  local invalid = ValueEditor.new({ kind = "integer", value = 12, min = 0, max = 99, base = "decimal" })
+  Assert.isTrue(invalid:textinput("bad"), "invalid text remains in the editor buffer")
+  local harness = backHarness({ section = "Player", dirty = true, valueEditor = invalid })
+  harness.state:requestClose("back")
+  harness.state:_performClose("save")
+  Assert.equal(harness.controller.modal, "leave", "a rejected Save keeps the leave prompt open")
+  Assert.equal(harness.state.valueEditor, invalid, "a rejected Save preserves the unfinished editor")
+  Assert.equal(invalid:snapshot().buffer, "bad", "a rejected Save preserves the exact invalid buffer")
+  Assert.notNil(harness.state.errorMessage, "the failure remains visible for correction")
+  Assert.deepEqual(harness.results, {}, "a rejected Save cannot leave the editor")
+
+  harness.state:_dispatchIntent({ kind = "cancel", modal = "leave" })
+  Assert.isNil(harness.controller.modal, "cancel returns from the leave prompt")
+  Assert.equal(harness.state.valueEditor, invalid, "cancel returns to the same unfinished editor")
+  Assert.equal(invalid:snapshot().buffer, "bad", "cancel preserves the invalid text for correction")
+
+  local discard = ValueEditor.new({ kind = "integer", value = 12, min = 0, max = 99, base = "decimal" })
+  local discarded = backHarness({ section = "Player", dirty = true, valueEditor = discard })
+  discarded.state:requestClose("back")
+  discarded.state:_performClose("discard")
+  Assert.equal(discarded.session.globalDiscards, 1, "explicit Discard uses the session-wide discard operation")
+  Assert.isNil(discarded.state.valueEditor, "explicit Discard retires the unfinished editor")
 end
 
 local function livePartyHarness(memberCount)
@@ -2410,6 +2469,8 @@ local function livePartyHarness(memberCount)
     disposed = false,
     approvedExit = false,
     controller = controller,
+    modalStack = ModalStack.new(),
+    modalLayerSequence = 0,
     session = session,
     dependencies = { context = fixture.context },
     partyView = PartyView.new(fixture.context),
@@ -2422,6 +2483,12 @@ local function livePartyHarness(memberCount)
     valueReturnFocus = nil,
     pendingFocusReturn = nil,
     pendingDraftAction = nil,
+    scopeEpoch = 0,
+    inputTick = 0,
+    numberPressUntilTick = 0,
+    fieldInput = {
+      beginUi = function() end,
+    },
     errorMessage = nil,
     dateProvider = function()
       return { year = 2000, month = 1, day = 1 }
@@ -2548,6 +2615,105 @@ function T.tests.move_slot_opens_a_three_action_overlay_returning_from_its_child
   Assert.isNil(harness.controller.modal, "Back pops the parent overlay")
   Assert.equal(harness.controller.partyTab, "Moves", "Back lands on the Moves page")
   Assert.isNil(harness.state.closeRequest, "popping the overlay never enters the leave flow")
+end
+
+function T.tests.move_child_survives_leave_cancel_and_restores_its_opener()
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  harness.state:_activate("party:page:next")
+  harness.state:_activate("party:move:0")
+  harness.state:_activate("party-move:pp")
+
+  local editor = assert(harness.state.valueEditor)
+  local originalBuffer = editor:snapshot().buffer
+  harness.state:requestClose("quit")
+  Assert.equal(harness.controller.modal, "leave", "quit confirmation becomes the top decision")
+  Assert.equal(harness.state.valueEditor, editor, "the unfinished PP editor remains owned below the prompt")
+  local nested = harness.state.modalStack:layers()
+  Assert.deepEqual(
+    { nested[1].kind, nested[2].kind, nested[3].kind },
+    { "move", "number", "leave" },
+    "the stack retains the move and PP layers below leave confirmation"
+  )
+  harness.state:_dispatchIntent({ kind = "cancel", modal = "leave" })
+  Assert.isNil(harness.controller.modal, "cancel removes only the leave confirmation")
+  Assert.equal(harness.state.valueEditor, editor, "cancel restores the same PP editor")
+  Assert.equal(editor:snapshot().buffer, originalBuffer, "cancel preserves the exact editor buffer")
+  Assert.equal(#harness.state.modalStack:layers(), 2, "cancel pops only the leave layer")
+
+  harness.state:_requestBack()
+  Assert.isNil(harness.state.valueEditor, "Back removes the PP editor")
+  Assert.equal(harness.controller.modal, "party-move", "the retained move dialog becomes active again")
+  Assert.equal(harness.controller.focus, "party-move:pp", "the child returns to the action that opened it")
+  Assert.equal(harness.state.modalStack:top().kind, "move", "Back pops exactly the PP editor layer")
+  harness.state:_requestBack()
+  Assert.isNil(harness.controller.modal, "the next Back removes only the move dialog")
+  Assert.equal(harness.controller.partyTab, "Moves", "the selected page survives both pops")
+  Assert.equal(harness.controller.partySlot0, 0, "the selected member survives both pops")
+end
+
+function T.tests.confirming_a_move_component_changes_only_the_party_draft()
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  harness.state:_activate("party:page:next")
+  harness.state:_activate("party:move:0")
+  harness.state:_activate("party-move:pp")
+  local before = harness.state.monDraft:record().moves[1].pp
+  local editor = assert(harness.state.valueEditor)
+  Assert.isTrue(editor:press("down"), "the PP editor accepts a local adjustment")
+  Assert.isTrue(editor:press("confirm"), "the adjusted PP value confirms")
+  harness.state:_finishValueEditor()
+
+  Assert.equal(harness.state.monDraft:record().moves[1].pp, before - 1, "confirmation updates the open draft")
+  Assert.equal(
+    harness.session:partySnapshot().members[1].mon.moves[1].pp,
+    before,
+    "the editor session remains unchanged until the draft is explicitly applied"
+  )
+  Assert.equal(harness.controller.modal, "party-move", "confirmation returns to the retained move dialog")
+  Assert.equal(harness.controller.focus, "party-move:pp", "confirmation restores the PP action")
+  Assert.equal(harness.state.modalStack:top().kind, "move", "confirmation retires only the value layer")
+end
+
+function T.tests.modal_keeps_the_resized_party_page_painted_but_rejects_old_input()
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  harness.state:_activate("party:page:next")
+  harness.controller:pointer({ type = "pointer_down", pointerId = "touch:base", targetId = "party:move:0" })
+  harness.state:_activate("party:move:0")
+
+  local view = harness.state:_snapshot()
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  local compact = Layout.compute(view, 256, 192, metrics)
+  local wide = Layout.compute(view, 640, 480, metrics)
+  Assert.isTrue(
+    type(wide.renderLayers) == "table" and #wide.renderLayers >= 2,
+    "the Party page remains in the visual plan under the active decision"
+  )
+  Assert.notNil(wide.partyStrip, "the retained page keeps its member strip geometry")
+  Assert.isNil(wide.targets["party:move:0"], "the retained base target is absent from active input")
+  Assert.notNil(wide.targets["party-move:pp"], "the top decision retains its own active control")
+  Assert.isTrue(
+    compact.decisionList.surface.x ~= wide.decisionList.surface.x
+      or compact.decisionList.surface.y ~= wide.decisionList.surface.y,
+    "resizing recomputes the top dialog geometry"
+  )
+  Assert.isNil(
+    harness.controller:pointer({
+      type = "pointer_up",
+      pointerId = "touch:base",
+      targetId = "party:move:0",
+    }),
+    "a release captured by the base page cannot activate after a modal opens"
+  )
+  local selected = harness.controller.partySlot0
+  harness.state:_activate("party:move:0")
+  Assert.equal(harness.controller.partySlot0, selected, "a base activation cannot pass through the top modal")
 end
 
 function T.tests.member_removal_has_no_party_path()

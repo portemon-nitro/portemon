@@ -1202,10 +1202,20 @@ end
 ---@param ctx SaveEditorPaintContext
 local function paintValueEditor(ctx)
   local renderer, graphics, view, layout = ctx.renderer, ctx.graphics, ctx.view, ctx.layout
+  local renderLayers, pane = ctx.renderLayers, ctx.pane
   local SELECTED = renderer.skin.cards.normal.selectedRim
   local BORDER = renderer.skin.cards.normal.border
   if view.valueEditor then
     local dialog = view.valueEditor
+    local topLayer = renderLayers[#renderLayers]
+    if topLayer ~= nil and topLayer.kind == dialog.kind and #renderLayers > 1 then
+      graphics.setColor(0, 0, 0, 0.42)
+      graphics.rectangle("fill", 0, 0, pane.placement.logicalWidth, pane.placement.logicalHeight)
+    end
+    for _, surface in ipairs(layout.listSurfaces or {}) do
+      graphics.setColor(1, 1, 1, 1)
+      graphics.rectangle("fill", surface.x, surface.y, surface.width, surface.height)
+    end
     if dialog.kind == "number" then
       local modal = assert(layout.valueModal)
       graphics.setColor(1, 1, 1, 1)
@@ -1444,6 +1454,9 @@ local function paintFrames(ctx)
     for _, surface in ipairs(layout.listSurfaces or {}) do
       renderer._windowRenderer:drawApplicationFrame(framedContentRect(surface), frameIndex)
     end
+    if activeView.modal and activeLayout.decisionList then
+      self._windowRenderer:drawApplicationFrame(framedContentRect(activeLayout.decisionList.surface), frameIndex)
+    end
   end
 end
 
@@ -1454,6 +1467,8 @@ local function paintPane(self, view, plan, pane)
     view = view,
     layout = assert(plan.content.layout),
     placement = pane.placement,
+    pane = pane,
+    renderLayers = plan.content.layout.renderLayers or {},
   }
   paintBackground(ctx)
   paintNavigation(ctx)
