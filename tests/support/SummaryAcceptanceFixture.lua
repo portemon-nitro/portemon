@@ -104,7 +104,7 @@ function SummaryAcceptanceFixture.openService(catalog, seed)
   local resolved = catalog or CatalogFixture.makeCatalog()
   return HgssMonService.new({
     catalog = resolved,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed or 0x5EED1234):capture(), resolved:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed or 0x5EED1234):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
