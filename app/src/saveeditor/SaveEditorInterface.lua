@@ -98,11 +98,11 @@ function Interface.resolve(context, view)
   end
   local bounds = surface.usableBounds
   local pixelRatio = context.measurement.pixelRatio or 1
+  local physicalWidth, physicalHeight = bounds.width * pixelRatio, bounds.height * pixelRatio
   local authoredWidth, authoredHeight = WIDTH, HEIGHT
-  if context.configuration == "wide" then
+  if context.configuration == "wide" or (physicalWidth >= 800 and physicalHeight >= 600) then
     authoredWidth, authoredHeight = 400, 300
   end
-  local physicalWidth, physicalHeight = bounds.width * pixelRatio, bounds.height * pixelRatio
   local logicalWidth, logicalHeight, placement
   if physicalWidth < authoredWidth or physicalHeight < authoredHeight then
     logicalWidth, logicalHeight = authoredWidth, authoredHeight

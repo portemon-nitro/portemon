@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -1579,6 +1580,7 @@ function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scop
   view.presentation, view.layout = plan, plan.content.layout
   local drawn = {}
   local text = {
+    fontDef = { lineHeight = 14 },
     textWidth = function(_, value)
       return #value * 8
     end,
@@ -2127,6 +2129,293 @@ function T.buttons_use_full_size_labels_with_coherent_middle_tones(scope)
         "the button middle tone is the midpoint of its faces"
       )
     end
+  end
+end
+
+function T.wide_host_resizes_keep_the_content_column_clamped_and_hits_inside_it(scope)
+  local cases = {
+    { width = 256, height = 192, wide = false },
+    { width = 360, height = 640, wide = false },
+    { width = 800, height = 600, wide = true },
+    { width = 1280, height = 720, wide = true },
+    { width = 2560, height = 1080, wide = true },
+  }
+  for _, case in ipairs(cases) do
+    local topology = singleDisplay(case.width, case.height)
+    local _, _, layout, _, _, view = draw(
+      scope,
+      case.width,
+      case.height,
+      topology,
+      "shell-host-" .. case.width,
+      "Player",
+      nil
+    )
+    local pane = assert(view.presentation.panes[1], "the host publishes its interactive pane")
+    local placement = assert(pane.placement, "the pane carries the resolved host transform")
+    local plan = assert(view.presentation)
+    local content = layout.content
+    if case.wide then
+      local rail = assert(layout.targets["section:Location"], "wide mode publishes the section rail").rect
+      Assert.isTrue(content.width <= 384, case.width .. "-pixel host keeps the content at or below 384 logical pixels")
+      Assert.isTrue(
+        rail.x + rail.width <= content.x,
+        "the rail stays left of the content (rail right " .. tostring(rail.x + rail.width) .. ", content left " .. tostring(content.x) .. ")"
+      )
+      Assert.isTrue(content.x >= 8, "wide content keeps its outer left margin")
+      Assert.isTrue(
+        content.x + content.width <= plan.content.width - 8,
+        "wide content keeps its logical outer right margin"
+      )
+    else
+      Assert.notNil(layout.targets["section:Location"], "compact host keeps direct section navigation")
+      Assert.isTrue(content.y >= 30, "compact body begins after top navigation")
+    end
+    local hostLeft = LayoutGeometry.logicalToHost(placement, content.x, content.y)
+    local hostRight = LayoutGeometry.logicalToHost(placement, content.x + content.width, content.y)
+    Assert.isTrue(hostRight > hostLeft, "content has a visible host-space width")
+    local hostContent = LayoutGeometry.logicalRectToHost(placement, content)
+    local hostBounds = placement.frame
+    Assert.isTrue(hostContent.x >= hostBounds.x, "content stays inside the resolved host frame")
+    Assert.isTrue(
+      hostContent.x + hostContent.width <= hostBounds.x + hostBounds.width,
+      "content stays inside the resolved host frame after scaling"
+    )
+    local navigationRect = assert(layout.targets["section:Location"]).rect
+    local hitX, hitY = LayoutGeometry.logicalToHost(
+      placement,
+      navigationRect.x + navigationRect.width / 2,
+      navigationRect.y + navigationRect.height / 2
+    )
+    local logicalX, logicalY = LayoutGeometry.hostToLogical(placement, hitX, hitY)
+    local mapped = assert(plan.mapInput({ type = "pointer_down", pointerId = "d04", x = logicalX, y = logicalY }, view, plan))
+    Assert.equal(mapped.targetId, "section:Location", "the transformed host point resolves to the same section target")
+    local footer = assert(layout.targets.back, "the host publishes the Back hit target").rect
+    Assert.isTrue(footer.x >= content.x, "the Back hit target stays inside the content column")
+    Assert.isTrue(footer.x + footer.width <= content.x + content.width, "the Back hit target is not stretched beyond content")
+  end
+end
+
+function T.section_labels_reuse_party_game_font_and_body_scale(scope)
+  local width, height = 1280, 720
+  local view, _, plan = fixture(
+    scope,
+    width,
+    height,
+    singleDisplay(width, height),
+    "Party",
+    "Stats"
+  )
+  local cache = FieldUiFixture.cacheWithFontAndFrames()
+  local text = scope:own(FieldTextRenderer.new({ cacheFs = cache, graphics = love.graphics }))
+  local renderer = Renderer.new({ text = text, versionId = view.versionId })
+  renderer:preparePresentationAssets(cache, assert(cache:loadLua(FieldUiAssetCache.manifestPath())))
+  local calls, currentScale = {}, 1
+  local oldScale = love.graphics.scale
+  local oldDraw = text.drawTextWithPalette
+  love.graphics.scale = function(x, y)
+    currentScale = x
+    return oldScale(x, y)
+  end
+  text.drawTextWithPalette = function(self, value, x, y, palette)
+    if value == "Map" or value == "Flags" or value == "Chikorita" then
+      calls[value] = { scale = currentScale, width = self:textWidth(value), palette = palette }
+    end
+    return oldDraw(self, value, x, y, palette)
+  end
+  local ok, failure = xpcall(function()
+    local canvas = scope:own(love.graphics.newCanvas(width, height))
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(1, 1, 1, 1)
+    ApplicationPresentation.draw(love.graphics, { renderer = renderer, text = text }, view, plan)
+  end, debug.traceback)
+  love.graphics.setCanvas()
+  love.graphics.scale = oldScale
+  text.drawTextWithPalette = oldDraw
+  renderer:dispose()
+  if not ok then
+    error(failure, 0)
+  end
+  for _, label in ipairs({ "Map", "Flags", "Chikorita" }) do
+    local call = assert(calls[label], label .. " uses the field-text renderer")
+    Assert.equal(call.scale, 0.75, label .. " uses the Party strip's body-label scale")
+    Assert.equal(call.width, view.textMetrics.measure(label), label .. " uses the field-text metric adapter")
+    Assert.notNil(call.palette, label .. " uses the semantic game glyph palette")
+  end
+end
+
+function T.map_and_flags_use_game_label_treatment_and_clear_painted_frames(scope)
+  for _, size in ipairs({ { 256, 192 }, { 360, 640 } }) do
+    for _, section in ipairs({ "Location", "Progress" }) do
+      local frameBoxes = {}
+      local labelCalls = {}
+      local _, text, layout = draw(
+        scope,
+        size[1],
+        size[2],
+        singleDisplay(size[1], size[2]),
+        "section-clearance-" .. section .. "-" .. size[1],
+        section,
+        section == "Location" and "map-list" or nil,
+        nil,
+        function(renderer)
+          local textRenderer = assert(renderer.text)
+          local drawWithPalette = textRenderer.drawTextWithPalette
+          textRenderer.drawTextWithPalette = function(self, value, x, y, palette)
+            labelCalls[#labelCalls + 1] = { value = value, palette = palette }
+            return drawWithPalette(self, value, x, y, palette)
+          end
+          local windowRenderer = assert(renderer._windowRenderer)
+          local drawApplicationFrame = windowRenderer.drawApplicationFrame
+          windowRenderer.drawApplicationFrame = function(self, box, frameIndex)
+            frameBoxes[#frameBoxes + 1] = box
+            return drawApplicationFrame(self, box, frameIndex)
+          end
+        end
+      )
+      local expected = section == "Location" and "Map" or "Flags"
+      Assert.isTrue(text:find(expected, 1, true) ~= nil, expected .. " is the visible section name")
+      local navigationLabel = nil
+      for _, item in ipairs(layout.navigation) do
+        if item.targetId == "section:" .. section then
+          navigationLabel = item.label
+        end
+      end
+      Assert.equal(navigationLabel, expected, "display label changes while the internal target identity stays stable")
+      local usedGameText = false
+      for _, call in ipairs(labelCalls) do
+        if call.value == expected and call.palette ~= nil then
+          usedGameText = true
+        end
+      end
+      Assert.isTrue(usedGameText, expected .. " is rendered through the palette-aware game text adapter")
+      local stripBottom = 0
+      for _, item in ipairs(layout.navigation) do
+        if item.targetId:match("^section:") then
+          local button = assert(layout.targets[item.targetId]).rect
+          stripBottom = math.max(stripBottom, button.y + button.height)
+        end
+      end
+      Assert.isTrue(#frameBoxes > 0, "the section draws its staged application frame")
+      local nearestPaintedFrameTop = math.huge
+      local frameTopInset = ApplicationLayout.applicationFrameInsets().top
+      for _, box in ipairs(frameBoxes) do
+        nearestPaintedFrameTop = math.min(nearestPaintedFrameTop, box.y - frameTopInset)
+      end
+      Assert.isTrue(
+        nearestPaintedFrameTop - stripBottom >= 8,
+        "top buttons clear the painted frame by at least eight logical pixels"
+      )
+    end
+  end
+end
+
+function T.action_buttons_use_reference_faces_and_resolved_focus_radius(scope)
+  local Button = require("libs.ui.src.Button")
+  local expected = {
+    save = { 32, 186, 162 },
+    back = { 97, 138, 251 },
+    confirm = { 32, 186, 162 },
+    cancel = { 97, 138, 251 },
+  }
+  local cases = {
+    { section = "Player", variant = "dirty-status", id = "save", label = "Save" },
+    { section = "Player", variant = nil, id = "back", label = "Back" },
+    { section = "Player", variant = "number-modal", id = "confirm", label = "Confirm" },
+    { section = "Player", variant = "number-modal", id = "cancel", label = "Cancel" },
+  }
+  for _, case in ipairs(cases) do
+    local oldSetColor, oldRectangle = love.graphics.setColor, love.graphics.rectangle
+    local currentColor, rings = { 1, 1, 1, 1 }, {}
+    love.graphics.setColor = function(r, g, b, a)
+      currentColor = { r, g, b, a }
+      return oldSetColor(r, g, b, a)
+    end
+    love.graphics.rectangle = function(mode, x, y, width, height, radiusX, radiusY, ...)
+      rings[#rings + 1] = {
+        mode = mode,
+        x = x,
+        y = y,
+        width = width,
+        height = height,
+        radiusX = radiusX,
+        radiusY = radiusY,
+        color = currentColor,
+      }
+      return oldRectangle(mode, x, y, width, height, radiusX, radiusY, ...)
+    end
+    local data, _, layout, _, _, view = draw(
+      scope,
+      640,
+      480,
+      singleDisplay(640, 480),
+      "action-face-" .. case.id,
+      case.section,
+      case.variant,
+      nil,
+      function(_, view)
+        view.focus = case.id
+        view.focusVisible = true
+      end
+    )
+    love.graphics.setColor, love.graphics.rectangle = oldSetColor, oldRectangle
+    local rect = assert(layout.targets[case.id], case.label .. " is a visible action").rect
+    local placement = assert(view.presentation.panes[1]).placement
+    local lower = (case.id == "save" or case.id == "confirm") and { 40, 121, 113 } or { 48, 89, 195 }
+    for _, point in ipairs({
+      { y = rect.y + 4, color = expected[case.id], name = "upper" },
+      { y = rect.y + rect.height / 2, color = {
+        (expected[case.id][1] + ((case.id == "save" or case.id == "confirm") and 40 or 48)) / 2,
+        (expected[case.id][2] + ((case.id == "save" or case.id == "confirm") and 121 or 89)) / 2,
+        (expected[case.id][3] + ((case.id == "save" or case.id == "confirm") and 113 or 195)) / 2,
+      }, name = "middle" },
+      { y = rect.y + rect.height - 4, color = lower, name = "lower" },
+    }) do
+      local _, hostY = LayoutGeometry.logicalToHost(placement, rect.x, point.y)
+      local matched = false
+      for logicalX = rect.x + 5, rect.x + rect.width - 5 do
+        local hostX = LayoutGeometry.logicalToHost(placement, logicalX, point.y)
+        local red, green, blue = data:getPixel(math.floor(hostX), math.floor(hostY))
+        local close = true
+        for channel, actual in ipairs({ red, green, blue }) do
+          if math.abs(actual * 255 - point.color[channel]) > 2 then
+            close = false
+            break
+          end
+        end
+        if close then
+          matched = true
+          break
+        end
+      end
+      Assert.isTrue(matched, case.label .. " renders its sampled " .. point.name .. " face color")
+    end
+    local ringsForAction = {}
+    for _, call in ipairs(rings) do
+      if
+        call.mode == "line"
+        and call.x == rect.x + 1
+        and call.y == rect.y + 1
+        and call.width == rect.width - 2
+        and call.height == rect.height - 2
+      then
+        ringsForAction[#ringsForAction + 1] = call
+      end
+    end
+    Assert.equal(#ringsForAction, 1, case.label .. " has one keyboard focus outline")
+    local resolved = Button.resolve({
+      rect = rect,
+      borderWidth = 1,
+      rimWidth = 1,
+      innerBorderWidth = 1,
+      cornerRadius = 2,
+      faceSplit = 0.5,
+      contentInsetX = 4,
+      contentInsetY = 2,
+    })
+    local radius = math.max(0, assert(resolved.border.cornerRadius) - 1)
+    Assert.equal(ringsForAction[1].radiusX, radius, case.label .. " focus radius follows its resolved button")
+    Assert.equal(ringsForAction[1].radiusY, radius, case.label .. " focus radius follows its resolved button")
   end
 end
 

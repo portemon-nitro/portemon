@@ -2,6 +2,7 @@
 
 local Layout = {}
 local Decisions = require("app.src.saveeditor.SaveEditorDecisions")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local PixelScale = require("libs.ui.src.PixelScale")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local SaveEditorList = require("app.src.saveeditor.SaveEditorList")
@@ -47,10 +48,13 @@ local function newContext(view, width, height, metrics)
       kind = view.modal and "decision" or view.valueEditor and "value" or "section",
     }
   assert(type(metrics) == "table" and type(metrics.measure) == "function" and metrics.lineHeight > 0)
-  local margin = width <= 280 and 4 or 12
-  local compactForm = width <= 280 and (view.section == "Party" or view.section == "Bag")
-  local footerHeight = compactForm and 38 or math.max(40, metrics.lineHeight + 24)
-  local hasRail = width >= 400
+  local wideShell = width >= 400 and width >= height
+  local margin = width <= 280 and 8 or wideShell and 8 or 12
+  local compactParty = width < 400 and view.section == "Party"
+  local compactBag = width <= 280 and view.section == "Bag"
+  local footerHeight = compactParty and width <= 280 and 38 or compactBag and 38
+    or math.max(40, metrics.lineHeight + 24)
+  local hasRail = wideShell
   local railWidth = hasRail and 88 or 0
   local railButtonHeight = 34
   local railStep = railButtonHeight + 4
@@ -59,8 +63,14 @@ local function newContext(view, width, height, metrics)
   end
   local shellWidth = hasRail and math.min(width - margin * 2, 640) or width
   local shellX = hasRail and PixelScale.snapLogical((width - shellWidth) / 2) or 0
-  local innerWidth = math.max(1, shellWidth - margin * 2 - (railWidth > 0 and railWidth + 6 or 0))
-  local contentX = shellX + margin + (railWidth > 0 and railWidth + 6 or 0)
+  local railGap = hasRail and 12 or 0
+  local contentWidth = hasRail and math.min(384, width - margin * 2 - railWidth - railGap) or shellWidth - margin * 2
+  local minContentX = hasRail and margin + railWidth + railGap or margin
+  local desiredContentX = hasRail and PixelScale.snapLogical((width - contentWidth) / 2) or shellX + margin
+  local maxContentX = width - margin - contentWidth
+  local contentX = math.max(minContentX, math.min(desiredContentX, maxContentX))
+  local innerWidth = math.max(1, contentWidth)
+  local railX = contentX - railGap - railWidth
   local contentTop = margin
   local footerReserve = view.modal ~= nil and (margin + 2) or footerHeight
   local contentBottom = math.max(contentTop + 1, height - footerReserve - 2)
@@ -76,6 +86,7 @@ local function newContext(view, width, height, metrics)
     railWidth = railWidth,
     railButtonHeight = railButtonHeight,
     railStep = railStep,
+    railX = railX,
     rows = {},
     targets = {},
     focusable = {},
@@ -216,7 +227,7 @@ local function buildShell(ctx)
   if railWidth > 0 then
     for index, name in ipairs(ctx.enabledSections) do
       local id = "section:" .. name
-      ctx.targets[id] = rect(shellX + margin, margin + (index - 1) * railStep, railWidth, railButtonHeight)
+      ctx.targets[id] = rect(ctx.railX, margin + (index - 1) * railStep, railWidth, railButtonHeight)
       ctx.navigation[#ctx.navigation + 1] =
         { role = "action", targetId = id, id = id, label = name, active = name == ctx.section }
       addFocusable(ctx, id)
@@ -232,6 +243,12 @@ local function buildShell(ctx)
       addFocusable(ctx, id)
     end
     ctx.contentTop = stripHeight
+    if
+      ctx.section == "Progress"
+      or ctx.section == "Location" and ctx.view.locationNavigation.page == "map-list"
+    then
+      ctx.contentTop = ctx.contentTop + ApplicationLayout.applicationFrameInsets().top + 8
+    end
   end
 end
 

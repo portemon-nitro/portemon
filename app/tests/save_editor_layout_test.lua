@@ -1520,6 +1520,32 @@ function T.tests.wide_shell_is_centered_and_capped_with_footer_inside()  for _, 
   end
 end
 
+function T.tests.wide_content_column_stays_narrow_as_the_host_grows()
+  for _, width in ipairs({ 800, 1280, 2560 }) do
+    local layout = computeLayout(sectionStripView("Player"), width, 600)
+    local rail = assert(layout.targets["section:Location"], "wide layout keeps its section rail").rect
+    Assert.isTrue(layout.content.width <= 384, width .. "-pixel hosts keep a 384-pixel content cap")
+    Assert.isTrue(rail.x + rail.width <= layout.content.x, "navigation remains to the left of content")
+    Assert.isTrue(layout.content.x >= 8, "content keeps the outer safety margin")
+    Assert.isTrue(layout.content.x + layout.content.width <= width - 8, "content fits within the far margin")
+  end
+end
+
+function T.tests.compact_content_and_footer_keep_the_minimum_outer_safety_margin()
+  local width, height = 256, 192
+  local layout = computeLayout(sectionStripView("Player"), width, height)
+  Assert.isTrue(layout.content.x >= 8, "compact content keeps the minimum outer safety margin")
+  Assert.isTrue(
+    layout.content.x + layout.content.width <= width - 8,
+    "compact content stays inside the far safety margin"
+  )
+  Assert.isTrue(layout.footer.x >= 8, "compact footer keeps the minimum outer safety margin")
+  Assert.isTrue(
+    layout.footer.x + layout.footer.width <= width - 8,
+    "compact footer stays inside the far safety margin"
+  )
+end
+
 local function backLabels(layout)
   local found = {}
   for _, item in ipairs(layout.navigation) do

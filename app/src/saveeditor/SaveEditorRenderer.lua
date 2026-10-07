@@ -513,6 +513,44 @@ local function drawButtonControl(renderer, rectValue, label, active, focused, di
   return drawCompactControl(renderer, rectValue, fitted, active, focused, disabled, semantic, option)
 end
 
+local function drawSectionControl(renderer, rectValue, label, active, focused)
+  local palette = active and buttonPalette(renderer.skin) or buttonInactivePalette(renderer.skin)
+  local fitted = fitText(renderer, label, math.max(0, (rectValue.width - 8) / BODY_TEXT_SCALE))
+  if rectValue.height >= renderer.text.fontDef.lineHeight + 33 then
+    local role = optionRole(false, nil, true, active)
+    local button = TextButton.resolve({ rect = rectValue, scale = 1 })
+    TextButton.draw(renderer.graphics, button, {
+      label = fitted,
+      selected = false,
+      colors = assert(BUTTON_COLORS[role]),
+      text = {
+        lineHeight = renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE,
+        measure = function(value)
+          return renderer.text:textWidth(value) * BODY_TEXT_SCALE
+        end,
+        draw = function(value, x, y)
+          drawBodyText(renderer, value, x, y, palette)
+        end,
+      },
+    })
+    if focused then
+      local border = assert(button.border, "resolved section button border is missing")
+      drawFocusRing(renderer, rectValue, math.max(0, assert(border.cornerRadius) - 1))
+    end
+    return
+  end
+  drawButtonControl(renderer, rectValue, "", active, focused, false, nil, true)
+  local textWidth = renderer.text:textWidth(fitted) * BODY_TEXT_SCALE
+  local textHeight = renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE
+  drawBodyText(
+    renderer,
+    fitted,
+    rectValue.x + (rectValue.width - textWidth) / 2,
+    rectValue.y + (rectValue.height - textHeight) / 2,
+    palette
+  )
+end
+
 local function drawListRow(
   renderer,
   rectValue,
@@ -731,11 +769,17 @@ local function drawStripSlot(renderer, slot, focused)
   end
   local graphics = renderer.graphics
   local lineHeight = renderer.text.fontDef.lineHeight
+  local textScale = BODY_TEXT_SCALE
+  if slot.textRect.width >= 36 then
+    local labelWidth = renderer.text:textWidth(slot.label or "")
+    local levelWidth = slot.level == nil and 0 or renderer.text:textWidth("Lv. " .. tostring(slot.level))
+    textScale = math.min(textScale, slot.textRect.width / math.max(1, labelWidth, levelWidth))
+  end
   graphics.push("all")
   local ok, err = pcall(function()
     graphics.translate(math.floor(slot.textRect.x + 0.5), math.floor(slot.textRect.y + 0.5))
-    graphics.scale(BODY_TEXT_SCALE, BODY_TEXT_SCALE)
-    local textWidth = slot.textRect.width / BODY_TEXT_SCALE
+    graphics.scale(textScale, textScale)
+    local textWidth = slot.textRect.width / textScale
     drawText(renderer, fitText(renderer, slot.label or "", textWidth), 0, 0)
     if slot.level ~= nil then
       drawText(renderer, fitText(renderer, "Lv. " .. tostring(slot.level), textWidth), 0, lineHeight, "hint")
@@ -799,16 +843,20 @@ local function paintNavigation(ctx)
           list ~= nil and list.pending == true
         )
       else
-        drawButtonControl(
-          renderer,
-          target,
-          label,
-          navigation.active == true,
-          isFocusedVisible(view, navigation.targetId),
-          false,
-          nil,
-          navigation.active ~= nil
-        )
+        if navigation.targetId:match("^section:") then
+          drawSectionControl(renderer, target, label, navigation.active == true, isFocusedVisible(view, navigation.targetId))
+        else
+          drawButtonControl(
+            renderer,
+            target,
+            label,
+            navigation.active == true,
+            isFocusedVisible(view, navigation.targetId),
+            false,
+            nil,
+            navigation.active ~= nil
+          )
+        end
       end
     end
   end
