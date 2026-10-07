@@ -630,7 +630,7 @@ function T.native_text_and_state_variants_follow_source_roles(scope)
     end
     local healthy = sub
     local copy = service:partyMon(0)
-    copy.condition = { status = 0, currentHp = 0 }
+    copy.condition = { effects = {}, currentHp = 0 }
     local preparation = assert(service:preparePartyChanges(service:partyRevision(), { { slot = 0, mon = copy } }))
     preparation.publish()
     controller:updateFixed({}, OPEN_GATES)
