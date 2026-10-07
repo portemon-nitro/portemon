@@ -7,11 +7,12 @@
 -- or compared. Restore resolves every saved task implementation and
 -- frame revision concretely against the current scheduler, and the
 -- scheduler reattaches every frame's graph through current compositions,
--- rejecting unknown revisions (SCRIPT_SAVE_REVISION_MISMATCH). Validation
--- is the complete load boundary: the whole bucket and every cross-record
--- reference are checked before any live scheduler state is constructed,
--- and restore stages every object and installs only after the entire
--- bucket has restored. Input edges are never serialized. Pure domain
+-- rejecting unknown revisions (SCRIPT_SAVE_REVISION_MISMATCH). Explicit
+-- validation of untrusted buckets stays in ScriptSave.validate: the whole
+-- bucket and every cross-record reference are checked there before any live
+-- scheduler state is constructed. Restore trusts the routed owner snapshot:
+-- it stages every object and installs only after the entire bucket has
+-- restored. Input edges are never serialized. Pure domain
 -- module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
@@ -493,32 +494,25 @@ end
 
 -- Restore a scripts bucket into an idle scheduler. `restoreTick` is the load
 -- boundary: the caller resumes with the first step at restoreTick + 1, so
--- relative delays rebase exactly. The whole bucket is validated first
--- (raising SCRIPT_TASK_UNSERIALIZABLE on malformed records or dangling
--- cross-references), then task types and versions must resolve and each task
--- implementation must accept the serialized state; the scheduler stages
--- every restored object and installs it only after the whole bucket has
--- restored. Raises on unknown task types or versions, invalid task state,
--- or unknown graph revisions. A failure anywhere before publication leaves
--- the scheduler idle.
+-- relative delays rebase exactly. Only the bucket schema is checked here;
+-- the scheduler resolves every saved task type/version and frame
+-- chain/graph revision against current resources while staging and installs
+-- the staged objects only after the whole bucket has restored. Raises on an
+-- unknown bucket schema, unavailable task implementations, or unknown
+-- graph revisions. A failure anywhere before publication leaves the
+-- scheduler idle.
 ---@param bucket table<string, unknown>
 ---@param scheduler Scheduler
 ---@param restoreTick integer
 function ScriptSave.restore(bucket, scheduler, restoreTick)
-  local function resolveTask(taskType, version)
-    return scheduler:resolveTask(taskType, version)
+  if type(bucket) ~= "table" or bucket.schema ~= ScriptSave.SCHEMA_NAME then
+    local schema = type(bucket) == "table" and bucket.schema or nil
+    Errors.raise(
+      ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
+      "unknown scripts bucket schema " .. tostring(schema),
+      { schema = schema }
+    )
   end
-  local function resolveComposition(scriptId)
-    return scheduler:resolveComposition(scriptId)
-  end
-  local envelopeErr = ScriptSave.validate(bucket, {
-    resolveTask = resolveTask,
-    resolveComposition = resolveComposition,
-  })
-  if envelopeErr ~= nil then
-    Errors.raise(envelopeErr.code, envelopeErr.message, envelopeErr.context)
-  end
-
   scheduler:restoreScriptState(bucket, restoreTick)
 end
 

@@ -283,10 +283,10 @@ end
 ---@param context table<string, unknown>
 ---@return Party
 function Party.restore(snapshot, context)
-  Party.validate(snapshot, context)
+  assert(type(context) == "table", "party restore requires a context")
   local mons = {}
   for _, mon in ipairs(snapshot.mons) do
-    mons[#mons + 1] = Mon.validate(mon, context)
+    mons[#mons + 1] = copyValue(mon)
   end
   return build(mons, #mons)
 end

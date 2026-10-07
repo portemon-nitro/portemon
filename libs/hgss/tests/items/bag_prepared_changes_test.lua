@@ -115,6 +115,54 @@ function T.prepare_applies_ordered_deltas_through_a_freed_slot()
   Assert.equal(bag:revision(), revision + 1, "publication bumps exactly once for the batch")
 end
 
+function T.prepare_clones_owner_state_without_whole_bucket_validation()
+  local BagSave = require("libs.hgss.src.save.BagSave")
+  local bag = service()
+  Assert.isTrue(bag:add("SITRUS_BERRY", 1), "setup stocks an unrelated berries stack")
+  fillMedicineExcept(bag, "POTION")
+  Assert.isFalse(bag:hasSpace("POTION", 1), "setup must leave the medicine pocket full")
+  local revision = bag:revision()
+  local before = bag:capture()
+
+  local calls = 0
+  local original = BagSave.validate
+  BagSave.validate = function(...)
+    calls = calls + 1
+    return original(...)
+  end
+  local function finish()
+    BagSave.validate = original
+    return calls
+  end
+
+  local stale, staleReason =
+    bag:prepareInventoryChanges(revision + 1, { { op = "take", item = "SITRUS_BERRY", quantity = 1 } })
+  Assert.isNil(stale)
+  Assert.equal(staleReason, "stale")
+
+  local refused, refuseReason = bag:prepareInventoryChanges(revision, {
+    { op = "take", item = "SITRUS_BERRY", quantity = 1 },
+    { op = "add", item = "POTION", quantity = 1 },
+  })
+  Assert.isNil(refused, "a full-pocket add refuses instead of publishing")
+  Assert.equal(refuseReason, "bag_full")
+  Assert.deepEqual(bag:capture(), before, "a refused preparation mutates nothing live")
+
+  local preparation = assert(
+    bag:prepareInventoryChanges(revision, { { op = "take", item = "SITRUS_BERRY", quantity = 1 } })
+  )
+  Assert.isTrue(preparation.isCurrent())
+  preparation.publish()
+  Assert.equal(bag:quantity("SITRUS_BERRY"), 0)
+  Assert.equal(bag:revision(), revision + 1, "publication bumps exactly once for the batch")
+
+  Assert.equal(finish(), 0, "staged owner-state cloning must not revalidate the whole bag")
+  Assert.notNil(
+    BagSave.validate(bag:capture(), bag:catalog()),
+    "explicit bag validation still accepts the published capture"
+  )
+end
+
 function T.prepare_reports_an_unfreeable_add_as_a_recoverable_refusal()
   local bag = service()
   Assert.isTrue(bag:add("SITRUS_BERRY", 1), "setup stocks an unrelated berries stack")

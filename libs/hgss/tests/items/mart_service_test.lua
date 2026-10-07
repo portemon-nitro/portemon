@@ -349,6 +349,66 @@ function T.capacity_is_checked_after_quantity_selection_and_sales_clamp_wallet()
   Assert.equal(state.service:capture().statistics.currencySpent, 0, "selling does not count as currency spent")
 end
 
+function T.owner_mutations_reuse_saved_state_without_whole_bucket_validation()
+  local state = resources({ money = 1000 })
+  state.service:processDate(today(2024, 3, 1))
+  local calls = 0
+  local original = MartSave.validate
+  MartSave.validate = function(...)
+    calls = calls + 1
+    return original(...)
+  end
+  local function finish()
+    MartSave.validate = original
+    return calls
+  end
+
+  local baseline = state.service:capture()
+  Assert.deepEqual(state.service:capture(), baseline, "captures of untouched owner state are stable")
+
+  local daily = stock({
+    {
+      key = "daily-potion",
+      displayItemKey = "POTION",
+      description = { kind = "item" },
+      unitPrice = 10,
+      destination = { kind = "bag", key = "POTION" },
+      restriction = { kind = "daily_slot", slot = 3 },
+    },
+    bagEntry("offer", 12),
+  })
+  local session = state.service:openBuy(daily)
+  local token = assert(session:quoteBuy("daily-potion", 1))
+  Assert.notNil(session:commit(token))
+  Assert.equal(state.profile.money, 990, "the committed purchase deducts its exact total")
+  Assert.equal(state.bag:quantity("POTION"), 1)
+  Assert.equal(state.service:capture().dailyPurchasedMask, 8, "the daily slot records its exact bit")
+
+  local repeated, repeatReason = session:quoteBuy("daily-potion", 1)
+  Assert.isNil(repeated)
+  Assert.equal(repeatReason, "bought_today", "the daily restriction still binds owner state")
+  local afforded, affordReason = session:quoteBuy("offer", 99)
+  Assert.isNil(afforded)
+  Assert.equal(affordReason, "insufficient_money", "the balance check still binds owner state")
+  session:close()
+
+  state.service:processDate(today(2024, 3, 2))
+  Assert.equal(
+    state.service:capture().dailyPurchasedMask,
+    0,
+    "a forward date clears the daily slots without touching ownership"
+  )
+  local nextDay = state.service:openBuy(daily)
+  Assert.notNil(nextDay:quoteBuy("daily-potion", 1), "the cleared slot is purchasable again")
+  nextDay:close()
+
+  Assert.equal(finish(), 0, "owner capture and controlled mutations must not revalidate the whole bucket")
+  Assert.notNil(
+    MartSave.validate(state.service:capture(), state.catalog),
+    "explicit mart validation still accepts the published capture"
+  )
+end
+
 function T.gregorian_century_rules_reject_invalid_dates_and_process_forward_days()
   local commonYear = resources()
   local february = commonYear.service:processDate(today(1900, 2, 28))

@@ -61,16 +61,10 @@ function AuxiliaryFieldUi:capture()
   return self:status()
 end
 
----@param record table<string, unknown>
+---@param record table<string, unknown> the current owner snapshot routed by persistence
 ---@return AuxiliaryFieldUi
 function AuxiliaryFieldUi.restore(record)
-  local valid, err = AuxiliaryFieldUi.validate(record)
-  if not valid then
-    local validationError = assert(err)
-    Errors.raise(validationError.code, validationError.message, validationError.context)
-  end
-  local validated = assert(valid)
-  return setmetatable({ _requested = validated.requested, _state = validated.state }, AuxiliaryFieldUi)
+  return setmetatable({ _requested = record.requested, _state = record.state }, AuxiliaryFieldUi)
 end
 
 ---@return { requested: "shown"|"hidden", state: "shown"|"showing"|"hidden"|"hiding" }

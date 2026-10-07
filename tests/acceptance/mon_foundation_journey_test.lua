@@ -723,11 +723,13 @@ function T.tests.preselection_trio_reproduces_through_the_public_creation_seam()
   Assert.equal(hexes[1], expectedHex(versionId), "the first candidate equals the fixed vector")
 end
 
--- Content identity at the product boundary: a stored bucket carrying a stale
--- fingerprint field is malformed under the current schema and fails
--- continue at the owning mon restore, while the valid record still boots
--- afterwards. Catalog drift alone (no shape change) never gates restore.
-function T.tests.continue_rejects_a_stale_fingerprint_field_as_malformed()
+-- Content identity at the product boundary: trusted continue restores the
+-- captured owner snapshot as-is, so a stored bucket carrying an inert
+-- legacy fingerprint field still continues and restores the captured party.
+-- Malformed rejection lives at the explicit mons validator, covered in the
+-- mons unit suite. Catalog drift alone (no shape change) never gates
+-- restore.
+function T.tests.continue_restores_a_record_carrying_an_inert_legacy_field()
   local versionId = AcceptanceHarness.defaultVersion()
   local valid = harness():boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })
   valid:waitForFieldEntry()
@@ -737,19 +739,22 @@ function T.tests.continue_rejects_a_stale_fingerprint_field_as_malformed()
   Assert.isNil(love.filesystem.getInfo(namespace), "the valid boot cleans its namespace")
 
   record.mons.catalogFingerprint = "00000000"
-  local tampered = AcceptanceHarness.new({
+  local carried = AcceptanceHarness.new({
     gameFactory = function()
       return record
     end,
-  })
-  local ok, err = pcall(function()
-    tampered:boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })
-  end)
-  Assert.isFalse(ok, "a stale fingerprint field must fail continue")
-  Assert.isTrue(
-    tostring(err):find("MONS_SAVE_INVALID", 1, true) ~= nil,
-    "the failure names the malformed bucket: " .. tostring(err):sub(1, 160)
-  )
+  }):boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })
+  local carriedOk, carriedErr = xpcall(function()
+    carried:waitForFieldEntry()
+    Assert.equal(partyCount(carried), 0, "continue restores the captured empty party")
+    Assert.equal(carried:renderAttempts(), 0, "the carried-field probe must stop before GPU rendering")
+  end, debug.traceback)
+  local carriedNamespace = carried.saveNamespace
+  carried:close()
+  if not carriedOk then
+    error(carriedErr, 0)
+  end
+  Assert.isNil(love.filesystem.getInfo(carriedNamespace), "teardown removes the isolated save namespace")
 
   local again = harness():boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })
   local againOk, againErr = xpcall(function()

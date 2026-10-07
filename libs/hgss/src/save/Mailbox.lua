@@ -64,13 +64,19 @@ local function validate(snapshot, context)
 end
 
 function Mailbox.new(snapshot)
-  local slots = {}
   if snapshot == nil then
+    local slots = {}
     for index = 1, Mailbox.CAPACITY do
       slots[index] = false
     end
-  else
-    slots = validate(snapshot)
+    return setmetatable({ _slots = slots, _revision = 0 }, Mailbox)
+  end
+  assert(type(snapshot) == "table", "mailbox restore requires the persisted snapshot")
+  local source = snapshot.slots
+  local slots = {}
+  for index = 1, Mailbox.CAPACITY do
+    local value = source[index]
+    slots[index] = value == false and false or copy(value)
   end
   return setmetatable({ _slots = slots, _revision = 0 }, Mailbox)
 end

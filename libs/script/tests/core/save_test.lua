@@ -580,6 +580,127 @@ T["capture requires phase boundary"] = function()
   Assert.isFalse(ok)
 end
 
+T["script_save trusted restore stages without a whole-bucket preflight"] = function()
+  local h = harness()
+  startForeground(
+    h,
+    script("test.trusted_stage", {
+      S.waitTicks({ ticks = 5 }),
+      S.setVar({ variable = "VAR_TRUSTED", value = 1 }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, nil)
+  local bucket = ScriptSave.capture(h.scheduler, 100)
+
+  local counts = { envelope = 0, records = 0, states = 0 }
+  local originalValidate = ScriptSave.validate
+  local originalRecord = ScriptTask.validateRecord
+  local originalImpl = WaitTicksTask.validate
+  ScriptSave.validate = function(...)
+    counts.envelope = counts.envelope + 1
+    return originalValidate(...)
+  end
+  ScriptTask.validateRecord = function(...)
+    counts.records = counts.records + 1
+    return originalRecord(...)
+  end
+  WaitTicksTask.validate = function(...)
+    counts.states = counts.states + 1
+    return originalImpl(...)
+  end
+  local function finish()
+    ScriptSave.validate = originalValidate
+    ScriptTask.validateRecord = originalRecord
+    WaitTicksTask.validate = originalImpl
+  end
+  local recorder = Diagnostics.newTraceRecorder()
+  local resumed = Scheduler.new({
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    services = h.services,
+    taskRegistry = h.taskRegistry,
+    trace = function(record)
+      recorder:record(record)
+    end,
+    resolveComposition = function(id)
+      return h.composition:effective(id)
+    end,
+  })
+  local ok, restoreErr = pcall(ScriptSave.restore, bucket, resumed, 100)
+  finish()
+  Assert.isTrue(ok, "trusted script restore succeeds: " .. tostring(restoreErr))
+  Assert.equal(counts.envelope, 0, "trusted restore must not run the whole-bucket preflight")
+  Assert.equal(counts.records, 0, "trusted restore must not revalidate every task record")
+  Assert.equal(counts.states, 0, "trusted restore must not revalidate every task state")
+  for tick = 101, 110 do
+    resumed:step(tick, nil)
+  end
+  Assert.equal(h.services.world:getVar("VAR_TRUSTED"), 1, "the staged continuation runs to completion")
+end
+
+T["script_save missing task implementation fails before scheduler publication"] = function()
+  local h = harness()
+  startForeground(
+    h,
+    script("test.missing_impl", {
+      S.waitTicks({ ticks = 5 }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, nil)
+  local bucket = ScriptSave.capture(h.scheduler, 100)
+  bucket.tasks[1].taskType = "missing_task_type"
+  local resumed = Scheduler.new({
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    services = h.services,
+    taskRegistry = h.taskRegistry,
+    resolveComposition = function(id)
+      return h.composition:effective(id)
+    end,
+  })
+  local ok, err = pcall(ScriptSave.restore, bucket, resumed, 100)
+  Assert.isFalse(ok)
+  Assert.isTrue(Errors.is(err))
+  ---@cast err Errors.Error
+  Assert.equal(err.code, "SCRIPT_TASK_VERSION_UNSUPPORTED")
+  Assert.equal(#resumed:liveInstances(), 0, "a failed restore publishes no instances")
+  Assert.equal(#resumed:tasks(), 0, "a failed restore publishes no tasks")
+  Assert.equal(#resumed:environments(), 0, "a failed restore publishes no environments")
+end
+
+T["script_save graph revision mismatch fails before scheduler publication"] = function()
+  local h = harness()
+  startForeground(
+    h,
+    script("test.missing_graph", {
+      S.waitTicks({ ticks = 5 }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, nil)
+  local bucket = ScriptSave.capture(h.scheduler, 100)
+  bucket.instances[1].frames[1].chainRevision = "deadbeef"
+  local resumed = Scheduler.new({
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    services = h.services,
+    taskRegistry = h.taskRegistry,
+    resolveComposition = function(id)
+      return h.composition:effective(id)
+    end,
+  })
+  local ok, err = pcall(ScriptSave.restore, bucket, resumed, 100)
+  Assert.isFalse(ok)
+  Assert.isTrue(Errors.is(err))
+  ---@cast err Errors.Error
+  Assert.equal(err.code, "SCRIPT_SAVE_REVISION_MISMATCH")
+  Assert.equal(#resumed:liveInstances(), 0, "a failed restore publishes no instances")
+  Assert.equal(#resumed:tasks(), 0, "a failed restore publishes no tasks")
+  Assert.equal(#resumed:environments(), 0, "a failed restore publishes no environments")
+end
+
 -- 14. The resumed trace suffix equals the uninterrupted suffix for a longer
 -- script combining waits, calls, and branches.
 T["trace suffix determinism"] = function()
@@ -1363,8 +1484,14 @@ T["failed late validation restores nothing, valid restore preserves task ownersh
   local badTask = deepCopyBucket(bucket)
   badTask.tasks[1].state.remainingTicks = -1
   local taskScheduler = freshScheduler(h)
-  local taskOk, taskErr = pcall(ScriptSave.restore, badTask, taskScheduler, 101)
-  Assert.isFalse(taskOk)
+  local taskErr = ScriptSave.validate(badTask, {
+    resolveTask = function(taskType, version)
+      return h.taskRegistry:resolve(taskType, version)
+    end,
+    resolveComposition = function(scriptId)
+      return h.composition:effective(scriptId)
+    end,
+  })
   Assert.isTrue(Errors.is(taskErr))
   ---@cast taskErr Errors.Error
   Assert.equal(taskErr.code, "SCRIPT_TASK_UNSERIALIZABLE")

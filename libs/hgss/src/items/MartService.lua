@@ -1,7 +1,6 @@
 -- Coordinates HGSS shop sessions over the canonical profile, Bag service,
 -- and a copied MartSave bucket. No UI, disk, or event ownership lives here.
 
-local MartSave = require("libs.hgss.src.save.MartSave")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 
 ---@class MartService
@@ -264,7 +263,8 @@ function MartService.new(options)
     type(options.itemCatalog) == "table" and type(options.catalog) == "table",
     "MartService requires both catalogs"
   )
-  local bucket = assert(MartSave.validate(options.bucket, options.catalog))
+  assert(type(options.bucket) == "table", "MartService requires the persisted mart bucket")
+  local bucket = copy(options.bucket)
   return setmetatable({
     _profile = options.profile,
     _bag = options.bag,
@@ -278,7 +278,7 @@ function MartService.new(options)
 end
 
 function MartService:capture()
-  return assert(MartSave.validate(copy(self._bucket), self._catalog))
+  return copy(self._bucket)
 end
 
 function MartService:processDate(date)
@@ -302,7 +302,7 @@ function MartService:processDate(date)
     candidate.lastProcessedDay ~= self._bucket.lastProcessedDay
     or candidate.dailyPurchasedMask ~= self._bucket.dailyPurchasedMask
   then
-    self._bucket = assert(MartSave.validate(candidate, self._catalog))
+    self._bucket = candidate
     self._revision = self._revision + 1
   end
   self._date = { weekday = weekday, dayOrdinal = ordinal }
@@ -503,9 +503,6 @@ local function prepareQuote(session, entry, quantity, selling)
   elseif currency == "money" then
     nextBucket = copy(service._bucket)
   end
-  if nextBucket then
-    nextBucket = assert(MartSave.validate(nextBucket, service._catalog))
-  end
   local terms = {
     quantity = quantity,
     unitPrice = price,
@@ -632,7 +629,6 @@ function sessionMethods:acknowledge(receipt)
   if state.bonusEligible then
     candidate = copy(self.service._bucket)
     candidate.statistics.premierBallsEarned = math.min(999999, candidate.statistics.premierBallsEarned + 1)
-    candidate = assert(MartSave.validate(candidate, self.service._catalog))
   end
   if state.bonusEligible and self.service._bag:hasSpace("PREMIER_BALL", 1) then
     granted = self.service._bag:add("PREMIER_BALL", 1)

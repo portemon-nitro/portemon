@@ -3,10 +3,11 @@
 -- Capture copies live state into canonical records; restore rebuilds the
 -- live party and generator against the current catalog. The catalog is a
 -- runtime dependency, not a persisted identity: no aggregate fingerprint is
--- stored or compared. Malformed buckets and failing mons fail with a save
--- error that names the zero-based mon slot. This module never touches the
--- top-level save; restore validates the bucket against the current catalog
--- before rebuilding live state.
+-- stored or compared. Explicit validation of editor-supplied buckets stays
+-- in MonsSave.validate, where malformed buckets and failing mons fail with
+-- a save error that names the zero-based mon slot. Restore trusts the
+-- current owner snapshot the persistence boundary already routed and copies
+-- it once into live state. This module never touches the top-level save.
 
 local Errors = require("libs.errors.src.Errors")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
@@ -87,15 +88,7 @@ end
 function MonsSave.capture(partySnapshot, rngCapture, boxesSnapshot, options)
   assert(type(partySnapshot) == "table", "mons capture requires a party snapshot")
   assert(type(rngCapture) == "table", "mons capture requires a generator capture")
-  local ok, failure = pcall(Lcrng.validate, rngCapture)
-  if not ok then
-    if Errors.is(failure) then
-      MonsErrors.raise(MonsErrors.SAVE_INVALID, "mons bucket generator record is malformed", {})
-    end
-    error(failure, 0)
-  end
   boxesSnapshot = boxesSnapshot or Boxes.new(nil, options):capture()
-  Boxes.validate(boxesSnapshot)
   return {
     schema = MonsSave.SCHEMA,
     rng = copyValue(rngCapture),
@@ -153,7 +146,6 @@ end
 ---@return { party: Party, boxes: Boxes, rng: Gen4Lcrng }
 function MonsSave.restore(bucket, context, options)
   assert(type(context) == "table", "mons restore requires a context")
-  MonsSave.validate(bucket, context)
   local party = Party.restore(bucket.party, context)
   local boxes = Boxes.restore(bucket.boxes, options)
   local rng = Lcrng.restore(bucket.rng)

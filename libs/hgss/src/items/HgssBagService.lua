@@ -184,7 +184,7 @@ function HgssBagService:prepareInventoryChanges(expectedRevision, deltas)
   if expectedRevision ~= self._revision then
     return nil, "stale"
   end
-  local candidate = BagInventory.new(self._catalog, self._inventory:capture())
+  local candidate = self._inventory:clone()
   for _, delta in ipairs(deltas) do
     assert(type(delta) == "table", "bag preparation deltas must be records")
     local applied = false

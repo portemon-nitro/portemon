@@ -123,12 +123,18 @@ function MenuTask.cancel(state, reason, ctx)
   end
 end
 
+-- Restore reattaches trusted serializable state to a fresh scheduler.
+-- Pointer capture is runtime-only and never serialized, so reattachment
+-- always cancels a held gesture: a restored menu resumes awaiting fresh
+-- input instead of completing a press that started before the save.
+---@param state unknown
+function MenuTask.onRestore(state)
+  pointerCaptures[state] = nil
+end
+
 ---@param state unknown
 ---@return Errors.Error|nil
 function MenuTask.validate(state)
-  -- Restore validates the serialized state before reattaching it. Pointer
-  -- capture is runtime-only, so that boundary always cancels a held gesture.
-  pointerCaptures[state] = nil
   if type(state) ~= "table" or type(state.menuDefinition) ~= "table" then
     return Errors.new(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, "menu task state must hold its menu definition", {})
   end

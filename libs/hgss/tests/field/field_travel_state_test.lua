@@ -66,6 +66,20 @@ function T.escape_entrance_rejects_malformed_records()
   Assert.isNil(state:capture().escapeEntrance)
 end
 
+function T.trusted_restore_takes_ownership_copies()
+  local entrance = { map = "MAP_UNION_CAVE_1F", fieldX = 10, fieldZ = 20, facing = "north" }
+  local snapshot = travel({ lastHealSpawn = "SPAWN_GOLDENROD", escapeEntrance = entrance })
+  local state = FieldTravelState.new(snapshot)
+  snapshot.lastHealSpawn = "SPAWN_PALLET"
+  snapshot.escapeEntrance.fieldX = 999
+  Assert.equal(state:capture().lastHealSpawn, "SPAWN_GOLDENROD", "restore copies the spawn value")
+  Assert.equal(state:capture().escapeEntrance.fieldX, 10, "restore copies the entrance record")
+  Assert.deepEqual(state:capture(), {
+    lastHealSpawn = "SPAWN_GOLDENROD",
+    escapeEntrance = { map = "MAP_UNION_CAVE_1F", fieldX = 10, fieldZ = 20, facing = "north" },
+  })
+end
+
 function T.constructor_rejects_malformed_save_data()
   Assert.throws(function()
     FieldTravelState.new({})

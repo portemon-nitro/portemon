@@ -1,6 +1,6 @@
 -- Versioned script task registry : every task type is registered by a stable
 -- name and major version; implementations supply `create`, `poll`, and
--- `validate`, and may supply `cancel`/`onComplete`. The scheduler routes task
+-- `validate`, and may supply `cancel`/`onComplete`/`onRestore`. The scheduler routes task
 -- creation and polling through this registry so save records can verify both
 -- the type and the version on load, and so raw-Lua handlers can only ever
 -- return a task type that is registered here. Pure domain module: no love
@@ -21,6 +21,7 @@ local ScriptErrors = require("libs.script.src.errors")
 ---@field validate fun(state: unknown): Errors.Error|nil
 ---@field cancel fun(state: unknown, reason: string, ctx: table<string, unknown>|nil)|nil
 ---@field onComplete fun(state: unknown, ctx: table<string, unknown>)|nil
+---@field onRestore fun(state: unknown)|nil
 
 ---@class TaskRegistry
 ---@field private _byType table<string, table<integer, TaskImplementation>>
@@ -38,7 +39,7 @@ end
 -- Registering the same type and version twice is a programming invariant, as
 -- is a fractional version (the version is the serialized-state shape's major
 -- version, not a real number). `validate` is required; the optional
--- `cancel`/`onComplete` callbacks, when present, must be functions.
+-- `cancel`/`onComplete`/`onRestore` callbacks, when present, must be functions.
 ---@param taskType string
 ---@param version integer
 ---@param impl TaskImplementation
@@ -49,6 +50,10 @@ function TaskRegistry:register(taskType, version, impl)
   assert(type(impl) == "table" and type(impl.poll) == "function", "task implementation must supply poll")
   assert(type(impl.create) == "function", "task implementation must supply create")
   assert(type(impl.validate) == "function", "task implementation must supply validate")
+  assert(
+    impl.onRestore == nil or type(impl.onRestore) == "function",
+    "task implementation must supply a function onRestore"
+  )
   assert(impl.cancel == nil or type(impl.cancel) == "function", "task implementation must supply a function cancel")
   assert(
     impl.onComplete == nil or type(impl.onComplete) == "function",

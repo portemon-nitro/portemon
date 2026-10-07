@@ -1409,28 +1409,73 @@ end
 -- Rebuild the scheduler's script state from a ScriptSave scripts bucket.
 -- The restore tick is the load boundary: the caller
 -- resumes with the first step at restoreTick + 1, so relative delays rebase
--- exactly and no tick is duplicated or skipped. The caller is responsible
--- for the whole-bucket checks (ScriptSave.restore performs them: record
--- shapes, cross-record references, and concrete task/composition
--- resolution); this method verifies every frame's
--- graph revision against the current compositions, then stages every
--- restored environment, instance, and task as a fresh object and installs
--- them only after the entire bucket has restored, so a raise anywhere in
--- the stage leaves the scheduler idle.
+-- exactly and no tick is duplicated or skipped. This method resolves every
+-- saved task implementation and frame chain/graph revision against the
+-- current compositions before staging anything, then stages every restored
+-- environment, instance, and task as a fresh object and installs them only
+-- after the entire bucket has restored, so a raise anywhere in the stage
+-- leaves the scheduler idle.
 ---@param bucket table<string, unknown>
 ---@param restoreTick integer
 function Scheduler:restoreScriptState(bucket, restoreTick)
   assert(self._foregroundEnvironmentId == nil and next(self._instances) == nil, "restore requires an idle scheduler")
   local graphs = {}
 
-  -- Collect graph objects through identities already checked by ScriptSave.
+  -- Reconstruction-critical resolution before publication: every saved
+  -- task implementation and every frame chain/graph revision must resolve
+  -- against current resources. Anything missing raises here, leaving the
+  -- scheduler idle. Saved task state itself is trusted owner state and is
+  -- not revalidated. Implementations with runtime-only adjunct state that
+  -- is never serialized reset it here through the optional onRestore hook,
+  -- so a restored task resumes without held input; the hook validates
+  -- nothing.
+  for _, taskRecord in ipairs(bucket.tasks or {}) do
+    local impl, resolveErr = self:resolveTask(taskRecord.taskType, taskRecord.taskVersion)
+    if impl == nil then
+      local failure = resolveErr
+        or Errors.new(
+          ScriptErrors.SCRIPT_TASK_VERSION_UNSUPPORTED,
+          "saved task implementation is unavailable",
+          { taskType = taskRecord.taskType, version = taskRecord.taskVersion }
+        )
+      Errors.raise(failure.code, failure.message, failure.context)
+    end
+    if impl ~= nil and impl.onRestore ~= nil then
+      impl.onRestore(taskRecord.state)
+    end
+  end
   for _, instanceRecord in ipairs(bucket.instances or {}) do
     for _, frameRecord in ipairs(instanceRecord.frames or {}) do
       local composed = self:resolveComposition(frameRecord.chainScriptId)
-      assert(composed and composed.revision == frameRecord.chainRevision, "validated frame chain must resolve")
+      if composed == nil or composed.revision ~= frameRecord.chainRevision then
+        Errors.raise(
+          ScriptErrors.SCRIPT_SAVE_REVISION_MISMATCH,
+          "save references an unknown composed script revision",
+          {
+            scriptId = frameRecord.chainScriptId,
+            revision = frameRecord.chainRevision,
+            composedRevision = composed and composed.revision or nil,
+          }
+        )
+      end
+      assert(composed ~= nil, "frame chain resolves after the revision check")
       local entry = composed.entries[frameRecord.composition.entryIndex + 1]
-      assert(entry ~= nil, "validated composition entry must resolve")
-      assert(entry.graph.revision == frameRecord.graphRevision, "validated graph revision must resolve")
+      if entry == nil then
+        Errors.raise(
+          ScriptErrors.SCRIPT_SAVE_REVISION_MISMATCH,
+          "save references an unknown composition entry",
+          { scriptId = frameRecord.chainScriptId, entryIndex = frameRecord.composition.entryIndex + 1 }
+        )
+      end
+      assert(type(entry) == "table", "composition entry resolves after the entry check")
+      if entry.graph == nil or entry.graph.revision ~= frameRecord.graphRevision then
+        Errors.raise(
+          ScriptErrors.SCRIPT_SAVE_REVISION_MISMATCH,
+          "save references an unknown graph revision",
+          { scriptId = frameRecord.chainScriptId, revision = frameRecord.graphRevision }
+        )
+      end
+      assert(type(entry.graph) == "table", "frame graph resolves after the revision check")
       graphs[frameRecord.graphRevision] = entry.graph
     end
   end

@@ -68,6 +68,27 @@ function T.validate_accepts_valid_directions_and_rejects_contradictions()
   Assert.isTrue(Errors.is(err))
 end
 
+function T.trusted_restore_reproduces_visibility_without_revalidation()
+  local ui = AuxiliaryFieldUi.new()
+  ui:requestVisible(false)
+  local snapshot = ui:capture()
+
+  local calls = 0
+  local original = AuxiliaryFieldUi.validate
+  AuxiliaryFieldUi.validate = function(...)
+    calls = calls + 1
+    return original(...)
+  end
+  local ok, restored = pcall(AuxiliaryFieldUi.restore, snapshot)
+  AuxiliaryFieldUi.validate = original
+  Assert.isTrue(ok, "trusted auxiliary restore succeeds")
+  Assert.equal(calls, 0, "trusted auxiliary restore must not revalidate owner state")
+  Assert.deepEqual(restored:status(), { requested = "hidden", state = "hiding" })
+  Assert.deepEqual(restored:capture(), snapshot, "restored visibility captures back to the snapshot")
+  restored:advance()
+  Assert.deepEqual(restored:status(), { requested = "hidden", state = "hidden" })
+end
+
 function T.auxiliary_ui_task_validation_returns_a_structured_error_for_invalid_saved_state()
   local err = AuxiliaryUiTask.validate({ visible = "hidden" })
   ---@cast err Errors.Error

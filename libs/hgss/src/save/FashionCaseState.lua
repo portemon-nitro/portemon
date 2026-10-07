@@ -68,11 +68,15 @@ function FashionCaseState.empty()
   return { schema = FashionCaseState.SCHEMA, counts = counts }
 end
 
----@param record table<string, unknown>
+---@param record table<string, unknown> the current owner snapshot routed by persistence
 ---@return FashionCaseState
 function FashionCaseState.new(record)
-  local canonical = FashionCaseState.validate(record)
-  return setmetatable({ counts = canonical.counts }, FashionCaseState)
+  assert(type(record) == "table", "Fashion Case restore requires the persisted record")
+  local counts = {}
+  for index = 1, ACCESSORY_COUNT do
+    counts[index] = record.counts[index]
+  end
+  return setmetatable({ counts = counts }, FashionCaseState)
 end
 
 ---@param accessoryId integer

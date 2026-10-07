@@ -46,6 +46,28 @@ function BagInventory.new(catalog, bag)
   return self
 end
 
+---@return BagInventory an independent mutable copy of this owner state
+function BagInventory:clone()
+  local copied = setmetatable({
+    _catalog = self._catalog,
+    _pockets = {},
+    _registered = {},
+    _byItem = {},
+  }, BagInventory)
+  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
+    local slots = {}
+    for index, slot in ipairs(self._pockets[pocketKey]) do
+      slots[index] = { item = slot.item, quantity = slot.quantity }
+    end
+    copied._pockets[pocketKey] = slots
+  end
+  for index, key in ipairs(self._registered) do
+    copied._registered[index] = key
+  end
+  copied:_reindex()
+  return copied
+end
+
 function BagInventory:_reindex()
   local index = {}
   for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do

@@ -38,7 +38,6 @@ end
 ---@param record { state: integer, calls: integer }
 ---@return Gen4Lcrng
 function Lcrng.restore(record)
-  Lcrng.validate(record)
   return build(record.state, record.calls)
 end
 
