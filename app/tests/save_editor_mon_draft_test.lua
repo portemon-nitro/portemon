@@ -251,26 +251,41 @@ function T.level_edit_writes_threshold_experience_and_preserves_health_coherence
   context = CatalogFixture.domainContext(catalog)
   local Experience = require("libs.mons.src.gen4.Experience")
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
-  local draft = draftFor(validMon(catalog, "CHIKORITA", 9), context)
+  local draft = draftFor(validMon(catalog, "CHIKORITA", 40), context)
   local curve = catalog:growthCurve("medium_slow")
+  Assert.isTrue(draft:setMet("level", 5))
+  Assert.isTrue(draft:setMet("location", 123))
+  Assert.isTrue(draft:setMet("year", 2010))
+  Assert.isTrue(draft:setMet("month", 3))
+  Assert.isTrue(draft:setMet("day", 14))
+  Assert.isTrue(draft:setMet("terrain", 7))
+  Assert.isTrue(draft:setOrigin("trainerId", 0xAABBCCDD))
+  Assert.isTrue(draft:setOrigin("trainerName", "ALICE"))
+  Assert.isTrue(draft:setOrigin("trainerGender", 1))
+  local historicalMet = draft:record().met
+  local origin = draft:record().origin
   local maxHp = assert(draft:projection().stats).hp
 
   Assert.isFalse(draft:setLevel(0), "level below one never enters the draft")
   Assert.isFalse(draft:setLevel(101), "level above one hundred never enters the draft")
   Assert.isTrue(draft:setScalar("currentHp", maxHp - 5))
-  Assert.isTrue(draft:setLevel(10))
-  Assert.equal(draft:record().experience, Experience.expFor(curve, 10))
-  Assert.equal(draft:projection().level, 10)
+  Assert.isTrue(draft:setLevel(41))
+  Assert.equal(draft:record().experience, Experience.expFor(curve, 41))
+  Assert.equal(draft:projection().level, 41)
   local newMaxHp = assert(draft:projection().stats).hp
   Assert.equal(
     draft:record().condition.currentHp,
     HgssMonService.adjustHpForMaxChange(maxHp, newMaxHp, maxHp - 5),
     "a damaged member keeps its damage across the new maximum"
   )
-  Assert.equal(draft:record().met.level, 10, "met level tracks the edited level")
+  Assert.deepEqual(draft:record().met, historicalMet, "current level edits preserve met history")
+  Assert.deepEqual(draft:record().origin, origin, "current level edits preserve origin data")
+  Assert.equal(draft:projection().level, 41)
   local valid, validError = draft:validate()
   Assert.isNil(validError)
   Assert.notNil(valid)
+  Assert.deepEqual(valid.met, historicalMet)
+  Assert.deepEqual(valid.origin, origin)
 
   local fainted = draftFor(validMon(catalog, "CHIKORITA", 9), context)
   Assert.isTrue(fainted:setScalar("currentHp", 0))
@@ -278,6 +293,60 @@ function T.level_edit_writes_threshold_experience_and_preserves_health_coherence
   Assert.isTrue(fainted:setLevel(10))
   Assert.equal(fainted:record().condition.currentHp, 0, "a fainted member stays fainted")
   Assert.isTrue(faintedMax >= 1, "the fixture maximum is usable")
+end
+
+function T.experience_and_species_edits_preserve_provenance_and_noop_revision()
+  local catalog, context = CatalogFixture.makeCatalog(), nil
+  context = CatalogFixture.domainContext(catalog)
+  local draft = draftFor(validMon(catalog, "CHIKORITA", 9), context)
+  Assert.isTrue(draft:setMet("level", 5))
+  Assert.isTrue(draft:setMet("location", 123))
+  Assert.isTrue(draft:setMet("year", 2010))
+  Assert.isTrue(draft:setMet("month", 3))
+  Assert.isTrue(draft:setMet("day", 14))
+  Assert.isTrue(draft:setMet("terrain", 7))
+  Assert.isTrue(draft:setOrigin("trainerId", 0xAABBCCDD))
+  Assert.isTrue(draft:setOrigin("trainerName", "ALICE"))
+  Assert.isTrue(draft:setOrigin("trainerGender", 1))
+  local initial = draft:record()
+
+  local experience = catalog:growthCurve("medium_slow")[12]
+  Assert.isTrue(draft:setExperience(experience))
+  Assert.isTrue(draft:setSpecies("EEVEE"))
+  Assert.equal(draft:record().experience, experience, "species edits preserve numeric EXP")
+  Assert.deepEqual(draft:record().met, initial.met, "EXP and species edits preserve met history")
+  Assert.deepEqual(draft:record().origin, initial.origin, "EXP and species edits preserve origin data")
+  local valid, validError = draft:validate()
+  Assert.isNil(validError)
+  Assert.notNil(valid)
+  Assert.deepEqual(valid.met, initial.met)
+  Assert.deepEqual(valid.origin, initial.origin)
+end
+
+function T.species_noop_does_not_advance_revision()
+  local catalog, context = CatalogFixture.makeCatalog(), nil
+  context = CatalogFixture.domainContext(catalog)
+  local draft = draftFor(validMon(catalog, "CHIKORITA", 9), context)
+  local revision = draft:revision()
+
+  Assert.isTrue(draft:setSpecies("CHIKORITA"))
+  Assert.equal(draft:revision(), revision, "a species no-op does not advance the draft revision")
+end
+
+function T.explicit_met_edit_changes_only_history_and_rejected_level_is_atomic()
+  local catalog, context = CatalogFixture.makeCatalog(), nil
+  context = CatalogFixture.domainContext(catalog)
+  local draft = draftFor(validMon(catalog, "CHIKORITA", 9), context)
+  local before = draft:record()
+
+  Assert.isTrue(draft:setMet("level", 5))
+  local afterHistoryEdit = draft:record()
+  Assert.equal(afterHistoryEdit.met.level, 5)
+  before.met.level = 5
+  Assert.deepEqual(afterHistoryEdit, before, "the explicit met editor changes only the historical field")
+
+  Assert.isFalse(draft:setLevel(101))
+  Assert.deepEqual(draft:record(), afterHistoryEdit, "a rejected current-level edit changes nothing")
 end
 
 function T.species_edit_preserves_numeric_experience_and_repairs_form_and_ability()

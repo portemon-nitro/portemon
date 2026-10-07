@@ -330,8 +330,7 @@ function SaveEditorMonDraft:setScalar(fieldId, value)
 end
 
 -- Level is represented solely by canonical cumulative EXP: the threshold of
--- the requested level on the current growth curve. Met level tracks the
--- edited level so the candidate stays coherent.
+-- the requested level on the current growth curve.
 ---@param level integer
 ---@return boolean
 function SaveEditorMonDraft:setLevel(level)
@@ -350,20 +349,18 @@ function SaveEditorMonDraft:setLevel(level)
     error(curve, 0)
   end
   local threshold = Experience.expFor(curve, level)
-  if self._record.experience == threshold and self._record.met.level == level then
+  if self._record.experience == threshold then
     return true
   end
   local oldMaxHp = projectedMaxHp(self._record, self._context)
   self._record.experience = threshold
-  self._record.met.level = level
   refreshHp(self._record, self._context, oldMaxHp)
   self:_changed()
   return true
 end
 
--- Direct EXP edits keep health coherent and track met level while the new
--- total still maps to a level; beyond the level-100 entry the candidate
--- stays invalid until corrected.
+-- Direct EXP edits keep health coherent; beyond the level-100 entry the
+-- candidate stays invalid until corrected.
 ---@param value unknown
 ---@return boolean
 function SaveEditorMonDraft:setExperience(value)
@@ -374,29 +371,18 @@ function SaveEditorMonDraft:setExperience(value)
   if species == nil then
     return false
   end
-  local ok, curve = pcall(self._context.catalog.growthCurve, self._context.catalog, species.growthCurve)
-  if not ok then
-    if Errors.is(curve) then
-      return false
-    end
-    error(curve, 0)
-  end
   if self._record.experience == value then
     return true
   end
   local oldMaxHp = projectedMaxHp(self._record, self._context)
   self._record.experience = value
-  if value <= curve[Stats.MAX_LEVEL] then
-    self._record.met.level = Experience.level(curve, value)
-  end
   refreshHp(self._record, self._context, oldMaxHp)
   self:_changed()
   return true
 end
 
--- Species edits preserve the exact numeric EXP and repair form/ability
--- validity for the new species; met level and health track the preserved
--- total under the new growth curve and base stats.
+-- Species edits preserve exact numeric EXP and repair form/ability validity
+-- for the new species while keeping health coherent.
 ---@param speciesKey string
 ---@return boolean
 function SaveEditorMonDraft:setSpecies(speciesKey)
@@ -445,9 +431,8 @@ function SaveEditorMonDraft:setSpecies(speciesKey)
     end
     record.ability = repaired
   end
-  local curveOk, curve = pcall(self._context.catalog.growthCurve, self._context.catalog, species.growthCurve)
-  if curveOk and type(record.experience) == "number" and record.experience <= curve[Stats.MAX_LEVEL] then
-    record.met.level = Experience.level(curve, record.experience)
+  if record.species == old.species and record.form == old.form and record.ability == old.ability then
+    return true
   end
   refreshHp(record, self._context, oldMaxHp)
   self:_changed()
