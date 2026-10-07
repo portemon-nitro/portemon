@@ -312,6 +312,7 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
           end,
         },
       },
+      fashionCase = {},
     }
     local result = compose(runtime, {
       cacheFs = {},
@@ -320,6 +321,11 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
       end,
       fontDef = {},
       audioService = nil,
+      followerInteractionCatalog = {},
+      mons = {},
+      itemCatalog = {},
+      followingMon = {},
+      clock = {},
     })
     Assert.notNil(result.scripts, "composition still yields its scripts")
     local service = assert(seen.opts and seen.opts.trainerCardStars, "composition wires the star service")

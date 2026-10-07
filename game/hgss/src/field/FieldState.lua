@@ -559,7 +559,10 @@ function FieldState:draw()
     self:_drawScriptScreenFadeIfNeeded()
     return
   end
-  local overworldPresent = self.runtime.overworld:isPresent()
+  -- Runtimes without a lifecycle owner predate the overworld gate and
+  -- keep the historical always-present behavior.
+  local overworld = self.runtime.overworld
+  local overworldPresent = overworld == nil or overworld:isPresent()
   if overworldPresent then
     self:_drawBackdrop(width, height)
   end

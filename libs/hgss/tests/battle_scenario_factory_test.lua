@@ -55,7 +55,7 @@ local function singleConsciousParty()
   local catalog = CatalogFixture.makeCatalog()
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x66666666):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x66666666):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",

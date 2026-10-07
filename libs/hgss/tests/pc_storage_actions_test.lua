@@ -106,7 +106,7 @@ function T.deposit_and_withdraw_keep_single_custody_and_apply_route_normalizatio
   local returned = mons:partyMon(1)
   Assert.equal(returned.personality, before.personality)
   Assert.equal(returned.condition.currentHp, mons:derive(returned).maxHp)
-  Assert.equal(returned.condition.status, 0)
+  Assert.deepEqual(returned.condition.effects, {}, "route normalization clears persistent conditions")
   Assert.equal(mons:partyCount(), 2)
   Assert.isNil(mons:boxMon(0, 0), "withdrawal clears the exact source address")
 end
@@ -268,7 +268,7 @@ function T.cross_domain_swap_normalizes_each_participant_for_its_destination_onl
   end)
   local boxMon = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
   boxMon.condition.currentHp = 1
-  boxMon.condition.status = 1
+  boxMon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
   boxMon.moves[1].pp = 1
   boxUpdate(mons, 0, 8, boxMon)
   local actions = PcStorageActions.new({ mons = mons, bag = bag })
@@ -284,14 +284,14 @@ function T.cross_domain_swap_normalizes_each_participant_for_its_destination_onl
   Assert.equal(stored.condition.currentHp, mons:derive(stored).maxHp)
   Assert.equal(stored.moves[1].pp, 49, "box-bound PP includes the two PP Ups")
   Assert.equal(returned.condition.currentHp, mons:derive(returned).maxHp)
-  Assert.equal(returned.condition.status, 0)
+  Assert.deepEqual(returned.condition.effects, {}, "route normalization clears persistent conditions")
   Assert.equal(returned.moves[1].pp, 1, "Party normalization preserves PP")
 
   local controlMons, controlBag = services()
   local controlFactory = CatalogFixture.makeFactory(0x778899aa, controlMons:catalog())
   local second = controlFactory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
   second.condition.currentHp = 1
-  second.condition.status = 1
+  second.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
   second.moves[1].pp = 1
   boxUpdate(controlMons, 0, 8, second)
   boxUpdate(controlMons, 0, 9, controlFactory:createNormal(CatalogFixture.normalRequest()))
@@ -412,7 +412,7 @@ function T.cross_domain_swap_normalizes_each_participant_for_its_destination_onl
   end)
   local boxMon = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
   boxMon.condition.currentHp = 1
-  boxMon.condition.status = 1
+  boxMon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
   boxMon.moves[1].pp = 1
   boxUpdate(mons, 0, 8, boxMon)
   local actions = PcStorageActions.new({ mons = mons, bag = bag })
@@ -428,14 +428,14 @@ function T.cross_domain_swap_normalizes_each_participant_for_its_destination_onl
   Assert.equal(stored.condition.currentHp, mons:derive(stored).maxHp)
   Assert.equal(stored.moves[1].pp, 49, "box-bound PP includes the two PP Ups")
   Assert.equal(returned.condition.currentHp, mons:derive(returned).maxHp)
-  Assert.equal(returned.condition.status, 0)
+  Assert.deepEqual(returned.condition.effects, {}, "route normalization clears persistent conditions")
   Assert.equal(returned.moves[1].pp, 1, "Party normalization preserves PP")
 
   local controlMons, controlBag = services()
   local controlFactory = CatalogFixture.makeFactory(0x778899aa, controlMons:catalog())
   local second = controlFactory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
   second.condition.currentHp = 1
-  second.condition.status = 1
+  second.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
   second.moves[1].pp = 1
   boxUpdate(controlMons, 0, 8, second)
   boxUpdate(controlMons, 0, 9, controlFactory:createNormal(CatalogFixture.normalRequest()))

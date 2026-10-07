@@ -1859,8 +1859,22 @@ function HANDLERS.pc_hof_open(_, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+---@class RuntimeOverworld
+---@field phase fun(self: RuntimeOverworld): string
+---@field requestRestore fun(self: RuntimeOverworld)
+
 function HANDLERS.restore_overworld(_, run)
   requireForeground(run, "restore_overworld")
+  -- ScrCmd_RestoreOverworld closes the source application's return
+  -- boundary. Retail scripts issue it unconditionally after sequences
+  -- that hid the overworld (such as Elm's healing 436/150 pair) as well
+  -- as on paths that never hid it, so the restore is synchronous and
+  -- best-effort: an absent overworld is asked to restore on the next
+  -- field tick while a present one is left untouched.
+  local overworld = requireService(run, "overworld") --[[@as RuntimeOverworld]]
+  if overworld:phase() == "absent" then
+    overworld:requestRestore()
+  end
   return Runtime.OUTCOME_CONTINUE
 end
 HANDLERS["if"] = handleIf

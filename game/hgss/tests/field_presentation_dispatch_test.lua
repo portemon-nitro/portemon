@@ -696,7 +696,7 @@ local function waitingPartyChild(ready, failure)
         nickname = "CHIKO",
         heldItem = "NONE",
         moves = { { move = "TACKLE", pp = 35, ppUps = 0 } },
-        condition = { currentHp = 20, status = 0 },
+        condition = { currentHp = 20, effects = {} },
       }
     end,
     partyMonDerived = function(_)

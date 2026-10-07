@@ -48,14 +48,16 @@ local function harness()
         versionId = versionId,
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
         playTime = PlayTime.new(),
         worldState = worldState,
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
         bag = require("libs.hgss.src.save.BagSave").empty(),
+        mart = require("libs.hgss.src.save.MartSave").empty(),
       }
     end,
   })
@@ -85,14 +87,16 @@ local function nurseJoyHarness()
         versionId = versionId,
         location = { mapSymbol = map or CENTER_MAP, fieldX = 8, fieldZ = 12, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_CHERRYGROVE" },
+        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
         playTime = PlayTime.new(),
         worldState = worldState,
         mons = MonBucket.emptyForVersion(versionId),
         bag = BagSave.empty(),
+        mart = require("libs.hgss.src.save.MartSave").empty(),
       }
     end,
   })
