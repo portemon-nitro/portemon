@@ -17,6 +17,9 @@ local T = {}
 -- idle and fails loudly if a choice layout is ever requested.
 local function idleChoiceHost()
   return {
+    isModal = function()
+      return false
+    end,
     presentation = function()
       return nil
     end,
@@ -93,6 +96,9 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
       end,
     },
     applicationHost = {
+      isActive = function()
+        return false
+      end,
       status = function()
         return { fadeAlpha = 0 }
       end,

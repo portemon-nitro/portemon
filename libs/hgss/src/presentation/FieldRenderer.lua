@@ -10,6 +10,10 @@ local RenderQueue = require("libs.hgss.src.presentation.RenderQueue")
 ---@field stats table<string, unknown>
 ---@field _ownsRenderer boolean
 ---@field _queueScratch RenderQueueScratch
+---@field _frame table<string, unknown> retained Gx frame record, overwritten every draw
+---@field _lightingProfile table<string, unknown>? profile identity of the cached lighting selection
+---@field _lightingBucket integer? effective half-second bucket of the cached lighting selection
+---@field _lightingRecord table<string, unknown>? cached lighting selection
 ---@field clearColor number[]?
 local FieldRenderer = {}
 FieldRenderer.__index = FieldRenderer
@@ -17,15 +21,25 @@ FieldRenderer.__index = FieldRenderer
 -- Selects the active time-of-day lighting record from a runtime render
 -- environment: the normalized lighting profile plus the optional
 -- presentation time override. Needs only environment state, never scene
--- geometry or map identity.
+-- geometry or map identity. The selection is cached by profile identity
+-- plus the effective half-second bucket and reused while both are stable.
 ---@param renderEnvironment table<string, unknown>
 ---@return table<string, unknown>?
-local function selectedLighting(renderEnvironment)
+function FieldRenderer:_selectedLighting(renderEnvironment)
   local profile = renderEnvironment.lighting
   if profile == nil or profile.records == nil then
     return nil
   end
-  return FieldLightProfile.select(profile, renderEnvironment.fieldTimeSeconds or FieldLightProfile.DEFAULT_TIME_SECONDS)
+  local timeSeconds = renderEnvironment.fieldTimeSeconds or FieldLightProfile.DEFAULT_TIME_SECONDS
+  local bucket = FieldLightProfile.bucket(timeSeconds)
+  if self._lightingProfile == profile and self._lightingBucket == bucket then
+    return self._lightingRecord
+  end
+  local record = FieldLightProfile.select(profile, timeSeconds)
+  self._lightingProfile = profile
+  self._lightingBucket = bucket
+  self._lightingRecord = record
+  return record
 end
 
 ---@param opts table<string, unknown>?
@@ -47,6 +61,10 @@ function FieldRenderer.new(opts)
     _ownsRenderer = ownsRenderer,
     clearColor = opts.clearColor,
     _queueScratch = RenderQueue.newScratch(),
+    _frame = {},
+    _lightingProfile = nil,
+    _lightingBucket = nil,
+    _lightingRecord = nil,
   }, FieldRenderer)
 end
 
@@ -58,27 +76,27 @@ end
 ---@param alpha number
 ---@param presentationPixelScale integer?
 function FieldRenderer:draw(renderEnvironment, camera, worldParts, spriteItems, viewport, alpha, presentationPixelScale)
-  assert(type(renderEnvironment) == "table", "field render environment is required")
-  assert(type(camera) == "table", "field presentation camera is required")
-  assert(type(camera.far) == "number" and camera.far > 0, "FieldRenderer requires camera.far to be a positive number")
   local viewMatrix = camera:view(alpha)
   local worldProjection = camera:projection()
   local billboardProjection = camera:billboardProjection()
   local queue = RenderQueue.buildInto(worldParts or {}, viewMatrix, self._queueScratch)
-  self.gxRenderer:draw({
-    lighting = selectedLighting(renderEnvironment),
-    edgeColors = renderEnvironment.edgeColors,
-    fog = renderEnvironment.fog,
-    viewMatrix = viewMatrix,
-    cameraZoom = camera.zoom,
-    presentationPixelScale = presentationPixelScale,
-    worldProjection = worldProjection,
-    billboardProjection = billboardProjection,
-    clearColor = self.clearColor,
-    queue = queue,
-    spriteItems = spriteItems,
-    viewport = viewport,
-  })
+  -- The retained Gx frame record is overwritten every draw: no per-frame
+  -- frame allocation remains on the steady 3D path. Assigning nil clears
+  -- the optional presentation scale on sprite-less frames.
+  local frame = self._frame
+  frame.lighting = self:_selectedLighting(renderEnvironment)
+  frame.edgeColors = renderEnvironment.edgeColors
+  frame.fog = renderEnvironment.fog
+  frame.viewMatrix = viewMatrix
+  frame.cameraZoom = camera.zoom
+  frame.presentationPixelScale = presentationPixelScale
+  frame.worldProjection = worldProjection
+  frame.billboardProjection = billboardProjection
+  frame.clearColor = self.clearColor
+  frame.queue = queue
+  frame.spriteItems = spriteItems
+  frame.viewport = viewport
+  self.gxRenderer:draw(frame)
 end
 
 function FieldRenderer:release()

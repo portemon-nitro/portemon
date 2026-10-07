@@ -211,6 +211,32 @@ function T.mixed_item_in_opaque_and_blended_passes()
   Assert.deepEqual(fragmentPassesIn(queue, "blended"), { "mixed", "translucent" })
 end
 
+-- Queue construction branches once on each item's renderer-facing alpha
+-- class: one build carrying all five valid classes lands every item in
+-- its pass, while an unknown class still fails loudly from the final
+-- branch.
+function T.build_into_sorts_all_five_alpha_classes_and_rejects_unknown()
+  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
+  local queue = RenderQueue.buildInto({
+    { item("wall", "opaque"), item("fence", "cutout") },
+    {
+      item("far-glass", "translucent", { 0, 0, -10 }),
+      item("mid-glass", "mixed", { 0, 0, -5 }),
+      item("edges", "wireframe"),
+    },
+  }, view, scratch())
+  Assert.deepEqual(ids(queue, "opaque"), { "wall" })
+  Assert.deepEqual(ids(queue, "cutout"), { "fence" })
+  Assert.deepEqual(ids(queue, "mixedOpaque"), { "mid-glass" })
+  Assert.deepEqual(ids(queue, "wireframe"), { "edges" })
+  Assert.deepEqual(ids(queue, "blended"), { "far-glass", "mid-glass" })
+  Assert.deepEqual(fragmentPassesIn(queue, "blended"), { "translucent", "mixed" })
+  local invalid = throwsCode("RENDER_QUEUE_UNKNOWN_ALPHA_CLASS", function()
+    build({ { item("ghostly", "ghostly") } }, Matrix4.identity())
+  end)
+  Assert.equal(invalid.context.alphaClass, "ghostly")
+end
+
 function T.rejects_material_only_alpha_class()
   local matItem = {
     id = "mat",

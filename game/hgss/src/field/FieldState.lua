@@ -38,6 +38,10 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field worldParts table[][] ordered map, static building, animated building, neighbor, entrance-indicator, actor, movement-emote, and terrain-effect draw arrays
 ---@field worldActorItems table[] persistent actor items kept in the world raster
 ---@field spriteItems table[] persistent presentation-resolution actor sprites
+---@field _terrainItems table[] reusable terrain-effect draw storage refilled every frame
+---@field _transitionItems table[] reusable follower-transition draw storage refilled every frame
+---@field _dialogueGeometry { boundsX: number, boundsY: number, boundsWidth: number, boundsHeight: number, fieldScale: integer, placement: table<string, unknown>, presentation: table<string, unknown> }? retained dialogue presentation geometry, rebuilt only when bounds/scale/placement changes
+---@field _fadeCover { topology: ScreenTopology, rects: { x: number, y: number, width: number, height: number }[] }? retained screen-fade cover rectangles, rebuilt only when the topology changes
 ---@field _entryFade StandardFade? one-shot covered-entry reveal, nil when inactive or complete
 ---@field _entryAccumulator number source-frame time held for the covered-entry reveal
 ---@field development boolean product mode (default) hides the developer overlay; dev mode shows it only after the F3 toggle and unbound keys stay inert
@@ -106,6 +110,10 @@ function FieldState.new(game, options)
     worldParts = {},
     worldActorItems = {},
     spriteItems = {},
+    _terrainItems = {},
+    _transitionItems = {},
+    _dialogueGeometry = nil,
+    _fadeCover = nil,
     _surfPresentation = { playerOffset = {}, surf = {} },
     _surfAnchor = { x = 0, y = 0, z = 0 },
     _entryFade = options.initialFadeIn == true and StandardFade.new({ direction = "in", color = 0 }) or nil,
@@ -402,11 +410,22 @@ function FieldState:_worldParts(alpha)
   worldParts[7] = resources.fieldEmoteRenderer:drawItems(assert(self.actorPresentation):records())
   local terrain = self.runtime.fieldTerrainEffectController
   local terrainRenderer = resources.fieldTerrainEffectRenderer
-  worldParts[8] = terrainRenderer and terrainRenderer:drawItems(terrain:status(), self.runtime.runtimeMap) or NO_DRAWS
+  local terrainItems = self._terrainItems
+  if terrainItems == nil then
+    terrainItems = {}
+    self._terrainItems = terrainItems
+  end
+  worldParts[8] = terrainRenderer and terrainRenderer:drawItems(terrain:status(), self.runtime.runtimeMap, terrainItems)
+    or NO_DRAWS
   local transition = self.runtime.followingMonTransition
   local transitionRenderer = resources.followingMonTransitionRenderer
+  local transitionItems = self._transitionItems
+  if transitionItems == nil then
+    transitionItems = {}
+    self._transitionItems = transitionItems
+  end
   worldParts[9] = (transition and transitionRenderer)
-      and transitionRenderer:drawItems(transition:status(), self.runtime.runtimeMap)
+      and transitionRenderer:drawItems(transition:status(), self.runtime.runtimeMap, transitionItems)
     or NO_DRAWS
   worldParts[10] = sceneRuntime and sceneRuntime.runtimePropDraws or NO_DRAWS
   return worldParts
@@ -456,16 +475,33 @@ function FieldState:resize(width, height)
 end
 
 function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
-  if hostStatus.menu or hostStatus.application then
+  if hostStatus ~= nil and (hostStatus.menu or hostStatus.application) then
     return
   end
   local dialogueModal = self.runtime.dialogue:isModal()
   local yesNoHost = assert(self.runtime.yesNoHost, "field presentation needs its choice host")
-  local liveYesNo = yesNoHost:presentation()
+  local liveYesNo = nil
+  if yesNoHost:isModal() then
+    liveYesNo = yesNoHost:presentation()
+  end
   -- The contextual record comes from the shared runtime method so draw
   -- and fixed-tick pointer translation consume one status and geometry.
-  local contextChoice = self.runtime:contextChoicePresentation()
-  assert(not (liveYesNo and contextChoice), "field cannot present opcode-63 and contextual two-choice prompts at once")
+  -- The provider status is the cheap idle gate: the runtime presentation
+  -- (which also reads the script dialogue host) runs only while a
+  -- contextual choice is actually open.
+  local contextChoice = nil
+  if liveYesNo == nil then
+    local provider = self.runtime.contextChoiceProvider
+    if provider ~= nil and provider:status() ~= nil then
+      contextChoice = self.runtime:contextChoicePresentation()
+    end
+  else
+    local provider = self.runtime.contextChoiceProvider
+    assert(
+      provider == nil or not provider:isActive(),
+      "field cannot present opcode-63 and contextual two-choice prompts at once"
+    )
+  end
   local yesNo, yesNoLayout = nil, nil
   if liveYesNo ~= nil then
     yesNo, yesNoLayout = liveYesNo.status, liveYesNo.layout
@@ -474,39 +510,61 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     yesNoLayout = yesNoHost:layoutFor(yesNo)
   end
   local signpostModal = self.runtime.signpost:isModal()
-  local fieldScale
-  if dialogueModal or yesNo or signpostModal then
-    fieldScale = self.runtime.fieldPixelScale:resolvedScale()
+  if not (dialogueModal or yesNo or signpostModal) then
+    return
   end
+  local fieldScale = self.runtime.fieldPixelScale:resolvedScale()
   local bounds = self.runtime.viewport.worldViewport
-  if type(bounds) ~= "table" or type(bounds.width) ~= "number" or type(bounds.height) ~= "number" then
-    bounds = self.runtime.viewport.referenceFrame
-  end
-  if type(bounds) ~= "table" or type(bounds.width) ~= "number" or type(bounds.height) ~= "number" then
-    bounds = {
-      x = 0,
-      y = 0,
-      width = assert(self.runtime.viewport.width),
-      height = assert(self.runtime.viewport.height),
-    }
-  end
   if dialogueModal then
-    local manifestPlacement = assert(self.runtime.uiManifest).dialogueFrames.continueCursor.placement
-    local dialogueScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, 48, assert(fieldScale))
-    local presentation = DialoguePresentationLayout.compute(bounds, {
-      scale = dialogueScale,
-      allowClipping = true,
-      cursorPlacement = manifestPlacement,
-    })
-    resources.dialogueRenderer:draw(self.runtime.dialogue, presentation)
+    resources.dialogueRenderer:draw(self.runtime.dialogue, self:_dialoguePresentation(bounds, fieldScale))
   end
   if yesNo then
-    resources.yesNoRenderer:draw(yesNo, assert(yesNoLayout, "active choice requires its host layout"))
+    resources.yesNoRenderer:draw(yesNo, yesNoLayout)
   end
   if signpostModal then
-    local signpostScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, NativeDisplay.HEIGHT, assert(fieldScale))
+    local signpostScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, NativeDisplay.HEIGHT, fieldScale)
     resources.signpostRenderer:draw(self.runtime.signpost, self.runtime.viewport, alpha, signpostScale)
   end
+end
+
+-- The retained dialogue presentation geometry: recomputed only when the
+-- host bounds, the resolved pixel scale, or the cursor placement changes.
+-- Scalar comparisons only; no per-frame signature is built to support
+-- the cache. The returned presentation is ephemeral to the next
+-- invalidation.
+---@param bounds { x: number, y: number, width: number, height: number }
+---@param fieldScale integer
+---@return table<string, unknown>
+function FieldState:_dialoguePresentation(bounds, fieldScale)
+  local placement = self.runtime.uiManifest.dialogueFrames.continueCursor.placement
+  local cached = self._dialogueGeometry
+  if
+    cached ~= nil
+    and cached.boundsX == bounds.x
+    and cached.boundsY == bounds.y
+    and cached.boundsWidth == bounds.width
+    and cached.boundsHeight == bounds.height
+    and cached.fieldScale == fieldScale
+    and cached.placement == placement
+  then
+    return cached.presentation
+  end
+  local dialogueScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, 48, fieldScale)
+  local presentation = DialoguePresentationLayout.compute(bounds, {
+    scale = dialogueScale,
+    allowClipping = true,
+    cursorPlacement = placement,
+  })
+  self._dialogueGeometry = {
+    boundsX = bounds.x,
+    boundsY = bounds.y,
+    boundsWidth = bounds.width,
+    boundsHeight = bounds.height,
+    fieldScale = fieldScale,
+    placement = placement,
+    presentation = presentation,
+  }
+  return presentation
 end
 
 function FieldState:draw()
@@ -519,13 +577,8 @@ function FieldState:draw()
     lg.printf(self.runtime.errorText, margin, margin + line, lg.getWidth() - 2 * margin)
     return
   end
-  local width = assert(self.runtime.viewport.width, "field viewport width is required for presentation")
-  local height = assert(self.runtime.viewport.height, "field viewport height is required for presentation")
-  assert(type(width) == "number" and type(height) == "number", "field viewport dimensions must be numeric")
-  assert(width % 1 == 0 and height % 1 == 0, "field viewport dimensions must be integral")
-  width, height =
-    width, --[[@as integer]]
-    height --[[@as integer]]
+  local width = self.runtime.viewport.width
+  local height = self.runtime.viewport.height
   if self._pollPresentationTopology then
     local provider = assert(self.topologyProvider, "field presentation needs its topology provider")
     local topology = provider(width, height)
@@ -538,10 +591,6 @@ function FieldState:draw()
       self:_recordGeometrySignature(width, height, topology)
     end
   end
-  assert(
-    type(self.runtime.destinationWorldPresentable) == "function",
-    "field runtime destination presentation capability required"
-  )
   if not self.runtime:destinationWorldPresentable() then
     self:_drawScriptScreenFadeIfNeeded()
     return
@@ -560,33 +609,26 @@ function FieldState:draw()
     alpha,
     self.runtime.fieldPixelScale:resolvedScale()
   )
-  assert(
-    type(self.runtime.acknowledgeDestinationPresentation) == "function",
-    "field runtime destination presentation acknowledgement required"
-  )
   self.runtime:acknowledgeDestinationPresentation()
   -- The retained Start Menu draws first and the foreground child second,
   -- with the paused world beneath both; no application transition overlay
   -- is painted. The unrelated warp fade over the world viewport follows.
-  local hostStatus = self.runtime.applicationHost:status()
-  local transitionStatus
-  if type(self.runtime.transition.presentationStatus) == "function" then
-    transitionStatus = self.runtime.transition:presentationStatus()
-  else
-    transitionStatus = {
-      overlay = self.runtime.transition.fadeAlpha > 0 and {
-        r = 0,
-        g = 0,
-        b = 0,
-        a = self.runtime.transition.fadeAlpha,
-      } or nil,
-    }
+  -- Both status records are gated on cheap owner state: the closed host
+  -- allocates no status, and the settled transition (fadeAlpha 0) resolves
+  -- no presentation status.
+  local hostStatus = nil
+  local applicationHost = self.runtime.applicationHost
+  if applicationHost:isActive() then
+    hostStatus = applicationHost:status()
   end
-  local transitionOverlay = transitionStatus.overlay
-  if transitionOverlay then
-    local rectangle = self.runtime.viewport.worldViewport
-    lg.setColor(transitionOverlay.r, transitionOverlay.g, transitionOverlay.b, transitionOverlay.a)
-    lg.rectangle("fill", rectangle.x, rectangle.y, rectangle.width, rectangle.height)
+  local transition = self.runtime.transition
+  if transition.fadeAlpha > 0 then
+    local transitionOverlay = transition:presentationStatus().overlay
+    if transitionOverlay then
+      local rectangle = self.runtime.viewport.worldViewport
+      lg.setColor(transitionOverlay.r, transitionOverlay.g, transitionOverlay.b, transitionOverlay.a)
+      lg.rectangle("fill", rectangle.x, rectangle.y, rectangle.width, rectangle.height)
+    end
   end
   -- Attached dialogue and signposts share the field scale and yield to modal
   -- application surfaces.
@@ -596,21 +638,20 @@ function FieldState:draw()
   -- field application owned by the presentation dispatch. The retained
   -- menu stays visible behind the child; child pixels cover menu pixels
   -- only where the child's own panes and frames draw.
-  if hostStatus.menu then
-    -- The icon presentation draws the gender-conditional Bag variant: the
-    -- controller status is gender-agnostic, so the draw site attaches the
-    -- live trainer gender to the fresh status table (never controller
-    -- state) beside the cursor/slot/icon/label data.
-    local menuPresentation = hostStatus.menu
-    local profile =
-      assert(self.runtime.playerData and self.runtime.playerData.profile, "the start menu requires the player profile")
-    local gender = assert(profile.gender, "the start menu requires the player gender")
-    assert(gender == 0 or gender == 1, "the start menu trainer gender is unsupported")
-    menuPresentation.trainerGender = gender == 0 and "male" or "female"
-    resources:drawStartMenu(menuPresentation --[[@as table<string, unknown>]])
-  end
-  if hostStatus.application then
-    resources:drawApplication(hostStatus.applicationId, hostStatus.application, self.runtime)
+  if hostStatus ~= nil then
+    if hostStatus.menu then
+      -- The icon presentation draws the gender-conditional Bag variant: the
+      -- controller status is gender-agnostic, so the draw site attaches the
+      -- live trainer gender to the fresh status table (never controller
+      -- state) beside the cursor/slot/icon/label data.
+      local menuPresentation = hostStatus.menu
+      local gender = self.runtime.playerData.profile.gender
+      menuPresentation.trainerGender = ({ [0] = "male", [1] = "female" })[gender]
+      resources:drawStartMenu(menuPresentation --[[@as table<string, unknown>]])
+    end
+    if hostStatus.application then
+      resources:drawApplication(hostStatus.applicationId, hostStatus.application, self.runtime)
+    end
   end
   local presentation = self.runtime.menuHost:presentation()
   if presentation then
@@ -706,19 +747,27 @@ function FieldState:_drawScriptScreenFadeIfNeeded()
   if screenFade == nil then
     return
   end
-  local status = screenFade:status()
-  if status.overlay == nil then
+  -- The borrowed overlay is polled every frame (cheap owner-state read),
+  -- but the cover rectangles follow the topology, not the frame clock:
+  -- they are rebuilt only when the topology identity changes and repainted
+  -- unchanged while only the alpha moves.
+  local overlay = screenFade:presentationOverlay()
+  if overlay == nil then
     return
   end
-  local topology = self.runtime.screenTopology
-  assert(topology ~= nil and type(topology.surfaces) == "table", "script screen fade requires a current topology")
-  local surfaces = topology.surfaces
-  local rects = {}
-  for _, surface in ipairs(surfaces) do
-    rects = rectUnion(rects, surface.rect)
+  local topology = assert(self.runtime.screenTopology, "script screen fade requires a current topology")
+  local cached = self._fadeCover
+  local rects
+  if cached ~= nil and cached.topology == topology then
+    rects = cached.rects
+  else
+    rects = {}
+    for _, surface in ipairs(topology.surfaces) do
+      rects = rectUnion(rects, surface.rect)
+    end
+    self._fadeCover = { topology = topology, rects = rects }
   end
   local lg = love.graphics
-  local overlay = status.overlay
   local prevR, prevG, prevB, prevA = lg.getColor()
   lg.setColor(overlay.r, overlay.g, overlay.b, overlay.a)
   for _, rect in ipairs(rects) do
@@ -1072,6 +1121,10 @@ function FieldState:dispose()
   self._entryFade = nil
   self._entryAccumulator = 0
   self._starterUiSuspended = false
+  self._dialogueGeometry = nil
+  self._fadeCover = nil
+  self._terrainItems = nil
+  self._transitionItems = nil
   self._lastGeometrySignature = nil
   self.displayContext = nil
   self.presentationOverrides = nil

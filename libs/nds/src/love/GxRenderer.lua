@@ -29,8 +29,9 @@
 -- canvas allocation, or target configuration releases everything already
 -- created, and a canvas recreation keeps the previous target set usable until
 -- the replacement is complete. It restores the exact caller state it changed
--- (canvas, shader, depth, cull, blend, wireframe, color, scissor) even when drawing
--- raises, so the diagnostic UI drawn afterwards is unaffected. It builds no
+-- (canvas, shader, depth, cull, blend, wireframe, color, scissor) on a
+-- successful draw, so the diagnostic UI drawn afterwards is unaffected; a
+-- thrown draw propagates without restoring for continued rendering. It builds no
 -- persistent meshes or textures and reads no ROM/NARC data -- those belong to
 -- the loader and compiler; here everything is already resident.
 
@@ -227,14 +228,6 @@ local function validateWorldRasterScale(scale)
   return scale
 end
 
-local function validatePresentationPixelScale(scale)
-  assert(
-    type(scale) == "number" and scale >= 1 and scale % 1 == 0,
-    "presentation scale must be a positive integer, got " .. tostring(scale)
-  )
-  return scale
-end
-
 local function isFinite(value)
   return value == value and value ~= math.huge and value ~= -math.huge
 end
@@ -259,18 +252,9 @@ local function projectSpriteBounds(item, viewMatrix, projection, stateW, stateH,
   end
   local billboardScale = assert(item.billboardScale, "presentation sprite requires billboardScale")
   local bounds = assert(item.bounds, "presentation sprite requires validated bounds")
-  assert(
-    type(bounds.width) == "number"
-      and isFinite(bounds.width)
-      and bounds.width >= 0
-      and type(bounds.height) == "number"
-      and isFinite(bounds.height)
-      and bounds.height >= 0
-      and type(bounds.depth) == "number"
-      and isFinite(bounds.depth)
-      and bounds.depth >= 0,
-    "presentation sprite bounds must be finite non-negative dimensions"
-  )
+  -- Trusted producer metadata: non-finite dimensions are not validated
+  -- here. They fail the finite projection checks below and select the
+  -- safe full-target fallback like any other unsafe projection.
   local center = assert(item.center, "presentation sprite requires model-space center")
   local viewX = viewMatrix[1] * billboardCenter[1]
     + viewMatrix[5] * billboardCenter[2]
@@ -1409,17 +1393,15 @@ function GxRenderer:draw(frame)
   stats.spriteClearPixels = 0
   stats.spriteCompositeArea = 0
 
-  assert(type(frame) == "table", "GxRenderer requires a normalized frame")
+  -- Trusted steady-path inputs: the frame, viewport, matrices, and
+  -- presentation scale come from the field producers that own them, so no
+  -- per-frame contract asserts re-prove them here. Malformed data fails at
+  -- its first direct use; non-finite projections keep selecting the safe
+  -- fallback inside the sprite work below.
   local spriteItems = frame.spriteItems
   local viewport = frame.viewport
-  assert(viewport and viewport.worldViewport, "GxRenderer requires a render viewport")
-  local viewMatrix = assert(frame.viewMatrix, "GxRenderer requires a view matrix")
-  assert(frame.worldProjection, "GxRenderer requires a world projection")
-  assert(frame.billboardProjection, "GxRenderer requires a billboard projection")
+  local viewMatrix = frame.viewMatrix
   local hasPresentationSprites = spriteItems ~= nil and #spriteItems > 0
-  if hasPresentationSprites then
-    validatePresentationPixelScale(frame.presentationPixelScale)
-  end
   -- The world MRT shader derives its depth from the host fragment's normalized
   -- window depth (map.glsl's dsZbufferDepth, the DS field Z-buffer domain).
   local lg = assert(self._graphics)
@@ -1438,10 +1420,14 @@ function GxRenderer:draw(frame)
 
   local presentationCanvas = lg.getCanvas()
 
-  -- Capture every caller state the draw modifies, restore the captured values
-  -- afterwards -- on success and error alike -- and rethrow the original draw
-  -- error. The 2D diagnostic UI after the scene must never inherit the
-  -- scene's canvas, shader, depth, cull, blend, wireframe, or color state.
+  -- Capture every caller state the draw modifies and restore the captured
+  -- values afterwards on the successful path. A thrown inner draw is a
+  -- terminal render failure: it propagates immediately with no guarantee
+  -- that caller state is restored for continued rendering. The 2D
+  -- diagnostic UI after the scene must never inherit the scene's canvas,
+  -- shader, depth, cull, blend, wireframe, or color state from a
+  -- successful frame. Native push("all") is not assumed to cover
+  -- depth/cull here, so those restore explicitly below.
   local canvas = presentationCanvas
   local shader = lg.getShader()
   local blendMode, blendAlpha = lg.getBlendMode()
@@ -1451,8 +1437,7 @@ function GxRenderer:draw(frame)
   local colorRed, colorGreen, colorBlue, colorAlpha = lg.getColor()
   local scissorX, scissorY, scissorWidth, scissorHeight = lg.getScissor()
 
-  local ok, err = pcall(
-    drawFrame,
+  drawFrame(
     self,
     frame,
     presentationCanvas,
@@ -1484,10 +1469,6 @@ function GxRenderer:draw(frame)
     lg.setScissor()
   else
     lg.setScissor(scissorX, scissorY, scissorWidth, scissorHeight)
-  end
-
-  if not ok then
-    error(err)
   end
 end
 

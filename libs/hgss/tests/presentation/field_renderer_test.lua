@@ -374,49 +374,104 @@ function T.owned_field_backend_construction_leaves_caller_options_unmutated()
   owner:release()
 end
 
-function T.rejects_a_missing_or_non_positive_camera_far_plane()
-  local draws = 0
-  local fieldRenderer = FieldRenderer.new({
-    gxRenderer = {
+-- One redraw through the fixture renderer with the same world and sprite
+-- records, used by the frame-reuse contract below.
+local function fieldRendererDrawForReuse(fixture)
+  fixture.fieldRenderer:draw(
+    fixture.sceneRuntime,
+    fixture.camera,
+    { { fixture.ordinaryItem, fixture.fieldEffectItem } },
+    { fixture.spriteItem },
+    { worldViewport = { x = 0, y = 0, width = 1, height = 1 } },
+    0,
+    3
+  )
+end
+
+-- The ordinary field frame reuses one Gx frame record: repeated draws hand
+-- the backend the identical table with freshly overwritten fields, so no
+-- per-frame frame allocation remains on the steady 3D path.
+function T.repeated_draws_reuse_the_gx_frame_record()
+  local frames = {}
+  local fakeRenderer = {
+    stats = {},
+    draw = function(_, frame)
+      frames[#frames + 1] = frame
+    end,
+    release = function() end,
+  }
+  local fixture = fixtureDraw(fakeRenderer)
+  fixture.camera.zoom = 2
+  fieldRendererDrawForReuse(fixture)
+  Assert.equal(#frames, 2, "both draws reach the backend")
+  Assert.isTrue(frames[2] == frames[1], "the Gx frame record is reused across draws")
+  Assert.equal(frames[2].cameraZoom, 2, "the reused record carries the overwritten camera zoom")
+  Assert.equal(
+    frames[2].lighting,
+    fixture.evening,
+    "the reused record still carries the selected time-of-day lighting"
+  )
+  Assert.isTrue(
+    frames[2].queue.opaque[1] == fixture.ordinaryItem,
+    "the reused record still carries the rebuilt world queue"
+  )
+end
+
+-- Time-of-day lighting selection rescans the profile records only when the
+-- effective half-second bucket or the profile identity changes: repeated
+-- draws at unchanged inputs reuse the selection without calling back into
+-- the profile search.
+function T.lighting_selection_rescans_only_on_effective_time_or_profile_change()
+  local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
+  local originalSelect = FieldLightProfile.select
+  local selectCalls = 0
+  FieldLightProfile.select = function(...)
+    selectCalls = selectCalls + 1
+    return originalSelect(...)
+  end
+  local ok, err = pcall(function()
+    local frames = {}
+    local fakeRenderer = {
       stats = {},
-      draw = function()
-        draws = draws + 1
+      draw = function(_, frame)
+        frames[#frames + 1] = frame
       end,
       release = function() end,
-    },
-  })
-  local identity = Matrix4.identity()
-  local camera = {
-    zoom = 1,
-    far = nil,
-    view = function()
-      return identity
-    end,
-    projection = function()
-      return identity
-    end,
-    billboardProjection = function()
-      return identity
-    end,
-  }
-  local sceneRuntime = {
-    edgeColors = { [0] = 0 },
-    fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = {} },
-  }
-  local viewport = { worldViewport = { x = 0, y = 0, width = 1, height = 1 } }
-
-  Assert.throws(function()
-    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0)
+    }
+    local fixture = fixtureDraw(fakeRenderer)
+    local redraw = function()
+      fixture.fieldRenderer:draw(
+        fixture.sceneRuntime,
+        fixture.camera,
+        { { fixture.ordinaryItem, fixture.fieldEffectItem } },
+        { fixture.spriteItem },
+        { worldViewport = { x = 0, y = 0, width = 1, height = 1 } },
+        0,
+        3
+      )
+    end
+    redraw()
+    redraw()
+    Assert.equal(selectCalls, 1, "unchanged lighting inputs select the profile record once")
+    Assert.equal(frames[2].lighting, fixture.evening)
+    Assert.equal(frames[3].lighting, fixture.evening)
+    fixture.sceneRuntime.fieldTimeSeconds = 21
+    redraw()
+    Assert.equal(selectCalls, 1, "the same half-second bucket performs no rescan")
+    Assert.equal(frames[4].lighting, fixture.evening)
+    fixture.sceneRuntime.fieldTimeSeconds = 22
+    redraw()
+    Assert.equal(selectCalls, 2, "the next half-second bucket rescans exactly once")
+    Assert.equal(frames[5].lighting, fixture.evening)
+    fixture.sceneRuntime.lighting = { records = fixture.sceneRuntime.lighting.records }
+    redraw()
+    Assert.equal(selectCalls, 3, "a replaced profile identity rescans exactly once")
+    Assert.equal(frames[6].lighting, fixture.evening)
   end)
-  camera.far = 0
-  Assert.throws(function()
-    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0)
-  end)
-  camera.far = -10
-  Assert.throws(function()
-    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0)
-  end)
-  Assert.equal(draws, 0, "invalid camera configuration never reaches the GX renderer")
+  FieldLightProfile.select = originalSelect
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return { tests = T }

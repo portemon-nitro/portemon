@@ -23,6 +23,9 @@ local T = {}
 -- idle and fails loudly if a choice layout is ever requested.
 local function idleChoiceHost()
   return {
+    isModal = function()
+      return false
+    end,
     presentation = function()
       return nil
     end,
@@ -164,6 +167,9 @@ local function drawableState(options)
       end,
     },
     applicationHost = {
+      isActive = function()
+        return options.hostStatus.phase ~= "closed"
+      end,
       status = function()
         return options.hostStatus
       end,

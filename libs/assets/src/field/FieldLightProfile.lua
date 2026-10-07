@@ -12,6 +12,16 @@ local FieldLightProfile = {}
 local SECONDS_PER_DAY = 86400
 local DEFAULT_TIME_SECONDS = 43200 -- noon
 
+-- The effective half-second bucket selection changes on: the single
+-- bucketing rule shared by `select` and by consumers that cache the
+-- selection (such as the field renderer), so a bucketing change in the
+-- owner can never silently stale a downstream cache.
+---@param secondsSinceMidnight number
+---@return integer
+function FieldLightProfile.bucket(secondsSinceMidnight)
+  return math.floor((secondsSinceMidnight % SECONDS_PER_DAY) / 2)
+end
+
 -- Select the active record for a wall-clock second-of-day, cyclically: the last
 -- record whose threshold <= now, or (before the first threshold) the final
 -- record carried over from the previous day.
@@ -20,7 +30,7 @@ local DEFAULT_TIME_SECONDS = 43200 -- noon
 ---@return table<string, unknown> record
 function FieldLightProfile.select(profile, secondsSinceMidnight)
   assert(profile and profile.records and #profile.records > 0, "profile has no records")
-  local halfSeconds = math.floor((secondsSinceMidnight % SECONDS_PER_DAY) / 2)
+  local halfSeconds = FieldLightProfile.bucket(secondsSinceMidnight)
   local chosen = profile.records[#profile.records]
   for _, rec in ipairs(profile.records) do
     if rec.startHalfSeconds <= halfSeconds then

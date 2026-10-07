@@ -18,6 +18,9 @@ local T = {}
 -- stays idle and fails loudly if a choice layout is ever requested.
 local function idleChoiceHost()
   return {
+    isModal = function()
+      return false
+    end,
     presentation = function()
       return nil
     end,
@@ -64,6 +67,9 @@ local function drawState(topologyProvider, pollTopology)
     },
     fieldPixelScale = FieldPixelScale.new(FieldPresentation.fieldScale),
     applicationHost = {
+      isActive = function()
+        return false
+      end,
       status = function()
         return { fadeAlpha = 0 }
       end,
@@ -351,6 +357,9 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
         },
       },
       contextChoiceProvider = {
+        isActive = function()
+          return false
+        end,
         status = function()
           return nil
         end,
@@ -374,6 +383,9 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
       end,
       acknowledgeDestinationPresentation = function() end,
       applicationHost = {
+        isActive = function()
+          return false
+        end,
         status = function()
           return { fadeAlpha = 0 }
         end,
@@ -647,6 +659,287 @@ function T.undersized_dialogue_on_both_axes_keeps_one_x_and_real_bounds()
   Assert.equal(presentation.scale, 1)
   Assert.deepEqual(presentation.bounds, bounds)
   Assert.deepEqual(presentation.outerRect, { x = 7, y = 8, width = 256, height = 48 })
+end
+
+-- Dialogue presentation geometry follows topology/scale invalidation, not the
+-- frame clock: repeated draws at unchanged bounds and pixel scale resolve
+-- the layout once, while a resize or pixel-scale change rebuilds it before
+-- the next draw with the same placement a fresh computation produces.
+function T.dialogue_layout_resolves_once_per_topology_scale_invalidation()
+  local PixelScaleModule = require("libs.ui.src.PixelScale")
+  local LayoutModule = require("libs.hgss.src.ui.DialoguePresentationLayout")
+  local originalFit = PixelScaleModule.fitPreferred
+  local originalCompute = LayoutModule.compute
+  local fitCalls, computeCalls = 0, 0
+  PixelScaleModule.fitPreferred = function(...)
+    fitCalls = fitCalls + 1
+    return originalFit(...)
+  end
+  LayoutModule.compute = function(...)
+    computeCalls = computeCalls + 1
+    return originalCompute(...)
+  end
+  local ok, err = pcall(function()
+    local viewport = FieldViewport.new(640, 480, { mode = "expanded" })
+    local scale = FieldPixelScale.new(FieldPresentation.fieldScale)
+    scale:resize(viewport.referenceFrame.height)
+    local uiManifest = FieldUiFixture.manifest()
+    local manifestPlacement = uiManifest.dialogueFrames.continueCursor.placement
+    local worldDraws = 0
+    local presentations = {}
+    local runtime = {
+      session = {
+        renderAlpha = function()
+          return 0
+        end,
+      },
+      destinationWorldPresentable = function()
+        return true
+      end,
+      acknowledgeDestinationPresentation = function() end,
+      runtimeMap = { sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} } },
+      camera = { zoom = 1 },
+      viewport = viewport,
+      fieldPixelScale = scale,
+      uiManifest = uiManifest,
+      applicationHost = {
+        isActive = function()
+          return false
+        end,
+        status = function()
+          return {}
+        end,
+      },
+      pcApplicationHost = {
+        isActive = function()
+          return false
+        end,
+        cancelPointerCapture = function() end,
+      },
+      transition = { fadeAlpha = 0 },
+      dialogue = {
+        isModal = function()
+          return true
+        end,
+      },
+      contextChoicePresentation = function()
+        return nil
+      end,
+      signpost = {
+        isModal = function()
+          return false
+        end,
+      },
+      menuHost = {
+        presentation = function()
+          return nil
+        end,
+      },
+      yesNoHost = idleChoiceHost(),
+      fieldEntranceIndicator = {
+        status = function()
+          return { visible = false }
+        end,
+      },
+      resizePresentation = function(self, width, height)
+        viewport.width = width
+        viewport.height = height
+        viewport.worldViewport = { x = 0, y = 0, width = width, height = height }
+      end,
+    }
+    local state = setmetatable({
+      runtime = runtime,
+      topologyProvider = function(width, height)
+        return oneDisplay(width, height)
+      end,
+      _pollPresentationTopology = false,
+      presentationResources = {
+        drawMart = function() end,
+        renderer = {
+          draw = function()
+            worldDraws = worldDraws + 1
+          end,
+        },
+        dialogueRenderer = {
+          draw = function(_, _, presentation)
+            presentations[#presentations + 1] = presentation
+          end,
+        },
+        fieldEntranceIndicatorRenderer = {
+          drawItems = function()
+            return {}
+          end,
+        },
+        fieldEmoteRenderer = {
+          drawItems = function()
+            return {}
+          end,
+        },
+      },
+      actorPresentation = {
+        drawItems = function()
+          return {}
+        end,
+        records = function()
+          return {}
+        end,
+      },
+      worldParts = {},
+      worldActorItems = {},
+      spriteItems = {},
+    }, FieldState)
+    local function referencePlacement()
+      local bounds = viewport.worldViewport
+      local fitted = originalFit(bounds, 256, 48, scale:resolvedScale())
+      return originalCompute(bounds, {
+        scale = fitted,
+        allowClipping = true,
+        cursorPlacement = manifestPlacement,
+      })
+    end
+    state:draw()
+    state:draw()
+    state:draw()
+    Assert.equal(worldDraws, 3, "every frame still renders the world")
+    Assert.equal(computeCalls, 1, "unchanged topology and scale resolve the dialogue layout once")
+    Assert.equal(fitCalls, 1, "unchanged topology and scale fit the dialogue scale once")
+    Assert.equal(#presentations, 3, "every frame still presents the dialogue")
+    Assert.deepEqual(presentations[2].outerRect, presentations[1].outerRect)
+    Assert.deepEqual(presentations[3].outerRect, presentations[1].outerRect)
+
+    state:resize(800, 600)
+    state:draw()
+    Assert.equal(computeCalls, 2, "a resize rebuilds the dialogue layout exactly once")
+    Assert.equal(fitCalls, 2, "a resize refits the dialogue scale exactly once")
+    Assert.deepEqual(
+      presentations[#presentations].outerRect,
+      referencePlacement().outerRect,
+      "the rebuilt dialogue keeps the freshly computed placement"
+    )
+    state:draw()
+    Assert.equal(computeCalls, 2, "the rebuilt layout is reused until the next invalidation")
+
+    local scaleBeforeZoom = scale:resolvedScale()
+    scale:zoomIn()
+    if scale:resolvedScale() == scaleBeforeZoom then
+      scale:zoomOut()
+    end
+    Assert.isTrue(scale:resolvedScale() ~= scaleBeforeZoom, "the fixture pixel-scale change takes effect")
+    state:draw()
+    Assert.equal(computeCalls, 3, "a pixel-scale change rebuilds the dialogue layout exactly once")
+    Assert.deepEqual(
+      presentations[#presentations].outerRect,
+      referencePlacement().outerRect,
+      "the rescaled dialogue keeps the freshly computed placement"
+    )
+    state:draw()
+    state:draw()
+    Assert.equal(computeCalls, 3, "the rescaled layout is reused until the next invalidation")
+  end)
+  PixelScaleModule.fitPreferred = originalFit
+  LayoutModule.compute = originalCompute
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Screen-fade cover rectangles follow the topology, not the frame clock or
+-- the fade coefficient: repeated draws at unchanged topology read the
+-- surface geometry once and repaint identical rectangles while only the
+-- alpha changes, while a topology change rebuilds the cover before the
+-- next draw.
+function T.screen_fade_cover_rects_reused_until_topology_changes()
+  local state, runtime = drawState()
+  runtime.viewport.worldViewport = { x = 0, y = 0, width = 800, height = 600 }
+  local alpha = 0.5
+  runtime.screenFade = {
+    presentationOverlay = function()
+      return { r = 0, g = 0, b = 0, a = alpha }
+    end,
+  }
+  local rectReads = 0
+  local function countedSurface(id, rect)
+    return setmetatable({ id = id, role = "world" }, {
+      __index = function(_, key)
+        if key == "rect" then
+          rectReads = rectReads + 1
+          return { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
+        end
+        return nil
+      end,
+    })
+  end
+  local surfaces = {
+    countedSurface("left", { x = 0, y = 0, width = 400, height = 600 }),
+    countedSurface("right", { x = 400, y = 0, width = 400, height = 600 }),
+  }
+  runtime.screenTopology = { surfaces = surfaces }
+  local lg = love.graphics
+  local originalRectangle, originalSetColor = lg.rectangle, lg.setColor
+  local fills, paintColors = {}, {}
+  lg.rectangle = function(mode, x, y, width, height)
+    fills[#fills + 1] = { mode = mode, x = x, y = y, width = width, height = height }
+    return originalRectangle(mode, x, y, width, height)
+  end
+  lg.setColor = function(red, green, blue, opacity)
+    paintColors[#paintColors + 1] = { red, green, blue, opacity }
+    return originalSetColor(red, green, blue, opacity)
+  end
+  local ok, err = pcall(function()
+    local function fadeFillsSince(mark)
+      local rects = {}
+      for index = mark + 1, #fills do
+        rects[#rects + 1] = fills[index]
+      end
+      return rects
+    end
+    local mark = #fills
+    state:draw()
+    state:draw()
+    state:draw()
+    Assert.equal(rectReads, 2, "unchanged topology reads each fade surface rectangle once")
+    local firstCover = fadeFillsSince(mark)
+    Assert.equal(#firstCover, 6, "three frames repaint the two-rectangle cover")
+    Assert.deepEqual({ firstCover[3], firstCover[4] }, { firstCover[1], firstCover[2] })
+    Assert.deepEqual({ firstCover[5], firstCover[6] }, { firstCover[1], firstCover[2] })
+
+    alpha = 0.8
+    mark = #fills
+    local colorsBefore = #paintColors
+    state:draw()
+    Assert.equal(rectReads, 2, "an alpha change alone rereads no surface geometry")
+    local alphaCover = fadeFillsSince(mark)
+    Assert.deepEqual(alphaCover, { firstCover[1], firstCover[2] }, "the cover geometry is reused while alpha changes")
+    Assert.isTrue(#paintColors > colorsBefore, "the alpha change still repaints")
+    Assert.equal(paintColors[#paintColors - 1][4], 0.8, "the repaint carries the new fade alpha")
+
+    runtime.screenTopology = {
+      surfaces = {
+        countedSurface("left", { x = 0, y = 0, width = 400, height = 600 }),
+        countedSurface("bottom", { x = 0, y = 400, width = 800, height = 200 }),
+      },
+    }
+    mark = #fills
+    state:draw()
+    Assert.equal(rectReads, 4, "a topology change rebuilds the cover exactly once")
+    local rebuiltCover = fadeFillsSince(mark)
+    Assert.equal(#rebuiltCover, 2, "the rebuilt cover paints once for the new topology")
+    Assert.deepEqual(rebuiltCover[1], { mode = "fill", x = 0, y = 0, width = 400, height = 600 })
+    Assert.deepEqual(
+      rebuiltCover[2],
+      { mode = "fill", x = 400, y = 400, width = 400, height = 200 },
+      "the union keeps the first surface whole and clips the overlap from the second"
+    )
+    mark = #fills
+    state:draw()
+    Assert.equal(rectReads, 4, "the rebuilt cover is reused until the next topology change")
+    Assert.deepEqual(fadeFillsSince(mark), rebuiltCover)
+  end)
+  lg.rectangle = originalRectangle
+  lg.setColor = originalSetColor
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.field_yes_no_layout_receives_the_resolved_dialogue_outer_rect()

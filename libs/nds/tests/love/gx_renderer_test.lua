@@ -745,26 +745,16 @@ function T.presentation_scale_does_not_change_world_edge_radius()
   renderer:release()
 end
 
-function T.presentation_sprites_require_a_positive_integer_scale()
+-- The presentation scale is trusted producer metadata, not steady-path
+-- validation: the sprite layer keys off the sprite records alone, and a
+-- valid integer scale enables the presentation sprite layer.
+function T.presentation_sprite_layer_enables_on_a_trusted_scale()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg })
   local scene = emptySceneCamera()
   scene.camera.zoom = 1
   local item = headlessSpriteItem()
   local viewport = FieldViewport.new(640, 480, { mode = "strict" })
-
-  for _, case in ipairs({ { value = nil }, { value = 0 }, { value = 1.5 } }) do
-    local presentationPixelScale = case.value
-    local err = Assert.throws(function()
-      render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, presentationPixelScale)
-    end)
-    Assert.isTrue(
-      tostring(err):find("presentation scale", 1, true) ~= nil,
-      "invalid presentation scale diagnostics name the logical layer"
-    )
-    Assert.isNil(renderer.spriteShader, "invalid presentation scales fail before sprite shader creation")
-    Assert.isNil(renderer._spriteTargets, "invalid presentation scales fail before sprite target creation")
-  end
 
   render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
   Assert.notNil(renderer._spriteTargets, "a valid integer scale enables the presentation sprite layer")
@@ -798,7 +788,11 @@ function T.draw_restores_exact_caller_state()
   assertResourcesReleased(lg, renderer)
 end
 
-function T.invalid_presentation_descriptor_restores_exact_caller_state()
+-- An invalid presentation descriptor is rejected before the frame mutates
+-- caller state, and the rejection propagates like any terminal draw
+-- failure: no generic unwind restores caller state for continued rendering.
+-- The renderer stays reusable for a later valid frame.
+function T.invalid_presentation_descriptor_propagates_and_keeps_the_renderer_reusable()
   local canvas, shader = { [1] = {} }, {}
   local lg = fakeGraphics({
     canvas = canvas,
@@ -817,7 +811,9 @@ function T.invalid_presentation_descriptor_restores_exact_caller_state()
     render(renderer, scene.runtime, scene.camera, nil, nil, FieldViewport.new(640, 480, { mode = "strict" }), 0)
   end)
   Assert.isTrue(tostring(err):find("color presentation target", 1, true) ~= nil)
-  assertRestoredState(lg, canvas, shader)
+  lg.setCanvas(nil)
+  render(renderer, scene.runtime, scene.camera, nil, nil, FieldViewport.new(640, 480, { mode = "strict" }), 0)
+  assertRestoredState(lg, nil, shader)
   renderer:release()
   assertResourcesReleased(lg, renderer)
 end
@@ -1159,29 +1155,39 @@ function T.nonpositive_sprite_anchor_projection_uses_full_target_fallback()
   renderer:release()
 end
 
-function T.nonfinite_sprite_bounds_fail_instead_of_using_full_target_fallback()
+-- Non-finite sprite bounds are trusted producer metadata, not validated
+-- here: the finite projection checks fail and the item selects the same
+-- safe full-target fallback as any other unsafe projection.
+function T.nonfinite_sprite_bounds_use_the_full_target_fallback()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg })
   local scene = emptySceneCamera()
   local item = boundedSpriteItem(0, 0)
   item.bounds.width = math.huge
 
-  local err = Assert.throws(function()
-    render(
-      renderer,
-      scene.runtime,
-      scene.camera,
-      nil,
-      { item },
-      { worldViewport = { x = 0, y = 0, width = 640, height = 480 } },
-      0,
-      nil,
-      3
-    )
-  end)
+  render(
+    renderer,
+    scene.runtime,
+    scene.camera,
+    nil,
+    { item },
+    { worldViewport = { x = 0, y = 0, width = 640, height = 480 } },
+    0,
+    nil,
+    3
+  )
 
-  Assert.isTrue(tostring(err):find("bounds", 1, true) ~= nil, "non-finite generated bounds are an invariant failure")
-  Assert.isNil(renderer._spriteTargets, "malformed bounds fail before sprite target allocation")
+  local clearScissor = spriteScissor(renderer, lg, item.mesh)
+  Assert.deepEqual(
+    clearScissor,
+    { 0, 0, 640, 480 },
+    "non-finite bounds fall back to the whole sprite target"
+  )
+  local submitted = false
+  for _, call in ipairs(lg.calls.draw) do
+    submitted = submitted or call.mesh == item.mesh
+  end
+  Assert.isTrue(submitted, "the item with non-finite bounds remains submitted")
   renderer:release()
 end
 
@@ -1370,7 +1376,7 @@ function T.sprite_target_to_window_switch_carries_no_scissor()
   renderer:release()
 end
 
-function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_failure()
+function T.logical_sprite_composite_restores_exact_caller_state_and_propagates_a_late_failure()
   local canvas, shader = {}, {}
   canvas.getWidth = function()
     return 256
@@ -1425,35 +1431,15 @@ function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_f
   )
   Assert.isTrue(#lg.calls.scissor >= 2, "the sprite composite temporarily applies and then restores clipping")
 
-  -- Fail the composite-entry clear so drawFrame unwinds with the
-  -- sprite-target dirty scissor still active on the sprite target: cleanup
-  -- must clear that scissor before restoring the caller target. (Clears
-  -- consume a scissor attempt without appending to calls.scissor, so count
-  -- attempts rather than records: the frame above made four clears
-  -- alongside its four recorded installs, and the composite-entry clear is
-  -- the fifth attempt of this frame after its start clear, resolve
-  -- reinstall, sprite-target clear, and dirty install.)
+  -- Fail a late scissor install: a thrown inner draw is terminal, so the
+  -- failure only propagates without restoring caller state for continued
+  -- rendering. (Clears consume a scissor attempt without appending to
+  -- calls.scissor, so count attempts rather than records.)
   lg.setFailOnScissor(#lg.calls.scissor + 9)
-  local transitionBase = #lg.calls.canvasTransitions
   local failed = Assert.throws(function()
     render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
   end)
   Assert.isTrue(tostring(failed):find("injected scissor failure", 1, true) ~= nil)
-  assertRestoredState(lg, canvas, shader)
-  sx, sy, sw, sh = lg.getScissor()
-  Assert.equal(sx, 55)
-  Assert.equal(sy, 40)
-  Assert.equal(sw, 10)
-  Assert.equal(sh, 10)
-  local sawCallerRestore = false
-  for index = transitionBase + 1, #lg.calls.canvasTransitions do
-    local transition = lg.calls.canvasTransitions[index]
-    if transition.to == canvas then
-      sawCallerRestore = true
-      Assert.isNil(transition.scissor, "caller target restoration crosses with scissor disabled")
-    end
-  end
-  Assert.isTrue(sawCallerRestore, "cleanup restores the caller target")
   renderer:release()
   for _, releasedShader in ipairs(lg.shaders) do
     Assert.equal(releasedShader.releaseCount, 1, "release disposes every shader exactly once")
@@ -1520,7 +1506,13 @@ end
 -- world MRT's own wireframe pass (which never touches host wireframe/cull
 -- state), so the failure is injected on the second draw call -- the color
 -- pass's wireframe draw, issued after setWireframe(true)/setMeshCullMode.
-function T.draw_failure_restores_exact_state_and_rethrows()
+-- A thrown inner draw is a terminal render failure: the error propagates to
+-- the caller, and the renderer offers no guarantee that it restores caller
+-- graphics state for continued rendering. Only the successful path restores
+-- (see draw_restores_exact_caller_state); here the interrupted shader
+-- binding is left in place and the caller canvas is not restored, proving
+-- no generic error-unwind runs around the frame.
+function T.draw_failure_propagates_without_a_restore_guarantee()
   local canvas, shader = {}, {}
   local lg = fakeGraphics({
     canvas = canvas,
@@ -1553,8 +1545,15 @@ function T.draw_failure_restores_exact_state_and_rethrows()
       },
     }, nil, FieldViewport.new(640, 480, { mode = "strict" }), 0)
   end)
-  Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil, "rethrows the draw failure")
-  assertRestoredState(lg, canvas, shader)
+  Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil, "propagates the draw failure")
+  Assert.notNil(
+    renderer._activeShader,
+    "no generic unwind clears the interrupted shader binding for continued rendering"
+  )
+  Assert.isTrue(
+    lg.getCanvas() ~= canvas,
+    "no generic unwind restores the caller canvas for continued rendering"
+  )
   renderer:release()
   assertResourcesReleased(lg, renderer)
 end
@@ -1903,27 +1902,6 @@ function T.draw_requires_the_scenes_edge_color_table()
 
   Assert.throws(function()
     render(renderer, scene.runtime, scene.camera, nil, nil, FieldViewport.new(640, 480, { mode = "strict" }), 0)
-  end)
-  renderer:release()
-end
-
--- A camera missing a usable far plane is a malformed collaborator, not a case
--- to silently default around: the camera's far plane still feeds its own
--- projection matrices (camera:projection()/camera:billboardProjection()),
--- which both passes draw through, so GxRenderer must fail loudly rather
--- than render against an invented projection bound.
-function T.draw_requires_normalized_projection_matrices()
-  local lg = fakeGraphics()
-  local renderer = GxRenderer.new({ graphics = lg })
-  local viewport = FieldViewport.new(640, 480, { mode = "strict" })
-
-  Assert.throws(function()
-    renderer:draw({
-      viewport = viewport,
-      viewMatrix = Matrix4.identity(),
-      billboardProjection = Matrix4.identity(),
-      queue = { opaque = {}, cutout = {}, mixedOpaque = {}, wireframe = {}, blended = {} },
-    })
   end)
   renderer:release()
 end

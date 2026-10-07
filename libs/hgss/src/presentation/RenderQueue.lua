@@ -41,30 +41,10 @@ local RENDER_QUEUE_UNKNOWN_ALPHA_CLASS = "RENDER_QUEUE_UNKNOWN_ALPHA_CLASS"
 
 local INITIAL_SORT_CAPACITY = 16
 
-local ALPHA_CLASSES = {
-  [AlphaClassifier.OPAQUE] = true,
-  [AlphaClassifier.CUTOUT] = true,
-  [AlphaClassifier.TRANSLUCENT] = true,
-  [AlphaClassifier.WIREFRAME] = true,
-  [AlphaClassifier.MIXED] = true,
-}
-
--- Validate the item's renderer-facing alpha class instead of inferring it from
--- material state. Queue classification is the authority for the pass an item
--- lands in; the renderer receives that selected class when drawing it.
----@param item table<string, unknown>
----@return string
-function RenderQueue.classifyAlphaClass(item)
-  local mode = item.alphaClass
-  if not ALPHA_CLASSES[mode] then
-    Errors.raise(
-      RENDER_QUEUE_UNKNOWN_ALPHA_CLASS,
-      "render item has unknown alpha class " .. tostring(mode),
-      { alphaClass = mode }
-    )
-  end
-  return mode
-end
+-- The item's renderer-facing alpha class selects the pass directly in
+-- buildInto below; no separate membership lookup precedes the branch.
+-- Queue classification is the authority for the pass an item lands in;
+-- the renderer receives that selected class when drawing it.
 
 -- Transform a world-space center into view space and return its Z distance
 -- from the camera. The camera looks down -Z in view space, so objects in
@@ -197,7 +177,10 @@ function RenderQueue.buildInto(parts, viewMatrix, scratch)
   for _, part in ipairs(parts) do
     for _, item in ipairs(part) do
       position = position + 1
-      local mode = RenderQueue.classifyAlphaClass(item)
+      -- One branch chain on the item's renderer-facing class: no separate
+      -- membership lookup precedes the pass selection. Only the five known
+      -- classes land in a pass; anything else fails loudly here.
+      local mode = item.alphaClass
 
       if mode == AlphaClassifier.OPAQUE then
         opaque[#opaque + 1] = item
@@ -239,8 +222,14 @@ function RenderQueue.buildInto(parts, viewMatrix, scratch)
         key.viewZ = itemViewSpaceZ(item, viewMatrix)
         key.position = position
         key.entryIndex = blendedCount
-      else
+      elseif mode == AlphaClassifier.WIREFRAME then
         wireframe[#wireframe + 1] = item
+      else
+        Errors.raise(
+          RENDER_QUEUE_UNKNOWN_ALPHA_CLASS,
+          "render item has unknown alpha class " .. tostring(mode),
+          { alphaClass = mode }
+        )
       end
     end
   end

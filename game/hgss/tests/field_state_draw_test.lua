@@ -359,6 +359,9 @@ local function drawOrderState(starterActive)
       },
       pcApplicationHost = idlePcApplicationHost(),
       applicationHost = {
+        isActive = function()
+          return false
+        end,
         status = function()
           return { phase = "closed", fadeAlpha = 0 }
         end,
@@ -522,6 +525,9 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
         end,
       },
       applicationHost = {
+        isActive = function()
+          return false
+        end,
         status = function()
           return { phase = "closed", fadeAlpha = 0 }
         end,
@@ -655,6 +661,9 @@ function T.physical_coverage_draws_without_a_realized_scene()
         end,
       },
       applicationHost = {
+        isActive = function()
+          return false
+        end,
         status = function()
           return { phase = "closed", fadeAlpha = 0 }
         end,
@@ -784,6 +793,9 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
         end,
       },
       applicationHost = {
+        isActive = function()
+          return false
+        end,
         status = function()
           return { phase = "closed", fadeAlpha = 0 }
         end,
@@ -915,6 +927,9 @@ function T.draw_without_a_menu_host_is_a_programming_error()
         end,
       },
       applicationHost = {
+        isActive = function()
+          return false
+        end,
         status = function()
           return { phase = "closed", fadeAlpha = 0 }
         end,
@@ -1200,6 +1215,9 @@ function T.destination_world_is_not_drawn_before_entry_presentation_is_ready()
         end,
       },
       applicationHost = {
+        isActive = function()
+          return false
+        end,
         status = function()
           return { phase = "closed", fadeAlpha = 0 }
         end,
@@ -1451,6 +1469,9 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
         end,
       },
       applicationHost = {
+        isActive = function()
+          return false
+        end,
         status = function()
           return { phase = "closed", fadeAlpha = 0 }
         end,
@@ -1677,6 +1698,142 @@ function T.actor_presentation_forwards_render_alpha_to_actor_records()
   Assert.equal(calls, 1, "actor records are collected once per draw")
   Assert.equal(forwardedAlpha, 0.37, "the field render alpha reaches object actor records")
   presentation:dispose()
+end
+
+-- The idle field frame is world rendering plus cheap modal gates: with no
+-- application, transition overlay, dialogue, choice, or signpost active,
+-- repeated draws resolve no application/transition status records and no
+-- modal geometry, while the world still reaches the renderer every frame.
+function T.idle_field_draw_resolves_no_modal_status_or_layout()
+  local PixelScale = require("libs.ui.src.PixelScale")
+  local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
+  local originalFit = PixelScale.fitPreferred
+  local originalCompute = DialoguePresentationLayout.compute
+  local fitCalls, computeCalls = 0, 0
+  PixelScale.fitPreferred = function(...)
+    fitCalls = fitCalls + 1
+    return originalFit(...)
+  end
+  DialoguePresentationLayout.compute = function(...)
+    computeCalls = computeCalls + 1
+    return originalCompute(...)
+  end
+  local ok, err = pcall(function()
+    local counts = {
+      applicationStatus = 0,
+      transitionStatus = 0,
+      yesNoPresentation = 0,
+      contextChoice = 0,
+    }
+    local worldDraws = 0
+    local lastParts = nil
+    local state = stateWith({
+      runtimeMap = { sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} } },
+      session = {
+        renderAlpha = function()
+          return 0.5
+        end,
+      },
+      destinationWorldPresentable = function()
+        return true
+      end,
+      acknowledgeDestinationPresentation = function() end,
+      viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
+      camera = { zoom = 1 },
+      transition = {
+        fadeAlpha = 0,
+        isActive = function()
+          return false
+        end,
+        presentationStatus = function()
+          counts.transitionStatus = counts.transitionStatus + 1
+          return { overlay = nil }
+        end,
+      },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      contextChoicePresentation = function()
+        counts.contextChoice = counts.contextChoice + 1
+        return nil
+      end,
+      signpost = {
+        isModal = function()
+          return false
+        end,
+      },
+      applicationHost = {
+        isActive = function()
+          return false
+        end,
+        status = function()
+          counts.applicationStatus = counts.applicationStatus + 1
+          return {}
+        end,
+      },
+      menuHost = {
+        presentation = function()
+          return nil
+        end,
+      },
+      yesNoHost = {
+        isModal = function()
+          return false
+        end,
+        presentation = function()
+          counts.yesNoPresentation = counts.yesNoPresentation + 1
+          return nil
+        end,
+        layoutFor = function()
+          error("no choice is active in this fixture", 0)
+        end,
+      },
+    })
+    state.presentationResources.renderer = {
+      draw = function(_, _, _, worldParts)
+        worldDraws = worldDraws + 1
+        lastParts = worldParts
+      end,
+    }
+    state.presentationResources.dialogueRenderer = {
+      draw = function()
+        error("idle field draws no dialogue", 0)
+      end,
+    }
+    state.presentationResources.yesNoRenderer = {
+      draw = function()
+        error("idle field draws no choice", 0)
+      end,
+    }
+    state.presentationResources.signpostRenderer = {
+      draw = function()
+        error("idle field draws no signpost", 0)
+      end,
+    }
+    state:draw()
+    state:draw()
+    state:draw()
+    Assert.equal(counts.applicationStatus, 0, "idle draws allocate no application status record")
+    Assert.equal(counts.transitionStatus, 0, "idle draws allocate no transition status record")
+    Assert.equal(counts.yesNoPresentation, 0, "idle draws resolve no live choice presentation")
+    Assert.equal(counts.contextChoice, 0, "idle draws resolve no contextual choice record")
+    Assert.equal(fitCalls, 0, "idle draws fit no modal pixel scale")
+    Assert.equal(computeCalls, 0, "idle draws compute no modal geometry")
+    Assert.equal(worldDraws, 3, "world rendering still runs on every idle frame")
+    Assert.isTrue(lastParts == state.worldParts, "idle draws keep presenting the retained world parts")
+  end)
+  PixelScale.fitPreferred = originalFit
+  DialoguePresentationLayout.compute = originalCompute
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return { tests = T }
