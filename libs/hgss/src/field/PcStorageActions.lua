@@ -28,6 +28,14 @@ local function sameAddress(left, right)
     )
 end
 
+local function clearParty(roster, slot)
+  table.remove(roster, slot + 1)
+end
+
+local function setParty(roster, slot, mon)
+  roster[slot + 1] = mon
+end
+
 function PcStorageActions.new(options)
   assert(type(options) == "table", "Storage actions require owners")
   assert(options.mons ~= nil and options.bag ~= nil, "Storage actions borrow mon and Bag services")
@@ -159,210 +167,390 @@ function PcStorageActions:_lastUsableAfterRemoving(address)
   return usable
 end
 
+function PcStorageActions:_partyRoster()
+  local roster = {}
+  for slot = 0, self._mons:partyCount() - 1 do
+    roster[#roster + 1] = self._mons:partyMon(slot)
+  end
+  return roster
+end
+
+function PcStorageActions:_previewCustodyMove(request, normalized, decision)
+  self:_validateAddress(assert(request.source, "custody actions have a source"))
+  local source = self:_read(request.source)
+  if source == nil then
+    return refusal("empty_source")
+  end
+  normalized.sourceMon = source
+  local destination = nil
+  if request.destination ~= nil then
+    self:_validateAddress(request.destination, false)
+    if request.destination.kind ~= "party" or request.destination.slot < self._mons:partyCount() then
+      destination = self:_read(request.destination)
+    end
+    normalized.destinationMon = destination
+    if request.kind ~= "swap" and destination ~= nil then
+      return refusal("occupied_destination")
+    end
+    if request.kind == "swap" and destination == nil then
+      return refusal("empty_destination")
+    end
+  end
+  local partyExitAddress, partyExitMon, incomingPartyMon
+  if request.kind == "deposit" then
+    assert(
+      request.source.kind == "party" and request.destination.kind == "box",
+      "deposit moves party custody into a box"
+    )
+    partyExitAddress, partyExitMon = request.source, source
+  elseif request.kind == "move" and request.source.kind == "party" and request.destination.kind == "box" then
+    partyExitAddress, partyExitMon = request.source, source
+  elseif request.kind == "swap" and request.source.kind ~= request.destination.kind then
+    if request.source.kind == "party" then
+      partyExitAddress, partyExitMon, incomingPartyMon = request.source, source, destination
+    else
+      partyExitAddress, partyExitMon, incomingPartyMon = request.destination, destination, source
+    end
+  end
+
+  if request.kind == "withdraw" then
+    assert(
+      request.source.kind == "box" and request.destination.kind == "party",
+      "withdraw moves box custody into the party"
+    )
+    if self._mons:partyCount() >= 6 then
+      return refusal("party_full")
+    end
+  end
+  if partyExitAddress ~= nil then
+    if hasMail(partyExitMon) then
+      return refusal("mail_attached")
+    end
+    if hasCapsule(partyExitMon) then
+      return refusal("capsule_attached")
+    end
+    local partyRemainsUsable = self:_lastUsableAfterRemoving(partyExitAddress)
+    if incomingPartyMon ~= nil and not incomingPartyMon.isEgg and incomingPartyMon.condition.currentHp > 0 then
+      partyRemainsUsable = true
+    end
+    if not partyRemainsUsable then
+      return refusal("last_usable")
+    end
+  end
+  return decision
+end
+
+function PcStorageActions:_previewRelease(request, decision)
+  self:_validateAddress(assert(request.source, "release has a source"))
+  local mon = self:_read(request.source)
+  if mon == nil then
+    return refusal("empty_source")
+  end
+  if mon.isEgg then
+    return refusal("egg")
+  end
+  if hasMail(mon) then
+    return refusal("mail_attached")
+  end
+  if hasCapsule(mon) then
+    return refusal("capsule_attached")
+  end
+  if request.source.kind == "party" and not self:_lastUsableAfterRemoving(request.source) then
+    return refusal("last_usable")
+  end
+  local protected = self:_firstProtectedMove(mon)
+  if protected ~= nil and not self:_hasOtherMove(request.source, protected) then
+    decision.kind = "refused"
+    decision.reason = "hm_return"
+    decision.message = "hm_return"
+    decision.returnMove = protected
+    decision.outcome = "returned"
+    return decision
+  end
+  decision.kind = "confirm"
+  decision.returnMove = protected
+  decision.outcome = "removed"
+  return decision
+end
+
+function PcStorageActions:_previewItemTransfer(request, normalized, decision)
+  self:_validateAddress(assert(request.source, "held-item actions have a source"))
+  local mon = self:_read(request.source)
+  if mon == nil then
+    return refusal("empty_source")
+  end
+  normalized.sourceMon = mon
+  if request.kind == "takeItem" then
+    if mon.heldItem == "NONE" then
+      return refusal("no_item")
+    end
+    if self:_isMail(mon.heldItem) then
+      return refusal("mail")
+    end
+    if not self._bag:hasSpace(mon.heldItem, 1) then
+      return refusal("bag_full")
+    end
+    normalized.item = mon.heldItem
+  else
+    assert(type(request.item) == "string", "giving names a semantic item")
+    local item = self._bag:catalog():item(request.item)
+    if item.pocket == "mail" then
+      return refusal("mail")
+    end
+    if mon.isEgg then
+      return refusal("egg")
+    end
+    if not item.canHold then
+      return refusal("cannot_hold")
+    end
+    if self:_isGriseous(request.item) and mon.species ~= HeldItemFormPolicy.GIRATINA then
+      return refusal("griseous_orb")
+    end
+    if not self._bag:has(request.item, 1) then
+      return refusal("item_missing")
+    end
+    if mon.heldItem ~= "NONE" and not request.confirmed then
+      decision.kind = "confirm"
+    end
+  end
+  return decision
+end
+
+function PcStorageActions:_previewItemSwap(request, normalized, decision)
+  decision.expected.bagRevision = nil
+  self:_validateAddress(assert(request.source, "item swaps have a source"))
+  self:_validateAddress(assert(request.destination, "item swaps have a destination"))
+  assert(not sameAddress(request.source, request.destination), "item swaps use distinct mon addresses")
+  local source, destination = self:_read(request.source), self:_read(request.destination)
+  if source == nil or destination == nil then
+    return refusal("empty_source")
+  end
+  normalized.sourceMon, normalized.destinationMon = source, destination
+  for _, pair in ipairs({ { source, destination.heldItem }, { destination, source.heldItem } }) do
+    local mon, incoming = pair[1], pair[2]
+    if incoming ~= "NONE" then
+      if mon.isEgg then
+        return refusal("egg")
+      end
+      if self:_isMail(incoming) then
+        return refusal("mail")
+      end
+      if not self._bag:catalog():item(incoming).canHold then
+        return refusal("cannot_hold")
+      end
+      if self:_isGriseous(incoming) and mon.species ~= HeldItemFormPolicy.GIRATINA then
+        return refusal("griseous_orb")
+      end
+    end
+  end
+  return decision
+end
+
+function PcStorageActions:_previewMarkings(request, normalized, decision)
+  self:_validateAddress(assert(request.source, "markings have a source"))
+  local mon = self:_read(request.source)
+  if mon == nil then
+    return refusal("empty_source")
+  end
+  assert(
+    type(request.mask) == "number" and request.mask % 1 == 0 and request.mask >= 0 and request.mask < 64,
+    "markings are six bits"
+  )
+  normalized.sourceMon = mon
+  return decision
+end
+
+function PcStorageActions:_previewBoxMeta(request, decision)
+  assert(
+    type(request.box) == "number" and request.box % 1 == 0 and request.box >= 0 and request.box < self._mons:boxCount(),
+    "box metadata names a valid box"
+  )
+  if request.kind == "boxName" then
+    assert(type(request.name) == "string", "box names are text")
+  end
+  if request.kind == "wallpaper" then
+    assert(type(request.wallpaperId) == "number", "wallpaper selection is numeric")
+  end
+  return decision
+end
+
+function PcStorageActions:_previewActiveBox(request, decision)
+  assert(
+    type(request.box) == "number" and request.box % 1 == 0 and request.box >= 0 and request.box < self._mons:boxCount(),
+    "active box is in range"
+  )
+  return decision
+end
+
 function PcStorageActions:preview(request)
   assert(type(request) == "table", "Storage action requests are records")
   local expected = self:_expectations()
   local normalized = copy(request)
   local decision = { kind = "allowed", expected = expected, request = normalized }
+  local kind = request.kind
 
-  if request.kind == "deposit" or request.kind == "withdraw" or request.kind == "move" or request.kind == "swap" then
-    self:_validateAddress(assert(request.source, "custody actions have a source"))
-    local source = self:_read(request.source)
-    if source == nil then
-      return refusal("empty_source")
-    end
-    normalized.sourceMon = source
-    local destination = nil
-    if request.destination ~= nil then
-      self:_validateAddress(request.destination, false)
-      if request.destination.kind ~= "party" or request.destination.slot < self._mons:partyCount() then
-        destination = self:_read(request.destination)
-      end
-      normalized.destinationMon = destination
-      if request.kind ~= "swap" and destination ~= nil then
-        return refusal("occupied_destination")
-      end
-      if request.kind == "swap" and destination == nil then
-        return refusal("empty_destination")
-      end
-    end
-    local partyExitAddress, partyExitMon, incomingPartyMon
-    if request.kind == "deposit" then
-      assert(
-        request.source.kind == "party" and request.destination.kind == "box",
-        "deposit moves party custody into a box"
-      )
-      partyExitAddress, partyExitMon = request.source, source
-    elseif request.kind == "move" and request.source.kind == "party" and request.destination.kind == "box" then
-      partyExitAddress, partyExitMon = request.source, source
-    elseif request.kind == "swap" and request.source.kind ~= request.destination.kind then
-      if request.source.kind == "party" then
-        partyExitAddress, partyExitMon, incomingPartyMon = request.source, source, destination
-      else
-        partyExitAddress, partyExitMon, incomingPartyMon = request.destination, destination, source
-      end
-    end
-
-    if request.kind == "withdraw" then
-      assert(
-        request.source.kind == "box" and request.destination.kind == "party",
-        "withdraw moves box custody into the party"
-      )
-      if self._mons:partyCount() >= 6 then
-        return refusal("party_full")
-      end
-    end
-    if partyExitAddress ~= nil then
-      if hasMail(partyExitMon) then
-        return refusal("mail_attached")
-      end
-      if hasCapsule(partyExitMon) then
-        return refusal("capsule_attached")
-      end
-      local partyRemainsUsable = self:_lastUsableAfterRemoving(partyExitAddress)
-      if incomingPartyMon ~= nil and not incomingPartyMon.isEgg and incomingPartyMon.condition.currentHp > 0 then
-        partyRemainsUsable = true
-      end
-      if not partyRemainsUsable then
-        return refusal("last_usable")
-      end
-    end
-  elseif request.kind == "release" then
-    self:_validateAddress(assert(request.source, "release has a source"))
-    local mon = self:_read(request.source)
-    if mon == nil then
-      return refusal("empty_source")
-    end
-    if mon.isEgg then
-      return refusal("egg")
-    end
-    if hasMail(mon) then
-      return refusal("mail_attached")
-    end
-    if hasCapsule(mon) then
-      return refusal("capsule_attached")
-    end
-    if request.source.kind == "party" and not self:_lastUsableAfterRemoving(request.source) then
-      return refusal("last_usable")
-    end
-    local protected = self:_firstProtectedMove(mon)
-    if protected ~= nil and not self:_hasOtherMove(request.source, protected) then
-      decision.kind = "refused"
-      decision.reason = "hm_return"
-      decision.message = "hm_return"
-      decision.returnMove = protected
-      decision.outcome = "returned"
-      return decision
-    end
-    decision.kind = "confirm"
-    decision.returnMove = protected
-    decision.outcome = "removed"
-    return decision
-  elseif request.kind == "takeItem" or request.kind == "giveItem" then
-    self:_validateAddress(assert(request.source, "held-item actions have a source"))
-    local mon = self:_read(request.source)
-    if mon == nil then
-      return refusal("empty_source")
-    end
-    normalized.sourceMon = mon
-    if request.kind == "takeItem" then
-      if mon.heldItem == "NONE" then
-        return refusal("no_item")
-      end
-      if self:_isMail(mon.heldItem) then
-        return refusal("mail")
-      end
-      if not self._bag:hasSpace(mon.heldItem, 1) then
-        return refusal("bag_full")
-      end
-      normalized.item = mon.heldItem
-    else
-      assert(type(request.item) == "string", "giving names a semantic item")
-      local item = self._bag:catalog():item(request.item)
-      if item.pocket == "mail" then
-        return refusal("mail")
-      end
-      if mon.isEgg then
-        return refusal("egg")
-      end
-      if not item.canHold then
-        return refusal("cannot_hold")
-      end
-      if self:_isGriseous(request.item) and mon.species ~= HeldItemFormPolicy.GIRATINA then
-        return refusal("griseous_orb")
-      end
-      if not self._bag:has(request.item, 1) then
-        return refusal("item_missing")
-      end
-      if mon.heldItem ~= "NONE" and not request.confirmed then
-        decision.kind = "confirm"
-      end
-    end
-    return decision
-  elseif request.kind == "swapItems" then
-    decision.expected.bagRevision = nil
-    self:_validateAddress(assert(request.source, "item swaps have a source"))
-    self:_validateAddress(assert(request.destination, "item swaps have a destination"))
-    assert(not sameAddress(request.source, request.destination), "item swaps use distinct mon addresses")
-    local source, destination = self:_read(request.source), self:_read(request.destination)
-    if source == nil or destination == nil then
-      return refusal("empty_source")
-    end
-    normalized.sourceMon, normalized.destinationMon = source, destination
-    for _, pair in ipairs({ { source, destination.heldItem }, { destination, source.heldItem } }) do
-      local mon, incoming = pair[1], pair[2]
-      if incoming ~= "NONE" then
-        if mon.isEgg then
-          return refusal("egg")
-        end
-        if self:_isMail(incoming) then
-          return refusal("mail")
-        end
-        if not self._bag:catalog():item(incoming).canHold then
-          return refusal("cannot_hold")
-        end
-        if self:_isGriseous(incoming) and mon.species ~= HeldItemFormPolicy.GIRATINA then
-          return refusal("griseous_orb")
-        end
-      end
-    end
-  elseif request.kind == "markings" then
-    self:_validateAddress(assert(request.source, "markings have a source"))
-    local mon = self:_read(request.source)
-    if mon == nil then
-      return refusal("empty_source")
-    end
-    assert(
-      type(request.mask) == "number" and request.mask % 1 == 0 and request.mask >= 0 and request.mask < 64,
-      "markings are six bits"
-    )
-    normalized.sourceMon = mon
-  elseif request.kind == "boxName" or request.kind == "wallpaper" then
-    assert(
-      type(request.box) == "number"
-        and request.box % 1 == 0
-        and request.box >= 0
-        and request.box < self._mons:boxCount(),
-      "box metadata names a valid box"
-    )
-    if request.kind == "boxName" then
-      assert(type(request.name) == "string", "box names are text")
-    end
-    if request.kind == "wallpaper" then
-      assert(type(request.wallpaperId) == "number", "wallpaper selection is numeric")
-    end
-  elseif request.kind == "activeBox" then
-    assert(
-      type(request.box) == "number"
-        and request.box % 1 == 0
-        and request.box >= 0
-        and request.box < self._mons:boxCount(),
-      "active box is in range"
-    )
-  else
-    assert(false, "unknown Storage action " .. tostring(request.kind))
+  if kind == "deposit" or kind == "withdraw" or kind == "move" or kind == "swap" then
+    return self:_previewCustodyMove(request, normalized, decision)
+  elseif kind == "release" then
+    return self:_previewRelease(request, decision)
+  elseif kind == "takeItem" or kind == "giveItem" then
+    return self:_previewItemTransfer(request, normalized, decision)
+  elseif kind == "swapItems" then
+    return self:_previewItemSwap(request, normalized, decision)
+  elseif kind == "markings" then
+    return self:_previewMarkings(request, normalized, decision)
+  elseif kind == "boxName" or kind == "wallpaper" then
+    return self:_previewBoxMeta(request, decision)
+  elseif kind == "activeBox" then
+    return self:_previewActiveBox(request, decision)
   end
-  return decision
+  assert(false, "unknown Storage action " .. tostring(request.kind))
+end
+
+function PcStorageActions:_commitCustodyMove(request, boxUpdates)
+  local party
+  local source, destination = request.sourceMon, request.destinationMon
+  if request.kind == "deposit" or request.kind == "withdraw" or request.kind == "move" then
+    local mon = source
+    if request.source.kind == "party" and request.destination.kind == "box" then
+      mon = self:_normalizeBox(mon)
+    elseif request.source.kind == "box" and request.destination.kind == "party" then
+      mon = self:_normalizeParty(mon)
+    end
+    if request.source.kind == "party" then
+      party = self:_partyRoster()
+      clearParty(party, request.source.slot)
+    else
+      boxUpdates[#boxUpdates + 1] = { box = request.source.box, slot = request.source.slot, mon = false }
+    end
+    if request.destination.kind == "party" then
+      party = party or self:_partyRoster()
+      local slot = request.destination.slot or #party
+      if slot == #party then
+        party[#party + 1] = mon
+      else
+        setParty(party, slot, mon)
+      end
+    else
+      boxUpdates[#boxUpdates + 1] = { box = request.destination.box, slot = request.destination.slot, mon = mon }
+    end
+  else
+    local sourceMon, destinationMon = source, destination
+    if request.source.kind == "party" and request.destination.kind == "box" then
+      sourceMon = self:_normalizeBox(sourceMon)
+      destinationMon = self:_normalizeParty(destinationMon)
+    elseif request.source.kind == "box" and request.destination.kind == "party" then
+      sourceMon = self:_normalizeParty(sourceMon)
+      destinationMon = self:_normalizeBox(destinationMon)
+    end
+    if request.source.kind == "party" or request.destination.kind == "party" then
+      party = self:_partyRoster()
+      if request.source.kind == "party" then
+        setParty(party, request.source.slot, destinationMon)
+      else
+        setParty(party, request.destination.slot, sourceMon)
+      end
+    end
+    if request.source.kind == "box" then
+      boxUpdates[#boxUpdates + 1] = {
+        box = request.source.box,
+        slot = request.source.slot,
+        mon = destinationMon,
+      }
+    end
+    if request.destination.kind == "box" then
+      boxUpdates[#boxUpdates + 1] = {
+        box = request.destination.box,
+        slot = request.destination.slot,
+        mon = sourceMon,
+      }
+    end
+  end
+  return party
+end
+
+function PcStorageActions:_commitRelease(request, boxUpdates)
+  local party
+  if request.source.kind == "party" then
+    party = self:_partyRoster()
+    clearParty(party, request.source.slot)
+  else
+    boxUpdates[#boxUpdates + 1] = { box = request.source.box, slot = request.source.slot, mon = false }
+  end
+  return party
+end
+
+function PcStorageActions:_commitItemTransfer(request, boxUpdates)
+  local mon = request.sourceMon
+  local itemKey = request.kind == "takeItem" and mon.heldItem or request.item
+  local item = self._bag:catalog():item(itemKey)
+  local updated =
+    HeldItemFormPolicy.apply(mon, request.kind == "takeItem" and self._bag:catalog():item("NONE") or item, self._mons)
+  local deltas = {}
+  if request.kind == "takeItem" then
+    updated.heldItem = "NONE"
+    deltas = { { op = "add", item = itemKey, quantity = 1 } }
+  else
+    if mon.heldItem ~= "NONE" then
+      deltas[#deltas + 1] = { op = "add", item = mon.heldItem, quantity = 1 }
+    end
+    deltas[#deltas + 1] = { op = "take", item = itemKey, quantity = 1 }
+    updated.heldItem = itemKey
+  end
+  local party = request.source.kind == "party" and self:_partyRoster() or nil
+  if party ~= nil then
+    setParty(party, request.source.slot, updated)
+  else
+    boxUpdates[#boxUpdates + 1] = { box = request.source.box, slot = request.source.slot, mon = updated }
+  end
+  return party, deltas
+end
+
+function PcStorageActions:_commitItemSwap(request, boxUpdates)
+  local party
+  local source, destination = request.sourceMon, request.destinationMon
+  local sourceItem = source.heldItem
+  local destinationItem = destination.heldItem
+  local updatedSource = HeldItemFormPolicy.apply(source, self._bag:catalog():item(destinationItem), self._mons)
+  local updatedDestination = HeldItemFormPolicy.apply(destination, self._bag:catalog():item(sourceItem), self._mons)
+  updatedSource.heldItem, updatedDestination.heldItem = destinationItem, sourceItem
+  if request.source.kind == "party" or request.destination.kind == "party" then
+    party = self:_partyRoster()
+    if request.source.kind == "party" then
+      setParty(party, request.source.slot, updatedSource)
+    end
+    if request.destination.kind == "party" then
+      setParty(party, request.destination.slot, updatedDestination)
+    end
+  end
+  if request.source.kind == "box" then
+    boxUpdates[#boxUpdates + 1] = {
+      box = request.source.box,
+      slot = request.source.slot,
+      mon = updatedSource,
+    }
+  end
+  if request.destination.kind == "box" then
+    boxUpdates[#boxUpdates + 1] = {
+      box = request.destination.box,
+      slot = request.destination.slot,
+      mon = updatedDestination,
+    }
+  end
+  return party
+end
+
+function PcStorageActions:_commitMarkings(request, boxUpdates)
+  local party
+  local mon = copy(request.sourceMon)
+  mon.markings = request.mask
+  if request.source.kind == "party" then
+    party = self:_partyRoster()
+    setParty(party, request.source.slot, mon)
+  else
+    boxUpdates[#boxUpdates + 1] = { box = request.source.box, slot = request.source.slot, mon = mon }
+  end
+  return party
 end
 
 function PcStorageActions:commit(intent, confirmation)
@@ -385,151 +573,23 @@ function PcStorageActions:commit(intent, confirmation)
 
   local request = intent.request
   local party, boxUpdates, metadata, activeBox, deltas = nil, {}, {}, nil, {}
-  local function partyRoster()
-    local roster = {}
-    for slot = 0, self._mons:partyCount() - 1 do
-      roster[#roster + 1] = self._mons:partyMon(slot)
-    end
-    return roster
-  end
-  local function clearParty(roster, slot)
-    table.remove(roster, slot + 1)
-  end
-  local function setParty(roster, slot, mon)
-    roster[slot + 1] = mon
-  end
+  local kind = request.kind
 
-  if request.kind == "deposit" or request.kind == "withdraw" or request.kind == "move" or request.kind == "swap" then
-    local source, destination = request.sourceMon, request.destinationMon
-    if request.kind == "deposit" or request.kind == "withdraw" or request.kind == "move" then
-      local mon = source
-      if request.source.kind == "party" and request.destination.kind == "box" then
-        mon = self:_normalizeBox(mon)
-      elseif request.source.kind == "box" and request.destination.kind == "party" then
-        mon = self:_normalizeParty(mon)
-      end
-      if request.source.kind == "party" then
-        party = partyRoster()
-        clearParty(party, request.source.slot)
-      else
-        boxUpdates[#boxUpdates + 1] = { box = request.source.box, slot = request.source.slot, mon = false }
-      end
-      if request.destination.kind == "party" then
-        party = party or partyRoster()
-        local slot = request.destination.slot or #party
-        if slot == #party then
-          party[#party + 1] = mon
-        else
-          setParty(party, slot, mon)
-        end
-      else
-        boxUpdates[#boxUpdates + 1] = { box = request.destination.box, slot = request.destination.slot, mon = mon }
-      end
-    else
-      local sourceMon, destinationMon = source, destination
-      if request.source.kind == "party" and request.destination.kind == "box" then
-        sourceMon = self:_normalizeBox(sourceMon)
-        destinationMon = self:_normalizeParty(destinationMon)
-      elseif request.source.kind == "box" and request.destination.kind == "party" then
-        sourceMon = self:_normalizeParty(sourceMon)
-        destinationMon = self:_normalizeBox(destinationMon)
-      end
-      if request.source.kind == "party" or request.destination.kind == "party" then
-        party = partyRoster()
-        if request.source.kind == "party" then
-          setParty(party, request.source.slot, destinationMon)
-        else
-          setParty(party, request.destination.slot, sourceMon)
-        end
-      end
-      if request.source.kind == "box" then
-        boxUpdates[#boxUpdates + 1] = {
-          box = request.source.box,
-          slot = request.source.slot,
-          mon = destinationMon,
-        }
-      end
-      if request.destination.kind == "box" then
-        boxUpdates[#boxUpdates + 1] = {
-          box = request.destination.box,
-          slot = request.destination.slot,
-          mon = sourceMon,
-        }
-      end
-    end
-  elseif request.kind == "release" then
-    if request.source.kind == "party" then
-      party = partyRoster()
-      clearParty(party, request.source.slot)
-    else
-      boxUpdates[#boxUpdates + 1] = { box = request.source.box, slot = request.source.slot, mon = false }
-    end
-  elseif request.kind == "takeItem" or request.kind == "giveItem" then
-    local mon = request.sourceMon
-    local itemKey = request.kind == "takeItem" and mon.heldItem or request.item
-    local item = self._bag:catalog():item(itemKey)
-    local updated =
-      HeldItemFormPolicy.apply(mon, request.kind == "takeItem" and self._bag:catalog():item("NONE") or item, self._mons)
-    if request.kind == "takeItem" then
-      updated.heldItem = "NONE"
-      deltas = { { op = "add", item = itemKey, quantity = 1 } }
-    else
-      if mon.heldItem ~= "NONE" then
-        deltas[#deltas + 1] = { op = "add", item = mon.heldItem, quantity = 1 }
-      end
-      deltas[#deltas + 1] = { op = "take", item = itemKey, quantity = 1 }
-      updated.heldItem = itemKey
-    end
-    party = request.source.kind == "party" and partyRoster() or nil
-    if party ~= nil then
-      setParty(party, request.source.slot, updated)
-    else
-      boxUpdates[#boxUpdates + 1] = { box = request.source.box, slot = request.source.slot, mon = updated }
-    end
-  elseif request.kind == "swapItems" then
-    local source, destination = request.sourceMon, request.destinationMon
-    local sourceItem = source.heldItem
-    local destinationItem = destination.heldItem
-    local updatedSource = HeldItemFormPolicy.apply(source, self._bag:catalog():item(destinationItem), self._mons)
-    local updatedDestination = HeldItemFormPolicy.apply(destination, self._bag:catalog():item(sourceItem), self._mons)
-    updatedSource.heldItem, updatedDestination.heldItem = destinationItem, sourceItem
-    if request.source.kind == "party" or request.destination.kind == "party" then
-      party = partyRoster()
-      if request.source.kind == "party" then
-        setParty(party, request.source.slot, updatedSource)
-      end
-      if request.destination.kind == "party" then
-        setParty(party, request.destination.slot, updatedDestination)
-      end
-    end
-    if request.source.kind == "box" then
-      boxUpdates[#boxUpdates + 1] = {
-        box = request.source.box,
-        slot = request.source.slot,
-        mon = updatedSource,
-      }
-    end
-    if request.destination.kind == "box" then
-      boxUpdates[#boxUpdates + 1] = {
-        box = request.destination.box,
-        slot = request.destination.slot,
-        mon = updatedDestination,
-      }
-    end
-  elseif request.kind == "markings" then
-    local mon = copy(request.sourceMon)
-    mon.markings = request.mask
-    if request.source.kind == "party" then
-      party = partyRoster()
-      setParty(party, request.source.slot, mon)
-    else
-      boxUpdates[#boxUpdates + 1] = { box = request.source.box, slot = request.source.slot, mon = mon }
-    end
-  elseif request.kind == "boxName" then
+  if kind == "deposit" or kind == "withdraw" or kind == "move" or kind == "swap" then
+    party = self:_commitCustodyMove(request, boxUpdates)
+  elseif kind == "release" then
+    party = self:_commitRelease(request, boxUpdates)
+  elseif kind == "takeItem" or kind == "giveItem" then
+    party, deltas = self:_commitItemTransfer(request, boxUpdates)
+  elseif kind == "swapItems" then
+    party = self:_commitItemSwap(request, boxUpdates)
+  elseif kind == "markings" then
+    party = self:_commitMarkings(request, boxUpdates)
+  elseif kind == "boxName" then
     metadata = { { box = request.box, name = request.name } }
-  elseif request.kind == "wallpaper" then
+  elseif kind == "wallpaper" then
     metadata = { { box = request.box, wallpaperId = request.wallpaperId } }
-  elseif request.kind == "activeBox" then
+  elseif kind == "activeBox" then
     activeBox = request.box
   end
 
