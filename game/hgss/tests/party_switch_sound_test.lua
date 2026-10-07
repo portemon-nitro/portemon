@@ -48,7 +48,7 @@ local function fakeMons()
       form = 0,
       nickname = nil,
       personality = 0,
-      condition = { status = 0, currentHp = 20 },
+      condition = { currentHp = 20, effects = {} },
       moves = {},
       heldItem = "NONE",
       isEgg = false,

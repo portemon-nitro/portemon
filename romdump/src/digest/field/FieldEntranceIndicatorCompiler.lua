@@ -16,6 +16,10 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local Hashing = require("romdump.src.digest.Hashing")
 local FieldEffects = require("romdump.src.config.FieldEffects")
 local Contract = require("libs.assets.src.DerivedAssetContract")
+local MapResolver = require("romdump.src.digest.map.MapResolver")
+local AreaData = require("romdump.src.digest.map.AreaData")
+local LandData = require("romdump.src.digest.map.LandData")
+local BuildingModelCompiler = require("romdump.src.digest.map.BuildingModelCompiler")
 
 local Compiler = {}
 
@@ -624,6 +628,121 @@ local function compileTransitionEffect(narc, animationNarc, animationArchive, ke
     modelSha1s
 end
 
+local function compilePokemonCenterHeal(romFs, meshes, textures)
+  local source = assert(FieldEffects.effects.pokemon_center_heal, "center-healing source selection is required")
+  local resolved, resolveErr = MapResolver.resolve(romFs, source.mapSymbol)
+  if not resolved then
+    error(resolveErr, 0)
+  end
+  local areaBytes = member(assert(romFs:openNarc("area_data")), resolved.areaDataMemberId, "area_data")
+  local area = assert(AreaData.decode(areaBytes, { alias = "area_data", memberId = resolved.areaDataMemberId }))
+  local landBytes = member(assert(romFs:openNarc("land_data")), resolved.landDataMemberId, "land_data")
+  local land = assert(LandData.decode(landBytes, {
+    mapId = resolved.map.id,
+    alias = "land_data",
+    memberId = resolved.landDataMemberId,
+  }))
+
+  -- Compile the two placed center props with their real placements so the
+  -- generated model keys match the map scene. The ball model is selected as
+  -- an additional model because its appearance is spawned transiently.
+  local selectedMembers = {
+    [source.anchorModelMemberId] = true,
+    [source.machineModelMemberId] = true,
+  }
+  local selectedLand = {}
+  for key, value in pairs(land) do
+    selectedLand[key] = value
+  end
+  selectedLand.buildings = {}
+  local placementIndices = {}
+  for _, placement in ipairs(land.buildings) do
+    if selectedMembers[placement.modelMemberId] then
+      selectedLand.buildings[#selectedLand.buildings + 1] = placement
+      local indices = placementIndices[placement.modelMemberId] or {}
+      indices[#indices + 1] = placement.index
+      placementIndices[placement.modelMemberId] = indices
+    end
+  end
+  for modelMemberId in pairs(selectedMembers) do
+    local indices = placementIndices[modelMemberId]
+    if not indices or #indices ~= 1 then
+      Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "center-healing prop must have exactly one map placement", {
+        mapId = resolved.map.id,
+        modelMemberId = modelMemberId,
+        placementCount = indices and #indices or 0,
+      })
+    end
+  end
+
+  local compiled = BuildingModelCompiler.compile(romFs, area, selectedLand, {
+    mapId = resolved.map.id,
+    mapSymbol = resolved.map.symbol,
+    areaDataMemberId = resolved.areaDataMemberId,
+    landDataMemberId = resolved.landDataMemberId,
+    meshes = meshes,
+    textures = textures,
+    finalizeMeshes = true,
+    requiredModelMembers = { source.ballModelMemberId },
+  })
+  local anchorModelKey = assert(compiled.modelKeyOf[source.anchorModelMemberId])
+  local machineModelKey = assert(compiled.modelKeyOf[source.machineModelMemberId])
+  local ballModelKey = assert(compiled.modelKeyOf[source.ballModelMemberId])
+  local ballModel = assert(compiled.models[ballModelKey])
+
+  local function clipNamed(model, name, role)
+    for _, clip in ipairs(model.animations or {}) do
+      if clip.name == name then
+        return clip
+      end
+    end
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "center-healing model is missing its source animation", {
+      role = role,
+      animation = name,
+      modelKey = model.key,
+    })
+  end
+
+  local machineAnimation = "moniter_mb"
+  local ballAnimation = "pc_mb"
+  local machineClip = clipNamed(assert(compiled.models[machineModelKey]), machineAnimation, "machine")
+  clipNamed(ballModel, ballAnimation, "ball")
+  rewriteEffectPaths(ballModel)
+
+  local ballPositions = {}
+  for index, point in ipairs(source.ballPositionsFx32) do
+    local fx32UnitsPerTile = 0x1000
+    ballPositions[index] = {
+      role = point.role,
+      offset = {
+        x = point.x / fx32UnitsPerTile,
+        y = point.y / fx32UnitsPerTile,
+        z = point.z / fx32UnitsPerTile,
+      },
+    }
+  end
+  if #ballPositions ~= 6 then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "center-healing source must define six ball positions", {
+      count = #ballPositions,
+    })
+  end
+  return {
+    models = { ballModel },
+    anchorModelKey = anchorModelKey,
+    machineModelKey = machineModelKey,
+    machineAnimation = machineAnimation,
+    machineAnimationFrameCount = machineClip.frameCount,
+    ballAnimation = ballAnimation,
+    ballPositions = ballPositions,
+    spawnIntervalSourceFrames = source.spawnIntervalSourceFrames,
+    placementSound = source.placementSound,
+    fanfare = source.fanfare,
+  }, {
+    models = compiled.buildingModelShas,
+    animations = compiled.animationListMemberSha1s,
+  }
+end
+
 function Compiler.compile(romFs, hashLua)
   assert(romFs and romFs.openNarc, "field-effect compiler requires RomFs")
   hashLua = hashLua or Hashing.hashLua
@@ -631,10 +750,12 @@ function Compiler.compile(romFs, hashLua)
   local animationNarc = assert(romFs:openNarc(FieldEffects.animationArchive.alias))
   local sourceHashesByKind = {}
   for kind, source in pairs(FieldEffects.effects) do
-    sourceHashesByKind[kind] = {
-      model = sourceHashes(narc, source.modelMembers, FieldEffects.archive.alias),
-      animation = sourceHashes(animationNarc, source.animationMembers, FieldEffects.animationArchive.alias),
-    }
+    if source.modelMembers then
+      sourceHashesByKind[kind] = {
+        model = sourceHashes(narc, source.modelMembers, FieldEffects.archive.alias),
+        animation = sourceHashes(animationNarc, source.animationMembers, FieldEffects.animationArchive.alias),
+      }
+    end
   end
   local basePack, basePackErr = Nsbtx.decode(member(narc, FieldEffects.followerReactionBase.textureMember), {
     alias = FieldEffects.archive.alias,
@@ -733,6 +854,8 @@ function Compiler.compile(romFs, hashLua)
     "field-effect-transition",
     FieldEffects.effects.follower_transition
   )
+  local centerHeal, centerHealModelShas = compilePokemonCenterHeal(romFs, meshes, textures)
+  sourceHashesByKind.pokemon_center_heal = centerHealModelShas
   for sha1, mesh in pairs(tallMeshes) do
     meshes[sha1] = mesh
   end
@@ -826,6 +949,7 @@ function Compiler.compile(romFs, hashLua)
       },
     },
     follower_transition = transition,
+    pokemon_center_heal = centerHeal,
   }
   local reactionMeshes, reactionTextures, reactionSha1s = {}, {}, {}
   for _, source in ipairs(FieldEffects.followerReactions) do
@@ -879,6 +1003,11 @@ function Compiler.compile(romFs, hashLua)
         definition = "follower_transition",
         path = FieldEffectAssetCache.definitionPath("follower_transition"),
       },
+      pokemon_center_heal = {
+        kind = "healing",
+        definition = "pokemon_center_heal",
+        path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
+      },
     },
   }
   for _, source in ipairs(FieldEffects.followerReactions) do
@@ -900,6 +1029,12 @@ function Compiler.compile(romFs, hashLua)
   end
   for sha1, texture in pairs(reactionTextures) do
     textures[sha1] = texture
+  end
+  for _, source in ipairs(centerHealModelShas.models) do
+    memberSha1[#memberSha1 + 1] = source.sha1
+  end
+  for _, source in ipairs(centerHealModelShas.animations) do
+    memberSha1[#memberSha1 + 1] = source.sha1
   end
   local depHash = hashLua({
     memberSha1 = memberSha1,

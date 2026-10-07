@@ -9,6 +9,8 @@ local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 
 local T = {}
 
@@ -37,6 +39,8 @@ local function record(overrides)
     mart = MartSave.empty(),
     mailbox = Mailbox.new():capture(),
     photoAlbum = PhotoAlbum.new():capture(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
   for key, replacement in pairs(overrides or {}) do
     rawset(value, key, replacement)
@@ -124,11 +128,17 @@ function T.weather_state_passes_through_to_its_owning_domain()
   Assert.isTrue(GameSave.normalize(record()) ~= nil)
 end
 
+
 function T.preserves_unrelated_top_level_fields_and_rejects_non_tables()
+
   returnsCode("GAME_SAVE_INVALID", function()
     ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid call
     return GameSave.normalize(nil)
   end)
+
+
+
+
   for _, field in ipairs({ "scenario", "currentState" }) do
     local input = record({ [field] = {} })
     local canonical = assert(GameSave.normalize(input))

@@ -106,10 +106,23 @@ local function sliceChunk(id, steps)
   for _, step in ipairs(steps) do
     if step.op == "set_spawn" then
       lines[#lines + 1] = '    { op = "set_spawn", spawn = "' .. step.spawn .. '" },'
+    elseif step.op == "set_special_spawn" then
+      lines[#lines + 1] = string.format(
+        '    { op = "set_special_spawn", map = %q, fieldX = %d, fieldZ = %d, warpId = %d, direction = %q },',
+        step.map,
+        step.fieldX,
+        step.fieldZ,
+        step.warpId,
+        step.direction
+      )
     elseif step.op == "field_move" then
       lines[#lines + 1] = '    { op = "field_move", source = "pending" },'
+    elseif step.op == "battle_launch" then
+      lines[#lines + 1] = '    { op = "battle_launch", kind = "wild", details = { species = "TOTODILE", level = 4 }, result = { value = "var", id = "VAR_TEMP_x4001" } },'
+    elseif step.op == "battle_result" then
+      lines[#lines + 1] = '    { op = "battle_result", result = { value = "var", id = "VAR_TEMP_x4002" } },'
     else
-      error("services harness covers set_spawn and pending field_move only", 0)
+      error("services harness covers set_spawn, set_special_spawn, pending field_move, and battle ops only", 0)
     end
   end
   lines[#lines + 1] = "  },"
@@ -146,6 +159,7 @@ local function driveSlice(services, id, steps)
     contextChoice = {},
     travel = services.travel,
     fieldMoves = services.fieldMoves,
+    battle = services.battle,
   }
   local platform = FieldScripts.new(args --[[@as FieldScriptsOptions]])
   local composed = assert(platform.composition:effective(id), "the slice must compose")
@@ -162,6 +176,27 @@ function T.tests.set_spawn_updates_the_injected_travel_service()
   Assert.equal(travel:capture().lastHealSpawn, "SPAWN_GOLDENROD", "set_spawn records on the injected travel owner")
 end
 
+function T.tests.set_special_spawn_writes_durable_copied_travel_state()
+  local travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" })
+  driveSlice({ travel = travel, fieldMoves = nil }, "test.special_slice", {
+    { op = "set_special_spawn", map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" },
+  })
+  Assert.deepEqual(travel:specialSpawn(), {
+    map = "MAP_NEW_BARK",
+    fieldX = 688,
+    fieldZ = 393,
+    warpId = -1,
+    direction = "south",
+  }, "opcode 582 writes the durable travel owner through the script maps service")
+  Assert.deepEqual(travel:capture().specialSpawn, {
+    map = "MAP_NEW_BARK",
+    fieldX = 688,
+    fieldZ = 393,
+    warpId = -1,
+    direction = "south",
+  }, "the opcode-582 value survives travel capture")
+end
+
 function T.tests.pending_field_move_reaches_the_injected_runtime()
   local takes = 0
   local fieldMoves = {
@@ -176,6 +211,131 @@ function T.tests.pending_field_move_reaches_the_injected_runtime()
   Assert.isFalse(ok, "an empty pending queue faults instead of succeeding")
   Assert.equal(takes, 1, "the task reads the injected runtime exactly once")
   Assert.isTrue(tostring(err):find("pending") ~= nil, "the fault names the missing queue: " .. tostring(err))
+end
+
+function T.tests.script_battle_launch_suspends_on_the_host_and_resumes_committed()
+  local launches = {}
+  local battleHost = {
+    launchBattle = function(_, spec)
+      launches[#launches + 1] = spec
+      return "script-launch-1"
+    end,
+    battleStatus = function(_)
+      return { phase = "complete", committed = true, result = "win", sourceResult = 1 }
+    end,
+    lastBattleResult = function(_)
+      return { result = "win", sourceResult = 1 }
+    end,
+  }
+  local platform = driveSlice({ travel = nil, fieldMoves = nil, battle = battleHost }, "test.battle_slice", {
+    { op = "battle_launch" },
+    { op = "battle_result" },
+  })
+  for _ = 1, 8 do
+    platform.scheduler:step(100 + _, nil)
+  end
+  Assert.equal(#launches, 1, "the launch reaches the injected host exactly once")
+  Assert.equal(launches[1].kind, "wild")
+  Assert.equal(launches[1].details.species, "TOTODILE", "launch details evaluate before the host")
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+  Assert.equal(
+    platform.worldState:getVar(symbols.variablesByName.VAR_TEMP_x4001),
+    1,
+    "the completed task writes its outcome code"
+  )
+  Assert.equal(
+    platform.worldState:getVar(symbols.variablesByName.VAR_TEMP_x4002),
+    1,
+    "the script resumes on the committed result"
+  )
+end
+
+-- The production Trainer Card service contributes no Frontier star: with
+-- every flag set and a complete dex the count stops at four, and the
+-- composition needs no runtime Frontier records owner to answer.
+function T.tests.production_trainer_card_service_counts_no_frontier_star()
+  local targetModule = "game.hgss.src.field.FieldScripts"
+  local composeModule = "game.hgss.src.field.FieldScriptComposition"
+  local seen = {}
+  local double = {
+    new = function(opts)
+      seen.opts = opts
+      return { scheduler = {}, worldState = {}, blackoutFlow = {} }
+    end,
+  }
+  local savedTarget = package.loaded[targetModule]
+  local savedCompose = package.loaded[composeModule]
+  package.loaded[targetModule] = double
+  package.loaded[composeModule] = nil
+  local ok, err = pcall(function()
+    local compose = require(composeModule).compose
+    local runtime = {
+      applicationHost = {
+        requestReopen = function() end,
+      },
+      applyAvatarTransitions = function()
+        return {}
+      end,
+      _setLiveWeather = function() end,
+      overrideFs = {},
+      eventState = {},
+      actors = {},
+      player = {},
+      playerAvatar = nil,
+      playerData = { profile = {}, options = { textFrame = 0 } },
+      versionId = "heartgold",
+      runtimeMap = { mapId = 61 },
+      overworld = { phase = function()
+        return "present"
+      end },
+      fieldTerrainEffectController = {},
+      scriptHosts = nil,
+      screenFade = nil,
+      auxiliaryFieldUi = {},
+      contextChoiceProvider = {},
+      menuHost = {},
+      dialogue = {},
+      messageProvider = {},
+      signpost = {},
+      windowStyles = {},
+      transition = {},
+      mapLoader = {},
+      dexKnowledge = {
+        isNationalDexComplete = function()
+          return true
+        end,
+      },
+      scripts = {
+        worldState = {
+          isFlagSet = function()
+            return true
+          end,
+        },
+      },
+      fashionCase = {},
+    }
+    local result = compose(runtime, {
+      cacheFs = {},
+      layoutMessage = function(message)
+        return message
+      end,
+      fontDef = {},
+      audioService = nil,
+      followerInteractionCatalog = {},
+      mons = {},
+      itemCatalog = {},
+      followingMon = {},
+      clock = {},
+    })
+    Assert.notNil(result.scripts, "composition still yields its scripts")
+    local service = assert(seen.opts and seen.opts.trainerCardStars, "composition wires the star service")
+    Assert.equal(service.count(), 4, "every flag plus a complete dex still counts no Frontier star")
+  end)
+  package.loaded[targetModule] = savedTarget
+  package.loaded[composeModule] = savedCompose
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return T

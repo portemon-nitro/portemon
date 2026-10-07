@@ -10,6 +10,7 @@ local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldPlayerModule = require("libs.hgss.src.actors.FieldPlayer")
 local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
 local FieldSessionModule = require("libs.hgss.src.field.FieldSession")
+local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local TilePermissions = require("tests.support.TilePermissions")
@@ -824,6 +825,31 @@ function T.camera_follows_the_player_xyz_each_fixed_tick()
   local s, targets = fixedSession()
   s:update(1 / 30)
   Assert.deepEqual(targets[1], { x = 1.25, y = 2.5, z = 3.75 })
+end
+
+function T.absent_overworld_keeps_scripts_running_and_suspends_actor_activity()
+  local lifecycle = FieldOverworldLifecycle.new()
+  lifecycle:requestLeave()
+  local scriptTicks, actorSteps = 0, 0
+  local options = baseOptions({
+    overworld = lifecycle,
+    scriptScheduler = {
+      step = function() scriptTicks = scriptTicks + 1 end,
+      playerInputLocked = function() return false end,
+      playerInputOwned = function() return false end,
+      foregroundEnvironmentId = function() return nil end,
+    },
+    actors = {
+      beginFixedStep = function() end,
+      step = function() actorSteps = actorSteps + 1 end,
+      finishFixedStep = function() end,
+    },
+  })
+  local session = FieldSession.new(options)
+  session:updateFixed({})
+  Assert.equal(lifecycle:phase(), "absent")
+  Assert.equal(scriptTicks, 1, "script scheduler continues while overworld is absent")
+  Assert.equal(actorSteps, 0, "autonomous actors stay suspended")
 end
 
 function T.map_init_claims_the_tick_before_scheduler_and_player_input()
@@ -4653,6 +4679,33 @@ function T.choice_host_without_a_presentation_callback_is_rejected()
     }))
   end)
   Assert.notNil(tostring(err):find("contextChoicePresentation", 1, true), "the missing callback is named")
+end
+
+function T.battle_ownership_freezes_player_input_initiation()
+  local started = 0
+  local player = defaultPlayer()
+  local baseUpdate = player.updateFixed
+  player.updateFixed = function(self, input)
+    started = started + 1
+    return baseUpdate(self, input)
+  end
+  local session = FieldSession.new(baseOptions({ player = player }))
+  Assert.isFalse(session:isBattleActive(), "sessions start outside battles")
+  session:updateFixed({ pressedDirection = "north" })
+  Assert.isTrue(started >= 1, "an idle field initiates movement from input")
+
+  session:setBattleActive(true)
+  Assert.isTrue(session:isBattleActive(), "the battle flag reports its owner")
+  local held = started
+  Assert.equal(player.facing, "south", "the fixture starts facing south")
+  session:updateFixed({ pressedDirection = "north" })
+  Assert.equal(started, held, "an owned battle never initiates movement from input")
+  Assert.equal(player.facing, "south", "an owned battle never turns the player")
+  Assert.equal(player.fieldX, 4, "an owned battle holds the player tile")
+  Assert.equal(player.fieldZ, 13, "an owned battle holds the player tile")
+
+  session:setBattleActive(false)
+  Assert.isFalse(session:isBattleActive(), "returning clears the battle flag")
 end
 
 return { tests = T }

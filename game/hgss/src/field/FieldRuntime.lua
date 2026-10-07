@@ -49,8 +49,11 @@ local MartService = require("libs.hgss.src.items.MartService")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local VanillaMartStock = require("game.hgss.src.mart.VanillaMartStock")
+local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
+local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
+local FieldScriptPropAnimations = require("libs.hgss.src.field.FieldScriptPropAnimations")
 local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
@@ -60,6 +63,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
+local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 local FollowerInteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
 local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
@@ -190,6 +194,17 @@ end
 ---@field martService MartService the live mart inventory/session service
 ---@field martHost table<string, unknown> the one script-owned mart child host
 ---@field martStockResolver function the selected mart stock provider
+---@field battleRuntime table<string, unknown>? the owned application battle lifetime (nil outside battles)
+---@field battlePresentation table<string, unknown>? presentation port for owned battles
+---@field pendingEncounterId integer|nil prepared unconsumed encounter identity
+---@field pendingEncounter table<string, unknown>? prepared unconsumed encounter
+---@field _trainerCatalog table<string, unknown>? composed immutable trainer template catalog (nil before composition)
+---@field _trainerFactory table<string, unknown>? composed native trainer party materializer (nil before composition)
+---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
+---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
+---@field dexKnowledge table<string, unknown>? the owned dex knowledge
+---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
+---@field _lastBattleResult table<string, unknown>? latest committed battle outcome words
 ---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
 ---@field menuLaneWarps table<string, unknown>? the long-lived menu-origin warp service (nil before composition / after teardown)
@@ -198,6 +213,8 @@ end
 ---@field followerTransitionDefinition table<string, unknown>? the compiled follower-transition definition behind the transient owner
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller (nil after teardown)
 ---@field session FieldSession
+---@field overworld FieldOverworldLifecycle
+---@field propAnimations FieldScriptPropAnimations
 ---@field actors FieldActorManager
 ---@field actorAssets FieldActorAssets
 ---@field dialogue FieldDialogueController?
@@ -238,6 +255,9 @@ end
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field fieldEntranceIndicatorAsset table<string, unknown>
 ---@field fieldEffectAssets table<string, unknown>
+---@field pokemonCenterHeal PokemonCenterHealFlow? source-owned Pokémon Center choreography
+---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
+---@field pokemonCenterHealDefinition table<string, unknown>? generated healing-ball asset definition
 ---@field physicalCoverage FieldCoverage?
 ---@field residency FieldResidencyCoordinator?
 ---@field assetPreparation AssetPreparationQueue? presentation-only preparation worker owner (nil when headless)
@@ -250,6 +270,7 @@ FieldRuntime.__index = FieldRuntime
 ---@field previous FieldCoverage?
 ---@field state "prepared"|"committed"|"released"
 
+local NEXT_BATTLE_LAUNCH_ID = 0
 local CAMERA_PROFILES_PATH = FieldCameraCache.profilesPath()
 
 ---@param avatars table[]
@@ -582,6 +603,7 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
     charmap = boot.fontDef.charmap,
     frameIndexes = frameIndexes,
   }
+  self.playerDataContext = boot.playerDataContext
   boot.world =
     assert(boot.cacheFs:loadLua(MapAssetCache.worldPath()), "world.lua missing -- run `scripts/buildcache.sh` first")
   local profiles = assert(
@@ -615,6 +637,7 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   self.martCatalog = MartCache.loadCatalog(boot.cacheFs)
   self.monCatalog = MonCatalog.new(monRoot, self.itemCatalog)
   self.monLanguage = monRoot.version.language
+  boot.monRoot = monRoot
   self.fieldEntranceIndicatorAsset, self.fieldEntranceIndicator = FieldEntranceIndicatorRuntime.load(boot.cacheFs)
   self.fieldEmoteModels = FieldActorEmoteRuntime.load(boot.cacheFs)
   self.fieldEffectAssets = self.fieldEntranceIndicatorAsset
@@ -1117,6 +1140,16 @@ function FieldRuntime:_composeFieldServices(boot)
   self.mailbox = Mailbox.new(boot.loadedGame and boot.loadedGame.mailbox or nil)
   self.photoAlbum = PhotoAlbum.new(boot.loadedGame and boot.loadedGame.photoAlbum or nil)
   self:_composeBag(boot.activeGame, boot.loadedGame)
+  self:_composeBattleState(
+    boot.loadedGame,
+    assert(boot.monRoot, "mon catalog root is required for battle state"),
+    boot.world
+  )
+  -- Encounter and trainer data compose during boot from the same cache:
+  -- a missing or invalid payload fails the boot instead of leaving
+  -- the battle owners absent.
+  self:composeEncounters(BattleDataCache.loadEncounters(boot.cacheFs))
+  self:composeTrainers(BattleDataCache.loadTrainers(boot.cacheFs))
   local martBucket = boot.loadedGame and boot.loadedGame.mart
     or assert(self.game.mart, "finalized game mart bucket is required")
   self.martService = MartService.new({
@@ -1144,12 +1177,17 @@ function FieldRuntime:_composeFieldServices(boot)
     end
     return self.mapLoader:get(mapId)
   end
+  -- The one follower-transition owner: composed before the following-mon
+  -- controller so the controller can hold it as its required
+  -- recall-transition collaborator.
+  self:_composeFollowerTransition(boot.cacheFs)
   self.followingMon = FollowingMonController.new({
     service = self.monService,
     catalog = self.monCatalog,
     actors = self.actors,
     playerOf = currentPlayer,
     mapOf = currentMap,
+    transition = self.followingMonTransition,
   })
   self.starterBalls = composeStarterBalls(self)
   self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
@@ -1179,13 +1217,7 @@ function FieldRuntime:_composeFieldServices(boot)
     sourcePolicy = self.pokemonMenu.pcManifest.terminal,
     resolveTerminalProp = resolveTerminalProp,
   })
-  -- The one follower-transition owner: the transient visual the
-  -- nonblocking transition command starts, advanced once per fixed tick
-  -- after the follower reconciles. A missing or malformed generated
-  -- definition fails the boot loudly instead of silently dropping the
-  -- visual. The headless factory keeps deterministic timing without GPU
-  -- state; presentation replaces it with renderer-backed instances.
-  self:_composeFollowerTransition(boot.cacheFs)
+  self:_composePokemonCenterHeal(boot.audioService)
   local scriptComposition = require("game.hgss.src.field.FieldScriptComposition").compose(self, {
     cacheFs = boot.cacheFs,
     layoutMessage = boot.layoutMessage,
@@ -1207,6 +1239,7 @@ function FieldRuntime:_composeFieldServices(boot)
     clock = self.localClock,
     followerTransition = self.followingMonTransition,
     starterBalls = self.starterBalls,
+    battle = self._battleHost,
     pcApplications = self.pcApplicationHost,
     pcTerminal = self.pcTerminal,
   })
@@ -1467,6 +1500,7 @@ function FieldRuntime:_startFieldSession(boot)
     partySelection = self.partySelection,
     martHost = self.martHost,
     fieldMoves = self.pokemonMenu.fieldMoves,
+    overworld = self.overworld,
     pokemonNaming = self.pokemonNaming,
     signpost = self.signpost,
     applicationHost = self.applicationHost,
@@ -1535,6 +1569,8 @@ function FieldRuntime.new(game, options)
     martStockResolver = options.martStockResolver,
     errorText = nil,
     fieldPixelScale = FieldPixelScale.new(options.fieldScaleConfig or FieldPresentation.fieldScale),
+    overworld = FieldOverworldLifecycle.new(),
+    propAnimations = FieldScriptPropAnimations.new(),
   }, FieldRuntime)
   -- The actual-display measurement owner: shared when the product root
   -- supplies one, otherwise a runtime-owned context whose provider tracks
@@ -1602,6 +1638,9 @@ function FieldRuntime:update(dt)
   local fieldExecuted = 0
   while self.session.accumulator + EPSILON >= FIXED_DT and fieldExecuted < MAX_CATCH_UP do
     self.session.accumulator = self.session.accumulator - FIXED_DT
+    if self.pokemonCenterHeal then
+      self.pokemonCenterHeal:updateFixed()
+    end
     self.session:updateFixed()
     fieldExecuted = fieldExecuted + 1
     -- The follower reconciles once per fixed tick, after player and
@@ -1645,6 +1684,9 @@ function FieldRuntime:update(dt)
     end
     self.transition:updateSourceFrame()
     self.screenFade:updateSourceFrame()
+    if self.blackoutFlow then
+      self.blackoutFlow:updateSourceFrame()
+    end
     if self.audio then
       self.audio:updateSoundFrame()
     end
@@ -1654,6 +1696,24 @@ function FieldRuntime:update(dt)
     self.session.accumulator = self.session.accumulator - discarded * FIXED_DT
   end
 
+  -- Directly constructed battles freeze player input through the shared
+  -- live party owner: while one owns decisions, field input never
+  -- initiates, even though the field runtime holds no handle on it.
+  -- Field-owned battles set the same flag through their direct handle.
+  if self.session ~= nil and self.monService ~= nil then
+    local DirectBattle = require("game.hgss.src.battle.BattleRuntime")
+    if DirectBattle.isActiveFor(self.monService) then
+      self.session:setBattleActive(true)
+    end
+  end
+  -- The owned battle lifetime pumps once per runtime update, after the
+  -- field settles: simulation and presentation acknowledgements advance
+  -- together while entry/return readiness still gates phase transitions.
+  -- Step encounters attempt at the committed-step boundary right after.
+  if self.battleRuntime ~= nil or self._battleLaunch ~= nil then
+    self:updateBattle()
+  end
+  self:pollStepEncounters()
   -- The audio output clock: pump PCM from the engine into the host sink once
   -- per runtime update, separate from the field fixed tick (the sink never
   -- advances game-semantic audio state).
@@ -1813,6 +1873,116 @@ function FieldRuntime:_composeFollowerTransition(cacheFs)
   self.menuComposer:composeFollowerTransition(cacheFs)
 end
 
+---@param audio table<string, unknown>
+function FieldRuntime:_composePokemonCenterHeal(audio)
+  local definition = assert(
+    self.fieldEntranceIndicatorAsset.effects.pokemon_center_heal,
+    "field-effect cache is missing pokemon_center_heal"
+  )
+  local ballModel = assert(definition.models[1], "healing ball model is missing")
+  local ballFrameCount
+  for _, clip in ipairs(ballModel.animations) do
+    if clip.name == definition.ballAnimation or clip.id == definition.ballAnimation then
+      ballFrameCount = clip.frameCount
+      break
+    end
+  end
+  assert(type(ballFrameCount) == "number" and ballFrameCount > 0, "healing ball animation is missing")
+  local function currentMap()
+    return self.session and self.session.currentMap or self.runtimeMap
+  end
+  local function exactPlacement(mapProps, modelKey)
+    local match
+    for _, placement in ipairs(mapProps.placements) do
+      if placement.modelKey == modelKey then
+        assert(match == nil, "healing model key resolves to multiple map placements")
+        match = placement
+      end
+    end
+    return assert(match, "healing model key has no placement on the active map")
+  end
+  local function timer(frameCount)
+    local remaining = frameCount
+    local function updateFixed()
+      remaining = math.max(0, remaining - 1)
+    end
+    local function isFinished()
+      return remaining == 0
+    end
+    local function release() end
+    return {
+      updateFixed = updateFixed,
+      isFinished = isFinished,
+      release = release,
+    }
+  end
+  local function headlessBallFactory(_, _, _)
+    local remaining = ballFrameCount
+    local started = false
+    local function startAnimation()
+      started = true
+    end
+    local function updateFixed()
+      if started then
+        remaining = math.max(0, remaining - 1)
+      end
+    end
+    local function isFinished()
+      return started and remaining == 0
+    end
+    local function dispose() end
+    return {
+      startAnimation = startAnimation,
+      updateFixed = updateFixed,
+      isFinished = isFinished,
+      dispose = dispose,
+    }
+  end
+  local Flow = require("libs.hgss.src.field.PokemonCenterHealFlow")
+  self.pokemonCenterHealDefinition = definition
+  local function mapId()
+    local map = currentMap()
+    return map and map.mapId
+  end
+  local function resolveAnchor()
+    local map = assert(currentMap(), "healing requires an active map")
+    local mapProps = assert(map.mapProps, "healing requires map props")
+    local anchorPlacement = exactPlacement(mapProps, definition.anchorModelKey)
+    local machinePlacement = exactPlacement(mapProps, definition.machineModelKey)
+    local machine = assert(mapProps:prop(machinePlacement.placementIndex), "healing machine prop is missing")
+    local transform = assert(anchorPlacement.transform, "healing anchor transform is missing")
+    local function startAnimation(_, animation)
+      local playback = machine:play(animation, { loopMode = "once" })
+      if playback == nil then
+        return timer(definition.machineAnimationFrameCount)
+      end
+      local function updateFixed() end
+      local function isFinished()
+        return machine:isFinished(animation) == true
+      end
+      local function release()
+        machine:stop(animation)
+      end
+      return {
+        updateFixed = updateFixed,
+        isFinished = isFinished,
+        release = release,
+      }
+    end
+    return {
+      position = { x = transform[13], y = transform[14], z = transform[15] },
+      startAnimation = startAnimation,
+    }
+  end
+  self.pokemonCenterHeal = Flow.new({
+    definition = definition,
+    mapId = mapId,
+    resolveAnchor = resolveAnchor,
+    spawnBall = headlessBallFactory,
+    audio = audio,
+  })
+end
+
 ---@param cacheFs unknown
 ---@param restoredAudio table<string, unknown>? the restored save's audio bucket, when resuming
 ---@return table<string, unknown> audioService the GameSound instance, or the injected recording adapter
@@ -1872,6 +2042,581 @@ end
 
 function FieldRuntime:_captureManualSaveFromMenu()
   return assert(self.saveCoordinator, "field runtime has no save coordinator"):captureManual()
+end
+
+-- Composes the battle-era persistent owners: roamer and encounter state
+-- plus dex knowledge, restored from the loaded battle-era buckets or
+-- started fresh. Reference sets come from the same mon root and world
+-- catalog the runtime boots from, so selected custom content resolves
+-- exactly as validation sees it.
+---@param loadedGame table<string, unknown>?
+---@param monRoot table<string, unknown>
+---@param world table<string, unknown>
+function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
+  local HgssRoamerState = require("libs.hgss.src.encounters.HgssRoamerState")
+  local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+  local speciesRefs = {}
+  for key in pairs(assert(monRoot.species, "mon catalog root carries its species")) do
+    speciesRefs[key] = true
+  end
+  local mapRefs = {}
+  for mapId in pairs(assert(world.byId, "world catalog carries its map index")) do
+    mapRefs[mapId] = true
+  end
+  if loadedGame ~= nil and loadedGame.encounters ~= nil then
+    self.roamerState = HgssRoamerState.restore(loadedGame.encounters, { species = speciesRefs, maps = mapRefs })
+  else
+    self.roamerState = HgssRoamerState.new({ records = {}, species = speciesRefs, maps = mapRefs })
+  end
+  if loadedGame ~= nil and loadedGame.pokedex ~= nil then
+    self.dexKnowledge = PokedexKnowledge.restore(loadedGame.pokedex, { species = speciesRefs })
+  else
+    self.dexKnowledge = PokedexKnowledge.new({ species = speciesRefs })
+  end
+  self.battleRuntime = nil
+  self._battleLaunch = nil
+  self._battleReceipt = nil
+  self.battlePresentation = nil
+  self.pendingEncounterId = nil
+  self.pendingEncounter = nil
+  self._lastBattleResult = nil
+  -- The narrow battle host for script battle tasks: launch, status, and
+  -- result reads delegate to the runtime's battle face. The adapter (not
+  -- the whole runtime) is what scheduler services carry.
+  local owner = self
+  local function hostLaunch(_, spec)
+    return owner:launchBattle(spec)
+  end
+  local function hostStatus(_, launchId)
+    return owner:battleStatus(launchId)
+  end
+  local function hostResult(_)
+    return owner:lastBattleResult()
+  end
+  self._battleHost = { launchBattle = hostLaunch, battleStatus = hostStatus, lastBattleResult = hostResult }
+end
+
+-- Attaches the presentation port owned battles present through. Without
+-- an attached port, owned battles acknowledge immediately; an attached
+-- later UI may instead remain waiting, which holds the lifecycle without
+-- touching simulation.
+---@param port table<string, unknown>
+function FieldRuntime:attachBattlePresentation(port)
+  assert(type(port) == "table", "battle presentation stays a record")
+  assert(type(port.enter) == "function", "battle presentation implements enter")
+  assert(type(port.present) == "function", "battle presentation implements present")
+  assert(type(port.leave) == "function", "battle presentation implements leave")
+  assert(type(port.dispose) == "function", "battle presentation implements dispose")
+  self.battlePresentation = port
+end
+
+-- Builds the detached scenario for one launch request from the prepared
+-- encounter (consuming a matching pending preparation exactly once), the
+-- resolved trainer party, or an explicit staged scenario. Native trainer
+-- identities resolve through the composed trainer catalog and materializer
+-- before shaping; explicit caller-authored parties still ride through
+-- untouched, and unknown trainer identities fail loudly.
+---@param request table<string, unknown>
+---@return table<string, unknown> detached scenario fragment
+function FieldRuntime:_scenarioForRequest(request)
+  local HgssBattleScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
+  assert(type(request) == "table" and type(request.kind) == "string", "scenario builds need their request")
+  local live = { party = self.monService, bag = self.bagService, world = self.scripts.worldState }
+  -- The current player reward identity rides the scenario context for
+  -- traded and foreign award classification: the validated profile owns
+  -- the trainer facts and the composed mon language owns the language key.
+  if self.playerData ~= nil and self.playerData.profile ~= nil and self.monLanguage ~= nil then
+    local profile = self.playerData.profile --[[@as table<string, unknown>]]
+    if type(profile.trainerId) == "number" and type(profile.name) == "string" then
+      live.player = { trainerId = profile.trainerId, trainerName = profile.name, language = self.monLanguage }
+    end
+  end
+  if request.kind == "wild" then
+    local payload = request.payload
+    assert(type(payload) == "table", "wild launches carry their payload")
+    if self.pendingEncounter ~= nil then
+      local pending = self.pendingEncounter --[[@as table<string, unknown>]]
+      if payload.attemptId == nil or payload.attemptId == pending.id then
+        local encounter = self:_consumePendingEncounter()
+        local mons = encounter.mons --[[@as table<integer, unknown>]]
+        assert(type(mons) == "table" and type(mons[1]) == "table", "prepared encounters carry their mon")
+        local first = mons[1] --[[@as table<string, unknown>]]
+        assert(type(first.mon) == "table", "prepared encounters carry their mon record")
+        return HgssBattleScenarioFactory.fromEncounter({
+          attemptId = encounter.id,
+          mon = first.mon,
+          format = encounter.format,
+          environment = encounter.environment,
+        }, live)
+      end
+    end
+    return HgssBattleScenarioFactory.fromEncounter(payload --[[@as table<string, unknown>]], live)
+  end
+  if request.kind == "trainer" then
+    return HgssBattleScenarioFactory.fromTrainer(
+      self:_trainerPayload(request.payload --[[@as table<string, unknown>]]),
+      live
+    )
+  end
+  return HgssBattleScenarioFactory.fromScript(request.payload --[[@as table<string, unknown>]], live)
+end
+
+-- Resolves one trainer launch payload into the detached trainer entries the
+-- scenario shaper consumes. Entries already carrying their full party
+-- records (explicit staged/scripted authoring) ride through untouched;
+-- bare native identities resolve through the composed catalog and
+-- materializer into detached bundles retaining the native identity, class,
+-- ordered party, and controller metadata. Unknown identities fail before
+-- any battle publishes; nothing here invents a party.
+---@param payload table<string, unknown>
+---@return table<string, unknown> scenario-ready trainer payload
+function FieldRuntime:_trainerPayload(payload)
+  assert(type(payload) == "table", "trainer launches carry their payload")
+  local source = payload.trainers
+  if source == nil then
+    source = { { id = payload.trainer, party = payload.party } }
+  end
+  assert(type(source) == "table" and #source > 0, "trainer battles field at least one trainer")
+  local factory = assert(self._trainerFactory, "trainer launches require their composed trainer materializer")
+  local Errors = require("libs.errors.src.Errors")
+  local world = self.scripts ~= nil and self.scripts.worldState or nil
+  local stream = world ~= nil and world.rng or nil
+  assert(type(stream) == "table", "trainer materialization threads the world stream untouched")
+  -- The rival display name stays an indirection: an explicit staged-launch
+  -- override wins, otherwise the script world supplies it when it models
+  -- one. Bracket reads mark both as optional open-record fields rather
+  -- than specified payload shape.
+  local rivalName = nil
+  local payloadRival = payload["rivalName"]
+  if type(payloadRival) == "string" and payloadRival ~= "" then
+    rivalName = payloadRival
+  elseif type(world) == "table" then
+    local worldRival = (world --[[@as table<string, unknown>]])["rivalName"]
+    if type(worldRival) == "function" then
+      local named = worldRival(world)
+      if type(named) == "string" and named ~= "" then
+        rivalName = named
+      end
+    end
+  end
+  local resolved = {}
+  for _, entry in ipairs(source) do
+    assert(type(entry) == "table", "trainer entries stay records")
+    local item = entry --[[@as table<string, unknown>]]
+    if type(item.party) == "table" and #item.party > 0 then
+      local staged = { id = item.id, party = item.party }
+      if item.doubleBattle ~= nil then
+        staged.doubleBattle = item.doubleBattle
+      end
+      resolved[#resolved + 1] = staged
+    else
+      local id = item.id
+      if id == nil then
+        id = payload.trainer
+      end
+      if type(id) ~= "string" and type(id) ~= "number" then
+        Errors.raise("TRAINER_UNKNOWN", "trainer launches name their trainer identity", {
+          trainer = tostring(id),
+        })
+      end
+      local bundle = factory:build({
+        trainerKey = id,
+        rivalName = rivalName,
+        storyVariant = item.storyVariant or payload.storyVariant,
+        rng = stream,
+      })
+      resolved[#resolved + 1] = {
+        id = id,
+        class = bundle.trainerClass,
+        name = bundle.name,
+        party = bundle.mons,
+        partyLevels = bundle.partyLevels,
+        prizeMoney = bundle.prizeMoney,
+        aiPasses = bundle.aiPasses,
+        items = bundle.items,
+        doubleBattle = bundle.doubleBattle,
+      }
+    end
+  end
+  return {
+    attemptId = payload.attemptId,
+    id = payload.id,
+    format = payload.format,
+    trainers = resolved,
+    inventories = payload.inventories,
+    environment = payload.environment,
+    formatState = payload.formatState,
+  }
+end
+
+-- Starts the owned application battle lifetime for one launch request and
+-- freezes player input until it returns. Only one battle runs at a time;
+-- presentation readiness (attached or default) gates entry and return.
+---@param args { request: table<string, unknown>, scenario: table<string, unknown>?, presentation: table<string, unknown>?, seed: integer? }
+---@return table<string, unknown> the owned application battle lifetime
+function FieldRuntime:startBattle(args)
+  assert(type(args) == "table", "battle launches require an argument record")
+  assert(self.battleRuntime == nil, "a battle is already active")
+  local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
+  local request = assert(args.request, "battle launches require their request")
+  local scenario = args.scenario or self:_scenarioForRequest(request)
+  -- Live consequence owners ride along so resolution stages through
+  -- them: the bag and dex owners plus the player money facts. Prize
+  -- inputs, captures, planned consumption, and roamer deltas arrive from
+  -- explicit drivers; without them the runtime stages only what the
+  -- executed battle determines.
+  local playerFacts = nil
+  if self.playerData ~= nil and self.playerDataContext ~= nil then
+    playerFacts = { record = self.playerData, context = self.playerDataContext }
+  end
+  local battle = BattleRuntime.new({
+    request = request,
+    scenario = scenario,
+    presentation = args.presentation or self.battlePresentation,
+    party = self.monService,
+    bag = self.bagService,
+    dex = self.dexKnowledge,
+    player = playerFacts,
+    seed = args.seed,
+  })
+  self.battleRuntime = battle
+  if self.session ~= nil then
+    self.session:setBattleActive(true)
+  end
+  return battle
+end
+
+-- Drives the owned battle once per runtime update and returns through the
+-- stable field when it settles. A committed battle records its outcome
+-- words for script result reads; a failed battle faults the runtime
+-- loudly instead of resuming the story as a success.
+function FieldRuntime:updateBattle()
+  local launch = self._battleLaunch
+  if launch ~= nil and launch.phase == "leaving" then
+    local phase, failure = self.overworld:phase()
+    if failure ~= nil or phase == "failed" then
+      launch.phase = "failed"
+      launch.error = failure
+      self.errorText = tostring(failure or "overworld leave failed")
+      return
+    end
+    if phase ~= "absent" then
+      return
+    end
+    local request = launch.request
+    self:startBattle({ request = request, scenario = launch.scenario })
+    launch.phase = "active"
+  end
+
+  if launch ~= nil and launch.phase == "restoring" then
+    local phase, failure = self.overworld:phase()
+    if failure ~= nil or phase == "failed" then
+      launch.phase = "failed"
+      launch.error = failure
+      self.errorText = tostring(failure or "overworld restore failed")
+      return
+    end
+    if phase ~= "present" then
+      return
+    end
+    launch.phase = "complete"
+    launch.committed = true
+    self._lastBattleResult = { result = launch.result, sourceResult = launch.sourceResult }
+    self._battleReceipt = launch
+    self._battleLaunch = nil
+    return
+  end
+
+  local battle = self.battleRuntime
+  if battle == nil then
+    return
+  end
+  battle:update()
+  local status = battle:status()
+  if status.phase ~= "complete" and status.phase ~= "failed" then
+    return
+  end
+  if self.session ~= nil then
+    self.session:setBattleActive(false)
+  end
+  battle:dispose()
+  self.battleRuntime = nil
+  if status.phase == "failed" then
+    self.errorText = tostring(status.error or "the battle reported a failure")
+    if launch ~= nil then
+      launch.phase = "failed"
+      launch.error = status.error or self.errorText
+      self._battleReceipt = launch
+      self._battleLaunch = nil
+    end
+    return
+  end
+  if launch ~= nil and status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
+    launch.result = status.result
+    launch.sourceResult = status.sourceResult
+    if status.result == "loss" or status.result == "draw" then
+      launch.phase = "complete"
+      launch.committed = true
+      self._lastBattleResult = { result = status.result, sourceResult = status.sourceResult }
+      self._battleReceipt = launch
+      self._battleLaunch = nil
+    else
+      launch.phase = "restoring"
+      self.overworld:requestRestore()
+    end
+  elseif status.phase == "complete" and status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
+    self._lastBattleResult = { result = status.result, sourceResult = status.sourceResult }
+  end
+end
+
+-- Battle host observation for script result reads: the latest committed
+-- outcome words, or nil when no battle has committed yet.
+---@return table<string, unknown>?
+function FieldRuntime:lastBattleResult()
+  return self._lastBattleResult
+end
+
+-- Battle host observation for script battle tasks: the owned battle's
+-- committed outcome for one launch, or nil when no owned battle carries
+-- that identity.
+---@param launchId string
+---@return table<string, unknown>?
+function FieldRuntime:battleStatus(launchId)
+  local receipt = self._battleReceipt
+  if receipt ~= nil and receipt.launchId == launchId then
+    return {
+      phase = receipt.phase,
+      committed = receipt.committed == true,
+      result = receipt.result,
+      sourceResult = receipt.sourceResult,
+      error = receipt.error,
+    }
+  end
+  local launch = self._battleLaunch
+  if launch ~= nil and launch.launchId == launchId then
+    return {
+      phase = launch.phase,
+      committed = launch.committed == true,
+      result = launch.result,
+      sourceResult = launch.sourceResult,
+      error = launch.error,
+    }
+  end
+  local battle = self.battleRuntime
+  if battle == nil then
+    return nil
+  end
+  return battle:battleStatus(launchId)
+end
+
+-- Battle host launch for script battle tasks: issues a unique launch
+-- identity per call (two runs of one script site never share a commit
+-- receipt) and starts the owned battle for the evaluated payload.
+---@param spec { launchId: string?, kind: string?, details: table<string, unknown>? }
+---@return string the issued launch identity
+function FieldRuntime:launchBattle(spec)
+  assert(type(spec) == "table", "battle host launches require a spec record")
+  assert(self._battleLaunch == nil and self.battleRuntime == nil, "a field-owned battle is already active")
+  self._battleReceipt = nil
+  NEXT_BATTLE_LAUNCH_ID = NEXT_BATTLE_LAUNCH_ID + 1
+  local tag = spec.launchId or spec.kind or "battle"
+  local launchId = tostring(tag) .. "#" .. tostring(NEXT_BATTLE_LAUNCH_ID)
+  local payload = spec.details or {}
+  assert(type(payload) == "table", "battle host launches carry their payload record")
+  self.overworld:requestLeave()
+  local request = { id = launchId, kind = spec.kind or "wild", payload = payload }
+  self._battleLaunch = { launchId = launchId, phase = "leaving", request = request }
+  return launchId
+end
+
+-- Releases a prepared but unconsumed encounter without rerolling: the
+-- service protection lifts and later steps may attempt anew. The prepared
+-- mon is discarded, never battled and never committed.
+---@return boolean released true when a pending encounter was held
+function FieldRuntime:cancelPendingEncounter()
+  if self.pendingEncounter == nil then
+    return false
+  end
+  self:_consumePendingEncounter()
+  return true
+end
+
+---@return table<string, unknown> the consumed prepared encounter
+function FieldRuntime:_consumePendingEncounter()
+  local pending = assert(self.pendingEncounter, "no prepared encounter to consume")
+  local id = self.pendingEncounterId
+  self.pendingEncounter = nil
+  self.pendingEncounterId = nil
+  if self._encounters ~= nil and id ~= nil then
+    return self._encounters:consume(id)
+  end
+  return pending
+end
+
+-- Composes the concrete encounter service over a compiled encounter
+-- catalog, sharing the live party, catalogs, and roamer state. Field
+-- boot composes it from generated data; a missing or invalid payload
+-- fails the boot instead of leaving the service absent.
+---@param compiled table<string, unknown> compiled encounter catalog record
+function FieldRuntime:composeEncounters(compiled)
+  local HgssEncounterCatalog = require("libs.hgss.src.encounters.HgssEncounterCatalog")
+  local WildMonFactory = require("libs.hgss.src.encounters.WildMonFactory")
+  local HgssEncounterService = require("libs.hgss.src.encounters.HgssEncounterService")
+  local catalog = HgssEncounterCatalog.new(compiled)
+  local encounterCacheFs = assert(self.cacheFs, "encounter composition requires its cache")
+  local fontDef = FieldFontLoader.load(encounterCacheFs)
+  local factory = WildMonFactory.new({
+    catalog = assert(self.monCatalog, "encounter composition requires the mon catalog"),
+    items = assert(self.itemCatalog, "encounter composition requires the item catalog"),
+    charmap = fontDef.charmap,
+    games = HgssMonService.GAMES,
+    languages = HgssMonService.LANGUAGES,
+    game = self.versionId,
+    language = self.monLanguage,
+  })
+  self._encounters = HgssEncounterService.new({
+    catalog = catalog,
+    wildFactory = factory,
+    roamers = assert(self.roamerState, "encounter composition requires its roamer state"),
+    game = self.versionId,
+  })
+end
+
+-- Composes the concrete trainer materializer over a compiled trainer
+-- catalog, sharing the domain mon catalog and creation policy. Field
+-- boot composes it from generated data; a missing or invalid payload
+-- fails the boot instead of leaving trainer launches uncomposed.
+---@param compiled table<string, unknown> compiled trainer catalog record
+function FieldRuntime:composeTrainers(compiled)
+  local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
+  local HgssTrainerFactory = require("libs.hgss.src.battle.HgssTrainerFactory")
+  local catalog = HgssTrainerCatalog.new(compiled)
+  local trainerCacheFs = assert(self.cacheFs, "trainer composition requires its cache")
+  local fontDef = FieldFontLoader.load(trainerCacheFs)
+  self._trainerCatalog = catalog
+  self._trainerFactory = HgssTrainerFactory.new({
+    catalog = catalog,
+    monCatalog = assert(self.monCatalog, "trainer composition requires the mon catalog"),
+    charmap = fontDef.charmap,
+    games = HgssMonService.GAMES,
+    languages = HgssMonService.LANGUAGES,
+    game = self.versionId,
+    language = assert(self.monLanguage, "trainer composition requires the mon language"),
+  })
+end
+
+-- Runs one encounter attempt over the composed service. Without a service
+-- (or while a battle or preparation owns the field) there is nothing to
+-- attempt. A prepared encounter is held exactly once under its attempt
+-- identity; later steps skip until it is consumed or released. Maps
+-- without tables miss instead of faulting: no table means no encounter.
+---@param context table<string, unknown> encounter attempt context
+---@return table<string, unknown>? attempt result
+function FieldRuntime:attemptEncounter(context)
+  local service = self._encounters
+  if service == nil then
+    return nil
+  end
+  if self.battleRuntime ~= nil or self.pendingEncounterId ~= nil then
+    return nil
+  end
+  local worldState = assert(self.scripts, "encounter attempts require their script platform").worldState
+  local worldRng = assert(worldState.rng, "encounter attempts draw from the world generator")
+  local function drawU16(_, _, _)
+    return worldRng:nextRaw() % 65536
+  end
+  local stream = { nextU16 = drawU16 }
+  local Errors = require("libs.errors.src.Errors")
+  local ok, result = pcall(service.attempt, service, context, stream)
+  if not ok then
+    if Errors.is(result) and result.code == "ENCOUNTER_MISSING_TABLE" then
+      return { kind = "miss", reason = "no_table" }
+    end
+    error(result, 0)
+  end
+  assert(type(result) == "table", "attempts answer with a result record")
+  if result.kind == "prepared" then
+    self.pendingEncounterId = result.attemptId
+    self.pendingEncounter = result.encounter
+  end
+  return result
+end
+
+-- The field-step encounter hook: after committed player steps, attempts at
+-- the exact opportunity boundary for tall-grass (and surfing) tiles. Inert
+-- without a composed encounter service; a prepared encounter is held for
+-- an explicit battle launch instead of auto-running without presentation.
+function FieldRuntime:pollStepEncounters()
+  if self._encounters == nil or self.session == nil or self.player == nil then
+    return
+  end
+  if self.battleRuntime ~= nil or self.pendingEncounterId ~= nil then
+    return
+  end
+  local player = self.player --[[@as table<string, unknown>]]
+  local cell = player.committedSourceCellKey
+  if cell == nil or cell == self._lastStepCell then
+    self._lastStepCell = cell
+    return
+  end
+  self._lastStepCell = cell
+  local session = self.session --[[@as table<string, unknown>]]
+  if session.mapEntryController:isActive() or session.dialogue:isModal() then
+    return
+  end
+  local map = session.currentMap --[[@as table<string, unknown>]]
+  local method = self:_stepEncounterMethod(map, player)
+  if method == nil then
+    return
+  end
+  self:attemptEncounter({
+    eventId = session.tick,
+    mapId = map.mapId,
+    method = method,
+    movement = "step",
+    modifiers = {},
+    environment = {},
+    playerProfile = self.playerData.profile,
+  })
+end
+
+---@param map table<string, unknown>
+---@param player table<string, unknown>
+---@return string? encounter method for the arrival tile, when one applies
+function FieldRuntime:_stepEncounterMethod(map, player)
+  if map.collision == nil then
+    return nil
+  end
+  local ok, localX, localZ = pcall(FieldCoordinates.fieldToLocal, map, player.fieldX, player.fieldZ)
+  if not ok then
+    return nil
+  end
+  local collision = map.collision --[[@as table<string, unknown>]]
+  local contains = collision.containsLocal
+  if type(contains) ~= "function" then
+    return nil
+  end
+  if not collision:containsLocal(localX, localZ) then
+    return nil
+  end
+  local behavior = collision:getLocal(localX, localZ).behavior
+  if MetatileBehavior.isTallGrass(behavior) or MetatileBehavior.isVeryTallGrass(behavior) then
+    return "grass"
+  end
+  if MetatileBehavior.isSurfableWater(behavior) and self:_isSurfing() then
+    return "surf"
+  end
+  return nil
+end
+
+---@return boolean true while the avatar surfs
+function FieldRuntime:_isSurfing()
+  local avatar = self.playerAvatar
+  if avatar == nil then
+    return false
+  end
+  local status = avatar:status()
+  return type(status) == "table" and status.durableState == "surfing"
 end
 
 function FieldRuntime:_saveCheckpoint()
@@ -2135,6 +2880,19 @@ end
 -- dialogue -- and the field clearing means reset never leaves a hand-picked
 -- subset behind for its re-boot.
 function FieldRuntime:_releaseAll()
+  if self.propAnimations then
+    self.propAnimations:clear()
+  end
+  if self.overworld then
+    self.overworld:dispose()
+  end
+  if self.blackoutFlow then
+    self.blackoutFlow:dispose()
+  end
+  if self.battleRuntime then
+    self.battleRuntime:dispose()
+  end
+  self.battleRuntime = nil
   if self.transition then
     self:_disposePreparedSwap(self.transition.resolution, self.transition.prepared)
   end
@@ -2182,6 +2940,10 @@ function FieldRuntime:_releaseAll()
     self.followingMonTransition:dispose()
   end
   self.followingMonTransition = nil
+  if self.pokemonCenterHeal then
+    self.pokemonCenterHeal:dispose()
+  end
+  self.pokemonCenterHeal, self.pokemonCenterHealDefinition = nil, nil
   self.starterBalls = nil
   self.followerTransitionDefinition = nil
   if self.actors then

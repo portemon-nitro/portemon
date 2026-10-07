@@ -124,7 +124,43 @@ end
 function T.tests.restore_overworld_is_a_foreground_return_boundary()
   local h = harness()
   Assert.deepEqual(S.restoreOverworld(), { op = "restore_overworld" })
+  h.run.services.overworld = {
+    phaseValue = "present",
+    phase = function(self)
+      return self.phaseValue
+    end,
+  }
   Assert.equal(Runtime.executeNode({ op = "restore_overworld" }, h.run), Runtime.OUTCOME_CONTINUE)
+end
+
+function T.tests.restore_overworld_requests_the_lifecycle_restore_while_absent()
+  local h = harness()
+  local requested = false
+  h.run.services.overworld = {
+    phase = function()
+      return "absent"
+    end,
+    requestRestore = function()
+      requested = true
+    end,
+  }
+  Assert.equal(Runtime.executeNode({ op = "restore_overworld" }, h.run), Runtime.OUTCOME_CONTINUE)
+  Assert.isTrue(requested, "an absent overworld must be asked to restore")
+end
+
+function T.tests.restore_overworld_leaves_a_present_overworld_untouched()
+  local h = harness()
+  local requested = false
+  h.run.services.overworld = {
+    phase = function()
+      return "present"
+    end,
+    requestRestore = function()
+      requested = true
+    end,
+  }
+  Assert.equal(Runtime.executeNode({ op = "restore_overworld" }, h.run), Runtime.OUTCOME_CONTINUE)
+  Assert.isFalse(requested, "a present overworld has nothing to restore")
 end
 
 return T

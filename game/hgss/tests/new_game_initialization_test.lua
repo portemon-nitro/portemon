@@ -1,4 +1,6 @@
 local Assert = require("tests.support.Assert")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MonsSave = require("libs.mons.src.MonsSave")
@@ -275,6 +277,8 @@ function T.lottery_persists_through_world_capture_and_game_save()
     mart = MartSave.empty(),
     mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
     photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
   local validated = assert(GameSave.normalize(record))
   Assert.equal(validated.world.variables[vars.VAR_LOTO_NUMBER_LO], 0x5678)

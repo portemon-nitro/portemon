@@ -9,6 +9,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local PixelScale = require("libs.ui.src.PixelScale")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
+local FieldBlackoutRenderer = require("game.hgss.src.field.FieldBlackoutRenderer")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -428,6 +429,9 @@ function FieldState:_worldParts(alpha)
       and transitionRenderer:drawItems(transition:status(), self.runtime.runtimeMap, transitionItems)
     or NO_DRAWS
   worldParts[10] = sceneRuntime and sceneRuntime.runtimePropDraws or NO_DRAWS
+  local healFlow = self.runtime.pokemonCenterHeal
+  local healRenderer = resources.pokemonCenterHealRenderer
+  worldParts[11] = (healFlow and healRenderer) and healRenderer:drawItems(healFlow:status()) or NO_DRAWS
   return worldParts
 end
 
@@ -510,12 +514,32 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     yesNoLayout = yesNoHost:layoutFor(yesNo)
   end
   local signpostModal = self.runtime.signpost:isModal()
-  if not (dialogueModal or yesNo or signpostModal) then
+  local blackoutStatus = self.runtime.blackoutFlow and self.runtime.blackoutFlow:status() or nil
+  local blackoutMessage = blackoutStatus ~= nil
+    and (
+      blackoutStatus.phase == "message_in"
+      or blackoutStatus.phase == "message_wait"
+      or blackoutStatus.phase == "message_out"
+    )
+  if not (dialogueModal or yesNo or signpostModal or blackoutMessage) then
     return
   end
   local fieldScale = self.runtime.fieldPixelScale:resolvedScale()
   local bounds = self.runtime.viewport.worldViewport
-  if dialogueModal then
+  if type(bounds) ~= "table" or type(bounds.width) ~= "number" or type(bounds.height) ~= "number" then
+    bounds = self.runtime.viewport.referenceFrame
+  end
+  if type(bounds) ~= "table" or type(bounds.width) ~= "number" or type(bounds.height) ~= "number" then
+    bounds = {
+      x = 0,
+      y = 0,
+      width = assert(self.runtime.viewport.width),
+      height = assert(self.runtime.viewport.height),
+    }
+  end
+  if blackoutMessage and blackoutStatus ~= nil then
+    FieldBlackoutRenderer.draw(blackoutStatus, assert(resources.windowRenderer), assert(resources.textRenderer), bounds)
+  elseif dialogueModal then
     resources.dialogueRenderer:draw(self.runtime.dialogue, self:_dialoguePresentation(bounds, fieldScale))
   end
   if yesNo then
@@ -595,21 +619,29 @@ function FieldState:draw()
     self:_drawScriptScreenFadeIfNeeded()
     return
   end
-  self:_drawBackdrop(width, height)
+  -- Runtimes without a lifecycle owner predate the overworld gate and
+  -- keep the historical always-present behavior.
+  local overworld = self.runtime.overworld
+  local overworldPresent = overworld == nil or overworld:isPresent()
+  if overworldPresent then
+    self:_drawBackdrop(width, height)
+  end
   local alpha = self.runtime.session:renderAlpha()
-  -- Rendering consumes the active logical map's render environment
-  -- independently from geometry: physical coverage owns outdoor world
-  -- parts while the environment carries lighting, edge, and fog state.
-  resources.renderer:draw(
-    self.runtime.runtimeMap.renderEnvironment,
-    self.runtime.camera,
-    self:_worldParts(alpha),
-    self.spriteItems,
-    self.runtime.viewport,
-    alpha,
-    self.runtime.fieldPixelScale:resolvedScale()
-  )
-  self.runtime:acknowledgeDestinationPresentation()
+  if overworldPresent then
+    -- Rendering consumes the active logical map's render environment
+    -- independently from geometry: physical coverage owns outdoor world
+    -- parts while the environment carries lighting, edge, and fog state.
+    resources.renderer:draw(
+      self.runtime.runtimeMap.renderEnvironment,
+      self.runtime.camera,
+      self:_worldParts(alpha),
+      self.spriteItems,
+      self.runtime.viewport,
+      alpha,
+      self.runtime.fieldPixelScale:resolvedScale()
+    )
+    self.runtime:acknowledgeDestinationPresentation()
+  end
   -- The retained Start Menu draws first and the foreground child second,
   -- with the paused world beneath both; no application transition overlay
   -- is painted. The unrelated warp fade over the world viewport follows.
@@ -632,7 +664,16 @@ function FieldState:draw()
   end
   -- Attached dialogue and signposts share the field scale and yield to modal
   -- application surfaces.
-  self:_drawFieldAttachedUi(resources, hostStatus, alpha)
+  local blackoutStatus = self.runtime.blackoutFlow and self.runtime.blackoutFlow:status() or nil
+  local blackoutMessageActive = blackoutStatus ~= nil
+    and (
+      blackoutStatus.phase == "message_in"
+      or blackoutStatus.phase == "message_wait"
+      or blackoutStatus.phase == "message_out"
+    )
+  if overworldPresent or blackoutMessageActive then
+    self:_drawFieldAttachedUi(resources, hostStatus, alpha)
+  end
   -- Each present application surface draws in order: the retained Start
   -- Menu through its resolved presentation plan, then the foreground
   -- field application owned by the presentation dispatch. The retained
@@ -685,6 +726,11 @@ function FieldState:draw()
   )
   if pokemonNaming ~= nil and pokemonNaming:isActive() and self._namingPresentationReady then
     pokemonNaming:drawPresentation(resources:pokemonNamingRenderer())
+  end
+  if blackoutStatus ~= nil and blackoutStatus.coverAlpha ~= nil and blackoutStatus.coverAlpha > 0 then
+    local color = blackoutStatus.coverColor == "white" and 1 or 0
+    lg.setColor(color, color, color, blackoutStatus.coverAlpha)
+    lg.rectangle("fill", 0, 0, width, height)
   end
   if self.development and self._developmentOverlayVisible then
     self._fpsFrames = self._fpsFrames + 1
@@ -1134,6 +1180,7 @@ function FieldState:dispose()
     self.worldParts[8] = nil
     self.worldParts[9] = nil
     self.worldParts[10] = nil
+    self.worldParts[11] = nil
   end
   self.worldActorItems = nil
   self.spriteItems = nil

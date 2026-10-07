@@ -1,5 +1,8 @@
 -- Semantic mon records. The authoritative runtime representation is the
--- readable g4-mon-v2 record; derivable values (level, nature, gender,
+-- readable g4-mon-v2 record; persistent conditions are an ordered list of
+-- typed effect records instead of an opaque native word, so native and
+-- custom battles share one canonical state without duplicating health,
+-- power points, or status. Derivable values (level, nature, gender,
 -- shininess, maximum stats) are never stored and unknown fields fail, so a
 -- persisted record cannot contradict its own personality, identity, or
 -- experience. Validation returns an owned canonical copy and never repairs
@@ -14,6 +17,7 @@ local Moves = require("libs.mons.src.gen4.Moves")
 local Mail = require("libs.mons.src.gen4.Mail")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
+local StatusCodec = require("libs.mons.src.gen4.StatusCodec")
 
 ---@class Mon
 local Mon = {}
@@ -66,7 +70,7 @@ local ORIGIN_FIELDS = {
   ball = true,
   language = true,
 }
-local CONDITION_FIELDS = { status = true, currentHp = true }
+local CONDITION_FIELDS = { currentHp = true, effects = true }
 local CAPSULE_FIELDS = { id = true, seals = true }
 local SEAL_FIELDS = { x = true, y = true, graphic = true }
 local DATE_FIELDS = { year = true, month = true, day = true }
@@ -221,8 +225,13 @@ end
 ---@param maxHp integer
 local function checkCondition(condition, maxHp)
   checkRecord(condition, CONDITION_FIELDS, "condition record")
-  checkU32(condition.status, "status condition")
   checkIntRange(condition.currentHp, 0, maxHp, "current health")
+  if not Validate.isArray(condition.effects) then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "condition effects must be an array", {})
+  end
+  for _, effect in ipairs(condition.effects) do
+    StatusCodec.checkEffect(effect)
+  end
 end
 
 ---@param record table<string, unknown>
@@ -370,6 +379,14 @@ function Mon.migrateV1(record)
   local migrated = copyValue(record)
   migrated.schema = Mon.SCHEMA
   migrated.mail = Mail.validate(migrated.mail)
+  -- Legacy conditions carry the opaque native status word; current records
+  -- carry the decoded semantic effect list alongside current health.
+  assert(type(migrated.condition) == "table", "legacy mon migration requires its condition record")
+  local legacyCondition = migrated.condition --[[@as { status: integer, currentHp: integer }]]
+  migrated.condition = {
+    currentHp = copyValue(legacyCondition.currentHp),
+    effects = StatusCodec.decode(legacyCondition.status),
+  }
   return migrated
 end
 

@@ -1,0 +1,649 @@
+-- Application battle consequence staging: prize and blackout money,
+-- captures, dex knowledge, roamer deltas, and planned bag consumption all
+-- stage through the live owners and the battle committer on the production
+-- runtime path. Unknown capture species and unstaged dex references fail
+-- the resolution instead of publishing a partial result.
+
+local Assert = require("tests.support.Assert")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local ItemFixture = require("libs.items.tests.item_fixture")
+local Lcrng = require("libs.mons.src.gen4.Lcrng")
+local MonsSave = require("libs.mons.src.MonsSave")
+local Party = require("libs.mons.src.Party")
+
+local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
+local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
+local COMMITTER_MODULE = "libs.hgss.src.battle.HgssBattleCommitter"
+
+local T = {}
+
+---@param name string module path under test
+---@param behavior string missing owner under test
+---@return table the loaded battle owner
+local function requirePresent(name, behavior)
+  local ok, loaded = pcall(require, name)
+  Assert.isTrue(ok, "missing battle owner: " .. behavior .. " (" .. name .. ")")
+  assert(loaded ~= nil, "the battle module loads")
+  return loaded --[[@as table]]
+end
+
+---@param record table full mon-domain record under test preparation
+---@return table the same record striking with a single known move
+local function tackleOnly(record)
+  record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return record
+end
+
+---@param species string
+---@param level integer
+---@param seed integer
+---@param hp integer? entry health override
+---@param heldItem string? held item key override
+---@return table full mon-domain record
+local function foeRecord(species, level, seed, hp, heldItem)
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(seed, catalog)
+  local record = factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level }))
+  if hp ~= nil then
+    record.condition.currentHp = hp
+  end
+  if heldItem ~= nil then
+    catalog:item(heldItem)
+    record.heldItem = heldItem
+  end
+  return record
+end
+
+---@param leadHp integer? entry health override for the party lead
+---@return table party owner holding one fixed mon
+local function newPartyOwner(leadHp)
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  local catalog = CatalogFixture.makeCatalog()
+  local owner = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+    mapSection = 7,
+    date = CatalogFixture.metDate(),
+  })
+  local record = foeRecord("CHIKORITA", 5, 0x33333333, leadHp)
+  Assert.isTrue(owner:addMon(record), "the resolution needs its live party lead")
+  return owner
+end
+
+
+---@return table bag owner holding a fixed ball stock
+local function newBagOwner()
+  local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  Assert.isTrue(bag:add("POKE_BALL", 5))
+  return bag
+end
+
+---@return table dex knowledge over the resolution species set
+local function newDexOwner()
+  local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+  return PokedexKnowledge.new({ species = { CHIKORITA = true, TOTODILE = true, EEVEE = true } })
+end
+
+---@return table roamer state with one roaming record
+local function newRoamerOwner()
+  local Fixture = require("libs.hgss.tests.encounter_fixture")
+  local HgssRoamerState = require("libs.hgss.src.encounters.HgssRoamerState")
+  local refs = Fixture.refs()
+  return HgssRoamerState.new({
+    records = { Fixture.roamerRecord(Fixture.roamerMon(), 11, "roaming", 0) },
+    species = refs.species,
+    maps = refs.maps,
+  })
+end
+
+---@param money integer pocket money the player record carries
+---@return table player record and its validation context
+local function playerFacts(money)
+  local record = {
+    profile = { name = "RED", gender = 0, trainerId = 1, money = money, badges = 0, nationalDex = false },
+    options = { textFrame = 0, textSpeed = "fastest" },
+  }
+  local context = { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }
+  return { record = record, context = context }
+end
+
+---@param battle table running application battle lifetime
+---@param scenario table detached battle setup carrying the player roster
+local function driveToSettlement(battle, scenario)
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local claimed = {} ---@type table<integer, boolean>
+  -- A full player roster turns a mid-battle faint into a mandatory
+  -- switch-only replacement, so the driver answers those requests with
+  -- an unclaimed benched roster member and strikes everywhere else.
+  ---@param actor table fainted entry owed a reserve
+  ---@return integer unclaimed roster member sharing the player side
+  local function reserveFor(actor)
+    local roster = scenario.participants[1].roster
+    for _, seed in ipairs(roster) do
+      local id = (seed --[[@as table<string, unknown>]]).id --[[@as integer]]
+      if id ~= actor.combatant and not claimed[id] then
+        claimed[id] = true
+        return id
+      end
+    end
+    error("the replacement needs an unclaimed reserve")
+  end
+  local ticks = 0
+  while battle:status().phase ~= "complete" and battle:status().phase ~= "failed" and ticks < 1200 do
+    battle:update()
+    local current = battle:status()
+    if current.phase == "running" and current.request ~= nil then
+      local kinds = {}
+      if current.request.legalChoices ~= nil then
+        kinds = current.request.legalChoices.kinds
+      end
+      local admitsSwitch = false
+      local admitsAttack = false
+      for _, kind in ipairs(kinds) do
+        if kind == "switch" then
+          admitsSwitch = true
+        end
+        if kind == "attack" then
+          admitsAttack = true
+        end
+      end
+      local choices = {}
+      for _, actor in ipairs(assert(current.request.actors, "a decision request names its actors")) do
+        if admitsSwitch and not admitsAttack then
+          choices[#choices + 1] = SessionFixture.switchChoice(actor, reserveFor(actor))
+        else
+          choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+        end
+      end
+      local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
+      Assert.isTrue(accepted, "a legal decision is accepted: " .. tostring(replyErr))
+    end
+    ticks = ticks + 1
+  end
+end
+
+---@param trainers table trainer entries fielding the enemy side
+---@param ctx table scenario context carrying the live owners
+---@return table trainer scenario fragment
+local function trainerScenario(trainers, ctx)
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  return ScenarioFactory.fromTrainer({ id = "trainer-prize", trainers = trainers }, ctx)
+end
+
+function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  requirePresent(COMMITTER_MODULE, "end-to-end exactly-once result publication")
+
+  local party = newPartyOwner()
+  local facts = playerFacts(3000)
+  -- Class 2 pays rate 4, so the final level-4 party member awards
+  -- 4 * 4 * 4 with no injected prize inputs anywhere. The foe strikes
+  -- with a modeled move so either turn order settles the standing.
+  local foe = foeRecord("TOTODILE", 4, 0x5EED0001, 1)
+  foe.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local trainers = {
+    {
+      id = "rival-early",
+      class = 2,
+      party = { foe },
+      partyLevels = { 4 },
+      prizeMoney = { trainerClass = 2, classRate = 4 },
+      program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
+      aiPasses = {},
+    },
+  }
+  local scenario = trainerScenario(trainers, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  local battle = BattleRuntime.new({
+    request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
+    scenario = scenario,
+    party = party,
+    player = facts,
+  })
+  driveToSettlement(battle, scenario)
+  Assert.equal(battle:status().phase, "complete", "answered decisions finish the trainer battle")
+  Assert.equal(battle:status().result, "win", "a fainted enemy side reports the win")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(receipt.committed, "the prize batch commits")
+  Assert.equal(receipt.rewards.amount, 64, "the prize follows the native class rate and final level")
+  Assert.equal(receipt.player.profile.money, 3064, "the receipt carries the credited money candidate")
+  Assert.equal(facts.record.profile.money, 3000, "staging never touches the input record")
+  battle:dispose()
+  -- Replaying the same terminal outcome under its launch identity reuses
+  -- the recorded receipt instead of crediting the prize a second time.
+  local replayScenario = trainerScenario(trainers, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  local replay = BattleRuntime.new({
+    request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
+    scenario = replayScenario,
+    party = party,
+    player = facts,
+  })
+  driveToSettlement(replay, replayScenario)
+  Assert.equal(replay:status().phase, "complete", "the replayed battle still settles")
+  local second = assert(replay:status().outcomeReceipt, "the replay carries its commit receipt")
+  Assert.equal(second.rewards.amount, 64, "the replayed prize matches the recorded amount")
+  Assert.equal(second.player.profile.money, 3064, "the replay credits nothing twice")
+  replay:dispose()
+end
+
+function T.trainer_win_doubles_the_prize_while_a_money_up_holder_stands()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+
+  local party = newPartyOwner()
+  local facts = playerFacts(3000)
+  -- The foe carries the money-up hold effect, so the battle-local
+  -- multiplier doubles the same native prize once.
+  local foe = foeRecord("TOTODILE", 4, 0x5EED0002, 1, "AMULET_COIN")
+  foe.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local scenario = trainerScenario({
+    {
+      id = "rival-coin",
+      class = 2,
+      party = { foe },
+      partyLevels = { 4 },
+      prizeMoney = { trainerClass = 2, classRate = 4 },
+      program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
+      aiPasses = {},
+    },
+  }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  local battle = BattleRuntime.new({
+    request = { id = "launch-coin-prize", kind = "trainer", payload = { trainer = "rival-coin" } },
+    scenario = scenario,
+    party = party,
+    player = facts,
+  })
+  driveToSettlement(battle, scenario)
+
+  Assert.equal(battle:status().phase, "complete", "answered decisions finish the trainer battle")
+  Assert.equal(battle:status().result, "win", "a fainted enemy side reports the win")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.equal(receipt.rewards.amount, 128, "an active money-up holder doubles the native prize once")
+  Assert.equal(receipt.player.profile.money, 3128, "the receipt carries the doubled money candidate")
+  battle:dispose()
+end
+
+function T.loss_stages_blackout_debit_through_the_committer()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+
+  local party = newPartyOwner(1)
+  local facts = playerFacts(3000)
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xB1AC0001))
+  local launch =
+    { id = "launch-blackout-debit", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    player = facts,
+  })
+  driveToSettlement(battle, scenario)
+  Assert.equal(battle:status().phase, "complete", "answered decisions finish the lost battle")
+  Assert.equal(battle:status().result, "loss", "a fainted player side reports the loss")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(receipt.committed, "the loss batch commits")
+  Assert.equal(receipt.rewards.kind, "loss", "the loss plans through the money planning owner")
+  Assert.equal(receipt.player.profile.money, 2960, "the receipt carries the debited money candidate")
+  battle:dispose()
+end
+
+function T.capture_stages_party_dex_and_bag_through_the_committer()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+
+  local party = newPartyOwner()
+  local bag = newBagOwner()
+  local dex = newDexOwner()
+  local caught = foeRecord("TOTODILE", 4, 0xC0FFEE01)
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xC0FFEE02))
+  local launch =
+    { id = "launch-capture-wire", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    bag = bag,
+    bagDeltas = { { op = "take", item = "POKE_BALL", quantity = 1 } },
+    dex = dex,
+    captures = { { captureId = 21, ball = "POKE_BALL", success = true, mon = caught } },
+  })
+  driveToSettlement(battle, scenario)
+  Assert.equal(battle:status().phase, "complete", "answered decisions finish the capture battle")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(receipt.committed, "the capture batch commits")
+  Assert.equal(#receipt.placements, 1, "the capture reports its placement")
+  Assert.isTrue(receipt.placements[1].retained, "room in the party retains the capture")
+  Assert.equal(party:partyCount(), 2, "the caught mon lands in the live party")
+  local stored = party:partyMon(1)
+  Assert.equal(stored.species, "TOTODILE", "the appended mon keeps its species")
+  Assert.equal(stored.personality, caught.personality, "the appended mon keeps its identity")
+  Assert.isTrue(dex:isCaught("TOTODILE"), "the capture registers caught knowledge")
+  Assert.isTrue(dex:isSeen("TOTODILE"), "a caught mon counts as seen")
+  Assert.equal(bag:quantity("POKE_BALL"), 4, "the planned ball consumption lands in the live bag")
+  battle:dispose()
+end
+
+-- With no storage behind a full party, the capture batch fails the commit
+-- preparation before any owner publishes: the resolution reports the
+-- failure instead of a receipt, and the live party, dex knowledge, and
+-- bag stay exactly as they were.
+function T.full_party_capture_fails_without_publishing_any_consequence()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+
+  local party = newPartyOwner()
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0xAAAA0001, catalog)
+  local species = { "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" }
+  for _, key in ipairs(species) do
+    local record = factory:createNormal(CatalogFixture.normalRequest({ species = key }))
+    Assert.isTrue(party:addMon(record), "the refused case needs a full party")
+  end
+  Assert.equal(party:partyCount(), 6, "the party starts full")
+  local bag = newBagOwner()
+  local dex = newDexOwner()
+  local foe = tackleOnly(foeRecord("EEVEE", 4, 0xAAAA0004))
+  local launch =
+    { id = "launch-full-party-wire", kind = "wild", payload = { species = "EEVEE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  local caught = foeRecord("EEVEE", 4, 0xAAAA0002)
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    bag = bag,
+    bagDeltas = { { op = "take", item = "POKE_BALL", quantity = 1 } },
+    dex = dex,
+    captures = { { captureId = 22, ball = "POKE_BALL", success = true, mon = caught } },
+  })
+  driveToSettlement(battle, scenario)
+  Assert.equal(battle:status().phase, "failed", "the capture without retention fails the resolution")
+  Assert.isNil(battle:status().outcomeReceipt, "a refused batch carries no commit receipt")
+  Assert.notNil(battle:status().error, "the failure names its missing retention")
+  Assert.equal(party:partyCount(), 6, "the live party is unchanged")
+  Assert.isFalse(dex:isCaught("EEVEE"), "the refused batch registers no caught knowledge")
+  Assert.equal(bag:quantity("POKE_BALL"), 5, "the refused batch consumes no ball")
+  battle:dispose()
+end
+
+function T.roamer_battle_advances_the_roamer_revision()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+
+  local party = newPartyOwner()
+  local roamer = newRoamerOwner()
+  local standin = foeRecord("EEVEE", 14, 0x90A4E001, 1)
+  local launch =
+    { id = "launch-roamer-wire", kind = "wild", payload = { species = "EEVEE", level = 14, mon = standin } }
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  -- The roaming record tracks its own battle health; the scenario foe is a
+  -- 1-HP stand-in so the executed battle settles the standing. The stand-in
+  -- races at level 14 so the level-5 lead still answers under exact STAB.
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    roamer = { owner = roamer, key = "roamer-eevee", expectedRevision = 0, details = {} },
+  })
+  driveToSettlement(battle, scenario)
+  Assert.equal(battle:status().phase, "complete", "answered decisions finish the roamer battle")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(receipt.committed, "the roamer batch commits")
+  Assert.equal(receipt.roamer.lifecycle, "defeated", "the receipt carries the settled roamer")
+  Assert.equal(receipt.roamer.revision, 1, "the roamer revision advances exactly once")
+  local ok = pcall(roamer.prepareEncounter, roamer, "roamer-eevee")
+  Assert.isFalse(ok, "a defeated roamer no longer offers encounters")
+  battle:dispose()
+end
+
+function T.unknown_capture_species_fails_the_resolution()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local Committer = requirePresent(COMMITTER_MODULE, "end-to-end exactly-once result publication")
+
+  local party = newPartyOwner()
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xAAAA0005))
+  local launch =
+    { id = "launch-unknown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  local bogus = foeRecord("EEVEE", 4, 0xAAAA0003)
+  bogus.species = "MISSINGNO"
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    captures = { { captureId = 23, ball = "POKE_BALL", success = true, mon = bogus } },
+  })
+  driveToSettlement(battle, scenario)
+  Assert.equal(battle:status().phase, "failed", "an unknown capture never stages")
+  Assert.isNil(battle:status().outcomeReceipt, "a failed resolution records no receipt")
+  Assert.isNil(Committer.receipt(launch.id), "a failed resolution records no success receipt")
+  Assert.equal(party:partyCount(), 1, "the live party is unchanged")
+  battle:dispose()
+end
+
+function T.unstaged_dex_reference_fails_the_resolution()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local Committer = requirePresent(COMMITTER_MODULE, "end-to-end exactly-once result publication")
+  local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+
+  local party = newPartyOwner()
+  local dex = PokedexKnowledge.new({ species = { CHIKORITA = true } })
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xAAAA0006))
+  local launch =
+    { id = "launch-unstaged-dex", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    dex = dex,
+  })
+  driveToSettlement(battle, scenario)
+  Assert.equal(battle:status().phase, "failed", "an unstaged dex reference never publishes silently")
+  Assert.isNil(battle:status().outcomeReceipt, "a failed resolution records no receipt")
+  Assert.isNil(Committer.receipt(launch.id), "a failed resolution records no success receipt")
+  battle:dispose()
+end
+
+-- Knockout progression reaches the committed party even when the
+-- recipient's health never moved: an undamaged Exp-Share-style earner
+-- stages its experience and effort writeback, and the commit publishes
+-- exactly one party revision with health untouched.
+function T.undamaged_knockout_progression_reaches_the_committed_party()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local Committer = requirePresent(COMMITTER_MODULE, "end-to-end exactly-once result publication")
+
+  local party = newPartyOwner()
+  local live = party:partyMon(0)
+  local liveCondition = live.condition --[[@as table<string, unknown>]]
+  local entryHp = liveCondition.currentHp --[[@as integer]]
+  local entryExp = live.experience --[[@as integer]]
+  local liveEvs = live.evs --[[@as table<string, unknown>]]
+  local entryAttack = liveEvs.attack --[[@as integer]]
+  local revision = party:partyRevision()
+
+  local rewarded = party:partyMon(0)
+  rewarded.experience = entryExp + 40
+  local rewardedEvs = rewarded.evs --[[@as table<string, unknown>]]
+  rewardedEvs.attack = entryAttack + 1
+  local battle = BattleRuntime.new({
+    request = { id = "launch-undamaged-progression", kind = "wild", payload = { species = "TOTODILE", level = 4 } },
+    party = party,
+  })
+  battle._session = {
+    dispose = function(_) end,
+    capture = function(_self)
+      return {
+        combatants = {
+          {
+            participant = 1,
+            hp = entryHp,
+            entryHp = entryHp,
+            source = { kind = "party", slot = 1 },
+            mon = rewarded,
+          },
+        },
+        participants = { { controller = "player" } },
+      }
+    end,
+  }
+  local updates = battle:_partyUpdates()
+  Assert.equal(#updates, 1, "an undamaged recipient with gains still stages its writeback")
+  local staged = updates[1] --[[@as table<string, unknown>]]
+  Assert.equal(staged.slot, 0, "the staged writeback names the live slot")
+  local stagedMon = staged.mon --[[@as table<string, unknown>]]
+  Assert.equal(stagedMon.experience, entryExp + 40, "the staged writeback carries the earned experience")
+  local prepared = Committer.prepare({
+    outcome = { id = "launch-undamaged-progression", result = "win" },
+    partyOwner = party,
+    partyUpdates = updates,
+  })
+  local receipt = Committer.commit(prepared)
+  Assert.isTrue(receipt.committed, "the progression batch commits")
+  local stored = party:partyMon(0)
+  Assert.equal(stored.experience, entryExp + 40, "earned experience reaches the committed party")
+  local storedEvs = stored.evs --[[@as table<string, unknown>]]
+  Assert.equal(storedEvs.attack, entryAttack + 1, "earned effort reaches the committed party")
+  local storedCondition = stored.condition --[[@as table<string, unknown>]]
+  Assert.equal(storedCondition.currentHp, entryHp, "untouched health stays untouched")
+  Assert.equal(party:partyRevision(), revision + 1, "the progression publishes exactly one revision")
+  battle:dispose()
+end
+
+---@param values integer[] scripted draw results in consumption order
+---@return table stream double spending the scripted draws
+local function thrownStream(values)
+  local used = 0
+  return {
+    nextU16 = function(self, label, cause)
+      assert(self ~= nil, "draws arrive through the stream")
+      assert(type(label) == "string" and label ~= "", "shake draws name their call site")
+      assert(type(cause) == "table", "shake draws carry their semantic cause")
+      used = used + 1
+      return values[used] or 0
+    end,
+  }
+end
+
+---@param mon table persistent mon record held by the target slot
+---@return table battle-owned execution state holding the weakened target
+local function weakenedThrow(mon)
+  return {
+    mode = "wild",
+    inventories = { party = { quantities = { GREAT_BALL = 1 }, revision = 0 } },
+    ledger = {},
+    combatants = { [1] = { hp = 30, maxHp = 30 }, [2] = { mon = mon, hp = 1, maxHp = 30 } },
+  }
+end
+
+---@return table owner-generated successful capture result over a real mon record
+local function thrownCapture()
+  local Capture = requirePresent("libs.battle.src.gen4.Capture", "throwing owns live captures")
+  local caught = foeRecord("TOTODILE", 4, 0xC0FFEE11)
+  local outcome = Capture.execute(
+    { actor = 1, inventoryId = "party", ball = "GREAT_BALL", target = { combatant = 2 } },
+    weakenedThrow(caught),
+    thrownStream({ 0, 0, 0 })
+  )
+  Assert.isTrue(outcome.result.success, "the thrown ball lands deterministically")
+  return outcome.result
+end
+
+---@return table bag owner holding one great ball for the thrown capture
+local function newThrowBag()
+  local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  Assert.isTrue(bag:add("GREAT_BALL", 1), "the thrown capture needs its ball stock")
+  return bag
+end
+
+-- Captures shaped by the throw owner commit through the runtime mapping
+-- without reconstruction: the generated record carries no hand-written
+-- species or level, yet the party keeps the exact mon, dex knowledge
+-- lands, and the ball stays consumed; a full party fails the batch
+-- before any publication instead.
+function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+
+  local generated = thrownCapture()
+  Assert.isNil(generated.species, "the generated record carries no rebuilt species")
+  local party = newPartyOwner()
+  local bag = newThrowBag()
+  local dex = newDexOwner()
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xC0FFEE12))
+  local launch =
+    { id = "launch-thrown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    bag = bag,
+    bagDeltas = { { op = "take", item = "GREAT_BALL", quantity = 1 } },
+    dex = dex,
+    captures = { generated },
+  })
+  driveToSettlement(battle, scenario)
+  Assert.equal(battle:status().phase, "complete", "answered decisions finish the capture battle")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(receipt.committed, "the capture batch commits")
+  Assert.equal(#receipt.placements, 1, "the capture reports its placement")
+  Assert.isTrue(receipt.placements[1].retained, "room in the party retains the capture")
+  Assert.equal(party:partyCount(), 2, "the caught mon lands in the live party")
+  local stored = party:partyMon(1)
+  Assert.equal(stored.species, "TOTODILE", "the appended mon keeps its species")
+  Assert.equal(stored.personality, generated.mon.personality, "the appended mon keeps its identity")
+  Assert.isTrue(dex:isCaught("TOTODILE"), "the capture registers caught knowledge")
+  Assert.isTrue(dex:isSeen("TOTODILE"), "a caught mon counts as seen")
+  Assert.equal(bag:quantity("GREAT_BALL"), 0, "the thrown ball stays consumed")
+  battle:dispose()
+
+  local fullParty = newPartyOwner()
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0xBBBB0001, catalog)
+  for _, key in ipairs({ "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" }) do
+    local record = factory:createNormal(CatalogFixture.normalRequest({ species = key }))
+    -- Reserves now reach the field through faint replacement, so the
+    -- filler movesets stay inside the modeled strike subset exactly like
+    -- every other record in this suite.
+    Assert.isTrue(fullParty:addMon(tackleOnly(record)), "the no-op case needs a full party")
+  end
+  Assert.equal(fullParty:partyCount(), 6, "the party starts full")
+  local fullBag = newThrowBag()
+  local fullDex = newDexOwner()
+  local fullFoe = tackleOnly(foeRecord("TOTODILE", 4, 0xBBBB0004))
+  local fullLaunch =
+    { id = "launch-thrown-capture-full", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = fullFoe } }
+  local fullScenario = ScenarioFactory.fromEncounter(fullLaunch.payload, { party = fullParty, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  local fullBattle = BattleRuntime.new({
+    request = fullLaunch,
+    scenario = fullScenario,
+    party = fullParty,
+    bag = fullBag,
+    bagDeltas = { { op = "take", item = "GREAT_BALL", quantity = 1 } },
+    dex = fullDex,
+    captures = { thrownCapture() },
+  })
+  driveToSettlement(fullBattle, fullScenario)
+  Assert.equal(fullBattle:status().phase, "failed", "the capture without retention fails the resolution")
+  Assert.isNil(fullBattle:status().outcomeReceipt, "a refused batch carries no commit receipt")
+  Assert.equal(fullParty:partyCount(), 6, "the live party is unchanged")
+  Assert.isFalse(fullDex:isCaught("TOTODILE"), "the refused batch registers no caught knowledge")
+  Assert.equal(fullBag:quantity("GREAT_BALL"), 1, "the refused batch consumes no ball")
+  fullBattle:dispose()
+end
+
+return { tests = T }

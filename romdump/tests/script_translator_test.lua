@@ -125,6 +125,14 @@ T["generated movement operands preserve local and player identities"] = function
   Assert.deepEqual(items[4].actor, { ref = "actor", special = "player" })
 end
 
+T["generated movement operands preserve variable-backed map indices"] = function()
+  local items = loweredActorSteps({ "VAR_SPECIAL_x8007" })
+  Assert.deepEqual(items[1].actor, {
+    ref = "actor",
+    mapIndex = { id = "VAR_SPECIAL_x8007", value = "var" },
+  })
+end
+
 T["set object movement type lowers the semantic source type"] = function()
   local ir = {
     instructions = {

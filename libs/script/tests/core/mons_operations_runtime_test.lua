@@ -115,7 +115,7 @@ function T.mutations_go_through_the_service_once()
   Runtime.executeNode({ op = "set_mon_move", slot = 0, moveSlot = 0, move = "CUT" }, run)
   Assert.equal(service:partyMon(0).moves[1].move, "CUT")
   Runtime.executeNode({ op = "heal_party" }, run)
-  Assert.equal(service:partyMon(0).condition.status, 0)
+  Assert.deepEqual(service:partyMon(0).condition.effects, {})
 end
 
 function T.missing_service_is_an_attributed_fault()

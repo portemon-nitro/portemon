@@ -64,6 +64,14 @@ Schema.ENUMS = {
   -- The three persistent follower map-object movement modes opcode 604 may
   -- select; raw source selectors never appear past the generated boundary.
   follower_movement_type = { "follow_player", "follow_transition_a", "follow_transition_b" },
+  -- Battle launch kinds: wild encounters, trainer battles, staged script
+  -- fights, and fully explicit scenarios. Numeric source codes never
+  -- appear at runtime (lowering converts them).
+  battle_kind = { "wild", "trainer", "scripted", "scenario" },
+  -- Battle result read contexts: the ordinary won check and the static
+  -- wild won-or-caught check.
+  battle_result_context = { "battle_won", "static_wild_won_or_caught" },
+  prop_animation_direction = { "forward", "reverse" },
 }
 
 Schema.ACTOR_SPECIALS = { "player", "self", "last_talked", "partner", "camera_target" }
@@ -95,6 +103,12 @@ Schema.VALUES = {
   object_id = { fields = { ref = { type = "actor", required = true } } },
   trigger_background_id = { fields = {} },
   trigger_direction = { fields = {} },
+  scaled_coordinate = {
+    fields = {
+      coordinate = { type = "scalar_or_value", required = true },
+      chunkOffset = { type = "integer", required = true },
+    },
+  },
 }
 
 -- Text-value descriptors. Descriptors are never
@@ -724,6 +738,30 @@ Schema.OPERATIONS = {
       facing = { type = "scalar_or_value", required = true },
     },
   },
+  overworld_leave = { fields = {} },
+  overworld_restore = { fields = {} },
+  whiteout = { fields = {} },
+  current_map_id = { fields = { result = { type = "id_or_var", required = true } } },
+  player_state = { fields = { result = { type = "id_or_var", required = true } } },
+  time_of_day = { fields = { result = { type = "id_or_var", required = true } } },
+  discard_value = { fields = { value = { type = "scalar_or_value", required = true } } },
+  trainer_card_stars = { fields = { result = { type = "id_or_var", required = true } } },
+  prop_animation_load = {
+    fields = {
+      fieldX = { type = "scalar_or_value", required = true },
+      fieldZ = { type = "scalar_or_value", required = true },
+      slot = { type = "integer", required = true },
+    },
+  },
+  prop_animation_play = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      direction = { type = "enum:prop_animation_direction", required = true },
+    },
+  },
+  prop_animation_wait = { fields = { slot = { type = "scalar_or_value", required = true } } },
+  prop_animation_unload = { fields = { slot = { type = "scalar_or_value", required = true } } },
+  pokemon_center_heal = { fields = { count = { type = "scalar_or_value", required = true } } },
   set_spawn = { fields = { spawn = { type = "string", required = true } } },
   -- The source special-spawn setter (opcode 582): records a pending spawn
   -- location distinct from `set_spawn`'s named spawn-point concept. warpId
@@ -1110,6 +1148,28 @@ Schema.OPERATIONS = {
       slot = { type = "scalar_or_value" },
     },
   },
+  -- Battle launch and result. A launch suspends the script on the battle
+  -- task: the injected battle host owns the lifetime and the commit, and
+  -- the completed task writes the script-visible outcome code into the
+  -- result variable. The result read answers from the host's latest
+  -- committed outcome (1 for a won or caught battle, else 0), so scripts
+  -- branch on real results without touching battle internals. No numeric
+  -- source flags here: only the semantic kind, opaque kind-specific
+  -- details validated by the host, and variable references.
+  battle_launch = {
+    fields = {
+      launchId = { type = "scalar_or_value" },
+      kind = { type = "enum:battle_kind", required = true },
+      details = { type = "serializable" },
+      result = { type = "value" },
+    },
+  },
+  battle_result = {
+    fields = {
+      result = { type = "value", required = true },
+      context = { type = "enum:battle_result_context", default = "battle_won" },
+    },
+  },
   -- Follower operations. Every node routes to the one field following
   -- controller through the injected collaborator; boolean results write 1
   -- or 0, and the movement mode carries one semantic mode string.
@@ -1150,6 +1210,7 @@ Schema.OPERATIONS = {
     },
   },
   follower_transition = { fields = {} },
+  follower_recall = { fields = {} },
   unsupported = {
     fields = {
       command = { type = "integer", required = true },
@@ -1927,6 +1988,16 @@ Schema.CONSTRUCTORS = {
         signature = "S.pokemonNicknameInput(spec)",
         canonical = "op=pokemon_nickname_input",
         notes = "spec={slot,result}; blocks on the field Pokemon Naming Screen.",
+      },
+      {
+        signature = "S.battleLaunch(spec)",
+        canonical = "op=battle_launch",
+        notes = "spec={kind,details=nil,result=nil,launchId=nil}; blocks on the battle task owned by the injected host.",
+      },
+      {
+        signature = "S.battleResult(spec)",
+        canonical = "op=battle_result",
+        notes = "spec={result,context=battle_won}; reads the host latest committed outcome as 1 or 0.",
       },
     },
   },

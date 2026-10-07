@@ -6,6 +6,7 @@
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
@@ -17,6 +18,7 @@ GameSave.SCHEMA = "g4-game-save-v8"
 GameSave.LEGACY_V7_SCHEMA = "g4-game-save-v7"
 GameSave.LEGACY_V5_SCHEMA = "g4-game-save-v5"
 GameSave.LEGACY_V6_SCHEMA = "g4-game-save-v6"
+
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local TOP_LEVEL_FIELDS = {
@@ -24,6 +26,7 @@ local TOP_LEVEL_FIELDS = {
   audio = true,
   auxiliaryUi = true,
   bag = true,
+  encounters = true,
   facing = true,
   fashionCase = true,
   fieldTravel = true,
@@ -34,6 +37,7 @@ local TOP_LEVEL_FIELDS = {
   mailbox = true,
   mons = true,
   playTimeSeconds = true,
+  pokedex = true,
   playerData = true,
   photoAlbum = true,
   saveId = true,
@@ -328,7 +332,9 @@ end
 -- Read-only display envelope for menu listing: save schema/id/version, the
 -- display profile name and the integral bounded play time. It performs no
 -- generated-cache lookup and implies no semantic validity; a listed record
+
 -- is not thereby loadable. Never throws a validation failure: malformed
+
 -- input returns a structured error instead.
 ---@param record unknown
 ---@return table<string, unknown>|nil, Errors.Error?

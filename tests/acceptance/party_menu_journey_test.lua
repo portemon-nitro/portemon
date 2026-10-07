@@ -14,6 +14,7 @@ local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
+local GameSave = require("libs.hgss.src.save.GameSave")
 
 local T = {
   metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:730", "audio-bank:759", "map-data:7", "map:7", "summary:global" }, tags = { "party", "bag", "journey" } },

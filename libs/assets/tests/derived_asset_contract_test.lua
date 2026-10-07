@@ -23,6 +23,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local MonCache = require("libs.assets.src.MonCache")
 local ItemCache = require("libs.assets.src.ItemCache")
+local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BagCache = require("libs.assets.src.BagCache")
 local PartyCache = require("libs.assets.src.PartyCache")
 local SummaryCache = require("libs.assets.src.SummaryCache")
@@ -63,7 +64,7 @@ function T.contract_pins_the_current_asset_identities()
     fieldMapData = {
       cacheFormat = "g4-field-map-cache-v1",
       fieldSchema = "g4-field-map-v11",
-      spawnIndexSchema = "g4-field-spawn-index-v1",
+      spawnIndexSchema = "g4-field-spawn-index-v3",
     },
     messages = {
       cacheFormat = "field-message-cache-v3",
@@ -114,11 +115,23 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-starter-choice-v7",
     },
     mons = {
-      cacheFormat = "mon-cache-v1",
+      cacheFormat = "mon-cache-v2",
       catalogSchema = "g4-mon-catalog-v4",
       indexSchema = "g4-mon-index-v2",
       iconManifestSchema = "g4-mon-icon-manifest-v2",
       portraitManifestSchema = "g4-mon-portrait-manifest-v2",
+    },
+    battleData = {
+      cacheFormat = "battle-data-cache-v1",
+      schema = "g4-battle-data-v1",
+    },
+    trainerCatalog = {
+      cacheFormat = "trainer-catalog-cache-v2",
+      schema = "g4-trainer-catalog-v2",
+    },
+    encounterCatalog = {
+      cacheFormat = "encounter-catalog-cache-v1",
+      schema = "g4-encounter-catalog-v1",
     },
     items = {
       cacheFormat = "item-cache-v4",
@@ -205,6 +218,9 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(MonCache.INDEX_SCHEMA, DerivedAssetContract.mons.indexSchema)
   Assert.equal(MonCache.ICON_MANIFEST_SCHEMA, DerivedAssetContract.mons.iconManifestSchema)
   Assert.equal(MonCache.PORTRAIT_MANIFEST_SCHEMA, DerivedAssetContract.mons.portraitManifestSchema)
+  Assert.equal(BattleDataCache.BATTLE_DATA_SCHEMA, DerivedAssetContract.battleData.schema)
+  Assert.equal(BattleDataCache.TRAINER_SCHEMA, DerivedAssetContract.trainerCatalog.schema)
+  Assert.equal(BattleDataCache.ENCOUNTER_SCHEMA, DerivedAssetContract.encounterCatalog.schema)
   Assert.equal(ItemCache.FORMAT, DerivedAssetContract.items.cacheFormat)
   Assert.equal(ItemCache.CATALOG_SCHEMA, DerivedAssetContract.items.catalogSchema)
   Assert.equal(ItemCache.INDEX_SCHEMA, DerivedAssetContract.items.indexSchema)

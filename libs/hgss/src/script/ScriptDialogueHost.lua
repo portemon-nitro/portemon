@@ -10,6 +10,7 @@
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
 ---@class ScriptDialogueHost
 ---@field private _controller table<string, unknown> FieldDialogueController-shaped
@@ -453,7 +454,12 @@ function ScriptDialogueHost:resolveMessage(message, bindings, textArgs)
   local resolvers = {}
   local templateTokens = template --[[@as table]].tokens
   for _, token in ipairs(templateTokens) do
-    if token.kind == "substitution" and token.args ~= nil and resolvers[token.control] == nil then
+    if token.kind == "substitution" and token.control == FieldMessageText.TRNAME then
+      local function resolvePlayerName()
+        return FieldMessageProvider.asciiGlyphTokens(self._player:name(), self._fontDef)
+      end
+      resolvers[token.control] = resolvePlayerName
+    elseif token.kind == "substitution" and token.args ~= nil and resolvers[token.control] == nil then
       local function resolveSubstitution(_, args, _)
         local slot = args and args[1]
         local descriptor = bindings[slot] or textArgs[slot]

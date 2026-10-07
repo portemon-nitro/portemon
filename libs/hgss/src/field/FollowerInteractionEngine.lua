@@ -66,26 +66,38 @@ local NATURE_MODIFIERS = {
   { 0, -10, 10, 0, 0 },
 }
 
-local function statusClass(status)
-  if status == 0 then
-    return 1
+-- Semantic persistent effects share the native status word's class order:
+-- poison/toxic outrank sleep, which outranks burn, freeze, and paralysis.
+-- A healthy record carries no effects; combined states resolve by the
+-- same precedence the word bits encode.
+---@param effects table<integer, table<string, unknown>>
+---@return integer
+local function statusClassOfEffects(effects)
+  local seen = {}
+  for _, effect in ipairs(effects) do
+    if type(effect) == "table" then
+      seen[effect.key] = true
+    end
   end
-  if math.floor(status / 8) % 2 == 1 or math.floor(status / 128) % 2 == 1 then
+  if seen.poison or seen.toxic then
     return 5
   end
-  if status % 8 ~= 0 then
+  if seen.sleep then
     return 8
   end
-  if status == 0x10 then
+  if seen.burn then
     return 2
   end
-  if status == 0x20 then
+  if seen.freeze then
     return 3
   end
-  if status == 0x40 then
+  if seen.paralysis then
     return 4
   end
-  return 8
+  if next(seen) ~= nil then
+    return 8
+  end
+  return 1
 end
 
 local function rangeClass(value, limits)
@@ -259,7 +271,7 @@ function FollowerInteractionEngine:_context(leadSlot)
   local criteria = {
     heldItemClass = heldClass,
     hpClass = hpPercent == 100 and 1 or hpPercent >= 75 and 2 or hpPercent >= 50 and 3 or hpPercent >= 25 and 4 or 5,
-    statusClass = statusClass(mon.condition.status),
+    statusClass = statusClassOfEffects(assert(mon.condition.effects, "follower status class needs condition effects")),
     friendshipClass = rangeClass(friendship, { 255, 200, 150, 90, 60, 30, 1 }),
     friendship = friendship,
     moodClass = mood >= 127 and 1

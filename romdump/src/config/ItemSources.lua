@@ -24,6 +24,13 @@ ItemSources.provenance = {
   },
 }
 
+-- Native identity of the full restore (ITEM_FULL_RESTORE in
+-- include/constants/items.h). The native trainer selector serves it only
+-- for a living holder below quarter health, so the item projection marks
+-- exactly this identity for that serving gate; runtime never sees the
+-- number.
+ItemSources.FULL_RESTORE_ID = 23
+
 --- Item identities 0..536 (ITEM_* minus prefix; mechanic aliases omitted).
 ItemSources.itemKeys = {
   [0] = "NONE",
@@ -672,6 +679,10 @@ ItemSources.machineMoves = {
 -- Item hold-effect constant driving the mon friendship fact
 -- (HOLD_EFFECT_FRIENDSHIP_UP in include/constants/items.h).
 ItemSources.HOLD_EFFECT_FRIENDSHIP_UP = 53
+
+-- Item hold-effect constant doubling trainer prize money while any battler
+-- holds it (HOLD_EFFECT_MONEY_UP in include/constants/items.h).
+ItemSources.HOLD_EFFECT_MONEY_UP = 58
 
 -- item_data member layout (struct ItemData in include/item.h): fixed 34-byte
 -- rows. Audited field offsets: u16 price at 0, hold-effect byte at 2,

@@ -10,6 +10,7 @@
 
 local Validate = require("libs.assets.src.Validate")
 local SchemaCheck = require("libs.assets.src.SchemaCheck")
+local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
 
 ---@class ItemAssetSchema
 local ItemAssetSchema = {}
@@ -57,6 +58,11 @@ local ITEM_FIELDS = {
   canHold = true,
   heldFormEffect = true,
   partyUse = true,
+  battleUse = true,
+  lowHpOnly = true,
+  heldBehavior = true,
+  fling = true,
+  naturalGift = true,
 }
 
 local fail = SchemaCheck.fail
@@ -215,6 +221,42 @@ local function assertEv(key, value, context)
   assertMood(key, value.mood, context)
 end
 
+-- Battle-use facts: the in-battle rider record for battle-only items.
+-- Cures name the confusion and infatuation volatiles the serving
+-- clears, guardSpec raises the mist side screen, and stages carry the
+-- already-decoded native stage flags per stat with the critical flag in
+-- its two-bit domain. Consumers interpret nonzero stages through the
+-- pinned battle item-use law.
+local function assertBattleUse(key, value, context)
+  if type(value) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " battleUse must be a record", context)
+  end
+  checkKeys(value, { cures = true, guardSpec = true, stages = true }, context, "ITEM_CATALOG_INVALID")
+  if type(value.cures) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " battleUse cures must be a record", context)
+  end
+  checkKeys(value.cures, { confusion = true, infatuation = true }, context, "ITEM_CATALOG_INVALID")
+  checkBoolean(value.cures.confusion, context, "ITEM_CATALOG_INVALID", "item " .. key .. " cure confusion")
+  checkBoolean(value.cures.infatuation, context, "ITEM_CATALOG_INVALID", "item " .. key .. " cure infatuation")
+  checkBoolean(value.guardSpec, context, "ITEM_CATALOG_INVALID", "item " .. key .. " guardSpec")
+  if type(value.stages) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " battleUse stages must be a record", context)
+  end
+  checkKeys(value.stages, {
+    attack = true,
+    defense = true,
+    specialAttack = true,
+    specialDefense = true,
+    speed = true,
+    accuracy = true,
+    critical = true,
+  }, context, "ITEM_CATALOG_INVALID")
+  for _, stat in ipairs({ "attack", "defense", "specialAttack", "specialDefense", "speed", "accuracy" }) do
+    checkInteger(value.stages[stat], context, "ITEM_CATALOG_INVALID", "item " .. key .. " stage " .. stat, 0, 15)
+  end
+  checkInteger(value.stages.critical, context, "ITEM_CATALOG_INVALID", "item " .. key .. " stage critical", 0, 3)
+end
+
 local function assertPartyUse(key, value, context)
   if type(value) ~= "table" then
     fail("ITEM_CATALOG_INVALID", "item " .. key .. " partyUse must be a record", context)
@@ -240,6 +282,35 @@ local function assertPartyUse(key, value, context)
     fail("ITEM_CATALOG_INVALID", "item " .. key .. " partyUse kind must be a closed effect kind", context)
   end
 end
+-- Fling throw facts: the numeric effect id plus the numeric power. Both
+-- ride the source bytes unchanged; no semantic Fling-effect inventory
+-- exists in this pipeline.
+local function assertFling(key, value, context)
+  if type(value) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " fling must be a record", context)
+  end
+  checkKeys(value, { effect = true, power = true }, context, "ITEM_CATALOG_INVALID")
+  checkInteger(value.effect, context, "ITEM_CATALOG_INVALID", "item " .. key .. " fling effect", 0, 255)
+  checkInteger(value.power, context, "ITEM_CATALOG_INVALID", "item " .. key .. " fling power", 0, 255)
+end
+
+-- Natural Gift throw facts: the numeric power, the raw five bitfield bits,
+-- and the resolved lower-case type key. Rows whose bits name no source
+-- type (non-berry rows the battle reader never consumes) carry a nil type
+-- with the bits preserved as typeId; the key itself reuses the shared
+-- source type check.
+local function assertNaturalGift(key, value, context)
+  if type(value) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " naturalGift must be a record", context)
+  end
+  checkKeys(value, { power = true, typeId = true, type = true }, context, "ITEM_CATALOG_INVALID")
+  checkInteger(value.power, context, "ITEM_CATALOG_INVALID", "item " .. key .. " natural-gift power", 0, 255)
+  checkInteger(value.typeId, context, "ITEM_CATALOG_INVALID", "item " .. key .. " natural-gift typeId", 0, 31)
+  if value.type ~= nil then
+    BattleDataSchema.assertTypeKey(value.type, context, "item " .. key .. " natural-gift type")
+  end
+end
+
 local function assertItem(key, record, context)
   if type(key) ~= "string" or key == "" then
     fail("ITEM_CATALOG_INVALID", "item keys must be non-empty strings", context)
@@ -288,6 +359,36 @@ local function assertItem(key, record, context)
     )
   end
   assertPartyUse(key, record.partyUse, context)
+  local partyUse = record.partyUse
+  -- Serving gate for trainer selection: set only on items the native
+  -- selector serves below quarter health, absent everywhere else.
+  if record.lowHpOnly ~= nil and type(record.lowHpOnly) ~= "boolean" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " lowHpOnly must be a boolean", context)
+  end
+  local battleOnly = partyUse.kind == "deferred" and partyUse.reason == "battle_only"
+  if battleOnly then
+    if record.battleUse == nil then
+      fail("ITEM_CATALOG_INVALID", "item " .. key .. " battle-only use requires battleUse", context)
+    end
+    assertBattleUse(key, record.battleUse, context)
+  elseif record.battleUse ~= nil then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " carries battleUse outside battle-only party use", context)
+  end
+  -- Semantic held behavior is optional: catalogs produced before the
+  -- battle import pipeline stay valid, while enriched records validate
+  -- their behavior reference through the shared check.
+  if record.heldBehavior ~= nil then
+    BattleDataSchema.assertBehaviorRef(record.heldBehavior, context, "item " .. key .. " heldBehavior")
+  end
+  -- Throw facts are optional: catalogs produced before the battle import
+  -- pipeline stay valid, while enriched records validate their Fling and
+  -- Natural Gift facts strictly through the closed shapes below.
+  if record.fling ~= nil then
+    assertFling(key, record.fling, context)
+  end
+  if record.naturalGift ~= nil then
+    assertNaturalGift(key, record.naturalGift, context)
+  end
   -- Optional machine/berry identities are pocket-gated: TM/HM items carry
   -- the taught move, berry items carry both berry-name forms, and every
   -- other item carries neither.

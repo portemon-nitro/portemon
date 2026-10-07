@@ -58,6 +58,29 @@ function T.source_no_init_record_is_empty_when_explicitly_allowed()
   })
 end
 
+function T.standard_map_init_selectors_use_common_identity_and_local_ids_stay_local()
+  local bytes = string.char(3) .. u16(9013) .. u16(0) .. u16(0)
+  Assert.deepEqual(ScriptHeader.parse(bytes, { scriptBankId = 852 }), {
+    { type = "on_resume", scriptId = "common.union_room_return" },
+  })
+
+  local localBytes = string.char(3) .. u16(3) .. u16(0) .. u16(0)
+  Assert.deepEqual(ScriptHeader.parse(localBytes, { scriptBankId = 852 }), {
+    { type = "on_resume", scriptId = "vanilla.hgss.scr_seq.0852.script_002" },
+  })
+end
+
+function T.standard_on_frame_selectors_use_common_identity()
+  local bytes = u16(0x0101) .. u16(0) .. u16(0) .. u16(0x4106) .. u16(3) .. u16(9013) .. u16(0)
+  local result = ScriptHeader.parse(bytes, { scriptBankId = 852 })
+  Assert.deepEqual(result, {
+    {
+      type = "on_frame_eq",
+      rules = { { variableId = 0x4106, equals = 3, scriptId = "common.union_room_return" } },
+    },
+  })
+end
+
 function T.mixed_stream_preserves_later_on_frame_table()
   local bytes = string.char(3, 2, 0, 0, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0x06, 0x41, 3, 0, 7, 0, 0, 0)
   Assert.deepEqual(ScriptHeader.parse(bytes, { scriptBankId = 845 }), {

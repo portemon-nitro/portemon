@@ -10,12 +10,15 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local SaveFs = require("libs.storage.src.SaveFs")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local GameSave = require("libs.hgss.src.save.GameSave")
 
 local T = {}
+
 
 local GAME_SCHEMA = GameSave.SCHEMA
 
@@ -116,6 +119,8 @@ local function record(saveId, versionId, overrides)
     mart = MartSave.empty(),
     mailbox = Mailbox.new():capture(),
     photoAlbum = PhotoAlbum.new():capture(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
   for key, valueOverride in pairs(overrides or {}) do
     value[key] = valueOverride

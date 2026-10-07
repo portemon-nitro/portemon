@@ -872,6 +872,17 @@ function M.pokemonNicknameInput(spec)
   return op("pokemon_nickname_input", spec)
 end
 
+-- Battle launch and result. The launch suspends the script on the battle
+-- task owned by the injected battle host; the result read answers from
+-- the host's latest committed outcome. Both take the single canonical
+-- spec table named by the schema fields.
+function M.battleLaunch(spec)
+  return op("battle_launch", spec)
+end
+function M.battleResult(spec)
+  return op("battle_result", spec)
+end
+
 -- Field-task request: the pending form claims the runtime-queued request
 -- for the menu-to-field builtin; the explicit form carries a source move
 -- key plus the zero-based mon slot for source lowering. No game-specific

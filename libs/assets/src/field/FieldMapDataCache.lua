@@ -299,6 +299,55 @@ function FieldMapDataCache.hasSpawnDestinations(spawns)
   return count > 0
 end
 
+function FieldMapDataCache.hasBlackoutDestinations(spawns)
+  if type(spawns) ~= "table" or not FieldMapDataCache.hasSpawnDestinations(spawns) then
+    return false
+  end
+  for _, destination in pairs(spawns) do
+    if destination.facing ~= "north" then
+      return false
+    end
+  end
+  return true
+end
+
+-- The setter-written special relocation records the current schema
+-- always carries: spawn keys to destination-global tiles with the unset
+-- warp id and the standard arrival facing. The namespace stays
+-- independent from the outdoor and death namespaces even where values
+-- coincide. An index without it is malformed generated data, never an
+-- empty feature.
+---@param spawns unknown
+---@return boolean
+function FieldMapDataCache.hasSpecialSpawnDestinations(spawns)
+  if type(spawns) ~= "table" then
+    return false
+  end
+  local count = 0
+  for key, destination in pairs(spawns) do
+    if type(key) ~= "string" or key == "" then
+      return false
+    end
+    if
+      type(destination) ~= "table"
+      or type(destination.map) ~= "string"
+      or destination.map == ""
+      or type(destination.fieldX) ~= "number"
+      or destination.fieldX % 1 ~= 0
+      or destination.fieldX < 0
+      or type(destination.fieldZ) ~= "number"
+      or destination.fieldZ % 1 ~= 0
+      or destination.fieldZ < 0
+      or destination.warpId ~= -1
+      or destination.direction ~= "south"
+    then
+      return false
+    end
+    count = count + 1
+  end
+  return count > 0
+end
+
 -- True only if the marker is exact and the index loads with the current
 -- schema and a valid destination table.
 function FieldMapDataCache.isSpawnIndexReady(cacheFs, expectedMarker)
@@ -309,7 +358,75 @@ function FieldMapDataCache.isSpawnIndexReady(cacheFs, expectedMarker)
   if type(index) ~= "table" then
     return false
   end
-  return index.schema == FieldMapDataCache.SPAWN_INDEX_SCHEMA and FieldMapDataCache.hasSpawnDestinations(index.spawns)
+  return index.schema == FieldMapDataCache.SPAWN_INDEX_SCHEMA
+    and FieldMapDataCache.hasSpawnDestinations(index.spawns)
+    and FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
+    and FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns)
+end
+
+-- Resolve one setter-written special relocation record: a fresh copy on
+-- success, nil for an unknown spawn key (the caller refuses loudly, never
+-- a guess). A missing or malformed index is corrupt generated data and
+-- raises. The returned table is detached: mutating it never affects the
+-- cached record or the durable travel owner the caller writes it through.
+---@param cacheFs CacheFs
+---@param spawnKey string
+---@return table<string, unknown>? a fresh { map, fieldX, fieldZ, warpId, direction } record
+function FieldMapDataCache.specialSpawnDestination(cacheFs, spawnKey)
+  assert(type(spawnKey) == "string" and spawnKey ~= "", "special resolution needs a spawn key")
+  local index = cacheFs:loadLua(FieldMapDataCache.spawnIndexPath()) ---@type table?
+  if
+    type(index) ~= "table"
+    or index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA
+    or not FieldMapDataCache.hasSpawnDestinations(index.spawns)
+    or not FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
+    or not FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns)
+  then
+    Errors.raise(SPAWN_INDEX_INVALID, "special destination index is missing or malformed; rebuild the derived cache", {
+      spawn = spawnKey,
+    })
+  end
+  local spawnIndex = index --[[@as table<string, unknown>]]
+  local specialSpawns = spawnIndex.specialSpawns --[[@as table<string, table<string, unknown>>]]
+  local destination = specialSpawns[spawnKey]
+  if destination == nil then
+    return nil
+  end
+  return {
+    map = destination.map,
+    fieldX = destination.fieldX,
+    fieldZ = destination.fieldZ,
+    warpId = destination.warpId,
+    direction = destination.direction,
+  }
+end
+
+function FieldMapDataCache.blackoutDestination(cacheFs, spawnKey)
+  assert(type(spawnKey) == "string" and spawnKey ~= "", "blackout resolution needs a spawn key")
+  local index = cacheFs:loadLua(FieldMapDataCache.spawnIndexPath()) ---@type table?
+  if
+    type(index) ~= "table"
+    or index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA
+    or not FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
+    or not FieldMapDataCache.hasSpawnDestinations(index.spawns)
+    or not FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns)
+  then
+    Errors.raise(SPAWN_INDEX_INVALID, "blackout destination index is missing or malformed; rebuild the derived cache", {
+      spawn = spawnKey,
+    })
+  end
+  local spawnIndex = index --[[@as table<string, unknown>]]
+  local blackoutSpawns = spawnIndex.blackoutSpawns --[[@as table<string, table<string, unknown>>]]
+  local destination = blackoutSpawns[spawnKey]
+  if destination == nil then
+    return nil
+  end
+  return {
+    map = destination.map,
+    fieldX = destination.fieldX,
+    fieldZ = destination.fieldZ,
+    facing = destination.facing,
+  }
 end
 
 -- Resolve one cited landing destination: a fresh record on success, nil
@@ -328,9 +445,19 @@ function FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
       { spawn = spawnKey }
     )
   end
-  assert(type(index) == "table", "spawn index validated above")
-  local destinations = index.spawns
-  assert(type(destinations) == "table", "spawn index validated above")
+  local spawnIndex = index --[[@as table<string, unknown>]]
+  local destinations = spawnIndex.spawns --[[@as table<string, table<string, unknown>>]]
+  if
+    not FieldMapDataCache.hasSpawnDestinations(destinations)
+    or not FieldMapDataCache.hasBlackoutDestinations(spawnIndex.blackoutSpawns)
+    or not FieldMapDataCache.hasSpecialSpawnDestinations(spawnIndex.specialSpawns)
+  then
+    Errors.raise(
+      SPAWN_INDEX_INVALID,
+      "teleport landing index is missing or malformed; rebuild the derived cache",
+      { spawn = spawnKey }
+    )
+  end
   local destination = destinations[spawnKey]
   if destination == nil then
     return nil

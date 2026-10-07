@@ -4,6 +4,7 @@
 -- validators.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local ItemFixture = require("libs.items.tests.item_fixture")
 
 local T = {}
@@ -200,6 +201,68 @@ function T.catalogs_require_held_item_action_metadata()
   Assert.isFalse(ItemAssetSchema.isValidCatalog(oldSchema), "the v3 schema is not accepted")
 end
 
+function T.catalogs_accept_enriched_held_behavior()
+  local ItemAssetSchema = schema()
+  local enriched = validRoot()
+  enriched.items["POTION"].heldBehavior = { key = "no_hold_effect", params = { nativeId = 17, holdEffect = 0 } }
+  enriched.items["POKE_BALL"].heldBehavior = { key = "ball", params = { nativeId = 4 } }
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.assertCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()), "records without held behavior stay valid")
+end
+
+function T.catalogs_reject_malformed_held_behavior()
+  local ItemAssetSchema = schema()
+  local cases = {
+    empty_key = { key = "", params = {} },
+    missing_params = { key = "ball" },
+    non_scalar_param = { key = "ball", params = { nativeId = {} } },
+  }
+  for name, heldBehavior in pairs(cases) do
+    local root = validRoot()
+    root.items["POTION"].heldBehavior = heldBehavior
+    Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "malformed held behavior must be rejected: " .. name)
+  end
+end
+
+function T.catalogs_accept_enriched_throw_facts()
+  local ItemAssetSchema = schema()
+  local enriched = validRoot()
+  enriched.items["POTION"].fling = { effect = 0, power = 30 }
+  enriched.items["POTION"].naturalGift = { power = 0, typeId = 31, type = nil }
+  enriched.items["CHERI_BERRY"].fling = { effect = 1, power = 10 }
+  enriched.items["CHERI_BERRY"].naturalGift = { power = 60, typeId = 10, type = "fire" }
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.assertCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()), "records without throw facts stay valid")
+end
+
+function T.catalogs_reject_malformed_throw_facts()
+  local ItemAssetSchema = schema()
+  local flingCases = {
+    missing_power = { effect = 0 },
+    negative_power = { effect = 0, power = -1 },
+    past_byte_power = { effect = 0, power = 256 },
+    unknown_field = { effect = 0, power = 10, spin = 1 },
+  }
+  for name, fling in pairs(flingCases) do
+    local root = validRoot()
+    root.items["POTION"].fling = fling
+    Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "malformed fling facts must be rejected: " .. name)
+  end
+  local giftCases = {
+    missing_type_bits = { power = 60, type = "fire" },
+    past_bit_power = { power = 256, typeId = 10, type = "fire" },
+    past_field_type_bits = { power = 60, typeId = 32, type = nil },
+    unknown_type_key = { power = 60, typeId = 10, type = "inferno" },
+  }
+  for name, naturalGift in pairs(giftCases) do
+    local root = validRoot()
+    root.items["POTION"].naturalGift = naturalGift
+    Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "malformed natural-gift facts must be rejected: " .. name)
+  end
+end
+
 function T.catalogs_require_party_use_metadata()
   local ItemAssetSchema = schema()
   Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()))
@@ -244,6 +307,201 @@ function T.catalogs_require_party_use_metadata()
   local badReason = validRoot()
   badReason.items.POTION.partyUse = { kind = "deferred", reason = "later" }
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badReason), "an unknown deferral reason must be rejected")
+end
+
+-- A complete in-battle rider record: no cures, no screen, one attack
+-- stage. Mirrors what the item compiler emits for stage-only items.
+local function completeBattleUse()
+  return {
+    cures = { confusion = false, infatuation = false },
+    guardSpec = false,
+    stages = {
+      attack = 1,
+      defense = 0,
+      specialAttack = 0,
+      specialDefense = 0,
+      speed = 0,
+      accuracy = 0,
+      critical = 0,
+    },
+  }
+end
+
+-- Reclassify a placeholder record as usable only inside battle, so
+-- battle-use riders attach to the parent they belong to.
+local function makeBattleOnly(record)
+  record.partyUse = { kind = "deferred", reason = "battle_only" }
+  return record
+end
+
+local function assertRejectsNamingItem(ItemAssetSchema, root, key, why)
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(root), why)
+  local err = Assert.throws(function()
+    ItemAssetSchema.assertCatalog(root)
+  end, why)
+  Assert.isTrue(Errors.is(err), "expected a structured catalog error, got " .. tostring(err))
+  Assert.equal(err.code, "ITEM_CATALOG_INVALID")
+  Assert.isTrue(
+    string.find(err.message, key, 1, true) ~= nil,
+    "rejection must name the offending item: " .. why
+  )
+end
+
+function T.catalogs_accept_the_optional_low_health_serving_gate()
+  local ItemAssetSchema = schema()
+  local gated = validRoot()
+  gated.items.POTION.lowHpOnly = true
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(gated), "a boolean serving gate must be accepted")
+  local ungated = validRoot()
+  Assert.isNil(ungated.items.POTION.lowHpOnly, "ordinary items carry no serving gate")
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(ungated), "an absent serving gate must be accepted")
+  local bad = validRoot()
+  bad.items.POTION.lowHpOnly = "below-quarter"
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(bad), "a non-boolean serving gate must be rejected")
+end
+
+function T.catalogs_accept_battle_only_records_with_complete_battle_use()
+  local ItemAssetSchema = schema()
+  local root = validRoot()
+  makeBattleOnly(root.items["ITEM_55"]).battleUse = completeBattleUse()
+  local guard = makeBattleOnly(root.items["ITEM_56"])
+  guard.battleUse = {
+    cures = { confusion = true, infatuation = true },
+    guardSpec = true,
+    stages = {
+      attack = 0,
+      defense = 0,
+      specialAttack = 0,
+      specialDefense = 0,
+      speed = 0,
+      accuracy = 0,
+      critical = 0,
+    },
+  }
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(root))
+  Assert.isTrue(ItemAssetSchema.assertCatalog(root))
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()), "records without battle use stay valid")
+end
+
+function T.catalogs_reject_battle_only_records_missing_battle_use()
+  local ItemAssetSchema = schema()
+  local root = validRoot()
+  makeBattleOnly(root.items["ITEM_55"])
+  assertRejectsNamingItem(
+    ItemAssetSchema,
+    root,
+    "ITEM_55",
+    "battle-only records without battle use must be rejected"
+  )
+end
+
+function T.catalogs_reject_battle_use_outside_battle_only_records()
+  local ItemAssetSchema = schema()
+  local medicine = validRoot()
+  medicine.items["POTION"].battleUse = completeBattleUse()
+  assertRejectsNamingItem(
+    ItemAssetSchema,
+    medicine,
+    "POTION",
+    "ordinary medicine must not carry battle use"
+  )
+  local berry = validRoot()
+  berry.items["SITRUS_BERRY"].battleUse = completeBattleUse()
+  assertRejectsNamingItem(
+    ItemAssetSchema,
+    berry,
+    "SITRUS_BERRY",
+    "berry medicine must not carry battle use"
+  )
+  local mail = validRoot()
+  mail.items["ITEM_55"].partyUse = { kind = "deferred", reason = "mail" }
+  mail.items["ITEM_55"].battleUse = completeBattleUse()
+  assertRejectsNamingItem(
+    ItemAssetSchema,
+    mail,
+    "ITEM_55",
+    "deferred mail must not carry battle use"
+  )
+  local evolution = validRoot()
+  evolution.items["ITEM_55"].partyUse = { kind = "deferred", reason = "evolution" }
+  evolution.items["ITEM_55"].battleUse = completeBattleUse()
+  assertRejectsNamingItem(
+    ItemAssetSchema,
+    evolution,
+    "ITEM_55",
+    "deferred evolution must not carry battle use"
+  )
+end
+
+function T.catalogs_reject_malformed_battle_use()
+  local ItemAssetSchema = schema()
+  local function battleUseWith(patch)
+    local record = {
+      cures = { confusion = false, infatuation = false },
+      guardSpec = false,
+      stages = {
+        attack = 1,
+        defense = 0,
+        specialAttack = 0,
+        specialDefense = 0,
+        speed = 0,
+        accuracy = 0,
+        critical = 0,
+      },
+    }
+    for key, value in pairs(patch) do
+      record[key] = value
+    end
+    return record
+  end
+  local cases = {
+    unknown_field = battleUseWith({ spin = 1 }),
+    non_boolean_cure = battleUseWith({ cures = { confusion = "yes", infatuation = false } }),
+    unknown_cure = battleUseWith({ cures = { confusion = false, infatuation = false, sleep = true } }),
+    non_boolean_guard = battleUseWith({ guardSpec = 1 }),
+    missing_stage = (function()
+      local record = battleUseWith({})
+      record.stages.critical = nil
+      return record
+    end)(),
+    unknown_stage = (function()
+      local record = battleUseWith({})
+      record.stages.evasion = 1
+      return record
+    end)(),
+    negative_stage = (function()
+      local record = battleUseWith({})
+      record.stages.attack = -1
+      return record
+    end)(),
+    past_nibble_stage = (function()
+      local record = battleUseWith({})
+      record.stages.attack = 16
+      return record
+    end)(),
+    past_crit_bits = (function()
+      local record = battleUseWith({})
+      record.stages.critical = 4
+      return record
+    end)(),
+  }
+  local missingCures = battleUseWith({})
+  missingCures.cures = nil
+  cases.missing_cures = missingCures
+  local missingStages = battleUseWith({})
+  missingStages.stages = nil
+  cases.missing_stages = missingStages
+  local missingGuard = battleUseWith({ guardSpec = true })
+  missingGuard.guardSpec = nil
+  cases.missing_guard = missingGuard
+  for name, battleUse in pairs(cases) do
+    local root = validRoot()
+    -- Malformed riders attach to a battle-only parent so the failure
+    -- exercises the battle-use shape check rather than a cross-field
+    -- rejection for carrying riders on ordinary medicine.
+    makeBattleOnly(root.items["ITEM_55"]).battleUse = battleUse
+    Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "malformed battle use must be rejected: " .. name)
+  end
 end
 
 return { tests = T }

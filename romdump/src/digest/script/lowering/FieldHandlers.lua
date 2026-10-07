@@ -1,5 +1,7 @@
 -- Script lowering handlers for field interactions and actor/UI operations.
 local Operands = require("romdump.src.digest.script.lowering.Operands")
+local FieldServiceHandlers = require("romdump.src.digest.script.lowering.FieldServiceHandlers")
+local BattleHandlers = require("romdump.src.digest.script.lowering.BattleHandlers")
 local MovementDecoder = require("romdump.src.digest.script.MovementDecoder")
 local SignpostCommands = require("romdump.src.reference.hgss.signpost_commands")
 local PlayerAvatar = require("romdump.src.reference.hgss.player_avatar")
@@ -58,6 +60,9 @@ local function actorRef(value)
       -- VAR_SPECIAL_LAST_TALKED to 0x800D; the decoder emits the name.)
       return { ref = "actor", special = "last_talked" }
     end
+    if raw:match("^VAR_") then
+      return { ref = "actor", mapIndex = { id = raw, value = "var" } }
+    end
     return { ref = "actor", id = raw }
   end
   return { ref = "actor", mapIndex = raw }
@@ -107,16 +112,25 @@ local function npcMessage(ins)
   return { op = "npc_msg", message = messageRef(Operands.operandValue(ins.operands[1])) }
 end
 
-local function nonNpcMessageVar(ins)
+local function variableMessageReference(ins, memberIr)
+  assert(memberIr.messageBank ~= nil, "variable message requires a script message bank")
+  return {
+    message = "external",
+    bank = memberIr.messageBank,
+    id = Operands.varRef(ins.operands[1]),
+  }
+end
+
+local function nonNpcMessageVar(ins, memberIr)
   return {
     op = "message",
-    message = Operands.varRef(ins.operands[1]),
+    message = variableMessageReference(ins, memberIr),
     waitForPrint = false,
   }
 end
 
-local function npcMessageVar(ins)
-  return { op = "npc_msg_var", message = Operands.varRef(ins.operands[1]) }
+local function npcMessageVar(ins, memberIr)
+  return { op = "npc_msg_var", message = variableMessageReference(ins, memberIr) }
 end
 
 local function waitInput()
@@ -428,6 +442,11 @@ local function followerTransition()
   -- visual through the transition owner and continues in the same tick; the
   -- field fixed tick advances the visual afterwards.
   return { op = "follower_transition" }
+end
+
+local function followerRecall()
+  -- Retail opcode 599 starts a TaskManager child and blocks until it settles.
+  return { op = "follower_recall" }
 end
 
 local function placeStarterBalls()
@@ -1368,52 +1387,6 @@ local function processSoundplate()
   return { op = "process_soundplate" }
 end
 
-local function martOpen(kind, selector)
-  local step = { op = "mart_open", kind = kind }
-  if selector ~= nil then
-    step.selector = selector
-  end
-  return step
-end
-
-local function martSpecial(ins)
-  return martOpen("special", Operands.varRef(ins.operands[1]))
-end
-
-local function martDecoration(ins)
-  return martOpen("decoration", Operands.varRef(ins.operands[1]))
-end
-
-local function martSeal(ins)
-  return martOpen("seal", Operands.varRef(ins.operands[1]))
-end
-
-local function martAthlete()
-  return martOpen("athlete")
-end
-
-local function martDataCards()
-  return martOpen("data_cards")
-end
-
-local function martSell()
-  return martOpen("sell")
-end
-
-local function martBuy(ins)
-  -- The source halfword is consumed but does not select stock.
-  assert(ins.operands[1] ~= nil, "MartBuy consumes its source operand")
-  return martOpen("standard")
-end
-
-local function martAthleteAvailable(ins)
-  return { op = "mart_query", kind = "athlete_available", result = Operands.varRef(ins.operands[1]) }
-end
-
-local function martCardPrefix(ins)
-  return { op = "mart_query", kind = "card_prefix", result = Operands.varRef(ins.operands[1]) }
-end
-
 -- ScrCmd_815 in src/scrcmd_c.c reads an immediate selector and only sets the
 -- field display-return target. The mart host always restores the default
 -- target, as field_system.c::sub_0203E33C does for selector zero. Other values
@@ -1429,6 +1402,10 @@ local function setDefaultFieldReturn(ins)
     sourceOffset = ins.offset,
     reason = "ScrCmd_815 supports only the immediate default field return selector zero",
   }
+end
+
+local function whiteout(_)
+  return { op = "whiteout" }
 end
 
 local function actorOscillate(ins)
@@ -1459,7 +1436,7 @@ local function actorOscillate(ins)
   }
 end
 
-return {
+local FieldHandlers = {
   [44] = nonNpcMessage,
   [45] = npcMessage,
   [46] = nonNpcMessageVar,
@@ -1476,16 +1453,7 @@ return {
   [58] = waitSignpostAction,
   [59] = trainerTipsPrint,
   [60] = waitSignpost,
-  [275] = martBuy,
-  [276] = martSpecial,
-  [277] = martDecoration,
-  [278] = martSeal,
-  [771] = martAthlete,
-  [772] = martDataCards,
-  [782] = martSell,
   [815] = setDefaultFieldReturn,
-  [834] = martAthleteAvailable,
-  [835] = martCardPrefix,
   [61] = requestStartMenu,
   [63] = askYesNo,
   [94] = applyMovement,
@@ -1610,6 +1578,7 @@ return {
   [581] = lockLastTalkedActor,
   [582] = setSpecialSpawn,
   [596] = followerPartnerState,
+  [599] = followerRecall,
   [601] = followerFacePlayer,
   [602] = followerSetPaused,
   [603] = followerWait,
@@ -1624,6 +1593,11 @@ return {
   [294] = checkBadge,
   [295] = awardBadge,
   [296] = countBadges,
+  [213] = BattleHandlers.trainerBattle,
+  [220] = BattleHandlers.checkBattleWon,
+  [589] = BattleHandlers.wildBattle,
+  [219] = whiteout,
+  [279] = whiteout,
   [746] = hideAuxiliaryUi,
   [747] = showAuxiliaryUi,
   [748] = contextChoice,
@@ -1636,4 +1610,25 @@ return {
   [178] = explicitFieldMove("surf"),
   [179] = explicitFieldMove("waterfall"),
   [182] = explicitFieldMove("whirlpool"),
+  [187] = FieldServiceHandlers.playerState,
+  [275] = FieldServiceHandlers.martBuy,
+  [276] = FieldServiceHandlers.martSpecial,
+  [277] = FieldServiceHandlers.martDecoration,
+  [278] = FieldServiceHandlers.martSeal,
+  [307] = FieldServiceHandlers.propAnimationLoad,
+  [310] = FieldServiceHandlers.propAnimationPlayForward,
+  [311] = FieldServiceHandlers.propAnimationPlayReverse,
+  [379] = FieldServiceHandlers.timeOfDay,
+  [436] = FieldServiceHandlers.overworldLeave,
+  [437] = FieldServiceHandlers.discardValue,
+  [446] = FieldServiceHandlers.currentMapId,
+  [487] = FieldServiceHandlers.pokemonCenterHeal,
+  [590] = FieldServiceHandlers.trainerCardStars,
+  [771] = FieldServiceHandlers.martAthlete,
+  [772] = FieldServiceHandlers.martDataCards,
+  [782] = FieldServiceHandlers.martSell,
+  [834] = FieldServiceHandlers.martAthleteAvailable,
+  [835] = FieldServiceHandlers.martCardPrefix,
 }
+
+return FieldHandlers

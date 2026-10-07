@@ -99,4 +99,25 @@ function T.missing_follower_collaborator_faults_loudly()
   Assert.isTrue(Errors.is(err), "a missing follower collaborator is an attributed fault, never inactive")
 end
 
+function T.recall_blocks_on_one_task_without_starting_in_the_runtime()
+  local recallStarts = {}
+  local transition = service(recallStarts, true)
+  local tasks = {}
+  local run = runWith(transition, tasks)
+  Assert.equal(Runtime.executeNode({ op = "follower_recall" }, run), Runtime.OUTCOME_BLOCK)
+  Assert.deepEqual(tasks, { "follower_recall" }, "recall enters its HGSS task once")
+  Assert.equal(#recallStarts, 0, "generic runtime leaves HGSS choreography to the task")
+  Assert.equal(run.blockTaskId, "task:follower_recall", "the script parks on the task")
+end
+
+function T.recall_uses_its_task_even_when_the_source_follower_is_inactive()
+  local recallStarts = {}
+  local transition = service(recallStarts, true)
+  local tasks = {}
+  local run = runWith(transition, tasks, false)
+  Assert.equal(Runtime.executeNode({ op = "follower_recall" }, run), Runtime.OUTCOME_BLOCK)
+  Assert.deepEqual(tasks, { "follower_recall" }, "inactive recall still crosses the task boundary")
+  Assert.equal(#recallStarts, 0, "inactive source follower starts no visual work in runtime")
+end
+
 return { tests = T }

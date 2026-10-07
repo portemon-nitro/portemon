@@ -2,8 +2,10 @@
 -- catalog (capacities, stack limits, and ordering come from
 -- include/constants/items.h via the catalog, never from a second table).
 -- One stack exists per item: a stack-overflow add fails even when another
--- empty slot exists. TM/HM and Berry pockets sort by ascending native item
--- id after add; other pockets preserve mutable order. Removing an item's
+-- empty slot exists. TM/HM and Berry pockets sort by the catalog ordering
+-- key after add (native entries keep ascending native-id order, custom
+-- entries sort after every native entry); other pockets preserve mutable
+-- order. Removing an item's
 -- final copy removes the pocket slot and leaves registration untouched.
 -- The service owns the revision; this mechanism
 -- only reports success. Pure domain code: no love dependency.
@@ -163,9 +165,12 @@ function BagInventory:add(itemKey, quantity)
     local slots = self._pockets[pocketKey]
     slots[#slots + 1] = { item = itemKey, quantity = quantity }
     if pocket.ordering == "native_id" then
+      -- Canonical order is the catalog's ordering key, shared with save
+      -- validation: native entries keep numeric source order while custom
+      -- entries sort after every native entry.
       local catalog = self._catalog
       table.sort(slots, function(left, right)
-        return catalog:item(left.item).nativeId < catalog:item(right.item).nativeId
+        return catalog:orderingKey(left.item) < catalog:orderingKey(right.item)
       end)
     end
   end

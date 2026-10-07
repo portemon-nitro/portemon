@@ -36,6 +36,27 @@ local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteracti
 local ScriptPlayerFacade = {}
 ScriptPlayerFacade.__index = ScriptPlayerFacade
 
+-- Script-visible PLAYER_STATE_* values from pret/pokeheartgold's
+-- include/constants/global_fieldmap.h. The value follows the live avatar's
+-- visual state, including temporary field-action poses.
+local PLAYER_STATE_CODE = {
+  walking = 0,
+  cycling = 1,
+  surfing = 2,
+  rocket = 3,
+  use_hm = 4,
+  watering = 5,
+  pokeathlon = 6,
+  fishing = 7,
+  poketch = 8,
+  saving = 9,
+  heal = 10,
+  ladder = 11,
+  rocket_heal = 12,
+  apricorn_shake = 13,
+  rocket_saving = 14,
+}
+
 ---@param player FieldPlayer
 ---@return ScriptPlayerFacade
 local function playerFacade(player)
@@ -135,6 +156,15 @@ function ScriptPlayerFacade:name()
   return profile --[[@as { gender: integer, name: string }]].name
 end
 
+function ScriptPlayerFacade:stateCode()
+  local avatar = self._avatarState
+  assert(avatar and type(avatar.status) == "function", "field scripts require a player avatar state owner")
+  local stateName = avatar:status().visualState
+  local code = PLAYER_STATE_CODE[stateName]
+  assert(code ~= nil, "unknown player avatar state " .. tostring(stateName))
+  return code
+end
+
 function ScriptPlayerFacade:turn(direction)
   local player = assert(self._player, "player facade has no live player")
   assert(player.turn, "player facade requires turn")
@@ -220,12 +250,20 @@ end
 ---@field pokemonNaming table<string, unknown>|nil the script-owned Pokemon Naming Screen host
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field pokemonCenterHeal table<string, unknown>|nil runtime-owned Pokémon Center choreography
 ---@field starterBalls table<string, unknown>|nil the Elm starter-ball runtime-prop controller (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerInteractionCatalog table<string, unknown> validated generated follower-interaction catalog
 ---@field clock table<string, unknown> live local clock
 ---@field fashionCase table<string, unknown> live fashion accessory inventory
 ---@field pcApplications table<string, unknown> the script-owned PC application host
 ---@field pcTerminal table<string, unknown> source PC terminal effects
+---@field battle table<string, unknown>|nil the battle host for script battle tasks (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field timeOfDay table<string, unknown> RTC-derived time-of-day service
+---@field trainerCardStars table<string, unknown> source-derived Trainer Card star query
+---@field overworld table<string, unknown>|nil the shared field lifecycle owner
+---@field propAnimations table<string, unknown>|nil the map-scoped one-shot prop slot owner
+---@field blackout { loader: table<string, unknown>, sourceMap: fun(): table<string, unknown> }? blackout flow construction inputs
+---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -244,7 +282,9 @@ end
 ---@field overrideFs table<string, unknown> read-shaped filesystem for data/scripts/overrides
 ---@field taskRegistry TaskRegistry the live registered-task registry
 ---@field initController MapInitScriptController
+---@field blackoutFlow FieldBlackoutFlow?
 ---@field mapSource RuntimeFieldMap the active runtime map map-scoped script state is bound to
+---@field propAnimations table<string, unknown>|nil
 local FieldScripts = {}
 FieldScripts.__index = FieldScripts
 
@@ -340,6 +380,7 @@ function FieldScripts.new(opts)
     loader = opts.mapLoader,
     sourceMap = opts.sourceMap,
     screen = opts.screen,
+    travel = opts.travel,
   })
   local function resolveText(message)
     return dialogueHost:resolveMessage(message, {}, {})
@@ -361,6 +402,7 @@ function FieldScripts.new(opts)
 
   ---@class FieldScriptsPlatform: FieldScripts
   ---@field initController MapInitScriptController
+  ---@field blackoutFlow FieldBlackoutFlow?
   local platform = setmetatable({
     registry = registry,
     cacheFs = opts.cacheFs,
@@ -375,7 +417,11 @@ function FieldScripts.new(opts)
     followerInteractionEngine = followerInteractionEngine,
     player = player,
     mapSource = opts.sourceMap,
+    propAnimations = opts.propAnimations,
   }, FieldScripts)
+  if opts.propAnimations ~= nil then
+    opts.propAnimations:bindMap(opts.sourceMap)
+  end
 
   -- The live badge progression borrows the supplied profile: badge reads
   -- observe the persisted mask and awards mutate it in place. Without a
@@ -388,6 +434,24 @@ function FieldScripts.new(opts)
 
   -- The live task registry: the scheduler routes through it.
   local liveTaskRegistry = HgssScript.registerTasks(TaskRegistry.new())
+
+  local blackoutFlow
+  if opts.blackout ~= nil then
+    local FieldBlackoutFlow = require("game.hgss.src.field.FieldBlackoutFlow")
+    blackoutFlow = FieldBlackoutFlow.new({
+      cacheFs = opts.cacheFs,
+      loader = opts.blackout.loader,
+      transition = opts.transition,
+      sourceMap = opts.blackout.sourceMap,
+      world = worldState,
+      mons = opts.mons,
+      travel = opts.travel,
+      audio = opts.audio,
+      overworld = opts.overworld,
+      resolveMessage = resolveMessage,
+    })
+    platform.blackoutFlow = blackoutFlow
+  end
 
   local scheduler
   local function advanceAsync()
@@ -407,6 +471,8 @@ function FieldScripts.new(opts)
       player = player,
       dialogue = dialogueHost,
       maps = mapsService,
+      overworld = opts.overworld,
+      propAnimations = opts.propAnimations,
       -- Optional backends: an absent service faults the operation that
       -- needs it (SCRIPT_SERVICE_MISSING) instead of silently succeeding.
       -- The production game wires real audio/camera/screen/events here when
@@ -438,9 +504,14 @@ function FieldScripts.new(opts)
       followingMon = opts.followingMon,
       followerInteraction = followerInteractionEngine,
       followerTransition = opts.followerTransition,
+      pokemonCenterHeal = opts.pokemonCenterHeal,
+      blackout = blackoutFlow,
+      timeOfDay = opts.timeOfDay,
+      trainerCardStars = opts.trainerCardStars,
       starterBalls = opts.starterBalls,
       pcApplications = opts.pcApplications,
       pcTerminal = opts.pcTerminal,
+      battle = opts.battle,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,
@@ -480,6 +551,9 @@ local function rebindMapContext(self, sourceMap)
   self.mapSource = sourceMap
   if self.followerInteractionEngine ~= nil then
     self.followerInteractionEngine.runtimeMap = sourceMap
+  end
+  if self.propAnimations ~= nil then
+    self.propAnimations:bindMap(sourceMap)
   end
 end
 

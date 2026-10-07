@@ -70,6 +70,8 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field getFieldPosition fun(self: FieldObjectActor): { fieldX: integer, fieldZ: integer }
 ---@field getWorldPosition fun(self: FieldObjectActor): { x: number?, y: number?, z: number? }
 ---@field getPresentationOffset fun(self: FieldObjectActor): { x: number, y: number, z: number }
+---@field getPresentationScale fun(self: FieldObjectActor): number
+---@field setPresentationScale fun(self: FieldObjectActor, scale: number)
 ---@field setAnimationPaused fun(self: FieldObjectActor, paused: boolean)
 ---@field setPresentationOffset fun(self: FieldObjectActor, x: number, y: number, z: number)
 ---@field renderPositionInto fun(self: FieldObjectActor, out: { x: number?, y: number?, z: number? }, alpha: number?): { x: number?, y: number?, z: number? }
@@ -245,6 +247,7 @@ function FieldObjectActor.new(opts)
     _gesturePose = nil,
     activeEmoteKind = nil,
     movementType = assert(event.movementType, "field actor movement type is required"),
+    _presentationScale = 1,
     interactionFacingOverride = nil,
     _numericStore = opts.numericStore,
     _numericSlot = opts.numericSlot,
@@ -379,6 +382,25 @@ end
 function FieldObjectActor:setPresentationOffset(x, y, z)
   local state = self:_numeric()
   state.presentationOffsetX, state.presentationOffsetY, state.presentationOffsetZ = x, y, z
+end
+
+-- Transient billboard-only scale multiplier for presentation tooling.
+-- Identity unless a presentation effect owns it; never persisted and never
+-- reflected in world coordinates, collision, or save state.
+---@return number
+function FieldObjectActor:getPresentationScale()
+  return self._presentationScale
+end
+
+-- Set the transient billboard scale. The value must be a strictly positive
+-- finite scalar; anything else is a programming error.
+---@param scale number
+function FieldObjectActor:setPresentationScale(scale)
+  assert(
+    type(scale) == "number" and scale == scale and scale ~= math.huge and scale ~= -math.huge and scale > 0,
+    "actor presentation scale must be a positive finite scalar"
+  )
+  self._presentationScale = scale
 end
 
 -- Temporary facing owned by an interaction client. Only one override may be

@@ -134,6 +134,18 @@ local function service()
   }
 end
 
+local function recordingTransition()
+  local transition = { starts = 0, clears = 0 }
+  function transition:start()
+    transition.starts = transition.starts + 1
+    return true
+  end
+  function transition:clear()
+    transition.clears = transition.clears + 1
+  end
+  return transition
+end
+
 local function world(options)
   options = options or {}
   local map = runtimeMap(61)
@@ -149,6 +161,10 @@ local function world(options)
   })
   local svc = service()
   local catalog = CatalogFixture.makeCatalog()
+  local transition = nil
+  if not options.omitTransition then
+    transition = options.transition or recordingTransition()
+  end
   local controller = FollowingMonController.new({
     service = svc,
     catalog = catalog,
@@ -156,6 +172,7 @@ local function world(options)
     playerOf = function()
       return player
     end,
+    transition = transition,
   })
   return {
     mgr = mgr,
@@ -165,6 +182,7 @@ local function world(options)
     svc = svc,
     catalog = catalog,
     controller = controller,
+    transition = transition,
   }
 end
 
@@ -656,6 +674,7 @@ function T.failed_replacement_raises_and_keeps_the_old_actor()
     playerOf = function()
       return player
     end,
+    transition = recordingTransition(),
   })
   svc:setLead(0, mon("CHIKORITA"))
   controller:update()
@@ -2053,6 +2072,383 @@ function T.direct_map_change_without_exit_keeps_behind_player_placement()
     "a direct map change still installs behind the west-facing player"
   )
   Assert.isTrue(w.controller:isMovementSettled(), "the reinstalled follower settles")
+  w.mgr:dispose()
+end
+
+-- The recall geometry classification reads committed tiles: a follower
+-- south of the player mirrors into the walk pair, while east or west of the
+-- player skips straight to facing. Results are fresh value tables.
+function T.recall_geometry_classifies_committed_tiles()
+  local south = world({ fieldX = 4, fieldZ = 5, facing = "north" })
+  south.svc:setLead(0, mon())
+  tick(south, 2)
+  local southResult = south.controller:classifyRecallGeometry()
+  Assert.deepEqual(southResult, { mirror = true, nextState = 2 }, "south of player mirrors into the walk pair")
+  southResult.mirror = false
+  Assert.deepEqual(
+    south.controller:classifyRecallGeometry(),
+    { mirror = true, nextState = 2 },
+    "classification answers a fresh value, never retained state"
+  )
+  south.mgr:dispose()
+
+  local east = world({ fieldX = 4, fieldZ = 5, facing = "west" })
+  east.svc:setLead(0, mon())
+  tick(east, 2)
+  Assert.deepEqual(
+    east.controller:classifyRecallGeometry(),
+    { mirror = false, nextState = 3 },
+    "east of player skips the walks without mirroring"
+  )
+  east.mgr:dispose()
+
+  local west = world({ fieldX = 4, fieldZ = 5, facing = "east" })
+  west.svc:setLead(0, mon())
+  tick(west, 2)
+  Assert.deepEqual(
+    west.controller:classifyRecallGeometry(),
+    { mirror = true, nextState = 3 },
+    "west of player skips the walks while mirroring"
+  )
+  west.mgr:dispose()
+end
+
+-- Any other committed geometry fails loudly instead of guessing a branch,
+-- and a missing partner fails as not installed.
+function T.recall_geometry_rejects_anything_outside_the_branches()
+  local north = world({ fieldX = 4, fieldZ = 5, facing = "south" })
+  north.svc:setLead(0, mon())
+  tick(north, 2)
+  local err = Assert.throws(function()
+    north.controller:classifyRecallGeometry()
+  end)
+  Assert.isTrue(Errors.is(err), "north-of-player geometry is a structured failure")
+  Assert.equal(err.code, FieldErrors.FOLLOWER_RECALL_GEOMETRY_INVALID, "the failure names the unsupported geometry")
+  north.mgr:dispose()
+
+  local diagonal = world({ fieldX = 4, fieldZ = 5, facing = "north" })
+  diagonal.svc:setLead(0, mon())
+  tick(diagonal, 2)
+  local partnerId = assert(diagonal.mgr:partnerId(), "setup installs the partner")
+  diagonal.mgr:setPosition(partnerId, { fieldX = 5, fieldZ = 6 }, { scripted = true })
+  local diagonalErr = Assert.throws(function()
+    diagonal.controller:classifyRecallGeometry()
+  end)
+  Assert.isTrue(Errors.is(diagonalErr), "diagonal geometry is a structured failure")
+  Assert.equal(
+    diagonalErr.code,
+    FieldErrors.FOLLOWER_RECALL_GEOMETRY_INVALID,
+    "the failure names the unsupported geometry"
+  )
+  diagonal.mgr:dispose()
+
+  local absent = world()
+  local absentErr = Assert.throws(function()
+    absent.controller:classifyRecallGeometry()
+  end)
+  Assert.isTrue(Errors.is(absentErr), "a missing partner is a structured failure")
+  Assert.equal(absentErr.code, FieldErrors.ACTOR_PARTNER_NOT_INSTALLED, "the failure names the missing partner")
+  absent.mgr:dispose()
+end
+
+-- The recall movement vocabulary walks west/north at normal speed
+-- through the existing trail owner and snaps facing north instantly.
+-- Anything outside the closed trio, including raw movement ids, faults.
+function T.recall_movement_walks_and_faces_through_the_trail_owner()
+  local w = world({ fieldX = 4, fieldZ = 5, facing = "north" })
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  local home = assert(w.mgr:getPosition(partnerId), "the partner position is required")
+  Assert.equal(home.fieldX, 4, "setup installs south of the player")
+  Assert.equal(home.fieldZ, 6, "setup installs south of the player")
+
+  w.controller:startRecallMovement("walk_west")
+  Assert.isFalse(w.controller:isMovementSettled(), "the recall walk starts unsettled")
+  tick(w, MovementCalibration.SPEED_TICKS.normal + 2)
+  Assert.isTrue(w.controller:isMovementSettled(), "the recall walk settles")
+  local stepped = assert(w.mgr:getPosition(partnerId), "the partner survives the recall walk")
+  Assert.equal(stepped.fieldX, 3, "the west walk steps one tile west")
+  Assert.equal(stepped.fieldZ, 6, "the west walk holds its row")
+
+  w.controller:startRecallMovement("walk_north")
+  tick(w, MovementCalibration.SPEED_TICKS.normal + 2)
+  local north = assert(w.mgr:getPosition(partnerId), "the partner survives the second walk")
+  Assert.equal(north.fieldX, 3, "the north walk holds its column")
+  Assert.equal(north.fieldZ, 5, "the north walk steps one tile north")
+  Assert.isTrue(w.controller:isMovementSettled(), "the walk pair settles")
+
+  w.controller:startRecallMovement("face_north")
+  Assert.equal(w.mgr:getById(partnerId).facing, "north", "the facing snap turns north instantly")
+  Assert.isTrue(w.controller:isMovementSettled(), "facing starts no movement")
+
+  for _, bad in ipairs({ "walk_south", "walk_east", "face_south", "", 14, 12, 0 }) do
+    Assert.throws(function()
+      w.controller:startRecallMovement(bad --[[@as string]])
+    end, "a recall movement outside the trio must fail, got: " .. tostring(bad))
+  end
+  w.mgr:dispose()
+end
+
+-- Recall vectors are presentation-only: eight cumulative absolute
+-- runtime-tile offsets (native HGSS model units normalized by 16 at the
+-- recall-task seam) never move the logical tile, and clearing zeroes the
+-- render displacement.
+function T.recall_offset_moves_presentation_without_touching_logic()
+  local w = world({ fieldX = 4, fieldZ = 5, facing = "north" })
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  local home = assert(w.mgr:getPosition(partnerId), "the partner position is required")
+  local actor = assert(w.mgr:getById(partnerId), "the partner actor is required")
+  Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "setup holds no vector displacement")
+
+  local nativeY = { 1, 2, 2, 3, 3, 2, 2, 0 }
+  local nativeZ = { 4, 4, 4, 2, 2, 2, 0, 0 }
+  local x, y, z = 0, 0, 0
+  local first = nil
+  local fourth = nil
+  for index = 1, 8 do
+    x = x - 2 / 16
+    y = y + nativeY[index] / 16
+    z = z - nativeZ[index] / 16
+    w.controller:setRecallPresentationOffset({ x = x, y = y, z = z })
+    Assert.deepEqual(
+      actor:getPresentationOffset(),
+      { x = x, y = y, z = z },
+      "vector update " .. index .. " applies its absolute offset"
+    )
+    if index == 1 then
+      first = { x = x, y = y, z = z }
+    end
+    if index == 4 then
+      fourth = { x = x, y = y, z = z }
+    end
+    local logical = assert(w.mgr:getPosition(partnerId), "the partner position is required")
+    Assert.equal(logical.fieldX, home.fieldX, "vector update " .. index .. " never moves the logical tile")
+    Assert.equal(logical.fieldZ, home.fieldZ, "vector update " .. index .. " never moves the logical tile")
+  end
+  Assert.deepEqual(first, { x = -2 / 16, y = 1 / 16, z = -4 / 16 }, "the first step normalizes native units to tiles")
+  Assert.deepEqual(
+    fourth,
+    { x = -8 / 16, y = 8 / 16, z = -14 / 16 },
+    "an intermediate step stays on the normalized tile scale"
+  )
+  Assert.deepEqual(
+    actor:getPresentationOffset(),
+    { x = -1, y = 15 / 16, z = -18 / 16 },
+    "the final vector lands one tile west and just under one tile up"
+  )
+  Assert.equal(w.mgr:partnerId(), partnerId, "the vector sequence keeps the stable actor")
+
+  w.controller:clearRecallPresentationOffset()
+  Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "clear zeroes the displacement")
+  w.controller:clearRecallPresentationOffset()
+  Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "clear stays idempotent")
+  w.mgr:dispose()
+end
+
+-- The final player-relative snap clears any task-owned vector displacement
+-- while placing the partner on the player tile facing north.
+function T.final_reposition_clears_the_recall_offset()
+  local w = world({ fieldX = 4, fieldZ = 5, facing = "north" })
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:setRecallPresentationOffset({ x = -1, y = 15 / 16, z = -18 / 16 })
+  local actor = assert(w.mgr:getById(partnerId), "the partner actor is required")
+  Assert.deepEqual(
+    actor:getPresentationOffset(),
+    { x = -1, y = 15 / 16, z = -18 / 16 },
+    "setup holds a vector displacement"
+  )
+  w.controller:repositionRelativeToPlayer(4, 0)
+  Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "the snap clears the displacement")
+  local placed = assert(w.mgr:getPosition(partnerId), "the partner survives the snap")
+  Assert.equal(placed.fieldX, 4, "the snap lands on the player tile")
+  Assert.equal(placed.fieldZ, 5, "the snap lands on the player tile")
+  Assert.equal(w.mgr:getById(partnerId).facing, "north", "the snap faces north")
+  w.mgr:dispose()
+end
+
+-- Partner actor visibility reports the render flag, unlike the
+-- map-permission visibility: a hidden mid-map birth reads hidden while the
+-- map still permits followers.
+function T.partner_visibility_reports_the_actor_flag()
+  local absent = world()
+  Assert.isFalse(absent.controller:isPartnerVisible(), "no partner reads hidden")
+  absent.mgr:dispose()
+
+  local entry = world()
+  entry.svc:setLead(0, mon())
+  tick(entry, 2)
+  Assert.isTrue(entry.controller:isPartnerVisible(), "a map-entry publication reads visible")
+  entry.mgr:dispose()
+
+  local birth = world()
+  tick(birth, 1)
+  birth.svc:setLead(0, mon())
+  tick(birth, 2)
+  Assert.isTrue(birth.controller:isVisible(), "the permitted map still allows followers")
+  Assert.isFalse(birth.controller:isPartnerVisible(), "a hidden mid-map birth reads hidden")
+  birth.mgr:dispose()
+end
+
+-- The recall transition owner is a required collaborator: construction
+-- without it faults instead of silently dropping the pending transition.
+function T.construction_requires_its_transition_collaborator()
+  local map = runtimeMap(61)
+  local assets = fakeAssets({ [20153] = true, [20154] = true })
+  local mgr = FieldActorManager.new({ assets = assets, policy = POLICY })
+  mgr:enterMap(map, FieldEventState.new())
+  local player = FieldPlayer.new({
+    currentMap = map,
+    fieldX = 4,
+    fieldZ = 5,
+    surfaceId = 0,
+    facing = "south",
+  })
+  Assert.throws(function()
+    FollowingMonController.new({
+      service = service(),
+      catalog = CatalogFixture.makeCatalog(),
+      actors = mgr,
+      playerOf = function()
+        return player
+      end,
+    })
+  end, "construction without the transition collaborator must fault")
+  mgr:dispose()
+end
+
+-- An armed recall runs the shared transition exactly once on the next real
+-- follower walk; the consuming walk still reaches its tile and later walks
+-- stay ordinary.
+function T.armed_recall_runs_the_transition_once_on_the_next_real_walk()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:armRecallTransition()
+  local vacated = driveScriptedWalk(w, "south", "normal")
+  Assert.equal(w.transition.starts, 1, "the first real walk starts the transition once")
+  local placed = assert(w.mgr:getPosition(partnerId), "the partner survives the consuming walk")
+  Assert.equal(placed.fieldX, vacated.fieldX, "the consuming walk still reaches the vacated tile")
+  Assert.equal(placed.fieldZ, vacated.fieldZ, "the consuming walk still reaches the vacated tile")
+  driveScriptedWalk(w, "south", "normal")
+  Assert.equal(w.transition.starts, 1, "the next walk starts no second transition")
+  w.mgr:dispose()
+end
+
+-- Merely queueing an obligation while paused never consumes the armed
+-- recall: only the later real walk starts the transition.
+function T.queued_obligations_wait_for_their_walk_before_consuming_recall()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  local home = assert(w.mgr:getPosition(partnerId), "the partner position is required")
+  w.controller:armRecallTransition()
+  w.controller:setMovementPaused(true)
+  driveScriptedWalk(w, "south", "normal")
+  Assert.equal(w.transition.starts, 0, "merely queueing an obligation starts nothing")
+  local queued = assert(w.mgr:getPosition(partnerId), "the partner survives the paused walk")
+  Assert.equal(queued.fieldX, home.fieldX, "the paused follower holds its tile")
+  Assert.equal(queued.fieldZ, home.fieldZ, "the paused follower holds its tile")
+  w.controller:setMovementPaused(false)
+  tick(w, 20)
+  Assert.equal(w.transition.starts, 1, "the drained walk consumes the armed transition once")
+  w.mgr:dispose()
+end
+
+-- Pause and movement-mode resets never disarm a pending recall on their
+-- own; the next real walk still consumes it exactly once.
+function T.recall_survives_pause_and_mode_resets_until_a_real_walk()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  assert(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:armRecallTransition()
+  w.controller:setMovementPaused(true)
+  w.controller:setMovementPaused(false)
+  w.controller:setMovementType("follow_player")
+  driveScriptedWalk(w, "south", "normal")
+  Assert.equal(w.transition.starts, 1, "pause and mode resets never disarm the pending transition")
+  driveScriptedWalk(w, "south", "normal")
+  Assert.equal(w.transition.starts, 1, "the latch stays one-shot after the reset survival")
+  w.mgr:dispose()
+end
+
+-- A teleport discontinuity replaces the source partner object, so an
+-- unconsumed recall never leaks onto the reinstalled follower.
+function T.teleport_discontinuity_drops_an_unconsumed_recall()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  w.controller:armRecallTransition()
+  w.player:setScriptPosition({ fieldX = 20, fieldZ = 20 })
+  tick(w, 3)
+  local actor = assert(w.mgr:getById("field:partner"), "the partner survives the discontinuity")
+  Assert.equal(actor:getFieldPosition().fieldX, 20, "setup snaps behind the player")
+  Assert.equal(actor:getFieldPosition().fieldZ, 19, "setup snaps behind the player")
+  local vacated = driveScriptedWalk(w, "south", "normal")
+  local placed = assert(w.mgr:getPosition("field:partner"), "the partner follows after the snap")
+  Assert.equal(placed.fieldX, vacated.fieldX, "a real walk runs after the discontinuity")
+  Assert.equal(placed.fieldZ, vacated.fieldZ, "a real walk runs after the discontinuity")
+  Assert.equal(w.transition.starts, 0, "the discontinuity drops the unconsumed transition")
+  w.mgr:dispose()
+end
+
+-- Map exit retires the source partner object, so an unconsumed recall never
+-- leaks onto the next map's reinstalled follower.
+function T.map_exit_drops_an_unconsumed_recall()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  w.controller:armRecallTransition()
+  w.controller:handleMapExit()
+  local nextMap = runtimeMap(62)
+  w.mgr:enterMap(nextMap, FieldEventState.new())
+  w.player.currentMap = nextMap
+  tick(w, 3)
+  local partnerId = assert(w.mgr:partnerId(), "the new map reinstalls the partner")
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  stepSouth(w)
+  tick(w, 20)
+  local placed = assert(w.mgr:getPosition(partnerId), "the new follower follows on the new map")
+  Assert.equal(placed.fieldX, vacated.fieldX, "a real walk runs after the map change")
+  Assert.equal(placed.fieldZ, vacated.fieldZ, "a real walk runs after the map change")
+  Assert.equal(w.transition.starts, 0, "map exit drops the unconsumed transition")
+  w.mgr:dispose()
+end
+
+---@param mgr table
+---@param actorId string
+---@return table
+local function drawRecordFor(mgr, actorId)
+  for _, record in ipairs(mgr:drawRecords()) do
+    if record.actorId == actorId then
+      return record
+    end
+  end
+  error("actor " .. actorId .. " has no draw record")
+end
+
+-- Recall scale is presentation-only: it never moves the logical tile, it
+-- reaches the partner draw record, and clearing restores identity.
+function T.recall_scale_stays_presentation_only_and_reaches_draw_records()
+  local w = world({ fieldX = 4, fieldZ = 5, facing = "north" })
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  local home = assert(w.mgr:getPosition(partnerId), "the partner position is required")
+  w.controller:setRecallPresentationScale(0.25)
+  local logical = assert(w.mgr:getPosition(partnerId), "the partner survives the scale")
+  Assert.equal(logical.fieldX, home.fieldX, "recall scale never moves the logical tile")
+  Assert.equal(logical.fieldZ, home.fieldZ, "recall scale never moves the logical tile")
+  Assert.equal(drawRecordFor(w.mgr, partnerId).presentationScale, 0.25, "the draw record carries the recall scale")
+  w.controller:clearRecallPresentationScale()
+  Assert.equal(drawRecordFor(w.mgr, partnerId).presentationScale, 1, "clearing restores the identity scale")
   w.mgr:dispose()
 end
 

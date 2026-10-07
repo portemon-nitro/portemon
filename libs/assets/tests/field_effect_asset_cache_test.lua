@@ -163,10 +163,12 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "trainer_reveal",
     "surf_attachment",
     "follower_transition",
+    "pokemon_center_heal",
   }) do
     index.effects[kind] = {
       kind = (kind == "warp_entrance" or kind == "surf_attachment") and "model"
         or kind == "follower_transition" and "transition"
+        or kind == "pokemon_center_heal" and "healing"
         or "animated_model",
       definition = kind,
       path = FieldEffectAssetCache.definitionPath(kind),
@@ -240,6 +242,34 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
           model = reaction,
           lifecycle = { mode = "once", frameCount = 4 },
         }
+      end
+      if kind == "pokemon_center_heal" then
+        local ballModel = validDynamicModel()
+        ballModel.key = "field-effect:pokemon-center-healing-ball"
+        ballModel.animations[1].id = "pc_mb"
+        ballModel.animations[1].name = "pc_mb"
+        return extra.healingDefinition
+          or {
+            models = { ballModel },
+            anchorModelKey = "indoor:36:anchor",
+
+            machineModelKey = "indoor:37:machine",
+
+            ballAnimation = "pc_mb",
+            machineAnimation = "moniter_mb",
+            machineAnimationFrameCount = 73,
+            ballPositions = {
+              { role = "northwest", offset = { x = -4.5, y = 12, z = -4.5 } },
+              { role = "northeast", offset = { x = 4.5, y = 12, z = -4.5 } },
+              { role = "west", offset = { x = -4.5, y = 12, z = 0 } },
+              { role = "east", offset = { x = 4.5, y = 12, z = 0 } },
+              { role = "southwest", offset = { x = -4.5, y = 12, z = 4.5 } },
+              { role = "southeast", offset = { x = 4.5, y = 12, z = 4.5 } },
+            },
+            spawnIntervalSourceFrames = 12,
+            placementSound = "SEQ_SE_DP_BOWA",
+            fanfare = "SEQ_ME_ASA",
+          }
       end
       if kind == "trainer_reveal" then
         if extra.unknownLifecycleMode then
@@ -454,6 +484,43 @@ end
 
 local SURF_MARKER = "field-effect-cache-v9:rom:dep"
 local SURF_INDEX_SCHEMA = "g4-field-effect-index-v3"
+T.tests["requires the complete generated Pokémon Center healing definition"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local ready, err = FieldEffectAssetCache.isReady(cache(validModel(), present), EXPECTED_MARKER)
+  Assert.isTrue(ready, tostring(err))
+
+  local incomplete = {
+    models = { validDynamicModel() },
+    anchorModelKey = "indoor:36:anchor",
+
+    machineModelKey = "indoor:37:machine",
+
+    ballAnimation = "pc_mb",
+    machineAnimation = "moniter_mb",
+    machineAnimationFrameCount = 73,
+    ballPositions = {},
+    spawnIntervalSourceFrames = 12,
+    placementSound = "SEQ_SE_DP_BOWA",
+    fanfare = "SEQ_ME_ASA",
+  }
+  local missingRole = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, { healingDefinition = incomplete }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(missingRole, "healing readiness requires every ordered retail ball position")
+
+  incomplete.sourceMemberId = 107
+  local sourceLeak = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, { healingDefinition = incomplete }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(sourceLeak, "runtime definition must not publish physical source identities")
+end
 
 local function validSurfModel()
   local model = validModel()
@@ -515,6 +582,11 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "follower_transition",
         path = FieldEffectAssetCache.definitionPath("follower_transition"),
       },
+      pokemon_center_heal = {
+        kind = "healing",
+        definition = "pokemon_center_heal",
+        path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
+      },
     },
   }
   for selector = 1, 14 do
@@ -557,6 +629,32 @@ local function surfCache(surfDefinition, mutateIndex)
           definition = kind,
           model = reaction,
           lifecycle = { mode = "once", frameCount = 4 },
+        }
+      end
+      if kind == "pokemon_center_heal" then
+        local ballModel = validDynamicModel()
+        ballModel.animations[1].id = "pc_mb"
+        ballModel.animations[1].name = "pc_mb"
+        return {
+          models = { ballModel },
+          anchorModelKey = "indoor:36:anchor",
+
+          machineModelKey = "indoor:37:machine",
+
+          ballAnimation = "pc_mb",
+          machineAnimation = "moniter_mb",
+          machineAnimationFrameCount = 73,
+          ballPositions = {
+            { role = "northwest", offset = { x = -4.5, y = 12, z = -4.5 } },
+            { role = "northeast", offset = { x = 4.5, y = 12, z = -4.5 } },
+            { role = "west", offset = { x = -4.5, y = 12, z = 0 } },
+            { role = "east", offset = { x = 4.5, y = 12, z = 0 } },
+            { role = "southwest", offset = { x = -4.5, y = 12, z = 4.5 } },
+            { role = "southeast", offset = { x = 4.5, y = 12, z = 4.5 } },
+          },
+          spawnIntervalSourceFrames = 12,
+          placementSound = "SEQ_SE_DP_BOWA",
+          fanfare = "SEQ_ME_ASA",
         }
       end
       if kind == "trainer_reveal" then

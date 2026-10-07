@@ -107,6 +107,7 @@ local function fakeFactory(made, failsAfter)
       updates = 0,
       resets = 0,
       disposed = false,
+      disposeCalls = 0,
     }
     function player:updateFixed()
       self.updates = self.updates + 1
@@ -124,6 +125,7 @@ local function fakeFactory(made, failsAfter)
       self.complete = false
     end
     function player:dispose()
+      self.disposeCalls = self.disposeCalls + 1
       self.disposed = true
     end
     made[#made + 1] = player
@@ -209,21 +211,6 @@ local function liveInstance(transitions)
   local instances = transitions:status().instances
   Assert.equal(#instances, 1, "exactly one transition must be live")
   return instances[1]
-end
-
-function T.start_without_a_partner_accepts_one_pending_request()
-  local actors = fakeActors()
-  local transitions, made = controller(actors)
-  Assert.isTrue(transitions:start(), "a pre-publication request is accepted, not dropped")
-  Assert.equal(#transitions:status().instances, 0, "a pending request binds no instance yet")
-  Assert.equal(#made, 0, "a pending request allocates no model state")
-  Assert.equal(#actors._shows, 0, "a pending request reveals nothing")
-  for _ = 1, 3 do
-    transitions:updateFixed()
-  end
-  Assert.equal(#transitions:status().instances, 0, "quiet updates bind nothing without a partner")
-  Assert.equal(#made, 0, "quiet updates allocate no model state without a partner")
-  Assert.equal(#actors._shows, 0, "quiet updates reveal nothing without a partner")
 end
 
 function T.pending_request_binds_the_first_hidden_partner_through_the_reveal_boundary()

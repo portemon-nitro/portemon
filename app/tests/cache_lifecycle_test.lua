@@ -6,6 +6,8 @@
 -- footprint while the halo stays a near 5x5 interest.
 
 local Assert = require("tests.support.Assert")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local SaveFs = require("libs.storage.src.SaveFs")
@@ -84,6 +86,8 @@ local function record(saveId, overrides)
     mons = MonsSave.empty(7),
     mailbox = Mailbox.new():capture(),
     photoAlbum = PhotoAlbum.new():capture(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
   for key, override in pairs(overrides or {}) do
     value[key] = override

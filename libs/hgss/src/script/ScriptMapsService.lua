@@ -8,23 +8,24 @@
 -- lifecycle -- source `Warp` owns no fade of its own. Completion is observed
 -- through the transition returning to idle after the application consumed
 -- the finished swap, so the warp task's poll cadence stays deterministic.
--- The service also holds the source special-spawn setter's semantic state
--- (opcode 582): a named record, not a hidden side effect. Pure domain
+-- The source special-spawn setter (opcode 582) delegates to the durable
+-- travel owner: this service keeps no spawn value of its own. Pure domain
 -- module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
-local ScriptErrors = require("libs.script.src.errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+local FieldCoveredSwap = require("libs.hgss.src.transition.FieldCoveredSwap")
 
 ---@class ScriptMapsService
 ---@field private _transition table<string, unknown> FieldTransition-shaped
 ---@field private _loader table<string, unknown> FieldMapLoader-shaped
 ---@field private _sourceMap table<string, unknown> RuntimeFieldMap
 ---@field private _screen table<string, unknown>|nil screen-fade-cover-shaped: isOpaque(): boolean
+---@field private _coveredSwap FieldCoveredSwap direct covered map replacement owner
+---@field private _travel table<string, unknown>|nil the durable travel owner for special-spawn state
 ---@field private pendingWarp table<string, unknown>|nil
 ---@field private _error unknown|nil
----@field private _specialSpawn table<string, unknown>|nil
 local ScriptMapsService = {}
 ScriptMapsService.__index = ScriptMapsService
 
@@ -34,7 +35,10 @@ ScriptMapsService.__index = ScriptMapsService
 -- swap. A caller with no screen cover (only exercised where a test's
 -- contract is unrelated to warp fade behavior) falls back to the ordinary
 -- transition lifecycle instead of asserting a capability it does not need.
----@param opts table<string, unknown> { transition, loader, sourceMap, screen? }
+-- `opts.travel` is likewise optional: warp-only consumers (such as menu
+-- lane warps) never touch special-spawn state, while special-spawn access
+-- without it faults loudly instead of keeping transient scratch state.
+---@param opts table<string, unknown> { transition, loader, sourceMap, screen?, travel? }
 ---@return ScriptMapsService
 function ScriptMapsService.new(opts)
   assert(
@@ -46,9 +50,14 @@ function ScriptMapsService.new(opts)
     _loader = opts.loader,
     _sourceMap = opts.sourceMap,
     _screen = opts.screen,
+    _travel = opts.travel,
     pendingWarp = nil,
     _error = nil,
-    _specialSpawn = nil,
+    _coveredSwap = FieldCoveredSwap.new({
+      loader = opts.loader,
+      transition = opts.transition,
+      sourceMap = opts.sourceMap,
+    }),
   }, ScriptMapsService)
 end
 
@@ -60,6 +69,7 @@ end
 ---@param sourceMap table<string, unknown> RuntimeFieldMap
 function ScriptMapsService:setSourceMap(sourceMap)
   self._sourceMap = sourceMap
+  self._coveredSwap:setSourceMap(sourceMap)
 end
 
 -- Resolve a map symbol to its runtime map; nil only for the known
@@ -112,40 +122,10 @@ end
 ---@param target table<string, unknown>
 function ScriptMapsService:startWarp(target)
   assert(self.pendingWarp == nil, "a scripted warp is already in progress")
-  local destination, loadErr = self._loader:load(target.map)
-  if destination == nil or destination.mapId == nil then
-    Errors.raise(
-      ScriptErrors.SCRIPT_INVALID_REFERENCE,
-      "warp target map is unavailable: "
-        .. tostring(target.map)
-        .. (loadErr and (" (" .. tostring(loadErr) .. ")") or ""),
-      { map = target.map }
-    )
-  end
-  destination = destination --[[@as table]]
-  local origin = destination.coordinateOrigin --[[@as { x: integer, z: integer }]]
-  if origin == nil or origin.x == nil or origin.z == nil then
-    Errors.raise(
-      ScriptErrors.SCRIPT_INVALID_REFERENCE,
-      "warp destination has no coordinate origin: " .. tostring(target.map),
-      { map = target.map }
-    )
-  end
-  origin = origin --[[@as { x: integer, z: integer }]]
-  local warpId = target.warp or 0
-  local warp = {
-    index = warpId,
-    x = origin.x + target.fieldX,
-    z = origin.z + target.fieldZ,
-    destinationMapId = destination.mapId,
-    destinationWarpId = warpId,
-    direct = true,
-  }
-  self.pendingWarp = warp
+  self.pendingWarp = { target = target }
   self._error = nil
   -- A scripted warp carries no trigger classification: it is a plain fade
   -- record ({ kind = nil, warp = warp }), never a door or stair choreography.
-  local trigger = { warp = warp }
   if self._screen ~= nil then
     -- Source `Warp` owns no fade of its own: the source-authored
     -- FadeScreen/WaitFade already owns visual cover, so the covered swap
@@ -153,25 +133,53 @@ function ScriptMapsService:startWarp(target)
     -- reaches the warp without opaque cover is a script sequencing fault,
     -- not a silently-inserted fade.
     assert(self._screen:isOpaque(), "a covered scripted swap requires the screen cover to be fully opaque")
-    self._transition:startCoveredSwap(self._sourceMap, trigger, target.facing)
+    self._coveredSwap:start(target)
   else
-    self._transition:start(self._sourceMap, trigger, target.facing)
+    local destination = assert(self._loader:load(target.map))
+    local origin = assert(destination.coordinateOrigin)
+    local warpId = target.warp or 0
+    local warp = {
+      index = warpId,
+      x = origin.x + target.fieldX,
+      z = origin.z + target.fieldZ,
+      destinationMapId = destination.mapId,
+      destinationWarpId = warpId,
+      direct = true,
+    }
+    self._transition:start(self._sourceMap, { warp = warp }, target.facing)
   end
 end
 
--- Record the source special-spawn location (opcode 582): a named semantic
--- setter, never a hidden side effect folded into the lowering. Full
--- LocalFieldData persistence is out of scope; this state is only observable
--- through `specialSpawn()`.
+-- Record the source special-spawn location (opcode 582) on the durable
+-- travel owner: a named semantic setter, never a hidden side effect folded
+-- into the lowering and never transient service scratch state. The lowered
+-- node carries either a semantic map symbol or the retail numeric map id;
+-- numerics resolve to the record symbol through the loader before the
+-- unchanged durable write, so resolution failure leaves the prior value
+-- untouched.
 ---@param spawn { map: unknown, fieldX: integer, fieldZ: integer, warpId: integer, direction: string }
 function ScriptMapsService:setSpecialSpawn(spawn)
-  self._specialSpawn = spawn
+  local travel = assert(self._travel, "special spawn requires the durable travel owner")
+  if type(spawn) == "table" and type(spawn.map) == "number" then
+    local symbol = self._loader:mapSymbol(spawn.map)
+    travel:setSpecialSpawn({
+      map = symbol,
+      fieldX = spawn.fieldX,
+      fieldZ = spawn.fieldZ,
+      warpId = spawn.warpId,
+      direction = spawn.direction,
+    })
+    return
+  end
+  travel:setSpecialSpawn(spawn)
 end
 
--- The recorded special-spawn location, or nil before the source setter ran.
+-- The recorded special-spawn location as a fresh copy, or nil before the
+-- source setter ran.
 ---@return table<string, unknown>|nil
 function ScriptMapsService:specialSpawn()
-  return self._specialSpawn
+  local travel = assert(self._travel, "special spawn requires the durable travel owner")
+  return travel:specialSpawn()
 end
 
 -- True when the started warp has run its course: the application consumed
@@ -181,6 +189,14 @@ end
 function ScriptMapsService:warpDone()
   if self.pendingWarp == nil then
     return false
+  end
+  if self._screen ~= nil then
+    if not self._coveredSwap:done() then
+      return false
+    end
+    self._error = self._coveredSwap:error()
+    self.pendingWarp = nil
+    return true
   end
   local transition = self._transition
   if transition.error ~= nil then

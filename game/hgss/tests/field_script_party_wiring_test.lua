@@ -27,6 +27,11 @@ local function stubRuntime()
     playerData = { profile = {}, options = { textFrame = 0 } },
     versionId = "heartgold",
     runtimeMap = { mapId = 61 },
+    overworld = {
+      phase = function()
+        return "present"
+      end,
+    },
     fieldTerrainEffectController = {},
     scriptHosts = nil,
     screenFade = nil,
@@ -101,7 +106,7 @@ function T.compose_threads_the_script_mart_host()
   local double = {
     new = function(opts)
       seen.opts = opts
-      return { scheduler = {}, worldState = {} }
+      return { scheduler = {}, worldState = {}, blackoutFlow = {} }
     end,
   }
   local savedTarget = package.loaded[TARGET_MODULE]
@@ -126,7 +131,7 @@ function T.compose_threads_the_party_selection_host()
   local double = {
     new = function(opts)
       seen.opts = opts
-      return { scheduler = {}, worldState = {} }
+      return { scheduler = {}, worldState = {}, blackoutFlow = {} }
     end,
   }
   local savedTarget = package.loaded[TARGET_MODULE]

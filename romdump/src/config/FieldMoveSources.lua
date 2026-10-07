@@ -176,6 +176,84 @@ FieldMoveSources.SPAWN_DESTINATIONS = {
   SPAWN_ROCK_TUNNEL = { map = "MAP_ROUTE_10", fieldX = 1426, fieldZ = 164 },
 }
 
+-- Retail sSpawnMaps death destinations, keyed by the same semantic spawn
+-- identity as the outdoor table. Coordinates are local to the death map.
+FieldMoveSources.BLACKOUT_DESTINATIONS = {
+  SPAWN_NEW_BARK = { map = "MAP_NEW_BARK_PLAYER_HOUSE_1F", fieldX = 6, fieldZ = 8, facing = "north" },
+  SPAWN_CHERRYGROVE = { map = "MAP_CHERRYGROVE_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_VIOLET = { map = "MAP_VIOLET_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_AZALEA = { map = "MAP_AZALEA_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_CIANWOOD = { map = "MAP_CIANWOOD_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_GOLDENROD = { map = "MAP_GOLDENROD_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_OLIVINE = { map = "MAP_OLIVINE_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_ECRUTEAK = { map = "MAP_ECRUTEAK_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_MAHOGANY = { map = "MAP_MAHOGANY_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_LAKE_OF_RAGE = { map = "MAP_LAKE_OF_RAGE", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_BLACKTHORN = { map = "MAP_BLACKTHORN_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_MT_SILVER = { map = "MAP_MOUNT_SILVER_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_PALLET = { map = "MAP_PALLET", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_VIRIDIAN = { map = "MAP_VIRIDIAN_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_PEWTER = { map = "MAP_PEWTER_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_CERULEAN = { map = "MAP_CERULEAN_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_LAVENDER = { map = "MAP_LAVENDER_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_VERMILION = { map = "MAP_VERMILION_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_CELADON = { map = "MAP_CELADON_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_FUCHSIA = { map = "MAP_FUCHSIA_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_CINNABAR = { map = "MAP_CINNABAR_ISLAND_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_INDIGO = { map = "MAP_POKEMON_LEAGUE_ENTRANCE", fieldX = 6, fieldZ = 21, facing = "north" },
+  SPAWN_SAFFRON = { map = "MAP_SAFFRON_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_SAFARI = { map = "MAP_SAFARI_ZONE_GATE_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_FRONTIER = { map = "MAP_FRONTIER_ACCESS_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_POKEATHLON = { map = "MAP_POKEATHLON_DOME", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_VICTORY_ROAD = { map = "MAP_ROUTE_22_POKEMON_LEAGUE_RECEPTION_GATE", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_UNION_CAVE = { map = "MAP_ROUTE_32_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_MT_MOON = { map = "MAP_ROUTE_3_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+  SPAWN_ROCK_TUNNEL = { map = "MAP_ROUTE_10_POKECENTER_1F", fieldX = 8, fieldZ = 13, facing = "north" },
+}
+
+-- Retail sSpawnMaps special-warp destinations, keyed by the same semantic
+-- spawn identity as the outdoor and death tables. Transcribed from
+-- asm/unk_0203BA5C.s sSpawnMaps (30 rows; the specialWarpMapNo/X/Y
+-- columns): every row's special map matches its outdoor arrival except
+-- FRONTIER (special = MAP_ROUTE_40, 0xED, 0x10B) and POKEATHLON
+-- (special = MAP_ROUTE_35, 0x16A, 0x10B). Coordinates are
+-- destination-global tiles. GetSpecialSpawnWarpData stamps warp -1 and
+-- the south facing, so every record carries them literally. Rows whose
+-- special map equals the outdoor arrival still publish an independent
+-- record here: runtime consumers never alias one namespace from another.
+FieldMoveSources.SPECIAL_SPAWN_DESTINATIONS = {
+  SPAWN_NEW_BARK = { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397, warpId = -1, direction = "south" },
+  SPAWN_CHERRYGROVE = { map = "MAP_CHERRYGROVE", fieldX = 564, fieldZ = 392, warpId = -1, direction = "south" },
+  SPAWN_VIOLET = { map = "MAP_VIOLET", fieldX = 497, fieldZ = 272, warpId = -1, direction = "south" },
+  SPAWN_AZALEA = { map = "MAP_AZALEA", fieldX = 410, fieldZ = 461, warpId = -1, direction = "south" },
+  SPAWN_GOLDENROD = { map = "MAP_GOLDENROD", fieldX = 352, fieldZ = 369, warpId = -1, direction = "south" },
+  SPAWN_ECRUTEAK = { map = "MAP_ECRUTEAK", fieldX = 397, fieldZ = 184, warpId = -1, direction = "south" },
+  SPAWN_OLIVINE = { map = "MAP_OLIVINE", fieldX = 272, fieldZ = 258, warpId = -1, direction = "south" },
+  SPAWN_CIANWOOD = { map = "MAP_CIANWOOD", fieldX = 187, fieldZ = 370, warpId = -1, direction = "south" },
+  SPAWN_MAHOGANY = { map = "MAP_MAHOGANY", fieldX = 534, fieldZ = 184, warpId = -1, direction = "south" },
+  SPAWN_LAKE_OF_RAGE = { map = "MAP_LAKE_OF_RAGE", fieldX = 536, fieldZ = 90, warpId = -1, direction = "south" },
+  SPAWN_BLACKTHORN = { map = "MAP_BLACKTHORN", fieldX = 674, fieldZ = 177, warpId = -1, direction = "south" },
+  SPAWN_MT_SILVER = { map = "MAP_MOUNT_SILVER", fieldX = 820, fieldZ = 266, warpId = -1, direction = "south" },
+  SPAWN_PALLET = { map = "MAP_PALLET", fieldX = 1033, fieldZ = 364, warpId = -1, direction = "south" },
+  SPAWN_VIRIDIAN = { map = "MAP_VIRIDIAN", fieldX = 1032, fieldZ = 263, warpId = -1, direction = "south" },
+  SPAWN_PEWTER = { map = "MAP_PEWTER", fieldX = 1048, fieldZ = 107, warpId = -1, direction = "south" },
+  SPAWN_CERULEAN = { map = "MAP_CERULEAN", fieldX = 1309, fieldZ = 132, warpId = -1, direction = "south" },
+  SPAWN_LAVENDER = { map = "MAP_LAVENDER", fieldX = 1418, fieldZ = 235, warpId = -1, direction = "south" },
+  SPAWN_VERMILION = { map = "MAP_VERMILION", fieldX = 1297, fieldZ = 295, warpId = -1, direction = "south" },
+  SPAWN_CELADON = { map = "MAP_CELADON", fieldX = 1231, fieldZ = 238, warpId = -1, direction = "south" },
+  SPAWN_FUCHSIA = { map = "MAP_FUCHSIA", fieldX = 1209, fieldZ = 440, warpId = -1, direction = "south" },
+  SPAWN_CINNABAR = { map = "MAP_CINNABAR_ISLAND", fieldX = 1039, fieldZ = 503, warpId = -1, direction = "south" },
+  SPAWN_INDIGO = { map = "MAP_INDIGO_PLATEAU", fieldX = 912, fieldZ = 201, warpId = -1, direction = "south" },
+  SPAWN_SAFFRON = { map = "MAP_SAFFRON", fieldX = 1294, fieldZ = 243, warpId = -1, direction = "south" },
+  SPAWN_SAFARI = { map = "MAP_SAFARI_ZONE_GATE", fieldX = 82, fieldZ = 303, warpId = -1, direction = "south" },
+  SPAWN_FRONTIER = { map = "MAP_ROUTE_40", fieldX = 237, fieldZ = 267, warpId = -1, direction = "south" },
+  SPAWN_POKEATHLON = { map = "MAP_ROUTE_35", fieldX = 362, fieldZ = 267, warpId = -1, direction = "south" },
+  SPAWN_VICTORY_ROAD = { map = "MAP_ROUTE_26", fieldX = 909, fieldZ = 297, warpId = -1, direction = "south" },
+  SPAWN_UNION_CAVE = { map = "MAP_ROUTE_32", fieldX = 468, fieldZ = 419, warpId = -1, direction = "south" },
+  SPAWN_MT_MOON = { map = "MAP_ROUTE_3", fieldX = 1167, fieldZ = 107, warpId = -1, direction = "south" },
+  SPAWN_ROCK_TUNNEL = { map = "MAP_ROUTE_10", fieldX = 1426, fieldZ = 164, warpId = -1, direction = "south" },
+}
+
 ---@param spawnKey string|nil
 ---@return table<string, unknown>|nil a fresh destination record, never a live table
 function FieldMoveSources.spawnDestinationForKey(spawnKey)

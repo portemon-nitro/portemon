@@ -8,6 +8,7 @@
 -- encoding gives them current use.
 
 local MonsErrors = require("libs.mons.src.errors")
+local ResolvedMonSchema = require("libs.mons.src.ResolvedMonSchema")
 
 ---@class MonCatalog
 ---@field private _root table<string, unknown>
@@ -17,6 +18,51 @@ local MonsErrors = require("libs.mons.src.errors")
 ---@field private _abilityByNative table<integer, string>
 local MonCatalog = {}
 MonCatalog.__index = MonCatalog
+
+---@param value unknown
+---@return unknown
+local function copyValue(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local out = {}
+  for key, item in pairs(value) do
+    out[key] = copyValue(item)
+  end
+  return out
+end
+
+-- Index builder for composed catalogs: entries without a declared numeric
+-- identity resolve semantically only and never occupy the native index,
+-- while duplicate declared identities fail loudly.
+---@param owned table<string, unknown>
+---@return table<integer, string> speciesByNative
+---@return table<integer, string> moveByNative
+---@return table<integer, string> abilityByNative
+local function buildComposedIndexes(owned)
+  local indexes = { species = {}, moves = {}, abilities = {} }
+  local sections = {
+    { records = owned.species, index = indexes.species, what = "species" },
+    { records = owned.moves, index = indexes.moves, what = "move" },
+    { records = owned.abilities, index = indexes.abilities, what = "ability" },
+  }
+  for _, section in ipairs(sections) do
+    for key, record in pairs(section.records) do
+      local nativeId = record.nativeId
+      if nativeId ~= nil then
+        if section.index[nativeId] ~= nil then
+          MonsErrors.raise(
+            MonsErrors.RECORD_INVALID,
+            "duplicate native " .. section.what .. " identity " .. tostring(nativeId),
+            { [section.what] = key }
+          )
+        end
+        section.index[nativeId] = key
+      end
+    end
+  end
+  return indexes.species, indexes.moves, indexes.abilities
+end
 
 ---@param root table<string, unknown> borrowed published generated root; the caller keeps it alive and immutable for the catalog's lifetime
 ---@param items table<string, unknown> shared item catalog; item lookups delegate to it
@@ -72,6 +118,34 @@ function MonCatalog.new(root, items)
     self._abilityByNative[ability.nativeId] = key
   end
   return self
+end
+
+-- Composed catalog construction: validates through the resolved schema so
+-- namespaced custom entries without numeric identities resolve, then shares
+-- the single lookup implementation with native construction. The owned root
+-- is detached from the caller.
+---@param root table<string, unknown>
+---@param items table<string, unknown> shared item catalog; item lookups delegate to it
+---@return MonCatalog
+function MonCatalog.fromResolved(root, items)
+  assert(type(root) == "table", "MonCatalog requires the generated asset root")
+  assert(
+    type(items) == "table"
+      and type(items.item) == "function"
+      and type(items.itemByNativeId) == "function"
+      and type(items.itemKeyByNativeId) == "function",
+    "MonCatalog requires the shared item catalog"
+  )
+  ResolvedMonSchema.assertCatalog(root)
+  local owned = copyValue(root)
+  local speciesByNative, moveByNative, abilityByNative = buildComposedIndexes(owned)
+  return setmetatable({
+    _root = owned,
+    _items = items,
+    _speciesByNative = speciesByNative,
+    _moveByNative = moveByNative,
+    _abilityByNative = abilityByNative,
+  }, MonCatalog)
 end
 
 -- Lookups below return the borrowed published records themselves: callers

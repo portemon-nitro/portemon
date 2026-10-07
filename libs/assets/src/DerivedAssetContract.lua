@@ -223,7 +223,11 @@ DerivedAssetContract.fieldMapData = {
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.
-  spawnIndexSchema = "g4-field-spawn-index-v1",
+  -- The death namespace carries the interior relocation destinations, and
+  -- the special namespace carries the setter-written relocation records
+  -- (unset warp id, standard arrival facing); the three namespaces stay
+  -- independent even where values coincide.
+  spawnIndexSchema = "g4-field-spawn-index-v3",
 }
 
 DerivedAssetContract.messages = {
@@ -282,7 +286,10 @@ DerivedAssetContract.newGameInit = {
 
 DerivedAssetContract.fieldEffects = {
   -- v9 adds the source-selected follower reaction clips to the field-effect
-  -- index and publishes their shared-model dynamic descriptors.
+  -- index (indexSchema v3) and publishes their shared-model dynamic
+  -- descriptors, plus the source-selected Pokémon Center healing
+  -- choreography model. Caches predating either payload fail readiness
+  -- through the required-kind inventory.
   cacheFormat = "field-effect-cache-v9",
   indexSchema = "g4-field-effect-index-v3",
 }
@@ -316,9 +323,11 @@ DerivedAssetContract.starterChoice = {
 -- in the field-actor class; the catalog references field-actor visual IDs
 -- only. Item identity lives in the item class, never here: v3 drops the
 -- former generated item collection so item-only metadata changes never
--- invalidate mon buckets.
+-- invalidate mon buckets. v4 adds the per-species source weight in
+-- hectograms (cacheFormat v2), so a stale v3 catalog without those facts
+-- must fail readiness.
 DerivedAssetContract.mons = {
-  cacheFormat = "mon-cache-v1",
+  cacheFormat = "mon-cache-v2",
   catalogSchema = "g4-mon-catalog-v4",
   -- v2 replaces the whole-atlas index with a page inventory: the index binds
   -- the catalog hash to one marker per icon/portrait page.
@@ -329,13 +338,35 @@ DerivedAssetContract.mons = {
   portraitManifestSchema = "g4-mon-portrait-manifest-v2",
 }
 
+-- The battle input class carries the source-independent native battle,
+-- trainer, and encounter payloads compiled from the supported dumps. Each
+-- family stages its whole semantic payload plus a completion marker under
+-- its own cache format, so one family rebuilds without disturbing the
+-- others or any unrelated cache job.
+DerivedAssetContract.battleData = {
+  cacheFormat = "battle-data-cache-v1",
+  schema = "g4-battle-data-v1",
+}
+
+DerivedAssetContract.trainerCatalog = {
+  cacheFormat = "trainer-catalog-cache-v2",
+  schema = "g4-trainer-catalog-v2",
+}
+
+DerivedAssetContract.encounterCatalog = {
+  cacheFormat = "encounter-catalog-cache-v1",
+  schema = "g4-encounter-catalog-v1",
+}
+
 -- The item class carries the source-independent item catalog (definitions,
 -- pockets, pocket names) plus the item-icon atlas with its manifest. The
 -- mon package and the Bag runtime resolve item identity through this class.
 -- v2 adds held-item action metadata (isHm, canHold, heldFormEffect), so a
 -- stale v1 cache without those facts must fail readiness. v3 adds semantic
--- party-use metadata (partyUse), and v4 adds source item prices, so older
--- catalogs must fail readiness.
+-- party-use metadata (partyUse), so a stale v2 cache without those facts
+-- must fail readiness. v4 adds source item prices plus the Fling and
+-- Natural Gift throw facts (cacheFormat v4), so a stale v3 catalog without
+-- those facts must fail readiness.
 DerivedAssetContract.items = {
   cacheFormat = "item-cache-v4",
   catalogSchema = "g4-item-catalog-v4",

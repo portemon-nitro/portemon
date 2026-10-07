@@ -326,7 +326,7 @@ function T.full_restore_heals_combined_flags()
   local maxHp = mons:derive(mons:partyMon(slot)).maxHp
   restage(mons, slot, function(mon)
     mon.condition.currentHp = maxHp - 25
-    mon.condition.status = 0x8
+    mon.condition.effects = { { key = "poison", version = 1, state = {} } }
   end)
   Assert.isTrue(bag:add("FULL_RESTORE", 1))
   local actions = PartyActions.new({ mons = mons, bag = bag })
@@ -336,7 +336,7 @@ function T.full_restore_heals_combined_flags()
   Assert.equal(outcome.kind, "changed")
   local after = mons:partyMon(slot)
   Assert.equal(after.condition.currentHp, maxHp, "combined restore heals to full")
-  Assert.equal(after.condition.status, 0, "combined restore clears the status")
+  Assert.deepEqual(after.condition.effects, {}, "combined restore clears the condition")
   Assert.equal(bag:quantity("FULL_RESTORE"), 0, "exactly one item is consumed")
   Assert.equal(outcome.feedback.slots[1].hpBefore, maxHp - 25)
   Assert.equal(outcome.feedback.slots[1].hpAfter, maxHp)

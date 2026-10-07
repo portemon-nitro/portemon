@@ -141,7 +141,7 @@ end
 
 function PcStorageActions:_normalizeParty(mon)
   local normalized = copy(mon)
-  normalized.condition.status = 0
+  normalized.condition.effects = {}
   normalized.condition.currentHp = self._mons:derive(normalized).maxHp
   return normalized
 end

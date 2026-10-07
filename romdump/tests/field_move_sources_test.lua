@@ -1,6 +1,8 @@
 -- FieldMoveSources contract tests: verified source move/badge/map/object
 -- policy facts stay producer-owned, with numeric source identities resolved
 -- here and semantic keys crossing to runtime.
+-- Source basis: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
+-- asm/unk_0203BA5C.s (sSpawnMaps and GetDeathWarpData).
 
 local Assert = require("tests.support.Assert")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
@@ -77,7 +79,7 @@ end
 
 function T.spawn_destinations_cover_every_frozen_spawn_name()
   local count = 0
-  for id, name in pairs(Spawns.byId) do
+  for _, name in pairs(Spawns.byId) do
     if name ~= "SPAWN_NONE" then
       local destination = assert(
         FieldMoveSources.spawnDestinationForKey(name),
@@ -106,6 +108,72 @@ function T.spawn_destinations_answer_fresh_records_and_refuse_garbage()
   Assert.isNil(FieldMoveSources.spawnDestinationForKey(nil))
   ---@diagnostic disable-next-line: param-type-mismatch -- the integer is the invalid input under test
   Assert.isNil(FieldMoveSources.spawnDestinationForKey(7))
+end
+
+function T.blackout_destinations_match_all_semantic_spawn_keys()
+  local expected = {
+    SPAWN_NEW_BARK = { map = "MAP_NEW_BARK_PLAYER_HOUSE_1F", fieldX = 6, fieldZ = 8 },
+    SPAWN_CHERRYGROVE = { map = "MAP_CHERRYGROVE_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_VIOLET = { map = "MAP_VIOLET_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_AZALEA = { map = "MAP_AZALEA_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_GOLDENROD = { map = "MAP_GOLDENROD_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_ECRUTEAK = { map = "MAP_ECRUTEAK_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_OLIVINE = { map = "MAP_OLIVINE_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_CIANWOOD = { map = "MAP_CIANWOOD_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_MAHOGANY = { map = "MAP_MAHOGANY_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_LAKE_OF_RAGE = { map = "MAP_LAKE_OF_RAGE", fieldX = 8, fieldZ = 13 },
+    SPAWN_BLACKTHORN = { map = "MAP_BLACKTHORN_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_MT_SILVER = { map = "MAP_MOUNT_SILVER_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_PALLET = { map = "MAP_PALLET", fieldX = 8, fieldZ = 13 },
+    SPAWN_VIRIDIAN = { map = "MAP_VIRIDIAN_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_PEWTER = { map = "MAP_PEWTER_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_CERULEAN = { map = "MAP_CERULEAN_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_LAVENDER = { map = "MAP_LAVENDER_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_VERMILION = { map = "MAP_VERMILION_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_CELADON = { map = "MAP_CELADON_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_FUCHSIA = { map = "MAP_FUCHSIA_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_CINNABAR = { map = "MAP_CINNABAR_ISLAND_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_INDIGO = { map = "MAP_POKEMON_LEAGUE_ENTRANCE", fieldX = 6, fieldZ = 21 },
+    SPAWN_SAFFRON = { map = "MAP_SAFFRON_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_SAFARI = { map = "MAP_SAFARI_ZONE_GATE_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_FRONTIER = { map = "MAP_FRONTIER_ACCESS_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_POKEATHLON = { map = "MAP_POKEATHLON_DOME", fieldX = 8, fieldZ = 13 },
+    SPAWN_VICTORY_ROAD = { map = "MAP_ROUTE_22_POKEMON_LEAGUE_RECEPTION_GATE", fieldX = 8, fieldZ = 13 },
+    SPAWN_UNION_CAVE = { map = "MAP_ROUTE_32_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_MT_MOON = { map = "MAP_ROUTE_3_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+    SPAWN_ROCK_TUNNEL = { map = "MAP_ROUTE_10_POKECENTER_1F", fieldX = 8, fieldZ = 13 },
+  }
+  local destinations = FieldMoveSources.BLACKOUT_DESTINATIONS
+  Assert.equal(type(destinations), "table")
+
+  local count = 0
+  for id, name in pairs(Spawns.byId) do
+    if name ~= "SPAWN_NONE" then
+      local destination = assert(destinations[name], "missing blackout spawn " .. name)
+      Assert.deepEqual(
+        { map = destination.map, fieldX = destination.fieldX, fieldZ = destination.fieldZ },
+        expected[name]
+      )
+      Assert.equal(destination.facing, "north", name .. " faces north")
+      count = count + 1
+    end
+  end
+  Assert.equal(count, 30)
+
+  local destinationKeys = 0
+  for name in pairs(destinations) do
+    Assert.notNil(expected[name], "blackout destination has a semantic spawn key")
+    destinationKeys = destinationKeys + 1
+  end
+  Assert.equal(destinationKeys, count)
+end
+
+function T.blackout_destinations_reconcile_source_rows_five_through_eight_by_map()
+  local destinations = FieldMoveSources.BLACKOUT_DESTINATIONS
+  Assert.equal(destinations.SPAWN_GOLDENROD.map, "MAP_GOLDENROD_POKECENTER_1F")
+  Assert.equal(destinations.SPAWN_ECRUTEAK.map, "MAP_ECRUTEAK_POKECENTER_1F")
+  Assert.equal(destinations.SPAWN_OLIVINE.map, "MAP_OLIVINE_POKECENTER_1F")
+  Assert.equal(destinations.SPAWN_CIANWOOD.map, "MAP_CIANWOOD_POKECENTER_1F")
 end
 
 return { tests = T }

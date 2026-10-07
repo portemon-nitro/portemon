@@ -69,6 +69,13 @@ local DOMAINS = {
     "MonCatalogCompiler",
     "MonPresentationCompiler",
   },
+  battle = {
+    "BattleDataCompiler",
+    "TrainerCatalogCompiler",
+  },
+  encounters = {
+    "EncounterCatalogCompiler",
+  },
   items = {
     "ItemCacheWriter",
     "ItemCatalogCompiler",
@@ -164,8 +171,10 @@ local EXISTING_DOMAINS = {
     "VanillaBindingIdentity",
     "Verifier",
     "lowering/AudioHandlers",
+    "lowering/BattleHandlers",
     "lowering/ControlHandlers",
     "lowering/FieldHandlers",
+    "lowering/FieldServiceHandlers",
     "lowering/Operands",
   },
 }
@@ -287,6 +296,8 @@ function T.representative_digest_modules_load_from_each_domain_path()
   requireFromNewPath("newgame", "IntroAssetCompiler")
   requireFromNewPath("mons", "MonCatalogCompiler")
   requireFromNewPath("items", "ItemCatalogCompiler")
+  requireFromNewPath("battle", "BattleDataCompiler")
+  requireFromNewPath("encounters", "EncounterCatalogCompiler")
   requireFromNewPath("audio", "AudioCompiler")
   requireFromNewPath("script", "ScriptCompiler")
 end

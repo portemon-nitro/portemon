@@ -15,6 +15,11 @@ local PlayerData = {}
 
 PlayerData.TEXT_SPEEDS = { slow = 3, mid = 2, fast = 1, fastest = 1 }
 PlayerData.GENDERS = { [0] = true, [1] = true }
+-- Native battle style: shift (the challenger may switch after a knockout)
+-- or set (no switch offer). Shift is the source default carried by
+-- migration and new games.
+PlayerData.BATTLE_STYLES = { shift = true, set = true }
+PlayerData.DEFAULT_BATTLE_STYLE = "shift"
 PlayerData.MIN_NAME_GLYPHS = 1
 PlayerData.MAX_NAME_GLYPHS = 7
 PlayerData.MAX_TRAINER_ID = 0xFFFFFFFF
@@ -123,6 +128,18 @@ local function validate(record, context)
       }
     )
   end
+  -- The native battle style defaults to shift for records predating the
+  -- option (migration and new games); a present unknown style is rejected
+  -- like any other malformed gameplay value.
+  local battleStyle = options.battleStyle
+  if battleStyle == nil then
+    battleStyle = PlayerData.DEFAULT_BATTLE_STYLE
+  end
+  if PlayerData.BATTLE_STYLES[battleStyle] ~= true then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "battle style must be shift or set", {
+      battleStyle = options.battleStyle,
+    })
+  end
   return {
     profile = {
       name = profile.name,
@@ -132,7 +149,7 @@ local function validate(record, context)
       badges = profile.badges,
       nationalDex = profile.nationalDex,
     },
-    options = { textFrame = textFrame, textSpeed = options.textSpeed },
+    options = { textFrame = textFrame, textSpeed = options.textSpeed, battleStyle = battleStyle },
   }
 end
 
@@ -155,7 +172,47 @@ function PlayerData.validate(record, context)
 end
 
 function PlayerData.defaultOptions()
-  return { textSpeed = "fastest", textFrame = 0 }
+  return { textSpeed = "fastest", textFrame = 0, battleStyle = PlayerData.DEFAULT_BATTLE_STYLE }
+end
+
+---@param moneyDelta integer
+---@return integer
+local function checkMoneyDelta(moneyDelta)
+  if not isFiniteInteger(moneyDelta) then
+    Errors.raise(FieldErrors.PLAYER_DATA_MONEY_INVALID, "player money delta must be an integer", {
+      moneyDelta = moneyDelta,
+    })
+  end
+  return moneyDelta
+end
+
+-- Builds the validated post-battle profile candidate: the money delta
+-- applies to the current pocket with source caps (prize overflow past the
+-- ceiling is lost, blackout debit never drops below zero) while every
+-- unrelated profile and option value carries over untouched. The
+-- candidate is detached; persisting it stays with the save pipeline.
+---@param record table<string, unknown>
+---@param context table<string, unknown> { charmap: table<string, unknown>, frameIndexes: table<integer, true> }
+---@param changes { moneyDelta: integer? }
+---@return table<string, unknown>
+function PlayerData.prepareBattleChanges(record, context, changes)
+  assert(
+    type(context) == "table" and type(context.charmap) == "table" and type(context.frameIndexes) == "table",
+    "PlayerData.prepareBattleChanges requires the generated charmap and frame-index context"
+  )
+  if type(changes) ~= "table" then
+    Errors.raise(FieldErrors.PLAYER_DATA_MONEY_INVALID, "player battle changes must be a record", {})
+  end
+  local delta = changes.moneyDelta or 0
+  checkMoneyDelta(delta)
+  local current, invalid = PlayerData.validate(record, context)
+  if current == nil then
+    assert(invalid ~= nil, "invalid player data carries its rejection")
+    error(invalid)
+  end
+  assert(type(current) == "table", "validated player data stays a record")
+  current.profile.money = math.min(PlayerData.MAX_MONEY, math.max(0, current.profile.money + delta))
+  return current
 end
 
 ---@param trainerId integer

@@ -304,6 +304,8 @@ function T.party_use_metadata_matches_source(romFs, versionId)
   Assert.equal(restore.kind, "medicine")
   Assert.equal(restore.restore.kind, "full")
   Assert.isTrue(restore.cures.poison and restore.cures.paralysis, "full restore cures every status")
+  Assert.equal(record("FULL_RESTORE").lowHpOnly, true, "the full restore carries the low-health serving gate")
+  Assert.isNil(record("POTION").lowHpOnly, "ordinary medicine carries no serving gate")
   local revive = use("REVIVE")
   Assert.equal(revive.kind, "medicine")
   Assert.equal(revive.revive, "single")
@@ -382,6 +384,21 @@ function T.mon_catalog_delegates_item_facts_to_the_shared_catalog(romFs, version
   Assert.isTrue(catalog:item("POKE_BALL").isBall)
   Assert.isFalse(catalog:item("POTION").isBall)
   Assert.isTrue(catalog:item("SOOTHE_BELL").friendshipBoost)
+end
+
+function T.money_up_items_share_one_data_driven_held_behavior(romFs, versionId)
+  local catalog = compileCatalog(romFs, versionId)
+  local function behavior(key)
+    local record = assert(catalog.items[key], key .. " must be a compiled item identity")
+    return assert(record.heldBehavior, key .. " must carry its compiled held behavior")
+  end
+  for _, key in ipairs({ "AMULET_COIN", "LUCK_INCENSE" }) do
+    local held = behavior(key)
+    Assert.equal(held.key, "money_up", key .. " must classify through the money-up hold effect")
+    Assert.equal(held.params.holdEffect, 58, key .. " must carry the source hold-effect byte")
+  end
+  Assert.equal(behavior("SOOTHE_BELL").key, "friendship_up", "the friendship item keeps its own behavior")
+  Assert.equal(behavior("POTION").key, "no_hold_effect", "an effectless item stays behaviorless")
 end
 
 local suite = RomSuite.fromFacts(T)

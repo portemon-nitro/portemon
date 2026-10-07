@@ -30,7 +30,6 @@ function T.decodes_the_catalog_consumed_fields()
     memberId = 196,
   }))
   Assert.equal(decoded.holdEffect, 53)
-  Assert.isNil(decoded.naturalGiftPower)
   Assert.isFalse(decoded.preventToss)
   Assert.isFalse(decoded.selectable)
   Assert.equal(decoded.fieldPocket, 0)
@@ -58,7 +57,8 @@ function T.decodes_pocket_toss_and_selectable_bits()
 end
 
 function T.ignores_non_catalog_bitfields()
-  -- naturalGiftType and battlePocket bits never leak into catalog facts.
+  -- Battle-pocket bits never leak into catalog facts; the natural-gift
+  -- type bits project through their own facts below.
   local word = 31 + 31 * 2048
   local decoded = assert(compiler().decodeItemData(memberWith(0, word), {
     archive = "item_data",
@@ -67,6 +67,25 @@ function T.ignores_non_catalog_bitfields()
   Assert.equal(decoded.fieldPocket, 0)
   Assert.isFalse(decoded.preventToss)
   Assert.isFalse(decoded.selectable)
+  Assert.equal(decoded.naturalGiftType, 31)
+end
+
+function T.decodes_fling_and_natural_gift_throw_facts()
+  -- Cheri Berry shape: pluck/fling effects 1, fling power 10,
+  -- natural-gift power 60, gift type 10 (fire) over the berries pocket.
+  local word = 10 + 4 * 128
+  local member = string.char(100, 0, 0, 0, 1, 1, 10, 60, word % 256, math.floor(word / 256) % 256, 0, 0, 0, 0)
+    .. string.rep("\0", 20)
+  Assert.equal(#member, 34)
+  local decoded = assert(compiler().decodeItemData(member, {
+    archive = "item_data",
+    memberId = 127,
+  }))
+  Assert.equal(decoded.flingEffect, 1)
+  Assert.equal(decoded.flingPower, 10)
+  Assert.equal(decoded.naturalGiftPower, 60)
+  Assert.equal(decoded.naturalGiftType, 10)
+  Assert.equal(decoded.fieldPocket, 4)
 end
 
 function T.rejects_malformed_item_members()
@@ -94,6 +113,7 @@ end
 
 function T.pins_the_friendship_and_ball_source_facts()
   Assert.equal(ItemSources.HOLD_EFFECT_FRIENDSHIP_UP, 53)
+  Assert.equal(ItemSources.HOLD_EFFECT_MONEY_UP, 58)
   for _, nativeId in ipairs({ 1, 4, 16, 492, 498, 500 }) do
     Assert.isTrue(ItemSources.ballItemIds[nativeId] == true, "item " .. nativeId .. " is a ball")
   end
@@ -374,6 +394,50 @@ function T.pins_the_machine_berry_and_mail_ranges()
   Assert.equal(ItemSources.messageBanks.description, 221)
   Assert.equal(ItemSources.messageBanks.pocket, 226)
   Assert.equal(ItemSources.messageBanks.berry, 251)
+end
+
+function T.battle_only_items_carry_their_decoded_battle_use()
+  -- X-attack shape: party-use byte set with only the attack-stage
+  -- nibble, so party normalization defers to battle-only riders.
+  local xAttack = catalogBytes(0, true, { 0, 0x10, 0, 0, 0, 0, 0 }, nil)
+  local catalog = assert(compiler().compileCatalog(stubCatalogRom({ [57] = xAttack }), { versionId = "heartgold" }))
+  local attack = assert(catalog.items.X_ATTACK, "X_ATTACK must compile")
+  Assert.equal(attack.partyUse.kind, "deferred")
+  Assert.equal(attack.partyUse.reason, "battle_only")
+  local battleUse = assert(attack.battleUse, "battle-only items carry their battle use")
+  Assert.deepEqual(battleUse.cures, { confusion = false, infatuation = false })
+  Assert.isFalse(battleUse.guardSpec)
+  Assert.deepEqual(battleUse.stages, {
+    attack = 1,
+    defense = 0,
+    specialAttack = 0,
+    specialDefense = 0,
+    speed = 0,
+    accuracy = 0,
+    critical = 0,
+  })
+  -- Dire-hit shape: only the critical-rate bits set.
+  local direHit = catalogBytes(0, true, { 0, 0, 0, 0, 0x10, 0, 0 }, nil)
+  local catalogHit =
+    assert(compiler().compileCatalog(stubCatalogRom({ [56] = direHit }), { versionId = "heartgold" }))
+  local hit = assert(catalogHit.items.DIRE_HIT, "DIRE_HIT must compile")
+  Assert.equal(hit.partyUse.kind, "deferred")
+  local hitUse = assert(hit.battleUse, "dire hit carries its battle use")
+  Assert.equal(hitUse.stages.critical, 1)
+  Assert.equal(hitUse.stages.attack, 0)
+  -- Guard-spec shape: only the guard flag set.
+  local guardSpec = catalogBytes(0, true, { 0x80, 0, 0, 0, 0, 0, 0 }, nil)
+  local catalogGuard =
+    assert(compiler().compileCatalog(stubCatalogRom({ [55] = guardSpec }), { versionId = "heartgold" }))
+  local guard = assert(catalogGuard.items.GUARD_SPEC_, "GUARD_SPEC_ must compile")
+  Assert.equal(guard.partyUse.kind, "deferred")
+  Assert.isTrue(assert(guard.battleUse, "guard spec carries its battle use").guardSpec)
+  -- Ordinary medicine carries no battle use: the potion shape maps to
+  -- its party family without riders.
+  local potion = catalogBytes(0, true, { 0, 0, 0, 0, 0, 0x04, 0 }, { 0, 0, 0, 0, 0, 0, 20 })
+  local catalogPotion =
+    assert(compiler().compileCatalog(stubCatalogRom({ [17] = potion }), { versionId = "heartgold" }))
+  Assert.isNil(catalogPotion.items.POTION.battleUse, "ordinary medicine carries no battle use")
 end
 
 return { tests = T }

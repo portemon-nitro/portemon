@@ -49,6 +49,7 @@ local function record(overrides)
     options = {
       textFrame = 0,
       textSpeed = "mid",
+      battleStyle = "shift",
     },
   }
   for key, item in pairs(overrides or {}) do
@@ -114,7 +115,29 @@ function T.unknown_keys_are_discarded_by_canonicalization()
     "badges,gender,money,name,nationalDex,trainerId",
     "canonicalization must drop profile.transientThing"
   )
-  Assert.keySet(validated.options, "textFrame,textSpeed", "canonicalization must drop options.futureThing")
+  Assert.keySet(
+    validated.options,
+    "battleStyle,textFrame,textSpeed",
+    "canonicalization must drop options.futureThing"
+  )
+end
+
+-- The native battle style defaults to shift for records predating the
+-- option, while a present unknown style is rejected like any other
+-- malformed gameplay value.
+function T.battle_style_defaults_to_shift_and_rejects_unknown_styles()
+  local without = record()
+  without.options.battleStyle = nil
+  local defaulted = assert(PlayerData.validate(without, context()))
+  Assert.equal(defaulted.options.battleStyle, "shift", "a missing battle style takes the source default")
+  local setStyle = record()
+  setStyle.options.battleStyle = "set"
+  Assert.equal(assert(PlayerData.validate(setStyle, context())).options.battleStyle, "set")
+  local broken = record()
+  broken.options.battleStyle = "auto"
+  local valid, err = PlayerData.validate(broken, context())
+  Assert.isNil(valid, "an unknown battle style never validates")
+  Assert.isTrue(Errors.is(err), "an unknown battle style reports a structured failure")
 end
 
 function T.over_seven_glyph_names_are_rejected()

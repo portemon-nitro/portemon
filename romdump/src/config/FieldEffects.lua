@@ -95,6 +95,23 @@ return {
       },
       placementOffset = { x = 0, y = 6, z = 0 },
     },
+    pokemon_center_heal = {
+      mapSymbol = "MAP_CHERRYGROVE_POKECENTER_1F",
+      anchorModelMemberId = 36,
+      machineModelMemberId = 37,
+      ballModelMemberId = 107,
+      spawnIntervalSourceFrames = 12,
+      placementSound = "SEQ_SE_DP_BOWA",
+      fanfare = "SEQ_ME_ASA",
+      ballPositionsFx32 = {
+        { role = "northwest", x = -0x4800, y = 0xC000, z = -0x4800 },
+        { role = "northeast", x = 0x4800, y = 0xC000, z = -0x4800 },
+        { role = "west", x = -0x4800, y = 0xC000, z = 0 },
+        { role = "east", x = 0x4800, y = 0xC000, z = 0 },
+        { role = "southwest", x = -0x4800, y = 0xC000, z = 0x4800 },
+        { role = "southeast", x = 0x4800, y = 0xC000, z = 0x4800 },
+      },
+    },
   },
   -- The source callback table `ov01_02209544` in
   -- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36

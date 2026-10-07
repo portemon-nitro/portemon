@@ -6,6 +6,7 @@ local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 
 local ScriptHeader = {}
+
 local STANDARD_SCRIPTS = SourceCatalog.catalog()
 
 local function fail(message, context)
@@ -41,6 +42,7 @@ local function scriptId(opts, rawScriptId, sourceOffset, typeId)
   if rawScriptId == nil or rawScriptId < 1 then
     fail("script ID must be at least one", context(opts, sourceOffset, typeId))
   end
+
   if STANDARD_SCRIPTS.namesById[rawScriptId] ~= nil then
     return SourceCatalog.commonPublicId(STANDARD_SCRIPTS, rawScriptId)
   end

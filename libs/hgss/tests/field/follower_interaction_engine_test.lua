@@ -123,7 +123,7 @@ local function engine(ruleSpecs, formPerformance, options)
     form = 0,
     personality = 0,
     experience = 0,
-    condition = { status = 0, currentHp = 20 },
+    condition = { currentHp = 20, effects = {} },
     maxHp = 20,
     friendship = 100,
     mood = 0,
@@ -539,28 +539,28 @@ T["mon context classifiers preserve retail boundary buckets"] = function()
   end
 
   local statusVectors = {
-    { 0, 1 },
-    { 0x10, 2 },
-    { 0x20, 3 },
-    { 0x40, 4 },
-    { 0x8, 5 },
-    { 0x80, 5 },
-    { 0x1, 8 },
-    { 0x81, 5 },
+    { {}, 1 },
+    { { { key = "burn" } }, 2 },
+    { { { key = "freeze" } }, 3 },
+    { { { key = "paralysis" } }, 4 },
+    { { { key = "poison" } }, 5 },
+    { { { key = "toxic" } }, 5 },
+    { { { key = "sleep" } }, 8 },
+    { { { key = "poison" }, { key = "sleep" } }, 5 },
   }
   for _, vector in ipairs(statusVectors) do
-    local subject = engine({}, nil, { mon = { condition = { status = vector[1] } } })
-    Assert.equal(subject:_context(0).statusClass, vector[2], "status condition " .. vector[1])
+    local subject = engine({}, nil, { mon = { condition = { effects = vector[1] } } })
+    Assert.equal(subject:_context(0).statusClass, vector[2], "status effects classify")
   end
-  for _, status in ipairs({ 0x10, 0x20, 0x40, 0x8, 0x80, 0x1 }) do
+  for _, effects in ipairs({ { { key = "burn" } }, { { key = "freeze" } } }) do
     Assert.deepEqual(
-      selectOne({ condition = { status = status } }, { statusClass = 7 }),
+      selectOne({ condition = { effects = effects } }, { statusClass = 7 }),
       { leadSlot = 0, programId = 1 },
-      "status-any selector includes condition " .. status
+      "status-any selector includes listed effects"
     )
   end
   Assert.equal(
-    selectOne({ condition = { status = 0 } }, { statusClass = 7 }),
+    selectOne({ condition = { effects = {} } }, { statusClass = 7 }),
     nil,
     "status-any selector excludes healthy"
   )

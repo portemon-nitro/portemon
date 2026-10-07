@@ -75,7 +75,7 @@ local function projectSlot(service, slot0, isEligible)
       record.genderSymbol = record.gender
     end
   end
-  record.status = PartyScreenTheme.statusKey(mon.condition.status, mon.condition.currentHp)
+  record.status = PartyScreenTheme.statusKey(mon.condition)
   record.currentHp = mon.condition.currentHp
   record.maxHp = derived.maxHp
   record.hpFraction = mon.condition.currentHp / derived.maxHp

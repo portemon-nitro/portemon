@@ -11,6 +11,7 @@
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local FieldBlackoutRenderer = require("game.hgss.src.field.FieldBlackoutRenderer")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
@@ -83,7 +84,7 @@ end
 -- recording into the sink, a fake runtime carrying every field draw touches,
 -- and the topology provider under test. The player visual record is
 -- invisible, so the actor assembly never touches a real asset provider.
----@param options { hostStatus: table, dialogueModal?: boolean, signpostModal?: boolean, development?: boolean, topology?: ScreenTopology, worldViewport?: table }
+---@param options { hostStatus: table, dialogueModal?: boolean, signpostModal?: boolean, blackoutStatus?: table, development?: boolean, topology?: ScreenTopology, worldViewport?: table }
 ---@return FieldState state
 ---@return table[] sink
 local function drawableState(options)
@@ -119,6 +120,11 @@ local function drawableState(options)
         return 0.5
       end,
     },
+    overworld = {
+      isPresent = function()
+        return true
+      end,
+    },
     destinationWorldPresentable = function()
       return true
     end,
@@ -141,6 +147,11 @@ local function drawableState(options)
         return options.dialogueModal == true
       end,
     },
+    blackoutFlow = options.blackoutStatus and {
+      status = function()
+        return options.blackoutStatus
+      end,
+    } or nil,
     scripts = {
       dialogueHost = {
         yesNoPresentation = function()
@@ -194,6 +205,8 @@ local function drawableState(options)
     presentationResources = {
       renderer = recordingRenderer("world", sink),
       dialogueRenderer = recordingRenderer("dialogue", sink),
+      windowRenderer = recordingRenderer("window", sink),
+      textRenderer = recordingRenderer("text", sink),
       signpostRenderer = recordingRenderer("signpost", sink),
       startMenuRenderer = recordingRenderer("menu", sink),
       trainerCardRenderer = recordingRenderer("card", sink),
@@ -251,6 +264,26 @@ local function drawableState(options)
     },
   }, FieldState)
   return state, sink
+end
+
+function T.draw_routes_blackout_message_without_a_dialogue_modal()
+  local blackoutStatus = { phase = "message_in", message = { tokens = {} }, coverColor = "white", coverAlpha = 0 }
+  local state, _ = drawableState({ hostStatus = { phase = "closed" }, blackoutStatus = blackoutStatus })
+  local priorDraw = FieldBlackoutRenderer.draw
+  local receivedStatus
+  FieldBlackoutRenderer.draw = function(status)
+    receivedStatus = status
+  end
+  local restore = spyGraphics({})
+  local ok, err = pcall(function()
+    state:draw()
+  end)
+  restore()
+  FieldBlackoutRenderer.draw = priorDraw
+  if not ok then
+    error(err, 0)
+  end
+  Assert.equal(receivedStatus, blackoutStatus)
 end
 
 local function labels(sink)

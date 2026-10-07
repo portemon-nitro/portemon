@@ -3,6 +3,7 @@
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldAudioSave = require("libs.hgss.src.audio.FieldAudioSave")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local ScriptSave = require("libs.script.src.ScriptSave")
 
@@ -43,6 +44,31 @@ local function hostIsActive(runtime)
   return host ~= nil and host:isActive()
 end
 
+-- The battle-lifetime save gate: an owned battle denies capture from
+-- launch acquisition through every completion subflow, and a prepared but
+-- unconsumed encounter denies it the same way. Only the stable field
+-- return re-enables capture; a cancelled battle without publication keeps
+-- the gate closed.
+---@class BattleSaveGate
+---@field canSave fun(self: BattleSaveGate): boolean, table<string, unknown>?
+
+---@param runtime table<string, unknown>
+---@return string? busy reason, or nil when no battle owns the field
+local function battleBusyReason(runtime)
+  local battle = runtime.battleRuntime --[[@as BattleSaveGate?]]
+  if battle ~= nil then
+    local saveable, reason = battle:canSave()
+    if not saveable then
+      local phase = (type(reason) == "table" and reason.phase) or "battle"
+      return "Save deferred: battle " .. tostring(phase) .. " owns the field"
+    end
+  end
+  if runtime.pendingEncounterId ~= nil then
+    return "Save deferred: a prepared encounter owns the field"
+  end
+  return nil
+end
+
 ---@param self FieldSaveCoordinator
 ---@param allowMenu boolean
 ---@return table<string, unknown>?, string|table<string, unknown>?
@@ -51,6 +77,10 @@ function FieldSaveCoordinator:capture(allowMenu)
   local pcHost = runtime.pcApplicationHost
   if pcHost ~= nil and pcHost:isActive() then
     return nil, "Save deferred: a PC application is active"
+  end
+  local battleReason = battleBusyReason(runtime)
+  if battleReason ~= nil then
+    return nil, battleReason
   end
   -- A pending or active field operation denies capture before any
   -- publication starts: the world is mid-mutation and the record would
@@ -107,6 +137,8 @@ function FieldSaveCoordinator:capture(allowMenu)
     mart = assert(runtime.martService, "field runtime has no mart service"):capture(),
     mailbox = assert(runtime.mailbox, "field runtime has no mailbox"):capture(),
     photoAlbum = assert(runtime.photoAlbum, "field runtime has no photo album"):capture(),
+    encounters = EncounterSave.capture(assert(runtime.roamerState, "field runtime has no roamer state")),
+    pokedex = assert(runtime.dexKnowledge, "field runtime has no dex knowledge"):bucket(),
   }
   if runtime.playerAvatar then
     snapshot.avatar = runtime.playerAvatar:capture()

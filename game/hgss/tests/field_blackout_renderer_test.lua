@@ -1,0 +1,91 @@
+-- The blackout message keeps the retail window geometry and shared line anchor.
+
+local Assert = require("tests.support.Assert")
+local FieldBlackoutRenderer = require("game.hgss.src.field.FieldBlackoutRenderer")
+local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+
+local T = {}
+
+function T.message_uses_source_window_palette_and_shared_centered_line_anchor()
+  local calls = {}
+  local fontPalette = {
+    { r = 8, g = 16, b = 24 },
+    { r = 32, g = 48, b = 64 },
+    { r = 80, g = 96, b = 112 },
+  }
+  local status = {
+    phase = "message_in",
+    message = {
+      tokens = {
+        { kind = "glyph", code = 1, colorIndex = 1 },
+        { kind = "glyph", code = 1, colorIndex = 1 },
+        { kind = "line_break" },
+        { kind = "glyph", code = 1, colorIndex = 1 },
+        { kind = "eos" },
+      },
+    },
+  }
+  local window = {
+    drawWindow = function(_, box, framePalette, background)
+      calls.window = { box = box, palette = framePalette, background = background }
+      calls.order = calls.order or {}
+      calls.order[#calls.order + 1] = "window"
+    end,
+  }
+  local text = {
+    fontDef = { glyphs = { [1] = { advance = 10 } }, letterSpacing = 0, palette = fontPalette },
+    drawLineWithPalette = function(_, tokens, x, y, palette)
+      calls[#calls + 1] = { tokens = tokens, x = x, y = y, palette = palette }
+    end,
+  }
+  local graphics = {
+    push = function() end,
+    translate = function() end,
+    scale = function() end,
+    pop = function() end,
+    setColor = function(red, green, blue, alpha)
+      calls.backingColor = { red, green, blue, alpha }
+    end,
+    rectangle = function(mode, x, y, width, height)
+      calls.backing = { mode = mode, x = x, y = y, width = width, height = height }
+      calls.order = calls.order or {}
+      calls.order[#calls.order + 1] = "backing"
+    end,
+  }
+  local priorLove = love
+  local priorProtectedDraw = FieldDrawState.protectedDraw
+  love = { graphics = graphics }
+  FieldDrawState.protectedDraw = function(_, draw)
+    draw()
+  end
+  local ok, err = pcall(FieldBlackoutRenderer.draw, status, window, text, { x = 0, y = 0, width = 256, height = 192 })
+  FieldDrawState.protectedDraw = priorProtectedDraw
+  love = priorLove
+  if not ok then
+    error(err)
+  end
+
+  Assert.equal(calls.window.box.x, 32)
+  Assert.equal(calls.window.box.y, 40)
+  Assert.equal(calls.window.box.width, 200)
+  Assert.equal(calls.window.box.height, 120)
+  Assert.equal(calls.window.palette, 13)
+  Assert.deepEqual(calls.window.background, { 8 / 255, 16 / 255, 24 / 255, 1 })
+  Assert.notNil(calls.backing, "opaque white backing draw is missing")
+  Assert.deepEqual(calls.backingColor, { 1, 1, 1, 1 })
+  Assert.deepEqual(calls.backing, { mode = "fill", x = 0, y = 0, width = 256, height = 192 })
+  Assert.deepEqual(calls.order, { "backing", "window" })
+  Assert.equal(#calls, 2)
+  Assert.equal(calls[1].x, 118)
+  Assert.equal(calls[2].x, 118)
+  Assert.equal(calls[1].y, 40)
+  Assert.equal(calls[2].y, 56)
+  Assert.equal(calls[1].palette.foreground, fontPalette[2])
+  Assert.equal(calls[1].palette.shadow, fontPalette[3])
+  Assert.equal(calls[1].palette.background, fontPalette[1])
+  Assert.equal(calls[1].tokens[1].colorIndex, 1)
+  Assert.equal(#calls[1].tokens, 2, "all first-line glyphs draw immediately")
+  Assert.equal(#calls[2].tokens, 1, "all second-line glyphs draw immediately")
+end
+
+return { tests = T }

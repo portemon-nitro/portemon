@@ -4,9 +4,9 @@
 -- behind the Multitype gate, the griseous orb selects the origin form, and
 -- any other held item restores the base form. A form change recomputes the
 -- PID-selected ability for the new form and clamps current HP to the
--- service-derived maximum; status, personality, experience and every other
--- field survive. Stat derivation stays with the mon service: the caller
--- supplies it, and gated-out mons never touch it.
+-- service-derived maximum; the semantic condition records, personality,
+-- experience and every other field survive. Stat derivation stays with the
+-- mon service: the caller supplies it, and gated-out mons never touch it.
 
 local Personality = require("libs.mons.src.gen4.Personality")
 
@@ -98,9 +98,10 @@ function HeldItemFormPolicy.apply(mon, itemDef, mons)
   end
   local maxHp = mons:derive(candidate).maxHp
   assert(type(maxHp) == "number", "derivation must report the new maximum HP")
+  local kept = assert(candidate.condition) --[[@as table<string, unknown>]]
   candidate.condition = {
-    status = candidate.condition.status,
-    currentHp = math.min(candidate.condition.currentHp, maxHp),
+    currentHp = math.min(kept.currentHp --[[@as integer]], maxHp),
+    effects = kept.effects,
   }
   return candidate
 end

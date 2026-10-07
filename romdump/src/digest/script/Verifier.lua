@@ -64,6 +64,7 @@ local BLOCKING_OPS = {
   warp = true,
   call_common = true,
   wait_signpost_action = true,
+  battle_launch = true,
   trainer_tips_print = true,
   wait_signpost = true,
   mart_open = true,
@@ -71,6 +72,8 @@ local BLOCKING_OPS = {
   follower_interact = true,
   pc_open = true,
   pc_hof_open = true,
+  follower_appearance = true,
+  follower_recall = true,
 }
 
 -- Operations that end the run phase: yield boundaries and stops.

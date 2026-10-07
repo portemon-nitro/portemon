@@ -54,6 +54,7 @@ local DOMAINS = {
   transition = {
     "DoorSound",
     "DoorTiles",
+    "FieldCoveredSwap",
     "FieldEntranceIndicator",
     "FieldScriptScreenFade",
     "FieldTransition",
@@ -61,6 +62,22 @@ local DOMAINS = {
     "FieldTransitionProfile",
     "TransitionTrigger",
     "WarpSystem",
+  },
+  battle = {
+    "HgssTrainerCatalog",
+    "HgssTrainerFactory",
+    "HgssOpponentControllers",
+    "HgssBattleCommitter",
+    "HgssBattleRewards",
+    "HgssBattleScenarioFactory",
+    "TrainerBattleTrigger",
+  },
+  encounters = {
+    "EncounterSelection",
+    "HgssEncounterCatalog",
+    "HgssEncounterService",
+    "HgssRoamerState",
+    "WildMonFactory",
   },
 }
 
@@ -77,6 +94,8 @@ local FIELD_COORDINATION = {
   "FieldMapEntryController",
   "FieldMovePolicy",
   "FieldMoveRuntime",
+  "FieldOverworldLifecycle",
+  "FieldScriptPropAnimations",
   "FieldSession",
   "FieldTravelState",
   "FieldWindowStyles",
@@ -84,6 +103,7 @@ local FIELD_COORDINATION = {
   "FollowingMonTransitionController",
   "MapInitScriptController",
   "MailActions",
+  "PokemonCenterHealFlow",
   "PartyActions",
   "PcStorageActions",
 }
@@ -211,6 +231,8 @@ end
 
 function T.representative_mechanisms_load_from_owner_domains()
   requireFromNewPath("libs.hgss.src.field.FieldSession", "field coordination")
+  requireFromNewPath("libs.hgss.src.field.FieldOverworldLifecycle", "field coordination")
+  requireFromNewPath("libs.hgss.src.field.FieldScriptPropAnimations", "field coordination")
   requireFromNewPath("libs.hgss.src.actors.FieldActorManager", "actor mechanisms")
   requireFromNewPath("libs.hgss.src.world.FieldCoverage", "world mechanisms")
   requireFromNewPath("libs.hgss.src.interaction.FieldInteractionResolver", "interaction mechanisms")

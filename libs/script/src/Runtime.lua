@@ -987,71 +987,193 @@ local function handlePartySelectResult(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+-- Battle launch and result. The launch suspends the script on the battle
+-- task: the injected battle host owns the lifetime and the commit, and
+-- the completed task writes the script-visible outcome code into the
+-- launch result variable. The result read answers from the host's latest
+-- committed outcome without touching battle internals. Neither handler
+-- executes mechanics inline.
+--
+-- The main chunk is at LuaJIT's 200-local limit; these handlers live in
+-- a block so their names never become more file-scoped locals.
+do
+  local function battleHostFor(run)
+    local host = run.services.battle
+    if host == nil then
+      Errors.raise(
+        ScriptErrors.SCRIPT_SERVICE_MISSING,
+        "battle service is unavailable",
+        { scriptId = run.instance.scriptId }
+      )
+    end
+    return host
+  end
+
+  -- Resolves kind-specific launch details with value references evaluated
+  -- through the run semantics. Plain data rides through untouched; only
+  -- reference records evaluate, so static payloads never change shape.
+  local function resolveBattleDetail(value, run)
+    if type(value) ~= "table" then
+      return value
+    end
+    local record = value --[[@as table<string, unknown>]]
+    if type(record.value) == "string" then
+      return semanticsFor(run).evaluateValue(record, run)
+    end
+    local out = {}
+    for key, item in pairs(record) do
+      out[key] = resolveBattleDetail(item, run)
+    end
+    return out
+  end
+
+  local function handleBattleLaunch(node, run)
+    requireForeground(run, "battle_launch")
+    battleHostFor(run)
+    local details = {}
+    if node.details ~= nil then
+      assert(type(node.details) == "table", "battle launch details stay a record")
+      details = resolveBattleDetail(node.details, run) --[[@as table<string, unknown>]]
+    end
+    local spec = { kind = node.kind, details = details }
+    if node.launchId ~= nil then
+      spec.launchId = semanticsFor(run).evaluateValue(node.launchId, run)
+    end
+    return blockOnTask(run, "battle", spec, node.result)
+  end
+
+  -- Outcome words the host may report, mapped per read context to the
+  -- script-visible code. An unrecorded battle reads back not-won (the
+  -- zero-initialized result), never a guessed victory.
+  local battleWonWords = { win = true }
+  local battleWonOrCaughtWords = { win = true, capture = true }
+
+  local function handleBattleResult(node, run)
+    local host = battleHostFor(run)
+    assert(host ~= nil, "the host check carries the battle host")
+    local latest = host:lastBattleResult()
+    local code = 0
+    if latest ~= nil then
+      assert(type(latest) == "table", "battle results stay records")
+      local words = node.context == "static_wild_won_or_caught" and battleWonOrCaughtWords or battleWonWords
+      if type(latest.result) ~= "string" then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "battle results report an outcome word",
+          { scriptId = run.instance.scriptId }
+        )
+      end
+      if words[latest.result] == true then
+        code = 1
+      end
+    end
+    semanticsFor(run).writeRef(node.result, code, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.battle_launch = handleBattleLaunch
+  HANDLERS.battle_result = handleBattleResult
+end
+
 -- Follower operations. Each handler calls exactly one named operation on
 -- the injected following-mon collaborator (the field controller behind the
 -- `followingMon` service) and writes its source-shaped result. No handler
 -- switches on a source opcode; the node op already names the behavior.
-local function followingMonFor(run)
-  return requireService(run, "followingMon")
-end
+---@class RuntimeFollowingMon
+---@field isActive fun(self: RuntimeFollowingMon): boolean
+---@field partnerSourceState fun(self: RuntimeFollowingMon): unknown
+---@field facePlayer fun(self: RuntimeFollowingMon)
+---@field isSourceActive fun(self: RuntimeFollowingMon): boolean
+---@field setMovementPaused fun(self: RuntimeFollowingMon, paused: boolean)
+---@field setMovementType fun(self: RuntimeFollowingMon, movementType: string)
+---@field repositionRelativeToPlayer fun(self: RuntimeFollowingMon, offsetSelector: integer, directionRaw: integer)
+---@field isEventTrigger fun(self: RuntimeFollowingMon, kind: string, param: unknown): boolean
 
-local function handleFollowerIsActive(node, run)
-  writeMonsBool(node, run, followingMonFor(run):isActive())
-  return Runtime.OUTCOME_CONTINUE
-end
+do
+  ---@class RuntimeFollowerTransition
+  ---@field start fun(self: RuntimeFollowerTransition)
 
-local function handleFollowerPartnerState(node, run)
-  writeMonsResult(node, run, followingMonFor(run):partnerSourceState())
-  return Runtime.OUTCOME_CONTINUE
-end
+  ---@param run table<string, unknown>
+  ---@return RuntimeFollowingMon
+  local function followingMonFor(run)
+    return requireService(run, "followingMon") --[[@as RuntimeFollowingMon]]
+  end
 
-local function handleFollowerFacePlayer(_, run)
-  followingMonFor(run):facePlayer()
-  return Runtime.OUTCOME_CONTINUE
-end
-
-local function handleFollowerSetPaused(node, run)
-  if not followingMonFor(run):isSourceActive() then
+  local function handleFollowerIsActive(node, run)
+    writeMonsBool(node, run, followingMonFor(run):isActive())
     return Runtime.OUTCOME_CONTINUE
   end
-  assert(node.paused ~= nil, "follower pause requires its source operand")
-  local paused = semanticsFor(run).evaluateValue(node.paused, run)
-  followingMonFor(run):setMovementPaused(paused ~= 0 and paused ~= false)
-  return Runtime.OUTCOME_CONTINUE
-end
 
-local function handleFollowerWait(node, run)
-  return blockOnTask(run, "follower_wait", { node = node })
-end
-
-local function handleFollowerSetMovementType(node, run)
-  if not followingMonFor(run):isSourceActive() then
+  local function handleFollowerPartnerState(node, run)
+    writeMonsResult(node, run, followingMonFor(run):partnerSourceState())
     return Runtime.OUTCOME_CONTINUE
   end
-  followingMonFor(run):setMovementType(node.movementType)
-  return Runtime.OUTCOME_CONTINUE
-end
 
-local function handleFollowerReposition(node, run)
-  local offset = semanticsFor(run).evaluateValue(node.a, run)
-  local direction = semanticsFor(run).evaluateValue(node.b, run)
-  followingMonFor(run):repositionRelativeToPlayer(offset, direction)
-  return Runtime.OUTCOME_CONTINUE
-end
-
-local function handleFollowerIsEventTrigger(node, run)
-  local kind = semanticsFor(run).evaluateValue(node.kind, run)
-  local slot = semanticsFor(run).evaluateValue(node.param, run)
-  writeMonsBool(node, run, monsFor(run):followerEventTrigger(kind, slot))
-  return Runtime.OUTCOME_CONTINUE
-end
-
-local function handleFollowerTransition(_, run)
-  if not followingMonFor(run):isSourceActive() then
+  local function handleFollowerFacePlayer(_, run)
+    followingMonFor(run):facePlayer()
     return Runtime.OUTCOME_CONTINUE
   end
-  requireService(run, "followerTransition"):start()
-  return Runtime.OUTCOME_CONTINUE
+
+  local function handleFollowerSetPaused(node, run)
+    if not followingMonFor(run):isSourceActive() then
+      return Runtime.OUTCOME_CONTINUE
+    end
+    assert(node.paused ~= nil, "follower pause requires its source operand")
+    local paused = semanticsFor(run).evaluateValue(node.paused, run)
+    followingMonFor(run):setMovementPaused(paused ~= 0 and paused ~= false)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerWait(node, run)
+    return blockOnTask(run, "follower_wait", { node = node })
+  end
+
+  local function handleFollowerSetMovementType(node, run)
+    if not followingMonFor(run):isSourceActive() then
+      return Runtime.OUTCOME_CONTINUE
+    end
+    followingMonFor(run):setMovementType(node.movementType)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerReposition(node, run)
+    local offset = semanticsFor(run).evaluateValue(node.a, run)
+    local direction = semanticsFor(run).evaluateValue(node.b, run)
+    followingMonFor(run):repositionRelativeToPlayer(offset, direction)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerIsEventTrigger(node, run)
+    local kind = semanticsFor(run).evaluateValue(node.kind, run)
+    local slot = semanticsFor(run).evaluateValue(node.param, run)
+    writeMonsBool(node, run, monsFor(run):followerEventTrigger(kind, slot))
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerTransition(_, run)
+    local follower = followingMonFor(run)
+    if not follower:isSourceActive() then
+      return Runtime.OUTCOME_CONTINUE
+    end
+    local owner = requireService(run, "followerTransition") --[[@as RuntimeFollowerTransition]]
+    owner:start()
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerRecall(_, run)
+    return blockOnTask(run, "follower_recall", {})
+  end
+
+  HANDLERS.follower_is_active = handleFollowerIsActive
+  HANDLERS.follower_partner_state = handleFollowerPartnerState
+  HANDLERS.follower_face_player = handleFollowerFacePlayer
+  HANDLERS.follower_set_paused = handleFollowerSetPaused
+  HANDLERS.follower_wait = handleFollowerWait
+  HANDLERS.follower_set_movement_type = handleFollowerSetMovementType
+  HANDLERS.follower_reposition = handleFollowerReposition
+  HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
+  HANDLERS.follower_transition = handleFollowerTransition
+  HANDLERS.follower_recall = handleFollowerRecall
 end
 
 local function handlePlaceStarterBalls(_, run)
@@ -1320,10 +1442,11 @@ local function handleMessage(node, run)
     -- and the instance's buffered text args ride alongside node bindings
     -- exactly as on the blocking DialogueTask path.
     local host = requireService(run, "dialogue")
+    local message = semanticsFor(run).evaluateMessage(node.message, run)
     -- LuaLS cannot see through Errors.raise; requireService never returns nil.
     ---@cast host table<string, unknown>
     host:openMessage(node)
-    host:startPrint(node.message, node.bindings or {}, run.instance.textArgs or {})
+    host:startPrint(message, node.bindings or {}, run.instance.textArgs or {})
     return Runtime.OUTCOME_CONTINUE
   end
   return blockOnTask(run, "dialogue", { node = node })
@@ -1736,8 +1859,22 @@ function HANDLERS.pc_hof_open(_, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+---@class RuntimeOverworld
+---@field phase fun(self: RuntimeOverworld): string
+---@field requestRestore fun(self: RuntimeOverworld)
+
 function HANDLERS.restore_overworld(_, run)
   requireForeground(run, "restore_overworld")
+  -- ScrCmd_RestoreOverworld closes the source application's return
+  -- boundary. Retail scripts issue it unconditionally after sequences
+  -- that hid the overworld (such as Elm's healing 436/150 pair) as well
+  -- as on paths that never hid it, so the restore is synchronous and
+  -- best-effort: an absent overworld is asked to restore on the next
+  -- field tick while a present one is left untouched.
+  local overworld = requireService(run, "overworld") --[[@as RuntimeOverworld]]
+  if overworld:phase() == "absent" then
+    overworld:requestRestore()
+  end
   return Runtime.OUTCOME_CONTINUE
 end
 HANDLERS["if"] = handleIf
@@ -1808,6 +1945,9 @@ HANDLERS.check_badge = handleCheckBadge
 HANDLERS.award_badge = handleAwardBadge
 HANDLERS.count_badges = handleCountBadges
 HANDLERS.heal_party = handleHealParty
+function HANDLERS.pokemon_center_heal(node, run)
+  return blockOnTask(run, "pokemon_center_heal", { count = evalField(node, run, "count") })
+end
 HANDLERS.bag_add_item = handleBagAddItem
 HANDLERS.bag_take_item = handleBagTakeItem
 HANDLERS.bag_has_space = handleBagHasSpace
@@ -1817,15 +1957,6 @@ HANDLERS.item_get_pocket = handleItemGetPocket
 HANDLERS.bag_get_quantity = handleBagGetQuantity
 HANDLERS.party_select = handlePartySelect
 HANDLERS.party_select_result = handlePartySelectResult
-HANDLERS.follower_is_active = handleFollowerIsActive
-HANDLERS.follower_partner_state = handleFollowerPartnerState
-HANDLERS.follower_face_player = handleFollowerFacePlayer
-HANDLERS.follower_set_paused = handleFollowerSetPaused
-HANDLERS.follower_wait = handleFollowerWait
-HANDLERS.follower_set_movement_type = handleFollowerSetMovementType
-HANDLERS.follower_reposition = handleFollowerReposition
-HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
-HANDLERS.follower_transition = handleFollowerTransition
 HANDLERS.place_starter_balls = handlePlaceStarterBalls
 HANDLERS.lock_player = handleLockPlayer
 HANDLERS.release_player = handleReleasePlayer
@@ -1864,6 +1995,66 @@ HANDLERS.wait_cry = handleWaitCry
 HANDLERS.wait_fanfare = handleWaitFanfare
 HANDLERS.wait_fade = handleWaitFade
 HANDLERS.warp = handleWarp
+function HANDLERS.overworld_leave(node, run)
+  requireForeground(run, node.op)
+  return blockOnTask(run, "overworld_lifecycle", { action = "leave" })
+end
+function HANDLERS.overworld_restore(node, run)
+  requireForeground(run, node.op)
+  return blockOnTask(run, "overworld_lifecycle", { action = "restore" })
+end
+function HANDLERS.whiteout(node, run)
+  requireForeground(run, node.op)
+  return blockOnTask(run, "whiteout", {})
+end
+function HANDLERS.current_map_id(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "maps"):currentId(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.player_state(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "player"):stateCode(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.time_of_day(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "timeOfDay"):currentCode(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.discard_value(node, run)
+  semanticsFor(run).evaluateValue(node.value, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.trainer_card_stars(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "trainerCardStars"):count(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.prop_animation_load(node, run)
+  local semantics = semanticsFor(run)
+  requireService(run, "propAnimations"):load(
+    node.slot,
+    semantics.evaluateValue(node.fieldX, run),
+    semantics.evaluateValue(node.fieldZ, run)
+  )
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.prop_animation_play(node, run)
+  local slot = semanticsFor(run).evaluateValue(node.slot, run)
+  local propAnimations = requireService(run, "propAnimations")
+  assert(propAnimations ~= nil, "prop animation service is required")
+  propAnimations:play(slot, node.direction)
+  local sound = propAnimations:takeSound(slot)
+  if sound ~= nil then
+    requireService(run, "audio"):play(sound)
+  end
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.prop_animation_wait(node, run)
+  local slot = semanticsFor(run).evaluateValue(node.slot, run)
+  return blockOnTask(run, "prop_animation_wait", { slot = slot })
+end
+function HANDLERS.prop_animation_unload(node, run)
+  requireService(run, "propAnimations"):unload(semanticsFor(run).evaluateValue(node.slot, run))
+  return Runtime.OUTCOME_CONTINUE
+end
 -- Defined as a field statement without a chunk local: this translation unit
 -- is at Lua's local budget, and the handler needs no upvalue beyond the
 -- shared helpers.

@@ -658,7 +658,7 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
     assert(type(eggHp) == "number" and eggHp % 1 == 0 and eggHp >= 0, "current health is a non-negative integer")
     ---@cast eggHp integer
     snapshot.indicators = {
-      status = PartyScreenTheme.statusKey(assert(condition.status, "conditions carry status bits"), eggHp),
+      status = PartyScreenTheme.statusKey(condition),
       pokerus = pokerusKey(assert(mon.pokerus, "stored mons carry pokerus")),
       markings = projectMarkings(assert(mon.markings, "stored mons carry markings")),
       leaves = crown.leaves,
@@ -801,7 +801,7 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
     local mask = assert(mon.shinyLeaves, "stored mons carry their leaf mask")
     local crown = projectLeaves(mask)
     snapshot.indicators = {
-      status = PartyScreenTheme.statusKey(assert(condition.status, "conditions carry status bits"), currentHp),
+      status = PartyScreenTheme.statusKey(condition),
       pokerus = pokerusKey(assert(mon.pokerus, "stored mons carry pokerus")),
       markings = projectMarkings(assert(mon.markings, "stored mons carry markings")),
       leaves = crown.leaves,

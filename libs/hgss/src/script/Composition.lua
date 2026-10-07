@@ -38,6 +38,12 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.FollowerWaitTask",
   "libs.hgss.src.script.tasks.FollowerInteractionTask",
   "libs.hgss.src.script.tasks.PcApplicationTask",
+  "libs.hgss.src.script.tasks.FollowerRecallTask",
+  "libs.hgss.src.script.tasks.OverworldLifecycleTask",
+  "libs.hgss.src.script.tasks.PropAnimationWaitTask",
+  "libs.hgss.src.script.tasks.PokemonCenterHealTask",
+  "libs.hgss.src.script.tasks.BattleTask",
+  "libs.hgss.src.script.tasks.WhiteoutTask",
 }
 
 ---@param registry TaskRegistry

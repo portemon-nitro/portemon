@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local Errors = require("libs.errors.src.Errors")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local BoxCodec = require("libs.mons.src.gen4.BoxCodec")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
@@ -184,6 +185,280 @@ function T.save_capture_preserves_the_corrected_bytes()
     CORRECTED_HEX,
     "capture changes no corrected byte"
   )
+end
+
+---@param value unknown
+---@return unknown
+local function copyRecord(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local out = {}
+  for key, item in pairs(value) do
+    out[key] = copyRecord(item)
+  end
+  return out
+end
+
+-- A composed catalog with namespaced species, move, ability, and type
+-- entries that resolve semantically with no native identities.
+---@return table<string, unknown>
+local function customCatalogRoot()
+  local root = CatalogFixture.buildAssetRoot()
+  local species = copyRecord(root.species.CHIKORITA)
+  species.name = "EMBERPUP"
+  species.nativeId = nil
+  species.forms[0].types = { "ember:CRYSTAL" }
+  species.forms[0].abilities = { "ember:BLAZE_HEART" }
+  root.species["ember:EMBERPUP"] = species
+  local move = copyRecord(root.moves.TACKLE)
+  move.name = "Ember Bite"
+  move.nativeId = nil
+  root.moves["ember:EMBER_BITE"] = move
+  local ability = copyRecord(root.abilities.OVERGROW)
+  ability.name = "Blaze Heart"
+  ability.nativeId = nil
+  root.abilities["ember:BLAZE_HEART"] = ability
+  return root
+end
+
+-- A hand-built healthy custom mon: level five on the copied medium-slow
+-- curve carries experience 135, and the copied base health with individual
+-- value ten derives maximum health 20.
+---@return table<string, unknown>
+local function customMon()
+  return {
+    schema = "g4-mon-v2",
+    species = "ember:EMBERPUP",
+    form = 0,
+    personality = 0x1B1B1B1B,
+    experience = 135,
+    friendship = 70,
+    ability = "ember:BLAZE_HEART",
+    heldItem = "NONE",
+    markings = 0,
+    evs = { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0 },
+    contest = { cool = 0, beauty = 0, cute = 0, smart = 0, tough = 0, sheen = 0 },
+    moves = { { move = "ember:EMBER_BITE", pp = 35, ppUps = 0 } },
+    ivs = { hp = 10, attack = 12, defense = 14, speed = 8, specialAttack = 11, specialDefense = 13 },
+    isEgg = false,
+    nickname = nil,
+    ribbons = { ds1 = 0, gba = 0, ds2 = 0 },
+    fatefulEncounter = false,
+    shinyLeaves = 0,
+    egg = { location = 0 },
+    met = {
+      location = 7,
+      date = { year = 2000, month = 1, day = 1 },
+      level = 5,
+      terrain = 4,
+    },
+    origin = {
+      trainerId = 1,
+      trainerName = "GOLD",
+      trainerGender = 0,
+      game = "heartgold",
+      ball = "POKE_BALL",
+      language = "english",
+    },
+    pokerus = 0,
+    mood = 0,
+    condition = { currentHp = 20, effects = {} },
+    capsule = { id = 0, seals = {} },
+    mail = {},
+  }
+end
+
+---@param catalog MonCatalog
+---@param bucket table<string, unknown>
+---@return HgssMonService
+local function reopenService(catalog, bucket)
+  return HgssMonService.new({
+    catalog = catalog,
+    bucket = bucket,
+    profile = PROFILE,
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+    mapSection = NATIVE_SECTION,
+    date = function()
+      return { year = MET_DATE.year, month = MET_DATE.month, day = MET_DATE.day }
+    end,
+  })
+end
+
+---@param err any
+---@return boolean
+local function mentionsNamespacedIdentity(err)
+  if not Errors.is(err) then
+    return false
+  end
+  return tostring(Errors.format(err)):find("ember:", 1, true) ~= nil
+end
+
+---@param err any
+---@param key string
+---@return boolean
+local function mentionsKey(err, key)
+  if not Errors.is(err) then
+    return false
+  end
+  return tostring(Errors.format(err)):find(key, 1, true) ~= nil
+end
+
+function T.custom_mons_publish_and_save_but_never_pass_as_native()
+  local Mon = require("libs.mons.src.Mon")
+  Assert.equal(Mon.SCHEMA, "g4-mon-v2", "the canonical record must carry semantic condition effects")
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local ResolvedMonSchema = require("libs.mons.src.ResolvedMonSchema")
+
+  local root = customCatalogRoot()
+  Assert.isTrue(ResolvedMonSchema.assertCatalog(root) ~= false, "the composed schema accepts the custom entries")
+  local catalog = MonCatalog.fromResolved(root, CatalogFixture.makeItemCatalog())
+  Assert.isNil(
+    catalog:species("ember:EMBERPUP").nativeId,
+    "custom species resolve without a native identity"
+  )
+
+  local service = openService(catalog, SEED, NATIVE_SECTION)
+  Assert.isTrue(service:addMon(customMon()), "domain-valid custom mons publish into the party")
+  Assert.equal(service:partyCount(), 1)
+
+  local revision = service:partyRevision()
+  local nicknamed = copyRecord(service:partyMon(0))
+  nicknamed.nickname = "EMBER"
+  local staged, stale = service:preparePartyChanges(revision, { { slot = 0, mon = nicknamed } })
+  Assert.notNil(staged, "staged party updates accept custom mons")
+  Assert.isNil(stale)
+  assert(staged ~= nil, "staged preparation validated above")
+  Assert.isTrue(staged.changed)
+  staged.publish()
+  Assert.equal(service:partyMon(0).nickname, "EMBER")
+
+  local restored = reopenService(catalog, service:capture())
+  Assert.equal(restored:partyCount(), 1, "capture restores the custom mon")
+  Assert.deepEqual(restored:partyMon(0), service:partyMon(0))
+
+  local live = restored:partyMon(0)
+  local settledRevision = restored:partyRevision()
+  local context = contextFor(catalog)
+  local exportErr = Assert.throws(function()
+    NativeLegality.project(live, context)
+  end, "native export of a custom mon must fail")
+  Assert.isTrue(Errors.is(exportErr), "native export must fail with a structured identity failure")
+  Assert.equal(exportErr.code, "MON_LEGALITY_INVALID", "native export fails at the representability boundary")
+  Assert.isTrue(
+    mentionsNamespacedIdentity(exportErr),
+    "native export must name the unrepresentable identity: " .. Errors.format(exportErr)
+  )
+
+  local typeErr = Assert.throws(function()
+    restored:monTypes(0)
+  end, "the native type opcode must reject the custom type")
+  Assert.isTrue(Errors.is(typeErr), "the type opcode must fail with a structured identity failure")
+  Assert.isTrue(
+    mentionsKey(typeErr, "ember:CRYSTAL"),
+    "the type opcode must name the custom type: " .. Errors.format(typeErr)
+  )
+
+  Assert.equal(restored:partyCount(), 1, "rejected native operations never mutate the party")
+  Assert.equal(restored:partyRevision(), settledRevision)
+  Assert.deepEqual(restored:partyMon(0), live)
+end
+
+function T.materialized_battle_facts_move_only_at_explicit_reload()
+  local ok, loaded = pcall(require, "libs.mons.src.gen4.MonStats")
+  Assert.isTrue(ok, "missing shared battle-stat projection: libs.mons.src.gen4.MonStats is not implemented")
+  local MonStats = assert(loaded, "the shared projection loads its module")
+  Assert.isTrue(type(MonStats.derive) == "function", "shared projection must expose derive")
+  Assert.isTrue(
+    type(MonStats.adjustHpForMaxChange) == "function",
+    "shared projection must expose adjustHpForMaxChange"
+  )
+
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local mon = factory:createNormal(CatalogFixture.normalRequest())
+
+  local Experience = require("libs.mons.src.gen4.Experience")
+  local Personality = require("libs.mons.src.gen4.Personality")
+  local Stats = require("libs.mons.src.gen4.Stats")
+  local species = catalog:species(mon.species)
+  local level = Experience.level(catalog:growthCurve(species.growthCurve), mon.experience)
+  local nature = Personality.nature(mon.personality)
+  local form = catalog:form(mon.species, mon.form)
+  local expected = Stats.calculate(form.baseStats, mon.ivs, mon.evs, level, nature)
+
+  local facts = MonStats.derive(mon, catalog)
+  Assert.keySet(facts, "attack,defense,level,maxHp,specialAttack,specialDefense,speed")
+  Assert.equal(facts.level, level)
+  Assert.equal(facts.maxHp, expected.hp)
+  Assert.equal(facts.attack, expected.attack)
+  Assert.equal(facts.defense, expected.defense)
+  Assert.equal(facts.speed, expected.speed)
+  Assert.equal(facts.specialAttack, expected.specialAttack)
+  Assert.equal(facts.specialDefense, expected.specialDefense)
+
+  -- The single-health species keeps one point through the shared owner.
+  local shedinjaMaker = CatalogFixture.makeFactory(0x44444444, catalog)
+  local shedinja = shedinjaMaker:createNormal(CatalogFixture.normalRequest({ species = "SHEDINJA", level = 5 }))
+  Assert.equal(MonStats.derive(shedinja, catalog).maxHp, 1)
+
+  -- The service derivation agrees with the shared owner.
+  local service = openService(catalog, SEED, NATIVE_SECTION)
+  Assert.deepEqual(MonStats.derive(mon, catalog), service:derive(mon))
+
+  -- Materialize battle facts, then award effort values: the materialized
+  -- facts must not move until the explicit reload runs.
+  local materialized = MonStats.derive(mon, catalog)
+  local frozen = copyRecord(materialized)
+  local trained = copyRecord(mon)
+  trained.evs.hp = 100
+  Assert.deepEqual(materialized, frozen, "effort awards never rewrite materialized facts")
+  local reloaded = MonStats.derive(trained, catalog)
+  local reloadedExpected = Stats.calculate(form.baseStats, mon.ivs, trained.evs, level, nature)
+  Assert.equal(reloaded.maxHp, reloadedExpected.hp, "the explicit reload picks up the new effort values")
+  Assert.isTrue(reloaded.maxHp > materialized.maxHp, "the award must grow health here")
+  for _, key in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+    Assert.equal(reloaded[key], materialized[key], "unrelated stats survive the reload")
+  end
+  Assert.equal(reloaded.level, materialized.level)
+
+  -- Health follows the shared adjustment on both owners.
+  local delta = reloaded.maxHp - materialized.maxHp
+  local currentHp = mon.condition.currentHp
+  local kept = MonStats.adjustHpForMaxChange(materialized.maxHp, reloaded.maxHp, currentHp)
+  Assert.equal(
+    kept,
+    HgssMonService.adjustHpForMaxChange(materialized.maxHp, reloaded.maxHp, currentHp),
+    "health adjustment agrees with the service owner"
+  )
+  Assert.equal(kept, currentHp + delta, "living mons keep their damage across the reload")
+  Assert.equal(
+    MonStats.adjustHpForMaxChange(materialized.maxHp, reloaded.maxHp, 0),
+    0,
+    "fainted mons stay fainted"
+  )
+  Assert.equal(
+    MonStats.adjustHpForMaxChange(reloaded.maxHp, materialized.maxHp, reloaded.maxHp),
+    materialized.maxHp,
+    "shrinking maxima clamp to the new maximum"
+  )
+  Assert.equal(
+    MonStats.adjustHpForMaxChange(reloaded.maxHp, materialized.maxHp, reloaded.maxHp),
+    HgssMonService.adjustHpForMaxChange(reloaded.maxHp, materialized.maxHp, reloaded.maxHp),
+    "the clamp agrees with the service owner"
+  )
+
+  -- Level-up reload moves the level.
+  local leveled = copyRecord(trained)
+  leveled.experience = 560
+  leveled.met.level = 10
+  Assert.equal(MonStats.derive(leveled, catalog).level, 10)
 end
 
 return { tests = T }

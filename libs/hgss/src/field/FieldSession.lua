@@ -67,6 +67,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field navigationBoundary table<string, unknown>?
 ---@field fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
+---@field overworld table<string, unknown>? lifecycle owner; absent sessions keep script scheduling but suspend ordinary field work
 ---@field initController table<string, unknown>|nil
 ---@field enterMapActors fun()?
 ---@field autoAcknowledgePresentation boolean?
@@ -113,7 +114,9 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field mapEntryStage FieldMapEntryStage? read-only view of mapEntryController state
 ---@field mapEntryController FieldMapEntryController
 ---@field private fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
+---@field private overworld table<string, unknown>|nil
 ---@field childResumePending boolean
+---@field battleActive boolean whether an application battle owns player input
 ---@field tick integer
 ---@field accumulator number
 ---@field navigationBoundary table<string, unknown>?
@@ -390,8 +393,10 @@ function FieldSession.new(options)
       autoAcknowledgePresentation = options.autoAcknowledgePresentation == true,
     }),
     childResumePending = false,
+    battleActive = false,
     navigationBoundary = options.navigationBoundary,
     fieldMoves = options.fieldMoves,
+    overworld = options.overworld,
     tick = 0,
     accumulator = 0,
     _boundaryMovementDirection = nil,
@@ -445,6 +450,21 @@ function FieldSession:onChildApplicationResume()
   self.childResumePending = true
 end
 
+-- Marks the application battle lifetime: while active, player input never
+-- initiates movement or opens the Start Menu, so decisions owned by the
+-- battle cannot leak through to the field. Ambient actors and the script
+-- scheduler keep stepping (the launching script itself stays blocked on
+-- its battle task); only player initiation is gated.
+---@param active boolean
+function FieldSession:setBattleActive(active)
+  self.battleActive = active == true
+end
+
+---@return boolean
+function FieldSession:isBattleActive()
+  return self.battleActive == true
+end
+
 -- A seamless connection never leaves the world: it stays outside the fade
 -- transition and remains presentable for its whole lifecycle. Only a full
 -- entry hides the destination until it has been presented.
@@ -488,6 +508,7 @@ local function canOpenStartMenu(self)
     and not self.contextChoice:isActive()
     and not isForegroundActive(self.scriptScheduler)
     and not isPlayerInputOwned(self.scriptScheduler)
+    and not self.battleActive
 end
 
 function FieldSession:_advanceTick()
@@ -828,6 +849,9 @@ function FieldSession:updateFixed(inputSnapshot)
   -- and changed-zone audio are owned by FieldAudioController:enterMap and
   -- FieldAudioController:enterZone respectively.
   inputSnapshot = inputSnapshot or self.input:snapshot()
+  if self.overworld ~= nil then
+    self.overworld:updateFixed()
+  end
   -- The avatar presentation phase advances once per fixed tick before any
   -- modal branch can return, so the surf bob runs on the field cadence even
   -- while ordinary world simulation is frozen.
@@ -936,9 +960,18 @@ function FieldSession:updateFixed(inputSnapshot)
     return
   end
 
+  if self.overworld ~= nil and not self.overworld:isPresent() then
+    self.currentMap:updateAnimated()
+    if self.audio then
+      self.audio:updateField()
+    end
+    self:_advanceTick()
+    return
+  end
+
   local playerInputOwnedAfterScheduler = isPlayerInputOwned(self.scriptScheduler)
   local foregroundActive = isForegroundActive(self.scriptScheduler)
-  local inputSuppressedThisTick = playerInputOwnedAtTickStart or playerInputOwnedAfterScheduler
+  local inputSuppressedThisTick = playerInputOwnedAtTickStart or playerInputOwnedAfterScheduler or self.battleActive
 
   -- Start Menu arbitration: a pending script reopen request (opcode 61's
   -- startMenuReopen service) opens the menu unconditionally at this point,

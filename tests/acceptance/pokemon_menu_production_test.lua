@@ -17,6 +17,7 @@ local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
 local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
+local GameSave = require("libs.hgss.src.save.GameSave")
 local RomFs = require("romdump.src.source.RomFs")
 
 local T = {
@@ -547,9 +548,12 @@ function T.tests.save_round_trip_preserves_domain_badges_travel_and_leaves(conte
     local potionBefore = bag:quantity("POTION")
     local record = assert(runtime:captureGameSave(), "a settled field captures")
     Assert.equal(record.schema, GameSave.SCHEMA, "production capture writes the current save schema")
+
     Assert.equal(type(record.mart), "table", "production capture carries the canonical mart bucket")
     Assert.equal(record.mart.schema, "g4-mart-save-v1", "production capture uses the supported mart schema")
     Assert.equal(record.playerData.profile.nationalDex, false, "new-game profiles start without the National Dex")
+    Assert.isNil(record.battleFrontier, "the current save schema carries no Frontier bucket")
+
     Assert.isTrue(record.playerData.profile.badges > 0, "awarded badges persist in the record")
     Assert.isTrue(type(record.fieldTravel) == "table", "the record carries travel facts")
     Assert.equal(record.fieldTravel.lastHealSpawn, "SPAWN_NEW_BARK", "the mother spawn survives capture")

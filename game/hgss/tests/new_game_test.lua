@@ -94,7 +94,7 @@ function T.new_candidate_uses_source_owned_opening_state()
     facing = "south",
   })
   Assert.equal(candidate.profileDraft.money, 3000)
-  Assert.deepEqual(candidate.options, { textSpeed = "fastest", textFrame = 0 })
+  Assert.deepEqual(candidate.options, { textSpeed = "fastest", textFrame = 0, battleStyle = "shift" })
   Assert.equal(candidate.playTime:seconds(), 0)
   Assert.isTrue(candidate.worldState:isFlagSet(openingFlag), "the source opening flag is seeded semantically")
   Assert.isNil(candidate.surfaceId, "surface resolution belongs to field entry")

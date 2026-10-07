@@ -2,6 +2,8 @@
 
 local FieldScripts = require("game.hgss.src.field.FieldScripts")
 local ScriptSave = require("libs.script.src.ScriptSave")
+local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
+local TrainerCardStars = require("libs.hgss.src.save.TrainerCardStars")
 
 ---@class FieldScriptCompositionResult
 ---@field scripts FieldScripts
@@ -29,7 +31,42 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 ---@field clock table<string, unknown> live local clock
 ---@field pcApplications table<string, unknown> script-owned PC application host
 ---@field pcTerminal table<string, unknown> PC terminal effect service
+---@field battle table<string, unknown>? the battle host for script battle tasks (absent until the application wires it)
+---@field pokemonCenterHeal table<string, unknown>? the runtime-owned blocking Pokémon Center choreography
 local FieldScriptComposition = {}
+
+local function currentTimeOfDayCode(runtime)
+  return TimeOfDayProps.rtcCodeForHour(runtime.localClock:nowLocal().hour)
+end
+
+local function timeOfDayService(runtime)
+  local function currentCode()
+    return currentTimeOfDayCode(runtime)
+  end
+  return { currentCode = currentCode }
+end
+
+-- No Frontier gameplay owns a writer yet, so the current production
+-- composition supplies a stateless non-qualifying Frontier capability. The
+-- source predicate inside TrainerCardStars.count stays untouched for the
+-- day a real Frontier subsystem injects a qualifying record.
+local function frontierNeverQualifiesForTrainerCardStar()
+  return false
+end
+
+local function trainerCardStarsService(runtime)
+  local function count()
+    local scripts = assert(runtime.scripts, "field script runtime is assigned before script execution")
+    return TrainerCardStars.count(
+      scripts.worldState,
+      assert(runtime.dexKnowledge, "field runtime has no dex knowledge"),
+      {
+        qualifiesForTrainerCardStar = frontierNeverQualifiesForTrainerCardStar,
+      }
+    )
+  end
+  return { count = count }
+end
 
 ---@param runtime FieldRuntime
 ---@param options FieldScriptCompositionOptions
@@ -50,6 +87,9 @@ function FieldScriptComposition.compose(runtime, options)
   end
   local function changeWeather(_, weatherId)
     runtime:_setLiveWeather(assert(runtime.runtimeMap), weatherId)
+  end
+  local function blackoutSourceMap()
+    return assert(runtime.runtimeMap, "blackout swaps require the live source map")
   end
   local scripts = FieldScripts.new({
     cacheFs = options.cacheFs,
@@ -100,7 +140,18 @@ function FieldScriptComposition.compose(runtime, options)
     starterBalls = options.starterBalls,
     pcApplications = runtime.pcApplicationHost,
     pcTerminal = runtime.pcTerminal,
+    battle = options.battle,
+    overworld = runtime.overworld,
+    propAnimations = runtime.propAnimations,
+    pokemonCenterHeal = runtime.pokemonCenterHeal,
+    blackout = {
+      loader = runtime.mapLoader,
+      sourceMap = blackoutSourceMap,
+    },
+    timeOfDay = timeOfDayService(runtime),
+    trainerCardStars = trainerCardStarsService(runtime),
   })
+  runtime.blackoutFlow = assert(scripts.blackoutFlow)
   local function restore()
     if options.loadedGame then
       ScriptSave.restore(options.loadedGame.scripts, scripts.scheduler, 0)

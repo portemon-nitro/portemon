@@ -21,6 +21,8 @@ local BinaryReader = require("libs.codec.src.BinaryReader")
 local Errors = require("libs.errors.src.Errors")
 local MonSources = require("romdump.src.config.MonSources")
 local ItemSources = require("romdump.src.config.ItemSources")
+local BattleSources = require("romdump.src.config.BattleSources")
+local BattleDataCompiler = require("romdump.src.digest.battle.BattleDataCompiler")
 local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
@@ -426,6 +428,53 @@ function MonCatalogCompiler.decodeGrowth(member, context)
   return curve
 end
 
+-- Decode the pokedex species weight table: member 1 of
+-- NARC_application_zukanlist_zkn_data_zukan_data as an s32 array indexed
+-- by species id 0..MAX_SPECIES carrying hectograms
+-- (src/battle/battle_command.c GetMonWeight,
+-- pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981; member
+-- selection pinned in BattleSources.weightSources). Weights are
+-- non-negative; a negative entry is corrupt input and fails, never clamps.
+---@param member string
+---@param context Errors.Context|nil
+---@return table<integer, integer>|nil, Errors.Error|nil
+function MonCatalogCompiler.decodeWeightTable(member, context)
+  context = context or {}
+  local expected = (MonSources.MAX_SPECIES + 1) * BattleSources.weightSources.entrySize
+  if #member ~= expected then
+    return nil,
+      Errors.new("MON_WEIGHT_BAD_SIZE", contextLabel(context) .. " is " .. #member .. " bytes, expected " .. expected, {
+        archive = context.archive,
+        memberId = context.memberId,
+        size = #member,
+        expected = expected,
+      })
+  end
+  local reader = BinaryReader.new(member, contextLabel(context))
+  local weights = {}
+  for speciesId = 0, MonSources.MAX_SPECIES do
+    local unsigned = reader:u32le(speciesId * BattleSources.weightSources.entrySize)
+    local weight = unsigned
+    if unsigned >= 2147483648 then
+      weight = unsigned - 4294967296
+    end
+    if weight < 0 then
+      return nil,
+        Errors.new(
+          "MON_WEIGHT_BAD_VALUE",
+          contextLabel(context) .. " carries a negative weight for species " .. speciesId,
+          {
+            archive = context.archive,
+            memberId = context.memberId,
+            species = speciesId,
+          }
+        )
+    end
+    weights[speciesId] = weight
+  end
+  return weights
+end
+
 -- Decode one display-text bank into its message texts indexed by native id.
 -- Banks are selected by MonSources.messageBanks (src/message_format.c call
 -- sites, content-verified for descriptions); every message must tokenize.
@@ -826,6 +875,11 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
   if not followerParamsArchive then
     return fail(err)
   end
+  local weightArchive
+  weightArchive, err = openArchive(romFs, BattleSources.weightSources.symbol)
+  if not weightArchive then
+    return fail(err)
+  end
   local ok, result = pcall(function()
     local banks = MonSources.messageBanks
     local counts = MonSources.messageCounts
@@ -835,6 +889,11 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
     local abilityNames = must(decodeTextBank(messages, banks.abilityName, counts.abilities, "ability names"))
     local abilityDescriptions =
       must(decodeTextBank(messages, banks.abilityDescription, counts.abilities, "ability descriptions"))
+    local weightMember = must(readMember(weightArchive, BattleSources.weightSources.memberId, "zukan_data"))
+    local weightTable = must(MonCatalogCompiler.decodeWeightTable(weightMember, {
+      archive = "zukan_data",
+      memberId = BattleSources.weightSources.memberId,
+    }))
     local personalCount = personal:memberCount()
     if personalCount ~= 508 then
       error(
@@ -905,14 +964,40 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
       if type(description) ~= "string" then
         error(Errors.new("MON_TEXT_MISSING", "move " .. moveId .. " has no description", { moveId = moveId }), 0)
       end
+      local categoryKey = must(MonSources.damageCategories[record.category])
+      local moveTypeKey = must(MonSources.typeKeys[record.moveType])
+      -- The NONE sentinel is not a usable move and carries no battle facts.
+      local battleBlock = nil
+      if moveId ~= 0 then
+        local binding = BattleSources.moveBindings[key]
+        if binding == nil then
+          error(Errors.new("MON_MOVE_UNBOUND", "move " .. key .. " has no behavior binding", { move = key }), 0)
+        end
+        local battleFacts = BattleDataCompiler.projectFacts(moveId, key, {
+          effect = record.effect,
+          category = categoryKey,
+          power = record.power,
+          moveType = moveTypeKey,
+          accuracy = record.accuracy,
+          basePp = record.basePp,
+          effectChance = record.effectChance,
+          range = record.range,
+          priority = record.priority,
+        }, binding)
+        battleBlock = {
+          behavior = battleFacts.behavior,
+          target = battleFacts.target,
+          flags = battleFacts.flags,
+        }
+      end
       moves[key] = {
         nativeId = moveId,
         name = name,
         description = description,
         effect = record.effect,
-        category = must(MonSources.damageCategories[record.category]),
+        category = categoryKey,
         power = record.power,
-        moveType = must(MonSources.typeKeys[record.moveType]),
+        moveType = moveTypeKey,
         accuracy = record.accuracy,
         basePp = record.basePp,
         effectChance = record.effectChance,
@@ -921,6 +1006,7 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
         flags = record.flags,
         unknownC = record.unknownC,
         contestType = record.contestType,
+        battle = battleBlock,
       }
     end
     local abilities = {}
@@ -984,6 +1070,11 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
           flip = personalRecord.flip,
           forms = {},
         }
+        if speciesId >= 0 and speciesId <= MonSources.MAX_SPECIES then
+          -- Species-indexed weight in hectograms: the zukan table spans
+          -- 0..MAX_SPECIES only, so sentinel species carry no weight.
+          entry.weight = assert(weightTable[speciesId], "weight table drops species " .. speciesId)
+        end
         species[key] = entry
       end
       if entry.forms[form] ~= nil then
