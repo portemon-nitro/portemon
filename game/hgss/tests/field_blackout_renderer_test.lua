@@ -2,7 +2,6 @@
 
 local Assert = require("tests.support.Assert")
 local FieldBlackoutRenderer = require("game.hgss.src.field.FieldBlackoutRenderer")
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 
 local T = {}
 
@@ -53,13 +52,8 @@ function T.message_uses_source_window_palette_and_shared_centered_line_anchor()
     end,
   }
   local priorLove = love
-  local priorProtectedDraw = FieldDrawState.protectedDraw
   love = { graphics = graphics }
-  FieldDrawState.protectedDraw = function(_, draw)
-    draw()
-  end
   local ok, err = pcall(FieldBlackoutRenderer.draw, status, window, text, { x = 0, y = 0, width = 256, height = 192 })
-  FieldDrawState.protectedDraw = priorProtectedDraw
   love = priorLove
   if not ok then
     error(err)

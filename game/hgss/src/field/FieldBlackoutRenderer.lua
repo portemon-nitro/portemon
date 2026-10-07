@@ -1,6 +1,5 @@
 -- Draws the retail blackout message in its source window and palette.
 
-local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 
@@ -50,31 +49,31 @@ function FieldBlackoutRenderer.draw(status, window, text, bounds)
   local scale = math.min(bounds.width / 256, bounds.height / 192)
   local originX = bounds.x + (bounds.width - 256 * scale) / 2
   local originY = bounds.y + (bounds.height - 192 * scale) / 2
-  FieldDrawState.protectedDraw(lg, function()
-    lg.push()
-    lg.translate(originX, originY)
-    lg.scale(scale, scale)
-    lg.setColor(1, 1, 1, 1)
-    lg.rectangle("fill", 0, 0, 256, 192)
-    local background = sourceColor(text, TEXT_COLORS.background)
-    window:drawWindow(BOX, FRAME_PALETTE, sourceWindowColor(background))
-    local palette = {
-      foreground = sourceColor(text, TEXT_COLORS.foreground),
-      shadow = sourceColor(text, TEXT_COLORS.shadow),
-      background = background,
-    }
-    local maxWidth = 0
-    for _, line in ipairs(lines) do
-      maxWidth = math.max(maxWidth, line.width)
-    end
-    local textX = BOX.x + (BOX.width - maxWidth) / 2 + TEXT_X_ADJUSTMENT
-    local lineY = BOX.y
-    for _, line in ipairs(lines) do
-      text:drawLineWithPalette(line.tokens, textX, lineY, palette)
-      lineY = lineY + LINE_HEIGHT
-    end
-    lg.pop()
-  end)
+  lg.push("all")
+  lg.push()
+  lg.translate(originX, originY)
+  lg.scale(scale, scale)
+  lg.setColor(1, 1, 1, 1)
+  lg.rectangle("fill", 0, 0, 256, 192)
+  local background = sourceColor(text, TEXT_COLORS.background)
+  window:drawWindow(BOX, FRAME_PALETTE, sourceWindowColor(background))
+  local palette = {
+    foreground = sourceColor(text, TEXT_COLORS.foreground),
+    shadow = sourceColor(text, TEXT_COLORS.shadow),
+    background = background,
+  }
+  local maxWidth = 0
+  for _, line in ipairs(lines) do
+    maxWidth = math.max(maxWidth, line.width)
+  end
+  local textX = BOX.x + (BOX.width - maxWidth) / 2 + TEXT_X_ADJUSTMENT
+  local lineY = BOX.y
+  for _, line in ipairs(lines) do
+    text:drawLineWithPalette(line.tokens, textX, lineY, palette)
+    lineY = lineY + LINE_HEIGHT
+  end
+  lg.pop()
+  lg.pop()
 end
 
 return FieldBlackoutRenderer

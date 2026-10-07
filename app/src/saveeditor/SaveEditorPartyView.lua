@@ -173,7 +173,7 @@ end
 ---@return { header: SaveEditorPartyHeaderFact[], rows: SaveEditorPartyStatsRow[] }
 function PartyView:stats(record, projection)
   local maxHp = projection.stats and projection.stats.hp or nil
-  local statusKey = PartyScreenTheme.statusKey(record.condition.status, record.condition.currentHp)
+  local statusKey = PartyScreenTheme.statusKey(assert(record.condition, "save editor records carry their condition"))
   local header = {
     {
       id = "level",

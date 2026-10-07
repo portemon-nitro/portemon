@@ -380,49 +380,49 @@ function T.status_pokerus_markings_and_leaves_stay_independent()
   Assert.equal(indicators(function() end).status, "ok", "a fresh mon carries no status")
   Assert.equal(
     indicators(function(mon)
-      mon.condition.status = 3
+      mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
     end).status,
     "sleep",
-    "sleep bits read sleep"
+    "sleep effects read sleep"
   )
   Assert.equal(
     indicators(function(mon)
-      mon.condition.status = 0x8
+      mon.condition.effects = { { key = "poison", version = 1, state = {} } }
     end).status,
     "poison",
     "poison reads poison"
   )
   Assert.equal(
     indicators(function(mon)
-      mon.condition.status = 0x10
+      mon.condition.effects = { { key = "burn", version = 1, state = {} } }
     end).status,
     "burn",
     "burn reads burn"
   )
   Assert.equal(
     indicators(function(mon)
-      mon.condition.status = 0x20
+      mon.condition.effects = { { key = "freeze", version = 1, state = {} } }
     end).status,
     "freeze",
     "freeze reads freeze"
   )
   Assert.equal(
     indicators(function(mon)
-      mon.condition.status = 0x40
+      mon.condition.effects = { { key = "paralysis", version = 1, state = {} } }
     end).status,
     "paralysis",
     "paralysis reads paralysis"
   )
   Assert.equal(
     indicators(function(mon)
-      mon.condition.status = 0
+      mon.condition.effects = {}
       mon.condition.currentHp = 0
     end).status,
     "faint",
     "zero health reads faint"
   )
   setMon(service, 0, function(mon)
-    mon.condition.status = 0
+    mon.condition.effects = {}
     mon.condition.currentHp = service:derive(mon).maxHp
     mon.pokerus = 0
   end)
@@ -432,13 +432,13 @@ function T.status_pokerus_markings_and_leaves_stay_independent()
   end)
   Assert.equal(buildFacts(service, 0).indicators.pokerus, "active", "remaining days read active infection")
   local cured = indicators(function(mon)
-    mon.condition.status = 0x8
+    mon.condition.effects = { { key = "poison", version = 1, state = {} } }
     mon.pokerus = 0x10
   end)
   Assert.equal(cured.pokerus, "cured", "a strain without days reads cured")
   Assert.equal(cured.status, "poison", "a cured marker coexists with status")
   local marked = indicators(function(mon)
-    mon.condition.status = 0
+    mon.condition.effects = {}
     mon.condition.currentHp = service:derive(mon).maxHp
     mon.pokerus = 0
     mon.markings = 21
