@@ -87,7 +87,7 @@ local function isolatedBackend(namespace)
 end
 
 local function clearCheckpoints(saveStore)
-  for _, entry in ipairs(saveStore:list()) do
+  for _, entry in ipairs(saveStore:listMetadata()) do
     saveStore:delete(entry.saveId)
   end
 end

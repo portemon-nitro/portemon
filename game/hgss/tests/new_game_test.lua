@@ -129,7 +129,7 @@ function T.real_store_reservation_creates_an_unpublished_candidate()
   local candidate = newCandidate(store)
 
   Assert.equal(candidate.saveId, "save-00000001")
-  Assert.equal(store:list()[1], nil, "reservation must remain unpublished")
+  Assert.equal(store:listMetadata()[1], nil, "reservation must remain unpublished")
   Assert.notNil(backend.files["saves/catalog.lua"], "reservation state must be durable")
 end
 

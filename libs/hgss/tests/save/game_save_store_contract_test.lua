@@ -19,13 +19,73 @@ local T = {}
 
 local GAME_SCHEMA = GameSave.SCHEMA
 
-local function newStore(backend)
+local function newStoreAtFs(saveFs)
   local loaded, GameSaveStore = pcall(require, "libs.hgss.src.save.GameSaveStore")
   Assert.isTrue(loaded, "global GameSave storage service is not implemented")
   Assert.isTrue(type(GameSaveStore.new) == "function", "global GameSave storage needs a constructor")
   Assert.isTrue(type(SaveFs.global) == "function", "SaveFs needs a global product save root")
   local Store = GameSaveStore --[[@as GameSaveStoreModule]]
-  return Store.new(SaveFs.global(backend))
+  return Store.new(saveFs)
+end
+
+local function newStore(backend)
+  return newStoreAtFs(SaveFs.global(backend))
+end
+
+-- In-memory backend that records every storage call with its Lua caller, so
+-- the contract can prove raw bytes only cross the SaveFs seam: no caller
+-- outside the storage owner may invoke backend operations or resolve save
+-- paths itself.
+local function recordingBackend(inner)
+  local calls = {}
+  local proxy = {}
+  local function record(method, path)
+    local info = debug.getinfo(3, "S")
+    calls[#calls + 1] = { method = method, path = path, source = info and info.source or "?" }
+  end
+  function proxy:write(path, data)
+    record("write", path)
+    return inner:write(path, data)
+  end
+  function proxy:read(path)
+    record("read", path)
+    return inner:read(path)
+  end
+  function proxy:getInfo(path)
+    record("getInfo", path)
+    return inner:getInfo(path)
+  end
+  function proxy:createDirectory(path)
+    record("createDirectory", path)
+    return inner:createDirectory(path)
+  end
+  function proxy:remove(path)
+    record("remove", path)
+    return inner:remove(path)
+  end
+  function proxy:replace(source, destination)
+    record("replace", source)
+    record("replace", destination)
+    return inner:replace(source, destination)
+  end
+  function proxy:getDirectoryItems(path)
+    record("getDirectoryItems", path)
+    return inner:getDirectoryItems(path)
+  end
+  return proxy, calls
+end
+
+-- Records save-path resolutions on one SaveFs instance with their Lua
+-- caller. Path confinement is SaveFs-owned: only storage code may resolve.
+local function watchResolutions(saveFs)
+  local calls = {}
+  local classResolve = SaveFs.resolve
+  saveFs.resolve = function(self, path)
+    local info = debug.getinfo(2, "S")
+    calls[#calls + 1] = info and info.source or "?"
+    return classResolve(self, path)
+  end
+  return calls
 end
 
 local function record(saveId, versionId, overrides)
@@ -139,7 +199,9 @@ local function failOn(backend, method, occurrence)
 end
 
 local function expectVisible(store, saveId)
-  local entries = assert(store:list())
+  -- Visibility is a display-envelope concern: the Main Menu lists the same
+  -- metadata cards, so the contract proves visibility through listMetadata.
+  local entries = assert(store:listMetadata())
   local entry = findEntry(entries, saveId)
   Assert.notNil(entry, "published save must be catalog-visible")
   Assert.isNil(entry and entry.error, "a valid published save must not list an error")
@@ -173,6 +235,64 @@ function T.multiple_versions_use_one_global_catalog_and_strict_game_records()
   end)
 end
 
+-- Raw predecessor rotation must work through the SaveFs capability alone:
+-- the store never invokes backend operations directly and never resolves
+-- save paths itself, while every backend path it causes stays confined
+-- below the save root.
+function T.raw_predecessor_work_stays_behind_the_save_fs_capability()
+  local inner = FakeCache.new()
+  local backend, backendCalls = recordingBackend(inner)
+  local saveFs = SaveFs.global(backend)
+  Assert.equal(type(saveFs.exists), "function", "SaveFs exposes a scoped existence probe for predecessor reads")
+  local resolveCalls = watchResolutions(saveFs)
+  local store = newStoreAtFs(saveFs)
+  local saveId = store:reserve()
+  store:publishFirst(record(saveId, "heartgold", { playTimeSeconds = 0 }))
+  local bytesA = inner.files[gamePath(saveId)]
+  Assert.notNil(bytesA)
+  store:save(record(saveId, "heartgold", { playTimeSeconds = 1 }))
+  local bytesB = inner.files[gamePath(saveId)]
+  store:save(record(saveId, "heartgold", { playTimeSeconds = 2 }))
+  Assert.equal(assert(store:load(saveId)).playTimeSeconds, 2)
+  Assert.equal(inner.files[backupPath(saveId, 1)], bytesB)
+  Assert.equal(inner.files[backupPath(saveId, 2)], bytesA)
+
+  -- Only existence probes may originate outside storage, and never from the
+  -- store: SaveFs:exists answers from backend metadata internally, while the
+  -- current reach-through calls backend:getInfo directly. Backend reads are
+  -- excluded here because SaveFs:read tail-calls the backend, which
+  -- attributes those reads to SaveFs:read's caller by construction.
+  local leaks = {}
+  for _, call in ipairs(backendCalls) do
+    if call.method == "getInfo" and call.source:find("GameSaveStore", 1, true) then
+      leaks[#leaks + 1] = call.method .. " " .. tostring(call.path)
+    end
+    Assert.equal(type(call.path), "string", "storage calls carry resolved save paths")
+    -- Confinement means the save root and below: the exact root itself
+    -- arrives via parent-chain creation on top-level writes, and every
+    -- deeper path stays below it. Anything else is an escape.
+    Assert.isTrue(
+      call.path == "saves" or call.path:sub(1, 6) == "saves/",
+      "the backend only sees save-root-confined paths, got " .. call.path
+    )
+  end
+  Assert.equal(#leaks, 0, "the store reached through SaveFs: " .. table.concat(leaks, ", "))
+  local resolvedOutside = {}
+  for _, source in ipairs(resolveCalls) do
+    if source:find("GameSaveStore", 1, true) then
+      resolvedOutside[#resolvedOutside + 1] = source
+    end
+  end
+  Assert.equal(#resolvedOutside, 0, "path resolution stays SaveFs-owned: " .. table.concat(resolvedOutside, ", "))
+end
+
+-- The full-normalizing enumeration is dead surface: menu cards list display
+-- envelopes and payloads load individually, so the store exposes no list().
+function T.dead_full_normalizing_enumeration_is_gone()
+  local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
+  Assert.isNil(GameSaveStore.list, "the normalizing enumeration is deleted; menus list metadata")
+end
+
 function T.load_trusts_nested_buckets_and_reads_no_generated_caches()
   local backend = FakeCache.new()
   local generatedReads = 0
@@ -193,10 +313,37 @@ function T.load_trusts_nested_buckets_and_reads_no_generated_caches()
   local loaded = assert(store:load(saveId))
   Assert.equal(loaded.saveId, saveId)
   Assert.equal(loaded.mons.fingerprint, "drifted")
-  local entries = assert(store:list())
+  local entries = assert(store:listMetadata())
   Assert.equal(#entries, 1)
   Assert.isNil(entries[1].error)
   Assert.equal(generatedReads, 0, "persistence load performs no generated-cache reads")
+end
+
+-- Current-schema routing trusts field-domain state: valid persistence
+-- identity (schema/save/version) with out-of-range coordinates, an unknown
+-- facing, and a nested bucket its owner rejects still loads byte-identically.
+-- The owning domain reports the nested failure when it restores its bucket,
+-- and display metadata never needed the unowned fields.
+function T.load_routes_current_schema_without_field_domain_preflight()
+  local backend = FakeCache.new()
+  local store = newStore(backend)
+  local saveId = store:reserve()
+  local trusted = record(saveId, "heartgold", { mapId = -1, facing = "up" })
+  trusted.mart.dailyPurchasedMask = 4096
+  store:publishFirst(trusted)
+
+  local loaded = assert(store:load(saveId))
+  Assert.equal(loaded.mapId, -1, "unowned field state reaches the runtime unrepaired")
+  Assert.equal(loaded.facing, "up")
+  Assert.equal(loaded.mart.dailyPurchasedMask, 4096)
+  local canonical, domainErr = MartSave.validate(loaded.mart, { cards = {}, apricorns = {}, seals = {} })
+  Assert.isNil(canonical)
+  Assert.isTrue(Errors.is(domainErr), "the owning domain is the first place allowed to fail")
+
+  local metadata = assert(store:listMetadata())
+  Assert.equal(#metadata, 1)
+  Assert.isNil(metadata[1].error, "the menu card never needed the unowned fields")
+  Assert.equal(metadata[1].versionId, "heartgold")
 end
 
 function T.reservation_survives_restart_without_payload_or_visibility_and_never_reuses_ids()
@@ -205,14 +352,14 @@ function T.reservation_survives_restart_without_payload_or_visibility_and_never_
   local first = firstStore:reserve()
   Assert.notNil(first)
   Assert.isNil(backend.files[gamePath(first)])
-  Assert.isNil(findEntry(assert(firstStore:list()), first))
+  Assert.isNil(findEntry(assert(firstStore:listMetadata()), first))
 
   local restarted = newStore(backend)
   local second = restarted:reserve()
   Assert.notNil(second)
   Assert.isFalse(first == second, "a later reservation must not reuse an abandoned identity")
   Assert.isNil(backend.files[gamePath(first)])
-  Assert.isNil(findEntry(assert(restarted:list()), first))
+  Assert.isNil(findEntry(assert(restarted:listMetadata()), first))
   Assert.notNil(backend.files["saves/catalog.lua"], "allocation state must be durable")
 end
 
@@ -226,7 +373,7 @@ function T.first_publication_normalizes_before_catalog_visibility_and_can_retry_
   callFailure(function()
     store:publishFirst(value)
   end)
-  Assert.isNil(findEntry(assert(store:list()), saveId))
+  Assert.isNil(findEntry(assert(store:listMetadata()), saveId))
   Assert.isNil(backend.files[gamePath(saveId)])
 
   local payloadFailureBackend = FakeCache.new()
@@ -236,7 +383,7 @@ function T.first_publication_normalizes_before_catalog_visibility_and_can_retry_
   callFailure(function()
     payloadFailureStore:publishFirst(record(payloadFailureId, "heartgold"))
   end)
-  Assert.isNil(findEntry(assert(payloadFailureStore:list()), payloadFailureId))
+  Assert.isNil(findEntry(assert(payloadFailureStore:listMetadata()), payloadFailureId))
   Assert.isNil(payloadFailureBackend.files[gamePath(payloadFailureId)])
   Assert.isNil(payloadFailureBackend.files[gamePath(payloadFailureId) .. ".tmp"])
 
@@ -248,12 +395,13 @@ function T.first_publication_normalizes_before_catalog_visibility_and_can_retry_
   callFailure(function()
     retryStore:publishFirst(retryValue)
   end)
-  Assert.isNil(findEntry(assert(retryStore:list()), retryId))
+  Assert.isNil(findEntry(assert(retryStore:listMetadata()), retryId))
   Assert.notNil(retryBackend.files[gamePath(retryId)], "catalog failure may leave an invisible orphan payload")
 
   retryStore:publishFirst(retryValue)
-  Assert.notNil(findEntry(assert(retryStore:list()), retryId))
-  retryValue.avatar = { state = "walking" }
+  Assert.notNil(findEntry(assert(retryStore:listMetadata()), retryId))
+  -- Loading performs no envelope canonicalization: the stored owner
+  -- snapshot returns exactly as published, with no backfilled avatar.
   Assert.deepEqual(assert(retryStore:load(retryId)), retryValue)
 end
 
@@ -263,7 +411,7 @@ function T.malformed_nil_catalog_and_payload_are_structured_errors()
   local _ = store:reserve()
   backend.files["saves/catalog.lua"] = LuaWriter.encode(nil)
   local catalogErr = callFailure(function()
-    store:list()
+    store:listMetadata()
   end)
   Assert.equal(catalogErr.code, "GAME_SAVE_CATALOG_INVALID")
 
@@ -271,12 +419,14 @@ function T.malformed_nil_catalog_and_payload_are_structured_errors()
   local payloadStore = newStore(payloadBackend)
   local payloadId = payloadStore:reserve()
   payloadStore:publishFirst(record(payloadId, "heartgold"))
+  -- A stored chunk that decodes to no record is a missing current payload:
+  -- the envelope path reports it without normalizing anything.
   payloadBackend.files[gamePath(payloadId)] = LuaWriter.encode(nil)
-  local entries = assert(payloadStore:list())
+  local entries = assert(payloadStore:listMetadata())
   local entry = findEntry(entries, payloadId)
   Assert.notNil(entry and entry.error)
   local payloadError = assert(entry and entry.error)
-  Assert.equal(payloadError.code, "GAME_SAVE_INVALID")
+  Assert.equal(payloadError.code, "GAME_SAVE_NOT_PUBLISHED")
 end
 
 function T.update_and_delete_failures_preserve_a_valid_checkpoint_and_order()
@@ -288,24 +438,23 @@ function T.update_and_delete_failures_preserve_a_valid_checkpoint_and_order()
   local second = record(secondId, "soulsilver")
   store:publishFirst(first)
   store:publishFirst(second)
-  local before = assert(store:list())
+  local before = assert(store:listMetadata())
 
   local replacement = record(firstId, "heartgold", { playTimeSeconds = 12 })
   failOn(backend, "replace", 1)
   callFailure(function()
     store:save(replacement)
   end)
-  -- Loading canonicalizes the envelope: normalization backfills the
-  -- reserved avatar field to walking.
-  first.avatar = { state = "walking" }
+  -- Loading performs no envelope canonicalization: the stored owner
+  -- snapshot returns exactly as published, with no backfilled avatar.
   Assert.deepEqual(assert(store:load(firstId)), first)
-  local afterFailedUpdate = assert(store:list())
+  local afterFailedUpdate = assert(store:listMetadata())
   Assert.equal(afterFailedUpdate[1].saveId, before[1].saveId)
   Assert.equal(afterFailedUpdate[2].saveId, before[2].saveId)
 
   store:save(replacement)
   Assert.equal(assert(store:load(firstId)).playTimeSeconds, 12)
-  local afterUpdate = assert(store:list())
+  local afterUpdate = assert(store:listMetadata())
   Assert.equal(afterUpdate[1].saveId, before[1].saveId)
   Assert.equal(afterUpdate[2].saveId, before[2].saveId)
 
@@ -313,7 +462,7 @@ function T.update_and_delete_failures_preserve_a_valid_checkpoint_and_order()
   callFailure(function()
     store:delete(firstId)
   end)
-  local failedDeleteEntries = assert(store:list())
+  local failedDeleteEntries = assert(store:listMetadata())
   local failedDeleteEntry = findEntry(failedDeleteEntries, firstId)
   if failedDeleteEntry ~= nil then
     Assert.isNil(failedDeleteEntry.error, "a failed delete must not expose a broken visible save")
@@ -321,9 +470,9 @@ function T.update_and_delete_failures_preserve_a_valid_checkpoint_and_order()
   end
 
   store:delete(firstId)
-  Assert.isNil(findEntry(assert(store:list()), firstId))
+  Assert.isNil(findEntry(assert(store:listMetadata()), firstId))
   Assert.isNil(backend.files[gamePath(firstId)])
-  Assert.notNil(findEntry(assert(store:list()), secondId), "deleting one save must not affect another")
+  Assert.notNil(findEntry(assert(store:listMetadata()), secondId), "deleting one save must not affect another")
 end
 
 function T.catalog_authority_preserves_errors_and_ignores_orphans_and_reserved_gaps()
@@ -346,7 +495,7 @@ function T.catalog_authority_preserves_errors_and_ignores_orphans_and_reserved_g
   local orphanId = "save-orphan"
   backend.files[gamePath(orphanId)] = LuaWriter.encode(record(orphanId, "heartgold"))
 
-  local entries = assert(store:list())
+  local entries = assert(store:listMetadata())
   Assert.equal(#entries, 3, "only catalog-referenced IDs may be listed")
   Assert.equal(entries[1].saveId, oldId)
   Assert.equal(entries[2].saveId, corruptId)
@@ -364,9 +513,9 @@ function T.catalog_authority_preserves_errors_and_ignores_orphans_and_reserved_g
   end)
   store:delete(corruptId)
   store:delete(oldId)
-  Assert.isNil(findEntry(assert(store:list()), corruptId))
-  Assert.isNil(findEntry(assert(store:list()), oldId))
-  Assert.notNil(findEntry(assert(store:list()), validId))
+  Assert.isNil(findEntry(assert(store:listMetadata()), corruptId))
+  Assert.isNil(findEntry(assert(store:listMetadata()), oldId))
+  Assert.notNil(findEntry(assert(store:listMetadata()), validId))
 end
 
 function T.metadata_listing_reads_envelopes_and_keeps_ordering_and_errors()
@@ -389,10 +538,11 @@ function T.metadata_listing_reads_envelopes_and_keeps_ordering_and_errors()
   Assert.isTrue(Errors.is(broken.error), "a malformed envelope lists its error, never a silent card")
   Assert.equal(broken.error.code, "GAME_SAVE_BUCKET_INVALID")
 
-  local listed = assert(store:list())
-  Assert.equal(#listed, 2, "listing keeps the same catalog ordering")
-  Assert.equal(listed[1].saveId, secondId)
-  Assert.equal(listed[2].saveId, firstId)
+  -- Menu-card ordering follows the same stored catalog order newest-first.
+  local relisted = assert(store:listMetadata())
+  Assert.equal(#relisted, 2, "listing keeps the same catalog ordering")
+  Assert.equal(relisted[1].saveId, secondId)
+  Assert.equal(relisted[2].saveId, firstId)
 end
 
 function T.metadata_listing_exposes_v4_envelopes_without_normalization()
@@ -474,7 +624,7 @@ function T.deleted_ids_are_not_reusable_and_listing_follows_publication_order()
   store:publishFirst(record(firstId, "heartgold"))
   -- First publication appends in publication order, and listing
   -- enumerates that stored order newest-first.
-  local entries = assert(store:list())
+  local entries = assert(store:listMetadata())
   Assert.equal(entries[1].saveId, firstId)
   Assert.equal(entries[2].saveId, secondId)
 
@@ -579,10 +729,7 @@ function T.failed_backup_rotation_leaves_prior_current_authoritative()
   for generation = 1, 3 do
     local history = backend.files[backupPath(saveId, generation)]
     if history ~= nil then
-      Assert.isTrue(
-        history == bytesA or history == bytesB,
-        "retained history holds only previously published bytes"
-      )
+      Assert.isTrue(history == bytesA or history == bytesB, "retained history holds only previously published bytes")
     end
     Assert.isNil(backend.files[backupPath(saveId, generation) .. ".tmp"])
   end
@@ -601,23 +748,70 @@ function T.updates_persist_owner_snapshots_without_envelope_preflight()
   local store = newStore(backend)
   local saveId = store:reserve()
   store:publishFirst(record(saveId, "heartgold", { playTimeSeconds = 0 }))
-  -- An envelope value the read boundary rejects, still plain serializable data.
+  -- Field-domain state the persistence routing does not own: routing
+  -- accepts it while the field owner would not.
   local update = record(saveId, "heartgold", { playTimeSeconds = 1, mapId = -1 })
   local normalized, normalizeErr = GameSave.normalize(update)
-  Assert.isNil(normalized)
-  Assert.equal(assert(normalizeErr).code, "GAME_SAVE_FIELD_INVALID")
+  Assert.isNil(normalizeErr, "current routing must not preflight field-domain state")
+  Assert.notNil(normalized)
 
   Assert.isTrue(store:save(update))
   Assert.equal(generatedReads, 0, "publication performs no generated-cache reads")
   local saveFs = SaveFs.global(backend)
   local persisted = assert(saveFs:loadLua("games/" .. saveId .. ".lua"))
   Assert.equal(persisted.mapId, -1, "the owner snapshot reaches durable storage byte-identically")
-  -- The read boundary still owns routing safety: a later load may reject
-  -- the same stored bytes the write boundary trusted.
+  local reloaded = assert(store:load(saveId))
+  Assert.equal(reloaded.mapId, -1, "the read boundary routes the same trusted bytes back")
+  -- The read boundary still owns routing safety: tampered version identity
+  -- in storage fails the load even though field-domain state passes.
+  backend.files[gamePath(saveId)] = LuaWriter.encode(record(saveId, "", { playTimeSeconds = 1 }))
+  local routingFailure = callFailure(function()
+    store:load(saveId)
+  end)
+  Assert.equal(routingFailure.code, "GAME_SAVE_VERSION_INVALID")
+end
+
+-- A catalog-listed save whose current payload is gone stays an owned,
+-- structured failure on both paths: an error card in metadata, a raised
+-- error on load. The exact missing-payload code is the store's routing
+-- business; both paths must own the failure rather than misread bytes.
+function T.catalog_listed_missing_payload_is_an_owned_failure()
+  local backend = FakeCache.new()
+  local store = newStore(backend)
+  local saveId = store:reserve()
+  store:publishFirst(record(saveId, "heartgold"))
+  backend.files[gamePath(saveId)] = nil
+
+  local metadata = assert(store:listMetadata())
+  local entry = findEntry(metadata, saveId)
+  Assert.notNil(entry, "a listed save keeps its card slot")
+  Assert.isTrue(Errors.is(assert(entry).error), "the missing payload lists its error, never a silent card")
   local loadFailure = callFailure(function()
     store:load(saveId)
   end)
-  Assert.equal(loadFailure.code, "GAME_SAVE_FIELD_INVALID")
+  Assert.isTrue(Errors.is(loadFailure), "loading a missing payload is an owned failure")
+end
+
+-- A payload carrying another save's identity never loads under the listed
+-- id, and its menu card reports the mismatch instead of another save.
+function T.payload_save_id_mismatch_is_rejected_on_load_and_listed_as_an_error()
+  local backend = FakeCache.new()
+  local store = newStore(backend)
+  local saveId = store:reserve()
+  local otherId = store:reserve()
+  store:publishFirst(record(saveId, "heartgold"))
+  store:publishFirst(record(otherId, "soulsilver"))
+  backend.files[gamePath(saveId)] = LuaWriter.encode(record(otherId, "heartgold"))
+
+  local loadFailure = callFailure(function()
+    store:load(saveId)
+  end)
+  Assert.equal(loadFailure.code, "GAME_SAVE_SAVE_ID_MISMATCH")
+  local metadata = assert(store:listMetadata())
+  local entry = findEntry(metadata, saveId)
+  Assert.notNil(entry)
+  Assert.equal(assert(assert(entry).error).code, "GAME_SAVE_SAVE_ID_MISMATCH")
+  Assert.equal(assert(store:load(otherId)).versionId, "soulsilver")
 end
 
 function T.relaxed_catalog_history_keeps_published_saves_reachable()

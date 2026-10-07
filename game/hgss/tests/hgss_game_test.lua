@@ -46,9 +46,6 @@ end
 
 local function fakeStore(entries)
   local store = { entries = entries, loads = {}, deletes = {} }
-  function store:list()
-    return self.entries
-  end
   function store:listMetadata()
     return self.entries
   end

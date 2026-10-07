@@ -142,7 +142,6 @@ end
 ---@field saveFs SaveFs
 ---@field private _busy boolean
 ---@field reserve fun(self: GameSaveStore): string
----@field list fun(self: GameSaveStore): table[]
 ---@field listMetadata fun(self: GameSaveStore): table[]
 ---@field load fun(self: GameSaveStore, saveId: string): table<string, unknown>?, Errors.Error?
 ---@field publishFirst fun(self: GameSaveStore, record: table<string, unknown>): boolean
@@ -252,7 +251,7 @@ end
 ---@param path string
 ---@return string?
 function GameSaveStore:_readRawOrNil(path)
-  if not self.saveFs.backend:getInfo(self.saveFs:resolve(path)) then
+  if not self.saveFs:exists(path) then
     return nil
   end
   local bytes, readErr = self.saveFs:read(path)
@@ -357,36 +356,11 @@ function GameSaveStore:reserve()
   return saveId
 end
 
----@return table[]
-function GameSaveStore:list()
-  local catalog = self:_readCatalog()
-  local entries = {}
-  for index = #catalog.saveIds, 1, -1 do
-    local saveId = catalog.saveIds[index]
-    local ok, recordOrError = pcall(function()
-      return self:_loadPublished(saveId)
-    end)
-    if ok then
-      local record = assert(recordOrError --[[@as table]])
-      entries[#entries + 1] = {
-        saveId = saveId,
-        versionId = record.versionId,
-        playerData = record.playerData,
-        playTimeSeconds = record.playTimeSeconds,
-      }
-    elseif Errors.is(recordOrError) then
-      entries[#entries + 1] = { saveId = saveId, error = recordOrError }
-    else
-      error(recordOrError)
-    end
-  end
-  return entries
-end
-
 -- Metadata-only listing for menu cards: validates the catalog and each
 -- payload's display envelope without normalizing records and without
 -- reading generated caches. A listed envelope is not thereby loadable.
--- Ordering and per-entry error reporting match list().
+-- Entries enumerate stored catalog order newest-first; a malformed
+-- envelope lists its error in place of a card.
 ---@return table[]
 function GameSaveStore:listMetadata()
   local catalog = self:_readCatalog()

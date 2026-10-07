@@ -61,12 +61,12 @@ function T.normalizes_the_envelope_and_leaves_nested_buckets_untouched()
   returnsCode("GAME_SAVE_SAVE_ID_INVALID", function()
     return GameSave.normalize(record({ saveId = "../escape" }))
   end)
-  returnsCode("GAME_SAVE_PLAY_TIME_INVALID", function()
-    return GameSave.normalize(record({ playTimeSeconds = 3599999 + 1 }))
-  end)
-  returnsCode("GAME_SAVE_FIELD_INVALID", function()
-    return GameSave.normalize(record({ facing = "up" }))
-  end)
+  -- Play time, facing, and every other domain value the routing does not
+  -- own passes through for its owner: only schema/save/version identity
+  -- can fail here.
+  local trusted = assert(GameSave.normalize(record({ playTimeSeconds = 3599999 + 1, facing = "up" })))
+  Assert.equal(trusted.playTimeSeconds, 3600000)
+  Assert.equal(trusted.facing, "up")
   -- Nested buckets travel to their owning domains untouched: a missing or
   -- placeholder bucket still normalizes, and the owner reports the failure
   -- when it restores the state it actually uses.
@@ -114,12 +114,13 @@ function T.metadata_extracts_only_the_display_envelope_without_semantic_checks()
   end)
 end
 
-function T.live_weather_is_optional_for_legacy_records_and_strict_when_present()
-  Assert.isTrue(GameSave.normalize(record({ weatherId = 0 })) ~= nil)
-  Assert.isTrue(GameSave.normalize(record({ weatherId = 13 })) ~= nil)
-  Assert.isTrue(GameSave.normalize(record({ weatherId = -1 })) == nil)
-  Assert.isTrue(GameSave.normalize(record({ weatherId = 14 })) == nil)
-  Assert.isTrue(GameSave.normalize(record({ weatherId = 1.5 })) == nil)
+-- Weather state belongs to the field domain: routing carries the value
+-- through untouched instead of bounding it before the owner sees it.
+function T.weather_state_passes_through_to_its_owning_domain()
+  for _, weatherId in ipairs({ 0, 13, -1, 14, 1.5 }) do
+    local trusted = assert(GameSave.normalize(record({ weatherId = weatherId })))
+    Assert.equal(trusted.weatherId, weatherId, "weather passes through untouched")
+  end
   Assert.isTrue(GameSave.normalize(record()) ~= nil)
 end
 

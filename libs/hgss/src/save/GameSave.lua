@@ -19,7 +19,6 @@ GameSave.LEGACY_V5_SCHEMA = "g4-game-save-v5"
 GameSave.LEGACY_V6_SCHEMA = "g4-game-save-v6"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
-local FACING = { north = true, south = true, west = true, east = true }
 local TOP_LEVEL_FIELDS = {
   avatar = true,
   audio = true,
@@ -70,34 +69,6 @@ end
 
 local function safeComponent(value)
   return type(value) == "string" and value ~= "" and value:match("^[%w%-_]+$") ~= nil
-end
-
--- Only durable avatar modes persist. A missing record canonicalizes to
--- walking (every save produced before avatar state existed boots walking);
--- any present malformed record is rejected.
-local DURABLE_AVATAR_STATES = {
-  walking = true,
-  cycling = true,
-  surfing = true,
-  rocket = true,
-}
-
-local function validateAvatar(record)
-  if record.avatar == nil then
-    return { state = "walking" }
-  end
-  local avatar = record.avatar
-  if type(avatar) ~= "table" then
-    Errors.raise(GameSaveErrors.GAME_SAVE_FIELD_INVALID, "game save avatar must be a table", {})
-  end
-  local fieldCount = 0
-  for _ in pairs(avatar) do
-    fieldCount = fieldCount + 1
-  end
-  if fieldCount ~= 1 or type(avatar.state) ~= "string" or DURABLE_AVATAR_STATES[avatar.state] ~= true then
-    Errors.raise(GameSaveErrors.GAME_SAVE_FIELD_INVALID, "game save avatar state is invalid", { avatar = avatar })
-  end
-  return { state = avatar.state }
 end
 
 local function validateSaveIdRaised(saveId)
@@ -164,53 +135,13 @@ local function validateLegacyShape(record, schema)
   end
 end
 
-local function validateFieldEnvelope(record)
-  if not safeComponent(record.versionId) then
-    Errors.raise(
-      GameSaveErrors.GAME_SAVE_VERSION_INVALID,
-      "game save version is missing",
-      { versionId = record.versionId }
-    )
-  end
-  if not integer(record.mapId) or record.mapId < 0 or record.mapId > 0xFFFF then
-    Errors.raise(GameSaveErrors.GAME_SAVE_FIELD_INVALID, "game save map id is invalid", { mapId = record.mapId })
-  end
-  if not integer(record.fieldX) or record.fieldX < 0 or record.fieldX > 0xFFFF then
-    Errors.raise(GameSaveErrors.GAME_SAVE_FIELD_INVALID, "game save field x is invalid", { fieldX = record.fieldX })
-  end
-  if not integer(record.fieldZ) or record.fieldZ < 0 or record.fieldZ > 0xFFFF then
-    Errors.raise(GameSaveErrors.GAME_SAVE_FIELD_INVALID, "game save field z is invalid", { fieldZ = record.fieldZ })
-  end
-  if not finite(record.worldY) then
-    Errors.raise(GameSaveErrors.GAME_SAVE_FIELD_INVALID, "game save world y is invalid", { worldY = record.worldY })
-  end
-  if not integer(record.surfaceId) or record.surfaceId < 0 or record.surfaceId > 0xFFFF then
-    Errors.raise(
-      GameSaveErrors.GAME_SAVE_FIELD_INVALID,
-      "game save surface id is invalid",
-      { surfaceId = record.surfaceId }
-    )
-  end
-  if record.weatherId ~= nil and (not integer(record.weatherId) or record.weatherId < 0 or record.weatherId > 13) then
-    Errors.raise(
-      GameSaveErrors.GAME_SAVE_FIELD_INVALID,
-      "game save weather id is invalid",
-      { weatherId = record.weatherId }
-    )
-  end
-  if type(record.terrainDependencyHash) ~= "string" or record.terrainDependencyHash == "" then
-    Errors.raise(GameSaveErrors.GAME_SAVE_FIELD_INVALID, "game save terrain dependency is missing", {})
-  end
-  if not FACING[record.facing] then
-    Errors.raise(GameSaveErrors.GAME_SAVE_FIELD_INVALID, "game save facing is invalid", { facing = record.facing })
-  end
-end
-
--- Checks the routing and entry envelope of a current-schema record and
--- returns a shallow copy with its avatar canonicalized. Unrelated
--- top-level keys survive unchanged, and nested buckets pass through
--- untouched: the runtime domains that own them restore and check the
--- state they actually use.
+-- Persistence routing for a current-schema record: only record identity (a
+-- table), the current schema, the safe save id, and the safe version id
+-- stay strict, since the store needs them to route and publish the save.
+-- Every other value -- play time, coordinates, facing, avatar, weather,
+-- nested buckets, unknown top-level fields -- passes through untouched for
+-- its owning runtime domain or display metadata to validate on use.
+-- Returns the record itself, never a normalized copy.
 local function canonicalizeCurrent(record)
   if record.schema ~= GameSave.SCHEMA then
     Errors.raise(
@@ -220,24 +151,14 @@ local function canonicalizeCurrent(record)
     )
   end
   validateSaveIdRaised(record.saveId)
-  validateFieldEnvelope(record)
-  if
-    not integer(record.playTimeSeconds)
-    or record.playTimeSeconds < 0
-    or record.playTimeSeconds > GameSave.MAX_PLAY_TIME_SECONDS
-  then
+  if not safeComponent(record.versionId) then
     Errors.raise(
-      GameSaveErrors.GAME_SAVE_PLAY_TIME_INVALID,
-      "game save play time exceeds 999:59:59",
-      { playTimeSeconds = record.playTimeSeconds }
+      GameSaveErrors.GAME_SAVE_VERSION_INVALID,
+      "game save version is missing",
+      { versionId = record.versionId }
     )
   end
-  local canonical = {}
-  for key, value in pairs(record) do
-    canonical[key] = value
-  end
-  canonical.avatar = validateAvatar(record)
-  return canonical
+  return record
 end
 
 -- Pure v3 -> v4 migration: copies every known field without mutating the
@@ -483,13 +404,13 @@ function GameSave.metadata(record)
 end
 
 -- Normalizes any supported save record into the current schema: supported
--- historical records migrate forward in order, then the current routing and
--- entry envelope is checked. Supported schemas are table identity, safe
--- save and version identities, entry coordinates, and bounded play time;
--- nested buckets pass through to their owning runtime domains untouched.
--- This boundary performs no generated-cache lookup and implies no semantic
--- validity beyond the envelope. Never throws a validation failure:
--- malformed input returns a structured error instead.
+-- historical records migrate forward in order, then only persistence
+-- routing identity is checked (table record, current schema, safe save id,
+-- safe version id). Play time, coordinates, facing, avatar, weather, nested
+-- buckets, and unknown top-level fields pass through to their owning
+-- runtime domains untouched. This boundary performs no generated-cache
+-- lookup and implies no semantic validity beyond routing. Never throws a
+-- validation failure: malformed input returns a structured error instead.
 ---@param record table<string, unknown>
 ---@return table<string, unknown>|nil, Errors.Error?
 function GameSave.normalize(record)

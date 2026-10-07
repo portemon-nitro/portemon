@@ -1,7 +1,8 @@
--- Tests the pure persistence-envelope boundary for game saves: supported
--- records normalize and migrate without generated caches, while routing
--- identity and entry coordinates stay strict. Nested buckets are owned by
--- their runtime domains, so envelope normalization never traverses them.
+-- Tests the pure persistence-routing boundary for game saves: supported
+-- records normalize and migrate without generated caches, while only
+-- record/schema/save/version identity stays strict. Entry coordinates,
+-- avatar, play time, and nested buckets are owned by their runtime domains
+-- or display metadata, so routing normalization never traverses them.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -101,7 +102,10 @@ function T.current_envelope_normalizes_without_reading_nested_buckets()
   Assert.deepEqual(normalized.world, {})
 end
 
-function T.routing_identity_and_entry_coordinates_stay_strict()
+-- Persistence routing owns only record/schema/save/version identity: every
+-- other current value belongs to a runtime domain or to display metadata,
+-- so it passes through untouched for its owner to validate on use.
+function T.routing_identity_stays_strict_while_domain_state_passes_through()
   Assert.notNil(GameSave.normalize(record()))
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     return GameSave.normalize(record({ schema = "g4-game-save-v9" }))
@@ -115,37 +119,43 @@ function T.routing_identity_and_entry_coordinates_stay_strict()
   returnsCode("GAME_SAVE_VERSION_INVALID", function()
     return GameSave.normalize(record({ versionId = "" }))
   end)
-  returnsCode("GAME_SAVE_PLAY_TIME_INVALID", function()
-    return GameSave.normalize(record({ playTimeSeconds = -1 }))
-  end)
-  returnsCode("GAME_SAVE_PLAY_TIME_INVALID", function()
-    return GameSave.normalize(record({ playTimeSeconds = GameSave.MAX_PLAY_TIME_SECONDS + 1 }))
-  end)
-  returnsCode("GAME_SAVE_FIELD_INVALID", function()
-    return GameSave.normalize(record({ facing = "up" }))
-  end)
-  returnsCode("GAME_SAVE_FIELD_INVALID", function()
-    return GameSave.normalize(record({ mapId = -1 }))
-  end)
-  returnsCode("GAME_SAVE_FIELD_INVALID", function()
-    local value = record()
-    value.fieldX = nil
-    return GameSave.normalize(value)
-  end)
-  returnsCode("GAME_SAVE_FIELD_INVALID", function()
-    return GameSave.normalize(record({ terrainDependencyHash = "" }))
-  end)
   returnsCode("GAME_SAVE_INVALID", function()
     ---@diagnostic disable-next-line: param-type-mismatch -- the test deliberately exercises invalid input
     return GameSave.normalize(nil)
   end)
+  -- Field-domain, display-domain, and avatar state the routing does not
+  -- own passes through byte-identically: the field owner, the menu card,
+  -- and legacy migration validate what they actually use.
+  local passthrough = {
+    { playTimeSeconds = -1 },
+    { playTimeSeconds = GameSave.MAX_PLAY_TIME_SECONDS + 1 },
+    { facing = "up" },
+    { mapId = -1 },
+    { fieldX = 0x10000 },
+    { terrainDependencyHash = "" },
+    { avatar = { state = "flying" } },
+    { weatherId = 99 },
+  }
+  for _, overrides in ipairs(passthrough) do
+    local input = record(overrides)
+    local trusted, trustErr = GameSave.normalize(input)
+    Assert.isNil(trustErr, "routing must not preflight domain state")
+    trusted = assert(trusted)
+    for key, expected in pairs(overrides) do
+      Assert.deepEqual(trusted[key], expected, "unowned state passes through untouched")
+    end
+  end
+  local missingCoordinate = record()
+  missingCoordinate.fieldX = nil
+  Assert.notNil(GameSave.normalize(missingCoordinate))
 end
 
-function T.missing_avatar_canonicalizes_to_walking_without_generated_reads()
+function T.missing_avatar_passes_through_without_canonicalization()
   local value = record()
   value.avatar = nil
-  local normalized = assert(GameSave.normalize(value))
-  Assert.deepEqual(normalized.avatar, { state = "walking" })
+  local normalized, err = GameSave.normalize(value)
+  Assert.isNil(err, "avatar state belongs to the field domain, not persistence routing")
+  Assert.isNil(assert(normalized).avatar, "routing adds no avatar the owner never stored")
   Assert.isNil(value.avatar, "normalization must not mutate its input")
 end
 
@@ -168,9 +178,13 @@ function T.unknown_top_level_extension_metadata_survives_current_normalization()
   Assert.equal(normalized.schema, GameSave.SCHEMA)
   Assert.deepEqual(normalized.modState, { marker = "kept" })
   Assert.equal(normalized.mapId, 60)
-  -- Required routing facts stay strict alongside unrelated extensions.
-  local _, routingErr = GameSave.normalize(record({ modState = { marker = "kept" }, mapId = -1 }))
-  Assert.equal(assert(routingErr).code, "GAME_SAVE_FIELD_INVALID")
+  -- Routing identity stays strict alongside unrelated extensions, while
+  -- field-domain values pass through even next to extension state.
+  local _, routingErr = GameSave.normalize(record({ modState = { marker = "kept" }, versionId = "" }))
+  Assert.equal(assert(routingErr).code, "GAME_SAVE_VERSION_INVALID")
+  local trusted = assert(GameSave.normalize(record({ modState = { marker = "kept" }, mapId = -1 })))
+  Assert.equal(trusted.mapId, -1)
+  Assert.deepEqual(trusted.modState, { marker = "kept" })
 end
 
 function T.historical_migration_never_repairs_nested_content()

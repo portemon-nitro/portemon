@@ -47,6 +47,7 @@ local SAVE_ERRORS = {
 ---@field resolve fun(self: SaveFs, relativePath: string): string
 ---@field write fun(self: SaveFs, relativePath: string, data: string): boolean
 ---@field read fun(self: SaveFs, relativePath: string): string?
+---@field exists fun(self: SaveFs, relativePath: string, expectedType?: string): boolean
 ---@field remove fun(self: SaveFs, relativePath: string): boolean
 ---@field replace fun(self: SaveFs, sourceRelativePath: string, destinationRelativePath: string): boolean
 ---@field writeLua fun(self: SaveFs, relativePath: string, value: table<string, unknown>): boolean
@@ -93,6 +94,20 @@ end
 
 function SaveFs:read(relativePath)
   return self.backend:read(self:resolve(relativePath))
+end
+
+-- Scoped existence probe: answers from backend metadata without reading
+-- payload bytes. Storage owners use it to distinguish an absent file from
+-- present bytes; path confinement matches every other SaveFs operation.
+function SaveFs:exists(relativePath, expectedType)
+  local info = self.backend:getInfo(self:resolve(relativePath))
+  if not info then
+    return false
+  end
+  if expectedType then
+    return info.type == expectedType
+  end
+  return true
 end
 
 -- Removing an absent path is a no-op (reset runs before the first save

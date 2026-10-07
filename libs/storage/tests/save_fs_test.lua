@@ -265,6 +265,58 @@ function T.remove_absent_path_is_a_noop()
   Assert.isTrue(save("heartgold", backend):remove("absent.lua"))
 end
 
+-- Scoped existence probe for storage owners that must distinguish an absent
+-- file from present bytes without reading the payload (raw backup rotation
+-- probes predecessors before preserving them). It resolves through the save
+-- root like every other SaveFs operation and never exposes backend details.
+function T.exists_reports_presence_through_the_scoped_root()
+  local backend = FakeCache.new()
+  local s = SaveFs.global(backend)
+  Assert.isFalse(s:exists("games/save-00000001.lua"))
+  s:write("games/save-00000001.lua", "PAYLOAD")
+  Assert.isTrue(s:exists("games/save-00000001.lua"))
+  Assert.isTrue(s:exists("games/save-00000001.lua", "file"))
+  Assert.isFalse(s:exists("games/save-00000001.lua", "directory"))
+  Assert.equal(backend.files["saves/games/save-00000001.lua"], "PAYLOAD")
+
+  local versioned = save("heartgold", backend)
+  Assert.isFalse(versioned:exists("field-session.lua"))
+  versioned:write("field-session.lua", "SAVE-DATA")
+  Assert.isTrue(versioned:exists("field-session.lua"))
+  Assert.equal(backend.files["saves/heartgold/field-session.lua"], "SAVE-DATA")
+end
+
+function T.exists_confines_paths_to_the_save_root()
+  throwsCode(StorageErrors.SAVE_PATH_INVALID, function()
+    SaveFs.global(FakeCache.new()):exists("../escape.lua")
+  end)
+  throwsCode(StorageErrors.SAVE_PATH_INVALID, function()
+    SaveFs.global(FakeCache.new()):exists("games/../../escape.lua")
+  end)
+  throwsCode(StorageErrors.SAVE_PATH_INVALID, function()
+    save("heartgold"):exists("../soulsilver/" .. SAVE_PATH)
+  end)
+end
+
+-- Existence answers from backend metadata only: probing a directory or an
+-- absent path performs no payload read.
+function T.exists_sees_directories_without_reading_bytes()
+  local backend = FakeCache.new()
+  local reads = 0
+  local innerRead = assert(backend.read)
+  function backend.read(self, path)
+    reads = reads + 1
+    return innerRead(self, path)
+  end
+  local s = SaveFs.global(backend)
+  s:write("games/save-00000001.lua", "PAYLOAD")
+  local before = reads
+  Assert.isTrue(s:exists("games", "directory"))
+  Assert.isFalse(s:exists("games", "file"))
+  Assert.isFalse(s:exists("games/absent.lua"))
+  Assert.equal(reads, before, "existence must not read payload bytes")
+end
+
 function T.replace_reports_backend_failure()
   local backend = FakeCache.new()
   local s = save("heartgold", backend)

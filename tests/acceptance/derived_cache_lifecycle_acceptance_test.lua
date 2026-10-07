@@ -173,7 +173,7 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
   local store = isolatedStore()
   local saveId = store:reserve()
   store:publishFirst(seedRecord(saveId, versionId))
-  local listedBefore = store:list()
+  local listedBefore = store:listMetadata()
   local loads = {}
   local originalLoad = store.load
   store.load = function(self, id)
@@ -292,7 +292,11 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
       Assert.equal(#fieldCalls, 1, "field entry commits once geometry and runtime are both ready")
       Assert.equal(fieldCalls[1].saveId, saveId, "field receives the early loaded record")
       Assert.equal(game.state, entered, "the committed field becomes the running state")
-      Assert.deepEqual(store:list(), listedBefore, "Continue mutates neither the catalog nor any payload")
+      Assert.deepEqual(
+        store:listMetadata(),
+        listedBefore,
+        "Continue mutates neither the catalog nor any payload"
+      )
       Assert.equal(loaderBuilds(), 1, "settling never rebuilds the production planning loader")
     end)
     game:dispose()
