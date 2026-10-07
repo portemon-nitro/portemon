@@ -127,6 +127,32 @@ end
 local function jntFull()
   return assertIdenticalSampling(require("tests.support.AnimationFixture").jntFull(), "jntFull", { fractional = true })
 end
+-- Fractional interpolation enabled (anmFlags bit 0) with no final-frame wrap:
+-- the last fractional frame has no next key to interpolate toward, so both
+-- samplers must fall back to the last key verbatim (the asm's terminal-frame
+-- shortcut in getTransDataEx_/getScaleDataEx_), matching the fallback
+-- getRotDataEx_ already takes.
+local function jntFullInterpolate()
+  return assertIdenticalSampling(
+    require("tests.support.AnimationFixture").jntFull(nil, nil, nil, nil, 0x1),
+    "jntFullInterpolate",
+    { fractional = true }
+  )
+end
+local function jntFullInterpolateHalf()
+  return assertIdenticalSampling(
+    require("tests.support.AnimationFixture").jntFull(0x40000000, nil, nil, nil, 0x1),
+    "jntFullInterpolateHalf",
+    { fractional = true }
+  )
+end
+local function jntFullInterpolateWrap()
+  return assertIdenticalSampling(
+    require("tests.support.AnimationFixture").jntFull(nil, nil, nil, nil, 0x3),
+    "jntFullInterpolateWrap",
+    { fractional = true }
+  )
+end
 local function jntFullHalf()
   return assertIdenticalSampling(
     require("tests.support.AnimationFixture").jntFull(0x40000000),
@@ -159,6 +185,9 @@ end
 T.jnt_door_pivot_rotation = jntDoor
 T.jnt_door_final_frame_wrap = jntDoorWrap
 T.jnt_full_rate = jntFull
+T.jnt_full_rate_interpolated_final_frame = jntFullInterpolate
+T.jnt_half_rate_interpolated_final_frame = jntFullInterpolateHalf
+T.jnt_full_rate_interpolated_final_frame_wrap = jntFullInterpolateWrap
 T.jnt_half_rate = jntFullHalf
 T.jnt_quarter_rate = jntFullQuarter
 T.jnt_constants_and_model_channels = jntConstants

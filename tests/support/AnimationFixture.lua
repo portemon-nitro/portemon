@@ -220,8 +220,9 @@ end
 -- 0x40000000 / 0x80000000); keys then cover 2/4 frames per key. `limit`
 -- overrides the authored curve limit (the real-format invariant is
 -- limit == numFrame; a caller passing a smaller value authors the malformed
--- shape the compiler must reject).
-function AnimationFixture.jntFull(rateFlag, keyCount, numFrame, limit)
+-- shape the compiler must reject). `anmFlags` enables fractional
+-- interpolation (bit 0) and final-frame wrap (bit 1), as on `jntDoor`.
+function AnimationFixture.jntFull(rateFlag, keyCount, numFrame, limit, anmFlags)
   keyCount = keyCount or 8
   numFrame = numFrame or 8
   local flag = (rateFlag or 0) + (limit or numFrame) * 0x10000
@@ -248,6 +249,7 @@ function AnimationFixture.jntFull(rateFlag, keyCount, numFrame, limit)
   end
   local record = buildJntRecord({
     numFrame = numFrame,
+    anmFlags = anmFlags,
     targets = {
       {
         nodeIndex = 3,

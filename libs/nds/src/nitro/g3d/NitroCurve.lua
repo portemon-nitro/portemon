@@ -8,8 +8,10 @@
 --   bits 16-28 (0x1FFF0000): limit -- the key count at full rate, always
 --          numFrame (verified for all 85 NSBCA members of the HGSS field
 --          archive; the clip compilers assert limit == numFrame, and the
---          callers clamp frames to numFrame - 1, so the sampler never
---          sees a frame past the last key)
+--          callers clamp frames to numFrame - 1). At that terminal frame
+--          there is no next key to interpolate toward, so the Ex path
+--          takes the asm's terminal-frame shortcut: getRotDataEx_'s
+--          fallback already mirrors this, and sampleValues does too.
 --   bit 29   (0x20000000): fx16 storage (u16 keys; else fx32 u32 keys).
 --          Rotation channels ignore this bit and always use u16 keys.
 --   bit 30   (0x40000000): half rate (2 frames per key, stored values
@@ -147,17 +149,27 @@ function NitroCurve:sampleValues(r, frameFx, numFrame, interpolate, wrapFinal)
     return out
   end
 
-  -- Final frame with the wrap flag: interpolate key[last] toward key[0].
-  if wrapFinal and frame == numFrame - 1 and frac ~= 0 then
-    return between(index, 0, function(v1, v2)
-      return v1 + asr(mul32(v2 - v1, frac), 12)
-    end)
-  end
-
   if interpolate and frac ~= 0 then
+    -- Terminal frame: no next key to interpolate toward. Remap the
+    -- half/quarter-rate index to the nearest stored key (matching the
+    -- asm's frame % rate + frame / rate), then either wrap toward key[0]
+    -- or return it as-is.
+    if frame == numFrame - 1 then
+      local terminalIndex = frame
+      if step == NitroCurve.HALF then
+        terminalIndex = frame % 2 + math.floor(frame / 2)
+      elseif step == NitroCurve.QUARTER then
+        terminalIndex = frame % 4 + math.floor(frame / 4)
+      end
+      if wrapFinal then
+        return between(terminalIndex, 0, function(v1, v2)
+          return v1 + asr(mul32(v2 - v1, frac), 12)
+        end)
+      end
+      return at(terminalIndex)
+    end
+
     -- Ex path: keys at index and index+1, 12/13/14-bit fractional part.
-    -- limit == numFrame and the frame is clamped to numFrame - 1, so the
-    -- frame never passes the last key (no tail branch).
     local fracWide = frameFx % (4096 * step)
     return between(index, index + 1, function(a, b)
       return lerpEx(a, b, step, fracWide)

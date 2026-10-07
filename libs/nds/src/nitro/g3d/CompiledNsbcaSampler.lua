@@ -244,9 +244,20 @@ local function sampleScalar(channel, frameFx, numFrame, interpolate, wrapFinal)
   local index = math.floor(frame / channel.rate)
   local keys = channel.keys
 
-  -- Final frame with the wrap flag: interpolate key[last] toward key[0].
-  if wrapFinal and frame == numFrame - 1 and frac ~= 0 then
-    return interpolateWrappedScalar(keyScalar(keys, index), keyScalar(keys, 0), frac)
+  -- Terminal frame: no next key to interpolate toward. Remap the
+  -- half/quarter-rate index to the nearest stored key, then either wrap
+  -- toward key[0] or return it as-is (the asm's terminal-frame shortcut).
+  if interpolate and frac ~= 0 and frame == numFrame - 1 then
+    local terminalIndex = frame
+    if step == HALF then
+      terminalIndex = frame % 2 + math.floor(frame / 2)
+    elseif step == QUARTER then
+      terminalIndex = frame % 4 + math.floor(frame / 4)
+    end
+    if wrapFinal then
+      return interpolateWrappedScalar(keyScalar(keys, terminalIndex), keyScalar(keys, 0), frac)
+    end
+    return keyScalar(keys, terminalIndex)
   end
 
   if interpolate and frac ~= 0 then
@@ -289,15 +300,26 @@ local function samplePair(channel, frameFx, numFrame, interpolate, wrapFinal)
   local index = math.floor(frame / channel.rate)
   local keys = channel.keys
 
-  -- Final frame with the wrap flag: interpolate key[last] toward key[0].
-  if wrapFinal and frame == numFrame - 1 and frac ~= 0 then
-    local a1, a2 = keyPair(keys, index)
-    local b1, b2 = keyPair(keys, 0)
-    local v = interpolateWrappedScalar(a1, b1, frac)
-    if a2 ~= nil then
-      return v, interpolateWrappedScalar(a2, b2, frac)
+  -- Terminal frame: no next key to interpolate toward. Remap the
+  -- half/quarter-rate index to the nearest stored key, then either wrap
+  -- toward key[0] or return it as-is (the asm's terminal-frame shortcut).
+  if interpolate and frac ~= 0 and frame == numFrame - 1 then
+    local terminalIndex = frame
+    if step == HALF then
+      terminalIndex = frame % 2 + math.floor(frame / 2)
+    elseif step == QUARTER then
+      terminalIndex = frame % 4 + math.floor(frame / 4)
     end
-    return v, nil
+    if wrapFinal then
+      local a1, a2 = keyPair(keys, terminalIndex)
+      local b1, b2 = keyPair(keys, 0)
+      local v = interpolateWrappedScalar(a1, b1, frac)
+      if a2 ~= nil then
+        return v, interpolateWrappedScalar(a2, b2, frac)
+      end
+      return v, nil
+    end
+    return keyPair(keys, terminalIndex)
   end
 
   if interpolate and frac ~= 0 then
