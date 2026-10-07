@@ -552,7 +552,7 @@ function State:update(dt)
       self.numberHold = nil
     else
       while self.inputTick >= hold.nextTick do
-        self:_adjustNumber(hold.delta)
+        self.valueEditor:adjustPlace(hold.delta)
         hold.nextTick = hold.nextTick + FieldInput.UI_REPEAT_INTERVAL_TICKS
       end
     end
@@ -739,11 +739,10 @@ function State:_snapshot()
       end
     end
   end
-  local numberControls, numberControlVisuals, numberPressTicks
+  local numberControlVisuals, numberPressTicks
   if valueEditorSnapshot ~= nil and valueEditorSnapshot.kind == "number" then
     local dependencies = assert(self.dependencies, "number editor requires its presentation manifest")
     local numberPresentation = assert(dependencies.bagManifest).interactive.overlays.quantity
-    numberControls = numberPresentation.controls
     numberControlVisuals = numberPresentation.visuals
     numberPressTicks = numberPresentation.pressTicks
   end
@@ -787,7 +786,6 @@ function State:_snapshot()
     flagRowAt = flagModel and flagModel.rowAt or nil,
     valueEditor = valueEditorSnapshot,
     editorFeedback = self.editorFeedback,
-    numberControls = numberControls,
     numberControlVisuals = numberControlVisuals,
     numberPressTicks = numberPressTicks,
     unappliedDraft = self.valueEditor ~= nil,
@@ -1726,9 +1724,10 @@ function State:_openBagQuantity(mode)
   )
 end
 
-function State:_adjustNumber(delta)
+function State:_adjustNumberPlace(place, sign)
   if self.valueEditor ~= nil then
-    self.valueEditor:adjustInteger(delta)
+    self.valueEditor:selectPlace(place)
+    self.valueEditor:adjustPlace(sign)
   end
 end
 
@@ -3062,8 +3061,14 @@ function State:_activate(targetId)
       self.valueEditor:activateTarget(controlId or targetId)
     elseif targetId == "confirm" then
       self.valueEditor:press("confirm")
-    elseif valueKind == "number" and targetId:match("^number:delta:(%-?%d+)$") then
-      self:_adjustNumber(assert(tonumber(targetId:match("^number:delta:(%-?%d+)$"))))
+    elseif valueKind == "number" then
+      local place, direction = targetId:match("^number:place:(%d+):([^:]+)$")
+      if place ~= nil then
+        assert(direction == "up" or direction == "down")
+        self:_adjustNumberPlace(assert(tonumber(place)), direction == "up" and 1 or -1)
+      else
+        self.valueEditor:activateTarget(targetId)
+      end
     else
       self.valueEditor:activateTarget(targetId)
     end
@@ -3303,6 +3308,22 @@ function State:_navigate(layout, direction)
   if focus == nil then
     focus = assert(logicalFocus(layout, layout.defaultFocus), "default focus belongs to a published region")
   end
+  local place, arrow = focus.targetId:match("^number:place:(%d+):([^:]+)$")
+  if self.valueEditor ~= nil and place ~= nil then
+    local selected = assert(tonumber(place))
+    if direction == "up" or direction == "down" then
+      self:_adjustNumberPlace(selected, direction == "up" and 1 or -1)
+      self.controller:markKeyboardNavigation()
+      return
+    elseif direction == "left" or direction == "right" then
+      local nextPlace =
+        math.max(0, math.min(self.valueEditor:snapshot().digitCount - 1, selected + (direction == "left" and 1 or -1)))
+      self.valueEditor:selectPlace(nextPlace)
+      self.controller:setFocus("number:place:" .. tostring(nextPlace) .. ":" .. (arrow or "up"))
+      self.controller:markKeyboardNavigation()
+      return
+    end
+  end
   local snapshot = navigationSnapshotForState(self, layout)
   local resolved = SaveEditorNavigation.resolve(snapshot, focus, direction)
   self.controller:markKeyboardNavigation()
@@ -3392,10 +3413,12 @@ function State:_pointer(events)
       and self.valueEditor ~= nil
       and self.valueEditor:snapshot().kind == "number"
       and event.targetId ~= nil
-      and event.targetId:match("^number:delta:(%-?%d+)$")
+      and event.targetId:match("^number:place:(%d+):([^:]+)$")
     then
-      local delta = math.floor(assert(tonumber(event.targetId:match("^number:delta:(%-?%d+)$"))))
-      self:_adjustNumber(delta)
+      local place, direction = event.targetId:match("^number:place:(%d+):([^:]+)$")
+      assert(direction == "up" or direction == "down")
+      local sign = direction == "up" and 1 or -1
+      self:_adjustNumberPlace(assert(tonumber(place)), sign)
       local pressTicks = assert(view.numberPressTicks, "number controls carry source press timing")
       assert(pressTicks > 0 and pressTicks % 1 == 0, "number control press timing is a positive integer")
       self.numberPressTarget = event.targetId
@@ -3403,7 +3426,7 @@ function State:_pointer(events)
       self.numberHold = {
         pointerId = event.pointerId,
         targetId = event.targetId,
-        delta = delta,
+        delta = sign,
         scopeEpoch = self.controller.scopeEpoch,
         nextTick = self.inputTick + FieldInput.UI_REPEAT_DELAY_TICKS,
       }

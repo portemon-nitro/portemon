@@ -7,6 +7,7 @@ local PixelScale = require("libs.ui.src.PixelScale")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local SaveEditorList = require("app.src.saveeditor.SaveEditorList")
 local SaveEditorCard = require("app.src.saveeditor.SaveEditorCard")
+local SaveEditorNumberLayout = require("app.src.saveeditor.SaveEditorNumberLayout")
 
 local function makeViewport(clip, offset, contentExtent, rowExtent, gap, count, rowTargets)
   local firstIndex, lastIndex = ScrollViewport.visibleRange(offset, clip.height, rowExtent, gap, count)
@@ -97,6 +98,7 @@ local function newContext(view, width, height, metrics)
     valueModal = nil,
     valueModalValue = nil,
     valueModalError = nil,
+    numberLayout = nil,
     decisionList = nil,
     locationHeader = nil,
     bagGrid = nil,
@@ -1006,73 +1008,37 @@ local function buildNameScope(ctx)
 end
 
 local function buildNumberScope(ctx)
-  local view = ctx.view
-  local dialog = view.valueEditor
-  local contentX, contentTop, contentBottom, innerWidth =
-    ctx.contentX, ctx.contentTop, ctx.contentBottom, ctx.innerWidth
+  local view, dialog = ctx.view, ctx.view.valueEditor
+  local contentX, contentTop, contentBottom, innerWidth = ctx.contentX, ctx.contentTop, ctx.contentBottom, ctx.innerWidth
   local metrics, margin, height = ctx.metrics, ctx.margin, ctx.height
-  local controls = assert(view.numberControls, "number controls come from the Bag manifest")
-  local minX, minY = math.huge, math.huge
-  local maxX, maxY = -math.huge, -math.huge
-  for _, control in ipairs(controls) do
-    local hit = assert(control.hitRect)
-    minX, minY = math.min(minX, hit.x), math.min(minY, hit.y)
-    maxX, maxY = math.max(maxX, hit.x + hit.width), math.max(maxY, hit.y + hit.height)
-  end
-  local unionWidth, unionHeight = math.max(1, maxX - minX), math.max(1, maxY - minY)
-  local valueText = tostring(dialog.parsedValue or dialog.buffer or "")
-  local valueWidth = metrics.measure(valueText)
-  local pad = 8
-  local confirmWidth = math.min(128, math.max(40, math.floor(metrics.measure("Confirm") + 24)))
-  local cancelWidth = math.min(128, math.max(40, math.floor(metrics.measure("Cancel") + 24)))
-  local buttonsWidth = confirmWidth + 4 + cancelWidth
-  local buttonHeight = 34
-  local errorHeight = metrics.lineHeight + 2
-  local padTop = pad
-  local gapValueControls, gapControlsButtons, gapButtonsError = 4, 6, 2
   local modalTop, modalBottom = contentTop, contentBottom
-  local function verticalNeed(verticalPad)
-    local need = verticalPad + metrics.lineHeight + gapValueControls + unionHeight
-    need = need + gapControlsButtons + buttonHeight + gapButtonsError + errorHeight
-    return need + verticalPad
-  end
-  if verticalNeed(padTop) > modalBottom - modalTop then
-    -- Value scope prunes every footer target, so the idle footer strip is
-    -- safe to borrow; tighten to the minimum frame clearance instead of
-    -- spilling controls past a clamped frame.
+  local frame = { inset = 8, actionHeight = 34, errorHeight = metrics.lineHeight + 2, actionGap = 4 }
+  local arrow = assert(view.numberControlVisuals.increment.normal)
+  if height <= 220 then
     modalBottom = height - (margin + 2) - 2
-    padTop, gapValueControls, gapControlsButtons, gapButtonsError = 4, 2, 4, 2
+    frame.inset = 4
   end
-  local modalWidth = math.max(unionWidth, buttonsWidth, valueWidth) + pad * 2
-  modalWidth = math.max(8, math.floor(math.min(modalWidth, innerWidth) / 8) * 8)
-  local modalHeight = verticalNeed(padTop)
-  modalHeight = math.max(8, math.floor(math.min(modalHeight, modalBottom - modalTop) / 8) * 8)
-  ctx.valueModal = rect(
-    contentX + math.floor((innerWidth - modalWidth) / 2),
-    modalTop + math.max(0, math.floor((modalBottom - modalTop - modalHeight) / 2)),
-    modalWidth,
-    modalHeight
-  )
-  local controlsX = ctx.valueModal.x + math.floor((ctx.valueModal.width - unionWidth) / 2)
-  local controlsY = ctx.valueModal.y + padTop + metrics.lineHeight + gapValueControls
-  for _, control in ipairs(controls) do
-    local hit = assert(control.hitRect)
-    local targetId = "number:delta:" .. tostring(control.delta)
-    ctx.targets[targetId] = rect(controlsX + (hit.x - minX), controlsY + (hit.y - minY), hit.width, hit.height)
-    addFocusable(ctx, targetId)
+  ctx.numberLayout = SaveEditorNumberLayout.resolve({
+    available = rect(contentX, modalTop, innerWidth, modalBottom - modalTop),
+    projection = dialog,
+    font = metrics,
+    arrows = { width = arrow.width, height = arrow.height },
+    frame = frame,
+  })
+  ctx.valueModal = ctx.numberLayout.bodyRect
+  for _, column in ipairs(ctx.numberLayout.columns) do
+    for direction, targetRect in pairs({ up = column.upRect, down = column.downRect }) do
+      local targetId = "number:place:" .. tostring(column.place) .. ":" .. direction
+      ctx.targets[targetId] = targetRect
+      addFocusable(ctx, targetId)
+    end
   end
-  local buttonsY = controlsY + unionHeight + gapControlsButtons
-  local buttonsX = ctx.valueModal.x + math.floor((ctx.valueModal.width - buttonsWidth) / 2)
-  ctx.targets.confirm = rect(buttonsX, buttonsY, confirmWidth, buttonHeight)
-  ctx.targets.cancel = rect(buttonsX + confirmWidth + 4, buttonsY, cancelWidth, buttonHeight)
+  ctx.targets.confirm = ctx.numberLayout.confirmRect
+  ctx.targets.cancel = ctx.numberLayout.backRect
   addFocusable(ctx, "confirm")
   addFocusable(ctx, "cancel")
-  ctx.targets["value-draft"] =
-    rect(ctx.valueModal.x + pad, ctx.valueModal.y + padTop, ctx.valueModal.width - pad * 2, metrics.lineHeight)
-  ctx.valueModalValue =
-    rect(ctx.valueModal.x + pad, ctx.valueModal.y + padTop, ctx.valueModal.width - pad * 2, metrics.lineHeight)
-  ctx.valueModalError =
-    rect(ctx.valueModal.x + pad, buttonsY + buttonHeight + gapButtonsError, ctx.valueModal.width - pad * 2, errorHeight)
+  ctx.valueModalValue = ctx.numberLayout.stripRect
+  ctx.valueModalError = ctx.numberLayout.errorRect
 end
 
 local function buildValueScope(ctx)
@@ -1188,8 +1154,9 @@ local function finalizeTargets(ctx)
       end
     elseif editor.kind == "number" then
       scopeAllowed["value-draft"] = true
-      for _, control in ipairs(assert(view.numberControls)) do
-        scopeAllowed["number:delta:" .. tostring(control.delta)] = true
+      for place = 0, editor.digitCount - 1 do
+        scopeAllowed["number:place:" .. tostring(place) .. ":up"] = true
+        scopeAllowed["number:place:" .. tostring(place) .. ":down"] = true
       end
     end
   end
@@ -1453,7 +1420,7 @@ local function defaultFocusFor(ctx)
       local cursor = assert(editor.naming.cursor)
       defaultFocus = tostring(cursor.row) .. ":" .. tostring(cursor.column)
     elseif editor.kind == "number" then
-      defaultFocus = "number:delta:1"
+      defaultFocus = "number:place:0:up"
     else
       defaultFocus = ctx.focusGraph["value-draft"] and "value-draft" or "digit-left"
     end
@@ -1695,6 +1662,7 @@ local function publishPlan(ctx)
     valueModal = ctx.valueModal,
     valueModalValue = ctx.valueModalValue,
     valueModalError = ctx.valueModalError,
+    numberLayout = ctx.numberLayout,
     decisionList = ctx.decisionList,
     listSurfaces = ctx.listSurfaces,
     partyStatsTable = ctx.partyStatsTable,

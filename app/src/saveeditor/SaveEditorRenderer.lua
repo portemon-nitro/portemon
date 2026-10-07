@@ -1218,10 +1218,63 @@ local function paintValueEditor(ctx)
     end
     if dialog.kind == "number" then
       local modal = assert(layout.valueModal)
+      local number = assert(layout.numberLayout)
       graphics.setColor(1, 1, 1, 1)
       graphics.rectangle("fill", modal.x, modal.y, modal.width, modal.height)
-      local valueRect = assert(layout.valueModalValue, "the compact number modal reserves its value line")
-      drawText(renderer, tostring(dialog.parsedValue or dialog.buffer), valueRect.x, valueRect.y)
+      graphics.setColor(0.86, 0.88, 0.9, 1)
+      graphics.rectangle(
+        "fill",
+        number.stripRect.x,
+        number.stripRect.y,
+        number.stripRect.width,
+        number.stripRect.height
+      )
+      for _, column in ipairs(number.columns) do
+        local id = "number:place:" .. tostring(column.place)
+        local upId, downId = id .. ":up", id .. ":down"
+        if column.place == assert(dialog.selectedPlace, "number projection publishes its active place") then
+          graphics.setColor(0.98, 0.88, 0.56, 1)
+          graphics.rectangle(
+            "fill",
+            column.digitRect.x,
+            column.digitRect.y,
+            column.digitRect.width,
+            column.digitRect.height
+          )
+        end
+        local upState = view.numberHoldTarget == upId and "pressed" or "normal"
+        local downState = view.numberHoldTarget == downId and "pressed" or "normal"
+        local upVisual = assert(view.numberControlVisuals.increment[upState])
+        local downVisual = assert(view.numberControlVisuals.decrement[downState])
+        local upImage = assert(renderer._bagImages[upVisual.image], "retail number controls are prepared before drawing")
+        local downImage =
+          assert(renderer._bagImages[downVisual.image], "retail number controls are prepared before drawing")
+        for _, item in ipairs({
+          { image = upImage, target = column.upRect, visual = upVisual, targetId = upId },
+          { image = downImage, target = column.downRect, visual = downVisual, targetId = downId },
+        }) do
+          local scale = math.min(item.target.width / item.visual.width, item.target.height / item.visual.height)
+          graphics.setColor(1, 1, 1, 1)
+          graphics.draw(
+            item.image,
+            item.target.x + (item.target.width - item.visual.width * scale) / 2,
+            item.target.y + (item.target.height - item.visual.height * scale) / 2,
+            0,
+            scale,
+            scale
+          )
+          if isFocusedVisible(view, item.targetId) then
+            drawFocusRing(renderer, item.target, 0)
+          end
+        end
+        local digitWidth = renderer:metrics().measure(column.digit)
+        drawText(
+          renderer,
+          column.digit,
+          column.digitRect.x + math.floor((column.digitRect.width - digitWidth) / 2),
+          column.digitRect.y
+        )
+      end
       local failed = view.editorFeedback ~= nil or dialog.valid == false
       if failed then
         local errorRect = assert(layout.valueModalError, "the compact number modal reserves its error line")
@@ -1232,22 +1285,6 @@ local function paintValueEditor(ctx)
           errorRect.y,
           "error"
         )
-      end
-      for _, control in ipairs(assert(view.numberControls)) do
-        local id = "number:delta:" .. tostring(control.delta)
-        local target = assert(targetRect(layout, id))
-        local state = view.numberHoldTarget == id and "pressed" or "normal"
-        local visual = assert(view.numberControlVisuals[control.role][state])
-        local image = assert(renderer._bagImages[visual.image], "retail number controls are prepared before drawing")
-        graphics.setColor(1, 1, 1, 1)
-        graphics.draw(
-          image,
-          target.x + (target.width - image:getWidth()) / 2,
-          target.y + (target.height - image:getHeight()) / 2
-        )
-        if isFocusedVisible(view, id) then
-          drawFocusRing(renderer, target, 0)
-        end
       end
       drawButtonControl(
         renderer,

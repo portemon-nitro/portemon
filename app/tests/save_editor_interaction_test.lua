@@ -189,7 +189,7 @@ end
 function T.tests.number_repeat_stops_on_pointer_cancel_and_focus_loss()
   local function stateWithHold(pointerId)
     local controller = Controller.new()
-    controller:pointer({ type = "pointer_down", pointerId = pointerId, targetId = "number:delta:1" })
+    controller:pointer({ type = "pointer_down", pointerId = pointerId, targetId = "number:place:0:up" })
     local adjustments = 0
     local state = setmetatable({
       disposed = false,
@@ -212,7 +212,7 @@ function T.tests.number_repeat_stops_on_pointer_cancel_and_focus_loss()
       },
       numberHold = {
         pointerId = pointerId,
-        targetId = "number:delta:1",
+        targetId = "number:place:0:up",
         delta = 1,
         scopeEpoch = controller.scopeEpoch,
         nextTick = 1,
@@ -226,9 +226,17 @@ function T.tests.number_repeat_stops_on_pointer_cancel_and_focus_loss()
       end,
       _reconcileFocus = function() end,
       _dispatchIntent = function() end,
-      _adjustNumber = function()
-        adjustments = adjustments + 1
-      end,
+      valueEditor = {
+        snapshot = function()
+          return { pending = false }
+        end,
+        update = function()
+          return 0
+        end,
+        adjustPlace = function()
+          adjustments = adjustments + 1
+        end,
+      },
     }, State)
     return state, function()
       return adjustments
@@ -2650,6 +2658,48 @@ function T.tests.move_child_survives_leave_cancel_and_restores_its_opener()
   Assert.isNil(harness.controller.modal, "the next Back removes only the move dialog")
   Assert.equal(harness.controller.partyTab, "Moves", "the selected page survives both pops")
   Assert.equal(harness.controller.partySlot0, 0, "the selected member survives both pops")
+end
+
+function T.tests.nested_pp_editor_keeps_invalid_input_local_and_returns_to_its_move_layer()
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  harness.state:_activate("party:page:next")
+  harness.state:_activate("party:move:0")
+  harness.state:_activate("party-move:pp")
+
+  local editor = assert(harness.state.valueEditor)
+  local before = harness.state.monDraft:record().moves[1]
+  Assert.isTrue(editor:textinput("invalid"), "invalid typed text stays in the PP editor")
+  harness.state:_activate("confirm")
+  Assert.equal(harness.state.valueEditor, editor, "invalid text cannot pop or publish the numeric child")
+  Assert.equal(editor:snapshot().buffer, "invalid", "rejected input remains available for correction")
+  Assert.equal(harness.state.monDraft:record().moves[1].pp, before.pp, "invalid input leaves draft PP unchanged")
+
+  harness.state.numberHold = {
+    pointerId = "touch:held-pp-arrow",
+    targetId = "number:place:0:up",
+    delta = 1,
+    scopeEpoch = harness.state.scopeEpoch,
+    nextTick = 1,
+  }
+  harness.state:_requestBack()
+  Assert.isNil(harness.state.valueEditor, "Back removes only the numeric child")
+  Assert.equal(harness.controller.modal, "party-move", "the move overlay is restored")
+  Assert.isNil(harness.state.numberHold, "popping the numeric layer clears its held arrow")
+  Assert.equal(harness.state.monDraft:record().moves[1].pp, before.pp, "cancel leaves PP unchanged")
+  Assert.equal(harness.state.monDraft:record().moves[1].ppUps, before.ppUps, "cancel preserves PP Ups")
+
+  harness.state:_activate("party-move:pp")
+  local validEditor = assert(harness.state.valueEditor)
+  Assert.isTrue(validEditor:press("down"), "the reopened child accepts an arithmetic edit")
+  Assert.isTrue(validEditor:press("confirm"), "a valid value can be confirmed")
+  harness.state:_finishValueEditor()
+  local after = harness.state.monDraft:record().moves[1]
+  Assert.equal(after.pp, before.pp - 1, "one confirmation updates draft PP exactly once")
+  Assert.equal(after.ppUps, before.ppUps, "editing PP preserves PP Ups")
+  Assert.equal(after.move, before.move, "editing PP preserves the selected move")
+  Assert.equal(harness.controller.modal, "party-move", "valid confirmation returns to the retained overlay")
+  Assert.equal(harness.state.modalStack:top().kind, "move", "only the numeric layer is retired")
 end
 
 function T.tests.confirming_a_move_component_changes_only_the_party_draft()

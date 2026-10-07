@@ -37,6 +37,9 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _buffer string?
 ---@field _cursor number?
 ---@field _hasInput boolean?
+---@field _radix integer?
+---@field _digitCount integer?
+---@field _selectedPlace integer?
 ---@field _options { key: string, label: string }[]?
 ---@field _index number?
 ---@field _selectedKey string?
@@ -80,10 +83,19 @@ function SaveEditorValueEditor.new(options)
     assert(type(options.value) == "number" and options.value % 1 == 0)
     assert(type(options.min) == "number" and type(options.max) == "number" and options.min <= options.max)
     assert(options.base == "decimal" or options.base == "hex")
+    assert(options.min >= 0 and options.max <= 0xFFFFFFFF, "integer editor ranges are unsigned 32-bit values")
     self._value = options.value
     self._min = options.min
     self._max = options.max
     self._base = options.base
+    self._radix = options.base == "hex" and 16 or 10
+    self._digitCount = 1
+    local placeValue = self._radix
+    while placeValue <= options.max do
+      self._digitCount = self._digitCount + 1
+      placeValue = placeValue * self._radix
+    end
+    self._selectedPlace = 0
     self._buffer = options.base == "hex" and string.format("%X", options.value) or tostring(options.value)
     self._cursor = #self._buffer
     self._hasInput = false
@@ -194,8 +206,12 @@ function SaveEditorValueEditor:press(action)
       self._hasInput = true
       return true
     elseif action == "up" or action == "down" or action == "left" or action == "right" then
-      local delta = action == "up" and 1 or action == "down" and -1 or action == "right" and 10 or -10
-      return self:adjustInteger(delta)
+      if action == "up" or action == "down" then
+        return self:adjustPlace(action == "up" and 1 or -1)
+      end
+      local place = assert(self._selectedPlace)
+      local direction = action == "left" and 1 or -1
+      return self:selectPlace(math.max(0, math.min(assert(self._digitCount) - 1, place + direction)))
     elseif action == "confirm" or action == "a" or action == "return" then
       return self:submit()
     end
@@ -244,21 +260,39 @@ function SaveEditorValueEditor:press(action)
   return false
 end
 
----@param delta integer
+---@param place integer Zero-based place from the least-significant digit.
+---@return boolean selected
+function SaveEditorValueEditor:selectPlace(place)
+  assert(self._kind == "integer" and type(place) == "number" and place % 1 == 0, "numeric place must be an integer")
+  assert(place >= 0 and place < assert(self._digitCount), "numeric place is outside the descriptor")
+  self._selectedPlace = place
+  return true
+end
+
+---@param sign -1|1
 ---@return boolean changed
-function SaveEditorValueEditor:adjustInteger(delta)
-  assert(self._kind == "integer" and delta % 1 == 0, "integer adjustment needs an integer editor and delta")
+function SaveEditorValueEditor:adjustPlace(sign)
+  assert(self._kind == "integer" and (sign == -1 or sign == 1), "place adjustment sign must be -1 or 1")
   local current = parseInteger(self._buffer, self._base)
-  if current == nil then
+  if current == nil or current < self._min or current > self._max then
     return false
   end
-  local nextValue = math.max(self._min, math.min(self._max, current + delta))
-  local changed = nextValue ~= current
+  local increment = assert(self._radix) ^ assert(self._selectedPlace)
+  local nextValue = math.max(self._min, math.min(self._max, current + sign * increment))
+  if nextValue == current then
+    return false
+  end
   self._value = nextValue
-  self._buffer = self._base == "hex" and string.format("%X", nextValue) or tostring(nextValue)
+  self._buffer = self:_formatInteger(nextValue)
   self._cursor = #self._buffer
   self._hasInput = true
-  return changed
+  return true
+end
+
+function SaveEditorValueEditor:_formatInteger(value)
+  local format = self._base == "hex" and "%0" .. tostring(self._digitCount) .. "X"
+    or "%0" .. tostring(self._digitCount) .. "d"
+  return string.format(format, value)
 end
 
 function SaveEditorValueEditor:moveChoice(delta)
@@ -542,6 +576,19 @@ end
 function SaveEditorValueEditor:snapshot()
   if self._kind == "integer" then
     local parsedValue = parseInteger(self._buffer, self._base)
+    local displayValue = parsedValue ~= nil
+        and parsedValue >= self._min
+        and parsedValue <= self._max
+        and self:_formatInteger(parsedValue)
+      or assert(self._buffer, "integer editor owns its input buffer")
+    local digits = {}
+    for index = 1, assert(self._digitCount) do
+      local start = math.max(1, #displayValue - self._digitCount + index)
+      digits[index] = displayValue:sub(start, start)
+      if digits[index] == "" then
+        digits[index] = "0"
+      end
+    end
     return {
       kind = "number",
       value = self._value,
@@ -549,6 +596,10 @@ function SaveEditorValueEditor:snapshot()
       base = self._base,
       minimum = self._min,
       maximum = self._max,
+      radix = self._radix,
+      digitCount = self._digitCount,
+      digits = digits,
+      selectedPlace = self._selectedPlace,
       parsedValue = parsedValue,
       valid = parsedValue ~= nil and parsedValue >= self._min and parsedValue <= self._max,
       cursor = self._cursor,

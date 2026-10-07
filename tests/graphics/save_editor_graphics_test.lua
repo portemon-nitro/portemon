@@ -233,11 +233,27 @@ local function fixture(scope, width, height, topology, section, variant, version
         { delta = -10, role = "decrement", hitRect = { x = 152, y = 136, width = 32, height = 24 } },
         { delta = -1, role = "decrement", hitRect = { x = 184, y = 136, width = 32, height = 24 } },
       }
-      view.numberControlVisuals = {
-        increment = { normal = { image = "bag/inc-normal" }, pressed = { image = "bag/inc-pressed" } },
-        decrement = { normal = { image = "bag/dec-normal" }, pressed = { image = "bag/dec-pressed" } },
+    view.numberControlVisuals = {
+      increment = {
+        normal = { image = "bag/inc-normal", width = 12, height = 12 },
+        pressed = { image = "bag/inc-pressed", width = 12, height = 12 },
+      },
+      decrement = {
+        normal = { image = "bag/dec-normal", width = 12, height = 12 },
+        pressed = { image = "bag/dec-pressed", width = 12, height = 12 },
+      },
+    }
+      view.valueEditor = {
+        kind = "number",
+        buffer = "12",
+        parsedValue = 12,
+        minimum = 0,
+        maximum = 99,
+        radix = 10,
+        digitCount = 2,
+        digits = { "1", "2" },
+        selectedPlace = 0,
       }
-      view.valueEditor = { kind = "number", buffer = "12", parsedValue = 12, minimum = 0, maximum = 99 }
       view.focus = "confirm"
       view.scope = { id = "value:move-pp", epoch = 3, kind = "value", focusId = view.focus }
       view.modalLayers = {
@@ -284,8 +300,14 @@ local function fixture(scope, width, height, topology, section, variant, version
     view.bagPage0, view.bagPageCount, view.bagAddEnabled = 0, variant == "bag-pages" and 2 or 1, true
     view.bagItemFocusVisual = { image = "bag/item-focus", offset = { x = -9, y = -6 } }
     view.bagQuantityVisuals = {
-      decrement = { normal = { image = "bag/dec-normal" }, pressed = { image = "bag/dec-pressed" } },
-      increment = { normal = { image = "bag/inc-normal" }, pressed = { image = "bag/inc-pressed" } },
+      decrement = {
+        normal = { image = "bag/dec-normal", width = 12, height = 12 },
+        pressed = { image = "bag/dec-pressed", width = 12, height = 12 },
+      },
+      increment = {
+        normal = { image = "bag/inc-normal", width = 12, height = 12 },
+        pressed = { image = "bag/inc-pressed", width = 12, height = 12 },
+      },
     }
     view.numberControlVisuals = view.bagQuantityVisuals
     view.numberControls = {
@@ -297,9 +319,19 @@ local function fixture(scope, width, height, topology, section, variant, version
       { delta = -1, role = "decrement", hitRect = { x = 184, y = 136, width = 32, height = 24 } },
     }
     if variant == "quantity-normal" or variant == "quantity-pressed" then
-      view.valueEditor = { kind = "number", buffer = "2", parsedValue = 2, minimum = 1, maximum = 999 }
-      view.focus = "number:delta:1"
-      view.numberHoldTarget = variant == "quantity-pressed" and "number:delta:1" or nil
+      view.valueEditor = {
+        kind = "number",
+        buffer = "002",
+        parsedValue = 2,
+        minimum = 1,
+        maximum = 999,
+        radix = 10,
+        digitCount = 3,
+        digits = { "0", "0", "2" },
+        selectedPlace = 0,
+      }
+      view.focus = "number:place:0:up"
+      view.numberHoldTarget = variant == "quantity-pressed" and "number:place:0:up" or nil
       view.scope = { id = "value:bag_quantity", epoch = 2, kind = "value", focusId = view.focus }
     end
   elseif section == "Location" then
@@ -382,27 +414,48 @@ local function fixture(scope, width, height, topology, section, variant, version
       query = "",
     }
     view.scope = { id = "value:choice:species", epoch = 2, kind = "value", focusId = view.focus }
-  elseif variant == "number-modal" then
+  elseif variant == "number-modal" or variant == "number-modal-ten-digit" then
     view.focus = "confirm"
-    view.numberControls = {
-      { delta = 100, role = "increment", hitRect = { x = 120, y = 88, width = 32, height = 24 } },
-      { delta = 10, role = "increment", hitRect = { x = 152, y = 88, width = 32, height = 24 } },
-      { delta = 1, role = "increment", hitRect = { x = 184, y = 88, width = 32, height = 24 } },
-      { delta = -100, role = "decrement", hitRect = { x = 120, y = 136, width = 32, height = 24 } },
-      { delta = -10, role = "decrement", hitRect = { x = 152, y = 136, width = 32, height = 24 } },
-      { delta = -1, role = "decrement", hitRect = { x = 184, y = 136, width = 32, height = 24 } },
-    }
+    local digitCount = variant == "number-modal-ten-digit" and 10 or 3
+    local numberControls = {}
+    for index = 1, digitCount do
+      local placeValue = 10 ^ (digitCount - index)
+      local x = 120 + (index - 1) * 14
+      numberControls[#numberControls + 1] = {
+        delta = placeValue,
+        place = digitCount - index,
+        role = "increment",
+        hitRect = { x = x, y = 88, width = 12, height = 12 },
+      }
+      numberControls[#numberControls + 1] = {
+        delta = -placeValue,
+        place = digitCount - index,
+        role = "decrement",
+        hitRect = { x = x, y = 128, width = 12, height = 12 },
+      }
+    end
+    view.numberControls = numberControls
     view.numberControlVisuals = {
-      increment = { normal = { image = "bag/inc-normal" }, pressed = { image = "bag/inc-pressed" } },
-      decrement = { normal = { image = "bag/dec-normal" }, pressed = { image = "bag/dec-pressed" } },
+      increment = {
+        normal = { image = "bag/inc-normal", width = 12, height = 12 },
+        pressed = { image = "bag/inc-pressed", width = 12, height = 12 },
+      },
+      decrement = {
+        normal = { image = "bag/dec-normal", width = 12, height = 12 },
+        pressed = { image = "bag/dec-pressed", width = 12, height = 12 },
+      },
     }
     view.valueEditor = {
       kind = "number",
-      buffer = "123",
-      parsedValue = 123,
+      buffer = variant == "number-modal-ten-digit" and "0000000001" or "123",
+      parsedValue = variant == "number-modal-ten-digit" and 1 or 123,
       minimum = 0,
-      maximum = 999,
+      maximum = variant == "number-modal-ten-digit" and 0xFFFFFFFF or 999,
       base = "decimal",
+      digitCount = digitCount,
+      digits = variant == "number-modal-ten-digit" and { "0", "0", "0", "0", "0", "0", "0", "0", "0", "1" }
+        or { "1", "2", "3" },
+      selectedPlace = 0,
     }
     view.scope = { id = "value:integer:money", epoch = 2, kind = "value", focusId = view.focus }
   end
@@ -543,12 +596,10 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   end
   if view.valueEditor and view.valueEditor.kind == "number" and view.section ~= "Bag" then
     renderer._bagImages = {}
-    local index = 0
     for _, role in ipairs({ "increment", "decrement" }) do
       for _, state in ipairs({ "normal", "pressed" }) do
-        index = index + 1
         local visual = view.numberControlVisuals[role][state]
-        renderer._bagImages[visual.image] = graphics.newImage(love.image.newImageData(12 + index, 12))
+        renderer._bagImages[visual.image] = graphics.newImage(love.image.newImageData(visual.width, visual.height))
       end
     end
   end
@@ -654,8 +705,8 @@ local function draw(scope, width, height, topology, name, section, variant, vers
     end
   elseif view.section == "Bag" then
     if view.valueEditor then
-      Assert.notNil(layout.targets["number:delta:-1"], name .. " exposes the number decrement visual")
-      Assert.notNil(layout.targets["number:delta:1"], name .. " exposes the number increment visual")
+      Assert.notNil(layout.targets["number:place:0:down"], name .. " exposes the least-significant decrement")
+      Assert.notNil(layout.targets["number:place:0:up"], name .. " exposes the least-significant increment")
     else
       Assert.notNil(layout.targets["bag:item:POTION"], name .. " exposes the selected stack")
       Assert.isNil(layout.targets["bag:quantity"], name .. " keeps quantity in the item modal")
@@ -930,17 +981,17 @@ function T.integer_editor_renders_as_a_white_staged_frame_modal(scope)
   end
   local modal = assert(layout.valueModal, "the number modal has framed content geometry")
   for _, targetId in ipairs({
-    "number:delta:100",
-    "number:delta:10",
-    "number:delta:1",
-    "number:delta:-100",
-    "number:delta:-10",
-    "number:delta:-1",
+    "number:place:2:up",
+    "number:place:1:up",
+    "number:place:0:up",
+    "number:place:2:down",
+    "number:place:1:down",
+    "number:place:0:down",
   }) do
     Assert.notNil(layout.targets[targetId], "the number modal exposes " .. targetId)
   end
   local pane = assert(view.presentation.panes[1])
-  local x, y = LayoutGeometry.logicalToHost(pane.placement, modal.x + modal.width - 10, modal.y + modal.height / 2)
+  local x, y = LayoutGeometry.logicalToHost(pane.placement, modal.x + 4, modal.y + 4)
   local red, green, blue = data:getPixel(math.floor(x), math.floor(y))
   Assert.near(red, 1, 0.05, "number modal body is white")
   Assert.near(green, 1, 0.05, "number modal body is white")
@@ -2545,7 +2596,100 @@ function T.number_modal_omits_range_and_step_labels(scope)
   for _, step in ipairs({ "+100", "+10", "+1", "-100", "-10", "-1" }) do
     Assert.isNil(renderedText:find(step, 1, true), "the compact modal omits step labels: " .. step)
   end
-  Assert.isTrue(renderedText:find("123", 1, true) ~= nil, "the current value stays visible near its arrows")
+  for _, digit in ipairs({ "1", "2", "3" }) do
+    Assert.isTrue(renderedText:find(digit, 1, true) ~= nil, "each digit is rendered in its own column")
+  end
+end
+
+function T.pointer_selected_place_stays_visible_after_press_feedback_ends(scope)
+  local data, _, layout, _, _, _, _, _, _, plan = draw(
+    scope,
+    256,
+    192,
+    singleDisplay(256, 192),
+    "number-modal-pointer-place",
+    "Player",
+    "number-modal",
+    nil,
+    function(_, view)
+      view.focus = "number:place:1:down"
+      view.focusVisible = false
+      view.valueEditor.selectedPlace = 1
+      view.numberHoldTarget = nil
+    end
+  )
+  local number = assert(layout.numberLayout)
+  local selected = number.columns[2].digitRect
+  local unselected = number.columns[1].digitRect
+  local selectedRed = pixelAtLogical(data, plan, selected.x + 1, selected.y + 1)
+  local unselectedRed = pixelAtLogical(data, plan, unselected.x + 1, unselected.y + 1)
+  Assert.isTrue(selectedRed > unselectedRed + 0.05, "the selected place keeps a visible marker without keyboard focus or a held press")
+end
+
+function T.ten_digit_editor_renders_individual_source_arrow_columns(scope)
+  for _, size in ipairs({ { 256, 192 }, { 640, 480 } }) do
+    local topology = singleDisplay(size[1], size[2])
+    local _, renderedText, layout, bagDrawn, drawnText = draw(
+      scope,
+      size[1],
+      size[2],
+      topology,
+      "number-modal-ten-digit",
+      "Player",
+      "number-modal-ten-digit"
+    )
+    local numericLayout = assert(layout.numberLayout, "number layout publishes the shared column geometry")
+    Assert.equal(#numericLayout.columns, 10, "unsigned decimal values use ten columns")
+    Assert.equal(table.concat((function()
+      local digits = {}
+      for index, column in ipairs(numericLayout.columns) do
+        digits[index] = column.digit
+      end
+      return digits
+    end)()), "0000000001", "leading zeroes remain visible as separate digits")
+    Assert.isNil(renderedText:find("0000000001", 1, true), "the renderer does not add an aggregate number label")
+    local drawnZeros, drawnOnes = 0, 0
+    for _, value in ipairs(drawnText) do
+      if value == "0" then
+        drawnZeros = drawnZeros + 1
+      elseif value == "1" then
+        drawnOnes = drawnOnes + 1
+      end
+    end
+    Assert.equal(drawnZeros, 9, "each leading zero is drawn in its own column")
+    Assert.equal(drawnOnes, 1, "the least-significant digit is drawn in its own column")
+    for _, path in ipairs({ "bag/inc-normal", "bag/dec-normal" }) do
+      Assert.isTrue(bagDrawn[path], "numeric columns reuse Bag arrow art: " .. path)
+    end
+    local _, _, _, pressedUp = draw(
+      scope,
+      size[1],
+      size[2],
+      topology,
+      "number-modal-ten-digit-pressed-up",
+      "Player",
+      "number-modal-ten-digit",
+      nil,
+      function(_, view)
+        view.numberHoldTarget = "number:place:0:up"
+      end
+    )
+    Assert.isTrue(pressedUp["bag/inc-pressed"], "held columns use pressed increment art")
+    local _, _, _, pressedDown = draw(
+      scope,
+      size[1],
+      size[2],
+      topology,
+      "number-modal-ten-digit-pressed-down",
+      "Player",
+      "number-modal-ten-digit",
+      nil,
+      function(_, view)
+        view.numberHoldTarget = "number:place:0:down"
+      end
+    )
+    Assert.isTrue(pressedDown["bag/dec-pressed"], "held columns use pressed decrement art")
+  end
 end
 
 function T.bag_cards_draw_generic_chrome_without_browse_backgrounds(scope)
