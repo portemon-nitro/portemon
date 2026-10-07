@@ -268,18 +268,16 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
         end
       end
       state:textinput(assert(stagedName, context .. " catalogs the staged map"))
-      local mapTargets = {}
-      for targetId in pairs(assert(state:view().layout).targets) do
-        if targetId:match("^location:map:%d+$") ~= nil then
-          mapTargets[targetId] = true
+      local stagedMapTarget = "location:map:" .. stagedMapId
+      local activated
+      for _ = 1, 120 do
+        if assert(state:view().layout).targets[stagedMapTarget] ~= nil then
+          activated = stagedMapTarget
+          break
         end
+        state:update(0)
       end
-      local activated = assert(
-        mapTargets["location:map:" .. stagedMapId] and "location:map:" .. stagedMapId,
-        context .. " publishes the staged map row"
-      )
-      clickTarget(state, activated)
-      state:update(0)
+      assert(activated, context .. " eventually publishes the staged map row")
       clickTarget(state, activated)
       state:update(0)
       for _ = 1, 120 do
@@ -350,6 +348,14 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     state.controller:setSection("Party")
     clickTarget(state, "party:add")
     state:textinput("NO MATCHING SPECIES")
+    Assert.isTrue(state.valueEditor:snapshot().pending, "the production species filter starts pending")
+    for _ = 1, 120 do
+      if not state.valueEditor:snapshot().pending then
+        break
+      end
+      state:update(0)
+    end
+    Assert.isFalse(state.valueEditor:snapshot().pending, "the production species filter eventually publishes")
     local emptyChoice = capture("no-results", width, height)
     Assert.isTrue(emptyChoice.valueEditor.empty, "the production species picker exposes its no-result state")
 

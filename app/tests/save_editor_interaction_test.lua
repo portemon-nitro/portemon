@@ -12,6 +12,7 @@ local State = require("app.src.saveeditor.SaveEditorState")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
+local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 
 local T = { tests = {} }
 
@@ -266,6 +267,16 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
     session = { playerName = "Player", money = 0, frameIndex = 0 },
     valueEditor = {
       kind = "choice",
+      count = #options,
+      idAt = function(index)
+        return rowTargets[index]
+      end,
+      indexOf = function(targetId)
+        return indexByTarget[targetId]
+      end,
+      rowAt = function(index)
+        return options[index]
+      end,
       purpose = "species",
       options = options,
       rowTargets = rowTargets,
@@ -342,6 +353,26 @@ local function interactionMetrics()
   }
 end
 
+local function indexedMapModel(maps)
+  local rowTargets, indexByTarget = {}, {}
+  for index, map in ipairs(maps) do
+    local targetId = "location:map:" .. map.mapId
+    rowTargets[index] = targetId
+    indexByTarget[targetId] = index
+  end
+  return {
+    revision = 1,
+    queryRevision = 0,
+    pending = false,
+    count = #maps,
+    rowTargets = rowTargets,
+    indexByTarget = indexByTarget,
+    idAt = function(index) return rowTargets[index] end,
+    indexOf = function(targetId) return indexByTarget[targetId] end,
+    rowAt = function(index) return maps[index] end,
+  }
+end
+
 local function progressFlagCatalog(count)
   local catalog = {}
   for index = 1, count do
@@ -382,8 +413,22 @@ local function progressListHarness(flagCatalog)
       focus = controller.focus,
       query = controller.query,
       flagRows = rows,
+      flagRowAt = function(index)
+        return rows[index]
+      end,
       flagRowTargets = rowTargets,
       flagIndexByTarget = indexByTarget,
+      flagModel = {
+        revision = 1,
+        queryRevision = 0,
+        pending = false,
+        count = #rows,
+        rowTargets = rowTargets,
+        indexByTarget = indexByTarget,
+        idAt = function(index) return rowTargets[index] end,
+        indexOf = function(targetId) return indexByTarget[targetId] end,
+        rowAt = function(index) return rows[index] end,
+      },
       scrollOffsets = controller.scrollOffsets,
     }
   end
@@ -728,6 +773,7 @@ local function locationListHarness()
         filtered[#filtered + 1] = map
       end
     end
+    local mapModel = indexedMapModel(filtered)
     return {
       section = "Location",
       status = "ready",
@@ -741,20 +787,9 @@ local function locationListHarness()
         symbol = "MAP_TEST_ROUTE",
         section = "TEST_SECTION",
         maps = filtered,
-        mapRowTargets = (function()
-          local targets = {}
-          for _, map in ipairs(filtered) do
-            targets[#targets + 1] = "location:map:" .. map.mapId
-          end
-          return targets
-        end)(),
-        mapIndexByTarget = (function()
-          local index = {}
-          for position, map in ipairs(filtered) do
-            index["location:map:" .. map.mapId] = position
-          end
-          return index
-        end)(),
+        mapModel = mapModel,
+        mapRowTargets = mapModel.rowTargets,
+        mapIndexByTarget = mapModel.indexByTarget,
         generation = 1,
         status = { state = "ready" },
         tiles = { { fieldX = 32, fieldZ = 48, selectable = true } },
@@ -852,6 +887,7 @@ local function overflowingLocationListHarness(width, height, count)
     }
   end
   local function buildView()
+    local mapModel = indexedMapModel(maps)
     return {
       section = "Location",
       status = "ready",
@@ -865,20 +901,9 @@ local function overflowingLocationListHarness(width, height, count)
         symbol = "MAP_TEST_12",
         section = "TEST_SECTION",
         maps = maps,
-        mapRowTargets = (function()
-          local targets = {}
-          for _, map in ipairs(maps) do
-            targets[#targets + 1] = "location:map:" .. map.mapId
-          end
-          return targets
-        end)(),
-        mapIndexByTarget = (function()
-          local index = {}
-          for position, map in ipairs(maps) do
-            index["location:map:" .. map.mapId] = position
-          end
-          return index
-        end)(),
+        mapModel = mapModel,
+        mapRowTargets = mapModel.rowTargets,
+        mapIndexByTarget = mapModel.indexByTarget,
         generation = 1,
         status = { state = "ready" },
         tiles = { { fieldX = 32, fieldZ = 48, selectable = true } },
@@ -996,15 +1021,15 @@ function T.tests.location_map_row_navigation_keeps_offscreen_identity()
   end
 end
 
-local function choiceListHarness()
+local function choiceListHarness(optionCount)
   local controller = Controller.new()
   controller:setSection("Bag")
   local metrics = interactionMetrics()
   local options = {}
-  for index = 1, 12 do
+  for index = 1, optionCount or 12 do
     options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
   end
-  local editor = ValueEditor.new({ kind = "choice", value = "K05", options = options })
+  local editor = ValueEditor.new({ kind = "choice", value = options[5].key, options = options })
   local function buildView()
     return {
       section = "Bag",
@@ -1018,14 +1043,16 @@ local function choiceListHarness()
     }
   end
   local function buildLayout()
+    editor:update(256)
     return Layout.compute(buildView(), 256, 192, metrics)
   end
   local finished = 0
   local state = setmetatable({
     status = "ready",
     controller = controller,
-    fieldInput = { beginUi = function() end },
-    scopeEpoch = 0,
+    fieldInput = FieldInput.new(),
+    inputTick = 0,
+    tickRemainder = 0,
     valueEditor = editor,
     _snapshot = buildView,
     _resolve = function()
@@ -1044,6 +1071,46 @@ local function choiceListHarness()
       return finished
     end,
   }
+end
+
+function T.tests.large_choice_filtering_is_sliced_and_cannot_submit_stale_rows()
+  local harness = choiceListHarness(10000)
+  local editor, state, controller = harness.editor, harness.state, harness.controller
+  local sourceOptions = editor._options
+  local visits = 0
+  local originalIpairs = ipairs
+  _G.ipairs = function(value)
+    if value ~= sourceOptions then
+      return originalIpairs(value)
+    end
+    local function nextOption(_, index)
+      index = index + 1
+      local option = value[index]
+      if option == nil then
+        return nil
+      end
+      visits = visits + 1
+      return index, option
+    end
+    return nextOption, value, 0
+  end
+  local ok, failure = xpcall(function()
+    controller:setFocus("choice:K05")
+    state:textinput("Choice 1")
+    Assert.isTrue(
+      visits <= 256,
+      string.format("one input event visited %d of 10000 choices", visits)
+    )
+    local pending = editor:snapshot()
+    Assert.isTrue(pending.pending, "a large query remains pending after its first bounded slice")
+    Assert.equal(pending.query, "Choice 1", "the newest query is visible while its model is pending")
+    Assert.isFalse(editor:submit(), "a stale row cannot submit while filtering is pending")
+    Assert.isNil(editor:result(), "a pending query publishes no selection")
+  end, debug.traceback)
+  _G.ipairs = originalIpairs
+  if not ok then
+    error(failure, 0)
+  end
 end
 
 function T.tests.choice_editor_opens_on_a_row_and_back_cancels_the_editor()
@@ -1074,6 +1141,8 @@ function T.tests.choice_typing_reconciles_the_cursor_without_publishing()
   local controller, state, editor = harness.controller, harness.state, harness.editor
   controller:setFocus("choice:K05")
   state:textinput("Choice 1")
+  editor:update(256)
+  state:update(0)
   local layout = harness.buildLayout()
   Assert.notNil(layout.lists, "the plan must publish one record per interactive list")
   local rows = layout.lists["value:choice"].rowTargets
@@ -1821,28 +1890,270 @@ function T.tests.focus_memory_is_scoped_to_the_active_interaction()
   Assert.equal(controller.focusVisible, false, "scope focus changes never show the ring by themselves")
 end
 
-function T.tests.repeated_flag_snapshots_reuse_the_filtered_catalog_until_the_query_changes()
+function T.tests.flag_value_snapshots_do_not_mutate_cached_flag_metadata()
   local controller = Controller.new()
-  local state = setmetatable({ controller = controller }, State)
-  local opening = state:_flagRows({})
-  Assert.isTrue(#opening > 0, "the catalog exposes flag rows")
-  Assert.isTrue(state:_flagRows({}) == opening, "snapshots without query changes reuse the cached rows")
-  local sample = opening[1]
+  controller:setSection("Progress")
+  local state = setmetatable({
+    controller = controller,
+    status = "ready",
+    session = {},
+    tickRemainder = 0,
+    inputTick = 0,
+    valueEditor = nil,
+    numberHold = nil,
+    disposed = false,
+  }, State)
+  while state._flagCatalog == nil do
+    state:update(0)
+  end
+  local opening = state:_flagProjection({})
+  Assert.isTrue(opening.count > 0, "the catalog exposes flag rows")
+  local sample = assert(opening.rowAt(1))
+  local originalName, originalLabel, originalValue = sample.name, sample.displayName, sample.value
   local values = { [sample.id] = true }
-  local refreshed = state:_flagRows(values)
-  Assert.isTrue(refreshed == opening, "value refresh never rebuilds the cached descriptors")
-  Assert.equal(refreshed[1].value, true, "refreshed rows still reflect the latest session flags")
-  local cleared = state:_flagRows({})
-  Assert.isTrue(cleared == opening, "clearing flags reuses the cached rows")
-  Assert.equal(cleared[1].value, false, "cleared flags read back as disabled")
+  local refreshed = state:_flagProjection(values)
+  Assert.equal(sample.name, originalName, "a value revision leaves cached flag identity unchanged")
+  Assert.equal(sample.displayName, originalLabel, "a value revision leaves cached labels unchanged")
+  Assert.equal(sample.value, originalValue, "a new snapshot does not mutate an earlier snapshot")
+  Assert.equal(assert(refreshed.rowAt(1)).value, true, "the refreshed visible flag reflects the current revision")
+  local cleared = state:_flagProjection({})
+  Assert.equal(assert(refreshed.rowAt(1)).value, true, "a later revision leaves the prior value snapshot stable")
+  Assert.equal(assert(cleared.rowAt(1)).value, false, "the current snapshot reflects the cleared flag")
   controller.query = sample.name:sub(1, 8):lower()
-  local filtered = state:_flagRows({})
-  Assert.isFalse(filtered == opening, "a changed query rebuilds the filtered order once")
-  Assert.isTrue(state:_flagRows({}) == filtered, "the rebuilt filter is reused while the query is stable")
-  Assert.isTrue(#filtered < #opening, "filtering narrows the catalog")
-  for _, row in ipairs(filtered) do
+  state:_flagProjection({})
+  while state._listFilterTask ~= nil do
+    state:_advanceListFilter(256)
+  end
+  local filtered = state:_flagProjection({})
+  Assert.isTrue(filtered.count < opening.count, "filtering narrows the catalog")
+  for index = 1, filtered.count do
+    local row = assert(filtered.rowAt(index))
     Assert.notNil(row.targetId, "cached rows carry their stable target identity")
   end
+end
+
+function T.tests.flag_value_reads_are_limited_to_the_visible_window()
+  local controller = Controller.new()
+  controller:setSection("Progress")
+  local reads = 0
+  local flags = setmetatable({}, {
+    __index = function()
+      reads = reads + 1
+      return false
+    end,
+  })
+  local snapshot = {
+    flags = flags,
+    dirtySections = { flags = false },
+    frameIndex = 0,
+    playerName = "Trainer",
+    money = 0,
+  }
+  local session = {
+    snapshot = function()
+      return snapshot
+    end,
+    isDirty = function()
+      return false
+    end,
+  }
+  local catalog = {}
+  for index = 1, 1000 do
+    local name = string.format("FLAG_TEST_%04d", index)
+    catalog[index] = {
+      name = name,
+      displayName = name:sub(6),
+      id = index,
+      targetId = "flag:" .. name,
+    }
+  end
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    fieldInput = FieldInput.new(),
+    inputTick = 0,
+    scopeEpoch = 0,
+    numberPressUntilTick = 0,
+    preserveChoiceScroll = false,
+    session = session,
+    _flagCatalog = catalog,
+  }, State)
+  local view = state:_snapshot()
+  view.scope = { id = "section:Progress", epoch = 1, kind = "section", focusId = controller.focus }
+  view.textMetrics = interactionMetrics()
+  view.scrollOffsets = {}
+  local layout = Layout.compute(view, 256, 192, view.textMetrics)
+  local viewport = assert(layout.viewports.flags)
+  local visibleCount = math.max(0, viewport.lastIndex - viewport.firstIndex + 1)
+  Assert.isTrue(visibleCount > 0 and visibleCount < #catalog, "the test viewport covers only part of the flag list")
+  Assert.isTrue(
+    reads <= visibleCount,
+    string.format("the stable snapshot read %d flag values for %d visible rows", reads, visibleCount)
+  )
+end
+
+function T.tests.flag_filter_publishes_bounded_c02_generations()
+  local controller = Controller.new()
+  controller:setSection("Progress")
+  local catalog = {}
+  for index = 1, 1000 do
+    local name = string.format("FLAG_TEST_%04d", index)
+    catalog[index] = {
+      name = name,
+      displayName = name,
+      id = index,
+      targetId = "flag:" .. name,
+    }
+  end
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    fieldInput = FieldInput.new(),
+    inputTick = 0,
+    tickRemainder = 0,
+    scopeEpoch = 0,
+    numberPressUntilTick = 0,
+    preserveChoiceScroll = false,
+    _flagCatalog = catalog,
+  }, State)
+  local initial = state:_flagProjection({})
+  Assert.equal(initial.count, #catalog, "the initial indexed projection covers the catalog")
+  Assert.equal(initial.idAt(1), "flag:FLAG_TEST_0001", "the projection resolves stable row identity")
+  Assert.equal(initial.indexOf("flag:FLAG_TEST_0999"), 999, "the projection resolves stable row position")
+  Assert.equal(initial.rowAt(1).value, false, "row payloads read the current flag value")
+
+  controller.query = "does-not-exist"
+  state:_filteredFlagRows()
+  state:update(0)
+  local pending = state:_flagProjection({})
+  Assert.isTrue(pending.pending, "the previous rows remain published while the query is pending")
+  Assert.equal(pending.idAt(1), initial.idAt(1), "pending rows retain their prior logical order")
+  Assert.isTrue(state._listFilterTask.cursor <= 257, "one update visits at most 256 catalog rows")
+  Assert.equal(pending.queryRevision, initial.queryRevision + 1, "the pending query has a new generation")
+
+  controller.query = "FLAG_TEST_1000"
+  state:_filteredFlagRows()
+  local newest = state:_flagProjection({})
+  Assert.isTrue(newest.pending, "a newer query replaces the unfinished generation")
+  Assert.equal(newest.queryRevision, pending.queryRevision + 1, "the replacement query owns a newer revision")
+  state:update(0)
+  state:update(0)
+  state:update(0)
+  state:update(0)
+  local published = state:_flagProjection({})
+  Assert.isFalse(published.pending, "a completed generation publishes atomically")
+  Assert.equal(published.count, 1, "the newest query contains only matching rows")
+  Assert.equal(published.idAt(1), "flag:FLAG_TEST_1000", "an obsolete generation never publishes")
+  Assert.equal(published.revision, initial.revision + 1, "publication advances the projection revision once")
+end
+
+function T.tests.first_progress_snapshot_defers_flag_catalog_enumeration_to_bounded_updates()
+  local controller = Controller.new()
+  controller:setSection("Progress")
+  local state = setmetatable({
+    controller = controller,
+    status = "ready",
+    session = {},
+    tickRemainder = 0,
+    inputTick = 0,
+    valueEditor = nil,
+    numberHold = nil,
+    disposed = false,
+    _listFilterTask = nil,
+    _listQueryRevision = 0,
+  }, State)
+  local visits = 0
+  local originalPairs = pairs
+  local expectedVisits = 0
+  for _ in originalPairs(FieldScriptSymbols.flagsByName) do
+    expectedVisits = expectedVisits + 1
+  end
+  _G.pairs = function(source)
+    local iterator, tableValue, key = originalPairs(source)
+    if source ~= FieldScriptSymbols.flagsByName then
+      return iterator, tableValue, key
+    end
+    return function()
+      key = iterator(tableValue, key)
+      if key ~= nil then
+        visits = visits + 1
+      end
+      return key, tableValue[key]
+    end, tableValue, key
+  end
+  local ok, errorMessage = xpcall(function()
+    local initial = state:_flagProjection({})
+    Assert.equal(visits, 0, "the first Progress snapshot does not enumerate the flag catalog")
+    Assert.equal(initial.count, 0, "the pending catalog publishes an empty Progress projection")
+    Assert.isTrue(initial.pending, "the projection reports that its catalog is still being prepared")
+
+    state:update(0)
+    Assert.isTrue(visits > 0 and visits <= 256, "one update enumerates only its row budget")
+    while visits < expectedVisits do
+      local before = visits
+      state:update(0)
+      Assert.isTrue(visits - before <= 256, "later updates keep flag enumeration bounded")
+    end
+    Assert.isNil(state._flagCatalog, "catalog enumeration does not synchronously sort and index all flags")
+    while state._flagCatalog == nil do
+      state:update(0)
+    end
+    local prepared = state:_flagProjection({})
+    Assert.isFalse(prepared.pending, "the complete flag catalog publishes after preparation")
+    Assert.isTrue(prepared.count > 0, "the prepared projection contains known script flags")
+  end, debug.traceback)
+  _G.pairs = originalPairs
+  if not ok then
+    error(errorMessage, 0)
+  end
+end
+
+function T.tests.map_filter_publishes_bounded_c02_generations()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller.locationPage = "map-list"
+  local summaries = {}
+  for index = 1, 1000 do
+    summaries[index] = {
+      mapId = index,
+      symbol = string.format("MAP_TEST_%04d", index),
+      section = "TEST_SECTION",
+      displayName = string.format("Test map %04d", index),
+    }
+  end
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    fieldInput = FieldInput.new(),
+    inputTick = 0,
+    tickRemainder = 0,
+    scopeEpoch = 0,
+    numberPressUntilTick = 0,
+    preserveChoiceScroll = false,
+    locationService = { mapSummaries = function() return summaries end },
+  }, State)
+  local initial = state:_mapProjection()
+  Assert.equal(initial.count, #summaries, "the initial indexed map projection covers the catalog")
+  Assert.equal(initial.idAt(1), "location:map:1", "the map projection resolves stable row identity")
+  Assert.equal(initial.indexOf("location:map:999"), 999, "the map projection resolves stable row position")
+  Assert.equal(initial.rowAt(1).symbol, "MAP_TEST_0001", "the projection resolves map metadata")
+
+  controller.query = "no-such-map"
+  state:_mapProjection()
+  state:update(0)
+  local pending = state:_mapProjection()
+  Assert.isTrue(pending.pending, "the previous map rows remain published while the query is pending")
+  Assert.equal(pending.idAt(1), initial.idAt(1), "pending maps retain their prior logical order")
+  Assert.isTrue(state._listFilterTask.cursor <= 257, "one update visits at most 256 map summaries")
+  Assert.equal(pending.queryRevision, initial.queryRevision + 1, "the pending map query has a new generation")
+
+  state:update(0)
+  state:update(0)
+  state:update(0)
+  local published = state:_mapProjection()
+  Assert.isFalse(published.pending, "a completed map generation publishes atomically")
+  Assert.equal(published.count, 0, "the published map query contains only matching rows")
+  Assert.equal(published.revision, initial.revision + 1, "map publication advances the revision once")
 end
 
 function T.tests.moving_past_the_visible_window_reveals_and_focuses_the_next_row()

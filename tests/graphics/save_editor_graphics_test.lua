@@ -31,7 +31,8 @@ end
 
 local function fixture(scope, width, height, topology, section, variant, versionId)
   section = section or "Progress"
-  local view = {
+  local view
+  view = {
     status = "ready",
     versionId = versionId or "heartgold",
     saveId = "TEST-SAVE-42",
@@ -58,6 +59,9 @@ local function fixture(scope, width, height, topology, section, variant, version
         value = false,
       } or { name = "FLAG_TEST", displayName = "TEST", id = 1, value = false },
     },
+    flagRowAt = function(index)
+      return view.flagRows[index]
+    end,
     flagRowTargets = {
       variant == "long-flag" and ("flag:" .. LONG_FLAG_NAME) or "flag:FLAG_TEST",
     },
@@ -337,6 +341,16 @@ local function fixture(scope, width, height, topology, section, variant, version
     view.focus = "choice:choice-01"
     view.valueEditor = {
       kind = "choice",
+      count = #options,
+      idAt = function(index)
+        return rowTargets[index]
+      end,
+      indexOf = function(targetId)
+        return indexByTarget[targetId]
+      end,
+      rowAt = function(index)
+        return options[index]
+      end,
       purpose = "species",
       options = options,
       rowTargets = rowTargets,
@@ -369,6 +383,35 @@ local function fixture(scope, width, height, topology, section, variant, version
       base = "decimal",
     }
     view.scope = { id = "value:integer:money", epoch = 2, kind = "value", focusId = view.focus }
+  end
+  if section == "Progress" then
+    local rowTargets, indexByTarget = view.flagRowTargets, view.flagIndexByTarget
+    view.flagModel = {
+      revision = 1,
+      queryRevision = 0,
+      pending = false,
+      count = #rowTargets,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+      idAt = function(index) return rowTargets[index] end,
+      indexOf = function(targetId) return indexByTarget[targetId] end,
+      rowAt = view.flagRowAt,
+    }
+  end
+  if section == "Location" and view.locationNavigation.page == "map-list" then
+    local maps, rowTargets, indexByTarget =
+      view.location.maps, view.location.mapRowTargets, view.location.mapIndexByTarget
+    view.location.mapModel = {
+      revision = 1,
+      queryRevision = 0,
+      pending = false,
+      count = #rowTargets,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+      idAt = function(index) return rowTargets[index] end,
+      indexOf = function(targetId) return indexByTarget[targetId] end,
+      rowAt = function(index) return maps[index] end,
+    }
   end
   local context = DisplayContext.new({
     graphics = love.graphics,
@@ -780,11 +823,11 @@ function T.choice_and_decision_lists_render_as_white_framed_surfaces(scope)
       Assert.near(red, 1, 0.05, "list content has a white surface")
       Assert.near(green, 1, 0.05, "list content has a white surface")
       Assert.near(blue, 1, 0.05, "list content has a white surface")
-      local outlineX, outlineY = LayoutGeometry.logicalToHost(pane.placement, rect.x + rect.width * 0.8, rect.y + 1)
+      local outlineX, outlineY = LayoutGeometry.logicalToHost(pane.placement, rect.x + rect.width / 2, rect.y + 3)
       local outlineRed, outlineGreen, outlineBlue = data:getPixel(math.floor(outlineX), math.floor(outlineY))
       Assert.isTrue(
         outlineRed > 0.7 and outlineGreen < 0.4 and outlineBlue < 0.4,
-        "the selected list row has a thin red outline"
+        "the active row marker is inset from its edges"
       )
     else
       local decision = assert(layout.decisionList, "the leave decision publishes its framed surface")
@@ -1961,16 +2004,18 @@ local function recordRectangles(drawFn)
     currentColor = { r, g, b, a }
     return oldSetColor(r, g, b, a)
   end
-  love.graphics.rectangle = function(mode, x, y, rectWidth, rectHeight, ...)
+  love.graphics.rectangle = function(mode, x, y, rectWidth, rectHeight, radiusX, radiusY)
     calls[#calls + 1] = {
       mode = mode,
       x = x,
       y = y,
       width = rectWidth,
       height = rectHeight,
+      radiusX = radiusX,
+      radiusY = radiusY,
       color = { currentColor[1], currentColor[2], currentColor[3], currentColor[4] },
     }
-    return oldRectangle(mode, x, y, rectWidth, rectHeight, ...)
+    return oldRectangle(mode, x, y, rectWidth, rectHeight, radiusX, radiusY)
   end
   local ok, result = xpcall(drawFn, debug.traceback)
   love.graphics.setColor, love.graphics.rectangle = oldSetColor, oldRectangle
@@ -1987,72 +2032,50 @@ local function surrounds(outer, inner, tolerance)
     and math.abs(outer.y + outer.height - (inner.y + inner.height)) <= tolerance
 end
 
-function T.choice_rows_have_no_per_row_chrome_and_focus_is_exclusive(scope)
+function T.choice_list_marks_the_remembered_row_without_outlining_its_surface(scope)
   local topology = singleDisplay(640, 480)
-  local function renderWithFocus(name, focusId)
+  local function render(name, focusId, focusVisible)
     local rendered = nil
     local calls = recordRectangles(function()
       local _, _, layout = draw(scope, 640, 480, topology, name, "Player", "choice-list", nil, function(_, view)
         view.focus = focusId
+        view.focusVisible = focusVisible
       end)
       rendered = layout
     end)
     return rendered, calls
   end
-  local surfaceLayout, _ = renderWithFocus("choice-chrome", "list:value:choice")
-  local surface = assert(surfaceLayout.listSurfaces[1], "the choice list owns one framed surface")
-  local rowRects = {}
-  for index = 1, 12 do
-    local targetId = string.format("choice:choice-%02d", index)
-    local target = surfaceLayout.targets[targetId]
-    if target ~= nil then
-      rowRects[#rowRects + 1] = target.rect
-    end
-  end
-  Assert.isTrue(#rowRects > 0, "the choice list publishes its row targets")
-
-  local function fillsMatching(rows, calls)
+  local function markerAround(rect, calls)
     local matches = 0
     for _, call in ipairs(calls) do
-      if call.mode == "fill" then
-        for _, rect in ipairs(rows) do
-          if call.x == rect.x and call.y == rect.y and call.width == rect.width and call.height == rect.height then
-            matches = matches + 1
-          end
-        end
-      end
-    end
-    return matches
-  end
-  local function outlinesSurrounding(rect, calls)
-    local matches = 0
-    for _, call in ipairs(calls) do
-      if call.mode == "line" and surrounds(call, rect, 3) then
+      if
+        call.mode == "line"
+        and call.x >= rect.x + 5
+        and call.x <= rect.x + 7
+        and math.abs(call.width - (rect.width - 12)) <= 2
+        and call.radiusX ~= nil
+        and call.radiusX > 0
+      then
         matches = matches + 1
       end
     end
     return matches
   end
 
-  local containerLayout, containerCalls = renderWithFocus("choice-container", "list:value:choice")
-  Assert.equal(fillsMatching(rowRects, containerCalls), 0, "list rows paint no per-row background")
-  Assert.isTrue(
-    outlinesSurrounding(assert(containerLayout.listSurfaces[1]), containerCalls) >= 1,
-    "container focus draws one ring around the list surface"
-  )
-  for _, rect in ipairs(rowRects) do
-    Assert.equal(outlinesSurrounding(rect, containerCalls), 0, "no row owns a ring while the container has focus")
+  local containerLayout, containerCalls = render("choice-container", "list:value:choice", true)
+  local surface = assert(containerLayout.listSurfaces[1], "the choice list owns one surface")
+  local remembered = assert(containerLayout.targets["choice:choice-01"]).rect
+  Assert.equal(markerAround(remembered, containerCalls), 1, "the remembered row keeps a rounded inset marker")
+  local marker = assert(containerLayout.rowMarkers["choice:choice-01"])
+  local label = assert(containerLayout.rowLabelRects["choice:choice-01"])
+  Assert.isTrue(label.x - (marker.x + 1) >= 3, "choice glyph bounds clear the marker stroke by at least three pixels")
+  for _, call in ipairs(containerCalls) do
+    Assert.isFalse(call.mode == "line" and surrounds(call, surface, 3), "the list surface has no focus ring")
   end
 
-  local rowLayout, rowCalls = renderWithFocus("choice-row", "choice:choice-01")
-  Assert.equal(fillsMatching(rowRects, rowCalls), 0, "focused rows paint no per-row background either")
-  local focused = assert(rowLayout.targets["choice:choice-01"]).rect
-  Assert.equal(outlinesSurrounding(focused, rowCalls), 1, "exactly one ring surrounds the focused row")
-  Assert.equal(
-    outlinesSurrounding(assert(rowLayout.listSurfaces[1]), rowCalls),
-    0,
-    "the container owns no ring while a row has focus"
-  )
+  local pointerLayout, pointerCalls = render("choice-pointer", "choice:choice-01", false)
+  local pointerRow = assert(pointerLayout.targets["choice:choice-01"]).rect
+  Assert.equal(markerAround(pointerRow, pointerCalls), 1, "pointer modality keeps the row marker visible")
 end
 
 function T.filterable_lists_render_an_inline_hint_without_search_controls(scope)

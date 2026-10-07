@@ -3,6 +3,30 @@
 local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
+---@class SaveEditorChoiceOption
+---@field key string
+---@field label string
+
+---@class SaveEditorChoiceProjection
+---@field query string
+---@field revision integer
+---@field queryRevision integer
+---@field options SaveEditorChoiceOption[]
+---@field rowTargets string[]
+---@field indexByTarget table<string, integer>
+---@field idAt fun(index: integer): string?
+---@field indexOf fun(targetId: string): integer?
+---@field rowAt fun(index: integer): SaveEditorChoiceOption?
+
+---@class SaveEditorChoiceFilterTask
+---@field query string
+---@field foldedQuery string
+---@field queryRevision integer
+---@field cursor integer
+---@field options SaveEditorChoiceOption[]
+---@field rowTargets string[]
+---@field indexByTarget table<string, integer>
+
 ---@class SaveEditorValueEditor
 ---@field _kind string
 ---@field _result { kind: string, value: unknown? }?
@@ -17,7 +41,9 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _index number?
 ---@field _selectedKey string?
 ---@field _query string?
----@field _filteredCache { query: string, options: { key: string, label: string }[], rowTargets: string[], indexByTarget: table<string, integer> }?
+---@field _filteredCache SaveEditorChoiceProjection?
+---@field _filterTask SaveEditorChoiceFilterTask?
+---@field _queryRevision integer?
 ---@field _name NamingScreenController?
 ---@field _nameKind "player"|"pokemon"|nil
 ---@field _nameMaxLength integer?
@@ -78,6 +104,34 @@ function SaveEditorValueEditor.new(options)
     end
     self._selectedKey = self._selectedKey or self._options[1].key
     self._query = ""
+    local rowTargets, indexByTarget = {}, {}
+    for index, option in ipairs(self._options) do
+      local targetId = "choice:" .. option.key
+      rowTargets[index] = targetId
+      indexByTarget[targetId] = index
+    end
+    ---@type SaveEditorChoiceProjection
+    local cache
+    cache = {
+      query = "",
+      revision = 1,
+      queryRevision = 0,
+      options = self._options,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+      idAt = function(index)
+        return cache.rowTargets[index]
+      end,
+      indexOf = function(targetId)
+        return cache.indexByTarget[targetId]
+      end,
+      rowAt = function(index)
+        return cache.options[index]
+      end,
+    }
+    self._filteredCache = cache
+    self._queryRevision = 0
+    self._index = assert(indexByTarget["choice:" .. self._selectedKey])
   elseif options.kind == "name" then
     self._nameKind = options.nameKind
     self._nameMaxLength = options.maxLength
@@ -114,7 +168,7 @@ function SaveEditorValueEditor:textinput(text)
     return true
   elseif self._kind == "choice" then
     self._query = self._query .. text
-    self:_reconcileSelection()
+    self:_beginFilter()
     return true
   end
   return self._name:inputText(text)
@@ -144,7 +198,6 @@ function SaveEditorValueEditor:press(action)
       return self:submit()
     end
   elseif self._kind == "choice" then
-    local filtered = self:_filteredOptions()
     if action == "backspace" then
       local glyphs = {}
       for glyph in Utf8Glyphs.iter(self._query) do
@@ -152,13 +205,17 @@ function SaveEditorValueEditor:press(action)
       end
       table.remove(glyphs)
       self._query = table.concat(glyphs)
-      self:_reconcileSelection()
+      self:_beginFilter()
       return true
     elseif action == "clear_search" then
       self._query = ""
-      self:_reconcileSelection()
+      self:_beginFilter()
       return true
     end
+    if self._filterTask ~= nil then
+      return false
+    end
+    local filtered = self:_filteredOptions()
     if #filtered == 0 then
       return false
     end
@@ -204,6 +261,9 @@ end
 
 function SaveEditorValueEditor:moveChoice(delta)
   assert(type(delta) == "number" and delta % 1 == 0 and delta ~= 0, "choice movement must be a non-zero integer")
+  if self._filterTask ~= nil then
+    return false
+  end
   local filtered = self:_filteredOptions()
   if #filtered == 0 then
     self._index = 0
@@ -229,13 +289,15 @@ function SaveEditorValueEditor:activateTarget(targetId)
     end
     return false
   elseif self._kind == "choice" then
+    if self._filterTask ~= nil then
+      return false
+    end
     local options = self:_filteredOptions()
-    for index, option in ipairs(options) do
-      if option.key == targetId then
-        self._index, self._selectedKey = index, option.key
-        self._result = { kind = "confirm", value = option.key }
-        return true
-      end
+    local index = assert(self._filteredCache).indexByTarget["choice:" .. targetId]
+    if index ~= nil and options[index] ~= nil and options[index].key == targetId then
+      self._index, self._selectedKey = index, targetId
+      self._result = { kind = "confirm", value = targetId }
+      return true
     end
   elseif self._kind == "name" then
     local row, column = targetId:match("^(%d+):(%d+)$")
@@ -277,6 +339,9 @@ function SaveEditorValueEditor:submit()
     end
     self._result = { kind = "confirm", value = value }
   elseif self._kind == "choice" then
+    if self._filterTask ~= nil then
+      return false, "Wait for the filtered choices to finish."
+    end
     local filtered = self:_filteredOptions()
     local option = filtered[self._index]
     if option == nil then
@@ -322,25 +387,104 @@ function SaveEditorValueEditor:retry()
 end
 
 function SaveEditorValueEditor:_filteredOptions()
-  local cache = self._filteredCache
-  if cache ~= nil and cache.query == self._query then
-    return cache.options
+  return assert(self._filteredCache).options
+end
+
+function SaveEditorValueEditor:_beginFilter()
+  if self._query == assert(self._filteredCache).query then
+    self._filterTask = nil
+    return
   end
-  local filtered = {}
-  local rowTargets = {}
-  local indexByTarget = {}
-  local query = self._query:lower()
-  for _, option in ipairs(self._options) do
-    if query == "" or option.label:lower():find(query, 1, true) or option.key:lower():find(query, 1, true) then
-      filtered[#filtered + 1] = option
+  local query = assert(self._query)
+  ---@type SaveEditorChoiceFilterTask
+  local task = {
+    query = query,
+    queryRevision = (self._queryRevision or 0) + 1,
+    foldedQuery = query:lower(),
+    cursor = 1,
+    options = {},
+    rowTargets = {},
+    indexByTarget = {},
+  }
+  self._filterTask = task
+  self._queryRevision = task.queryRevision
+end
+
+---@param rowBudget integer
+---@return integer visited
+function SaveEditorValueEditor:update(rowBudget)
+  assert(type(rowBudget) == "number" and rowBudget >= 0 and rowBudget % 1 == 0)
+  if self._kind ~= "choice" or self._filterTask == nil then
+    return 0
+  end
+  local task = assert(self._filterTask)
+  local options = assert(self._options)
+  local visited = 0
+  while task.cursor <= #options and visited < rowBudget do
+    local option = options[task.cursor]
+    if
+      task.foldedQuery == ""
+      or option.label:lower():find(task.foldedQuery, 1, true)
+      or option.key:lower():find(task.foldedQuery, 1, true)
+    then
+      local index = #task.options + 1
+      task.options[index] = option
       local targetId = "choice:" .. option.key
-      rowTargets[#rowTargets + 1] = targetId
-      indexByTarget[targetId] = #filtered
+      task.rowTargets[index] = targetId
+      task.indexByTarget[targetId] = index
     end
+    task.cursor = task.cursor + 1
+    visited = visited + 1
   end
-  self._filteredCache =
-    { query = self._query, options = filtered, rowTargets = rowTargets, indexByTarget = indexByTarget }
-  return filtered
+  if task.cursor > #options then
+    local previousIndex = self._index or 1
+    local selectedIndex = task.indexByTarget["choice:" .. tostring(self._selectedKey)]
+    if selectedIndex == nil and #task.options > 0 then
+      selectedIndex = math.min(previousIndex, #task.options) --[[@as integer]]
+    end
+    ---@type SaveEditorChoiceProjection
+    local cache
+    cache = {
+      query = task.query,
+      revision = assert(self._filteredCache).revision + 1,
+      queryRevision = task.queryRevision,
+      options = task.options,
+      rowTargets = task.rowTargets,
+      indexByTarget = task.indexByTarget,
+      idAt = function(index)
+        return cache.rowTargets[index]
+      end,
+      indexOf = function(targetId)
+        return cache.indexByTarget[targetId]
+      end,
+      rowAt = function(index)
+        return cache.options[index]
+      end,
+    }
+    self._filteredCache = cache
+    self._index = selectedIndex or 0
+    if selectedIndex ~= nil then
+      self._selectedKey = task.options[selectedIndex].key
+    end
+    self._filterTask = nil
+  end
+  return visited
+end
+
+---@param key string
+---@return boolean selected
+function SaveEditorValueEditor:selectChoice(key)
+  assert(self._kind == "choice" and type(key) == "string", "choice selection needs a key")
+  if self._filterTask ~= nil then
+    return false
+  end
+  local targetId = "choice:" .. key
+  local index = assert(self._filteredCache).indexByTarget[targetId]
+  if index == nil then
+    return false
+  end
+  self._index, self._selectedKey = index, key
+  return true
 end
 
 ---@return string[] rowTargets
@@ -356,19 +500,15 @@ function SaveEditorValueEditor:_filteredIndexByTarget()
 end
 
 function SaveEditorValueEditor:_reconcileSelection()
-  local filtered = self:_filteredOptions()
-  for index, option in ipairs(filtered) do
-    if option.key == self._selectedKey then
-      self._index = index
-      return
-    end
-  end
-  if #filtered == 0 then
+  local index = assert(self._filteredCache).indexByTarget["choice:" .. tostring(self._selectedKey)]
+  if index ~= nil then
+    self._index = index
+  elseif #self._filteredCache.options == 0 then
     self._index = 0
-    return
+  else
+    self._index = 1
+    self._selectedKey = self._filteredCache.options[1].key
   end
-  self._index = 1
-  self._selectedKey = filtered[1] and filtered[1].key or nil
 end
 
 function SaveEditorValueEditor:_collectNameResult()
@@ -401,23 +541,23 @@ function SaveEditorValueEditor:snapshot()
       result = self:result(),
     }
   elseif self._kind == "choice" then
-    local options = self:_filteredOptions()
-    local selected
-    for index, option in ipairs(options) do
-      if option.key == self._selectedKey then
-        selected = index
-        break
-      end
-    end
+    local cache = assert(self._filteredCache)
     return {
       kind = "choice",
-      options = options,
-      rowTargets = self:_filteredRowTargets(),
-      indexByTarget = self:_filteredIndexByTarget(),
-      index = selected or 0,
+      revision = cache.revision,
+      queryRevision = self._queryRevision,
+      count = #cache.options,
+      idAt = cache.idAt,
+      indexOf = cache.indexOf,
+      rowAt = cache.rowAt,
+      options = cache.options,
+      rowTargets = cache.rowTargets,
+      indexByTarget = cache.indexByTarget,
+      index = self._index or 0,
       selectedKey = self._selectedKey,
       query = self._query,
-      empty = #options == 0,
+      empty = #cache.options == 0 and self._filterTask == nil,
+      pending = self._filterTask ~= nil,
       result = self:result(),
     }
   end

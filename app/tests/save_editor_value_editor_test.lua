@@ -21,6 +21,12 @@ local function integerEditor(value, minimum, maximum)
   })
 end
 
+local function finishChoiceFilter(editor)
+  while editor:snapshot().pending do
+    editor:update(256)
+  end
+end
+
 function T.direct_decimal_entry_confirms_the_exact_value()
   local editor = integerEditor(2400, 0, 999999)
 
@@ -196,18 +202,106 @@ function T.large_choice_catalog_reuses_its_filtered_order_until_the_query_change
   Assert.isTrue(editor:snapshot().options == opening.options, "browsing never rebuilds the cached order")
   Assert.equal(editor:snapshot().selectedKey, "K00006", "browsing still advances the selection")
   Assert.isTrue(editor:textinput("K000"), "filtering narrows the catalog")
+  finishChoiceFilter(editor)
   local narrowed = editor:snapshot()
   Assert.isFalse(narrowed.options == opening.options, "a changed query rebuilds the filtered order once")
   Assert.isTrue(#narrowed.options < 10000 and #narrowed.options > 0, "the filter narrows without emptying")
   Assert.isTrue(editor:snapshot().options == narrowed.options, "the rebuilt filter is reused while stable")
   Assert.isTrue(editor:press("backspace"), "backspace edits the query")
+  finishChoiceFilter(editor)
   local widened = editor:snapshot()
   Assert.isFalse(widened.options == narrowed.options, "query edits rebuild exactly once")
   Assert.isTrue(editor:snapshot().options == widened.options, "the widened filter is reused while stable")
   Assert.isTrue(editor:press("clear_search"), "clearing restores the catalog")
+  finishChoiceFilter(editor)
   local restored = editor:snapshot()
   Assert.equal(#restored.options, 10000, "clearing restores every logical choice")
   Assert.isTrue(editor:snapshot().options == restored.options, "the restored order is reused while stable")
+end
+
+function T.stable_large_choice_snapshots_and_layout_do_not_walk_the_logical_catalog()
+  local function stableVisits(count)
+    local options = {}
+    for index = 1, count do
+      local key = string.format("K%05d", index)
+      options[index] = { key = key, label = "Choice " .. index }
+    end
+    local editor = SaveEditorValueEditor.new({
+      kind = "choice",
+      value = options[count].key,
+      options = options,
+    })
+    local opening = editor:snapshot()
+    local watched = { [opening.options] = "options", [opening.rowTargets] = "row targets" }
+    local visits = { options = 0, ["row targets"] = 0 }
+    local originalIpairs = ipairs
+    _G.ipairs = function(value)
+      local kind = watched[value]
+      if kind == nil then
+        return originalIpairs(value)
+      end
+      local function nextValue(_, index)
+        index = index + 1
+        local item = value[index]
+        if item == nil then
+          return nil
+        end
+        visits[kind] = visits[kind] + 1
+        return index, item
+      end
+      return nextValue, value, 0
+    end
+    local ok, result = xpcall(function()
+      for _ = 1, 3 do
+        editor:snapshot()
+      end
+      local layout = SaveEditorLayout.compute(
+        {
+          section = "Bag",
+          status = "ready",
+          ready = true,
+          dirty = false,
+          bagRows = {},
+          valueEditor = opening,
+          scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:" .. options[count].key },
+          scrollOffsets = {},
+        },
+        256,
+        192,
+        {
+          lineHeight = 14,
+          measure = function(text)
+            return #text * 7
+          end,
+        }
+      )
+      return layout
+    end, debug.traceback)
+    _G.ipairs = originalIpairs
+    if not ok then
+      error(result, 0)
+    end
+    return visits, result
+  end
+
+  local smallVisits = stableVisits(100)
+  local largeVisits, largeLayout = stableVisits(10000)
+  local total = largeVisits.options + largeVisits["row targets"]
+  local smallTotal = smallVisits.options + smallVisits["row targets"]
+  Assert.isTrue(
+    total <= smallTotal + 8,
+    string.format(
+      "stable work grew with catalog size: 100=%d/%d, 10000=%d/%d",
+      smallVisits.options,
+      smallVisits["row targets"],
+      largeVisits.options,
+      largeVisits["row targets"]
+    )
+  )
+  Assert.isTrue(
+    largeLayout.targets["choice:K10000"] ~= nil and largeLayout.viewports["value:choice"].offset > 0,
+    "the selected logical row near the end remains addressable and visible"
+  )
 end
 
 function T.choice_snapshot_carries_stable_row_identity_for_visible_layout()
@@ -224,9 +318,51 @@ function T.choice_snapshot_carries_stable_row_identity_for_visible_layout()
   Assert.isTrue(editor:snapshot().rowTargets == snapshot.rowTargets, "the row order is reused while stable")
   Assert.isTrue(editor:snapshot().indexByTarget == snapshot.indexByTarget, "the index map is reused while stable")
   editor:textinput("K1")
+  finishChoiceFilter(editor)
   local narrowed = editor:snapshot()
   Assert.isFalse(narrowed.rowTargets == snapshot.rowTargets, "a changed query rebuilds the row identity once")
   Assert.equal(narrowed.indexByTarget[narrowed.rowTargets[1]], 1, "the rebuilt index map stays consistent")
+end
+
+function T.choice_selection_uses_index_membership_without_submitting_or_scanning()
+  Assert.isTrue(loaded)
+  local options = {}
+  for index = 1, 10000 do
+    local key = string.format("K%05d", index)
+    options[index] = { key = key, label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K00001", options = options })
+  local snapshot = editor:snapshot()
+  local sourceOptions = editor._options
+  local scans = 0
+  local originalIpairs = ipairs
+  _G.ipairs = function(value)
+    if value ~= sourceOptions then
+      return originalIpairs(value)
+    end
+    return function(_, index)
+      index = index + 1
+      if value[index] == nil then
+        return nil
+      end
+      scans = scans + 1
+      return index, value[index]
+    end, value, 0
+  end
+  local ok, failure = xpcall(function()
+    Assert.isTrue(type(editor.selectChoice) == "function", "choice owners expose direct indexed selection")
+    Assert.isTrue(editor:selectChoice("K09999"), "a current logical key selects directly")
+    Assert.equal(editor:snapshot().selectedKey, "K09999")
+    Assert.equal(scans, 0, "direct selection does not scan the catalog")
+    Assert.isFalse(editor:selectChoice("unknown"), "an unknown key cannot reuse a stale numeric index")
+    Assert.equal(editor:snapshot().selectedKey, "K09999", "a rejected key leaves selection unchanged")
+    Assert.isNil(editor:result(), "selection remains separate from submission")
+  end, debug.traceback)
+  _G.ipairs = originalIpairs
+  if not ok then
+    error(failure, 0)
+  end
+  Assert.equal(snapshot.selectedKey, "K00001", "selection never mutates its earlier snapshot")
 end
 
 function T.choice_browsing_uses_the_full_filtered_sequence()
@@ -300,6 +436,7 @@ function T.choice_filter_keeps_the_opening_identity_visible_and_recovers_from_no
   editor:textinput("no matching choice")
   local backspaceRecovered = editor:press("backspace")
   local clearRecovered = editor:press("clear_search")
+  finishChoiceFilter(editor)
   local recovered = editor:snapshot()
   local allOptionsReturned = #recovered.options == 24 and recovered.query == "" and recovered.selectedKey == "K18"
   local selected = editor:submit()
@@ -395,9 +532,11 @@ function T.cleared_choice_filter_restores_the_opening_selection_without_publishi
   end
   local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K18", options = options })
   Assert.isTrue(editor:textinput("no matching choice"), "typing filters the choice rows")
+  finishChoiceFilter(editor)
   Assert.deepEqual(editor:snapshot().options, {}, "a query without matches leaves zero rows")
   Assert.isNil(editor:result(), "filtering publishes no result")
   Assert.isTrue(editor:press("clear_search"), "Delete clears the choice query")
+  finishChoiceFilter(editor)
   local recovered = editor:snapshot()
   Assert.equal(recovered.query, "")
   Assert.equal(#recovered.options, 24, "clearing restores every row")
@@ -417,6 +556,7 @@ function T.multibyte_choice_query_backspace_removes_one_glyph_without_publishing
   Assert.isTrue(editor:textinput("é"), "typing accepts a multibyte glyph")
   Assert.equal(editor:snapshot().query, "é")
   Assert.isTrue(editor:press("backspace"), "Backspace removes the complete multibyte glyph")
+  finishChoiceFilter(editor)
   Assert.equal(editor:snapshot().query, "", "the query is empty after removing its only glyph")
   Assert.equal(#editor:snapshot().options, 8, "the cleared query restores every row")
   Assert.isNil(editor:result(), "query edits publish no result")

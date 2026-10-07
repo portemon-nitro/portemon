@@ -98,6 +98,8 @@ local function newContext(view, width, height, metrics)
     partyMoves = nil,
     partyPageLabel = nil,
     focusableSet = {},
+    rowMarkers = {},
+    rowLabelRects = {},
     shellWidth = shellWidth,
     shellX = shellX,
     shell = rect(shellX, 0, shellWidth, height),
@@ -193,6 +195,7 @@ local function registerList(ctx, id, viewportId, resolved, rowTargets, query, in
     -- reference; only visible rows below gain geometry and focus records.
     rowTargets = rowTargets,
     indexByTarget = indexByTarget,
+    cursorTarget = ctx.view.listCursors and ctx.view.listCursors[id] or nil,
     filterable = true,
     query = query or "",
     empty = #rowTargets == 0,
@@ -260,14 +263,13 @@ local function buildLocationMapList(ctx)
   local metrics, compactRowExtent = ctx.metrics, ctx.compactRowExtent
   local location = assert(view.location, "Location needs the headless service snapshot")
   local locationNav = assert(view.locationNavigation, "Location needs controller navigation state")
-  local maps = assert(location.maps, "Location needs cached structural map summaries")
-  local mapRowTargets = assert(location.mapRowTargets, "the Location map list carries its cached logical row order")
-  assert(#maps == #mapRowTargets, "map payloads and row order describe the same logical rows")
+  local mapModel = assert(location.mapModel, "Location needs its indexed map projection")
+  local mapRowTargets = mapModel.rowTargets
   local storedMapOffset = locationNav.mapOffset or 0
   local mapBounds = rect(contentX, contentTop, innerWidth, math.max(1, contentBottom - contentTop))
   local mapList = SaveEditorList.resolve({
     bounds = mapBounds,
-    rowCount = #maps,
+    rowCount = mapModel.count,
     rowHeight = compactRowExtent,
     gap = 0,
     maxWidth = innerWidth,
@@ -284,29 +286,36 @@ local function buildLocationMapList(ctx)
     mapList,
     mapRowTargets,
     view.query,
-    location.mapIndexByTarget
+    mapModel.indexByTarget
   )
+  ctx.lists["location:map-list"].pending = mapModel.pending
   local mapScroll =
-    makeViewport(mapViewport, mapOffset, mapList.contentHeight, compactRowExtent, 0, #maps, mapRowTargets)
+    makeViewport(mapViewport, mapOffset, mapList.contentHeight, compactRowExtent, 0, mapModel.count, mapRowTargets)
   mapScroll.visibleTargets = {}
   ctx.viewports["location:map-list"] = mapScroll
   for _, row in ipairs(mapList.rows) do
-    local map = assert(maps[row.index], "visible map rows resolve to their logical payload")
-    local id = assert(mapRowTargets[row.index], "visible map rows keep their logical identity")
+    local map = assert(mapModel.rowAt(row.index), "visible map rows resolve to their logical payload")
+    local id = assert(mapModel.idAt(row.index), "visible map rows keep their logical identity")
     ctx.listRowRoles[id] = "list"
     local y = row.rect.y - mapOffset
     ctx.targets[id] = rect(row.rect.x, y, row.rect.width, compactRowExtent - 2)
+    ctx.rowMarkers[id] = rect(row.markerRect.x, row.markerRect.y - mapOffset, row.markerRect.width, row.markerRect.height)
+    ctx.rowLabelRects[id] = rect(row.markerRect.x + 6, y + 3, row.rect.width * 0.58 - 6, compactRowExtent - 6)
     ctx.focusPositions[id] = rect(row.rect.x, y, row.rect.width, row.rect.height)
     addFocusable(ctx, id)
     mapScroll.visibleTargets[#mapScroll.visibleTargets + 1] = id
+    if mapModel.pending then
+      ctx.disabledTargets[id] = true
+    end
     ctx.rows[#ctx.rows + 1] = {
       role = "list",
       listSurface = true,
       targetId = id,
       label = map.displayName,
       value = map.section,
-      labelRect = rect(row.rect.x + 6, y + 3, row.rect.width * 0.58, compactRowExtent - 6),
+      labelRect = ctx.rowLabelRects[id],
       valueRect = rect(row.rect.x + row.rect.width * 0.62, y + 3, row.rect.width * 0.34, compactRowExtent - 6),
+      muted = mapModel.pending,
     }
   end
 end
@@ -409,15 +418,14 @@ local function buildProgress(ctx)
   local contentX, contentTop, contentBottom, innerWidth =
     ctx.contentX, ctx.contentTop, ctx.contentBottom, ctx.innerWidth
   local metrics, compactRowExtent = ctx.metrics, ctx.compactRowExtent
-  local flags = view.flagRows or {}
-  local flagRowTargets = assert(view.flagRowTargets, "the Progress list carries its cached logical row order")
-  assert(#flags == #flagRowTargets, "flag payloads and row order describe the same logical rows")
+  local flagModel = assert(view.flagModel, "Progress needs its indexed flag projection")
+  local flagRowTargets = flagModel.rowTargets
   local storedFlagOffset = view.scrollOffsets and view.scrollOffsets.flags or 0
   local bodyTop = contentTop + #ctx.rows * ctx.rowHeight
   local bodyHeight = math.max(0, contentBottom - bodyTop)
   local flagList = SaveEditorList.resolve({
     bounds = rect(contentX, bodyTop, innerWidth, bodyHeight),
-    rowCount = #flags,
+    rowCount = flagModel.count,
     rowHeight = compactRowExtent,
     gap = 0,
     maxWidth = innerWidth,
@@ -429,21 +437,30 @@ local function buildProgress(ctx)
   local contentExtent = flagList.contentHeight
   ctx.listSurfaces[#ctx.listSurfaces + 1] = flagList.surface
   local flagViewport = registerList(ctx, "flags", "flags", flagList, flagRowTargets, view.query, view.flagIndexByTarget)
-  local flagScroll = makeViewport(flagViewport, flagOffset, contentExtent, compactRowExtent, 0, #flags, flagRowTargets)
+  ctx.lists.flags.pending = flagModel.pending
+  local flagScroll = makeViewport(flagViewport, flagOffset, contentExtent, compactRowExtent, 0, flagModel.count, flagRowTargets)
   flagScroll.visibleTargets = {}
   ctx.viewports.flags = flagScroll
   for _, row in ipairs(flagList.rows) do
-    local flag = assert(flags[row.index], "visible flag rows resolve to their logical payload")
-    local id = assert(flagRowTargets[row.index], "visible flag rows keep their logical identity")
+    local flag = assert(flagModel.rowAt(row.index), "visible flag rows resolve to their logical payload")
+    local id = assert(flagModel.idAt(row.index), "visible flag rows keep their logical identity")
     ctx.listRowRoles[id] = "toggle"
     local y = row.rect.y - flagOffset
     ctx.targets[id] = rect(row.rect.x, y, row.rect.width, compactRowExtent - 2)
+    ctx.rowMarkers[id] = rect(row.markerRect.x, row.markerRect.y - flagOffset, row.markerRect.width, row.markerRect.height)
+    ctx.rowLabelRects[id] = rect(row.markerRect.x + 6, y + 3, row.rect.width - 18, compactRowExtent - 6)
     ctx.focusPositions[id] = rect(row.rect.x, y, row.rect.width, compactRowExtent - 2)
     addFocusable(ctx, id)
     flagScroll.visibleTargets[#flagScroll.visibleTargets + 1] = id
-    placeRow(ctx, "toggle", id, flag.name, flag.value, true, y, compactRowExtent)
+    if flagModel.pending then
+      ctx.disabledTargets[id] = true
+    end
+    placeRow(ctx, "toggle", id, flag.name, flag.value, not flagModel.pending, y, compactRowExtent)
     ctx.rows[#ctx.rows].listSurface = true
     ctx.rows[#ctx.rows].displayName = flag.displayName
+    ctx.rows[#ctx.rows].labelRect = ctx.rowLabelRects[id]
+    ctx.rows[#ctx.rows].muted = flagModel.pending
+    ctx.rows[#ctx.rows].muted = flagModel.pending
   end
 end
 
@@ -874,7 +891,7 @@ local function buildChoiceScope(ctx)
   local function resolveChoice(offset)
     return SaveEditorList.resolve({
       bounds = choiceBounds,
-      rowCount = #dialog.options,
+      rowCount = dialog.count,
       rowHeight = compactRowExtent,
       gap = 0,
       maxWidth = innerWidth,
@@ -888,9 +905,10 @@ local function buildChoiceScope(ctx)
   local contentExtent = choiceList.contentHeight
   ctx.listSurfaces[#ctx.listSurfaces + 1] = choiceList.surface
   local rowTargets = assert(dialog.rowTargets, "the choice dialog carries its cached logical row order")
-  assert(#dialog.options == #rowTargets, "choice payloads and row order describe the same logical rows")
+  assert(dialog.count == #rowTargets, "choice projection and row order describe the same logical rows")
   local viewport =
     registerList(ctx, "value:choice", "value:choice", choiceList, rowTargets, dialog.query, dialog.indexByTarget)
+  ctx.lists["value:choice"].pending = dialog.pending
   local selectedIndex = dialog.index ~= 0 and dialog.index or nil
   if selectedIndex ~= nil and dialog.selectedKey ~= nil then
     assert(
@@ -907,14 +925,19 @@ local function buildChoiceScope(ctx)
   if offset ~= resolvedOffset then
     choiceList = resolveChoice(offset)
   end
-  local choiceScroll = makeViewport(viewport, offset, contentExtent, compactRowExtent, 0, #dialog.options, rowTargets)
+  local choiceScroll = makeViewport(viewport, offset, contentExtent, compactRowExtent, 0, dialog.count, rowTargets)
   choiceScroll.visibleTargets = {}
   ctx.viewports["value:choice"] = choiceScroll
   for _, row in ipairs(choiceList.rows) do
-    local id = assert(rowTargets[row.index], "visible choice rows keep their logical identity")
+    local id = assert(dialog.idAt(row.index), "visible choice rows keep their logical identity")
     addFocusable(ctx, id)
     ctx.focusPositions[id] = rect(row.rect.x, row.rect.y - offset, row.rect.width, row.rect.height - 1)
     ctx.targets[id] = rect(row.rect.x, row.rect.y - offset, row.rect.width, row.rect.height - 1)
+    ctx.rowMarkers[id] = rect(row.markerRect.x, row.markerRect.y - offset, row.markerRect.width, row.markerRect.height)
+    ctx.rowLabelRects[id] = rect(row.markerRect.x + 6, row.rect.y - offset + 3, row.rect.width - 18, row.rect.height - 6)
+    if dialog.pending then
+      ctx.disabledTargets[id] = true
+    end
     choiceScroll.visibleTargets[#choiceScroll.visibleTargets + 1] = id
   end
   local footerWidth = math.max(1, math.floor(innerWidth / 2))
@@ -922,7 +945,7 @@ local function buildChoiceScope(ctx)
   ctx.targets.cancel = rect(contentX + footerWidth, contentBottom - 34, innerWidth - footerWidth, 34)
   addFocusable(ctx, "confirm")
   addFocusable(ctx, "cancel")
-  if #dialog.options == 0 then
+  if dialog.count == 0 or dialog.pending then
     ctx.disabledTargets.confirm = true
   end
 end
@@ -1654,6 +1677,8 @@ local function publishPlan(ctx)
     scrollOffset = view.scrollOffset or 0,
     viewports = ctx.viewports,
     lists = ctx.lists,
+    rowMarkers = ctx.rowMarkers,
+    rowLabelRects = ctx.rowLabelRects,
     scrollOwner = scrollOwner,
     scopeId = ctx.scope.id,
     scopeEpoch = ctx.scope.epoch,

@@ -9,6 +9,7 @@ local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
 local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 
 local T = {}
 
@@ -545,6 +546,18 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
   end
   view.flagRowTargets = rowTargets
   view.flagIndexByTarget = indexByTarget
+  view.flagRowAt = function(index) return view.flagRows[index] end
+  view.flagModel = {
+    revision = 1,
+    queryRevision = 0,
+    pending = false,
+    count = #rowTargets,
+    rowTargets = rowTargets,
+    indexByTarget = indexByTarget,
+    idAt = function(index) return rowTargets[index] end,
+    indexOf = function(targetId) return indexByTarget[targetId] end,
+    rowAt = view.flagRowAt,
+  }
 
   local layout = computeLayout(view, 800, 600)
   local middleIndex = 600
@@ -581,6 +594,8 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
     dirty = view.dirty,
     flagFilter = view.flagFilter,
     flagRows = view.flagRows,
+    flagRowAt = view.flagRowAt,
+    flagModel = view.flagModel,
     flagRowTargets = view.flagRowTargets,
     flagIndexByTarget = view.flagIndexByTarget,
     scrollOffsets = { flags = (middleIndex - 2) * layout.viewports.flags.rowExtent },
@@ -1004,6 +1019,162 @@ function T.shared_pp_arithmetic_drives_items_deposit_and_editors()
     Moves.maxPp(10, 3),
     "the move-child editor offers the shared maximum"
   )
+function T.bag_snapshot_reuses_catalog_and_pocket_metadata_until_revision_changes()
+  local pocket = next(ItemAssetSchema.POCKETS)
+  local counts = { itemKeys = 0, item = 0, pocket = 0, bagSnapshot = 0 }
+  local catalog = {
+    itemKeyIterator = function()
+      local key = 0
+      return function()
+        key = key + 1
+        if key > 8 then
+          return nil
+        end
+        return ({ "NONE", "ITEM_ONE", "ITEM_TWO", "ITEM_THREE", "ITEM_FOUR", "ITEM_FIVE", "ITEM_SIX", "ITEM_SEVEN" })[key]
+      end
+    end,
+    itemKeys = function()
+      counts.itemKeys = counts.itemKeys + 1
+      return { "NONE", "ITEM_ONE", "ITEM_TWO", "ITEM_THREE", "ITEM_FOUR", "ITEM_FIVE", "ITEM_SIX", "ITEM_SEVEN" }
+    end,
+    item = function(_, key)
+      counts.item = counts.item + 1
+      return { name = key == "NONE" and "None" or key, icon = key, pocket = pocket, nativeId = counts.item }
+    end,
+    pocket = function(_, key)
+      counts.pocket = counts.pocket + 1
+      return { nativeId = key == pocket and 1 or 2, maxQuantity = 99 }
+    end,
+  }
+  local revision, quantity = 1, 2
+  local session = {
+    revision = function() return revision end,
+    bagSnapshot = function()
+      counts.bagSnapshot = counts.bagSnapshot + 1
+      local entries = {}
+      for index = 1, 7 do
+        entries[index] = { item = "ITEM_" .. ({ "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN" })[index], quantity = index == 1 and quantity or index }
+      end
+      return entries
+    end,
+  }
+  local manifest = {
+    interactive = {
+      pocketTabs = { rects = {}, strips = { [pocket] = {} } },
+      focus = { tabs = { visual = {}, targets = {} } },
+      overlays = { quantity = { visuals = {} } },
+    },
+  }
+  local state = setmetatable({
+    dependencies = { context = { itemCatalog = catalog }, bagManifest = manifest },
+    session = session,
+    controller = { bagPocket = pocket, bagPage0 = 0, bagItemKey = "ITEM_ONE" },
+  }, SaveEditorState)
+  while state._bagCatalogMetadata == nil do
+    state:_advanceBagCatalog(256)
+  end
+  local first = state:_bagView()
+  local firstCounts = { itemKeys = counts.itemKeys, item = counts.item, pocket = counts.pocket }
+  local second = state:_bagView()
+  Assert.equal(counts.itemKeys, firstCounts.itemKeys, "stable snapshots never rescan catalog keys")
+  Assert.equal(counts.item, firstCounts.item, "stable snapshots reuse item descriptors")
+  Assert.equal(counts.pocket, firstCounts.pocket, "stable snapshots reuse pocket descriptors")
+  Assert.equal(counts.bagSnapshot, 1, "an unchanged session revision reuses its pocket rows")
+  Assert.isTrue(rawequal(first.bagRows, second.bagRows), "stable snapshots retain cached row metadata")
+
+  state.controller.bagPage0 = 1
+  local secondPage = state:_bagView()
+  Assert.equal(secondPage.bagPageRows[1].item, "ITEM_SEVEN", "page changes materialize the selected six-row slice")
+  Assert.equal(counts.bagSnapshot, 1, "changing pages does not reread the pocket snapshot")
+  Assert.isTrue(rawequal(first.bagRows, secondPage.bagRows), "page changes retain the cached row metadata")
+
+  quantity = 3
+  revision = revision + 1
+  state.controller.bagPage0 = 0
+  local changed = state:_bagView()
+  Assert.equal(counts.itemKeys, firstCounts.itemKeys, "a bag revision does not rebuild catalog availability")
+  Assert.equal(changed.bagPageRows[1].quantity, 3, "the next revision materializes current quantities")
+  Assert.equal(first.bagPageRows[1].quantity, 2, "an earlier page keeps its published quantity")
+  Assert.equal(counts.bagSnapshot, 2, "a new session revision rebuilds the selected pocket once")
+end
+
+function T.first_bag_snapshot_does_not_scan_or_materialize_the_item_catalog()
+  local pocket = next(ItemAssetSchema.POCKETS)
+  local catalogVisits, itemReads, iteratorCalls = 0, 0, 0
+  local catalog = {
+    itemKeyIterator = function()
+      iteratorCalls = iteratorCalls + 1
+      local key = 0
+      return function()
+        key = key + 1
+        if key > 600 then
+          return nil
+        end
+        catalogVisits = catalogVisits + 1
+        return "ITEM_" .. key
+      end
+    end,
+    itemKeys = function()
+      error("Bag snapshots must not request a complete item-key list")
+    end,
+    item = function(_, key)
+      itemReads = itemReads + 1
+      return { name = key, pocket = pocket, nativeId = itemReads }
+    end,
+    pocket = function()
+      return { nativeId = 1 }
+    end,
+  }
+  local state = setmetatable({
+    dependencies = {
+      context = { itemCatalog = catalog },
+      bagManifest = {
+        interactive = {
+          pocketTabs = { rects = {}, strips = { [pocket] = {} } },
+          focus = { tabs = { visual = {}, targets = {} } },
+          overlays = { quantity = { visuals = {} } },
+        },
+      },
+    },
+    session = {
+      revision = function()
+        return 1
+      end,
+      bagSnapshot = function()
+        return {}
+      end,
+    },
+    controller = { section = "Bag", bagPocket = pocket, bagPage0 = 0 },
+    tickRemainder = 0,
+    inputTick = 0,
+    numberHold = nil,
+    valueEditor = nil,
+    disposed = false,
+    status = "ready",
+  }, SaveEditorState)
+
+  local initial = state:_bagView()
+  Assert.equal(iteratorCalls, 0, "the first snapshot does not start catalog enumeration")
+  Assert.equal(catalogVisits, 0, "the first snapshot does not visit item keys")
+  Assert.equal(itemReads, 0, "the first snapshot does not materialize item definitions")
+  Assert.equal(#initial.bagRows, 0, "the pending catalog publishes an empty Bag projection")
+
+  local fieldInput = require("libs.hgss.src.field.FieldInput")
+  state.fieldInput = fieldInput.new()
+  state:update(0)
+  Assert.isTrue(catalogVisits > 0 and catalogVisits <= 256, "one update prepares only its row budget")
+  Assert.isTrue(itemReads > 0 and itemReads <= 256, "one update materializes only its row budget")
+  for _ = 1, 2 do
+    state:_advanceBagCatalog(256)
+  end
+  Assert.isNil(state._bagCatalogMetadata, "catalog enumeration does not synchronously sort and publish all options")
+  while state._bagCatalogMetadata == nil do
+    local before = catalogVisits
+    state:update(0)
+    Assert.isTrue(catalogVisits - before <= 256, "later updates keep catalog enumeration bounded")
+  end
+  Assert.equal(catalogVisits, 600, "the preparation eventually visits every item key")
+  Assert.isTrue(state:_bagView().bagAddEnabled, "the completed catalog publishes its pocket options")
 end
 
 return { tests = T }

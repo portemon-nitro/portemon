@@ -683,6 +683,12 @@ local function openBagEditor(fixture, host)
     error(stateError, 0)
   end
   assert(state).controller:setSection("Bag")
+  local catalogUpdates = 0
+  while state._bagCatalogMetadata == nil do
+    catalogUpdates = catalogUpdates + 1
+    Assert.isTrue(catalogUpdates <= 5000, "the bounded Bag catalog reaches readiness")
+    state:update(0)
+  end
   local potionPocket = assert(state.dependencies.context.itemCatalog:item("POTION")).pocket
   assert(state).controller:selectBagPocket(potionPocket)
   local seeded = assert(state).session:setBagQuantity("POTION", 20)
@@ -700,7 +706,8 @@ function T.tests.bag_item_actions_and_quantity_commit_are_staged_until_outer_sav
     withoutRendering(function()
       local initial = state.session:captureCandidate()
       local view = state:view()
-      local row = assert(view.bagRows[1], "the production save contains a Bag item to edit")
+      local row = assert(view.bagPageRows[1], "the production Bag page publishes a card to edit")
+      local item = assert(view.bagRows[1], "the production Bag catalog supplies item limits")
       local originalQuantity = row.quantity
       local itemTarget = "bag:item:" .. row.item
 
@@ -722,12 +729,15 @@ function T.tests.bag_item_actions_and_quantity_commit_are_staged_until_outer_sav
       local expected = math.max(1, originalQuantity)
       state:keypressed("up")
       state:keyreleased("up")
-      expected = math.min(expected + 1, row.maxQuantity or 999)
+      expected = math.min(expected + 1, item.maxQuantity or 999)
       Assert.equal(state:view().valueEditor.value, expected, "Up changes transient quantity by one")
-      state:keypressed("right")
-      state:keyreleased("right")
-      expected = math.min(expected + 10, row.maxQuantity or 999)
-      Assert.equal(state:view().valueEditor.value, expected, "Right changes transient quantity by ten")
+      state:keypressed("left")
+      state:keyreleased("left")
+      Assert.equal(state:view().valueEditor.value, expected, "Left selects the tens place")
+      state:keypressed("up")
+      state:keyreleased("up")
+      expected = math.min(expected + 10, item.maxQuantity or 999)
+      Assert.equal(state:view().valueEditor.value, expected, "Up adjusts the selected tens place")
       state:keypressed("escape")
       Assert.equal(
         state.session:bagSnapshot(view.bagPocket)[1].quantity,
@@ -783,7 +793,13 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
       state:textinput("POTION")
       choice = state:view().valueEditor
       Assert.equal(choice.query, "POTION", "typing filters the Add catalog")
-      state:keypressed("return")
+      local updates = 0
+      while choice.pending do
+        updates = updates + 1
+        Assert.isTrue(updates <= 5000, "the bounded Add query publishes a result")
+        state:update(0)
+        choice = assert(state:view().valueEditor)
+      end
       state:keypressed("return")
       local quantity = assert(state:view().valueEditor, "choosing an item opens quantity entry")
       local expected = assert(quantity.parsedValue or quantity.value) + 1
@@ -791,17 +807,27 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
       state:keyreleased("up")
       quantity = state:view().valueEditor
       Assert.equal(quantity.parsedValue or quantity.value, expected, "Up changes transient quantity by one")
-      state:keypressed("right")
-      state:keyreleased("right")
+      state:keypressed("left")
+      state:keyreleased("left")
+      Assert.equal(quantity.parsedValue or quantity.value, expected, "Left selects the tens place")
+      state:keypressed("up")
+      state:keyreleased("up")
       quantity = state:view().valueEditor
-      Assert.equal(quantity.parsedValue or quantity.value, expected + 10, "Right changes transient quantity by ten")
+      Assert.equal(quantity.parsedValue or quantity.value, expected + 10, "Up adjusts the selected tens place")
       state:keypressed("escape")
       Assert.deepEqual(state.session:captureCandidate(), initial, "canceling Add quantity leaves inventory unchanged")
       Assert.equal(state:view().focus, "bag:add", "cancel returns to the separate Add control")
 
       activateTarget(state, "bag:add")
       state:textinput("POTION")
-      state:keypressed("return")
+      local updates = 0
+      local choice = assert(state:view().valueEditor)
+      while choice.pending do
+        updates = updates + 1
+        Assert.isTrue(updates <= 5000, "the bounded Add query publishes a result")
+        state:update(0)
+        choice = assert(state:view().valueEditor)
+      end
       state:keypressed("return")
       state:keypressed("return")
       Assert.equal(

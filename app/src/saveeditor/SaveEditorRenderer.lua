@@ -372,6 +372,29 @@ local function drawFocusRing(renderer, rectValue, radius)
   graphics.setColor(1, 1, 1, 1)
 end
 
+local function drawRowMarker(renderer, rectValue, active)
+  local graphics = renderer.graphics
+  local savedWidth = graphics.getLineWidth()
+  if active then
+    setColor(graphics, renderer.skin.cards.normal.selectedRim)
+  else
+    local muted = renderer.skin.text.hint.foreground
+    graphics.setColor(muted.r / 255, muted.g / 255, muted.b / 255, 1)
+  end
+  graphics.setLineWidth(2)
+  graphics.rectangle(
+    "line",
+    rectValue.x + 1,
+    rectValue.y + 1,
+    rectValue.width - 2,
+    rectValue.height - 2,
+    math.min(6, rectValue.height / 2),
+    math.min(6, rectValue.height / 2)
+  )
+  graphics.setLineWidth(savedWidth)
+  graphics.setColor(1, 1, 1, 1)
+end
+
 local function optionRole(disabled, semantic, option, active)
   if disabled then
     return "disabled"
@@ -490,10 +513,27 @@ local function drawButtonControl(renderer, rectValue, label, active, focused, di
   return drawCompactControl(renderer, rectValue, fitted, active, focused, disabled, semantic, option)
 end
 
-local function drawListRow(renderer, rectValue, label, focused, value, labelRect, valueRect)
+local function drawListRow(
+  renderer,
+  rectValue,
+  label,
+  focused,
+  value,
+  labelRect,
+  valueRect,
+  markerRect,
+  remembered,
+  muted
+)
   local labelBounds = labelRect or { x = rectValue.x + 6, y = rectValue.y + 3, width = rectValue.width - 12 }
   local labelY = labelBounds.y or rectValue.y + 3
-  drawBodyText(renderer, fitText(renderer, label, labelBounds.width / BODY_TEXT_SCALE), labelBounds.x, labelY)
+  drawBodyText(
+    renderer,
+    fitText(renderer, label, labelBounds.width / BODY_TEXT_SCALE),
+    labelBounds.x,
+    labelY,
+    muted and "hint" or nil
+  )
   if value ~= nil then
     local valueText = tostring(value)
     local bounds = valueRect or { x = rectValue.x, y = rectValue.y + 3, width = rectValue.width * 0.35 }
@@ -502,9 +542,24 @@ local function drawListRow(renderer, rectValue, label, focused, value, labelRect
     local x = valueRect and bounds.x or rectValue.x + rectValue.width - fittedWidth - 6
     drawBodyText(renderer, fitted, x, bounds.y or rectValue.y + 3, "hint")
   end
-  if focused then
+  if markerRect ~= nil then
+    if focused then
+      drawRowMarker(renderer, markerRect, true)
+    elseif remembered then
+      drawRowMarker(renderer, markerRect, false)
+    end
+  elseif focused then
     drawFocusRing(renderer, rectValue, 0)
   end
+end
+
+local function findListForTarget(lists, targetId)
+  for _, list in pairs(lists or {}) do
+    if list.indexByTarget ~= nil and list.indexByTarget[targetId] ~= nil then
+      return list
+    end
+  end
+  return nil
 end
 
 fitText = function(renderer, value, width)
@@ -730,7 +785,19 @@ local function paintNavigation(ctx)
         label = fitText(renderer, label, target.width - 22)
       end
       if navigation.role == "list" then
-        drawListRow(renderer, target, label, isFocusedVisible(view, navigation.targetId))
+        local list = findListForTarget(layout.lists, navigation.targetId)
+        drawListRow(
+          renderer,
+          target,
+          label,
+          isFocusedVisible(view, navigation.targetId),
+          nil,
+          nil,
+          nil,
+          layout.rowMarkers[navigation.targetId],
+          list ~= nil and list.cursorTarget == navigation.targetId,
+          list ~= nil and list.pending == true
+        )
       else
         drawButtonControl(
           renderer,
@@ -757,6 +824,7 @@ local function paintRows(ctx)
       local target = assert(layout.targets[row.targetId])
       LogicalSurface.clip(graphics, target.clip or rect, function()
         if row.listSurface then
+          local list = findListForTarget(layout.lists, row.targetId)
           drawListRow(
             renderer,
             rect,
@@ -764,7 +832,10 @@ local function paintRows(ctx)
             isFocusedVisible(view, row.targetId),
             row.valueText or row.value,
             row.labelRect,
-            row.valueRect
+            row.valueRect,
+            layout.rowMarkers[row.targetId],
+            list ~= nil and list.cursorTarget == row.targetId,
+            row.muted or list ~= nil and list.pending == true
           )
           return
         end
@@ -1144,11 +1215,24 @@ local function paintValueEditor(ctx)
       local viewport = assert(layout.viewports["value:choice"])
       LogicalSurface.clip(graphics, viewport.clip, function()
         for index = viewport.firstIndex, viewport.lastIndex do
-          local option = dialog.options[index]
+          local option = dialog.rowAt(index)
           if option ~= nil then
             local rect = targetRect(layout, "choice:" .. option.key)
             if rect then
-              drawListRow(renderer, rect, option.label, isFocusedVisible(view, "choice:" .. option.key))
+              local id = "choice:" .. option.key
+              local list = assert(layout.lists["value:choice"])
+              drawListRow(
+                renderer,
+                rect,
+                option.label,
+                isFocusedVisible(view, id),
+                nil,
+                layout.rowLabelRects[id],
+                nil,
+                layout.rowMarkers[id],
+                list.cursorTarget == id,
+                dialog.pending == true
+              )
             end
           end
         end
@@ -1263,11 +1347,8 @@ local function paintListHints(ctx)
     local hint = list.hintRect
     if hint ~= nil and hint.height > 0 then
       local query = list.query or ""
-      local hintText = query == "" and "Type to filter" or ("Filter: " .. query)
+      local hintText = list.pending and "Filtering…" or query == "" and "Type to filter" or ("Filter: " .. query)
       drawBodyText(renderer, fitText(renderer, hintText, hint.width / BODY_TEXT_SCALE), hint.x, hint.y, "hint")
-    end
-    if isFocusedVisible(view, list.targetId) and list.surfaceRect ~= nil then
-      drawFocusRing(renderer, list.surfaceRect, 0)
     end
   end
 end

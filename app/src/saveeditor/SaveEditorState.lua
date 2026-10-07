@@ -24,6 +24,144 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 
+---@class SaveEditorBagItemMetadata
+---@field item string
+---@field label string
+---@field iconKey string?
+
+---@class SaveEditorFlagRow
+---@field name string
+---@field displayName string
+---@field id integer
+---@field targetId string
+
+---@class SaveEditorBagOption
+---@field key string
+---@field label string
+
+---@generic T
+---@class SaveEditorIncrementalSort<T>
+---@field source T[]
+---@field destination T[]
+---@field less fun(left: T, right: T): boolean
+---@field width integer
+---@field left integer
+---@field leftEnd integer?
+---@field rightEnd integer?
+---@field i integer?
+---@field j integer?
+---@field output integer
+
+---@generic T
+---@param rows T[]
+---@param less fun(left: T, right: T): boolean
+---@return SaveEditorIncrementalSort<T>
+local function newIncrementalSort(rows, less)
+  return {
+    source = rows,
+    destination = {},
+    less = less,
+    width = 1,
+    left = 1,
+    output = 1,
+  }
+end
+
+---@generic T
+---@param sort SaveEditorIncrementalSort<T>
+---@param budget integer
+---@return integer, boolean
+local function advanceIncrementalSort(sort, budget)
+  local used = 0
+  local count = #sort.source
+  while used < budget and sort.width < count do
+    if sort.left > count then
+      sort.source, sort.destination = sort.destination, sort.source
+      sort.width = sort.width * 2
+      sort.left = 1
+      sort.output = 1
+      if sort.width >= count then
+        return used, true
+      end
+    end
+    if sort.leftEnd == nil then
+      sort.leftEnd = math.min(sort.left + sort.width - 1, count)
+      sort.rightEnd = math.min(sort.left + sort.width * 2 - 1, count)
+      sort.i = sort.left
+      sort.j = sort.leftEnd + 1
+    end
+    local i = assert(sort.i)
+    local j = assert(sort.j)
+    local leftEnd = assert(sort.leftEnd)
+    local rightEnd = assert(sort.rightEnd)
+    if i > leftEnd and j > rightEnd then
+      sort.left = rightEnd + 1
+      sort.leftEnd = nil
+      sort.rightEnd = nil
+      sort.i = nil
+      sort.j = nil
+    else
+      local takeLeft = i <= leftEnd and (j > rightEnd or not sort.less(sort.source[j], sort.source[i]))
+      if takeLeft then
+        sort.destination[sort.output] = sort.source[i]
+        sort.i = i + 1
+      else
+        sort.destination[sort.output] = sort.source[j]
+        sort.j = j + 1
+      end
+      sort.output = sort.output + 1
+      used = used + 1
+    end
+  end
+  return used, sort.width >= count
+end
+
+---@class SaveEditorBagCatalogMetadata
+---@field catalog ItemCatalog
+---@field pockets { key: string }[]
+---@field pocketByKey table<string, table<string, unknown>>
+---@field optionsByPocket table<string, { key: string, label: string }[]>
+---@field itemByKey table<string, SaveEditorBagItemMetadata>
+
+---@class SaveEditorBagCatalogTask
+---@field catalog ItemCatalog
+---@field nextItemKey fun(): string?
+---@field pockets { key: string }[]
+---@field pocketByKey table<string, table<string, unknown>>
+---@field optionsByPocket table<string, { key: string, label: string }[]>
+---@field itemByKey table<string, SaveEditorBagItemMetadata>
+---@field nativeIdByKey table<string, integer>
+---@field sortPocketIndex integer
+---@field sort SaveEditorIncrementalSort<SaveEditorBagOption>?
+---@field stage "scan"|"sort"
+
+---@class SaveEditorFlagCatalogTask
+---@field iterator fun(state: table<string, integer>, key: string?): string?, integer?
+---@field state table<string, integer>
+---@field key string?
+---@field rows SaveEditorFlagRow[]
+---@field stage "scan"|"sort"|"index"
+---@field sort SaveEditorIncrementalSort<SaveEditorFlagRow>?
+---@field rowTargets string[]
+---@field indexByTarget table<string, integer>
+---@field indexCursor integer
+
+---@class SaveEditorBagPageRow
+---@field item string
+---@field label string
+---@field iconKey string?
+---@field quantity integer
+
+---@class SaveEditorBagProjection
+---@field catalog ItemCatalog
+---@field pocket string
+---@field revision integer
+---@field rows SaveEditorBagItemMetadata[]
+---@field rowByItem table<string, SaveEditorBagItemMetadata>
+---@field quantityByItem table<string, integer>
+---@field pageRows table<integer, SaveEditorBagPageRow[]>
+---@field pageCount integer
+
 ---@class SaveEditorLocationService
 ---@field listMaps fun(self: SaveEditorLocationService): table[]
 ---@field mapSummaries fun(self: SaveEditorLocationService): table[]
@@ -34,6 +172,47 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field snapshot fun(self: SaveEditorLocationService): table<string, unknown>
 ---@field resolve fun(self: SaveEditorLocationService, mapId: integer, fieldX: integer, fieldZ: integer, expectedGeneration: integer): SaveEditorLocation?, table<string, unknown>
 ---@field dispose fun(self: SaveEditorLocationService)
+
+---@class SaveEditorListFilterRow
+---@field targetId string
+---@field name string?
+---@field displayName string
+---@field symbol string?
+---@field section string?
+---@field mapId integer?
+---@field id integer?
+---@field value boolean?
+
+---@class SaveEditorIndexedListCache
+---@field query string
+---@field revision integer
+---@field queryRevision integer
+---@field rows SaveEditorListFilterRow[]
+---@field rowTargets string[]
+---@field indexByTarget table<string, integer>
+
+---@class SaveEditorIndexedListProjection
+---@field revision integer
+---@field queryRevision integer
+---@field pending boolean
+---@field count integer
+---@field rowTargets string[]
+---@field indexByTarget table<string, integer>
+---@field idAt fun(index: integer): string?
+---@field indexOf fun(targetId: string): integer?
+---@field rowAt fun(index: integer): SaveEditorListFilterRow?
+
+---@class SaveEditorListFilterTask
+---@field listId string
+---@field query string
+---@field foldedQuery string
+---@field queryRevision integer
+---@field revision integer
+---@field cursor integer
+---@field source SaveEditorListFilterRow[]
+---@field rows SaveEditorListFilterRow[]
+---@field rowTargets string[]
+---@field indexByTarget table<string, integer>
 
 ---@class SaveEditorState
 ---@field valueEditor SaveEditorValueEditor?
@@ -92,9 +271,17 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field scopeEpoch integer
 ---@field editorFeedback string?
 ---@field _flagCatalog { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[]?
----@field _flagFilter { query: string, rows: { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[], rowTargets: string[], indexByTarget: table<string, integer> }?
----@field _mapCatalog { rows: { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[], rowTargets: string[], indexByTarget: table<string, integer> }?
----@field _mapFilter { query: string, rows: { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[], rowTargets: string[], indexByTarget: table<string, integer> }?
+---@field _flagFilter SaveEditorIndexedListCache?
+---@field _mapCatalog SaveEditorIndexedListCache?
+---@field _mapFilter SaveEditorIndexedListCache?
+---@field _pendingChoiceCursor { targetId: string?, index: integer? }?
+---@field _listFilterTask SaveEditorListFilterTask?
+---@field _listQueryRevision integer?
+---@field _pendingListCursor { listId: string, targetId: string?, index: integer? }?
+---@field _bagCatalogMetadata SaveEditorBagCatalogMetadata?
+---@field _bagCatalogTask SaveEditorBagCatalogTask?
+---@field _flagCatalogTask SaveEditorFlagCatalogTask?
+---@field _bagProjection SaveEditorBagProjection?
 local State = {}
 State.__index = State
 local FIELD_DIRECTIONS = { up = "north", down = "south", left = "west", right = "east" }
@@ -126,25 +313,6 @@ local function message(value)
     return value.message
   end
   return tostring(value)
-end
-
-local function filterLocationMaps(maps, query)
-  local normalized = query:lower()
-  if normalized == "" then
-    return maps
-  end
-  local filtered = {}
-  for _, map in ipairs(maps) do
-    if
-      map.symbol:lower():find(normalized, 1, true)
-      or map.displayName:lower():find(normalized, 1, true)
-      or map.section:lower():find(normalized, 1, true)
-      or tostring(map.mapId):find(normalized, 1, true)
-    then
-      filtered[#filtered + 1] = map
-    end
-  end
-  return filtered
 end
 
 local function flagDisplayName(symbol)
@@ -354,6 +522,29 @@ function State:update(dt)
     self.tickRemainder = self.tickRemainder % 1
     self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
   end
+  local rowVisits = 0
+  if self.valueEditor ~= nil then
+    local wasFiltering = self.valueEditor:snapshot().pending == true
+    rowVisits = self.valueEditor:update(256)
+    if wasFiltering and self.valueEditor:snapshot().pending ~= true then
+      self:_reconcilePublishedChoiceFilter()
+    end
+  end
+  if self._listFilterTask ~= nil then
+    if self._listFilterTask.listId ~= self:_activeFilterListId() then
+      self._listFilterTask = nil
+      self._pendingListCursor = nil
+    else
+      rowVisits = rowVisits + self:_advanceListFilter(math.max(0, 256 - rowVisits))
+    end
+  end
+  if self.status == "ready" and self.session ~= nil then
+    if self.controller.section == "Progress" then
+      rowVisits = rowVisits + self:_advanceFlagCatalog(math.max(0, 256 - rowVisits))
+    elseif self.controller.section == "Bag" then
+      rowVisits = rowVisits + self:_advanceBagCatalog(math.max(0, 256 - rowVisits))
+    end
+  end
   local hold = self.numberHold
   if hold ~= nil then
     if self.controller.pointerId ~= hold.pointerId or self.controller.scopeEpoch ~= hold.scopeEpoch then
@@ -519,9 +710,10 @@ end
 function State:_snapshot()
   local session = self.session and self.session:snapshot() or nil
   local section = self.controller.section
-  local flagRows, flagRowTargets, flagIndexByTarget = {}, {}, {}
+  local flagModel, flagRows, flagRowTargets, flagIndexByTarget
   if session ~= nil and section == "Progress" then
-    flagRows, flagRowTargets, flagIndexByTarget = self:_flagRows(session.flags)
+    flagModel = self:_flagProjection(session.flags)
+    flagRows, flagRowTargets, flagIndexByTarget = flagModel.rowTargets, flagModel.rowTargets, flagModel.indexByTarget
   end
   local party = session and section == "Party" and self:_partyView() or {}
   local bag = session and section == "Bag" and self:_bagView() or {}
@@ -567,6 +759,8 @@ function State:_snapshot()
     flagRows = flagRows,
     flagRowTargets = flagRowTargets,
     flagIndexByTarget = flagIndexByTarget,
+    flagModel = flagModel,
+    flagRowAt = flagModel and flagModel.rowAt or nil,
     valueEditor = self.valueEditor and self.valueEditor:snapshot() or nil,
     editorFeedback = self.editorFeedback,
     numberControls = numberControls,
@@ -579,10 +773,11 @@ function State:_snapshot()
   }
   if self.locationService then
     local location = self.locationService:snapshot()
-    local mapRows, mapRowTargets, mapIndexByTarget = self:_mapRows()
-    location.maps = mapRows
-    location.mapRowTargets = mapRowTargets
-    location.mapIndexByTarget = mapIndexByTarget
+    local mapModel = self:_mapProjection()
+    location.mapModel = mapModel
+    location.maps = mapModel.rowTargets
+    location.mapRowTargets = mapModel.rowTargets
+    location.mapIndexByTarget = mapModel.indexByTarget
     location.symbol = location.map and location.map.symbol or nil
     location.actionStatus = self.locationActionStatus
         and {
@@ -629,6 +824,7 @@ function State:_snapshot()
     or self.inputTick < self.numberPressUntilTick and self.numberPressTarget
     or nil
   view.preserveChoiceScroll = self.preserveChoiceScroll
+  view.listCursors = self.controller.listCursors
   view.scrollOffsets = self.controller.scrollOffsets
   return view
 end
@@ -656,25 +852,185 @@ function State:_sectionDirty(session)
   return false
 end
 
-function State:_flagCatalogRows()
-  if self._flagCatalog == nil then
-    local catalog = {}
-    for name, flagId in pairs(FieldScriptSymbols.flagsByName) do
-      if name:sub(1, 9) ~= "FLAG_UNK_" then
-        catalog[#catalog + 1] = {
-          name = name,
-          displayName = flagDisplayName(name),
-          id = flagId,
-          targetId = "flag:" .. name,
-        }
-      end
-    end
-    table.sort(catalog, function(a, b)
-      return a.name < b.name
-    end)
-    self._flagCatalog = catalog
+function State:_advanceFlagCatalog(budget)
+  if self._flagCatalog ~= nil then
+    return 0
   end
+  local task = self._flagCatalogTask
+  if task == nil then
+    local iterator, state, key = pairs(FieldScriptSymbols.flagsByName)
+    task = {
+      iterator = iterator,
+      state = state,
+      key = key,
+      rows = {},
+      stage = "scan",
+      rowTargets = {},
+      indexByTarget = {},
+      indexCursor = 1,
+    }
+    self._flagCatalogTask = task
+  end
+  local used = 0
+  while used < budget do
+    if task.stage == "scan" then
+      local name, flagId = task.iterator(task.state, task.key)
+      task.key = name
+      if name == nil then
+        task.stage = "sort"
+        task.sort = newIncrementalSort(task.rows, function(a, b)
+          return a.name < b.name
+        end)
+      else
+        used = used + 1
+        if name:sub(1, 9) ~= "FLAG_UNK_" then
+          task.rows[#task.rows + 1] = {
+            name = name,
+            displayName = flagDisplayName(name),
+            id = assert(flagId),
+            targetId = "flag:" .. name,
+          }
+        end
+      end
+    elseif task.stage == "sort" then
+      local sort = assert(task.sort)
+      local sortUsed, complete = advanceIncrementalSort(sort, budget - used)
+      used = used + sortUsed
+      if complete then
+        task.rows = sort.source
+        task.sort = nil
+        task.stage = "index"
+      end
+    else
+      local index = task.indexCursor
+      local row = task.rows[index]
+      if row == nil then
+        self._flagCatalog = task.rows
+        self._flagFilter = {
+          query = "",
+          revision = 1,
+          queryRevision = 0,
+          rows = task.rows,
+          rowTargets = task.rowTargets,
+          indexByTarget = task.indexByTarget,
+        }
+        self._flagCatalogTask = nil
+        break
+      end
+      task.rowTargets[index] = row.targetId
+      task.indexByTarget[row.targetId] = index
+      task.indexCursor = index + 1
+      used = used + 1
+    end
+  end
+  return used
+end
+
+function State:_flagCatalogRows()
   return assert(self._flagCatalog)
+end
+
+---@param cache SaveEditorIndexedListCache
+---@param revision integer
+---@param queryRevision integer
+---@param pending boolean
+---@param rowAt fun(index: integer): SaveEditorListFilterRow?
+---@return SaveEditorIndexedListProjection
+local function makeListProjection(cache, revision, queryRevision, pending, rowAt)
+  return {
+    revision = revision,
+    queryRevision = queryRevision,
+    pending = pending,
+    count = #cache.rows,
+    rowTargets = cache.rowTargets,
+    indexByTarget = cache.indexByTarget,
+    idAt = function(index)
+      return cache.rowTargets[index]
+    end,
+    indexOf = function(targetId)
+      return cache.indexByTarget[targetId]
+    end,
+    rowAt = rowAt or function(index)
+      return cache.rows[index]
+    end,
+  }
+end
+
+local function matchesListQuery(listId, descriptor, query)
+  if query == "" then
+    return true
+  end
+  if listId == "flags" then
+    return descriptor.name:lower():find(query, 1, true) ~= nil
+      or descriptor.displayName:lower():find(query, 1, true) ~= nil
+  end
+  return descriptor.symbol:lower():find(query, 1, true) ~= nil
+    or descriptor.displayName:lower():find(query, 1, true) ~= nil
+    or descriptor.section:lower():find(query, 1, true) ~= nil
+    or tostring(descriptor.mapId):find(query, 1, true) ~= nil
+end
+
+function State:_beginListFilter(listId, query, source, previous)
+  if self._pendingListCursor ~= nil and self._pendingListCursor.listId ~= listId then
+    self._pendingListCursor = nil
+  end
+  self._listQueryRevision = (self._listQueryRevision or 0) + 1
+  self._listFilterTask = {
+    listId = listId,
+    query = query,
+    foldedQuery = query:lower(),
+    queryRevision = self._listQueryRevision,
+    revision = previous and previous.revision or 0,
+    cursor = 1,
+    source = source,
+    rows = {},
+    rowTargets = {},
+    indexByTarget = {},
+  }
+end
+
+function State:_advanceListFilter(budget)
+  local task = assert(self._listFilterTask)
+  local visited = 0
+  while task.cursor <= #task.source and visited < budget do
+    local descriptor = task.source[task.cursor]
+    if matchesListQuery(task.listId, descriptor, task.foldedQuery) then
+      task.rows[#task.rows + 1] = descriptor
+      task.rowTargets[#task.rowTargets + 1] = descriptor.targetId
+      task.indexByTarget[descriptor.targetId] = #task.rows
+    end
+    task.cursor = task.cursor + 1
+    visited = visited + 1
+  end
+  if task.cursor > #task.source then
+    local cache = {
+      query = task.query:lower(),
+      revision = task.revision + 1,
+      queryRevision = task.queryRevision,
+      rows = task.rows,
+      rowTargets = task.rowTargets,
+      indexByTarget = task.indexByTarget,
+    }
+    if task.listId == "flags" then
+      self._flagFilter = cache
+    else
+      self._mapFilter = cache
+    end
+    self._listFilterTask = nil
+    self:_reconcilePublishedListFilter()
+  end
+  return visited
+end
+
+function State:_activeFilterListId()
+  if self.controller.modal ~= nil or self.valueEditor ~= nil then
+    return nil
+  elseif self.controller.section == "Progress" then
+    return "flags"
+  elseif self.controller.section == "Location" and self.controller.locationPage == "map-list" then
+    return "location:map-list"
+  end
+  return nil
 end
 
 ---@return { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[] rows
@@ -683,21 +1039,33 @@ end
 function State:_filteredFlagRows()
   local query = self.controller.query:lower()
   local cached = self._flagFilter
-  if cached == nil or cached.query ~= query then
-    local rows, rowTargets, indexByTarget = {}, {}, {}
-    for _, descriptor in ipairs(self:_flagCatalogRows()) do
-      if
-        query == ""
-        or descriptor.name:lower():find(query, 1, true)
-        or descriptor.displayName:lower():find(query, 1, true)
-      then
-        rows[#rows + 1] = descriptor
-        rowTargets[#rowTargets + 1] = descriptor.targetId
-        indexByTarget[descriptor.targetId] = #rows
-      end
+  if cached == nil then
+    local rows = self._flagCatalog or {}
+    local rowTargets, indexByTarget = {}, {}
+    for index, descriptor in ipairs(rows) do
+      rowTargets[index] = descriptor.targetId
+      indexByTarget[descriptor.targetId] = index
     end
-    cached = { query = query, rows = rows, rowTargets = rowTargets, indexByTarget = indexByTarget }
+    cached = {
+      query = "",
+      revision = self._flagCatalog ~= nil and 1 or 0,
+      queryRevision = 0,
+      rows = rows,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+    }
     self._flagFilter = cached
+  end
+  if self._listFilterTask ~= nil and self._listFilterTask.listId == "flags" and cached.query == query then
+    self._listFilterTask = nil
+    self._pendingListCursor = nil
+  end
+  if
+    self._flagCatalog ~= nil
+    and cached.query ~= query
+    and (self._listFilterTask == nil or self._listFilterTask.listId ~= "flags" or self._listFilterTask.query ~= query)
+  then
+    self:_beginListFilter("flags", query, self._flagCatalog, cached)
   end
   return cached.rows, cached.rowTargets, cached.indexByTarget
 end
@@ -722,7 +1090,14 @@ function State:_mapCatalogRows()
       rowTargets[#rowTargets + 1] = descriptor.targetId
       indexByTarget[descriptor.targetId] = #rows
     end
-    cached = { rows = rows, rowTargets = rowTargets, indexByTarget = indexByTarget }
+    cached = {
+      query = "",
+      revision = 1,
+      queryRevision = 0,
+      rows = rows,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+    }
     self._mapCatalog = cached
   end
   return cached.rows, cached.rowTargets, cached.indexByTarget
@@ -734,15 +1109,32 @@ end
 function State:_filteredMapRows()
   local query = self.controller.query:lower()
   local cached = self._mapFilter
-  if cached == nil or cached.query ~= query then
-    local rows = filterLocationMaps(self:_mapCatalogRows(), self.controller.query)
-    local rowTargets, indexByTarget = {}, {}
-    for _, descriptor in ipairs(rows) do
-      rowTargets[#rowTargets + 1] = descriptor.targetId
-      indexByTarget[descriptor.targetId] = #rowTargets
-    end
-    cached = { query = query, rows = rows, rowTargets = rowTargets, indexByTarget = indexByTarget }
+  if cached == nil then
+    local rows, rowTargets, indexByTarget = self:_mapCatalogRows()
+    cached = {
+      query = "",
+      revision = 1,
+      queryRevision = 0,
+      rows = rows,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+    }
     self._mapFilter = cached
+  end
+  if self._listFilterTask ~= nil and self._listFilterTask.listId == "location:map-list" and cached.query == query then
+    self._listFilterTask = nil
+    self._pendingListCursor = nil
+  end
+  if
+    cached.query ~= query
+    and (
+      self._listFilterTask == nil
+      or self._listFilterTask.listId ~= "location:map-list"
+      or self._listFilterTask.query ~= query
+    )
+  then
+    local rows = self:_mapCatalogRows()
+    self:_beginListFilter("location:map-list", query, rows, cached)
   end
   return cached.rows, cached.rowTargets, cached.indexByTarget
 end
@@ -757,16 +1149,84 @@ function State:_mapRows()
   return self:_mapCatalogRows()
 end
 
----@param values table<integer, boolean>
----@return { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[] rows
----@return string[] rowTargets
----@return table<string, integer> indexByTarget
-function State:_flagRows(values)
-  local rows, rowTargets, indexByTarget = self:_filteredFlagRows()
-  for _, row in ipairs(rows) do
-    row.value = values[row.id] == true
+function State:_mapProjection()
+  local isMapList = self.controller.section == "Location" and self.controller.locationPage == "map-list"
+  local cache
+  if isMapList then
+    self:_filteredMapRows()
+    cache = assert(self._mapFilter)
+  else
+    self:_mapCatalogRows()
+    cache = assert(self._mapCatalog)
   end
-  return rows, rowTargets, indexByTarget
+  local task = self._listFilterTask
+  local pending = isMapList and task ~= nil and task.listId == "location:map-list"
+  local queryRevision = cache.queryRevision
+  if pending then
+    queryRevision = assert(task).queryRevision
+  end
+  local projection = makeListProjection(cache, cache.revision, queryRevision, pending, function(index)
+    return cache.rows[index]
+  end)
+  return projection
+end
+
+function State:_flagProjection(values)
+  local rows, rowTargets, indexByTarget = self:_filteredFlagRows()
+  local cache = assert(self._flagFilter)
+  local task = self._listFilterTask
+  local pending = self._flagCatalog == nil or (task ~= nil and task.listId == "flags")
+  local queryRevision = cache.queryRevision
+  if task ~= nil and task.listId == "flags" then
+    queryRevision = assert(task).queryRevision
+  end
+  local projection = makeListProjection(cache, cache.revision, queryRevision, pending, function(index)
+    local descriptor = rows[index]
+    if descriptor == nil then
+      return nil
+    end
+    return {
+      name = descriptor.name,
+      displayName = descriptor.displayName,
+      id = descriptor.id,
+      targetId = descriptor.targetId,
+      value = values[descriptor.id] == true,
+    }
+  end)
+  projection.rowTargets, projection.indexByTarget = rowTargets, indexByTarget
+  return projection
+end
+
+function State:_reconcilePublishedListFilter()
+  local previous = self._pendingListCursor
+  self._pendingListCursor = nil
+  if previous == nil then
+    return
+  end
+  local layout = self:_resolve(self:_snapshot()).content.layout
+  local list = layout.lists[previous.listId]
+  if list == nil then
+    return
+  end
+  if #list.rowTargets == 0 then
+    self.controller:setListCursor(previous.listId, nil)
+    self.controller:setFocus(list.targetId)
+    return
+  end
+  local index = previous.targetId and list.indexByTarget and list.indexByTarget[previous.targetId] or nil
+  index = index or math.max(1, math.min(previous.index or 1, #list.rowTargets))
+  local targetId = list.rowTargets[index]
+  self.controller:setListCursor(previous.listId, targetId)
+  if self.controller.focus == previous.targetId or self.controller.focus == list.targetId then
+    self.controller:setFocus(targetId)
+    local viewport = assert(layout.viewports[list.viewportId])
+    local revealed = ScrollViewport.clamp(
+      ScrollViewport.reveal(viewport.offset, viewport.clip.height, (index - 1) * viewport.rowExtent, viewport.rowExtent),
+      viewport.contentExtent,
+      viewport.clip.height
+    )
+    self:_storeListOffset(list, revealed)
+  end
 end
 
 function State:_partyView()
@@ -832,60 +1292,177 @@ function State:_partyView()
   return view
 end
 
+function State:_advanceBagCatalog(budget)
+  local itemCatalog = assert(self.dependencies.context.itemCatalog)
+  local cached = self._bagCatalogMetadata
+  if cached ~= nil and cached.catalog == itemCatalog then
+    return 0
+  end
+  local task = self._bagCatalogTask
+  if task == nil or task.catalog ~= itemCatalog then
+    local pocketKeys, pocketByKey = {}, {}
+    for key in pairs(ItemAssetSchema.POCKETS) do
+      pocketKeys[#pocketKeys + 1] = key
+      pocketByKey[key] = itemCatalog:pocket(key)
+    end
+    table.sort(pocketKeys, function(a, b)
+      return pocketByKey[a].nativeId < pocketByKey[b].nativeId
+    end)
+    local pockets, optionsByPocket = {}, {}
+    for _, key in ipairs(pocketKeys) do
+      pockets[#pockets + 1] = { key = key }
+      optionsByPocket[key] = {}
+    end
+    task = {
+      catalog = itemCatalog,
+      nextItemKey = itemCatalog:itemKeyIterator(),
+      pockets = pockets,
+      pocketByKey = pocketByKey,
+      optionsByPocket = optionsByPocket,
+      itemByKey = {},
+      nativeIdByKey = {},
+      sortPocketIndex = 1,
+      stage = "scan",
+    }
+    self._bagCatalogTask = task
+  end
+  local used = 0
+  while used < budget do
+    if task.stage == "scan" then
+      local key = task.nextItemKey()
+      if key == nil then
+        task.stage = "sort"
+      else
+        used = used + 1
+        local item = itemCatalog:item(key)
+        task.itemByKey[key] = { item = key, label = item.name or key, iconKey = item.icon }
+        task.nativeIdByKey[key] = item.nativeId
+        if key ~= "NONE" then
+          local options = task.optionsByPocket[item.pocket]
+          if options ~= nil then
+            options[#options + 1] = { key = key, label = item.name or key }
+          end
+        end
+      end
+    elseif task.sortPocketIndex <= #task.pockets then
+      local pocket = task.pockets[task.sortPocketIndex].key
+      local sort = task.sort
+      if sort == nil then
+        sort = newIncrementalSort(task.optionsByPocket[pocket], function(a, b)
+          local aId = assert(task.nativeIdByKey[a.key])
+          local bId = assert(task.nativeIdByKey[b.key])
+          return aId == bId and a.key < b.key or aId < bId
+        end)
+        task.sort = sort
+      end
+      local sortUsed, complete = advanceIncrementalSort(sort, budget - used)
+      used = used + sortUsed
+      if complete then
+        task.optionsByPocket[pocket] = sort.source
+        task.sort = nil
+        task.sortPocketIndex = task.sortPocketIndex + 1
+      end
+    else
+      cached = {
+        catalog = itemCatalog,
+        pockets = task.pockets,
+        pocketByKey = task.pocketByKey,
+        optionsByPocket = task.optionsByPocket,
+        itemByKey = task.itemByKey,
+      }
+      self._bagCatalogMetadata = cached
+      self._bagCatalogTask = nil
+      break
+    end
+  end
+  return used
+end
+
 function State:_bagView()
-  local context = assert(self.dependencies.context)
-  local itemCatalog = assert(context.itemCatalog)
-  local pocketKeys = {}
-  for key in pairs(ItemAssetSchema.POCKETS) do
-    pocketKeys[#pocketKeys + 1] = key
-  end
-  table.sort(pocketKeys, function(a, b)
-    return itemCatalog:pocket(a).nativeId < itemCatalog:pocket(b).nativeId
-  end)
-  local pockets = {}
-  for _, key in ipairs(pocketKeys) do
-    pockets[#pockets + 1] = { key = key }
-  end
-  local snapshot = self.session:bagSnapshot(self.controller.bagPocket)
-  local rows = {}
-  for _, entry in ipairs(snapshot) do
-    local item = itemCatalog:item(entry.item)
-    rows[#rows + 1] = {
-      item = entry.item,
-      label = item.name or entry.item,
-      iconKey = item.icon,
-      quantity = entry.quantity,
+  local itemCatalog = assert(self.dependencies.context.itemCatalog)
+  local catalog = self._bagCatalogMetadata
+  if catalog == nil or catalog.catalog ~= itemCatalog then
+    local manifest = assert(self.dependencies.bagManifest, "Bag presentation manifest is required")
+    return {
+      bagPocket = self.controller.bagPocket,
+      bagPockets = {},
+      bagRows = {},
+      bagPageRows = {},
+      bagPage0 = 0,
+      bagPageCount = 1,
+      bagAddEnabled = false,
+      bagPocketTabRects = {},
+      bagPocketStrip = manifest.interactive.pocketTabs.strips[self.controller.bagPocket],
+      bagFocusVisuals = manifest.interactive.focus,
+      bagTabFocusVisual = manifest.interactive.focus.tabs.visual,
+      bagTabFocusTargets = manifest.interactive.focus.tabs.targets,
+      bagQuantityVisuals = manifest.interactive.overlays.quantity.visuals,
+      bagSelectedItem = self.controller.bagItemKey,
+      bagSelectedQuantity = nil,
+      bagSelectedLabel = nil,
     }
   end
-  local selectedQuantity = nil
-  for _, row in ipairs(rows) do
-    if row.item == self.controller.bagItemKey then
-      selectedQuantity = row.quantity
-      break
+  local revision = self.session:revision()
+  local pocket = self.controller.bagPocket
+  local projection = self._bagProjection
+  if
+    projection == nil
+    or projection.catalog ~= itemCatalog
+    or projection.pocket ~= pocket
+    or projection.revision ~= revision
+  then
+    local rows, quantityByItem = {}, {}
+    local previousRows = projection ~= nil and projection.catalog == itemCatalog and projection.rowByItem or {}
+    for _, entry in ipairs(self.session:bagSnapshot(pocket)) do
+      local row = previousRows[entry.item]
+        or assert(catalog.itemByKey[entry.item], "bag entries resolve in the item catalog")
+      rows[#rows + 1] = row
+      quantityByItem[entry.item] = entry.quantity
     end
+    local rowByItem = {}
+    for _, row in ipairs(rows) do
+      rowByItem[row.item] = row
+    end
+    projection = {
+      catalog = itemCatalog,
+      pocket = pocket,
+      revision = revision,
+      rows = rows,
+      rowByItem = rowByItem,
+      quantityByItem = quantityByItem,
+      pageRows = {},
+      pageCount = math.max(1, math.ceil(#rows / 6)),
+    }
+    self._bagProjection = projection
   end
-  local pageCount = math.max(1, math.ceil(#rows / 6))
-  local page0 = math.max(0, math.min(pageCount - 1, self.controller.bagPage0))
-  local pageRows = {}
-  for index = page0 * 6 + 1, math.min(#rows, page0 * 6 + 6) do
-    pageRows[#pageRows + 1] = rows[index]
+  local pageCount = projection.pageCount
+  self.controller.bagPage0 = math.max(0, math.min(pageCount - 1, self.controller.bagPage0))
+  local pageRows = projection.pageRows[self.controller.bagPage0]
+  if pageRows == nil then
+    pageRows = {}
+    local firstIndex = self.controller.bagPage0 * 6 + 1
+    for index = firstIndex, math.min(#projection.rows, firstIndex + 5) do
+      local metadata = projection.rows[index]
+      pageRows[#pageRows + 1] = {
+        item = metadata.item,
+        label = metadata.label,
+        iconKey = metadata.iconKey,
+        quantity = projection.quantityByItem[metadata.item],
+      }
+    end
+    projection.pageRows[self.controller.bagPage0] = pageRows
   end
   local manifest = assert(self.dependencies.bagManifest, "Bag presentation manifest is required")
-  local canAdd = false
-  for _, key in ipairs(itemCatalog:itemKeys()) do
-    if key ~= "NONE" and itemCatalog:item(key).pocket == self.controller.bagPocket then
-      canAdd = true
-      break
-    end
-  end
+  local options = assert(catalog.optionsByPocket[pocket])
+  local selectedMetadata = self.controller.bagItemKey and catalog.itemByKey[self.controller.bagItemKey] or nil
   return {
     bagPocket = self.controller.bagPocket,
-    bagPockets = pockets,
-    bagRows = rows,
+    bagPockets = catalog.pockets,
+    bagRows = projection.rows,
     bagPageRows = pageRows,
     bagPage0 = page0,
     bagPageCount = pageCount,
-    bagAddEnabled = canAdd,
+    bagAddEnabled = #options > 0,
     bagPocketTabRects = manifest.interactive.pocketTabs.rects,
     bagPocketStrip = manifest.interactive.pocketTabs.strips[self.controller.bagPocket],
     bagFocusVisuals = manifest.interactive.focus,
@@ -893,8 +1470,8 @@ function State:_bagView()
     bagTabFocusTargets = manifest.interactive.focus.tabs.targets,
     bagQuantityVisuals = manifest.interactive.overlays.quantity.visuals,
     bagSelectedItem = self.controller.bagItemKey,
-    bagSelectedQuantity = selectedQuantity,
-    bagSelectedLabel = self.controller.bagItemKey and itemCatalog:item(self.controller.bagItemKey).name or nil,
+    bagSelectedQuantity = self.controller.bagItemKey and projection.quantityByItem[self.controller.bagItemKey] or nil,
+    bagSelectedLabel = selectedMetadata and selectedMetadata.label or nil,
   }
 end
 
@@ -1088,14 +1665,8 @@ function State:_beginMonAdd(species)
 end
 
 function State:_beginBagAdd()
-  local catalog = assert(self.dependencies.context.itemCatalog)
-  local options = {}
-  for _, key in ipairs(catalog:itemKeys()) do
-    local item = catalog:item(key)
-    if key ~= "NONE" and item.pocket == self.controller.bagPocket then
-      options[#options + 1] = { key = key, label = item.name or key }
-    end
-  end
+  local catalog = assert(self._bagCatalogMetadata, "Bag Add requires a prepared item catalog")
+  local options = assert(catalog.optionsByPocket[self.controller.bagPocket])
   if #options == 0 then
     self.errorMessage = "This pocket has no items to add."
     return
@@ -1185,9 +1756,11 @@ function State:_activeList(layout)
     if type(indexByTarget) == "table" and indexByTarget[focus] ~= nil then
       return list, indexByTarget[focus]
     end
-    for index, targetId in ipairs(list.rowTargets) do
-      if focus == targetId then
-        return list, index
+    if type(indexByTarget) ~= "table" and focus ~= nil then
+      for index, targetId in ipairs(list.rowTargets) do
+        if focus == targetId then
+          return list, index
+        end
       end
     end
   end
@@ -1199,10 +1772,8 @@ end
 ---@return table<string, unknown>?
 local function findListByRowTarget(lists, targetId)
   for _, list in pairs(lists) do
-    for _, rowTarget in ipairs(list.rowTargets) do
-      if rowTarget == targetId then
-        return list
-      end
+    if list.indexByTarget ~= nil and list.indexByTarget[targetId] ~= nil then
+      return list
     end
   end
   return nil
@@ -1224,19 +1795,9 @@ end
 ---@return string? cursor
 function State:_reconcileListCursor(list)
   local cursor = self.controller:listCursor(list.id)
-  if cursor ~= nil then
-    local indexByTarget = list.indexByTarget
-    if type(indexByTarget) == "table" then
-      if indexByTarget[cursor] ~= nil then
-        return cursor
-      end
-    else
-      for _, targetId in ipairs(list.rowTargets) do
-        if targetId == cursor then
-          return cursor
-        end
-      end
-    end
+  local indexByTarget = list.indexByTarget
+  if cursor ~= nil and type(indexByTarget) == "table" and indexByTarget[cursor] ~= nil then
+    return cursor
   end
   cursor = list.rowTargets[1]
   self.controller:setListCursor(list.id, cursor)
@@ -1270,13 +1831,7 @@ function State:_clampListCursorToVisible(list, viewport, offset)
   local firstIndex, lastIndex =
     ScrollViewport.visibleRange(offset, viewport.clip.height, viewport.rowExtent, viewport.gap, #list.rowTargets)
   local cursor = self.controller:listCursor(list.id)
-  local cursorIndex
-  for index, targetId in ipairs(list.rowTargets) do
-    if targetId == cursor then
-      cursorIndex = index
-      break
-    end
-  end
+  local cursorIndex = cursor ~= nil and list.indexByTarget and list.indexByTarget[cursor] or nil
   if cursorIndex ~= nil and firstIndex <= lastIndex then
     if cursorIndex < firstIndex then
       cursorIndex = firstIndex
@@ -1297,30 +1852,7 @@ function State:_syncChoiceSelection(list, targetId)
   end
   local editor = assert(self.valueEditor, "choice rows need their value editor")
   local key = assert(targetId:match("^choice:(.+)$"), "choice cursor must identify a choice row")
-  local guard = 0
-  while editor:snapshot().selectedKey ~= key and guard < 64 do
-    guard = guard + 1
-    local snapshot = editor:snapshot()
-    local current, wanted
-    for index, option in ipairs(snapshot.options) do
-      if option.key == snapshot.selectedKey then
-        current = index
-      end
-      if option.key == key then
-        wanted = index
-      end
-    end
-    if wanted == nil then
-      return
-    end
-    local delta = wanted - (current or 1)
-    if delta == 0 then
-      editor:moveChoice(1)
-      editor:moveChoice(-1)
-    else
-      editor:moveChoice(delta)
-    end
-  end
+  editor:selectChoice(key)
 end
 
 function State:_filterFocusedList(list, rowIndex, operation, text)
@@ -1329,6 +1861,9 @@ function State:_filterFocusedList(list, rowIndex, operation, text)
   local hadRowFocus = rowIndex ~= nil
   if list.id == "value:choice" then
     local editor = assert(self.valueEditor, "choice filtering needs its value editor")
+    local priorQuery = editor:snapshot().query
+    local priorTarget = rowIndex ~= nil and previousFocus or self.controller:listCursor(list.id)
+    local priorIndex = rowIndex or (priorTarget ~= nil and list.indexByTarget[priorTarget] or nil)
     self.preserveChoiceScroll = false
     if operation == "append" then
       editor:textinput(assert(text, "filter append needs its input text"))
@@ -1338,6 +1873,9 @@ function State:_filterFocusedList(list, rowIndex, operation, text)
       editor:press("clear_search")
     else
       error("unknown list filter operation", 2)
+    end
+    if editor:snapshot().query ~= priorQuery then
+      self._pendingChoiceCursor = { targetId = priorTarget, index = priorIndex }
     end
   else
     if operation == "append" then
@@ -1364,31 +1902,25 @@ function State:_filterFocusedList(list, rowIndex, operation, text)
   end
   local layout = self:_resolve(self:_snapshot()).content.layout
   local fresh = assert(layout.lists and layout.lists[list.id], "filtering keeps its focused list")
+  if fresh.pending then
+    self._pendingListCursor = {
+      listId = fresh.id,
+      targetId = previousFocus,
+      index = rowIndex,
+    }
+    return
+  end
   if #fresh.rowTargets == 0 then
     self.controller:setListCursor(fresh.id, nil)
     self.controller:setFocus(fresh.targetId)
     return
   end
-  local focusLive = false
-  for _, targetId in ipairs(fresh.rowTargets) do
-    if targetId == previousFocus then
-      focusLive = true
-      break
-    end
-  end
+  local focusLive = fresh.indexByTarget ~= nil and fresh.indexByTarget[previousFocus] ~= nil
   if hadRowFocus then
     if focusLive then
       self.controller:setListCursor(fresh.id, previousFocus)
       local viewport = assert(layout.viewports[fresh.viewportId], "filtering keeps its scroll viewport")
       local survived = fresh.indexByTarget ~= nil and fresh.indexByTarget[previousFocus] or nil
-      if survived == nil then
-        for index, targetId in ipairs(fresh.rowTargets) do
-          if targetId == previousFocus then
-            survived = index
-            break
-          end
-        end
-      end
       local revealed = ScrollViewport.clamp(
         ScrollViewport.reveal(
           viewport.offset,
@@ -1424,6 +1956,43 @@ function State:_filterFocusedList(list, rowIndex, operation, text)
   end
 end
 
+function State:_reconcilePublishedChoiceFilter()
+  local previous = self._pendingChoiceCursor
+  self._pendingChoiceCursor = nil
+  if previous == nil then
+    return
+  end
+  local layout = self:_resolve(self:_snapshot()).content.layout
+  local list = layout.lists and layout.lists["value:choice"]
+  if list == nil then
+    return
+  end
+  if #list.rowTargets == 0 then
+    self.controller:setListCursor(list.id, nil)
+    self.controller:setFocus(list.targetId)
+    self:_reconcileFocus(list.targetId, layout)
+    return
+  end
+  local index = previous.targetId ~= nil and list.indexByTarget[previous.targetId] or nil
+  if index == nil then
+    index = math.min(previous.index or 1, #list.rowTargets)
+  end
+  local targetId = assert(list.rowTargets[index])
+  self.controller:setListCursor(list.id, targetId)
+  if previous.targetId ~= nil and previous.targetId ~= list.targetId then
+    self.controller:setFocus(targetId)
+    local viewport = assert(layout.viewports[list.viewportId])
+    local offset = ScrollViewport.clamp(
+      ScrollViewport.reveal(viewport.offset, viewport.clip.height, (index - 1) * viewport.rowExtent, viewport.rowExtent),
+      viewport.contentExtent,
+      viewport.clip.height
+    )
+    self:_storeListOffset(list, offset)
+    layout = self:_resolve(self:_snapshot()).content.layout
+    self:_reconcileFocus(targetId, layout)
+  end
+end
+
 ---@param list table<string, unknown>
 ---@param rowIndex integer?
 ---@param layout table<string, unknown>?
@@ -1440,14 +2009,6 @@ function State:_handleListConfirm(list, rowIndex, layout)
   local resolved = layout or self:_resolve(self:_snapshot()).content.layout
   local viewport = assert(resolved.viewports[list.viewportId], "list confirmation needs its scroll viewport")
   local cursorIndex = list.indexByTarget ~= nil and list.indexByTarget[cursor] or nil
-  if cursorIndex == nil then
-    for index, targetId in ipairs(list.rowTargets) do
-      if targetId == cursor then
-        cursorIndex = index
-        break
-      end
-    end
-  end
   local revealed = ScrollViewport.clamp(
     ScrollViewport.reveal(
       viewport.offset,
@@ -2369,6 +2930,10 @@ function State:_performDecisionCommand(kind, command, id)
 end
 
 function State:_activate(targetId)
+  local listTask = self._listFilterTask
+  if listTask ~= nil and (targetId:match("^flag:") or targetId:match("^location:map:")) then
+    return
+  end
   if self.status == "error" then
     if targetId == "retry" then
       self.generation = self.generation + 1

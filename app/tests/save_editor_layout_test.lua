@@ -10,6 +10,45 @@ local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
 local T = { tests = {} }
 local function computeLayout(view, width, height)
+  if view.flagRows ~= nil and view.flagModel == nil then
+    local rowTargets, indexByTarget = view.flagRowTargets, view.flagIndexByTarget
+    view.flagModel = {
+      revision = 1,
+      queryRevision = 0,
+      pending = false,
+      count = #rowTargets,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+      idAt = function(index) return rowTargets[index] end,
+      indexOf = function(targetId) return indexByTarget[targetId] end,
+      rowAt = function(index) return view.flagRowAt(index) end,
+    }
+  end
+  if
+    view.locationNavigation ~= nil
+    and view.locationNavigation.page == "map-list"
+    and view.location
+    and view.location.maps ~= nil
+    and view.location.mapModel == nil
+  then
+    local maps, rowTargets, indexByTarget = view.location.maps, view.location.mapRowTargets, view.location.mapIndexByTarget
+    view.location.mapModel = {
+      revision = 1,
+      queryRevision = 0,
+      pending = false,
+      count = #rowTargets,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+      idAt = function(index) return rowTargets[index] end,
+      indexOf = function(targetId) return indexByTarget[targetId] end,
+      rowAt = function(index) return maps[index] end,
+    }
+  end
+  if view.flagRows ~= nil and view.flagRowAt == nil then
+    view.flagRowAt = function(index)
+      return view.flagRows[index]
+    end
+  end
   return Layout.compute(view, width, height, {
     lineHeight = 14,
     measure = function(text)
@@ -512,6 +551,16 @@ local function choiceDialog(options, selectedKey, query)
   end
   return {
     kind = "choice",
+    count = #options,
+    idAt = function(index)
+      return rowTargets[index]
+    end,
+    indexOf = function(targetId)
+      return indexByTarget[targetId]
+    end,
+    rowAt = function(index)
+      return options[index]
+    end,
     options = options,
     rowTargets = rowTargets,
     indexByTarget = indexByTarget,
@@ -562,6 +611,13 @@ function T.tests.progress_list_publishes_one_container_with_ordered_filterable_r
   Assert.deepEqual(list.rowTargets, expectedRows)
 
   local container = assert(layout.targets["list:flags"], "the flag list owns one screen-level container target")
+  local rowTarget = expectedRows[1]
+  local marker = assert(layout.rowMarkers[rowTarget], "visible flag rows publish marker geometry")
+  local label = assert(layout.rowLabelRects[rowTarget], "visible flag rows publish bounded label geometry")
+  Assert.isTrue(
+    label.x - (marker.x + 1) >= 3,
+    "flag glyph bounds clear the marker stroke by at least three pixels"
+  )
   Assert.isTrue(container.focusable, "the container remains focusable while rows scroll")
   Assert.isTrue(
     focusOrderContains(layout.focusOrder, "list:flags"),
@@ -1054,7 +1110,7 @@ function T.tests.filterable_lists_reserve_a_hint_line_above_their_rows()
   local metrics = filterMetrics()
   local flags = progressFilterFlags()
   for _, query in ipairs({ "", "beat" }) do
-    local layout = Layout.compute(progressFilterView(flags, query), 256, 192, metrics)
+    local layout = computeLayout(progressFilterView(flags, query), 256, 192)
     local surface = assert(layout.listSurfaces[1], "the flag list owns one framed surface")
     local firstRow = assert(layout.targets["flag:" .. flags[1].name]).rect
     Assert.isTrue(
@@ -1322,6 +1378,16 @@ function T.tests.large_choice_catalog_materializes_only_its_visible_window()
     bagRows = {},
     valueEditor = {
       kind = "choice",
+      count = #options,
+      idAt = function(index)
+        return rowTargets[index]
+      end,
+      indexOf = function(targetId)
+        return indexByTarget[targetId]
+      end,
+      rowAt = function(index)
+        return options[index]
+      end,
       options = options,
       rowTargets = rowTargets,
       indexByTarget = indexByTarget,

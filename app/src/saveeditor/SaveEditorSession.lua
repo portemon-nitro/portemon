@@ -59,6 +59,7 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@class SaveEditorSession
 ---@field snapshot fun(self: SaveEditorSession): SaveEditorSnapshot
 ---@field isDirty fun(self: SaveEditorSession): boolean
+---@field revision fun(self: SaveEditorSession): integer
 ---@field partyRevision fun(self: SaveEditorSession): integer
 ---@field partySnapshot fun(self: SaveEditorSession): { revision: integer, members: { slot0: integer, mon: table<string, unknown> }[] }
 ---@field bagSnapshot fun(self: SaveEditorSession, pocket: string): { item: string, quantity: integer }[]
