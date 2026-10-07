@@ -18,7 +18,7 @@ local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "field-runtime", "audio-bank:730", "map-data:7", "map:7", "pc:global" },
+    derivedAssets = { "field-runtime", "audio-bank:730", "map-data:7", "map:7", "pc:global", "summary:global" },
     tags = { "party", "bag", "flow" },
   },
   tests = {},
@@ -77,6 +77,61 @@ local function recordingIcons()
   return { prepare = prepare, cancel = cancel, calls = calls }
 end
 
+local function summaryContext(game)
+  local SummaryCache = require("libs.assets.src.SummaryCache")
+  local manifest = SummaryCache.loadManifest(assert(game.runtime.cacheFs, "the runtime owns its cache"))
+  local performance = assert(manifest.performance, "the summary family carries performance rules")
+  local zero = assert(performance.zeroAprijuice, "performance rules carry the zero modifiers")
+  local initials = assert(
+    manifest.ribbons.initialSpecialDescriptions,
+    "ribbon definitions carry the source-initial special descriptions"
+  )
+  return function()
+    local profile = assert(game.runtime.playerData.profile, "the runtime owns the player profile")
+    local day = assert(game.runtime.localClock, "the runtime owns its clock"):nowLocal().day
+    local count = assert(game.runtime.monService, "the runtime owns the mon service"):partyCount()
+    local rows = {}
+    for _ = 1, count do
+      rows[#rows + 1] =
+        { power = zero.power, stamina = zero.stamina, skill = zero.skill, jump = zero.jump, speed = zero.speed }
+    end
+    local specials = {}
+    for slot = 1, 14 do
+      local initial = initials[slot]
+      if type(initial) == "string" and initial ~= "" then
+        specials[slot] = initial
+      else
+        specials[slot] = "acceptance special-ribbon description " .. slot
+      end
+    end
+    return {
+      profile = { trainerId = profile.trainerId, name = profile.name, gender = profile.gender },
+      dayOfMonth = day,
+      dexMode = "regional",
+      performanceEnabled = false,
+      aprijuiceBySlot = rows,
+      specialRibbonDescriptions = specials,
+    }
+  end
+end
+
+-- Headless summary leases resolve instantly with the validated family:
+-- nothing draws (render attempts stay zero), so no portrait realizes.
+---@param game table<string, unknown> booted acceptance game
+---@return fun(): table<string, unknown> lease factory
+local function acquireSummaryLease(game)
+  local SummaryCache = require("libs.assets.src.SummaryCache")
+  local manifest = SummaryCache.loadManifest(assert(game.runtime.cacheFs, "the runtime owns its cache"))
+  return function()
+    local lease = {}
+    function lease:prepare(demand)
+      return { kind = "ready", key = demand.key, assets = { manifest = manifest } }
+    end
+    function lease:release() end
+    return lease
+  end
+end
+
 local function openFlow(game, root)
   local Flow = requireFlow()
   local runtime = game.runtime
@@ -104,6 +159,7 @@ local function openFlow(game, root)
     assets = {
       bagManifest = BagCache.loadManifest(cacheFs),
       partyManifest = PartyCache.loadManifest(cacheFs),
+      summaryManifest = require("libs.assets.src.SummaryCache").loadManifest(cacheFs),
       uiManifest = assert(runtime.uiManifest, "field runtime owns the field-UI manifest"),
       monCatalog = assert(runtime.monCatalog, "field runtime owns the mon catalog"),
       itemCatalog = assert(runtime.itemCatalog, "field runtime owns the item catalog"),
@@ -115,8 +171,20 @@ local function openFlow(game, root)
     prepareIcons = icons.prepare,
     cancelIconPreparation = icons.cancel,
     textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
+    summaryContext = summaryContext(game),
+    readSummaryNavigation = function()
+      return nil
+    end,
+    acquireSummaryPreparation = acquireSummaryLease(game),
   })
 end
+
+-- The explicit read-only summary display context over live runtime
+-- reads: headless leases never draw, so special descriptions ride the
+-- family's own source-initial selections when they carry display text
+-- and explicit placeholders only until the family lowers real ones.
+---@param game table<string, unknown> booted acceptance game
+---@return fun(): table<string, unknown> context provider
 
 local function givePair(game)
   local service = assert(game.runtime.monService, "field runtime owns the live mon service")
@@ -716,9 +784,15 @@ function T.tests.summary_return_follows_displayed_mon()
     status = drive(flow, { { type = "confirm" } })
     status = choosePartyMenu(flow, "summary")
     Assert.equal(status.page, "summary", "choosing Summary must open the summary page")
-    status = drive(flow, { { type = "navigate", direction = "right" } })
+    -- The Summary entry gate discards pre-active edges, so settle until
+    -- the child turns active before driving navigation at its controller.
+    status = driveUntil(flow, "the active summary child", 24, function(current)
+      local child = current.child
+      return current.page == "summary" and child ~= nil and child.wrapperPhase == "active"
+    end)
+    status = drive(flow, { { type = "navigate", direction = "down" } })
     local child = bagChild(status)
-    Assert.equal(child.slot, 1, "moving right must display the second mon")
+    Assert.equal(child.slot, 1, "moving down must display the second mon")
     status = drive(flow, { { type = "cancel" } })
     status = driveUntil(flow, "the party browse page", 30, function(current)
       return current.page == "party_browse"

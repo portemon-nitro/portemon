@@ -656,4 +656,133 @@ function T.menu_rejects_missing_sources()
   end)
 end
 
+-- The read-only navigation observation below lets a feature-local
+-- repeater recover the fresh-versus-held distinction that the shared
+-- event list deliberately collapses. The accessor never consumes an
+-- edge, never retimes the sibling stream, and invalidates on every
+-- modal or focus reset.
+
+local function lastSample(input)
+  Assert.notNil(input.lastUiNavigation, "the input exposes its most recent navigation sample")
+  return input:lastUiNavigation()
+end
+
+local function rawSample(input)
+  local accessor = input.lastUiNavigation
+  if accessor == nil then
+    return nil
+  end
+  return input:lastUiNavigation()
+end
+
+function T.last_navigation_reports_the_fresh_press_and_held_direction()
+  local input = FieldInput.new()
+  input:beginUi(0)
+  input:pressDirection("north", "key:w")
+  Assert.deepEqual(
+    input:uiSnapshot(0),
+    { { type = "navigate", direction = "up" } },
+    "the event stream stays unchanged"
+  )
+  Assert.deepEqual(
+    lastSample(input),
+    { tick = 0, active = true, heldDirection = "up", pressedDirection = "up" },
+    "the sample carries the fresh press and the hold"
+  )
+end
+
+function T.last_navigation_reads_never_consume_or_retime_the_stream()
+  local function drive(observe)
+    local input = FieldInput.new()
+    input:beginUi(0)
+    input:pressDirection("north", "key:w")
+    local events = {}
+    for tick = 0, 22 do
+      if observe then
+        lastSample(input)
+        lastSample(input)
+      end
+      events[tick + 1] = input:uiSnapshot(tick)
+    end
+    return events
+  end
+  Assert.deepEqual(drive(true), drive(false), "observing never changes the event stream")
+  local plain = drive(false)
+  Assert.deepEqual(plain[1], { { type = "navigate", direction = "up" } }, "the fresh press emits at once")
+  for tick = 1, 17 do
+    Assert.deepEqual(plain[tick + 1], {}, "the shared stream holds its delay at tick " .. tick)
+  end
+  Assert.deepEqual(
+    plain[19],
+    { { type = "navigate", direction = "up" } },
+    "the shared stream repeats after eighteen"
+  )
+  Assert.deepEqual(plain[23], { { type = "navigate", direction = "up" } }, "the shared stream repeats every four")
+end
+
+function T.held_only_snapshots_carry_no_fresh_edge()
+  local input = FieldInput.new()
+  input:beginUi(0)
+  input:pressDirection("north", "key:w")
+  input:uiSnapshot(0)
+  Assert.deepEqual(input:uiSnapshot(1), {}, "the hold alone emits no event")
+  Assert.deepEqual(
+    lastSample(input),
+    { tick = 1, active = true, heldDirection = "up" },
+    "the sample carries the hold without a fresh edge"
+  )
+end
+
+function T.lifecycle_resets_invalidate_the_sample()
+  local input = FieldInput.new()
+  input:beginUi(0)
+  input:pressDirection("north", "key:w")
+  input:uiSnapshot(0)
+  Assert.notNil(rawSample(input), "snapshots publish their observation")
+  input:beginUi(5)
+  Assert.isNil(rawSample(input), "a new lifetime starts with no observation")
+  input:pressDirection("north", "key:w")
+  input:uiSnapshot(5)
+  Assert.notNil(rawSample(input), "the new lifetime observes anew")
+  input:clearUi()
+  Assert.isNil(rawSample(input), "closing the modal drops the observation")
+  input:beginUi(6)
+  input:pressDirection("east", "key:d")
+  input:uiSnapshot(6)
+  Assert.notNil(rawSample(input), "a later lifetime observes anew")
+  input:clearAll()
+  Assert.isNil(rawSample(input), "focus loss drops the observation")
+end
+
+function T.inactive_snapshots_record_an_inactive_sample_without_replay()
+  local input = FieldInput.new()
+  input:pressDirection("north", "key:w")
+  Assert.deepEqual(input:uiSnapshot(7), {}, "suspended UI emits nothing")
+  Assert.deepEqual(
+    lastSample(input),
+    { tick = 7, active = false },
+    "inactive snapshots record an inactive sample"
+  )
+  input:beginUi(8)
+  Assert.deepEqual(input:uiSnapshot(8), {}, "the suspended fresh edge never replays")
+  Assert.deepEqual(
+    lastSample(input),
+    { tick = 8, active = true, heldDirection = "up" },
+    "the surviving hold carries no stale fresh edge"
+  )
+end
+
+function T.returned_samples_are_copies()
+  local input = FieldInput.new()
+  input:beginUi(0)
+  input:pressDirection("north", "key:w")
+  input:uiSnapshot(0)
+  local first = lastSample(input)
+  local expected = { tick = 0, active = true, heldDirection = "up", pressedDirection = "up" }
+  Assert.deepEqual(first, expected, "the sample carries the observation")
+  first.heldDirection = "down"
+  first.extra = true
+  Assert.deepEqual(lastSample(input), expected, "mutating a sample never leaks back")
+end
+
 return { tests = T }

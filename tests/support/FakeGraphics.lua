@@ -116,6 +116,9 @@ function FakeGraphics.new(opts)
         getHeight = function()
           return size[2]
         end,
+        getDimensions = function()
+          return size[1], size[2]
+        end,
       }
       image.release = function()
         image.released = true

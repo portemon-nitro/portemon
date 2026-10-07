@@ -18,6 +18,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.assets.src.MartCache",
   "libs.assets.src.PartyCache",
   "libs.assets.src.PcCache",
+  "libs.assets.src.SummaryCache",
   "libs.hgss.src.presentation.BagHeroRenderer",
   "libs.hgss.src.ui.BagRenderer",
   "libs.hgss.src.ui.MartRenderer",
@@ -42,6 +43,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.hgss.src.presentation.AssetPreparationQueue",
   "libs.hgss.src.presentation.ItemIconAssetProvider",
   "libs.hgss.src.presentation.FollowingMonTransitionRenderer",
+  "game.hgss.src.field.SummaryPresentationResources",
 }
 
 local function releasable(calls, name)
@@ -94,6 +96,35 @@ local function buildDoubles(sink, calls)
     ["libs.assets.src.PcCache"] = {
       loadManifest = function(_)
         return { storage = {}, mailbox = {}, photoAlbum = {} }
+      end,
+    },
+    ["libs.assets.src.SummaryCache"] = {
+      loadManifest = function(_)
+        return { summaryDispatchManifest = true }
+      end,
+    },
+    -- The summary preparation owner stays a recording stub: dispatch
+    -- coverage owns presenter routing, while the required owner itself
+    -- is proven with real collaborators in the summary composition
+    -- suite. The stub still installs exactly one owner plus one runtime
+    -- binding, so construction never runs without the capability.
+    ["game.hgss.src.field.SummaryPresentationResources"] = {
+      new = function(opts)
+        calls.summaryOwnerConstructed = (calls.summaryOwnerConstructed or 0) + 1
+        calls.summaryOwnerManifest = opts and opts.manifest
+        local owner = {}
+        function owner:acquire()
+          calls.summaryLeases = (calls.summaryLeases or 0) + 1
+          return {
+            release = function(_)
+              calls.summaryLeaseReleases = (calls.summaryLeaseReleases or 0) + 1
+            end,
+          }
+        end
+        function owner:release()
+          calls.summaryOwner = (calls.summaryOwner or 0) + 1
+        end
+        return owner
       end,
     },
     ["libs.hgss.src.presentation.BagHeroRenderer"] = {
@@ -344,6 +375,25 @@ local function compositionRuntime()
   end
   runtime.unbindPartyIconPreparation = function(_, binding)
     runtime.unbindCalls[#runtime.unbindCalls + 1] = binding
+  end
+  -- The recording summary seam mirrors the production runtime binding:
+  -- one live acquire callback with an identity, removed only by its own
+  -- identity so a stale unbind can never drop a replacement owner.
+  runtime.summaryBindCalls = {}
+  runtime.summaryUnbindCalls = {}
+  runtime.bindSummaryPreparation = function(_, acquire)
+    assert(type(acquire) == "function", "summary preparation binding requires its acquire function")
+    assert(runtime.summaryPreparation == nil, "one summary preparation binding owns the presented lifetime")
+    runtime.summaryBindCalls[#runtime.summaryBindCalls + 1] = acquire
+    runtime.summaryPreparation = { id = #runtime.summaryBindCalls, acquire = acquire }
+    return runtime.summaryPreparation.id
+  end
+  runtime.unbindSummaryPreparation = function(_, binding)
+    runtime.summaryUnbindCalls[#runtime.summaryUnbindCalls + 1] = binding
+    local current = runtime.summaryPreparation
+    if current ~= nil and current.id == binding then
+      runtime.summaryPreparation = nil
+    end
   end
   return runtime
 end
@@ -652,6 +702,27 @@ function T.party_binding_installs_and_retires_with_presentation()
     Assert.deepEqual(runtime.unbindCalls, { 1 }, "disposal unbinds the exact installed binding")
     resources:dispose()
     Assert.deepEqual(runtime.unbindCalls, { 1 }, "repeat disposal unbinds nothing again")
+  end)
+end
+
+function T.summary_binding_installs_and_retires_with_presentation()
+  local sink, calls = {}, {}
+  local runtime = compositionRuntime()
+  withProductionComposition(sink, calls, runtime, function(resources)
+    Assert.equal(#runtime.summaryBindCalls, 1, "presentation binds one summary preparation owner before launch")
+    Assert.isTrue(
+      type(runtime.summaryBindCalls[1]) == "function",
+      "the summary binding carries the owner acquire closure"
+    )
+    Assert.notNil(resources.summaryResources, "construction installs the summary preparation owner")
+    Assert.notNil(resources._summaryBinding, "construction installs the runtime summary binding")
+    Assert.equal(calls.summaryOwnerConstructed, 1, "construction builds the summary owner exactly once")
+    resources:dispose()
+    Assert.deepEqual(runtime.summaryUnbindCalls, { 1 }, "disposal unbinds the exact installed summary binding")
+    Assert.equal(calls.summaryOwner, 1, "disposal releases the field summary owner exactly once")
+    resources:dispose()
+    Assert.deepEqual(runtime.summaryUnbindCalls, { 1 }, "repeat disposal unbinds nothing again")
+    Assert.equal(calls.summaryOwner, 1, "repeat disposal releases nothing again")
   end)
 end
 

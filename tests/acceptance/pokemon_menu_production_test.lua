@@ -11,6 +11,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
+local GameSave = require("libs.hgss.src.save.GameSave")
 local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 local GameSave = require("libs.hgss.src.save.GameSave")
@@ -20,7 +21,7 @@ local RomFs = require("romdump.src.source.RomFs")
 
 local T = {
   metadata = { capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "audio-bank:758", "audio-bank:759", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:33", "map:60" }, tags = { "menu", "production" } },
+    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "audio-bank:758", "audio-bank:759", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:33", "map:60", "summary:global" }, tags = { "menu", "production" } },
   tests = {},
 }
 
@@ -53,6 +54,20 @@ local function withGame(fn, map)
   game.runtime:bindPartyIconPreparation(function(_)
     return true
   end, function() end)
+  -- Headless summary leases resolve instantly with the validated
+  -- family: nothing draws (render attempts stay zero), so no portrait
+  -- realizes.
+  local SummaryCache = require("libs.assets.src.SummaryCache")
+  local summaryManifest = SummaryCache.loadManifest(assert(game.runtime.cacheFs, "the runtime owns its cache"))
+  game.runtime:bindSummaryPreparation(function()
+    local lease = {}
+    function lease:prepare(demand)
+      return { kind = "ready", key = demand.key, assets = { manifest = summaryManifest } }
+    end
+    function lease:release()
+    end
+    return lease
+  end)
   OpeningLifecycle.seedNewBarkWestExitScene(game)
   OpeningLifecycle.settleNewBarkFriendScene(game)
   local runtime = game.runtime
@@ -179,7 +194,10 @@ local function childView(flow)
 end
 
 local function settleTransition(flow)
-  for _ = 1, 6 do
+  -- Summary-involved exits publish one extra full-black frame past the
+  -- six-update shutter cadence; the loop still breaks early for shorter
+  -- sibling transitions.
+  for _ = 1, 10 do
     if flow:status().transition == nil then
       break
     end

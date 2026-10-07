@@ -35,6 +35,7 @@ local PAGE = {
 
 ---@class PokemonMenuFlow
 ---@field private _effect (fun(sequence: string))? the production semantic sound boundary for menu children
+---@field private _playCry (fun(species: integer, pattern: integer))? the production cry boundary for summary children
 ---@field private _textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
 ---@field private _root string
 ---@field private _mons table<string, unknown>
@@ -50,6 +51,9 @@ local PAGE = {
 ---@field private _prepareIcons fun(iconKeys: string[]): boolean, string? presented icon preparation (borrowed binding)
 ---@field private _cancelIconPreparation fun() presented preparation release (borrowed binding)
 ---@field private _mailOutcome table<string, unknown>? latest Party Mail result for the composed child
+---@field private _summaryContext fun(): table<string, unknown>? the explicit summary display context per refresh
+---@field private _readSummaryNavigation fun(): table<string, unknown>? the read-only summary navigation sample
+---@field private _acquireSummaryPreparation fun(): table<string, unknown>? the per-open summary lease factory
 ---@field private _overrides table<string, unknown>?
 ---@field private _page string
 ---@field private _child table<string, unknown>?
@@ -65,6 +69,7 @@ local PokemonMenuFlow = {}
 PokemonMenuFlow.__index = PokemonMenuFlow
 
 ---@class PokemonMenuFlow.ReplacementTransition
+---@field settled boolean? whether the full-black summary frame published
 ---@field kind "replacement"
 ---@field phase "app_exit"
 ---@field fade StandardFade
@@ -74,6 +79,7 @@ PokemonMenuFlow.__index = PokemonMenuFlow
 ---@field childStatus table<string, unknown>? the last drawable outgoing child status
 
 ---@class PokemonMenuFlow.TerminalTransition
+---@field settled boolean? whether the full-black summary frame published
 ---@field kind "terminal"
 ---@field phase "app_exit"|"menu_return"
 ---@field fade StandardFade
@@ -269,7 +275,17 @@ function PokemonMenuFlow.new(opts)
   local cancelIconPreparation = assert(opts.cancelIconPreparation, "the menu flow needs its preparation release")
   assert(type(cancelIconPreparation) == "function", "the menu flow needs its preparation release")
   assert(opts.effect == nil or type(opts.effect) == "function", "the menu flow carries an effect function")
+  assert(opts.playCry == nil or type(opts.playCry) == "function", "the menu flow carries a cry function")
   assert(opts.textPolicy == nil or type(opts.textPolicy) == "table", "the menu flow carries a text policy")
+  if opts.summaryContext ~= nil then
+    assert(type(opts.summaryContext) == "function", "the menu flow carries its summary context")
+  end
+  if opts.readSummaryNavigation ~= nil then
+    assert(type(opts.readSummaryNavigation) == "function", "the menu flow carries its summary navigation sample")
+  end
+  if opts.acquireSummaryPreparation ~= nil then
+    assert(type(opts.acquireSummaryPreparation) == "function", "the menu flow carries its summary lease factory")
+  end
   local self = setmetatable({
     _root = opts.root,
     _mons = mons,
@@ -284,7 +300,11 @@ function PokemonMenuFlow.new(opts)
     _measureDisplay = opts.measureDisplay,
     _prepareIcons = prepareIcons,
     _cancelIconPreparation = cancelIconPreparation,
+    _summaryContext = opts.summaryContext,
+    _readSummaryNavigation = opts.readSummaryNavigation,
+    _acquireSummaryPreparation = opts.acquireSummaryPreparation,
     _effect = opts.effect,
+    _playCry = opts.playCry,
     _textPolicy = opts.textPolicy,
     _overrides = opts.overrides,
     _page = opts.root == "bag" and PAGE.BAG_BROWSE or PAGE.PARTY_BROWSE,
@@ -408,21 +428,35 @@ function PokemonMenuFlow:_openPage(page, continuation)
     local cont = assert(continuation, "the summary opens for a captured slot")
     return SummaryScreenState.new({
       mons = self._mons,
-      manifest = assets.partyManifest,
+      manifest = assert(assets.summaryManifest, "presented summaries require the summary family"),
       initialSlot = assert(cont.slot, "the summary opens on a party slot"),
       measureDisplay = measureDisplay,
       mode = PAGE.SUMMARY,
+      context = assert(self._summaryContext, "presented summaries require their display context"),
+      readNavigation = assert(self._readSummaryNavigation, "presented summaries require their navigation sample"),
+      acquirePreparation = assert(self._acquireSummaryPreparation, "presented summaries require preparation"),
+      effect = self._effect,
+      playCry = self._playCry,
+      textPolicy = self._textPolicy,
+      overrides = self._overrides,
     })
   end
   if page == PAGE.MOVE_PICK then
     local cont = assert(continuation, "the move picker opens for a pending operation")
     return SummaryScreenState.new({
       mons = self._mons,
-      manifest = assets.partyManifest,
+      manifest = assert(assets.summaryManifest, "presented pickers require the summary family"),
       initialSlot = assert(cont.slot, "the picker opens on the pending slot"),
       measureDisplay = measureDisplay,
       mode = PAGE.MOVE_PICK,
       request = assert(cont.pickerRequest, "the picker carries its closed request"),
+      context = assert(self._summaryContext, "presented pickers require their display context"),
+      readNavigation = assert(self._readSummaryNavigation, "presented pickers require their navigation sample"),
+      acquirePreparation = assert(self._acquireSummaryPreparation, "presented pickers require preparation"),
+      effect = self._effect,
+      playCry = self._playCry,
+      textPolicy = self._textPolicy,
+      overrides = self._overrides,
     })
   end
   if page == PAGE.MAIL_READ then
@@ -834,6 +868,18 @@ function PokemonMenuFlow:_routeUse(intent, continuation, itemKey)
   self:_completeParty({ kind = outcome.kind })
 end
 
+-- Resolves the move the selected machine would teach: the item record
+-- names its native move identity, the mon catalog folds it to the stored
+-- move key, and the picker previews that key without owning it.
+---@param itemKey string
+---@return string move key behind the machine
+function PokemonMenuFlow:_teachingMove(itemKey)
+  local definition = self._assets.itemCatalog:item(itemKey)
+  local nativeId = assert(definition.tmhmMoveNativeId, "machines carry their native move identity")
+  assert(type(nativeId) == "number", "machine move identities are numeric")
+  return self._assets.monCatalog:moveKeyByNativeId(nativeId)
+end
+
 -- Routes a machine use: free slots commit at once, full sets detour
 -- through the protected picker, and known/incompatible sets report
 -- without publishing or consuming.
@@ -860,6 +906,7 @@ function PokemonMenuFlow:_routeTeach(intent, continuation, itemKey)
     continuation.pickerRequest = {
       context = "replace_machine",
       protected = protectedRows(self._mons, self._assets.monCatalog, self._assets.itemCatalog, slot),
+      prospectiveMove = self:_teachingMove(itemKey),
     }
     self:_replace(PAGE.MOVE_PICK, continuation)
     return
@@ -1051,7 +1098,12 @@ function PokemonMenuFlow:_routeSummaryResult(result)
   local continuation = assert(self._continuation, "cancellation returns to a pending operation")
   local operation = assert(continuation.operation, "continuations name their operation")
   if operation == PAGE.SUMMARY then
-    self:_replace(PAGE.PARTY_BROWSE, { focusSlot = assert(continuation.slot, "summary opens on a slot") })
+    local slot = assert(continuation.slot, "summary opens on a slot")
+    local focus = nil
+    if type(slot) == "number" and slot >= 0 and slot < self._mons:partyCount() then
+      focus = slot
+    end
+    self:_replace(PAGE.PARTY_BROWSE, { focusSlot = focus })
     self._continuation = nil
     return
   end
@@ -1253,6 +1305,17 @@ function PokemonMenuFlow:updateFixed(uiInput)
     end
     fade:updateSourceFrame()
     if fade.completed then
+      local outgoingPlan = childStatus.presentation
+      local outgoingKey = type(outgoingPlan) == "table" and outgoingPlan.inputKey or nil
+      local incomingSummary = transition.kind == "replacement"
+        and (transition.page == PAGE.SUMMARY or transition.page == PAGE.MOVE_PICK)
+      if (outgoingKey == "summary" or incomingSummary) and transition.settled ~= true then
+        -- A summary-involved exit publishes its full-black frame once
+        -- before the handoff so the both-pane recurrence reads complete;
+        -- sibling shutters keep their six-update cadence.
+        transition.settled = true
+        return
+      end
       local previous = assert(self._child, "transition completion retires the published child")
       if transition.kind == "replacement" then
         self._child = transition.child

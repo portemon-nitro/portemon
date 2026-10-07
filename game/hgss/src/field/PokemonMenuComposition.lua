@@ -64,7 +64,12 @@ local PokemonMenuComposition = {}
 ---@field fieldTravel table<string, unknown>? durable travel owner (borrowed)
 ---@field overrides table<string, unknown>? per-case application overrides
 ---@field effect (fun(sequence: string))? the production semantic sound boundary for bag children
+---@field playCry (fun(species: integer, pattern: integer))? the production cry boundary for summary children
 ---@field textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
+---@field summaryManifest table<string, unknown>? the borrowed summary family for summary children
+---@field summaryContext fun(): table<string, unknown>? the explicit summary display context per refresh
+---@field readSummaryNavigation fun(): table<string, unknown>? the read-only summary navigation sample
+---@field acquireSummaryPreparation fun(): table<string, unknown>? the per-open summary lease factory
 
 -- The menu flow's field-check port: capture the current world facts on
 -- every call, then answer the source eligibility decision. Fresh reads
@@ -122,7 +127,20 @@ function PokemonMenuComposition.create(deps)
   assert(type(worldPorts) == "table", "the menu composition needs the field world ports")
   local overrides = deps.overrides
   assert(deps.effect == nil or type(deps.effect) == "function", "the menu composition carries an effect function")
+  assert(deps.playCry == nil or type(deps.playCry) == "function", "the menu composition carries a cry function")
   assert(deps.textPolicy == nil or type(deps.textPolicy) == "table", "the menu composition carries a text policy")
+  if deps.summaryManifest ~= nil then
+    assert(type(deps.summaryManifest) == "table", "the menu composition borrows the summary family")
+  end
+  if deps.summaryContext ~= nil then
+    assert(type(deps.summaryContext) == "function", "the menu composition carries its summary context")
+  end
+  if deps.readSummaryNavigation ~= nil then
+    assert(type(deps.readSummaryNavigation) == "function", "the menu composition carries its summary navigation sample")
+  end
+  if deps.acquireSummaryPreparation ~= nil then
+    assert(type(deps.acquireSummaryPreparation) == "function", "the menu composition carries its summary lease factory")
+  end
 
   local partyActions = PartyActions.new({ mons = mons, bag = bag })
   local mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest })
@@ -142,6 +160,7 @@ function PokemonMenuComposition.create(deps)
   local assets = {
     bagManifest = bagManifest,
     partyManifest = partyManifest,
+    summaryManifest = deps.summaryManifest,
     uiManifest = uiManifest,
     monCatalog = monCatalog,
     itemCatalog = itemCatalog,
@@ -154,7 +173,11 @@ function PokemonMenuComposition.create(deps)
     return PokemonMenuFlow.new({
       root = root,
       effect = deps.effect,
+      playCry = deps.playCry,
       textPolicy = deps.textPolicy,
+      summaryContext = deps.summaryContext,
+      readSummaryNavigation = deps.readSummaryNavigation,
+      acquireSummaryPreparation = deps.acquireSummaryPreparation,
       mons = mons,
       bag = bag,
       bagCursor = bagCursor,
@@ -286,11 +309,17 @@ function PokemonMenuComposition.create(deps)
       end
       return SummaryScreenState.new({
         mons = mons,
-        manifest = partyManifest,
+        manifest = assert(deps.summaryManifest, "boxed summaries require the summary family"),
         initialSlot = subjectPort == nil and source.slot or 0,
         measureDisplay = measureDisplay,
         subjectPort = subjectPort,
         mode = "summary",
+        context = assert(deps.summaryContext, "boxed summaries require their display context"),
+        readNavigation = assert(deps.readSummaryNavigation, "boxed summaries require their navigation sample"),
+        acquirePreparation = assert(deps.acquireSummaryPreparation, "boxed summaries require preparation"),
+        effect = deps.effect,
+        playCry = deps.playCry,
+        textPolicy = deps.textPolicy,
       })
     end
     local function makeBoxName(request)

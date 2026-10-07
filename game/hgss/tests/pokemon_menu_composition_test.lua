@@ -32,7 +32,7 @@ local COMPOSITION_MODULE = "game.hgss.src.field.PokemonMenuComposition"
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "bag:global", "party:global", "pc:global" },
+    derivedAssets = { "bag:global", "party:global", "pc:global", "summary:global" },
     tags = { "menu", "composition" },
   },
   tests = {},
@@ -42,6 +42,62 @@ local function requireComposition()
   local ok, compositionModule = pcall(require, COMPOSITION_MODULE)
   Assert.isTrue(ok, "the production composition owns the menu collaborators: " .. tostring(compositionModule))
   return assert(compositionModule)
+end
+
+-- The explicit read-only summary display context for composed Storage
+-- children: headless tests never draw, so performance stays off and
+-- special descriptions ride the family's own source-initial selections
+-- when they carry display text.
+---@param manifest table<string, unknown> the validated summary family
+---@param mons table<string, unknown> the live mon service
+---@return fun(): table<string, unknown> context provider
+local function summaryTestContext(manifest, mons)
+  local performance = assert(manifest.performance, "the summary family carries performance rules")
+  local zero = assert(performance.zeroAprijuice, "performance rules carry the zero modifiers")
+  local initials = assert(
+    manifest.ribbons.initialSpecialDescriptions,
+    "ribbon definitions carry the source-initial special descriptions"
+  )
+  local profile = CatalogFixture.profile()
+  return function()
+    local rows = {}
+    for _ = 1, mons:partyCount() do
+      rows[#rows + 1] =
+        { power = zero.power, stamina = zero.stamina, skill = zero.skill, jump = zero.jump, speed = zero.speed }
+    end
+    local specials = {}
+    for slot = 1, 14 do
+      local initial = initials[slot]
+      if type(initial) == "string" and initial ~= "" then
+        specials[slot] = initial
+      else
+        specials[slot] = "composition special-ribbon description " .. slot
+      end
+    end
+    return {
+      profile = { trainerId = profile.trainerId, name = profile.name, gender = profile.gender },
+      dayOfMonth = 13,
+      dexMode = "regional",
+      performanceEnabled = false,
+      aprijuiceBySlot = rows,
+      specialRibbonDescriptions = specials,
+    }
+  end
+end
+
+-- Headless summary leases resolve instantly with the validated family:
+-- nothing draws, so no portrait realizes.
+---@param manifest table<string, unknown> the validated summary family
+---@return fun(): table<string, unknown> lease factory
+local function summaryTestLease(manifest)
+  return function()
+    local lease = {}
+    function lease:prepare(demand)
+      return { kind = "ready", key = demand.key, assets = { manifest = manifest } }
+    end
+    function lease:release() end
+    return lease
+  end
 end
 
 local function openMons(seed)
@@ -428,6 +484,7 @@ function T.tests.box_summary_moves_publish_to_the_selected_box(context)
   prepared.publish()
 
   local bag = openBag()
+  local summaryManifest = require("libs.assets.src.SummaryCache").loadManifest(cacheFs)
   local composition = requireComposition().create(dependencies({
     mons = mons,
     bag = bag,
@@ -436,6 +493,12 @@ function T.tests.box_summary_moves_publish_to_the_selected_box(context)
     versionId = versionId,
     cacheFs = cacheFs,
     derivedAssets = {},
+    summaryManifest = summaryManifest,
+    summaryContext = summaryTestContext(summaryManifest, mons),
+    readSummaryNavigation = function()
+      return nil
+    end,
+    acquireSummaryPreparation = summaryTestLease(summaryManifest),
   }))
   local storage = composition.makeStorageChild(1)
   storage:updateFixed({ { type = "confirm" } })
@@ -443,10 +506,16 @@ function T.tests.box_summary_moves_publish_to_the_selected_box(context)
   storage:updateFixed({ { type = "navigate", direction = "down" } })
   storage:updateFixed({ { type = "confirm" } })
   Assert.equal(storage:status().childKind, "summary", "Storage opens Summary for the selected box mon")
+  for _ = 1, 12 do
+    storage:updateFixed({})
+  end
   for _, batch in ipairs({
+    { { type = "navigate", direction = "right" } },
+    { { type = "confirm" } },
     {},
-    { { type = "navigate", direction = "down" } },
-    { { type = "navigate", direction = "down" } },
+    {},
+    {},
+    {},
     { { type = "confirm" } },
     { { type = "navigate", direction = "down" } },
     { { type = "confirm" } },

@@ -424,4 +424,52 @@ function T.portrait_manifest_keeps_entry_shape()
   end
 end
 
+local function subrect(pixels, width, x, y, w, h)
+  local rows = {}
+  for row = 0, h - 1 do
+    local base = ((y + row) * width + x) * 4
+    rows[#rows + 1] = pixels:sub(base + 1, base + w * 4)
+  end
+  return table.concat(rows)
+end
+
+-- The summary egg closure reuses the page raster path: the narrow
+-- front-frame entrypoint returns the same two owned 80x80 frames the page
+-- compiler packs for the matching portrait selector, so exposing the helper
+-- changes no existing page output.
+function T.front_frame_helper_reuses_the_page_raster_path()
+  Assert.notNil(
+    MonPresentationCompiler.compileFrontFrames,
+    "the mon presentation compiler exposes no front-frame entrypoint for the summary picture closure"
+  )
+  local scanned = {}
+  for i = 1, 3200 do
+    scanned[i] = (i * 257) % 65536
+  end
+  scanned[1] = 0x0102
+  local catalog = catalogWithRepresentatives()
+  local speciesId = assert(MonSources.speciesId("CHIKORITA"), "CHIKORITA must be a known species")
+  local tiles = charContainer(wordsToBytes(scanned))
+  local frames = assert(
+    MonPresentationCompiler.compileFrontFrames(uniformFs(catalog, tiles), speciesId, 0, "male", false),
+    "the front-frame entrypoint compiles"
+  )
+  Assert.equal(frames.width, 80, "front frames stay 80 wide")
+  Assert.equal(frames.height, 80, "front frames stay 80 tall")
+  Assert.equal(#frames.frames, 2, "front compilation keeps both frames")
+  local portraits = mustCompile(uniformFs(catalog, tiles), catalog)
+  local entry = assert(
+    portraits.manifest.entries[MonCache.portraitSelector("CHIKORITA", 0, "male", false)],
+    "the matching page entry resolves"
+  )
+  for index, rgba in ipairs(frames.frames) do
+    local cell = assert(entry.frames[index], "the page entry carries frame " .. index)
+    Assert.equal(
+      rgba,
+      subrect(portraits.image.pixels, portraits.image.width, cell.x, cell.y, 80, 80),
+      "front frame " .. index .. " matches the packed page pixels"
+    )
+  end
+end
+
 return { tests = T }

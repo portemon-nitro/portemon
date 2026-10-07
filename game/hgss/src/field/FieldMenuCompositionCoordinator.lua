@@ -282,6 +282,76 @@ function FieldMenuCompositionCoordinator:composeBag(activeGame, loadedGame)
   runtime.bagCursor = BagCursor.new()
 end
 
+-- Builds the explicit read-only Summary display context per open: the
+-- trainer profile identity, the captured civil day, regional Dex mode
+-- (no national-Dex owner exists on this path), zero aprijuice modifiers
+-- for each current party member (no Aprijuice persistence exists here),
+-- performance enablement from the world flag, and the source-initial
+-- special-ribbon descriptions resolved through the message bank. These
+-- current-owner limits are explicit values, never inferred flags.
+---@param innerRuntime table<string, unknown> the live field runtime
+---@param manifest table<string, unknown> the validated summary family
+---@return fun(): table<string, unknown> context provider
+local function summaryContextProvider(innerRuntime, manifest)
+  local performance = assert(manifest.performance, "the summary family carries performance rules")
+  assert(type(performance) == "table", "performance rules are a record")
+  local zero = assert(performance.zeroAprijuice, "performance rules carry the zero modifiers")
+  assert(type(zero) == "table", "zero modifiers are a record")
+  local ribbons = assert(manifest.ribbons, "the summary family carries ribbon definitions")
+  assert(type(ribbons) == "table", "ribbon definitions are a record")
+  local initials =
+    assert(ribbons.initialSpecialDescriptions, "ribbon definitions carry the source-initial special descriptions")
+  assert(type(initials) == "table", "initial special descriptions are a record")
+  local choices = assert(ribbons.descriptionChoices, "ribbon definitions carry description choices")
+  assert(type(choices) == "table", "description choices are a record")
+  local bank = assert(choices.base, "description choices carry their message bank")
+  assert(type(bank) == "number", "description message banks are numeric")
+  local function provide()
+    local playerData = assert(innerRuntime.playerData, "the menu composition requires the player data")
+    local profile = assert(playerData.profile, "the menu composition requires the player profile")
+    local day = assert(innerRuntime.localClock, "the menu composition requires its clock"):nowLocal().day
+    assert(type(day) == "number", "the civil day stays numeric")
+    local eventState = assert(innerRuntime.eventState, "the menu composition requires the event state")
+    local performanceEnabled = eventState:isFlagSet(FieldScriptSymbols.flagsByName.FLAG_UNK_982) == true
+    local count = assert(innerRuntime.monService, "the menu composition requires the mon service"):partyCount()
+    assert(type(count) == "number" and count >= 1, "summary contexts need a non-empty party")
+    local rows = {}
+    for _ = 1, count do
+      rows[#rows + 1] = {
+        power = zero.power,
+        stamina = zero.stamina,
+        skill = zero.skill,
+        jump = zero.jump,
+        speed = zero.speed,
+      }
+    end
+    local provider = assert(innerRuntime.messageProvider, "special descriptions resolve through messages")
+    local specials = {}
+    for slot = 1, 14 do
+      local initial = initials[slot]
+      if type(initial) == "string" and initial ~= "" then
+        specials[slot] = initial
+      else
+        assert(type(initial) == "number", "source-initial special selections stay numeric")
+        local template, messageErr = provider:get(bank, initial)
+        assert(template ~= nil, "special-ribbon message unavailable: " .. tostring(messageErr))
+        local text = assert(template.text, "special-ribbon messages carry text")
+        assert(type(text) == "string" and text ~= "", "special-ribbon messages carry display text")
+        specials[slot] = text
+      end
+    end
+    return {
+      profile = { trainerId = profile.trainerId, name = profile.name, gender = profile.gender },
+      dayOfMonth = day,
+      dexMode = "regional",
+      performanceEnabled = performanceEnabled,
+      aprijuiceBySlot = rows,
+      specialRibbonDescriptions = specials,
+    }
+  end
+  return provide
+end
+
 -- Composes the one live Pokemon menu composition outside the boot
 -- closure (which sits close to LuaJIT's per-function upvalue limit).
 -- Joins the live mon/Bag services, manifests, display facts, and field
@@ -294,6 +364,7 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
   local PokemonMenuComposition = require("game.hgss.src.field.PokemonMenuComposition")
   local BagCache = require("libs.assets.src.BagCache")
   local PartyCache = require("libs.assets.src.PartyCache")
+  local SummaryCache = require("libs.assets.src.SummaryCache")
   local ScriptMapsService = require("libs.hgss.src.script.ScriptMapsService")
   local avatar = assert(runtime.avatar, "the menu composition requires the player avatar")
   assert(avatar.gender == 0 or avatar.gender == 1, "the bag hero gender is unsupported")
@@ -388,12 +459,37 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
       runtime.audio:play(sequence)
     end
   end
+  -- Summary cries play through the composed field audio service under
+  -- the same borrowed-audio rule: a host without audio stays silent.
+  local function playSummaryCry(species, pattern)
+    if runtime.audio then
+      runtime.audio:playCry(species, pattern)
+    end
+  end
   local bagTextPolicy = TextSpeedPolicy.forSpeed(
     assert(runtime.playerData and runtime.playerData.options and runtime.playerData.options.textSpeed)
   )
+  local summaryManifest = SummaryCache.loadManifest(cacheFs)
+  -- The preparation factory stays late-bound through the runtime
+  -- because presentation resources postdate this composition: the
+  -- binding resolves per summary open, when a screen is actually
+  -- constructed. Navigation observes the already-created input sample
+  -- without snapshotting twice.
+  local function acquireSummaryPreparation()
+    local binding = assert(runtime._summaryPreparation, "summary opens require the presented preparation binding")
+    return binding.acquire()
+  end
+  local function readSummaryNavigation()
+    return assert(runtime.input, "summary navigation needs the field input"):lastUiNavigation()
+  end
   runtime.pokemonMenu = PokemonMenuComposition.create({
     effect = playBagSequence,
+    playCry = playSummaryCry,
     textPolicy = bagTextPolicy,
+    summaryManifest = summaryManifest,
+    summaryContext = summaryContextProvider(runtime, summaryManifest),
+    readSummaryNavigation = readSummaryNavigation,
+    acquireSummaryPreparation = acquireSummaryPreparation,
     mons = assert(runtime.monService, "the menu composition requires the live mon service"),
     bag = assert(runtime.bagService, "the menu composition requires the live bag service"),
     mailbox = assert(runtime.mailbox, "the menu composition requires the live Mailbox"),

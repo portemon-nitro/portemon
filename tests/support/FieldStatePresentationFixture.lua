@@ -2,8 +2,9 @@
 -- base field-UI font/frames plus the Trainer Card front, one minimal mon
 -- icon class, the minimal item icon/atlas and Bag/Mart manifests/images
 -- the eager child presentation resources require, the minimal party manifest
--- and images the eager party presentation resources require, and the
--- minimal field-actor
+-- and images the eager party presentation resources require, the minimal
+-- summary family and portrait entries the required summary preparation
+-- owner validates during FieldState construction, and the minimal field-actor
 -- index/visual/atlas FieldState presentation loaders currently require.
 
 local LuaWriter = require("libs.codec.src.LuaWriter")
@@ -16,6 +17,8 @@ local ItemCache = require("libs.assets.src.ItemCache")
 local MonCache = require("libs.assets.src.MonCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local PcCache = require("libs.assets.src.PcCache")
+local SummaryCache = require("libs.assets.src.SummaryCache")
+local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local MartFixture = require("tests.support.MartFixture")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
@@ -376,6 +379,12 @@ function FieldStatePresentationFixture.cache()
   for _, path in ipairs(PartyCache.referencedPaths(partyData)) do
     cache:write(path, solidPng(32, 32))
   end
+  -- Minimal schema-valid summary family and portrait entries so the
+  -- required summary preparation owner validates during FieldState
+  -- construction. No image realizes here: these boots never open the
+  -- summary, so no lease ever demands visuals from the family.
+  cache:writeLua(SummaryCache.manifestPath(), SummaryPresentationFixture.manifest())
+  cache:writeLua(MonCache.portraitManifestPath(), { entries = {} })
   cache:write(
     FieldActorCache.indexPath(),
     LuaWriter.encode({ schema = FieldActorCache.INDEX_SCHEMA, spriteIds = { 0 } })

@@ -9,6 +9,9 @@ local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
 local MartRenderer = require("libs.hgss.src.ui.MartRenderer")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local SummaryCache = require("libs.assets.src.SummaryCache")
+local SummaryPresentationResources = require("game.hgss.src.field.SummaryPresentationResources")
+local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
@@ -38,12 +41,15 @@ local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 
 ---@alias PartyIconPrepare fun(iconKeys: string[]): boolean, string?
 ---@alias PartyIconCancel fun()
+---@alias SummaryPreparationAcquire fun(): table<string, unknown>
 
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
 ---@field derivedAssets table<string, function>? semantic derived-asset host in presented composition
 ---@field bindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, prepare: PartyIconPrepare, cancel: PartyIconCancel): integer? runtime party preparation binding in presented composition
 ---@field unbindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer)? runtime preparation unbinding in presented composition
+---@field bindSummaryPreparation fun(runtime: FieldPresentationResourcesRuntime, acquire: SummaryPreparationAcquire): integer runtime summary preparation binding in presented composition
+---@field unbindSummaryPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime summary preparation unbinding in presented composition
 ---@field uiManifest table<string, unknown>
 ---@field playerData table<string, unknown> the validated profile/options authority
 ---@field windowStyles FieldWindowStyles
@@ -73,6 +79,9 @@ local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 ---@field imageQueue AssetPreparationQueue? the one owned worker decoding party icon pages
 ---@field _presentationRuntime FieldPresentationResourcesRuntime? borrowed runtime owning the party preparation binding
 ---@field _partyIconBinding integer? installed preparation binding identity
+---@field _summaryBinding integer? installed summary preparation binding identity
+---@field summaryResources SummaryPresentationResources? the one field-owned summary preparation leaf
+---@field summaryRenderer SummaryRenderer? the one real summary pane renderer
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
@@ -169,6 +178,39 @@ local function buildPresenters(owner)
       text = assert(owner.textRenderer, "party text renderer is unavailable"),
     }, status, plan)
   end
+  -- The summary wait screen mirrors the party wait contract over the
+  -- wrapper-owned preparation state: pending shows the host preparation
+  -- cover, failure shows the explicit cause with cancellation. Drawing
+  -- never invokes bundle getters, so no draw ever acquires resources.
+  ---@param presentation table<string, unknown>?
+  ---@return boolean handled
+  local function drawSummaryWait(presentation)
+    local state = presentation and presentation.preparationState
+    if state ~= "pending" and state ~= "failed" then
+      return false
+    end
+    local text = assert(owner.textRenderer, "summary text renderer is unavailable")
+    if state == "pending" then
+      text:drawText("Preparing summary...", 8, 8)
+    else
+      local status = assert(presentation, "the summary application presents its status")
+      text:drawText("Summary unavailable: " .. tostring(status.preparationError), 8, 8)
+    end
+    return true
+  end
+  ---@param hostGraphics table<string, unknown>
+  ---@param status table<string, unknown>
+  ---@param plan table<string, unknown>
+  local function drawSummaryPlan(hostGraphics, status, plan)
+    local resources = {
+      graphics = hostGraphics,
+      summaryRenderer = assert(owner.summaryRenderer, "summary renderer is unavailable"),
+    }
+    if plan.inputKey == "summary" then
+      resources.summaryBundle = assert(status.resources, "the summary plan carries its ready bundle")
+    end
+    ApplicationPresentation.draw(hostGraphics, resources, status, plan)
+  end
   ---@param hostGraphics table<string, unknown>
   ---@param status table<string, unknown>
   ---@param plan table<string, unknown>
@@ -210,14 +252,18 @@ local function buildPresenters(owner)
       inputKey = assert(transition.inputKey, "menu return retains its plan role")
       panes = assert(transition.panes, "menu return retains pane placements")
     end
-    if inputKey == "bag-inactive" or inputKey == "party-inactive" then
+    if inputKey == "bag-inactive" or inputKey == "party-inactive" or inputKey == "summary-inactive" then
       return
     end
     local mainId, subId
+    local summaryExit = false
     if inputKey == "bag" then
       mainId, subId = "interaction", "hero"
     elseif inputKey == "party" then
       mainId, subId = "content", "detail"
+    elseif inputKey == "summary" then
+      mainId, subId = "main", "sub"
+      summaryExit = true
     else
       error("menu transitions cannot present plan " .. tostring(inputKey), 0)
     end
@@ -242,6 +288,11 @@ local function buildPresenters(owner)
       end)
     end
     if phase == "app_exit" then
+      if summaryExit then
+        drawBrightness(mainPane)
+        drawBrightness(subPane)
+        return
+      end
       local step = assert(transition.step, "app exit carries its source shutter step")
       assert(type(step) == "number" and step % 1 == 0 and step >= 0 and step <= 6, "shutter steps stay in 0..6")
       if mainPane ~= nil then
@@ -260,11 +311,12 @@ local function buildPresenters(owner)
   end
   -- Both menu applications run the shared Bag/Party flow, whose single
   -- live child follows the active page: the bag hosts party targets for
-  -- Use/Give, and the party hosts the bag picker for Give. Dispatch on
-  -- the resolved child plan, never the application id, so a cross-page
-  -- child draws through its own renderer with its own icon provider. A
-  -- plan outside the owned bag/party set is a composition error, never a
-  -- fallback to another application surface.
+  -- Use/Give, the party hosts the bag picker for Give, and either hosts
+  -- the native Summary child. Dispatch on the resolved child plan,
+  -- never the application id, so a cross-page child draws through its
+  -- own renderer with its own providers. A plan outside the owned
+  -- bag/party/summary set is a composition error, never a fallback to
+  -- another application surface.
   ---@param presentation table<string, unknown>?
   ---@param applicationId string
   local function drawMenuFlow(presentation, applicationId)
@@ -273,6 +325,16 @@ local function buildPresenters(owner)
       local hostGraphics = love and love.graphics
       assert(type(hostGraphics) == "table", applicationId .. " drawing requires its host graphics namespace")
       drawMenuFlowTransition(hostGraphics, transition, nil)
+      return
+    end
+    if drawSummaryWait(presentation) then
+      if transition ~= nil then
+        local hostGraphics = love and love.graphics
+        assert(type(hostGraphics) == "table", applicationId .. " drawing requires its host graphics namespace")
+        local status = assert(presentation, "the summary wait screen carries its presentation status")
+        local plan = assert(status.presentation, "the summary wait carries its resolved pane plan")
+        drawMenuFlowTransition(hostGraphics, transition, plan)
+      end
       return
     end
     if drawPartyWait(presentation) then
@@ -294,6 +356,8 @@ local function buildPresenters(owner)
       drawBagPlan(hostGraphics, status, plan)
     elseif inputKey == "party" or inputKey == "party-inactive" then
       drawPartyPlan(hostGraphics, status, plan)
+    elseif inputKey == "summary" or inputKey == "summary-inactive" then
+      drawSummaryPlan(hostGraphics, status, plan)
     else
       error("the " .. applicationId .. " application cannot present plan " .. tostring(inputKey), 0)
     end
@@ -399,6 +463,26 @@ function FieldPresentationResources.new(runtime)
     local bindPreparation =
       assert(runtime.bindPartyIconPreparation, "presented party icons require the runtime preparation binding")
     self._partyIconBinding = bindPreparation(runtime, preparePartyIcons, cancelPartyIconPreparation)
+    -- The summary preparation owner is required for the field lifetime:
+    -- construction fails when the generated family cannot be read, so a
+    -- field never starts without its preparation capability. No image
+    -- realizes here; a wrapper lease demands visuals later.
+    self.summaryRenderer = SummaryRenderer.new({ text = textRenderer })
+    self.summaryResources = SummaryPresentationResources.new({
+      cacheFs = runtime.cacheFs,
+      graphics = assert(love and love.graphics, "summary preparation needs its graphics namespace"),
+      text = textRenderer,
+      icons = provider,
+      preparationQueue = self.imageQueue,
+      derivedAssets = runtime.derivedAssets or {},
+      manifest = SummaryCache.loadManifest(runtime.cacheFs),
+    })
+    local bindSummaryPreparation =
+      assert(runtime.bindSummaryPreparation, "presented summary preparation requires the runtime preparation binding")
+    local summaryOwner = assert(self.summaryResources, "summary preparation is unavailable")
+    self._summaryBinding = bindSummaryPreparation(runtime, function()
+      return summaryOwner:acquire()
+    end)
     -- Bag presentation resolves eagerly beside the party icons: field entry
     -- boots only when the compiled item/bag caches are present, and the
     -- launch-time capability gate in the FieldRuntime bag factory still
@@ -771,8 +855,10 @@ function FieldPresentationResources:dispose()
     self.monIconProvider = nil
   end
   local partyIconBinding = self._partyIconBinding
+  local summaryBinding = self._summaryBinding
   local presentationRuntime = self._presentationRuntime
   self._partyIconBinding = nil
+  self._summaryBinding = nil
   self._presentationRuntime = nil
   if partyIconBinding ~= nil and presentationRuntime ~= nil then
     local unbindPreparation = assert(
@@ -781,6 +867,18 @@ function FieldPresentationResources:dispose()
     )
     unbindPreparation(presentationRuntime, partyIconBinding)
   end
+  if summaryBinding ~= nil and presentationRuntime ~= nil then
+    local unbindSummary = assert(
+      presentationRuntime.unbindSummaryPreparation,
+      "the installed summary binding requires its runtime unbinding"
+    )
+    unbindSummary(presentationRuntime, summaryBinding)
+  end
+  if self.summaryResources then
+    self.summaryResources:release()
+    self.summaryResources = nil
+  end
+  self.summaryRenderer = nil
   if self.imageQueue then
     self.imageQueue:release()
     self.imageQueue = nil
