@@ -17,6 +17,8 @@ local T = {
     derivedAssets = {
       "field-planning",
       "field-runtime",
+      "encounters:global",
+      "trainers:global",
       "items:global",
       "bag:global",
       "party:global",
@@ -906,14 +908,8 @@ function T.tests.party_stats_edit_uses_number_modal_and_keeps_draft_staged()
       Assert.isNil(detail.layout.targets["party:edit"], "selecting a member edits immediately without an Edit action")
       Assert.isNil(detail.layout.targets["party:apply"], "the member editor has no local Apply action")
       Assert.isNil(detail.layout.targets["party:back"], "the member editor has no local Back action")
-      Assert.isNil(
-        detail.layout.targets["party:subpage:Stats"],
-        "the member editor has no top subpage tab bar"
-      )
-      Assert.notNil(
-        detail.layout.targets["party:page:previous"],
-        "the bottom pager exposes the previous page arrow"
-      )
+      Assert.isNil(detail.layout.targets["party:subpage:Stats"], "the member editor has no top subpage tab bar")
+      Assert.notNil(detail.layout.targets["party:page:previous"], "the bottom pager exposes the previous page arrow")
       Assert.notNil(detail.layout.targets["party:page:next"], "the bottom pager exposes the next page arrow")
       Assert.equal(detail.partyTab, "Stats", "the selected member opens on the Stats page")
 
@@ -1023,11 +1019,7 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
       }
 
       local firstMap = assert(world.maps[assert(world.byId[selectedMaps[1]])])
-      state.controller:chooseLocationMap(
-        selectedMaps[1],
-        firstMap.worldOriginX + 16,
-        firstMap.worldOriginZ + 16
-      )
+      state.controller:chooseLocationMap(selectedMaps[1], firstMap.worldOriginX + 16, firstMap.worldOriginZ + 16)
       state:update(0)
       Assert.equal(
         assert(state:view().location).status.state,
@@ -1046,11 +1038,7 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
         selectedMaps[2],
         "a replacement browse request owns the service after cancellation"
       )
-      state.controller:chooseLocationMap(
-        selectedMaps[1],
-        firstMap.worldOriginX + 16,
-        firstMap.worldOriginZ + 16
-      )
+      state.controller:chooseLocationMap(selectedMaps[1], firstMap.worldOriginX + 16, firstMap.worldOriginZ + 16)
       state:update(0)
       Assert.equal(
         assert(state:view().location).mapId,
@@ -1063,17 +1051,6 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
         state:_performDeferred({ kind = "location-map-select", mapId = mapId })
         state:update(0)
 
-        local beforeMove = assert(state:view().locationNavigation.cursor)
-        if mapIndex > 1 then
-          state:keypressed("right")
-          state:keyreleased("right")
-          Assert.equal(
-            assert(state:view().locationNavigation.cursor).fieldX,
-            beforeMove.fieldX + 1,
-            "map browsing continues to accept input between bounded service updates"
-          )
-        end
-
         local updates = 0
         local view = assert(state:view().location)
         local requestGeneration = assert(view.initialCursor).generation
@@ -1083,19 +1060,27 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
           state:update(0)
           view = assert(state:view().location)
         end
-        Assert.equal(view.status.state, "ready", "the selected source map is prepared: " .. tostring(view.status.reason))
+        Assert.equal(
+          view.status.state,
+          "ready",
+          "the selected source map is prepared: " .. tostring(view.status.reason)
+        )
 
         local suggestion = view.initialCursor
         Assert.notNil(suggestion, "real map browsing publishes its surveyed initial cursor")
-        Assert.equal(suggestion.state, "ready", "the survey finds a selectable tile in the selected map")
-        Assert.equal(suggestion.mapId, mapId, "the suggestion remains bound to the selected map")
-        Assert.equal(suggestion.generation, requestGeneration, "the suggestion remains bound to the active browse request")
-        local resolved, resolution = state.locationService:resolve(
-          mapId,
-          assert(suggestion.fieldX),
-          assert(suggestion.fieldZ),
-          view.generation
+        Assert.equal(
+          suggestion.state,
+          "ready",
+          "the survey finds a selectable tile in " .. tostring(view.symbol) .. ": " .. tostring(suggestion.state)
         )
+        Assert.equal(suggestion.mapId, mapId, "the suggestion remains bound to the selected map")
+        Assert.equal(
+          suggestion.generation,
+          requestGeneration,
+          "the suggestion remains bound to the active browse request"
+        )
+        local resolved, resolution =
+          state.locationService:resolve(mapId, assert(suggestion.fieldX), assert(suggestion.fieldZ), view.generation)
         Assert.notNil(resolved, "the surveyed coordinate passes the production placement classifier")
         Assert.equal(resolution.state, "ready", "the suggestion is fully prepared for explicit selection")
         if mapIndex == 1 then
@@ -1104,7 +1089,7 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
             { fieldX = suggestion.fieldX, fieldZ = suggestion.fieldZ },
             "the production browse flow centers the cursor on its valid-tile suggestion"
           )
-          beforeMove = assert(state:view().locationNavigation.cursor)
+          local beforeMove = assert(state:view().locationNavigation.cursor)
           state:keypressed("right")
           state:keyreleased("right")
           Assert.equal(

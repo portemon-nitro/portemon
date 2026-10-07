@@ -13,6 +13,7 @@ local SaveEditorMapSurvey = require("app.src.saveeditor.SaveEditorMapSurvey")
 ---@field id integer
 ---@field symbol string
 ---@field mapSection string
+---@field mapSectionNativeId integer
 ---@field worldOriginX integer
 ---@field worldOriginZ integer
 ---@field matrix { memberId: integer }
@@ -77,7 +78,6 @@ local SaveEditorMapSurvey = require("app.src.saveeditor.SaveEditorMapSurvey")
 ---@field coverageTaskMapId integer?
 ---@field coverageTaskAnchorX integer?
 ---@field coverageTaskAnchorZ integer?
----@field maps table[]
 ---@field mapId integer?
 ---@field runtimeMap RuntimeFieldMap?
 ---@field coverage FieldCoverage?
@@ -96,7 +96,7 @@ local SaveEditorMapSurvey = require("app.src.saveeditor.SaveEditorMapSurvey")
 ---@field objectEvents table[]?
 ---@field warpEvents table[]?
 ---@field coordinateEvents table[]?
----@field metadata table<string, unknown>?
+---@field metadata SaveEditorLocationMetadata?
 ---@field metadataReady boolean
 ---@field metadataTask FieldMapLoader.LogicalMetadataTask?
 ---@field requestPurpose string
@@ -115,8 +115,7 @@ SaveEditorLocationService.__index = SaveEditorLocationService
 
 local TILE_SIZE = 32
 local MAX_VIEW_TILES = 64
-local MAX_CLASSIFICATIONS_PER_UPDATE = 256
-local LOAD_WORK_UNITS = 8
+local UPDATE_WORK_UNITS = 8
 local METADATA_ITEMS_PER_UNIT = 128
 
 local function copy(value)
@@ -151,27 +150,50 @@ local function recordById(world, mapId)
   return index and world.maps[index] or nil
 end
 
-local function mapList(world)
-  local result = {}
-  for _, record in ipairs(world.maps) do
-    result[#result + 1] = {
-      mapId = record.id,
-      symbol = record.symbol,
-      section = record.mapSection,
-      mapSectionNativeId = record.mapSectionNativeId,
-      displayName = (record.symbol:gsub("^MAP_", "", 1)),
-    }
-  end
-  table.sort(result, function(left, right)
-    if left.section ~= right.section then
-      return left.section < right.section
-    end
-    if left.symbol ~= right.symbol then
-      return left.symbol < right.symbol
-    end
-    return left.mapId < right.mapId
-  end)
-  return result
+---@class SaveEditorMapSummaryTask
+---@field world SaveEditorStructuralWorld
+---@field cursor integer
+---@field summaries SaveEditorMapSummary[]
+---@field complete boolean
+---@field advance fun(self: SaveEditorMapSummaryTask, budget: integer): integer, boolean
+---@field take fun(self: SaveEditorMapSummaryTask): SaveEditorMapSummary[]
+---@param world SaveEditorStructuralWorld
+---@return SaveEditorMapSummaryTask
+local function newMapSummaryTask(world)
+  local task = {
+    world = world,
+    cursor = 1,
+    summaries = {},
+    complete = false,
+    advance = function(self, budget)
+      assert(
+        type(budget) == "number" and budget % 1 == 0 and budget >= 0,
+        "map summary budget must be a non-negative integer"
+      )
+      local used = 0
+      while used < budget and self.cursor <= #self.world.maps do
+        local record = self.world.maps[self.cursor]
+        self.summaries[#self.summaries + 1] = {
+          mapId = record.id,
+          symbol = record.symbol,
+          section = record.mapSection,
+          mapSectionNativeId = record.mapSectionNativeId,
+          displayName = record.symbol:gsub("^MAP_", "", 1),
+        }
+        self.cursor = self.cursor + 1
+        used = used + 1
+      end
+      self.complete = self.cursor > #self.world.maps
+      return used, self.complete
+    end,
+    take = function(self)
+      assert(self.complete, "map summaries are complete before publication")
+      local summaries = self.summaries
+      self.summaries = {}
+      return summaries
+    end,
+  }
+  return task
 end
 
 local function savedActorList(savedObjects)
@@ -224,25 +246,6 @@ local function surveyRectangleDomain(bounds)
   return domain
 end
 
-local function coordinateTrigger(warps, coordinates, fieldX, fieldZ)
-  for _, event in ipairs(warps) do
-    if fieldX == event.x and fieldZ == event.z then
-      return "warp"
-    end
-  end
-  for _, event in ipairs(coordinates) do
-    if
-      fieldX >= event.x
-      and fieldX < event.x + event.width
-      and fieldZ >= event.z
-      and fieldZ < event.z + event.height
-    then
-      return "coordinate_trigger"
-    end
-  end
-  return false
-end
-
 ---@param options SaveEditorLocationOptions
 ---@return SaveEditorLocationService
 function SaveEditorLocationService.new(options)
@@ -266,7 +269,6 @@ function SaveEditorLocationService.new(options)
     coverageTaskMapId = nil,
     coverageTaskAnchorX = nil,
     coverageTaskAnchorZ = nil,
-    maps = mapList(options.world),
     mapId = nil,
     runtimeMap = nil,
     coverage = nil,
@@ -295,22 +297,18 @@ function SaveEditorLocationService.new(options)
     surveyDomainComplete = false,
     surveyResult = nil,
     requestGeneration = 0,
+    visibleClassificationTask = nil,
+    rememberedClassificationTask = nil,
+    surveyClassificationTask = nil,
+    surveyValidationTask = nil,
     factsRevision = 0,
   }, SaveEditorLocationService)
 end
 
-function SaveEditorLocationService:listMaps()
+-- Creates source summaries incrementally so callers can bound inventory reads.
+function SaveEditorLocationService:newMapSummaryTask()
   assert(not self.disposed, "location service is disposed")
-  return copy(self.maps)
-end
-
--- Shares the cached structural map summaries by reference. The array and
--- its records are immutable after construction; consumers must not mutate
--- them. Filtered views are owned by the caller.
----@return table[] summaries
-function SaveEditorLocationService:mapSummaries()
-  assert(not self.disposed, "location service is disposed")
-  return self.maps
+  return newMapSummaryTask(self.world)
 end
 
 -- Releases staged tasks and published grid resources after leaving
@@ -334,6 +332,9 @@ function SaveEditorLocationService:cancelInitialSurvey()
   self.surveyDomain = nil
   self.surveyDomainComplete = false
   self.surveyResult = nil
+  self.rememberedClassificationTask = nil
+  self.surveyClassificationTask = nil
+  self.surveyValidationTask = nil
   self.surveyCells = nil
   if self.requestPurpose == "browse" and self.initialCursor and self.initialCursor.state == "pending" then
     self.initialCursor = {
@@ -348,6 +349,7 @@ end
 function SaveEditorLocationService:_invalidate()
   self.generation = self.generation + 1
   self.tileStatuses = {}
+  self.visibleClassificationTask = nil
 end
 
 function SaveEditorLocationService:_releaseLoadTask()
@@ -424,6 +426,10 @@ function SaveEditorLocationService:_releaseMap()
   self.surveyResult = nil
   self.initialCursor = nil
   self.rememberedCursor = nil
+  self.rememberedClassificationTask = nil
+  self.surveyClassificationTask = nil
+  self.surveyValidationTask = nil
+  self.visibleClassificationTask = nil
 end
 
 ---@param mapId integer
@@ -470,6 +476,9 @@ function SaveEditorLocationService:openMap(mapId, request)
   self.surveyDomain = nil
   self.surveyDomainComplete = false
   self.surveyResult = nil
+  self.rememberedClassificationTask = nil
+  self.surveyClassificationTask = nil
+  self.surveyValidationTask = nil
   self.factsRevision = self.factsRevision + 1
   self:_invalidate()
 end
@@ -500,6 +509,8 @@ function SaveEditorLocationService:_collectRepresented(coverage, candidate)
     complete = false,
     ids = coverage == nil and { self.mapId } or nil,
     idsSet = idsSet,
+    representedCount = 1,
+    catalogIndex = 1,
     descriptorCursor = nil,
     descriptorCells = coverage ~= nil and assert(coverage.cells) or nil,
     mapIndex = 1,
@@ -527,26 +538,45 @@ function SaveEditorLocationService:_advanceRepresented(maxWorkUnits)
   local metadata = assert(self.metadata)
   local consumed = 0
   while consumed < maxWorkUnits do
-    if metadata.phase == "representedDescriptors" then
+    if metadata.phase == "representedDescriptors" or metadata.phase == "representedCatalog" then
       local visited = 0
       while visited < METADATA_ITEMS_PER_UNIT do
-        local cellKey, cell = next(assert(metadata.descriptorCells), metadata.descriptorCursor)
-        if cellKey == nil then
-          local ids = {}
-          for id in pairs(metadata.idsSet) do
-            ids[#ids + 1] = id
+        if metadata.phase == "representedDescriptors" then
+          local cellKey, cell = next(assert(metadata.descriptorCells), metadata.descriptorCursor)
+          if cellKey == nil then
+            metadata.ids = {}
+            metadata.phase = "representedCatalog"
+          else
+            metadata.descriptorCursor = cellKey
+            visited = visited + 1
+            local descriptor = assert(cell.descriptor, "committed coverage cells retain their descriptors")
+            local header = assert(descriptor.mapHeaderId, "physical descriptor map header is required")
+            if not FieldZoneIdentity.isPhysicalOnlyCell(header) and self.loader:definesMap(header) then
+              if not metadata.idsSet[header] then
+                metadata.idsSet[header] = true
+                metadata.representedCount = metadata.representedCount + 1
+              end
+            end
           end
-          table.sort(ids)
-          metadata.ids = ids
-          metadata.phase = "matrixSearch"
+        elseif metadata.phase == "representedCatalog" then
+          local maps = self.world.maps
+          if metadata.catalogIndex > #maps then
+            assert(
+              #assert(metadata.ids) == metadata.representedCount,
+              "structural catalog contains every represented map"
+            )
+            metadata.phase = "matrixSearch"
+          else
+            local mapId = maps[metadata.catalogIndex].id
+            if metadata.idsSet[mapId] then
+              local ids = assert(metadata.ids)
+              ids[#ids + 1] = mapId
+            end
+            metadata.catalogIndex = metadata.catalogIndex + 1
+            visited = visited + 1
+          end
+        else
           break
-        end
-        metadata.descriptorCursor = cellKey
-        visited = visited + 1
-        local descriptor = assert(cell.descriptor, "committed coverage cells retain their descriptors")
-        local header = assert(descriptor.mapHeaderId, "physical descriptor map header is required")
-        if not FieldZoneIdentity.isPhysicalOnlyCell(header) and self.loader:definesMap(header) then
-          metadata.idsSet[header] = true
         end
       end
       consumed = consumed + 1
@@ -589,7 +619,9 @@ function SaveEditorLocationService:_advanceRepresented(maxWorkUnits)
             end
           end
           if metadata.currentMap ~= nil then
-            metadata.events = assert(metadata.currentMap.fieldData.events, "field map event collections are required")
+            ---@type SaveEditorFieldEvents
+            local events = assert(metadata.currentMap.fieldData.events, "field map event collections are required")
+            metadata.events = events
           end
           metadata.kindIndex = 1
           metadata.eventIndex = 1
@@ -908,19 +940,23 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
   if assetsError ~= nil then
     self.status = status("failed", assetsError)
     self.initialCursor = nil
-    return false
+    return false, 0
   end
   if not assetsReady then
     self.status = status("pending")
-    return false
+    return false, 0
   end
 
-  local remaining = LOAD_WORK_UNITS
+  local remaining = UPDATE_WORK_UNITS
+  local function pending()
+    return false, UPDATE_WORK_UNITS - remaining
+  end
+
   if self.runtimeMap == nil then
     local consumed, mapReady = self:_advanceStagedMap(remaining)
     remaining = remaining - consumed
     if not mapReady then
-      return false
+      return pending()
     end
   end
 
@@ -930,11 +966,11 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
   local ready, err = self.loader:requestLocation(self.mapId, fieldX, fieldZ, "required")
   if err ~= nil then
     self.status = status("failed", err)
-    return false
+    return pending()
   end
   if not ready then
     self.status = status("pending")
-    return false
+    return pending()
   end
 
   local coverageReady = true
@@ -942,13 +978,13 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
     -- Do not begin/advance coverage after the budget is exhausted.
     if remaining == 0 and self:_needsCoverageFor(fieldX, fieldZ) then
       self.status = status("pending")
-      return false
+      return pending()
     end
     local consumed, isReady = self:_advanceStagedCoverage(fieldX, fieldZ, remaining)
     remaining = remaining - consumed
     coverageReady = isReady
     if self.status.state == "failed" then
-      return false
+      return pending()
     end
   elseif self.runtimeMap.scene.type ~= "outdoor" and self.coverage ~= nil then
     self:_releaseCoverage()
@@ -991,22 +1027,37 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
       error(metadataCompleteOrError, 0)
     end
     self.status = status("failed", Errors.format(metadataCompleteOrError))
-    return false
+    return pending()
   end
   if not metadataCompleteOrError then
     self.status = status("pending")
-    return false
+    return pending()
   end
   if not coverageReady then
     self.status = status("pending")
-    return false
+    return pending()
   end
   if self.candidateCoverage ~= nil then
     self:_publishCandidateCoverage()
   end
   if self.requestPurpose == "browse" and self.initialCursor.state == "pending" and self.rememberedCursor ~= nil then
+    if remaining == 0 then
+      self.status = status("pending")
+      return pending()
+    end
     local cursor = assert(self.rememberedCursor, "pending remembered cursor is retained for point preparation")
-    local result = self:_classify(cursor.fieldX, cursor.fieldZ)
+    local task = self.rememberedClassificationTask
+    if task == nil then
+      task = self:_beginTileClassification(cursor.fieldX, cursor.fieldZ)
+      self.rememberedClassificationTask = task
+    end
+    local _, result = self:_advanceTileClassification(task, METADATA_ITEMS_PER_UNIT)
+    remaining = remaining - 1
+    if result == nil then
+      self.status = status("pending")
+      return pending()
+    end
+    self.rememberedClassificationTask = nil
     self.initialCursor = {
       state = result.selectable and "ready" or "unavailable",
       mapId = self.mapId,
@@ -1019,7 +1070,7 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
     self.rememberedCursor = nil
     if self.runtimeMap.scene.type == "outdoor" and self:_needsCoverageFor(self.centerX, self.centerZ) then
       self.status = status("pending")
-      return false
+      return pending()
     end
   end
   if self.requestPurpose == "browse" and self.initialCursor.state == "pending" then
@@ -1027,21 +1078,22 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
       self:_beginInitialSurvey()
     end
     if remaining > 0 then
-      local _, complete = self:_advanceInitialSurvey(remaining)
+      local consumed, complete = self:_advanceInitialSurvey(remaining)
+      remaining = remaining - consumed
       if self.status.state == "failed" then
-        return false
+        return pending()
       end
       if not complete then
         self.status = status("pending")
-        return false
+        return pending()
       end
     else
       self.status = status("pending")
-      return false
+      return pending()
     end
   end
   self.status = status("ready")
-  return true
+  return true, UPDATE_WORK_UNITS - remaining
 end
 
 function SaveEditorLocationService:_releaseCoverage()
@@ -1062,7 +1114,7 @@ function SaveEditorLocationService:_tileFacts(fieldX, fieldZ)
     logicalMapMatch = false,
     collision = nil,
     surface = nil,
-    trigger = coordinateTrigger(self.warpEvents or {}, self.coordinateEvents or {}, fieldX, fieldZ),
+    trigger = false,
     mapBounds = self.mapBounds,
     representedMapIds = self.representedMapIds,
     savedActors = self.savedActors,
@@ -1136,10 +1188,87 @@ function SaveEditorLocationService:_tileFacts(fieldX, fieldZ)
 end
 
 function SaveEditorLocationService:_classify(fieldX, fieldZ)
+  local task = self:_beginTileClassification(fieldX, fieldZ)
+  while true do
+    local _, result = self:_advanceTileClassification(task, 4096)
+    if result ~= nil then
+      return result
+    end
+  end
+end
+
+function SaveEditorLocationService:_beginTileClassification(fieldX, fieldZ)
   local facts = self:_tileFacts(fieldX, fieldZ)
   facts.events = self.objectEvents or {}
   facts.savedActors = self.savedActors
-  return SaveEditorLocationPolicy.classify(facts)
+  return {
+    fieldX = fieldX,
+    fieldZ = fieldZ,
+    facts = facts,
+    phase = "warps",
+    eventIndex = 1,
+    policyTask = nil,
+  }
+end
+
+function SaveEditorLocationService:_advanceTileClassification(task, maxVisits)
+  assert(finiteInteger(maxVisits) and maxVisits >= 0, "tile classification budget must be non-negative")
+  local visits = 0
+  while true do
+    if task.phase == "warps" then
+      local event = (self.warpEvents or {})[task.eventIndex]
+      if event == nil then
+        task.phase = "coordinates"
+        task.eventIndex = 1
+      else
+        if visits >= maxVisits then
+          return visits, nil
+        end
+        if task.fieldX == event.x and task.fieldZ == event.z then
+          task.facts.trigger = "warp"
+          task.phase = "policy"
+        else
+          task.eventIndex = task.eventIndex + 1
+        end
+        visits = visits + 1
+      end
+    elseif task.phase == "coordinates" then
+      local event = (self.coordinateEvents or {})[task.eventIndex]
+      if event == nil then
+        task.phase = "policy"
+      else
+        if visits >= maxVisits then
+          return visits, nil
+        end
+        if
+          task.fieldX >= event.x
+          and task.fieldX < event.x + event.width
+          and task.fieldZ >= event.z
+          and task.fieldZ < event.z + event.height
+        then
+          task.facts.trigger = "coordinate_trigger"
+          task.phase = "policy"
+        else
+          task.eventIndex = task.eventIndex + 1
+        end
+        visits = visits + 1
+      end
+    elseif task.phase == "policy" then
+      task.policyTask = task.policyTask or SaveEditorLocationPolicy.beginClassification(task.facts)
+      local used, result = SaveEditorLocationPolicy.advanceClassification(task.policyTask, maxVisits - visits)
+      visits = visits + used
+      if result ~= nil then
+        task.phase = "done"
+        task.result = result
+        return visits, result
+      end
+      if used == 0 and result == nil then
+        return visits, nil
+      end
+    else
+      return visits, assert(task.result)
+    end
+  end
 end
 
 function SaveEditorLocationService:_visibleTiles()
@@ -1155,27 +1284,48 @@ function SaveEditorLocationService:_visibleTiles()
   return result
 end
 
-function SaveEditorLocationService:_classifyVisible()
+function SaveEditorLocationService:_classifyVisible(maxWorkUnits)
+  assert(finiteInteger(maxWorkUnits) and maxWorkUnits >= 0, "visible classification budget must be non-negative")
   local work = 0
-  for _, tile in ipairs(self:_visibleTiles()) do
-    local key = tileKey(tile.fieldX, tile.fieldZ)
-    if self.tileStatuses[key] == nil then
-      if work >= MAX_CLASSIFICATIONS_PER_UPDATE then
-        break
+  local tiles = self:_visibleTiles()
+  local index = 1
+  while work < maxWorkUnits do
+    local unitVisits, unitTiles = 0, 0
+    local incomplete = false
+    while unitTiles < METADATA_ITEMS_PER_UNIT and index <= #tiles do
+      local tile = tiles[index]
+      index = index + 1
+      local key = tileKey(tile.fieldX, tile.fieldZ)
+      if self.tileStatuses[key] == nil then
+        local task = self.visibleClassificationTask
+        if task == nil or task.fieldX ~= tile.fieldX or task.fieldZ ~= tile.fieldZ then
+          task = self:_beginTileClassification(tile.fieldX, tile.fieldZ)
+          self.visibleClassificationTask = task
+        end
+        local visits, result = self:_advanceTileClassification(task, METADATA_ITEMS_PER_UNIT - unitVisits)
+        unitVisits = unitVisits + visits
+        unitTiles = unitTiles + 1
+        if result == nil then
+          incomplete = true
+          break
+        end
+        if result.selectable then
+          self.tileStatuses[key] = { state = "selectable", selectable = true }
+        else
+          self.tileStatuses[key] = { state = "unavailable", selectable = false, reason = result.reason }
+        end
+        self.visibleClassificationTask = nil
       end
-      local result = self:_classify(tile.fieldX, tile.fieldZ)
-      if result.selectable then
-        self.tileStatuses[key] = { state = "selectable", selectable = true }
-      else
-        self.tileStatuses[key] = {
-          state = "unavailable",
-          selectable = false,
-          reason = result.reason,
-        }
-      end
-      work = work + 1
+    end
+    if unitTiles == 0 then
+      break
+    end
+    work = work + 1
+    if incomplete then
+      break
     end
   end
+  return work
 end
 
 function SaveEditorLocationService:_beginInitialSurvey()
@@ -1207,6 +1357,8 @@ function SaveEditorLocationService:_discardInitialSurvey()
   self.surveyDomain = nil
   self.surveyDomainComplete = false
   self.surveyResult = nil
+  self.surveyClassificationTask = nil
+  self.surveyValidationTask = nil
 end
 
 function SaveEditorLocationService:_advanceInitialSurvey(maxWorkUnits)
@@ -1271,19 +1423,38 @@ function SaveEditorLocationService:_advanceInitialSurvey(maxWorkUnits)
     if self:_needsCoverageFor(currentCell.x * TILE_SIZE, currentCell.z * TILE_SIZE) then
       return consumed, false
     end
-    local stop = math.min(#cells * TILE_SIZE * TILE_SIZE, self.surveyIndex + METADATA_ITEMS_PER_UNIT)
-    for index = self.surveyIndex, stop - 1 do
+    local currentCellEnd = math.min(
+      #cells * TILE_SIZE * TILE_SIZE,
+      (math.floor(self.surveyIndex / (TILE_SIZE * TILE_SIZE)) + 1) * TILE_SIZE * TILE_SIZE
+    )
+    local unitVisits, unitTiles = 0, 0
+    while unitTiles < METADATA_ITEMS_PER_UNIT and self.surveyIndex < currentCellEnd do
+      local index = self.surveyIndex
       local cell = cells[math.floor(index / (TILE_SIZE * TILE_SIZE)) + 1]
       local localIndex = index % (TILE_SIZE * TILE_SIZE)
       local fieldX = cell.x * TILE_SIZE + localIndex % TILE_SIZE
       local fieldZ = cell.z * TILE_SIZE + math.floor(localIndex / TILE_SIZE)
       local bounds = assert(self.mapBounds)
-      if fieldX >= bounds.minX and fieldX <= bounds.maxX and fieldZ >= bounds.minZ and fieldZ <= bounds.maxZ then
-        survey:record(fieldX, fieldZ, self:_classify(fieldX, fieldZ).selectable)
+      local classification = self.surveyClassificationTask
+      if classification == nil then
+        classification = self:_beginTileClassification(fieldX, fieldZ)
+        self.surveyClassificationTask = classification
       end
+      local visits, result = self:_advanceTileClassification(classification, METADATA_ITEMS_PER_UNIT - unitVisits)
+      unitVisits = unitVisits + visits
+      unitTiles = unitTiles + 1
+      if result == nil then
+        return consumed + 1, false
+      end
+      if fieldX >= bounds.minX and fieldX <= bounds.maxX and fieldZ >= bounds.minZ and fieldZ <= bounds.maxZ then
+        survey:record(fieldX, fieldZ, result.selectable)
+      end
+      self.surveyClassificationTask = nil
+      self.surveyIndex = index + 1
     end
-    self.surveyIndex = stop
-    consumed = consumed + 1
+    if unitTiles > 0 then
+      consumed = consumed + 1
+    end
   end
   if self.surveyIndex < #cells * TILE_SIZE * TILE_SIZE then
     return consumed, false
@@ -1343,7 +1514,17 @@ function SaveEditorLocationService:_advanceInitialSurvey(maxWorkUnits)
     if consumed >= maxWorkUnits then
       return consumed, false
     end
-    local confirmed = self:_classify(result.fieldX, result.fieldZ)
+    local task = self.surveyValidationTask
+    if task == nil then
+      task = self:_beginTileClassification(result.fieldX, result.fieldZ)
+      self.surveyValidationTask = task
+    end
+    local _, confirmed = self:_advanceTileClassification(task, METADATA_ITEMS_PER_UNIT)
+    consumed = consumed + 1
+    if confirmed == nil then
+      return consumed, false
+    end
+    self.surveyValidationTask = nil
     if not confirmed.selectable then
       self.initialCursor = {
         state = "unavailable",
@@ -1355,7 +1536,7 @@ function SaveEditorLocationService:_advanceInitialSurvey(maxWorkUnits)
       }
       survey:release()
       self.survey = nil
-      return consumed + 1, true
+      return consumed, true
     end
     self.initialCursor = {
       state = "ready",
@@ -1389,12 +1570,13 @@ function SaveEditorLocationService:update()
   if self.initialCursor ~= nil and self.initialCursor.state == "pending" and self.rememberedCursor ~= nil then
     fieldX, fieldZ = self.rememberedCursor.fieldX, self.rememberedCursor.fieldZ
   end
-  local readyOrError = self:_prepareAt(fieldX, fieldZ)
+  local readyOrError, consumed = self:_prepareAt(fieldX, fieldZ)
   if not readyOrError then
     self.tileStatuses = {}
     return
   end
-  self:_classifyVisible()
+  assert(finiteInteger(consumed) and consumed >= 0 and consumed <= UPDATE_WORK_UNITS)
+  self:_classifyVisible(UPDATE_WORK_UNITS - consumed)
 end
 
 function SaveEditorLocationService:snapshot()
@@ -1404,9 +1586,6 @@ function SaveEditorLocationService:snapshot()
       mapId = nil,
       map = nil,
       symbol = nil,
-      -- The structural summaries are immutable after construction and
-      -- shared by reference, matching the prepared path below.
-      maps = self.maps,
       generation = self.generation,
       status = status("idle"),
       tiles = {},
@@ -1425,9 +1604,6 @@ function SaveEditorLocationService:snapshot()
     mapId = self.mapId,
     map = record and { mapId = record.id, symbol = record.symbol, section = record.mapSection } or nil,
     symbol = record and record.symbol or nil,
-    -- The structural summaries are immutable after construction and shared
-    -- by reference; only per-update tiles/status are copied below.
-    maps = self.maps,
     generation = self.generation,
     status = copy(self.status),
     tiles = tiles,

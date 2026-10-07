@@ -87,60 +87,201 @@ local function rowOrder(left, right)
   return leftIdentity < rightIdentity
 end
 
+local function newSort(rows, publish)
+  return { source = rows, destination = {}, width = 1, left = 1, output = 1, publish = publish }
+end
+
+local function advanceSort(sort, budget)
+  local used = 0
+  local count = #sort.source
+  while used < budget and sort.width < count do
+    if sort.left > count then
+      sort.source, sort.destination = sort.destination, sort.source
+      sort.width = sort.width * 2
+      sort.left = 1
+      sort.output = 1
+      sort.leftEnd, sort.rightEnd, sort.i, sort.j = nil, nil, nil, nil
+      if sort.width >= count then
+        return used, true
+      end
+    end
+    if sort.leftEnd == nil then
+      sort.leftEnd = math.min(sort.left + sort.width - 1, count)
+      sort.rightEnd = math.min(sort.left + sort.width * 2 - 1, count)
+      sort.i = sort.left
+      sort.j = sort.leftEnd + 1
+    end
+    local i, j = assert(sort.i), assert(sort.j)
+    local leftEnd, rightEnd = assert(sort.leftEnd), assert(sort.rightEnd)
+    if i > leftEnd and j > rightEnd then
+      sort.left = rightEnd + 1
+      sort.leftEnd, sort.rightEnd, sort.i, sort.j = nil, nil, nil, nil
+    elseif i > leftEnd then
+      sort.destination[sort.output] = sort.source[j]
+      sort.j = j + 1
+      sort.output = sort.output + 1
+      used = used + 1
+    elseif j > rightEnd then
+      sort.destination[sort.output] = sort.source[i]
+      sort.i = i + 1
+      sort.output = sort.output + 1
+      used = used + 1
+    else
+      if budget - used < 2 then
+        break
+      end
+      if rowOrder(sort.source[j], sort.source[i]) then
+        sort.destination[sort.output] = sort.source[j]
+        sort.j = j + 1
+      else
+        sort.destination[sort.output] = sort.source[i]
+        sort.i = i + 1
+      end
+      sort.output = sort.output + 1
+      used = used + 2
+    end
+  end
+  return used, sort.width >= count
+end
+
+---@class SaveEditorMapCatalogTask
+---@field summaries SaveEditorMapSummary[]
+---@field cursor integer
+---@field groups SaveEditorMapGroupRow[]
+---@field groupById table<string, SaveEditorMapGroupRow>
+---@field groupIdByMap table<integer, string>
+---@field seenMapIds table<integer, boolean>
+---@field sorts table[]
+---@field sortIndex integer
+---@field groupsSortQueued boolean
+---@field catalog SaveEditorMapCatalog?
+---@field advance fun(self: SaveEditorMapCatalogTask, budget: integer): integer, boolean
+---@field take fun(self: SaveEditorMapCatalogTask): SaveEditorMapCatalog
+
+local function completeTask(task)
+  task.catalog = setmetatable({
+    groupRows = task.groups,
+    groupById = task.groupById,
+    groupIdByMap = task.groupIdByMap,
+  }, SaveEditorMapCatalog)
+end
+
+---@param task SaveEditorMapCatalogTask
+---@param budget integer
+---@return integer used
+---@return boolean complete
+local function advanceTask(task, budget)
+  assert(
+    type(budget) == "number" and budget % 1 == 0 and budget >= 0,
+    "catalog work budget must be a non-negative integer"
+  )
+  local used = 0
+  while used < budget and task.catalog == nil do
+    if task.cursor <= #task.summaries then
+      local summary = task.summaries[task.cursor]
+      local mapId = summary.mapId
+      assert(type(mapId) == "number" and mapId % 1 == 0, "map summary needs its source map ID")
+      assert(not task.seenMapIds[mapId], "a structural map summary appears once")
+      task.seenMapIds[mapId] = true
+      local nativeId = summary.mapSectionNativeId
+      assert(type(nativeId) == "number" and nativeId % 1 == 0, "map summary needs its source map-section identity")
+      assert(type(summary.section) == "string" and summary.section ~= "", "map summary needs its section label")
+      assert(type(summary.symbol) == "string" and summary.symbol ~= "", "map summary needs its source symbol")
+      assert(type(summary.displayName) == "string" and summary.displayName ~= "", "map summary needs its display name")
+      local groupId = "location:group:" .. nativeId
+      local group = task.groupById[groupId]
+      if group == nil then
+        group = {
+          targetId = groupId,
+          kind = "group",
+          groupId = groupId,
+          mapSectionNativeId = nativeId,
+          section = summary.section,
+          displayName = summary.section,
+          maps = {},
+        }
+        task.groupById[groupId] = group
+        task.groups[#task.groups + 1] = group
+        task.sorts[#task.sorts + 1] = newSort(group.maps, function(sorted)
+          group.maps = sorted
+        end)
+      else
+        assert(group.section == summary.section, "one source section identity has one display label")
+      end
+      group.maps[#group.maps + 1] = {
+        targetId = "location:map:" .. mapId,
+        kind = "map",
+        mapId = mapId,
+        symbol = summary.symbol,
+        section = summary.section,
+        displayName = summary.displayName,
+      }
+      task.groupIdByMap[mapId] = groupId
+      task.cursor = task.cursor + 1
+      used = used + 1
+    elseif task.sortIndex <= #task.sorts then
+      local consumed, complete = advanceSort(task.sorts[task.sortIndex], budget - used)
+      used = used + consumed
+      if complete then
+        local sort = task.sorts[task.sortIndex]
+        if not sort.published then
+          sort.publish(sort.source)
+          sort.published = true
+        end
+        task.sortIndex = task.sortIndex + 1
+      elseif consumed == 0 then
+        break
+      end
+    elseif not task.groupsSortQueued then
+      task.groupsSortQueued = true
+      task.sorts[#task.sorts + 1] = newSort(task.groups, function(sorted)
+        task.groups = sorted
+      end)
+    else
+      completeTask(task)
+    end
+  end
+  return used, task.catalog ~= nil
+end
+
+---@param task SaveEditorMapCatalogTask
+---@return SaveEditorMapCatalog
+local function takeTask(task)
+  assert(task.catalog ~= nil, "catalog preparation is complete before publication")
+  local catalog = assert(task.catalog)
+  task.catalog = nil
+  return catalog
+end
+
+---@param summaries SaveEditorMapSummary[] immutable structural map summaries
+---@return SaveEditorMapCatalogTask
+function SaveEditorMapCatalog.newTask(summaries)
+  assert(type(summaries) == "table", "map summaries are required")
+  return {
+    summaries = summaries,
+    cursor = 1,
+    groups = {},
+    groupById = {},
+    groupIdByMap = {},
+    seenMapIds = {},
+    sorts = {},
+    sortIndex = 1,
+    groupsSortQueued = false,
+    advance = advanceTask,
+    take = takeTask,
+  }
+end
+
 ---@param summaries SaveEditorMapSummary[] immutable structural map summaries
 ---@return SaveEditorMapCatalog
 function SaveEditorMapCatalog.new(summaries)
-  assert(type(summaries) == "table", "map summaries are required")
-  local groups, groupById = {}, {}
-  local groupIdByMap = {}
-  local seenMapIds = {}
-  for _, summary in ipairs(summaries) do
-    assert(type(summary.mapId) == "number" and summary.mapId % 1 == 0, "map summary needs its source map ID")
-    assert(not seenMapIds[summary.mapId], "a structural map summary appears once")
-    seenMapIds[summary.mapId] = true
-    assert(
-      type(summary.mapSectionNativeId) == "number" and summary.mapSectionNativeId % 1 == 0,
-      "map summary needs its source map-section identity"
-    )
-    assert(type(summary.section) == "string" and summary.section ~= "", "map summary needs its section label")
-    assert(type(summary.symbol) == "string" and summary.symbol ~= "", "map summary needs its source symbol")
-    assert(type(summary.displayName) == "string" and summary.displayName ~= "", "map summary needs its display name")
-    local groupId = "location:group:" .. summary.mapSectionNativeId
-    local group = groupById[groupId]
-    if group == nil then
-      group = {
-        targetId = groupId,
-        kind = "group",
-        groupId = groupId,
-        mapSectionNativeId = summary.mapSectionNativeId,
-        section = summary.section,
-        displayName = summary.section,
-        maps = {},
-      }
-      groupById[groupId] = group
-      groups[#groups + 1] = group
-    else
-      assert(group.section == summary.section, "one source section identity has one display label")
-    end
-    group.maps[#group.maps + 1] = {
-      targetId = "location:map:" .. summary.mapId,
-      kind = "map",
-      mapId = summary.mapId,
-      symbol = summary.symbol,
-      section = summary.section,
-      displayName = summary.displayName,
-    }
-    groupIdByMap[summary.mapId] = groupId
+  local task = SaveEditorMapCatalog.newTask(summaries)
+  local complete = false
+  while not complete do
+    local _, isComplete = task:advance(math.max(1, #summaries * 4))
+    complete = isComplete
   end
-  table.sort(groups, rowOrder)
-  for _, group in ipairs(groups) do
-    table.sort(group.maps, rowOrder)
-  end
-  return setmetatable({
-    groupRows = groups,
-    groupById = groupById,
-    groupIdByMap = groupIdByMap,
-  }, SaveEditorMapCatalog)
+  return task:take()
 end
 
 ---@param mapId integer

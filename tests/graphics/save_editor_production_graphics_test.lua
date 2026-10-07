@@ -15,6 +15,8 @@ local T = {
     derivedAssets = {
       "field-planning",
       "field-runtime",
+      "encounters:global",
+      "trainers:global",
       "audio-bank:702",
       "audio-bank:709",
       "map-data:7",
@@ -277,7 +279,13 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       local stagedMapId = assert(assert(state.session, context .. " stages a session"):snapshot().location).mapId
       local stagedName
       local stagedSectionId
-      local summaries = assert(state.locationService, context .. " owns its location service"):mapSummaries()
+      local summaryTask = assert(state.locationService, context .. " owns its location service"):newMapSummaryTask()
+      local summariesReady = false
+      while not summariesReady do
+        local _, complete = summaryTask:advance(256)
+        summariesReady = complete
+      end
+      local summaries = summaryTask:take()
       for _, summary in ipairs(summaries) do
         if summary.mapId == stagedMapId then
           stagedName = assert(summary.displayName, context .. " names the staged map")
@@ -324,20 +332,33 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       )
       clickTarget(state, stagedMapTarget)
       state:update(0)
+      local service = assert(state.locationService, context .. " owns its location service")
+      local ready = false
       for _ = 1, 120 do
-        local snapshot = assert(state.locationService, context .. " owns its location service"):snapshot()
-        local classified = false
-        for _, tile in ipairs(snapshot.tiles) do
-          if tile.selectable == false then
-            classified = true
-            break
-          end
-        end
-        if classified then
+        if service:snapshot().status.state == "ready" then
+          ready = true
           break
         end
         state:update(0)
       end
+      assert(ready, context .. " prepares the selected map before positioning the test viewport")
+      state.locationAutoCenterToken = nil
+      state.controller:setLocationCursor(0, 0)
+      state:update(0)
+      local unavailableTileVisible = false
+      for _ = 1, 120 do
+        for _, tile in ipairs(service:snapshot().tiles) do
+          if tile.selectable == false then
+            unavailableTileVisible = true
+            break
+          end
+        end
+        if unavailableTileVisible then
+          break
+        end
+        state:update(0)
+      end
+      assert(unavailableTileVisible, context .. " classifies out-of-bounds cells at the map boundary")
     end
     for _, case in ipairs(cases) do
       width, height, topology = case.width, case.height, case.topology
@@ -369,6 +390,15 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       end
     end
     Assert.isTrue(crowdedItems >= 10, "the selected ROM catalog provides a crowded item pocket")
+    local bagPocketReady = false
+    for _ = 1, 120 do
+      if state:view().layout.targets["bag:pocket:items"] ~= nil then
+        bagPocketReady = true
+        break
+      end
+      state:update(0)
+    end
+    Assert.isTrue(bagPocketReady, "the production Bag pocket tab is published")
     clickTarget(state, "bag:pocket:items")
     local crowdedBag = capture("crowded-bag", width, height)
     Assert.isTrue(#crowdedBag.bagRows >= 10, "the production Bag view contains a long item list")
@@ -575,6 +605,13 @@ function T.tests.production_party_uses_generic_selector_without_retail_manifest(
     Assert.isTrue(state.session:setBagQuantity(probeKey, 1).ok, "the production session stages one probe stack")
     state:update(0)
     local bagView = state:view()
+    for _ = 1, 32 do
+      if #bagView.bagPageRows > 0 then
+        break
+      end
+      state:update(0)
+      bagView = state:view()
+    end
     local pageRows = assert(bagView.bagPageRows, "the Bag view publishes its visible page rows")
     Assert.isTrue(#pageRows > 0, "the production Bag page exposes its item rows")
     for _, row in ipairs(pageRows) do

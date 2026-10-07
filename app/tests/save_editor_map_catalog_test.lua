@@ -32,15 +32,11 @@ function T.tests.source_sections_keep_complete_membership_and_filter_through_chi
   local groups = catalog:groups("")
   local groupRows = projectedRows(groups)
   Assert.equal(#groupRows, 3, "distinct source sections remain distinct even when their labels match")
-  Assert.deepEqual(
-    {
-      groupRows[1].row.mapSectionNativeId,
-      groupRows[2].row.mapSectionNativeId,
-      groupRows[3].row.mapSectionNativeId,
-    },
-    { 77, 5, 9 },
-    "groups sort by display label, then source identity for duplicate labels"
-  )
+  Assert.deepEqual({
+    groupRows[1].row.mapSectionNativeId,
+    groupRows[2].row.mapSectionNativeId,
+    groupRows[3].row.mapSectionNativeId,
+  }, { 77, 5, 9 }, "groups sort by display label, then source identity for duplicate labels")
 
   local groupIdsByNativeId = {}
   local membersById = {}
@@ -79,6 +75,45 @@ function T.tests.source_sections_keep_complete_membership_and_filter_through_chi
   Assert.equal(#childMatchedMaps, 1, "the carried child query filters the entered group")
   Assert.equal(childMatchedMaps[1].row.mapId, 41, "the matching leaf keeps its source map ID")
   Assert.equal(catalog:maps(groupIdsByNativeId[5], "no match").count, 0, "empty leaf results are valid")
+end
+
+function T.tests.incremental_catalog_preparation_limits_summary_reads_per_advance()
+  local Catalog = require("app.src.saveeditor.SaveEditorMapCatalog")
+  local reads = 0
+  local summaries = {}
+  for index = 1, 7 do
+    summaries[index] = setmetatable({
+      mapId = index,
+      symbol = "MAP_" .. index,
+      section = "Section " .. (index % 2),
+      mapSectionNativeId = index % 2,
+      displayName = "Map " .. (8 - index),
+    }, {
+      __index = function(_, key)
+        if key == "mapId" then
+          reads = reads + 1
+        end
+      end,
+    })
+  end
+
+  local task = Catalog.newTask(summaries)
+  Assert.equal(reads, 0, "starting catalog preparation does not scan the map inventory")
+  local completed = false
+  while not completed do
+    local before = reads
+    local used
+    used, completed = task:advance(2)
+    Assert.isTrue(used <= 2, "one catalog update charges no more than its row budget")
+    Assert.isTrue(reads - before <= 2, "one catalog update reads no more than its row budget")
+  end
+
+  local catalog = task:take()
+  Assert.equal(catalog:groups("").count, 2, "the bounded build publishes the complete hierarchy")
+  local maps = projectedRows(catalog:maps("location:group:1", ""))
+  Assert.equal(#maps, 4, "the built group preserves all leaves")
+  Assert.equal(maps[1].row.mapId, 7, "incremental merge passes publish the sorted first leaf")
+  Assert.equal(maps[4].row.mapId, 1, "incremental merge passes publish the sorted last leaf")
 end
 
 return T

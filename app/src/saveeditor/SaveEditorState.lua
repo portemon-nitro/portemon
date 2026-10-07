@@ -8,6 +8,7 @@ local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local DisplayContext = require("libs.ui.src.DisplayContext")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local Moves = require("libs.mons.src.gen4.Moves")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
@@ -165,8 +166,7 @@ end
 ---@field pageCount integer
 
 ---@class SaveEditorLocationService
----@field listMaps fun(self: SaveEditorLocationService): table[]
----@field mapSummaries fun(self: SaveEditorLocationService): table[]
+---@field newMapSummaryTask fun(self: SaveEditorLocationService): SaveEditorMapSummaryTask
 ---@field openMap fun(self: SaveEditorLocationService, mapId: integer, request: { purpose: "browse"|"verify" }?)
 ---@field releaseGrid fun(self: SaveEditorLocationService)
 ---@field cancelInitialSurvey fun(self: SaveEditorLocationService)
@@ -175,6 +175,14 @@ end
 ---@field snapshot fun(self: SaveEditorLocationService): table<string, unknown>
 ---@field resolve fun(self: SaveEditorLocationService, mapId: integer, fieldX: integer, fieldZ: integer, expectedGeneration: integer): SaveEditorLocation?, table<string, unknown>
 ---@field dispose fun(self: SaveEditorLocationService)
+
+---@class SaveEditorLocationListBuildTask
+---@field listId string
+---@field source SaveEditorMapCatalogRow[]
+---@field cursor integer
+---@field rows SaveEditorMapCatalogRow[]
+---@field rowTargets string[]
+---@field indexByTarget table<string, integer>
 
 ---@class SaveEditorListFilterRow
 ---@field targetId string
@@ -285,6 +293,10 @@ end
 ---@field _flagFilter SaveEditorIndexedListCache?
 ---@field _mapCatalog SaveEditorIndexedListCache?
 ---@field _locationMapCatalog SaveEditorMapCatalog?
+---@field _locationMapSummaryTask SaveEditorMapSummaryTask?
+---@field _locationCatalogTask SaveEditorMapCatalogTask?
+---@field _locationListBuildTask SaveEditorLocationListBuildTask?
+---@field _locationCatalogLocation SaveEditorLocation?
 ---@field _locationListCaches table<string, SaveEditorIndexedListCache>
 ---@field _mapFilter SaveEditorIndexedListCache?
 ---@field _pendingChoiceCursor { targetId: string?, index: integer? }?
@@ -417,6 +429,39 @@ local function makeText(versionId)
   return FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(versionId) })
 end
 
+local function scopeDescription(state)
+  local controller = state.controller
+  local scopeId
+  local scopeRevision
+  local scopeKind = controller.modal and "decision"
+    or state.valueEditor and "value"
+    or controller.section == "Party" and "party"
+    or "section"
+  if controller.modal then
+    scopeId = "decision:" .. controller.modal
+    scopeRevision = scopeId
+  elseif state.valueEditor then
+    local value = state.valueEditor:snapshot()
+    scopeId = "value:" .. (state.valuePurpose or "editor")
+    scopeRevision = table.concat({ scopeId, value.kind == "choice" and value.query or "" }, ":")
+  elseif controller.section == "Party" then
+    scopeId = "section:Party"
+    scopeRevision = table.concat({ scopeId, tostring(controller.partySlot0), controller.partyTab }, ":")
+  elseif controller.section == "Progress" then
+    scopeId = "section:Progress"
+    scopeRevision = table.concat({ scopeId, controller.query }, ":")
+  elseif controller.section == "Bag" then
+    scopeId = "section:Bag"
+    scopeRevision = table.concat({ scopeId, controller.bagPocket, controller.bagPage0 }, ":")
+  else
+    scopeId = "section:" .. controller.section
+    scopeRevision = controller.section == "Location"
+        and table.concat({ scopeId, controller.locationPage, controller.query }, ":")
+      or scopeId
+  end
+  return scopeId, scopeRevision, scopeKind
+end
+
 function State.new(options)
   assert(type(options) == "table", "save editor state options are required")
   assert(type(options.versionId) == "string" and options.versionId ~= "")
@@ -510,7 +555,7 @@ function State.new(options)
     scopeEpoch = 0,
     editorFeedback = nil,
   }, State)
-  self.fieldInput:beginUi(self.inputTick)
+  self:_syncScope()
   local resolveOk, resolveError = pcall(function()
     self:_resolve(self:_snapshot())
   end)
@@ -521,6 +566,31 @@ function State.new(options)
     error(resolveError, 0)
   end
   return self
+end
+
+function State:_syncScope()
+  local scopeId, scopeRevision = scopeDescription(self)
+  assert(scopeRevision ~= nil, "active focus scopes publish a layout revision")
+  if scopeId == self.activeScopeId and scopeRevision == self.activeScopeRevision then
+    return
+  end
+  local previousScopeId = self.activeScopeId
+  if
+    previousScopeId ~= nil
+    and scopeId ~= previousScopeId
+    and (previousScopeId:match("^decision:") or previousScopeId:match("^value:"))
+  then
+    self.controller.focusByScope[previousScopeId] = nil
+    self.controller.focusByRegion[previousScopeId] = nil
+  end
+  self.activeScopeId = scopeId
+  self.activeScopeRevision = scopeRevision
+  self.scopeEpoch = self.scopeEpoch + 1
+  self.fieldInput:beginUi(self.inputTick)
+  self.controller:cancelInteraction()
+  self.numberHold = nil
+  self.numberPressTarget = nil
+  self.controller.scopeId, self.controller.scopeEpoch = scopeId, self.scopeEpoch
 end
 
 function State:_readyReadiness()
@@ -548,6 +618,7 @@ function State:update(dt)
   then
     self:_locationListCache(assert(locationListId(self.controller:locationSnapshot())))
   end
+  self:_advanceLocationPreparation(256)
   self.tickRemainder = self.tickRemainder + (dt or 0) * 60
   if self.tickRemainder >= 1 then
     self.inputTick = self.inputTick + math.floor(self.tickRemainder)
@@ -644,10 +715,8 @@ function State:update(dt)
     local originalLocation = assert(self.session:snapshot().location)
     self.controller:enterLocation(originalLocation)
     self.controller:setSection("Location")
-    local initialGroup = self._locationMapCatalog:groupForMap(originalLocation.mapId)
-    if initialGroup ~= nil then
-      self.controller:rememberLocationDestination(initialGroup, "location:map:" .. tostring(originalLocation.mapId))
-    end
+    self:_syncScope()
+    self._locationCatalogLocation = originalLocation
     self.status, self.errorMessage = "ready", nil
     self:_settleScope()
     self:_resolve(self:_snapshot())
@@ -1167,10 +1236,16 @@ end
 
 ---@return SaveEditorIndexedListProjection
 function State:_mapProjection()
-  assert(self._locationMapCatalog, "the hierarchy catalog is prepared during opening")
   local navigation = self.controller:locationSnapshot()
   local listId = locationListId(navigation) or navigation.groupId or "location:root"
-  local cache = assert(self._locationListCaches[listId], "map list projections are prepared during opening")
+  local cache = self._locationListCaches[listId]
+  if self._locationMapCatalog == nil or cache == nil then
+    self:_locationListCache(listId)
+    local pending = { rows = {}, rowTargets = {}, indexByTarget = {} }
+    return makeListProjection(pending, 0, 0, true, function()
+      return nil
+    end)
+  end
   local filteringActive = self.controller.section == "Location"
     and (navigation.page == "root" or navigation.page == "group")
   local query = filteringActive and self.controller.query:lower() or cache.query
@@ -1197,51 +1272,104 @@ function State:_mapProjection()
 end
 
 ---@param listId string
----@return SaveEditorIndexedListCache
+---@return SaveEditorIndexedListCache?
 function State:_locationListCache(listId)
   local cached = self._locationListCaches[listId]
   if cached ~= nil then
     return cached
   end
-  local catalog = self._locationMapCatalog
-  if catalog == nil then
-    catalog = MapCatalog.new(assert(self.locationService):mapSummaries())
-    self._locationMapCatalog = catalog
-  end
-  local base
-  if listId == "location:root" then
-    base = catalog:groups("")
-  else
-    assert(listId:match("^location:group:"), "Location list identity is a root or source group")
-    base = catalog:maps(listId, "")
-  end
-  local rows, rowTargets, indexByTarget = {}, {}, {}
-  for index = 1, base.count do
-    local row = assert(base.rowAt(index), "catalog projections contain each in-range row")
-    rows[index] = row
-    rowTargets[index] = assert(base.idAt(index))
-    indexByTarget[rowTargets[index]] = index
-  end
-  cached = {
-    query = "",
-    revision = 1,
-    queryRevision = 0,
-    rows = rows,
-    rowTargets = rowTargets,
-    indexByTarget = indexByTarget,
-    source = rows,
-  }
-  self._locationListCaches[listId] = cached
-  return cached
+  self:_startLocationListCache(listId)
+  return nil
 end
 
 function State:_prepareLocationListCaches()
-  local catalog = assert(self._locationMapCatalog, "map list preparation needs its structural catalog")
   self:_locationListCache("location:root")
-  local groups = catalog:groups("")
-  for index = 1, groups.count do
-    self:_locationListCache(assert(groups.idAt(index), "each map section has a stable list identity"))
+end
+
+function State:_startLocationListCache(listId)
+  if self._locationListCaches[listId] ~= nil then
+    return
   end
+  local task = self._locationListBuildTask
+  if task ~= nil and task.listId == listId then
+    return
+  end
+  local catalog = self._locationMapCatalog
+  if catalog == nil then
+    return
+  end
+  local rows
+  if listId == "location:root" then
+    rows = catalog.groupRows
+  else
+    assert(listId:match("^location:group:"), "Location list identity is a root or source group")
+    local groupId = listId
+    rows = assert(catalog.groupById[groupId], "map group belongs to the complete source catalog").maps
+  end
+  self._locationListBuildTask = {
+    listId = listId,
+    source = rows,
+    cursor = 1,
+    rows = {},
+    rowTargets = {},
+    indexByTarget = {},
+  }
+end
+
+function State:_advanceLocationPreparation(budget)
+  local used = 0
+  local summaries = self._locationMapSummaryTask
+  if summaries ~= nil and used < budget then
+    local consumed, complete = summaries:advance(budget - used)
+    used = used + consumed
+    if complete then
+      self._locationCatalogTask = MapCatalog.newTask(summaries:take())
+      self._locationMapSummaryTask = nil
+    end
+  end
+  local catalogTask = self._locationCatalogTask
+  if catalogTask ~= nil and used < budget then
+    local consumed, complete = catalogTask:advance(budget - used)
+    used = used + consumed
+    if complete then
+      self._locationMapCatalog = catalogTask:take()
+      self._locationCatalogTask = nil
+      local original = self._locationCatalogLocation
+      if original ~= nil then
+        local initialGroup = self._locationMapCatalog:groupForMap(original.mapId)
+        if initialGroup ~= nil then
+          self.controller:rememberLocationDestination(initialGroup, "location:map:" .. tostring(original.mapId))
+        end
+        self._locationCatalogLocation = nil
+      end
+      self:_startLocationListCache("location:root")
+    end
+  end
+  local task = self._locationListBuildTask
+  if task ~= nil then
+    while used < budget and task.cursor <= #task.source do
+      local row = task.source[task.cursor]
+      local index = #task.rows + 1
+      task.rows[index] = row
+      task.rowTargets[index] = row.targetId
+      task.indexByTarget[row.targetId] = index
+      task.cursor = task.cursor + 1
+      used = used + 1
+    end
+    if task.cursor > #task.source then
+      self._locationListCaches[task.listId] = {
+        query = "",
+        revision = 1,
+        queryRevision = 0,
+        rows = task.rows,
+        rowTargets = task.rowTargets,
+        indexByTarget = task.indexByTarget,
+        source = task.rows,
+      }
+      self._locationListBuildTask = nil
+    end
+  end
+  return used
 end
 
 function State:_flagProjection(values)
@@ -1325,6 +1453,7 @@ function State:_partyView()
     partySelector = partyView:selector(members, controller.partySlot0),
     partyMemberCount = #members,
     partyEmpty = #members == 0,
+    bagQuantityVisuals = assert(dependencies.bagManifest, "Party pager reuses Bag arrow visuals").interactive.overlays.quantity.visuals,
   }
   if draft == nil then
     return view
@@ -1987,6 +2116,7 @@ function State:_filterFocusedList(list, rowIndex, operation, text)
       error("unknown filterable list " .. list.id, 2)
     end
   end
+  self:_syncScope()
   local layout = self:_resolve(self:_snapshot()).content.layout
   local fresh = assert(layout.lists and layout.lists[list.id], "filtering keeps its focused list")
   if fresh.pending then
@@ -2330,7 +2460,15 @@ function State:_locationGridSize()
   return self.locationGridWidthTiles or 1, self.locationGridHeightTiles or 1
 end
 
+function State:_takeLocationCursorOwnership()
+  self.locationAutoCenterToken = nil
+  if self.locationService ~= nil then
+    self.locationService:cancelInitialSurvey()
+  end
+end
+
 function State:_selectLocationTile(fieldX, fieldZ)
+  self:_takeLocationCursorOwnership()
   local service = assert(self.locationService, "ready Location input needs its service")
   local navigation = self.controller:locationSnapshot()
   local mapId = assert(navigation.mapId)
@@ -2347,6 +2485,7 @@ function State:_selectLocationTile(fieldX, fieldZ)
     self.locationActionStatus = { state = "unavailable", reason = self.errorMessage }
     return
   end
+  self.locationAutoCenterToken = nil
   self.errorMessage = nil
   self.locationActionStatus = { state = "ready" }
 end
@@ -2627,12 +2766,12 @@ function State:_performDeferred(action)
     self:_settleScope()
     return
   elseif action.kind == "location-cursor-move" then
-    self.locationAutoCenterToken = nil
+    self:_takeLocationCursorOwnership()
     local width, height = self:_locationGridSize()
     self.controller:moveLocationCursor(action.direction, width, height)
     self:_updateLocationService()
   elseif action.kind == "location-pan" then
-    self.locationAutoCenterToken = nil
+    self:_takeLocationCursorOwnership()
     if action.centerX ~= nil and action.centerZ ~= nil then
       self.controller.locationCenterX = action.centerX
       self.controller.locationCenterZ = action.centerZ
@@ -2898,8 +3037,9 @@ function State:_rememberLocationPreview()
   }
 end
 
-function State:_popDecision()
-  local modal = assert(self.controller.modal, "decision pop needs its open decision")
+function State:_popDecision(decision)
+  local modal = decision or assert(self.controller.modal, "decision pop needs its open decision")
+  assert(modal == self.controller.modal, "decision action must belong to the active decision")
   if modal == "leave" and self.closeRequest ~= nil then
     self:_cancelPendingLocationSave()
     self:_popModalLayer("leave")
@@ -3013,6 +3153,7 @@ function State:requestClose(reason)
       previousFocus = self.controller.focus,
     }
     self:_openDecision("leave")
+    self:_syncScope()
     return true
   elseif reason == "back" then
     self:_sendResult()
@@ -3240,7 +3381,7 @@ function State:_activate(targetId)
       ValueEditor.new({ kind = "integer", value = money, min = 0, max = PlayerData.MAX_MONEY, base = "decimal" }),
       "money"
     )
-  elseif targetId == "dialogue-frame" then
+  elseif action.kind == "player.edit-dialogue-frame" then
     self:_cancelPendingLocationSave()
     local frameIndexes = assert(self.dependencies.context.frameIndexes)
     local choices = {}
@@ -3256,10 +3397,12 @@ function State:_activate(targetId)
       ValueEditor.new({ kind = "choice", options = options, value = tostring(self.session:snapshot().frameIndex) }),
       "dialogue_frame"
     )
-  elseif targetId:sub(1, 5) == "flag:" then
-    local name = targetId:sub(6)
-    local current = self.session:snapshot().flags[FieldScriptSymbols.flagsByName[name]] == true
-    local result = self.session:setFlag(name, not current)
+  elseif action.kind == "progress.toggle-flag" then
+    if self._listFilterTask ~= nil then
+      return
+    end
+    local current = self.session:snapshot().flags[FieldScriptSymbols.flagsByName[action.name]] == true
+    local result = self.session:setFlag(action.name, not current)
     if not result.ok then
       self.errorMessage = message(result.error)
     end
@@ -3270,14 +3413,43 @@ function State:_activate(targetId)
     else
       self:_requestDraftResolution({ kind = "save" })
     end
-  elseif targetId == "discard" then
+  elseif action.kind == "editor.discard" then
     self:_discardSection()
-  elseif targetId == "back" then
+  elseif action.kind == "editor.back" then
     self:_requestBack()
-  elseif targetId:match("^party:slot:") then
-    local slot0 = assert(tonumber(targetId:match("^party:slot:(%d+)$")))
-    self:_requestDraftResolution({ kind = "party-slot", slot0 = slot0 })
-  elseif targetId == "party:add" then
+  elseif action.kind == "editor.retry-open" then
+    self.generation = self.generation + 1
+    self.status, self.errorMessage = "opening", nil
+  elseif action.kind == "editor.close-open-error" then
+    self:_sendResult()
+  elseif action.kind == "list.inert" then
+    return
+  elseif action.kind == "location.select-group" then
+    self:_performDeferred({ kind = "location-group-select", groupId = action.groupId })
+  elseif action.kind == "location.select-map" then
+    if self._listFilterTask ~= nil then
+      return
+    end
+    self:_performDeferred({ kind = "location-map-select", mapId = action.mapId })
+  elseif action.kind == "location.select-tile" then
+    self:_performDeferred({ kind = "select_tile", fieldX = action.fieldX, fieldZ = action.fieldZ })
+  elseif action.kind == "location.select-current-tile" then
+    local cursor = self.controller:locationSnapshot().cursor
+    if cursor ~= nil then
+      self:_performDeferred({ kind = "select_tile", fieldX = cursor.fieldX, fieldZ = cursor.fieldZ })
+    end
+  elseif action.kind == "party.select-slot" then
+    self:_requestDraftResolution({ kind = "party-slot", slot0 = action.slot0 })
+  elseif action.kind == "party.change-page" then
+    self.controller:stepPartyTab(action.direction)
+  elseif action.kind == "bag.select-pocket" then
+    self.controller:selectBagPocket(action.pocket)
+  elseif action.kind == "bag.change-page" then
+    self.controller:setBagPage(math.max(0, self.controller.bagPage0 + (action.direction == "next" and 1 or -1)))
+  elseif action.kind == "bag.select-item" then
+    self.controller:selectBagItem(action.itemKey)
+    self:_openDecision("bag-item")
+  elseif action.kind == "party.add-member" then
     if not self:_applyCurrentPartyDraftIfNeeded() then
       return
     end
@@ -3289,20 +3461,16 @@ function State:_activate(targetId)
       return catalog:species(key).name or key
     end)
     self:_installValueEditor(ValueEditor.new({ kind = "choice", options = options }), "party_add_species")
-  elseif targetId == "party:page:previous" then
-    self.controller:stepPartyTab("previous")
-  elseif targetId == "party:page:next" then
-    self.controller:stepPartyTab("next")
-  elseif targetId:match("^party:field:") then
+  elseif action.kind == "party.edit-field" then
     if not self:_ensurePartyDraft() then
       return
     end
-    local descriptor = self:_partyField(targetId)
+    local descriptor = self:_partyField("party:field:" .. action.fieldId)
     if descriptor ~= nil then
       self:_openEditor(descriptor)
       self.valuePurpose = "party_field"
     end
-  elseif targetId == "party:use-species-name" then
+  elseif action.kind == "party.use-species-name" then
     if not self:_ensurePartyDraft() then
       return
     end
@@ -3311,12 +3479,7 @@ function State:_activate(targetId)
     else
       self.errorMessage = nil
     end
-  elseif targetId:match("^party:move:%d+$") then
-    if not self:_ensurePartyDraft() then
-      return
-    end
-    self:_showMoveOverlay(assert(tonumber(targetId:match("^party:move:(%d+)$"))))
-  elseif targetId == "party:move:add" then
+  elseif action.kind == "party.add-move" then
     self:_cancelPendingLocationSave()
     local catalog = assert(self.dependencies.context.monCatalog)
     self:_installValueEditor(
@@ -3330,39 +3493,22 @@ function State:_activate(targetId)
       }),
       "party_add_move"
     )
-  elseif targetId:match("^bag:pocket:") then
-    local pocket = assert(targetId:match("^bag:pocket:(.+)$"))
-    self.controller:selectBagPocket(pocket)
-  elseif targetId:match("^bag:item:") then
-    self.controller:selectBagItem(assert(targetId:match("^bag:item:(.+)$")))
-    self:_openDecision("bag-item")
-  elseif targetId == "bag:page:previous" or targetId == "bag:page:next" then
-    self.controller:setBagPage(math.max(0, self.controller.bagPage0 + (targetId == "bag:page:next" and 1 or -1)))
-  elseif targetId == "bag:add" then
+  elseif action.kind == "bag.add-item" then
     self:_cancelPendingLocationSave()
     self:_beginBagAdd()
-  elseif targetId == "bag:quantity" then
+  elseif action.kind == "bag.edit-quantity" then
     self:_openBagQuantity("set")
-  elseif targetId == "bag:remove" then
+  elseif action.kind == "bag.remove-item" then
     self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
     self:_openDecision("remove")
-  end
-end
-
-function State:_activateControl(targetId, layout)
-  local control
-  for _, candidate in ipairs(layout.focusNavigation.controls) do
-    if candidate.id == targetId then
-      control = candidate
-      break
+  elseif action.kind == "party.edit-move" then
+    if not self:_ensurePartyDraft() then
+      return
     end
+    self:_showMoveOverlay(action.moveIndex)
+  else
+    error("unknown Save Editor activation action: " .. tostring(action.kind), 2)
   end
-  if control == nil or not control.eligible then
-    return
-  end
-  local action = assert(control.action, "active controls publish an action record")
-  assert(action.kind == "target", "unknown Save Editor control action")
-  self:_activate(action.targetId)
 end
 
 function State:_dispatchIntent(intent)
@@ -3569,6 +3715,7 @@ function State:_pointer(events)
       }
     end
     self._pointerDispatching = false
+    self:_syncScope()
   end
   if self.disposed then
     return plan
@@ -3629,9 +3776,19 @@ function State:_drawNavigationDebug(view)
   local graphics = self.renderer.graphics
   local rect = control and control.rect or region and region.rect
   graphics.push("all")
-  graphics.setColor(1, 0.85, 0.2, 1)
   if rect ~= nil then
-    graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
+    local interactivePlacement
+    for _, pane in ipairs(view.presentation.panes) do
+      if pane.interactive then
+        interactivePlacement = pane.placement
+        break
+      end
+    end
+    assert(interactivePlacement, "navigation diagnostics require the active logical pane placement")
+    LogicalSurface.draw(graphics, interactivePlacement, function()
+      graphics.setColor(1, 0.85, 0.2, 1)
+      graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
+    end)
   end
   local lines = { focus.regionId .. " / " .. focus.targetId }
   local snapshot = navigationSnapshotForState(self, layout)
@@ -3720,6 +3877,7 @@ function State:_consumeUiInput(events)
         self:_dispatchIntent(self.controller:press("cancel"))
       end
     end
+    self:_syncScope()
   end
   self:_reconcileFocus()
   self:_settleScope()
@@ -3782,6 +3940,7 @@ function State:keypressed(key, _, isrepeat)
       self.controller:markKeyboardNavigation()
       self:_navigate(editorLayout, key)
     end
+    self:_syncScope()
     self:_reconcileFocus()
     self:_settleScope()
     return

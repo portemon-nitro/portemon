@@ -667,6 +667,13 @@ function T.tests.one_update_shares_a_single_work_budget_between_map_and_coverage
     coverageConsumePerAdvance = 3,
   })
   openOutside(service, 11)
+  local prepare = service._prepareAt
+  local preparationConsumed
+  function service:_prepareAt(fieldX, fieldZ)
+    local ready, consumed = prepare(self, fieldX, fieldZ)
+    preparationConsumed = consumed
+    return ready, consumed
+  end
   service:update()
 
   local mapTask = loader.tasks[1]
@@ -677,6 +684,7 @@ function T.tests.one_update_shares_a_single_work_budget_between_map_and_coverage
     "staged preparation never builds coverage through the blocking call"
   )
   local coverageTask = loader.coverageTasks[1]
+  Assert.equal(preparationConsumed, 8, "map and coverage preparation report their combined work")
   Assert.equal(mapTask.consumedTotal, 5, "the map reports the work it consumed")
   Assert.equal(
     coverageTask.advanceArgs[1],
@@ -692,6 +700,39 @@ function T.tests.one_update_shares_a_single_work_budget_between_map_and_coverage
     "pending",
     "a pending replacement coverage keeps the viewport pending"
   )
+  service:dispose()
+end
+
+function T.tests.one_update_shares_preparation_and_visible_classification_work()
+  local service = loadingService({ taskImmediate = true })
+  openOutside(service, 11)
+  service:setViewport(OUTSIDE_CENTER, OUTSIDE_CENTER, 20, 20)
+
+  local prepare = service._prepareAt
+  function service:_prepareAt(fieldX, fieldZ)
+    local ready = prepare(self, fieldX, fieldZ)
+    Assert.isTrue(ready, "the test preparation is ready")
+    return ready, 5
+  end
+  local classify = service._classifyVisible
+  local classificationBudget
+  function service:_classifyVisible(maxWorkUnits)
+    classificationBudget = maxWorkUnits
+    return classify(self, maxWorkUnits)
+  end
+  local classificationAdvances = 0
+  local advanceTile = service._advanceTileClassification
+  function service:_advanceTileClassification(task, maxVisits)
+    classificationAdvances = classificationAdvances + 1
+    return advanceTile(self, task, maxVisits)
+  end
+
+  service:update()
+
+  Assert.equal(classificationBudget, 3, "visible classification receives only preparation's remaining work")
+  Assert.equal(classificationAdvances, 384, "visible classification spends only the remaining tile-position budget")
+  Assert.equal(service:_classifyVisible(2), 1, "visible classification reports one unit for the remaining tiles")
+  Assert.equal(classificationAdvances, 400, "remaining visible positions finish inside their bounded work unit")
   service:dispose()
 end
 
@@ -1230,7 +1271,7 @@ function T.tests.represented_matrix_lookup_advances_under_the_metadata_budget()
   Assert.equal(service.metadata.phase, "representedDescriptors", "represented descriptor enumeration is staged")
   local descriptorConsumed = service:_advanceRepresented(1)
   Assert.equal(descriptorConsumed, 1, "represented descriptor enumeration consumes one metadata unit")
-  Assert.equal(service.metadata.phase, "matrixSearch", "matrix selection follows represented descriptor enumeration")
+  Assert.equal(service.metadata.phase, "matrixSearch", "structural ordering shares work with descriptor enumeration")
   local consumed, complete = service:_advanceRepresented(1)
   Assert.equal(consumed, 1, "one metadata unit charges one matrix-search batch")
   Assert.equal(service.metadata.matrixIndex, 129, "one work unit visits no more than 128 matrices")
@@ -1271,6 +1312,40 @@ function T.tests.represented_descriptors_are_enumerated_under_the_metadata_budge
   Assert.equal(consumed, 1, "one descriptor batch consumes one metadata unit")
   Assert.isTrue(mapDefinitionChecks <= 128, "one metadata unit visits no more than 128 descriptors")
   Assert.isFalse(service.metadata.complete, "represented descriptor enumeration remains staged")
+  service:dispose()
+end
+
+function T.tests.represented_map_ids_are_ordered_under_the_metadata_budget()
+  local service, loader = loadingService({})
+  service:openMap(11)
+  local maps, byId = {}, {}
+  for index = 1, 513 do
+    local id = index == 1 and 11 or index == 2 and 22 or 1000 + index
+    maps[index] = {
+      id = id,
+      symbol = "MAP_" .. tostring(id),
+      mapSection = "TEST",
+      mapSectionNativeId = index,
+      worldOriginX = 0,
+      worldOriginZ = 0,
+      matrix = { memberId = 0 },
+    }
+    byId[id] = index
+  end
+  service.world.maps, service.world.byId = maps, byId
+  service.coverage = fakeCoverage(loader, 11, 0, 0)
+  service.coverage.cells["extra"] = { descriptor = { x = 1, z = 0, mapHeaderId = 22 } }
+
+  service:_collectRepresented()
+  while service.metadata.phase == "representedDescriptors" do
+    service:_advanceRepresented(1)
+  end
+  Assert.equal(service.metadata.phase, "representedCatalog", "catalog ordering is staged after descriptor enumeration")
+  Assert.equal(service.metadata.catalogIndex, 127, "descriptor work shares its remaining item budget with catalog traversal")
+  local consumed = service:_advanceRepresented(1)
+  Assert.equal(consumed, 1, "catalog ordering consumes one metadata unit")
+  Assert.equal(service.metadata.catalogIndex, 255, "one unit visits no more than 128 source maps")
+  Assert.deepEqual(service.metadata.ids, { 11, 22 }, "represented maps keep structural catalog order")
   service:dispose()
 end
 
@@ -1600,6 +1675,70 @@ function T.tests.browse_suggestion_generation_stays_bound_to_its_request()
   if not ok then
     error(err, 0)
   end
+end
+
+function T.tests.tile_classification_bounds_trigger_and_actor_collection_visits()
+  local LocationPolicy = require("app.src.saveeditor.SaveEditorLocationPolicy")
+  local objectEvents, savedActors, warps, coordinates = {}, {}, {}, {}
+  for index = 1, 140 do
+    objectEvents[index] = {
+      mapId = 11,
+      objectEventId = index,
+      movementType = "stationary",
+      x = 1000 + index,
+      z = 1000,
+      xRange = -1,
+      yRange = -1,
+    }
+    savedActors[index] = {
+      actorId = "unrepresented:" .. index,
+      mapId = 1000 + index,
+      objectEventId = 1,
+      sourceMovementType = "stationary",
+      movementType = "stationary",
+      fieldX = 2000 + index,
+      fieldZ = 2000,
+    }
+    warps[index] = { x = 3000 + index, z = 3000 }
+    coordinates[index] = { x = 4000 + index, z = 4000, width = 1, height = 1 }
+  end
+  local sourceFacts = {
+    mapId = 11,
+    fieldX = 32,
+    fieldZ = 64,
+    coverage = true,
+    logicalMapMatch = true,
+    collision = { blocked = false, behavior = 0 },
+    surface = { surfaceId = 3, worldY = 0, terrainDependencyHash = "budget-test" },
+    trigger = false,
+    events = objectEvents,
+    savedActors = savedActors,
+    mapBounds = { minX = 0, maxX = 5000, minZ = 0, maxZ = 5000 },
+  }
+  local service = setmetatable({
+    objectEvents = objectEvents,
+    savedActors = savedActors,
+    warpEvents = warps,
+    coordinateEvents = coordinates,
+    _tileFacts = function()
+      return sourceFacts
+    end,
+  }, Service)
+  local expected = LocationPolicy.classify(sourceFacts)
+  local task = service:_beginTileClassification(sourceFacts.fieldX, sourceFacts.fieldZ)
+  local firstVisits, firstResult = service:_advanceTileClassification(task, 128)
+  Assert.equal(firstVisits, 128, "trigger and policy scans share the per-unit source-record budget")
+  Assert.isNil(firstResult, "a tile with many source records remains pending after one bounded advance")
+  local totalVisits = firstVisits
+  local result
+  while result == nil do
+    local visits
+    visits, result = service:_advanceTileClassification(task, 128)
+    Assert.isTrue(visits <= 128, "one tile advance never visits more than 128 source records")
+    totalVisits = totalVisits + visits
+  end
+  Assert.isTrue(totalVisits > 4 * 128, "trigger, object-event, and actor passes all advance incrementally")
+  Assert.deepEqual(result, expected, "staged tile classification preserves the established policy result")
 end
 
 return T

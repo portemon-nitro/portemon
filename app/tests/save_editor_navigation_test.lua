@@ -295,9 +295,18 @@ function T.tests.navigation_debug_overlay_shows_the_current_region_and_resolver_
   controller:setFocus("money")
   controller.scopeId, controller.scopeEpoch = layout.scopeId, layout.scopeEpoch
   local lines = {}
+  local transforms = {}
   local graphics = {
     push = function() end,
     pop = function() end,
+    origin = function() end,
+    intersectScissor = function() end,
+    translate = function(x, y)
+      transforms[#transforms + 1] = { x = x, y = y }
+    end,
+    scale = function(x, y)
+      transforms[#transforms + 1] = { x = x, y = y }
+    end,
     setColor = function() end,
     rectangle = function() end,
     print = function(text)
@@ -311,9 +320,28 @@ function T.tests.navigation_debug_overlay_shows_the_current_region_and_resolver_
     valueEditor = nil,
   }
 
-  SaveEditorState._drawNavigationDebug(state, { layout = layout })
+  SaveEditorState._drawNavigationDebug(state, {
+    layout = layout,
+    presentation = {
+      panes = {
+        {
+          interactive = true,
+          placement = {
+            frame = { x = 10, y = 20, width = 640, height = 480 },
+            origin = { x = 12, y = 24 },
+            clipRect = { x = 10, y = 20, width = 640, height = 480 },
+            logicalWidth = 320,
+            logicalHeight = 240,
+            scale = 2,
+          },
+        },
+      },
+    },
+  })
 
   Assert.equal(#lines, 5, "the overlay includes focus identity and four resolver results")
+  Assert.equal(transforms[1].x, 12, "the focus outline uses the interactive pane origin")
+  Assert.equal(transforms[2].x, 2, "the focus outline uses the interactive pane scale")
   Assert.isTrue(lines[1]:find("body / money", 1, true) ~= nil, "the overlay identifies the active region")
   Assert.isTrue(lines[2]:find("up: stop", 1, true) ~= nil, "the overlay reports the resolver diagnostic reason")
 end

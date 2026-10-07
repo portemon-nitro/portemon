@@ -184,6 +184,21 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
     self.iconStatus, self.iconFailure = "ready", nil
     return
   end
+  local partyLayout = view.section == "Party" and assert(plan.content.layout)
+  if partyLayout and partyLayout.targets["party:page:previous"] ~= nil then
+    local visuals = assert(view.bagQuantityVisuals)
+    for _, direction in ipairs({ "decrement", "increment" }) do
+      for _, state in ipairs({ "normal", "pressed" }) do
+        local path = visuals[direction][state].image
+        if self._bagImages[path] == nil then
+          local bytes = assert(cacheFs:read(path), "Party pager visual bytes are required")
+          local image = self.graphics.newImage(love.filesystem.newFileData(bytes, path))
+          image:setFilter("nearest", "nearest")
+          self._bagImages[path] = image
+        end
+      end
+    end
+  end
   if view.section ~= "Party" then
     self.iconStatus, self.iconFailure = nil, nil
     return
@@ -683,7 +698,7 @@ local function drawBagCard(renderer, card, focused)
   end
 end
 
-local function drawBagPageArrow(renderer, target, visuals, angle, focused, pressed, disabled)
+local function drawPageArrow(renderer, target, visuals, angle, focused, pressed, disabled)
   local visual = (pressed == true and not disabled) and visuals.pressed or visuals.normal
   local image = assert(renderer._bagImages[assert(visual.image)])
   local width, height = image:getDimensions()
@@ -972,11 +987,10 @@ local function paintParty(ctx)
     drawButtonControl(
       renderer,
       previous,
-      "<",
-      false,
+      visuals.decrement,
+      math.pi / 2,
       isFocusedVisible(view, "party:page:previous"),
-      previousDisabled,
-      "navigation",
+      view.capturedTarget == "party:page:previous",
       false
     )
     drawText(
@@ -989,11 +1003,10 @@ local function paintParty(ctx)
     drawButtonControl(
       renderer,
       next,
-      ">",
-      false,
+      visuals.increment,
+      math.pi / 2,
       isFocusedVisible(view, "party:page:next"),
-      nextDisabled,
-      "navigation",
+      view.capturedTarget == "party:page:next",
       false
     )
   end

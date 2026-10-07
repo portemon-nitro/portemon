@@ -6,6 +6,7 @@ local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local Navigation = require("app.src.saveeditor.SaveEditorNavigation")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
+local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
 local T = { tests = {} }
@@ -19,9 +20,15 @@ local function computeLayout(view, width, height)
       count = #rowTargets,
       rowTargets = rowTargets,
       indexByTarget = indexByTarget,
-      idAt = function(index) return rowTargets[index] end,
-      indexOf = function(targetId) return indexByTarget[targetId] end,
-      rowAt = function(index) return view.flagRowAt(index) end,
+      idAt = function(index)
+        return rowTargets[index]
+      end,
+      indexOf = function(targetId)
+        return indexByTarget[targetId]
+      end,
+      rowAt = function(index)
+        return view.flagRowAt(index)
+      end,
     }
   end
   if
@@ -31,7 +38,8 @@ local function computeLayout(view, width, height)
     and view.location.maps ~= nil
     and view.location.mapModel == nil
   then
-    local maps, rowTargets, indexByTarget = view.location.maps, view.location.mapRowTargets, view.location.mapIndexByTarget
+    local maps, rowTargets, indexByTarget =
+      view.location.maps, view.location.mapRowTargets, view.location.mapIndexByTarget
     view.location.mapModel = {
       revision = 1,
       queryRevision = 0,
@@ -39,9 +47,15 @@ local function computeLayout(view, width, height)
       count = #rowTargets,
       rowTargets = rowTargets,
       indexByTarget = indexByTarget,
-      idAt = function(index) return rowTargets[index] end,
-      indexOf = function(targetId) return indexByTarget[targetId] end,
-      rowAt = function(index) return maps[index] end,
+      idAt = function(index)
+        return rowTargets[index]
+      end,
+      indexOf = function(targetId)
+        return indexByTarget[targetId]
+      end,
+      rowAt = function(index)
+        return maps[index]
+      end,
     }
   end
   if view.flagRows ~= nil and view.flagRowAt == nil then
@@ -275,10 +289,8 @@ function T.tests.shell_content_starts_at_the_application_margin_without_a_header
     local layout = computeLayout(view, size[1], size[2])
     Assert.isNil(layout.header, "the shell does not reserve header geometry")
     if size[1] < 400 then
-      local strip = assert(
-        layout.targets["section:Player"],
-        "compact section navigation begins at the application margin"
-      )
+      local strip =
+        assert(layout.targets["section:Player"], "compact section navigation begins at the application margin")
       Assert.isTrue(strip.rect.y <= 8, "compact section navigation begins at the application margin")
       Assert.isTrue(layout.content.y <= 34, "compact player content follows its section strip")
     else
@@ -298,8 +310,12 @@ local function partyEditorView(tab, focus)
   selector.slots[6] = { kind = "empty" }
   local statsRows = {}
   for _, pair in ipairs({
-    { "hp", "HP" }, { "attack", "Attack" }, { "defense", "Defense" },
-    { "speed", "Speed" }, { "specialAttack", "Sp. Atk" }, { "specialDefense", "Sp. Def" },
+    { "hp", "HP" },
+    { "attack", "Attack" },
+    { "defense", "Defense" },
+    { "speed", "Speed" },
+    { "specialAttack", "Sp. Atk" },
+    { "specialDefense", "Sp. Def" },
   }) do
     statsRows[#statsRows + 1] = {
       key = pair[1],
@@ -322,9 +338,27 @@ local function partyEditorView(tab, focus)
     partyStats = {
       header = {
         { id = "level", label = "Level", value = 9, targetId = "party:field:level", editor = { kind = "integer" } },
-        { id = "experience", label = "Exp", value = 100, targetId = "party:field:experience", editor = { kind = "integer" } },
-        { id = "friendship", label = "Friendship", value = 70, targetId = "party:field:friendship", editor = { kind = "integer" } },
-        { id = "currentHp", label = "HP", value = "20/20", targetId = "party:field:currentHp", editor = { kind = "integer" } },
+        {
+          id = "experience",
+          label = "Exp",
+          value = 100,
+          targetId = "party:field:experience",
+          editor = { kind = "integer" },
+        },
+        {
+          id = "friendship",
+          label = "Friendship",
+          value = 70,
+          targetId = "party:field:friendship",
+          editor = { kind = "integer" },
+        },
+        {
+          id = "currentHp",
+          label = "HP",
+          value = "20/20",
+          targetId = "party:field:currentHp",
+          editor = { kind = "integer" },
+        },
         { id = "status", label = "Status", value = "OK", targetId = "party:readonly:status" },
       },
       rows = statsRows,
@@ -339,8 +373,22 @@ local function partyEditorView(tab, focus)
     },
     partyDetails = {
       rows = {
-        { role = "named choice", targetId = "party:field:species", id = "species", label = "Species", value = "A", editor = { kind = "choice" } },
-        { role = "named choice", targetId = "party:field:ability", id = "ability", label = "Ability", value = "X", editor = { kind = "choice" } },
+        {
+          role = "named choice",
+          targetId = "party:field:species",
+          id = "species",
+          label = "Species",
+          value = "A",
+          editor = { kind = "choice" },
+        },
+        {
+          role = "named choice",
+          targetId = "party:field:ability",
+          id = "ability",
+          label = "Ability",
+          value = "X",
+          editor = { kind = "choice" },
+        },
       },
     },
   }
@@ -369,7 +417,6 @@ function T.tests.action_control_geometry_fits_labels_with_padding_on_compact_and
   end
 end
 
-
 local function partyEditorView(tab, focus)
   local selector = { slots = {} }
   selector.slots[1] = { kind = "member", slot0 = 0, iconKey = "a", label = "A", level = 9, active = true }
@@ -380,8 +427,12 @@ local function partyEditorView(tab, focus)
   selector.slots[6] = { kind = "empty" }
   local statsRows = {}
   for _, pair in ipairs({
-    { "hp", "HP" }, { "attack", "Attack" }, { "defense", "Defense" },
-    { "speed", "Speed" }, { "specialAttack", "Sp. Atk" }, { "specialDefense", "Sp. Def" },
+    { "hp", "HP" },
+    { "attack", "Attack" },
+    { "defense", "Defense" },
+    { "speed", "Speed" },
+    { "specialAttack", "Sp. Atk" },
+    { "specialDefense", "Sp. Def" },
   }) do
     statsRows[#statsRows + 1] = {
       key = pair[1],
@@ -404,9 +455,27 @@ local function partyEditorView(tab, focus)
     partyStats = {
       header = {
         { id = "level", label = "Level", value = 9, targetId = "party:field:level", editor = { kind = "integer" } },
-        { id = "experience", label = "Exp", value = 100, targetId = "party:field:experience", editor = { kind = "integer" } },
-        { id = "friendship", label = "Friendship", value = 70, targetId = "party:field:friendship", editor = { kind = "integer" } },
-        { id = "currentHp", label = "HP", value = "20/20", targetId = "party:field:currentHp", editor = { kind = "integer" } },
+        {
+          id = "experience",
+          label = "Exp",
+          value = 100,
+          targetId = "party:field:experience",
+          editor = { kind = "integer" },
+        },
+        {
+          id = "friendship",
+          label = "Friendship",
+          value = 70,
+          targetId = "party:field:friendship",
+          editor = { kind = "integer" },
+        },
+        {
+          id = "currentHp",
+          label = "HP",
+          value = "20/20",
+          targetId = "party:field:currentHp",
+          editor = { kind = "integer" },
+        },
         { id = "status", label = "Status", value = "OK", targetId = "party:readonly:status" },
       },
       rows = statsRows,
@@ -421,8 +490,22 @@ local function partyEditorView(tab, focus)
     },
     partyDetails = {
       rows = {
-        { role = "named choice", targetId = "party:field:species", id = "species", label = "Species", value = "A", editor = { kind = "choice" } },
-        { role = "named choice", targetId = "party:field:ability", id = "ability", label = "Ability", value = "X", editor = { kind = "choice" } },
+        {
+          role = "named choice",
+          targetId = "party:field:species",
+          id = "species",
+          label = "Species",
+          value = "A",
+          editor = { kind = "choice" },
+        },
+        {
+          role = "named choice",
+          targetId = "party:field:ability",
+          id = "ability",
+          label = "Ability",
+          value = "X",
+          editor = { kind = "choice" },
+        },
       },
     },
   }
@@ -442,9 +525,19 @@ function T.tests.party_editor_publishes_a_strip_pager_and_exactly_three_pages()
       Assert.equal(layout.partyPageLabel.text, tab, "the pager names " .. tab)
       Assert.notNil(layout.viewports.party, "the page body scrolls through its viewport")
       for _, targetId in ipairs({
-        "party:subpage:Identity", "party:subpage:Training", "party:subpage:Stats", "party:subpage:Moves",
-        "party:subpage:Origin", "party:edit", "party:remove", "party:back", "party:apply",
-        "party:discard", "party:cancel", "party:move:remove:0", "party:clear-nickname",
+        "party:subpage:Identity",
+        "party:subpage:Training",
+        "party:subpage:Stats",
+        "party:subpage:Moves",
+        "party:subpage:Origin",
+        "party:edit",
+        "party:remove",
+        "party:back",
+        "party:apply",
+        "party:discard",
+        "party:cancel",
+        "party:move:remove:0",
+        "party:clear-nickname",
       }) do
         Assert.isNil(layout.targets[targetId], "obsolete Party target is gone: " .. targetId)
         Assert.isFalse(hasNavigationControl(layout, targetId), "obsolete Party target leaves navigation: " .. targetId)
@@ -458,7 +551,7 @@ function T.tests.party_editor_publishes_a_strip_pager_and_exactly_three_pages()
   Assert.notNil(statsLayout.partyStatsTable, "Stats keeps its IV/EV table")
   Assert.equal(#statsLayout.partyStatsTable.headers, 3, "the table has exactly Stat/IV/EV columns")
   Assert.equal(#statsLayout.partyStatsTable.rows, 6, "the table keeps one row per battle stat")
-  Assert.isFalse(statsLayout.targets["party:page:previous"].activationEnabled, "previous is disabled on Stats")
+  Assert.isTrue(statsLayout.targets["party:page:previous"].activationEnabled, "Party Previous wraps from Stats")
   local movesLayout = computeLayout(partyEditorView("Moves", "party:move:0"), 800, 600)
   Assert.notNil(movesLayout.targets["party:move:0"], "occupied slots stay activatable")
   Assert.notNil(movesLayout.targets["party:move:1"], "every occupied slot stays activatable")
@@ -468,7 +561,7 @@ function T.tests.party_editor_publishes_a_strip_pager_and_exactly_three_pages()
   local detailsLayout = computeLayout(partyEditorView("Details", "party:field:species"), 800, 600)
   Assert.notNil(detailsLayout.targets["party:field:species"], "Details exposes its fields")
   Assert.notNil(detailsLayout.targets["party:field:ability"], "Details exposes its ability choice")
-  Assert.isFalse(detailsLayout.targets["party:page:next"].activationEnabled, "next is disabled on Details")
+  Assert.isTrue(detailsLayout.targets["party:page:next"].activationEnabled, "Party Next wraps from Details")
   local compactDetails = computeLayout(partyEditorView("Details", "party:field:species"), 256, 192)
   Assert.notNil(compactDetails.viewports.party, "compact Details keeps its scroll viewport")
   Assert.notNil(
@@ -484,15 +577,14 @@ function T.tests.live_stats_navigation_preserves_the_iv_ev_column()
   local layout = computeLayout(view, 800, 600)
   controller.scopeId, controller.scopeEpoch = layout.scopeId, layout.scopeEpoch
   controller:setFocus("party:field:iv:attack")
-  local state = {
+  local state = setmetatable({
     controller = controller,
     valueEditor = nil,
     _snapshot = function()
       return {}
     end,
-    _setScrollOffset = function()
-    end,
-  }
+    _setScrollOffset = function() end,
+  }, SaveEditorState)
 
   SaveEditorState._navigate(state, layout, "down")
 
@@ -614,10 +706,7 @@ function T.tests.progress_list_publishes_one_container_with_ordered_filterable_r
   local rowTarget = expectedRows[1]
   local marker = assert(layout.rowMarkers[rowTarget], "visible flag rows publish marker geometry")
   local label = assert(layout.rowLabelRects[rowTarget], "visible flag rows publish bounded label geometry")
-  Assert.isTrue(
-    label.x - (marker.x + 1) >= 3,
-    "flag glyph bounds clear the marker stroke by at least three pixels"
-  )
+  Assert.isTrue(label.x - (marker.x + 1) >= 3, "flag glyph bounds clear the marker stroke by at least three pixels")
   Assert.isTrue(container.focusable, "the container remains focusable while rows scroll")
   Assert.isTrue(
     focusOrderContains(layout.focusOrder, "list:flags"),
@@ -793,14 +882,8 @@ function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible
       scrolledView.locationNavigation.mapOffset = (30 - viewport.lastIndex) * viewport.rowExtent
       return computeLayout(scrolledView, size[1], size[2])
     end)()
-    Assert.notNil(
-      revealed.targets[distant],
-      "the scrolled window materializes the last map (" .. label .. ")"
-    )
-    Assert.notNil(
-      navigationFocus(revealed, distant),
-      "the scrolled window focuses the last map (" .. label .. ")"
-    )
+    Assert.notNil(revealed.targets[distant], "the scrolled window materializes the last map (" .. label .. ")")
+    Assert.notNil(navigationFocus(revealed, distant), "the scrolled window focuses the last map (" .. label .. ")")
   end
 end
 
@@ -814,10 +897,7 @@ function T.tests.location_uses_one_mode_per_layout_without_picker_controls()
       listLayout.lists["location:group:1"],
       "the map list publishes its interaction record (" .. label .. ")"
     )
-    Assert.isNil(
-      listLayout.targets["location:map-picker"],
-      "map selection has no picker control (" .. label .. ")"
-    )
+    Assert.isNil(listLayout.targets["location:map-picker"], "map selection has no picker control (" .. label .. ")")
     Assert.isNil(listLayout.targets["location:map-back"], "map selection has no nested Back (" .. label .. ")")
 
     local gridLayout = computeLayout(locationView(), size[1], size[2])
@@ -836,15 +916,9 @@ function T.tests.location_uses_one_mode_per_layout_without_picker_controls()
       gridLayout.targets["location:map-picker"],
       "coordinate selection has no picker control (" .. label .. ")"
     )
-    Assert.isNil(
-      gridLayout.targets["location:map-back"],
-      "coordinate selection has no nested Back (" .. label .. ")"
-    )
+    Assert.isNil(gridLayout.targets["location:map-back"], "coordinate selection has no nested Back (" .. label .. ")")
     for targetId in pairs(gridLayout.targets) do
-      Assert.isNil(
-        targetId:match("^location:map:%d+$"),
-        "coordinate selection exposes no map row (" .. label .. ")"
-      )
+      Assert.isNil(targetId:match("^location:map:%d+$"), "coordinate selection exposes no map row (" .. label .. ")")
     end
   end
 end
@@ -1038,11 +1112,7 @@ function T.tests.save_editor_list_and_card_geometry_is_bounded_and_row_major()
       scrollOffset = 12 * (24 + 2),
     })
     Assert.equal(scrolled.contentHeight, list.contentHeight, "scrolling never changes the total extent")
-    Assert.equal(
-      #scrolled.rows,
-      scrolled.lastIndex - scrolled.firstIndex + 1,
-      "a scrolled window stays densely packed"
-    )
+    Assert.equal(#scrolled.rows, scrolled.lastIndex - scrolled.firstIndex + 1, "a scrolled window stays densely packed")
     for position, row in ipairs(scrolled.rows) do
       Assert.equal(row.index, scrolled.firstIndex + position - 1)
     end
@@ -1189,10 +1259,7 @@ function T.tests.adjacent_action_controls_keep_a_minimum_gap_without_overlap()
     for left = 1, #rects do
       for right = left + 1, #rects do
         local a, b = rects[left], rects[right]
-        local overlap = a.x < b.x + b.width
-          and b.x < a.x + a.width
-          and a.y < b.y + b.height
-          and b.y < a.y + a.height
+        local overlap = a.x < b.x + b.width and b.x < a.x + a.width and a.y < b.y + b.height and b.y < a.y + a.height
         Assert.isFalse(overlap, size[1] .. "px draft controls never overlap")
       end
     end
@@ -1238,10 +1305,7 @@ function T.tests.list_rows_use_a_compact_extent_independent_of_form_controls()
     session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
   }, 256, 192)
   local money = assert(player.targets.money).rect
-  Assert.isTrue(
-    money.height >= 28,
-    "form controls keep their roomy height while list rows stay compact"
-  )
+  Assert.isTrue(money.height >= 28, "form controls keep their roomy height while list rows stay compact")
   Assert.isTrue(money.height > first.height, "list rows are roughly half the form control height")
 
   local options = {}
@@ -1338,16 +1402,16 @@ function T.tests.large_flag_catalog_materializes_only_its_visible_window()
       countMatching(layout.targets, "^flag:") <= last - first + 1,
       case.name .. " materializes targets only for its visible window"
     )
-    Assert.isTrue(
-      countMatching((function()
+    Assert.isTrue(countMatching(
+      (function()
         local ids = {}
         for _, control in ipairs(layout.focusNavigation.controls) do
           ids[control.id] = true
         end
         return ids
-      end)(), "^flag:") <= last - first + 1,
-      case.name .. " keeps navigation controls only for its visible window"
-    )
+      end)(),
+      "^flag:"
+    ) <= last - first + 1, case.name .. " keeps navigation controls only for its visible window")
     Assert.equal(#layout.lists.flags.rowTargets, 10000, case.name .. " keeps the complete logical order")
     local firstTarget = rowTargets[first]
     local firstRect = assert(
@@ -1355,15 +1419,11 @@ function T.tests.large_flag_catalog_materializes_only_its_visible_window()
       case.name .. " materializes the first row of its window (" .. firstTarget .. ")"
     )
     Assert.isTrue(
-      firstRect.rect.y >= viewport.clip.y - 18
-        and firstRect.rect.y <= viewport.clip.y + viewport.clip.height,
+      firstRect.rect.y >= viewport.clip.y - 18 and firstRect.rect.y <= viewport.clip.y + viewport.clip.height,
       case.name .. " places its window rows inside the viewport"
     )
     if last < 10000 then
-      Assert.isNil(
-        layout.targets[rowTargets[last + 1]],
-        case.name .. " shares no target with the row past its window"
-      )
+      Assert.isNil(layout.targets[rowTargets[last + 1]], case.name .. " shares no target with the row past its window")
     end
   end
 end
@@ -1412,16 +1472,16 @@ function T.tests.large_choice_catalog_materializes_only_its_visible_window()
     countMatching(layout.targets, "^choice:") <= capacity,
     "choice targets stay bounded by the visible window"
   )
-  Assert.isTrue(
-    countMatching((function()
+  Assert.isTrue(countMatching(
+    (function()
       local ids = {}
       for _, control in ipairs(layout.focusNavigation.controls) do
         ids[control.id] = true
       end
       return ids
-    end)(), "^choice:") <= capacity,
-    "choice controls stay bounded by the visible window"
-  )
+    end)(),
+    "^choice:"
+  ) <= capacity, "choice controls stay bounded by the visible window")
   Assert.equal(#layout.lists["value:choice"].rowTargets, 10000, "the logical choice order stays complete")
   Assert.isNil(layout.targets["choice:K10000"], "the last choice has no target at the top offset")
   Assert.notNil(navigationFocus(layout, "choice:K10000"), "the last choice stays logically addressable")
@@ -1503,7 +1563,8 @@ function T.tests.compact_layouts_offer_five_direct_section_controls_instead_of_a
   end
 end
 
-function T.tests.wide_shell_is_centered_and_capped_with_footer_inside()  for _, width in ipairs({ 800, 1200 }) do
+function T.tests.wide_shell_is_centered_and_capped_with_footer_inside()
+  for _, width in ipairs({ 800, 1200 }) do
     local label = width .. "px"
     local layout = computeLayout(sectionStripView("Player"), width, 600)
     local shell = assert(layout.shell, "the wide layout publishes its centered shell (" .. label .. ")")
@@ -1511,10 +1572,7 @@ function T.tests.wide_shell_is_centered_and_capped_with_footer_inside()  for _, 
     Assert.near(shell.x, (width - shell.width) / 2, 1.01, "the shell is horizontally centered")
     local rail = assert(layout.targets["section:Location"], "the wide layout keeps its side rail").rect
     Assert.isTrue(rail.x >= shell.x, "the rail lives inside the shell")
-    Assert.isTrue(
-      layout.content.x >= rail.x + rail.width,
-      "content starts right of the rail (" .. label .. ")"
-    )
+    Assert.isTrue(layout.content.x >= rail.x + rail.width, "content starts right of the rail (" .. label .. ")")
     Assert.isTrue(
       layout.content.x + layout.content.width <= shell.x + shell.width + 1.01,
       "content stays inside the shell (" .. label .. ")"
@@ -2113,6 +2171,72 @@ function T.tests.painting_follows_resolved_geometry_without_recomputing_layout()
   Assert.isTrue(hasFillAt(firstOps, saveRect.x - 7), "the footer paints at its resolved save position")
   Assert.isTrue(hasFillAt(secondOps, saveRect.x), "the footer follows the resolved save rectangle")
   Assert.isFalse(hasFillAt(secondOps, saveRect.x - 7), "the footer does not repaint the old position")
+function T.tests.layout_publishes_semantic_activation_actions()
+  local controller = Controller.new()
+  local layout = computeLayout({
+    status = "ready",
+    ready = true,
+    dirty = false,
+    sectionDirty = false,
+    section = "Player",
+    scope = controller:snapshot().scope,
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+  }, 800, 600)
+  local actions = {}
+  for _, control in ipairs(layout.focusNavigation.controls) do
+    actions[control.id] = control.action
+  end
+
+  Assert.equal(actions["section:Party"].kind, "section.select", "section controls publish a section action")
+  Assert.equal(actions["section:Party"].section, "Party", "section action carries its semantic value")
+  Assert.equal(actions.money.kind, "player.edit-money", "money publishes a field action")
+  Assert.isNil(actions.money.targetId, "activation does not require reparsing the target ID")
+end
+
+function T.tests.layout_publishes_value_and_decision_payloads_without_control_ids()
+  local controller = Controller.new()
+  local metrics = { lineHeight = 14, measure = function(text) return #text * 7 end }
+  local numberView = {
+    status = "ready",
+    ready = true,
+    dirty = false,
+    sectionDirty = false,
+    section = "Player",
+    scope = { id = "value:test", epoch = 1, kind = "value" },
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+    valueEditor = ValueEditor.new({ kind = "integer", value = 12, min = 0, max = 99, base = "decimal" }):snapshot(),
+    numberControlVisuals = { increment = { normal = { width = 8, height = 8 } } },
+  }
+  local numberLayout = Layout.compute(numberView, 640, 480, metrics)
+  local actions = {}
+  for _, control in ipairs(numberLayout.focusNavigation.controls) do
+    actions[control.id] = control.action
+  end
+  Assert.equal(actions["number:place:1:up"].kind, "value.adjust-number-place")
+  Assert.equal(actions["number:place:1:up"].place, 1)
+  Assert.equal(actions["number:place:1:up"].direction, "up")
+  Assert.isNil(actions["number:place:1:up"].controlId)
+
+  local decisionView = {
+    status = "ready",
+    ready = true,
+    dirty = false,
+    sectionDirty = false,
+    section = "Player",
+    scope = { id = "decision:test", epoch = 1, kind = "decision" },
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+    modal = "party-move",
+  }
+  local decisionLayout = Layout.compute(decisionView, 640, 480, metrics)
+  actions = {}
+  for _, control in ipairs(decisionLayout.focusNavigation.controls) do
+    actions[control.id] = control.action
+  end
+  Assert.equal(actions["party-move:pp"].kind, "decision.edit-move-pp")
+  Assert.equal(actions["party-move:pp"].decision, "party-move")
+  Assert.isNil(actions["party-move:pp"].controlId)
+  Assert.equal(actions.cancel.kind, "decision.cancel")
+  Assert.equal(actions.cancel.decision, "party-move")
 end
 
 return T

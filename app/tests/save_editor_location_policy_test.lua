@@ -297,4 +297,33 @@ function T.tests.special_actor_fails_closed_and_flag_visibility_does_not_shrink_
   end
 end
 
+function T.tests.staged_classification_bounds_each_actor_and_event_advance()
+  local LocationPolicy = policy()
+  local events = {}
+  local actors = {}
+  for index = 1, 300 do
+    events[index] = event({ objectEventId = index, x = 0x1000 + index, z = 0x1000 })
+    actors[index] = {
+      actorId = "unrepresented:" .. index,
+      mapId = 1000 + index,
+      objectEventId = 1,
+      sourceMovementType = "stationary",
+      movementType = "stationary",
+      fieldX = 0x2000 + index,
+      fieldZ = 0x2000,
+    }
+  end
+  local source = facts({ events = events, savedActors = actors })
+  local expected = LocationPolicy.classify(source)
+  local task = LocationPolicy.beginClassification(source)
+  local totalVisits = 0
+  while not task.done do
+    local visits = LocationPolicy.advanceClassification(task, 17)
+    Assert.isTrue(visits <= 17, "one staged policy advance never visits more than its supplied budget")
+    totalVisits = totalVisits + visits
+  end
+  Assert.isTrue(totalVisits >= #events + #actors * 2, "all retained policy passes charge their array visits")
+  Assert.deepEqual(task.result, expected, "staged classification preserves the synchronous policy result")
+end
+
 return T

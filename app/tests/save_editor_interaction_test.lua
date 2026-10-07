@@ -17,6 +17,41 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 
 local T = { tests = {} }
 
+local function stateHarness(fields)
+  fields.fieldInput = fields.fieldInput or FieldInput.new()
+  fields.scopeEpoch = fields.scopeEpoch or 0
+  fields.inputTick = fields.inputTick or 0
+  fields.locationPreviewMemory = fields.locationPreviewMemory or {}
+  local state = setmetatable(fields, State)
+  state:_syncScope()
+  return state
+end
+
+local function activate(state, targetId)
+  state.inputTick = state.inputTick or 0
+  state.numberPressUntilTick = state.numberPressUntilTick or 0
+  local view = state:_snapshot()
+  if view.session ~= nil then
+    view.session.frameIndex = view.session.frameIndex or 0
+  end
+  local metrics = view.textMetrics or {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  view.numberControlVisuals = { increment = { normal = { width = 8, height = 8 } } }
+  local layout = Layout.compute(view, 800, 600, metrics)
+  state:_activateControl(targetId, layout)
+end
+
+local function prepareLocationList(state, listId)
+  state:_locationListCache(listId)
+  while state._locationListCaches[listId] == nil do
+    state:_advanceLocationPreparation(256)
+  end
+end
+
 function T.tests.location_section_entry_always_opens_the_map_list()
   local controller = Controller.new()
   controller:setSection("Location")
@@ -83,7 +118,7 @@ function T.tests.carried_root_query_overrides_stale_group_filter_memory()
 end
 
 function T.tests.map_hierarchy_filtering_can_switch_queries_after_a_completed_filter()
-  local state = setmetatable({
+  local state = stateHarness({
     controller = Controller.new(),
     locationService = {
       mapSummaries = function()
@@ -108,9 +143,10 @@ function T.tests.map_hierarchy_filtering_can_switch_queries_after_a_completed_fi
     _locationListCaches = {},
     _listFilterTask = nil,
     _listQueryRevision = 0,
-  }, State)
-  state._locationMapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog").new(state.locationService:mapSummaries())
-  state:_prepareLocationListCaches()
+  })
+  state._locationMapCatalog =
+    require("app.src.saveeditor.SaveEditorMapCatalog").new(state.locationService:mapSummaries())
+  prepareLocationList(state, "location:root")
   state.controller:setSection("Location")
   state.controller.query = "ALPHA"
   state:_mapProjection()
@@ -135,7 +171,7 @@ function T.tests.map_group_entry_uses_projections_prepared_before_navigation()
   local controller = Controller.new()
   controller:setSection("Location")
   controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
-  local state = setmetatable({
+  local state = stateHarness({
     controller = controller,
     locationService = {
       mapSummaries = function()
@@ -160,9 +196,10 @@ function T.tests.map_group_entry_uses_projections_prepared_before_navigation()
     _locationListCaches = {},
     _listFilterTask = nil,
     _listQueryRevision = 0,
-  }, State)
-  state._locationMapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog").new(state.locationService:mapSummaries())
-  state:_locationListCache("location:root")
+  })
+  state._locationMapCatalog =
+    require("app.src.saveeditor.SaveEditorMapCatalog").new(state.locationService:mapSummaries())
+  prepareLocationList(state, "location:root")
 
   local catalog = assert(state._locationMapCatalog)
   local mapProjectionCalls = 0
@@ -176,7 +213,7 @@ function T.tests.map_group_entry_uses_projections_prepared_before_navigation()
   Assert.isNil(state._locationListCaches["location:group:1"], "entry does not materialize the group list synchronously")
 
   controller:backLocation()
-  state:_prepareLocationListCaches()
+  prepareLocationList(state, "location:group:1")
   local preparedCalls = mapProjectionCalls
   state:_performDeferred({ kind = "location-group-select", groupId = "location:group:1" })
   Assert.equal(mapProjectionCalls, preparedCalls, "readiness preparation leaves group entry projection-free")
@@ -213,11 +250,7 @@ function T.tests.location_hierarchy_back_restores_each_level_query_cursor_and_sc
     scroll = controller.scrollOffset,
   }
   local leafActivation = controller:press("confirm")
-  Assert.deepEqual(
-    leafActivation,
-    { kind = "activate", targetId = leafTargetId },
-    "confirm activates a focused leaf"
-  )
+  Assert.deepEqual(leafActivation, { kind = "activate", targetId = leafTargetId }, "confirm activates a focused leaf")
   controller:chooseLocationMap(mapId, 12, 18)
   Assert.equal(controller:locationSnapshot().page, "grid", "leaf activation enters coordinate selection")
 
@@ -406,7 +439,7 @@ function T.tests.number_repeat_stops_on_pointer_cancel_and_focus_loss()
     local controller = Controller.new()
     controller:pointer({ type = "pointer_down", pointerId = pointerId, targetId = "number:place:0:up" })
     local adjustments = 0
-    local state = setmetatable({
+    local state = stateHarness({
       disposed = false,
       status = "ready",
       tickRemainder = 0,
@@ -452,7 +485,7 @@ function T.tests.number_repeat_stops_on_pointer_cancel_and_focus_loss()
           adjustments = adjustments + 1
         end,
       },
-    }, State)
+    })
     return state, function()
       return adjustments
     end
@@ -674,7 +707,7 @@ local function progressListHarness(flagCatalog)
   local current = { view = buildView(), layout = buildLayout() }
   local activations = {}
   local backs = 0
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     controller = controller,
     fieldInput = { beginUi = function() end },
@@ -686,10 +719,14 @@ local function progressListHarness(flagCatalog)
     _activate = function(_, targetId)
       activations[#activations + 1] = targetId
     end,
+    _dispatchActivationAction = function(_, action)
+      Assert.equal(action.kind, "progress.toggle-flag", "flag activation arrives as a typed action")
+      activations[#activations + 1] = "flag:" .. action.name
+    end,
     _requestBack = function()
       backs = backs + 1
     end,
-  }, State)
+  })
   local function sync()
     current.view = buildView()
     current.layout = buildLayout()
@@ -1049,7 +1086,7 @@ local function locationListHarness()
   end
   local intents = {}
   local backs = 0
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     controller = controller,
     fieldInput = { beginUi = function() end },
@@ -1067,7 +1104,7 @@ local function locationListHarness()
     _requestBack = function()
       backs = backs + 1
     end,
-  }, State)
+  })
   return {
     controller = controller,
     state = state,
@@ -1166,7 +1203,7 @@ local function overflowingLocationListHarness(width, height, count)
   end
   local intents = {}
   local backs = 0
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     controller = controller,
     fieldInput = { beginUi = function() end },
@@ -1184,7 +1221,7 @@ local function overflowingLocationListHarness(width, height, count)
     _requestBack = function()
       backs = backs + 1
     end,
-  }, State)
+  })
   return {
     controller = controller,
     state = state,
@@ -1288,7 +1325,7 @@ local function choiceListHarness(optionCount)
     return Layout.compute(buildView(), 256, 192, metrics)
   end
   local finished = 0
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     controller = controller,
     fieldInput = FieldInput.new(),
@@ -1302,7 +1339,7 @@ local function choiceListHarness(optionCount)
     _finishValueEditor = function()
       finished = finished + 1
     end,
-  }, State)
+  })
   return {
     controller = controller,
     state = state,
@@ -1458,7 +1495,7 @@ local function mapActivationHarness()
   local service = recordingLocationService()
   local resolveCount = 0
   local grid = { columns = 7, rows = 5 }
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     controller = controller,
     locationService = service,
@@ -1481,7 +1518,7 @@ local function mapActivationHarness()
       resolveCount = resolveCount + 1
       return { content = { layout = { locationGrid = grid } } }
     end,
-  }, State)
+  })
   return {
     controller = controller,
     service = service,
@@ -1490,6 +1527,39 @@ local function mapActivationHarness()
       return resolveCount
     end,
   }
+end
+
+function T.tests.manual_tile_selection_disarms_pending_survey_centering()
+  local harness = mapActivationHarness()
+  harness.service.resolve = function(_, mapId, fieldX, fieldZ)
+    Assert.equal(mapId, 12, "manual selection resolves the active map")
+    Assert.equal(fieldX, 32, "manual selection resolves the chosen x coordinate")
+    Assert.equal(fieldZ, 48, "manual selection resolves the chosen z coordinate")
+    return { mapId = mapId, fieldX = fieldX, fieldZ = fieldZ }, { state = "ready" }
+  end
+  harness.state.session = {
+    setLocation = function()
+      return { ok = true }
+    end,
+  }
+  harness.state.locationAutoCenterToken = { mapId = 12, generation = 3 }
+
+  harness.state:_performDeferred({ kind = "select_tile", fieldX = 32, fieldZ = 48 })
+
+  Assert.isNil(harness.state.locationAutoCenterToken, "manual tile selection takes ownership from the survey")
+end
+
+function T.tests.pending_manual_tile_selection_cancels_survey_ownership()
+  local harness = mapActivationHarness()
+  harness.service.resolve = function()
+    return nil, { state = "pending", reason = "preparing" }
+  end
+  harness.state.locationAutoCenterToken = { mapId = 12, generation = 3 }
+
+  harness.state:_selectLocationTile(32, 48)
+
+  Assert.isNil(harness.state.locationAutoCenterToken, "a manual tile attempt takes ownership from the survey")
+  Assert.equal(harness.service.cancelInitialSurveyCalls or 0, 1, "a pending survey is canceled before tile resolution")
 end
 
 function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_work()
@@ -1519,7 +1589,7 @@ function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_wor
   )
   local firstTap =
     controller:pointer({ type = "pointer_up", pointerId = "touch:map-row", targetId = "location:map:47", x = 8, y = 8 })
-  Assert.deepEqual(firstTap, { kind = "location-map-select", mapId = 47 }, "a clean tap activates the map row")
+  Assert.deepEqual(firstTap, { kind = "activate", targetId = "location:map:47" }, "a clean tap activates the map row")
   Assert.equal(controller.focus, "location:map:47", "the tap moves focus to its map row")
   Assert.equal(controller.locationMapId, 12, "the activation request does not commit a map itself")
 
@@ -1534,7 +1604,7 @@ function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_wor
     controller:pointer({ type = "pointer_up", pointerId = "touch:map-act", targetId = "location:map:47", x = 8, y = 8 })
   Assert.deepEqual(
     secondTap,
-    { kind = "location-map-select", mapId = 47 },
+    { kind = "activate", targetId = "location:map:47" },
     "a clean tap on the focused row requests activation"
   )
   Assert.equal(
@@ -1605,7 +1675,7 @@ function T.tests.location_grid_direction_moves_the_cursor_without_a_list_viewpor
   Assert.equal(after.fieldX, before.fieldX + 1, "directional grid input moves the location cursor one tile")
   Assert.equal(after.fieldZ, before.fieldZ, "horizontal grid input preserves the row")
   Assert.isNil(harness.state.locationAutoCenterToken, "manual grid movement takes ownership from the suggestion")
-  Assert.equal(harness.service.cancelInitialSurveyCalls or 0, 0, "manual grid movement does not cancel survey readiness")
+  Assert.equal(harness.service.cancelInitialSurveyCalls or 0, 1, "manual grid movement cancels the pending survey")
 end
 
 function T.tests.pointer_pan_takes_location_cursor_ownership_before_the_next_update()
@@ -1716,7 +1786,7 @@ function T.tests.location_grid_page_only_moves_its_cursor_when_grid_has_focus()
     },
   }
   local cursorMoves = 0
-  local state = setmetatable({
+  local state = stateHarness({
     controller = controller,
     valueEditor = nil,
     _performDeferred = function(_, intent)
@@ -1724,7 +1794,7 @@ function T.tests.location_grid_page_only_moves_its_cursor_when_grid_has_focus()
         cursorMoves = cursorMoves + 1
       end
     end,
-  }, State)
+  })
   local initialCursor = controller:locationSnapshot().cursor
 
   controller:setFocus("section:Location")
@@ -2162,7 +2232,7 @@ local function scrollableChoiceHarness(optionCount)
     return Layout.compute(buildView(), 256, 192, metrics)
   end
   local finished = 0
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     controller = controller,
     fieldInput = { beginUi = function() end },
@@ -2175,7 +2245,7 @@ local function scrollableChoiceHarness(optionCount)
     _finishValueEditor = function()
       finished = finished + 1
     end,
-  }, State)
+  })
   holder.state = state
   return {
     controller = controller,
@@ -2238,7 +2308,7 @@ function T.tests.location_focus_without_a_published_grid_control_falls_back_to_i
     },
     lists = {},
   }
-  local state = setmetatable({
+  local state = stateHarness({
     controller = controller,
     _snapshot = function()
       return { section = "Location" }
@@ -2246,7 +2316,7 @@ function T.tests.location_focus_without_a_published_grid_control_falls_back_to_i
     _resolve = function()
       return { content = { layout = layout } }
     end,
-  }, State)
+  })
 
   state:_reconcileFocus()
 
@@ -2480,7 +2550,7 @@ function T.tests.modal_navigation_does_not_move_the_underlying_location_grid()
     end,
   }
   local token = { mapId = 7, generation = 4 }
-  local state = setmetatable({
+  local state = stateHarness({
     controller = controller,
     locationService = service,
     locationServiceMapId = 7,
@@ -2488,7 +2558,7 @@ function T.tests.modal_navigation_does_not_move_the_underlying_location_grid()
     locationAutoCenterToken = token,
     locationGridWidthTiles = 1,
     locationGridHeightTiles = 1,
-  }, State)
+  })
   local cursorBefore = controller:locationSnapshot().cursor
   local layout = {
     scopeId = controller.scopeId,
@@ -2616,7 +2686,7 @@ end
 function T.tests.flag_value_snapshots_do_not_mutate_cached_flag_metadata()
   local controller = Controller.new()
   controller:setSection("Progress")
-  local state = setmetatable({
+  local state = stateHarness({
     controller = controller,
     status = "ready",
     session = {},
@@ -2625,7 +2695,7 @@ function T.tests.flag_value_snapshots_do_not_mutate_cached_flag_metadata()
     valueEditor = nil,
     numberHold = nil,
     disposed = false,
-  }, State)
+  })
   while state._flagCatalog == nil do
     state:update(0)
   end
@@ -2690,7 +2760,7 @@ function T.tests.flag_value_reads_are_limited_to_the_visible_window()
       targetId = "flag:" .. name,
     }
   end
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     controller = controller,
     fieldInput = FieldInput.new(),
@@ -2702,7 +2772,7 @@ function T.tests.flag_value_reads_are_limited_to_the_visible_window()
     _flagCatalog = catalog,
     modalStack = ModalStack.new(),
     modalLayerSequence = 0,
-  }, State)
+  })
   local view = state:_snapshot()
   view.scope = { id = "section:Progress", epoch = 1, kind = "section", focusId = controller.focus }
   view.textMetrics = interactionMetrics()
@@ -2717,7 +2787,7 @@ function T.tests.flag_value_reads_are_limited_to_the_visible_window()
   )
 end
 
-function T.tests.flag_filter_publishes_bounded_c02_generations()
+function T.tests.flag_filter_publishes_bounded_generations()
   local controller = Controller.new()
   controller:setSection("Progress")
   local catalog = {}
@@ -2730,7 +2800,7 @@ function T.tests.flag_filter_publishes_bounded_c02_generations()
       targetId = "flag:" .. name,
     }
   end
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     controller = controller,
     fieldInput = FieldInput.new(),
@@ -2740,7 +2810,7 @@ function T.tests.flag_filter_publishes_bounded_c02_generations()
     numberPressUntilTick = 0,
     preserveChoiceScroll = false,
     _flagCatalog = catalog,
-  }, State)
+  })
   local initial = state:_flagProjection({})
   Assert.equal(initial.count, #catalog, "the initial indexed projection covers the catalog")
   Assert.equal(initial.idAt(1), "flag:FLAG_TEST_0001", "the projection resolves stable row identity")
@@ -2775,7 +2845,7 @@ end
 function T.tests.first_progress_snapshot_defers_flag_catalog_enumeration_to_bounded_updates()
   local controller = Controller.new()
   controller:setSection("Progress")
-  local state = setmetatable({
+  local state = stateHarness({
     controller = controller,
     status = "ready",
     session = {},
@@ -2786,7 +2856,7 @@ function T.tests.first_progress_snapshot_defers_flag_catalog_enumeration_to_boun
     disposed = false,
     _listFilterTask = nil,
     _listQueryRevision = 0,
-  }, State)
+  })
   local visits = 0
   local originalPairs = pairs
   local expectedVisits = 0
@@ -2804,7 +2874,9 @@ function T.tests.first_progress_snapshot_defers_flag_catalog_enumeration_to_boun
         visits = visits + 1
       end
       return key, tableValue[key]
-    end, tableValue, key
+    end,
+      tableValue,
+      key
   end
   local ok, errorMessage = xpcall(function()
     local initial = state:_flagProjection({})
@@ -2833,7 +2905,7 @@ function T.tests.first_progress_snapshot_defers_flag_catalog_enumeration_to_boun
   end
 end
 
-function T.tests.map_filter_publishes_bounded_c02_generations()
+function T.tests.map_filter_publishes_bounded_generations()
   local controller = Controller.new()
   controller:setSection("Location")
   controller.locationPage = "group"
@@ -2848,7 +2920,7 @@ function T.tests.map_filter_publishes_bounded_c02_generations()
       displayName = string.format("Test map %04d", index),
     }
   end
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     controller = controller,
     fieldInput = FieldInput.new(),
@@ -2863,9 +2935,9 @@ function T.tests.map_filter_publishes_bounded_c02_generations()
         return summaries
       end,
     },
-  }, State)
+  })
   state._locationMapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog").new(summaries)
-  state:_prepareLocationListCaches()
+  prepareLocationList(state, "location:group:1")
   local initial = state:_mapProjection()
   Assert.equal(initial.count, #summaries, "the initial indexed map projection covers the catalog")
   Assert.equal(initial.idAt(1), "location:map:1", "the map projection resolves stable row identity")
@@ -2890,18 +2962,86 @@ function T.tests.map_filter_publishes_bounded_c02_generations()
   Assert.equal(published.revision, initial.revision + 1, "map publication advances the revision once")
 end
 
+function T.tests.location_catalog_and_list_publication_share_the_update_budget()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  local summaries, sourceReads = {}, 0
+  local sourceTask = { cursor = 1 }
+  function sourceTask:advance(budget)
+    local used = 0
+    while used < budget and self.cursor <= 600 do
+      local mapId = self.cursor
+      summaries[#summaries + 1] = {
+        mapId = mapId,
+        symbol = string.format("MAP_TEST_%04d", mapId),
+        section = "TEST_SECTION",
+        mapSectionNativeId = 1,
+        displayName = string.format("Test map %04d", mapId),
+      }
+      self.cursor = mapId + 1
+      sourceReads = sourceReads + 1
+      used = used + 1
+    end
+    return used, self.cursor > 600
+  end
+  function sourceTask:take()
+    return summaries
+  end
+
+  local state = stateHarness({
+    status = "preparing",
+    controller = controller,
+    locationService = {},
+    fieldInput = FieldInput.new(),
+    inputTick = 0,
+    tickRemainder = 0,
+    _locationMapSummaryTask = sourceTask,
+    _locationListCaches = {},
+  })
+  local advance = state._advanceLocationPreparation
+  local updateWork = {}
+  state._advanceLocationPreparation = function(self, budget)
+    local used = advance(self, budget)
+    updateWork[#updateWork + 1] = used
+    return used
+  end
+
+  Assert.isTrue(state:_mapProjection().pending, "the map root stays pending before its source scan completes")
+  state:update(0)
+  Assert.equal(sourceReads, 256, "the real update loop limits source-summary acquisition to its row budget")
+  Assert.isNil(state._locationMapCatalog, "the whole map catalog does not publish during one source-scan update")
+
+  local updates = 1
+  while state._locationListCaches["location:root"] == nil do
+    state:update(0)
+    updates = updates + 1
+    Assert.isTrue(
+      updateWork[#updateWork] <= 256,
+      "source scan, catalog build, and list indexing share one update budget"
+    )
+    Assert.isTrue(updates < 100, "bounded catalog preparation eventually publishes the root list")
+  end
+  Assert.isTrue(updates > 1, "a full hierarchy is never acquired and indexed in one update")
+  Assert.equal(state:_mapProjection().count, 1, "the root publishes its complete source group after preparation")
+  Assert.equal(
+    state._locationListCaches["location:root"].rows[1].maps[600].mapId,
+    600,
+    "all maps remain available after publication"
+  )
+end
+
 function T.tests.map_filter_charges_each_group_child_label_to_its_budget()
   local controller = Controller.new()
   local maps = {}
   for index = 1, 2000 do
     maps[index] = { displayName = string.format("Test map %04d", index) }
   end
-  local state = setmetatable({
+  local state = stateHarness({
     controller = controller,
     _locationListCaches = {},
     _listFilterTask = nil,
     _listQueryRevision = 0,
-  }, State)
+  })
   local listId = "location:group:1"
   state:_beginListFilter(listId, "not-found", {
     {
@@ -2921,11 +3061,7 @@ function T.tests.map_filter_charges_each_group_child_label_to_its_budget()
   while state._listFilterTask ~= nil do
     state:_advanceListFilter(256)
   end
-  Assert.equal(
-    #state._locationListCaches[listId].rows,
-    0,
-    "the group is excluded after all child labels fail to match"
-  )
+  Assert.equal(#state._locationListCaches[listId].rows, 0, "the group is excluded after all child labels fail to match")
 end
 
 function T.tests.moving_past_the_visible_window_reveals_and_focuses_the_next_row()
@@ -3116,7 +3252,7 @@ local function backHarness(options)
     end,
   }
   local results = {}
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     disposed = false,
     approvedExit = false,
@@ -3136,14 +3272,14 @@ local function backHarness(options)
     onResult = function(result)
       results[#results + 1] = result
     end,
-  }, State)
+  })
   return { controller = controller, session = session, state = state, results = results }
 end
 
 function T.tests.every_section_button_activates_its_section_directly()
   local harness = backHarness({ section = "Player" })
   for _, name in ipairs({ "Location", "Player", "Party", "Bag", "Progress" }) do
-    harness.state:_activate("section:" .. name)
+    harness.state:_dispatchActivationAction({ kind = "section.select", section = name })
     Assert.equal(harness.controller.section, name, "the " .. name .. " button enters its section")
   end
 end
@@ -3226,7 +3362,7 @@ local function livePartyHarness(memberCount)
   local controller = Controller.new()
   controller:setSection("Party")
   local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     disposed = false,
     approvedExit = false,
@@ -3234,7 +3370,27 @@ local function livePartyHarness(memberCount)
     modalStack = ModalStack.new(),
     modalLayerSequence = 0,
     session = session,
-    dependencies = { context = fixture.context },
+    dependencies = {
+      context = fixture.context,
+      bagManifest = {
+        interactive = {
+          overlays = {
+            quantity = {
+              visuals = {
+                decrement = {
+                  normal = { image = "bag/dec-normal" },
+                  pressed = { image = "bag/dec-pressed" },
+                },
+                increment = {
+                  normal = { image = "bag/inc-normal" },
+                  pressed = { image = "bag/inc-pressed" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     partyView = PartyView.new(fixture.context),
     fieldInput = { beginUi = function() end },
     scopeEpoch = 0,
@@ -3256,7 +3412,7 @@ local function livePartyHarness(memberCount)
       return { year = 2000, month = 1, day = 1 }
     end,
     onResult = function() end,
-  }, State)
+  })
   return { state = state, controller = controller, session = session }
 end
 
@@ -3281,7 +3437,7 @@ function T.tests.switching_members_applies_a_valid_dirty_draft()
   local harness = livePartyHarness(2)
   harness.state:_ensurePartyDraft()
   Assert.isTrue(harness.state.monDraft:setScalar("friendship", 200))
-  harness.state:_activate("party:slot:1")
+  activate(harness.state, "party:slot:1")
   Assert.equal(harness.controller.partySlot0, 1, "selection moves after the draft applies")
   Assert.equal(harness.session:partySnapshot().members[1].mon.friendship, 200)
   Assert.equal(harness.state.monDraft:slot0(), 1, "the new member context owns a fresh draft")
@@ -3293,7 +3449,7 @@ function T.tests.invalid_draft_blocks_leaving_the_member()
   harness.state:_ensurePartyDraft()
   local draft = harness.state.monDraft
   Assert.isTrue(draft:setScalar("currentHp", 9999), "the invalid value stages in the draft")
-  harness.state:_activate("party:slot:1")
+  activate(harness.state, "party:slot:1")
   Assert.equal(harness.controller.partySlot0, 0, "selection stays on the invalid member")
   Assert.equal(harness.state.monDraft, draft, "the invalid draft is preserved")
   Assert.notNil(harness.state.errorMessage, "the validation error is shown")
@@ -3306,19 +3462,21 @@ function T.tests.paging_preserves_the_open_draft_without_applying()
   local draft = harness.state.monDraft
   local revision = harness.session:partyRevision()
   Assert.isTrue(draft:setScalar("friendship", 150))
-  harness.state:_activate("party:page:next")
+  activate(harness.state, "party:page:next")
   Assert.equal(harness.controller.partyTab, "Moves", "next advances Stats to Moves")
   Assert.equal(harness.state.monDraft, draft, "paging never recreates the draft")
-  harness.state:_activate("party:page:next")
+  activate(harness.state, "party:page:next")
   Assert.equal(harness.controller.partyTab, "Details", "next advances Moves to Details")
-  harness.state:_activate("party:page:next")
-  Assert.equal(harness.controller.partyTab, "Details", "next is disabled on Details")
-  harness.state:_activate("party:page:previous")
+  activate(harness.state, "party:page:next")
+  Assert.equal(harness.controller.partyTab, "Stats", "next wraps Details to Stats")
+  activate(harness.state, "party:page:previous")
+  Assert.equal(harness.controller.partyTab, "Details", "previous wraps Stats to Details")
+  activate(harness.state, "party:page:previous")
   Assert.equal(harness.controller.partyTab, "Moves", "previous returns to Moves")
-  harness.state:_activate("party:page:previous")
+  activate(harness.state, "party:page:previous")
   Assert.equal(harness.controller.partyTab, "Stats", "previous returns to Stats")
-  harness.state:_activate("party:page:previous")
-  Assert.equal(harness.controller.partyTab, "Stats", "previous is disabled on Stats")
+  Assert.equal(harness.controller.partySlot0, 0, "page wrapping keeps the selected member")
+  Assert.equal(harness.state.monDraft, draft, "page wrapping keeps the same draft object")
   Assert.equal(harness.session:partyRevision(), revision, "paging never publishes the draft")
   Assert.isTrue(harness.state.monDraft:isDirty(), "the dirty draft survives paging")
 end
@@ -3327,7 +3485,7 @@ function T.tests.section_switch_applies_the_open_draft()
   local harness = livePartyHarness(1)
   harness.state:_ensurePartyDraft()
   Assert.isTrue(harness.state.monDraft:setScalar("friendship", 77))
-  harness.state:_activate("section:Player")
+  activate(harness.state, "section:Player")
   Assert.equal(harness.controller.section, "Player", "the section switch proceeds")
   Assert.equal(harness.session:partySnapshot().members[1].mon.friendship, 77)
   Assert.isNil(harness.state.monDraft, "the applied draft is retired")
@@ -3351,7 +3509,7 @@ function T.tests.member_switch_applies_a_provisional_add_on_a_full_strip()
     { "member", "member", "member", "member", "member", "member" },
     "the provisional add occupies the final strip position with no room left for Add"
   )
-  harness.state:_activate("party:slot:0")
+  activate(harness.state, "party:slot:0")
   Assert.equal(#harness.session:partySnapshot().members, 6, "the member switch applies the provisional add")
   Assert.equal(harness.controller.partySlot0, 0, "selection follows the requested member")
   Assert.equal(harness.state.monDraft:mode(), "edit", "the new member context owns a fresh edit draft")
@@ -3361,12 +3519,12 @@ end
 function T.tests.move_slot_opens_a_three_action_overlay_returning_from_its_children()
   local harness = livePartyHarness(1)
   harness.state:_ensurePartyDraft()
-  harness.state:_activate("party:page:next")
+  activate(harness.state, "party:page:next")
   Assert.equal(harness.controller.partyTab, "Moves")
-  harness.state:_activate("party:move:0")
+  activate(harness.state, "party:move:0")
   Assert.equal(harness.controller.modal, "party-move", "an occupied slot opens its move overlay")
   Assert.equal(harness.state.pendingMoveSlot, 0)
-  harness.state:_activate("party-move:pp-ups")
+  activate(harness.state, "party-move:pp-ups")
   Assert.notNil(harness.state.valueEditor, "the component opens a child editor")
   Assert.isNil(harness.controller.modal, "the child editor sits above the suspended overlay")
   Assert.isTrue(harness.state.valueEditor:press("confirm"), "the unchanged value confirms")
@@ -3382,9 +3540,9 @@ end
 function T.tests.move_child_survives_leave_cancel_and_restores_its_opener()
   local harness = livePartyHarness(1)
   harness.state:_ensurePartyDraft()
-  harness.state:_activate("party:page:next")
-  harness.state:_activate("party:move:0")
-  harness.state:_activate("party-move:pp")
+  activate(harness.state, "party:page:next")
+  activate(harness.state, "party:move:0")
+  activate(harness.state, "party-move:pp")
 
   local editor = assert(harness.state.valueEditor)
   local originalBuffer = editor:snapshot().buffer
@@ -3417,14 +3575,14 @@ end
 function T.tests.nested_pp_editor_keeps_invalid_input_local_and_returns_to_its_move_layer()
   local harness = livePartyHarness(1)
   harness.state:_ensurePartyDraft()
-  harness.state:_activate("party:page:next")
-  harness.state:_activate("party:move:0")
-  harness.state:_activate("party-move:pp")
+  activate(harness.state, "party:page:next")
+  activate(harness.state, "party:move:0")
+  activate(harness.state, "party-move:pp")
 
   local editor = assert(harness.state.valueEditor)
   local before = harness.state.monDraft:record().moves[1]
   Assert.isTrue(editor:textinput("invalid"), "invalid typed text stays in the PP editor")
-  harness.state:_activate("confirm")
+  activate(harness.state, "confirm")
   Assert.equal(harness.state.valueEditor, editor, "invalid text cannot pop or publish the numeric child")
   Assert.equal(editor:snapshot().buffer, "invalid", "rejected input remains available for correction")
   Assert.equal(harness.state.monDraft:record().moves[1].pp, before.pp, "invalid input leaves draft PP unchanged")
@@ -3443,7 +3601,7 @@ function T.tests.nested_pp_editor_keeps_invalid_input_local_and_returns_to_its_m
   Assert.equal(harness.state.monDraft:record().moves[1].pp, before.pp, "cancel leaves PP unchanged")
   Assert.equal(harness.state.monDraft:record().moves[1].ppUps, before.ppUps, "cancel preserves PP Ups")
 
-  harness.state:_activate("party-move:pp")
+  activate(harness.state, "party-move:pp")
   local validEditor = assert(harness.state.valueEditor)
   Assert.isTrue(validEditor:press("down"), "the reopened child accepts an arithmetic edit")
   Assert.isTrue(validEditor:press("confirm"), "a valid value can be confirmed")
@@ -3459,9 +3617,9 @@ end
 function T.tests.confirming_a_move_component_changes_only_the_party_draft()
   local harness = livePartyHarness(1)
   harness.state:_ensurePartyDraft()
-  harness.state:_activate("party:page:next")
-  harness.state:_activate("party:move:0")
-  harness.state:_activate("party-move:pp")
+  activate(harness.state, "party:page:next")
+  activate(harness.state, "party:move:0")
+  activate(harness.state, "party-move:pp")
   local before = harness.state.monDraft:record().moves[1].pp
   local editor = assert(harness.state.valueEditor)
   Assert.isTrue(editor:press("down"), "the PP editor accepts a local adjustment")
@@ -3482,9 +3640,9 @@ end
 function T.tests.modal_keeps_the_resized_party_page_painted_but_rejects_old_input()
   local harness = livePartyHarness(1)
   harness.state:_ensurePartyDraft()
-  harness.state:_activate("party:page:next")
+  activate(harness.state, "party:page:next")
   harness.controller:pointer({ type = "pointer_down", pointerId = "touch:base", targetId = "party:move:0" })
-  harness.state:_activate("party:move:0")
+  activate(harness.state, "party:move:0")
 
   local view = harness.state:_snapshot()
   local metrics = {
@@ -3516,14 +3674,14 @@ function T.tests.modal_keeps_the_resized_party_page_painted_but_rejects_old_inpu
     "a release captured by the base page cannot activate after a modal opens"
   )
   local selected = harness.controller.partySlot0
-  harness.state:_activate("party:move:0")
+  activate(harness.state, "party:move:0")
   Assert.equal(harness.controller.partySlot0, selected, "a base activation cannot pass through the top modal")
 end
 
 function T.tests.member_removal_has_no_party_path()
   local harness = livePartyHarness(2)
   harness.state:_ensurePartyDraft()
-  harness.state:_activate("party:remove")
+  activate(harness.state, "party:remove")
   Assert.isNil(harness.controller.modal, "no removal decision opens")
   Assert.equal(#harness.session:partySnapshot().members, 2, "no member is removed")
   Assert.equal(harness.controller.partySlot0, 0, "selection is untouched")
@@ -3594,7 +3752,7 @@ function T.tests.activating_the_staged_map_keeps_its_coordinates_while_other_map
   controller:setSection("Location")
   controller:enterLocation({ mapId = 12, fieldX = 40, fieldZ = 50 })
   controller:openLocationMaps()
-  local state = setmetatable({
+  local state = stateHarness({
     status = "ready",
     controller = controller,
     dependencies = {
@@ -3613,7 +3771,7 @@ function T.tests.activating_the_staged_map_keeps_its_coordinates_while_other_map
         return { location = { mapId = 12, fieldX = 40, fieldZ = 50 } }
       end,
     },
-  }, State)
+  })
   state:_performDeferred({ kind = "location-map-select", mapId = 12 })
   local staged = controller:locationSnapshot()
   Assert.equal(staged.page, "grid", "activation enters coordinate selection")
@@ -3652,7 +3810,10 @@ end
 
 function T.tests.footer_discard_resets_only_the_active_section()
   local harness = backHarness({ section = "Progress", dirty = true })
-  harness.state:_activate("discard")
+  harness.session.snapshot = function()
+    return { dirtySections = { flags = true }, location = { mapId = 7, fieldX = 10, fieldZ = 12 } }
+  end
+  activate(harness.state, "discard")
   Assert.deepEqual(harness.session.discardedSections, { "Progress" }, "footer Discard resets its own section")
   Assert.equal(harness.session.globalDiscards, 0, "footer Discard never resets the whole session")
 end
@@ -3663,7 +3824,7 @@ function T.tests.footer_discard_abandons_a_party_draft_with_its_section()
   harness.state:_ensurePartyDraft()
   Assert.isTrue(harness.state.monDraft:setScalar("friendship", 199))
   Assert.isTrue(harness.session:setMoney(3100).ok, "money stages in another section")
-  harness.state:_activate("discard")
+  activate(harness.state, "discard")
   Assert.isTrue(harness.session:snapshot().dirtySections.money, "other sections stay staged")
   Assert.isFalse(harness.session:snapshot().dirtySections.party, "the Party baseline is restored without applying")
   Assert.equal(harness.controller.partySlot0, 0, "the same slot stays selected")
@@ -4635,6 +4796,109 @@ function T.tests.repeated_and_failing_draws_keep_observation_and_graphics_state_
     "drawing recovers with identical commands after a failure"
   )
   Assert.equal(recoveryGraphics.depth, 0, "a successful draw balances every graphics scope")
+function T.tests.snapshot_does_not_publish_or_mutate_the_active_scope()
+  local controller = Controller.new()
+  controller.capturedTarget = "money"
+  controller.pointerId = "mouse:1"
+  local fieldInput = { beginCount = 0 }
+  function fieldInput:beginUi()
+    self.beginCount = self.beginCount + 1
+  end
+  local state = setmetatable({
+    status = "ready",
+    versionId = "heartgold",
+    saveId = "save",
+    message = "",
+    controller = controller,
+    modalStack = ModalStack.new(),
+    fieldInput = fieldInput,
+    scopeEpoch = 0,
+    activeScopeId = nil,
+    activeScopeRevision = nil,
+    inputTick = 0,
+    numberHold = { targetId = "number:place:0:up" },
+    numberPressTarget = "number:place:0:up",
+    numberPressUntilTick = 10,
+    session = nil,
+    valueEditor = nil,
+    locationService = nil,
+    pendingLocationSave = nil,
+  }, State)
+
+  local first = state:_snapshot()
+  local second = state:_snapshot()
+
+  Assert.equal(first.scope.id, "section:Player", "snapshots describe the current focus scope")
+  Assert.equal(second.scope.epoch, first.scope.epoch, "observing the scope does not publish a new epoch")
+  Assert.equal(state.scopeEpoch, 0, "scope epochs change outside snapshot creation")
+  Assert.equal(fieldInput.beginCount, 0, "snapshots never reset input ownership")
+  Assert.equal(controller.capturedTarget, "money", "snapshots preserve an active pointer capture")
+  Assert.equal(controller.pointerId, "mouse:1", "snapshots preserve the pointer owner")
+  Assert.notNil(state.numberHold, "snapshots preserve active numeric holds")
+  Assert.isNil(state.activeScopeId, "snapshots do not publish scope identity")
+
+  controller:setSection("Bag")
+  state:_syncScope()
+  Assert.equal(state.activeScopeId, "section:Bag", "the state transition publishes its new scope")
+  Assert.equal(state.scopeEpoch, 1, "a real scope transition advances the epoch")
+  Assert.equal(fieldInput.beginCount, 1, "a real scope transition resets input ownership")
+  Assert.isNil(controller.capturedTarget, "a real scope transition retires the old pointer capture")
+  Assert.isNil(state.numberHold, "a real scope transition retires the old numeric hold")
+end
+
+function T.tests.typed_section_activation_dispatches_its_semantic_payload()
+  local request
+  local state = setmetatable({
+    _requestDraftResolution = function(_, action)
+      request = action
+    end,
+    _activate = function()
+      error("typed action dispatch must not reparse a target ID")
+    end,
+  }, State)
+
+  State._dispatchActivationAction(state, { kind = "section.select", section = "Party" })
+
+  Assert.equal(request.kind, "section", "the typed action requests the section transition")
+  Assert.equal(request.section, "Party", "the semantic section value reaches the transition owner")
+end
+
+function T.tests.active_control_activation_uses_its_published_semantic_action()
+  local dispatched
+  local action = { kind = "test.semantic-action", value = "published" }
+  local layout = {
+    focusNavigation = {
+      controls = { { id = "section:Party", eligible = true, action = action } },
+    },
+  }
+  local state = setmetatable({
+    view = function()
+      return { layout = layout }
+    end,
+    _dispatchActivationAction = function(_, value)
+      dispatched = value
+    end,
+  }, State)
+
+  State._activateControl(state, "section:Party", layout)
+
+  Assert.equal(dispatched, action, "the entry point forwards the published semantic action")
+end
+
+function T.tests.typed_decision_action_uses_its_declared_decision_and_choice()
+  local closed = false
+  local state = setmetatable({
+    _popDecision = function(_, decision)
+      closed = decision == "party-move"
+    end,
+    _activate = function()
+      error("typed decision dispatch must not reparse a control ID or inspect the current modal")
+    end,
+  }, State)
+
+  State._dispatchActivationAction(state, { kind = "decision.cancel", decision = "party-move" })
+
+  Assert.isTrue(closed, "the typed cancel action closes its decision")
 end
 
 return T

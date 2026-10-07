@@ -87,6 +87,16 @@ local function fixture(scope, width, height, topology, section, variant, version
     local tab = variant == "Moves" and "Moves" or variant == "Details" and "Details" or "Stats"
     local empty = variant == "empty"
     view.partyTab = tab
+    view.bagQuantityVisuals = {
+      decrement = {
+        normal = { image = "bag/dec-normal" },
+        pressed = { image = "bag/dec-pressed" },
+      },
+      increment = {
+        normal = { image = "bag/inc-normal" },
+        pressed = { image = "bag/inc-pressed" },
+      },
+    }
     view.partySlot0 = empty and nil or 0
     view.focus = variant == "Moves" and "party:move:0"
       or variant == "party-move" and "party-move:move"
@@ -633,6 +643,12 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       local imageData = love.image.newImageData(index == 1 and 256 or 12, index == 1 and 32 or 12)
       local image = graphics.newImage(imageData)
       renderer._bagImages[path] = image
+    end
+  elseif view.section == "Party" then
+    renderer._bagImages = {}
+    for index, path in ipairs({ "bag/dec-normal", "bag/dec-pressed", "bag/inc-normal", "bag/inc-pressed" }) do
+      local imageData = love.image.newImageData(12 + index, 12 + index)
+      renderer._bagImages[path] = graphics.newImage(imageData)
     end
   end
   if view.valueEditor and view.valueEditor.kind == "number" and view.section ~= "Bag" then
@@ -1291,6 +1307,40 @@ function T.bag_page_controls_draw_generated_arrow_art_without_text_labels(scope)
   Assert.isFalse(renderedText:find("Next", 1, true) ~= nil, "Next is represented by arrow art")
 end
 
+function T.party_pager_reuses_bag_arrow_art_for_normal_and_pressed_feedback(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    touch = true,
+    role = "world",
+  })
+  local _, partyText, _, partyDrawn = draw(scope, 640, 480, topology, "party-pager-art", "Party", "Stats")
+  local _, bagText, _, bagDrawn = draw(scope, 640, 480, topology, "bag-pager-art", "Bag", "bag-pages")
+  for _, path in ipairs({ "bag/dec-normal", "bag/inc-normal" }) do
+    Assert.isTrue(partyDrawn[path], "Party pager uses Bag source art " .. path)
+    Assert.isTrue(bagDrawn[path], "Bag pager keeps its source art " .. path)
+  end
+  Assert.isFalse(partyText:find("<", 1, true) ~= nil, "Party arrows are images rather than text glyphs")
+  Assert.isFalse(partyText:find(">", 1, true) ~= nil, "Party arrows are images rather than text glyphs")
+  Assert.isFalse(bagText:find("Previous", 1, true) ~= nil, "Bag arrow labels remain absent")
+  Assert.isFalse(bagText:find("Next", 1, true) ~= nil, "Bag arrow labels remain absent")
+
+  local _, _, _, pressed = draw(
+    scope,
+    640,
+    480,
+    topology,
+    "party-pager-pressed",
+    "Party",
+    "Stats",
+    nil,
+    function(_, view)
+      view.capturedTarget = "party:page:next"
+    end
+  )
+  Assert.isTrue(pressed["bag/inc-pressed"], "Party uses the same pressed increment image")
+end
+
 function T.party_icons_center_from_distinct_provider_dimensions(scope)
   local size, height = 1280, 720
   local topology = ScreenTopology.oneDisplay({
@@ -1345,6 +1395,12 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
       end,
     },
   })
+  renderer._bagImages = {
+    ["bag/dec-normal"] = scope:own(love.graphics.newImage(love.image.newImageData(12, 12))),
+    ["bag/dec-pressed"] = scope:own(love.graphics.newImage(love.image.newImageData(12, 12))),
+    ["bag/inc-normal"] = scope:own(love.graphics.newImage(love.image.newImageData(12, 12))),
+    ["bag/inc-pressed"] = scope:own(love.graphics.newImage(love.image.newImageData(12, 12))),
+  }
   local frameCache = FieldUiFixture.cacheWithFontAndFrames()
   renderer:preparePresentationAssets(frameCache, assert(frameCache:loadLua(FieldUiAssetCache.manifestPath())))
   local iconRects, draws, iconColors = {}, {}, {}
@@ -1359,6 +1415,7 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     for _, slot in ipairs(strip.slots) do
       slot.iconKey = nil
     end
+    strip.slots[1].descriptiveLabel = "An exceptionally long nickname that must stay hidden"
     local iconSpecs = {
       { slot = 1, key = "small", rect = { x = 20, y = 72, width = 28, height = 24 } },
       { slot = 1, key = "large", rect = { x = 86, y = 72, width = 32, height = 28 } },
@@ -1395,6 +1452,7 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     end
     local compactSlot = assert(compactStrip.slots[1])
     compactSlot.iconKey = "oversized"
+    Assert.isNil(compactSlot.textRect, "compact strip has no member text bounds")
     renderer:prepareVisibleIcons(compactView, compactPlan, {}, {})
     local compactDraw
     love.graphics.draw = function(drawable, drawQuad, x, y, _, scaleX, scaleY, ...)
@@ -1441,8 +1499,16 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     Assert.near(draws[index].y, point.y, 0.01, "icon y uses provider-reported height and layout icon bounds")
   end
   Assert.isTrue(
-    table.concat(drawnText, " "):find("Chikorita", 1, true) ~= nil,
-    "strip slots render their member identity beside the icon"
+    table.concat(drawnText, " "):find("Chikorita", 1, true) == nil,
+    "strip slots do not render their member identity"
+  )
+  Assert.isTrue(
+    table.concat(drawnText, " "):find("Lv. 5", 1, true) == nil,
+    "strip slots do not render the member level"
+  )
+  Assert.isTrue(
+    table.concat(drawnText, " "):find("exceptionally long nickname", 1, true) == nil,
+    "long descriptive labels remain metadata and never reach the strip"
   )
   local compactDraw = assert(draws.oversized, "compact strip draws its prepared icon")
   local compactBounds = iconRects.oversized
@@ -1454,9 +1520,11 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
       and compactDraw.y + dimensions.oversized.height * compactDraw.scaleY <= compactBounds.y + compactBounds.height,
     "scaled icon stays inside its compact icon rectangle"
   )
-  Assert.isTrue(
-    compactDraw.x + dimensions.oversized.width * compactDraw.scaleX <= iconRects.text.x,
-    "scaled icon stays beside the slot label"
+  Assert.near(
+    compactDraw.x,
+    compactBounds.x + (compactBounds.width - dimensions.oversized.width * compactDraw.scaleX) / 2,
+    0.01,
+    "scaled icon stays centered in its target"
   )
 end
 function T.location_grid_shows_status_and_controls_on_compact_wide_tall_and_dual_touch(scope)
@@ -1710,8 +1778,8 @@ function T.selected_member_renders_identity_in_strip_and_stats_header(scope)
   local strip = assert(layout.partyStrip, "the Party layout publishes its member strip")
   Assert.equal(#strip.slots, 6, "the strip spans six positions")
   Assert.isTrue(strip.slots[1].active, "the first member stays selected")
-  Assert.isTrue(renderedText:find("Chikorita", 1, true) ~= nil, "the strip renders the member identity")
-  Assert.isTrue(renderedText:find("Lv. 5", 1, true) ~= nil, "the strip renders the member level")
+  Assert.isFalse(renderedText:find("Chikorita", 1, true) ~= nil, "the strip omits member identity text")
+  Assert.isFalse(renderedText:find("Lv. 5", 1, true) ~= nil, "the strip omits member level text")
   Assert.isTrue(renderedText:find("Level", 1, true) ~= nil, "the Stats header renders its level fact")
   Assert.isTrue(renderedText:find("Stats", 1, true) ~= nil, "the pager names the current page")
 end
@@ -2464,6 +2532,10 @@ function T.section_labels_reuse_party_game_font_and_body_scale(scope)
   local cache = FieldUiFixture.cacheWithFontAndFrames()
   local text = scope:own(FieldTextRenderer.new({ cacheFs = cache, graphics = love.graphics }))
   local renderer = Renderer.new({ text = text, versionId = view.versionId })
+  renderer._bagImages = {}
+  for _, path in ipairs({ "bag/dec-normal", "bag/dec-pressed", "bag/inc-normal", "bag/inc-pressed" }) do
+    renderer._bagImages[path] = scope:own(love.graphics.newImage(love.image.newImageData(12, 12)))
+  end
   renderer:preparePresentationAssets(cache, assert(cache:loadLua(FieldUiAssetCache.manifestPath())))
   local calls, currentScale = {}, 1
   local oldScale = love.graphics.scale
@@ -2491,12 +2563,13 @@ function T.section_labels_reuse_party_game_font_and_body_scale(scope)
   if not ok then
     error(failure, 0)
   end
-  for _, label in ipairs({ "Map", "Flags", "Chikorita" }) do
+  for _, label in ipairs({ "Map", "Flags" }) do
     local call = assert(calls[label], label .. " uses the field-text renderer")
     Assert.equal(call.scale, 0.75, label .. " uses the Party strip's body-label scale")
     Assert.equal(call.width, view.textMetrics.measure(label), label .. " uses the field-text metric adapter")
     Assert.notNil(call.palette, label .. " uses the semantic game glyph palette")
   end
+  Assert.isNil(calls.Chikorita, "occupied Party slots do not paint their descriptive labels")
 end
 
 function T.map_and_flags_use_game_label_treatment_and_clear_painted_frames(scope)

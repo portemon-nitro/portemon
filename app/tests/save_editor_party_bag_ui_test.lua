@@ -172,10 +172,7 @@ function T.bag_cards_expose_icon_name_and_quantity_regions_without_descriptions(
         local region = assert(card[key], "cards publish " .. key)
         Assert.isTrue(region.width > 0 and region.height > 0, key .. " stays positive")
         Assert.isTrue(region.x >= card.rect.x, key .. " starts inside its card")
-        Assert.isTrue(
-          region.x + region.width <= card.rect.x + card.rect.width + 0.01,
-          key .. " ends inside its card"
-        )
+        Assert.isTrue(region.x + region.width <= card.rect.x + card.rect.width + 0.01, key .. " ends inside its card")
         Assert.isTrue(region.y >= card.rect.y, key .. " stays below the card top")
         Assert.isTrue(
           region.y + region.height <= card.rect.y + card.rect.height + 0.01,
@@ -185,10 +182,7 @@ function T.bag_cards_expose_icon_name_and_quantity_regions_without_descriptions(
       end
       for first = 1, #regions do
         for second = first + 1, #regions do
-          Assert.isFalse(
-            regionsOverlap(regions[first], regions[second]),
-            "card content regions never overlap"
-          )
+          Assert.isFalse(regionsOverlap(regions[first], regions[second]), "card content regions never overlap")
         end
       end
       Assert.notNil(layout.targets[card.targetId], "cards keep their hit targets")
@@ -243,7 +237,15 @@ function T.party_grid_places_members_and_add_in_occupied_six_cell_positions()
     local layout = computeLayout(stripView(count), 800, 600)
     Assert.equal(#layout.partyStrip.slots, 6, "the strip always spans six positions")
     for index = 0, count - 1 do
-      Assert.notNil(layout.targets["party:slot:" .. index], "every member stays selectable")
+      local targetId = "party:slot:" .. index
+      Assert.notNil(layout.targets[targetId], "every member stays selectable")
+      local slot = assert(layout.partyStrip.slots[index + 1])
+      Assert.isNil(slot.textRect, "occupied slots expose no member text geometry")
+      Assert.equal(
+        slot.iconRect.x,
+        slot.rect.x + (slot.rect.width - slot.iconRect.width) / 2,
+        "member icons stay centered"
+      )
     end
     if count < 6 then
       Assert.notNil(layout.targets["party:add"], "Add marks the first empty position")
@@ -260,10 +262,8 @@ function T.party_cards_use_bounded_icon_left_geometry_and_keep_grid_edges()
     local layout = computeLayout(stripView(5), width, width == 256 and 192 or 720)
     local first = assert(layout.partyStrip.slots[1])
     Assert.isTrue(first.rect.x >= layout.content.x, "strip positions stay within the content bounds")
-    Assert.isTrue(
-      first.iconRect.x + first.iconRect.width <= first.textRect.x,
-      "icon and text use side-by-side regions"
-    )
+    Assert.isNil(first.textRect, "occupied Party slots have no text geometry")
+    Assert.equal(first.iconRect.x, first.rect.x + (first.rect.width - first.iconRect.width) / 2)
     if width > 280 then
       local last = assert(layout.partyStrip.slots[6])
       local stripWidth = last.rect.x + last.rect.width - first.rect.x
@@ -277,6 +277,59 @@ function T.party_cards_use_bounded_icon_left_geometry_and_keep_grid_edges()
     navigate(stripController, layout, "right")
     Assert.equal(stripController.focus, "party:slot:2", "Right follows the declared member strip order")
   end
+end
+
+function T.party_detail_actions_use_compact_rows_without_losing_reachability()
+  local view = stripView(1)
+  view.partyTab = "Details"
+  view.partyDetails = {
+    rows = {
+      {
+        role = "integer value",
+        targetId = "party:field:trainerId",
+        id = "trainerId",
+        label = "Trainer ID",
+        value = 123,
+        enabled = true,
+      },
+      {
+        role = "action",
+        targetId = "party:field:trainerName",
+        id = "trainerName",
+        label = "Trainer name",
+        enabled = true,
+      },
+      { role = "action", targetId = "party:field:nickname", id = "nickname", label = "Nickname", enabled = true },
+      {
+        role = "action",
+        targetId = "party:use-species-name",
+        id = "use-species-name",
+        label = "Use species name",
+        enabled = true,
+      },
+    },
+  }
+  local normalHeight
+  for _, size in ipairs({ { 800, 600 }, { 1280, 720 } }) do
+    local layout = computeLayout(view, size[1], size[2])
+    normalHeight = assert(layout.targets["party:field:trainerId"]).rect.height
+    for _, targetId in ipairs({ "party:field:trainerName", "party:field:nickname", "party:use-species-name" }) do
+      local rect = assert(layout.targets[targetId], targetId .. " stays reachable").rect
+      Assert.isTrue(rect.height <= normalHeight + 2, targetId .. " uses compact body height")
+      Assert.isTrue(rect.height >= 20, targetId .. " keeps a usable hit target")
+      Assert.equal(
+        Layout.hitTest(layout, view, rect.x + rect.width / 2, rect.y + rect.height / 2),
+        targetId,
+        targetId .. " remains pointer reachable"
+      )
+    end
+  end
+  local compact = computeLayout(view, 256, 192)
+  Assert.notNil(compact.viewports.party, "compact Details keeps its body viewport")
+  Assert.isTrue(
+    compact.viewports.party.contentExtent >= normalHeight * #view.partyDetails.rows,
+    "compact rows remain part of the scrollable body"
+  )
 end
 function T.bag_pages_six_items_and_keeps_add_outside_grid()
   local rows = {}
@@ -385,7 +438,7 @@ function T.nickname_blank_and_clear_have_distinct_raw_results()
   draft.basePartyRevision = function()
     return 0
   end
-  clearState:_activate("party:use-species-name")
+  SaveEditorState._dispatchActivationAction(clearState, { kind = "party.use-species-name" })
   Assert.equal(assignedField, "nickname")
   Assert.isNil(assignedValue, "the explicit action stores nil")
 end
@@ -428,6 +481,7 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
     renderer:prepareVisibleIcons({ section = "Party" }, {
       content = {
         layout = {
+          targets = {},
           rows = { { iconKey = "0001:0" }, { iconKey = "0004:0" } },
           partyStrip = { slots = { { iconKey = "0007:0" } } },
         },
@@ -475,6 +529,13 @@ function T.close_cancel_restores_an_open_removal_decision_without_resolving_it()
     controller = controller,
     modalStack = modalStackWith("bag-remove"),
     modalLayerSequence = 0,
+    activeScopeId = "decision:remove",
+    activeScopeRevision = "decision:remove",
+    scopeEpoch = 0,
+    inputTick = 0,
+    fieldInput = { beginUi = function() end },
+    numberHold = nil,
+    numberPressTarget = nil,
     session = session,
     monDraft = draft,
     valueEditor = valueEditor,
@@ -565,7 +626,9 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
   end
   view.flagRowTargets = rowTargets
   view.flagIndexByTarget = indexByTarget
-  view.flagRowAt = function(index) return view.flagRows[index] end
+  view.flagRowAt = function(index)
+    return view.flagRows[index]
+  end
   view.flagModel = {
     revision = 1,
     queryRevision = 0,
@@ -573,8 +636,12 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
     count = #rowTargets,
     rowTargets = rowTargets,
     indexByTarget = indexByTarget,
-    idAt = function(index) return rowTargets[index] end,
-    indexOf = function(targetId) return indexByTarget[targetId] end,
+    idAt = function(index)
+      return rowTargets[index]
+    end,
+    indexOf = function(targetId)
+      return indexByTarget[targetId]
+    end,
     rowAt = view.flagRowAt,
   }
 
@@ -665,7 +732,7 @@ function T.disabled_bag_and_footer_actions_are_not_focusable_or_pointer_targets(
   local stats = stripView(2)
   stats.dirty = false
   local statsLayout = computeLayout(stats, 800, 600)
-  assertDisabled(statsLayout, stats, "party:page:previous")
+  Assert.isTrue(statsLayout.targets["party:page:previous"].activationEnabled, "Party Previous wraps from Stats")
   assertDisabled(statsLayout, stats, "save")
   Assert.isNil(statsLayout.targets["party:move-up"], "reorder controls are removed")
   Assert.isNil(statsLayout.targets["party:move-down"], "reorder controls are removed")
@@ -674,7 +741,7 @@ function T.disabled_bag_and_footer_actions_are_not_focusable_or_pointer_targets(
   local details = stripView(2)
   details.partyTab = "Details"
   local detailsLayout = computeLayout(details, 800, 600)
-  assertDisabled(detailsLayout, details, "party:page:next")
+  Assert.isTrue(detailsLayout.targets["party:page:next"].activationEnabled, "Party Next wraps from Details")
   Assert.notNil(detailsLayout.targets["back"], "the normal Back affordance remains available")
 end
 function T.bag_cards_stay_bounded_and_centered_on_large_screens()
@@ -780,13 +847,47 @@ function T.persistent_selector_lists_members_first_add_and_empty_positions()
   Assert.isFalse(slots[2].active or slots[3].active, "only one member stays selected")
   for index = 1, 3 do
     Assert.notNil(slots[index].iconKey, "member position " .. index .. " carries its sprite identity")
-    Assert.notNil(slots[index].level, "member position " .. index .. " carries its level")
+    Assert.notNil(slots[index].descriptiveLabel, "member position " .. index .. " retains descriptive metadata")
   end
   Assert.equal(slots[4].slot0, 3, "the add control marks the first empty position")
 
   local emptySlots = view:selector({}, nil).slots
   Assert.equal(emptySlots[1].kind, "add", "an empty party offers + Add first")
   Assert.isNil(emptySlots[1].active, "no member is selected when the party is empty")
+end
+
+function T.details_projects_canonical_nature_names_without_mutating_personality()
+  local catalog, view = structuredView()
+  local _, context, record = structuredMon("EEVEE", 9, "Sparky")
+  local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
+  local Personality = require("libs.mons.src.gen4.Personality")
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  for nature = 0, 24 do
+    record.personality = nature
+    local projection = Draft.projectRecord(record, { catalog = catalog })
+    local details = view:details(record, projection)
+    local row
+    for _, detail in ipairs(details.rows) do
+      if detail.id == "nature" then
+        row = detail
+      end
+    end
+    Assert.notNil(row, "Details keeps the derived nature row")
+    Assert.equal(projection.nature, Personality.nature(record.personality))
+    Assert.equal(row.value, HgssMonService.natureName(nature), "nature is displayed by its canonical name")
+    Assert.equal(record.personality, nature, "display projection leaves personality untouched")
+  end
+
+  local draft = Draft.new({
+    mode = "edit",
+    slot0 = 0,
+    basePartyRevision = 0,
+    record = record,
+    context = context,
+  })
+  local personality = draft:record().personality
+  Assert.isTrue(draft:setScalar("friendship", 150), "an unrelated current stat remains editable")
+  Assert.equal(draft:record().personality, personality, "editing a current stat preserves nature source data")
 end
 
 function T.stats_projection_exposes_header_and_iv_ev_table_without_derived_values()
@@ -826,10 +927,7 @@ function T.moves_projection_publishes_four_slots_with_allowance_labels()
   local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
   local slots = view:moves(mon).slots
   Assert.equal(#slots, 4, "the moves page always spans four slots")
-  Assert.deepEqual(
-    { slots[1].kind, slots[2].kind, slots[3].kind, slots[4].kind },
-    { "move", "move", "add", "empty" }
-  )
+  Assert.deepEqual({ slots[1].kind, slots[2].kind, slots[3].kind, slots[4].kind }, { "move", "move", "add", "empty" })
   for index = 1, 2 do
     local definition = catalog:move(mon.moves[index].move)
     local maxPp = Moves.maxPp(definition.basePp, mon.moves[index].ppUps)
@@ -850,9 +948,26 @@ function T.details_projection_keeps_player_facing_fields_and_omits_technical_sta
     rowsById[row.id] = row
   end
   for _, id in ipairs({
-    "species", "form", "nickname", "use-species-name", "nature", "gender", "shiny", "ability",
-    "heldItem", "trainerName", "trainerGender", "trainerId", "ball", "game", "language", "location",
-    "year", "month", "day", "metLevel",
+    "species",
+    "form",
+    "nickname",
+    "use-species-name",
+    "nature",
+    "gender",
+    "shiny",
+    "ability",
+    "heldItem",
+    "trainerName",
+    "trainerGender",
+    "trainerId",
+    "ball",
+    "game",
+    "language",
+    "location",
+    "year",
+    "month",
+    "day",
+    "metLevel",
   }) do
     Assert.notNil(rowsById[id], "details keeps " .. id)
   end
@@ -861,9 +976,21 @@ function T.details_projection_keeps_player_facing_fields_and_omits_technical_sta
   Assert.isNil(rowsById.gender.editor, "gender stays derived")
   Assert.isNil(rowsById.shiny.editor, "shininess stays derived")
   for _, id in ipairs({
-    "personality", "species-native-id", "form-native-id", "ability-native-id", "pid-ability-slot",
-    "growth-curve", "exp-interval", "terrain", "move", "native-id", "type", "power", "accuracy",
-    "base-pp", "allowed-pp",
+    "personality",
+    "species-native-id",
+    "form-native-id",
+    "ability-native-id",
+    "pid-ability-slot",
+    "growth-curve",
+    "exp-interval",
+    "terrain",
+    "move",
+    "native-id",
+    "type",
+    "power",
+    "accuracy",
+    "base-pp",
+    "allowed-pp",
   }) do
     Assert.isNil(rowsById[id], "details omits technical field " .. id)
   end
@@ -1067,12 +1194,17 @@ function T.bag_snapshot_reuses_catalog_and_pocket_metadata_until_revision_change
   }
   local revision, quantity = 1, 2
   local session = {
-    revision = function() return revision end,
+    revision = function()
+      return revision
+    end,
     bagSnapshot = function()
       counts.bagSnapshot = counts.bagSnapshot + 1
       local entries = {}
       for index = 1, 7 do
-        entries[index] = { item = "ITEM_" .. ({ "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN" })[index], quantity = index == 1 and quantity or index }
+        entries[index] = {
+          item = "ITEM_" .. ({ "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN" })[index],
+          quantity = index == 1 and quantity or index,
+        }
       end
       return entries
     end,

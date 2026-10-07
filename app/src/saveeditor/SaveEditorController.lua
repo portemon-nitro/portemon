@@ -506,15 +506,13 @@ function Controller:selectPartyTab(tab)
 end
 
 ---@param direction "previous"|"next"
----@return string? stepped the newly selected page, or nil at a disabled end
+---@return string stepped the newly selected page
 function Controller:stepPartyTab(direction)
   assert(direction == "previous" or direction == "next")
   local tabs = direction == "next" and PARTY_TABS or PARTY_TABS_REVERSE
-  local stepped = tabs[self.partyTab]
-  if stepped ~= nil then
-    self.partyTab = stepped
-    self:setFocus(direction == "next" and "party:page:next" or "party:page:previous")
-  end
+  local stepped = tabs[self.partyTab] or (direction == "next" and "Stats" or "Details")
+  self.partyTab = stepped
+  self:setFocus(direction == "next" and "party:page:next" or "party:page:previous")
   self:cancelInteraction()
   return stepped
 end
@@ -655,11 +653,7 @@ function Controller:pointer(event)
       if fieldX ~= nil then
         self:setFocus("location:grid")
         self.locationCursorX, self.locationCursorZ = tonumber(fieldX), tonumber(fieldZ)
-        return { kind = "select_tile", fieldX = self.locationCursorX, fieldZ = self.locationCursorZ }
-      end
-      local mapId = target:match("^location:map:(%d+)$")
-      if mapId ~= nil then
-        return { kind = "location-map-select", mapId = tonumber(mapId) }
+        return { kind = "activate", targetId = target }
       end
     end
     return { kind = "activate", targetId = target }
