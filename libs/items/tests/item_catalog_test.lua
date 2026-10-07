@@ -107,14 +107,35 @@ function T.catalog_names_every_pocket()
   end)
 end
 
-function T.catalog_copies_its_input_root()
+-- Generated catalog roots are published immutable data retained by the
+-- runtime composition, so the catalog must borrow the root read-only and
+-- index it instead of recursively cloning it. Identity and shared
+-- mutation visibility fail while the constructor still deep-copies.
+function T.catalog_borrows_the_published_root_without_a_recursive_copy()
   local ItemCatalog = require("libs.items.src.ItemCatalog")
   local root = ItemFixture.buildAssetRoot()
   local catalog = ItemCatalog.new(root)
-  root.items.POTION = nil
+  Assert.isTrue(
+    catalog:item("POTION") == root.items.POTION,
+    "item lookups resolve the published record itself"
+  )
+  Assert.isTrue(
+    catalog:pocket("medicine") == root.pockets.medicine,
+    "pocket lookups resolve the published record itself"
+  )
+  root.items.POTION.price = 99999
+  Assert.equal(catalog:item("POTION").price, 99999, "the catalog borrows the live published root")
+  Assert.equal(catalog:itemKeyByNativeId(17), "POTION")
+  Assert.equal(catalog:itemByNativeId(4).pocket, "balls")
+  Assert.equal(catalog:pocketName("medicine"), ItemFixture.POCKET_NAMES.medicine)
+end
+
+function T.catalog_borrows_its_input_root()
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local root = ItemFixture.buildAssetRoot()
+  local catalog = ItemCatalog.new(root)
   root.pockets.medicine.capacity = 1
-  Assert.equal(catalog:item("POTION").nativeId, 17)
-  Assert.equal(catalog:pocket("medicine").capacity, 40)
+  Assert.equal(catalog:pocket("medicine").capacity, 1, "the catalog borrows the live published root")
 end
 
 function T.catalog_rejects_duplicate_native_identities_at_construction()

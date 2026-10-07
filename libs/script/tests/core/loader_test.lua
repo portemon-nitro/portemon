@@ -252,31 +252,32 @@ T["lazy build reads no script files until first use"] = function()
   Assert.equal(scriptReads, 1, "base() reads exactly its own file")
 end
 
--- 8b. The lazy per-use validation policy: by default a generated script is
--- validated on first use, so invalid content fails at the access point.
-T["lazy build validates generated content on first use"] = function()
+-- 8b. The lazy trust policy: a generated script decodes on first use
+-- without semantic validation (producer-validated before publication), so
+-- even schema-invalid content resolves at the access point and fails only
+-- where it is actually used.
+T["lazy build trusts generated content on first use"] = function()
   local registry = ScriptLoader.buildRegistry(invalidScriptCache(), overrideFs({}), requireShim, { lazy = true })
-  throwsCode("SCRIPT_SCHEMA_INVALID", function()
-    registry:base("invalid.script")
-  end)
+  local base = assert(registry:base("invalid.script"))
+  Assert.equal(base.id, "invalid.script")
 end
 
--- 8c. validateGenerated=false skips validation on the lazy path (a keyed
--- snapshot already proved the corpus unchanged since the cache build
--- validated it); the identity check still applies.
-T["lazy build without validation accepts invalid generated content"] = function()
-  local registry = ScriptLoader.buildRegistry(invalidScriptCache(), overrideFs({}), requireShim, {
+-- 8c. The legacy validation toggle is accepted but inert on the lazy path:
+-- published content resolves identically whether or not a caller passes it.
+T["lazy build ignores the legacy validation toggle"] = function()
+  local plain = ScriptLoader.buildRegistry(invalidScriptCache(), overrideFs({}), requireShim, { lazy = true })
+  local toggled = ScriptLoader.buildRegistry(invalidScriptCache(), overrideFs({}), requireShim, {
     lazy = true,
     validateGenerated = false,
   })
-  Assert.notNil(registry:base("invalid.script"))
+  Assert.equal(assert(plain:base("invalid.script")).id, assert(toggled:base("invalid.script")).id)
 end
 
--- 8d. The eager path still validates generated content by default.
-T["eager build validates generated content by default"] = function()
-  throwsCode("SCRIPT_SCHEMA_INVALID", function()
-    ScriptLoader.buildRegistry(invalidScriptCache(), overrideFs({}), requireShim)
-  end)
+-- 8d. The eager path trusts generated content the same way: a
+-- schema-invalid resource installs instead of failing the build.
+T["eager build trusts generated content by default"] = function()
+  local registry = ScriptLoader.buildRegistry(invalidScriptCache(), overrideFs({}), requireShim)
+  Assert.equal(assert(registry:base("invalid.script")).id, "invalid.script")
 end
 
 -- 8e. The lazy path never skips the checked-in override layer: overrides are
@@ -367,7 +368,7 @@ local function hashedCache(order)
   end
   local entries = {}
   for index, id in ipairs(ids) do
-    local resource = assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim, { validate = false }))
+    local resource = assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim))
     entries[#entries + 1] = {
       id = id,
       member = 0,
@@ -496,6 +497,82 @@ T["built registry exposes no digest surface"] = function()
   Assert.isNil(surface["fingerprint"])
   Assert.isNil(surface["cacheScriptHash"])
   Assert.isNil(surface["restoreFingerprint"])
+end
+
+-- Generated script resources are producer-validated before publication,
+-- so runtime decoding must route by pinned cache identity and script id
+-- without rerunning the full semantic validator. The counter fails while
+-- the loader still validates generated content.
+T["script_loader trusts published generated resources without semantic validation"] = function()
+  local Validator = require("libs.script.src.Validator")
+  local Registry = require("libs.script.src.Registry")
+  local calls = 0
+  local original = Validator.validate
+  rawset(Validator, "validate", function(...)
+    calls = calls + 1
+    return original(...)
+  end)
+  local ok, resource = pcall(function()
+    return ScriptLoader.loadGeneratedFrom(scriptCache(), GENERATION, 0, "new_bark.lab_sign", requireShim)
+  end)
+  local registry = nil
+  local installErr = nil
+  if ok then
+    registry = Registry.new()
+    local installOk, err = pcall(ScriptLoader.installGenerated, registry, scriptCache(), requireShim)
+    if not installOk then
+      ok, installErr = false, err
+    end
+  end
+  rawset(Validator, "validate", original)
+  if not ok then
+    error(installErr or resource, 0)
+  end
+  Assert.notNil(resource, "a published generated resource must decode through the runtime loader")
+  Assert.equal(resource.id, "new_bark.lab_sign")
+  local base = assert(registry:base("new_bark.lab_sign"))
+  Assert.equal(base.id, "new_bark.lab_sign")
+  Assert.equal(base.steps[1].op, "say")
+  Assert.deepEqual(registry:ids(), {
+    "new_bark.lab_sign",
+    "vanilla.hgss.scr_seq.0842.script_001",
+  })
+  Assert.equal(calls, 0, "runtime generated loading must not rerun the semantic validator")
+end
+
+-- No replacement surface: ordinary loading must behave identically
+-- whether or not a caller passes the old validation toggles, and strict
+-- override diagnostics stay owned by direct validator coverage rather than
+-- requiring game-runtime validation.
+T["script_loader exposes no replacement validation surface; overrides stay authoring-owned"] = function()
+  local Validator = require("libs.script.src.Validator")
+  local knownEntryPoints = {
+    loadGenerated = true,
+    loadGeneratedFrom = true,
+    installGenerated = true,
+    loadOverride = true,
+    installOverrides = true,
+    buildRegistry = true,
+  }
+  for key in pairs(ScriptLoader) do
+    Assert.isTrue(knownEntryPoints[key] == true, "no new runtime validation entry point: " .. tostring(key))
+  end
+  local function tryEagerBuild(opts)
+    return pcall(ScriptLoader.buildRegistry, invalidScriptCache(), overrideFs({}), requireShim, opts)
+  end
+  local defaultOk = tryEagerBuild(nil)
+  local toggleOk = tryEagerBuild({ validateGenerated = false })
+  Assert.equal(
+    defaultOk,
+    toggleOk,
+    "ordinary loading must not change behavior through a validation toggle"
+  )
+  Assert.isTrue(defaultOk, "published-path loading trusts its fixtures without semantic validation")
+  local S = requireShim("gen4.script")
+  local malformed = S.script({ api = 1, id = "bad.override", steps = { S.setVar({}) } })
+  local valid, validateErr = Validator.validate(malformed)
+  Assert.isNil(valid, "authoring coverage still diagnoses a malformed override directly")
+  Assert.notNil(validateErr, "the direct validator failure carries the strict diagnostic")
 end
 
 -- 9c. An explicitly empty resources array is schema-legal and installs

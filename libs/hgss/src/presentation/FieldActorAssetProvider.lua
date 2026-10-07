@@ -143,14 +143,20 @@ local function billboardScales(visual)
 end
 
 local function load(self, spriteId)
+  -- Published cache data is producer-validated before publication
+  -- (FieldActorCacheWriter readback); runtime uses the record directly
+  -- and fails at first use when it is absent.
   local visual = self._cacheFs:loadLua(FieldActorCache.visualPath(spriteId))
-  if not FieldActorCache.isValidVisual(visual, spriteId) then
+  if type(visual) ~= "table" then
     Errors.raise(
       FieldErrors.FIELD_ACTOR_VISUAL_UNAVAILABLE,
       "no " .. FieldActorCache.SCHEMA .. " definition for spriteId " .. spriteId,
       { spriteId = spriteId, path = FieldActorCache.visualPath(spriteId) }
     )
   end
+  -- The guard raised for a non-table, so the published record is a table
+  -- here; the assert narrows the loadLua `table?` for LuaLS.
+  visual = assert(visual)
 
   local entry = {
     spriteId = spriteId,

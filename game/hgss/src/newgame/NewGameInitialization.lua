@@ -2,7 +2,9 @@
 -- generated `_std_init` operations in source order to a finalized Oak
 -- candidate's authoritative worldState before FieldState/FieldRuntime construct any
 -- actor. It never creates a second event-state copy, never touches
--- player/profile/options, and never runs on Continue.
+-- player/profile/options, and never runs on Continue. The initializer is
+-- producer-validated before publication (NewGameInitCacheWriter readback),
+-- so runtime uses the published operations and initial location directly.
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
@@ -16,7 +18,7 @@ local function loadArtifact(versionId)
     cacheFs:loadLua(NewGameInitCache.path()),
     "fresh-game startup initializer cache is cold -- run `scripts/buildcache.sh` first"
   )
-  assert(NewGameInitCache.validate(artifact), "fresh-game startup initializer cache is invalid")
+  assert(type(artifact) == "table", "fresh-game startup initializer cache is cold")
   return artifact
 end
 
@@ -64,7 +66,7 @@ function NewGameInitialization.apply(candidate, artifactOrOptions)
     end
   end
   artifact = artifact or loadArtifact(candidate.versionId)
-  assert(NewGameInitCache.validate(artifact), "fresh-game startup initializer artifact is invalid")
+  assert(type(artifact.operations) == "table", "fresh-game startup initializer artifact has no operations")
 
   if randomU16 ~= nil then
     assert(type(randomU16) == "function", "randomU16 must be a function")
@@ -85,8 +87,8 @@ function NewGameInitialization.apply(candidate, artifactOrOptions)
 end
 
 --- Reads the generated initial player-room location for a fresh New Game.
---- Loads through the same strict artifact path as apply and returns a fresh
---- caller-owned copy of the normalized record; stale or missing caches fail
+--- Uses the published artifact record directly and returns a fresh
+--- caller-owned copy of the location; stale or missing caches fail
 --- loudly instead of falling back to a default location.
 ---@param versionId string
 ---@return table<string, string|integer> location

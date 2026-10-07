@@ -60,14 +60,8 @@ function T.catalog_indexes_definitions_and_selects_presentations()
     catalog:speciesKeyByNativeId(9999)
   end)
 
-  -- Later callers cannot replace the indexed maps through the input root.
-  local OtherCatalog = require("libs.mons.src.MonCatalog")
-  local root = CatalogFixture.buildAssetRoot()
-  local frozen = OtherCatalog.new(root, CatalogFixture.makeItemCatalog())
-  root.species.CHIKORITA = nil
-  Assert.equal(frozen:species("CHIKORITA").nativeId, 152)
-
   -- Duplicate native identities fail at construction.
+  local OtherCatalog = require("libs.mons.src.MonCatalog")
   local doubled = CatalogFixture.buildAssetRoot()
   doubled.species.FAKE = copy(doubled.species.CHIKORITA)
   doubled.species.FAKE.name = "FAKE"
@@ -76,15 +70,41 @@ function T.catalog_indexes_definitions_and_selects_presentations()
   end)
 end
 
-function T.catalog_keeps_copied_indexed_lookups_without_an_aggregate_digest()
+function T.catalog_keeps_indexed_lookups_without_an_aggregate_digest()
   local MonCatalog = require("libs.mons.src.MonCatalog")
   Assert.isNil(MonCatalog.fingerprint, "the catalog exposes no aggregate compatibility digest")
   local root = CatalogFixture.buildAssetRoot()
   local catalog = MonCatalog.new(root, CatalogFixture.makeItemCatalog())
   Assert.isNil(catalog.fingerprint, "a constructed catalog carries no aggregate digest")
   Assert.isNil(rawget(catalog, "_fingerprint"), "a constructed catalog retains no digest state")
-  root.species.CHIKORITA = nil
   Assert.equal(catalog:species("CHIKORITA").nativeId, 152)
+  Assert.equal(catalog:speciesKeyByNativeId(158), "TOTODILE")
+  Assert.equal(catalog:move("TACKLE").nativeId, 33)
+end
+
+-- The generated mon root is published immutable data borrowed for the
+-- catalog's lifetime: construction indexes it without a recursive clone.
+-- Identity and shared mutation visibility fail while the constructor
+-- still deep-copies.
+function T.mon_catalog_borrows_the_published_root_without_a_recursive_copy()
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local root = CatalogFixture.buildAssetRoot()
+  local catalog = MonCatalog.new(root, CatalogFixture.makeItemCatalog())
+  Assert.isTrue(
+    catalog:species("CHIKORITA") == root.species.CHIKORITA,
+    "species lookups resolve the published record itself"
+  )
+  Assert.isTrue(
+    catalog:move("TACKLE") == root.moves.TACKLE,
+    "move lookups resolve the published record itself"
+  )
+  root.species.CHIKORITA.nativeId = 9999
+  Assert.equal(
+    catalog:species("CHIKORITA").nativeId,
+    9999,
+    "the catalog borrows the live published root"
+  )
   Assert.equal(catalog:speciesKeyByNativeId(158), "TOTODILE")
   Assert.equal(catalog:move("TACKLE").nativeId, 33)
 end

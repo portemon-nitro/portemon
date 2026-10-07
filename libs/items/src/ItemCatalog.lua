@@ -1,7 +1,8 @@
--- Immutable resolved item definitions. The constructor requires the
--- already-canonical generated asset root, copies it into package-owned
--- state, and indexes semantic and native identities. Lookups never mutate
--- and never reach source formats:
+-- Immutable resolved item definitions. The constructor borrows the
+-- already-published generated asset root read-only for the catalog's
+-- lifetime (callers must treat the root as immutable and keep it alive as
+-- long as the catalog) and indexes semantic and native identities. Lookups
+-- never mutate and never reach source formats:
 -- native numeric identities stay only because exact native encoding gives
 -- them current use. Pocket definitions are the schema-owned source
 -- contract, re-exported here for consumers.
@@ -18,33 +19,19 @@ ItemCatalog.__index = ItemCatalog
 
 ItemCatalog.POCKETS = ItemAssetSchema.POCKETS
 
----@param value unknown
----@return unknown
-local function copyValue(value)
-  if type(value) ~= "table" then
-    return value
-  end
-  local out = {}
-  for key, item in pairs(value) do
-    out[key] = copyValue(item)
-  end
-  return out
-end
-
----@param root table<string, unknown>
+---@param root table<string, unknown> borrowed published generated root; the caller keeps it alive and immutable for the catalog's lifetime
 ---@return ItemCatalog
 function ItemCatalog.new(root)
   assert(type(root) == "table", "ItemCatalog requires the generated asset root")
-  local owned = copyValue(root)
-  assert(type(owned.items) == "table", "ItemCatalog requires the items table")
-  assert(type(owned.pockets) == "table", "ItemCatalog requires the pockets table")
-  assert(type(owned.pocketNames) == "table", "ItemCatalog requires the pocket names table")
+  assert(type(root.items) == "table", "ItemCatalog requires the items table")
+  assert(type(root.pockets) == "table", "ItemCatalog requires the pockets table")
+  assert(type(root.pocketNames) == "table", "ItemCatalog requires the pocket names table")
   local self = setmetatable({
-    _root = owned,
+    _root = root,
     _itemByNative = {},
     _pocketByNative = {},
   }, ItemCatalog)
-  for key, item in pairs(owned.items) do
+  for key, item in pairs(root.items) do
     if self._itemByNative[item.nativeId] ~= nil then
       ItemErrors.raise(
         ItemErrors.RECORD_INVALID,
@@ -54,11 +41,16 @@ function ItemCatalog.new(root)
     end
     self._itemByNative[item.nativeId] = key
   end
-  for key, pocket in pairs(owned.pockets) do
+  for key, pocket in pairs(root.pockets) do
     self._pocketByNative[pocket.nativeId] = key
   end
   return self
 end
+
+-- Lookups below return the borrowed published records themselves: callers
+-- must not mutate or retain them beyond the catalog's lifetime. Fresh
+-- tables are built only where a method assembles a new collection
+-- (itemKeys, hmMoveNativeIds); those are caller-owned.
 
 ---@param key string
 ---@return table<string, unknown>

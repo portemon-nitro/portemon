@@ -1,9 +1,10 @@
--- Immutable resolved mon definitions. The constructor requires the
--- already-canonical generated asset root plus the shared item catalog,
--- copies it into package-owned state, and indexes semantic and native
--- identities. Item identity is never copied here: item lookups delegate to
--- the injected catalog. Lookups never mutate and never reach source
--- formats: native numeric identities stay only because exact native
+-- Immutable resolved mon definitions. The constructor borrows the
+-- already-published generated asset root read-only for the catalog's
+-- lifetime (callers must treat the root as immutable and keep it alive as
+-- long as the catalog) plus the shared item catalog, and indexes semantic
+-- and native identities. Item identity is never copied here: item lookups
+-- delegate to the injected catalog. Lookups never mutate and never reach
+-- source formats: native numeric identities stay only because exact native
 -- encoding gives them current use.
 
 local MonsErrors = require("libs.mons.src.errors")
@@ -17,20 +18,7 @@ local MonsErrors = require("libs.mons.src.errors")
 local MonCatalog = {}
 MonCatalog.__index = MonCatalog
 
----@param value unknown
----@return unknown
-local function copyValue(value)
-  if type(value) ~= "table" then
-    return value
-  end
-  local out = {}
-  for key, item in pairs(value) do
-    out[key] = copyValue(item)
-  end
-  return out
-end
-
----@param root table<string, unknown>
+---@param root table<string, unknown> borrowed published generated root; the caller keeps it alive and immutable for the catalog's lifetime
 ---@param items table<string, unknown> shared item catalog; item lookups delegate to it
 ---@return MonCatalog
 function MonCatalog.new(root, items)
@@ -42,19 +30,18 @@ function MonCatalog.new(root, items)
       and type(items.itemKeyByNativeId) == "function",
     "MonCatalog requires the shared item catalog"
   )
-  local owned = copyValue(root)
-  assert(type(owned.species) == "table", "MonCatalog requires the species table")
-  assert(type(owned.moves) == "table", "MonCatalog requires the moves table")
-  assert(type(owned.abilities) == "table", "MonCatalog requires the abilities table")
-  assert(type(owned.growthCurves) == "table", "MonCatalog requires the growth curves table")
+  assert(type(root.species) == "table", "MonCatalog requires the species table")
+  assert(type(root.moves) == "table", "MonCatalog requires the moves table")
+  assert(type(root.abilities) == "table", "MonCatalog requires the abilities table")
+  assert(type(root.growthCurves) == "table", "MonCatalog requires the growth curves table")
   local self = setmetatable({
-    _root = owned,
+    _root = root,
     _items = items,
     _speciesByNative = {},
     _moveByNative = {},
     _abilityByNative = {},
   }, MonCatalog)
-  for key, species in pairs(owned.species) do
+  for key, species in pairs(root.species) do
     if self._speciesByNative[species.nativeId] ~= nil then
       MonsErrors.raise(
         MonsErrors.RECORD_INVALID,
@@ -64,7 +51,7 @@ function MonCatalog.new(root, items)
     end
     self._speciesByNative[species.nativeId] = key
   end
-  for key, move in pairs(owned.moves) do
+  for key, move in pairs(root.moves) do
     if self._moveByNative[move.nativeId] ~= nil then
       MonsErrors.raise(
         MonsErrors.RECORD_INVALID,
@@ -74,7 +61,7 @@ function MonCatalog.new(root, items)
     end
     self._moveByNative[move.nativeId] = key
   end
-  for key, ability in pairs(owned.abilities) do
+  for key, ability in pairs(root.abilities) do
     if self._abilityByNative[ability.nativeId] ~= nil then
       MonsErrors.raise(
         MonsErrors.RECORD_INVALID,
@@ -86,6 +73,11 @@ function MonCatalog.new(root, items)
   end
   return self
 end
+
+-- Lookups below return the borrowed published records themselves: callers
+-- must not mutate or retain them beyond the catalog's lifetime. Fresh
+-- tables are built only where a method assembles a new collection
+-- (speciesKeys, moveKeys); those are caller-owned.
 
 ---@return string[] caller-owned species keys in native identity order
 function MonCatalog:speciesKeys()

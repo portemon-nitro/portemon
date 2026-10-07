@@ -65,20 +65,19 @@ local function loadResourceChunk(content, chunkName, requireFn)
 end
 
 -- Decode one generated script file from the compiled cache: read, parse, and
--- execute the restricted chunk, check the resource id against the entry, and
--- optionally validate the schema. Returns the resource, or nil plus an Errors
+-- execute the restricted chunk, then check the resource id against the
+-- entry. Generated resources are producer-validated before publication, so
+-- runtime routes by pinned cache identity and script id without rerunning
+-- the semantic validator. Returns the resource, or nil plus an Errors
 -- object on any failure.
 ---@param cacheFs table<string, unknown> CacheFs-shaped
 ---@param generation string
 ---@param member integer
 ---@param id string
 ---@param requireFn fun(name: string): unknown|nil defaults to the restricted gen4.script-only require
----@param opts table<string, unknown>|nil { validate: boolean? }
 ---@return table<string, unknown>|nil, Errors.Error?
----@return table<string, unknown>|nil, Errors.Error?
-local function loadGeneratedAt(cacheFs, generation, member, id, requireFn, opts)
+local function loadGeneratedAt(cacheFs, generation, member, id, requireFn)
   requireFn = requireFn or defaultRequire
-  opts = opts or {}
   local path = ScriptCache.scriptPath(generation, member, id)
   local content = cacheFs:read(path)
   if content == nil then
@@ -102,12 +101,6 @@ local function loadGeneratedAt(cacheFs, generation, member, id, requireFn, opts)
         { scriptId = id, resourceId = resource.id }
       )
   end
-  if opts.validate ~= false then
-    local valid, validateErr = Validator.validate(resource)
-    if not valid then
-      return nil, validateErr
-    end
-  end
   return resource
 end
 
@@ -116,12 +109,11 @@ function ScriptLoader.loadGenerated(cacheFs, id, requireFn, opts)
     opts and opts.generation ~= nil and opts.member ~= nil,
     "generated script loading requires a pinned generation"
   )
-  return loadGeneratedAt(cacheFs, opts.generation, opts.member, id, requireFn, opts)
+  return loadGeneratedAt(cacheFs, opts.generation, opts.member, id, requireFn)
 end
 
-function ScriptLoader.loadGeneratedFrom(cacheFs, generation, member, id, requireFn, opts)
-  opts = opts or {}
-  return loadGeneratedAt(cacheFs, generation, member, id, requireFn, opts)
+function ScriptLoader.loadGeneratedFrom(cacheFs, generation, member, id, requireFn)
+  return loadGeneratedAt(cacheFs, generation, member, id, requireFn)
 end
 
 ---@param cacheFs table<string, unknown> CacheFs-shaped
@@ -135,17 +127,15 @@ local function loadSelection(cacheFs)
 end
 
 -- Load every generated base from the compiled script cache: the index lists
--- the resources and each file is one `S.script` resource. A missing or
--- invalid base is a hard load error (the cache readiness check already gates
--- the build, so a mismatch here is a real fault). With `opts.lazy`, only the
--- layer presence is installed (installBaseDeferred): the resources decode
--- through the build's resource loader on first access, and
--- `opts.validateGenerated` (default true) gates per-load validation on that
--- path; the eager path validates every loaded resource under the same flag.
+-- the resources and each file is one `S.script` resource. A missing base or
+-- an id mismatch is a hard load error (the cache readiness check already
+-- gates the build, so a mismatch here is a real fault). With `opts.lazy`,
+-- only the layer presence is installed (installBaseDeferred): the resources
+-- decode through the build's resource loader on first access.
 ---@param registry table<string, unknown> Registry
 ---@param cacheFs table<string, unknown> CacheFs-shaped
 ---@param requireFn? fun(name: string): unknown
----@param opts table<string, unknown>|nil { lazy: boolean?, validateGenerated: boolean?, builtins: table<string, unknown>|nil }
+---@param opts table<string, unknown>|nil { lazy: boolean?, builtins: table<string, unknown>|nil }
 function ScriptLoader.installGenerated(registry, cacheFs, requireFn, opts)
   requireFn = requireFn or defaultRequire
   opts = opts or {}
@@ -176,14 +166,8 @@ function ScriptLoader.installGenerated(registry, cacheFs, requireFn, opts)
       registry:installBaseDeferred(entry.id, "generated")
     else
       local resource, err
-      resource, err = ScriptLoader.loadGeneratedFrom(
-        cacheFs,
-        selection.generation,
-        assert(entry.member),
-        entry.id,
-        requireFn,
-        { validate = opts.validateGenerated ~= false }
-      )
+      resource, err =
+        ScriptLoader.loadGeneratedFrom(cacheFs, selection.generation, assert(entry.member), entry.id, requireFn)
       if resource == nil then
         local context = { scriptId = entry.id, cause = err and err.context or nil }
         ---@cast context Errors.Context
@@ -266,15 +250,16 @@ end
 -- must expose the repo `data/scripts/overrides` directory; the game passes an
 -- io-backed repo filesystem (RepoFs) reading the checkout tree. With
 -- `opts.lazy` the generated layer installs as deferred placeholders that
--- decode on first access through a loader closure over `cacheFs`;
--- `opts.validateGenerated` (default true) gates per-load validation on the
--- lazy path and per-file validation on the eager path. The override layer is
--- always loaded and validated eagerly. The finished registry is sealed:
+-- decode on first access through a loader closure over `cacheFs`.
+-- The override layer is always loaded eagerly and validated strictly: it is
+-- hand-authored checked-in content, so the file/resource id check plus the
+-- semantic validator diagnose authoring mistakes at startup.
+-- The finished registry is sealed:
 -- installs after load finish are rejected.
 ---@param cacheFs table<string, unknown> CacheFs-shaped
 ---@param fs table<string, unknown> directory-shaped filesystem for data/scripts/overrides
 ---@param requireFn function|nil defaults to the restricted gen4.script-only require
----@param opts table<string, unknown>|nil { lazy: boolean?, validateGenerated: boolean?, builtins: table<string, unknown>|nil }
+---@param opts table<string, unknown>|nil { lazy: boolean?, builtins: table<string, unknown>|nil }
 ---@return Registry registry, ScriptSelection selection
 function ScriptLoader.buildRegistry(cacheFs, fs, requireFn, opts)
   opts = opts or {}
@@ -293,14 +278,7 @@ function ScriptLoader.buildRegistry(cacheFs, fs, requireFn, opts)
       end
       assert(entry ~= nil, "generated script is not in the pinned index: " .. id)
       local resource, err
-      resource, err = ScriptLoader.loadGeneratedFrom(
-        cacheFs,
-        selection.generation,
-        assert(entry.member),
-        id,
-        requireFn,
-        { validate = opts.validateGenerated ~= false }
-      )
+      resource, err = ScriptLoader.loadGeneratedFrom(cacheFs, selection.generation, assert(entry.member), id, requireFn)
       if resource == nil then
         local context = { scriptId = id, cause = err and err.context or nil }
         ---@cast context Errors.Context

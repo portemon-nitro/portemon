@@ -283,9 +283,9 @@ function T.lottery_persists_through_world_capture_and_game_save()
   Assert.equal(restored:getVar(vars.VAR_LOTO_NUMBER_HI), 0)
 end
 
--- The generated initial-location accessor reads through the same strict
--- artifact path as apply. The cache stub below is restored on every path,
--- including assertion failure.
+-- The generated initial-location accessor reads the published artifact
+-- through the same trust boundary as apply. The cache stub below is
+-- restored on every path, including assertion failure.
 local function withInitialLocationArtifact(artifactOrNil, fn)
   local CacheFs = require("libs.storage.src.CacheFs")
   local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
@@ -340,6 +340,61 @@ function T.initial_location_rejects_stale_artifacts()
       NewGameInitialization.initialLocation("heartgold")
     end, "a stale artifact without the location must not read as current")
   end)
+end
+
+-- The published initializer is producer-validated before publication, so
+-- runtime application must use the artifact's operations directly instead
+-- of rerunning full semantic validation. The counter fails while apply
+-- still calls the validator.
+function T.apply_trusts_the_published_artifact_without_semantic_runtime_validation()
+  local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
+  local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
+  local calls = 0
+  local original = NewGameInitCache.validate
+  rawset(NewGameInitCache, "validate", function(...)
+    calls = calls + 1
+    return original(...)
+  end)
+  local candidate = finalizedCandidate()
+  local ok, err = pcall(
+    NewGameInitialization.apply,
+    candidate,
+    { artifact = v3Artifact(), randomU16 = function()
+      return 0x1234
+    end }
+  )
+  rawset(NewGameInitCache, "validate", original)
+  if not ok then
+    error(err, 0)
+  end
+  Assert.isTrue(candidate.worldState:isFlagSet(flags.FLAG_HIDE_PLAYERS_ROOM_BRONZE_TROPHY))
+  Assert.equal(candidate.worldState:getVar(vars.VAR_LOTO_NUMBER_LO), 0x1234)
+  Assert.equal(calls, 0, "runtime apply must not rerun semantic artifact validation")
+end
+
+-- The initial-location reader owns the same trust boundary: the published
+-- record is used directly, with no semantic revalidation on the path.
+function T.initial_location_trusts_the_published_artifact_without_semantic_runtime_validation()
+  local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
+  local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
+  local calls = 0
+  local original = NewGameInitCache.validate
+  rawset(NewGameInitCache, "validate", function(...)
+    calls = calls + 1
+    return original(...)
+  end)
+  local location = nil
+  local ok, err = pcall(function()
+    withInitialLocationArtifact(v3Artifact(), function()
+      location = NewGameInitialization.initialLocation("heartgold")
+    end)
+  end)
+  rawset(NewGameInitCache, "validate", original)
+  if not ok then
+    error(err, 0)
+  end
+  Assert.deepEqual(location, initialLocation())
+  Assert.equal(calls, 0, "the location reader must not rerun semantic artifact validation")
 end
 
 function T.initial_location_fails_loudly_when_cache_is_cold()

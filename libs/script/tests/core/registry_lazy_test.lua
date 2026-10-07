@@ -107,7 +107,7 @@ local function lazyRegistry(cache)
     loadResource = function(id)
       calls[#calls + 1] = id
       local resource =
-        assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim, { validate = false }))
+        assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim))
       return resource
     end,
   })
