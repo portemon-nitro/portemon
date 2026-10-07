@@ -157,9 +157,11 @@ function T.dispose_resets_the_routed_style_to_the_default()
   Assert.equal(c:status().styleId, "hgss.signpost", "dispose must restore the default style id")
 end
 
--- The presentation snapshot is presentation-ready: exact field set of plain
--- data (no LÖVE objects), and fresh copies so a consumer cannot mutate the
--- controller through its status.
+-- The presentation record is presentation-ready: exact field set of plain
+-- data (no LÖVE objects), retained across reads. The record is borrowed
+-- (read-only/ephemeral): no production consumer mutates through it --
+-- script tasks read through semantic queries and the renderer only reads --
+-- so snapshot isolation is not part of this contract.
 function T.status_exposes_the_presentation_snapshot()
   local c = controller({})
   c:setSourceAppearance({ game = "hgss", type = 0, map = 42 })
@@ -180,8 +182,7 @@ function T.status_exposes_the_presentation_snapshot()
     revealedGlyphs = 0,
     totalGlyphs = 0,
   })
-  status.sourceAppearance.type = 99
-  Assert.equal(c:status().sourceAppearance.type, 0, "mutating the snapshot cannot leak into the controller")
+  Assert.isTrue(rawequal(status, c:status()), "repeated reads borrow the retained record")
 end
 
 -- SHOW completes on its own audited source update (the source case clears
@@ -748,6 +749,62 @@ function T.reopened_show_rebases_presentation_history_to_hidden()
   c:updateFixed()
   Assert.equal(c:status().logicalYOffset, 0)
   Assert.equal(c:status().command, "nop", "the endpoint-check update returns the command to nop")
+end
+
+-- Retained presentation state: the renderer borrows retained presentation state
+-- instead of rebuilding equivalent snapshots every read. Repeated reads
+-- without an owner mutation return the same top-level record and the same
+-- visible-line storage; a fixed tick that moves the wipe is visible in the
+-- borrowed view before the next draw; reads alone never advance commands
+-- or the printer. The identity assertions are red until the controller
+-- retains its presentation record.
+function T.retained_status_identity_is_stable_without_mutation()
+  local lines = { line({ glyph("A", 1) }), line({ glyph("B", 2) }) }
+  local c = controller(lines)
+  c:setCommand("show")
+  c:updateFixed()
+  c:setCommand("wipe_in")
+  for _ = 1, 4 do
+    c:updateFixed()
+  end
+  c:printInstant(message(lines))
+  local first = c:status()
+  local second = c:status()
+  Assert.isTrue(rawequal(first, second), "repeated reads without mutation return the retained record")
+  Assert.isTrue(
+    rawequal(first.visibleLines, second.visibleLines),
+    "visible-line storage is retained, not rebuilt per read"
+  )
+  Assert.equal(#first.visibleLines, 2)
+end
+
+function T.retained_view_updates_after_a_fixed_tick_before_draw()
+  local c = controller({})
+  c:setCommand("show")
+  c:updateFixed()
+  c:setCommand("wipe_in")
+  c:updateFixed()
+  Assert.equal(c:status().logicalYOffset, -32)
+  c:updateFixed()
+  local after = c:status()
+  Assert.equal(after.logicalYOffset, -16, "the borrowed view exposes the new offset before draw")
+  Assert.equal(after.previousLogicalYOffset, -32, "the history pair tracks the wipe motion")
+end
+
+function T.repeated_status_reads_do_not_advance_commands_or_print()
+  local lines = { line({ glyph("A", 1), glyph("B", 2), glyph("C", 3), glyph("D", 4) }) }
+  local c = controller(lines)
+  c:setCommand("show")
+  c:updateFixed()
+  c:printTyped(message(lines))
+  c:updateFixed()
+  local before = c:status()
+  c:status()
+  c:status()
+  local after = c:status()
+  Assert.equal(after.command, before.command, "reads never advance the command")
+  Assert.equal(after.logicalYOffset, before.logicalYOffset, "reads never move the wipe")
+  Assert.equal(revealedGlyphs(after), revealedGlyphs(before), "reads borrow state; only updateFixed advances print")
 end
 
 -- A typed print of an empty message is instantly complete and leaves no live

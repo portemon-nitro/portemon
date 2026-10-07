@@ -9,6 +9,7 @@ local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 
 ---@class FieldTerrainEffectRenderer
+---@field _emptyItems table[] stable empty draw storage borrowed for empty transient lists
 local FieldTerrainEffectRenderer = {}
 FieldTerrainEffectRenderer.__index = FieldTerrainEffectRenderer
 
@@ -42,7 +43,7 @@ function FieldTerrainEffectRenderer.new(assets, pool)
     end
     return resources
   end)
-  return setmetatable({ resources = resources, pool = pool }, FieldTerrainEffectRenderer)
+  return setmetatable({ resources = resources, pool = pool, _emptyItems = {} }, FieldTerrainEffectRenderer)
 end
 
 function FieldTerrainEffectRenderer:newInstance(kind)
@@ -58,13 +59,37 @@ function FieldTerrainEffectRenderer:newInstance(kind)
   return instance
 end
 
-function FieldTerrainEffectRenderer:drawItems(status, runtimeMap)
+-- Draws borrowed effect instances into reusable output storage. The
+-- caller-owned (or, by default, fresh) items array is cleared to its exact
+-- logical length and refilled in place; an empty transient list borrows
+-- one stable empty array instead of allocating. Only presentation-owned
+-- model pose state is touched; borrowed controller records are never
+-- mutated. The returned array must be treated as ephemeral.
+---@param status { instances: table[] } borrowed controller status
+---@param runtimeMap table<string, unknown>
+---@param items table[]? reusable output storage (defaults to a fresh array)
+---@return table[]
+function FieldTerrainEffectRenderer:drawItems(status, runtimeMap, items)
   assert(status and type(status.instances) == "table", "terrain effect status instances are required")
   if #status.instances == 0 then
-    return {}
+    if items ~= nil then
+      assert(type(items) == "table", "terrain effect draw storage must be a table")
+      for index = #items, 1, -1 do
+        items[index] = nil
+      end
+      return items
+    end
+    return assert(self._emptyItems, "terrain effect renderer is missing its empty draw storage")
   end
   assert(type(runtimeMap) == "table", "terrain effect runtime map is required")
-  local items = {}
+  if items ~= nil then
+    assert(type(items) == "table", "terrain effect draw storage must be a table")
+    for index = #items, 1, -1 do
+      items[index] = nil
+    end
+  else
+    items = {}
+  end
   for _, effect in ipairs(status.instances) do
     local anchorX, anchorY, anchorZ
     if effect.kind == "trainer_reveal" then

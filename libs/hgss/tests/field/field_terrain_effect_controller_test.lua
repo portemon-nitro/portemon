@@ -291,6 +291,40 @@ T.tests["follower reactions use their generated one-shot lifecycle"] = function(
   Assert.equal(#effects:status().instances, 0)
 end
 
+-- Borrowed transient instances: presentation borrows controller-owned live
+-- instance records instead of deep-copying them per status() call.
+-- Repeated reads without a fixed-tick mutation return the same array and
+-- the same records; a fixed tick is visible in the borrowed view before
+-- the next draw; reads alone never advance instances. The identity
+-- assertions are red until the controller stops copying per read.
+T.tests["repeated status reads borrow the retained instance records"] = function()
+  local effects = controller()
+  effects:emit({ kind = "tall_grass", fieldX = 1, fieldZ = 2, worldY = 4, direction = "east" })
+  local first = effects:status()
+  local second = effects:status()
+  Assert.isTrue(rawequal(first.instances, second.instances), "repeated reads return the retained array")
+  Assert.isTrue(rawequal(first.instances[1], second.instances[1]), "records are borrowed, not deep-copied")
+end
+
+T.tests["borrowed view reflects fixed-tick advance before the next draw"] = function()
+  local effects = controller(nil, { tall_grass = genericDefinition("tall_grass") })
+  effects:emit({ kind = "tall_grass", fieldX = 7, fieldZ = 9, worldY = 3.5, direction = "north" })
+  updateWithOwner(effects, { fieldX = 7, fieldZ = 9, facing = "north" })
+  local view = effects:status()
+  Assert.equal(view.instances[1].age, 1, "the borrowed view exposes the new age before draw")
+  Assert.equal(view.instances[1].frame, 1, "the borrowed view exposes the new animation frame before draw")
+end
+
+T.tests["repeated status reads do not advance instances"] = function()
+  local effects = controller(nil, { tall_grass = genericDefinition("tall_grass") })
+  effects:emit({ kind = "tall_grass", fieldX = 7, fieldZ = 9, worldY = 3.5, direction = "north" })
+  updateWithOwner(effects, { fieldX = 7, fieldZ = 9, facing = "north" })
+  local age = effects:status().instances[1].age
+  effects:status()
+  effects:status()
+  Assert.equal(effects:status().instances[1].age, age, "reads borrow state; only updateFixed advances instances")
+end
+
 T.tests["failed second emission preserves the live instance"] = function()
   local calls = 0
   local function factory(kind, _)

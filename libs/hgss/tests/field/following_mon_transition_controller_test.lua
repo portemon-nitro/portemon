@@ -551,6 +551,50 @@ function T.delayed_pending_bind_failure_is_consumed_without_retry()
   Assert.isTrue(actors:isVisible(PARTNER_ID), "the partner ends visible")
 end
 
+-- Borrowed transient instances: presentation borrows controller-owned live
+-- instance records instead of deep-copying them per status() call.
+-- Repeated reads without a fixed-tick mutation return the same array and
+-- the same records; a fixed tick is visible in the borrowed view before
+-- the next draw; reads alone never advance lifecycle state. The identity
+-- assertions are red until the controller stops copying per read.
+function T.repeated_status_reads_borrow_the_retained_instance_records()
+  local actors = fakeActors()
+  actors:install(partnerRecord({ visible = true }))
+  local transitions = controller(actors)
+  transitions:start()
+  local first = transitions:status()
+  local second = transitions:status()
+  Assert.isTrue(rawequal(first.instances, second.instances), "repeated reads return the retained array")
+  Assert.isTrue(rawequal(first.instances[1], second.instances[1]), "records are borrowed, not deep-copied")
+end
+
+function T.borrowed_view_reflects_prelude_advance_before_the_next_draw()
+  local actors = fakeActors()
+  actors:install(partnerRecord())
+  local transitions = controller(actors)
+  transitions:start()
+  transitions:updateFixed()
+  local view = transitions:status()
+  Assert.equal(view.instances[1].phase, "prelude")
+  Assert.equal(view.instances[1].preludeAge, 1, "the borrowed view exposes the new prelude age before draw")
+end
+
+function T.repeated_status_reads_do_not_advance_lifecycle()
+  local actors = fakeActors()
+  actors:install(partnerRecord())
+  local transitions = controller(actors)
+  transitions:start()
+  transitions:updateFixed()
+  local age = transitions:status().instances[1].preludeAge
+  transitions:status()
+  transitions:status()
+  Assert.equal(
+    transitions:status().instances[1].preludeAge,
+    age,
+    "reads borrow state; only updateFixed advances the lifecycle"
+  )
+end
+
 function T.clear_and_dispose_release_exactly_once()
   local actors = fakeActors()
   actors:install(partnerRecord())

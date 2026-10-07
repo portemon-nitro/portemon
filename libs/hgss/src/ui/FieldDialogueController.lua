@@ -35,6 +35,8 @@ local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 ---@field _scrollLines FieldDialogueController.VisibleLine[]?
 ---@field _scrollRemaining integer
 ---@field _scrollOffsetY integer
+---@field _presentation FieldDialogueController.Status? retained borrowed presentation record (read-only/ephemeral)
+---@field _presentationDirty boolean true when the next status() must rebuild the retained record
 ---@field _cursorCycle integer[]
 ---@field _cursorTicksPerPhase integer
 ---@field _cursorCycleIndex integer
@@ -188,6 +190,8 @@ function FieldDialogueController.new(opts)
     _cursorTicksPerPhase = cursorTicks,
     _cursorCycleIndex = 1,
     _cursorTicksIntoPhase = 0,
+    _presentation = nil,
+    _presentationDirty = true,
   }, FieldDialogueController)
 end
 
@@ -209,8 +213,43 @@ function FieldDialogueController:isScriptOwned()
   return metadata ~= nil and metadata.scriptOwned == true
 end
 
+-- Marks the retained presentation record stale. Every owner mutation
+-- (open, fixed-tick advancement, close/dispose/dispatch, scroll and
+-- cursor transitions) calls this; status() rebuilds lazily on the next
+-- read so unchanged frames borrow the identical record.
+function FieldDialogueController:_invalidatePresentation()
+  self._presentationDirty = true
+end
+
+-- The current visible lines computed directly over owner fields, without
+-- building a presentation record. Owner-internal scroll/page-end logic
+-- uses this instead of status() so rendering views never pay for
+-- diagnostic snapshot construction on the mutation path.
+---@return (MessageToken[]|FieldDialogueController.VisibleLine)[]
+function FieldDialogueController:_currentVisibleLines()
+  local page = self._pages and self._pages[self._pageIndex]
+  if self._state == "SCROLLING" then
+    return { assert(self._scrollLines)[#self._scrollLines] }
+  end
+  local lines = {}
+  for _, retained in ipairs(self._retainedLines) do
+    lines[#lines + 1] = retained
+  end
+  for _, visible in ipairs(page and visibleLines(page, self._revealed) or {}) do
+    lines[#lines + 1] = visible
+  end
+  return lines
+end
+
+-- The borrowed presentation record for the renderer: controller-owned,
+-- read-only, and ephemeral (valid only until the owner's next mutation).
+-- Repeated reads without an owner mutation return the identical record
+-- and the identical visible-line storage; the next mutation rebuilds it.
 ---@return FieldDialogueController.Status
 function FieldDialogueController:status()
+  if not self._presentationDirty then
+    return assert(self._presentation, "retained dialogue presentation is missing")
+  end
   local page = self._pages and self._pages[self._pageIndex]
   local waiting = self._state == "WAITING_BOUNDARY" or self._state == "WAITING_CLOSE"
   local resolvedContinuation = nil
@@ -231,7 +270,7 @@ function FieldDialogueController:status()
       lines[#lines + 1] = visible
     end
   end
-  return {
+  self._presentation = {
     state = self._state,
     modal = self:isModal(),
     requestId = self._request and self._request.id or nil,
@@ -258,6 +297,8 @@ function FieldDialogueController:status()
     scrollRemaining = self._scrollRemaining,
     allowCancel = self._request and self._request.allowCancel == true or false,
   }
+  self._presentationDirty = false
+  return assert(self._presentation, "retained dialogue presentation is missing")
 end
 
 -- Builds the terminal result: request identity plus any extra fields
@@ -328,6 +369,7 @@ function FieldDialogueController:_dispatch()
   self._hasPrintBeenSpedUp = false
   self._cursorCycleIndex = 1
   self._cursorTicksIntoPhase = 0
+  self:_invalidatePresentation()
   local ok, err = pcall(function()
     if callback then
       callback(terminal.result)
@@ -411,6 +453,7 @@ function FieldDialogueController:open(request)
     self._warnings = {}
     self._state = "OPENING"
     self._pendingClose = { kind = "error", error = layout }
+    self:_invalidatePresentation()
     return handle
   end
   local pageGlyphs = {}
@@ -443,6 +486,7 @@ function FieldDialogueController:open(request)
   self._cursorCycleIndex = 1
   self._cursorTicksIntoPhase = 0
   self._state = "OPENING"
+  self:_invalidatePresentation()
   if #self._pages == 0 then
     -- An empty or control-only message closes safely on its first step: the
     -- session's modal gate still drives the completion, and handle callbacks
@@ -457,6 +501,7 @@ end
 
 ---@return boolean
 function FieldDialogueController:_advancePage()
+  self:_invalidatePresentation()
   if self._pageIndex >= #self._pages then
     self._state = "WAITING_CLOSE"
     return false
@@ -472,7 +517,8 @@ end
 
 ---@return nil
 function FieldDialogueController:_beginScroll()
-  local statusLines = self:status().visibleLines
+  self:_invalidatePresentation()
+  local statusLines = self:_currentVisibleLines()
   assert(#statusLines > 0, "scroll break requires visible dialogue lines")
   self._scrollLines = {}
   for _, tokens in ipairs(statusLines) do
@@ -488,6 +534,7 @@ end
 
 ---@return nil
 function FieldDialogueController:_finishScroll()
+  self:_invalidatePresentation()
   self._scrollLines = nil
   self._scrollRemaining = 0
   if self._pageIndex >= #self._pages then
@@ -506,6 +553,7 @@ function FieldDialogueController:_enterWait()
   -- automatically because EOS follows, without a second confirmation.
   -- EOS and trailing automatic boundaries wait for close directly.
   local state = continuationKind(page) ~= nil and "WAITING_BOUNDARY" or "WAITING_CLOSE"
+  self:_invalidatePresentation()
   self._state = state
   self._cursorCycleIndex = 1
   self._cursorTicksIntoPhase = 0
@@ -525,7 +573,7 @@ function FieldDialogueController:_atPageEnd()
   -- window through the existing scroll state. Zero-glyph automatic pages
   -- carry no line to retain, so step through them until a wait or a real
   -- reveal, bounded by the page count.
-  if self._pageGlyphs[self._pageIndex] > 0 and #self:status().visibleLines > 0 then
+  if self._pageGlyphs[self._pageIndex] > 0 and #self:_currentVisibleLines() > 0 then
     if self._pageIndex >= #self._pages then
       self:_enterWait()
     else
@@ -612,6 +660,9 @@ function FieldDialogueController:step(snapshot)
   if self._state == "CLOSED" then
     return nil
   end
+  -- A fixed tick is an owner mutation event (reveal, cursor, scroll, or
+  -- state advancement); the retained presentation rebuilds on next read.
+  self:_invalidatePresentation()
   snapshot = snapshot or {}
   local sourceNew = snapshot.actionPressed == true or (not self._request.allowCancel and snapshot.cancelPressed == true)
   local sourceHeld = snapshot.actionDown == true or (not self._request.allowCancel and snapshot.cancelDown == true)
@@ -702,6 +753,7 @@ function FieldDialogueController:close()
   if self._state == "CLOSED" then
     return nil
   end
+  self:_invalidatePresentation()
   if self._state ~= "CLOSING" then
     self._state = "CLOSING"
   end
@@ -718,6 +770,7 @@ function FieldDialogueController:dispose()
   if self._state == "CLOSED" then
     return nil
   end
+  self:_invalidatePresentation()
   self._state = "CLOSED"
   self:_complete("cancel")
   return self:_dispatch()

@@ -13,6 +13,8 @@
 ---@field preludeTicks integer
 ---@field modelFactory fun(part: string, descriptor: table<string, unknown>): table<string, unknown>
 ---@field instances table<string, unknown>[]
+---@field _presentation { instances: table[] }? retained borrowed status (read-only/ephemeral)
+---@field _presentationDirty boolean true when the next status() must rebuild the retained record
 ---@field _pendingStart boolean accepted request retained until a partner is published
 local FollowingMonTransitionController = {}
 FollowingMonTransitionController.__index = FollowingMonTransitionController
@@ -89,8 +91,18 @@ function FollowingMonTransitionController.new(options)
     preludeTicks = preludeTicks,
     modelFactory = options.modelFactory,
     instances = {},
+    _presentation = nil,
+    _presentationDirty = true,
     _pendingStart = false,
   }, FollowingMonTransitionController)
+end
+
+-- Marks the retained status stale. Every owner mutation (start, bind,
+-- fixed-tick advancement, removal, clear) calls this; status() rebuilds
+-- lazily on the next read so unchanged frames borrow the identical
+-- array and records.
+function FollowingMonTransitionController:_invalidatePresentation()
+  self._presentationDirty = true
 end
 
 function FollowingMonTransitionController:setModelFactory(factory)
@@ -187,6 +199,7 @@ end
 -- the request was bound immediately or retained as pending.
 ---@return boolean
 function FollowingMonTransitionController:start()
+  self:_invalidatePresentation()
   local partnerId = self.actors:partnerId()
   if partnerId == nil or self.actors:getById(partnerId) == nil then
     self._pendingStart = true
@@ -196,6 +209,7 @@ function FollowingMonTransitionController:start()
 end
 
 function FollowingMonTransitionController:updateFixed()
+  self:_invalidatePresentation()
   if self._pendingStart and self.actors:partnerId() ~= nil then
     local ok, bound = pcall(tryStartOnCurrentPartner, self)
     if not ok then
@@ -239,7 +253,15 @@ function FollowingMonTransitionController:updateFixed()
   end
 end
 
+-- The borrowed presentation status: controller-owned, read-only, and
+-- ephemeral (valid only until the owner's next mutation). Repeated reads
+-- without a fixed-tick mutation return the identical array and records;
+-- a fixed tick is visible in the borrowed view before the next draw.
+-- Presentation must neither mutate nor retain the records past mutation.
 function FollowingMonTransitionController:status()
+  if not self._presentationDirty then
+    return assert(self._presentation, "retained transition presentation is missing")
+  end
   local instances = {}
   for index, instance in ipairs(self.instances) do
     instances[index] = {
@@ -258,10 +280,13 @@ function FollowingMonTransitionController:status()
       animatedInstance = instance.animatedInstance,
     }
   end
-  return { instances = instances }
+  self._presentation = { instances = instances }
+  self._presentationDirty = false
+  return assert(self._presentation, "retained transition presentation is missing")
 end
 
 function FollowingMonTransitionController:clear()
+  self:_invalidatePresentation()
   self._pendingStart = false
   for index = #self.instances, 1, -1 do
     release(self.instances[index])

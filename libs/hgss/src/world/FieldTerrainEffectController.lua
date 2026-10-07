@@ -6,6 +6,8 @@
 ---@field effects table<string, table<string, unknown>>
 ---@field instances table[]
 ---@field nextId integer
+---@field _presentation { instances: table[] }? retained borrowed status (read-only/ephemeral)
+---@field _presentationDirty boolean true when the next status() must rebuild the retained record
 local FieldTerrainEffectController = {}
 FieldTerrainEffectController.__index = FieldTerrainEffectController
 
@@ -16,7 +18,17 @@ function FieldTerrainEffectController.new(options)
     modelFactory = options.modelFactory,
     instances = {},
     nextId = 0,
+    _presentation = nil,
+    _presentationDirty = true,
   }, FieldTerrainEffectController)
+end
+
+-- Marks the retained status stale. Every owner mutation (emission,
+-- fixed-tick advancement, removal, clear) calls this; status() rebuilds
+-- lazily on the next read so unchanged frames borrow the identical
+-- array and records.
+function FieldTerrainEffectController:_invalidatePresentation()
+  self._presentationDirty = true
 end
 
 function FieldTerrainEffectController:setModelFactory(factory)
@@ -60,6 +72,7 @@ function FieldTerrainEffectController:emit(response)
   else
     assert(lifecycle.frameCount == animation.frameCount)
   end
+  self:_invalidatePresentation()
   local modelFactory = assert(self.modelFactory, "terrain effect model factory is not configured")
   local modelInstance = assert(modelFactory(response.kind, definition), "terrain effect model factory returned nil")
   local handle = modelInstance:play(animation.name, { loopMode = "once" })
@@ -92,6 +105,7 @@ end
 
 ---@param owner { fieldX: integer, fieldZ: integer, facing: string }
 function FieldTerrainEffectController:updateFixed(owner)
+  self:_invalidatePresentation()
   assert(type(owner) == "table", "terrain effect owner is required")
   assert(type(owner.fieldX) == "number" and type(owner.fieldZ) == "number", "terrain effect owner tile is required")
   assert(type(owner.facing) == "string", "terrain effect owner facing is required")
@@ -128,6 +142,7 @@ function FieldTerrainEffectController:remove(handleOrId)
   if handleOrId == nil then
     return
   end
+  self:_invalidatePresentation()
   for index = #self.instances, 1, -1 do
     if self.instances[index].id == handleOrId then
       table.remove(self.instances, index)
@@ -137,12 +152,21 @@ function FieldTerrainEffectController:remove(handleOrId)
 end
 
 function FieldTerrainEffectController:clear()
+  self:_invalidatePresentation()
   for index = #self.instances, 1, -1 do
     self.instances[index] = nil
   end
 end
 
+-- The borrowed presentation status: controller-owned, read-only, and
+-- ephemeral (valid only until the owner's next mutation). Repeated reads
+-- without a fixed-tick mutation return the identical array and records;
+-- a fixed tick is visible in the borrowed view before the next draw.
+-- Presentation must neither mutate nor retain the records past mutation.
 function FieldTerrainEffectController:status()
+  if not self._presentationDirty then
+    return assert(self._presentation, "retained terrain effect presentation is missing")
+  end
   local instances = {}
   for index, instance in ipairs(self.instances) do
     instances[index] = {
@@ -163,7 +187,9 @@ function FieldTerrainEffectController:status()
       animationComplete = instance.animationHandle.player:isComplete(),
     }
   end
-  return { instances = instances }
+  self._presentation = { instances = instances }
+  self._presentationDirty = false
+  return assert(self._presentation, "retained terrain effect presentation is missing")
 end
 
 return FieldTerrainEffectController

@@ -128,6 +128,30 @@ function T.starting_a_second_fade_while_one_is_active_is_a_programming_error()
   Assert.isFalse(ok, "two concurrent script screen fades must never blend")
 end
 
+function T.idle_presentation_borrows_nil_without_allocation()
+  local fade = newFade()
+  Assert.isNil(fade:presentationOverlay(), "an idle fade borrows nil for the renderer")
+  Assert.isNil(fade:presentationOverlay(), "repeated idle reads stay nil")
+end
+
+function T.active_presentation_borrows_one_retained_overlay()
+  local fade = newFade()
+  fade:startFade(OPENING_IN)
+  local first = fade:presentationOverlay()
+  Assert.notNil(first, "an opaque fade-in borrows its overlay")
+  Assert.equal(first.a, 1, "a fully opaque coefficient covers the frame")
+  Assert.isTrue(rawequal(first, fade:presentationOverlay()), "unchanged frames borrow the identical overlay")
+  fade:updateSourceFrame()
+  local advanced = assert(fade:presentationOverlay(), "the advancing fade still borrows its overlay")
+  Assert.isTrue(rawequal(first, advanced), "advancement reuses the overlay storage in place")
+  Assert.isTrue(advanced.a < 1, "the borrowed overlay tracks the new coefficient before draw")
+  for _ = 1, 5 do
+    fade:updateSourceFrame()
+  end
+  Assert.isTrue(fade:fadeDone())
+  Assert.isNil(fade:presentationOverlay(), "a completed fade-in borrows nil once clear")
+end
+
 function T.rendering_never_advances_the_controller()
   -- Rendering only reads status(); nothing but updateSourceFrame() may
   -- change the coefficient. This is a contract test, not a real renderer:

@@ -5,6 +5,8 @@
 -- Pure domain module: no love dependency.
 
 ---@class FieldScriptScreenFade
+---@field private _overlay { r: number, g: number, b: number, a: number }? retained borrowed overlay (read-only/ephemeral)
+---@field private _overlayRecord { r: number, g: number, b: number, a: number } reusable overlay storage
 ---@field private _active boolean
 ---@field private _completed boolean
 ---@field private _direction string|nil
@@ -29,6 +31,8 @@ end
 ---@return FieldScriptScreenFade
 function FieldScriptScreenFade.new()
   return setmetatable({
+    _overlay = nil,
+    _overlayRecord = { r = 0, g = 0, b = 0, a = 0 },
     _active = false,
     _completed = true,
     _direction = nil,
@@ -84,6 +88,7 @@ function FieldScriptScreenFade:startFade(spec)
   self._target = target
   self._speed = spec.speed
   self._coefficient = math.abs(truncTowardZero(self._brightnessFx / 128))
+  self:_refreshOverlay()
 end
 
 -- True while idle: nothing has started, or the started fade fully completed.
@@ -124,6 +129,33 @@ function FieldScriptScreenFade:updateSourceFrame()
     self._coefficient = math.abs(self._target)
     self._completed = true
   end
+  self:_refreshOverlay()
+end
+
+-- Refreshes the retained overlay from the current coefficient. The record
+-- is reused in place so unchanged frames borrow the identical table; idle
+-- (no fade, or a fully clear coefficient) borrows nil with no allocation.
+function FieldScriptScreenFade:_refreshOverlay()
+  if not self._active or self._coefficient <= 0 then
+    self._overlay = nil
+    return
+  end
+  local channel = self._color == "white" and 1 or 0
+  local record = self._overlayRecord
+  record.r = channel
+  record.g = channel
+  record.b = channel
+  record.a = math.min(1, math.max(0, self._coefficient / 16))
+  self._overlay = record
+end
+
+-- The borrowed presentation overlay for the renderer: the retained overlay
+-- record, or nil while idle/clear. Controller-owned, read-only, and
+-- ephemeral (valid only until the next updateSourceFrame/startFade).
+-- Unlike status(), this never allocates an idle record for the renderer.
+---@return { r: number, g: number, b: number, a: number }?
+function FieldScriptScreenFade:presentationOverlay()
+  return self._overlay
 end
 
 -- Read-only status for the scheduler poll and for presentation/acceptance

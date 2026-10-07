@@ -18,7 +18,8 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 ---@field pool table<string, unknown> mesh/image pool backing part instances
 ---@field new fun(options: FollowingMonTransitionRendererOptions, pool: table<string, unknown>): FollowingMonTransitionRenderer
 ---@field newInstance fun(self: FollowingMonTransitionRenderer, part: string): table<string, unknown>
----@field drawItems fun(self: FollowingMonTransitionRenderer, status: table<string, unknown>, runtimeMap: table<string, unknown>): table<string, unknown>[]
+---@field _emptyItems table<string, unknown>[] stable empty draw storage borrowed for empty transient lists
+---@field drawItems fun(self: FollowingMonTransitionRenderer, status: table<string, unknown>, runtimeMap: table<string, unknown>, items: table<string, unknown>[]?): table<string, unknown>[]
 ---@field dispose fun(self: FollowingMonTransitionRenderer)
 local FollowingMonTransitionRenderer = {}
 FollowingMonTransitionRenderer.__index = FollowingMonTransitionRenderer
@@ -145,7 +146,7 @@ function FollowingMonTransitionRenderer.new(options, pool)
     return resources
   end)
   return setmetatable(
-    { resources = resources, placementOffset = placementOffset, pool = pool },
+    { resources = resources, placementOffset = placementOffset, pool = pool, _emptyItems = {} },
     FollowingMonTransitionRenderer
   )
 end
@@ -241,18 +242,38 @@ local function drawDynamic(resource, modelInstance, transform, part, items)
 end
 
 -- Draws only the currently active part of every live instance at the
--- normalized partner anchor. Draw never advances lifecycle state.
+-- normalized partner anchor. Draw never advances lifecycle state. The
+-- caller-owned (or, by default, fresh) items array is cleared to its exact
+-- logical length and refilled in place; an empty transient list borrows
+-- one stable empty array instead of allocating. Borrowed controller
+-- records are never mutated. The returned array must be treated as
+-- ephemeral.
 ---@param status table<string, unknown> controller status carrying live instances
 ---@param runtimeMap table<string, unknown>
+---@param items table<string, unknown>[]? reusable output storage (defaults to a fresh array)
 ---@return table<string, unknown>[]
-function FollowingMonTransitionRenderer:drawItems(status, runtimeMap)
+function FollowingMonTransitionRenderer:drawItems(status, runtimeMap, items)
   assert(status and type(status.instances) == "table", "transition status instances are required")
   if #status.instances == 0 then
-    return {}
+    if items ~= nil then
+      assert(type(items) == "table", "transition draw storage must be a table")
+      for index = #items, 1, -1 do
+        items[index] = nil
+      end
+      return items
+    end
+    return assert(self._emptyItems, "transition renderer is missing its empty draw storage")
   end
   assert(type(runtimeMap) == "table", "transition runtime map is required")
+  if items ~= nil then
+    assert(type(items) == "table", "transition draw storage must be a table")
+    for index = #items, 1, -1 do
+      items[index] = nil
+    end
+  else
+    items = {}
+  end
   local offset = assert(self.placementOffset, "transition placement offset is required")
-  local items = {}
   for _, effect in ipairs(status.instances) do
     local point = FieldCoordinates.fieldToWorld(runtimeMap, effect.fieldX, effect.fieldZ, effect.worldY)
     local transform = Matrix4.translate(point.x + offset.x, point.y + offset.y, point.z + offset.z)

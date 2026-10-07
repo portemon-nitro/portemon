@@ -204,6 +204,67 @@ T.tests["unknown parts fail loudly instead of drawing a substitute"] = function(
   Assert.isFalse(ok, "an unknown part must fail rather than alias a real one")
 end
 
+-- Reusable draw storage: the renderer fills caller/renderer-owned
+-- reusable output storage instead of allocating a fresh items table every
+-- frame, and an empty transient list returns a stable empty array. Draw
+-- never mutates controller semantic state (only presentation-owned pose)
+-- and never advances lifecycle state. The storage assertions are red
+-- until drawItems accepts and returns reusable storage.
+T.tests["draw fills caller-owned storage instead of allocating"] = function()
+  local poolCalls = {}
+  local renderer, cleanup = newRenderer(poolCalls)
+  local initial = renderer:newInstance("initial")
+  local animated = renderer:newInstance("animated")
+  local items = {}
+  local result = renderer:drawItems(status("prelude", initial, animated), runtimeMap(), items)
+  Assert.isTrue(rawequal(result, items), "draw returns the supplied storage instead of a fresh table")
+  Assert.equal(#items, 1, "the reused storage carries the live effect")
+  Assert.equal(items[1].transitionPart, "initial")
+  cleanup()
+end
+
+T.tests["empty status returns a stable empty array"] = function()
+  local poolCalls = {}
+  local renderer, cleanup = newRenderer(poolCalls)
+  local first = renderer:drawItems({ instances = {} }, runtimeMap())
+  local second = renderer:drawItems({ instances = {} }, runtimeMap())
+  Assert.equal(#first, 0)
+  Assert.isTrue(rawequal(first, second), "empty transient lists share a stable empty array, not fresh tables")
+  cleanup()
+end
+
+T.tests["removed effects clear reused storage without stale entries"] = function()
+  local poolCalls = {}
+  local renderer, cleanup = newRenderer(poolCalls)
+  local map = runtimeMap()
+  local initial = renderer:newInstance("initial")
+  local animated = renderer:newInstance("animated")
+  local items = {}
+  renderer:drawItems(status("prelude", initial, animated), map, items)
+  Assert.equal(#items, 1)
+  local result = renderer:drawItems({ instances = {} }, map, items)
+  Assert.isTrue(rawequal(result, items), "the empty draw reuses the same storage")
+  Assert.equal(#items, 0, "removal clears the reused array to its exact logical length")
+  cleanup()
+end
+
+T.tests["draw leaves controller semantic state untouched"] = function()
+  local poolCalls = {}
+  local renderer, cleanup = newRenderer(poolCalls)
+  local initial = renderer:newInstance("initial")
+  local animated = renderer:newInstance("animated")
+  local live = status("prelude", initial, animated)
+  local effect = live.instances[1]
+  renderer:drawItems(live, runtimeMap(), {})
+  Assert.equal(effect.phase, "prelude", "draw never mutates the borrowed phase")
+  Assert.equal(effect.fieldX, 2, "draw never mutates the borrowed anchor")
+  Assert.equal(effect.fieldZ, 5)
+  Assert.equal(effect.worldY, 3)
+  Assert.equal(#live.instances, 1, "draw never adds or drops borrowed records")
+  Assert.equal(animated.updates, 0, "draw never advances lifecycle state")
+  cleanup()
+end
+
 T.tests["mutable instances share pooled immutable resources"] = function()
   local poolCalls = {}
   local renderer, cleanup = newRenderer(poolCalls)

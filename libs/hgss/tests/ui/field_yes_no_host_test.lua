@@ -369,6 +369,130 @@ function T.borrowed_capture_resets_on_demand_resize_and_topology()
   )
 end
 
+-- Shared resolved geometry: draw and pointer input share one resolved
+-- geometry. The layout resolves once per presentation context; repeated
+-- presentation reads, pointer translation, and selection changes perform no
+-- new resolution, while a resize/topology change invalidates exactly once.
+-- Resolution work is observed through the injected text measure (the
+-- adapted path measures both labels once per resolve). The call-count
+-- assertions are red until draw and input share the retained layout.
+local function rowPoint(layout, row)
+  local content = assert(layout.content, "choice layout must publish its content box")
+  local placement = assert(layout.placement, "choice layout must publish its placement")
+  local origin = assert(placement.origin, "choice placement must publish its content origin")
+  return origin.x + (content.x + content.width / 2) * placement.scale,
+    origin.y + (content.y + row * 16 + 8) * placement.scale
+end
+
+local function countingHost()
+  local measureCalls = 0
+  local base = productionMeasure()
+  local state = { calls = 0 }
+  local host = openHost({
+    measureText = function(text)
+      measureCalls = measureCalls + 1
+      state.calls = measureCalls
+      return base(text)
+    end,
+  })
+  return host, state
+end
+
+function T.draw_and_pointer_input_share_one_resolved_geometry()
+  local host, state = countingHost()
+  local first = assert(host:presentation(), "open choice publishes its presentation")
+  Assert.equal(state.calls, 2, "one presentation resolves geometry once (both labels measured)")
+  local second = assert(host:presentation(), "a second draw reuses the resolved layout")
+  Assert.isTrue(rawequal(first.layout, second.layout), "repeated draws share the retained layout object")
+  Assert.equal(state.calls, 2, "a repeated presentation performs no new resolution")
+  local x, y = rowPoint(first.layout, 1)
+  Assert.deepEqual(
+    host:inputEvents({ { type = "pointer_down", pointerId = "touch", x = x, y = y } }),
+    { { type = "focus", row = 1 } }
+  )
+  Assert.deepEqual(
+    host:inputEvents({ { type = "pointer_up", pointerId = "touch", x = x, y = y } }),
+    { { type = "focus", row = 1 }, { type = "confirm" } }
+  )
+  Assert.equal(state.calls, 2, "pointer translation shares the draw geometry without re-resolving")
+end
+
+function T.selection_changes_reuse_resolved_geometry()
+  local host, state = countingHost()
+  host:presentation()
+  Assert.equal(state.calls, 2)
+  host:syncSelection(1)
+  local reselected = assert(host:presentation())
+  Assert.equal(reselected.status.selectedIndex, 1, "selection still updates in the shared status")
+  Assert.equal(state.calls, 2, "a selection change is not a geometry change")
+end
+
+function T.resize_invalidates_shared_geometry_exactly_once()
+  local host, state = countingHost()
+  host:presentation()
+  Assert.equal(state.calls, 2)
+  host:resize(800, 600)
+  Assert.isTrue(host:isModal(), "the choice itself survives the resize")
+  local resized = assert(host:presentation(), "draw after resize re-resolves once")
+  Assert.equal(state.calls, 4, "a resize invalidates exactly one new resolution")
+  local again = assert(host:presentation())
+  Assert.isTrue(rawequal(resized.layout, again.layout), "the new geometry is then retained")
+  Assert.equal(state.calls, 4, "no further resolution follows")
+  local x, y = rowPoint(resized.layout, 0)
+  Assert.deepEqual(
+    host:inputEvents({ { type = "pointer_down", pointerId = "touch", x = x, y = y } }),
+    { { type = "focus", row = 0 } },
+    "pointer translation follows the invalidated geometry"
+  )
+  Assert.equal(state.calls, 4, "pointer translation after resize shares the new layout")
+end
+
+function T.borrowed_choice_layout_is_shared_between_draw_and_pointer_translation()
+  local measureCalls = 0
+  local base = productionMeasure()
+  local idle = FieldYesNoHost.new({
+    width = 640,
+    height = 480,
+    input = fakeInput() --[[@as FieldInput]],
+    screenTopology = singleTopology(),
+    measureText = function(text)
+      measureCalls = measureCalls + 1
+      return base(text)
+    end,
+    presentation = fixedContext(),
+  })
+  local status = borrowedStatus()
+  local first = idle:layoutFor(status)
+  Assert.equal(measureCalls, 2, "one borrowed layout resolves geometry once")
+  local second = idle:layoutFor(status)
+  Assert.isTrue(rawequal(first, second), "repeated borrowed draws share the retained layout")
+  Assert.equal(measureCalls, 2, "a repeated borrowed layout performs no new resolution")
+  local x, y = rowPoint(first, 0)
+  Assert.deepEqual(
+    idle:inputEventsFor(status, { { type = "pointer_down", pointerId = "touch", x = x, y = y } }),
+    { { type = "focus", row = 0 } }
+  )
+  Assert.deepEqual(
+    idle:inputEventsFor(status, { { type = "pointer_up", pointerId = "touch", x = x, y = y } }),
+    { { type = "focus", row = 0 }, { type = "confirm" } }
+  )
+  Assert.equal(measureCalls, 2, "borrowed pointer translation shares the draw geometry")
+  Assert.isFalse(idle:isModal(), "borrowed sharing never starts a live modal lifetime")
+end
+
+function T.presentation_and_input_translation_leave_choice_state_untouched()
+  local host = openHost()
+  local before = assert(host:presentation())
+  local x, y = rowPoint(before.layout, 1)
+  host:inputEvents({ { type = "pointer_down", pointerId = "touch", x = x, y = y } })
+  host:inputEvents({ { type = "pointer_up", pointerId = "touch", x = x, y = y } })
+  local after = assert(host:presentation())
+  Assert.equal(after.status.selectedIndex, 0, "translation never moves the selection")
+  Assert.equal(after.status.yesText, "YES")
+  Assert.equal(after.status.noText, "NO")
+  Assert.isTrue(host:isModal(), "reads and translation never close the choice")
+end
+
 function T.borrowed_status_shape_fails_loudly()
   local idle = FieldYesNoHost.new({
     width = 640,

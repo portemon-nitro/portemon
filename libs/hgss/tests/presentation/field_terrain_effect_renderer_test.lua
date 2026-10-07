@@ -347,6 +347,100 @@ T.tests["trainer reveal anchors to the actor coordinate with source placement"] 
   Assert.equal(result[1].fieldEffect, "trainer_reveal")
 end
 
+-- Reusable draw storage: the renderer fills caller/renderer-owned
+-- reusable output storage instead of allocating a fresh items table every
+-- frame, and an empty transient list returns a stable empty array. Draw
+-- never mutates controller semantic state (only presentation-owned pose),
+-- and reused storage still reflects animation-derived motion. The storage
+-- assertions are red until drawItems accepts and returns reusable storage.
+local function committedStatus(renderer, fieldX)
+  return {
+    instances = {
+      {
+        kind = "tall_grass",
+        fieldX = fieldX,
+        fieldZ = 5,
+        worldY = 3,
+        cellKey = "0:0",
+        sourceSurfaceId = 7,
+        modelInstance = renderer:newInstance("tall_grass"),
+      },
+    },
+  }
+end
+
+local function committedMap()
+  return {
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function()
+        return true
+      end,
+    },
+  }
+end
+
+T.tests["draw fills caller-owned storage instead of allocating"] = function()
+  local renderer, cleanup = newRenderer()
+  local items = {}
+  local result = renderer:drawItems(committedStatus(renderer, 2), committedMap(), items)
+  Assert.isTrue(rawequal(result, items), "draw returns the supplied storage instead of a fresh table")
+  Assert.equal(#items, 1, "the reused storage carries the live effect")
+  Assert.equal(items[1].fieldEffect, "tall_grass")
+  cleanup()
+end
+
+T.tests["empty status returns a stable empty array"] = function()
+  local renderer, cleanup = newRenderer()
+  local first = renderer:drawItems({ instances = {} }, committedMap())
+  local second = renderer:drawItems({ instances = {} }, committedMap())
+  Assert.equal(#first, 0)
+  Assert.isTrue(rawequal(first, second), "empty transient lists share a stable empty array, not fresh tables")
+  cleanup()
+end
+
+T.tests["removed effects clear reused storage without stale entries"] = function()
+  local renderer, cleanup = newRenderer()
+  local map = committedMap()
+  local items = {}
+  renderer:drawItems(committedStatus(renderer, 2), map, items)
+  Assert.equal(#items, 1)
+  local result = renderer:drawItems({ instances = {} }, map, items)
+  Assert.isTrue(rawequal(result, items), "the empty draw reuses the same storage")
+  Assert.equal(#items, 0, "removal clears the reused array to its exact logical length")
+  cleanup()
+end
+
+T.tests["draw leaves controller semantic state untouched"] = function()
+  local renderer, cleanup = newRenderer()
+  local status = committedStatus(renderer, 2)
+  local effect = status.instances[1]
+  renderer:drawItems(status, committedMap(), {})
+  Assert.equal(effect.kind, "tall_grass", "draw never mutates the borrowed kind")
+  Assert.equal(effect.fieldX, 2, "draw never mutates the borrowed anchor")
+  Assert.equal(effect.fieldZ, 5)
+  Assert.equal(effect.worldY, 3)
+  Assert.equal(effect.cellKey, "0:0", "draw never mutates borrowed surface identity")
+  Assert.equal(effect.sourceSurfaceId, 7)
+  Assert.equal(#status.instances, 1, "draw never adds or drops borrowed records")
+  cleanup()
+end
+
+T.tests["reused storage reflects animation-derived motion"] = function()
+  local renderer, cleanup = newRenderer()
+  local map = committedMap()
+  local items = {}
+  local first = renderer:drawItems(committedStatus(renderer, 2), map, items)
+  Assert.isTrue(rawequal(first, items), "the first draw fills the supplied storage")
+  local settled = items[1].transform[13]
+  local second = renderer:drawItems(committedStatus(renderer, 3), map, items)
+  Assert.isTrue(rawequal(second, items), "the second draw refills the same storage")
+  Assert.equal(#items, 1, "the reused storage still carries exactly the live effect")
+  Assert.isTrue(items[1].transform[13] ~= settled, "the reused entry repaints at the new anchor")
+  Assert.equal(items[1].fieldEffect, "tall_grass")
+  cleanup()
+end
+
 T.tests["follower reaction uses the actor's physical surface projection"] = function()
   local renderer, cleanup = newRenderer()
   local runtimeMap = {

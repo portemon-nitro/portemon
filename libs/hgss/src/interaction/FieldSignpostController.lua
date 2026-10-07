@@ -24,6 +24,8 @@ local FieldWindowStyles = require("libs.hgss.src.field.FieldWindowStyles")
 ---@field _previousOffset integer the offset captured at the start of the most recent updateFixed
 ---@field _offset integer
 ---@field _active boolean
+---@field _presentation FieldSignpostController.Status? retained borrowed presentation record (read-only/ephemeral)
+---@field _presentationDirty boolean true when the next status() must rebuild the retained record
 ---@field _sourceAppearance { game: string, type: integer, map: integer }?
 ---@field _print { lines: { tokens: MessageToken[] }[], revealed: integer, revealTicks: integer, total: integer, live: boolean }?
 local FieldSignpostController = {}
@@ -115,6 +117,8 @@ function FieldSignpostController.new(opts)
     _previousOffset = HIDDEN_OFFSET,
     _offset = HIDDEN_OFFSET,
     _active = false,
+    _presentation = nil,
+    _presentationDirty = true,
     _sourceAppearance = nil,
     _print = nil,
     _hasPrintBeenSpedUp = false,
@@ -128,8 +132,10 @@ function FieldSignpostController:isModal()
   return self._active
 end
 
--- The presentation snapshot: plain data only, freshly built per call, so
--- the renderer never mutates controller state through it.
+-- The borrowed presentation record: plain data only, retained across reads
+-- until the next owner mutation. Consumers must treat it as read-only
+-- and ephemeral: never mutate it and never retain it past the next
+-- controller mutation.
 
 ---@class FieldSignpostController.Status
 ---@field active boolean window presented (isModal)
@@ -143,11 +149,27 @@ end
 ---@field revealedGlyphs integer
 ---@field totalGlyphs integer
 
+-- Marks the retained presentation record stale. Every owner mutation
+-- (commands, appearance/style routing, prints, fixed-tick updates, resets)
+-- calls this; status() rebuilds lazily on the next read so unchanged
+-- frames borrow the identical record.
+function FieldSignpostController:_invalidatePresentation()
+  self._presentationDirty = true
+end
+
+-- The borrowed presentation record for the renderer: controller-owned,
+-- read-only, and ephemeral (valid only until the owner's next mutation).
+-- Repeated reads without an owner mutation return the identical record
+-- and the identical visible-line storage; the next mutation rebuilds it.
+-- The source appearance is copied at rebuild time, never aliased.
 ---@return FieldSignpostController.Status
 function FieldSignpostController:status()
+  if not self._presentationDirty then
+    return assert(self._presentation, "retained signpost presentation is missing")
+  end
   local print = self._print
   local appearance = self._sourceAppearance
-  return {
+  self._presentation = {
     active = self._active,
     command = self._command,
     previousLogicalYOffset = self._previousOffset,
@@ -163,6 +185,8 @@ function FieldSignpostController:status()
     revealedGlyphs = print and print.revealed or 0,
     totalGlyphs = print and print.total or 0,
   }
+  self._presentationDirty = false
+  return assert(self._presentation, "retained signpost presentation is missing")
 end
 
 -- HGSS Signpost_SetCommand is a bare assignment with no busy guard: the
@@ -174,6 +198,7 @@ end
 function FieldSignpostController:setCommand(command)
   assert(FieldSignpostController.COMMANDS[command] == true, "unknown signpost command " .. tostring(command))
   self._command = command
+  self:_invalidatePresentation()
 end
 
 -- The semantic command-idle query: true exactly when no command is scheduled.
@@ -199,6 +224,7 @@ end
 
 ---@param appearance { game: string, type: integer, map: integer }?
 function FieldSignpostController:setSourceAppearance(appearance)
+  self:_invalidatePresentation()
   if appearance == nil then
     self._sourceAppearance = nil
     return
@@ -230,6 +256,9 @@ end
 -- endpoint-check update.
 ---@param input table<string, unknown>|nil
 function FieldSignpostController:updateFixed(input)
+  -- A fixed tick is an owner mutation event (offset history capture,
+  -- command motion, printer advance); the retained view rebuilds on read.
+  self:_invalidatePresentation()
   self._previousOffset = self._offset
   local command = self._command
   if command == "show" then
@@ -269,6 +298,7 @@ end
 -- implementation shared by the hide update, the wipe-out endpoint check, and
 -- the explicit cleanup operation.
 function FieldSignpostController:_resetPresentation()
+  self:_invalidatePresentation()
   self._active = false
   self._print = nil
   self._hasPrintBeenSpedUp = false
@@ -305,6 +335,7 @@ end
 ---@param message FieldMessageProvider.FormattedMessage
 function FieldSignpostController:printInstant(message)
   local lines = self:_captureLines(message)
+  self:_invalidatePresentation()
   local total = glyphCount(lines)
   self._print = { lines = lines, revealed = total, revealTicks = 0, total = total, live = false }
   self._hasPrintBeenSpedUp = false
@@ -316,6 +347,7 @@ end
 ---@param message FieldMessageProvider.FormattedMessage
 function FieldSignpostController:printTyped(message)
   local lines = self:_captureLines(message)
+  self:_invalidatePresentation()
   local total = glyphCount(lines)
   self._print = { lines = lines, revealed = 0, revealTicks = 0, total = total, live = total > 0 }
   self._hasPrintBeenSpedUp = false
@@ -329,6 +361,7 @@ function FieldSignpostController:finishPrint()
   if print == nil then
     return
   end
+  self:_invalidatePresentation()
   print.revealed = print.total
   print.revealTicks = 0
   print.live = false
@@ -351,12 +384,14 @@ end
 function FieldSignpostController:setStyleId(styleId)
   assert(type(styleId) == "string" and styleId ~= "", "style id must be a non-empty string")
   self._styleId = styleId
+  self:_invalidatePresentation()
 end
 
 -- Session teardown: returns the controller to its initial hidden state and
 -- releases every owned surface (command, presentation, printer, appearance,
 -- routed style) exactly once. Idempotent.
 function FieldSignpostController:dispose()
+  self:_invalidatePresentation()
   self._command = "nop"
   self._active = false
   self._previousOffset = HIDDEN_OFFSET

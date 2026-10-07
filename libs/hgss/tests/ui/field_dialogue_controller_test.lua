@@ -988,6 +988,61 @@ function T.status_exposes_visible_lines_up_to_the_reveal()
   Assert.equal(c:status().state, "WAITING_CLOSE")
 end
 
+-- Retained presentation state: the renderer borrows retained presentation state
+-- instead of rebuilding equivalent snapshots every frame. Repeated reads
+-- without an owner mutation return the same top-level record and the same
+-- visible-line storage; a fixed tick that changes reveal state is visible
+-- in the borrowed view before the next draw; reads alone never advance
+-- the printer. The identity assertions are red until the controller
+-- retains its presentation record.
+function T.retained_status_identity_is_stable_without_mutation()
+  local c = controller({ page({ line({ glyph("A", 1), glyph("B", 2) }) }, "eos") })
+  c:open(request("retained", message()))
+  local guard = 0
+  while not c:status().waiting do
+    c:step({})
+    guard = guard + 1
+    Assert.isTrue(guard < 20, "dialogue reaches its close wait promptly")
+  end
+  local first = c:status()
+  local second = c:status()
+  Assert.isTrue(rawequal(first, second), "repeated reads without mutation return the retained record")
+  Assert.isTrue(
+    rawequal(first.visibleLines, second.visibleLines),
+    "visible-line storage is retained, not rebuilt per read"
+  )
+end
+
+function T.retained_view_updates_after_a_reveal_tick_before_draw()
+  local c = controller({ page({ line({ glyph("A", 1), glyph("B", 2), glyph("C", 3) }) }, "eos") }, {
+    printerDelay = 8,
+  })
+  c:open(request("retained-update", message()))
+  c:step({})
+  local revealedBefore = c:status().revealedGlyphs
+  local guard = 0
+  while c:status().revealedGlyphs == revealedBefore do
+    c:step({})
+    guard = guard + 1
+    Assert.isTrue(guard < 30, "the reveal advances promptly")
+  end
+  local after = c:status()
+  Assert.equal(after.revealedGlyphs, revealedBefore + 1, "the borrowed view exposes the new reveal before draw")
+  Assert.equal(#after.visibleLines[1], revealedBefore + 1, "line storage carries the newly revealed glyph")
+end
+
+function T.repeated_status_reads_do_not_advance_the_printer()
+  local c = controller({ page({ line({ glyph("A", 1), glyph("B", 2) }) }, "eos") })
+  c:open(request("read-only", message()))
+  c:step({})
+  local revealed = c:status().revealedGlyphs
+  c:status()
+  c:status()
+  c:status()
+  Assert.equal(c:status().revealedGlyphs, revealed, "reads borrow state; only step() advances the printer")
+  Assert.equal(c:status().state, "REVEALING")
+end
+
 function T.trailing_indicator_appears_only_at_its_reveal_position()
   local indicator = {
     kind = "focus_indicator",
