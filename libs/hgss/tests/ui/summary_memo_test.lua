@@ -21,7 +21,7 @@ local function openService(catalog, seed)
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
   return HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -896,7 +896,7 @@ local function openServiceForGame(catalog, seed, game)
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
   return HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture()),
     profile = CatalogFixture.profile(),
     game = game,
     language = "english",
