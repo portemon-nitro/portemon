@@ -305,7 +305,13 @@ local function loadCollision(cacheFs, descriptor, missingCode, context)
   })
 end
 
-local function loadNeighborRegion(cacheFs, scene, centralCollision, centralTerrain)
+---@param cacheFs CacheFs
+---@param scene table<string, unknown>
+---@param centralCollision table<string, unknown>
+---@param centralTerrain table<string, unknown>
+---@param checkpoint fun()? cooperative yield invoked once per neighbor element when staging
+---@return table<string, unknown> composite region
+local function loadNeighborRegion(cacheFs, scene, centralCollision, centralTerrain, checkpoint)
   local neighbors = {}
   for _, descriptor in ipairs(scene.neighbors) do
     if not descriptor.collision or not descriptor.terrain then
@@ -331,6 +337,9 @@ local function loadNeighborRegion(cacheFs, scene, centralCollision, centralTerra
       }),
       terrain = TerrainSurface.new(terrainArtifact),
     }
+    if checkpoint then
+      checkpoint()
+    end
   end
   return FieldRegion.new(centralCollision, centralTerrain, neighbors)
 end
@@ -375,9 +384,13 @@ end
 ---@param collision table<string, unknown>
 ---@param originX integer
 ---@param originZ integer
+---@param checkpoint fun()? cooperative yield invoked per building instance when staging
 ---@return MapProps
-local function buildMapProps(cacheFs, buildingInstances, fieldData, collision, originX, originZ)
+local function buildMapProps(cacheFs, buildingInstances, fieldData, collision, originX, originZ, checkpoint)
   local doorTiles = warpBearingDoorTiles(DoorTiles.fromGrid(collision), fieldData.events.warps, originX, originZ)
+  if checkpoint then
+    checkpoint()
+  end
   local doorMetaByModelKey = {}
   local placements = {}
   for _, inst in ipairs(buildingInstances) do
@@ -395,6 +408,9 @@ local function buildMapProps(cacheFs, buildingInstances, fieldData, collision, o
       doorSoundType = meta and meta.doorSoundType or nil,
       doorRoles = meta and meta.roles or nil,
     }
+    if checkpoint then
+      checkpoint()
+    end
   end
   return MapProps.new({ placements = placements, instances = {}, doorTiles = doorTiles })
 end
@@ -528,9 +544,13 @@ end
 -- the staged task owns scene realization and single cache publication.
 ---@param loader FieldMapLoader
 ---@param record table<string, unknown>
+---@param checkpoint fun()? cooperative yield invoked after each material operation when staging
 ---@return table<string, unknown>
-local function prepareLoad(loader, record)
+local function prepareLoad(loader, record, checkpoint)
   local fieldData = loader:_acquireSemantic(record)
+  if checkpoint then
+    checkpoint()
+  end
   if loader.derivedAssets then
     loader.derivedAssets.ensureField(record.id)
   end
@@ -559,6 +579,9 @@ local function prepareLoad(loader, record)
       { mapId = record.id, visualCameraType = scene.cameraType, fieldCameraType = fieldData.cameraType }
     )
   end
+  if checkpoint then
+    checkpoint()
+  end
 
   local physicalCells = scene.type == "outdoor"
   if physicalCells and not loader.fieldCellIndex then
@@ -575,6 +598,9 @@ local function prepareLoad(loader, record)
       )
     end
     requireTerrainSource(terrainArtifact, { mapId = record.id })
+  end
+  if checkpoint then
+    checkpoint()
   end
 
   -- Outdoor cells own collision, terrain, and geometry through the physical
@@ -609,13 +635,17 @@ local function prepareLoad(loader, record)
       worldOriginX = scene.matrix.worldOriginX,
       worldOriginZ = scene.matrix.worldOriginZ,
     })
+    if checkpoint then
+      checkpoint()
+    end
     mapProps = buildMapProps(
       loader.cacheFs,
       scene.buildingInstances,
       fieldData,
       centralCollision,
       scene.matrix.worldOriginX,
-      scene.matrix.worldOriginZ
+      scene.matrix.worldOriginZ,
+      checkpoint
     )
   end
   return {
@@ -670,26 +700,33 @@ end
 ---@param loader FieldMapLoader
 ---@param ctx table<string, unknown>
 ---@param sceneRuntime table<string, unknown>?
+---@param checkpoint fun()? cooperative yield invoked after each material operation when staging
+---@param outerBox table<string, unknown>? task-owned box tracking runtimes created mid-assembly
 ---@return table<string, unknown> runtimeMap
-local function assembleComplete(loader, ctx, sceneRuntime)
+local function assembleComplete(loader, ctx, sceneRuntime, checkpoint, outerBox)
   local record = ctx.record
   local scene = ctx.scene
   local physicalCells = ctx.physicalCells
-  local neighborRuntime
-  local runtimeMap
-  local ok, loadErr = pcall(function()
+  local box = outerBox or {}
+  local function body()
     if not physicalCells and loader.neighborLoader and #scene.neighbors > 0 then
-      neighborRuntime = loader.neighborLoader.load(loader.cacheFs, scene.neighbors, {
+      box.neighborRuntime = loader.neighborLoader.load(loader.cacheFs, scene.neighbors, {
         textureSrt = scene.terrainAnimations.textureSrt,
       })
+      if checkpoint then
+        checkpoint()
+      end
     end
 
     local region
     if not physicalCells then
       local centralTerrain = TerrainSurface.new(assert(ctx.terrainArtifact))
-      region = loadNeighborRegion(loader.cacheFs, scene, ctx.centralCollision, centralTerrain)
+      if checkpoint then
+        checkpoint()
+      end
+      region = loadNeighborRegion(loader.cacheFs, scene, ctx.centralCollision, centralTerrain, checkpoint)
     end
-    runtimeMap = {
+    local runtimeMap = {
       mapId = record.id,
       mapSymbol = record.symbol,
       mapSection = record.mapSection,
@@ -707,7 +744,7 @@ local function assembleComplete(loader, ctx, sceneRuntime)
       cameraType = scene.cameraType,
       coordinateOrigin = { x = scene.matrix.worldOriginX, z = scene.matrix.worldOriginZ },
       physicalOrigin = nil,
-      neighborRuntime = neighborRuntime,
+      neighborRuntime = box.neighborRuntime,
       runtimePropSelections = {},
       released = false,
     }
@@ -778,22 +815,35 @@ local function assembleComplete(loader, ctx, sceneRuntime)
       end
     end
 
+    if checkpoint then
+      checkpoint()
+    end
     local entry = { runtimeMap = runtimeMap }
     loader.entries[record.id] = entry
     loader:_touch(entry)
-  end)
-  if not ok then
-    if neighborRuntime then
-      neighborRuntime:release()
-    end
-    if sceneRuntime then
-      sceneRuntime:release()
-    end
-    error(loadErr)
+    box.neighborRuntime = nil
+    return runtimeMap
   end
-
-  loader:_evict(record.id)
-  return runtimeMap
+  if checkpoint == nil then
+    local ok, result = pcall(body)
+    if not ok then
+      if box.neighborRuntime then
+        box.neighborRuntime:release()
+      end
+      if sceneRuntime then
+        sceneRuntime:release()
+      end
+      error(result, 0)
+    end
+    loader:_evict(record.id)
+    return result
+  else
+    -- Staged driver context: failures propagate to the resuming advance,
+    -- which owns cleanup of the same box before the error goes sticky.
+    local runtimeMap = body()
+    loader:_evict(record.id)
+    return runtimeMap
+  end
 end
 
 ---@class FieldMapLoader.SceneRuntime
@@ -816,6 +866,7 @@ end
 ---@field _failed unknown?
 ---@field _released boolean
 ---@field _transferred boolean
+---@field _driver table<string, unknown>? lazy headless cooperative driver when the loader has no presentation collaborators
 ---@field advance fun(self: FieldMapLoader.StagedTask, workUnits: integer): integer
 ---@field isReady fun(self: FieldMapLoader.StagedTask): boolean
 ---@field takeResult fun(self: FieldMapLoader.StagedTask): table<string, unknown>
@@ -848,8 +899,97 @@ local function failStaged(task, err)
   error(err, 0)
 end
 
+-- Completes one staged transaction: the scene runtime moves into the
+-- single assembly transaction so a failure releases it exactly once,
+-- and the published resident map marks the task ready.
+---@param task FieldMapLoader.StagedTask
+local function completeAssembly(task)
+  local sceneRuntime = task._sceneRuntime
+  task._sceneRuntime = nil
+  local okAssemble, mapOrErr = pcall(assembleComplete, task._loader, task._ctx, sceneRuntime)
+  if not okAssemble then
+    task._failed = mapOrErr
+    error(mapOrErr, 0)
+  end
+  task._result = mapOrErr
+  task._ready = true
+end
+
+-- Fails a headless driver task: releases task-owned partial runtimes
+-- exactly once, records the cause, and propagates it. Later
+-- advance/finish/takeResult calls stay loud with the same cause.
+---@param task FieldMapLoader.StagedTask
+---@param box table<string, unknown>
+---@param err unknown
+local function failDriver(task, box, err)
+  task._driver = nil
+  if box.neighborRuntime ~= nil then
+    local doomed = box.neighborRuntime
+    box.neighborRuntime = nil
+    pcall(function()
+      doomed:release()
+    end)
+  end
+  if box.sceneRuntime ~= nil then
+    local doomed = box.sceneRuntime
+    box.sceneRuntime = nil
+    pcall(function()
+      doomed:release()
+    end)
+  end
+  task._failed = err
+  error(err, 0)
+end
+
+-- Resumes a lazy headless driver for at most maxWorkUnits cooperative
+-- checkpoints. Each checkpoint reports exactly one consumed unit; the
+-- driver publishes the resident entry only on its final return.
+---@param task FieldMapLoader.StagedTask
+---@param maxWorkUnits integer
+---@return integer consumed work units within the caller budget
+local function advanceDriver(task, maxWorkUnits)
+  local driver = assert(task._driver)
+  local thread = assert(driver.thread)
+  local consumed = 0
+  while consumed < maxWorkUnits do
+    local ok, yielded = coroutine.resume(thread)
+    if not ok then
+      failDriver(task, driver.box, yielded)
+    end
+    if coroutine.status(thread) == "dead" then
+      task._result = assert(yielded, "headless load returned no runtime map")
+      task._ready = true
+      task._driver = nil
+      break
+    else
+      assert(yielded == 1, "headless load yielded an invalid work unit")
+      consumed = consumed + 1
+    end
+  end
+  return consumed
+end
+
+-- Finishes a lazy headless driver synchronously: the same cooperative
+-- transaction runs to completion with no budget cap.
+---@param task FieldMapLoader.StagedTask
+local function finishDriver(task)
+  local driver = assert(task._driver)
+  local thread = assert(driver.thread)
+  while task._driver ~= nil do
+    local ok, yielded = coroutine.resume(thread)
+    if not ok then
+      failDriver(task, driver.box, yielded)
+    end
+    if coroutine.status(thread) == "dead" then
+      task._result = assert(yielded, "headless load returned no runtime map")
+      task._ready = true
+      task._driver = nil
+    end
+  end
+end
+
 ---@param workUnits integer main-thread work budget for this advance
----@return integer consumed (always zero; scene work is accounted by its owner)
+---@return integer consumed task-owned work units within the caller budget
 function StagedLoadTask:advance(workUnits)
   if self._failed ~= nil then
     error(self._failed, 0)
@@ -862,13 +1002,22 @@ function StagedLoadTask:advance(workUnits)
     type(workUnits) == "number" and workUnits >= 0 and workUnits % 1 == 0,
     "staged advance requires non-negative integer work units"
   )
+  if self._driver ~= nil then
+    return advanceDriver(self, workUnits)
+  end
+  local consumed = 0
   if self._sceneTask ~= nil then
-    local okAdvance, advanceErr = pcall(self._sceneTask.advance, self._sceneTask, workUnits)
+    local okAdvance, sceneConsumed = pcall(self._sceneTask.advance, self._sceneTask, workUnits)
     if not okAdvance then
-      failStaged(self, advanceErr)
+      failStaged(self, sceneConsumed)
     end
+    assert(
+      type(sceneConsumed) == "number" and sceneConsumed >= 0 and sceneConsumed % 1 == 0 and sceneConsumed <= workUnits,
+      "scene build consumed an invalid work-unit count"
+    )
+    consumed = sceneConsumed
     if not self._sceneTask:isReady() then
-      return 0
+      return consumed
     end
     local okResult, runtimeOrErr = pcall(self._sceneTask.takeResult, self._sceneTask)
     self._sceneTask = nil
@@ -877,18 +1026,14 @@ function StagedLoadTask:advance(workUnits)
     end
     self._sceneRuntime = runtimeOrErr
   end
-  -- The scene runtime moves into assembly here so a failure releases it
-  -- exactly once through the single assembly transaction.
-  local sceneRuntime = self._sceneRuntime
-  self._sceneRuntime = nil
-  local okAssemble, mapOrErr = pcall(assembleComplete, self._loader, self._ctx, sceneRuntime)
-  if not okAssemble then
-    self._failed = mapOrErr
-    error(mapOrErr, 0)
+  -- Assembly is loader-owned work worth one unit: when the delegated
+  -- scene build already consumed the whole budget, publication waits for
+  -- a later advance or a blocking finish instead of overspending.
+  if consumed >= workUnits then
+    return consumed
   end
-  self._result = mapOrErr
-  self._ready = true
-  return 0
+  completeAssembly(self)
+  return consumed + 1
 end
 
 ---@return boolean
@@ -906,39 +1051,63 @@ function StagedLoadTask:takeResult()
   return assert(self._result)
 end
 
--- Finishes the staged transaction synchronously: a pending scene build is
--- finished through its own synchronous path (the same block-wait a direct
--- scene load performs), then assembly publishes exactly once.
+-- Finishes the staged transaction synchronously: a pending driver runs to
+-- completion, a pending scene build is finished through its own
+-- synchronous path (the same block-wait a direct scene load performs),
+-- then assembly publishes exactly once.
 ---@return table<string, unknown> the published resident runtime map
 function StagedLoadTask:finish()
   if self._failed ~= nil then
     error(self._failed, 0)
   end
   if not self._ready then
-    if self._sceneTask ~= nil then
-      local sceneTask = assert(self._sceneTask)
-      local okFinish, runtimeOrErr = pcall(sceneTask.finish, sceneTask)
-      self._sceneTask = nil
-      if not okFinish then
-        failStaged(self, runtimeOrErr)
+    if self._driver ~= nil then
+      finishDriver(self)
+    else
+      if self._sceneTask ~= nil then
+        local sceneTask = assert(self._sceneTask)
+        local okFinish, runtimeOrErr = pcall(sceneTask.finish, sceneTask)
+        self._sceneTask = nil
+        if not okFinish then
+          failStaged(self, runtimeOrErr)
+        end
+        self._sceneRuntime = runtimeOrErr
       end
-      self._sceneRuntime = runtimeOrErr
+      completeAssembly(self)
     end
-    self:advance(0)
   end
   return self:takeResult()
 end
 
--- Releases a staged task before completion: the outstanding scene build
--- or untaken scene runtime is released and no entry is published. After
--- completion the resident entry belongs to the loader, so release (and a
--- repeated release) is a no-op.
+-- Releases a staged task before completion: the outstanding scene build,
+-- untaken scene runtime, or lazy headless driver is released and no entry
+-- is published. After completion the resident entry belongs to the loader,
+-- so release (and a repeated release) is a no-op.
 function StagedLoadTask:release()
   if self._transferred or self._released then
     return
   end
   self._released = true
   if not self._ready then
+    if self._driver ~= nil then
+      local driver = assert(self._driver)
+      self._driver = nil
+      local box = assert(driver.box)
+      if box.neighborRuntime ~= nil then
+        local doomed = box.neighborRuntime
+        box.neighborRuntime = nil
+        pcall(function()
+          doomed:release()
+        end)
+      end
+      if box.sceneRuntime ~= nil then
+        local doomed = box.sceneRuntime
+        box.sceneRuntime = nil
+        pcall(function()
+          doomed:release()
+        end)
+      end
+    end
     if self._sceneTask ~= nil then
       local sceneTask = assert(self._sceneTask)
       self._sceneTask = nil
@@ -955,6 +1124,24 @@ function StagedLoadTask:release()
     end
   end
   self._result = nil
+end
+
+-- Runs the lazy headless transaction inside its driver coroutine: the
+-- same preparation and assembly the blocking path uses, with a yielding
+-- checkpoint between material operations so advances stay budgeted.
+---@param loader FieldMapLoader
+---@param record table<string, unknown>
+---@param box table<string, unknown>
+---@param checkpoint fun()
+---@return table<string, unknown> runtimeMap
+local function runHeadlessDriver(loader, record, box, checkpoint)
+  local ctx = prepareLoad(loader, record, checkpoint)
+  local sceneTask, sceneRuntime = startScene(loader, ctx)
+  assert(sceneTask == nil, "headless load started a scene build")
+  box.sceneRuntime = sceneRuntime
+  local runtimeMap = assembleComplete(loader, ctx, sceneRuntime, checkpoint, box)
+  box.sceneRuntime = nil
+  return runtimeMap
 end
 
 -- Begins one staged load transaction for the map. The returned task
@@ -987,6 +1174,35 @@ function FieldMapLoader:beginLoad(idOrSymbol)
     function task:release() end
     return task
   end
+  -- Without presentation collaborators the miss transaction stays lazy:
+  -- only the in-memory structural record resolves here, and generated
+  -- field/scene/collision/terrain materialization waits for a
+  -- positive-budget advance (or a blocking finish) of the returned task.
+  -- With presentation collaborators the transaction keeps its existing
+  -- eager preparation and staged scene-task shape.
+  if self.sceneLoader == nil and self.neighborLoader == nil then
+    local box = {}
+    local loaderSelf = self
+    local recordForDriver = record
+    local thread = coroutine.create(function()
+      local function checkpoint()
+        coroutine.yield(1)
+      end
+      return runHeadlessDriver(loaderSelf, recordForDriver, box, checkpoint)
+    end)
+    return setmetatable({
+      _loader = self,
+      _ctx = nil,
+      _sceneTask = nil,
+      _sceneRuntime = nil,
+      _driver = { thread = thread, box = box },
+      _ready = false,
+      _result = nil,
+      _failed = nil,
+      _released = false,
+      _transferred = false,
+    }, StagedLoadTask)
+  end
   local ctx = prepareLoad(self, record)
   local sceneTask, sceneRuntime = startScene(self, ctx)
   return setmetatable({
@@ -994,6 +1210,7 @@ function FieldMapLoader:beginLoad(idOrSymbol)
     _ctx = ctx,
     _sceneTask = sceneTask,
     _sceneRuntime = sceneRuntime,
+    _driver = nil,
     _ready = false,
     _result = nil,
     _failed = nil,
@@ -1023,25 +1240,18 @@ function FieldMapLoader:globalPosition(idOrSymbol, localX, localZ)
   return { x = localX + originX, z = localZ + originZ }
 end
 
--- Nonblocking location demand: requests the destination full field
--- closure and, for a destination with physical cells, every valid
--- descriptor in the existing radius-1 committed footprint. Every loadable
--- map represented by those committed descriptors additionally enrolls its
--- logical field closure at the caller's urgency (the destination reuses
--- its own full closure instead), while non-destination maps enroll their
--- full visual closure as near prefetch only. Performs no scene, terrain,
--- or GPU acquisition. Returns ready/pending/error without blocking.
+-- Nonblocking destination-only demand: requests the destination full
+-- and logical field assets at the caller's urgency so a staged map driver
+-- can proceed. It performs no field-cell-index load, no cell request, no
+-- represented-map walk, no warp scan, and no scene, terrain, or GPU
+-- acquisition. Returns ready/pending/error without blocking.
 ---@param idOrSymbol integer|string
----@param fieldX integer
----@param fieldZ integer
 ---@param urgency string
 ---@return boolean
 ---@return string|nil
-function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
+function FieldMapLoader:requestMapAssets(idOrSymbol, urgency)
   assert(not self.released, "field map loader is released")
-  assert(type(fieldX) == "number" and fieldX % 1 == 0, "field x must be an integer")
-  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "field z must be an integer")
-  assert(type(urgency) == "string" and urgency ~= "", "location demand requires an urgency")
+  assert(type(urgency) == "string" and urgency ~= "", "map asset demand requires an urgency")
   local record = worldRecord(self.world, idOrSymbol)
   local host = self.derivedAssets
   if host == nil then
@@ -1068,6 +1278,52 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
   local destinationFailure = consume(host.requestLogicalField(record.id, urgency))
   if destinationFailure ~= nil then
     return false, destinationFailure
+  end
+  if pending then
+    return false
+  end
+  return true
+end
+
+-- Nonblocking location demand: requests the destination full field
+-- closure and, for a destination with physical cells, every valid
+-- descriptor in the existing radius-1 committed footprint. Every loadable
+-- map represented by those committed descriptors additionally enrolls its
+-- logical field closure at the caller's urgency (the destination reuses
+-- its own full closure instead), while non-destination maps enroll their
+-- full visual closure as near prefetch only. Performs no scene, terrain,
+-- or GPU acquisition. Returns ready/pending/error without blocking.
+---@param idOrSymbol integer|string
+---@param fieldX integer
+---@param fieldZ integer
+---@param urgency string
+---@return boolean
+---@return string|nil
+function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
+  assert(not self.released, "field map loader is released")
+  assert(type(fieldX) == "number" and fieldX % 1 == 0, "field x must be an integer")
+  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "field z must be an integer")
+  assert(type(urgency) == "string" and urgency ~= "", "location demand requires an urgency")
+  local record = worldRecord(self.world, idOrSymbol)
+  local host = self.derivedAssets
+  if host == nil then
+    return true
+  end
+  -- The destination-only prerequisite keeps its enrollment even while
+  -- pending so the physical/warp closure below is never narrowed.
+  local assetsReady, assetsFailure = self:requestMapAssets(idOrSymbol, urgency)
+  if assetsFailure ~= nil then
+    return false, assetsFailure
+  end
+  local pending = not assetsReady
+  local function consume(ready, failure)
+    if failure ~= nil then
+      return failure
+    end
+    if not ready then
+      pending = true
+    end
+    return nil
   end
   local seen = {}
   local matrix = record.matrix
@@ -1210,33 +1466,36 @@ function FieldMapLoader:_destinationFieldData(mapId)
   return fieldData
 end
 
--- Construct the session-owned physical window for an outdoor logical map.
--- The loader provides validated cache access and presentation construction,
--- but never stores or releases the returned owner.
+-- Composes the staged initial-coverage options the loader owns: the
+-- matrix member identity from the map record, the already-loaded
+-- field-cell index, the cell semantic-resolver factory, and the current
+-- presentation/derived collaborators. Beginning the task performs no cell
+-- acquisition; the caller drives it cooperatively.
+---@param loader FieldMapLoader
 ---@param runtimeMap RuntimeFieldMap
 ---@param position { fieldX: integer, fieldZ: integer }
----@return FieldCoverage
-function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
-  assert(not self.released, "field map loader is released")
+---@return table<string, unknown> options for FieldCoverage.begin
+local function physicalCoverageOptions(loader, runtimeMap, position)
+  assert(not loader.released, "field map loader is released")
   assert(runtimeMap and runtimeMap.scene and runtimeMap.scene.type == "outdoor", "outdoor logical map required")
-  local fieldCellIndex = assert(self.fieldCellIndex, "field cell cache is unavailable")
+  local fieldCellIndex = assert(loader.fieldCellIndex, "field cell cache is unavailable")
   assert(type(position) == "table", "physical coverage position required")
-  local record = worldRecord(self.world, runtimeMap.mapId)
+  local record = worldRecord(loader.world, runtimeMap.mapId)
   local matrix = assert(record.matrix, "outdoor map matrix metadata is required")
   local matrixMemberId = assert(matrix.memberId, "outdoor matrix member is required")
   local presentationLoader
   local presentationTaskFactory
   -- Physical-cell presentation inherits the loader's scene options plus the
   -- preparation queue without mutating the shared options table.
-  local sceneOptions = self.sceneOptions
-  if self.assetPreparation ~= nil then
+  local sceneOptions = loader.sceneOptions
+  if loader.assetPreparation ~= nil then
     local merged = {}
     if sceneOptions then
       for key, value in pairs(sceneOptions) do
         merged[key] = value
       end
     end
-    merged.assetPreparation = self.assetPreparation
+    merged.assetPreparation = loader.assetPreparation
     sceneOptions = merged
   end
   -- The semantic resolver for one newly normalized physical cell. Only the
@@ -1246,7 +1505,7 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
   -- placements, collision, and global origin, so door keys stay cell-local
   -- while warp records stay global. Failures propagate into the staging
   -- transaction; only the physical-only case returns nil.
-  local mapLoader = self
+  local mapLoader = loader
   local function mapPropsFactory(runtime, descriptor)
     local cell = runtime.descriptor or descriptor
     if FieldZoneIdentity.isPhysicalOnlyCell(cell.mapHeaderId) then
@@ -1267,19 +1526,19 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
     options.mapProps = runtime.mapProps
     return options
   end
-  if self.sceneLoader and self.sceneLoader.beginCell then
+  if loader.sceneLoader and loader.sceneLoader.beginCell then
     local function beginCell(runtime, cell)
       return mapLoader.sceneLoader.beginCell(mapLoader.cacheFs, cell, cellOptions(runtime))
     end
     presentationTaskFactory = beginCell
-  elseif self.sceneLoader and self.sceneLoader.loadCell then
+  elseif loader.sceneLoader and loader.sceneLoader.loadCell then
     local function loadCell(runtime, cell)
       return mapLoader.sceneLoader.loadCell(mapLoader.cacheFs, cell, cellOptions(runtime))
     end
     presentationLoader = loadCell
   end
-  return FieldCoverage.new({
-    cacheFs = self.cacheFs,
+  return {
+    cacheFs = loader.cacheFs,
     index = fieldCellIndex,
     matrixMemberId = matrixMemberId,
     anchorX = math.floor(position.fieldX / 32),
@@ -1287,8 +1546,29 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
     mapPropsFactory = mapPropsFactory,
     presentationLoader = presentationLoader,
     presentationTaskFactory = presentationTaskFactory,
-    derivedAssets = self.derivedAssets,
-  })
+    derivedAssets = loader.derivedAssets,
+  }
+end
+
+-- Begins staged construction of the session-owned physical window for an
+-- outdoor logical map. The loader provides validated cache access and
+-- presentation construction, but never stores or releases the returned
+-- owner; the staged coverage transfers to the caller on takeResult.
+---@param runtimeMap RuntimeFieldMap
+---@param position { fieldX: integer, fieldZ: integer }
+---@return FieldCoverage.InitialTask
+function FieldMapLoader:beginPhysicalCoverage(runtimeMap, position)
+  return FieldCoverage.begin(physicalCoverageOptions(self, runtimeMap, position))
+end
+
+-- Construct the session-owned physical window for an outdoor logical map.
+-- The loader provides validated cache access and presentation construction,
+-- but never stores or releases the returned owner.
+---@param runtimeMap RuntimeFieldMap
+---@param position { fieldX: integer, fieldZ: integer }
+---@return FieldCoverage
+function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
+  return self:beginPhysicalCoverage(runtimeMap, position):finish()
 end
 
 -- Read only the generated semantic metadata needed to choose a transition.

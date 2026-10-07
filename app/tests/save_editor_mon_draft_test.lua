@@ -238,12 +238,169 @@ function T.experience_curve_boundaries_shedinja_hp_and_ev_total_use_current_rule
   Assert.isNil(boundaryError)
   Assert.notNil(legalBoundary)
 
-  Assert.isTrue(evDraft:setEV("defense", 111))
-  Assert.isNil(evDraft:projection().stats, "an invalid EV total has no current stat preview")
-  local invalidEv, invalidEvError = evDraft:validate()
-  Assert.isNil(invalidEv)
-  Assert.isTrue(Errors.is(invalidEvError))
-  Assert.equal(invalidEvError.code, "MON_RECORD_INVALID", "Mon.validate owns the EV-total record contract")
+  Assert.isFalse(evDraft:setEV("defense", 111), "an over-cap total never enters the draft")
+  Assert.equal(evDraft:record().evs.defense, 110, "a rejected effort edit leaves the candidate unchanged")
+  local validAfterReject, rejectError = evDraft:validate()
+  Assert.isNil(rejectError)
+  Assert.notNil(validAfterReject)
+end
+
+function T.level_edit_writes_threshold_experience_and_preserves_health_coherence()
+  local catalog, context = CatalogFixture.makeCatalog(), nil
+  context = CatalogFixture.domainContext(catalog)
+  local Experience = require("libs.mons.src.gen4.Experience")
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  local draft = draftFor(validMon(catalog, "CHIKORITA", 9), context)
+  local curve = catalog:growthCurve("medium_slow")
+  local maxHp = assert(draft:projection().stats).hp
+
+  Assert.isFalse(draft:setLevel(0), "level below one never enters the draft")
+  Assert.isFalse(draft:setLevel(101), "level above one hundred never enters the draft")
+  Assert.isTrue(draft:setScalar("currentHp", maxHp - 5))
+  Assert.isTrue(draft:setLevel(10))
+  Assert.equal(draft:record().experience, Experience.expFor(curve, 10))
+  Assert.equal(draft:projection().level, 10)
+  local newMaxHp = assert(draft:projection().stats).hp
+  Assert.equal(
+    draft:record().condition.currentHp,
+    HgssMonService.adjustHpForMaxChange(maxHp, newMaxHp, maxHp - 5),
+    "a damaged member keeps its damage across the new maximum"
+  )
+  Assert.equal(draft:record().met.level, 10, "met level tracks the edited level")
+  local valid, validError = draft:validate()
+  Assert.isNil(validError)
+  Assert.notNil(valid)
+
+  local fainted = draftFor(validMon(catalog, "CHIKORITA", 9), context)
+  Assert.isTrue(fainted:setScalar("currentHp", 0))
+  local faintedMax = assert(fainted:projection().stats).hp
+  Assert.isTrue(fainted:setLevel(10))
+  Assert.equal(fainted:record().condition.currentHp, 0, "a fainted member stays fainted")
+  Assert.isTrue(faintedMax >= 1, "the fixture maximum is usable")
+end
+
+function T.species_edit_preserves_numeric_experience_and_repairs_form_and_ability()
+  local catalog, context = CatalogFixture.makeCatalog(), nil
+  context = CatalogFixture.domainContext(catalog)
+  local Experience = require("libs.mons.src.gen4.Experience")
+  local Personality = require("libs.mons.src.gen4.Personality")
+  local draft = draftFor(validMon(catalog, "CHIKORITA", 9), context)
+  local storedExp = draft:record().experience
+
+  Assert.isFalse(draft:setSpecies("MISSINGNO"), "unknown species never enter the draft")
+  local before = copy(draft:record())
+  Assert.deepEqual(draft:record(), before, "a rejected species leaves the candidate unchanged")
+  Assert.isTrue(draft:setSpecies("CHIKORITA"))
+  Assert.equal(draft:record().ability, "OVERGROW", "a still-permitted ability is kept")
+  Assert.isFalse(draft:isDirty(), "a no-op species edit stages nothing")
+  Assert.isTrue(draft:setSpecies("EEVEE"))
+  Assert.equal(draft:record().experience, storedExp, "numeric experience survives the species change")
+  Assert.equal(
+    draft:projection().level,
+    Experience.level(catalog:growthCurve("medium_fast"), storedExp),
+    "the derived level follows the new growth curve"
+  )
+  Assert.equal(draft:record().form, 0, "a valid old form is kept when the new species defines it")
+  local eeveeForm = catalog:form("EEVEE", 0)
+  local expectedAbility = eeveeForm.abilities[Personality.abilitySlot(#eeveeForm.abilities, draft:record().personality)]
+  Assert.equal(draft:record().ability, expectedAbility, "an unpermitted ability is repaired by personality slot")
+  local validKept, keptError = draft:validate()
+  Assert.isNil(keptError)
+  Assert.notNil(validKept)
+
+  -- OVERGROW is not permitted by EEVEE form 1, so moving there repairs the
+  -- ability through the personality slot instead of leaving a conflict.
+  Assert.isTrue(draft:setForm(1))
+  Assert.equal(draft:record().form, 1)
+  local repaired = catalog:form("EEVEE", 1).abilities[Personality.abilitySlot(1, draft:record().personality)]
+  Assert.equal(draft:record().ability, repaired)
+  local validForm, formError = draft:validate()
+  Assert.isNil(formError)
+  Assert.notNil(validForm)
+
+  -- Returning to single-form CHIKORITA repairs the now-invalid form id.
+  Assert.isTrue(draft:setSpecies("CHIKORITA"))
+  Assert.equal(draft:record().experience, storedExp, "numeric experience still survives")
+  Assert.equal(draft:record().form, 0)
+  local validBack, backError = draft:validate()
+  Assert.isNil(backError)
+  Assert.notNil(validBack)
+
+  Assert.isFalse(draft:setForm(7), "an undefined form never enters the draft")
+  Assert.equal(draft:record().form, 0, "a rejected form leaves the candidate unchanged")
+end
+
+function T.effort_edit_rejects_total_above_the_cap_before_mutation()
+  local catalog, context = CatalogFixture.makeCatalog(), nil
+  context = CatalogFixture.domainContext(catalog)
+  local draft = draftFor(validMon(catalog, "EEVEE", 5), context)
+  for _, stat in ipairs({ "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+    Assert.isTrue(draft:setEV(stat, 0))
+  end
+  Assert.isTrue(draft:setEV("hp", 200))
+  Assert.isTrue(draft:setEV("attack", 200))
+  Assert.isTrue(draft:setEV("defense", 110))
+  Assert.isFalse(draft:setEV("defense", 111), "an over-cap total never enters the draft")
+  Assert.equal(draft:record().evs.defense, 110, "a rejected effort edit leaves the candidate unchanged")
+  local valid, validError = draft:validate()
+  Assert.isNil(validError)
+  Assert.notNil(valid)
+end
+
+function T.move_replacement_resets_allowance_and_pp_up_clamps_current_pp()
+  local catalog, context = CatalogFixture.makeCatalog(), nil
+  context = CatalogFixture.domainContext(catalog)
+  local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
+  local draft = draftFor(validMon(catalog, "EEVEE", 5), context)
+  local first = copy(draft:record().moves[1])
+  local boostedMax = Draft.maxMovePp(catalog:move(first.move), 3)
+  Assert.isTrue(draft:setMove(0, "ppUps", 3))
+  Assert.isTrue(draft:setMove(0, "pp", boostedMax))
+  Assert.isFalse(
+    draft:setMove(0, "pp", boostedMax + 1),
+    "power points above the current maximum never enter the draft"
+  )
+  Assert.equal(draft:record().moves[1].pp, boostedMax, "a rejected PP edit leaves the slot unchanged")
+  Assert.isTrue(draft:setMove(0, "ppUps", 0))
+  local clampedMax = Draft.maxMovePp(catalog:move(first.move), 0)
+  Assert.equal(
+    draft:record().moves[1].pp,
+    math.min(boostedMax, clampedMax),
+    "lowering PP Ups clamps current PP to the new maximum"
+  )
+
+  local replacement = catalog:move("HARDEN")
+  Assert.isTrue(draft:setMove(0, "move", "HARDEN"))
+  Assert.equal(draft:record().moves[1].move, "HARDEN")
+  Assert.equal(draft:record().moves[1].ppUps, 0, "replacing a move resets PP Ups")
+  Assert.equal(draft:record().moves[1].pp, replacement.basePp, "replacing a move restores base PP")
+  Assert.isFalse(draft:setMove(0, "move", "MISSINGNO"), "unknown moves never enter the draft")
+  Assert.equal(draft:record().moves[1].move, "HARDEN", "a rejected move leaves the slot unchanged")
+  local valid, validError = draft:validate()
+  Assert.isNil(validError)
+  Assert.notNil(valid)
+end
+
+function T.direct_experience_edit_refreshes_current_health()
+  local catalog, context = CatalogFixture.makeCatalog(), nil
+  context = CatalogFixture.domainContext(catalog)
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  local draft = draftFor(validMon(catalog, "CHIKORITA", 9), context)
+  local maxHp = assert(draft:projection().stats).hp
+  Assert.isTrue(draft:setScalar("currentHp", maxHp - 3))
+  local curve = catalog:growthCurve("medium_slow")
+  local target = curve[12]
+  Assert.isTrue(draft:setExperience(target))
+  Assert.equal(draft:record().experience, target)
+  Assert.equal(draft:projection().level, 12)
+  local newMaxHp = assert(draft:projection().stats).hp
+  Assert.equal(
+    draft:record().condition.currentHp,
+    HgssMonService.adjustHpForMaxChange(maxHp, newMaxHp, maxHp - 3)
+  )
+  local valid, validError = draft:validate()
+  Assert.isNil(validError)
+  Assert.notNil(valid)
 end
 
 function T.primitive_date_limits_and_move_validation_remain_owned_by_the_catalog()
@@ -279,14 +436,16 @@ function T.primitive_date_limits_and_move_validation_remain_owned_by_the_catalog
   Assert.isTrue(draft:setMove(0, "move", "HARDEN"))
   local replaced = draft:record().moves[1]
   Assert.equal(replaced.move, "HARDEN")
-  Assert.equal(replaced.pp, first.pp, "changing a move key preserves current PP")
-  Assert.equal(replaced.ppUps, first.ppUps, "changing a move key preserves PP Ups")
+  Assert.equal(replaced.pp, catalog:move("HARDEN").basePp, "replacing a move restores base PP")
+  Assert.equal(replaced.ppUps, 0, "replacing a move resets PP Ups")
 
-  local addDraft = draftFor(initial, context)
+  local addBase = validMon(catalog, "EEVEE", 5)
+  Assert.isTrue(#addBase.moves < 4, "the young fixture member keeps an empty slot for explicit Add")
+  local addDraft = draftFor(addBase, context)
   local unusedMove
   for _, key in ipairs({ "HARDEN", "TAIL_WHIP", "CUT", "TOXIC" }) do
     local used = false
-    for _, move in ipairs(initial.moves) do
+    for _, move in ipairs(addBase.moves) do
       if move.move == key then
         used = true
       end
@@ -297,33 +456,32 @@ function T.primitive_date_limits_and_move_validation_remain_owned_by_the_catalog
     end
   end
   Assert.notNil(unusedMove, "fixture has an unused catalog move for explicit Add")
-  Assert.isTrue(addDraft:removeMove(#initial.moves - 1))
-  local reducedMoves = addDraft:record().moves
   Assert.isTrue(addDraft:addMove(unusedMove))
-  local added = addDraft:record().moves[#initial.moves]
+  local added = addDraft:record().moves[#addBase.moves + 1]
   Assert.equal(added.move, unusedMove)
   Assert.equal(added.pp, catalog:move(unusedMove).basePp)
   Assert.equal(added.ppUps, 0)
-  Assert.isTrue(addDraft:removeMove(#initial.moves - 1))
-  Assert.deepEqual(addDraft:record().moves, reducedMoves, "remove compacts the dense move list")
 
-  local duplicateDraft = draftFor(initial, context)
-  Assert.isTrue(duplicateDraft:removeMove(#initial.moves - 1))
-  Assert.isTrue(duplicateDraft:addMove(first.move))
+  local duplicateDraft = draftFor(addBase, context)
+  Assert.isTrue(duplicateDraft:addMove(addBase.moves[1].move))
   local duplicateRecord = duplicateDraft:record()
-  Assert.equal(duplicateRecord.moves[#duplicateRecord.moves].move, first.move)
+  Assert.equal(duplicateRecord.moves[#duplicateRecord.moves].move, addBase.moves[1].move)
   local invalidDuplicate, duplicateError = duplicateDraft:validate()
   Assert.isNil(invalidDuplicate)
   Assert.notNil(duplicateError, "duplicate move conflicts are shown without automatic removal")
 
-  local ppDraft = draftFor(initial, context)
-  local moveDefinition = catalog:move(first.move)
-  local maxPp = moveDefinition.basePp + 3 * math.floor(moveDefinition.basePp / 5)
-  Assert.isTrue(ppDraft:setMove(0, "pp", maxPp + 1))
+  local ppDraft = draftFor(addBase, context)
+  local moveDefinition = catalog:move(addBase.moves[1].move)
+  local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
+  local currentMax = Draft.maxMovePp(moveDefinition, addBase.moves[1].ppUps)
+  Assert.isFalse(ppDraft:setMove(0, "pp", currentMax + 1), "PP above the current maximum never enters the draft")
   Assert.isFalse(ppDraft:setMove(0, "ppUps", 4), "PP-Up count uses its own native field range")
+  Assert.isTrue(ppDraft:setMove(0, "ppUps", 3))
+  local raisedMax = Draft.maxMovePp(moveDefinition, 3)
+  Assert.isTrue(ppDraft:setMove(0, "pp", raisedMax), "PP at the raised maximum is accepted")
   local invalidPp, ppError = ppDraft:validate()
-  Assert.isNil(invalidPp)
-  Assert.notNil(ppError, "PP over the catalog maximum remains a validation conflict")
+  Assert.isNil(ppError)
+  Assert.notNil(invalidPp)
 end
 
 return { tests = T }

@@ -23,7 +23,9 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 
 ---@class SaveEditorLocationService
 ---@field listMaps fun(self: SaveEditorLocationService): table[]
+---@field mapSummaries fun(self: SaveEditorLocationService): table[]
 ---@field openMap fun(self: SaveEditorLocationService, mapId: integer)
+---@field releaseGrid fun(self: SaveEditorLocationService)
 ---@field setViewport fun(self: SaveEditorLocationService, centerX: integer, centerZ: integer, widthTiles: integer, heightTiles: integer)
 ---@field update fun(self: SaveEditorLocationService)
 ---@field snapshot fun(self: SaveEditorLocationService): table<string, unknown>
@@ -53,6 +55,8 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field locationService SaveEditorLocationService?
 ---@field locationViewport table<string, number>?
 ---@field locationServiceMapId integer?
+---@field locationGridWidthTiles integer?
+---@field locationGridHeightTiles integer?
 ---@field errorMessage string?
 ---@field notice string?
 ---@field generation number
@@ -62,8 +66,9 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field closeRequest { reason: "back"|"quit", phase: "confirm"|"saving", previousModal: string?, previousModalReturnFocus: string?, previousFocus: string }?
 ---@field monDraft SaveEditorMonDraft?
 ---@field partyView SaveEditorPartyView?
----@field partyProjectionCache { partyRevision: integer, slot0: integer, value: SaveEditorMonProjection }?
----@field pendingDraftAction table<string, unknown>?
+---@field pendingMoveSlot integer?
+---@field moveChildReturn integer?
+---@field moveChildAction string?
 ---@field activeDraftField table<string, unknown>?
 ---@field valuePurpose string?
 ---@field dateProvider fun(): table<string, integer>
@@ -82,6 +87,10 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field activeScopeId string?
 ---@field scopeEpoch integer
 ---@field editorFeedback string?
+---@field _flagCatalog { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[]?
+---@field _flagFilter { query: string, rows: { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[], rowTargets: string[], indexByTarget: table<string, integer> }?
+---@field _mapCatalog { rows: { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[], rowTargets: string[], indexByTarget: table<string, integer> }?
+---@field _mapFilter { query: string, rows: { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[], rowTargets: string[], indexByTarget: table<string, integer> }?
 local State = {}
 State.__index = State
 local FIELD_DIRECTIONS = { up = "north", down = "south", left = "west", right = "east" }
@@ -134,17 +143,13 @@ local function filterLocationMaps(maps, query)
   return filtered
 end
 
-local function mapDisplayName(symbol)
-  return (symbol:gsub("^MAP_", "", 1))
-end
-
 local function flagDisplayName(symbol)
   return (symbol:gsub("^FLAG_", "", 1))
 end
 
 local function scrollPurpose(viewportId, view)
   if viewportId == "party" then
-    return "party:" .. view.partyPage .. ":" .. tostring(view.partySubpage or "list")
+    return "party:" .. tostring(view.partyTab or "Stats")
   elseif viewportId == "bag" then
     return "bag:" .. tostring(view.bagPocket)
   elseif viewportId == "flags" then
@@ -212,6 +217,8 @@ function State.new(options)
     locationService = nil,
     locationViewport = nil,
     locationServiceMapId = nil,
+    locationGridWidthTiles = nil,
+    locationGridHeightTiles = nil,
     pendingLocationSave = nil,
     locationSaveOperationId = 0,
     valueEditor = nil,
@@ -227,8 +234,9 @@ function State.new(options)
     closeRequest = nil,
     monDraft = nil,
     partyView = nil,
-    partyProjectionCache = nil,
-    pendingDraftAction = nil,
+    pendingMoveSlot = nil,
+    moveChildReturn = nil,
+    moveChildAction = nil,
     activeDraftField = nil,
     valuePurpose = nil,
     dateProvider = dateProvider,
@@ -341,8 +349,6 @@ function State:update(dt)
     local originalLocation = assert(self.session:snapshot().location)
     self.controller:enterLocation(originalLocation)
     self.controller:setSection("Location")
-    self.locationService:openMap(originalLocation.mapId)
-    self.locationServiceMapId = originalLocation.mapId
     self.status, self.errorMessage = "ready", nil
     self:_resolve(self:_snapshot())
   end
@@ -355,12 +361,6 @@ function State:update(dt)
       self:_cancelPendingLocationSave()
       error(updateError, 0)
     end
-  end
-  if self.status == "ready" and self.renderer and self.dependencies then
-    local view = self:_snapshot()
-    local plan = self:_resolve(view)
-    self.renderer:prepareVisibleIcons(view, plan, self.dependencies.cacheFs, self.derivedAssets)
-    self.iconStatus, self.iconFailure = self.renderer.iconStatus, self.renderer.iconFailure
   end
 end
 
@@ -377,7 +377,10 @@ end
 function State:_snapshot()
   local session = self.session and self.session:snapshot() or nil
   local section = self.controller.section
-  local flags = session and section == "Progress" and self:_flagRows(session.flags) or {}
+  local flagRows, flagRowTargets, flagIndexByTarget = {}, {}, {}
+  if session ~= nil and section == "Progress" then
+    flagRows, flagRowTargets, flagIndexByTarget = self:_flagRows(session.flags)
+  end
   local party = session and section == "Party" and self:_partyView() or {}
   local bag = session and section == "Bag" and self:_bagView() or {}
   local numberControls, numberControlVisuals, numberPressTicks
@@ -401,8 +404,12 @@ function State:_snapshot()
       self.valueEditor:snapshot().selectedKey
     ) or nil,
     ready = session ~= nil,
-    dirty = self.session ~= nil and self.session:isDirty() or self.monDraft ~= nil,
+    dirty = self.session ~= nil
+      and (
+        self.session:isDirty() or (self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty()))
+      ),
     dirtySections = session and session.dirtySections or { money = false, flags = false },
+    sectionDirty = self:_sectionDirty(session),
     section = self.controller.section,
     sections = self.controller:snapshot().sections,
     navigationRows = {
@@ -411,35 +418,29 @@ function State:_snapshot()
     },
     modal = self.controller.modal,
     focus = self.controller.focus,
+    focusVisible = self.controller.focusVisible,
     capturedTarget = self.controller.capturedTarget,
     scrollOffset = self.controller.scrollOffset,
     query = self.controller.query,
-    flagRows = flags,
+    flagRows = flagRows,
+    flagRowTargets = flagRowTargets,
+    flagIndexByTarget = flagIndexByTarget,
     valueEditor = self.valueEditor and self.valueEditor:snapshot() or nil,
     editorFeedback = self.editorFeedback,
     numberControls = numberControls,
     numberControlVisuals = numberControlVisuals,
     numberPressTicks = numberPressTicks,
-    unappliedDraft = self.monDraft ~= nil,
+    unappliedDraft = self.valueEditor ~= nil,
     iconStatus = self.iconStatus,
     iconFailure = self.iconFailure,
     locationNavigation = self.controller:locationSnapshot(),
   }
   if self.locationService then
     local location = self.locationService:snapshot()
-    local maps = self.locationService:listMaps()
-    local displayMaps = {}
-    for _, map in ipairs(maps) do
-      local displayMap = {}
-      for key, value in pairs(map) do
-        displayMap[key] = value
-      end
-      displayMap.displayName = mapDisplayName(map.symbol)
-      displayMaps[#displayMaps + 1] = displayMap
-    end
-    location.maps = self.controller.locationPage == "map-list"
-        and filterLocationMaps(displayMaps, self.controller.query)
-      or displayMaps
+    local mapRows, mapRowTargets, mapIndexByTarget = self:_mapRows()
+    location.maps = mapRows
+    location.mapRowTargets = mapRowTargets
+    location.mapIndexByTarget = mapIndexByTarget
     location.symbol = location.map and location.map.symbol or nil
     location.actionStatus = self.locationActionStatus
         and {
@@ -473,18 +474,11 @@ function State:_snapshot()
     local value = self.valueEditor:snapshot()
     local query = value.kind == "choice" and value.query or ""
     scopeId = "value:" .. (self.valuePurpose or "editor") .. ":" .. query
-  elseif self.monDraft then
+  elseif self.controller.section == "Party" then
     scopeId = table.concat({
-      "mon-draft",
-      self.monDraft:mode(),
+      "party",
       tostring(self.controller.partySlot0),
-      self.controller.partySubpage,
-    }, ":")
-  elseif self.controller.section == "Party" and self.controller.partyPage ~= "list" then
-    scopeId = table.concat({
-      "party-detail",
-      tostring(self.controller.partySlot0),
-      self.controller.partySubpage,
+      self.controller.partyTab,
     }, ":")
   elseif self.controller.section == "Progress" then
     scopeId = table.concat({
@@ -510,8 +504,7 @@ function State:_snapshot()
   self.controller.scopeId, self.controller.scopeEpoch = scopeId, self.scopeEpoch
   local scopeKind = self.controller.modal and "decision"
     or self.valueEditor and "value"
-    or self.monDraft and "mon-draft"
-    or self.controller.section == "Party" and self.controller.partyPage ~= "list" and "party-detail"
+    or self.controller.section == "Party" and "party"
     or "section"
   view.scope = {
     id = scopeId,
@@ -527,147 +520,203 @@ function State:_snapshot()
   return view
 end
 
-function State:_flagRows(values)
-  local rows = {}
-  local query = self.controller.query:lower()
-  for name, flagId in pairs(FieldScriptSymbols.flagsByName) do
-    if name:sub(1, 9) ~= "FLAG_UNK_" then
-      local displayName = flagDisplayName(name)
-      local matches = query == "" or name:lower():find(query, 1, true) or displayName:lower():find(query, 1, true)
-      if matches then
-        rows[#rows + 1] = { name = name, displayName = displayName, id = flagId, value = values[flagId] == true }
+function State:_sectionDirty(session)
+  if session == nil then
+    return false
+  end
+  local dirty = session.dirtySections
+  local section = self.controller.section
+  if section == "Player" then
+    return dirty.money == true or dirty.frame == true
+  elseif section == "Progress" then
+    return dirty.flags == true
+  elseif section == "Location" then
+    return dirty.location == true
+  elseif section == "Party" then
+    if self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty()) then
+      return true
+    end
+    return dirty.party == true
+  elseif section == "Bag" then
+    return dirty.bag == true
+  end
+  return false
+end
+
+function State:_flagCatalogRows()
+  if self._flagCatalog == nil then
+    local catalog = {}
+    for name, flagId in pairs(FieldScriptSymbols.flagsByName) do
+      if name:sub(1, 9) ~= "FLAG_UNK_" then
+        catalog[#catalog + 1] = {
+          name = name,
+          displayName = flagDisplayName(name),
+          id = flagId,
+          targetId = "flag:" .. name,
+        }
       end
     end
+    table.sort(catalog, function(a, b)
+      return a.name < b.name
+    end)
+    self._flagCatalog = catalog
   end
-  table.sort(rows, function(a, b)
-    return a.name < b.name
-  end)
-  return rows
+  return assert(self._flagCatalog)
+end
+
+---@return { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[] rows
+---@return string[] rowTargets
+---@return table<string, integer> indexByTarget
+function State:_filteredFlagRows()
+  local query = self.controller.query:lower()
+  local cached = self._flagFilter
+  if cached == nil or cached.query ~= query then
+    local rows, rowTargets, indexByTarget = {}, {}, {}
+    for _, descriptor in ipairs(self:_flagCatalogRows()) do
+      if
+        query == ""
+        or descriptor.name:lower():find(query, 1, true)
+        or descriptor.displayName:lower():find(query, 1, true)
+      then
+        rows[#rows + 1] = descriptor
+        rowTargets[#rowTargets + 1] = descriptor.targetId
+        indexByTarget[descriptor.targetId] = #rows
+      end
+    end
+    cached = { query = query, rows = rows, rowTargets = rowTargets, indexByTarget = indexByTarget }
+    self._flagFilter = cached
+  end
+  return cached.rows, cached.rowTargets, cached.indexByTarget
+end
+
+---@return { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[] rows
+---@return string[] rowTargets
+---@return table<string, integer> indexByTarget
+function State:_mapCatalogRows()
+  local cached = self._mapCatalog
+  if cached == nil then
+    local rows, rowTargets, indexByTarget = {}, {}, {}
+    local summaries = assert(self.locationService, "the map catalog needs its location service"):mapSummaries()
+    for _, summary in ipairs(summaries) do
+      local descriptor = {
+        mapId = summary.mapId,
+        symbol = summary.symbol,
+        section = summary.section,
+        displayName = summary.displayName,
+        targetId = "location:map:" .. summary.mapId,
+      }
+      rows[#rows + 1] = descriptor
+      rowTargets[#rowTargets + 1] = descriptor.targetId
+      indexByTarget[descriptor.targetId] = #rows
+    end
+    cached = { rows = rows, rowTargets = rowTargets, indexByTarget = indexByTarget }
+    self._mapCatalog = cached
+  end
+  return cached.rows, cached.rowTargets, cached.indexByTarget
+end
+
+---@return { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[] rows
+---@return string[] rowTargets
+---@return table<string, integer> indexByTarget
+function State:_filteredMapRows()
+  local query = self.controller.query:lower()
+  local cached = self._mapFilter
+  if cached == nil or cached.query ~= query then
+    local rows = filterLocationMaps(self:_mapCatalogRows(), self.controller.query)
+    local rowTargets, indexByTarget = {}, {}
+    for _, descriptor in ipairs(rows) do
+      rowTargets[#rowTargets + 1] = descriptor.targetId
+      indexByTarget[descriptor.targetId] = #rowTargets
+    end
+    cached = { query = query, rows = rows, rowTargets = rowTargets, indexByTarget = indexByTarget }
+    self._mapFilter = cached
+  end
+  return cached.rows, cached.rowTargets, cached.indexByTarget
+end
+
+---@return { mapId: integer, symbol: string, section: string, displayName: string, targetId: string }[] rows
+---@return string[] rowTargets
+---@return table<string, integer> indexByTarget
+function State:_mapRows()
+  if self.controller.locationPage == "map-list" then
+    return self:_filteredMapRows()
+  end
+  return self:_mapCatalogRows()
+end
+
+---@param values table<integer, boolean>
+---@return { name: string, displayName: string, id: integer, targetId: string, value: boolean? }[] rows
+---@return string[] rowTargets
+---@return table<string, integer> indexByTarget
+function State:_flagRows(values)
+  local rows, rowTargets, indexByTarget = self:_filteredFlagRows()
+  for _, row in ipairs(rows) do
+    row.value = values[row.id] == true
+  end
+  return rows, rowTargets, indexByTarget
 end
 
 function State:_partyView()
   local dependencies = assert(self.dependencies, "ready Party view requires editor dependencies")
-  local context = assert(dependencies.context)
-  local catalog = assert(context.monCatalog)
+  assert(dependencies.context, "ready Party view requires its version context")
   local partyView = assert(self.partyView, "ready Party view requires its catalog-backed row builder")
   local snapshot = self.session:partySnapshot()
   local members = snapshot.members
-  local controller = self.controller:snapshot()
-  local rows, cards = {}, {}
-  local selectedProjection
-  if controller.partyPage == "list" then
+  local controller = self.controller
+  local draft = self.monDraft
+  if draft ~= nil and draft:mode() == "add" and draft:basePartyRevision() == snapshot.revision then
+    local staged = {}
     for _, member in ipairs(members) do
-      local mon = member.mon
-      local species = catalog:species(mon.species)
-      local projection = Draft.projectRecord(mon, { catalog = catalog })
-      cards[#cards + 1] = {
-        kind = "member",
-        slot0 = member.slot0,
-        label = mon.nickname ~= nil and mon.nickname ~= "" and mon.nickname or species.name or mon.species,
-        species = species.name or mon.species,
-        level = projection.level or "Unavailable",
-        iconKey = catalog:iconSelection(mon),
-      }
+      staged[#staged + 1] = member
     end
-    if #members < 6 then
-      cards[#cards + 1] = { kind = "add", slot0 = #members, label = "Add Pokemon" }
-    end
+    staged[#staged + 1] = { slot0 = controller.partySlot0 or #members, mon = draft:record() }
+    members = staged
   end
-  if controller.partyPage ~= "list" and (controller.partySlot0 ~= nil or self.monDraft ~= nil) then
-    local mon = self.monDraft and self.monDraft:record() or self:_selectedPartyMon(members)
-    local projection
-    if self.monDraft then
-      projection = self.monDraft:projection()
-    else
-      local cached = self.partyProjectionCache
-      if cached and cached.partyRevision == snapshot.revision and cached.slot0 == controller.partySlot0 then
-        projection = cached.value
-      else
-        projection = Draft.projectRecord(mon, { catalog = catalog })
-        self.partyProjectionCache = {
-          partyRevision = snapshot.revision,
-          slot0 = assert(controller.partySlot0),
-          value = projection,
-        }
-      end
-    end
-    selectedProjection = projection
-    local valid, validationError = mon, nil
-    if self.monDraft then
-      valid, validationError = self.monDraft:validate()
-    end
-    rows = PartyView.rows(partyView, mon, projection, controller.partySubpage, self.monDraft ~= nil)
-    if validationError ~= nil then
-      rows[#rows + 1] = { role = "warning", targetId = "party:validation", label = message(validationError) }
-    elseif self.monDraft and valid == nil then
-      rows[#rows + 1] =
-        { role = "warning", targetId = "party:validation", label = "Correct invalid fields before Apply." }
-    end
-  end
-  local selected = controller.partySlot0
-  local draftDirty = self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty())
-  local partySummary
-  local partyFieldHelp
-  if controller.partyPage ~= "list" and (controller.partySlot0 ~= nil or self.monDraft ~= nil) then
-    local mon = self.monDraft and self.monDraft:record() or self:_selectedPartyMon(members)
-    local projection = selectedProjection
-      or (self.monDraft and self.monDraft:projection())
-      or Draft.projectRecord(mon, { catalog = catalog })
-    local species = catalog:species(mon.species)
-    partySummary = {
-      slot0 = controller.partySlot0,
-      label = mon.nickname ~= nil and mon.nickname ~= "" and mon.nickname or species.name or mon.species,
-      species = species.name or mon.species,
-      level = projection.level or "Unavailable",
-      iconKey = catalog:iconSelection(mon),
-    }
-    for _, row in ipairs(rows) do
-      if row.targetId == controller.focus then
-        partyFieldHelp = row.help
-        break
-      end
-    end
-    if partyFieldHelp == nil and rows.statsTable ~= nil then
-      for _, stat in ipairs(rows.statsTable.rows) do
-        for _, cell in ipairs({ stat.ivEditor, stat.evEditor }) do
-          if cell.targetId == controller.focus then
-            partyFieldHelp = cell.help
-            break
-          end
-        end
-        if partyFieldHelp ~= nil then
-          break
-        end
-      end
-    end
-  end
-  return {
-    partyPage = controller.partyPage,
-    partySlot0 = selected,
-    partyLastSlot0 = #members - 1,
-    partySubpage = controller.partySubpage,
-    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
-    partyRows = rows,
-    statsTable = rows.statsTable,
-    partyCards = cards,
-    partySummary = partySummary,
-    partyFieldHelp = partyFieldHelp,
-    partyCanAdd = #members < 6,
-    partyDirty = draftDirty,
-    partyValid = self.monDraft ~= nil and self.monDraft:validate() ~= nil,
+  local tab = controller.partyTab
+  local view = {
+    partyTab = tab,
+    partySlot0 = controller.partySlot0,
+    partySelector = partyView:selector(members, controller.partySlot0),
     partyMemberCount = #members,
-    partyError = self.errorMessage,
+    partyEmpty = #members == 0,
   }
-end
-
-function State:_selectedPartyMon(members)
-  local slot0 = assert(self.controller.partySlot0, "Party detail requires a selected slot")
-  for _, member in ipairs(members) do
-    if member.slot0 == slot0 then
-      return member.mon
+  if draft == nil then
+    return view
+  end
+  local record = draft:record()
+  local projection = draft:projection()
+  local fields = {}
+  local function collect(targetId, editor)
+    if targetId ~= nil and editor ~= nil then
+      fields[targetId] = editor
     end
   end
-  error("selected party slot is no longer available", 2)
+  if tab == "Stats" then
+    local stats = partyView:stats(record, projection)
+    view.partyStats = stats
+    for _, fact in ipairs(stats.header) do
+      collect(fact.targetId, fact.editor)
+    end
+    for _, row in ipairs(stats.rows) do
+      collect(row.ivEditor.targetId, row.ivEditor.editor)
+      collect(row.evEditor.targetId, row.evEditor.editor)
+    end
+  elseif tab == "Moves" then
+    view.partyMoves = partyView:moves(record)
+  else
+    local details = partyView:details(record, projection)
+    view.partyDetails = details
+    for _, row in ipairs(details.rows) do
+      collect(row.targetId, row.editor)
+    end
+  end
+  view.partyFields = fields
+  local _, validationError = draft:validate()
+  view.partyValid = validationError == nil
+  if validationError ~= nil then
+    view.partyWarning = message(validationError)
+  end
+  return view
 end
 
 function State:_bagView()
@@ -691,7 +740,6 @@ function State:_bagView()
     rows[#rows + 1] = {
       item = entry.item,
       label = item.name or entry.item,
-      description = item.description,
       iconKey = item.icon,
       quantity = entry.quantity,
     }
@@ -728,7 +776,6 @@ function State:_bagView()
     bagPocketTabRects = manifest.interactive.pocketTabs.rects,
     bagPocketStrip = manifest.interactive.pocketTabs.strips[self.controller.bagPocket],
     bagFocusVisuals = manifest.interactive.focus,
-    bagItemFocusVisual = manifest.interactive.focus.items.visual,
     bagTabFocusVisual = manifest.interactive.focus.tabs.visual,
     bagTabFocusTargets = manifest.interactive.focus.tabs.targets,
     bagQuantityVisuals = manifest.interactive.overlays.quantity.visuals,
@@ -763,27 +810,22 @@ end
 
 function State:_partyField(targetId)
   local view = self:_snapshot()
-  local statsTable = view.statsTable
-  if statsTable ~= nil then
-    for _, stat in ipairs(statsTable.rows) do
-      for _, cell in ipairs({ stat.ivEditor, stat.evEditor }) do
-        if cell.targetId == targetId then
-          return cell.editor
-        end
-      end
-    end
+  local fields = view.partyFields
+  if fields == nil then
+    return nil
   end
-  for _, row in ipairs(view.partyRows) do
-    if row.targetId == targetId then
-      return row.editor
-    end
-  end
-  return nil
+  return fields[targetId]
 end
 
 function State:_setDraftValue(descriptor, value)
   local draft = assert(self.monDraft, "raw Party fields require an active draft")
-  if descriptor.setter == "iv" then
+  if descriptor.setter == "level" then
+    return draft:setLevel(value)
+  elseif descriptor.setter == "species" then
+    return draft:setSpecies(value)
+  elseif descriptor.setter == "form" then
+    return draft:setForm(value)
+  elseif descriptor.setter == "iv" then
     return draft:setIV(descriptor.fieldId:sub(4), value)
   elseif descriptor.setter == "ev" then
     return draft:setEV(descriptor.fieldId:sub(4), value)
@@ -820,7 +862,10 @@ function State:_finishValueEditor()
     self.pendingFocusReturn = self.valueReturnFocus
     self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.valueReturnFocus = nil
-    if purpose == "bag_quantity" then
+    if self.moveChildReturn ~= nil then
+      local slot0, action = assert(self.moveChildReturn), assert(self.moveChildAction)
+      self:_showMoveOverlay(slot0, action)
+    elseif purpose == "bag_quantity" then
       local pending = assert(self.pendingQuantity)
       self.pendingQuantity = nil
       if pending.returnModal then
@@ -857,6 +902,23 @@ function State:_finishValueEditor()
     else
       self.errorMessage = nil
     end
+  elseif purpose == "party_move_key" or purpose == "party_move_pp" or purpose == "party_move_pp_ups" then
+    local slot0 = assert(self.pendingMoveSlot, "a move component editor owns its slot")
+    local draft = assert(self.monDraft, "a move component editor needs its member draft")
+    local component = purpose == "party_move_key" and "move" or purpose == "party_move_pp" and "pp" or "ppUps"
+    if not draft:setMove(slot0, component, result.value) then
+      self.errorMessage = "That value is not valid for this move."
+      editor:retry()
+      return false
+    end
+    self.errorMessage = nil
+    self.pendingFocusReturn = nil
+    self.numberHold = nil
+    self.numberPressTarget = nil
+    self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
+    self.valueReturnFocus = nil
+    self:_showMoveOverlay(slot0, assert(self.moveChildAction))
+    return true
   elseif purpose == "bag_add_item" then
     self.numberHold = nil
     self.numberPressTarget = nil
@@ -905,7 +967,9 @@ function State:_beginMonAdd(species)
     return false
   end
   self.monDraft = draft
-  self.controller:openPartyDraft("add", nil)
+  self.controller.partySlot0 = #self.session:partySnapshot().members
+  self.controller.focus = "party:slot:" .. self.controller.partySlot0
+  self.controller:cancelInteraction()
   self.errorMessage = nil
   return true
 end
@@ -978,40 +1042,368 @@ end
 
 function State:_resolve(view)
   view.textMetrics = assert(self.renderer):metrics()
-  return self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
+  local plan = self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
+  local grid = plan.content.layout.locationGrid
+  if grid ~= nil then
+    self.locationGridWidthTiles = grid.columns
+    self.locationGridHeightTiles = grid.rows
+  end
+  return plan
+end
+
+---@param layout table<string, unknown>
+---@return table<string, unknown>? list
+---@return integer? rowIndex
+function State:_activeList(layout)
+  local available = type(layout) == "table" and layout.lists or nil
+  if type(available) ~= "table" then
+    return nil
+  end
+  local focus = self.controller.focus
+  for _, list in pairs(available) do
+    if focus == list.targetId then
+      return list, nil
+    end
+    local indexByTarget = list.indexByTarget
+    if type(indexByTarget) == "table" and indexByTarget[focus] ~= nil then
+      return list, indexByTarget[focus]
+    end
+    for index, targetId in ipairs(list.rowTargets) do
+      if focus == targetId then
+        return list, index
+      end
+    end
+  end
+  return nil
+end
+
+---@param lists table<string, unknown>
+---@param targetId string
+---@return table<string, unknown>?
+local function findListByRowTarget(lists, targetId)
+  for _, list in pairs(lists) do
+    for _, rowTarget in ipairs(list.rowTargets) do
+      if rowTarget == targetId then
+        return list
+      end
+    end
+  end
+  return nil
+end
+
+---@param lists table<string, unknown>
+---@param viewportId string
+---@return table<string, unknown>?
+local function findListByViewportId(lists, viewportId)
+  for _, list in pairs(lists) do
+    if list.viewportId == viewportId then
+      return list
+    end
+  end
+  return nil
+end
+
+---@param list table<string, unknown>
+---@return string? cursor
+function State:_reconcileListCursor(list)
+  local cursor = self.controller:listCursor(list.id)
+  if cursor ~= nil then
+    local indexByTarget = list.indexByTarget
+    if type(indexByTarget) == "table" then
+      if indexByTarget[cursor] ~= nil then
+        return cursor
+      end
+    else
+      for _, targetId in ipairs(list.rowTargets) do
+        if targetId == cursor then
+          return cursor
+        end
+      end
+    end
+  end
+  cursor = list.rowTargets[1]
+  self.controller:setListCursor(list.id, cursor)
+  return cursor
+end
+
+---@param list table<string, unknown>
+---@param offset number
+function State:_storeListOffset(list, offset)
+  if list.id == "location:map-list" then
+    self.controller.locationMapOffset = offset
+  elseif list.id == "flags" or list.id == "value:choice" then
+    if list.id == "value:choice" then
+      self.preserveChoiceScroll = true
+    end
+    self.controller.scrollOffsets[list.id] = offset
+  else
+    error("unknown generic list " .. tostring(list.id), 2)
+  end
+end
+
+---@param list table<string, unknown>
+---@param viewport table<string, unknown>
+---@param offset number
+---@return string? cursor
+function State:_clampListCursorToVisible(list, viewport, offset)
+  if #list.rowTargets == 0 then
+    self.controller:setListCursor(list.id, nil)
+    return nil
+  end
+  local firstIndex, lastIndex =
+    ScrollViewport.visibleRange(offset, viewport.clip.height, viewport.rowExtent, viewport.gap, #list.rowTargets)
+  local cursor = self.controller:listCursor(list.id)
+  local cursorIndex
+  for index, targetId in ipairs(list.rowTargets) do
+    if targetId == cursor then
+      cursorIndex = index
+      break
+    end
+  end
+  if cursorIndex ~= nil and firstIndex <= lastIndex then
+    if cursorIndex < firstIndex then
+      cursorIndex = firstIndex
+    elseif cursorIndex > lastIndex then
+      cursorIndex = lastIndex
+    end
+  elseif cursorIndex == nil then
+    cursorIndex = firstIndex <= lastIndex and firstIndex or 1
+  end
+  local target = assert(list.rowTargets[assert(cursorIndex)], "visible cursor stays within its rows")
+  self.controller:setListCursor(list.id, target)
+  return target
+end
+
+function State:_syncChoiceSelection(list, targetId)
+  if list.id ~= "value:choice" then
+    return
+  end
+  local editor = assert(self.valueEditor, "choice rows need their value editor")
+  local key = assert(targetId:match("^choice:(.+)$"), "choice cursor must identify a choice row")
+  local guard = 0
+  while editor:snapshot().selectedKey ~= key and guard < 64 do
+    guard = guard + 1
+    local snapshot = editor:snapshot()
+    local current, wanted
+    for index, option in ipairs(snapshot.options) do
+      if option.key == snapshot.selectedKey then
+        current = index
+      end
+      if option.key == key then
+        wanted = index
+      end
+    end
+    if wanted == nil then
+      return
+    end
+    local delta = wanted - (current or 1)
+    if delta == 0 then
+      editor:moveChoice(1)
+      editor:moveChoice(-1)
+    else
+      editor:moveChoice(delta)
+    end
+  end
+end
+
+---@param list table<string, unknown>
+---@param rowIndex integer
+---@param direction string
+---@param layout table<string, unknown>
+function State:_moveListRow(list, rowIndex, direction, layout)
+  local viewport = assert(layout.viewports[list.viewportId], "list movement needs its scroll viewport")
+  local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
+  local delta = direction == "up" and -1
+    or direction == "down" and 1
+    or direction == "left" and -visibleCount
+    or direction == "right" and visibleCount
+    or error("list movement needs a cardinal direction", 2)
+  local nextIndex = math.max(1, math.min(#list.rowTargets, rowIndex + delta))
+  if list.id == "value:choice" then
+    local editor = assert(self.valueEditor, "choice rows need their value editor")
+    self.preserveChoiceScroll = false
+    self:_syncChoiceSelection(list, list.rowTargets[rowIndex])
+    if nextIndex ~= rowIndex then
+      editor:moveChoice(nextIndex - rowIndex)
+    end
+    local selected = assert(editor:snapshot().selectedKey, "choice movement keeps a selected row")
+    local target = "choice:" .. selected
+    self.controller:setListCursor(list.id, target)
+    self.controller:setFocus(target)
+    return
+  end
+  -- Logical movement never depends on which rows the previous layout materialized:
+  -- the cursor moves by index, the offset reveals that index, and focus is
+  -- reconciled only after a fresh layout makes the target visible.
+  local target = assert(list.rowTargets[nextIndex], "list movement stays within its rows")
+  self.controller:setListCursor(list.id, target)
+  local offset = ScrollViewport.reveal(
+    viewport.offset,
+    viewport.clip.height,
+    (nextIndex - 1) * viewport.rowExtent,
+    viewport.rowExtent
+  )
+  offset = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
+  self:_storeListOffset(list, offset)
+  self:_reconcileFocus(target, self:_resolve(self:_snapshot()).content.layout)
+end
+
+function State:_filterFocusedList(list, rowIndex, operation, text)
+  assert(list.filterable, "filtering needs a filterable list")
+  local previousFocus = self.controller.focus
+  local hadRowFocus = rowIndex ~= nil
+  if list.id == "value:choice" then
+    local editor = assert(self.valueEditor, "choice filtering needs its value editor")
+    self.preserveChoiceScroll = false
+    if operation == "append" then
+      editor:textinput(assert(text, "filter append needs its input text"))
+    elseif operation == "backspace" then
+      editor:press("backspace")
+    elseif operation == "clear" then
+      editor:press("clear_search")
+    else
+      error("unknown list filter operation", 2)
+    end
+  else
+    if operation == "append" then
+      self.controller.query = self.controller.query .. assert(text, "filter append needs its input text")
+    elseif operation == "backspace" then
+      local glyphs = {}
+      for glyph in Utf8Glyphs.iter(self.controller.query) do
+        glyphs[#glyphs + 1] = glyph
+      end
+      table.remove(glyphs)
+      self.controller.query = table.concat(glyphs)
+    elseif operation == "clear" then
+      self.controller.query = ""
+    else
+      error("unknown list filter operation", 2)
+    end
+    if list.id == "flags" then
+      self.controller.scrollOffsets.flags = 0
+    elseif list.id == "location:map-list" then
+      self.controller.locationMapOffset = 0
+    else
+      error("unknown filterable list " .. list.id, 2)
+    end
+  end
+  local layout = self:_resolve(self:_snapshot()).content.layout
+  local fresh = assert(layout.lists and layout.lists[list.id], "filtering keeps its focused list")
+  if #fresh.rowTargets == 0 then
+    self.controller:setListCursor(fresh.id, nil)
+    self.controller:setFocus(fresh.targetId)
+    return
+  end
+  local focusLive = false
+  for _, targetId in ipairs(fresh.rowTargets) do
+    if targetId == previousFocus then
+      focusLive = true
+      break
+    end
+  end
+  if hadRowFocus then
+    if focusLive then
+      self.controller:setListCursor(fresh.id, previousFocus)
+      local viewport = assert(layout.viewports[fresh.viewportId], "filtering keeps its scroll viewport")
+      local survived = fresh.indexByTarget ~= nil and fresh.indexByTarget[previousFocus] or nil
+      if survived == nil then
+        for index, targetId in ipairs(fresh.rowTargets) do
+          if targetId == previousFocus then
+            survived = index
+            break
+          end
+        end
+      end
+      local revealed = ScrollViewport.clamp(
+        ScrollViewport.reveal(
+          viewport.offset,
+          viewport.clip.height,
+          (assert(survived, "surviving focus stays within its rows") - 1) * viewport.rowExtent,
+          viewport.rowExtent
+        ),
+        viewport.contentExtent,
+        viewport.clip.height
+      )
+      self:_storeListOffset(fresh, revealed)
+      self:_reconcileFocus(previousFocus, self:_resolve(self:_snapshot()).content.layout)
+    else
+      self.controller:setListCursor(fresh.id, fresh.rowTargets[1])
+      self.controller:setFocus(fresh.rowTargets[1])
+    end
+  else
+    self:_reconcileListCursor(fresh)
+  end
+end
+
+---@param list table<string, unknown>
+---@param rowIndex integer?
+---@param layout table<string, unknown>?
+function State:_handleListConfirm(list, rowIndex, layout)
+  if rowIndex ~= nil then
+    self:_dispatchIntent(self.controller:press("confirm"))
+    return
+  end
+  local cursor = self:_reconcileListCursor(list)
+  if cursor == nil then
+    return
+  end
+  if list.id == "value:choice" then
+    self:_syncChoiceSelection(list, cursor)
+    local editor = assert(self.valueEditor, "choice rows need their value editor")
+    local selected = editor:snapshot().selectedKey
+    if selected ~= nil then
+      cursor = "choice:" .. selected
+    end
+  end
+  self.controller:setListCursor(list.id, cursor)
+  local resolved = layout or self:_resolve(self:_snapshot()).content.layout
+  local viewport = assert(resolved.viewports[list.viewportId], "list confirmation needs its scroll viewport")
+  local cursorIndex = list.indexByTarget ~= nil and list.indexByTarget[cursor] or nil
+  if cursorIndex == nil then
+    for index, targetId in ipairs(list.rowTargets) do
+      if targetId == cursor then
+        cursorIndex = index
+        break
+      end
+    end
+  end
+  local revealed = ScrollViewport.clamp(
+    ScrollViewport.reveal(
+      viewport.offset,
+      viewport.clip.height,
+      (assert(cursorIndex, "entered cursor stays within its rows") - 1) * viewport.rowExtent,
+      viewport.rowExtent
+    ),
+    viewport.contentExtent,
+    viewport.clip.height
+  )
+  self:_storeListOffset(list, revealed)
+  self:_reconcileFocus(cursor, self:_resolve(self:_snapshot()).content.layout)
 end
 
 ---@param preferred string?
-function State:_reconcileFocus(preferred)
-  local layout = self:_resolve(self:_snapshot()).content.layout
+---@param layout table<string, unknown>?
+---@return table<string, unknown> layout the reconciled layout
+function State:_reconcileFocus(preferred, layout)
+  local current = layout or self:_resolve(self:_snapshot()).content.layout
+  local before = self.controller.focus
+  ---@type string?
   local focus = preferred or self.pendingFocusReturn or self.controller.focus
-  if focus == nil or layout.focusGraph[focus] == nil then
-    if
-      self.controller.section == "Progress"
-      and self.session ~= nil
-      and #self:_flagRows(self.session:snapshot().flags) == 0
-    then
-      focus = layout.defaultFocus
-    elseif
-      self.controller.section == "Location"
-      and self.controller.locationPage == "grid"
-      and self.controller.focus == "location:grid"
-      and layout.focusGraph["location:grid"]
-    then
-      focus = "location:grid"
-    else
-      focus = layout.defaultFocus
+  if focus ~= nil and current.focusGraph[focus] == nil then
+    focus = nil
+  end
+  self.controller:reconcileFocus(current.focusGraph, focus, { current.defaultFocus })
+  self.pendingFocusReturn = nil
+  local reconciled = current
+  if self.controller.focus ~= before then
+    reconciled = self:_resolve(self:_snapshot()).content.layout
+  end
+  if reconciled.lists ~= nil then
+    for _, list in pairs(reconciled.lists) do
+      self:_reconcileListCursor(list)
     end
   end
-  self.controller:setFocus(assert(focus))
-  self.pendingFocusReturn = nil
-end
-
-function State:_resetProgressSearch()
-  self.controller.scrollOffsets.flags = 0
-  local layout = assert(self:_resolve(self:_snapshot()).content.layout)
-  self.controller.focus = layout.defaultFocus
-  self:_reconcileFocus()
+  return reconciled
 end
 
 ---@param editor SaveEditorValueEditor
@@ -1035,20 +1427,21 @@ function State:_updateLocationService()
   if mapId == nil then
     return
   end
+  if navigation.page ~= "grid" then
+    return
+  end
   if self.locationServiceMapId ~= mapId then
     service:openMap(mapId)
     self.locationServiceMapId = mapId
     self.locationViewport = nil
   end
 
-  local plan = self:_resolve(self:_snapshot())
-  local grid = plan.content.layout.locationGrid
   local center = assert(navigation.center, "Location viewport needs a center")
   local viewport = {
     centerX = center.fieldX,
     centerZ = center.fieldZ,
-    widthTiles = grid and grid.columns or 1,
-    heightTiles = grid and grid.rows or 1,
+    widthTiles = self.locationGridWidthTiles or 1,
+    heightTiles = self.locationGridHeightTiles or 1,
   }
   local previous = self.locationViewport
   if
@@ -1073,9 +1466,7 @@ function State:_syncLocationToSession()
 end
 
 function State:_locationGridSize()
-  local layout = self:_resolve(self:_snapshot()).content.layout
-  local grid = layout.locationGrid
-  return grid and grid.columns or 1, grid and grid.rows or 1
+  return self.locationGridWidthTiles or 1, self.locationGridHeightTiles or 1
 end
 
 function State:_selectLocationTile(fieldX, fieldZ)
@@ -1262,20 +1653,96 @@ function State:_sendResult()
   self.onResult({ kind = "main_menu" })
 end
 
+-- The selected member is always being edited: entering or reselecting a
+-- member opens its edit draft, and leaving that member context publishes a
+-- dirty draft through the session. An invalid draft blocks the transition
+-- and keeps the current context with its error shown.
+function State:_ensurePartyDraft()
+  if self.controller.section ~= "Party" or self.session == nil then
+    return false
+  end
+  local pending = self.monDraft
+  if pending ~= nil and pending:mode() == "add" and pending:basePartyRevision() == self.session:partyRevision() then
+    if self.controller.partySlot0 == nil then
+      self.controller.partySlot0 = #self.session:partySnapshot().members
+    end
+    return true
+  end
+  local members = self.session:partySnapshot().members
+  if #members == 0 then
+    self.controller.partySlot0 = nil
+    return false
+  end
+  local slot0 = self.controller.partySlot0
+  local present = false
+  for _, member in ipairs(members) do
+    if member.slot0 == slot0 then
+      present = true
+      break
+    end
+  end
+  if not present then
+    slot0 = members[1].slot0
+    self.controller.partySlot0 = slot0
+  end
+  local draft = self.monDraft
+  if
+    draft ~= nil
+    and draft:mode() == "edit"
+    and draft:slot0() == slot0
+    and draft:basePartyRevision() == self.session:partyRevision()
+  then
+    return true
+  end
+  local fresh, freshError = self.session:beginMonEdit(assert(slot0))
+  if fresh == nil then
+    self.errorMessage = message(assert(freshError))
+    return false
+  end
+  self.monDraft = fresh
+  self.errorMessage = nil
+  return true
+end
+
+---@return boolean applied true when no draft blocks the transition
+function State:_applyCurrentPartyDraftIfNeeded()
+  local draft = self.monDraft
+  if draft == nil then
+    return true
+  end
+  if draft:mode() ~= "add" and not draft:isDirty() then
+    self.monDraft = nil
+    return true
+  end
+  local canonical, validationError = draft:validate()
+  if canonical == nil then
+    self.errorMessage = message(assert(validationError))
+    return false
+  end
+  local result = self.session:applyMonDraft(draft)
+  if not result.ok then
+    self.errorMessage = message(result.error)
+    return false
+  end
+  if draft:mode() == "add" then
+    local members = self.session:partySnapshot().members
+    self.controller.partySlot0 = assert(members[#members], "an applied new member joins the party").slot0
+  end
+  self.monDraft = nil
+  self.errorMessage = nil
+  return true
+end
+
 function State:_requestDraftResolution(action)
   if self.monDraft == nil then
     self:_performDeferred(action)
     return false
   end
-  local dirty = self.monDraft:mode() == "add" or self.monDraft:isDirty()
-  if not dirty then
-    self.monDraft = nil
-    self:_performDeferred(action)
-    return false
+  if not self:_applyCurrentPartyDraftIfNeeded() then
+    return true
   end
-  self.pendingDraftAction = action
-  self.controller:openModal("draft")
-  return true
+  self:_performDeferred(action)
+  return false
 end
 
 function State:_performDeferred(action)
@@ -1291,75 +1758,32 @@ function State:_performDeferred(action)
     self.controller:setSection(action.section)
     if action.section == "Progress" then
       self.controller.query = ""
-      self.controller.focus = "flag:" .. self:_firstFlagName()
+      self.controller.focus = "list:flags"
     elseif action.section == "Location" and self.locationService then
       self:_updateLocationService()
+    elseif action.section == "Party" then
+      self:_ensurePartyDraft()
     end
     self.errorMessage = nil
   elseif action.kind == "save" then
     self:_save(false)
-  elseif action.kind == "session-discard" then
-    self:_discard(false)
   elseif action.kind == "party-slot" then
     self.controller:selectPartySlot(action.slot0)
-  elseif action.kind == "party-detail" then
-    if self.controller.partySlot0 ~= nil then
-      self.controller.partyPage = "detail"
-      self.controller.focus = "party:edit"
-    else
-      self.controller.partyPage = "list"
-      self.controller.focus = "party:add"
-    end
-  elseif action.kind == "location-page" then
-    if action.page == "map-list" then
-      self.controller.query = ""
-      self.controller.locationMapOffset = 0
-    end
-    self.errorMessage = nil
+    self:_ensurePartyDraft()
   elseif action.kind == "location-map-select" then
     local world = assert(self.dependencies.world)
     local record = world.maps[assert(world.byId[action.mapId], "selected map must be in structural world data")]
-    self.controller:chooseLocationMap(action.mapId, record.worldOriginX + 16, record.worldOriginZ + 16)
+    local staged = self.session and self.session:snapshot().location or nil
+    if staged ~= nil and staged.mapId == action.mapId then
+      self.controller:chooseLocationMap(action.mapId, staged.fieldX, staged.fieldZ)
+    else
+      self.controller:chooseLocationMap(action.mapId, record.worldOriginX + 16, record.worldOriginZ + 16)
+    end
     self.locationServiceMapId = nil
     self.locationViewport = nil
     self.locationActionStatus = nil
     self.errorMessage = nil
-    self:_updateLocationService()
-  elseif action.kind == "location-map-move" then
-    local view = self:_snapshot()
-    local plan = self:_resolve(view)
-    local layout = plan.content.layout
-    local maps = assert(view.location).maps
-    if #maps == 0 then
-      self.controller:setFocus("location:map-picker")
-      return
-    end
-    if action.direction == "up" or action.direction == "down" then
-      local currentIndex
-      for index, map in ipairs(maps) do
-        if self.controller.focus == "location:map:" .. map.mapId then
-          currentIndex = index
-          break
-        end
-      end
-      local delta = action.direction == "down" and 1 or -1
-      if currentIndex == nil then
-        currentIndex = delta > 0 and 0 or (#maps + 1)
-      end
-      currentIndex = math.max(1, math.min(#maps, currentIndex + delta))
-      self.controller:setFocus("location:map:" .. maps[currentIndex].mapId)
-      local viewport = assert(layout.viewports["location:map-list"])
-      self.controller.locationMapOffset = ScrollViewport.clamp(
-        ScrollViewport.reveal(
-          viewport.offset,
-          viewport.clip.height,
-          (currentIndex - 1) * viewport.rowExtent,
-          viewport.rowExtent
-        ),
-        viewport.contentExtent,
-        viewport.clip.height
-      )
-    end
+    return
   elseif action.kind == "location-cursor-move" then
     local width, height = self:_locationGridSize()
     self.controller:moveLocationCursor(action.direction, width, height)
@@ -1378,78 +1802,25 @@ function State:_performDeferred(action)
   end
 end
 
-function State:_resolveDraftChoice(action)
-  local draft = assert(self.monDraft)
-  if action == "cancel" then
-    self.controller:closeModal()
-    self.pendingDraftAction = nil
-    return
-  elseif action == "apply" then
-    local canonical, validationError = draft:validate()
-    if canonical == nil then
-      self.errorMessage = message(assert(validationError))
-      return
-    end
-    local result = self.session:applyMonDraft(draft)
-    if not result.ok then
-      self.errorMessage = message(result.error)
-      return
-    end
-  elseif action ~= "discard" then
-    return
-  end
-  local previous = draft
-  self.monDraft = nil
-  self.errorMessage = nil
-  if previous:mode() == "add" and action == "discard" then
-    self.controller.partyPage = "list"
-    self.controller.partySlot0 = nil
-    self.controller.focus = "party:add"
-  elseif previous:mode() == "add" then
-    local members = self.session:partySnapshot().members
-    local added = assert(members[#members], "applied new member must appear in the party")
-    self.controller.partySlot0 = added.slot0
-    self.controller.partyPage = "detail"
-    self.controller.focus = "party:edit"
-  else
-    self.controller.partyPage = "detail"
-    self.controller.focus = "party:edit"
-  end
-  self.controller:closeModal()
-  local pending = self.pendingDraftAction
-  self.pendingDraftAction = nil
-  self:_performDeferred(pending)
-end
-
 function State:_confirmRemoval()
   local pending = assert(self.pendingRemove)
+  assert(pending.kind == "bag", "only bag removal keeps a confirmation path")
   self.pendingRemove = nil
   self.controller:closeModal()
-  if pending.kind == "party" then
-    local result = self.session:removePartyMon(pending.slot0)
-    if not result.ok then
-      self.errorMessage = message(result.error)
-      return
+  local oldRows = self.session:bagSnapshot(self.controller.bagPocket)
+  local oldIndex = 1
+  for index, row in ipairs(oldRows) do
+    if row.item == pending.itemKey then
+      oldIndex = index
+      break
     end
-    self.controller.partyPage = "list"
-    self.controller.partySlot0 = nil
-    self.controller.focus = "party:add"
-  else
-    local oldRows = self.session:bagSnapshot(self.controller.bagPocket)
-    local oldIndex = 1
-    for index, row in ipairs(oldRows) do
-      if row.item == pending.itemKey then
-        oldIndex = index
-        break
-      end
-    end
-    self:_publishBagQuantity(pending.itemKey, 0)
-    self.controller.bagItemKey = nil
-    local rows = self.session:bagSnapshot(self.controller.bagPocket)
-    self.controller.bagPage0 = math.min(self.controller.bagPage0, math.max(0, math.ceil(#rows / 6) - 1))
-    local focusRow = rows[math.min(oldIndex, #rows)]
-    self.controller.focus = focusRow and "bag:item:" .. focusRow.item or "bag:add"
   end
+  self:_publishBagQuantity(pending.itemKey, 0)
+  self.controller.bagItemKey = nil
+  local rows = self.session:bagSnapshot(self.controller.bagPocket)
+  self.controller.bagPage0 = math.min(self.controller.bagPage0, math.max(0, math.ceil(#rows / 6) - 1))
+  local focusRow = rows[math.min(oldIndex, #rows)]
+  self.controller.focus = focusRow and "bag:item:" .. focusRow.item or "bag:add"
 end
 
 function State:_save(leave)
@@ -1468,7 +1839,13 @@ function State:_save(leave)
     end
     return false
   end
-  local result = self.session:save(self.valueEditor ~= nil or self.monDraft ~= nil)
+  if not self:_applyCurrentPartyDraftIfNeeded() then
+    if leave and self.closeRequest ~= nil then
+      self.closeRequest.phase = "confirm"
+    end
+    return false
+  end
+  local result = self.session:save(self.valueEditor ~= nil)
   if not result.ok then
     self.errorMessage = message(result.error)
     if leave and self.closeRequest ~= nil then
@@ -1508,13 +1885,14 @@ function State:_discard(leave)
     self:_syncLocationToSession()
   end
   self.monDraft = nil
-  self.pendingDraftAction = nil
+  self.pendingMoveSlot = nil
+  self.moveChildReturn = nil
+  self.moveChildAction = nil
   self.closeRequest = nil
   self.pendingRemove = nil
   self.pendingQuantity = nil
   self.errorMessage = nil
-  self.controller.partyPage = "list"
-  self.controller.partySubpage = "Identity"
+  self.controller.partyTab = "Stats"
   self.controller.partySlot0 = nil
   self.controller.bagItemKey = nil
   if self.controller.section == "Party" then
@@ -1533,26 +1911,201 @@ function State:_discard(leave)
   end
 end
 
+function State:_discardSection()
+  self:_cancelPendingLocationSave()
+  local section = self.controller.section
+  local editorSections = {
+    money = "Player",
+    dialogue_frame = "Player",
+    party_field = "Party",
+    party_add_species = "Party",
+    party_add_move = "Party",
+    party_move_key = "Party",
+    party_move_pp = "Party",
+    party_move_pp_ups = "Party",
+    bag_add_item = "Bag",
+    bag_quantity = "Bag",
+  }
+  if self.valueEditor ~= nil and editorSections[self.valuePurpose] == section then
+    self.valueEditor:cancel()
+    self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
+    self.valueReturnFocus, self.pendingFocusReturn = nil, nil
+    self.pendingQuantity = nil
+    self.numberHold = nil
+    self.numberPressTarget = nil
+  end
+  if section == "Party" then
+    self.monDraft = nil
+    self.pendingMoveSlot = nil
+    self.moveChildReturn = nil
+    self.moveChildAction = nil
+    if self.controller.modal == "party-move" then
+      self.controller:closeModal()
+    end
+    self.errorMessage = nil
+    assert(self.session, "section discard needs its ready session"):discardSection(section)
+    local members = self.session:partySnapshot().members
+    local slot0 = self.controller.partySlot0
+    local present = false
+    for _, member in ipairs(members) do
+      if member.slot0 == slot0 then
+        present = true
+        break
+      end
+    end
+    if not present then
+      slot0 = #members > 0 and members[1].slot0 or nil
+      self.controller.partySlot0 = slot0
+    end
+    self.controller.focus = slot0 ~= nil and ("party:slot:" .. slot0) or "party:add"
+    self:_ensurePartyDraft()
+    return
+  elseif section == "Bag" then
+    if self.controller.modal == "bag-item" or self.controller.modal == "remove" then
+      self.pendingRemove = nil
+      self.pendingQuantity = nil
+      self.controller:closeModal()
+      self.controller.bagItemKey = nil
+      self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
+    end
+  end
+  self.errorMessage = nil
+  local changed = assert(self.session, "section discard needs its ready session"):discardSection(section)
+  if changed and section == "Location" then
+    self:_syncLocationToSession()
+  end
+end
+
 function State:_requestBack()
   if self.valueEditor then
-    self.valueEditor:cancel()
-    self.pendingFocusReturn = self.valueReturnFocus
-    self.valueEditor = nil
-    self.valuePurpose = nil
-    self.activeDraftField = nil
-    self.valueReturnFocus = nil
-    self.controller:cancelInteraction()
+    if self.moveChildReturn ~= nil then
+      self.valueEditor:cancel()
+      self.valueEditor = nil
+      self.valuePurpose = nil
+      self.activeDraftField = nil
+      self.valueReturnFocus = nil
+      self.pendingFocusReturn = nil
+      local slot0, action = assert(self.moveChildReturn), assert(self.moveChildAction)
+      self:_showMoveOverlay(slot0, action)
+    else
+      self.valueEditor:cancel()
+      self.pendingFocusReturn = self.valueReturnFocus
+      self.valueEditor = nil
+      self.valuePurpose = nil
+      self.activeDraftField = nil
+      self.valueReturnFocus = nil
+      self.controller:cancelInteraction()
+    end
+  elseif self.controller.modal ~= nil then
+    self:_popDecision()
   elseif self.monDraft ~= nil then
-    self:_requestDraftResolution({ kind = "back" })
-  elseif self.controller.section == "Party" and self.controller.partyPage == "detail" then
-    self.controller:closePartyDetail()
+    if not self:_applyCurrentPartyDraftIfNeeded() then
+      return
+    end
+    if self.session and self.session:isDirty() then
+      self:requestClose("back")
+    else
+      self:_sendResult()
+    end
   elseif self.controller.section == "Bag" and self.controller.bagItemKey ~= nil then
     self.controller.bagItemKey = nil
     self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
+  elseif self.controller.section == "Location" and self.controller.locationPage == "grid" then
+    self.controller:openLocationMaps()
+    if self.locationService ~= nil then
+      self.locationService:releaseGrid()
+    end
+    self.locationServiceMapId = nil
+    self.locationViewport = nil
+    self.locationActionStatus = nil
+    self.errorMessage = nil
   elseif self.session and self.session:isDirty() then
     self:requestClose("back")
   else
     self:_sendResult()
+  end
+end
+
+function State:_popDecision()
+  local modal = assert(self.controller.modal, "decision pop needs its open decision")
+  if modal == "leave" and self.closeRequest ~= nil then
+    self:_cancelPendingLocationSave()
+    local request = assert(self.closeRequest)
+    self.closeRequest = nil
+    self.controller.modal = request.previousModal
+    self.controller.modalReturnFocus = request.previousModalReturnFocus
+    self.controller.focus = request.previousFocus
+  elseif modal == "party-move" then
+    self.pendingMoveSlot = nil
+    self.controller:closeModal()
+  else
+    if modal == "remove" then
+      self.pendingRemove = nil
+    end
+    self.controller:closeModal()
+  end
+end
+
+-- An occupied move slot owns a small decision layer with exactly three
+-- component actions; each child editor suspends the overlay and returns to
+-- it, so Back pops child, parent, then page one layer at a time.
+function State:_showMoveOverlay(slot0, focusTarget)
+  local draft = assert(self.monDraft, "a move overlay needs its member draft")
+  assert(
+    type(slot0) == "number" and slot0 % 1 == 0 and draft:record().moves[slot0 + 1] ~= nil,
+    "a move overlay needs its occupied slot"
+  )
+  self.pendingMoveSlot = slot0
+  self.moveChildReturn = nil
+  self.moveChildAction = nil
+  self.controller:openModal("party-move")
+  self.controller.modalReturnFocus = "party:move:" .. slot0
+  self.controller.focus = focusTarget or "party-move:move"
+end
+
+function State:_openMoveChild(action)
+  local slot0 = assert(self.pendingMoveSlot, "a move component editor owns its slot")
+  local draft = assert(self.monDraft, "a move component editor needs its member draft")
+  local entry = assert(draft:record().moves[slot0 + 1], "a move component editor needs its occupied slot")
+  local catalog = assert(self.dependencies.context.monCatalog)
+  self.moveChildReturn = slot0
+  self.moveChildAction = action
+  self.controller.modal = nil
+  self.controller.modalReturnFocus = nil
+  if action == "party-move:move" then
+    self:_installValueEditor(
+      ValueEditor.new({
+        kind = "choice",
+        options = PartyView.options(assert(self.partyView), "moves", function()
+          return catalog:moveKeys()
+        end, function(key)
+          return catalog:move(key).name or key
+        end),
+        value = entry.move,
+      }),
+      "party_move_key",
+      action
+    )
+  elseif action == "party-move:pp" then
+    local definition = catalog:move(entry.move)
+    self:_installValueEditor(
+      ValueEditor.new({
+        kind = "integer",
+        value = entry.pp,
+        min = 0,
+        max = Draft.maxMovePp(definition, entry.ppUps),
+        base = "decimal",
+      }),
+      "party_move_pp",
+      action
+    )
+  else
+    assert(action == "party-move:pp-ups", "unknown move component action " .. tostring(action))
+    self:_installValueEditor(
+      ValueEditor.new({ kind = "integer", value = entry.ppUps, min = 0, max = 3, base = "decimal" }),
+      "party_move_pp_ups",
+      action
+    )
   end
 end
 
@@ -1680,8 +2233,13 @@ function State:_activate(targetId)
       elseif targetId == "cancel" then
         self.controller:closeModal()
       end
-    elseif self.controller.modal == "draft" then
-      self:_resolveDraftChoice(targetId)
+    elseif self.controller.modal == "party-move" then
+      if targetId == "party-move:move" or targetId == "party-move:pp" or targetId == "party-move:pp-ups" then
+        self:_openMoveChild(targetId)
+      elseif targetId == "cancel" then
+        self.pendingMoveSlot = nil
+        self.controller:closeModal()
+      end
     elseif self.controller.modal == "remove" then
       if targetId == "remove" then
         self:_confirmRemoval()
@@ -1722,17 +2280,6 @@ function State:_activate(targetId)
     return
   end
   local section = targetId:match("^section:(.+)$")
-  if targetId == "section" then
-    local sections = { "Location", "Player", "Party", "Bag", "Progress" }
-    local current = 1
-    for index, value in ipairs(sections) do
-      if value == self.controller.section then
-        current = index
-        break
-      end
-    end
-    section = sections[current % #sections + 1]
-  end
   if section ~= nil then
     self:_requestDraftResolution({ kind = "section", section = section })
     return
@@ -1775,13 +2322,16 @@ function State:_activate(targetId)
       self:_requestDraftResolution({ kind = "save" })
     end
   elseif targetId == "discard" then
-    self:_requestDraftResolution({ kind = "session-discard" })
+    self:_discardSection()
   elseif targetId == "back" then
     self:_requestBack()
   elseif targetId:match("^party:slot:") then
     local slot0 = assert(tonumber(targetId:match("^party:slot:(%d+)$")))
     self:_requestDraftResolution({ kind = "party-slot", slot0 = slot0 })
   elseif targetId == "party:add" then
+    if not self:_applyCurrentPartyDraftIfNeeded() then
+      return
+    end
     self:_cancelPendingLocationSave()
     local catalog = assert(self.dependencies.context.monCatalog)
     local options = PartyView.options(assert(self.partyView), "species", function()
@@ -1790,54 +2340,33 @@ function State:_activate(targetId)
       return catalog:species(key).name or key
     end)
     self:_installValueEditor(ValueEditor.new({ kind = "choice", options = options }), "party_add_species")
-  elseif targetId == "party:edit" then
-    self:_cancelPendingLocationSave()
-    local slot0 = assert(self.controller.partySlot0)
-    local draft, draftError = self.session:beginMonEdit(slot0)
-    if draft == nil then
-      self.errorMessage = message(assert(draftError))
-    else
-      self.monDraft = draft
-      self.controller:openPartyDraft("edit", slot0)
-      self.errorMessage = nil
-    end
+  elseif targetId == "party:page:previous" then
+    self.controller:stepPartyTab("previous")
+  elseif targetId == "party:page:next" then
+    self.controller:stepPartyTab("next")
   elseif targetId:match("^party:field:") then
+    if not self:_ensurePartyDraft() then
+      return
+    end
     local descriptor = self:_partyField(targetId)
     if descriptor ~= nil then
       self:_openEditor(descriptor)
       self.valuePurpose = "party_field"
     end
-  elseif targetId == "party:clear-nickname" then
+  elseif targetId == "party:use-species-name" then
+    if not self:_ensurePartyDraft() then
+      return
+    end
     if not self:_setDraftValue({ setter = "scalar", fieldId = "nickname" }, nil) then
       self.errorMessage = "Nickname could not be cleared."
     else
       self.errorMessage = nil
     end
-  elseif targetId:match("^party:subpage:") then
-    local subpage = assert(targetId:match("^party:subpage:(.+)$"))
-    self.controller:selectPartySubpage(subpage)
-  elseif targetId == "party:back" then
-    if self.monDraft then
-      self:_requestDraftResolution({ kind = "party-detail" })
-    else
-      self.controller:closePartyDetail()
+  elseif targetId:match("^party:move:%d+$") then
+    if not self:_ensurePartyDraft() then
+      return
     end
-  elseif targetId == "party:apply" then
-    self:_resolveDraftChoice("apply")
-  elseif targetId == "party:discard" then
-    self:_resolveDraftChoice("discard")
-  elseif targetId == "party:cancel" then
-    self:_requestDraftResolution({ kind = "party-detail" })
-  elseif targetId == "party:remove" then
-    self.pendingRemove = { kind = "party", slot0 = assert(self.controller.partySlot0) }
-    self.controller:openModal("remove")
-  elseif targetId:match("^party:move:remove:") then
-    local slot0 = assert(tonumber(targetId:match("^party:move:remove:(%d+)$")))
-    if self.monDraft then
-      assert(slot0 % 1 == 0, "move slot index is an integer")
-      ---@cast slot0 integer
-      self.monDraft:removeMove(slot0)
-    end
+    self:_showMoveOverlay(assert(tonumber(targetId:match("^party:move:(%d+)$"))))
   elseif targetId == "party:move:add" then
     self:_cancelPendingLocationSave()
     local catalog = assert(self.dependencies.context.monCatalog)
@@ -1871,10 +2400,6 @@ function State:_activate(targetId)
   end
 end
 
-function State:_firstFlagName()
-  return assert(self:_flagRows({})[1], "field flags catalog is empty").name
-end
-
 function State:_dispatchIntent(intent)
   if intent == nil then
     return
@@ -1886,9 +2411,7 @@ function State:_dispatchIntent(intent)
   elseif intent.kind == "action" then
     self:_activate(intent.action)
   elseif
-    intent.kind == "location-page"
-    or intent.kind == "location-map-select"
-    or intent.kind == "location-map-move"
+    intent.kind == "location-map-select"
     or intent.kind == "location-cursor-move"
     or intent.kind == "location-pan"
     or intent.kind == "select_tile"
@@ -1905,14 +2428,14 @@ function State:_dispatchIntent(intent)
     elseif self.valueEditor then
       self.valueEditor:cancel()
       self:_finishValueEditor()
-    elseif intent.modal == "draft" then
-      self:_resolveDraftChoice("cancel")
+    elseif intent.modal == "party-move" then
+      self.pendingMoveSlot = nil
+      self.controller:closeModal()
     elseif intent.modal == "remove" then
       self.pendingRemove = nil
       self.controller.modalReturnFocus = nil
     else
       self.controller:closeModal()
-      self.pendingDraftAction = nil
     end
   elseif intent.kind == "scroll-drag" then
     local view = self:_snapshot()
@@ -1924,34 +2447,16 @@ function State:_dispatchIntent(intent)
   elseif intent.kind == "move" then
     local plan = self:_resolve(self:_snapshot())
     local layout = assert(plan.content.layout)
+    if layout.focusGraph[self.controller.focus] == nil then
+      self.controller.focus = layout.defaultFocus
+    end
+    self.controller:moveFocus(layout.focusGraph, intent.direction)
     if
-      layout.targets.section ~= nil
-      and self.controller.focus == "section"
-      and (intent.direction == "left" or intent.direction == "right")
+      self.controller.section == "Party"
+      or self.controller.section == "Bag"
+      or self.controller.section == "Progress"
     then
-      local sections = { "Location", "Player", "Party", "Bag", "Progress" }
-      local current = 1
-      for index, section in ipairs(sections) do
-        if section == self.controller.section then
-          current = index
-          break
-        end
-      end
-      local offset = intent.direction == "right" and 1 or -1
-      local nextSection = sections[(current - 1 + offset) % #sections + 1]
-      self:_requestDraftResolution({ kind = "section", section = nextSection })
-    else
-      if layout.focusGraph[self.controller.focus] == nil then
-        self.controller.focus = layout.defaultFocus
-      end
-      self.controller:moveFocus(layout.focusGraph, intent.direction)
-      if
-        self.controller.section == "Party"
-        or self.controller.section == "Bag"
-        or self.controller.section == "Progress"
-      then
-        self:_revealFocusedRow(layout.focusOrder)
-      end
+      self:_revealFocusedRow(layout.focusOrder)
     end
     self.controller:cancelInteraction()
   end
@@ -1960,19 +2465,17 @@ end
 function State:_revealFocusedRow(_)
   local view = self:_snapshot()
   local section = self.controller.section
-  if section == "Party" and view.statsTable ~= nil then
-    return
-  end
   if section == "Bag" then
     return
   end
-  local rows = section == "Party" and view.partyRows
-    or section == "Bag" and view.bagRows
-    or section == "Progress" and view.flagRows
-    or {}
+  if section == "Party" and (view.partyTab ~= "Details" or view.partyDetails == nil) then
+    return
+  end
+  local rows = section == "Party" and view.partyDetails.rows or section == "Progress" and view.flagRows or {}
+  ---@cast rows { targetId: string?, name: string? }[]
   local rowIndex
-  for index, row in ipairs(rows or {}) do
-    local targetId = row.targetId or (section == "Bag" and ("bag:item:" .. row.item) or "flag:" .. row.name)
+  for index, row in ipairs(rows) do
+    local targetId = row.targetId or ("flag:" .. assert(row.name, "flag rows carry their logical name"))
     if targetId == self.controller.focus then
       rowIndex = index
       break
@@ -1990,7 +2493,7 @@ function State:_revealFocusedRow(_)
     (rowIndex - 1) * viewport.rowExtent,
     viewport.rowExtent
   )
-  local purpose = section == "Party" and ("party:" .. view.partyPage .. ":" .. tostring(view.partySubpage or "list"))
+  local purpose = section == "Party" and ("party:" .. tostring(view.partyTab))
     or section == "Bag" and ("bag:" .. tostring(view.bagPocket))
     or "flags"
   self.controller.scrollOffsets[purpose] = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
@@ -2015,6 +2518,15 @@ function State:_pointer(events)
       end
     end
     local intent = self.controller:pointer(event)
+    if event.type == "pointer_down" and event.targetId ~= nil and self.controller.focus == event.targetId then
+      local lists = plan.content.layout.lists
+      if type(lists) == "table" then
+        local list = findListByRowTarget(lists, event.targetId)
+        if list ~= nil then
+          self.controller:setListCursor(list.id, event.targetId)
+        end
+      end
+    end
     if not (event.type == "pointer_up" and heldNumberTarget ~= nil) then
       self:_dispatchIntent(intent)
     end
@@ -2062,6 +2574,10 @@ function State:draw()
     return
   end
   local view = self:view()
+  if self.dependencies then
+    self.renderer:prepareVisibleIcons(view, view.presentation, self.dependencies.cacheFs, self.derivedAssets)
+    self.iconStatus, self.iconFailure = self.renderer.iconStatus, self.renderer.iconFailure
+  end
   ApplicationPresentation.draw(
     self.renderer.graphics,
     { renderer = self.renderer, text = self.renderer.text },
@@ -2077,6 +2593,8 @@ function State:resize(width, height)
   self.numberHold = nil
   self.numberPressTarget = nil
   self.locationViewport = nil
+  self.locationGridWidthTiles = nil
+  self.locationGridHeightTiles = nil
 end
 
 function State:focus(focused)
@@ -2093,38 +2611,56 @@ end
 function State:_consumeUiInput(events)
   for _, event in ipairs(events) do
     if event.type == "navigate" then
-      self:_reconcileFocus()
+      self.controller:markKeyboardNavigation()
       if self.controller.modal then
-        local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+        local layout = self:_reconcileFocus()
         self.controller:moveFocus(layout.focusGraph, event.direction)
       elseif self.valueEditor then
         local snapshot = self.valueEditor:snapshot()
         if snapshot.kind == "choice" then
-          self.preserveChoiceScroll = false
-          if event.direction == "up" or event.direction == "down" then
-            self.valueEditor:moveChoice(event.direction == "up" and -1 or 1)
+          local layout = self:_reconcileFocus()
+          local list, rowIndex = self:_activeList(layout)
+          if list ~= nil and list.id == "value:choice" and rowIndex ~= nil then
+            self:_moveListRow(list, rowIndex, event.direction, layout)
+            self.controller:cancelInteraction()
+          elseif list ~= nil and list.id == "value:choice" then
+            self.controller:moveFocus(layout.focusGraph, event.direction)
+            self.controller:cancelInteraction()
           else
-            local layout = assert(self:_resolve(self:_snapshot()).content.layout)
-            local viewport = assert(layout.viewports["value:choice"])
-            local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
-            self.valueEditor:moveChoice((event.direction == "left" and -1 or 1) * visibleCount)
+            self.preserveChoiceScroll = false
+            if event.direction == "up" or event.direction == "down" then
+              self.valueEditor:moveChoice(event.direction == "up" and -1 or 1)
+            else
+              local viewport = assert(layout.viewports["value:choice"])
+              local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
+              self.valueEditor:moveChoice((event.direction == "left" and -1 or 1) * visibleCount)
+            end
+            local selected = self.valueEditor:snapshot().selectedKey
+            self.controller.focus = selected and ("choice:" .. selected) or "cancel"
           end
-          local selected = self.valueEditor:snapshot().selectedKey
-          self.controller.focus = selected and ("choice:" .. selected) or "cancel"
         elseif snapshot.kind == "name" or snapshot.kind == "number" then
           self.valueEditor:press(event.direction)
         end
       else
-        self:_dispatchIntent(self.controller:press(event.direction))
+        local layout = self:_reconcileFocus()
+        local list, rowIndex = self:_activeList(layout)
+        if list ~= nil and rowIndex ~= nil then
+          self:_moveListRow(list, rowIndex, event.direction, layout)
+          self.controller:cancelInteraction()
+        else
+          self:_dispatchIntent(self.controller:press(event.direction))
+        end
       end
     elseif event.type == "confirm" then
-      self:_reconcileFocus()
-      local currentLayout = assert(self:_resolve(self:_snapshot()).content.layout)
+      local currentLayout = self:_reconcileFocus()
       if self.controller.modal then
         local target = currentLayout.targets[self.controller.focus]
         if target and target.activationEnabled and currentLayout.focusGraph[self.controller.focus] then
           self:_dispatchIntent(self.controller:press("confirm"))
         end
+      elseif self:_activeList(currentLayout) ~= nil then
+        local list, rowIndex = self:_activeList(currentLayout)
+        self:_handleListConfirm(assert(list), rowIndex, currentLayout)
       elseif self.valueEditor then
         local confirmTarget = currentLayout.targets.confirm
         if self.valueEditor:snapshot().kind == "choice" and confirmTarget and not confirmTarget.activationEnabled then
@@ -2143,11 +2679,17 @@ function State:_consumeUiInput(events)
     elseif event.type == "cancel" then
       if self.controller.modal then
         self:_dispatchIntent(self.controller:press("cancel"))
-      elseif self.valueEditor then
-        self.valueEditor:cancel()
-        self:_finishValueEditor()
       else
-        self:_dispatchIntent(self.controller:press("cancel"))
+        local layout = self:_resolve(self:_snapshot()).content.layout
+        local list, rowIndex = self:_activeList(layout)
+        if list ~= nil and rowIndex ~= nil then
+          self.controller:setFocus(list.targetId)
+        elseif self.valueEditor then
+          self.valueEditor:cancel()
+          self:_finishValueEditor()
+        else
+          self:_dispatchIntent(self.controller:press("cancel"))
+        end
       end
     end
   end
@@ -2174,21 +2716,44 @@ function State:keypressed(key, _, isrepeat)
   end
   if self.valueEditor then
     self.preserveChoiceScroll = false
+    local editorLayout = self:_resolve(self:_snapshot()).content.layout
+    local editorList, editorRow = self:_activeList(editorLayout)
+    local choiceList = editorList ~= nil and editorList.id == "value:choice" and editorList or nil
     if key == "return" or key == "kpenter" then
-      local submitted, reason = self.valueEditor:submit()
-      self.editorFeedback = submitted and nil or reason
-      self:_finishValueEditor()
+      if choiceList ~= nil then
+        self:_handleListConfirm(choiceList, editorRow, editorLayout)
+      else
+        local submitted, reason = self.valueEditor:submit()
+        self.editorFeedback = submitted and nil or reason
+        self:_finishValueEditor()
+      end
     elseif key == "escape" then
-      self.valueEditor:cancel()
-      self:_finishValueEditor()
+      if choiceList ~= nil and editorRow ~= nil then
+        self.controller:setFocus(choiceList.targetId)
+      else
+        self.valueEditor:cancel()
+        self:_finishValueEditor()
+      end
     elseif key == "backspace" then
-      self.valueEditor:press("backspace")
+      if choiceList ~= nil then
+        self:_filterFocusedList(choiceList, editorRow, "backspace")
+      else
+        self.valueEditor:press("backspace")
+      end
     elseif key == "delete" then
-      self.valueEditor:press("clear_search")
+      if choiceList ~= nil then
+        self:_filterFocusedList(choiceList, editorRow, "clear")
+      else
+        self.valueEditor:press("clear_search")
+      end
     elseif key == "left" or key == "right" or key == "up" or key == "down" then
-      if self.valueEditor:snapshot().kind == "choice" and (key == "left" or key == "right") then
-        local layout = assert(self:_resolve(self:_snapshot()).content.layout)
-        local viewport = assert(layout.viewports["value:choice"])
+      self.controller:markKeyboardNavigation()
+      if choiceList ~= nil and editorRow ~= nil then
+        self:_moveListRow(choiceList, editorRow, key, editorLayout)
+      elseif choiceList ~= nil then
+        self.controller:moveFocus(editorLayout.focusGraph, key)
+      elseif self.valueEditor:snapshot().kind == "choice" and (key == "left" or key == "right") then
+        local viewport = assert(editorLayout.viewports["value:choice"])
         local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
         self.valueEditor:moveChoice((key == "left" and -1 or 1) * visibleCount)
       else
@@ -2198,42 +2763,14 @@ function State:keypressed(key, _, isrepeat)
     self:_reconcileFocus()
     return
   end
-  if self.controller.section == "Progress" and key == "backspace" then
-    local glyphs = {}
-    for glyph in Utf8Glyphs.iter(self.controller.query) do
-      glyphs[#glyphs + 1] = glyph
-    end
-    if #glyphs > 0 then
-      table.remove(glyphs)
-      self.controller.query = table.concat(glyphs)
-      self:_resetProgressSearch()
-    end
-    return
-  end
-  if self.controller.section == "Progress" and key == "delete" then
-    self.controller.query = ""
-    self:_resetProgressSearch()
-    return
-  end
-  if self.controller.section == "Location" and self.controller.locationPage == "map-list" then
-    if key == "delete" then
-      self.controller.query = ""
-      self.controller.locationMapOffset = 0
+  if key == "backspace" or key == "delete" then
+    local layout = self:_resolve(self:_snapshot()).content.layout
+    local list, rowIndex = self:_activeList(layout)
+    if list ~= nil and list.filterable then
+      self:_filterFocusedList(list, rowIndex, key == "delete" and "clear" or "backspace")
       self:_reconcileFocus()
-      return
-    elseif key == "backspace" then
-      local glyphs = {}
-      for glyph in Utf8Glyphs.iter(self.controller.query) do
-        glyphs[#glyphs + 1] = glyph
-      end
-      if #glyphs > 0 then
-        table.remove(glyphs)
-        self.controller.query = table.concat(glyphs)
-        self.controller.locationMapOffset = 0
-        self:_reconcileFocus()
-      end
-      return
     end
+    return
   end
   if self.controller.section == "Progress" and isPrintableKeyName(key) then
     return
@@ -2254,24 +2791,26 @@ end
 function State:textinput(text)
   if self.valueEditor then
     if self.valueEditor:snapshot().kind == "choice" then
-      self.preserveChoiceScroll = false
-    end
-    self.valueEditor:textinput(text)
-    self.editorFeedback = nil
-  elseif
-    self.controller.section == "Progress"
-    or (self.controller.section == "Location" and self.controller.locationPage == "map-list")
-  then
-    self.controller.query = self.controller.query .. text
-    if self.controller.section == "Progress" then
-      self:_resetProgressSearch()
-    else
-      self.controller.locationMapOffset = 0
-      if self.controller.locationPage == "map-list" then
-        self:_reconcileFocus()
+      local layout = self:_resolve(self:_snapshot()).content.layout
+      local list, rowIndex = self:_activeList(layout)
+      if list ~= nil and list.id == "value:choice" then
+        self:_filterFocusedList(list, rowIndex, "append", text)
+      else
+        self.preserveChoiceScroll = false
+        self.valueEditor:textinput(text)
       end
+    else
+      self.valueEditor:textinput(text)
     end
+    self.editorFeedback = nil
+    return
   end
+  local layout = self:_resolve(self:_snapshot()).content.layout
+  local list, rowIndex = self:_activeList(layout)
+  if list == nil or not list.filterable then
+    return
+  end
+  self:_filterFocusedList(list, rowIndex, "append", text)
 end
 
 function State:keyreleased(key)
@@ -2348,29 +2887,22 @@ function State:_setScrollOffset(view, layout, viewportId, offset)
   assert(layout.scrollOwner == viewportId, "scroll intent must belong to the active owner")
   local viewport = assert(layout.viewports[viewportId], "active scroll owner needs a published viewport")
   local clamped = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
-  if viewportId == "location:map-list" then
+  local list
+  if type(layout.lists) == "table" then
+    list = findListByViewportId(layout.lists, viewportId)
+  end
+  if list ~= nil then
+    self:_storeListOffset(list, clamped)
+    self:_clampListCursorToVisible(list, viewport, clamped)
+  elseif viewportId == "location:map-list" then
     self.controller.locationMapOffset = clamped
-    local wideLocation = layout.locationGrid ~= nil and layout.viewports["location:map-list"] ~= nil
-    if self.controller.section == "Location" and wideLocation then
-      local firstIndex = ScrollViewport.visibleRange(
-        clamped,
-        viewport.clip.height,
-        viewport.rowExtent,
-        viewport.gap,
-        #view.location.maps
-      )
-      local targetId = viewport.rowTargets[firstIndex]
-      if targetId ~= nil then
-        self.controller:setFocus(targetId)
-      end
+  else
+    if viewportId == "value:choice" then
+      self.preserveChoiceScroll = true
     end
-    return
+    local purpose = assert(scrollPurpose(viewportId, view))
+    self.controller.scrollOffsets[purpose] = clamped
   end
-  if viewportId == "value:choice" then
-    self.preserveChoiceScroll = true
-  end
-  local purpose = assert(scrollPurpose(viewportId, view))
-  self.controller.scrollOffsets[purpose] = clamped
 end
 
 function State:wheelmoved(_, y)
@@ -2406,7 +2938,6 @@ function State:dispose()
   self.session = nil
   self.dependencies = nil
   self.partyView = nil
-  self.partyProjectionCache = nil
 end
 
 return State

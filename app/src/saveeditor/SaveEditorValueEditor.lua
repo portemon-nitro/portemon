@@ -17,6 +17,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _index number?
 ---@field _selectedKey string?
 ---@field _query string?
+---@field _filteredCache { query: string, options: { key: string, label: string }[], rowTargets: string[], indexByTarget: table<string, integer> }?
 ---@field _name NamingScreenController?
 ---@field _nameKind "player"|"pokemon"|nil
 ---@field _nameMaxLength integer?
@@ -321,14 +322,37 @@ function SaveEditorValueEditor:retry()
 end
 
 function SaveEditorValueEditor:_filteredOptions()
+  local cache = self._filteredCache
+  if cache ~= nil and cache.query == self._query then
+    return cache.options
+  end
   local filtered = {}
+  local rowTargets = {}
+  local indexByTarget = {}
   local query = self._query:lower()
   for _, option in ipairs(self._options) do
     if query == "" or option.label:lower():find(query, 1, true) or option.key:lower():find(query, 1, true) then
       filtered[#filtered + 1] = option
+      local targetId = "choice:" .. option.key
+      rowTargets[#rowTargets + 1] = targetId
+      indexByTarget[targetId] = #filtered
     end
   end
+  self._filteredCache =
+    { query = self._query, options = filtered, rowTargets = rowTargets, indexByTarget = indexByTarget }
   return filtered
+end
+
+---@return string[] rowTargets
+function SaveEditorValueEditor:_filteredRowTargets()
+  self:_filteredOptions()
+  return assert(self._filteredCache).rowTargets
+end
+
+---@return table<string, integer> indexByTarget
+function SaveEditorValueEditor:_filteredIndexByTarget()
+  self:_filteredOptions()
+  return assert(self._filteredCache).indexByTarget
 end
 
 function SaveEditorValueEditor:_reconcileSelection()
@@ -388,6 +412,8 @@ function SaveEditorValueEditor:snapshot()
     return {
       kind = "choice",
       options = options,
+      rowTargets = self:_filteredRowTargets(),
+      indexByTarget = self:_filteredIndexByTarget(),
       index = selected or 0,
       selectedKey = self._selectedKey,
       query = self._query,

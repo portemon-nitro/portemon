@@ -181,6 +181,54 @@ function T.hexadecimal_high_bit_values_and_digit_edits_remain_unsigned()
   end
 end
 
+function T.large_choice_catalog_reuses_its_filtered_order_until_the_query_changes()
+  Assert.isTrue(loaded)
+  local options = {}
+  for index = 1, 10000 do
+    local key = string.format("K%05d", index)
+    options[index] = { key = key, label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K00001", options = options })
+  local opening = editor:snapshot()
+  Assert.equal(#opening.options, 10000, "the catalog exposes every logical choice")
+  Assert.isTrue(editor:snapshot().options == opening.options, "repeated snapshots reuse the cached order")
+  Assert.isTrue(editor:moveChoice(5), "browsing moves the selection")
+  Assert.isTrue(editor:snapshot().options == opening.options, "browsing never rebuilds the cached order")
+  Assert.equal(editor:snapshot().selectedKey, "K00006", "browsing still advances the selection")
+  Assert.isTrue(editor:textinput("K000"), "filtering narrows the catalog")
+  local narrowed = editor:snapshot()
+  Assert.isFalse(narrowed.options == opening.options, "a changed query rebuilds the filtered order once")
+  Assert.isTrue(#narrowed.options < 10000 and #narrowed.options > 0, "the filter narrows without emptying")
+  Assert.isTrue(editor:snapshot().options == narrowed.options, "the rebuilt filter is reused while stable")
+  Assert.isTrue(editor:press("backspace"), "backspace edits the query")
+  local widened = editor:snapshot()
+  Assert.isFalse(widened.options == narrowed.options, "query edits rebuild exactly once")
+  Assert.isTrue(editor:snapshot().options == widened.options, "the widened filter is reused while stable")
+  Assert.isTrue(editor:press("clear_search"), "clearing restores the catalog")
+  local restored = editor:snapshot()
+  Assert.equal(#restored.options, 10000, "clearing restores every logical choice")
+  Assert.isTrue(editor:snapshot().options == restored.options, "the restored order is reused while stable")
+end
+
+function T.choice_snapshot_carries_stable_row_identity_for_visible_layout()
+  Assert.isTrue(loaded)
+  local options = {}
+  for index = 1, 50 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
+  local snapshot = editor:snapshot()
+  Assert.equal(#snapshot.rowTargets, 50, "the snapshot carries the complete logical order")
+  Assert.equal(snapshot.rowTargets[1], "choice:K01", "row targets use the stable row identity")
+  Assert.equal(snapshot.indexByTarget["choice:K25"], 25, "the index map resolves stable identities")
+  Assert.isTrue(editor:snapshot().rowTargets == snapshot.rowTargets, "the row order is reused while stable")
+  Assert.isTrue(editor:snapshot().indexByTarget == snapshot.indexByTarget, "the index map is reused while stable")
+  editor:textinput("K1")
+  local narrowed = editor:snapshot()
+  Assert.isFalse(narrowed.rowTargets == snapshot.rowTargets, "a changed query rebuilds the row identity once")
+  Assert.equal(narrowed.indexByTarget[narrowed.rowTargets[1]], 1, "the rebuilt index map stays consistent")
+end
+
 function T.choice_browsing_uses_the_full_filtered_sequence()
   Assert.isTrue(loaded)
   local options = {}
@@ -339,6 +387,41 @@ function T.repeated_adjustment_preserves_decimal_and_hexadecimal_display()
   Assert.equal(hexadecimal:snapshot().buffer, "1B6", "ten-step adjustments preserve hexadecimal display")
 end
 
+function T.cleared_choice_filter_restores_the_opening_selection_without_publishing()
+  Assert.isTrue(loaded)
+  local options = {}
+  for index = 1, 24 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K18", options = options })
+  Assert.isTrue(editor:textinput("no matching choice"), "typing filters the choice rows")
+  Assert.deepEqual(editor:snapshot().options, {}, "a query without matches leaves zero rows")
+  Assert.isNil(editor:result(), "filtering publishes no result")
+  Assert.isTrue(editor:press("clear_search"), "Delete clears the choice query")
+  local recovered = editor:snapshot()
+  Assert.equal(recovered.query, "")
+  Assert.equal(#recovered.options, 24, "clearing restores every row")
+  Assert.equal(recovered.selectedKey, "K18", "the opening cursor identity survives a filter-clear round trip")
+  Assert.isNil(editor:result(), "clearing publishes no result")
+  Assert.isTrue(editor:submit(), "the restored selection still submits")
+  Assert.deepEqual(editor:result(), { kind = "confirm", value = "K18" })
+end
+
+function T.multibyte_choice_query_backspace_removes_one_glyph_without_publishing()
+  Assert.isTrue(loaded)
+  local options = {}
+  for index = 1, 8 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
+  Assert.isTrue(editor:textinput("é"), "typing accepts a multibyte glyph")
+  Assert.equal(editor:snapshot().query, "é")
+  Assert.isTrue(editor:press("backspace"), "Backspace removes the complete multibyte glyph")
+  Assert.equal(editor:snapshot().query, "", "the query is empty after removing its only glyph")
+  Assert.equal(#editor:snapshot().options, 8, "the cleared query restores every row")
+  Assert.isNil(editor:result(), "query edits publish no result")
+end
+
 function T.name_variant_uses_naming_snapshot_and_submits_real_text()
   Assert.isTrue(loaded)
   local editor = SaveEditorValueEditor.new({
@@ -371,6 +454,62 @@ function T.name_variant_uses_naming_snapshot_and_submits_real_text()
   })
   Assert.isTrue(cancelEditor:cancel())
   Assert.deepEqual(cancelEditor:result(), { kind = "cancel" })
+end
+
+function T.number_modal_uses_native_source_control_geometry_in_a_compact_frame()
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  local sourceControls = {
+    { delta = 100, role = "increment", hitRect = { x = 120, y = 88, width = 32, height = 24 } },
+    { delta = 10, role = "increment", hitRect = { x = 152, y = 88, width = 32, height = 24 } },
+    { delta = 1, role = "increment", hitRect = { x = 184, y = 88, width = 32, height = 24 } },
+    { delta = -100, role = "decrement", hitRect = { x = 120, y = 136, width = 32, height = 24 } },
+    { delta = -10, role = "decrement", hitRect = { x = 152, y = 136, width = 32, height = 24 } },
+    { delta = -1, role = "decrement", hitRect = { x = 184, y = 136, width = 32, height = 24 } },
+  }
+  local view = {
+    section = "Player",
+    status = "ready",
+    ready = true,
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+    valueEditor = { kind = "number", buffer = "123", parsedValue = 123, minimum = 0, maximum = 999 },
+    scope = { id = "value:integer:money", epoch = 2, kind = "value", focusId = "confirm" },
+    numberControls = sourceControls,
+  }
+  local layout = SaveEditorLayout.compute(view, 640, 480, metrics)
+  local modal = assert(layout.valueModal, "the number editor owns a framed modal")
+  Assert.isTrue(
+    modal.width < 384 and modal.height < 192,
+    "the modal stays close to its source cluster instead of scaling a 256x192 system"
+  )
+  for _, control in ipairs(sourceControls) do
+    local target = assert(layout.targets["number:delta:" .. tostring(control.delta)]).rect
+    Assert.equal(target.width, control.hitRect.width, "delta controls keep native width")
+    Assert.equal(target.height, control.hitRect.height, "delta controls keep native height")
+    Assert.isTrue(
+      target.x >= modal.x and target.x + target.width <= modal.x + modal.width,
+      "delta controls stay inside the modal"
+    )
+    Assert.isTrue(
+      target.y >= modal.y and target.y + target.height <= modal.y + modal.height,
+      "delta controls stay inside the modal"
+    )
+  end
+  for _, id in ipairs({ "confirm", "cancel" }) do
+    local button = assert(layout.targets[id]).rect
+    Assert.isTrue(
+      button.x >= modal.x and button.x + button.width <= modal.x + modal.width,
+      id .. " stays inside the modal"
+    )
+    Assert.isTrue(
+      button.y >= modal.y and button.y + button.height <= modal.y + modal.height,
+      id .. " stays inside the modal"
+    )
+  end
 end
 
 return { tests = T }

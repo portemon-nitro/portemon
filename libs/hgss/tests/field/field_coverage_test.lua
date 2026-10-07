@@ -1272,4 +1272,230 @@ function T.committed_semantic_resolvers_tick_once_after_presentation_each_tick()
   coverage:release()
 end
 
+-- Initial physical coverage stages committed cells under the caller
+-- budget: nothing is transferable early, each advance stays within
+-- budget, and the completed coverage matches synchronous construction.
+function T.initial_coverage_stages_committed_cells_under_a_shared_budget()
+  Assert.isTrue(type(FieldCoverage.begin) == "function", "the staged initial-coverage constructor is available")
+  local releases = {}
+  local task = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory(releases)(descriptor)
+    end,
+  })
+  Assert.isFalse(task:isReady(), "staged initial coverage starts pending")
+  Assert.isFalse(pcall(task.takeResult, task), "no coverage is transferable before completion")
+  Assert.equal(task:advance(0), 0, "a zero budget consumes no work")
+  Assert.isFalse(task:isReady(), "a zero budget stages no cell")
+  local first = task:advance(1)
+  Assert.isTrue(first >= 0 and first <= 1 and first % 1 == 0, "each advance stays within its budget")
+  Assert.isFalse(task:isReady(), "one unit cannot stage nine committed cells")
+  local total, guard = first, 0
+  while not task:isReady() do
+    local step = task:advance(1)
+    Assert.isTrue(step >= 0 and step <= 1 and step % 1 == 0, "every advance stays within its budget")
+    total = total + step
+    guard = guard + 1
+    Assert.isTrue(guard <= 128, "bounded initial coverage completes")
+  end
+  Assert.isTrue(total >= 1, "completion reports the cooperative work it consumed")
+  local coverage = task:takeResult()
+  Assert.equal(coverage:status().residentCount, 9, "the staged coverage commits the radius-1 window")
+  local synchronous = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  Assert.equal(
+    coverage:status().terrainDependencyHash,
+    synchronous:status().terrainDependencyHash,
+    "staged and synchronous construction share the dependency identity"
+  )
+  Assert.deepEqual(
+    { x = coverage.origin.x, z = coverage.origin.z },
+    { x = synchronous.origin.x, z = synchronous.origin.z },
+    "staged and synchronous construction share the anchor origin"
+  )
+  Assert.equal(
+    #coverage:committedDescriptors(),
+    #synchronous:committedDescriptors(),
+    "staged and synchronous construction commit the same window"
+  )
+  coverage:release()
+  synchronous:release()
+end
+
+-- A pending initial-coverage task owns its partial cells: release or
+-- failure before transfer cleans every acquired runtime exactly once and
+-- no result can ever be taken afterwards.
+function T.pending_initial_coverage_release_cleans_owned_cells_exactly_once()
+  Assert.isTrue(type(FieldCoverage.begin) == "function", "the staged initial-coverage constructor is available")
+  local releases = {}
+  local loads = 0
+  local task = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      loads = loads + 1
+      return runtimeFactory(releases)(descriptor)
+    end,
+  })
+  local guard = 0
+  while loads < 1 and not task:isReady() do
+    task:advance(1)
+    guard = guard + 1
+    Assert.isTrue(guard <= 64, "staged acquisition starts with bounded work")
+  end
+  Assert.isTrue(loads >= 1, "cancellation covers at least one acquired cell")
+  Assert.isFalse(task:isReady(), "a partially staged coverage is not transferable yet")
+  task:release()
+  for cellKey, count in pairs(releases) do
+    Assert.equal(count, 1, "cancelled cell " .. cellKey .. " releases exactly once")
+  end
+  task:release()
+  for cellKey, count in pairs(releases) do
+    Assert.equal(count, 1, "a second release keeps cancelled cell " .. cellKey .. " at one release")
+  end
+  Assert.isFalse(pcall(task.takeResult, task), "no result is transferable after cancellation")
+
+  local failReleases = {}
+  local seen = 0
+  local failing = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      seen = seen + 1
+      if seen > 1 then
+        error("injected committed-cell failure", 0)
+      end
+      return runtimeFactory(failReleases)(descriptor)
+    end,
+  })
+  local okAdvance = true
+  guard = 0
+  while okAdvance and not failing:isReady() do
+    okAdvance = pcall(failing.advance, failing, 4)
+    guard = guard + 1
+    Assert.isTrue(guard <= 64, "the injected cell failure surfaces with bounded work")
+  end
+  Assert.isFalse(okAdvance, "the committed-cell failure fails the staged advance")
+  Assert.isTrue(seen >= 2, "the failure lands after an earlier staged acquisition")
+  for cellKey, count in pairs(failReleases) do
+    Assert.equal(count, 1, "failed cell " .. cellKey .. " releases exactly once")
+  end
+  Assert.isFalse(pcall(failing.finish, failing), "finish after cell failure stays loud")
+  Assert.isFalse(pcall(failing.takeResult, failing), "no result is transferable after failure")
+  failing:release()
+end
+
+-- The blocking coverage entry points keep their contract: direct
+-- construction still commits the radius-1 window synchronously with the
+-- same region, origin, and dependency identity it has today.
+function T.blocking_coverage_construction_returns_a_usable_committed_window()
+  local releases = {}
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory(releases)(descriptor)
+    end,
+  })
+  Assert.equal(coverage:status().residentCount, 9, "direct construction commits the radius-1 window")
+  Assert.equal(#coverage:committedDescriptors(), 9, "the committed window matches the radius-1 policy")
+  Assert.notNil(coverage.origin, "the usable coverage owns its anchor origin")
+  Assert.notNil(coverage.region, "the usable coverage owns its assembled region")
+  Assert.notNil(coverage:status().terrainDependencyHash, "the usable coverage owns its dependency identity")
+  Assert.equal(coverage:status().anchorX, 1, "the usable coverage owns its anchor")
+  Assert.equal(coverage:status().anchorZ, 1, "the usable coverage owns its anchor")
+  coverage:release()
+  for cellKey, count in pairs(releases) do
+    Assert.equal(count, 1, "released cell " .. cellKey .. " releases exactly once")
+  end
+end
+
+-- Final publication is caller-budgeted work: when the last committed
+-- cell consumes the final supplied unit, the task stays pending until a
+-- later advance supplies the publication unit.
+function T.initial_coverage_publication_consumes_one_work_unit()
+  local releases = {}
+  local task = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory(releases)(descriptor)
+    end,
+  })
+  local first = task:advance(9)
+  Assert.equal(first, 9, "nine committed cells consume nine units")
+  Assert.isFalse(task:isReady(), "publication waits for its own work unit")
+  local second = task:advance(1)
+  Assert.equal(second, 1, "publication consumes exactly one unit")
+  Assert.isTrue(task:isReady(), "the funded publication completes the task")
+  local coverage = task:takeResult()
+  Assert.equal(coverage:status().residentCount, 9, "the published coverage commits the radius-1 window")
+  coverage:release()
+end
+
+-- The published coverage transfers once: a second transfer is a
+-- programming error, and releasing the task after transfer never touches
+-- the caller-owned coverage.
+function T.initial_coverage_result_transfers_exactly_once()
+  local releases = {}
+  local task = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory(releases)(descriptor)
+    end,
+  })
+  local coverage = task:finish()
+  Assert.equal(coverage:status().residentCount, 9, "the transferred coverage commits the radius-1 window")
+  task:release()
+  Assert.isNil(next(releases), "releasing after transfer never touches caller-owned cells")
+  local ok, err = pcall(task.takeResult, task)
+  Assert.isFalse(ok, "a second ownership transfer must fail")
+  Assert.isTrue(
+    tostring(err):find("once", 1, true) ~= nil,
+    "the repeated transfer names its one-shot ownership"
+  )
+  coverage:release()
+  for cellKey, count in pairs(releases) do
+    Assert.equal(count, 1, "caller-owned cell " .. cellKey .. " releases exactly once")
+  end
+end
+
+-- A zero budget stages nothing and publishes nothing.
+function T.initial_coverage_zero_budget_advance_never_publishes()
+  local task = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  Assert.equal(task:advance(0), 0, "a zero budget consumes no work")
+  Assert.isFalse(task:isReady(), "a zero budget publishes no coverage")
+  task:release()
+end
+
 return { metadata = { capabilities = {} }, tests = T }

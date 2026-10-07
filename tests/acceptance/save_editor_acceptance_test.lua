@@ -550,7 +550,10 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
     state:update(0)
     withoutRendering(function()
       Assert.equal(state:view().status, "ready", "the production editor opens against the real selected save")
-      local browserMapId = assert(state:view().location.mapId)
+      local browserMapId = assert(
+        state:view().locationNavigation.mapId,
+        "the browser remembers the saved map while the section opens on the map list"
+      )
       Assert.isTrue(state.session:setLocation(placement).ok, "the existing Session stages a resolved outdoor tuple")
       local expected = state.session:captureCandidate()
       state.controller:setSection("Player")
@@ -558,7 +561,7 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       state:update(0)
       Assert.equal(recordWrites, 0, "the Save intent waits while destination data is pending")
       Assert.equal(
-        state:view().location.mapId,
+        state:view().locationNavigation.mapId,
         browserMapId,
         "a pending destination check does not replace the user's browser map"
       )
@@ -572,7 +575,11 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       end
       Assert.equal(recordWrites, 1, "one Save intent publishes exactly one save after readiness")
       Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), expected, "the authorized tuple and edits publish")
-      Assert.equal(state:view().location.mapId, browserMapId, "verification leaves the browser selection untouched")
+      Assert.equal(
+        state:view().locationNavigation.mapId,
+        browserMapId,
+        "verification leaves the browser selection untouched"
+      )
       Assert.equal(#results, 0, "Save keeps the editor open")
 
       Assert.isTrue(state.session:setLocation(assert(housePlacement)).ok)
@@ -771,6 +778,7 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
       choice = state:view().valueEditor
       Assert.equal(choice.query, "POTION", "typing filters the Add catalog")
       state:keypressed("return")
+      state:keypressed("return")
       local quantity = assert(state:view().valueEditor, "choosing an item opens quantity entry")
       local expected = assert(quantity.parsedValue or quantity.value) + 1
       state:keypressed("up")
@@ -787,6 +795,7 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
 
       activateTarget(state, "bag:add")
       state:textinput("POTION")
+      state:keypressed("return")
       state:keypressed("return")
       state:keypressed("return")
       Assert.equal(
@@ -862,18 +871,34 @@ function T.tests.party_stats_edit_uses_number_modal_and_keeps_draft_staged()
       for _, target in pairs(detail.layout.targets) do
         Assert.isFalse(target.label == "Party list", "the redundant Party list action is removed")
       end
-      activateTarget(state, "party:edit")
-      activateTarget(state, "party:subpage:Stats")
+      Assert.isNil(detail.layout.targets["party:edit"], "selecting a member edits immediately without an Edit action")
+      Assert.isNil(detail.layout.targets["party:apply"], "the member editor has no local Apply action")
+      Assert.isNil(detail.layout.targets["party:back"], "the member editor has no local Back action")
+      Assert.isNil(
+        detail.layout.targets["party:subpage:Stats"],
+        "the member editor has no top subpage tab bar"
+      )
+      Assert.notNil(
+        detail.layout.targets["party:page:previous"],
+        "the bottom pager exposes the previous page arrow"
+      )
+      Assert.notNil(detail.layout.targets["party:page:next"], "the bottom pager exposes the next page arrow")
+      Assert.equal(detail.partyTab, "Stats", "the selected member opens on the Stats page")
 
       local view = state:view()
-      Assert.notNil(view.statsTable, "Stats exposes one structured Stat / IV / EV / Derived table")
-      Assert.equal(#view.statsTable.rows, 6, "the table has exactly one row per stat")
+      local stats = assert(view.partyStats, "Stats exposes one structured header plus IV/EV table")
+      Assert.equal(#stats.rows, 6, "the table has exactly one row per stat")
 
       local initialPublished = assert(fixture.store:load(fixture.saveId))
-      local row = assert(view.statsTable.rows[2], "Attack is the second Stats row")
-      local originalAttack = row.derived
+      local row = assert(stats.rows[2], "Attack is the second Stats row")
       local originalIv = row.iv
 
+      for _ = 1, 10 do
+        if state:view().layout.targets["party:field:iv:attack"] ~= nil then
+          break
+        end
+        state:wheelmoved(0, -1)
+      end
       activateTarget(state, "party:field:iv:attack")
       Assert.equal(state:view().valueEditor.kind, "number", "an IV cell opens the shared number modal")
       for _ = 1, 31 do
@@ -882,31 +907,38 @@ function T.tests.party_stats_edit_uses_number_modal_and_keeps_draft_staged()
       end
       state:keypressed("return")
 
+      local edited = originalIv < 31 and 31 or 0
       view = state:view()
-      local editedAttack = assert(view.statsTable.rows[2]).derived
-      Assert.isTrue(editedAttack ~= originalAttack, "the derived Attack preview updates immediately")
+      Assert.equal(assert(view.partyStats.rows[2]).iv, edited, "the table shows the edited raw IV")
       Assert.equal(
         state.session:partySnapshot().members[1].mon.ivs.attack,
         originalIv,
-        "the live Party remains unchanged while the Mon draft is open"
+        "the live Party remains unchanged while the member draft is open"
       )
-      Assert.equal(assert(view.statsTable.rows[2]).iv, originalIv < 31 and 31 or 0, "the table shows the edited raw IV")
-      activateTarget(state, "party:apply")
+      Assert.deepEqual(
+        assert(fixture.store:load(fixture.saveId)),
+        initialPublished,
+        "confirming the modal keeps the canonical save unchanged before staging"
+      )
+
+      activateTarget(state, "section:Player")
+      Assert.equal(state.controller.section, "Player", "leaving the member switches section")
       local staged = state.session:captureCandidate()
       Assert.equal(
         staged.mons.party.mons[1].ivs.attack,
-        originalIv < 31 and 31 or 0,
-        "Apply stages the raw IV through the Mon draft"
+        edited,
+        "leaving the member stages the raw IV through the member draft"
       )
       Assert.deepEqual(
         assert(fixture.store:load(fixture.saveId)),
         initialPublished,
         "the canonical save remains unchanged before the outer Save"
       )
-
-      activateTarget(state, "party:back")
-      Assert.equal(state:view().partyPage, "list", "Back returns to the Party grid")
-      Assert.deepEqual(state.session:captureCandidate(), staged, "Back preserves the staged draft without applying it")
+      Assert.deepEqual(
+        state.session:captureCandidate(),
+        staged,
+        "the staged draft survives the section switch without publishing"
+      )
     end)
   end, debug.traceback)
   if state then
