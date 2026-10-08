@@ -432,6 +432,49 @@ function SaveEditorLocationService:_releaseMap()
   self.visibleClassificationTask = nil
 end
 
+function SaveEditorLocationService:_failRequest(err, allowReturnedText)
+  if self.status.state == "failed" then
+    return
+  end
+  local expected = Errors.is(err) or (allowReturnedText and type(err) == "string")
+
+  local preservePublished = self.coverage ~= nil
+    and self.mapBounds ~= nil
+    and self.objectEvents ~= nil
+    and self.warpEvents ~= nil
+    and self.coordinateEvents ~= nil
+    and self.representedMapIds ~= nil
+  self:_releaseLoadTask()
+  self:_releaseCoverageTask()
+  if self.candidateCoverage ~= nil then
+    self.metadataReady = preservePublished
+    self:_discardCandidateCoverage()
+  elseif self.metadata ~= nil then
+    self:_releaseMetadata(preservePublished)
+  end
+  self:_discardInitialSurvey()
+  self.rememberedCursor = nil
+  self.rememberedClassificationTask = nil
+  self.visibleClassificationTask = nil
+  self.tileStatuses = {}
+  if not expected then
+    error(err, 0)
+  end
+  local reason = Errors.is(err) and Errors.format(err) or err
+  self.status = status("failed", reason)
+  if self.requestPurpose == "browse" then
+    self.initialCursor = {
+      state = "failed",
+      mapId = self.mapId,
+      generation = self.requestGeneration,
+      factsRevision = self.factsRevision,
+      reason = reason,
+    }
+  else
+    self.initialCursor = nil
+  end
+end
+
 ---@param mapId integer
 ---@param request { purpose: "browse"|"verify", rememberedCursor: { fieldX: integer, fieldZ: integer }? }?
 function SaveEditorLocationService:openMap(mapId, request)
@@ -742,17 +785,7 @@ function SaveEditorLocationService:_advanceRepresented(maxWorkUnits)
 end
 
 function SaveEditorLocationService:_failStaged(err)
-  self:_releaseLoadTask()
-  self.objectEvents = nil
-  self.warpEvents = nil
-  self.coordinateEvents = nil
-  self.representedMapIds = nil
-  self.mapBounds = nil
-  self.initialCursor = nil
-  if not Errors.is(err) then
-    error(err, 0)
-  end
-  self.status = status("failed", Errors.format(err))
+  self:_failRequest(err)
 end
 
 -- Advances the outstanding staged map load under the caller's work budget
@@ -809,11 +842,7 @@ function SaveEditorLocationService:_advanceStagedMap(maxWorkUnits)
 end
 
 function SaveEditorLocationService:_failCoverageTask(err)
-  self:_releaseCoverageTask()
-  if not Errors.is(err) then
-    error(err, 0)
-  end
-  self.status = status("failed", Errors.format(err))
+  self:_failRequest(err)
 end
 
 function SaveEditorLocationService:_publishCandidateCoverage()
@@ -938,8 +967,7 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
   -- the staged map driver below instead of running outside the budget.
   local assetsReady, assetsError = self.loader:requestMapAssets(self.mapId, "required")
   if assetsError ~= nil then
-    self.status = status("failed", assetsError)
-    self.initialCursor = nil
+    self:_failRequest(assetsError, true)
     return false, 0
   end
   if not assetsReady then
@@ -965,7 +993,7 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
   -- pending closure below returns without spending coverage work.
   local ready, err = self.loader:requestLocation(self.mapId, fieldX, fieldZ, "required")
   if err ~= nil then
-    self.status = status("failed", err)
+    self:_failRequest(err, true)
     return pending()
   end
   if not ready then
@@ -1026,7 +1054,7 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
     if not Errors.is(metadataCompleteOrError) then
       error(metadataCompleteOrError, 0)
     end
-    self.status = status("failed", Errors.format(metadataCompleteOrError))
+    self:_failRequest(metadataCompleteOrError)
     return pending()
   end
   if not metadataCompleteOrError then
@@ -1040,7 +1068,12 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
   if self.candidateCoverage ~= nil then
     self:_publishCandidateCoverage()
   end
-  if self.requestPurpose == "browse" and self.initialCursor.state == "pending" and self.rememberedCursor ~= nil then
+  if
+    self.requestPurpose == "browse"
+    and self.initialCursor
+    and self.initialCursor.state == "pending"
+    and self.rememberedCursor ~= nil
+  then
     if remaining == 0 then
       self.status = status("pending")
       return pending()
@@ -1073,7 +1106,7 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
       return pending()
     end
   end
-  if self.requestPurpose == "browse" and self.initialCursor.state == "pending" then
+  if self.requestPurpose == "browse" and self.initialCursor and self.initialCursor.state == "pending" then
     if self.survey == nil then
       self:_beginInitialSurvey()
     end
@@ -1387,9 +1420,7 @@ function SaveEditorLocationService:_advanceInitialSurvey(maxWorkUnits)
       local closureReady, closureError =
         self.loader:requestLocation(self.mapId, currentCell.x * TILE_SIZE, currentCell.z * TILE_SIZE, "required")
       if closureError ~= nil then
-        self.status = status("failed", Errors.format(closureError))
-        self.initialCursor = nil
-        self:_discardInitialSurvey()
+        self:_failRequest(closureError, true)
         return consumed, false
       end
       if not closureReady then
@@ -1400,8 +1431,6 @@ function SaveEditorLocationService:_advanceInitialSurvey(maxWorkUnits)
         self:_advanceStagedCoverage(currentCell.x * TILE_SIZE, currentCell.z * TILE_SIZE, maxWorkUnits - consumed)
       consumed = consumed + coverageConsumed
       if self.status.state == "failed" then
-        self.initialCursor = nil
-        self:_discardInitialSurvey()
         return consumed, false
       end
       if not coverageReady or consumed >= maxWorkUnits then
@@ -1503,8 +1532,6 @@ function SaveEditorLocationService:_advanceInitialSurvey(maxWorkUnits)
         self:_advanceStagedCoverage(result.fieldX, result.fieldZ, maxWorkUnits - consumed)
       consumed = consumed + coverageConsumed
       if self.status.state == "failed" then
-        self.initialCursor = nil
-        self:_discardInitialSurvey()
         return consumed, false
       end
       if not coverageReady then
@@ -1562,6 +1589,9 @@ end
 
 function SaveEditorLocationService:update()
   assert(not self.disposed, "location service is disposed")
+  if self.status.state == "failed" then
+    return
+  end
   if self.mapId == nil or self.centerX == nil or self.centerZ == nil then
     self.status = status("idle")
     return
@@ -1570,7 +1600,11 @@ function SaveEditorLocationService:update()
   if self.initialCursor ~= nil and self.initialCursor.state == "pending" and self.rememberedCursor ~= nil then
     fieldX, fieldZ = self.rememberedCursor.fieldX, self.rememberedCursor.fieldZ
   end
-  local readyOrError, consumed = self:_prepareAt(fieldX, fieldZ)
+  local ok, readyOrError, consumed = pcall(self._prepareAt, self, fieldX, fieldZ)
+  if not ok then
+    self:_failRequest(readyOrError)
+    return
+  end
   if not readyOrError then
     self.tileStatuses = {}
     return
@@ -1632,9 +1666,14 @@ function SaveEditorLocationService:resolve(mapId, fieldX, fieldZ, expectedGenera
     return nil, status("unavailable", "wrong_map")
   end
 
+  if self.status.state == "failed" then
+    return nil, copy(self.status)
+  end
+
   local requested, requestError = self.loader:requestLocation(mapId, fieldX, fieldZ, "required")
   if requestError ~= nil then
-    return nil, status("failed", requestError)
+    self:_failRequest(requestError, true)
+    return nil, copy(self.status)
   end
   if not requested then
     return nil, status("pending")
@@ -1642,9 +1681,6 @@ function SaveEditorLocationService:resolve(mapId, fieldX, fieldZ, expectedGenera
 
   -- Resolution only observes preparation the update loop already published;
   -- it never starts or advances staged map/coverage work itself.
-  if self.status.state == "failed" then
-    return nil, copy(self.status)
-  end
   if self.runtimeMap == nil or self.loadTask ~= nil then
     return nil, status("pending")
   end

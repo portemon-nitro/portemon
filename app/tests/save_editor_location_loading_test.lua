@@ -189,7 +189,13 @@ local function stagedTask(loader, mapId, script)
     self.advanceArgs[#self.advanceArgs + 1] = requested
     self.advanceBudget = self.advanceBudget + requested
     if script.taskFailOnAdvance ~= nil then
-      error(script.taskFailOnAdvance, 0)
+      local failure = script.taskFailOnAdvance
+      if type(failure) == "function" then
+        failure = failure(self)
+      end
+      if failure ~= nil then
+        error(failure, 0)
+      end
     end
     local consumed = math.min(script.consumePerAdvance or 0, requested)
     self.consumedTotal = self.consumedTotal + consumed
@@ -598,6 +604,208 @@ function T.tests.task_failure_releases_and_publishes_a_failed_status()
   service:dispose()
 end
 
+function T.tests.programmer_string_from_staged_task_remains_a_hard_failure()
+  local service, loader = loadingService({ taskFailOnAdvance = "unexpected task failure" })
+  openOutside(service, 11)
+
+  local ok, failure = pcall(service.update, service)
+
+  Assert.isFalse(ok, "an unstructured task exception is not converted into a recoverable map status")
+  Assert.equal(failure, "unexpected task failure", "the original programmer failure propagates")
+  Assert.equal(assert(loader.tasks[1]).releases, 1, "the failed task still releases exactly once")
+  service:dispose()
+end
+
+function T.tests.failed_browse_request_stays_terminal_across_updates_viewports_and_resolve()
+  local failure = Errors.new("MAP_PREPARATION_FAILED", "staged scene build failed")
+  local failedTask
+  local service, loader = loadingService({
+    taskFailOnAdvance = function(task)
+      if failedTask == nil then
+        failedTask = task
+        return failure
+      end
+      return nil
+    end,
+    taskImmediate = true,
+  })
+  local requestMapAssets = loader.requestMapAssets
+  local assetRequests = 0
+  function loader:requestMapAssets(mapId, urgency)
+    assetRequests = assetRequests + 1
+    return requestMapAssets(self, mapId, urgency)
+  end
+  service:openMap(11, { purpose = "browse" })
+  service:setViewport(16, 16, 1, 1)
+  service:update()
+
+  local failed = service:snapshot()
+  Assert.equal(failed.status.state, "failed", "the typed staged error is visible")
+  Assert.notNil(failed.initialCursor, "failed browse requests keep an inspectable cursor")
+  Assert.equal(failed.initialCursor.state, "failed", "the browse cursor is terminal with the request")
+  Assert.equal(failed.initialCursor.mapId, 11, "the failed cursor identifies its map")
+  Assert.equal(
+    failed.initialCursor.generation,
+    service.requestGeneration,
+    "the failed cursor identifies its request"
+  )
+  Assert.equal(failed.initialCursor.reason, failed.status.reason, "the cursor retains the failure reason")
+
+  local task = assert(loader.tasks[1])
+  local initialCounts = {
+    assets = assetRequests,
+    begins = #loader.begins,
+    advances = task.advances,
+    requests = loader.locationRequestCount,
+    releases = task.releases,
+  }
+  for index = 1, 20 do
+    service:setViewport(16 + index, 16, 1, 1)
+    service:update()
+    local snapshot = service:snapshot()
+    Assert.equal(snapshot.status.state, "failed", "viewport changes do not rearm the failed request")
+    Assert.equal(snapshot.status.reason, failed.status.reason, "failure diagnostics remain stable")
+    Assert.equal(snapshot.initialCursor.state, "failed", "the failed cursor remains inspectable")
+    Assert.equal(
+      snapshot.initialCursor.generation,
+      failed.initialCursor.generation,
+      "the failed cursor remains request-bound"
+    )
+  end
+  local resolved, resolveStatus = service:resolve(11, 16, 16, service.generation)
+  Assert.isNil(resolved, "a failed request cannot resolve a tile")
+  Assert.equal(resolveStatus.state, "failed", "resolution returns the terminal failure")
+  Assert.equal(assetRequests, initialCounts.assets, "failed updates request no map assets")
+  Assert.equal(#loader.begins, initialCounts.begins, "failed updates begin no new map tasks")
+  Assert.equal(task.advances, initialCounts.advances, "failed updates advance no staged task")
+  Assert.equal(
+    loader.locationRequestCount,
+    initialCounts.requests,
+    "failed updates and resolution request no location readiness"
+  )
+  Assert.equal(task.releases, 1, "the failed map task is released exactly once")
+  service:dispose()
+end
+
+function T.tests.resolve_location_failure_commits_terminal_browse_request()
+  local failure = Errors.new("LOCATION_CLOSURE_FAILED", "selected location is unavailable")
+  local service, loader = loadingService({ taskImmediate = true })
+  local locationRequests = 0
+  function loader:requestLocation()
+    locationRequests = locationRequests + 1
+    return false, failure
+  end
+
+  service:openMap(11, { purpose = "browse" })
+  service:setViewport(16, 16, 1, 1)
+  local generation = service.generation
+  local requestGeneration = service.requestGeneration
+  local resolved, resolveStatus = service:resolve(11, 16, 16, generation)
+
+  Assert.isNil(resolved, "a failed location cannot resolve")
+  Assert.equal(resolveStatus.state, "failed", "resolution reports the structured failure")
+  local failed = service:snapshot()
+  Assert.equal(failed.status.state, "failed", "resolution commits failure for its request")
+  Assert.equal(failed.status.reason, Errors.format(failure), "the terminal status preserves typed error context")
+  Assert.equal(failed.initialCursor.state, "failed", "the browse cursor becomes terminal")
+  Assert.equal(failed.initialCursor.mapId, 11, "the failed cursor retains its map")
+  Assert.equal(failed.initialCursor.generation, requestGeneration, "the failed cursor retains its generation")
+  Assert.equal(failed.initialCursor.reason, failed.status.reason, "cursor and status retain the same cause")
+
+  local acquisitionCounts = {
+    assets = loader.requestCount,
+    begins = #loader.begins,
+    locationRequests = locationRequests,
+  }
+  for _ = 1, 3 do
+    local repeated, repeatedStatus = service:resolve(11, 16, 16, generation)
+    Assert.isNil(repeated, "a terminal request still cannot resolve")
+    Assert.equal(repeatedStatus.reason, failed.status.reason, "resolution returns the committed failure")
+    service:update()
+  end
+  Assert.equal(locationRequests, acquisitionCounts.locationRequests, "terminal resolution requests no more locations")
+  Assert.equal(loader.requestCount, acquisitionCounts.assets, "terminal updates request no map assets")
+  Assert.equal(#loader.begins, acquisitionCounts.begins, "terminal updates begin no staged map task")
+  service:dispose()
+end
+
+function T.tests.asset_and_location_failures_are_terminal_for_browse_requests()
+  local assetFailure = Errors.new("MAP_ASSETS_FAILED", "map assets are unavailable")
+  local assetService, assetLoader = loadingService({ requestError = assetFailure })
+  assetService:openMap(11, { purpose = "browse" })
+  assetService:setViewport(16, 16, 1, 1)
+  assetService:update()
+  local assetFailureView = assetService:snapshot()
+  Assert.equal(assetFailureView.status.state, "failed", "asset acquisition failure is published")
+  Assert.equal(assetFailureView.initialCursor.state, "failed", "asset failure closes the browse cursor")
+  local requestsAtAssetFailure = assetLoader.requestCount
+  assetService:update()
+  Assert.equal(assetLoader.requestCount, requestsAtAssetFailure, "failed asset acquisition is not retried")
+  assetService:dispose()
+
+  local locationFailure = Errors.new("LOCATION_CLOSURE_FAILED", "map location is unavailable")
+  local locationService, locationLoader = loadingService({ taskImmediate = true })
+  local requests = 0
+  function locationLoader:requestLocation()
+    requests = requests + 1
+    return false, locationFailure
+  end
+  locationService:openMap(11, { purpose = "browse" })
+  locationService:setViewport(16, 16, 1, 1)
+  locationService:update()
+  local locationFailureView = locationService:snapshot()
+  Assert.equal(locationFailureView.status.state, "failed", "location readiness failure is published")
+  Assert.equal(locationFailureView.initialCursor.state, "failed", "location failure closes the browse cursor")
+  local requestsAtLocationFailure = requests
+  locationService:update()
+  Assert.equal(requests, requestsAtLocationFailure, "failed location readiness is not retried")
+  Assert.equal(assert(locationLoader.tasks[1]).releases, 0, "a successfully published map task is not released on closure failure")
+  locationService:dispose()
+end
+
+function T.tests.same_map_retry_rearms_only_after_explicit_open()
+  local failure = Errors.new("MAP_PREPARATION_FAILED", "staged scene build failed")
+  local failedTask
+  local service, loader = loadingService({
+    taskFailOnAdvance = function(task)
+      if failedTask == nil then
+        failedTask = task
+        return failure
+      end
+      return nil
+    end,
+    taskImmediate = true,
+  })
+  service:openMap(11, { purpose = "browse" })
+  service:setViewport(16, 16, 1, 1)
+  service:update()
+  Assert.equal(service:snapshot().status.state, "failed", "the first generation records its staged failure")
+
+  local beginsAtFailure = #loader.begins
+  pcall(service.update, service)
+  Assert.equal(
+    #loader.begins,
+    beginsAtFailure,
+    "a failed generation does not implicitly begin replacement work"
+  )
+
+  local failedGeneration = service.requestGeneration
+  service:openMap(11, { purpose = "browse", rememberedCursor = { fieldX = 18, fieldZ = 16 } })
+  local retry = service:snapshot()
+  Assert.equal(retry.status.state, "pending", "reopening the same map starts a new request")
+  Assert.isTrue(retry.initialCursor.generation > failedGeneration, "explicit retry receives a fresh generation")
+  Assert.equal(retry.initialCursor.fieldX, 18, "explicit retry uses its fresh remembered cursor")
+  local guard = 0
+  while service:snapshot().status.state ~= "ready" and guard < 20 do
+    service:update()
+    guard = guard + 1
+  end
+  Assert.equal(service:snapshot().status.state, "ready", "the explicit same-map retry can become ready")
+  Assert.equal(#loader.begins, beginsAtFailure + 1, "one new map task begins only after explicit retry")
+  Assert.equal(assert(loader.tasks[1]).releases, 1, "the original failed task stays released exactly once")
+  service:dispose()
+end
+
 function T.tests.an_immediately_ready_task_publishes_in_one_update()
   local service, loader = loadingService({ taskImmediate = true })
   openOutside(service, 11)
@@ -866,7 +1074,15 @@ function T.tests.replacement_coverage_and_metadata_publish_atomically_and_fail_s
   Assert.isNil(failed.candidateCoverage, "failed candidate coverage is discarded")
   Assert.equal(failedCandidate.releases, 1, "failed candidate coverage releases exactly once")
   Assert.equal(assert(getMetadataTask()).releases, 1, "failed metadata task releases exactly once")
+  local coverageBeginsAtFailure = #failedLoader.coverageBegins
+  failed:update()
+  Assert.equal(failed:snapshot().status.state, "failed", "candidate failure remains terminal")
+  Assert.equal(#failedLoader.coverageBegins, coverageBeginsAtFailure, "failed candidate work is not staged again")
+  Assert.isTrue(failed.coverage == retainedCoverage, "repeated failure observation retains committed coverage")
+  Assert.equal(retainedCoverage.releases, 0, "repeated failure observation keeps committed coverage owned")
   failed:dispose()
+  failed:dispose()
+  Assert.equal(retainedCoverage.releases, 1, "disposal releases retained coverage exactly once")
 end
 
 function T.tests.resolve_observes_pending_work_without_advancing_it()
@@ -1513,7 +1729,7 @@ function T.tests.survey_closure_failure_remains_failed_and_releases_survey_state
   Assert.isTrue(loader.locationRequestCount >= 2, "failure occurs after initial location preparation")
   Assert.equal(view.status.state, "failed", "survey closure failure is not overwritten with pending")
   Assert.isTrue(view.status.reason:find("survey closure fixture failure", 1, true) ~= nil, "failure reason is retained")
-  Assert.isNil(view.initialCursor, "failed survey publishes no cursor suggestion")
+  Assert.equal(view.initialCursor.state, "failed", "failed survey publishes a terminal cursor")
   Assert.isNil(service.survey, "failed survey releases its accumulator")
   Assert.isNil(service.surveyDomain, "failed survey releases its remaining domain")
   Assert.isNil(service.surveyCells, "failed survey releases discovered cells")
