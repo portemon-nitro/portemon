@@ -2599,7 +2599,8 @@ function T.wide_host_resizes_keep_the_content_column_clamped_and_hits_inside_it(
       )
     else
       Assert.notNil(layout.targets["section:Location"], "compact host keeps direct section navigation")
-      Assert.isTrue(content.y >= 30, "compact body begins after top navigation")
+      local section = assert(layout.targets["section:Location"]).rect
+      Assert.isTrue(content.y >= section.y + section.height + 2, "compact body begins after top navigation")
     end
     local hostLeft = LayoutGeometry.logicalToHost(placement, content.x, content.y)
     local hostRight = LayoutGeometry.logicalToHost(placement, content.x + content.width, content.y)
@@ -2631,49 +2632,62 @@ function T.wide_host_resizes_keep_the_content_column_clamped_and_hits_inside_it(
 end
 
 function T.section_labels_reuse_party_game_font_and_body_scale(scope)
-  local width, height = 1280, 720
-  local view, _, plan = fixture(scope, width, height, singleDisplay(width, height), "Party", "Stats")
-  local cache = FieldUiFixture.cacheWithFontAndFrames()
-  local text = scope:own(FieldTextRenderer.new({ cacheFs = cache, graphics = love.graphics }))
-  local renderer = Renderer.new({ text = text, versionId = view.versionId })
-  renderer._bagImages = {}
-  for _, path in ipairs({ "bag/dec-normal", "bag/dec-pressed", "bag/inc-normal", "bag/inc-pressed" }) do
-    renderer._bagImages[path] = scope:own(love.graphics.newImage(love.image.newImageData(12, 12)))
-  end
-  renderer:preparePresentationAssets(cache, assert(cache:loadLua(FieldUiAssetCache.manifestPath())))
-  local calls, currentScale = {}, 1
-  local oldScale = love.graphics.scale
-  local oldDraw = text.drawTextWithPalette
-  love.graphics.scale = function(x, y)
-    currentScale = x
-    return oldScale(x, y)
-  end
-  text.drawTextWithPalette = function(self, value, x, y, palette)
-    if value == "Map" or value == "Flags" or value == "Chikorita" then
-      calls[value] = { scale = currentScale, width = self:textWidth(value), palette = palette }
+  for _, size in ipairs({ { width = 256, height = 192 }, { width = 1280, height = 720 } }) do
+    local width, height = size.width, size.height
+    local view, _, plan = fixture(scope, width, height, singleDisplay(width, height), "Party", "Stats")
+    local cache = FieldUiFixture.cacheWithFontAndFrames()
+    local text = scope:own(FieldTextRenderer.new({ cacheFs = cache, graphics = love.graphics }))
+    local renderer = Renderer.new({ text = text, versionId = view.versionId })
+    renderer._bagImages = {}
+    for _, path in ipairs({ "bag/dec-normal", "bag/dec-pressed", "bag/inc-normal", "bag/inc-pressed" }) do
+      renderer._bagImages[path] = scope:own(love.graphics.newImage(love.image.newImageData(12, 12)))
     end
-    return oldDraw(self, value, x, y, palette)
+    renderer:preparePresentationAssets(cache, assert(cache:loadLua(FieldUiAssetCache.manifestPath())))
+    local calls, currentScale = {}, 1
+    local oldScale = love.graphics.scale
+    local oldDraw = text.drawTextWithPalette
+    love.graphics.scale = function(x, y)
+      currentScale = x
+      return oldScale(x, y)
+    end
+    text.drawTextWithPalette = function(self, value, x, y, palette)
+      if value == "Map" or value == "Flags" or value == "Party" or value == "Chikorita" then
+        calls[value] = { scale = currentScale, width = self:textWidth(value), palette = palette }
+      end
+      return oldDraw(self, value, x, y, palette)
+    end
+    local ok, failure = xpcall(function()
+      local canvas = scope:own(love.graphics.newCanvas(width, height))
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(1, 1, 1, 1)
+      ApplicationPresentation.draw(love.graphics, { renderer = renderer, text = text }, view, plan)
+    end, debug.traceback)
+    love.graphics.setCanvas()
+    love.graphics.scale = oldScale
+    text.drawTextWithPalette = oldDraw
+    local normal = renderer.skin.text.normal
+    renderer:dispose()
+    if not ok then
+      error(failure, 0)
+    end
+    for _, label in ipairs({ "Map", "Flags" }) do
+      local call = assert(calls[label], label .. " uses the field-text renderer")
+      Assert.equal(call.scale, 0.75, label .. " uses the list body-label scale at " .. width .. "x" .. height)
+      Assert.equal(call.width, view.textMetrics.measure(label), label .. " uses the field-text metric adapter")
+      Assert.equal(call.palette.foreground.r, normal.foreground.r, label .. " uses the normal body foreground")
+      Assert.equal(call.palette.foreground.g, normal.foreground.g, label .. " uses the normal body foreground")
+      Assert.equal(call.palette.foreground.b, normal.foreground.b, label .. " uses the normal body foreground")
+      Assert.equal(call.palette.shadow.r, normal.shadow.r, label .. " uses the normal body shadow")
+      Assert.equal(call.palette.shadow.g, normal.shadow.g, label .. " uses the normal body shadow")
+      Assert.equal(call.palette.shadow.b, normal.shadow.b, label .. " uses the normal body shadow")
+    end
+    local active = assert(calls.Party, "the active Party section label uses field text")
+    Assert.isTrue(
+      foregroundAverage(active.palette) > foregroundAverage(assert(calls.Map).palette),
+      "the active section remains visually distinct from neutral inactive sections"
+    )
+    Assert.isNil(calls.Chikorita, "occupied Party slots do not paint their descriptive labels")
   end
-  local ok, failure = xpcall(function()
-    local canvas = scope:own(love.graphics.newCanvas(width, height))
-    love.graphics.setCanvas(canvas)
-    love.graphics.clear(1, 1, 1, 1)
-    ApplicationPresentation.draw(love.graphics, { renderer = renderer, text = text }, view, plan)
-  end, debug.traceback)
-  love.graphics.setCanvas()
-  love.graphics.scale = oldScale
-  text.drawTextWithPalette = oldDraw
-  renderer:dispose()
-  if not ok then
-    error(failure, 0)
-  end
-  for _, label in ipairs({ "Map", "Flags" }) do
-    local call = assert(calls[label], label .. " uses the field-text renderer")
-    Assert.equal(call.scale, 0.75, label .. " uses the Party strip's body-label scale")
-    Assert.equal(call.width, view.textMetrics.measure(label), label .. " uses the field-text metric adapter")
-    Assert.notNil(call.palette, label .. " uses the semantic game glyph palette")
-  end
-  Assert.isNil(calls.Chikorita, "occupied Party slots do not paint their descriptive labels")
 end
 
 function T.map_and_flags_use_game_label_treatment_and_clear_painted_frames(scope)
@@ -3590,12 +3604,12 @@ function T.focused_buttons_draw_geometry_matched_outlines_only_while_navigation_
 end
 
 function T.active_section_chrome_survives_focus_movement(scope)
-  local TextButton = require("libs.ui.src.TextButton")
-  local oldDraw = TextButton.draw
+  local Button = require("libs.ui.src.Button")
+  local oldDraw = Button.draw
   local painted = {}
-  TextButton.draw = function(graphics, button, options)
-    painted[#painted + 1] = { label = options.label, colors = options.colors, selected = options.selected }
-    return oldDraw(graphics, button, options)
+  Button.draw = function(graphics, button, palette)
+    painted[#painted + 1] = palette
+    return oldDraw(graphics, button, palette)
   end
   local calls, restoreRectangles = recordOutlinedRectangles()
   local layout
@@ -3616,20 +3630,11 @@ function T.active_section_chrome_survives_focus_movement(scope)
     )
   end, debug.traceback)
   restoreRectangles()
-  TextButton.draw = oldDraw
+  Button.draw = oldDraw
   if not ok then
     error(failure, 0)
   end
   Assert.notNil(layout.targets["section:Player"], "the wide layout keeps its section rail")
-  local seen = {}
-  for _, entry in ipairs(painted) do
-    if entry.label == "Player" or entry.label == "Party" or entry.label == "Bag" then
-      seen[entry.label] = entry
-      Assert.isFalse(entry.selected, "section chrome never borrows the button selected effect")
-    end
-  end
-  Assert.notNil(seen["Player"], "the active section paints its option chrome")
-  Assert.notNil(seen["Party"], "inactive sections paint their option chrome")
   local function faceAverage(colors)
     return (
       (colors.faceTop[1] + colors.faceBottom[1]) / 2
@@ -3637,10 +3642,12 @@ function T.active_section_chrome_survives_focus_movement(scope)
       + (colors.faceTop[3] + colors.faceBottom[3]) / 2
     ) / 3
   end
-  Assert.isTrue(faceAverage(seen["Player"].colors) < 0.9, "the active section keeps its colored face")
-  for _, label in ipairs({ "Party", "Bag" }) do
+  local activeSection, inactiveSections = painted[2], { painted[1], painted[3], painted[4], painted[5] }
+  Assert.notNil(activeSection, "the active section paints its option chrome")
+  Assert.isTrue(faceAverage(activeSection) < 0.9, "the active section keeps its colored face")
+  for _, palette in ipairs(inactiveSections) do
     Assert.isTrue(
-      faceAverage(seen[label].colors) > 0.9,
+      faceAverage(assert(palette)) > 0.9,
       "inactive sections use a near-white face while another control has focus"
     )
   end

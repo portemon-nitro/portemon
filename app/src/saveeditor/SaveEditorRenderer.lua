@@ -300,7 +300,7 @@ local function buttonDisabledPalette(skin)
 end
 
 local function buttonInactivePalette(skin)
-  return textPalette(skin, { r = 0, g = 0, b = 0 })
+  return skin.text.normal
 end
 
 local function isFocusedVisible(view, targetId)
@@ -413,6 +413,8 @@ local function optionLabelPalette(renderer, disabled, option, active)
   return buttonPalette(renderer.skin)
 end
 
+local drawBodyText
+
 local function drawShadedControl(renderer, rect, label, active, focused, disabled, semantic, option)
   local role = optionRole(disabled, semantic, option, active)
   local colors = assert(BUTTON_COLORS[role], "unknown save editor button role: " .. tostring(role))
@@ -428,7 +430,7 @@ local function drawShadedControl(renderer, rect, label, active, focused, disable
         return renderer.text:textWidth(value)
       end,
       draw = function(value, x, y)
-        drawText(renderer, value, x, y, labelPalette)
+        drawBodyText(renderer, value, x / BODY_TEXT_SCALE, y / BODY_TEXT_SCALE, labelPalette)
       end,
     },
   })
@@ -441,7 +443,7 @@ end
 
 local fitText
 
-local function drawBodyText(renderer, value, x, y, role)
+drawBodyText = function(renderer, value, x, y, role)
   local graphics = renderer.graphics
   graphics.push("all")
   local ok, err = pcall(function()
@@ -481,13 +483,15 @@ local function drawCompactControl(renderer, rectValue, label, active, focused, d
   graphics.setColor(colors.innerBorder[1], colors.innerBorder[2], colors.innerBorder[3], colors.innerBorder[4])
   graphics.rectangle("fill", innerRect.x, splitY - 1, innerRect.width, 2)
   local content = button.contentRect
-  local fitted = fitText(renderer, label, content.width)
+  local fitted = fitText(renderer, label, content.width / BODY_TEXT_SCALE)
   local labelPalette = optionLabelPalette(renderer, disabled, option, active)
-  drawText(
+  local textWidth = renderer.text:textWidth(fitted) * BODY_TEXT_SCALE
+  local textHeight = renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE
+  drawBodyText(
     renderer,
     fitted,
-    content.x + (content.width - renderer.text:textWidth(fitted)) / 2,
-    content.y + (content.height - renderer.text.fontDef.lineHeight) / 2,
+    content.x + (content.width - textWidth) / 2,
+    content.y + (content.height - textHeight) / 2,
     labelPalette
   )
   if focused then

@@ -69,14 +69,14 @@ local function newContext(view, width, height, metrics)
   assert(type(metrics) == "table" and type(metrics.measure) == "function" and metrics.lineHeight > 0)
   local wideShell = width >= 400 and width >= height
   local margin = width <= 280 and 8 or wideShell and 8 or 12
-  local compactParty = width < 400 and view.section == "Party"
-  local compactBag = width <= 280 and view.section == "Bag"
-  local footerHeight = compactParty and width <= 280 and 38 or compactBag and 38
-    or math.max(40, metrics.lineHeight + 24)
+  local bodyGlyphHeight = math.ceil(metrics.lineHeight * 0.75)
+  local footerHeight = bodyGlyphHeight + 12
   local hasRail = wideShell
   local railWidth = hasRail and 88 or 0
-  local railButtonHeight = 34
+  local railButtonHeight = math.min(bodyGlyphHeight + 12, metrics.lineHeight + 16)
   local railStep = railButtonHeight + 4
+  railButtonHeight = math.min(bodyGlyphHeight + 12, metrics.lineHeight + 16)
+  railStep = railButtonHeight + 4
   if railWidth > 0 and height >= 360 then
     railButtonHeight, railStep = 56, 60
   end
@@ -254,16 +254,17 @@ local function buildShell(ctx)
       addFocusable(ctx, id)
     end
   else
-    local stripHeight = math.max(30, ctx.metrics.lineHeight + 16)
+    local stripHeight = bodyGlyphHeight + 8
+    local stripY = 4
     local cellWidth = innerWidth / #ctx.enabledSections
     for index, name in ipairs(ctx.enabledSections) do
       local id = "section:" .. name
-      ctx.targets[id] = rect(contentX + (index - 1) * cellWidth, 0, cellWidth, stripHeight)
+      ctx.targets[id] = rect(contentX + (index - 1) * cellWidth, stripY, cellWidth, stripHeight)
       ctx.navigation[#ctx.navigation + 1] =
         { role = "action", targetId = id, id = id, label = name, active = name == ctx.section }
       addFocusable(ctx, id)
     end
-    ctx.contentTop = stripHeight
+    ctx.contentTop = stripY + stripHeight + 2
     if
       ctx.section == "Progress"
       or ctx.section == "Location"
@@ -900,7 +901,7 @@ local function buildFooterActions(ctx)
   end
   local actionGap = 4
   local actionX = contentX + math.floor((innerWidth - widthTotal - actionGap * 2) / 2)
-  local actionHeight = math.max(34, metrics.lineHeight + 16)
+  local actionHeight = bodyGlyphHeight + 8
   for index, action in ipairs(actions) do
     ctx.targets[action.id] = rect(
       actionX,

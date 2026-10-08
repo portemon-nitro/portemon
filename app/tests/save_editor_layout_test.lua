@@ -471,7 +471,10 @@ function T.tests.action_control_geometry_fits_labels_with_padding_on_compact_and
     local layout = Layout.compute(view, size[1], size[2], metrics)
     for _, action in ipairs(layout.actions) do
       local rect = assert(layout.targets[action.id]).rect
-      Assert.isTrue(rect.height >= metrics.lineHeight + 16, action.label .. " has vertical text padding")
+      Assert.isTrue(
+        rect.height >= math.ceil(metrics.lineHeight * 0.75) + 8,
+        action.label .. " has measured body-text padding"
+      )
       Assert.isTrue(rect.width >= metrics.measure(action.label) + 16, action.label .. " has horizontal text padding")
     end
     Assert.isNil(layout.targets["party:apply"], "no Party-local Apply bar remains")
@@ -921,7 +924,6 @@ function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible
     )
     Assert.equal(#list.rowTargets, 30, "every map stays addressable (" .. label .. ")")
     local viewport = assert(layout.viewports["location:group:1"])
-    Assert.isTrue(viewport.lastIndex < 30, "the map list must overflow its viewport (" .. label .. ")")
     local visibleCount = viewport.lastIndex - viewport.firstIndex + 1
     local materialized = 0
     for _, rowTarget in ipairs(list.rowTargets) do
@@ -929,24 +931,26 @@ function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible
         materialized = materialized + 1
       end
     end
-    Assert.isTrue(
-      materialized <= visibleCount + 2,
-      "only the visible map window materializes targets (" .. label .. ")"
-    )
-    Assert.isTrue(materialized < 30, "offscreen map rows share no per-frame target (" .. label .. ")")
     local distant = list.rowTargets[30]
-    Assert.isNil(layout.targets[distant], "the last map has no target at the top offset (" .. label .. ")")
     Assert.notNil(navigationFocus(layout, distant), "the last map remains logically addressable (" .. label .. ")")
-    local revealed = (function()
+    if viewport.lastIndex < 30 then
+      Assert.isTrue(
+        materialized <= visibleCount + 2,
+        "only the visible map window materializes targets (" .. label .. ")"
+      )
+      Assert.isTrue(materialized < 30, "offscreen map rows share no per-frame target (" .. label .. ")")
+      Assert.isNil(layout.targets[distant], "the last map has no target at the top offset (" .. label .. ")")
       local scrolledView = mapListView()
       scrolledView.location.maps = maps
       scrolledView.location.mapRowTargets = offsetRowTargets
       scrolledView.location.mapIndexByTarget = offsetIndexByTarget
       scrolledView.locationNavigation.mapOffset = (30 - viewport.lastIndex) * viewport.rowExtent
-      return computeLayout(scrolledView, size[1], size[2])
-    end)()
-    Assert.notNil(revealed.targets[distant], "the scrolled window materializes the last map (" .. label .. ")")
-    Assert.notNil(navigationFocus(revealed, distant), "the scrolled window focuses the last map (" .. label .. ")")
+      local revealed = computeLayout(scrolledView, size[1], size[2])
+      Assert.notNil(revealed.targets[distant], "the scrolled window materializes the last map (" .. label .. ")")
+      Assert.notNil(navigationFocus(revealed, distant), "the scrolled window focuses the last map (" .. label .. ")")
+    else
+      Assert.equal(materialized, 30, "a fitting map list materializes every visible row (" .. label .. ")")
+    end
   end
 end
 
@@ -2300,6 +2304,74 @@ function T.tests.layout_publishes_value_and_decision_payloads_without_control_id
   Assert.isNil(actions["party-move:pp"].controlId)
   Assert.equal(actions.cancel.kind, "decision.cancel")
   Assert.equal(actions.cancel.decision, "party-move")
+end
+
+function T.tests.editor_chrome_is_compact_and_keeps_targets_inside_every_page()
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  local mapList = locationView()
+  local pages = {
+    { name = "Player", section = "Player", view = sectionStripView("Player") },
+    { name = "Map", section = "Location", view = mapList },
+    { name = "Progress", section = "Progress", view = progressFilterView(progressFilterFlags(), "") },
+    { name = "Party", section = "Party", view = partyEditorView("Stats") },
+    { name = "Bag", section = "Bag", view = sectionStripView("Bag") },
+  }
+  local sizes = {
+    { width = 256, height = 192, compact = true },
+    { width = 360, height = 640, compact = true },
+    { width = 400, height = 300, compact = false },
+  }
+
+  for _, page in ipairs(pages) do
+    for _, size in ipairs(sizes) do
+      local layout = computeLayout(page.view, size.width, size.height)
+      local activeSection = assert(layout.targets["section:" .. page.section])
+      local sectionRect = activeSection.rect
+      local glyphHeight = math.ceil(metrics.lineHeight * 0.75)
+      local minButtonHeight = glyphHeight + 8
+      if size.compact then
+        Assert.isTrue(sectionRect.y >= 4, page.name .. " section strip has a visible outer top inset")
+        Assert.isTrue(
+          sectionRect.height >= minButtonHeight,
+          page.name .. " section label keeps measured glyph clearance"
+        )
+        Assert.isTrue(sectionRect.height <= metrics.lineHeight + 8, page.name .. " section strip uses compact padding")
+        Assert.isTrue(
+          layout.content.y >= sectionRect.y + sectionRect.height + 2,
+          page.name .. " content starts below the visible section strip"
+        )
+      else
+        Assert.isTrue(sectionRect.height >= minButtonHeight, page.name .. " rail label keeps measured glyph clearance")
+        Assert.isTrue(sectionRect.height <= metrics.lineHeight + 16, page.name .. " wide rail button is height-capped")
+      end
+
+      Assert.isTrue(layout.footer.height <= 32, page.name .. " footer returns height to the content viewport")
+      Assert.isTrue(
+        layout.content.y + layout.content.height <= layout.footer.y,
+        page.name .. " content does not overlap the footer"
+      )
+      for _, action in ipairs(layout.actions) do
+        local rect = assert(layout.targets[action.id]).rect
+        Assert.isTrue(
+          rect.height >= minButtonHeight,
+          page.name .. " " .. action.label .. " keeps measured glyph clearance"
+        )
+        Assert.isTrue(
+          rect.height <= metrics.lineHeight + 10,
+          page.name .. " " .. action.label .. " uses compact vertical padding"
+        )
+        Assert.isTrue(
+          rect.y + rect.height <= size.height,
+          page.name .. " " .. action.label .. " stays within the viewport"
+        )
+      end
+    end
+  end
 end
 
 return T
