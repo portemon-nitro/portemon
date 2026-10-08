@@ -54,7 +54,6 @@ function Layout.preferredListWidth(view, metrics, height)
   elseif view.section == "Location" and view.location ~= nil and view.locationNavigation ~= nil
     and (view.locationNavigation.page == "root" or view.locationNavigation.page == "group") then
     projection = assert(view.location.mapModel, "Map list sizing uses its indexed projection")
-    trailingValueWidth = math.max(metrics.measure("OFF"), metrics.measure("›"), metrics.measure("99"))
   elseif view.section == "Progress" then
     projection = assert(view.flagModel, "Flags list sizing uses its indexed projection")
     trailingValueWidth = metrics.measure("OFF")
@@ -66,7 +65,7 @@ function Layout.preferredListWidth(view, metrics, height)
   local filterText = projection.pending and "Filtering…" or query == "" and "Type to filter" or ("Filter: " .. query)
   local hintText = view.section == "Location" and view.location and view.location.breadcrumb
       and (view.location.breadcrumb .. "  ·  " .. filterText) or filterText
-  return SaveEditorList.preferredWidth({
+  local preferredWidth, measuredTrailingValueWidth = SaveEditorList.preferredWidth({
     bounds = { x = 0, y = 0, width = 640, height = height },
     rowCount = projection.count,
     rowHeight = rowHeight,
@@ -79,11 +78,14 @@ function Layout.preferredListWidth(view, metrics, height)
     textScale = 0.75,
     rowAt = function(index)
       local row = assert(rowAt(index), "sampled list rows remain in the current projection")
-      local value = trailingValueWidth ~= nil and (view.section == "Location"
-          and (row.kind == "group" and "›" or row.section) or (row.value and "ON" or "OFF")) or nil
+      local value = trailingValueWidth ~= nil and (row.value and "ON" or "OFF") or nil
       return { label = row.displayName or row.label or row.name, value = value }
     end,
   })
+  if view.section == "Location" then
+    preferredWidth = math.max(preferredWidth, math.ceil(metrics.measure(hintText) * 0.75 + 16))
+  end
+  return preferredWidth, measuredTrailingValueWidth
 end
 
 function Layout.minimumListCanvasWidth(view, metrics, height)
@@ -378,6 +380,7 @@ local function buildLocationMapList(ctx)
     maxWidth = preferredListWidth or innerWidth,
     headerHeight = metrics.lineHeight,
     scrollOffset = storedMapOffset,
+    font = { lineHeight = metrics.lineHeight, measure = metrics.measure },
   })
   local mapOffset =
     ScrollViewport.clamp(storedMapOffset, mapList.contentHeight, mapList.content.height - mapList.header.height)
@@ -404,7 +407,7 @@ local function buildLocationMapList(ctx)
     local y = row.rect.y - mapOffset
     ctx.targets[id] = rect(row.rect.x, y, row.rect.width, compactRowExtent - 2)
     ctx.rowMarkers[id] = rect(row.markerRect.x, row.markerRect.y - mapOffset, row.markerRect.width, row.markerRect.height)
-    ctx.rowLabelRects[id] = rect(row.markerRect.x + 6, y + 3, row.rect.width * 0.58 - 6, compactRowExtent - 6)
+    ctx.rowLabelRects[id] = rect(row.labelRect.x, row.labelRect.y - mapOffset, row.labelRect.width, row.labelRect.height)
     ctx.focusPositions[id] = rect(row.rect.x, y, row.rect.width, row.rect.height)
     addFocusable(ctx, id)
     mapScroll.visibleTargets[#mapScroll.visibleTargets + 1] = id
@@ -416,9 +419,7 @@ local function buildLocationMapList(ctx)
       listSurface = true,
       targetId = id,
       label = map.displayName,
-      value = map.kind == "group" and "›" or map.section,
       labelRect = ctx.rowLabelRects[id],
-      valueRect = rect(row.rect.x + row.rect.width * 0.62, y + 3, row.rect.width * 0.34, compactRowExtent - 6),
       muted = mapModel.pending,
     }
   end

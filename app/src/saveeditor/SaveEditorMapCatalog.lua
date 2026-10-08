@@ -82,9 +82,13 @@ local function rowOrder(left, right)
   if left.displayName ~= right.displayName then
     return left.displayName < right.displayName
   end
-  local leftIdentity = left.mapSectionNativeId or left.mapId
-  local rightIdentity = right.mapSectionNativeId or right.mapId
-  return leftIdentity < rightIdentity
+  local leftIdentity = left.mapSectionNativeId or left.mapId or left.groupId
+  local rightIdentity = right.mapSectionNativeId or right.mapId or right.groupId
+  assert(leftIdentity ~= nil and rightIdentity ~= nil, "catalog rows have stable sort identities")
+  if type(leftIdentity) == "number" and type(rightIdentity) == "number" then
+    return leftIdentity < rightIdentity
+  end
+  return tostring(leftIdentity) < tostring(rightIdentity)
 end
 
 local function newSort(rows, publish)
@@ -188,16 +192,25 @@ local function advanceTask(task, budget)
       assert(type(summary.section) == "string" and summary.section ~= "", "map summary needs its section label")
       assert(type(summary.symbol) == "string" and summary.symbol ~= "", "map summary needs its source symbol")
       assert(type(summary.displayName) == "string" and summary.displayName ~= "", "map summary needs its display name")
-      local groupId = "location:group:" .. nativeId
+      local groupId, groupName, nativeGroup
+      if summary.symbol:match("^MAP_BATTLE_FRONTIER_") then
+        groupId, groupName = "location:group:battle-frontier", "Battle Frontier"
+      elseif summary.symbol:match("^MAP_ROUTE_") then
+        groupId, groupName = "location:group:routes", "Routes"
+      else
+        groupId = "location:group:" .. nativeId
+        groupName = summary.section
+        nativeGroup = true
+      end
       local group = task.groupById[groupId]
       if group == nil then
         group = {
           targetId = groupId,
           kind = "group",
           groupId = groupId,
-          mapSectionNativeId = nativeId,
-          section = summary.section,
-          displayName = summary.section,
+          mapSectionNativeId = nativeGroup and nativeId or nil,
+          section = groupName,
+          displayName = groupName,
           maps = {},
         }
         task.groupById[groupId] = group
@@ -205,7 +218,7 @@ local function advanceTask(task, budget)
         task.sorts[#task.sorts + 1] = newSort(group.maps, function(sorted)
           group.maps = sorted
         end)
-      else
+      elseif group.mapSectionNativeId ~= nil then
         assert(group.section == summary.section, "one source section identity has one display label")
       end
       group.maps[#group.maps + 1] = {

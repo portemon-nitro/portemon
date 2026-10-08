@@ -898,6 +898,27 @@ function T.tests.location_map_list_publishes_one_container_with_ordered_rows()
   end
 end
 
+function T.tests.location_map_rows_use_full_width_labels_without_a_trailing_value()
+  local mapIds = { "location:map:12", "location:map:34", "location:map:47", "location:map:7" }
+  for _, size in ipairs({ { 800, 600 }, { 256, 192 } }) do
+    local layout = computeLayout(mapListView(), size[1], size[2])
+    local rowsByTarget = {}
+    for _, row in ipairs(layout.rows) do
+      rowsByTarget[row.targetId] = row
+    end
+    for _, targetId in ipairs(mapIds) do
+      local row = assert(rowsByTarget[targetId], "visible map rows publish label geometry")
+      Assert.isNil(row.value, "map rows do not repeat their section in a right-hand value")
+      Assert.isNil(row.valueRect, "map rows do not reserve a right-hand value cell")
+      local target = assert(layout.targets[targetId]).rect
+      Assert.isTrue(
+        row.labelRect.x + row.labelRect.width >= target.x + target.width - 12,
+        "the Map name fills the row after its marker inset"
+      )
+    end
+  end
+end
+
 function T.tests.offscreen_location_map_rows_stay_addressable_while_only_visible_rows_materialize()
   local maps = {}
   local offsetRowTargets = {}

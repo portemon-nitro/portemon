@@ -3021,6 +3021,33 @@ function State:_discardSection()
 end
 
 function State:_requestBack()
+  local focus = self.controller.focus
+  if
+    self.valueEditor == nil
+    and self.controller.modal == nil
+    and self.controller.section == "Location"
+    and (self.controller.locationPage == "root" or self.controller.locationPage == "group")
+    and focus ~= nil
+    and (
+      focus == "list:location:root"
+      or focus:match("^list:location:group:.+$")
+      or focus:match("^location:group:.+$")
+      or focus:match("^location:map:%d+$")
+    )
+  then
+    local layout = self:_resolve(self:_snapshot()).content.layout
+    local activeList, rowIndex = self:_activeList(layout)
+    local listId = locationListId(self.controller:locationSnapshot())
+    if activeList ~= nil and activeList.id == listId then
+      if rowIndex ~= nil then
+        self.controller:setListCursor(activeList.id, self.controller.focus)
+      end
+      self.controller:setFocus("section:Location")
+      self:_reconcileFocus("section:Location", layout)
+      return
+    end
+  end
+
   if self.valueEditor then
     self.valueEditor:cancel()
     self:_finishValueEditor()

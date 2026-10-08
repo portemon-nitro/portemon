@@ -4139,6 +4139,7 @@ end
 
 function T.tests.back_from_the_map_list_root_follows_the_normal_leave_path()
   local dirty = backHarness({ section = "Location", dirty = true, mapList = true })
+  dirty.controller:setFocus("section:Location")
   Assert.equal(dirty.controller.locationPage, "root", "the harness starts at the hierarchy root")
   dirty.state:_requestBack()
   Assert.equal(dirty.controller.locationPage, "root", "root Back stays at the hierarchy root")
@@ -4146,13 +4147,40 @@ function T.tests.back_from_the_map_list_root_follows_the_normal_leave_path()
   Assert.deepEqual(dirty.results, {}, "entering the leave flow never leaves the editor")
 
   local clean = backHarness({ section = "Location", dirty = false, mapList = true })
+  clean.controller:setFocus("section:Location")
   clean.state:_requestBack()
   Assert.deepEqual(clean.results, { { kind = "main_menu" } }, "root Back without work leaves the editor")
+end
+
+function T.tests.first_back_from_a_focused_map_row_moves_focus_to_the_location_section()
+  local harness = locationListHarness()
+  local controller, state = harness.controller, harness.state
+  state._requestBack = State._requestBack
+  controller:setFocus("list:location:group:1")
+  state:_reconcileFocus()
+  state:_consumeUiInput({ { type = "navigate", direction = "down" } })
+  local rememberedFocus = controller.focus
+  local rememberedCursor = controller:listCursor("location:group:1")
+  local rememberedQuery = controller.query
+  local rememberedScroll = controller.locationMapOffset
+  Assert.equal(rememberedFocus, "location:map:34", "the setup focuses a logical map row")
+
+  state:_requestBack()
+
+  Assert.equal(controller.focus, "section:Location", "first Back from a list row enters section chrome")
+  Assert.equal(controller.locationPage, "group", "first Back leaves the Map hierarchy unchanged")
+  Assert.equal(controller.locationGroupId, "location:group:1", "the same Map group remains active")
+  Assert.equal(controller:listCursor("location:group:1"), rememberedCursor, "the list cursor is remembered")
+  Assert.equal(controller.query, rememberedQuery, "the list filter is preserved")
+  Assert.equal(controller.locationMapOffset, rememberedScroll, "the list scroll is preserved")
+  state:_requestBack()
+  Assert.equal(controller.locationPage, "root", "a second Back uses the existing hierarchy transition")
 end
 
 local function terminalInputHarness()
   local harness = backHarness({ section = "Location", dirty = false, mapList = true })
   local state = harness.state
+  state.controller:setFocus("section:Location")
   local metrics = interactionMetrics()
   state.width, state.height = 800, 600
   state.generation = 0

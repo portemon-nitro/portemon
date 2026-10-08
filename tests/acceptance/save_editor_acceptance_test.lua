@@ -1423,12 +1423,128 @@ function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_
     Assert.equal(state:view().status, "ready", "production Save Editor composition opens the isolated save")
 
     withoutRendering(function()
+      state.controller:setSection("Location")
       local rootView = advanceEditorUntil(state, function(view)
         local list = view.layout.lists["location:root"]
         return list ~= nil and #list.rowTargets > 0 and not list.pending
       end, "the production Map root list")
-      local mapList = assert(rootView.layout.lists["location:root"])
-      local mapFitsMeasuredContent = mapList.surfaceRect.width < rootView.layout.content.width
+      state:resize(256, 192)
+      rootView = advanceEditorUntil(state, function(view)
+        local list = view.layout.lists["location:root"]
+        return list ~= nil and #list.rowTargets > 0 and not list.pending
+      end, "the compact production Map root list")
+      local rootMapList = assert(rootView.layout.lists["location:root"])
+
+      local groupTarget, groupSize
+      local rootMapModel = assert(rootView.location).mapModel
+      for rowIndex = 1, #rootMapList.rowTargets do
+        local row = assert(rootMapModel.rowAt(rowIndex))
+        if row.kind == "group" then
+          local matchingMaps = 0
+          for _, map in ipairs(assert(row.maps)) do
+            if map.displayName:lower():find("r", 1, true) ~= nil then
+              matchingMaps = matchingMaps + 1
+            end
+          end
+          if groupSize == nil or matchingMaps > groupSize then
+            groupTarget, groupSize = row.targetId, matchingMaps
+          end
+        end
+      end
+      local selectedGroup = assert(groupTarget, "the production Map root has a selectable group")
+      local rootGroupCursor = selectedGroup
+      state.controller:setFocus(selectedGroup)
+      state:keypressed("return")
+      state:keyreleased("return")
+      local groupView = advanceEditorUntil(state, function(view)
+        local list = view.locationNavigation.page == "group"
+          and view.layout.lists[assert(view.location).mapListId]
+        return list ~= nil and #list.rowTargets > 0 and not list.pending
+      end, "the selected production Map group")
+      local groupListId = assert(groupView.location).mapListId
+      local groupList = assert(groupView.layout.lists[groupListId])
+      Assert.equal(groupView.locationNavigation.groupId, selectedGroup, "confirm enters the selected group identity")
+
+      state:textinput("r")
+      groupView = advanceEditorUntil(state, function(view)
+        local list = view.layout.lists[groupListId]
+        return list ~= nil and list.query == "r" and not list.pending
+      end, "the filtered production Map group")
+      groupList = assert(groupView.layout.lists[groupListId])
+      local groupViewport = assert(groupView.layout.viewports[groupListId])
+      local targetIndex = groupViewport.lastIndex + 1
+      Assert.isTrue(targetIndex <= #groupList.rowTargets, "the Map group has a row beyond its compact viewport")
+      local rememberedMap = groupList.rowTargets[targetIndex]
+      for _ = 1, targetIndex do
+        if state.controller.focus == rememberedMap then
+          break
+        end
+        state:keypressed("down")
+        state:keyreleased("down")
+      end
+      Assert.equal(state.controller.focus, rememberedMap, "keyboard selection reaches the offscreen map identity")
+      local focusedGroupView = state:view()
+      local focusedGroupViewport = assert(focusedGroupView.layout.viewports[groupListId])
+      Assert.isTrue(
+        focusedGroupViewport.firstIndex <= targetIndex and targetIndex <= focusedGroupViewport.lastIndex,
+        "the production Map State reveals its focused logical row"
+      )
+      local rememberedQuery = state.controller.query
+      local rememberedScroll = state.controller.scrollOffset
+
+      state:keypressed("escape")
+      state:keyreleased("escape")
+      Assert.equal(
+        state.controller.focus,
+        "section:Location",
+        "the first Back from a focused Map row transfers focus to the Location section control"
+      )
+      local escapedGroupView = state:view()
+      Assert.equal(escapedGroupView.locationNavigation.page, "group", "first Back leaves the Map hierarchy unchanged")
+      Assert.equal(escapedGroupView.locationNavigation.groupId, selectedGroup, "first Back retains the selected group")
+      Assert.equal(state.controller.query, rememberedQuery, "first Back preserves the group query")
+      Assert.equal(state.controller.scrollOffset, rememberedScroll, "first Back preserves the group scroll")
+
+      state:keypressed("tab")
+      local restoredGroupView = state:view()
+      Assert.equal(state.controller.focus, rememberedMap, "Tab re-enters the remembered Map row")
+      local restoredViewport = assert(restoredGroupView.layout.viewports[groupListId])
+      Assert.isTrue(
+        restoredViewport.firstIndex <= targetIndex and targetIndex <= restoredViewport.lastIndex,
+        "re-entering the Map list reveals the remembered row"
+      )
+      for _, row in ipairs(restoredGroupView.layout.rows) do
+        if groupList.indexByTarget[row.targetId] ~= nil then
+          Assert.isNil(row.value, "Map rows use their complete label without a trailing value")
+          Assert.isNil(row.valueRect, "Map rows do not reserve a trailing value cell")
+          local rowTarget = assert(restoredGroupView.layout.targets[row.targetId]).rect
+          Assert.isTrue(
+            row.labelRect.x + row.labelRect.width >= rowTarget.x + rowTarget.width - 12,
+            "Map labels reach the full text width after the marker inset"
+          )
+        end
+      end
+
+      state:keypressed("escape")
+      state:keyreleased("escape")
+      state:keypressed("escape")
+      state:keyreleased("escape")
+      local returnedRootView = advanceEditorUntil(state, function(view)
+        return view.locationNavigation.page == "root"
+      end, "the Map root after Back from section chrome")
+      Assert.equal(state.controller.focus, rootGroupCursor, "Back from section chrome restores the root group cursor")
+      for _, row in ipairs(returnedRootView.layout.rows) do
+        if rootMapList.indexByTarget[row.targetId] ~= nil then
+          Assert.isNil(row.value, "Map group rows use their complete label without a trailing value")
+          Assert.isNil(row.valueRect, "Map group rows do not reserve a trailing value cell")
+          local rowTarget = assert(returnedRootView.layout.targets[row.targetId]).rect
+          Assert.isTrue(
+            row.labelRect.x + row.labelRect.width >= rowTarget.x + rowTarget.width - 12,
+            "Map group labels reach the full text width after the marker inset"
+          )
+        end
+      end
+      local mapFitsMeasuredContent = rootMapList.surfaceRect.width < returnedRootView.layout.content.width
 
       state.controller:setSection("Progress")
       local flagView = advanceEditorUntil(state, function(view)

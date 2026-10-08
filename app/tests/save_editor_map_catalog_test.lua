@@ -77,6 +77,55 @@ function T.tests.source_sections_keep_complete_membership_and_filter_through_chi
   Assert.equal(catalog:maps(groupIdsByNativeId[5], "no match").count, 0, "empty leaf results are valid")
 end
 
+function T.tests.route_and_battle_frontier_prefixes_share_only_their_explicit_groups()
+  local Catalog = require("app.src.saveeditor.SaveEditorMapCatalog")
+  local summaries = {
+    { mapId = 10, symbol = "MAP_ROUTE_29", section = "Route 29", mapSectionNativeId = 3, displayName = "ROUTE 29" },
+    { mapId = 11, symbol = "MAP_ROUTE_30", section = "Route 30", mapSectionNativeId = 4, displayName = "ROUTE 30" },
+    { mapId = 12, symbol = "MAP_BATTLE_FRONTIER_GATE", section = "Gate", mapSectionNativeId = 7, displayName = "GATE" },
+    { mapId = 13, symbol = "MAP_BATTLE_FRONTIER_PLAZA", section = "Plaza", mapSectionNativeId = 8, displayName = "PLAZA" },
+    { mapId = 14, symbol = "MAP_ROUTEHOUSE", section = "Route House", mapSectionNativeId = 12, displayName = "ROUTE HOUSE" },
+    { mapId = 15, symbol = "MAP_ORDINARY", section = "Ordinary", mapSectionNativeId = 9, displayName = "ORDINARY" },
+  }
+  local task = Catalog.newTask(summaries)
+  local complete = false
+  while not complete do
+    local _, isComplete = task:advance(2)
+    complete = isComplete
+  end
+  local catalog = task:take()
+  local expectedGroupByMap = {
+    [10] = "location:group:routes",
+    [11] = "location:group:routes",
+    [12] = "location:group:battle-frontier",
+    [13] = "location:group:battle-frontier",
+    [14] = "location:group:12",
+    [15] = "location:group:9",
+  }
+  local occurrences = {}
+  local groups = projectedRows(catalog:groups(""))
+  local ids = {}
+  for _, entry in ipairs(groups) do
+    Assert.isNil(ids[entry.id], "native and synthetic groups have distinct stable identities")
+    ids[entry.id] = true
+    local leaves = projectedRows(catalog:maps(entry.id, ""))
+    for _, leaf in ipairs(leaves) do
+      occurrences[leaf.row.mapId] = (occurrences[leaf.row.mapId] or 0) + 1
+      Assert.equal(catalog:groupForMap(leaf.row.mapId), entry.id, "group lookup follows each leaf identity")
+      Assert.equal(entry.id, expectedGroupByMap[leaf.row.mapId], "only the declared source-symbol prefixes override grouping")
+    end
+  end
+  Assert.equal(#groups, 4, "the two prefixes add groups without splitting ordinary source sections")
+  Assert.equal(catalog.groupById["location:group:routes"].displayName, "Routes")
+  Assert.equal(catalog.groupById["location:group:battle-frontier"].displayName, "Battle Frontier")
+  for _, summary in ipairs(summaries) do
+    Assert.equal(occurrences[summary.mapId], 1, "each source map appears in exactly one group")
+  end
+  local filtered = projectedRows(catalog:maps("location:group:routes", "30"))
+  Assert.equal(#filtered, 1, "synthetic groups retain child-label filtering")
+  Assert.equal(filtered[1].row.mapId, 11, "filter results preserve the source map identity")
+end
+
 function T.tests.incremental_catalog_preparation_limits_summary_reads_per_advance()
   local Catalog = require("app.src.saveeditor.SaveEditorMapCatalog")
   local reads = 0

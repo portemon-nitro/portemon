@@ -2085,12 +2085,14 @@ function T.location_map_list_labels_fit_button_content_without_losing_map_identi
   Assert.equal(found and found.label, "AZALEA_ILEX_FOREST_GATEHOUSE", "layout retains the complete map display name")
   Assert.isTrue(renderedText:find("AZALEA_ILEX", 1, true) ~= nil, "the painted map label remains recognizable")
   local labelRect = assert(found.labelRect)
-  local valueRect = assert(found.valueRect)
+  Assert.isNil(found.value, "Map rows omit their redundant trailing section value")
+  Assert.isNil(found.valueRect, "Map rows do not reserve a trailing value rectangle")
   local labelCall = assert(findPaletteCall(paletteCalls, "AZALEA_ILEX"), "the map label has a painted text call")
   local paintedWidth = view.textMetrics.measure(labelCall.value) * 0.75
   Assert.isTrue(labelCall.x >= labelRect.x, "the map glyphs begin inside their row label region")
   Assert.isTrue(labelCall.x + paintedWidth <= labelRect.x + labelRect.width + 0.01, "map glyphs fit their row label region")
-  Assert.isTrue(labelCall.x + paintedWidth + 4 <= valueRect.x, "map glyphs stay clear of the trailing value")
+  local targetRect = assert(layout.targets[targetId]).rect
+  Assert.isTrue(labelRect.width >= targetRect.width - 20, "the map label uses the full row after its marker inset")
   local clip = assert(layout.viewports["location:group:1"]).clip
   Assert.isTrue(labelCall.x >= clip.x and labelCall.x + paintedWidth <= clip.x + clip.width)
   Assert.isTrue(labelCall.y >= clip.y and labelCall.y + view.textMetrics.lineHeight * 0.75 <= clip.y + clip.height)
