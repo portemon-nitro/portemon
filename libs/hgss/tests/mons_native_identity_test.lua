@@ -461,4 +461,43 @@ function T.materialized_battle_facts_move_only_at_explicit_reload()
   Assert.equal(MonStats.derive(leveled, catalog).level, 10)
 end
 
+function T.staged_health_follows_the_new_maximum_and_survives_failed_derivation()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED, NATIVE_SECTION)
+  service:createStarter("CHIKORITA", {
+    date = { year = MET_DATE.year, month = MET_DATE.month, day = MET_DATE.day },
+  })
+  local fresh = service:partyMon(0)
+  local oldMax = service:derive(fresh).maxHp
+  Assert.equal(fresh.condition.currentHp, oldMax, "the fresh mon opens at full health")
+
+  local probe = copyRecord(fresh)
+  probe.experience = 0
+  probe.condition.currentHp = 0
+  local newMax = service:derive(probe).maxHp
+  Assert.isTrue(newMax < oldMax, "the lowered record recalculates a smaller maximum")
+
+  local lowered = copyRecord(fresh)
+  lowered.experience = 0
+  lowered.condition.currentHp = oldMax - 2
+  local healed = service:refreshStagedHp(lowered, oldMax)
+  Assert.isTrue(healed == lowered, "recalculation finalizes the staged record in place")
+  Assert.equal(healed.condition.currentHp, newMax - 2, "living mons keep their damage across the new maximum")
+
+  local fainted = copyRecord(fresh)
+  fainted.experience = 0
+  fainted.condition.currentHp = 0
+  Assert.equal(service:refreshStagedHp(fainted, oldMax).condition.currentHp, 0, "fainted mons stay at zero")
+
+  local broken = copyRecord(fresh)
+  broken.condition.currentHp = oldMax - 2
+  broken.species = "NOT_A_SPECIES"
+  local healthBefore = broken.condition.currentHp
+  local ok = pcall(function()
+    service:refreshStagedHp(broken, oldMax)
+  end)
+  Assert.isFalse(ok, "unusable calculation inputs fail the recalculation")
+  Assert.equal(broken.condition.currentHp, healthBefore, "a failed derivation leaves staged health intact")
+end
+
 return { tests = T }

@@ -24,9 +24,13 @@ LÖVE, source ROM, game, HGSS field, script, or presentation knowledge.
   Only independent source-of-truth values persist: level, nature, gender,
   shininess, and maximum stats derive from experience, personality, trainer
   identity, and catalog data, and are never stored.
-- Schemas are strict with no silent repair. Unknown fields, duplicate native
-  identities, unencodable text, and inconsistent derivations fail loudly with
-  structured package errors; programming invariants use `assert`.
+- Schemas are strict at admission, mutation, and native encoding with no
+  silent repair. Unknown fields, duplicate native identities, unencodable
+  text, and inconsistent derivations fail loudly with structured package
+  errors; programming invariants use `assert`.
+- Reads over already-owned records never rerun admission: derivation, view,
+  and status projections compute from the borrowed record and propagate
+  calculation errors without validating or copying unrelated fields.
 - `MonCatalog` is immutable after construction and copies its input root.
 - Published generated roots arrive comprehensively validated by
   producer/audit paths; the constructor trusts the current canonical root

@@ -324,4 +324,57 @@ function T.ordinary_mons_project_their_derived_gender_symbol()
   Assert.equal(lead.genderSymbol, lead.gender, "the symbol follows the derived gender")
 end
 
+function T.derived_reads_ignore_unrelated_condition_members()
+  local _, service = openService()
+  give(service, "CHIKORITA")
+  local expected = service:derive(service:partyMon(0))
+  local revision = service:partyRevision()
+  local rngCalls = service:capture().rng.calls
+
+  local observed = service:partyMon(0)
+  observed.condition.status = 0
+  local healthBefore = observed.condition.currentHp
+  local effectCountBefore = #observed.condition.effects
+
+  local Mon = require("libs.mons.src.Mon")
+  local admitted = Mon.validate
+  local audits = 0
+  Mon.validate = function(record, context)
+    audits = audits + 1
+    return admitted(record, context)
+  end
+  local ok, failure = pcall(function()
+    for _ = 1, 3 do
+      Assert.deepEqual(service:derive(observed), expected, "repeated reads agree with the clean fixture")
+    end
+    Assert.deepEqual(
+      service:partyMonDerived(0),
+      { level = expected.level, maxHp = expected.maxHp },
+      "slot reads reuse the same derivation"
+    )
+  end)
+  Mon.validate = admitted
+  Assert.isTrue(ok, "reads must ignore the inert condition member, got " .. tostring(failure))
+  Assert.equal(audits, 0, "reads never run whole-record admission")
+  Assert.equal(observed.condition.status, 0, "reads leave the borrowed member alone")
+  Assert.equal(observed.condition.currentHp, healthBefore, "reads leave health alone")
+  Assert.equal(#observed.condition.effects, effectCountBefore, "reads leave effects alone")
+  Assert.equal(service:partyRevision(), revision, "reads never publish a revision")
+  Assert.equal(service:capture().rng.calls, rngCalls, "reads never draw the generator")
+
+  local view = PartyScreenModel.build(service)
+  Assert.equal(view.slots[1].maxHp, expected.maxHp, "party facts carry the derived maximum")
+  Assert.equal(view.slots[1].level, expected.level, "party facts carry the derived level")
+  local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
+  local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
+  local facts = SummaryModel.build(
+    service,
+    0,
+    SummaryPresentationFixture.context(service:partyCount()),
+    SummaryPresentationFixture.manifest()
+  )
+  Assert.equal(facts.skills.maxHp, expected.maxHp, "summary facts carry the derived maximum")
+  Assert.equal(facts.skills.level, expected.level, "summary facts carry the derived level")
+end
+
 return { tests = T }

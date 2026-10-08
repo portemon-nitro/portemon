@@ -971,4 +971,48 @@ function T.detached_subject_sets_share_the_rich_projection_without_per_member_ro
   Assert.isTrue(#seen >= 7, "the projection reads through the subject set")
 end
 
+function T.invalid_records_still_fail_at_admission_and_encoding_boundaries()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x2B2B2B2B)
+  gift(service, "CHIKORITA", 5)
+  local count = service:partyCount()
+  local revision = service:partyRevision()
+
+  local flawed = service:partyMon(0)
+  flawed.friendship = 300
+
+  local Errors = require("libs.errors.src.Errors")
+  local addErr = Assert.throws(function()
+    service:addMon(flawed)
+  end, "creation still rejects out-of-range friendship")
+  Assert.isTrue(Errors.is(addErr), "creation fails with a structured rejection")
+  Assert.equal(addErr.code, "MON_RECORD_INVALID", "creation fails at record admission")
+
+  local stageErr = Assert.throws(function()
+    service:preparePartyChanges(revision, { { slot = 0, mon = flawed } })
+  end, "staged mutation still rejects out-of-range friendship")
+  Assert.isTrue(Errors.is(stageErr), "staged mutation fails with a structured rejection")
+  Assert.equal(stageErr.code, "MON_RECORD_INVALID", "staged mutation fails at record admission")
+
+  local BoxCodec = require("libs.mons.src.gen4.BoxCodec")
+  local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
+  local context = {
+    catalog = catalog,
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+  }
+  local encodeErr = Assert.throws(function()
+    BoxCodec.encode(flawed, context)
+  end, "native encoding still rejects the flawed record")
+  Assert.isTrue(Errors.is(encodeErr), "native encoding fails with a structured rejection")
+  Assert.equal(encodeErr.code, "MON_RECORD_INVALID", "native encoding fails at record admission")
+
+  Assert.isTrue(NativeLegality.project(service:partyMon(0), context) ~= nil, "valid records still project")
+  Assert.equal(service:partyCount(), count, "rejected records never publish")
+  Assert.equal(service:partyRevision(), revision, "rejected records never move the revision")
+end
+
 return { tests = T }

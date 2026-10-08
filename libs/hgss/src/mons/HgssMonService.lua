@@ -444,10 +444,9 @@ function HgssMonService.adjustHpForMaxChange(oldMaxHp, newMaxHp, currentHp)
 end
 
 -- Finalizes a copied mon whose effort values changed: rederives through
--- the canonical calculations and adjusts current health to the new
--- maximum without reviving the fainted. The staged copy carries the old
--- health through a zero placeholder because record validation forbids
--- health above the derived maximum before the adjustment runs.
+-- the shared calculations and adjusts current health to the new maximum
+-- without reviving the fainted. The staged copy keeps its old health
+-- until the adjustment runs, so a failed derivation leaves it untouched.
 ---@param staged table<string, unknown>
 ---@param oldMaxHp integer
 ---@return table<string, unknown>
@@ -455,7 +454,6 @@ function HgssMonService:refreshStagedHp(staged, oldMaxHp)
   assert(type(staged) == "table", "staged finalization needs a mon record")
   local condition = assert(staged.condition) --[[@as table<string, unknown>]]
   local currentHp = assert(condition.currentHp) --[[@as integer]]
-  condition.currentHp = 0
   local updated = self:derive(staged)
   condition.currentHp = HgssMonService.adjustHpForMaxChange(oldMaxHp, updated.maxHp, currentHp)
   return staged
@@ -463,13 +461,12 @@ end
 
 -- Read-only full derived-stat projection for item and summary
 -- calculations: level plus every computed stat through the shared
--- battle-stat projection. The record is validated first; nothing is
--- stored and no revision moves.
+-- battle-stat projection. The borrowed record is calculated directly;
+-- nothing is validated, stored, or copied, and no revision moves.
 ---@param mon table<string, unknown>
 ---@return { level: integer, maxHp: integer, attack: integer, defense: integer, speed: integer, specialAttack: integer, specialDefense: integer }
 function HgssMonService:derive(mon)
-  local canonical = Mon.validate(mon, self._context)
-  return MonStats.derive(canonical, self._catalog)
+  return MonStats.derive(mon, self._catalog)
 end
 
 -- Stages validated mon replacements without touching the live party.

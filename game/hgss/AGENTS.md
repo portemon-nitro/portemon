@@ -26,9 +26,10 @@ playable product.
 - Do not import `app`, `romdump`, or `libs/nds` directly. Process callbacks, launcher and
   provisioning policy belong to `app`; ROM/source interpretation belongs to `romdump`; NDS
   implementation details stay behind reusable HGSS-facing seams.
-- Reusable complete save validation, field-script compatibility, HGSS input bindings, and
-  shared presentation mechanisms belong to their libraries. Application ownership remains
-  here for HGSS retail-specific behavior and composition.
+- Nested domain restoration with explicit admission ownership, field-script compatibility,
+  HGSS input bindings, and shared presentation mechanisms belong to their libraries.
+  Each runtime domain owner restores and checks the nested state it actually uses.
+  Application ownership remains here for HGSS retail-specific behavior and composition.
 - Existing `data.*` module paths and data layout are unchanged. This package does not own a
   data migration or a cross-game namespace.
 
