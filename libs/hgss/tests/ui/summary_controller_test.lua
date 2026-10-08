@@ -1578,4 +1578,75 @@ function T.closing_terminal_ticks_settle_without_running_their_input()
   Assert.equal(ribbonStatus.phase, "root", "the clean ribbon edge browses normally")
 end
 
+function T.every_material_context_input_refreshes_retained_facts()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = liveService(catalog, 0x70106002)
+  giftSpecies(service, "CHIKORITA", 5)
+  giftSpecies(service, "TOTODILE", 5)
+  editPartyMon(service, 0, function(copy)
+    copy.ribbons = { ds1 = 2147483649, gba = 16777216, ds2 = 0 }
+  end)
+  local manifest = SummaryPresentationFixture.manifest()
+  local current = SummaryPresentationFixture.context(2)
+  local projection = SummaryModel.newProjection(service, function()
+    return current
+  end, manifest)
+  local controller, _ = nativeOpen({
+    model = {
+      refresh = function(slot)
+        return projection.refresh(slot)
+      end,
+    },
+    manifest = manifest,
+  })
+  Assert.isTrue(controller:refreshFacts(), "the facts reconcile")
+  local facts = assert(controller:status().facts, "status publishes its facts")
+  Assert.isTrue(controller:refreshFacts(), "an unchanged refresh stays active")
+  Assert.isTrue(controller:status().facts == facts, "an unchanged refresh reuses its facts")
+  Assert.equal(controller:status().pictureEpoch, 0, "context-only traffic never restarts the picture")
+  local revision = service:partyRevision()
+  local function expectRefresh(note)
+    Assert.equal(service:partyRevision(), revision, note .. " moves no party revision")
+    Assert.isTrue(controller:refreshFacts(), note .. " stays active")
+    local next = assert(controller:status().facts, note .. " publishes its facts")
+    Assert.isTrue(next ~= facts, note .. " replaces its facts")
+    Assert.equal(controller:status().pictureEpoch, 0, note .. " never restarts the picture")
+    facts = next
+  end
+  current = SummaryPresentationFixture.context(2, { dayOfMonth = 14 })
+  expectRefresh("a changed day")
+  current.profile.name = "NEWHOPE"
+  expectRefresh("a changed profile name")
+  current.profile.trainerId = current.profile.trainerId + 1
+  expectRefresh("a changed profile identity")
+  current.profile.gender = 1 - current.profile.gender
+  expectRefresh("a changed profile gender")
+  current.dexMode = "national"
+  expectRefresh("a changed dex mode")
+  Assert.equal(facts.info.dexNumber, 152, "the national mode selects the national dex number")
+  current.aprijuiceBySlot[1] = { power = 10, stamina = 0, skill = 0, jump = 0, speed = 0 }
+  expectRefresh("a changed aprijuice row")
+  current.specialRibbonDescriptions[2] = "CHANGED SLOT TWO"
+  expectRefresh("a changed special description")
+  current.performanceEnabled = false
+  expectRefresh("disabled performance")
+  Assert.isNil(facts.performance, "disabled performance exposes no rows")
+  current.performanceEnabled = true
+  expectRefresh("reenabled performance")
+  Assert.equal(#facts.performance, 5, "reenabled performance exposes five rows")
+  editPartyMon(service, 0, function(copy)
+    copy.nickname = "LEAFY"
+  end)
+  revision = service:partyRevision()
+  Assert.isTrue(controller:refreshFacts(), "a source revision stays active")
+  local revised = assert(controller:status().facts, "a source revision publishes its facts")
+  Assert.isTrue(revised ~= facts, "a source revision replaces its facts")
+  Assert.equal(revised.identity.nickname, "LEAFY", "a source revision carries the new nickname")
+  facts = revised
+  local status = nativeStep(controller, { { type = "navigate", direction = "down" } })
+  Assert.equal(status.slot, 1, "navigation changes the member")
+  Assert.isTrue(status.facts ~= facts, "a changed member replaces its facts")
+  Assert.equal(status.pictureEpoch, 1, "a changed member advances the epoch exactly once")
+end
+
 return { tests = T }

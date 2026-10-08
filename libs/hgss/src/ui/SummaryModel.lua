@@ -14,7 +14,6 @@ local MonCache = require("libs.assets.src.MonCache")
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
-local SummaryAssetSchema = require("libs.assets.src.SummaryAssetSchema")
 local SummaryMemo = require("libs.hgss.src.ui.SummaryMemo")
 
 ---@class SummaryModel
@@ -256,6 +255,88 @@ local function contextKey(context)
     parts[#parts + 1] = tostring(text)
   end
   return table.concat(parts, "|")
+end
+
+-- The retained identity behind one projection: every display-context
+-- value the projection reads, copied by value. Freshly allocated
+-- context tables compare by content, never by reference, and text
+-- values compare exactly rather than through a joined signature.
+---@param context table<string, unknown>
+---@return table<string, unknown>
+local function snapshotContext(context)
+  checkContext(context)
+  local profile = assert(context.profile, "the display context carries the trainer profile")
+  assert(type(profile) == "table", "the trainer profile is a record")
+  local juice = assert(context.aprijuiceBySlot, "the context carries aprijuice modifiers")
+  assert(type(juice) == "table", "aprijuice modifiers are an array")
+  local specials = assert(context.specialRibbonDescriptions, "the context carries special-ribbon descriptions")
+  assert(type(specials) == "table", "special-ribbon descriptions are an array")
+  local rows = {}
+  for index, row in ipairs(juice) do
+    assert(type(row) == "table", "aprijuice rows are records")
+    rows[index] = { power = row.power, stamina = row.stamina, skill = row.skill, jump = row.jump, speed = row.speed }
+  end
+  local descriptions = {}
+  for index, text in ipairs(specials) do
+    descriptions[index] = text
+  end
+  return {
+    trainerId = profile.trainerId,
+    trainerName = profile.name,
+    trainerGender = profile.gender,
+    dayOfMonth = context.dayOfMonth,
+    dexMode = context.dexMode,
+    performanceEnabled = context.performanceEnabled,
+    aprijuice = rows,
+    specials = descriptions,
+  }
+end
+
+---@param current table<string, unknown>
+---@param kept table<string, unknown>
+---@return boolean
+local function sameContext(current, kept)
+  if
+    current.trainerId ~= kept.trainerId
+    or current.trainerName ~= kept.trainerName
+    or current.trainerGender ~= kept.trainerGender
+    or current.dayOfMonth ~= kept.dayOfMonth
+    or current.dexMode ~= kept.dexMode
+    or current.performanceEnabled ~= kept.performanceEnabled
+  then
+    return false
+  end
+  local rows = assert(current.aprijuice, "the snapshot carries aprijuice rows")
+  local held = assert(kept.aprijuice, "the snapshot carries aprijuice rows")
+  assert(type(rows) == "table" and type(held) == "table", "aprijuice snapshots are arrays")
+  if #rows ~= #held then
+    return false
+  end
+  for index = 1, #rows do
+    local left = rows[index]
+    local right = held[index]
+    if
+      left.power ~= right.power
+      or left.stamina ~= right.stamina
+      or left.skill ~= right.skill
+      or left.jump ~= right.jump
+      or left.speed ~= right.speed
+    then
+      return false
+    end
+  end
+  local texts = assert(current.specials, "the snapshot carries special descriptions")
+  local previous = assert(kept.specials, "the snapshot carries special descriptions")
+  assert(type(texts) == "table" and type(previous) == "table", "description snapshots are arrays")
+  if #texts ~= #previous then
+    return false
+  end
+  for index = 1, #texts do
+    if texts[index] ~= previous[index] then
+      return false
+    end
+  end
+  return true
 end
 
 ---@param mon table<string, unknown>
@@ -559,7 +640,6 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
   assert(type(catalog) == "table", "the summary needs the mon catalog")
   assert(type(derive) == "function", "the summary needs the derived-stat projection")
   assert(type(manifest) == "table", "the summary needs the summary family")
-  SummaryAssetSchema.assertManifest(manifest)
   local slotCount = reader.count()
   assert(
     type(slotCount) == "number" and slotCount % 1 == 0 and slotCount >= 1,
@@ -849,6 +929,76 @@ function SummaryModel.build(service, slot0, context, manifest)
   end
   local reader = { count = readerCount, revision = readerRevision, read = readerRead }
   return buildRich(reader, slot0, context, manifest, service:catalog(), derive)
+end
+
+-- Retains one immutable facts record for a single open: unchanged
+-- refreshes return the kept record without rereading subjects or
+-- deriving stats, while source, slot, catalog, or context drift rebuilds
+-- a complete candidate behind the existing revision consistency check.
+-- A replacement binding creates a new projection; in-place mutation of
+-- a contractually immutable catalog is not an invalidation mechanism.
+-- A failed build keeps the last successful facts and reports its error
+-- without caching the partial candidate.
+---@param service HgssMonService the live mon service (partyCount/partyRevision/partyMon/derive/catalog)
+---@param contextSource fun(): table<string, unknown> explicit read-only display context per refresh
+---@param manifest table<string, unknown> validated summary family
+---@return { refresh: fun(slot0: integer): table<string, unknown> }
+function SummaryModel.newProjection(service, contextSource, manifest)
+  assert(type(service) == "table", "the summary needs the live mon service")
+  assert(type(service.partyCount) == "function", "the summary needs the party count")
+  assert(type(service.partyRevision) == "function", "the summary needs the party revision")
+  assert(type(service.partyMon) == "function", "the summary needs party reads")
+  assert(type(service.derive) == "function", "the summary needs the derived-stat projection")
+  assert(type(service.catalog) == "function", "the summary needs the mon catalog")
+  assert(type(contextSource) == "function", "the retained projection reads its display context per refresh")
+  assert(type(manifest) == "table", "the summary needs the summary family")
+  local function readerCount()
+    return service:partyCount()
+  end
+  local function readerRevision()
+    return service:partyRevision()
+  end
+  local function readerRead(index)
+    return service:partyMon(index)
+  end
+  local function derive(mon)
+    return service:derive(mon)
+  end
+  local reader = { count = readerCount, revision = readerRevision, read = readerRead }
+  ---@type table<string, unknown>?
+  local facts = nil
+  ---@type integer?
+  local keptSlot = nil
+  ---@type integer?
+  local keptRevision = nil
+  local keptCatalog = nil
+  ---@type table<string, unknown>?
+  local keptContext = nil
+  ---@param slot0 integer zero-based selected subject index
+  ---@return table<string, unknown>
+  local function refresh(slot0)
+    local context = contextSource()
+    local snapshot = snapshotContext(context)
+    local revision = reader.revision()
+    local catalog = service:catalog()
+    if
+      facts ~= nil
+      and keptSlot == slot0
+      and keptRevision == revision
+      and keptCatalog == catalog
+      and sameContext(snapshot, assert(keptContext, "a kept projection carries its context"))
+    then
+      return facts
+    end
+    local candidate = buildRich(reader, slot0, context, manifest, catalog, derive)
+    facts = candidate
+    keptSlot = slot0
+    keptRevision = candidate.revision
+    keptCatalog = catalog
+    keptContext = snapshot
+    return candidate
+  end
+  return { refresh = refresh }
 end
 
 return SummaryModel

@@ -1210,6 +1210,15 @@ function SummaryController:updateFixed(uiInput, gates)
   end
 end
 
+-- Reconciles facts without advancing input, animation, or cry clocks:
+-- the semantic refresh behind resource-demand and readiness checks.
+-- Carries the existing reconciliation cancellation behavior and never
+-- exposes private live state.
+---@return boolean true while the instance stays open
+function SummaryController:refreshFacts()
+  return reconcile(self)
+end
+
 -- The presentation snapshot: open flag, mode, native group/phase/cursors,
 -- transition sample, picture epoch and sample, transient notice, capability
 -- flags, and the current immutable facts. Absent selections are nil.

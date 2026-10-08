@@ -375,4 +375,39 @@ function T.boxed_reorder_publishes_guarded_and_stale_attempts_write_nothing()
   state:dispose()
 end
 
+function T.boxed_idle_ticks_reuse_facts_and_rebuild_no_model()
+  local mons = boxedService({
+    { species = "CHIKORITA" },
+    { species = "TOTODILE" },
+  }, { 2, 5 })
+  local captured = {}
+  local builds = 0
+  local originalBuild = SummaryModel.build
+  SummaryModel.build = function(serviceArg, slot, context, manifest)
+    builds = builds + 1
+    return originalBuild(serviceArg, slot, context, manifest)
+  end
+  local ok, err = pcall(function()
+    local state = openBoxSummary(mons, { 2, 5 }, captured, 0)
+    settleToActive(state)
+    local status = state:status()
+    local demand = assert(captured[#captured], "the wrapper prepares demand for the selection")
+    Assert.deepEqual(
+      demand.portraitSelectors,
+      { status.facts.portraitSelector },
+      "boxed demand follows the selected portrait"
+    )
+    Assert.deepEqual(demand.iconKeys, { status.facts.iconKey }, "boxed demand follows the selected icon")
+    builds = 0
+    for _ = 1, 3 do
+      state:updateFixed({})
+    end
+    Assert.equal(builds, 0, "idle boxed ticks rebuild no model")
+    Assert.isTrue(state:status().facts == status.facts, "idle boxed ticks reuse their facts")
+    state:dispose()
+  end)
+  SummaryModel.build = originalBuild
+  Assert.isTrue(ok, "boxed idle ticks reuse their facts: " .. tostring(err))
+end
+
 return { tests = T }

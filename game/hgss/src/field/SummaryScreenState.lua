@@ -208,8 +208,11 @@ function SummaryScreenState.new(opts)
   )
   self._lease = lease
   local wrapper = self
+  local projection = SummaryModel.newProjection(modelService(wrapper), function()
+    return wrapper._contextSource()
+  end, manifest)
   local function refreshModel(slot)
-    return SummaryModel.build(modelService(wrapper), slot, wrapper._contextSource(), manifest)
+    return projection.refresh(slot)
   end
   local function resolveLayout()
     return wrapper:resolveLayout()
@@ -452,33 +455,37 @@ function SummaryScreenState:refreshPresentation(view)
   return self._session:resolve(self:_measured(), view or self:_view())
 end
 
--- Builds the bounded demand behind the current selection. Party demand
--- carries one full portrait identity per non-egg roster member in slot
--- order with the roster icon keys. Detached demand carries only the
--- selected subject: a box can hold more subjects than the bounded page
--- contract allows, so whole-box portraits never enter preparation.
--- Demand stays qualified by source revision, selection, and picture epoch
--- so a stale worker result can never satisfy a newer selection.
----@return table<string, unknown>? demand when facts build
----@return string? build failure when facts do not build
+-- Builds the bounded demand behind the current selection from the
+-- already-reconciled controller facts. Party demand carries one full
+-- portrait identity per non-egg roster member in slot order with the
+-- roster icon keys. Detached demand carries only the selected subject:
+-- a box can hold more subjects than the bounded page contract allows,
+-- so whole-box portraits never enter preparation. Demand stays
+-- qualified by source revision, selection, and picture epoch so a stale
+-- worker result can never satisfy a newer selection. The refresh below
+-- reconciles facts only; input, animation, and cry clocks never advance.
+---@return table<string, unknown>? demand when facts reconcile
+---@return string? build failure when facts do not reconcile
 local function currentDemand(self)
-  local ok, context = pcall(self._contextSource)
-  if not ok then
-    return nil, tostring(context)
+  local refreshed, refreshErr = pcall(function()
+    return self._controller:refreshFacts()
+  end)
+  if not refreshed then
+    return nil, tostring(refreshErr)
   end
-  local source = modelService(self)
-  local manifest = self._manifest
   local status = self._controller:status()
+  if status.open ~= true then
+    return nil, "the summary closed during its refresh"
+  end
+  local facts = assert(status.facts, "reconciled facts carry the selection")
+  assert(type(facts) == "table", "reconciled facts arrive as a record")
   local selected = 0
   local slot = status.slot
   if type(slot) == "number" and slot % 1 == 0 and slot >= 0 then
     selected = slot
   end
-  local buildOk, facts = pcall(SummaryModel.build, source, selected, context, manifest)
-  if not buildOk then
-    return nil, tostring(facts)
-  end
-  local revision = source:partyRevision()
+  local revision = assert(facts.revision, "facts carry their source revision")
+  assert(type(revision) == "number", "revisions are numeric")
   local pictureEpoch = status.pictureEpoch or 0
   if self._subjectPort ~= nil then
     local selectors = {}

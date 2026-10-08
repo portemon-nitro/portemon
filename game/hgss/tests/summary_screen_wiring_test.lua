@@ -1211,6 +1211,56 @@ function T.production_presenters_draw_summary_without_a_test_renderer()
   owner:release()
 end
 
+function T.fact_reads_leave_picture_and_cry_clocks_untouched()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x70106003)
+  gift(service, "CHIKORITA")
+  gift(service, "TOTODILE")
+  local builds = 0
+  local originalBuild = SummaryModel.build
+  SummaryModel.build = function(serviceArg, slot, context, manifest)
+    builds = builds + 1
+    return originalBuild(serviceArg, slot, context, manifest)
+  end
+  local ok, err = pcall(function()
+    local state = SummaryScreenState.new(composition(service))
+    settle(state, 24)
+    Assert.equal(state:status().wrapperPhase, "active", "the summary settles into its interactive state")
+    builds = 0
+    state:updateFixed({})
+    Assert.equal(builds, 0, "an idle tick rebuilds no model")
+    local picture = state:status().picture
+    local epoch = state:status().pictureEpoch
+    for _ = 1, 3 do
+      Assert.deepEqual(state:status().picture, picture, "repeated reads hold the picture sample")
+    end
+    Assert.equal(state:status().pictureEpoch, epoch, "repeated reads hold the epoch")
+    state:updateFixed({ { type = "navigate", direction = "right" } })
+    state:updateFixed({ { type = "confirm" } })
+    for _ = 1, 6 do
+      if state:status().phase == "move_detail" then
+        break
+      end
+      state:updateFixed({})
+    end
+    Assert.equal(state:status().phase, "move_detail", "the detail settles after its transition")
+    state:updateFixed({ { type = "confirm" } })
+    Assert.equal(state:status().phase, "move_reorder", "confirmation arms the source row")
+    service:setMove(0, 0, "SCRATCH")
+    local drifted = service:partyRevision()
+    state:updateFixed({})
+    local status = state:status()
+    Assert.isNil(status.reorderSource, "drift drops the armed gesture")
+    Assert.notNil(status.notice, "drift surfaces a notice")
+    Assert.equal(status.pictureEpoch, epoch, "revision drift alone restarts no picture")
+    Assert.equal(service:partyRevision(), drifted, "a drifted gesture publishes nothing")
+    Assert.isNil(state:takeResult(), "a drifted gesture reports no terminal result")
+    state:dispose()
+  end)
+  SummaryModel.build = originalBuild
+  Assert.isTrue(ok, "fact reads leave the clocks untouched: " .. tostring(err))
+end
+
 return {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },

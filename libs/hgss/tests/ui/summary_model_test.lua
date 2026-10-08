@@ -1015,4 +1015,89 @@ function T.invalid_records_still_fail_at_admission_and_encoding_boundaries()
   Assert.equal(service:partyRevision(), revision, "rejected records never move the revision")
 end
 
+function T.idle_refresh_reuses_facts_without_a_manifest_audit()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x70106001)
+  gift(service, "CHIKORITA", 5)
+  local manifest = SummaryPresentationFixture.manifest()
+  local Schema = require("libs.assets.src.SummaryAssetSchema")
+  local audits = 0
+  local originalAudit = Schema.assertManifest
+  Schema.assertManifest = function(target)
+    audits = audits + 1
+    return originalAudit(target)
+  end
+  local ok, err = pcall(function()
+    local first = SummaryModel.build(service, 0, SummaryPresentationFixture.context(1), manifest)
+    local second = SummaryModel.build(service, 0, SummaryPresentationFixture.context(1), manifest)
+    Assert.deepEqual(second, first, "equal contexts rebuild equal facts")
+    Assert.equal(audits, 0, "idle projection performs no manifest audit")
+  end)
+  Schema.assertManifest = originalAudit
+  Assert.isTrue(ok, "idle refresh keeps its facts without audits: " .. tostring(err))
+  local counts = { mon = 0, derive = 0 }
+  local reader = {
+    partyCount = function()
+      return service:partyCount()
+    end,
+    partyRevision = function()
+      return service:partyRevision()
+    end,
+    partyMon = function(_, index)
+      counts.mon = counts.mon + 1
+      return service:partyMon(index)
+    end,
+    catalog = function()
+      return service:catalog()
+    end,
+    derive = function(_, mon)
+      counts.derive = counts.derive + 1
+      return service:derive(mon)
+    end,
+  }
+  local current = SummaryPresentationFixture.context(1)
+  local projection = SummaryModel.newProjection(reader, function()
+    return current
+  end, manifest)
+  local facts = projection.refresh(0)
+  local reference = SummaryModel.build(service, 0, SummaryPresentationFixture.context(1), manifest)
+  Assert.deepEqual(facts, reference, "the retained projection matches a fresh build")
+  local monReads = counts.mon
+  local derives = counts.derive
+  Assert.isTrue(monReads > 0, "the first refresh reads its subjects")
+  Assert.isTrue(derives > 0, "the first refresh derives its stats")
+  local again = projection.refresh(0)
+  Assert.isTrue(again == facts, "an unchanged refresh reuses its facts")
+  Assert.equal(counts.mon, monReads, "an unchanged refresh rereads no subjects")
+  Assert.equal(counts.derive, derives, "an unchanged refresh derives no stats")
+end
+
+function T.producer_rejection_and_replaced_facts_stay_stable()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x70106004)
+  gift(service, "CHIKORITA", 5)
+  local manifest = SummaryPresentationFixture.manifest()
+  local Schema = require("libs.assets.src.SummaryAssetSchema")
+  Assert.throws(function()
+    Schema.assertManifest({})
+  end, "producer validation still rejects malformed output")
+  local current = SummaryPresentationFixture.context(1)
+  local projection = SummaryModel.newProjection(service, function()
+    return current
+  end, manifest)
+  local before = projection.refresh(0)
+  local displayName = before.identity.displayName
+  Assert.isTrue(type(displayName) == "string", "the snapshot names its display mon")
+  setMon(service, 0, function(mon)
+    mon.nickname = "RETIRED"
+  end)
+  local after = projection.refresh(0)
+  Assert.isTrue(after ~= before, "a source change replaces its facts")
+  Assert.equal(before.identity.displayName, displayName, "prior facts stay stable after replacement")
+  Assert.equal(after.identity.nickname, "RETIRED", "replacement facts carry the new nickname")
+  local snapshot = service:partyMon(0)
+  projection.refresh(0)
+  Assert.deepEqual(service:partyMon(0), snapshot, "fact reads never mutate the borrowed mon")
+end
+
 return { tests = T }
