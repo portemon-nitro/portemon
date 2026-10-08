@@ -2,6 +2,7 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local CollisionFixture = require("tests.support.CollisionFixture")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
@@ -803,6 +804,27 @@ function T.tests.same_map_retry_rearms_only_after_explicit_open()
   Assert.equal(service:snapshot().status.state, "ready", "the explicit same-map retry can become ready")
   Assert.equal(#loader.begins, beginsAtFailure + 1, "one new map task begins only after explicit retry")
   Assert.equal(assert(loader.tasks[1]).releases, 1, "the original failed task stays released exactly once")
+  service:dispose()
+end
+
+function T.tests.uncovered_door_failure_retains_map_identity_and_typed_diagnostic_context()
+  local failure = Errors.new(
+    FieldErrors.MAP_PROP_UNCOVERED_DOOR,
+    "door tile (9,1) nearest placement is 9.01387818866 tiles away (beyond 5)",
+    { x = 9, z = 1, nearestDistance = 9.01387818866 }
+  )
+  local service = loadingService({ taskFailOnAdvance = failure })
+  openOutside(service, 11)
+  service:update()
+
+  local snapshot = service:snapshot()
+  Assert.equal(snapshot.mapId, 11, "the failed request retains its map identity")
+  Assert.equal(snapshot.status.state, "failed", "the typed door error remains a loader failure")
+  Assert.equal(snapshot.status.reason, Errors.format(failure), "the status preserves the original typed code and context")
+  Assert.isTrue(snapshot.status.reason:find(FieldErrors.MAP_PROP_UNCOVERED_DOOR, 1, true) ~= nil)
+  Assert.isTrue(snapshot.status.reason:find("nearestDistance=9.01387818866", 1, true) ~= nil)
+  Assert.isNil(service.runtimeMap, "a failed map is not published as loaded")
+
   service:dispose()
 end
 

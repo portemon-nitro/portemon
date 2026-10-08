@@ -11,7 +11,6 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local TextButton = require("libs.ui.src.TextButton")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
-local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
 ---@class SaveEditorRenderer
 ---@field text table<string, unknown>
@@ -267,24 +266,8 @@ function Renderer:metrics()
   }
 end
 
-local function visibleText(renderer, value)
-  local text = tostring(value or "")
-  if not text:find("{", 1, true) then
-    return text
-  end
-  local tokens, parseError = FieldMessageText.parse(text, renderer.text.fontDef)
-  if parseError ~= nil then
-    error(parseError, 0)
-  end
-  local glyphs = {}
-  for _, token in ipairs(assert(tokens)) do
-    if token.kind == "glyph" then
-      glyphs[#glyphs + 1] = token.text
-    elseif token.kind == "line_break" or token.kind == "prompt_break" then
-      glyphs[#glyphs + 1] = " "
-    end
-  end
-  return table.concat(glyphs)
+local function visibleText(value)
+  return tostring(value or "")
 end
 
 local function textPalette(skin, foreground)
@@ -342,7 +325,7 @@ local function drawText(renderer, value, x, y, role)
   if type(role) == "table" then
     if role.foreground ~= nil and role.shadow ~= nil then
       renderer.graphics.setColor(1, 1, 1, 1)
-      renderer.text:drawTextWithPalette(visibleText(renderer, value), x, y, role)
+      renderer.text:drawTextWithPalette(visibleText(value), x, y, role)
       renderer.graphics.setColor(1, 1, 1, 1)
       return
     end
@@ -361,11 +344,11 @@ local function drawText(renderer, value, x, y, role)
       background = base.background,
     }
     renderer.graphics.setColor(1, 1, 1, 1)
-    renderer.text:drawTextWithPalette(visibleText(renderer, value), x, y, palette)
+    renderer.text:drawTextWithPalette(visibleText(value), x, y, palette)
     renderer.graphics.setColor(1, 1, 1, 1)
     return
   end
-  ProductMenuSkin.drawText(renderer.graphics, renderer.text, skin, textRole, visibleText(renderer, value), x, y)
+  ProductMenuSkin.drawText(renderer.graphics, renderer.text, skin, textRole, visibleText(value), x, y)
 end
 
 local function drawFocusRing(renderer, rectValue, radius)
@@ -616,7 +599,7 @@ local function findListForTarget(lists, targetId)
 end
 
 fitText = function(renderer, value, width)
-  local text = visibleText(renderer, value)
+  local text = visibleText(value)
   local textRenderer = assert(renderer.text)
   if textRenderer:textWidth(text) <= width then
     return text

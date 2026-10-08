@@ -6,10 +6,14 @@ local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local Errors = require("libs.errors.src.Errors")
+local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local Interface = require("app.src.saveeditor.SaveEditorInterface")
+local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
@@ -19,6 +23,10 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local T = {}
 local LONG_FLAG_NAME = "FLAG_HIDE_GOLDENROD_DEPT_STORE_5F_RETURN_FRUSTRATION_LADY"
 local LONG_FLAG_DISPLAY_NAME = LONG_FLAG_NAME:gsub("^FLAG_", "")
+local DISPLAY_CHARMAP = {}
+for code = 32, 126 do
+  DISPLAY_CHARMAP[string.char(code)] = code
+end
 
 local function realTextMetrics(scope)
   local fieldText = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
@@ -389,6 +397,7 @@ local function fixture(scope, width, height, topology, section, variant, version
       mapOffset = 0,
     }
     if variant == "location-long-blocked-header"
+      or variant == "location-literal-error"
       or variant == "location-policy-event"
       or variant == "location-policy-actor"
       or variant == "location-policy-surface"
@@ -397,6 +406,12 @@ local function fixture(scope, width, height, topology, section, variant, version
       view.location.symbol = "A_VERY_LONG_SOURCE_MAP_NAME_WITH_A_VISIBLE_POLICY_REASON"
       view.location.map.symbol = "MAP_A_VERY_LONG_SOURCE_MAP_NAME_WITH_A_VISIBLE_POLICY_REASON"
       view.location.displayName = "A_VERY_LONG_SOURCE_MAP_NAME_WITH_A_VISIBLE_POLICY_REASON"
+    end
+    if variant == "location-literal-error" then
+      view.location.symbol = "A_VERY_LONG_SOURCE_{unknown}_MAP_NAME"
+      view.location.map.symbol = "MAP_A_VERY_LONG_SOURCE_{unknown}_MAP_NAME"
+      view.location.displayName = "A_VERY_LONG_SOURCE_{unknown}_MAP_NAME"
+      view.session.playerName = "PLAYER{A}"
     end
     if variant == "location-policy-event" then
       view.location.cursor = { fieldX = 32, fieldZ = 48 }
@@ -433,6 +448,9 @@ local function fixture(scope, width, height, topology, section, variant, version
     end
     view.savedLocation = { mapId = 12, fieldX = 31, fieldZ = 48 }
     view.pendingLocation = { mapId = 12, fieldX = 32, fieldZ = 48 }
+    if variant == "location-literal-error" then
+      view.savedLocation = nil
+    end
   end
   if variant == "choice-list" then
     local options = {}
@@ -610,7 +628,7 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   local drawnText = {}
   local paletteCalls = {}
   local text = {
-    fontDef = { lineHeight = 14 },
+    fontDef = { lineHeight = 14, charmap = DISPLAY_CHARMAP },
     textWidth = function(_, value)
       return view.textMetrics.measure(value)
     end,
@@ -826,6 +844,7 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   end
   if view.section == "Location" then
     local hasLongHeader = variant == "location-long-blocked-header"
+      or variant == "location-literal-error"
       or variant == "location-policy-event"
       or variant == "location-policy-actor"
       or variant == "location-policy-surface"
@@ -851,6 +870,7 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       end
       local header = assert(layout.locationHeader)
       local longIdentity = variant == "location-long-blocked-header"
+        or variant == "location-literal-error"
         or variant == "location-policy-event"
         or variant == "location-policy-actor"
         or variant == "location-policy-surface"
@@ -1554,6 +1574,85 @@ function T.location_grid_shows_status_and_controls_on_compact_wide_tall_and_dual
     { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
   )
   draw(scope, 256, 384, dual, "location-dual-touch", "Location")
+end
+
+function T.typed_location_failure_from_service_renders_with_map_identity_and_context(scope)
+  local topology = ScreenTopology.dualDisplay(
+    { id = "upper", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+    { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+  )
+  local failure = Errors.new(
+    FieldErrors.MAP_PROP_UNCOVERED_DOOR,
+    "door tile (9,1) nearest placement is 9.01387818866 tiles away (beyond 5)",
+    { x = 9, z = 1, nearestDistance = 9.01387818866 }
+  )
+  local service = LocationService.new({
+    cacheFs = { loadLua = function() return nil end },
+    world = {
+      schema = MapAssetCache.WORLD_SCHEMA,
+      maps = {
+        {
+          id = 12,
+          symbol = "MAP_A_VERY_LONG_SOURCE_MAP_NAME_WITH_A_VISIBLE_POLICY_REASON",
+          mapSection = "TEST_SECTION",
+          mapSectionNativeId = 1,
+          followMode = "ALLOW",
+          worldOriginX = 16,
+          worldOriginZ = 16,
+          matrix = { memberId = 0 },
+        },
+      },
+      byId = { [12] = 1 },
+      bySymbol = { MAP_A_VERY_LONG_SOURCE_MAP_NAME_WITH_A_VISIBLE_POLICY_REASON = 12 },
+      analysis = { mapHeaderCount = 1, excluded = {} },
+    },
+    derivedAssets = {},
+    savedObjects = { actors = {} },
+  })
+  scope:own({ release = function() service:dispose() end })
+  service.loader = {
+    requestMapAssets = function() return true end,
+    beginLoad = function()
+      return {
+        advance = function() error(failure, 0) end,
+        isReady = function() return false end,
+        release = function() end,
+      }
+    end,
+    release = function() end,
+  }
+  service:openMap(12)
+  service:update()
+  local failedLocation = service:snapshot()
+  local reason = Errors.format(failure)
+  Assert.equal(failedLocation.mapId, 12, "the failed service snapshot retains its requested map identity")
+  Assert.equal(failedLocation.status.state, "failed", "the typed loader failure reaches failed status")
+  Assert.equal(failedLocation.status.reason, reason, "failed status preserves the typed cause and context")
+  Assert.isTrue(reason:find(FieldErrors.MAP_PROP_UNCOVERED_DOOR, 1, true) ~= nil)
+  Assert.isTrue(reason:find("nearestDistance=9.01387818866", 1, true) ~= nil)
+
+  local _, renderedText, _, _, _, view = draw(
+    scope,
+    256,
+    384,
+    topology,
+    "location-literal-error",
+    "Location",
+    "location-literal-error",
+    nil,
+    function(_, preparedView)
+      preparedView.location.status = failedLocation.status
+      preparedView.location.mapId = failedLocation.mapId
+    end
+  )
+
+  Assert.equal(view.location.mapId, 12, "the renderer receives the service's failed map identity")
+  Assert.equal(view.location.status.state, "failed", "the loader failure remains visible in the view")
+  Assert.equal(view.location.status.reason, reason, "the structured failure reason remains unchanged")
+  Assert.isTrue(renderedText:find("PLAYER{A}", 1, true) ~= nil, "the user name is rendered literally")
+  Assert.isTrue(renderedText:find("A_VERY_LONG_SOURCE_{unknown}", 1, true) ~= nil, "the map header keeps its braces literal")
+  Assert.isTrue(renderedText:find("MAP_PROP_UNCOVERED_DOOR", 1, true) ~= nil, "the failed Map cause remains displayed")
+  Assert.isTrue(renderedText:find("nearestDistance=9.01387818866", 1, true) ~= nil, "the failed Map context remains displayed")
 end
 
 function T.location_grid_focus_cue_remains_visible_over_grid_tiles(scope)
