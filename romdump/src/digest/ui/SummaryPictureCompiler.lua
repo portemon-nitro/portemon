@@ -541,327 +541,415 @@ local function initChannel(machine, kind)
   end
 end
 
--- Executes one opcode of the motion word stream. Every handler consumes
--- exactly the words its source counterpart reads past the opcode; the
--- kind bytes that double as accumulator destinations land exactly where
--- the source store address computes them.
-local function executeOpcode(machine, opcode)
-  if opcode == 0 then
-    setAttr(machine, ATTR_X, machine.savedX)
-    setAttr(machine, ATTR_Y, machine.savedY)
-    setAttr(machine, ATTR_ZROT, 0)
-    setAttr(machine, 10, 0)
-    setAttr(machine, ATTR_AFFINEW, AFFINE_UNIT)
-    setAttr(machine, ATTR_AFFINEH, AFFINE_UNIT)
-    machine.done = true
-    machine.finished = true
-  elseif opcode == 1 then
-    machine.done = true
-  elseif opcode == 2 then
-    setAttr(machine, ATTR_X, machine.savedX)
-    setAttr(machine, ATTR_Y, machine.savedY)
-    setAttr(machine, ATTR_ZROT, 0)
-    setAttr(machine, 10, 0)
-    setAttr(machine, ATTR_AFFINEW, AFFINE_UNIT)
-    setAttr(machine, ATTR_AFFINEH, AFFINE_UNIT)
-  elseif opcode == 3 then
-    local kindA = lowByte(fetch(machine))
-    local lhs, rhs
-    if kindA == 0x14 then
-      local index = fetchReg(machine, "conditional")
-      lhs = machine.regs[index]
-      rhs = fetchImm(machine)
-    elseif kindA == 0x15 then
-      local leftIndex = fetchReg(machine, "conditional")
-      local rightIndex = fetchReg(machine, "conditional")
-      lhs = machine.regs[leftIndex]
-      rhs = machine.regs[rightIndex]
-    else
-      malformed("the conditional carries an unknown operand kind: " .. tostring(kindA), {})
-      error("unreachable conditional", 0)
-    end
-    local cond = lowByte(fetch(machine))
-    if cond ~= 0x0F and cond ~= 0x10 and cond ~= 0x11 then
-      malformed("the conditional escapes its vocabulary: " .. tostring(cond), {})
-    end
-    local kindB = lowByte(fetch(machine))
-    local dst, value
-    if kindB == 0x14 then
-      dst = fetchReg(machine, "conditional")
-      value = fetchImm(machine)
-    elseif kindB == 0x15 then
-      dst = fetchReg(machine, "conditional")
-      value = machine.regs[fetchReg(machine, "conditional")]
-    else
-      malformed("the conditional carries an unknown operand kind: " .. tostring(kindB), {})
-      error("unreachable conditional", 0)
-    end
-    local outcome = 0x11
-    if lhs < rhs then
-      outcome = 0x0F
-    elseif lhs > rhs then
-      outcome = 0x10
-    end
-    if cond == outcome then
-      machine.regs[dst] = toS32(value)
-    end
-  elseif opcode == 4 then
-    local index = fetchReg(machine, "assign")
-    machine.pc = machine.pc + 1
-    local value = machine.words[machine.pc + 1]
-    if value == nil then
-      malformed("the motion program escapes its member", { pc = machine.pc })
-    end
-    machine.regs[index] = value
-  elseif opcode == 5 then
-    local src = fetchReg(machine, "copy")
-    local dst = fetchReg(machine, "copy")
-    machine.regs[dst] = machine.regs[src]
-  elseif opcode == 6 or opcode == 7 then
-    fetchReg(machine, "arithmetic")
-    local kind = lowByte(fetch(machine))
-    local left, right
-    if kind == 0x12 then
-      left = machine.regs[fetchReg(machine, "arithmetic")]
-      right = fetchImm(machine)
-    elseif kind == 0x13 then
-      left = machine.regs[fetchReg(machine, "arithmetic")]
-      right = machine.regs[fetchReg(machine, "arithmetic")]
-    else
-      malformed("the arithmetic carries an unknown operand kind: " .. tostring(kind), {})
-      error("unreachable arithmetic", 0)
-    end
-    local value = 0
-    if opcode == 6 then
-      value = add32(left, right)
-    else
-      value = mul32(left, right)
-    end
-    -- The kind word doubles as the destination: 0x12 writes 0x6C,
-    -- 0x13 writes 0x70.
-    if kind == 0x12 then
-      machine.acc[0x6C] = value
-    else
-      machine.acc[0x70] = value
-    end
-  elseif opcode == 8 then
-    fetchReg(machine, "arithmetic")
-    local kindA = lowByte(fetch(machine))
-    local kindB = lowByte(fetch(machine))
-    local left, right
-    if kindA == 0x12 then
-      left = fetchImm(machine)
-    elseif kindA == 0x13 then
-      left = machine.regs[fetchReg(machine, "arithmetic")]
-    else
-      malformed("the arithmetic carries an unknown operand kind: " .. tostring(kindA), {})
-      error("unreachable arithmetic", 0)
-    end
-    if kindB == 0x12 then
-      right = fetchImm(machine)
-    elseif kindB == 0x13 then
-      right = machine.regs[fetchReg(machine, "arithmetic")]
-    else
-      malformed("the arithmetic carries an unknown operand kind: " .. tostring(kindB), {})
-      error("unreachable arithmetic", 0)
-    end
-    if kindB == 0x12 then
-      machine.acc[0x6C] = toS32(left - right)
-    else
-      machine.acc[0x70] = toS32(left - right)
-    end
-  elseif opcode == 9 or opcode == 10 then
-    fetchReg(machine, "division")
-    local kindA = lowByte(fetch(machine))
-    local kindB = lowByte(fetch(machine))
-    local left, right
-    if kindA == 0x12 then
-      left = fetchImm(machine)
-    elseif kindA == 0x13 then
-      left = machine.regs[fetchReg(machine, "division")]
-    else
-      malformed("the division carries an unknown operand kind: " .. tostring(kindA), {})
-      error("unreachable division", 0)
-    end
-    if kindB == 0x12 then
-      right = fetchImm(machine)
-    elseif kindB == 0x13 then
-      right = machine.regs[fetchReg(machine, "division")]
-    else
-      malformed("the division carries an unknown operand kind: " .. tostring(kindB), {})
-      error("unreachable division", 0)
-    end
-    local quotient = div32(left, right)
-    local value = quotient
-    if opcode == 10 then
-      value = toS32(left - mul32(quotient, right))
-    end
-    if kindB == 0x12 then
-      machine.acc[0x6C] = value
-    else
-      machine.acc[0x70] = value
-    end
-  elseif opcode == 11 then
-    if machine.loopStart ~= nil then
-      malformed("the motion program nests its loops", {})
-    end
-    local count = fetchImm(machine)
-    machine.loopStart = machine.pc
-    machine.loopTotal = count
+-- Shared operand decoding for the add/multiply pair: one kind word (0x12
+-- for register/immediate, 0x13 for register/register) selects the operand
+-- shapes. Reads stay in source order with the source diagnostics.
+local function fetchArithPair(machine, what)
+  local kind = lowByte(fetch(machine))
+  local left, right
+  if kind == 0x12 then
+    left = machine.regs[fetchReg(machine, what)]
+    right = fetchImm(machine)
+  elseif kind == 0x13 then
+    left = machine.regs[fetchReg(machine, what)]
+    right = machine.regs[fetchReg(machine, what)]
+  else
+    malformed(what .. " carries an unknown operand kind: " .. tostring(kind), {})
+    error("unreachable arithmetic", 0)
+  end
+  return left, right, kind
+end
+
+-- Shared operand decoding for the subtract/divide/remainder family: two
+-- kind words select the left and right shapes independently. Reads stay
+-- in source order with the source diagnostics.
+local function fetchArithDual(machine, what)
+  local kindA = lowByte(fetch(machine))
+  local kindB = lowByte(fetch(machine))
+  local left, right
+  if kindA == 0x12 then
+    left = fetchImm(machine)
+  elseif kindA == 0x13 then
+    left = machine.regs[fetchReg(machine, what)]
+  else
+    malformed(what .. " carries an unknown operand kind: " .. tostring(kindA), {})
+    error("unreachable arithmetic", 0)
+  end
+  if kindB == 0x12 then
+    right = fetchImm(machine)
+  elseif kindB == 0x13 then
+    right = machine.regs[fetchReg(machine, what)]
+  else
+    malformed(what .. " carries an unknown operand kind: " .. tostring(kindB), {})
+    error("unreachable arithmetic", 0)
+  end
+  return left, right, kindA, kindB
+end
+
+local function finishPicture(machine)
+  setAttr(machine, ATTR_X, machine.savedX)
+  setAttr(machine, ATTR_Y, machine.savedY)
+  setAttr(machine, ATTR_ZROT, 0)
+  setAttr(machine, 10, 0)
+  setAttr(machine, ATTR_AFFINEW, AFFINE_UNIT)
+  setAttr(machine, ATTR_AFFINEH, AFFINE_UNIT)
+  machine.done = true
+  machine.finished = true
+end
+
+local function yieldBurst(machine)
+  machine.done = true
+end
+
+local function resetPose(machine)
+  setAttr(machine, ATTR_X, machine.savedX)
+  setAttr(machine, ATTR_Y, machine.savedY)
+  setAttr(machine, ATTR_ZROT, 0)
+  setAttr(machine, 10, 0)
+  setAttr(machine, ATTR_AFFINEW, AFFINE_UNIT)
+  setAttr(machine, ATTR_AFFINEH, AFFINE_UNIT)
+end
+
+local function compareRegs(machine)
+  local kindA = lowByte(fetch(machine))
+  local lhs, rhs
+  if kindA == 0x14 then
+    local index = fetchReg(machine, "conditional")
+    lhs = machine.regs[index]
+    rhs = fetchImm(machine)
+  elseif kindA == 0x15 then
+    local leftIndex = fetchReg(machine, "conditional")
+    local rightIndex = fetchReg(machine, "conditional")
+    lhs = machine.regs[leftIndex]
+    rhs = machine.regs[rightIndex]
+  else
+    malformed("the conditional carries an unknown operand kind: " .. tostring(kindA), {})
+    error("unreachable conditional", 0)
+  end
+  local cond = lowByte(fetch(machine))
+  if cond ~= 0x0F and cond ~= 0x10 and cond ~= 0x11 then
+    malformed("the conditional escapes its vocabulary: " .. tostring(cond), {})
+  end
+  local kindB = lowByte(fetch(machine))
+  local dst, value
+  if kindB == 0x14 then
+    dst = fetchReg(machine, "conditional")
+    value = fetchImm(machine)
+  elseif kindB == 0x15 then
+    dst = fetchReg(machine, "conditional")
+    value = machine.regs[fetchReg(machine, "conditional")]
+  else
+    malformed("the conditional carries an unknown operand kind: " .. tostring(kindB), {})
+    error("unreachable conditional", 0)
+  end
+  local outcome = 0x11
+  if lhs < rhs then
+    outcome = 0x0F
+  elseif lhs > rhs then
+    outcome = 0x10
+  end
+  if cond == outcome then
+    machine.regs[dst] = toS32(value)
+  end
+end
+
+local function assignReg(machine)
+  local index = fetchReg(machine, "assign")
+  machine.pc = machine.pc + 1
+  local value = machine.words[machine.pc + 1]
+  if value == nil then
+    malformed("the motion program escapes its member", { pc = machine.pc })
+  end
+  machine.regs[index] = value
+end
+
+local function copyReg(machine)
+  local src = fetchReg(machine, "copy")
+  local dst = fetchReg(machine, "copy")
+  machine.regs[dst] = machine.regs[src]
+end
+
+local function addOrMultiply(machine, opcode)
+  fetchReg(machine, "arithmetic")
+  local left, right, kind = fetchArithPair(machine, "arithmetic")
+  local value = 0
+  if opcode == 6 then
+    value = add32(left, right)
+  else
+    value = mul32(left, right)
+  end
+  -- The kind word doubles as the destination: 0x12 writes 0x6C,
+  -- 0x13 writes 0x70.
+  if kind == 0x12 then
+    machine.acc[0x6C] = value
+  else
+    machine.acc[0x70] = value
+  end
+end
+
+local function subtractOperands(machine)
+  fetchReg(machine, "arithmetic")
+  local left, right, _, kindB = fetchArithDual(machine, "arithmetic")
+  if kindB == 0x12 then
+    machine.acc[0x6C] = toS32(left - right)
+  else
+    machine.acc[0x70] = toS32(left - right)
+  end
+end
+
+local function divideOperands(machine, opcode)
+  fetchReg(machine, "division")
+  local left, right, _, kindB = fetchArithDual(machine, "division")
+  local quotient = div32(left, right)
+  local value = quotient
+  if opcode == 10 then
+    value = toS32(left - mul32(quotient, right))
+  end
+  if kindB == 0x12 then
+    machine.acc[0x6C] = value
+  else
+    machine.acc[0x70] = value
+  end
+end
+
+local function startLoop(machine)
+  if machine.loopStart ~= nil then
+    malformed("the motion program nests its loops", {})
+  end
+  local count = fetchImm(machine)
+  machine.loopStart = machine.pc
+  machine.loopTotal = count
+  machine.loopCount = 0
+end
+
+local function continueLoop(machine)
+  if machine.loopStart == nil then
+    malformed("the motion program continues no loop", {})
+  end
+  machine.loopCount = machine.loopCount + 1
+  if machine.loopCount >= machine.loopTotal then
+    machine.loopStart = nil
+    machine.loopTotal = 0
     machine.loopCount = 0
-  elseif opcode == 12 then
-    if machine.loopStart == nil then
-      malformed("the motion program continues no loop", {})
-    end
-    machine.loopCount = machine.loopCount + 1
-    if machine.loopCount >= machine.loopTotal then
-      machine.loopStart = nil
-      machine.loopTotal = 0
-      machine.loopCount = 0
-    else
-      machine.pc = machine.loopStart
-    end
-  elseif opcode == 13 then
-    local attr = fetchImm(machine)
-    local index = fetchReg(machine, "attribute")
+  else
+    machine.pc = machine.loopStart
+  end
+end
+
+local function attributeFromReg(machine, opcode)
+  local attr = fetchImm(machine)
+  local index = fetchReg(machine, "attribute")
+  if opcode == 13 then
     setAttr(machine, attr, machine.regs[index])
-  elseif opcode == 14 then
-    local attr = fetchImm(machine)
-    local index = fetchReg(machine, "attribute")
+  else
     addAttr(machine, attr, machine.regs[index])
-  elseif opcode == 15 then
-    local attr = fetchImm(machine)
-    local value = fetchOperand(machine, "attribute")
-    local mode = lowByte(fetch(machine))
-    if mode == 0x16 then
-      setAttr(machine, attr, value)
-    elseif mode == 0x17 then
-      addAttr(machine, attr, value)
-    else
-      malformed("the attribute mode escapes its vocabulary: " .. tostring(mode), {})
-    end
-  elseif opcode == 16 or opcode == 17 then
+  end
+end
+
+local function attributeFromOperand(machine)
+  local attr = fetchImm(machine)
+  local value = fetchOperand(machine, "attribute")
+  local mode = lowByte(fetch(machine))
+  if mode == 0x16 then
+    setAttr(machine, attr, value)
+  elseif mode == 0x17 then
+    addAttr(machine, attr, value)
+  else
+    malformed("the attribute mode escapes its vocabulary: " .. tostring(mode), {})
+  end
+end
+
+local function sineOrCosine(machine, opcode)
+  fetchReg(machine, "sine")
+  local src = fetchReg(machine, "sine")
+  local base = machine.regs[src]
+  local kindA = lowByte(fetch(machine))
+  if kindA == 0x14 then
+    fetchImm(machine)
+  elseif kindA == 0x15 then
     fetchReg(machine, "sine")
-    local src = fetchReg(machine, "sine")
-    local base = machine.regs[src]
-    local kindA = lowByte(fetch(machine))
-    if kindA == 0x14 then
-      fetchImm(machine)
-    elseif kindA == 0x15 then
-      fetchReg(machine, "sine")
-    else
-      malformed("the sine carries an unknown operand kind: " .. tostring(kindA), {})
-    end
-    local kindB = lowByte(fetch(machine))
-    local amplitude
-    if kindB == 0x14 then
-      amplitude = fetchImm(machine)
-    elseif kindB == 0x15 then
-      amplitude = machine.regs[fetchReg(machine, "sine")]
-    else
-      malformed("the sine carries an unknown operand kind: " .. tostring(kindB), {})
-      error("unreachable sine", 0)
-    end
-    -- The first operand only advances the stream; the sum wraps the
-    -- source register with the surviving operand, and the trailing kind
-    -- doubles as the destination: 0x14 writes 0x74, 0x15 writes 0x78.
-    local angle = wrapU16(add32(base, amplitude))
-    local output = 0
-    if opcode == 16 then
-      output = asr32(mul32(sinTable(asr32(angle, 4)), amplitude), 12)
-    else
-      output = asr32(mul32(cosTable(asr32(angle, 4)), amplitude), 12)
-    end
-    if kindB == 0x14 then
-      machine.acc[0x74] = output
-    else
-      machine.acc[0x78] = output
-    end
-  elseif opcode == 18 then
-    local index = fetchReg(machine, "accumulator")
-    local kind = lowByte(fetch(machine))
-    if kind == 8 then
+  else
+    malformed("the sine carries an unknown operand kind: " .. tostring(kindA), {})
+  end
+  local kindB = lowByte(fetch(machine))
+  local amplitude
+  if kindB == 0x14 then
+    amplitude = fetchImm(machine)
+  elseif kindB == 0x15 then
+    amplitude = machine.regs[fetchReg(machine, "sine")]
+  else
+    malformed("the sine carries an unknown operand kind: " .. tostring(kindB), {})
+    error("unreachable sine", 0)
+  end
+  -- The first operand only advances the stream; the sum wraps the
+  -- source register with the surviving operand, and the trailing kind
+  -- doubles as the destination: 0x14 writes 0x74, 0x15 writes 0x78.
+  local angle = wrapU16(add32(base, amplitude))
+  local output = 0
+  if opcode == 16 then
+    output = asr32(mul32(sinTable(asr32(angle, 4)), amplitude), 12)
+  else
+    output = asr32(mul32(cosTable(asr32(angle, 4)), amplitude), 12)
+  end
+  if kindB == 0x14 then
+    machine.acc[0x74] = output
+  else
+    machine.acc[0x78] = output
+  end
+end
+
+local function laneFromReg(machine, opcode)
+  local index = fetchReg(machine, "accumulator")
+  local kind = lowByte(fetch(machine))
+  if kind == 8 then
+    if opcode == 18 then
       machine.acc[0x60] = machine.regs[index]
-    elseif kind == 9 then
+    else
+      machine.acc[0x60] = add32(machine.acc[0x60], machine.regs[index])
+    end
+  elseif kind == 9 then
+    if opcode == 18 then
       machine.acc[0x64] = machine.regs[index]
     else
-      malformed("the accumulator selector escapes its vocabulary: " .. tostring(kind), {})
-    end
-  elseif opcode == 19 then
-    local index = fetchReg(machine, "accumulator")
-    local kind = lowByte(fetch(machine))
-    if kind == 8 then
-      machine.acc[0x60] = add32(machine.acc[0x60], machine.regs[index])
-    elseif kind == 9 then
       machine.acc[0x64] = add32(machine.acc[0x64], machine.regs[index])
-    else
-      malformed("the accumulator selector escapes its vocabulary: " .. tostring(kind), {})
-    end
-  elseif opcode == 20 then
-    local selector = lowByte(fetch(machine))
-    if selector < 8 or selector > 0x0E then
-      malformed("the accumulator selector escapes its vocabulary: " .. tostring(selector), {})
-    end
-    local address = 0x60 + (selector - 8) * 4
-    local value = fetchOperand(machine, "accumulator")
-    local mode = lowByte(fetch(machine))
-    if mode == 0x16 then
-      machine.acc[address] = toS32(value)
-    elseif mode == 0x17 then
-      machine.acc[address] = add32(machine.acc[address], value)
-    else
-      malformed("the accumulator mode escapes its vocabulary: " .. tostring(mode), {})
-    end
-  elseif opcode == 21 or opcode == 22 then
-    applyRestore(machine)
-  elseif opcode == 23 then
-    local index = fetchReg(machine, "accumulator")
-    machine.pc = machine.pc + 1
-    local selector = machine.words[machine.pc + 1]
-    if selector == nil then
-      malformed("the motion program escapes its member", { pc = machine.pc })
-    end
-    local low = lowByte(selector)
-    if low == 8 or low == 0x0A then
-      machine.acc[0x68] = machine.regs[index]
-    elseif low == 9 or low == 0x0B then
-      machine.acc[0x6C] = machine.regs[index]
-    else
-      malformed("the accumulator selector escapes its vocabulary: " .. tostring(selector), {})
-    end
-  elseif opcode == 24 then
-    machine.restoreFlag = true
-  elseif opcode == 25 then
-    local mode = lowByte(fetch(machine))
-    if mode ~= 0x1B and mode ~= 0x1C and mode ~= 0x1D then
-      malformed("the fade state escapes its vocabulary: " .. tostring(mode), {})
-    end
-    machine.fadeMode = mode
-  elseif opcode == 26 or opcode == 27 or opcode == 28 or opcode == 29 or opcode == 30 then
-    initChannel(machine, opcode - 26)
-  elseif opcode == 31 then
-    machine.delay = toU32(fetchImm(machine))
-    machine.done = true
-  elseif opcode == 32 then
-    local start = lowByte(fetch(machine))
-    local finish = lowByte(fetch(machine))
-    local framesPer = lowByte(fetch(machine))
-    local target = fetchImm(machine)
-    machine.fade.active = true
-    machine.fade.cur = toS32(start)
-    machine.fade.endValue = toS32(finish)
-    machine.fade.counter = 0
-    machine.fade.length = toU32(framesPer)
-    machine.fade.target = toS32(target)
-    machine.fade.started = true
-  elseif opcode == 33 then
-    if machine.fade.active then
-      machine.fadeWait = true
-      machine.done = true
     end
   else
+    malformed("the accumulator selector escapes its vocabulary: " .. tostring(kind), {})
+  end
+end
+
+local function cellFromOperand(machine)
+  local selector = lowByte(fetch(machine))
+  if selector < 8 or selector > 0x0E then
+    malformed("the accumulator selector escapes its vocabulary: " .. tostring(selector), {})
+  end
+  local address = 0x60 + (selector - 8) * 4
+  local value = fetchOperand(machine, "accumulator")
+  local mode = lowByte(fetch(machine))
+  if mode == 0x16 then
+    machine.acc[address] = toS32(value)
+  elseif mode == 0x17 then
+    machine.acc[address] = add32(machine.acc[address], value)
+  else
+    malformed("the accumulator mode escapes its vocabulary: " .. tostring(mode), {})
+  end
+end
+
+local function restorePose(machine)
+  applyRestore(machine)
+end
+
+local function storeLane(machine)
+  local index = fetchReg(machine, "accumulator")
+  machine.pc = machine.pc + 1
+  local selector = machine.words[machine.pc + 1]
+  if selector == nil then
+    malformed("the motion program escapes its member", { pc = machine.pc })
+  end
+  local low = lowByte(selector)
+  if low == 8 or low == 0x0A then
+    machine.acc[0x68] = machine.regs[index]
+  elseif low == 9 or low == 0x0B then
+    machine.acc[0x6C] = machine.regs[index]
+  else
+    malformed("the accumulator selector escapes its vocabulary: " .. tostring(selector), {})
+  end
+end
+
+local function raiseRestore(machine)
+  machine.restoreFlag = true
+end
+
+local function selectFadeMode(machine)
+  local mode = lowByte(fetch(machine))
+  if mode ~= 0x1B and mode ~= 0x1C and mode ~= 0x1D then
+    malformed("the fade state escapes its vocabulary: " .. tostring(mode), {})
+  end
+  machine.fadeMode = mode
+end
+
+local function startChannel(machine, opcode)
+  initChannel(machine, opcode - 26)
+end
+
+local function waitMotion(machine)
+  machine.delay = toU32(fetchImm(machine))
+  machine.done = true
+end
+
+local function startFade(machine)
+  local start = lowByte(fetch(machine))
+  local finish = lowByte(fetch(machine))
+  local framesPer = lowByte(fetch(machine))
+  local target = fetchImm(machine)
+  machine.fade.active = true
+  machine.fade.cur = toS32(start)
+  machine.fade.endValue = toS32(finish)
+  machine.fade.counter = 0
+  machine.fade.length = toU32(framesPer)
+  machine.fade.target = toS32(target)
+  machine.fade.started = true
+end
+
+local function waitFade(machine)
+  if machine.fade.active then
+    machine.fadeWait = true
+    machine.done = true
+  end
+end
+
+-- Closed motion dispatch: exactly the current operations, each borrowing
+-- the machine synchronously. Paired operations share one family handler
+-- that receives the opcode; the table itself is not a registration API.
+local OPCODE_HANDLERS = {
+  [0] = finishPicture,
+  [1] = yieldBurst,
+  [2] = resetPose,
+  [3] = compareRegs,
+  [4] = assignReg,
+  [5] = copyReg,
+  [6] = addOrMultiply,
+  [7] = addOrMultiply,
+  [8] = subtractOperands,
+  [9] = divideOperands,
+  [10] = divideOperands,
+  [11] = startLoop,
+  [12] = continueLoop,
+  [13] = attributeFromReg,
+  [14] = attributeFromReg,
+  [15] = attributeFromOperand,
+  [16] = sineOrCosine,
+  [17] = sineOrCosine,
+  [18] = laneFromReg,
+  [19] = laneFromReg,
+  [20] = cellFromOperand,
+  [21] = restorePose,
+  [22] = restorePose,
+  [23] = storeLane,
+  [24] = raiseRestore,
+  [25] = selectFadeMode,
+  [26] = startChannel,
+  [27] = startChannel,
+  [28] = startChannel,
+  [29] = startChannel,
+  [30] = startChannel,
+  [31] = waitMotion,
+  [32] = startFade,
+  [33] = waitFade,
+}
+
+-- Executes one opcode of the motion word stream through the closed
+-- family dispatch above. Every handler consumes exactly the words its
+-- source counterpart reads past the opcode; the kind bytes that double
+-- as accumulator destinations land exactly where the source store address
+-- computes them.
+local function executeOpcode(machine, opcode)
+  local handler = OPCODE_HANDLERS[opcode]
+  if handler == nil then
     malformed("the motion program selects no operation: " .. tostring(opcode), {})
   end
+  assert(handler ~= nil, "unknown motion operations fail above")
+  handler(machine, opcode)
 end
 
 -- One native tick of the motion task, transcribing sub_020170C4 with its
