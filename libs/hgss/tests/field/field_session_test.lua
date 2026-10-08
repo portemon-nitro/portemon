@@ -2679,6 +2679,50 @@ function T.modal_dialogue_ticks_advance_scene_and_coverage_once_through_the_map_
   Assert.equal(calls.coverage, 1, "the coverage runtime advances exactly once")
 end
 
+-- A tick that reaches the absent-overworld branch has already advanced the
+-- aggregate map clock at the ordinary position and stepped the scheduler, so
+-- the branch must complete the tick without advancing the map again. The
+-- lifecycle moves from leaving to absent during this same tick, which proves
+-- the branch is genuinely entered rather than inferred from static code.
+function T.absent_overworld_tick_advances_the_map_clock_once()
+  local lifecycle = FieldOverworldLifecycle.new()
+  lifecycle:requestLeave()
+  local map, calls = clockMap()
+  local scriptTicks, audioCalls = 0, 0
+  local session = FieldSession.new(baseOptions({
+    currentMap = map,
+    overworld = lifecycle,
+    audio = {
+      updateField = function()
+        audioCalls = audioCalls + 1
+      end,
+      play = function() end,
+    },
+    scriptScheduler = {
+      step = function()
+        scriptTicks = scriptTicks + 1
+      end,
+      playerInputLocked = function()
+        return false
+      end,
+      playerInputOwned = function()
+        return false
+      end,
+      foregroundEnvironmentId = function()
+        return nil
+      end,
+    },
+  }))
+  session:updateFixed({})
+  Assert.equal(lifecycle:phase(), "absent", "the tick enters the absent-overworld branch")
+  Assert.equal(scriptTicks, 1, "the scheduler steps after the ordinary map clock advance")
+  Assert.equal(calls.aggregate, 1, "the absent-overworld tick advances the aggregate map clock exactly once")
+  Assert.equal(calls.scene, 1, "the central scene runtime advances exactly once")
+  Assert.equal(calls.coverage, 1, "the coverage runtime advances exactly once")
+  Assert.equal(audioCalls, 1, "field audio still runs once on the absent-overworld tick")
+  Assert.equal(session.tick, 1, "the absent-overworld tick completes exactly once")
+end
+
 -- The application host is the one application modal owner: while it is
 -- active, the session steps only the host (once per fixed tick, with the
 -- tick's UI event list plus the synthesized menu edge) and freezes world

@@ -961,7 +961,6 @@ function FieldSession:updateFixed(inputSnapshot)
   end
 
   if self.overworld ~= nil and not self.overworld:isPresent() then
-    self.currentMap:updateAnimated()
     if self.audio then
       self.audio:updateField()
     end
