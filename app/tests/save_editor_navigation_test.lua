@@ -98,6 +98,7 @@ function T.tests.logical_lists_keep_offscreen_identity_and_reveal_the_next_row()
         id = "flags",
         rect = { x = 40, y = 20, width = 180, height = 120 },
         kind = "list",
+        viewportId = "flags",
         order = 1,
         defaultId = rowIds[1],
         logical = {
@@ -148,6 +149,7 @@ function T.tests.entering_a_list_region_focuses_its_remembered_row_without_activ
         id = "flags",
         rect = { x = 32, y = 24, width = 180, height = 100 },
         kind = "list",
+        viewportId = "flags",
         order = 2,
         defaultId = rowIds[1],
         logical = {
@@ -179,6 +181,55 @@ function T.tests.entering_a_list_region_focuses_its_remembered_row_without_activ
   Assert.equal(entered.targetId, rowIds[4], "entry restores the remembered logical row immediately")
   Assert.equal(entered.regionId, "flags", "the remembered row belongs to the list region")
   Assert.equal(entered.reveal.index, 4, "entry reveals the remembered row when it is offscreen")
+end
+
+function T.tests.static_logical_regions_do_not_request_viewport_reveals()
+  local Navigation = navigationModule()
+  local snapshot = {
+    scope = { id = "editor", epoch = 1 },
+    regions = {
+      {
+        id = "party:members",
+        kind = "row",
+        order = 1,
+        defaultId = "party:slot:0",
+        logical = {
+          count = 2,
+          idAt = function(index)
+            return ({ "party:slot:0", "party:slot:1" })[index]
+          end,
+          indexOf = function(id)
+            return id == "party:slot:0" and 1 or id == "party:slot:1" and 2 or nil
+          end,
+        },
+      },
+    },
+    controls = {
+      control("party:slot:0", "party:members", 0, 0, 20, 20, 1),
+      control("party:slot:1", "party:members", 22, 0, 20, 20, 2),
+    },
+  }
+
+  local move = Navigation.resolve(snapshot, focus("party:members", "party:slot:0"), "right")
+  Assert.equal(move.targetId, "party:slot:1", "static members remain navigable")
+  Assert.isNil(move.reveal, "static members never request viewport scrolling")
+end
+
+function T.tests.reconciliation_moves_focus_with_its_published_region()
+  local Navigation = navigationModule()
+  local snapshot = {
+    scope = { id = "editor", epoch = 2 },
+    regions = {
+      { id = "old", kind = "row", order = 1, defaultId = "shared" },
+      { id = "new", kind = "row", order = 2, defaultId = "shared" },
+    },
+    controls = { control("shared", "new", 20, 0, 20, 20, 1) },
+  }
+
+  local reconciled = Navigation.reconcile(snapshot, focus("old", "shared"), {})
+
+  Assert.equal(reconciled.regionId, "new", "the control's current region owns focus after reflow")
+  Assert.equal(reconciled.targetId, "shared", "reconciliation preserves the moved target")
 end
 
 function T.tests.disabled_targets_and_explicit_stops_never_escape_the_active_region()

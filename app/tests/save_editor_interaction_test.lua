@@ -52,6 +52,140 @@ local function prepareLocationList(state, listId)
   end
 end
 
+function T.tests.static_party_focus_moves_do_not_reveal_or_activate_controls()
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  local partyController = Controller.new()
+  partyController:setSection("Party")
+  partyController:setFocus("party:slot:0")
+  local partyLayout = Layout.compute({
+    ready = true,
+    status = "ready",
+    dirty = false,
+    sectionDirty = false,
+    section = "Party",
+    scope = partyController:snapshot().scope,
+    partyTab = "Moves",
+    partySelector = {
+      slots = {
+        { kind = "member", slot0 = 0 },
+        { kind = "member", slot0 = 1 },
+        { kind = "empty" },
+        { kind = "empty" },
+        { kind = "empty" },
+        { kind = "empty" },
+      },
+    },
+    partyMoves = { slots = { { kind = "move", slot0 = 0, targetId = "party:move:0" } } },
+  }, 800, 600, metrics)
+  local partyState = setmetatable({ controller = partyController, valueEditor = nil }, State)
+
+  partyState:_navigate(partyLayout, "right")
+
+  Assert.equal(partyController.focus, "party:slot:1", "direction advances within the static Party member strip")
+  Assert.equal(partyController.section, "Party", "directional focus does not activate another section")
+  Assert.deepEqual(partyController.scrollOffsets, {}, "static Party focus does not change viewport offsets")
+
+  partyController:setFocus("party:page:previous")
+  partyState:_navigate(partyLayout, "right")
+  Assert.equal(partyController.focus, "party:page:next", "direction advances within the static Party pager")
+
+  partyController:setFocus("party:page:previous")
+  partyState:_navigateTab(partyLayout, "next")
+  Assert.equal(partyController.focus, "party:move:0", "Tab enters the static Party moves sequence")
+end
+
+function T.tests.static_bag_focus_moves_do_not_reveal_or_activate_controls()
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  local bagController = Controller.new()
+  bagController:setSection("Bag")
+  bagController:setFocus("bag:pocket:items")
+  local bagLayout = Layout.compute({
+    ready = true,
+    status = "ready",
+    dirty = false,
+    sectionDirty = false,
+    section = "Bag",
+    scope = bagController:snapshot().scope,
+    bagPockets = { { key = "items" }, { key = "medicine" } },
+    bagPocketTabRects = {
+      { x = 0, y = 0, width = 40, height = 20 },
+      { x = 42, y = 0, width = 40, height = 20 },
+    },
+    bagPageRows = {},
+    bagPage0 = 0,
+    bagPageCount = 2,
+    bagAddEnabled = true,
+  }, 256, 192, metrics)
+  local bagState = setmetatable({ controller = bagController, valueEditor = nil }, State)
+
+  bagState:_navigate(bagLayout, "right")
+
+  Assert.equal(bagController.focus, "bag:pocket:medicine", "direction advances within the static Bag pocket strip")
+  Assert.equal(bagController.section, "Bag", "directional focus does not activate another section")
+  Assert.deepEqual(bagController.scrollOffsets, {}, "static Bag focus does not change viewport offsets")
+
+  bagController:setFocus("bag:page:next")
+  bagState:_navigate(bagLayout, "right")
+  Assert.equal(bagController.focus, "bag:add", "direction advances within static Bag actions")
+end
+
+function T.tests.progress_section_navigation_does_not_request_scrolling()
+  local controller = Controller.new()
+  controller:setSection("Progress")
+  controller:setFocus("section:Progress")
+  local layout = Layout.compute({
+    ready = true,
+    status = "ready",
+    dirty = false,
+    sectionDirty = false,
+    section = "Progress",
+    scope = controller:snapshot().scope,
+    query = "",
+    scrollOffsets = {},
+    flagModel = {
+      count = 0,
+      rowTargets = {},
+      indexByTarget = {},
+      rowAt = function()
+        return nil
+      end,
+      idAt = function()
+        return nil
+      end,
+    },
+  }, 800, 600, {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  })
+  local sectionTargets = {}
+  for _, control in ipairs(layout.focusNavigation.controls) do
+    if control.regionId == "sections" then
+      sectionTargets[#sectionTargets + 1] = control.id
+    end
+  end
+  Assert.isTrue(#sectionTargets >= 2, "the real Progress layout publishes multiple section controls")
+  controller:setFocus(sectionTargets[1])
+  local state = setmetatable({ controller = controller, valueEditor = nil }, State)
+
+  state:_navigate(layout, "down")
+
+  Assert.equal(controller.focus, sectionTargets[2], "the section rail follows its published logical order")
+  Assert.equal(controller.section, "Progress", "section focus does not activate a different section")
+  Assert.deepEqual(controller.scrollOffsets, {}, "section focus does not change viewport offsets")
+end
+
 function T.tests.location_section_entry_always_opens_the_map_list()
   local controller = Controller.new()
   controller:setSection("Location")

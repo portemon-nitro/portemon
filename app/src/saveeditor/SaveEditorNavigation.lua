@@ -59,11 +59,14 @@ local function moved(targetId, regionId, reason, reveal)
 end
 
 local function revealFor(region, targetId)
+  if type(region.viewportId) ~= "string" or region.viewportId == "" then
+    return nil
+  end
   if region.logical and region.logical.matrix then
     for rowIndex, row in ipairs(region.logical.matrix) do
       for _, id in ipairs(row) do
         if id == targetId then
-          return { viewportId = region.viewportId or region.id, index = rowIndex }
+          return { viewportId = region.viewportId, index = rowIndex }
         end
       end
     end
@@ -72,7 +75,7 @@ local function revealFor(region, targetId)
   if index == nil then
     return nil
   end
-  return { viewportId = region.viewportId or region.id, index = index }
+  return { viewportId = region.viewportId, index = index }
 end
 
 local function entryTarget(snapshot, region, focus, direction)
@@ -261,12 +264,19 @@ function Navigation.reconcile(snapshot, focus, fallbackTargets)
   assert(type(snapshot) == "table" and type(snapshot.regions) == "table" and type(snapshot.controls) == "table")
   assert(type(fallbackTargets) == "table")
   local currentRegion = regionFor(snapshot, focus.regionId)
-  local current = currentRegion
-      and focus.scopeId == snapshot.scope.id
-      and (validTarget(snapshot, focus.targetId) or logicalIndex(currentRegion, focus.targetId) ~= nil)
-    or nil
-  if current ~= nil then
-    local currentLogicalRegion = assert(currentRegion)
+  local targetRegion
+  if focus.scopeId == snapshot.scope.id then
+    local targetControl = controlFor(snapshot, focus.targetId)
+    if targetControl ~= nil then
+      if targetControl.eligible then
+        targetRegion = assert(regionFor(snapshot, targetControl.regionId), "control references an undeclared region")
+      end
+    elseif currentRegion ~= nil and logicalIndex(currentRegion, focus.targetId) ~= nil then
+      targetRegion = currentRegion
+    end
+  end
+  if targetRegion ~= nil then
+    local currentLogicalRegion = targetRegion
     if currentLogicalRegion.kind == "list" and currentLogicalRegion.containerId == focus.targetId then
       local remembered = snapshot.remembered and snapshot.remembered[currentLogicalRegion.id]
       local targetId = remembered and logicalIndex(currentLogicalRegion, remembered) ~= nil and remembered
@@ -275,7 +285,10 @@ function Navigation.reconcile(snapshot, focus, fallbackTargets)
         return { scopeId = snapshot.scope.id, regionId = currentLogicalRegion.id, targetId = targetId }
       end
     end
-    return focus
+    if targetRegion.id == focus.regionId then
+      return focus
+    end
+    return { scopeId = snapshot.scope.id, regionId = targetRegion.id, targetId = focus.targetId }
   end
   for _, targetId in ipairs(fallbackTargets) do
     local target = validTarget(snapshot, targetId)
@@ -309,11 +322,11 @@ function Navigation.resolve(snapshot, focus, direction)
   then
     return { kind = "edit", regionId = region.id, reason = "editor" }
   end
-  local targetId, index = logicalDestination(region, focus.targetId, direction)
+  local targetId = logicalDestination(region, focus.targetId, direction)
   if targetId ~= nil then
     local target = validTarget(snapshot, targetId)
     if target ~= nil or logicalIndex(region, targetId) ~= nil then
-      return moved(targetId, region.id, "container", { viewportId = region.viewportId or region.id, index = index })
+      return moved(targetId, region.id, "container", revealFor(region, targetId))
     end
   end
   if region.kind == "spatial" and source and source.rect then
