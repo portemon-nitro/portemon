@@ -22,6 +22,7 @@ local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+local LogicalFieldPlan = require("romdump.src.build.LogicalFieldPlan")
 
 ---@class InteractiveCacheBuild.EnrollCursor
 ---@field pending { milestone: string|nil, kind: string, key: string, urgency: string|nil }[]
@@ -62,6 +63,14 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field pendingDeps table<string, boolean> unready children observed through reverse edges
 ---@field propagateIndex integer|nil resume position for bounded urgency propagation over retained edges
 ---@field retryPending boolean an explicit retry waits for admission
+
+---@class InteractiveCacheBuild.InterestTally
+---@field ready integer retained ready entries
+---@field queued integer retained pending entries holding no worker
+---@field running integer retained pending entries observed on a worker
+---@field failures string[] sorted retained failure causes
+---@field allTerminal boolean every retained entry is ready or failed
+---@field directTerminal boolean every directly requested entry is ready or failed
 
 ---@class InteractiveCacheBuild
 ---@field versionId string
@@ -2039,100 +2048,24 @@ function InteractiveCacheBuild:_logicalFieldMembers(mapId)
   if type(field) ~= "table" or field.mapId ~= mapId then
     return nil
   end
-  local messageBankId = field.messageBankId
-  local scriptBankId = field.scriptBankId
-  if type(messageBankId) ~= "number" or messageBankId % 1 ~= 0 or messageBankId < 0 then
-    error(self.generationId .. " logical field " .. tostring(mapId) .. ": field record has no message bank", 0)
-  end
-  if type(scriptBankId) ~= "number" or scriptBankId % 1 ~= 0 or scriptBankId < 0 then
-    error(self.generationId .. " logical field " .. tostring(mapId) .. ": field record has no script member", 0)
-  end
   local audioPlan = assert(adopted.audioPlan, "logical field needs the adopted audio plan")
   local index = assert(audioPlan.index, "logical field needs the adopted audio index")
   assert(type(index.sequences) == "table", "logical field needs the adopted sequences")
   assert(type(index.sequenceBySymbol) == "table", "logical field needs the adopted sequence symbols")
-  local banks = {}
-  local function addBank(bankId, reference)
-    assert(
-      type(bankId) == "number" and bankId % 1 == 0 and bankId >= 0,
-      self.generationId
-        .. " logical field "
-        .. tostring(mapId)
-        .. " audio reference resolves to no bank: "
-        .. tostring(reference)
-    )
-    banks[tostring(bankId)] = true
+  -- The script closure still resolves through the session: a stale
+  -- generation fails here with its own cause before the deterministic
+  -- expansion below owns every map-derived reference. An unreadable
+  -- script bank id never reaches the closure; the expansion reports it.
+  local scriptSequences = {}
+  local scriptBankId = field.scriptBankId
+  if type(scriptBankId) == "number" and scriptBankId % 1 == 0 and scriptBankId >= 0 then
+    scriptSequences = self:_scriptMemberAudioClosure(mapId, scriptBankId)
   end
-  local function addSequenceReference(reference)
-    if reference == nil then
-      return
-    end
-    local sequenceId = reference
-    if type(reference) == "string" then
-      sequenceId = index.sequenceBySymbol[reference]
-      if sequenceId == nil then
-        error(self.generationId .. " logical field " .. tostring(mapId) .. " has no adopted sequence: " .. reference, 0)
-      end
-    end
-    if type(sequenceId) ~= "number" or sequenceId % 1 ~= 0 or sequenceId < 0 then
-      error(
-        self.generationId .. " logical field " .. tostring(mapId) .. " has no adopted sequence: " .. tostring(reference),
-        0
-      )
-    end
-    local entry = index.sequences[sequenceId]
-    if type(entry) ~= "table" then
-      error(
-        self.generationId .. " logical field " .. tostring(mapId) .. " has no adopted sequence: " .. tostring(reference),
-        0
-      )
-    end
-    addBank(entry.bankId, reference)
+  local plannedOk, plannedOrCause = pcall(LogicalFieldPlan.members, mapId, field, scriptSequences, index)
+  if not plannedOk then
+    error(self.generationId .. " " .. tostring(plannedOrCause), 0)
   end
-  local members = {
-    { kind = "map-data", key = tostring(mapId) },
-    { kind = "message-bank", key = tostring(messageBankId) },
-    { kind = "script-member", key = tostring(scriptBankId) },
-    { kind = "script-summary", key = "global" },
-    { kind = "audio-catalog", key = "global" },
-  }
-  local music = field.music
-  if type(music) == "table" then
-    addSequenceReference(music.day)
-    addSequenceReference(music.night)
-    if type(music.flagOverrides) == "table" then
-      for _, override in ipairs(music.flagOverrides) do
-        if type(override) == "table" then
-          addSequenceReference(override.sequence)
-        end
-      end
-    end
-    if type(music.traversalOverrides) == "table" then
-      for _, override in ipairs(music.traversalOverrides) do
-        if type(override) == "table" then
-          addSequenceReference(override.sequence)
-        end
-      end
-    end
-  end
-  if type(field.soundplates) == "table" then
-    for _, plate in ipairs(field.soundplates) do
-      if type(plate) == "table" then
-        addSequenceReference(plate.sequence)
-      end
-    end
-  end
-  -- Script-reachable audio joins the map-derived banks through the same
-  -- adopted sequence resolution, so shared banks collapse and a member with
-  -- an explicit empty closure adds nothing. Unresolvable symbols and missing
-  -- member closures fail loudly instead of reading as no audio.
-  for _, symbol in ipairs(self:_scriptMemberAudioClosure(mapId, scriptBankId)) do
-    addSequenceReference(symbol)
-  end
-  for bankKey in pairs(banks) do
-    members[#members + 1] = { kind = "audio-bank", key = bankKey }
-  end
-  return members
+  return plannedOrCause
 end
 
 ---@param members { kind: string, key: string }[]
@@ -3213,14 +3146,82 @@ function InteractiveCacheBuild:_statusMilestone(name, requested)
   return "pending", false
 end
 
+-- Read-only interest reduction for one observation: counts and failures
+-- derive from the retained entries once per status call. Queued and
+-- running follow the last pump-observed pool states.
+---@param interest InteractiveCacheBuild.Interest[]
+---@return InteractiveCacheBuild.InterestTally
+local function collectInterestStatus(interest)
+  ---@type InteractiveCacheBuild.InterestTally
+  local tally = { ready = 0, queued = 0, running = 0, failures = {}, allTerminal = true, directTerminal = true }
+  for _, entry in ipairs(interest) do
+    if entry.failure ~= nil then
+      tally.failures[#tally.failures + 1] = entry.failure
+    elseif entry.ready then
+      tally.ready = tally.ready + 1
+    else
+      tally.allTerminal = false
+      if entry.direct then
+        tally.directTerminal = false
+      end
+      if entry.submitted and (entry.poolState == "running" or entry.poolState == "prepared") then
+        tally.running = tally.running + 1
+      else
+        tally.queued = tally.queued + 1
+      end
+    end
+  end
+  table.sort(tally.failures)
+  return tally
+end
+
+-- Settlement is scope-relative and truthful: successful settlement needs
+-- every requested scope terminal, every direct root terminal, every entry
+-- terminal and, when a complete build was requested, the canonical
+-- enumeration exhausted. Membership merely known never substitutes for
+-- the exhausted enumerator. A terminally failed milestone or metadata
+-- owner also settles without waiting for successful completion, but an
+-- unrelated failed job never settles around still-pending work.
+---@param milestonesTerminal boolean every requested scope left pending
+---@param tally InteractiveCacheBuild.InterestTally
+---@param milestoneFailed boolean a requested scope settled with a failure
+---@param metadataFailed boolean a metadata owner settled with a failure
+---@param completeDone boolean no complete build was requested or its enumeration exhausted
+---@return boolean settled
+local function projectSettlement(milestonesTerminal, tally, milestoneFailed, metadataFailed, completeDone)
+  return milestonesTerminal
+    and tally.directTerminal
+    and (tally.allTerminal or milestoneFailed or metadataFailed)
+    and (completeDone or milestoneFailed or metadataFailed)
+end
+
+-- Background completion is never part of a gameplay readiness predicate:
+-- the sweep observation reports authorized warming, exhaustion, or the
+-- first background failure without entering any readiness gate.
+---@param authorized boolean background corpus completion authorized
+---@param exhausted boolean canonical corpus enumeration reached its end
+---@param failure string|nil first background candidate failure when present
+---@return string sweepState idle, warming, exhausted or incomplete
+local function projectSweep(authorized, exhausted, failure)
+  if not authorized then
+    return "idle"
+  end
+  if exhausted then
+    if failure ~= nil then
+      return "incomplete"
+    end
+    return "exhausted"
+  end
+  return "warming"
+end
+
 ---@return table<string, unknown>
 function InteractiveCacheBuild:status()
   -- Read-only retained observation: no cache IO, no validation, no pool
-  -- polling. Queued and running follow the last pump-observed pool states;
-  -- settled and planningPending carry the exact readiness contract.
-  -- Milestone states below come from the one shared readiness helper;
-  -- retirement masks every scope back to pending. The progress projection
-  -- in milestoneStatus keeps its own separate denominator semantics.
+  -- polling. Milestone states below come from the one shared readiness
+  -- helper; retirement masks every scope back to pending. The progress
+  -- projection in milestoneStatus keeps its own separate denominator
+  -- semantics.
   local states = {
     bootstrap = "pending",
     ["new-game-intro"] = "pending",
@@ -3247,26 +3248,7 @@ function InteractiveCacheBuild:status()
   -- A terminally failed requested scope or metadata owner settles without
   -- waiting for successful sweep completion. Success never settles around
   -- running work.
-  local ready, queued, running = 0, 0, 0
-  local failures = {}
-  local allTerminal, directTerminal = true, true
-  for _, entry in ipairs(self.interest) do
-    if entry.failure ~= nil then
-      failures[#failures + 1] = entry.failure
-    elseif entry.ready then
-      ready = ready + 1
-    else
-      allTerminal = false
-      if entry.direct then
-        directTerminal = false
-      end
-      if entry.submitted and (entry.poolState == "running" or entry.poolState == "prepared") then
-        running = running + 1
-      else
-        queued = queued + 1
-      end
-    end
-  end
+  local tally = collectInterestStatus(self.interest)
   local milestonesTerminal = true
   if not self.retired then
     for _, name in ipairs(STATUS_MILESTONES) do
@@ -3275,65 +3257,41 @@ function InteractiveCacheBuild:status()
       end
     end
   end
-  -- Settlement is scope-relative and truthful: successful settlement
-  -- needs every requested scope ready, every direct root ready, every
-  -- entry terminal and, when a complete build was requested, the canonical
-  -- enumeration exhausted. Membership merely known never substitutes for
-  -- the exhausted enumerator. A terminally failed milestone or metadata
-  -- owner also settles without waiting for successful completion, but an
-  -- unrelated failed job never settles around still-pending work.
-  -- Success never settles around running work.
   local completeDone = self.completeUrgency == nil or self.completeExhausted
   local metadataFailed = false
-  if #failures > 0 then
+  if #tally.failures > 0 then
     local sourceOwner = self.byKey["source-plan:global"]
     local layoutOwner = self.byKey["mon-layout:global"]
     if (sourceOwner ~= nil and sourceOwner.failure ~= nil) or (layoutOwner ~= nil and layoutOwner.failure ~= nil) then
       metadataFailed = true
     end
   end
-  local settled = milestonesTerminal
-    and directTerminal
-    and (allTerminal or milestoneFailed or metadataFailed)
-    and (completeDone or milestoneFailed or metadataFailed)
-  table.sort(failures)
-  -- Background completion is never part of a gameplay readiness
-  -- predicate: the sweep observation below reports authorized warming,
-  -- exhaustion, or the first background failure without entering any
-  -- readiness gate above.
-  local sweepState = "idle"
-  if self.sweepAuthorized then
-    if self.sweepExhausted then
-      sweepState = self.sweepFailure ~= nil and "incomplete" or "exhausted"
-    else
-      sweepState = "warming"
-    end
-  end
+  local settled = projectSettlement(milestonesTerminal, tally, milestoneFailed, metadataFailed, completeDone)
   -- Exhaustive attestation is stricter than settlement: only an
   -- explicitly requested and exhausted complete build certifies it.
   local completeAttested = self.completeUrgency ~= nil and self.completeExhausted
   local complete = completeAttested
     and bootstrapState == "ready"
-    and #failures == 0
-    and (ready + queued + running) > 0
-    and queued == 0
-    and running == 0
+    and #tally.failures == 0
+    and (tally.ready + tally.queued + tally.running) > 0
+    and tally.queued == 0
+    and tally.running == 0
     and completeDone
   return {
     generationId = self.generationId,
     epoch = self.epoch,
     bootstrap = bootstrapState,
     enumerated = #self.interest,
-    ready = ready,
-    queued = queued,
-    running = running,
-    failed = #failures,
-    failures = failures,
+    ready = tally.ready,
+    queued = tally.queued,
+    running = tally.running,
+    failed = #tally.failures,
+    failures = tally.failures,
     complete = complete,
     enumerationComplete = self.sourceLoaded and self.pagesKnown or false,
     settled = settled,
     planningPending = self.planningPending,
-    sweepState = sweepState,
+    sweepState = projectSweep(self.sweepAuthorized, self.sweepExhausted, self.sweepFailure),
     sweepFailure = self.sweepFailure,
   }
 end

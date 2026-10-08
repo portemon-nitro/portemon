@@ -2437,4 +2437,95 @@ function T.malformed_milestone_is_treated_as_absent()
   Assert.isNil(failure, "a malformed milestone reports no failure while pending")
 end
 
+-- Repeated public observations perform no scheduler work and keep their
+-- answers: status and milestone snapshots stay identical across calls
+-- without pumping, submitted worker jobs never grow and a satisfied
+-- scope keeps answering ready.
+function T.repeated_observations_perform_no_work_and_keep_their_answers()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("observation-stability-generation", pool, backend)
+  session:requestMilestone("bootstrap", "required")
+  pool.states["field-font:global"] = "ready"
+  for _ = 1, 20 do
+    session:update()
+  end
+  local ready, failure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(ready, "bootstrap is ready before the observation run")
+  Assert.isNil(failure, "bootstrap reports no failure before the observation run")
+  local submittedBefore = #pool.submitted
+  local retainedBefore = 0
+  for _ in pairs(session.byKey) do
+    retainedBefore = retainedBefore + 1
+  end
+  local first = session:status()
+  local firstMilestone = session:milestoneStatus("bootstrap")
+  for _ = 1, 3 do
+    local again = session:status()
+    Assert.deepEqual(again, first, "status keeps its answers without pumping")
+    local againMilestone = session:milestoneStatus("bootstrap")
+    Assert.deepEqual(againMilestone, firstMilestone, "milestone progress keeps its answers without pumping")
+  end
+  Assert.equal(#pool.submitted, submittedBefore, "observations submit no worker work")
+  local retainedAfter = 0
+  for _ in pairs(session.byKey) do
+    retainedAfter = retainedAfter + 1
+  end
+  Assert.equal(retainedAfter, retainedBefore, "observations enroll no retained interest")
+  local stillReady, stillFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(stillReady, "observations never disturb readiness")
+  Assert.isNil(stillFailure, "observations never invent a failure")
+end
+
+-- Settlement, exhaustive completion and background warming stay distinct
+-- under repeated observation: a requested failure settles without
+-- attesting completion while warming continues, and an unrelated
+-- background failure never settles pending required work.
+function T.requested_failure_settles_while_sweep_and_completion_stay_distinct()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("distinct-settlement-generation", pool, backend)
+  session:requestMilestone("field-runtime", "required")
+  session:requestComplete("required")
+  session:enableSweep()
+  for _ = 1, 10 do
+    session:update()
+  end
+  local roster = assert(session.roster["field-runtime"], "the runtime roster is retained")
+  local firstKey = roster[1].kind .. ":" .. roster[1].key
+  pool.states[firstKey] = { state = "failed", details = { error = "synthetic member failure" } }
+  for _ = 1, 10 do
+    session:update()
+  end
+  local submittedBefore = #pool.submitted
+  local first = session:status()
+  Assert.isTrue(first.settled, "a requested failure settles its scope")
+  Assert.isFalse(first.complete, "a failure never attests completion")
+  Assert.equal(first.sweepState, "warming", "background warming stays distinct from settlement")
+  for _ = 1, 3 do
+    Assert.deepEqual(session:status(), first, "the distinct answers stay stable without pumping")
+  end
+  Assert.equal(#pool.submitted, submittedBefore, "observations submit no worker work")
+  local scopeBackend = FakeCache.new()
+  local scopePool = retryCapablePool()
+  local scopeSession, _ = isolatedSession("distinct-background-generation", scopePool, scopeBackend)
+  scopeSession.messageBankIds = { 31511 }
+  scopeSession:requestMilestone("bootstrap", "required")
+  scopeSession:requestJob("message-bank", "31511", "near")
+  scopePool.states["message-bank:31511"] = { state = "failed", details = { error = "synthetic background failure" } }
+  for _ = 1, 10 do
+    scopeSession:update()
+  end
+  local scopeFirst = scopeSession:status()
+  Assert.isFalse(scopeFirst.settled, "an unrelated failure never settles pending required work")
+  Assert.isFalse(scopeFirst.complete, "pending work never attests completion")
+  Assert.equal(scopeFirst.sweepState, "idle", "an unauthorized sweep stays idle")
+  Assert.equal(scopeFirst.failed, 1, "exactly the background job counts as failed")
+  local scopeSubmittedBefore = #scopePool.submitted
+  for _ = 1, 3 do
+    Assert.deepEqual(scopeSession:status(), scopeFirst, "the pending answers stay stable without pumping")
+  end
+  Assert.equal(#scopePool.submitted, scopeSubmittedBefore, "observations submit no worker work")
+end
+
 return { metadata = { capabilities = {} }, tests = T }
