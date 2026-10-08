@@ -1524,7 +1524,7 @@ function SaveEditorLocationService:_advanceInitialSurvey(maxWorkUnits)
       reason = "no_valid_tiles",
     }
   else
-    if self.coverage ~= nil and self:_needsCoverageFor(result.fieldX, result.fieldZ) then
+    if self:_needsCoverageFor(result.fieldX, result.fieldZ) then
       if consumed >= maxWorkUnits then
         return consumed, false
       end
@@ -1537,6 +1537,38 @@ function SaveEditorLocationService:_advanceInitialSurvey(maxWorkUnits)
       if not coverageReady then
         return consumed, false
       end
+    end
+    if self.candidateCoverage ~= nil then
+      local candidate = self.candidateCoverage
+      local prepared, metadataCompleteOrError = pcall(function()
+        self:_collectRepresented(candidate, true)
+        if not self.metadata.complete and consumed < maxWorkUnits then
+          local metadataConsumed, complete = self:_advanceRepresented(maxWorkUnits - consumed)
+          consumed = consumed + metadataConsumed
+          return complete
+        end
+        return self.metadata.complete
+      end)
+      if not prepared then
+        self:_discardCandidateCoverage()
+        if not Errors.is(metadataCompleteOrError) then
+          error(metadataCompleteOrError, 0)
+        end
+        self:_failRequest(metadataCompleteOrError)
+        return consumed, false
+      end
+      if not metadataCompleteOrError then
+        self.status = status("pending")
+        return consumed, false
+      end
+      self:_publishCandidateCoverage()
+    end
+    if self.runtimeMap.scene.type == "outdoor" then
+      local anchorX, anchorZ = math.floor(result.fieldX / TILE_SIZE), math.floor(result.fieldZ / TILE_SIZE)
+      assert(
+        self.coverage ~= nil and self.coverage.anchorX == anchorX and self.coverage.anchorZ == anchorZ,
+        "selected survey tile has published physical coverage"
+      )
     end
     if consumed >= maxWorkUnits then
       return consumed, false

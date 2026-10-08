@@ -7,6 +7,7 @@ local CollisionFixture = require("tests.support.CollisionFixture")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local MapSurvey = require("app.src.saveeditor.SaveEditorMapSurvey")
 local Service = require("app.src.saveeditor.SaveEditorLocationService")
 
 local T = { tests = {} }
@@ -1659,6 +1660,137 @@ function T.tests.survey_waits_for_replacement_coverage_metadata_before_classifyi
   Assert.equal(oldWindowClassifications, 0, "tiles are not classified against the old published coverage")
   Assert.isTrue(pendingMetadata.advances > 0, "the shared metadata stage advances before survey classification")
   service:dispose()
+end
+
+function T.tests.selected_survey_tile_waits_for_its_published_coverage_and_metadata()
+  local service, loader = loadingService({
+    outdoor = true,
+    taskImmediate = true,
+    coverageReadyAtAdvances = 3,
+    coverageConsumePerAdvance = 1,
+  })
+  openOutside(service, 11)
+  local guard = 0
+  while service:snapshot().status.state ~= "ready" and guard < 20 do
+    service:update()
+    guard = guard + 1
+  end
+  Assert.equal(service:snapshot().status.state, "ready", "the original outdoor window is committed")
+  local previousCoverage = assert(service.coverage)
+  local previousBounds = assert(service.mapBounds)
+  local previousEvents = assert(service.objectEvents)
+
+  local beginCoverage = loader.beginPhysicalCoverage
+  function loader:beginPhysicalCoverage(runtimeMap, position)
+    local task = beginCoverage(self, runtimeMap, position)
+    local takeResult = task.takeResult
+    function task:takeResult()
+      local coverage = takeResult(self)
+      coverage.index.matrices[1].width = 3
+      coverage.index.matrices[1].cells = {
+        { x = 0, z = 0, mapHeaderId = 11 },
+        { x = 1, z = 0, mapHeaderId = 0 },
+        { x = 2, z = 0, mapHeaderId = 22 },
+      }
+      coverage.cells = {
+        ["0:0"] = { descriptor = { x = 0, z = 0, mapHeaderId = 11 } },
+        ["1:0"] = { descriptor = { x = 1, z = 0, mapHeaderId = 0 } },
+        ["2:0"] = { descriptor = { x = 2, z = 0, mapHeaderId = 22 } },
+      }
+      return coverage
+    end
+    return task
+  end
+
+  local delayedMetadata = { advances = 0, releases = 0, readyAfter = 4 }
+  local representedRuntime = indoorRuntime()
+  representedRuntime.releases = 0
+  function representedRuntime:release()
+    self.releases = self.releases + 1
+  end
+  function loader:beginLogicalMetadata(mapId)
+    Assert.equal(mapId, 22, "the selected candidate prepares its represented neighbor facts")
+    function delayedMetadata:advance(workUnits)
+      self.advances = self.advances + 1
+      return math.min(workUnits, 1)
+    end
+    function delayedMetadata:isReady()
+      return self.advances >= self.readyAfter
+    end
+    function delayedMetadata:takeResult()
+      return representedRuntime
+    end
+    function delayedMetadata:release()
+      self.releases = self.releases + 1
+    end
+    return delayedMetadata
+  end
+
+  local survey = MapSurvey.new()
+  survey:record(4, 5, true)
+  survey:finishClassification()
+  local _, selectionComplete = survey:advanceSelection({
+    { x = 0, z = 0 },
+    { x = 1, z = 0 },
+    { x = 2, z = 0 },
+  }, 3 * 32 * 32)
+  Assert.isTrue(selectionComplete, "the sparse valid mask selects its first physical cell")
+  service.survey = survey
+  service.surveyCells = { { x = 0, z = 0 }, { x = 1, z = 0 }, { x = 2, z = 0 } }
+  service.surveyIndex = 3 * 32 * 32
+  service.surveyDomainComplete = true
+  service.surveyResult = assert(survey:takeResult())
+  service.initialCursor = {
+    state = "pending",
+    mapId = 11,
+    generation = service.requestGeneration,
+    factsRevision = service.factsRevision,
+  }
+  local classifications = 0
+  local beginClassification = service._beginTileClassification
+  function service:_beginTileClassification(fieldX, fieldZ)
+    classifications = classifications + 1
+    return beginClassification(self, fieldX, fieldZ)
+  end
+
+  local consumed, complete = service:_advanceInitialSurvey(8)
+  local advances = 1
+  while service.metadata == nil and advances < 6 do
+    consumed, complete = service:_advanceInitialSurvey(8)
+    advances = advances + 1
+  end
+  Assert.equal(complete, false, "the selected cursor stays pending while its represented facts are staged")
+  Assert.isTrue(consumed <= 8, "selected-cursor finalization stays within the shared update budget")
+  Assert.equal(service.initialCursor.state, "pending", "unpublished coverage cannot make the selected tile unavailable")
+  Assert.equal(classifications, 0, "the final tile is not classified against stale published coverage")
+  Assert.isTrue(service.coverage == previousCoverage, "the previous physical window stays committed")
+  Assert.isTrue(service.mapBounds == previousBounds, "the previous map bounds stay committed")
+  Assert.isTrue(service.objectEvents == previousEvents, "the previous event facts stay committed")
+  Assert.notNil(service.candidateCoverage, "selected physical coverage remains a private candidate")
+  Assert.isFalse(assert(service.metadata).complete, "candidate metadata is incomplete")
+  Assert.isTrue(delayedMetadata.advances > 0, "candidate metadata advances incrementally")
+  Assert.isTrue(assert(loader.coverageTasks[2]).advances >= 3, "candidate coverage advances across frames")
+  Assert.equal(previousCoverage.releases, 0, "the previous window remains owned during staging")
+
+  local updates = 0
+  while not complete and updates < 20 do
+    consumed, complete = service:_advanceInitialSurvey(8)
+    Assert.isTrue(consumed <= 8, "each selected-cursor update stays within the shared work budget")
+    updates = updates + 1
+  end
+  Assert.isTrue(complete, "the selected cursor completes after candidate metadata becomes ready")
+  Assert.equal(service.initialCursor.state, "ready", "the selected tile is revalidated after publication")
+  Assert.equal(service.initialCursor.fieldX, 4, "the selected coordinate remains from the survey")
+  Assert.equal(service.initialCursor.fieldZ, 5, "the selected coordinate remains from the survey")
+  Assert.equal(service.initialCursor.validTileCount, 1, "the survey count survives final validation")
+  Assert.isTrue(service.coverage.anchorX == 0 and service.coverage.anchorZ == 0, "selected coverage is published")
+  Assert.equal(previousCoverage.releases, 1, "publication releases the previous window once")
+  Assert.equal(classifications, 1, "final validation runs once against the selected coverage")
+  Assert.equal(survey.released, true, "completion releases the survey")
+  service:dispose()
+  Assert.equal(previousCoverage.releases, 1, "disposal does not release the replaced window again")
+  Assert.equal(assert(loader.coverages[2]).releases, 1, "disposal releases the unpublished candidate once")
+  Assert.equal(representedRuntime.releases, 1, "represented metadata is released once")
 end
 
 function T.tests.represented_event_preparation_stops_at_the_shared_update_budget()
