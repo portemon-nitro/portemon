@@ -19,6 +19,7 @@ local ModelDoorMetadata = require("libs.hgss.src.world.ModelDoorMetadata")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
 local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
+local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
 
 ---@class LogicalFieldMap
 --- A scene-free semantic map acquisition: identity, zone, audio/script
@@ -260,8 +261,10 @@ end
 
 -- One runtime-owned render environment per runtime map: the outer table is
 -- fresh, while the immutable lighting, edge-color, and base-fog records
--- are borrowed from validated generated data. Only live fog is ever
--- replaced; the generated record is never mutated.
+-- are borrowed from validated generated data. Only live fog and
+-- fieldTimeSeconds are ever replaced; the generated record is never
+-- mutated. FieldRuntime advances fieldTimeSeconds from the host clock every
+-- update, independently of presentation.
 ---@param fieldData table<string, unknown>
 ---@return table<string, unknown>
 local function materializeRenderEnvironment(fieldData)
@@ -273,6 +276,7 @@ local function materializeRenderEnvironment(fieldData)
     baseWeatherId = assert(generated.weatherId, "render environment requires its base weather"),
     baseFog = baseFog,
     fog = baseFog,
+    fieldTimeSeconds = FieldLightProfile.DEFAULT_TIME_SECONDS,
   }
 end
 

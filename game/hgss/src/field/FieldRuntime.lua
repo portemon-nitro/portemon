@@ -61,6 +61,7 @@ local FieldWindowStyles = require("libs.hgss.src.field.FieldWindowStyles")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
+local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
@@ -1631,6 +1632,8 @@ function FieldRuntime:update(dt)
     self.residency:updatePrefetch()
   end
 
+  self:_refreshFieldTimeOfDay()
+
   self.session.accumulator = self.session.accumulator + acceptedDt
   local FIXED_DT = FieldSession.FIXED_DT
   local MAX_CATCH_UP = FieldSession.MAX_CATCH_UP_TICKS
@@ -2706,6 +2709,27 @@ function FieldRuntime:_setLiveWeather(runtimeMap, weatherId)
   runtimeMap.effectiveWeatherId = weatherId
   self.lastEffectiveWeatherId = weatherId
   environment.fog = preset
+end
+
+-- Advance the active map's field lighting from the injected local clock,
+-- every runtime update (unlike weather, which only samples its clock on map
+-- activation). A render environment without a `fieldTimeSeconds` field
+-- carries no live time-of-day state to advance. The banded animated-prop
+-- clip swap is a separate, presentation-only concern that lives on the
+-- scene runtime rather than the render environment.
+function FieldRuntime:_refreshFieldTimeOfDay()
+  local runtimeMap = self.runtimeMap
+  local environment = runtimeMap and runtimeMap.renderEnvironment
+  if environment == nil or environment.fieldTimeSeconds == nil then
+    return
+  end
+  local now = self.localClock:nowLocal()
+  local seconds = now.hour * 3600 + now.minute * 60 + now.second
+  environment.fieldTimeSeconds = seconds
+  local sceneRuntime = runtimeMap.sceneRuntime
+  if sceneRuntime and sceneRuntime.setTimeBand then
+    sceneRuntime:setTimeBand(TimeOfDayProps.bandForSeconds(seconds))
+  end
 end
 
 -- Select the physical owner for a discontinuous outdoor destination. A
