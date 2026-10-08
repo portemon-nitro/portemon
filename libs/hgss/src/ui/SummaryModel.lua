@@ -9,6 +9,7 @@
 
 local Experience = require("libs.mons.src.gen4.Experience")
 local Mon = require("libs.mons.src.Mon")
+local Moves = require("libs.mons.src.gen4.Moves")
 local MonCache = require("libs.assets.src.MonCache")
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local Personality = require("libs.mons.src.gen4.Personality")
@@ -312,6 +313,7 @@ local function projectMoves(catalog, moves)
       assert(type(pp) == "number", "current power points are numeric")
       local ppUps = assert(entry.ppUps, "stored move entries carry power-point ups")
       assert(type(ppUps) == "number", "power-point ups are numeric")
+      ---@cast ppUps integer
       local power = assert(definition.power, "catalog moves carry power")
       local accuracy = assert(definition.accuracy, "catalog moves carry accuracy")
       local powerText = tostring(power)
@@ -333,7 +335,7 @@ local function projectMoves(catalog, moves)
         accuracyText = accuracyText,
         description = assert(definition.description, "catalog moves carry a description"),
         pp = pp,
-        ppMax = basePp + math.floor(basePp * ppUps / 5),
+        ppMax = Moves.maxPp(basePp, ppUps),
         ppUps = ppUps,
       }
     end

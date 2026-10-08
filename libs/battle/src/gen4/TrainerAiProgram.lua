@@ -16,6 +16,7 @@
 -- matching the native move-points store.
 
 local BattleErrors = require("libs.battle.src.errors")
+local Moves = require("libs.mons.src.gen4.Moves")
 
 ---@class TrainerAiProgram
 local TrainerAiProgram = {}
@@ -12057,7 +12058,7 @@ function ppUseGate(state, selector, jump)
         if ups > 3 then
           ups = 3
         end
-        local maxPp = base + math.floor((base * 20 * ups) / 100)
+        local maxPp = Moves.maxPp(base, ups)
         if
           detail.pp --[[@as integer]]
           ~= maxPp

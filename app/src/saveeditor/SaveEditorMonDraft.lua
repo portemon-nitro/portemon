@@ -2,6 +2,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Mon = require("libs.mons.src.Mon")
+local Moves = require("libs.mons.src.gen4.Moves")
 local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local Experience = require("libs.mons.src.gen4.Experience")
 local Personality = require("libs.mons.src.gen4.Personality")
@@ -35,18 +36,6 @@ local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 ---@field private _projectionCache { revision: integer, value: SaveEditorMonProjection }?
 local SaveEditorMonDraft = {}
 SaveEditorMonDraft.__index = SaveEditorMonDraft
-
--- The single app-local Gen4 PP-allowance formula: base plus one fifth of base
--- per PP Up. Legality ceilings live in the domain owner; this helper only
--- bounds what the always-editing UI offers and stores.
----@param definition table<string, unknown>
----@param ppUps integer
----@return integer
-function SaveEditorMonDraft.maxMovePp(definition, ppUps)
-  assert(type(definition) == "table" and type(definition.basePp) == "number")
-  assert(type(ppUps) == "number" and ppUps % 1 == 0 and ppUps >= 0 and ppUps <= 3)
-  return definition.basePp + math.floor(definition.basePp * ppUps / 5)
-end
 
 local UINT8_MAX = 255
 local UINT16_MAX = 65535
@@ -592,7 +581,7 @@ function SaveEditorMonDraft:setMove(slot0, component, value)
     if not hasPrimitiveType(value, "u8") then
       return false
     end
-    if value > SaveEditorMonDraft.maxMovePp(definition, move.ppUps) then
+    if value > Moves.maxPp(definition.basePp, move.ppUps) then
       return false
     end
     if move.pp == value then
@@ -610,7 +599,7 @@ function SaveEditorMonDraft:setMove(slot0, component, value)
       return true
     end
     move.ppUps = value
-    move.pp = math.min(move.pp, SaveEditorMonDraft.maxMovePp(definition, value))
+    move.pp = math.min(move.pp, Moves.maxPp(definition.basePp, value))
     self:_changed()
     return true
   end

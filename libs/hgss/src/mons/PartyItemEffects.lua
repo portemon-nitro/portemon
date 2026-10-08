@@ -18,6 +18,7 @@
 -- source integer flooring, then clamps to 0..255; mood clamps to -127..127.
 
 local ItemErrors = require("libs.items.src.errors")
+local Moves = require("libs.mons.src.gen4.Moves")
 local PartyUse = require("libs.items.src.PartyUse")
 local ProgressionItemUse = require("libs.hgss.src.mons.ProgressionItemUse")
 
@@ -329,7 +330,7 @@ local function planPp(staged, partyUse, moveSlot, catalog)
     assert(type(basePp) == "number" and basePp % 1 == 0, "moves carry integer base power points")
     local ups = assert(entry.ppUps) --[[@as integer]]
     basePp = basePp --[[@as integer]]
-    return basePp, basePp + math.floor(basePp * ups / 5)
+    return basePp, Moves.maxPp(basePp, ups)
   end
   if partyUse.target == "one" then
     if moveSlot == nil then
@@ -353,7 +354,7 @@ local function planPp(staged, partyUse, moveSlot, catalog)
       if newUps > 3 then
         newUps = 3
       end
-      local newMax = basePp + math.floor(basePp * newUps / 5)
+      local newMax = Moves.maxPp(basePp, newUps)
       entry.ppUps = newUps
       entry.pp = (
         assert(entry.pp) --[[@as integer]]

@@ -4,6 +4,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+local Moves = require("libs.mons.src.gen4.Moves")
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
 
@@ -323,7 +324,7 @@ function PartyView:moves(record)
     local entry = record.moves[slot0 + 1]
     if entry ~= nil then
       local definition = catalog:move(entry.move)
-      local maxPp = Draft.maxMovePp(definition, entry.ppUps)
+      local maxPp = Moves.maxPp(definition.basePp, entry.ppUps)
       slots[slot0 + 1] = {
         kind = "move",
         slot0 = slot0,

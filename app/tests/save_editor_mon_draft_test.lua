@@ -3,6 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local Moves = require("libs.mons.src.gen4.Moves")
 
 local T = {}
 
@@ -353,7 +354,7 @@ function T.move_replacement_resets_allowance_and_pp_up_clamps_current_pp()
   local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
   local draft = draftFor(validMon(catalog, "EEVEE", 5), context)
   local first = copy(draft:record().moves[1])
-  local boostedMax = Draft.maxMovePp(catalog:move(first.move), 3)
+  local boostedMax = Moves.maxPp(catalog:move(first.move).basePp, 3)
   Assert.isTrue(draft:setMove(0, "ppUps", 3))
   Assert.isTrue(draft:setMove(0, "pp", boostedMax))
   Assert.isFalse(
@@ -362,7 +363,7 @@ function T.move_replacement_resets_allowance_and_pp_up_clamps_current_pp()
   )
   Assert.equal(draft:record().moves[1].pp, boostedMax, "a rejected PP edit leaves the slot unchanged")
   Assert.isTrue(draft:setMove(0, "ppUps", 0))
-  local clampedMax = Draft.maxMovePp(catalog:move(first.move), 0)
+  local clampedMax = Moves.maxPp(catalog:move(first.move).basePp, 0)
   Assert.equal(
     draft:record().moves[1].pp,
     math.min(boostedMax, clampedMax),
@@ -473,11 +474,11 @@ function T.primitive_date_limits_and_move_validation_remain_owned_by_the_catalog
   local ppDraft = draftFor(addBase, context)
   local moveDefinition = catalog:move(addBase.moves[1].move)
   local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
-  local currentMax = Draft.maxMovePp(moveDefinition, addBase.moves[1].ppUps)
+  local currentMax = Moves.maxPp(moveDefinition.basePp, addBase.moves[1].ppUps)
   Assert.isFalse(ppDraft:setMove(0, "pp", currentMax + 1), "PP above the current maximum never enters the draft")
   Assert.isFalse(ppDraft:setMove(0, "ppUps", 4), "PP-Up count uses its own native field range")
   Assert.isTrue(ppDraft:setMove(0, "ppUps", 3))
-  local raisedMax = Draft.maxMovePp(moveDefinition, 3)
+  local raisedMax = Moves.maxPp(moveDefinition.basePp, 3)
   Assert.isTrue(ppDraft:setMove(0, "pp", raisedMax), "PP at the raised maximum is accepted")
   local invalidPp, ppError = ppDraft:validate()
   Assert.isNil(ppError)

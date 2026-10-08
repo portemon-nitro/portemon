@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
+local Moves = require("libs.mons.src.gen4.Moves")
 local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
 local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
@@ -748,7 +749,7 @@ function T.moves_projection_publishes_four_slots_with_allowance_labels()
   )
   for index = 1, 2 do
     local definition = catalog:move(mon.moves[index].move)
-    local maxPp = Draft.maxMovePp(definition, mon.moves[index].ppUps)
+    local maxPp = Moves.maxPp(definition.basePp, mon.moves[index].ppUps)
     Assert.isTrue(slots[index].label:find(definition.name, 1, true) ~= nil, "slot names its move")
     Assert.isTrue(
       slots[index].label:find(mon.moves[index].pp .. "/" .. maxPp, 1, true) ~= nil,
@@ -790,6 +791,170 @@ function T.details_projection_keeps_player_facing_fields_and_omits_technical_sta
     singleFormById[row.id] = row
   end
   Assert.isNil(singleFormById.form, "a single-form species omits the form row entirely")
+end
+
+function T.storage_allowance_stays_distinct_from_the_ordinary_maximum()
+  local Errors = require("libs.errors.src.Errors")
+  local MonsErrors = require("libs.mons.src.errors")
+  local Mon = require("libs.mons.src.Mon")
+  local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
+  local catalog = CatalogFixture.makeCatalog()
+  local context = CatalogFixture.domainContext(catalog)
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  -- TOXIC carries base 10: the absolute ceiling is 16 while the ordinary
+  -- maximum at zero ups is 10.
+  local stored = factory:createNormal(CatalogFixture.normalRequest())
+  stored.moves = { { move = "TOXIC", pp = 15, ppUps = 0 } }
+  local valid, canonical = pcall(Mon.validate, stored, context)
+  Assert.isTrue(valid, "a record under the absolute ceiling stays admissible")
+  local legal, _ = pcall(NativeLegality.project, canonical, context)
+  Assert.isTrue(legal, "a record under the absolute ceiling stays representable")
+  Assert.equal(Moves.maxPp(10, 0), 10, "ordinary restoration still uses the actual ups")
+  local viewContext = { monCatalog = catalog, itemCatalog = CatalogFixture.makeItemCatalog() }
+  local slots = PartyView.new(viewContext):moves(stored).slots
+  Assert.isTrue(
+    slots[1].label:find("15/10", 1, true) ~= nil,
+    "the draft label shows current points against the ordinary maximum"
+  )
+  stored.moves = { { move = "TOXIC", pp = 17, ppUps = 0 } }
+  local stillValid, recordError = pcall(Mon.validate, stored, context)
+  Assert.isFalse(stillValid, "points past the absolute ceiling stay inadmissible")
+  Assert.isTrue(Errors.is(recordError), "the admission failure stays structured")
+  Assert.equal(recordError.code, MonsErrors.RECORD_INVALID, "the admission failure keeps its code")
+  local stillLegal, legalityError = pcall(NativeLegality.project, stored, context)
+  Assert.isFalse(stillLegal, "points past the absolute ceiling stay unrepresentable")
+  Assert.equal(legalityError.code, MonsErrors.LEGALITY_INVALID, "the representability failure keeps its code")
+  Assert.equal(stored.moves[1].pp, 17, "a rejected record keeps its stored points without repair")
+end
+
+function T.shared_pp_arithmetic_drives_items_deposit_and_editors()
+  local PartyItemEffects = require("libs.hgss.src.mons.PartyItemEffects")
+  local itemCatalogFor = function(bases)
+    return {
+      move = function(_, key)
+        local base = bases[key]
+        assert(base ~= nil, "test catalog is missing move " .. tostring(key))
+        return { basePp = base }
+      end,
+      item = function()
+        return { friendshipBoost = false }
+      end,
+    }
+  end
+  local itemContext = { location = 7, catalog = itemCatalogFor({ SEVEN = 7, FOUR = 4 }) }
+  local derived = { level = 9, maxHp = 30 }
+  local function sevenMon(pp, ppUps, key)
+    return {
+      species = "CHIKORITA",
+      form = 0,
+      heldItem = "NONE",
+      isEgg = false,
+      friendship = 70,
+      mood = 0,
+      evs = { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0 },
+      moves = { { move = key or "SEVEN", pp = pp, ppUps = ppUps } },
+      origin = { ball = "POKE_BALL" },
+      egg = { location = 7 },
+      condition = { currentHp = 30, effects = {} },
+    }
+  end
+  local boost = { kind = "pp", target = "one", boost = 1 }
+  local boosted = PartyItemEffects.plan(sevenMon(4, 0), { partyUse = boost }, 0, itemContext, derived)
+  Assert.equal(boosted.kind, "ready")
+  Assert.equal(boosted.updates.moves[1].ppUps, 1, "one up is recorded")
+  Assert.equal(
+    boosted.updates.moves[1].pp,
+    4 + (Moves.maxPp(7, 1) - Moves.maxPp(7, 0)),
+    "spent points survive the shared maximum delta"
+  )
+  Assert.equal(Moves.maxPp(7, 1), 8, "the custom-base boost widens to the shared maximum")
+  Assert.equal(
+    PartyItemEffects.plan(sevenMon(11, 3), { partyUse = boost }, 0, itemContext, derived).kind,
+    "no_effect",
+    "three ups stay ineligible for another boost"
+  )
+  Assert.equal(
+    PartyItemEffects.plan(sevenMon(4, 0, "FOUR"), { partyUse = boost }, 0, itemContext, derived).kind,
+    "no_effect",
+    "below-minimum bases stay ineligible for boosts"
+  )
+  local restore = { kind = "pp", target = "one", restore = 10 }
+  local restored = PartyItemEffects.plan(sevenMon(2, 3), { partyUse = restore }, 0, itemContext, derived)
+  Assert.equal(restored.kind, "ready")
+  Assert.equal(restored.updates.moves[1].pp, Moves.maxPp(7, 3), "restoration caps at the shared maximum")
+  Assert.equal(restored.updates.moves[1].pp, 11, "the custom-base cap keeps source rounding")
+
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  local MonsSave = require("libs.mons.src.MonsSave")
+  local Party = require("libs.mons.src.Party")
+  local Lcrng = require("libs.mons.src.gen4.Lcrng")
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+  local PcStorageActions = require("libs.hgss.src.field.PcStorageActions")
+  local catalog = CatalogFixture.makeCatalog()
+  local mons = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x44444444):capture()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+  })
+  local factory = CatalogFixture.makeFactory(0x55555555, catalog)
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE" }))))
+  local spent = mons:partyMon(0)
+  spent.moves[1].pp = 1
+  spent.moves[1].ppUps = 2
+  local staged = assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 0, mon = spent } }))
+  staged.publish()
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  local actions = PcStorageActions.new({ mons = mons, bag = bag })
+  local preview = actions:preview({
+    kind = "deposit",
+    source = { kind = "party", slot = 0 },
+    destination = { kind = "box", box = 0, slot = 0 },
+  })
+  Assert.equal(preview.kind, "allowed")
+  Assert.equal(actions:commit(preview).kind, "changed")
+  local deposited = assert(mons:boxMon(0, 0))
+  Assert.equal(deposited.moves[1].pp, Moves.maxPp(35, 2), "deposit restores through the shared authority")
+  Assert.equal(deposited.moves[1].pp, 49, "deposit keeps the two-up restoration")
+
+  local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
+  local draftContext = CatalogFixture.domainContext(catalog)
+  local record = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 5 }))
+  record.moves = { { move = "TOXIC", pp = 8, ppUps = 0 } }
+  local draft =
+    Draft.new({ mode = "edit", slot0 = 0, basePartyRevision = 0, record = record, context = draftContext })
+  Assert.isTrue(draft:setMove(0, "ppUps", 3))
+  Assert.isFalse(
+    draft:setMove(0, "pp", Moves.maxPp(10, 3) + 1),
+    "points above the shared maximum never enter the draft"
+  )
+  local viewContext = { monCatalog = catalog, itemCatalog = CatalogFixture.makeItemCatalog() }
+  local moveSlots = PartyView.new(viewContext):moves(draft:record()).slots
+  Assert.isTrue(
+    moveSlots[1].label:find("8/" .. Moves.maxPp(10, 3), 1, true) ~= nil,
+    "the moves page labels the slot against the shared maximum"
+  )
+  local childState = setmetatable({
+    pendingMoveSlot = 0,
+    monDraft = draft,
+    dependencies = { context = { monCatalog = catalog } },
+    controller = { focus = "party-move:pp" },
+    valueEditor = nil,
+  }, SaveEditorState)
+  childState:_openMoveChild("party-move:pp")
+  Assert.equal(
+    childState.valueEditor:snapshot().maximum,
+    Moves.maxPp(10, 3),
+    "the move-child editor offers the shared maximum"
+  )
 end
 
 return { tests = T }

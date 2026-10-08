@@ -9,11 +9,11 @@ local FieldInput = require("libs.hgss.src.field.FieldInput")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local Interface = require("app.src.saveeditor.SaveEditorInterface")
+local Moves = require("libs.mons.src.gen4.Moves")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
-local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local Composition = require("app.src.saveeditor.SaveEditorComposition")
 local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
@@ -2093,7 +2093,7 @@ function State:_openMoveChild(action)
         kind = "integer",
         value = entry.pp,
         min = 0,
-        max = Draft.maxMovePp(definition, entry.ppUps),
+        max = Moves.maxPp(definition.basePp, entry.ppUps),
         base = "decimal",
       }),
       "party_move_pp",

@@ -132,7 +132,7 @@ function NativeLegality.project(mon, context)
       MonsErrors.raise(MonsErrors.LEGALITY_INVALID, "duplicate move " .. entry.move, { move = entry.move })
     end
     seen[entry.move] = true
-    local ceiling = definition.basePp + Moves.MAX_PP_UPS * math.floor(definition.basePp / 5)
+    local ceiling = Moves.maxPp(definition.basePp, Moves.MAX_PP_UPS)
     if entry.pp < 0 or entry.pp > ceiling or entry.ppUps < 0 or entry.ppUps > Moves.MAX_PP_UPS then
       MonsErrors.raise(
         MonsErrors.LEGALITY_INVALID,

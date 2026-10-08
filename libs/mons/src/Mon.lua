@@ -168,12 +168,14 @@ local function copyValue(value)
   return out
 end
 
--- Maximum power points for a move: base value plus one fifth per power-point
--- up, at most Moves.MAX_PP_UPS ups.
+-- Absolute power-point allowance for a stored move entry: the shared
+-- arithmetic at the maximum representable up count, not the entry's
+-- actual ups. Admission keeps this ceiling distinct from the ordinary
+-- healing and display maximum.
 ---@param definition table<string, unknown>
 ---@return integer
 local function maxPp(definition)
-  return definition.basePp + Moves.MAX_PP_UPS * math.floor(definition.basePp / 5)
+  return Moves.maxPp(definition.basePp, Moves.MAX_PP_UPS)
 end
 
 ---@param moves unknown

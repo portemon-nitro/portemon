@@ -2,6 +2,7 @@
 -- mon and Bag owners. Preview records are value-only and revision-bound.
 
 local HeldItemFormPolicy = require("libs.hgss.src.mons.HeldItemFormPolicy")
+local Moves = require("libs.mons.src.gen4.Moves")
 
 ---@class PcStorageActions
 ---@field _mons HgssMonService
@@ -139,7 +140,7 @@ function PcStorageActions:_normalizeBox(mon)
   normalized.condition.currentHp = self._mons:derive(normalized).maxHp
   for _, move in ipairs(normalized.moves) do
     local definition = self._mons:catalog():move(move.move)
-    move.pp = definition.basePp + math.floor(definition.basePp * move.ppUps / 5)
+    move.pp = Moves.maxPp(definition.basePp, move.ppUps)
   end
   if normalized.species == "SHAYMIN" then
     normalized.form = 0

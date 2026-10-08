@@ -14,6 +14,25 @@ local Moves = {}
 Moves.MAX_SLOTS = 4
 Moves.MAX_PP_UPS = 3
 
+-- Maximum power points for a base value and power-point up count: the
+-- base plus one fifth per up, multiplying before truncating to match the
+-- source GetMoveMaxPP rule. Pure scalar arithmetic only; legality,
+-- eligibility, and clamping stay with the callers.
+---@param basePp integer
+---@param ppUps integer
+---@return integer
+function Moves.maxPp(basePp, ppUps)
+  assert(
+    type(basePp) == "number" and basePp % 1 == 0 and basePp >= 0 and basePp < math.huge,
+    "base power points are a non-negative integer"
+  )
+  assert(
+    type(ppUps) == "number" and ppUps % 1 == 0 and ppUps >= 0 and ppUps <= Moves.MAX_PP_UPS,
+    "power-point ups stay in 0.." .. Moves.MAX_PP_UPS
+  )
+  return basePp + math.floor(basePp * ppUps / 5)
+end
+
 ---@param learnset { level: integer, move: string }[]
 ---@param level integer
 ---@param catalog MonCatalog
