@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
+local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
 local T = { tests = {} }
@@ -1831,6 +1832,128 @@ function T.tests.decision_targets_keep_their_canonical_shape_without_published_d
   Assert.notNil(layout.targets["bag:quantity"], "the item decision offers Quantity")
   Assert.notNil(layout.targets["bag:remove"], "the item decision offers Remove")
   Assert.notNil(layout.targets.cancel, "the item decision offers Cancel")
+end
+
+local function layoutPaintGraphics(ops)
+  local graphics = { ops = ops, depth = 0, lineWidth = 1 }
+  function graphics.setColor(red, green, blue, alpha)
+    ops[#ops + 1] = { op = "color", red, green, blue, alpha }
+  end
+  function graphics.getColor()
+    return 1, 1, 1, 1
+  end
+  function graphics.getLineWidth()
+    return graphics.lineWidth
+  end
+  function graphics.setLineWidth(width)
+    graphics.lineWidth = width
+  end
+  function graphics.rectangle(mode, x, y, width, height)
+    ops[#ops + 1] = { op = "rect", mode, x, y, width, height }
+  end
+  function graphics.line(...)
+    ops[#ops + 1] = { op = "line" }
+  end
+  function graphics.draw(...)
+    ops[#ops + 1] = { op = "image" }
+  end
+  function graphics.push()
+    graphics.depth = graphics.depth + 1
+  end
+  function graphics.pop()
+    graphics.depth = graphics.depth - 1
+  end
+  function graphics.origin() end
+  function graphics.intersectScissor(x, y, width, height)
+    ops[#ops + 1] = { op = "scissor", x, y, width, height }
+  end
+  function graphics.translate(x, y) end
+  function graphics.scale(x, y) end
+  function graphics.transformPoint(x, y)
+    return x, y
+  end
+  return graphics
+end
+
+local function layoutPaintText()
+  local text = { fontDef = { lineHeight = 14 } }
+  function text.textWidth(_, value)
+    return #tostring(value) * 7
+  end
+  function text.drawTextWithPalette(_, _value, _x, _y, _palette) end
+  return text
+end
+
+function T.tests.painting_follows_resolved_geometry_without_recomputing_layout()
+  local view = {
+    status = "ready",
+    ready = true,
+    dirty = true,
+    section = "Player",
+    scope = { id = "section:Player", epoch = 0 },
+    focus = "save",
+    focusVisible = true,
+    session = { playerName = "PLAYER", money = 3000 },
+  }
+  local width, height = 640, 480
+  local layout = computeLayout({
+    status = view.status,
+    ready = true,
+    dirty = true,
+    section = "Player",
+    scope = view.scope,
+    focus = "save",
+    focusVisible = true,
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+  }, width, height)
+  local saveRect = assert(layout.targets.save, "the footer publishes its save target").rect
+  local plan = {
+    content = { layout = layout },
+    panes = {
+      {
+        interactive = true,
+        placement = {
+          frame = { x = 0, y = 0, width = width, height = height },
+          origin = { x = 0, y = 0 },
+          clipRect = { x = 0, y = 0, width = width, height = height },
+          scale = 1,
+          logicalWidth = width,
+          logicalHeight = height,
+        },
+      },
+    },
+  }
+  local computeCalls = 0
+  local originalCompute = Layout.compute
+  Layout.compute = function(...)
+    computeCalls = computeCalls + 1
+    return originalCompute(...)
+  end
+  local firstOps, secondOps = {}, {}
+  local ok, drawError = pcall(function()
+    local renderer = Renderer.new({ text = layoutPaintText(), graphics = layoutPaintGraphics(firstOps), versionId = "heartgold" })
+    renderer:draw(view, plan)
+    renderer:dispose()
+    saveRect.x = saveRect.x + 7
+    local shifted = Renderer.new({ text = layoutPaintText(), graphics = layoutPaintGraphics(secondOps), versionId = "heartgold" })
+    shifted:draw(view, plan)
+    shifted:dispose()
+  end)
+  Layout.compute = originalCompute
+  Assert.isTrue(ok, "painting the resolved footer succeeds: " .. tostring(drawError))
+  Assert.equal(computeCalls, 0, "painting never recomputes geometry")
+  Assert.isTrue(#firstOps > 0, "painting emits draw commands")
+  local function hasFillAt(ops, x)
+    for _, entry in ipairs(ops) do
+      if entry.op == "rect" and entry[1] == "fill" and entry[2] == x then
+        return true
+      end
+    end
+    return false
+  end
+  Assert.isTrue(hasFillAt(firstOps, saveRect.x - 7), "the footer paints at its resolved save position")
+  Assert.isTrue(hasFillAt(secondOps, saveRect.x), "the footer follows the resolved save rectangle")
+  Assert.isFalse(hasFillAt(secondOps, saveRect.x - 7), "the footer does not repaint the old position")
 end
 
 return T

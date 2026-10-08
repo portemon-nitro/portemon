@@ -7,6 +7,7 @@ local DisplayContext = require("libs.ui.src.DisplayContext")
 local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
+local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local State = require("app.src.saveeditor.SaveEditorState")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
@@ -2829,6 +2830,536 @@ function T.tests.scoped_focus_and_pointer_hits_agree_on_active_targets()
     modalTile == nil or modalTile:match("^location:tile:") == nil,
     "a decision scope never resolves a background grid tile"
   )
+end
+
+local function stubPaintImage(name)
+  return {
+    __stubImage = name,
+    getDimensions = function()
+      return 64, 64
+    end,
+    getWidth = function()
+      return 64
+    end,
+    getHeight = function()
+      return 64
+    end,
+    setFilter = function() end,
+    release = function() end,
+  }
+end
+
+local function recordingPaintGraphics()
+  local graphics = { ops = {}, depth = 0, lineWidth = 1, imagesMade = 0 }
+  function graphics.setColor(red, green, blue, alpha)
+    graphics.ops[#graphics.ops + 1] = { op = "color", red, green, blue, alpha }
+  end
+  function graphics.getColor()
+    return 1, 1, 1, 1
+  end
+  function graphics.getLineWidth()
+    return graphics.lineWidth
+  end
+  function graphics.setLineWidth(width)
+    graphics.lineWidth = width
+    graphics.ops[#graphics.ops + 1] = { op = "width", width }
+  end
+  function graphics.rectangle(mode, x, y, width, height)
+    graphics.ops[#graphics.ops + 1] = { op = "rect", mode, x, y, width, height }
+  end
+  function graphics.line(...)
+    graphics.ops[#graphics.ops + 1] = { op = "line" }
+  end
+  function graphics.draw(...)
+    graphics.ops[#graphics.ops + 1] = { op = "image" }
+  end
+  function graphics.push()
+    graphics.depth = graphics.depth + 1
+    graphics.ops[#graphics.ops + 1] = { op = "push" }
+  end
+  function graphics.pop()
+    graphics.depth = graphics.depth - 1
+    graphics.ops[#graphics.ops + 1] = { op = "pop" }
+  end
+  function graphics.origin() end
+  function graphics.intersectScissor(x, y, width, height)
+    graphics.ops[#graphics.ops + 1] = { op = "scissor", x, y, width, height }
+  end
+  function graphics.translate(x, y)
+    graphics.ops[#graphics.ops + 1] = { op = "translate", x, y }
+  end
+  function graphics.scale(x, y)
+    graphics.ops[#graphics.ops + 1] = { op = "scale", x, y }
+  end
+  function graphics.transformPoint(x, y)
+    return x, y
+  end
+  function graphics.newImage(_fileData)
+    graphics.imagesMade = graphics.imagesMade + 1
+    return stubPaintImage("prepared:" .. graphics.imagesMade)
+  end
+  return graphics
+end
+
+local function recordingPaintText(fail)
+  local drawn = {}
+  local text = { fontDef = { lineHeight = 14 } }
+  function text.textWidth(_, value)
+    return #tostring(value) * 7
+  end
+  function text.drawTextWithPalette(_, value, x, y, _palette)
+    if fail ~= nil and fail.shouldFail(value) then
+      error(fail.error, 0)
+    end
+    drawn[#drawn + 1] = { text = tostring(value), x = x, y = y }
+  end
+  return { object = text, drawn = drawn }
+end
+
+local function serializePaintOperand(value, seen)
+  if type(value) == "number" then
+    return string.format("%.4f", value)
+  elseif type(value) == "string" then
+    return string.format("%q", value)
+  elseif type(value) == "boolean" then
+    return tostring(value)
+  elseif type(value) == "table" then
+    if value.__stubImage ~= nil then
+      return "<image:" .. tostring(value.__stubImage) .. ">"
+    end
+    if seen[value] then
+      return "<cycle>"
+    end
+    seen[value] = true
+    local keys = {}
+    for key in pairs(value) do
+      keys[#keys + 1] = key
+    end
+    table.sort(keys, function(a, b)
+      return tostring(a) < tostring(b)
+    end)
+    local parts = {}
+    for _, key in ipairs(keys) do
+      parts[#parts + 1] = tostring(key) .. "=" .. serializePaintOperand(value[key], seen)
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+  end
+  return "<" .. type(value) .. ">"
+end
+
+local function serializePaintOps(ops)
+  local lines = {}
+  for _, entry in ipairs(ops) do
+    lines[#lines + 1] = serializePaintOperand(entry, {})
+  end
+  return lines
+end
+
+local function layoutViewFor(view)
+  if view.session ~= nil and view.session.frameIndex == nil then
+    local copy = {}
+    for key, value in pairs(view) do
+      copy[key] = value
+    end
+    local session = {}
+    for key, value in pairs(view.session) do
+      session[key] = value
+    end
+    session.frameIndex = 0
+    copy.session = session
+    return copy
+  end
+  return view
+end
+
+local function paintPlanFor(view, width, height)
+  local layout = Layout.compute(layoutViewFor(view), width, height, interactionMetrics())
+  return {
+    content = { layout = layout },
+    panes = {
+      {
+        interactive = true,
+        placement = {
+          frame = { x = 0, y = 0, width = width, height = height },
+          origin = { x = 0, y = 0 },
+          clipRect = { x = 0, y = 0, width = width, height = height },
+          scale = 1,
+          logicalWidth = width,
+          logicalHeight = height,
+        },
+      },
+    },
+  }
+end
+
+local function paintPlayerViewForPaint()
+  return {
+    section = "Player",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    scope = { id = "section:Player", epoch = 0 },
+    focus = "money",
+    focusVisible = true,
+    session = { playerName = "PLAYER", money = 3000 },
+  }
+end
+
+local function paintPartyView()
+  local selector = { slots = {} }
+  selector.slots[1] = { kind = "member", slot0 = 0, label = "A", level = 9, active = true }
+  selector.slots[2] = { kind = "member", slot0 = 1, label = "B", level = 5, active = false }
+  selector.slots[3] = { kind = "add", slot0 = 2 }
+  selector.slots[4] = { kind = "empty" }
+  selector.slots[5] = { kind = "empty" }
+  selector.slots[6] = { kind = "empty" }
+  local statsRows = {}
+  for _, pair in ipairs({
+    { "hp", "HP" },
+    { "attack", "Attack" },
+  }) do
+    statsRows[#statsRows + 1] = {
+      key = pair[1],
+      label = pair[2],
+      iv = 1,
+      ivEditor = { targetId = "party:field:iv:" .. pair[1], editor = { kind = "integer" } },
+      ev = 2,
+      evEditor = { targetId = "party:field:ev:" .. pair[1], editor = { kind = "integer" } },
+    }
+  end
+  return {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    scope = { id = "section:Party", epoch = 0 },
+    focus = "party:slot:0",
+    focusVisible = true,
+    session = { playerName = "PLAYER", money = 3000 },
+    partyTab = "Stats",
+    partySlot0 = 0,
+    partySelector = selector,
+    partyStats = {
+      header = {
+        { id = "level", label = "Level", value = 9, targetId = "party:field:level", editor = { kind = "integer" } },
+        { id = "status", label = "Status", value = "OK", targetId = "party:readonly:status" },
+      },
+      rows = statsRows,
+    },
+    partyMoves = {
+      slots = {
+        { kind = "move", slot0 = 0, label = "Tackle 35/35", targetId = "party:move:0" },
+        { kind = "add", label = "+ Add", targetId = "party:move:add" },
+        { kind = "empty" },
+        { kind = "empty" },
+      },
+    },
+  }
+end
+
+local function paintBagView()
+  local view = scopedBagView()
+  view.focus = "bag:item:POKE_BALL"
+  view.focusVisible = true
+  view.session = { playerName = "PLAYER", money = 3000 }
+  view.bagPageRows[1] = { item = "POKE_BALL", label = "Poke Ball", quantity = 3, iconKey = "ball" }
+  view.bagPocketStrip = { image = "strip/items" }
+  view.bagQuantityVisuals = {
+    decrement = { normal = { image = "dec/n" }, pressed = { image = "dec/p" } },
+    increment = { normal = { image = "inc/n" }, pressed = { image = "inc/p" } },
+  }
+  return view
+end
+
+local function paintLocationView()
+  return {
+    section = "Location",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    scope = { id = "section:Location", epoch = 0, kind = "section" },
+    focus = "location:tile:32:48",
+    focusVisible = true,
+    session = { playerName = "P", money = 0 },
+    location = {
+      mapId = 12,
+      symbol = "MAP_TEST_ROUTE",
+      map = { mapId = 12, symbol = "MAP_TEST_ROUTE", section = "TEST" },
+      section = "TEST",
+      generation = 1,
+      status = { state = "ready" },
+      tiles = { { fieldX = 32, fieldZ = 48, selectable = true } },
+      cursor = { fieldX = 32, fieldZ = 48 },
+    },
+    locationNavigation = {
+      page = "grid",
+      mapId = 12,
+      cursor = { fieldX = 32, fieldZ = 48 },
+      center = { fieldX = 32, fieldZ = 48 },
+      mapOffset = 0,
+    },
+  }
+end
+
+local function paintProgressView()
+  return {
+    section = "Progress",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    scope = { id = "section:Progress", epoch = 0 },
+    focus = "flag:FLAG_A",
+    focusVisible = true,
+    query = "",
+    session = { playerName = "PLAYER", money = 3000 },
+    flagRows = { { name = "FLAG_A", displayName = "Flag A", id = 1, value = false } },
+    flagRowTargets = { "flag:FLAG_A" },
+    flagIndexByTarget = { ["flag:FLAG_A"] = 1 },
+    flagFilter = "Named",
+    flagGroupLabel = "Named",
+  }
+end
+
+local function paintNumberEditorView()
+  return {
+    section = "Player",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    scope = { id = "value:number", epoch = 1, kind = "value" },
+    focus = "confirm",
+    focusVisible = true,
+    session = { playerName = "PLAYER", money = 3000 },
+    valueEditor = { kind = "number", parsedValue = 3, buffer = "3", valid = true },
+    numberControls = {
+      { delta = 1, role = "increment", hitRect = { x = 0, y = 0, width = 24, height = 24 } },
+      { delta = -1, role = "decrement", hitRect = { x = 0, y = 28, width = 24, height = 24 } },
+    },
+    numberControlVisuals = {
+      increment = { normal = { image = "num/inc" }, pressed = { image = "num/inc-pressed" } },
+      decrement = { normal = { image = "num/dec" }, pressed = { image = "num/dec-pressed" } },
+    },
+  }
+end
+
+local function paintChoiceEditorView()
+  local options = {}
+  for index = 1, 6 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local editor = ValueEditor.new({ kind = "choice", value = "K01", options = options })
+  local view = paintBagView()
+  view.scope = { id = "value:choice", epoch = 1, kind = "value" }
+  view.focus = "choice:K01"
+  view.valueEditor = editor:snapshot()
+  view.scrollOffsets = {}
+  return view
+end
+
+local function paintNameEditorView()
+  local grid = {}
+  for row = 1, 6 do
+    grid[row] = {}
+    for column = 1, 13 do
+      grid[row][column] = { glyph = "A" }
+    end
+  end
+  return {
+    section = "Player",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    scope = { id = "value:name", epoch = 1, kind = "value" },
+    focus = "confirm",
+    focusVisible = true,
+    session = { playerName = "PLAYER", money = 3000 },
+    valueEditor = {
+      kind = "name",
+      naming = {
+        text = "AB",
+        cursor = { row = 1, column = 1 },
+        grid = grid,
+        controls = { { id = "lower", label = "abc", firstColumn = 1, lastColumn = 1 } },
+      },
+    },
+    scrollOffsets = {},
+  }
+end
+
+local function paintLeaveDecisionView()
+  local view = paintLocationView()
+  view.dirty = true
+  view.modal = "leave"
+  view.focus = "cancel"
+  view.scope = { id = "decision:leave", epoch = 2, kind = "decision", focusId = "cancel" }
+  view.decisionActions = {
+    { id = "save", label = "Save", semantic = "primary", enabled = false, command = "save" },
+    { id = "discard", label = "Discard", semantic = "destructive", enabled = true, command = "discard" },
+    { id = "cancel", label = "Cancel", semantic = "secondary", enabled = true, command = "cancel" },
+  }
+  return view
+end
+
+local function drawPaintView(view, width, height, graphics, text, cacheReads)
+  local renderer = Renderer.new({ text = text.object, graphics = graphics, versionId = "heartgold" })
+  local plan = paintPlanFor(view, width, height)
+  local cacheFs = {
+    read = function(_, path)
+      cacheReads[#cacheReads + 1] = path
+      return "bytes"
+    end,
+  }
+  local ItemIcons = require("libs.hgss.src.presentation.ItemIconAssetProvider")
+  local providerNew = ItemIcons.new
+  ItemIcons.new = function()
+    return {
+      image = function()
+        return stubPaintImage("item")
+      end,
+      quadFor = function()
+        return {}
+      end,
+      dimensions = function()
+        return { width = 32, height = 32 }
+      end,
+      release = function() end,
+    }
+  end
+  local ok, prepareError = pcall(function()
+    renderer:prepareVisibleIcons(view, plan, cacheFs, {})
+  end)
+  ItemIcons.new = providerNew
+  if not ok then
+    renderer:dispose()
+    error(prepareError, 0)
+  end
+  local readsBeforeDraw = #cacheReads
+  local imagesBeforeDraw = graphics.imagesMade
+  renderer:draw(view, plan)
+  local drawReads = #cacheReads - readsBeforeDraw
+  local drawImages = graphics.imagesMade - imagesBeforeDraw
+  renderer:dispose()
+  return { plan = plan, drawReads = drawReads, drawImages = drawImages }
+end
+
+local function drawnPaintText(text)
+  local labels = {}
+  for _, entry in ipairs(text.drawn) do
+    labels[#labels + 1] = entry.text
+  end
+  return table.concat(labels, "\n")
+end
+
+function T.tests.every_section_and_overlay_paints_stable_draw_commands()
+  local cases = {
+    { name = "Player", view = paintPlayerViewForPaint() },
+    { name = "Party", view = paintPartyView() },
+    { name = "Bag", view = paintBagView() },
+    { name = "Location", view = paintLocationView() },
+    { name = "Progress", view = paintProgressView() },
+    { name = "number editor", view = paintNumberEditorView() },
+    { name = "choice editor", view = paintChoiceEditorView() },
+    { name = "name editor", view = paintNameEditorView() },
+    { name = "leave decision", view = paintLeaveDecisionView() },
+  }
+  local streams = {}
+  for _, case in ipairs(cases) do
+    local graphics = recordingPaintGraphics()
+    local text = recordingPaintText()
+    local cacheReads = {}
+    local first = drawPaintView(case.view, 640, 480, graphics, text, cacheReads)
+    Assert.equal(first.drawReads, 0, case.name .. " draws without reading retail bytes")
+    Assert.equal(first.drawImages, 0, case.name .. " draws without decoding new images")
+    local firstStream = serializePaintOps(graphics.ops)
+    Assert.isTrue(#firstStream > 0, case.name .. " emits draw commands")
+    local secondGraphics = recordingPaintGraphics()
+    local secondText = recordingPaintText()
+    drawPaintView(case.view, 640, 480, secondGraphics, secondText, {})
+    Assert.deepEqual(
+      serializePaintOps(secondGraphics.ops),
+      firstStream,
+      case.name .. " paints the same commands on repeated draws"
+    )
+    streams[case.name] = firstStream
+  end
+  Assert.isTrue(#streams.Player ~= #streams.Party, "Player and Party paint through distinct sections")
+  Assert.isTrue(#streams.Bag ~= #streams.Location, "Bag and Location paint through distinct sections")
+  local bagImages = 0
+  for _, entry in ipairs(streams.Bag) do
+    if entry:find("image", 1, true) then
+      bagImages = bagImages + 1
+    end
+  end
+  Assert.isTrue(bagImages > 0, "the Bag section paints its prepared pocket art")
+  local locationLines = 0
+  for _, entry in ipairs(streams.Location) do
+    if entry:find("line", 1, true) then
+      locationLines = locationLines + 1
+    end
+  end
+  Assert.isTrue(locationLines > 0, "the Location section paints its grid tiles")
+  local decisionGraphics = recordingPaintGraphics()
+  local decisionText = recordingPaintText()
+  drawPaintView(paintLeaveDecisionView(), 640, 480, decisionGraphics, decisionText, {})
+  Assert.isTrue(
+    drawnPaintText(decisionText):find("Save every section before leaving?", 1, true) ~= nil,
+    "the leave decision paints its prompt"
+  )
+end
+
+function T.tests.repeated_and_failing_draws_keep_observation_and_graphics_state_still()
+  local view = paintPartyView()
+  local graphics = recordingPaintGraphics()
+  local text = recordingPaintText()
+  local beforeView = serializePaintOperand(view, {})
+  local first = drawPaintView(view, 640, 480, graphics, text, {})
+  Assert.equal(first.drawReads, 0, "Party draws without reading retail bytes")
+  Assert.equal(first.drawImages, 0, "Party draws without decoding new images")
+  local firstStream = serializePaintOps(graphics.ops)
+  Assert.equal(serializePaintOperand(view, {}), beforeView, "drawing never mutates the published view")
+  Assert.equal(serializePaintOperand(first.plan.content.layout, {}), serializePaintOperand(paintPlanFor(view, 640, 480).content.layout, {}), "drawing never mutates the resolved layout")
+  local repeatGraphics = recordingPaintGraphics()
+  drawPaintView(view, 640, 480, repeatGraphics, recordingPaintText(), {})
+  Assert.deepEqual(
+    serializePaintOps(repeatGraphics.ops),
+    firstStream,
+    "repeated draws emit identical commands"
+  )
+  local failure = { message = "injected stats paint failure" }
+  local failingText = recordingPaintText({
+    error = failure,
+    shouldFail = function(value)
+      return value == "Level"
+    end,
+  })
+  local failingGraphics = recordingPaintGraphics()
+  local failingRenderer = Renderer.new({
+    text = failingText.object,
+    graphics = failingGraphics,
+    versionId = "heartgold",
+  })
+  local failingPlan = paintPlanFor(view, 640, 480)
+  local depthBefore = failingGraphics.depth
+  local ok, caught = pcall(function()
+    failingRenderer:draw(view, failingPlan)
+  end)
+  failingRenderer:dispose()
+  Assert.isFalse(ok, "a nested section failure propagates out of draw")
+  Assert.isTrue(caught == failure, "draw retains the original section failure")
+  Assert.isTrue(
+    failingGraphics.depth == depthBefore + 1,
+    "a failing draw unwinds every painter-owned scope and keeps only the host surface scope"
+      .. " (depth " .. failingGraphics.depth .. ", base " .. depthBefore .. ")"
+  )
+  Assert.equal(serializePaintOperand(view, {}), beforeView, "a failing draw never mutates the published view")
+  local recoveryGraphics = recordingPaintGraphics()
+  drawPaintView(view, 640, 480, recoveryGraphics, recordingPaintText(), {})
+  Assert.deepEqual(
+    serializePaintOps(recoveryGraphics.ops),
+    firstStream,
+    "drawing recovers with identical commands after a failure"
+  )
+  Assert.equal(recoveryGraphics.depth, 0, "a successful draw balances every graphics scope")
 end
 
 return T

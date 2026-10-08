@@ -423,10 +423,15 @@ local fitText
 local function drawBodyText(renderer, value, x, y, role)
   local graphics = renderer.graphics
   graphics.push("all")
-  graphics.translate(math.floor(x + 0.5), math.floor(y + 0.5))
-  graphics.scale(BODY_TEXT_SCALE, BODY_TEXT_SCALE)
-  drawText(renderer, value, 0, 0, role)
+  local ok, err = pcall(function()
+    graphics.translate(math.floor(x + 0.5), math.floor(y + 0.5))
+    graphics.scale(BODY_TEXT_SCALE, BODY_TEXT_SCALE)
+    drawText(renderer, value, 0, 0, role)
+  end)
   graphics.pop()
+  if not ok then
+    error(err, 0)
+  end
 end
 
 local function drawCompactControl(renderer, rectValue, label, active, focused, disabled, semantic, option)
@@ -550,27 +555,32 @@ local function drawBagCard(renderer, card, focused)
   local palette = buttonInactivePalette(renderer.skin)
   local scale = card.textScale or 1
   graphics.push("all")
-  graphics.translate(math.floor(bounds.x + 0.5), math.floor(bounds.y + 0.5))
-  graphics.scale(scale, scale)
-  local name = card.nameRect
-  drawText(
-    renderer,
-    fitText(renderer, card.label, name.width / scale),
-    (name.x - bounds.x) / scale,
-    (name.y - bounds.y) / scale,
-    palette
-  )
-  local quantity = "x" .. tostring(card.quantity)
-  local quantityWidth = renderer.text:textWidth(quantity)
-  local slot = card.quantityRect
-  drawText(
-    renderer,
-    quantity,
-    (slot.x - bounds.x) / scale + math.max(0, slot.width / scale - quantityWidth),
-    (slot.y - bounds.y) / scale,
-    palette
-  )
+  local ok, err = pcall(function()
+    graphics.translate(math.floor(bounds.x + 0.5), math.floor(bounds.y + 0.5))
+    graphics.scale(scale, scale)
+    local name = card.nameRect
+    drawText(
+      renderer,
+      fitText(renderer, card.label, name.width / scale),
+      (name.x - bounds.x) / scale,
+      (name.y - bounds.y) / scale,
+      palette
+    )
+    local quantity = "x" .. tostring(card.quantity)
+    local quantityWidth = renderer.text:textWidth(quantity)
+    local slot = card.quantityRect
+    drawText(
+      renderer,
+      quantity,
+      (slot.x - bounds.x) / scale + math.max(0, slot.width / scale - quantityWidth),
+      (slot.y - bounds.y) / scale,
+      palette
+    )
+  end)
   graphics.pop()
+  if not ok then
+    error(err, 0)
+  end
   if focused then
     drawFocusRing(
       renderer,
@@ -667,26 +677,49 @@ local function drawStripSlot(renderer, slot, focused)
   local graphics = renderer.graphics
   local lineHeight = renderer.text.fontDef.lineHeight
   graphics.push("all")
-  graphics.translate(math.floor(slot.textRect.x + 0.5), math.floor(slot.textRect.y + 0.5))
-  graphics.scale(BODY_TEXT_SCALE, BODY_TEXT_SCALE)
-  local textWidth = slot.textRect.width / BODY_TEXT_SCALE
-  drawText(renderer, fitText(renderer, slot.label or "", textWidth), 0, 0)
-  if slot.level ~= nil then
-    drawText(renderer, fitText(renderer, "Lv. " .. tostring(slot.level), textWidth), 0, lineHeight, "hint")
-  end
+  local ok, err = pcall(function()
+    graphics.translate(math.floor(slot.textRect.x + 0.5), math.floor(slot.textRect.y + 0.5))
+    graphics.scale(BODY_TEXT_SCALE, BODY_TEXT_SCALE)
+    local textWidth = slot.textRect.width / BODY_TEXT_SCALE
+    drawText(renderer, fitText(renderer, slot.label or "", textWidth), 0, 0)
+    if slot.level ~= nil then
+      drawText(renderer, fitText(renderer, "Lv. " .. tostring(slot.level), textWidth), 0, lineHeight, "hint")
+    end
+  end)
   graphics.pop()
+  if not ok then
+    error(err, 0)
+  end
 end
 
 local drawLocation
 
-local function paintPane(self, view, plan, pane)
-  local graphics = self.graphics
-  local layout = assert(plan.content.layout)
-  local placement = pane.placement
-  local INK = self.skin.text.normal.foreground
-  local BORDER = self.skin.cards.normal.border
-  local SELECTED = self.skin.cards.normal.selectedRim
-  setColor(graphics, self.skin.background)
+---@class SaveEditorPaintContext
+---@field renderer SaveEditorRenderer
+---@field graphics table<string, unknown>
+---@field view table<string, unknown>
+---@field layout table<string, unknown>
+---@field placement table<string, unknown>
+
+-- Runs one section painter inside its own graphics scope so a section
+-- failure propagates with the painter-owned state restored instead of
+-- leaking a half-drawn scope.
+---@param ctx SaveEditorPaintContext
+---@param painter fun(ctx: SaveEditorPaintContext)
+local function runSection(ctx, painter)
+  ctx.graphics.push("all")
+  local ok, err = pcall(painter, ctx)
+  ctx.graphics.pop()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintBackground(ctx)
+  local renderer, graphics, layout = ctx.renderer, ctx.graphics, ctx.layout
+  local placement = ctx.placement
+  setColor(graphics, renderer.skin.background)
   graphics.rectangle("fill", 0, 0, placement.logicalWidth, placement.logicalHeight)
   for _, surface in ipairs(layout.listSurfaces or {}) do
     graphics.setColor(1, 1, 1, 1)
@@ -697,19 +730,24 @@ local function paintPane(self, view, plan, pane)
     graphics.setColor(1, 1, 1, 1)
     graphics.rectangle("fill", surface.x, surface.y, surface.width, surface.height)
   end
-  local frameIndex = view.framePreviewIndex or view.session and view.session.frameIndex
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintNavigation(ctx)
+  local renderer, layout = ctx.renderer, ctx.layout
+  local view = ctx.view
   for _, navigation in ipairs(layout.navigation) do
     local target = targetRect(layout, navigation.targetId)
     if target then
       local label = navigation.label
       if navigation.targetId:match("^location:map:") then
-        label = fitText(self, label, target.width - 22)
+        label = fitText(renderer, label, target.width - 22)
       end
       if navigation.role == "list" then
-        drawListRow(self, target, label, isFocusedVisible(view, navigation.targetId))
+        drawListRow(renderer, target, label, isFocusedVisible(view, navigation.targetId))
       else
         drawButtonControl(
-          self,
+          renderer,
           target,
           label,
           navigation.active == true,
@@ -721,6 +759,12 @@ local function paintPane(self, view, plan, pane)
       end
     end
   end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintRows(ctx)
+  local renderer, graphics, view, layout = ctx.renderer, ctx.graphics, ctx.view, ctx.layout
+  local SELECTED = renderer.skin.cards.normal.selectedRim
   for _, row in ipairs(layout.rows) do
     local rect = targetRect(layout, row.targetId)
     if rect and not row.gridCard and not row.partyField then
@@ -728,7 +772,7 @@ local function paintPane(self, view, plan, pane)
       LogicalSurface.clip(graphics, target.clip or rect, function()
         if row.listSurface then
           drawListRow(
-            self,
+            renderer,
             rect,
             row.displayName or row.label,
             isFocusedVisible(view, row.targetId),
@@ -740,7 +784,7 @@ local function paintPane(self, view, plan, pane)
         end
         if row.role == "toggle" or row.role == "integer value" or row.role == "named choice" then
           drawListRow(
-            self,
+            renderer,
             rect,
             row.displayName or row.label,
             isFocusedVisible(view, row.targetId),
@@ -752,7 +796,7 @@ local function paintPane(self, view, plan, pane)
         end
         if row.role == "action" then
           drawButtonControl(
-            self,
+            renderer,
             rect,
             row.displayName or row.label,
             false,
@@ -771,7 +815,7 @@ local function paintPane(self, view, plan, pane)
           setColor(graphics, SELECTED)
           graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
         end
-        local icon = row.iconKey and self._icons[row.iconKey]
+        local icon = row.iconKey and renderer._icons[row.iconKey]
         if icon and graphics.draw then
           graphics.setColor(1, 1, 1, 1)
           graphics.draw(icon.image, icon.quad, rect.x + 3, rect.y + 2)
@@ -779,8 +823,8 @@ local function paintPane(self, view, plan, pane)
         local labelRect = assert(row.labelRect, "layout rows own their label text bounds")
         local labelRole = row.role == "warning" and "error" or row.role == "read-only value" and "hint" or nil
         drawBodyText(
-          self,
-          fitText(self, row.displayName or row.label, labelRect.width / BODY_TEXT_SCALE),
+          renderer,
+          fitText(renderer, row.displayName or row.label, labelRect.width / BODY_TEXT_SCALE),
           labelRect.x,
           rect.y + 3,
           labelRole
@@ -788,8 +832,8 @@ local function paintPane(self, view, plan, pane)
         if row.valueText ~= nil and row.valueRect ~= nil then
           local valueRect = row.valueRect
           drawBodyText(
-            self,
-            fitText(self, row.valueText, valueRect.width / BODY_TEXT_SCALE),
+            renderer,
+            fitText(renderer, row.valueText, valueRect.width / BODY_TEXT_SCALE),
             valueRect.x,
             rect.y + 3,
             "hint"
@@ -798,76 +842,15 @@ local function paintPane(self, view, plan, pane)
       end)
     end
   end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintParty(ctx)
+  local renderer, graphics, view, layout = ctx.renderer, ctx.graphics, ctx.view, ctx.layout
+  local SELECTED = renderer.skin.cards.normal.selectedRim
   if view.section == "Party" and layout.partyStrip ~= nil then
     for _, slot in ipairs(layout.partyStrip.slots) do
-      drawStripSlot(self, slot, isFocusedVisible(view, slot.targetId))
-    end
-  end
-  if view.section == "Bag" then
-    local strip = assert(layout.bagStripTarget)
-    local stripImage = self._bagImages[assert(view.bagPocketStrip).image]
-    assert(stripImage, "selected Bag pocket strip was prepared before drawing")
-    graphics.setColor(1, 1, 1, 1)
-    graphics.draw(stripImage, strip.x, strip.y)
-    for _, targetId in ipairs(layout.bagTabs or {}) do
-      if isFocusedVisible(view, targetId) and view.bagTabFocusVisual ~= nil then
-        local tabIndex = tonumber(targetId:match("bag:pocket:(%d+)$"))
-        local pocketKey = targetId:match("bag:pocket:(.+)$")
-        for index, pocket in ipairs(view.bagPockets) do
-          if pocket.key == pocketKey then
-            tabIndex = index
-            break
-          end
-        end
-        local point = assert(view.bagTabFocusTargets[assert(tabIndex)])
-        local descriptor = assert(view.bagTabFocusVisual)
-        local image = assert(self._bagImages[descriptor.image])
-        local offset = descriptor.offset or { x = 0, y = 0 }
-        graphics.setColor(1, 1, 1, 1)
-        graphics.draw(image, strip.x + point.x + offset.x, strip.y + point.y + offset.y)
-      end
-    end
-    for _, card in ipairs(layout.bagGrid or {}) do
-      drawBagCard(self, card, isFocusedVisible(view, card.targetId))
-    end
-    if targetRect(layout, "bag:add") then
-      drawBagPageArrow(
-        self,
-        targetRect(layout, "bag:page:previous"),
-        view.bagQuantityVisuals.decrement,
-        math.pi / 2,
-        isFocusedVisible(view, "bag:page:previous"),
-        view.capturedTarget == "bag:page:previous",
-        view.bagPage0 == 0
-      )
-      local pageText = tostring(layout.bagPage.index) .. " / " .. tostring(layout.bagPage.count)
-      drawText(
-        self,
-        pageText,
-        layout.bagPageText.x + math.max(0, (layout.bagPageText.width - self.text:textWidth(pageText)) / 2),
-        layout.bagPageText.y,
-        pageMutedPalette(self.skin)
-      )
-      drawBagPageArrow(
-        self,
-        targetRect(layout, "bag:page:next"),
-        view.bagQuantityVisuals.increment,
-        -- Next uses the up/increment source arrow rotated clockwise to point right.
-        math.pi / 2,
-        isFocusedVisible(view, "bag:page:next"),
-        view.capturedTarget == "bag:page:next",
-        view.bagPage0 + 1 >= view.bagPageCount
-      )
-      drawButtonControl(
-        self,
-        targetRect(layout, "bag:add"),
-        "Add",
-        false,
-        isFocusedVisible(view, "bag:add"),
-        view.bagAddEnabled == false,
-        "primary",
-        false
-      )
+      drawStripSlot(renderer, slot, isFocusedVisible(view, slot.targetId))
     end
   end
   if
@@ -882,7 +865,7 @@ local function paintPane(self, view, plan, pane)
     local previousDisabled = layout.targets["party:page:previous"].activationEnabled == false
     local nextDisabled = layout.targets["party:page:next"].activationEnabled == false
     drawButtonControl(
-      self,
+      renderer,
       previous,
       "<",
       false,
@@ -892,14 +875,14 @@ local function paintPane(self, view, plan, pane)
       false
     )
     drawText(
-      self,
-      fitText(self, label.text, label.rect.width),
-      label.rect.x + math.max(0, (label.rect.width - self.text:textWidth(label.text)) / 2),
+      renderer,
+      fitText(renderer, label.text, label.rect.width),
+      label.rect.x + math.max(0, (label.rect.width - renderer.text:textWidth(label.text)) / 2),
       label.rect.y + 1,
-      pagePalette(self.skin)
+      pagePalette(renderer.skin)
     )
     drawButtonControl(
-      self,
+      renderer,
       next,
       ">",
       false,
@@ -915,15 +898,15 @@ local function paintPane(self, view, plan, pane)
         local y = row.layoutRect.y + 3
         local fieldRole = row.role == "warning" and "error" or nil
         drawBodyText(
-          self,
-          fitText(self, row.label, row.labelRect.width / BODY_TEXT_SCALE),
+          renderer,
+          fitText(renderer, row.label, row.labelRect.width / BODY_TEXT_SCALE),
           row.labelRect.x,
           y,
           fieldRole
         )
         if row.editable then
           drawButtonControl(
-            self,
+            renderer,
             row.valueRect,
             row.valueText or "",
             false,
@@ -934,7 +917,7 @@ local function paintPane(self, view, plan, pane)
           )
         elseif row.role == "action" then
           drawButtonControl(
-            self,
+            renderer,
             row.layoutRect,
             row.label,
             false,
@@ -945,8 +928,8 @@ local function paintPane(self, view, plan, pane)
           )
         elseif row.valueText ~= nil then
           drawBodyText(
-            self,
-            fitText(self, row.valueText, row.valueRect.width / BODY_TEXT_SCALE),
+            renderer,
+            fitText(renderer, row.valueText, row.valueRect.width / BODY_TEXT_SCALE),
             row.valueRect.x,
             y,
             "hint"
@@ -956,18 +939,23 @@ local function paintPane(self, view, plan, pane)
     end
     if layout.partyStatsTable ~= nil then
       local stats = layout.partyStatsTable
-      local headerColor = self.skin.cards.normal.border
+      local headerColor = renderer.skin.cards.normal.border
       local function drawCellText(text, target, role)
-        local lineHeight = self.text.fontDef.lineHeight
+        local lineHeight = renderer.text.fontDef.lineHeight
         local scale = math.min(1, target.height / lineHeight)
         graphics.push("all")
-        graphics.translate(target.x + 4, target.y + math.max(0, (target.height - lineHeight * scale) / 2))
-        graphics.scale(scale, scale)
-        local palette = role == "hint" and pageMutedPalette(self.skin)
-          or role == "error" and pageErrorPalette(self.skin)
-          or pagePalette(self.skin)
-        drawText(self, fitText(self, text, (target.width - 8) / scale), 0, 0, palette)
+        local ok, err = pcall(function()
+          graphics.translate(target.x + 4, target.y + math.max(0, (target.height - lineHeight * scale) / 2))
+          graphics.scale(scale, scale)
+          local palette = role == "hint" and pageMutedPalette(renderer.skin)
+            or role == "error" and pageErrorPalette(renderer.skin)
+            or pagePalette(renderer.skin)
+          drawText(renderer, fitText(renderer, text, (target.width - 8) / scale), 0, 0, palette)
+        end)
         graphics.pop()
+        if not ok then
+          error(err, 0)
+        end
       end
       for _, header in ipairs(stats.headers) do
         setColor(graphics, headerColor)
@@ -989,7 +977,7 @@ local function paintPane(self, view, plan, pane)
       for _, slot in ipairs(layout.partyMoves.slots) do
         if slot.kind ~= "empty" then
           drawButtonControl(
-            self,
+            renderer,
             slot.rect,
             slot.label or "",
             false,
@@ -1002,17 +990,115 @@ local function paintPane(self, view, plan, pane)
       end
     end
   end
-  if view.section == "Location" then
-    drawLocation(self, view, layout)
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintBag(ctx)
+  local renderer, graphics, view, layout = ctx.renderer, ctx.graphics, ctx.view, ctx.layout
+  if view.section == "Bag" then
+    local strip = assert(layout.bagStripTarget)
+    local stripImage = renderer._bagImages[assert(view.bagPocketStrip).image]
+    assert(stripImage, "selected Bag pocket strip was prepared before drawing")
+    graphics.setColor(1, 1, 1, 1)
+    graphics.draw(stripImage, strip.x, strip.y)
+    for _, targetId in ipairs(layout.bagTabs or {}) do
+      if isFocusedVisible(view, targetId) and view.bagTabFocusVisual ~= nil then
+        local tabIndex = tonumber(targetId:match("bag:pocket:(%d+)$"))
+        local pocketKey = targetId:match("bag:pocket:(.+)$")
+        for index, pocket in ipairs(view.bagPockets) do
+          if pocket.key == pocketKey then
+            tabIndex = index
+            break
+          end
+        end
+        local point = assert(view.bagTabFocusTargets[assert(tabIndex)])
+        local descriptor = assert(view.bagTabFocusVisual)
+        local image = assert(renderer._bagImages[descriptor.image])
+        local offset = descriptor.offset or { x = 0, y = 0 }
+        graphics.setColor(1, 1, 1, 1)
+        graphics.draw(image, strip.x + point.x + offset.x, strip.y + point.y + offset.y)
+      end
+    end
+    for _, card in ipairs(layout.bagGrid or {}) do
+      drawBagCard(renderer, card, isFocusedVisible(view, card.targetId))
+    end
+    if targetRect(layout, "bag:add") then
+      drawBagPageArrow(
+        renderer,
+        targetRect(layout, "bag:page:previous"),
+        view.bagQuantityVisuals.decrement,
+        math.pi / 2,
+        isFocusedVisible(view, "bag:page:previous"),
+        view.capturedTarget == "bag:page:previous",
+        view.bagPage0 == 0
+      )
+      local pageText = tostring(layout.bagPage.index) .. " / " .. tostring(layout.bagPage.count)
+      drawText(
+        renderer,
+        pageText,
+        layout.bagPageText.x + math.max(0, (layout.bagPageText.width - renderer.text:textWidth(pageText)) / 2),
+        layout.bagPageText.y,
+        pageMutedPalette(renderer.skin)
+      )
+      drawBagPageArrow(
+        renderer,
+        targetRect(layout, "bag:page:next"),
+        view.bagQuantityVisuals.increment,
+        -- Next uses the up/increment source arrow rotated clockwise to point right.
+        math.pi / 2,
+        isFocusedVisible(view, "bag:page:next"),
+        view.capturedTarget == "bag:page:next",
+        view.bagPage0 + 1 >= view.bagPageCount
+      )
+      drawButtonControl(
+        renderer,
+        targetRect(layout, "bag:add"),
+        "Add",
+        false,
+        isFocusedVisible(view, "bag:add"),
+        view.bagAddEnabled == false,
+        "primary",
+        false
+      )
+    end
   end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintLocation(ctx)
+  if ctx.view.section == "Location" then
+    drawLocation(ctx.renderer, ctx.view, ctx.layout)
+  end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintFooter(ctx)
+  local renderer, layout = ctx.renderer, ctx.layout
+  local view = ctx.view
   for _, action in ipairs(layout.actions) do
     local rect = targetRect(layout, action.id)
     if rect then
       local label = action.id == "save" and view.locationSave and "Cancel check" or action.label
       local role = action.id == "save" and "primary" or action.id == "discard" and "destructive" or "secondary"
-      drawButtonControl(self, rect, label, false, isFocusedVisible(view, action.id), not action.enabled, role, false)
+      drawButtonControl(
+        renderer,
+        rect,
+        label,
+        false,
+        isFocusedVisible(view, action.id),
+        not action.enabled,
+        role,
+        false
+      )
     end
   end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintValueEditor(ctx)
+  local renderer, graphics, view, layout = ctx.renderer, ctx.graphics, ctx.view, ctx.layout
+  local SELECTED = renderer.skin.cards.normal.selectedRim
+  local BORDER = renderer.skin.cards.normal.border
   if view.valueEditor then
     local dialog = view.valueEditor
     if dialog.kind == "number" then
@@ -1020,13 +1106,13 @@ local function paintPane(self, view, plan, pane)
       graphics.setColor(1, 1, 1, 1)
       graphics.rectangle("fill", modal.x, modal.y, modal.width, modal.height)
       local valueRect = assert(layout.valueModalValue, "the compact number modal reserves its value line")
-      drawText(self, tostring(dialog.parsedValue or dialog.buffer), valueRect.x, valueRect.y)
+      drawText(renderer, tostring(dialog.parsedValue or dialog.buffer), valueRect.x, valueRect.y)
       local failed = view.editorFeedback ~= nil or dialog.valid == false
       if failed then
         local errorRect = assert(layout.valueModalError, "the compact number modal reserves its error line")
         drawText(
-          self,
-          fitText(self, view.editorFeedback or "Enter a whole number.", errorRect.width),
+          renderer,
+          fitText(renderer, view.editorFeedback or "Enter a whole number.", errorRect.width),
           errorRect.x,
           errorRect.y,
           "error"
@@ -1037,7 +1123,7 @@ local function paintPane(self, view, plan, pane)
         local target = assert(targetRect(layout, id))
         local state = view.numberHoldTarget == id and "pressed" or "normal"
         local visual = assert(view.numberControlVisuals[control.role][state])
-        local image = assert(self._bagImages[visual.image], "retail number controls are prepared before drawing")
+        local image = assert(renderer._bagImages[visual.image], "retail number controls are prepared before drawing")
         graphics.setColor(1, 1, 1, 1)
         graphics.draw(
           image,
@@ -1045,11 +1131,11 @@ local function paintPane(self, view, plan, pane)
           target.y + (target.height - image:getHeight()) / 2
         )
         if isFocusedVisible(view, id) then
-          drawFocusRing(self, target, 0)
+          drawFocusRing(renderer, target, 0)
         end
       end
       drawButtonControl(
-        self,
+        renderer,
         targetRect(layout, "confirm"),
         "Confirm",
         false,
@@ -1059,7 +1145,7 @@ local function paintPane(self, view, plan, pane)
         false
       )
       drawButtonControl(
-        self,
+        renderer,
         targetRect(layout, "cancel"),
         "Cancel",
         false,
@@ -1076,20 +1162,20 @@ local function paintPane(self, view, plan, pane)
           if option ~= nil then
             local rect = targetRect(layout, "choice:" .. option.key)
             if rect then
-              drawListRow(self, rect, option.label, isFocusedVisible(view, "choice:" .. option.key))
+              drawListRow(renderer, rect, option.label, isFocusedVisible(view, "choice:" .. option.key))
             end
           end
         end
       end)
       if dialog.empty then
-        drawBodyText(self, "No matching choices.", viewport.clip.x + 3, viewport.clip.y + 3, "hint")
+        drawBodyText(renderer, "No matching choices.", viewport.clip.x + 3, viewport.clip.y + 3, "hint")
       end
       for _, id in ipairs({ "confirm", "cancel" }) do
         local rect = targetRect(layout, id)
         assert(rect)
         local disabled = id == "confirm" and dialog.empty == true
         drawButtonControl(
-          self,
+          renderer,
           rect,
           id == "cancel" and "Cancel" or "Choose",
           false,
@@ -1101,7 +1187,7 @@ local function paintPane(self, view, plan, pane)
       end
     elseif dialog.kind == "name" then
       local naming = dialog.naming
-      drawText(self, naming.text, layout.content.x + 4, layout.content.y + 3, pagePalette(self.skin))
+      drawText(renderer, naming.text, layout.content.x + 4, layout.content.y + 3, pagePalette(renderer.skin))
       for row = 1, 6 do
         for column = 1, 13 do
           local id = row .. ":" .. column
@@ -1109,7 +1195,7 @@ local function paintPane(self, view, plan, pane)
           local cell = naming.grid[row][column]
           setColor(graphics, naming.cursor.row == row and naming.cursor.column == column and SELECTED or BORDER)
           graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-          drawText(self, cell.glyph or "", rect.x + 2, rect.y + 2, pagePalette(self.skin))
+          drawText(renderer, cell.glyph or "", rect.x + 2, rect.y + 2, pagePalette(renderer.skin))
         end
       end
       for _, control in ipairs(naming.controls) do
@@ -1117,33 +1203,46 @@ local function paintPane(self, view, plan, pane)
         local rect = assert(targetRect(layout, id))
         setColor(graphics, BORDER)
         graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-        drawText(self, control.label, rect.x + 2, rect.y + 2, pagePalette(self.skin))
+        drawText(renderer, control.label, rect.x + 2, rect.y + 2, pagePalette(renderer.skin))
       end
       for _, id in ipairs({ "confirm", "cancel" }) do
         local rect = targetRect(layout, id)
         setColor(graphics, BORDER)
         graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-        drawText(self, id == "confirm" and "OK" or "Cancel", rect.x + 3, rect.y + 3, pagePalette(self.skin))
+        drawText(renderer, id == "confirm" and "OK" or "Cancel", rect.x + 3, rect.y + 3, pagePalette(renderer.skin))
       end
     end
   end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintNotices(ctx)
+  local renderer, layout = ctx.renderer, ctx.layout
+  local view = ctx.view
   if view.iconStatus == "pending" then
     drawText(
-      self,
+      renderer,
       "Preparing party icons…",
       layout.content.x + 4,
       layout.content.y + layout.content.height - 16,
-      pageMutedPalette(self.skin)
+      pageMutedPalette(renderer.skin)
     )
   elseif view.iconStatus == "failed" then
     drawText(
-      self,
+      renderer,
       "Icons unavailable",
       layout.content.x + 4,
       layout.content.y + layout.content.height - 16,
-      pageErrorPalette(self.skin)
+      pageErrorPalette(renderer.skin)
     )
   end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintDecision(ctx)
+  local renderer, layout = ctx.renderer, ctx.layout
+  local view = ctx.view
+  local INK = renderer.skin.text.normal.foreground
   if view.modal then
     local prompt
     if view.modal == "bag-item" then
@@ -1154,10 +1253,10 @@ local function paintPane(self, view, plan, pane)
       prompt = "Save every section before leaving?"
     end
     local decisionList = assert(layout.decisionList)
-    drawText(self, prompt, decisionList.prompt.x, decisionList.prompt.y, INK)
+    drawText(renderer, prompt, decisionList.prompt.x, decisionList.prompt.y, INK)
     for _, row in ipairs(decisionList.rows) do
       drawButtonControl(
-        self,
+        renderer,
         row.rect,
         row.label,
         false,
@@ -1168,25 +1267,36 @@ local function paintPane(self, view, plan, pane)
       )
     end
   end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintListHints(ctx)
+  local renderer, layout = ctx.renderer, ctx.layout
+  local view = ctx.view
   for _, list in pairs(layout.lists or {}) do
     local hint = list.hintRect
     if hint ~= nil and hint.height > 0 then
       local query = list.query or ""
       local hintText = query == "" and "Type to filter" or ("Filter: " .. query)
-      drawBodyText(self, fitText(self, hintText, hint.width / BODY_TEXT_SCALE), hint.x, hint.y, "hint")
+      drawBodyText(renderer, fitText(renderer, hintText, hint.width / BODY_TEXT_SCALE), hint.x, hint.y, "hint")
     end
     if isFocusedVisible(view, list.targetId) and list.surfaceRect ~= nil then
-      drawFocusRing(self, list.surfaceRect, 0)
+      drawFocusRing(renderer, list.surfaceRect, 0)
     end
   end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintScrollbars(ctx)
+  local renderer, graphics, layout = ctx.renderer, ctx.graphics, ctx.layout
   for _, viewport in pairs(layout.viewports or {}) do
     if viewport.contentExtent > viewport.clip.height then
       local clip = viewport.clip
       local trackX = clip.x + clip.width - 2
       graphics.setColor(
-        self.skin.cards.normal.border[1],
-        self.skin.cards.normal.border[2],
-        self.skin.cards.normal.border[3],
+        renderer.skin.cards.normal.border[1],
+        renderer.skin.cards.normal.border[2],
+        renderer.skin.cards.normal.border[3],
         0.35
       )
       graphics.rectangle("fill", trackX, clip.y, 2, clip.height)
@@ -1194,25 +1304,55 @@ local function paintPane(self, view, plan, pane)
       local travel = math.max(0, clip.height - thumbHeight)
       local range = math.max(1, viewport.contentExtent - clip.height)
       local thumbY = clip.y + travel * math.min(1, math.max(0, viewport.offset / range))
-      local hintInk = self.skin.text.hint.foreground
+      local hintInk = renderer.skin.text.hint.foreground
       graphics.setColor(hintInk.r / 255, hintInk.g / 255, hintInk.b / 255, 1)
       graphics.rectangle("fill", trackX, thumbY, 2, thumbHeight)
       graphics.setColor(1, 1, 1, 1)
     end
   end
+end
+
+---@param ctx SaveEditorPaintContext
+local function paintFrames(ctx)
+  local renderer, layout = ctx.renderer, ctx.layout
+  local view = ctx.view
+  local frameIndex = view.framePreviewIndex or view.session and view.session.frameIndex
   if frameIndex ~= nil then
-    assert(self._windowRenderer, "field frame renderer is prepared before Save Editor drawing")
+    assert(renderer._windowRenderer, "field frame renderer is prepared before Save Editor drawing")
     -- Frame pass runs after surface content.
     if layout.valueModal then
-      self._windowRenderer:drawApplicationFrame(framedContentRect(layout.valueModal), frameIndex)
+      renderer._windowRenderer:drawApplicationFrame(framedContentRect(layout.valueModal), frameIndex)
     end
     if layout.decisionList then
-      self._windowRenderer:drawApplicationFrame(framedContentRect(layout.decisionList.surface), frameIndex)
+      renderer._windowRenderer:drawApplicationFrame(framedContentRect(layout.decisionList.surface), frameIndex)
     end
     for _, surface in ipairs(layout.listSurfaces or {}) do
-      self._windowRenderer:drawApplicationFrame(framedContentRect(surface), frameIndex)
+      renderer._windowRenderer:drawApplicationFrame(framedContentRect(surface), frameIndex)
     end
   end
+end
+
+local function paintPane(self, view, plan, pane)
+  local ctx = {
+    renderer = self,
+    graphics = self.graphics,
+    view = view,
+    layout = assert(plan.content.layout),
+    placement = pane.placement,
+  }
+  runSection(ctx, paintBackground)
+  runSection(ctx, paintNavigation)
+  runSection(ctx, paintRows)
+  runSection(ctx, paintParty)
+  runSection(ctx, paintBag)
+  runSection(ctx, paintLocation)
+  runSection(ctx, paintFooter)
+  runSection(ctx, paintValueEditor)
+  runSection(ctx, paintNotices)
+  runSection(ctx, paintDecision)
+  runSection(ctx, paintListHints)
+  runSection(ctx, paintScrollbars)
+  runSection(ctx, paintFrames)
 end
 
 drawLocation = function(self, view, layout)
