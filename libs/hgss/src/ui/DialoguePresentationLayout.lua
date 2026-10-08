@@ -22,6 +22,8 @@ local Layout = {}
 ---@field text DialoguePresentationLayout.Rect
 ---@field cursor DialoguePresentationLayout.Rect
 ---@field lineHeight number
+---@field visible boolean whether the outer strip intersects the host bounds
+---@field placement LayoutGeometry.Placement? the shared root transform when visible
 
 local WIDTH = FieldDialogueTheme.referenceWidth
 local HEIGHT = 48
@@ -115,15 +117,38 @@ function Layout.compute(bounds, options)
   -- The text pen starts at the window content origin; the continuation
   -- cursor is placed outside the content window, never clipped inside it.
   local text = { x = TEXT.x, y = TEXT.y, width = TEXT.width, height = TEXT.height }
+  local outerRect = { x = origin.x, y = origin.y, width = WIDTH * scale, height = HEIGHT * scale }
+  -- The visible host region is the outer strip intersected with the host
+  -- bounds, using the same intersection the renderer used to clip. A host
+  -- that fits the strip always intersects; the flag stays explicit so draw
+  -- never recomputes it.
+  local clipX = math.max(outerRect.x, bounds.x)
+  local clipY = math.max(outerRect.y, bounds.y)
+  local clipFarX = math.min(outerRect.x + outerRect.width, bounds.x + bounds.width)
+  local clipFarY = math.min(outerRect.y + outerRect.height, bounds.y + bounds.height)
+  local visible = clipFarX > clipX and clipFarY > clipY
+  local placement
+  if visible then
+    placement = {
+      frame = { x = outerRect.x, y = outerRect.y, width = outerRect.width, height = outerRect.height },
+      origin = { x = origin.x, y = origin.y },
+      scale = scale,
+      logicalWidth = WIDTH,
+      logicalHeight = HEIGHT,
+      clipRect = { x = clipX, y = clipY, width = clipFarX - clipX, height = clipFarY - clipY },
+    }
+  end
   return {
     bounds = { x = bounds.x, y = bounds.y, width = bounds.width, height = bounds.height },
     origin = origin,
     scale = scale,
-    outerRect = { x = origin.x, y = origin.y, width = WIDTH * scale, height = HEIGHT * scale },
+    outerRect = outerRect,
     box = { x = BOX.x, y = BOX.y, width = BOX.width, height = BOX.height },
     text = text,
     cursor = cursor,
     lineHeight = LINE_HEIGHT,
+    visible = visible,
+    placement = placement,
   }
 end
 

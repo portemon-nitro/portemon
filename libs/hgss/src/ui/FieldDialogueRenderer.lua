@@ -20,7 +20,6 @@ local Errors = require("libs.errors.src.Errors")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
@@ -224,7 +223,8 @@ function FieldDialogueRenderer:_drawFocusIndicator(status, layout)
 end
 
 -- Draws the dialogue from a resolved host presentation. No-op (and no state
--- touched) when the controller is closed or this renderer is disposed.
+-- touched) when the controller is closed, this renderer is disposed, or the
+-- resolved placement is not visible.
 -- Restores canvas, shader, scissor, blend, depth, wireframe, cull, and color
 -- afterwards so the HUD and host overlays draw normally. The presentation
 -- origin/scale bottom-centers the 256x48 strip inside the host bounds; every
@@ -241,30 +241,16 @@ function FieldDialogueRenderer:draw(controller, presentation)
     return
   end
   local layout = assert(presentation, "FieldDialogueRenderer:draw requires a resolved dialogue presentation")
-  DialoguePresentationLayout.validate(layout)
-  local lg = assert(self._graphics)
-  local status = controller:status()
-  -- The complete transformed strip plus its visible host region, resolved
-  -- locally at the draw boundary: source text geometry never carries host
-  -- fields, and input-free dialogue keeps its existing layout and timing.
-  local outer = layout.outerRect
-  local bounds = layout.bounds
-  local clipX = math.max(outer.x, bounds.x)
-  local clipY = math.max(outer.y, bounds.y)
-  local clipFarX = math.min(outer.x + outer.width, bounds.x + bounds.width)
-  local clipFarY = math.min(outer.y + outer.height, bounds.y + bounds.height)
-  if clipFarX <= clipX or clipFarY <= clipY then
+  if layout.visible == false then
     return
   end
-  local placement = {
-    frame = { x = outer.x, y = outer.y, width = outer.width, height = outer.height },
-    origin = { x = layout.origin.x, y = layout.origin.y },
-    scale = layout.scale,
-    logicalWidth = outer.width / layout.scale,
-    logicalHeight = outer.height / layout.scale,
-    clipRect = { x = clipX, y = clipY, width = clipFarX - clipX, height = clipFarY - clipY },
-  }
-  lg.push("all")
+  local placement =
+    assert(layout.placement, "FieldDialogueRenderer:draw requires a resolved dialogue presentation placement")
+  local lg = assert(self._graphics)
+  local status = controller:status()
+  -- The transformed strip and its visible host region arrive resolved with
+  -- the presentation: source text geometry never carries host fields, and
+  -- input-free dialogue keeps its existing layout and timing.
   -- Everything draws in reference-canvas coordinates under one
   -- translate(origin) + scale transform; the theme never returns
   -- screen-mapped rects, so nothing is scaled twice.
@@ -286,7 +272,6 @@ function FieldDialogueRenderer:draw(controller, presentation)
     self:_drawFocusIndicator(status, layout)
     self:_drawCursor(status, layout)
   end)
-  lg.pop()
 end
 
 function FieldDialogueRenderer:release()

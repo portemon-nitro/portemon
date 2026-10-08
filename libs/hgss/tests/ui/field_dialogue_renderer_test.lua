@@ -21,6 +21,7 @@ local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 local T = {}
 
@@ -160,7 +161,7 @@ function T.text_renderer_missing_atlas_is_a_typed_error()
 end
 
 -- A draw failure is terminal: the error propagates unwrapped without generic
--- state restoration, so the two unpopped scopes (renderer and surface) stay
+-- state restoration, so the shared scope stays
 -- on the stack for the host to observe.
 function T.draw_failure_propagates_without_generic_restore()
   local canvas, shader = {}, {}
@@ -190,7 +191,7 @@ function T.draw_failure_propagates_without_generic_restore()
     renderer:draw(controller, presentationAtFieldScale(fieldScale))
   end)
   Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil, "rethrows the draw failure")
-  Assert.equal(lg.pushDepth(), 2, "the failed draw leaks exactly its two unpopped scopes (renderer and surface)")
+  Assert.equal(lg.pushDepth(), 1, "the failed draw leaves only its shared scope open")
 
   renderer:release()
 end
@@ -214,9 +215,11 @@ function T.clips_to_the_dialogue_bounds_and_restores_the_callers_scissor()
     })
   end
   local function clippedPresentation()
-    local presentation = presentationAtFieldScale(1)
-    presentation.bounds = { x = 37, y = 11, width = 255, height = 47 }
-    return presentation
+    return DialoguePresentationLayout.compute({ x = 0, y = 0, width = 255, height = 48 }, {
+      scale = 1,
+      allowClipping = true,
+      cursorPlacement = MANIFEST.dialogueFrames.continueCursor.placement,
+    })
   end
 
   local lg = graphics()
@@ -229,17 +232,16 @@ function T.clips_to_the_dialogue_bounds_and_restores_the_callers_scissor()
   renderer:draw(FieldDialogueFixture.openDialogue("AB", 0), clippedPresentation())
   Assert.deepEqual(lg.scissorIntersections, {
     {
-      -- The shared root scope clips the strip (host bounds intersected with
-      -- the resolved outer strip) against the caller scissor: the effective
-      -- region matches the previous manual boundary exactly.
-      requested = { 37, 11, 219, 37 },
-      effective = { 40, 11, 20, 14 },
+      -- The shared root scope clips the resolved strip/host intersection
+      -- against the caller scissor.
+      requested = { 0, 0, 255, 48 },
+      effective = { 40, 5, 20, 20 },
     },
     {
       -- Text always draws under the text-window clip so scrolling lines
       -- never overpaint the frame tiles.
       requested = { 16, 8, 216, 32 },
-      effective = { 40, 11, 20, 14 },
+      effective = { 40, 8, 20, 17 },
     },
   }, "dialogue clips against both its host bounds and the caller scissor")
   FieldDialogueFixture.assertRestoredState(lg, canvas, shader, { 40, 5, 20, 20 })
@@ -257,7 +259,7 @@ function T.clips_to_the_dialogue_bounds_and_restores_the_callers_scissor()
   end)
   Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil)
   Assert.equal(#failing.scissorIntersections, 1, "the failed draw clips before emitting pixels")
-  Assert.equal(failing.pushDepth(), 2, "the failed draw leaks exactly its two unpopped scopes (renderer and surface)")
+  Assert.equal(failing.pushDepth(), 1, "the failed draw leaves only its shared scope open")
   failingRenderer:release()
 end
 
@@ -794,6 +796,178 @@ function T.borrowed_window_survives_a_later_construction_failure()
     "raises FIELD_UI_CONTINUE_CURSOR_MISSING"
   )
   Assert.isFalse(borrowed.released, "a failed borrow construction never releases the caller-owned window")
+end
+
+-- A resolved placement renders identically at native, clipped, wide, and
+-- tall hosts without draw-time layout work: the placement published once by
+-- compute carries the frame, origin, scale, logical dimensions, and clip,
+-- draw consumes that exact table through the shared root scope, and later
+-- controller states reuse it while their visible content keeps changing.
+function T.resolved_placement_draws_identically_without_draw_time_layout_work()
+  local cursorPlacement = MANIFEST.dialogueFrames.continueCursor.placement
+  local geometries = {
+    { bounds = { x = 0, y = 0, width = 256, height = 192 }, options = { scale = 1, cursorPlacement = cursorPlacement } },
+    {
+      bounds = { x = 0, y = 0, width = 255, height = 48 },
+      options = { scale = 1, allowClipping = true, cursorPlacement = cursorPlacement },
+    },
+    { bounds = { x = 37, y = 11, width = 900, height = 420 }, options = { cursorPlacement = cursorPlacement } },
+    { bounds = { x = 0, y = 0, width = 256, height = 768 }, options = { scale = 1, cursorPlacement = cursorPlacement } },
+  }
+  local validateCalls = 0
+  local originalValidate = DialoguePresentationLayout.validate
+  local seenPlacements = {}
+  local originalSurfaceDraw = LogicalSurface.draw
+  DialoguePresentationLayout.validate = function(presentation)
+    validateCalls = validateCalls + 1
+    return originalValidate(presentation)
+  end
+  LogicalSurface.draw = function(graphics, placement, draw)
+    seenPlacements[#seenPlacements + 1] = placement
+    return originalSurfaceDraw(graphics, placement, draw)
+  end
+  local ok, err = pcall(function()
+    for _, geometry in ipairs(geometries) do
+      local presentation = DialoguePresentationLayout.compute(geometry.bounds, geometry.options)
+      local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
+      local renderer = FieldDialogueRenderer.new({
+        cacheFs = uiCache(),
+        manifest = MANIFEST,
+        text = withTextRenderer(uiCache(), lg),
+        graphics = lg,
+      })
+      local controller = FieldDialogueFixture.openDialogue("AB", 0)
+      local seenBefore = #seenPlacements
+      renderer:draw(controller, presentation)
+      Assert.equal(validateCalls, 0, "draw must not revalidate the resolved layout")
+      Assert.equal(#seenPlacements, seenBefore + 1, "one draw crosses the shared root scope once")
+      Assert.isTrue(
+        seenPlacements[#seenPlacements] == presentation.placement,
+        "draw consumes the resolved placement table itself"
+      )
+      Assert.isTrue(#lg.draws > 0, "the resolved placement draws the dialogue")
+      Assert.isTrue(presentation.visible == true, "a fitting host resolves a visible placement")
+      Assert.deepEqual(
+        presentation.placement.frame,
+        presentation.outerRect,
+        "the resolved frame is the outer strip"
+      )
+      Assert.deepEqual(presentation.placement.origin, presentation.origin, "the resolved origin is shared")
+      Assert.equal(presentation.placement.scale, presentation.scale, "the resolved scale is shared")
+      Assert.equal(presentation.placement.logicalWidth, 256, "the strip keeps its source width")
+      Assert.equal(presentation.placement.logicalHeight, 48, "the strip keeps its source height")
+      local outer, bounds = presentation.outerRect, presentation.bounds
+      local clipX = math.max(outer.x, bounds.x)
+      local clipY = math.max(outer.y, bounds.y)
+      local clipFarX = math.min(outer.x + outer.width, bounds.x + bounds.width)
+      local clipFarY = math.min(outer.y + outer.height, bounds.y + bounds.height)
+      Assert.deepEqual(presentation.placement.clipRect, {
+        x = clipX,
+        y = clipY,
+        width = clipFarX - clipX,
+        height = clipFarY - clipY,
+      }, "the resolved clip is the strip/host intersection")
+      local firstDraws = #lg.draws
+      for _ = 1, 30 do
+        controller:step({})
+      end
+      renderer:draw(controller, presentation)
+      Assert.equal(validateCalls, 0, "a second draw still performs no layout work")
+      Assert.isTrue(
+        seenPlacements[#seenPlacements] == presentation.placement,
+        "later controller states reuse the same placement table"
+      )
+      Assert.isTrue(#lg.draws > firstDraws, "revealed content keeps changing on the same placement")
+      Assert.equal(lg.pushDepth(), 0, "successful draws restore the borrowed graphics state")
+      renderer:release()
+    end
+  end)
+  DialoguePresentationLayout.validate = originalValidate
+  LogicalSurface.draw = originalSurfaceDraw
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Closed, invisible, and failing draws keep the borrowed graphics state
+-- safe: the first two draw nothing and touch no transform or scissor state,
+-- while a throwing text callback propagates with only the shared scopes
+-- left open, never an extra outer frame.
+function T.inactive_invisible_and_failing_draws_keep_borrowed_state_safe()
+  local closedGraphics = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
+  local closedRenderer = FieldDialogueRenderer.new({
+    cacheFs = uiCache(),
+    manifest = MANIFEST,
+    text = withTextRenderer(uiCache(), closedGraphics),
+    graphics = closedGraphics,
+  })
+  local closedController = FieldDialogueController.new({
+    layout = function()
+      return { pages = {}, warnings = {}, lineHeight = 0, lineSpacing = 0 }
+    end,
+    continueCursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 },
+  })
+  Assert.isFalse(closedController:isModal(), "the controller was never opened")
+  closedRenderer:draw(closedController, nil)
+  Assert.equal(#closedGraphics.draws, 0, "a closed dialogue draws nothing")
+  Assert.equal(closedGraphics.pushDepth(), 0, "a closed dialogue touches no transform state")
+  Assert.equal(#closedGraphics.scissorIntersections, 0, "a closed dialogue touches no scissor state")
+  closedRenderer:release()
+
+  local hiddenGraphics = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
+  local hiddenRenderer = FieldDialogueRenderer.new({
+    cacheFs = uiCache(),
+    manifest = MANIFEST,
+    text = withTextRenderer(uiCache(), hiddenGraphics),
+    graphics = hiddenGraphics,
+  })
+  local hiddenController = FieldDialogueFixture.openDialogue("AB", 0)
+  Assert.isTrue(hiddenController:isModal(), "the hidden dialogue is still active")
+  local hiddenPresentation = presentationAtFieldScale(1)
+  hiddenPresentation.visible = false
+  hiddenPresentation.placement = nil
+  hiddenRenderer:draw(hiddenController, hiddenPresentation)
+  Assert.equal(#hiddenGraphics.draws, 0, "an invisible dialogue draws nothing")
+  Assert.equal(hiddenGraphics.pushDepth(), 0, "an invisible dialogue touches no transform state")
+  Assert.equal(#hiddenGraphics.scissorIntersections, 0, "an invisible dialogue touches no scissor state")
+  hiddenRenderer:release()
+
+  local failingGraphics = fakeGraphics()
+  local failingRenderer = FieldDialogueRenderer.new({
+    cacheFs = uiCache(),
+    manifest = MANIFEST,
+    text = {
+      windowBackgroundColor = function()
+        return { 0, 0, 0, 1 }
+      end,
+      drawLine = function()
+        error("injected text failure")
+      end,
+      drawFocusIndicator = function() end,
+    },
+    graphics = failingGraphics,
+    windowRenderer = {
+      drawWindow = function() end,
+      framePalette = function()
+        return MANIFEST.dialogueFrames.palettes[0]
+      end,
+    },
+  })
+  local failingController = FieldDialogueFixture.openDialogue("AB", 0)
+  for _ = 1, 30 do
+    failingController:step({})
+  end
+  Assert.isTrue(failingController:status().revealedGlyphs > 0, "the failing draw has revealed text to draw")
+  local err = Assert.throws(function()
+    failingRenderer:draw(failingController, presentationAtFieldScale(1))
+  end)
+  Assert.isTrue(tostring(err):find("injected text failure", 1, true) ~= nil, "rethrows the text failure")
+  Assert.equal(
+    failingGraphics.pushDepth(),
+    2,
+    "the failed draw leaves only the shared scopes open, never an extra outer frame"
+  )
+  failingRenderer:release()
 end
 
 -- A closed controller draws nothing and requires no presentation: the

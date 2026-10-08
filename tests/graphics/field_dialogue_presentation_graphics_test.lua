@@ -31,16 +31,9 @@ end
 T["authentic_window_renders_inside_arbitrary_host_bounds"] = function(scope)
   local dialogue, graphics = renderer(scope)
   local controller = FieldDialogueFixture.openDialogue("AB", 0)
-  local presentation = {
-    bounds = { x = 37, y = 11, width = 900, height = 420 },
-    origin = { x = 359, y = 383 },
-    scale = 1.640625,
-    outerRect = { x = 359, y = 383, width = 420, height = 78.75 },
-    box = { x = 16, y = 8, width = 216, height = 32 },
-    text = { x = 16, y = 8, width = 216, height = 32 },
-    cursor = { x = 240, y = 24, width = 16, height = 16 },
-    lineHeight = 16,
-  }
+  local presentation = DialoguePresentationLayout.compute({ x = 37, y = 11, width = 900, height = 420 }, {
+    cursorPlacement = CURSOR_PLACEMENT,
+  })
 
   dialogue:draw(controller, presentation)
 
