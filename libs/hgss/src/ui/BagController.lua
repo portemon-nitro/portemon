@@ -42,6 +42,10 @@ local EFFECT = {
 local validateBagEvent
 local pressInsidePane
 
+---@class BattleSelectionPolicy native battle item selection policy
+---@field isEnabled fun(itemKey: string): boolean true while the kernel can execute the item
+---@field reason fun(itemKey: string): string? native refusal reason, nil while selectable
+
 ---@class BagControllerCommands semantic mutations bound to the live inventory service
 ---@field toss fun(itemKey: string, quantity: integer): boolean remove owned copies
 ---@field move fun(pocketKey: string, fromIndex: integer, toIndex: integer): boolean reorder by absolute pocket index
@@ -69,6 +73,7 @@ local pressInsidePane
 ---@field _saleBalance integer
 ---@field _saleDisplayedTotal integer
 ---@field _isPickable (fun(itemKey: string): boolean)? the held-item eligibility probe for picker contexts
+---@field _battlePolicy BattleSelectionPolicy? the native selection policy for the battle context
 ---@field _intent table<string, unknown>? the one-shot selection intent for the owning flow
 ---@field _prompt YesNoPromptController the owned modal prompt for toss confirmation
 ---@field _tossPrompt { x: integer, y: integer, shape: string, initialSelection: string } the generated semantic prompt placement
@@ -106,20 +111,21 @@ BagController.__index = BagController
 ---@field model { refresh: fun(): table<string, unknown> } the injected view projection
 ---@field cursor BagCursor the borrowed runtime-only field cursor
 ---@field resolveLayout fun(): table<string, unknown> the injected layout resolver
----@field promptShape { width: integer, height: integer, yes: table<string, unknown>, no: table<string, unknown> } the validated compact prompt shape
----@field tossPrompt { x: integer, y: integer, shape: string, initialSelection: string } the generated semantic prompt placement
+---@field promptShape { width: integer, height: integer, yes: table<string, unknown>, no: table<string, unknown> }? the validated compact prompt shape; battle selections never open prompts
+---@field tossPrompt { x: integer, y: integer, shape: string, initialSelection: string }? the generated semantic prompt placement; unused in battle
 ---@field commands BagControllerCommands semantic mutations bound to the live inventory service
 ---@field resolveActions fun(view: table<string, unknown>): table<string, unknown>[] the injected inventory-local menu projection over the refreshed view
----@field itemSelectTicks integer the generated selection-entry total; the controller owns the clock but never the frame visuals
+---@field itemSelectTicks integer? the generated selection-entry total; battle uses its fixed inert total
 ---@field effect (fun(sequence: string))? the optional semantic sound boundary, silent when omitted
----@field textPolicy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean } the copied text-speed cadence
+---@field textPolicy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean }? the copied text-speed cadence; battle uses its fixed reveal pacing
 ---@field messages table<string, unknown>? the generated lower-message templates; direct unit construction falls back to the equivalent semantic defaults
 ---@field feedbackTicks integer? the generated activation-feedback total; direct unit construction falls back to a small positive total
 ---@field moveTransition table<string, unknown>? the generated move commit-clip totals; direct unit construction falls back to small positive totals
----@field context "inventory"|"field"|"pick_held"|"sell"? the selection context (defaults to inventory)
+---@field context "inventory"|"field"|"pick_held"|"sell"|"battle"? the selection context (defaults to inventory)
 ---@field saleSession table<string, unknown>? required for sell context
 ---@field salePrompt { x: integer, y: integer, shape: string, initialSelection: string }? required for sell context
 ---@field isPickable (fun(itemKey: string): boolean)? the held-item eligibility probe, required for pick_held
+---@field battlePolicy BattleSelectionPolicy? the native selection policy, required for battle
 
 ---@param value unknown
 ---@param what string
@@ -248,6 +254,29 @@ local function parseTab(node)
   return nil
 end
 
+-- Battle selections never open a modal prompt: this null owner keeps the
+-- prompt contract (open, dispose, status, update, take) with inert
+-- behavior, except its open edge which fails closed instead of arming a
+-- confirmation the battle flow can never resolve.
+---@return table<string, fun()> inert prompt owner for the battle context
+local function nullPrompt()
+  local idle = {}
+  function idle:open(_)
+    error("battle selections never open a modal prompt", 2)
+  end
+  function idle:dispose() end
+  function idle:updateFixed(_)
+    return nil
+  end
+  function idle:takeResult()
+    return nil
+  end
+  function idle:status()
+    return { active = false }
+  end
+  return idle
+end
+
 ---@param opts BagController.Options
 ---@return BagController
 function BagController.new(opts)
@@ -266,12 +295,20 @@ function BagController.new(opts)
   assert(type(opts.resolveActions) == "function", "the bag controller needs its action policy")
   local context = opts.context or "inventory"
   assert(
-    context == "inventory" or context == "field" or context == "pick_held" or context == "sell",
-    "the bag controller needs a named inventory, field, or pick_held context"
+    context == "inventory" or context == "field" or context == "pick_held" or context == "sell" or context == "battle",
+    "the bag controller needs a named inventory, field, pick_held, sell, or battle context"
   )
   local isPickable = opts.isPickable
   if context == "pick_held" then
     assert(type(isPickable) == "function", "the held-item picker needs its eligibility probe")
+  end
+  local battlePolicy = opts.battlePolicy
+  if context == "battle" then
+    assert(battlePolicy ~= nil, "the battle context needs its native selection policy")
+    assert(type(battlePolicy.isEnabled) == "function", "the battle policy answers selection legality")
+    assert(type(battlePolicy.reason) == "function", "the battle policy explains its refusals")
+  else
+    assert(battlePolicy == nil, "only the battle context takes battle options")
   end
   if context == "sell" then
     assert(type(opts.saleSession) == "table", "the selling bag needs its sale session")
@@ -280,14 +317,36 @@ function BagController.new(opts)
     assert(type(opts.saleSession.commit) == "function", "the selling bag needs sale commits")
     assert(type(opts.salePrompt) == "table", "the selling bag needs its compact prompt placement")
   end
-  assert(type(opts.promptShape) == "table", "the bag controller needs its modal prompt shape")
-  assert(type(opts.tossPrompt) == "table", "the bag controller needs its toss prompt template")
+  -- Battle selections never open a modal prompt, never enter the timed
+  -- selection entry, and reveal refusals at once: the fixed battle
+  -- cadence below stays inert. Every other context keeps its production
+  -- collaborators exactly as before.
+  local prompt
+  if context == "battle" then
+    prompt = nullPrompt()
+  else
+    assert(type(opts.promptShape) == "table", "the bag controller needs its modal prompt shape")
+    assert(type(opts.tossPrompt) == "table", "the bag controller needs its toss prompt template")
+    prompt = YesNoPromptController.new(opts.promptShape, opts.effect)
+    prompt:open(opts.tossPrompt)
+    prompt:dispose()
+  end
+  local itemSelectTicks = opts.itemSelectTicks
+  if itemSelectTicks == nil then
+    assert(context == "battle", "the bag controller needs its positive selection-entry total")
+    itemSelectTicks = 1
+  end
   assert(
-    type(opts.itemSelectTicks) == "number" and opts.itemSelectTicks % 1 == 0 and opts.itemSelectTicks >= 1,
+    type(itemSelectTicks) == "number" and itemSelectTicks % 1 == 0 and itemSelectTicks >= 1,
     "the bag controller needs its positive selection-entry total"
   )
   assert(opts.effect == nil or type(opts.effect) == "function", "the bag effect boundary must be a function")
-  local textPolicy = assert(opts.textPolicy, "the bag controller needs its copied text-speed policy")
+  local textPolicy = opts.textPolicy
+  if textPolicy == nil then
+    assert(context == "battle", "the bag controller needs its copied text-speed policy")
+    textPolicy = { interGlyphDelay = 0, glyphBudget = 64, abAcceleration = false }
+  end
+  textPolicy = assert(textPolicy, "the bag controller needs its copied text-speed policy")
   assert(type(textPolicy) == "table", "the bag controller needs its copied text-speed policy")
   assert(
     type(textPolicy.interGlyphDelay) == "number"
@@ -326,13 +385,6 @@ function BagController.new(opts)
     type(moveTransition.changed) == "table" and moveTransition.changed.totalTicks,
     "the changed move clip total"
   )
-  -- The modal prompt is bound once and owned for the controller lifetime:
-  -- opening the supplied template here proves a malformed placement fails
-  -- construction instead of falling back to action slots, and disposing
-  -- leaves no active prompt behind.
-  local prompt = YesNoPromptController.new(opts.promptShape, opts.effect)
-  prompt:open(opts.tossPrompt)
-  prompt:dispose()
   local self = setmetatable({
     _model = opts.model,
     _cursor = opts.cursor,
@@ -351,6 +403,7 @@ function BagController.new(opts)
     _saleSoundAttempted = false,
     _salePostCommitBusy = false,
     _isPickable = isPickable,
+    _battlePolicy = battlePolicy,
     _intent = nil,
     _focusNode = slotNode(0),
     _lastSlot = 0,
@@ -360,7 +413,7 @@ function BagController.new(opts)
     _actionNode = 4,
     _actionItemKey = nil,
     _actionPocket = nil,
-    _itemSelectTicks = opts.itemSelectTicks,
+    _itemSelectTicks = itemSelectTicks,
     _itemSelectElapsed = 0,
     _quantity = 1,
     _quantityMax = 1,
@@ -613,6 +666,9 @@ end
 
 -- Applies one resolved browse node and its side effects: grid cells focus
 -- through the shared slot path, while tabs and Cancel only move focus.
+-- Battle tab focus carries its pocket at once so keyboard walks land on
+-- the focused tab's cells; every other context switches pockets on
+-- confirm, exactly as before.
 ---@param node string
 function BagController:_applyFocusNode(node)
   local absolute = parseSlot(node)
@@ -621,6 +677,12 @@ function BagController:_applyFocusNode(node)
     return
   end
   assert(parseTab(node) ~= nil or node == CANCEL_NODE, "focus nodes stay inside the browse graph")
+  if self._context == "battle" then
+    local pocketKey = parseTab(node)
+    if pocketKey ~= nil and pocketKey ~= self:_pocket() then
+      self:_enterPocket(pocketKey)
+    end
+  end
   self._focusNode = node
 end
 
@@ -1643,9 +1705,56 @@ function BagController:_syncNested()
   return true
 end
 
+-- Confirms one battle cell without opening the field action menu:
+-- tabs and Cancel keep their browsing behavior, an empty cell stays a
+-- no-op, an enabled cell forwards one selection intent for the owning
+-- battle flow to stage, and a refused cell explains its native reason
+-- with no stock movement. Consumption stays with native execution.
+function BagController:_confirmBattle()
+  if self._state ~= "browsing" then
+    return
+  end
+  if self._focusNode == CANCEL_NODE then
+    self:_play(EFFECT.cancel)
+    self._result = { kind = "closed" }
+    self._closed = true
+  elseif parseTab(self._focusNode) ~= nil then
+    local candidate = assert(parseTab(self._focusNode), "tab focus carries a pocket")
+    if candidate ~= self:_pocket() then
+      self:_enterPocket(candidate)
+    end
+  else
+    local absolute = self:_focusedOccupiedAbsolute()
+    if absolute == nil then
+      return
+    end
+    if self._intent ~= nil then
+      return
+    end
+    local selected = assert(self._view.selected, "an occupied focus carries its record")
+    local itemKey = assert(selected.item, "selected slots carry their item key")
+    local policy = assert(self._battlePolicy, "the battle context carries its native options")
+    if policy.isEnabled(itemKey) then
+      self:_play(EFFECT.select)
+      self:_emitIntent("battle_select", itemKey)
+    else
+      self:_play(EFFECT.invalid)
+      local reason = policy.reason(itemKey)
+      if type(reason) ~= "string" or reason == "" then
+        reason = "That choice is unavailable."
+      end
+      self:_startMessage(reason, true)
+    end
+  end
+end
+
 function BagController:_confirm()
   if self._overlay then
     self._overlay = false
+    return
+  end
+  if self._context == "battle" then
+    self:_confirmBattle()
     return
   end
   if self._context == "pick_held" and self._state == "browsing" and parseSlot(self._focusNode) ~= nil then

@@ -96,6 +96,9 @@ end
 ---@field manifest table<string, unknown> the validated party presentation manifest
 ---@field actionPolicy table<string, unknown>? the action policy (defaults to the production browse policy)
 ---@field uiManifest table<string, unknown>? the field-UI manifest carrying the yes/no prompt shape
+---@field selectionOnly boolean? true to show a picker without wiring a live reorder callback (pick contexts only)
+---@field isEligible (fun(slot: integer): boolean)? slot eligibility predicate (defaults to every slot)
+---@field canCancel boolean? false blocks cancel at the input boundary (defaults to true)
 ---@field context string? the named party context (defaults to browse)
 ---@field targetPromptKey ("giveTarget"|"useTarget"|"teachTarget")? the lower prompt for item target contexts
 ---@field item { key: string, bagRevision: integer }? the pending item for give continuation and target contexts
@@ -153,6 +156,14 @@ function PartyScreenState.new(opts)
   else
     assert(targetPromptKey == nil, "only target contexts carry a target prompt")
   end
+  local selectionOnly = opts.selectionOnly == true
+  local isEligible = opts.isEligible
+  assert(isEligible == nil or type(isEligible) == "function", "slot eligibility arrives as a predicate")
+  local canCancel = opts.canCancel
+  if canCancel == nil then
+    canCancel = true
+  end
+  assert(type(canCancel) == "boolean", "cancel permission must be a boolean")
   local self = setmetatable({
     _manifest = manifest,
     _policy = opts.actionPolicy or productionPolicy(service, manifestLabels(manifest)),
@@ -175,13 +186,20 @@ function PartyScreenState.new(opts)
     _disposed = false,
   }, PartyScreenState)
   local function refreshModel()
-    return PartyScreenModel.build(service)
+    return PartyScreenModel.build(service, { isEligible = isEligible })
   end
-  local function partyRevision()
-    return service:partyRevision()
-  end
-  local function swapPartyMons(a, b)
-    service:swapPartyMons(a, b)
+  local swapPort = nil
+  if not selectionOnly then
+    local function partyRevision()
+      return service:partyRevision()
+    end
+    local function swapPartyMons(a, b)
+      service:swapPartyMons(a, b)
+    end
+    swapPort = {
+      partyRevision = partyRevision,
+      swapPartyMons = swapPartyMons,
+    }
   end
   local wrapper = self
   local function resolveLayout()
@@ -195,14 +213,12 @@ function PartyScreenState.new(opts)
       context = context,
       initialFocus = opts.initialFocus,
       initialMessage = opts.initialMessage,
+      allowCancel = canCancel,
       model = {
         refresh = refreshModel,
       },
       layout = resolveLayout,
-      swap = {
-        partyRevision = partyRevision,
-        swapPartyMons = swapPartyMons,
-      },
+      swap = swapPort,
       actionPolicy = self._policy,
       promptShape = self._promptShape,
       item = self._item,

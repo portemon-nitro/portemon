@@ -231,6 +231,9 @@ local function openParty(ready, failure, calls, screenOptions)
     item = screenOptions and screenOptions.item,
     targetPromptKey = screenOptions and screenOptions.targetPromptKey,
     initialFocus = screenOptions and screenOptions.initialFocus,
+    selectionOnly = screenOptions and screenOptions.selectionOnly,
+    isEligible = screenOptions and screenOptions.isEligible,
+    canCancel = screenOptions and screenOptions.canCancel,
     measureDisplay = function()
       return measurement
     end,
@@ -1238,6 +1241,64 @@ function T.facts_refresh_between_ticks_advances_nothing()
   Assert.notNil(result, "a waiting screen still closes on cancel")
   Assert.equal(result.kind, "close", "close keeps its existing host translation")
   waiting:dispose()
+end
+
+-- the new options, while an explicit selection-only pick carries its
+-- eligibility predicate, blocks cancel at the input boundary, and never
+-- wires a live reorder callback.
+---@param state table<string, unknown> party wrapper under test driving
+local function pumpToInteractive(state)
+  for _ = 1, 40 do
+    local status = state:status()
+    if status.phase == "interactive" then
+      break
+    end
+    if status.phase == nil and status.preparationState == "ready" then
+      break
+    end
+    state:updateFixed({})
+  end
+  for _ = 1, 3 do
+    state:updateFixed({})
+  end
+end
+
+function T.pick_defaults_preserve_selection_and_cancel()
+  local calls = { swaps = {} }
+  local state = openParty(true, nil, calls, { context = "pick" })
+  pumpToInteractive(state)
+  state:updateFixed({ { type = "cancel" } })
+  local result = state:takeResult()
+  Assert.notNil(result, "the default pick stays cancellable")
+  Assert.equal(result.kind, "cancelled", "cancel reports its navigation outcome")
+  state:dispose()
+end
+
+function T.selection_only_pick_threads_eligibility_and_blocks_cancel()
+  local calls = { swaps = {} }
+  local seen = {}
+  local state = openParty(true, nil, calls, {
+    context = "pick",
+    selectionOnly = true,
+    isEligible = function(slot)
+      seen[#seen + 1] = slot
+      return slot == 1
+    end,
+    canCancel = false,
+  })
+  pumpToInteractive(state)
+  Assert.isTrue(#seen >= 6, "eligibility observes every party slot")
+  Assert.equal(state:status().cursorNode, 1, "focus starts on the eligible reserve")
+  state:updateFixed({ { type = "cancel" } })
+  Assert.isNil(state:takeResult(), "blocked cancel seals no result")
+  Assert.isTrue(state:status().open, "blocked cancel keeps the picker")
+  state:updateFixed({ { type = "confirm" } })
+  local result = state:takeResult()
+  Assert.notNil(result, "confirming the reserve completes")
+  Assert.equal(result.kind, "selected", "the picker reports its selection")
+  Assert.equal(result.slot, 1, "the selection names the eligible slot")
+  Assert.equal(#calls.swaps, 0, "selection never reorders the persistent party")
+  state:dispose()
 end
 
 return { tests = T }

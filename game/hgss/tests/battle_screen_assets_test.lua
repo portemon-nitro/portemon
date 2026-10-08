@@ -101,6 +101,82 @@ function T.preparation_failure_surfaces()
   bad:dispose()
 end
 
+-- A bare not-yet answer polls again without failing, while a nil answer
+-- or any answer carrying a failure string fails closed with context.
+function T.preparation_pending_and_typed_failures()
+  local polls = 0
+  local patient = { images = {}, released = {} }
+  function patient.prepare(_)
+    polls = polls + 1
+    if polls == 1 then
+      return false
+    end
+    return true
+  end
+  function patient.drawable(key)
+    if patient.images[key] == nil then
+      patient.images[key] = { handle = key }
+    end
+    return patient.images[key]
+  end
+  function patient.release(key)
+    patient.released[key] = (patient.released[key] or 0) + 1
+  end
+  local waiting = BattlePresentationAssets.new({
+    assets = patient,
+    launchId = "assets-patient",
+    sceneKey = "general/plain/day",
+    sceneImage = "scene:patient",
+  })
+  waiting:update()
+  Assert.equal(waiting:state(), "pending", "a bare not-yet answer polls again without failing")
+  Assert.isNil(waiting:error(), "polling again carries no failure context")
+  waiting:update()
+  Assert.equal(waiting:state(), "ready", "the prepared demand completes once the service answers")
+  waiting:dispose()
+
+  local untyped = BattlePresentationAssets.new({
+    assets = stubAssets({ failPrepare = "test-typed-nil" }),
+    launchId = "assets-untyped",
+    sceneKey = "general/plain/day",
+    sceneImage = "scene:untyped",
+  })
+  untyped:update()
+  Assert.equal(untyped:state(), "failed", "a nil answer with a message fails closed")
+  Assert.isTrue(
+    (untyped:error() or ""):find("test%-typed%-nil", 1) ~= nil,
+    "the nil failure carries its context"
+  )
+  untyped:dispose()
+
+  local reluctant = { images = {}, released = {} }
+  function reluctant.prepare(_)
+    return false, "test-typed-false"
+  end
+  function reluctant.drawable(key)
+    if reluctant.images[key] == nil then
+      reluctant.images[key] = { handle = key }
+    end
+    return reluctant.images[key]
+  end
+  function reluctant.release(key)
+    reluctant.released[key] = (reluctant.released[key] or 0) + 1
+  end
+  local refused = BattlePresentationAssets.new({
+    assets = reluctant,
+    launchId = "assets-refused",
+    sceneKey = "general/plain/day",
+    sceneImage = "scene:refused",
+  })
+  refused:update()
+  Assert.equal(refused:state(), "failed", "a not-yet answer carrying a failure string fails closed")
+  Assert.isTrue(
+    (refused:error() or ""):find("test%-typed%-false", 1) ~= nil,
+    "the typed failure carries its context"
+  )
+  refused:dispose()
+end
+
 -- A held image reports pending instead of failing or skipping ahead;
 -- releasing it completes preparation exactly.
 function T.delayed_images_stay_pending()
@@ -131,6 +207,50 @@ function T.disposal_releases_owned_handles_once()
   Assert.equal(assets.released["scene:probe"], 1, "the scene handle releases once")
   Assert.equal(assets.released["mon:player:back"], 1, "the player handle releases once")
   Assert.isNil(assets.released["mon:enemy:front"], "never-drawn keys never release")
+end
+
+-- A regrown demand keeps readiness on a bare not-yet answer, while nil
+-- or a failure string fails closed with context.
+function T.regrown_demand_prefetch_failures()
+  local assets = stubAssets({})
+  local waiting = holder(nil, assets)
+  waiting:update()
+  Assert.equal(waiting:state(), "ready", "the first demand prepares")
+  function assets.prepare(_)
+    return false
+  end
+  waiting:addSelectors({ "mon:enemy:front" })
+  Assert.equal(waiting:state(), "ready", "a bare not-yet regrow keeps readiness")
+  Assert.isNil(waiting:error(), "the kept readiness carries no failure context")
+  waiting:dispose()
+
+  local nilAssets = stubAssets({})
+  local nilled = holder(nil, nilAssets)
+  nilled:update()
+  function nilAssets.prepare(_)
+    return nil, "test-regrow-nil"
+  end
+  nilled:addSelectors({ "mon:enemy:front" })
+  Assert.equal(nilled:state(), "failed", "a nil regrow answer fails closed")
+  Assert.isTrue(
+    (nilled:error() or ""):find("test%-regrow%-nil", 1) ~= nil,
+    "the nil regrow failure carries its context"
+  )
+  nilled:dispose()
+
+  local typedAssets = stubAssets({})
+  local refused = holder(nil, typedAssets)
+  refused:update()
+  function typedAssets.prepare(_)
+    return false, "test-regrow-typed"
+  end
+  refused:addSelectors({ "mon:enemy:front" })
+  Assert.equal(refused:state(), "failed", "a regrow answer carrying a failure string fails closed")
+  Assert.isTrue(
+    (refused:error() or ""):find("test%-regrow%-typed", 1) ~= nil,
+    "the typed regrow failure carries its context"
+  )
+  refused:dispose()
 end
 
 return { tests = T }

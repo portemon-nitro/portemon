@@ -106,9 +106,16 @@ function BattlePresentationAssets:update()
   end
   if not self._prepared then
     local ok, failure = self._assets.prepare(self:_demand())
-    if ok == nil or ok == false then
+    if ok == nil or failure ~= nil then
       self._state = "failed"
       self._error = tostring(failure or "battle preparation failed")
+      return
+    end
+    -- A bare not-yet answer polls again: false without a failure string
+    -- means the demand is still preparing. A nil answer, or any answer
+    -- carrying a failure string, is a terminal preparation failure and
+    -- fails closed with context.
+    if ok == false then
       return
     end
     self._prepared = true
@@ -141,7 +148,9 @@ function BattlePresentationAssets:addSelectors(selectors)
   -- readiness: preparation already succeeded for this launch.
   if grown and self._state == "ready" then
     local ok, failure = self._assets.prepare(self:_demand())
-    if ok == nil or ok == false then
+    -- A bare not-yet answer keeps readiness: the grown selectors stay
+    -- named for a later demand, while nil or a failure string fails.
+    if ok == nil or failure ~= nil then
       self._state = "failed"
       self._error = tostring(failure or "battle preparation failed")
     end

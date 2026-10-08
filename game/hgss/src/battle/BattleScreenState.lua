@@ -12,6 +12,7 @@
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
+local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 
 ---@class BattleScreenState
@@ -25,6 +26,9 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 ---@field _assets BattlePresentationAssets per-launch preparation leases
 ---@field _timeline BattleTimeline ordered visible-cue player
 ---@field _session ApplicationPresentation per-open presentation session
+---@field _subflows BattleSubflows battle-local child coordinator
+---@field _partySnapshot table<integer, table<string, unknown>>? latest detached own-party facts
+---@field _inventorySnapshot table<string, integer>? latest detached battle stock
 ---@field _mode string closed controller mode
 ---@field _selection string? highlighted semantic identity
 ---@field _armed table<string, unknown>? pressed control awaiting release
@@ -101,6 +105,8 @@ end
 ---@field text table<string, unknown> borrowed text services
 ---@field windows table<string, unknown> borrowed window services
 ---@field audio table<string, unknown> semantic sound boundary
+---@field itemCatalog table<string, unknown>? borrowed immutable item catalog for battle bag grouping
+---@field monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
 ---@field overrides table<string, unknown>? per-instance scene/frame/case inputs
 
 ---@param opts BattleScreenState.Options
@@ -143,6 +149,14 @@ function BattleScreenState.new(opts)
     }),
     _timeline = nil,
     _session = nil,
+    _subflows = BattleSubflows.new({
+      launchId = opts.launchId,
+      itemCatalog = opts.itemCatalog,
+      monCatalog = opts.monCatalog,
+      measureDisplay = opts.measureDisplay,
+    }),
+    _partySnapshot = nil,
+    _inventorySnapshot = nil,
     _mode = "preparing",
     _selection = "fight",
     _armed = nil,
@@ -543,6 +557,12 @@ function BattleScreenState:_portPresent(packet)
   if packet.result ~= nil then
     self._pendingResult = copyValue(packet.result)
   end
+  if type(packet.party) == "table" then
+    self._partySnapshot = copyValue(packet.party)
+  end
+  if type(packet.inventory) == "table" then
+    self._inventorySnapshot = copyValue(packet.inventory)
+  end
   self._pendingFinal = copyValue(packet.after)
 end
 
@@ -608,6 +628,9 @@ function BattleScreenState:cancelPointerCapture()
     local _ = ok
   end
   self._armed = nil
+  if self._subflows ~= nil then
+    self._subflows:cancelPointerCapture()
+  end
 end
 
 ---@param armed table<string, unknown>? pressed control awaiting release
@@ -696,6 +719,52 @@ function BattleScreenState:_seal(fragment)
   self._audio.play("select")
 end
 
+-- Builds the child intent for the mirrored open request: battle-owned
+-- snapshots and the projected options travel with the launch and request
+-- identity so every child result binds back to this decision.
+---@param kind string child kind under opening
+---@param purpose string selection purpose under opening
+---@param cancellable boolean cancel permission under opening
+---@return table<string, unknown>? child intent, nil without an open request
+function BattleScreenState:_childIntent(kind, purpose, cancellable)
+  if self._request == nil or self._options == nil then
+    return nil
+  end
+  return {
+    kind = kind,
+    purpose = purpose,
+    launchId = self._launchId,
+    requestId = self._request.requestId,
+    epoch = self._request.epoch,
+    controller = self._request.controller,
+    cancellable = cancellable,
+    request = copyValue(self._request),
+    options = copyValue(self._options),
+    party = copyValue(self._partySnapshot or {}),
+    inventory = copyValue(self._inventorySnapshot or {}),
+  }
+end
+
+-- Opens a voluntary child over the open command decision. A child that
+-- cannot open keeps the command request with a visible refusal instead
+-- of a half-open selection.
+---@param kind string child kind under opening
+---@param purpose string selection purpose under opening
+function BattleScreenState:_openVoluntaryChild(kind, purpose)
+  local intent = self:_childIntent(kind, purpose, true)
+  if intent == nil then
+    return
+  end
+  local ok, failure = self._subflows:open(intent)
+  if not ok then
+    self:_refuse(type(failure) == "string" and failure or nil)
+    return
+  end
+  self._child = { kind = kind, cancellable = true, purpose = purpose, requestId = intent.requestId }
+  self._mode = "child"
+  self._notice = nil
+end
+
 ---@param id string command identity under activation
 function BattleScreenState:_activateCommand(id)
   if id == "fight" then
@@ -703,13 +772,9 @@ function BattleScreenState:_activateCommand(id)
     self._selection = self:_defaultMoveSelection()
     self._notice = nil
   elseif id == "bag" then
-    self._child = { kind = "bag", cancellable = true }
-    self._mode = "child"
-    self._notice = nil
+    self:_openVoluntaryChild("bag", "bag")
   elseif id == "pokemon" then
-    self._child = { kind = "party", cancellable = true }
-    self._mode = "child"
-    self._notice = nil
+    self:_openVoluntaryChild("party", "switch")
   elseif id == "run" then
     local fragment = self._options ~= nil and fragmentFor(self._options, "run") or nil
     if fragment == nil then
@@ -786,11 +851,84 @@ function BattleScreenState:_sealControl(control)
   end
 end
 
+-- Checks one staged child result against the mirrored open request.
+-- Only the current launch, request, epoch, and controller seal.
+---@param identity table<string, unknown> staged result or reply identity under validation
+---@return boolean current true for the mirrored open request
+function BattleScreenState:_childIdentityMatches(identity)
+  if self._request == nil then
+    return false
+  end
+  if type(identity.launchId) == "string" and identity.launchId ~= self._launchId then
+    return false
+  end
+  return identity.requestId == self._request.requestId
+    and identity.epoch == self._request.epoch
+    and identity.controller == self._request.controller
+end
+
+-- Collects one staged child result: a bound choice seals through the
+-- accepted-choice boundary, a permitted cancellation returns to the
+-- mirrored request, and a stale identity discards without sealing. A
+-- refused seal keeps the child open for another selection.
+function BattleScreenState:_pollChild()
+  local result = self._subflows:takeResult()
+  if result == nil then
+    local notice = self._subflows:status().notice
+    if type(notice) == "string" and notice ~= "" then
+      self._notice = notice
+    end
+    return
+  end
+  if result.kind == "cancelled" then
+    if not self:_childIdentityMatches(result) then
+      return
+    end
+    self._subflows:closeChild()
+    self._child = nil
+    self._notice = nil
+    if self._request ~= nil then
+      self._mode = self:_modeForOptions(self._options)
+    else
+      self._mode = "command"
+    end
+    return
+  end
+  if result.kind == "choice" then
+    local reply = result.reply --[[@as table<string, unknown>]]
+    if not self:_childIdentityMatches(reply) then
+      self._subflows:closeChild()
+      self._child = nil
+      self._notice = "The selection expired."
+      if self._request ~= nil then
+        self._mode = self:_modeForOptions(self._options)
+      else
+        self._mode = "command"
+      end
+      return
+    end
+    local fragment = reply.choices --[[@as table<integer, table<string, unknown>>]]
+    self:_seal(copyValue(fragment[1]))
+    if self._mode == "awaiting_resolution" then
+      self._subflows:closeChild()
+      self._child = nil
+    end
+  end
+end
+
 ---@param event table<string, unknown> mapped semantic input under consumption
 function BattleScreenState:_consume(event)
   local eventType = event.type
   if eventType == "pointer_cancel" then
     self._armed = nil
+    self._subflows:cancelPointerCapture()
+    return
+  end
+  if self._mode == "child" and self._subflows:status().active then
+    if eventType == "confirm" or eventType == "cancel" or eventType == "navigate" then
+      self._subflows:update({ event })
+      self:_pollChild()
+    end
     return
   end
   if eventType == "battle_press" then
@@ -1043,6 +1181,9 @@ function BattleScreenState:_drain(settledTick)
     self._child = nil
     return
   end
+  if self._mode == "child" and self._subflows:status().active then
+    return
+  end
   if self._pendingRequest ~= nil then
     local request = self._pendingRequest --[[@as table<string, unknown>]]
     self._pendingRequest = nil
@@ -1055,14 +1196,30 @@ function BattleScreenState:_drain(settledTick)
       self._selection = "fight"
     elseif mode == "child" then
       local kind = "learn"
+      local purpose = "learn"
       if type(self._options) == "table" and type(self._options.actors) == "table" then
         for _, actor in ipairs(self._options.actors) do
           if type(actor) == "table" and actor.kind == "replacement" then
             kind = "party"
+            purpose = "replacement"
           end
         end
       end
-      self._child = { kind = kind, cancellable = false, requestId = request.requestId }
+      local intent = self:_childIntent(kind, purpose, false)
+      local ok = false
+      ---@type string?
+      local failure = "the battle screen mirrors its request"
+      if intent ~= nil then
+        ok, failure = self._subflows:open(intent)
+      end
+      if not ok then
+        self._mode = "failed"
+        self._error = type(failure) == "string" and failure
+          or "the requested child failed to open for launch " .. self._launchId
+        self._child = nil
+        return
+      end
+      self._child = { kind = kind, cancellable = false, purpose = purpose, requestId = request.requestId }
       self._selection = nil
     end
   end
@@ -1144,6 +1301,10 @@ function BattleScreenState:updateFixed(dt)
       self._mode = "narration"
     end
   end
+  if self._mode == "child" and self._subflows:status().active then
+    self._subflows:tick()
+    self:_pollChild()
+  end
   if self._mode == "command" or self._mode == "moves" or self._mode == "target" then
     self._arrowTick = self._arrowTick + 1
   else
@@ -1191,6 +1352,9 @@ function BattleScreenState:dispose()
   self._mode = "disposed"
   self:cancelPointerCapture()
   self._queue = {}
+  if self._subflows ~= nil then
+    self._subflows:dispose()
+  end
   if self._assets ~= nil then
     self._assets:dispose()
   end
