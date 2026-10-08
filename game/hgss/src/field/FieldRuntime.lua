@@ -190,6 +190,7 @@ end
 ---@field monService HgssMonService the live party/creation/script mon service
 ---@field fashionCase FashionCaseState live accessory inventory restored from the save
 ---@field followerInteractionCatalog table<string, unknown> generated follower interaction rules
+---@field followerReactionTicks table<string, integer> follower reaction emote kind -> emote action duration
 ---@field bagService HgssBagService the live bag/inventory service
 ---@field martService MartService the live mart inventory/session service
 ---@field martHost table<string, unknown> the one script-owned mart child host
@@ -639,18 +640,14 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   self.monLanguage = monRoot.version.language
   boot.monRoot = monRoot
   self.fieldEntranceIndicatorAsset, self.fieldEntranceIndicator = FieldEntranceIndicatorRuntime.load(boot.cacheFs)
-  self.fieldEmoteModels = FieldActorEmoteRuntime.load(boot.cacheFs)
+  self.fieldEmoteModels, self.followerReactionTicks =
+    FieldActorEmoteRuntime.load(boot.cacheFs, self.fieldEntranceIndicatorAsset.effects)
   self.fieldEffectAssets = self.fieldEntranceIndicatorAsset
   local terrainEffects = {
     tall_grass = self.fieldEntranceIndicatorAsset.effects.tall_grass,
     very_tall_grass = self.fieldEntranceIndicatorAsset.effects.very_tall_grass,
     trainer_reveal = self.fieldEntranceIndicatorAsset.effects.trainer_reveal,
   }
-  for selector = 1, 14 do
-    local kind = "follower_reaction_" .. selector
-    terrainEffects[kind] =
-      assert(self.fieldEntranceIndicatorAsset.effects[kind], "follower reaction definition is missing: " .. kind)
-  end
   self.fieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController").new({
     effects = terrainEffects,
     modelFactory = require("libs.hgss.src.presentation.FieldTerrainEffectModelFactory").new(),
@@ -1236,6 +1233,7 @@ function FieldRuntime:_composeFieldServices(boot)
     pokemonNaming = self.pokemonNaming,
     followingMon = self.followingMon,
     followerInteractionCatalog = self.followerInteractionCatalog,
+    followerReactionTicks = self.followerReactionTicks,
     clock = self.localClock,
     followerTransition = self.followingMonTransition,
     starterBalls = self.starterBalls,
@@ -2995,6 +2993,7 @@ function FieldRuntime:_releaseAll()
   self.fieldEffectAssets = nil
   self.fieldEntranceIndicator, self.fieldEntranceIndicatorAsset = nil, nil
   self.fieldEmoteModels = nil
+  self.followerReactionTicks = nil
   self.viewport, self.input, self.menuHost = nil, nil, nil
   self.yesNoHost = nil
   self.auxiliaryFieldUi, self.contextChoiceProvider, self.interactionResolver = nil, nil, nil

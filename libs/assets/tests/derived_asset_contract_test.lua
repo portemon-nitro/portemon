@@ -98,8 +98,8 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-follower-interactions-v3",
     },
     fieldEmotes = {
-      cacheFormat = "field-emotes-cache-v2",
-      schema = "g4-field-emote-v1",
+      cacheFormat = "field-emotes-cache-v3",
+      schema = "g4-field-emote-v2",
     },
     fieldUi = {
       cacheFormat = "field-ui-cache-v1",

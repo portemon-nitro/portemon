@@ -19,6 +19,7 @@ if not loaded then
 end
 
 local T = {}
+local REACTION_TICKS = 4
 
 local function copy(value)
   if type(value) ~= "table" then
@@ -59,7 +60,8 @@ local function fixture(programs, options)
       return assert(programs.motions[motionId], "fixture motion exists")
     end,
     reaction = function(_, selector)
-      return { selector = selector, kind = "test-follower-reaction" }
+      Assert.equal(selector, 3, "fixture programs use reaction selector 3")
+      return { kind = "test-follower-reaction", ticks = REACTION_TICKS }
     end,
     partnerMetatileBehavior = function()
       return options.metatileBehavior or 0
@@ -108,7 +110,11 @@ local function fixture(programs, options)
     actor.begins = (actor.begins or 0) + 1
     actor.actionX, actor.actionY, actor.actionZ = action.x, action.y, action.z
     actor.offset = { x = 0, y = 0, z = 0 }
-    events[#events + 1] = { "begin", action.x, action.y, action.z, action.ticks }
+    if action.action == "emote" then
+      events[#events + 1] = { "emote", action.name, action.ticks }
+    else
+      events[#events + 1] = { "begin", action.x, action.y, action.z, action.ticks }
+    end
   end
   function actors:advanceScriptedAction(actorId, elapsed, duration)
     Assert.equal(actorId, "partner")
@@ -238,6 +244,16 @@ local function fixture(programs, options)
         return anchorReads
       end,
     }
+end
+
+local function emoteBegins(seen)
+  local begins = {}
+  for _, event in ipairs(seen.events) do
+    if type(event) == "table" and event[1] == "emote" then
+      begins[#begins + 1] = event
+    end
+  end
+  return begins
 end
 
 local function poll(task, state, ctx, count)
@@ -428,7 +444,7 @@ T["reward dialogue stays open until acquisition fanfare and needs a fresh edge"]
   Assert.deepEqual(seen.audio.played, { "SEQ_ME_ACCE" }, "repeated polls do not replay the reward effect")
 end
 
-T["reaction effect startup is suppressed only on retail reaction-blocking tiles"] = function()
+T["reaction emotes are suppressed only on retail reaction-blocking tiles"] = function()
   for _, behavior in ipairs({ 46, 113, 114, 0, 2, 3 }) do
     local programs = {
       motions = {},
@@ -436,16 +452,48 @@ T["reaction effect startup is suppressed only on retail reaction-blocking tiles"
     }
     local ctx, seen = fixture(programs, { metatileBehavior = behavior })
     local state = FollowerInteractionTask.create({}, ctx)
-    FollowerInteractionTask.poll(state, ctx)
-    local emitted = #seen.terrainEffects.emitted
+    poll(FollowerInteractionTask, state, ctx, REACTION_TICKS)
     Assert.equal(
-      emitted,
+      #emoteBegins(seen),
       (behavior == 46 or behavior == 113 or behavior == 114) and 0 or 1,
-      "reaction emission count for metatile behavior " .. behavior
+      "reaction emote count for metatile behavior " .. behavior
     )
     Assert.equal(state.phase, "dialogue", "reaction suppression preserves message progression")
-    Assert.notNil(seen.dialogue.open, "the interaction message continues on behavior " .. behavior)
+    Assert.isTrue(seen.dialogue.open, "the interaction message continues on behavior " .. behavior)
   end
+end
+
+T["a reaction plays as a partner emote that finishes before the interaction message"] = function()
+  local programs = {
+    motions = {},
+    [10] = { steps = { { messageId = 1, reactionId = 3 } }, friendshipDelta = 0, moodDelta = 0 },
+  }
+  local ctx, seen = fixture(programs)
+  local task = FollowerInteractionTask
+  local state = task.create({}, ctx)
+  task.poll(state, ctx)
+  Assert.deepEqual(
+    emoteBegins(seen),
+    { { "emote", "test-follower-reaction", REACTION_TICKS } },
+    "the reaction begins one partner emote action with its clip-derived duration"
+  )
+  Assert.isFalse(seen.dialogue.open, "the message waits for the reaction like the source subtask")
+  for tick = 2, REACTION_TICKS - 1 do
+    task.poll(state, ctx)
+    Assert.isFalse(seen.dialogue.open, "the message stays closed through reaction tick " .. tick)
+  end
+  local advances = {}
+  for _, event in ipairs(seen.events) do
+    if type(event) == "table" and event[1] == "advance" then
+      advances[#advances + 1] = event[2]
+    end
+  end
+  Assert.deepEqual(advances, { 1, 2, 3 }, "each fixed tick advances the emote exactly once")
+  task.poll(state, ctx)
+  Assert.equal(seen.events[#seen.events], "commit", "the emote completes on its final tick")
+  Assert.isFalse(seen.actor.motionActive, "the partner action is committed before the message")
+  Assert.equal(state.phase, "dialogue", "the message starts once the reaction completes")
+  Assert.isTrue(seen.dialogue.open, "the interaction message opens after the reaction")
 end
 
 T["interaction turns emit grass effects only for actual facing changes"] = function()
@@ -638,8 +686,7 @@ T["cancellation during motion clears the offset and restores facing"] = function
   Assert.isFalse(seen.choice.active, "cancel closes an open continuation")
 end
 
-T["cancellation during dialogue closes dialogue and removes reaction effect"] = function()
-  Assert.notNil(FollowerInteractionTask, "interaction cancellation cleanup is missing")
+T["cancellation during a reaction cancels the partner emote"] = function()
   local programs = {
     motions = {},
     [10] = {
@@ -652,13 +699,29 @@ T["cancellation during dialogue closes dialogue and removes reaction effect"] = 
   local task = FollowerInteractionTask
   local state = task.create({}, ctx)
   task.poll(state, ctx)
+  Assert.isTrue(seen.actor.motionActive, "the reaction emote is active before cancellation")
+  task.cancel(state, "test cancellation", ctx)
+  Assert.isFalse(seen.actor.motionActive, "cancel ends the task-owned reaction emote")
+  Assert.isFalse(seen.dialogue.open, "a cancelled reaction never opens its message")
+  Assert.equal(seen.actor.facing, "west", "cancel restores saved partner facing")
+end
+
+T["cancellation during dialogue closes dialogue"] = function()
+  local programs = {
+    motions = {},
+    [10] = {
+      steps = { { messageId = 1 } },
+      friendshipDelta = 0,
+      moodDelta = 0,
+    },
+  }
+  local ctx, seen = fixture(programs)
+  local task = FollowerInteractionTask
+  local state = task.create({}, ctx)
+  task.poll(state, ctx)
   Assert.isTrue(seen.dialogue.open, "the task owns an open dialogue while printing")
-  Assert.notNil(seen.terrainEffects.active[1], "the reaction effect is active before cancellation")
-  Assert.equal(seen.terrainEffects.active[1].cellKey, "upper-1")
-  Assert.equal(seen.terrainEffects.active[1].sourceSurfaceId, 9)
   task.cancel(state, "test cancellation", ctx)
   Assert.isFalse(seen.dialogue.open, "cancel closes the active task-owned dialogue")
-  Assert.deepEqual(seen.terrainEffects.removed, { 1 }, "cancel removes its task-owned reaction effect")
   Assert.equal(seen.actor.facing, "west", "cancel restores saved partner facing")
   Assert.deepEqual(seen.actor.offset, { x = 0, y = 0, z = 0 }, "cancel leaves no presentation offset")
 end
@@ -736,7 +799,9 @@ T["task state is plain serialized data and rejects invalid fields or phases"] = 
     { field = "savedFacing", value = "northeast" },
     { field = "motionStarted", value = 1 },
     { field = "rewardStarted", value = "yes" },
-    { field = "effectSelector", value = 15 },
+    { field = "reactionTick", value = 0 },
+    { field = "reactionTick", value = 1.5 },
+    { field = "reactionTick", value = 1 },
     { field = "effectId", value = 1 },
     { field = "soundId", value = {} },
     { field = "delayRemaining", value = -1 },
@@ -786,8 +851,7 @@ T["reward restore state requires a completed reward mutation and its dialogue"] 
   )
 end
 
-T["reaction dialogue restore recreates presentation without serializing its handle"] = function()
-  Assert.notNil(FollowerInteractionTask, "reaction presentation restore is missing")
+T["reaction restore rebuilds the derived partner emote at its saved tick"] = function()
   local programs = {
     motions = {},
     [10] = {
@@ -797,20 +861,25 @@ T["reaction dialogue restore recreates presentation without serializing its hand
     },
   }
   local task = FollowerInteractionTask
-  local ctx, seen = fixture(programs)
+  local ctx = fixture(programs)
   local state = task.create({}, ctx)
   task.poll(state, ctx)
-  Assert.equal(state.phase, "dialogue", "the reaction is active while its message is open")
-  Assert.equal(#seen.terrainEffects.removed, 0)
+  task.poll(state, ctx)
+  Assert.equal(state.phase, "reaction", "the reaction is still presenting")
+  Assert.equal(state.reactionTick, 2, "the reaction's progress is serialized")
 
   local saved = copy(state)
-  Assert.isNil(saved.effectId, "the runtime effect handle is absent from serialized task state")
-
+  Assert.isNil(task.validate(saved), "a mid-reaction task state is serializable")
   local resumedCtx, resumedSeen = fixture(programs)
   task.poll(saved, resumedCtx)
-  Assert.equal(saved.phase, "dialogue", "restored dialogue remains active")
-  Assert.equal(resumedSeen.terrainEffects.active[1].kind, "test-follower-reaction")
-  Assert.equal(saved.effectSelector, 3, "the semantic selector survives restore")
+  Assert.deepEqual(
+    emoteBegins(resumedSeen),
+    { { "emote", "test-follower-reaction", REACTION_TICKS } },
+    "restore rebuilds the derived partner emote once"
+  )
+  Assert.deepEqual(resumedSeen.events[#resumedSeen.events], { "advance", 3, REACTION_TICKS })
+  task.poll(saved, resumedCtx)
+  Assert.equal(saved.phase, "dialogue", "the restored reaction completes into its message")
 end
 
 T["mid-motion task restore rebuilds the derived partner action without replaying effects"] = function()
@@ -854,7 +923,7 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
   local bucket = ScriptSave.capture(original.scheduler, 102)
   Assert.equal(#bucket.tasks, 1, "the blocked interaction task is captured")
   Assert.equal(bucket.tasks[1].taskType, "follower_interaction")
-  Assert.equal(bucket.tasks[1].taskVersion, 1)
+  Assert.equal(bucket.tasks[1].taskVersion, FollowerInteractionTask.version)
   Assert.equal(bucket.tasks[1].state.phase, "motion")
 
   local resumed = harness()

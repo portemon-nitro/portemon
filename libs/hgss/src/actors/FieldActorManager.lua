@@ -222,6 +222,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field gesturePose string?
 ---@field gestureTick integer?
 ---@field activeEmoteKind string?
+---@field activeEmoteTick integer? the active emote action's progress tick
 ---@field presentationScale number transient billboard scale, identity unless a presentation effect owns it
 ---@field visible boolean
 
@@ -2077,6 +2078,7 @@ function FieldActorManager:drawRecords(alpha)
       record.gesturePose = presentation.gesturePose
       record.gestureTick = presentation.gestureTick
       record.activeEmoteKind = actor.activeEmoteKind
+      record.activeEmoteTick = actor.activeEmoteKind and assert(actor:scriptedMotionState()).progressTicks or nil
       record.presentationScale = actor:getPresentationScale()
       record.visible = state.visible == 1
       records[count] = record

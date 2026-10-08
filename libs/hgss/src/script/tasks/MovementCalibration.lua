@@ -274,7 +274,16 @@ function MovementCalibration.actionTicks(action)
   elseif kind == "delay" then
     return action.ticks
   elseif kind == "emote" then
-    return MovementCalibration.EMOTE_TICKS
+    -- Script movement emotes share the exclamation timing; a follower
+    -- reaction carries the duration derived from its pattern clip.
+    if action.ticks == nil then
+      return MovementCalibration.EMOTE_TICKS
+    end
+    assert(
+      type(action.ticks) == "number" and action.ticks % 1 == 0 and action.ticks > 0,
+      "emote ticks must be a positive integer"
+    )
+    return action.ticks
   elseif kind == "gesture" then
     local profile = GESTURE_PROFILE[action.name]
     assert(profile, "unknown gesture " .. tostring(action.name))

@@ -253,6 +253,7 @@ end
 ---@field pokemonCenterHeal table<string, unknown>|nil runtime-owned Pokémon Center choreography
 ---@field starterBalls table<string, unknown>|nil the Elm starter-ball runtime-prop controller (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerInteractionCatalog table<string, unknown> validated generated follower-interaction catalog
+---@field followerReactionTicks table<string, integer>|nil follower reaction emote kind -> emote action duration (required with the catalog)
 ---@field clock table<string, unknown> live local clock
 ---@field fashionCase table<string, unknown> live fashion accessory inventory
 ---@field pcApplications table<string, unknown> the script-owned PC application host
@@ -350,6 +351,7 @@ function FieldScripts.new(opts)
   if opts.followerInteractionCatalog ~= nil then
     followerInteractionEngine = FollowerInteractionEngine.new({
       catalog = opts.followerInteractionCatalog,
+      reactionTicks = assert(opts.followerReactionTicks, "follower reaction emote durations are required"),
       mons = assert(opts.mons),
       items = assert(opts.itemCatalog),
       fashionCase = assert(opts.fashionCase),

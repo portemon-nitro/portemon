@@ -10,8 +10,8 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
 
-local FORMAT = "field-emotes-cache-v2"
-local SCHEMA = "g4-field-emote-v1"
+local FORMAT = "field-emotes-cache-v3"
+local SCHEMA = "g4-field-emote-v2"
 local MARKER = FORMAT .. ":rom:dep"
 
 local function model()
@@ -49,7 +49,6 @@ end
 local function descriptor()
   return {
     schema = SCHEMA,
-    anchorOffset = { x = 0, y = 2, z = 0.0625 },
     model = model(),
   }
 end
@@ -63,7 +62,7 @@ local function cacheWith(value)
   return cache
 end
 
-function T.tests.current_descriptor_is_ready_and_preserves_the_source_anchor()
+function T.tests.current_descriptor_is_ready()
   local cache = cacheWith(descriptor())
   Assert.equal(FieldEmoteAssetCache.FORMAT, FORMAT)
   Assert.isTrue(FieldEmoteAssetCache.validateDescriptor(descriptor()))
@@ -71,7 +70,6 @@ function T.tests.current_descriptor_is_ready_and_preserves_the_source_anchor()
 
   local loaded = assert(cache:loadLua(FieldEmoteAssetCache.exclamationDescriptorPath()))
   Assert.equal(loaded.schema, SCHEMA)
-  Assert.deepEqual(loaded.anchorOffset, { x = 0, y = 2, z = 0.0625 })
   Assert.equal(loaded.model.key, "field-emote:exclamation")
 end
 
@@ -80,31 +78,13 @@ function T.tests.bare_models_and_malformed_descriptors_are_not_ready()
   local cases = {
     { name = "bare model", value = model() },
     { name = "extra key", value = descriptor() },
-    { name = "missing x", value = descriptor() },
-    { name = "missing y", value = descriptor() },
-    { name = "missing z", value = descriptor() },
     { name = "wrong schema", value = descriptor() },
-    { name = "string x", value = descriptor() },
-    { name = "boolean y", value = descriptor() },
-    { name = "nan z", value = descriptor() },
-    { name = "positive infinity x", value = descriptor() },
-    { name = "negative infinity y", value = descriptor() },
     { name = "invalid nested model", value = descriptor() },
-    { name = "extra anchor key", value = descriptor() },
   }
 
   cases[2].value.extra = true
-  cases[3].value.anchorOffset.x = nil
-  cases[4].value.anchorOffset.y = nil
-  cases[5].value.anchorOffset.z = nil
-  cases[6].value.schema = "g4-other-v1"
-  cases[7].value.anchorOffset.x = "0"
-  cases[8].value.anchorOffset.y = false
-  cases[9].value.anchorOffset.z = 0 / 0
-  cases[10].value.anchorOffset.x = math.huge
-  cases[11].value.anchorOffset.y = -math.huge
-  cases[12].value.model = {}
-  cases[13].value.anchorOffset.w = 1
+  cases[3].value.schema = "g4-other-v1"
+  cases[4].value.model = {}
 
   for _, case in ipairs(cases) do
     local valid, err = FieldEmoteAssetCache.validateDescriptor(case.value)
@@ -115,12 +95,10 @@ function T.tests.bare_models_and_malformed_descriptors_are_not_ready()
       Assert.equal(err.code, ModelAsset.ERROR_INVALID, "nested model validation must retain its owner")
     end
 
-    if case.name ~= "nan z" and case.name ~= "positive infinity x" and case.name ~= "negative infinity y" then
-      Assert.isFalse(
-        FieldEmoteAssetCache.isReady(cacheWith(case.value), MARKER),
-        case.name .. " must not pass field-emote readiness"
-      )
-    end
+    Assert.isFalse(
+      FieldEmoteAssetCache.isReady(cacheWith(case.value), MARKER),
+      case.name .. " must not pass field-emote readiness"
+    )
   end
 end
 

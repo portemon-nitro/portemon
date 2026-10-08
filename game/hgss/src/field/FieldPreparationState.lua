@@ -9,10 +9,11 @@ local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 -- even while the static runtime is still pending. New Game derives and
 -- demands its target the same way, and both entries transfer to the
 -- already-composed field exactly once, only when the target and the
--- runtime are both ready. A failure raises directly: no invalid candidate
--- or save is repaired or published, and preparation owns no error
--- presentation of its own. Cancellation remains available while pending
--- and publishes nothing.
+-- runtime are both ready. A factory that returns no loader latches a
+-- visible failed phase carrying its diagnostic; any other failure raises
+-- directly: no invalid candidate or save is repaired or published, and
+-- preparation owns no error presentation beyond the latched diagnostic.
+-- Cancellation remains available while pending and publishes nothing.
 
 ---@class FieldPreparationOptions
 ---@field kind "continue"|"newgame"
@@ -21,7 +22,7 @@ local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 ---@field versionId string selected game version, carried for diagnostics
 ---@field derivedAssets table<string, function> semantic derived-asset host
 ---@field saveStore table<string, unknown>? Continue only: the normalizing save store
----@field createLoader fun(): table<string, unknown> loader factory owned by the HGSS composition
+---@field createLoader fun(): (table<string, unknown>?, string?) loader factory owned by the HGSS composition; a nil loader latches a visible failure
 ---@field enterField fun(record: table<string, unknown>, extraOptions: table<string, unknown>?) ownership transfer
 ---@field onCancel fun()? return to the owning menu
 
@@ -32,11 +33,12 @@ local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 ---@field versionId string
 ---@field derivedAssets table<string, function>
 ---@field saveStore table<string, unknown>?
----@field createLoader fun(): table<string, unknown>
+---@field createLoader fun(): (table<string, unknown>?, string?)
 ---@field loader table<string, unknown>? retained planning loader, built once planning is ready
 ---@field enterField fun(record: table<string, unknown>, extraOptions: table<string, unknown>?)
 ---@field onCancel fun()?
----@field phase "assets"|"location"|"done"
+---@field phase "assets"|"location"|"done"|"failed"
+---@field error string? latched loader-unavailability diagnostic, set only in the failed phase
 ---@field planningReady boolean entry planning observed ready
 ---@field runtimeReady boolean static field runtime observed ready
 ---@field loadAttempted boolean Continue only: the one-shot save load already ran
@@ -107,11 +109,20 @@ end
 function FieldPreparationState:_ensureLoader()
   -- The planning loader is legal once entry planning is ready: build it
   -- exactly once, then reuse the retained loader for every later update.
-  if self.loader ~= nil then
+  -- A factory that yields no loader reports an unavailable world: latch
+  -- the visible failed phase with its diagnostic and never rebuild. A
+  -- factory that raises keeps raising directly.
+  if self.loader ~= nil or self.phase == "failed" then
     return
   end
   local factory = assert(self.createLoader, "field preparation requires its metadata-only loader factory")
-  self.loader = assert(factory())
+  local loader, failure = factory()
+  if loader == nil then
+    self.phase = "failed"
+    self.error = failure or "field preparation loader is unavailable"
+    return
+  end
+  self.loader = loader
 end
 
 function FieldPreparationState:_loadContinue()
@@ -176,7 +187,7 @@ function FieldPreparationState:_pollGeometry()
 end
 
 function FieldPreparationState:update(_)
-  if self.transferred or self.cancelled or self.phase == "done" then
+  if self.transferred or self.cancelled or self.phase == "done" or self.phase == "failed" then
     return
   end
   if self.kind == "continue" and not self.loadAttempted then
@@ -197,6 +208,9 @@ function FieldPreparationState:update(_)
       return
     end
     self:_ensureLoader()
+    if self.phase == "failed" then
+      return
+    end
   end
   if self.target == nil then
     if self.kind == "continue" then
@@ -213,6 +227,14 @@ end
 function FieldPreparationState:draw()
   local lg = love.graphics
   local margin, line = DevScreenLayout.MARGIN, DevScreenLayout.LINE_HEIGHT
+  if self.phase == "failed" then
+    lg.setColor(1, 1, 1)
+    lg.print("Field entry failed.", margin, margin)
+    lg.setColor(0.7, 0.7, 0.75)
+    lg.print(tostring(self.error), margin, margin + line)
+    lg.print("Press escape to cancel.", margin, margin + 2 * line)
+    return
+  end
   lg.setColor(1, 1, 1)
   lg.print("Preparing field entry...", margin, margin)
   lg.setColor(0.7, 0.7, 0.75)

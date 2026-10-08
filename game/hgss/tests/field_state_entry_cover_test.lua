@@ -88,11 +88,7 @@ local function boot(withCover)
         },
       },
       fieldEmoteModels = {
-        exclamation = {
-          schema = "g4-field-emote-v1",
-          anchorOffset = { x = 0, y = 2, z = 0.0625 },
-          model = { batches = {}, materials = {} },
-        },
+        exclamation = { kind = "static", batches = {}, materials = {} },
       },
       fieldEffectAssets = { effects = terrain },
       fieldTerrainEffectController = FieldTerrainEffectController.new({

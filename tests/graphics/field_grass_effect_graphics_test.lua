@@ -43,10 +43,6 @@ local function runVersion(scope, versionId)
   for _, kind in ipairs({ "tall_grass", "very_tall_grass", "trainer_reveal" }) do
     assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
   end
-  for selector = 1, 14 do
-    local kind = "follower_reaction_" .. selector
-    assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
-  end
 
   Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v9")
   local pool = scope:own(GpuAssetPool.new(cache))
@@ -125,10 +121,6 @@ local function loadEffectAssets(cache)
   for _, kind in ipairs({ "tall_grass", "very_tall_grass", "trainer_reveal" }) do
     assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
   end
-  for selector = 1, 14 do
-    local kind = "follower_reaction_" .. selector
-    assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
-  end
   return assets
 end
 
@@ -204,7 +196,7 @@ local T = GraphicsSmoke.suite({
         cellKey = "0:0",
         sourceSurfaceId = 0,
       })
-      local offset = assets.effects.tall_grass.placementOffset or { x = 0, y = 0, z = 0 }
+      local offset = assets.effects.tall_grass.placementOffset
       local transform = assert(controller:status().instances[1]).modelInstance.transform
       Assert.deepEqual(
         transform,
@@ -229,16 +221,12 @@ local T = GraphicsSmoke.suite({
         runtimeMap.projectPhysicalPoint,
         "the local map must expose no physical projector"
       )
-      controller:emit({ kind = "follower_reaction_1", fieldX = 4, fieldZ = 6, worldY = 3 })
+      controller:emit({ kind = "tall_grass", fieldX = 4, fieldZ = 6, worldY = 3 })
       local items = renderer:drawItems(controller:status(), runtimeMap)
-      Assert.isTrue(#items > 0, "a local follower effect must produce a real draw item")
-      Assert.equal(
-        items[1].fieldEffect,
-        "follower_reaction_1",
-        "the draw item must carry the emitted reaction kind"
-      )
+      Assert.isTrue(#items > 0, "a local effect must produce a real draw item")
+      Assert.equal(items[1].fieldEffect, "tall_grass", "the draw item must carry the emitted effect kind")
       local gridX, gridZ = FieldGrid.tileCenterToWorld(4 - 1, 6 - 2)
-      local offset = assets.effects.follower_reaction_1.placementOffset or { x = 0, y = 0, z = 0 }
+      local offset = assets.effects.tall_grass.placementOffset
       local transform = assert(controller:status().instances[1]).modelInstance.transform
       Assert.deepEqual(
         transform,

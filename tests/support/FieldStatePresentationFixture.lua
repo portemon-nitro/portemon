@@ -489,9 +489,6 @@ function FieldStatePresentationFixture.terrainEffects(cache)
     very_tall_grass = effect(),
     trainer_reveal = effect(),
   }
-  for selector = 1, 14 do
-    effects["follower_reaction_" .. selector] = effect()
-  end
   return effects
 end
 

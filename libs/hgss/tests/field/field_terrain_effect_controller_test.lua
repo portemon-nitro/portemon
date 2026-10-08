@@ -274,23 +274,6 @@ T.tests["one-shot reveal retires after exactly seven fixed frames"] = function()
   Assert.equal(#effects:status().instances, 0)
 end
 
-T.tests["follower reactions use their generated one-shot lifecycle"] = function()
-  local kind = "follower_reaction_3"
-  local effects = controller(nil, {
-    [kind] = {
-      definition = kind,
-      lifecycle = { mode = "once", frameCount = 2 },
-      model = { kind = "nitro-dynamic", animations = { { name = "reaction", frameCount = 2 } } },
-    },
-  })
-  local id = effects:emit({ kind = kind, fieldX = 4, fieldZ = 5, worldY = 2, direction = "north" })
-  Assert.equal(effects:status().instances[1].kind, kind)
-  Assert.equal(effects:status().instances[1].id, id)
-  effects:updateFixed({ fieldX = 4, fieldZ = 5, facing = "north" })
-  effects:updateFixed({ fieldX = 4, fieldZ = 5, facing = "north" })
-  Assert.equal(#effects:status().instances, 0)
-end
-
 -- Borrowed transient instances: presentation borrows controller-owned live
 -- instance records instead of deep-copying them per status() call.
 -- Repeated reads without a fixed-tick mutation return the same array and

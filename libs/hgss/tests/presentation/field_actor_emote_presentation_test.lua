@@ -12,6 +12,7 @@ local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
+local FieldActorEmote = require("libs.hgss.src.actors.FieldActorEmote")
 local FieldActorEmoteRenderer = require("libs.hgss.src.presentation.FieldActorEmoteRenderer")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 
@@ -111,6 +112,7 @@ local IDENTITY_MATRIX = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
 
 local function fakeExclamationModel(baseTransform)
   return {
+    kind = "static",
     materials = {
       { id = 0, name = "exclamation", texture = "exclamation.png", wrap = { x = "clamp", y = "clamp" } },
     },
@@ -125,14 +127,6 @@ local function fakeExclamationModel(baseTransform)
         baseTransform = baseTransform or IDENTITY_MATRIX,
       },
     },
-  }
-end
-
-local function fakeExclamationDescriptor(baseTransform)
-  return {
-    schema = "g4-field-emote-v1",
-    anchorOffset = { x = 0, y = 2, z = 0.0625 },
-    model = fakeExclamationModel(baseTransform),
   }
 end
 
@@ -162,7 +156,7 @@ function T.emote_presentation_follows_the_action_lifetime_independent_of_draw_co
 
   Assert.isNil(drawRecordFor(mgr, ACTOR_ID).activeEmoteKind, "no emote is active before the action begins")
 
-  local renderer = FieldActorEmoteRenderer.new({ exclamation = fakeExclamationDescriptor() }, fakePool())
+  local renderer = FieldActorEmoteRenderer.new({ exclamation = fakeExclamationModel() }, fakePool())
   Assert.equal(#renderer:drawItems(mgr:drawRecords()), 0, "the renderer draws nothing before the action begins")
 
   mgr:beginScriptedAction(ACTOR_ID, { action = "emote", name = "exclamation" })
@@ -175,6 +169,7 @@ function T.emote_presentation_follows_the_action_lifetime_independent_of_draw_co
     for _ = 1, 3 do
       local record = drawRecordFor(mgr, ACTOR_ID)
       Assert.equal(record.activeEmoteKind, "exclamation", "exclamation must be active for tick " .. tick)
+      Assert.equal(record.activeEmoteTick, tick, "the draw record carries the emote action's own tick")
     end
     Assert.equal(actor:getFieldPosition().fieldX, baseFieldX, "an emote must never change logical fieldX")
     Assert.equal(actor:getFieldPosition().fieldZ, baseFieldZ, "an emote must never change logical fieldZ")
@@ -183,12 +178,18 @@ function T.emote_presentation_follows_the_action_lifetime_independent_of_draw_co
     Assert.equal(actor:getWorldPosition().z, baseWorldZ, "an emote must never change logical worldZ")
 
     -- The renderer's actual draw trace: exactly one quad, anchored above the
-    -- acting actor's current draw-world position by the generated offset.
+    -- acting actor's current draw-world position by the source offset and
+    -- the entrance bounce at this action tick.
     local items = renderer:drawItems(mgr:drawRecords())
     Assert.equal(#items, 1, "exactly one emote quad draws while the action is active")
     Assert.equal(items[1].actorId, ACTOR_ID, "the emote quad is attributed to the acting actor")
     Assert.equal(items[1].transform[13], baseWorldX, "the emote quad tracks the actor's world x")
-    Assert.near(items[1].transform[14], baseWorldY + 2, 1e-9, "the emote quad is above the actor's world y")
+    Assert.near(
+      items[1].transform[14],
+      baseWorldY + 2 + FieldActorEmote.bounceOffsetY(tick),
+      1e-9,
+      "the emote quad is above the actor's world y at its bounce height"
+    )
     Assert.near(items[1].transform[15], baseWorldZ + 0.0625, 1e-9, "the emote quad uses the actor's world z anchor")
     Assert.notNil(items[1].billboardCenter, "a billboard batch must carry a camera-independent center")
     Assert.notNil(items[1].billboardScale, "a billboard batch must carry a camera-independent scale")
@@ -196,15 +197,16 @@ function T.emote_presentation_follows_the_action_lifetime_independent_of_draw_co
       items[1].billboardProjection,
       "a billboard emote must be routed to the presentation sprite layer like an actor billboard"
     )
-    Assert.equal(
+    Assert.deepEqual(
       items[1].bounds,
-      FAKE_BOUNDS,
-      "a billboard emote needs its mesh bounds for the presentation sprite layer's projection"
+      { width = 2, height = 2, depth = 2 },
+      "a billboard emote needs its mesh extents in the presentation sprite layer's bounds shape"
     )
   end
   mgr:commitScriptedAction(ACTOR_ID)
 
   Assert.isNil(drawRecordFor(mgr, ACTOR_ID).activeEmoteKind, "the indicator must be gone once the action completes")
+  Assert.isNil(drawRecordFor(mgr, ACTOR_ID).activeEmoteTick, "a completed emote leaves no tick on the draw record")
   Assert.equal(#renderer:drawItems(mgr:drawRecords()), 0, "the renderer draws nothing once the action completes")
 end
 
@@ -238,7 +240,7 @@ function T.a_billboard_batch_folds_its_captured_base_transform_into_the_final_pl
     0,
     1,
   }
-  local renderer = FieldActorEmoteRenderer.new({ exclamation = fakeExclamationDescriptor(baseTransform) }, fakePool())
+  local renderer = FieldActorEmoteRenderer.new({ exclamation = fakeExclamationModel(baseTransform) }, fakePool())
 
   mgr:beginScriptedAction(ACTOR_ID, { action = "emote", name = "exclamation" })
   mgr:advanceScriptedAction(ACTOR_ID, 1, MovementCalibration.EMOTE_TICKS)
@@ -248,15 +250,15 @@ function T.a_billboard_batch_folds_its_captured_base_transform_into_the_final_pl
   Assert.near(items[1].billboardCenter[1], actor:getWorldPosition().x, 1e-9, "billboard center x tracks the actor")
   Assert.near(
     items[1].billboardCenter[2],
-    actor:getWorldPosition().y + 4,
+    actor:getWorldPosition().y + 4 + FieldActorEmote.bounceOffsetY(1),
     1e-9,
-    "billboard center y includes anchor and base offsets"
+    "billboard center y includes anchor, bounce, and base offsets"
   )
   Assert.near(
     items[1].billboardCenter[3],
     actor:getWorldPosition().z + 0.0625,
     1e-9,
-    "billboard center z includes the generated anchor"
+    "billboard center z includes the source anchor"
   )
   Assert.near(items[1].billboardScale[1], 1.5, 1e-9, "billboard scale x comes from the base transform")
   Assert.near(items[1].billboardScale[2], 2, 1e-9, "billboard scale y comes from the base transform")
@@ -265,17 +267,19 @@ function T.a_billboard_batch_folds_its_captured_base_transform_into_the_final_pl
 end
 
 function T.emote_anchor_uses_each_current_draw_world_once()
-  local renderer = FieldActorEmoteRenderer.new({ exclamation = fakeExclamationDescriptor() }, fakePool())
+  local renderer = FieldActorEmoteRenderer.new({ exclamation = fakeExclamationModel() }, fakePool())
   local items = renderer:drawItems({
     {
       actorId = "actor:a",
       activeEmoteKind = "exclamation",
+      activeEmoteTick = 8,
       world = { x = 10, y = 20.25, z = -3 },
       presentationOffset = { x = 7, y = 11, z = 13 },
     },
     {
       actorId = "actor:b",
       activeEmoteKind = "exclamation",
+      activeEmoteTick = 3,
       world = { x = -4, y = 1.5, z = 8 },
     },
     {
@@ -286,6 +290,7 @@ function T.emote_anchor_uses_each_current_draw_world_once()
     {
       actorId = "actor:unsupported",
       activeEmoteKind = "question",
+      activeEmoteTick = 1,
       world = { x = 0, y = 0, z = 0 },
     },
   })
@@ -293,11 +298,11 @@ function T.emote_anchor_uses_each_current_draw_world_once()
   Assert.equal(#items, 2, "only active compiled emotes produce draw items")
   Assert.equal(items[1].actorId, "actor:a")
   Assert.equal(items[1].transform[13], 10)
-  Assert.near(items[1].transform[14], 22.25, 1e-9)
+  Assert.near(items[1].transform[14], 22.25, 1e-9, "a landed emote rests at the source anchor")
   Assert.near(items[1].transform[15], -2.9375, 1e-9)
   Assert.equal(items[2].actorId, "actor:b")
   Assert.equal(items[2].transform[13], -4)
-  Assert.near(items[2].transform[14], 3.5, 1e-9)
+  Assert.near(items[2].transform[14], 3.5 + 0.75, 1e-9, "the third bounce update floats twelve source units higher")
   Assert.near(items[2].transform[15], 8.0625, 1e-9)
 end
 

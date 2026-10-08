@@ -59,16 +59,12 @@ local function actorIndex()
 end
 
 local function trustedEffects()
-  local effects = {
+  return {
     tall_grass = {},
     very_tall_grass = {},
     trainer_reveal = {},
     surf_attachment = { presentation = {} },
   }
-  for selector = 1, 14 do
-    effects["follower_reaction_" .. selector] = {}
-  end
-  return effects
 end
 
 function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
@@ -135,7 +131,7 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
     return { effects = trustedEffects() }, {}
   end)
   rawset(FieldActorEmoteRuntime, "load", function()
-    return { exclamation = {} }
+    return { exclamation = {} }, {}
   end)
 
   local runtime = setmetatable({

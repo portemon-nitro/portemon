@@ -28,6 +28,7 @@ local TrainerCardStars = require("libs.hgss.src.save.TrainerCardStars")
 ---@field followerTransition table<string, unknown>? the transient follower-transition owner the nonblocking transition command starts
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller
 ---@field followerInteractionCatalog table<string, unknown> validated generated interaction catalog
+---@field followerReactionTicks table<string, integer> follower reaction emote kind -> emote action duration
 ---@field clock table<string, unknown> live local clock
 ---@field pcApplications table<string, unknown> script-owned PC application host
 ---@field pcTerminal table<string, unknown> PC terminal effect service
@@ -74,6 +75,7 @@ end
 function FieldScriptComposition.compose(runtime, options)
   assert(type(options) == "table", "field script composition options are required")
   assert(options.followerInteractionCatalog ~= nil, "the validated follower interaction catalog is required")
+  assert(options.followerReactionTicks ~= nil, "the follower reaction emote durations are required")
   assert(
     options.mons and options.itemCatalog and options.followingMon and options.clock,
     "follower interaction services are required"
@@ -127,6 +129,7 @@ function FieldScriptComposition.compose(runtime, options)
     itemCatalog = options.itemCatalog,
     followingMon = options.followingMon,
     followerInteractionCatalog = options.followerInteractionCatalog,
+    followerReactionTicks = options.followerReactionTicks,
     clock = options.clock,
     fashionCase = runtime.fashionCase,
     starterProvider = options.starterProvider,

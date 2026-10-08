@@ -16,10 +16,6 @@ local Hashing = require("romdump.src.digest.Hashing")
 
 local Compiler = {}
 local MEMBER_ID = 118
-local SOURCE_Y_OFFSET = 0x20000
-local SOURCE_Z_OFFSET = 0x1000
-local SOURCE_FIXED_POINT_UNITS = 0x1000
-local SOURCE_POSITION_UNITS_PER_FIELD_UNIT = 16
 
 local function member(narc, memberId)
   if memberId < 0 or memberId >= narc:memberCount() then
@@ -87,11 +83,6 @@ function Compiler.compile(romFs, hashLua)
   end
   local descriptor = {
     schema = FieldEmoteAssetCache.SCHEMA,
-    anchorOffset = {
-      x = 0,
-      y = SOURCE_Y_OFFSET / (SOURCE_FIXED_POINT_UNITS * SOURCE_POSITION_UNITS_PER_FIELD_UNIT),
-      z = SOURCE_Z_OFFSET / (SOURCE_FIXED_POINT_UNITS * SOURCE_POSITION_UNITS_PER_FIELD_UNIT),
-    },
     model = modelDescriptor,
   }
   local ok, valid, err = pcall(FieldEmoteAssetCache.validateDescriptor, descriptor)

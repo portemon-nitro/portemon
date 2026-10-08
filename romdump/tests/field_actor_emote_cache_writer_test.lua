@@ -41,8 +41,7 @@ end
 
 local function model()
   return {
-    schema = "g4-field-emote-v1",
-    anchorOffset = { x = 0, y = 2, z = 0.0625 },
+    schema = "g4-field-emote-v2",
     model = modelAsset(),
   }
 end
@@ -59,7 +58,7 @@ T.tests["publishes field-emote descriptor and referenced assets under owned root
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local meshPath = FieldEmoteAssetCache.geometryPath("mesh-key")
   local bundle = {
-    marker = "field-emotes-cache-v2:rom:dep",
+    marker = "field-emotes-cache-v3:rom:dep",
     model = model(),
     meshes = { ["mesh-key"] = data },
     textures = { ["texture-key"] = { width = 1, height = 1, data = "png" } },
@@ -74,8 +73,8 @@ end
 T.tests["aborts before publication when the canonical descriptor is invalid"] = function()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local ok = pcall(Writer.write, cache, {
-    marker = "field-emotes-cache-v2:rom:dep",
-    model = { schema = "g4-field-emote-v1", anchorOffset = { x = 0, y = 2, z = 0.0625 }, model = {} },
+    marker = "field-emotes-cache-v3:rom:dep",
+    model = { schema = "g4-field-emote-v2", model = {} },
     meshes = {},
     textures = {},
   })

@@ -4,6 +4,8 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FollowerInteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local FieldActorEmote = require("libs.hgss.src.actors.FieldActorEmote")
+local FollowerInteractionTask = require("libs.hgss.src.script.tasks.FollowerInteractionTask")
 
 local T = {
   metadata = {
@@ -123,7 +125,11 @@ function T.tests.compiled_following_mon_script_blocks_on_live_interaction_and_re
       "the compiled opcode 711 must create its registered blocking task; script fault: "
         .. tostring(errors[1] and errors[1].payload.code)
     )
-    Assert.equal(interactionTasks[1].payload.taskVersion, 1, "the interaction task must use its registered version")
+    Assert.equal(
+      interactionTasks[1].payload.taskVersion,
+      FollowerInteractionTask.version,
+      "the interaction task must use its registered version"
+    )
     local task = assert(game.runtime.scripts.scheduler:taskById(interactionTasks[1].payload.taskId))
     Assert.equal(task.taskType, "follower_interaction", "the registered task must own opcode 711")
     Assert.equal(task.status, "active", "the script must block while the interaction task is active")
@@ -257,30 +263,45 @@ function T.tests.facing_the_partner_starts_the_following_mon_script()
   end
 end
 
-function T.tests.production_terrain_controller_emits_the_generated_follower_reaction()
+function T.tests.production_partner_presents_a_generated_follower_reaction_as_its_emote()
   local versionId = AcceptanceHarness.defaultVersion()
   local game = boot(versionId)
   local ok, err = xpcall(function()
-    game:waitForFieldReady()
-    local controller = assert(
-      game.runtime.fieldTerrainEffectController,
-      "the production runtime must compose its live terrain-effect controller"
+    Assert.isTrue(
+      game.runtime.monService:giveMon({ species = "EEVEE", level = 5, form = 0 }),
+      "the production mon service must add the lead mon"
     )
-    local player = game:snapshot().player
-    local handle = controller:emit({
-      kind = "follower_reaction_1",
-      fieldX = player.fieldX,
-      fieldZ = player.fieldZ,
-      worldY = player.worldY,
-      direction = player.facing,
-    })
-    Assert.notNil(handle, "reaction emission must return a live instance handle")
-    local instances = controller:status().instances
-    Assert.equal(#instances, 1, "exactly one reaction instance must be live after emission")
-    Assert.equal(instances[1].id, handle, "the live instance must carry the emission handle")
-    Assert.equal(instances[1].kind, "follower_reaction_1", "the live instance must name the emitted reaction kind")
-    controller:remove(handle)
-    Assert.equal(#controller:status().instances, 0, "removing the probe must leave no live test instances behind")
+    game:advanceUntil("follower installation", function()
+      return game.runtime.followingMon:partnerActorId() ~= nil
+    end, 120)
+    local partnerId = assert(game.runtime.followingMon:partnerActorId())
+    local engine = assert(game.runtime.scripts.followerInteractionEngine, "the runtime composes its interaction engine")
+    local reaction = engine:reaction(1)
+    local definition = assert(game.runtime.fieldEntranceIndicatorAsset.effects[reaction.kind])
+    Assert.equal(
+      reaction.ticks,
+      FieldActorEmote.reactionTicks(definition.lifecycle.frameCount),
+      "the composed reaction duration follows its generated clip"
+    )
+    Assert.equal(
+      game.runtime.fieldEmoteModels[reaction.kind],
+      definition.model,
+      "the emote renderer receives the generated reaction art"
+    )
+
+    local actors = game.runtime.actors
+    actors:beginScriptedAction(partnerId, { action = "emote", name = reaction.kind, ticks = reaction.ticks })
+    actors:advanceScriptedAction(partnerId, 1, reaction.ticks)
+    local partnerRecord
+    for _, record in ipairs(actors:drawRecords()) do
+      if record.actorId == partnerId then
+        partnerRecord = record
+      end
+    end
+    partnerRecord = assert(partnerRecord, "the partner must publish a draw record")
+    Assert.equal(partnerRecord.activeEmoteKind, reaction.kind, "the partner presents the reaction as its emote")
+    Assert.equal(partnerRecord.activeEmoteTick, 1, "the partner's emote record carries the action tick")
+    actors:commitScriptedAction(partnerId)
     Assert.equal(game:renderAttempts(), 0, "reaction composition acceptance must stop before GPU rendering")
   end, debug.traceback)
   game:close()

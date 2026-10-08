@@ -14,6 +14,7 @@ local DOMAINS = {
   actors = {
     "FieldActorAutonomy",
     "FieldActorDefinitionProvider",
+    "FieldActorEmote",
     "FieldActorManager",
     "FieldActorOccupancy",
     "FieldActorPersistence",

@@ -646,7 +646,7 @@ local function publishEmoteFamily(cache)
   local EmoteCache = require("libs.assets.src.field.FieldEmoteAssetCache")
   local Writer = require("romdump.src.digest.actor.FieldActorEmoteCacheWriter")
   local ModelAsset = require("libs.assets.src.model.ModelAsset")
-  local marker = "field-emotes-cache-v2:test-rom:test-dep"
+  local marker = "field-emotes-cache-v3:test-rom:test-dep"
   local modelAsset = {
     schema = ModelAsset.SCHEMA,
     key = "field-emote:exclamation",
@@ -680,8 +680,7 @@ local function publishEmoteFamily(cache)
   local ok, err = pcall(Writer.write, cache, {
     marker = marker,
     model = {
-      schema = "g4-field-emote-v1",
-      anchorOffset = { x = 0, y = 2, z = 0.0625 },
+      schema = "g4-field-emote-v2",
       model = modelAsset,
     },
     meshes = {

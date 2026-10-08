@@ -6,7 +6,7 @@ local DialogueTask = require("libs.hgss.src.script.tasks.DialogueTask")
 local ContextChoiceTask = require("libs.hgss.src.script.tasks.ContextChoiceTask")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 
-local FollowerInteractionTask = { type = "follower_interaction", version = 1 }
+local FollowerInteractionTask = { type = "follower_interaction", version = 2 }
 local STATE_KEYS = {
   leadSlot = true,
   programId = true,
@@ -21,7 +21,7 @@ local STATE_KEYS = {
   cumulativeZ = true,
   dialogueState = true,
   choiceState = true,
-  effectSelector = true,
+  reactionTick = true,
   rewardStarted = true,
   rewardWaitForEffect = true,
   delayRemaining = true,
@@ -41,7 +41,6 @@ local PHASES = {
 }
 local FACING = { [1] = "north", [2] = "south", [3] = "west", [4] = "east" }
 local FACING_VALUES = { north = true, south = true, west = true, east = true }
-local EFFECT_HANDLES = setmetatable({}, { __mode = "k" })
 
 local function services(ctx)
   return assert(ctx.services, "follower interaction task services are required")
@@ -86,22 +85,13 @@ function FollowerInteractionTask.create(_, ctx)
   }
 end
 
-local function releaseEffect(state, svc)
-  local effectId = EFFECT_HANDLES[state]
-  if effectId ~= nil then
-    svc.terrainEffects:remove(effectId)
-    EFFECT_HANDLES[state] = nil
-  end
-  state.effectSelector = nil
-end
-
-local function effectAnchor(svc, actorId, direction)
+local function effectAnchor(svc, direction)
   local anchor = svc.followerInteraction:partnerEffectAnchor()
-  anchor.direction = direction or svc.actors:getFacing(actorId)
+  anchor.direction = direction
   return anchor
 end
 
-local function emitGrassTurn(svc, engine, actorId, previousFacing, facing)
+local function emitGrassTurn(svc, engine, previousFacing, facing)
   if previousFacing == facing then
     return
   end
@@ -109,7 +99,7 @@ local function emitGrassTurn(svc, engine, actorId, previousFacing, facing)
   local kind = MetatileBehavior.isTallGrass(behavior) and "tall_grass"
     or MetatileBehavior.isVeryTallGrass(behavior) and "very_tall_grass"
   if kind then
-    local anchor = effectAnchor(svc, actorId, facing)
+    local anchor = effectAnchor(svc, facing)
     anchor.kind = kind
     svc.terrainEffects:emit(anchor)
   end
@@ -124,34 +114,41 @@ local function clearMotion(state, svc, normalCompletion)
     local previousFacing = svc.actors:getFacing(actorId)
     svc.actors:setFacing(actorId, state.savedFacing)
     if normalCompletion then
-      emitGrassTurn(svc, svc.followerInteraction, actorId, previousFacing, state.savedFacing)
+      emitGrassTurn(svc, svc.followerInteraction, previousFacing, state.savedFacing)
     end
   end
   state.motionId, state.motionIndex, state.motionTick, state.motionStarted = 0, 1, 0, false
   state.cumulativeX, state.cumulativeY, state.cumulativeZ = 0, 0, 0
 end
 
-local function ensureReaction(state, svc)
-  local selector = state.effectSelector
-  if selector == nil or EFFECT_HANDLES[state] ~= nil then
-    return
+-- The source spawns a reaction as a blocking subtask (ov02_0224FB54 ->
+-- ov01_02203AB4), so the step's message waits for the partner's emote to
+-- finish. The partner action is derived presentation: after restore it is
+-- rebuilt at the serialized tick.
+local function pollReaction(state, svc, step)
+  if state.reactionTick == nil then
+    local selector = step.reactionId
+    if selector == nil or selector == 0 then
+      return true
+    end
+    if MetatileBehavior.suppressesFollowerReaction(svc.followerInteraction:partnerMetatileBehavior()) then
+      return true
+    end
+    state.reactionTick = 0
   end
-  local reaction = svc.followerInteraction:reaction(selector)
+  local reaction = svc.followerInteraction:reaction(step.reactionId)
   local actorId = partnerId(svc.followingMon)
-  local anchor = effectAnchor(svc, actorId)
-  anchor.kind = reaction.definition or reaction.kind
-  EFFECT_HANDLES[state] = svc.terrainEffects:emit(anchor)
-end
-
-local function startReaction(state, svc, selector)
-  if selector == nil or selector == 0 then
-    return
+  if state.reactionTick == 0 or not svc.actors:isScriptedMoving(actorId) then
+    svc.actors:beginScriptedAction(actorId, { action = "emote", name = reaction.kind, ticks = reaction.ticks })
   end
-  if MetatileBehavior.suppressesFollowerReaction(svc.followerInteraction:partnerMetatileBehavior()) then
-    return
+  state.reactionTick = state.reactionTick + 1
+  if state.reactionTick < reaction.ticks then
+    svc.actors:advanceScriptedAction(actorId, state.reactionTick, reaction.ticks)
+    return false
   end
-  state.effectSelector = selector
-  ensureReaction(state, svc)
+  svc.actors:commitScriptedAction(actorId)
+  state.reactionTick = nil
+  return true
 end
 
 local function message(ctx, bank, id, bindings)
@@ -214,7 +211,7 @@ function FollowerInteractionTask.poll(state, ctx)
         if facing then
           local previousFacing = svc.actors:getFacing(actorId)
           svc.actors:setFacing(actorId, facing)
-          emitGrassTurn(svc, engine, actorId, previousFacing, facing)
+          emitGrassTurn(svc, engine, previousFacing, facing)
         end
         svc.actors:beginScriptedAction(actorId, {
           action = "presentation_offset",
@@ -269,8 +266,9 @@ function FollowerInteractionTask.poll(state, ctx)
   if state.phase == "reaction" then
     local program = engine:program(state.programId)
     local step = program.steps[state.stepIndex]
-    local selector = step.reactionId
-    startReaction(state, svc, selector)
+    if not pollReaction(state, svc, step) then
+      return { complete = false, state = state }
+    end
     if step.messageId ~= nil then
       local bindings = engine:bindings(state.leadSlot)
       state.dialogueState = message(ctx, 265, step.messageId, bindings)
@@ -280,17 +278,14 @@ function FollowerInteractionTask.poll(state, ctx)
     end
   end
   if state.phase == "dialogue" then
-    ensureReaction(state, svc)
     local result = DialogueTask.poll(state.dialogueState, ctx)
     if not result.complete then
       return { complete = false, state = state }
     end
     state.dialogueState = nil
-    releaseEffect(state, svc)
     state.phase = "delay"
   end
   if state.phase == "delay" then
-    ensureReaction(state, svc)
     local program = engine:program(state.programId)
     local step = program.steps[state.stepIndex]
     local delay = step.delayTicks or 0
@@ -301,7 +296,6 @@ function FollowerInteractionTask.poll(state, ctx)
       end
     end
     state.delayRemaining = nil
-    releaseEffect(state, svc)
     state.stepIndex, state.phase = state.stepIndex + 1, "step"
     return { complete = false, state = state }
   end
@@ -417,7 +411,10 @@ function FollowerInteractionTask.cancel(state, reason, ctx)
     ContextChoiceTask.cancel(state.choiceState, reason, ctx)
     state.choiceState = nil
   end
-  releaseEffect(state, svc)
+  if state.reactionTick ~= nil then
+    svc.actors:cancelScriptedMovement(partnerId(svc.followingMon))
+    state.reactionTick = nil
+  end
   clearMotion(state, svc, false)
 end
 
@@ -472,7 +469,7 @@ function FollowerInteractionTask.validate(state)
   if state.delayRemaining ~= nil and not integer(state.delayRemaining, 1, 0xFF) then
     return invalid()
   end
-  if state.effectSelector ~= nil and not integer(state.effectSelector, 1, 14) then
+  if state.reactionTick ~= nil and not integer(state.reactionTick, 1, 0xFF) then
     return invalid()
   end
   if state.choiceTargets ~= nil then
@@ -564,7 +561,7 @@ function FollowerInteractionTask.validate(state)
     or (state.phase == "reward" and (not state.rewardStarted or state.dialogueState == nil))
     or (not state.rewardStarted and state.rewardWaitForEffect)
     or (state.delayRemaining ~= nil and state.phase ~= "delay")
-    or (state.effectSelector ~= nil and state.phase ~= "dialogue" and state.phase ~= "delay")
+    or (state.reactionTick ~= nil and state.phase ~= "reaction")
     or (state.rewardStarted and state.phase ~= "reward" and state.phase ~= "done")
     or (state.motionStarted and state.phase ~= "motion")
   then

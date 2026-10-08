@@ -36,7 +36,7 @@ T.tests["rewrites compiled geometry and texture references into the emote root"]
   }
   package.loaded["libs.assets.src.model.ModelAsset"] = { SCHEMA = "g4-model-v1", validate = function() end }
   package.loaded["libs.assets.src.field.FieldEmoteAssetCache"] = {
-    SCHEMA = "g4-field-emote-v1",
+    SCHEMA = "g4-field-emote-v2",
     geometryPath = FieldEmoteAssetCache.geometryPath,
     texturePath = FieldEmoteAssetCache.texturePath,
     marker = FieldEmoteAssetCache.marker,
@@ -79,8 +79,7 @@ T.tests["rewrites compiled geometry and texture references into the emote root"]
   package.loaded["romdump.src.digest.actor.FieldActorEmoteCompiler"] = nil
   Assert.isTrue(ok, tostring(result))
   Assert.equal(seenMemberId, 118, "the exclamation billboard is sourced from field_static_models member 118")
-  Assert.equal(result.model.schema, "g4-field-emote-v1")
-  Assert.deepEqual(result.model.anchorOffset, { x = 0, y = 2, z = 0.0625 })
+  Assert.equal(result.model.schema, "g4-field-emote-v2")
   Assert.equal(result.model.model.batches[1].geometry, FieldEmoteAssetCache.geometryPath("mesh"))
   Assert.equal(result.model.model.materials[1].texture, FieldEmoteAssetCache.texturePath("texture"))
   Assert.equal(result.model.model.key, "field-emote:exclamation")

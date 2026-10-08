@@ -6,6 +6,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 
 ---@class FollowerInteractionEngine
 ---@field catalog table<string, unknown>
+---@field reactionTicks table<string, integer> reaction emote kind -> emote action duration
 ---@field mons HgssMonService
 ---@field items ItemCatalog
 ---@field fashionCase FashionCaseState
@@ -170,8 +171,10 @@ function FollowerInteractionEngine.new(opts)
   for _, key in ipairs({ "mons", "items", "world", "actors", "followingMon", "runtimeMap", "player", "clock" }) do
     assert(opts[key] ~= nil, "interaction engine requires " .. key)
   end
+  assert(type(opts.reactionTicks) == "table", "interaction engine requires its reaction emote durations")
   return setmetatable({
     catalog = opts.catalog,
+    reactionTicks = opts.reactionTicks,
     mons = opts.mons,
     items = opts.items,
     fashionCase = opts.fashionCase,
@@ -405,8 +408,13 @@ function FollowerInteractionEngine:motion(motionId)
   return assert(self.catalog.motions[motionId], "interaction motion is missing")
 end
 
+-- The partner emote a reaction selector plays: its generated kind and the
+-- emote duration composed from that kind's clip.
+---@param selector integer
+---@return { kind: string, ticks: integer }
 function FollowerInteractionEngine:reaction(selector)
-  return assert(self.catalog.reactions[selector], "interaction reaction is missing")
+  local kind = assert(self.catalog.reactions[selector], "interaction reaction is missing").definition
+  return { kind = kind, ticks = assert(self.reactionTicks[kind], "interaction reaction duration is missing") }
 end
 
 function FollowerInteractionEngine:bindings(leadSlot)

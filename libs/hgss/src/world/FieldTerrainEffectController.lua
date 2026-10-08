@@ -38,11 +38,6 @@ function FieldTerrainEffectController:setModelFactory(factory)
 end
 
 function FieldTerrainEffectController:emit(response)
-  local reactionSelector = type(response.kind) == "string" and response.kind:match("^follower_reaction_(%d+)$")
-  if reactionSelector ~= nil then
-    local selector = tonumber(reactionSelector)
-    assert(selector ~= nil and selector >= 1 and selector <= 14, "unknown follower reaction kind " .. response.kind)
-  end
   local definition = assert(self.effects[response.kind], "missing field-effect definition: " .. response.kind)
   local lifecycle = assert(definition.lifecycle, "field-effect lifecycle metadata is required: " .. response.kind)
   assert(type(lifecycle.mode) == "string", "field-effect lifecycle mode is required: " .. response.kind)
@@ -56,10 +51,6 @@ function FieldTerrainEffectController:emit(response)
     assert(lifecycle.holdFrame == nil, "once lifecycle must not carry holdFrame: " .. response.kind)
   else
     error("unknown field-effect lifecycle mode " .. tostring(lifecycle.mode) .. " for " .. response.kind)
-  end
-  if reactionSelector ~= nil then
-    assert(lifecycle.mode == "once", "follower reactions require a once lifecycle")
-    assert(definition.definition == response.kind, "follower reaction definition identity is invalid")
   end
   local model = assert(definition.model)
   local animations = assert(model.animations)

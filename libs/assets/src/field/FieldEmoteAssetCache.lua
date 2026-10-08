@@ -49,10 +49,6 @@ local function exactKeys(value, expected, label)
   return true
 end
 
-local function finiteNumber(value)
-  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
-end
-
 ---@param descriptor table<string, unknown>
 ---@return boolean, Errors.Error?
 -- Validate the feature-local generated descriptor and delegate generic model
@@ -62,25 +58,12 @@ function FieldEmoteAssetCache.validateDescriptor(descriptor)
   if type(descriptor) ~= "table" then
     return invalid("descriptor is not a table")
   end
-  local keysOk, keysErr = exactKeys(descriptor, { schema = true, anchorOffset = true, model = true }, "descriptor")
+  local keysOk, keysErr = exactKeys(descriptor, { schema = true, model = true }, "descriptor")
   if not keysOk then
     return keysOk, keysErr
   end
   if descriptor.schema ~= FieldEmoteAssetCache.SCHEMA then
     return invalid("schema must be " .. FieldEmoteAssetCache.SCHEMA .. ", got " .. tostring(descriptor.schema))
-  end
-  if type(descriptor.anchorOffset) ~= "table" then
-    return invalid("anchorOffset must be a table")
-  end
-  local anchorKeysOk, anchorKeysErr =
-    exactKeys(descriptor.anchorOffset, { x = true, y = true, z = true }, "anchorOffset")
-  if not anchorKeysOk then
-    return anchorKeysOk, anchorKeysErr
-  end
-  for _, axis in ipairs({ "x", "y", "z" }) do
-    if not finiteNumber(descriptor.anchorOffset[axis]) then
-      return invalid("anchorOffset." .. axis .. " must be a finite number")
-    end
   end
   local modelOk, modelErr = pcall(ModelAsset.validate, descriptor.model)
   if not modelOk then

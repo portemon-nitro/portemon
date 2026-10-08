@@ -96,6 +96,7 @@ local function stubOptions(partySelection, mart)
     followingMon = {},
     clock = {},
     followerInteractionCatalog = followerInteractionCatalog,
+    followerReactionTicks = {},
     partySelection = partySelection,
     mart = mart,
   }

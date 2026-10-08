@@ -295,8 +295,9 @@ DerivedAssetContract.fieldEffects = {
 }
 
 DerivedAssetContract.fieldEmotes = {
-  cacheFormat = "field-emotes-cache-v2",
-  schema = "g4-field-emote-v1",
+  -- v2 drops the anchor offset: the runtime overhead-emote mechanism owns it.
+  cacheFormat = "field-emotes-cache-v3",
+  schema = "g4-field-emote-v2",
 }
 
 DerivedAssetContract.fieldUi = {

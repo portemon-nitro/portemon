@@ -322,6 +322,7 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
       fontDef = {},
       audioService = nil,
       followerInteractionCatalog = {},
+      followerReactionTicks = {},
       mons = {},
       itemCatalog = {},
       followingMon = {},

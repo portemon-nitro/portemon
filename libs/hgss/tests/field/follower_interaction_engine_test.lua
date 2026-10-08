@@ -240,8 +240,13 @@ local function engine(ruleSpecs, formPerformance, options)
   end
   local valid, validationError = FollowerInteractionCache.validateCatalog(data)
   Assert.isTrue(valid, validationError and validationError.message)
+  local reactionTicks = {}
+  for selector, reaction in pairs(data.reactions) do
+    reactionTicks[reaction.definition] = 20 + selector
+  end
   local instance = FollowerInteractionEngine.new({
     catalog = data,
+    reactionTicks = reactionTicks,
     mons = mons,
     items = {
       item = function()
@@ -361,6 +366,11 @@ T["partner effect anchor exposes the committed stacked surface"] = function()
     sourceSurfaceId = 10,
   })
   Assert.equal(first.fieldX, 12, "an earlier anchor remains a snapshot")
+end
+
+T["a reaction selector resolves its catalog kind and composed emote duration"] = function()
+  local subject = engine({})
+  Assert.deepEqual(subject:reaction(3), { kind = "follower_reaction_3", ticks = 23 })
 end
 
 T["each reached percentage row consumes one persisted script RNG draw"] = function()
