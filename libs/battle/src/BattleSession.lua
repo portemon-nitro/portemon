@@ -1007,17 +1007,13 @@ end
 ---@param controller string
 ---@return table<string, unknown> detached perspective view
 function BattleSession:view(controller)
-  self:_live()
-  return BattleView.forController(self, controller)
+  return BattleView.forController(self:_live(), controller)
 end
 
 ---@return table<string, unknown> detached plain interruption capture
 function BattleSession:capture()
   local state = self:_live()
-  local snapshot = BattleSnapshot.capture(state)
-  snapshot.maxRounds = state.maxRounds
-  BattleSnapshot.validate(snapshot)
-  return snapshot
+  return BattleSnapshot.capture(state, { maxRounds = state.maxRounds })
 end
 
 function BattleSession:dispose()

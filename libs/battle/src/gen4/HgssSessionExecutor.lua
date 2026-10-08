@@ -5153,8 +5153,7 @@ end
 ---@param controller string
 ---@return table<string, unknown> detached perspective view
 function HgssSessionExecutor:view(controller)
-  self:_live()
-  return BattleView.forController(self, controller)
+  return BattleView.forController(self:_live(), controller)
 end
 
 -- Runs one internal opponent decision against the session battle stream.
@@ -5286,38 +5285,37 @@ end
 ----@return table<string, unknown> detached plain interruption capture
 function HgssSessionExecutor:capture()
   local state = self:_live()
-  local snapshot = BattleSnapshot.capture(state)
-  snapshot.queue = copyValue(state.queue)
-  snapshot.schedule = copyValue(state.schedule)
-  snapshot.faints = copyValue(state.faints)
+  local prizeMoneyValue = state.prizeMoneyValue
+  if prizeMoneyValue ~= 1 and prizeMoneyValue ~= 2 then
+    error(BattleErrors.invalidState("prize multipliers stay 1 or 2", {}))
+  end
+  -- Scattered pay day coins ride the snapshot like the prize
+  -- multiplier so interruption never loses the running total.
+  local scattered = state.paydayScattered or 0
+  assert(type(scattered) == "number" and scattered % 1 == 0 and scattered >= 0, "scattered coins stay counted")
   -- Reward continuations ride as plain frame plus semantic facts: the
   -- detached battle-owned copies with their resumable frames, the
   -- per-opponent participation records, and the accumulated eligibility. The
   -- reward catalog itself is rebuilt from the facts above on restore and
   -- never serialized.
-  snapshot.progressionChildren = copyValue(state.progressionChildren)
-  snapshot.rewardParticipation = copyValue(state.rewardParticipation)
-  snapshot.evolutionEligible = copyValue(state.evolutionEligible)
-  snapshot.moveFacts = copyValue(self._moveFacts)
-  snapshot.speciesFacts = copyValue(self._speciesFacts)
-  snapshot.itemFacts = copyValue(self._itemFacts)
-  snapshot.moneyUpItems = copyValue(state.moneyUpItems or {})
   -- Trainer knowledge and slot order ride as a detached plain record
   -- beside the other native extensions; generic snapshot code never
   -- interprets it.
-  snapshot.trainerAi = copyValue(state.trainerAi)
-  local prizeMoneyValue = state.prizeMoneyValue
-  if prizeMoneyValue ~= 1 and prizeMoneyValue ~= 2 then
-    error(BattleErrors.invalidState("prize multipliers stay 1 or 2", {}))
-  end
-  snapshot.prizeMoneyValue = prizeMoneyValue
-  -- Scattered pay day coins ride the snapshot like the prize
-  -- multiplier so interruption never loses the running total.
-  local scattered = state.paydayScattered or 0
-  assert(type(scattered) == "number" and scattered % 1 == 0 and scattered >= 0, "scattered coins stay counted")
-  snapshot.paydayScattered = scattered
-  BattleSnapshot.validate(snapshot)
-  return snapshot
+  return BattleSnapshot.capture(state, {
+    queue = state.queue,
+    schedule = state.schedule,
+    faints = state.faints,
+    progressionChildren = state.progressionChildren,
+    rewardParticipation = state.rewardParticipation,
+    evolutionEligible = state.evolutionEligible,
+    moveFacts = self._moveFacts,
+    speciesFacts = self._speciesFacts,
+    itemFacts = self._itemFacts,
+    moneyUpItems = state.moneyUpItems or {},
+    trainerAi = state.trainerAi,
+    prizeMoneyValue = prizeMoneyValue,
+    paydayScattered = scattered,
+  })
 end
 
 function HgssSessionExecutor:dispose()

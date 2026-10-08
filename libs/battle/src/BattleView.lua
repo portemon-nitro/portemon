@@ -25,19 +25,7 @@ local function copyValue(value)
   return out
 end
 
----@param handle table<string, unknown> live session or interruption snapshot
----@return table<string, unknown> the plain snapshot under presentation
-local function sourceOf(handle)
-  assert(type(handle) == "table", "presentation reads require their battle")
-  if type(handle.capture) == "function" then
-    local snapshot = handle.capture(handle)
-    assert(type(snapshot) == "table", "presentation reads require snapshot state")
-    return snapshot --[[@as table<string, unknown>]]
-  end
-  return handle
-end
-
----@param snapshot table<string, unknown>
+---@param snapshot table<string, unknown> borrowed live state or explicit snapshot record
 ---@param controller string
 ---@return table<integer, integer> participant identities owned by the controller
 local function participantsOf(snapshot, controller)
@@ -58,12 +46,12 @@ local function participantsOf(snapshot, controller)
   return owned
 end
 
----@param handle table<string, unknown> live session or interruption snapshot
+---@param snapshot table<string, unknown> borrowed live state or explicit snapshot record
 ---@param controller string
 ---@return table<string, unknown> detached controller perspective
-function BattleView.forController(handle, controller)
+function BattleView.forController(snapshot, controller)
+  assert(type(snapshot) == "table", "perspective views require their battle")
   assert(type(controller) == "string", "perspective views require their controller")
-  local snapshot = sourceOf(handle --[[@as table<string, unknown>]])
   local owned = participantsOf(snapshot, controller)
   local isOwned = {}
   for _, id in ipairs(owned) do
@@ -145,10 +133,10 @@ function BattleView.forController(handle, controller)
   }
 end
 
----@param handle table<string, unknown> live session or interruption snapshot
+---@param snapshot table<string, unknown> explicit detached capture under trusted inspection
 ---@return table<string, unknown> detached trusted full read
-function BattleView.forDebug(handle)
-  local snapshot = sourceOf(handle --[[@as table<string, unknown>]])
+function BattleView.forDebug(snapshot)
+  assert(type(snapshot) == "table", "trusted reads require their capture")
   return copyValue(snapshot) --[[@as table<string, unknown>]]
 end
 

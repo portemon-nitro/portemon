@@ -4601,4 +4601,354 @@ function T.breaking_strikes_pierce_ability_wards_live()
   end
 end
 
+-- Interruption captures validate their complete result once and resume
+-- identically: a waiting capture over a generic session runs one shape
+-- check, restores, accepts the same replies, and replays the same
+-- remaining events into the same terminal state.
+function T.generic_waiting_captures_validate_once_and_resume_identically()
+  local contracts = SessionFixture.sessionContracts()
+  local State = contracts.State
+  local originalValidate = State.validateSnapshot
+  local validateCalls = 0
+  State.validateSnapshot = function(snapshot)
+    validateCalls = validateCalls + 1
+    return originalValidate(snapshot)
+  end
+  local ok, failure = pcall(function()
+    local content = SessionFixture.makeContent()
+    local parts = {
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { SessionFixture.combatant(1, 11) }),
+        SessionFixture.participant(2, 2, "beta", { SessionFixture.combatant(3, 23) }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 3),
+      },
+    }
+    local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(parts))
+    local waiting = SessionFixture.driveUntilSettled(session)
+    Assert.equal(waiting.status, "waiting", "the generic battle opens its decision boundary")
+    validateCalls = 0
+    local held = session:capture()
+    Assert.equal(validateCalls, 1, "generic captures validate the complete result once")
+    Assert.equal(held.version, State.VERSION, "the capture carries the current schema version")
+    local revived = contracts.Session.restore(held, content)
+    local firstFrame = SessionFixture.driveUntilSettled(session)
+    local secondFrame = SessionFixture.driveUntilSettled(revived)
+    Assert.deepEqual(secondFrame.request, firstFrame.request, "restored sessions reopen the same boundary")
+    local function strike(request)
+      local target = 2
+      if request.controller == "beta" then
+        target = 1
+      end
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+      end
+      return choices
+    end
+    for _, live in ipairs({ session, revived }) do
+      local frame = SessionFixture.driveUntilSettled(live)
+      for _, request in ipairs(frame.request.requests) do
+        local accepted, replyErr = live:submit(SessionFixture.replyFor(request, strike(request)))
+        Assert.isTrue(accepted, "restored sessions accept the open replies")
+        Assert.isNil(replyErr, "accepted replies carry no input error")
+      end
+    end
+    local firstEvents = SessionFixture.driveToEnd(session, 16, strike)
+    local secondEvents = SessionFixture.driveToEnd(revived, 16, strike)
+    Assert.deepEqual(secondEvents, firstEvents, "restored sessions replay the same events")
+    Assert.deepEqual(revived:capture(), session:capture(), "restored sessions reach the same state")
+    session:dispose()
+    revived:dispose()
+  end)
+  State.validateSnapshot = originalValidate
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+-- A waiting capture over a native session runs one shape check over the
+-- complete assembly, then restores, accepts the same replies, and replays
+-- the same remaining events into the same terminal state with every
+-- native extension intact and the schema version unchanged.
+function T.native_waiting_captures_validate_once_and_resume_identically()
+  local contracts = SessionFixture.sessionContracts()
+  local State = contracts.State
+  local Snapshot = contracts.Snapshot
+  local Executor = executorOwner()
+  local nativeContentValue = nativeContent()
+  local native = contracts.Battle.newSession(healthyDuelScenario(), nativeContentValue)
+  local opening = SessionFixture.driveUntilSettled(native)
+  Assert.equal(opening.status, "waiting", "the native battle opens its decision boundary")
+  local nativeValidate = State.validateSnapshot
+  local nativeCalls = 0
+  State.validateSnapshot = function(snapshot)
+    nativeCalls = nativeCalls + 1
+    return nativeValidate(snapshot)
+  end
+  local nativeOk, nativeFailure = pcall(function()
+    native:capture()
+  end)
+  State.validateSnapshot = nativeValidate
+  Assert.isTrue(nativeOk, "native captures succeed")
+  Assert.equal(nativeCalls, 1, "native captures validate the complete result once")
+  local heldNative = native:capture()
+  Assert.equal(heldNative.version, State.VERSION, "native captures keep the schema version")
+  Assert.notNil(heldNative.trainerAi, "native captures keep their trainer record")
+  Assert.notNil(heldNative.moveFacts, "native captures keep their move facts")
+  Assert.notNil(heldNative.speciesFacts, "native captures keep their species facts")
+  Assert.notNil(heldNative.prizeMoneyValue, "native captures keep their prize multiplier")
+  Assert.notNil(heldNative.paydayScattered, "native captures keep their scattered coins")
+  local twin = Executor.restore(heldNative, nativeContent())
+  for _, live in ipairs({ native, twin }) do
+    local frame = SessionFixture.driveUntilSettled(live)
+    for _, request in ipairs(frame.request.requests) do
+      local accepted, replyErr = live:submit(SessionFixture.replyFor(request, answer(request)))
+      Assert.isTrue(accepted, "restored native sessions accept the open replies")
+      Assert.isNil(replyErr, "accepted replies carry no input error")
+    end
+  end
+  local firstEvents = SessionFixture.driveToEnd(native, 16, answer)
+  local secondEvents = SessionFixture.driveToEnd(twin, 16, answer)
+  Assert.deepEqual(secondEvents, firstEvents, "restored native sessions replay the same events")
+  Assert.deepEqual(twin:capture(), native:capture(), "restored native sessions reach the same state")
+  Assert.isTrue(type(Snapshot.validate) == "function", "explicit validation stays available")
+  native:dispose()
+  twin:dispose()
+end
+
+-- A learning suspension survives interruption identically: capturing
+-- while the prompt is open and restoring reopens the same prompt,
+-- accepts the same decline, and replays the same completion into the
+-- same terminal state with no second award.
+function T.open_learning_prompts_resume_identically_across_snapshots()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(rewardScenario(), content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  for _, request in ipairs(opening.request.requests) do
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(ok, "opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local boundary, collected = advanceCollecting(session, 64)
+  Assert.equal(boundary.status, "waiting", "the knockout suspends on its learning prompt")
+  local prompt = findLearnPrompt(boundary)
+  Assert.notNil(prompt, "the suspension names the pending learning prompt")
+  local held = session:capture()
+  SessionFixture.assertPlainData(held, "learning")
+  local revived = Executor.restore(held, content)
+  local first = SessionFixture.driveUntilSettled(session)
+  local second = SessionFixture.driveUntilSettled(revived)
+  Assert.deepEqual(findLearnPrompt(second), findLearnPrompt(first), "restored sessions reopen the same prompt")
+  local firstPrompt = assert(findLearnPrompt(first), "the prompt loads")
+  local secondPrompt = assert(findLearnPrompt(second), "the restored prompt loads")
+  for _, entry in ipairs({
+    { live = session, asked = firstPrompt },
+    { live = revived, asked = secondPrompt },
+  }) do
+    local actor = assert(entry.asked.actors[1], "the prompt addresses its recipient")
+    local ok, replyErr =
+      entry.live:submit(SessionFixture.replyFor(entry.asked, { learnChoice(actor, "decline") }))
+    Assert.isTrue(ok, "restored sessions accept the same decline")
+    Assert.isNil(replyErr, "accepted declines carry no input error")
+  end
+  local firstEnded, firstClosing = advanceCollecting(session, 64)
+  local secondEnded, secondClosing = advanceCollecting(revived, 64)
+  Assert.equal(firstEnded.status, "ended", "the answered battle ends")
+  Assert.deepEqual(secondClosing, firstClosing, "restored sessions replay the same completion")
+  Assert.deepEqual(revived:capture(), session:capture(), "restored sessions reach the same terminal state")
+  Assert.equal(countSessionEvents(firstClosing, "exp"), 0, "the reply awards no experience again")
+  Assert.isTrue(#collected > 0, "the opening run collected its events")
+  session:dispose()
+  revived:dispose()
+end
+
+-- Explicit captures stay strict: cyclic and executable extensions fail
+-- with the incompatible-snapshot family before any unbounded recursion,
+-- colliding extensions never overwrite core state, malformed base and
+-- native child records reject on restore, aliased-but-acyclic extensions
+-- still assemble, and no failure mutates the live session.
+function T.explicit_captures_reject_nonplain_and_colliding_extensions()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local Snapshot = contracts.Snapshot
+  local DomainErrors = contracts.DomainErrors
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(healthyDuelScenario(), content)
+  SessionFixture.driveUntilSettled(session)
+  local before = session:capture()
+
+  ---@return table live-shaped record borrowing the detached capture fields
+  local function liveDouble()
+    local held = session:capture()
+    local live = {}
+    for key, value in pairs(held) do
+      live[key] = value
+    end
+    live.rng = {
+      capture = function()
+        return held.rng
+      end,
+    }
+    return live
+  end
+
+  ---@param fn fun(): any operation expected to fail
+  ---@return any the raised structured error
+  local function rejects(fn, why)
+    local err = Assert.throws(fn, why)
+    Assert.equal(type(err), "table", why .. " raises a structured error")
+    Assert.equal(err.code, DomainErrors.INCOMPATIBLE_SNAPSHOT, why .. " keeps the snapshot error family")
+    return err
+  end
+
+  local loop = {}
+  loop.self = loop
+  rejects(function()
+    Snapshot.capture(liveDouble(), { note = loop })
+  end, "cyclic extensions never assemble")
+  rejects(function()
+    Snapshot.capture(liveDouble(), { note = function()
+      return 1
+    end })
+  end, "executable extensions never assemble")
+  rejects(function()
+    Snapshot.capture(liveDouble(), { ruleset = "forged" })
+  end, "extensions never overwrite core state")
+  rejects(function()
+    Snapshot.capture(liveDouble(), { format = "forged" })
+  end, "extensions never overwrite the format")
+
+  local shared = { merit = 1 }
+  local assembled = Snapshot.capture(liveDouble(), { first = shared, second = shared })
+  Assert.deepEqual(assembled.first, { merit = 1 }, "aliased extensions still assemble")
+  Assert.deepEqual(assembled.second, { merit = 1 }, "every alias carries its values")
+  Assert.equal(assembled.ruleset, before.ruleset, "core state survives extension assembly")
+
+  rejects(function()
+    contracts.Session.restore({ version = 1 }, SessionFixture.makeContent())
+  end, "malformed base records never restore")
+  local cyclic = {}
+  cyclic.self = cyclic
+  rejects(function()
+    Snapshot.restore(cyclic)
+  end, "cyclic restores never assemble")
+  local tampered = session:capture()
+  tampered.rewardParticipation = { [1] = "not-a-record" }
+  rejects(function()
+    Executor.restore(tampered, content)
+  end, "malformed native children never restore")
+  Assert.deepEqual(session:capture(), before, "rejected captures leave the live session untouched")
+  session:dispose()
+end
+
+-- Repeated observations leave wild decisions deterministic: views change
+-- neither the battle stream nor the pending batch, identical wild draws
+-- follow, and identical submitted choices replay identical traces.
+function T.repeated_views_leave_wild_decisions_deterministic()
+  local contracts = SessionFixture.sessionContracts()
+  local DomainErrors = contracts.DomainErrors
+  local first = leaseSession()
+  local second = contracts.Battle.newSession(leaseScenario(), nativeContent())
+  SessionFixture.driveUntilSettled(second)
+  local Snapshot = contracts.Snapshot
+  local State = contracts.State
+  local originalCapture = Snapshot.capture
+  local originalValidate = State.validateSnapshot
+  local captureCalls = 0
+  local validateCalls = 0
+  Snapshot.capture = function(...)
+    captureCalls = captureCalls + 1
+    return originalCapture(...)
+  end
+  State.validateSnapshot = function(snapshot)
+    validateCalls = validateCalls + 1
+    return originalValidate(snapshot)
+  end
+  local viewsOk, viewsFailure = pcall(function()
+    first:view("player")
+    first:view("wild")
+    first:view("player")
+    first:view("wild")
+  end)
+  Snapshot.capture = originalCapture
+  State.validateSnapshot = originalValidate
+  Assert.isTrue(viewsOk, "wild observations succeed")
+  if viewsOk then
+    Assert.equal(captureCalls, 0, "wild observations never run explicit capture")
+    Assert.equal(validateCalls, 0, "wild observations never run snapshot validation")
+  else
+    error(viewsFailure, 0)
+  end
+  local callsBefore = first:capture().rng.calls
+  Assert.equal(first:capture().rng.calls, callsBefore, "observations draw nothing")
+  Assert.deepEqual(first:capture(), second:capture(), "observations change no wild battle state")
+
+  local wildFirst = openRequest(first, "wild")
+  local wildSecond = openRequest(second, "wild")
+  local function draw(request)
+    return function(stream)
+      return stream:nextU16("wild_strike", { controller = request.controller, request = request.requestId })
+    end
+  end
+  local firstDraw = first:withDecisionStream(wildFirst, draw(wildFirst))
+  local secondDraw = second:withDecisionStream(wildSecond, draw(wildSecond))
+  Assert.equal(firstDraw, secondDraw, "identical wild draws follow identical observations")
+
+  local function replyAll(live)
+    local frame = SessionFixture.driveUntilSettled(live)
+    Assert.equal(frame.status, "waiting", "the wild duel asks for decisions")
+    for _, request in ipairs(frame.request.requests) do
+      local target = 2
+      if request.controller == "wild" then
+        target = 1
+      end
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+      end
+      local ok, replyErr = live:submit(SessionFixture.replyFor(request, choices))
+      Assert.isTrue(ok, "wild duel replies are accepted")
+      Assert.isNil(replyErr, "accepted replies carry no input error")
+    end
+  end
+  local firstEvents = {}
+  local secondEvents = {}
+  for _ = 1, 256 do
+    replyAll(first)
+    local frame = first:advance(64)
+    for _, event in ipairs(frame.events or {}) do
+      firstEvents[#firstEvents + 1] = event
+    end
+    if frame.status == "ended" then
+      break
+    end
+  end
+  for _ = 1, 256 do
+    replyAll(second)
+    local frame = second:advance(64)
+    for _, event in ipairs(frame.events or {}) do
+      secondEvents[#secondEvents + 1] = event
+    end
+    if frame.status == "ended" then
+      break
+    end
+  end
+  Assert.deepEqual(secondEvents, firstEvents, "identical choices replay identical wild traces")
+  Assert.deepEqual(second:capture(), first:capture(), "identical choices reach identical wild state")
+  local unknownErr = Assert.throws(function()
+    first:view("ghost")
+  end, "undeclared observers cannot open a wild perspective")
+  Assert.equal(unknownErr.code, DomainErrors.INPUT, "unknown wild observers fail as input errors")
+  Assert.isTrue(type(DomainErrors.INPUT) == "string", "the input family stays named")
+  first:dispose()
+  second:dispose()
+end
+
 return { tests = T }
