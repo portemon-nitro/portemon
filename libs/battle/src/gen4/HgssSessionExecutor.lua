@@ -38,6 +38,7 @@ local BattleState = require("libs.battle.src.BattleState")
 local BattleView = require("libs.battle.src.BattleView")
 local Capture = require("libs.battle.src.gen4.Capture")
 local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
+local DecisionBatch = require("libs.battle.src.DecisionBatch")
 local EffectBag = require("libs.battle.src.EffectBag")
 local EffectDispatch = require("libs.battle.src.EffectDispatch")
 local Escape = require("libs.battle.src.gen4.Escape")
@@ -352,31 +353,6 @@ local function freshSchedule()
 end
 
 ---@param state table<string, unknown>
----@return table<integer, table<string, unknown>> pending requests in batch order
-local function batchRequests(state)
-  local pending = state.pending --[[@as table<string, unknown>]]
-  local batch = pending.batch --[[@as table<string, unknown>]]
-  return batch.requests --[[@as table<integer, table<string, unknown>>]]
-end
-
----@param state table<string, unknown>
----@return boolean true once every open request holds a stored reply
-local function batchComplete(state)
-  local pending = state.pending --[[@as table<string, unknown>]]
-  local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
-  for _, request in ipairs(batchRequests(state)) do
-    if
-      submitted[
-        request.requestId --[[@as integer]]
-      ] == nil
-    then
-      return false
-    end
-  end
-  return true
-end
-
----@param state table<string, unknown>
 ---@return table<integer, table<string, unknown>> drained events in sequence order
 local function drainOutbox(state)
   local outbox = state.outbox --[[@as table<integer, table<string, unknown>>]]
@@ -386,13 +362,6 @@ local function drainOutbox(state)
   end
   state.outbox = {}
   return flushed
-end
-
----@param state table<string, unknown>
----@return table<string, unknown> detached open batch without sealed replies
-local function openBatchView(state)
-  local pending = state.pending --[[@as table<string, unknown>]]
-  return copyValue(pending.batch) --[[@as table<string, unknown>]]
 end
 
 ---@param context table<string, unknown>
@@ -1984,6 +1953,22 @@ local function siblingReserves(state, except)
           promised[#promised + 1] = reserve
         end
       end
+    end
+  end
+  table.sort(promised)
+  return promised
+end
+
+---@param staged table<string, unknown> reservation maps staged for the reply under admission
+---@param except integer? the choice's own promised reserve, never a sibling conflict
+---@return integer[] sibling-promised reserves in ascending order
+local function stagedSiblingReserves(staged, except)
+  local promised = {} ---@type integer[]
+  for reserve in
+    pairs(staged.replacements --[[@as table<integer, integer>]])
+  do
+    if reserve ~= except then
+      promised[#promised + 1] = reserve
     end
   end
   table.sort(promised)
@@ -3929,7 +3914,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     assert(type(state.pending) == "table" and type(pending.learning) == "table", "learning commits over its own batch")
     local learning = pending.learning --[[@as table<string, unknown>]]
     local obligations = learning.obligations --[[@as table<integer, table<string, unknown>>]]
-    local requests = batchRequests(state)
+    local requests = DecisionBatch.requests(state)
     assert(#requests == 1, "learning batches suspend on one prompt")
     local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
     local reply = submitted[
@@ -4488,7 +4473,7 @@ function HgssSessionExecutor:_commitBatch(state, allowance)
   assert(pending.replacement == nil, "replacement batches commit through their own path")
   local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
   local ordered = {}
-  for _, request in ipairs(batchRequests(state)) do
+  for _, request in ipairs(DecisionBatch.requests(state)) do
     local reply = submitted[
       request.requestId --[[@as integer]]
     ]
@@ -4554,7 +4539,7 @@ function HgssSessionExecutor:_commitReplacement(state)
   -- validated on submit and suspension stages no intervening mechanics,
   -- so every open obligation answers exactly once here.
   local picks = {} ---@type table<integer, integer>
-  for _, request in ipairs(batchRequests(state)) do
+  for _, request in ipairs(DecisionBatch.requests(state)) do
     local reply = submitted[
       request.requestId --[[@as integer]]
     ]
@@ -4617,88 +4602,12 @@ function HgssSessionExecutor:_commitReplacement(state)
   settleReplacements(state)
 end
 
---- Canonicalizes one reply actor for equality bookkeeping: roster-scoped
---- prompts omit the entry token, so absence matches absence on both
---- sides of the comparison without ever writing a zero into protocol
---- data. Live-entry batches always carry tokens on both sides.
----@param combatant integer addressed roster identity
----@param activation integer? addressed entry token, when the prompt is entry-scoped
----@return string
-local function actorKey(combatant, activation)
-  return combatant .. ":" .. (activation or "")
-end
-
----@param state table<string, unknown>
----@param request table<string, unknown>
----@param reply table<string, unknown>
----@return table<string, unknown>? input error, or nil when the reply stores
-local function checkReplyContext(state, request, reply)
-  local pending = state.pending --[[@as table<string, unknown>]]
-  local batch = pending.batch --[[@as table<string, unknown>]]
-  if reply.controller ~= request.controller then
-    return BattleErrors.input("controllers answer only their own requests", {
-      request = request.requestId,
-    })
-  end
-  if reply.epoch ~= batch.epoch then
-    return BattleErrors.input("replies must carry their batch epoch", { request = request.requestId })
-  end
-  local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
-  if
-    submitted[
-      request.requestId --[[@as integer]]
-    ] ~= nil
-  then
-    return BattleErrors.input("duplicate replies cannot answer twice", { request = request.requestId })
-  end
-  local actors = request.actors --[[@as table<integer, table<string, unknown>>]]
-  local choices = reply.choices --[[@as table<integer, table<string, unknown>>]]
-  if #choices ~= #actors then
-    return BattleErrors.input("replies must answer every addressed actor exactly once", {
-      request = request.requestId,
-    })
-  end
-  local expected = {}
-  for _, actor in ipairs(actors) do
-    expected[
-      actorKey(actor.combatant --[[@as integer]], actor.activation --[[@as integer?]])
-    ] = actor
-  end
-  local seen = {}
-  for _, choice in ipairs(choices) do
-    local actor = choice.actor --[[@as table<string, unknown>]]
-    local key = actorKey(actor.combatant --[[@as integer]], actor.activation --[[@as integer?]])
-    if expected[key] == nil or seen[key] ~= nil then
-      return BattleErrors.input("replies must address exactly the requested entries", {
-        request = request.requestId,
-      })
-    end
-    seen[key] = true
-  end
-  return nil
-end
-
----@param state table<string, unknown>
----@return table<integer, table<string, unknown>> every choice already stored in this batch
-local function replyChoices(state)
-  local pending = state.pending --[[@as table<string, unknown>]]
-  local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
-  local out = {}
-  for _, reply in pairs(submitted) do
-    for _, choice in
-      ipairs((reply --[[@as table<string, unknown>]]).choices --[[@as table<integer, unknown>]])
-    do
-      out[#out + 1] = choice --[[@as table<string, unknown>]]
-    end
-  end
-  return out
-end
-
 ---@param state table<string, unknown>
 ---@param replacement table<string, unknown> open replacement continuation
 ---@param choice table<string, unknown>
+---@param staged table<string, unknown> reservation maps staged for the reply under admission
 ---@return table<string, unknown>? input error, or nil when the replacement binds
-local function checkReplacementBinding(state, replacement, choice)
+local function checkReplacementBinding(state, replacement, choice, staged)
   local actor = choice.actor --[[@as table<string, unknown>]]
   local payload = choice.payload --[[@as table<string, unknown>]]
   local obligations = replacement.obligations --[[@as table<integer, table<string, unknown>>]]
@@ -4736,18 +4645,11 @@ local function checkReplacementBinding(state, replacement, choice)
   then
     return BattleErrors.input("replacements must be living", {})
   end
-  local pending = state.pending --[[@as table<string, unknown>]]
-  local reserved = pending.reserved --[[@as table<string, unknown>]]
-  local taken = (reserved.replacements --[[@as table<integer, integer>]])[
+  local taken = (staged.replacements --[[@as table<integer, integer>]])[
     payload.replacement --[[@as integer]]
   ]
   if taken ~= nil then
     return BattleErrors.input("replacements are reserved once per batch", {})
-  end
-  for _, other in ipairs((replyChoices(state))) do
-    if other.kind == "switch" and other.payload.replacement == payload.replacement then
-      return BattleErrors.input("replacements are reserved once per batch", {})
-    end
   end
   return nil
 end
@@ -4771,7 +4673,7 @@ local function checkLearningBinding(state, choice)
   if child == nil then
     return BattleErrors.input("learning replies require an open prompt", {})
   end
-  local requests = batchRequests(state)
+  local requests = DecisionBatch.requests(state)
   if #requests ~= 1 then
     return BattleErrors.input("learning batches suspend on one prompt", {})
   end
@@ -4832,8 +4734,9 @@ end
 ---@param choice table<string, unknown>
 ---@param admitted string[] admitted action kinds resolved at construction
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@param staged table<string, unknown> reservation maps staged for the reply under admission
 ---@return table<string, unknown>? input error, or nil when the choice binds
-local function checkChoiceBinding(state, choice, admitted, battleKind)
+local function checkChoiceBinding(state, choice, admitted, battleKind, staged)
   local actor = choice.actor --[[@as table<string, unknown>]]
   local payload = choice.payload --[[@as table<string, unknown>]]
   local openBatch = state.pending --[[@as table<string, unknown>]]
@@ -4846,68 +4749,18 @@ local function checkChoiceBinding(state, choice, admitted, battleKind)
     -- Replacement batches address fainted entries: the live-entry binding
     -- below cannot hold, so obligations bind instead. Stale pre-faint
     -- actions still fail here when they name no open obligation.
-    return checkReplacementBinding(state, openBatch.replacement --[[@as table<string, unknown>]], choice)
+    return checkReplacementBinding(state, openBatch.replacement --[[@as table<string, unknown>]], choice, staged)
+  end
+  local commonError = DecisionBatch.checkActionBinding(state, choice, staged)
+  if commonError ~= nil then
+    return commonError
+  end
+  if choice.kind == "attack" or choice.kind == "confirm" then
+    return nil
   end
   local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
   local active = combatant.active --[[@as table<string, unknown>]]
-  if active == nil or active.activation ~= actor.activation then
-    return BattleErrors.input("locked references die with their entry", {
-      combatant = actor.combatant,
-    })
-  end
-  if choice.kind == "attack" then
-    local target = payload.target --[[@as table<string, unknown>]]
-    if target.kind == "position" then
-      if
-        (state.positions --[[@as table<integer, table<string, unknown>>]])[
-          target.position --[[@as integer]]
-        ] == nil
-      then
-        return BattleErrors.input("strikes must name a declared position", {})
-      end
-    elseif target.kind == "combatant" then
-      if
-        (state.combatants --[[@as table<integer, table<string, unknown>>]])[
-          target.combatant --[[@as integer]]
-        ] == nil
-      then
-        return BattleErrors.input("strikes must name a declared combatant", {})
-      end
-    elseif target.kind == "side" then
-      if
-        (state.sides --[[@as table<integer, table<string, unknown>>]])[
-          target.side --[[@as integer]]
-        ] == nil
-      then
-        return BattleErrors.input("strikes must name a declared side", {})
-      end
-    end
-  elseif choice.kind == "switch" then
-    local replacement = (state.combatants --[[@as table<integer, table<string, unknown>>]])[
-      payload.replacement --[[@as integer]]
-    ]
-    if replacement == nil then
-      return BattleErrors.input("replacements must name a declared combatant", {})
-    end
-    if replacement.participant ~= combatant.participant then
-      return BattleErrors.input("replacements must share the actor roster", {})
-    end
-    if replacement.active ~= nil then
-      return BattleErrors.input("replacements must start benched", {})
-    end
-    local pending = state.pending --[[@as table<string, unknown>]]
-    local reserved = pending.reserved --[[@as table<string, unknown>]]
-    local taken = (reserved.replacements --[[@as table<integer, integer>]])[
-      payload.replacement --[[@as integer]]
-    ]
-    if taken ~= nil then
-      return BattleErrors.input("replacements are reserved once per batch", {})
-    end
-    for _, other in ipairs((replyChoices(state))) do
-      if other.kind == "switch" and other.payload.replacement == payload.replacement then
-        return BattleErrors.input("replacements are reserved once per batch", {})
-      end
-    end
+  if choice.kind == "switch" then
     -- Voluntary exchanges bind through the exchange owner: trapping and
     -- reserves that cannot fight refuse here, before anything moves. An
     -- effective shell slips trapping for the departure, so the flag
@@ -4922,7 +4775,7 @@ local function checkChoiceBinding(state, choice, admitted, battleKind)
       incoming = payload.replacement,
       reason = "voluntary",
       reserves = reserves,
-      reserved = siblingReserves(state, payload.replacement --[[@as integer]]),
+      reserved = stagedSiblingReserves(staged, payload.replacement --[[@as integer]]),
       fainted = faintedIds(state),
       trap = heldChoice,
       shedShell = NativePassiveBridge.wrap(state):effectiveHeldItem(combatant.id --[[@as integer]]) == "SHED_SHELL",
@@ -4932,22 +4785,7 @@ local function checkChoiceBinding(state, choice, admitted, battleKind)
     end
   elseif choice.kind == "item" then
     local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
-    if participant.inventoryId == nil then
-      return BattleErrors.input("item use requires a declared inventory", {})
-    end
-    local inventory = (state.inventories --[[@as table<string, table<string, unknown>>]])[
-      participant.inventoryId --[[@as string]]
-    ]
-    if inventory == nil then
-      return BattleErrors.input("item use requires a known inventory", {})
-    end
-    local quantities = inventory.quantities --[[@as table<string, integer>]]
-    local stock = quantities[
-      payload.item --[[@as string]]
-    ] or 0
-    local pending = state.pending --[[@as table<string, unknown>]]
-    local reserved = pending.reserved --[[@as table<string, unknown>]]
-    local held = reserved.items --[[@as table<string, table<string, integer>>]]
+    local held = staged.items --[[@as table<string, table<string, integer>>]]
     local claimed = 0
     if
       held[
@@ -4959,9 +4797,6 @@ local function checkChoiceBinding(state, choice, admitted, battleKind)
       ][
         payload.item --[[@as string]]
       ] or 0
-    end
-    if stock - claimed < 1 then
-      return BattleErrors.input("item use requires reserved stock", { item = payload.item })
     end
     if
       CaptureContext.isBall(payload.item --[[@as string]]) and battleKind ~= "wild"
@@ -5040,7 +4875,7 @@ function HgssSessionExecutor:advance(operationBudget)
       if state.pending == nil and state.status == "ended" then
         self:_finalizeOnce()
       end
-    elseif batchComplete(state) then
+    elseif DecisionBatch.isComplete(state) then
       if remaining < 1 then
         return { status = "running", events = drainOutbox(state) }
       end
@@ -5064,10 +4899,10 @@ function HgssSessionExecutor:advance(operationBudget)
         end
       end
     else
-      return { status = state.status, events = drainOutbox(state), request = openBatchView(state) }
+      return { status = state.status, events = drainOutbox(state), request = DecisionBatch.view(state) }
     end
-    if state.pending ~= nil and not batchComplete(state) then
-      return { status = state.status, events = drainOutbox(state), request = openBatchView(state) }
+    if state.pending ~= nil and not DecisionBatch.isComplete(state) then
+      return { status = state.status, events = drainOutbox(state), request = DecisionBatch.view(state) }
     end
   end
 end
@@ -5077,77 +4912,19 @@ end
 ---@return table<string, unknown>? input error when the reply is rejected
 function HgssSessionExecutor:submit(reply)
   local state = self:_live()
-  if type(reply) ~= "table" or type(reply.requestId) ~= "number" then
-    return false, BattleErrors.input("decision replies must name a positive request", {})
+  local admitted = self._admitted
+  local battleKind = self._battleKind
+  local stored, err, requestId = DecisionBatch.submit(state, reply, function(choice, staged)
+    return checkChoiceBinding(state, choice, admitted, battleKind, staged)
+  end)
+  if stored then
+    -- Committed replies retire their pending trainer servings: later
+    -- answers decide against executed stock instead of the proposal.
+    self._trainerProvisional[
+      requestId --[[@as integer]]
+    ] = nil
   end
-  if state.status ~= "waiting" or state.pending == nil then
-    return false, BattleErrors.input("replies require an open decision batch", {})
-  end
-  local wanted = nil
-  for _, request in ipairs(batchRequests(state)) do
-    if request.requestId == reply.requestId then
-      wanted = request
-    end
-  end
-  if wanted == nil then
-    return false, BattleErrors.input("replies must answer an open request", {})
-  end
-  local ok, validated = pcall(BattleProtocol.validateReply, reply, wanted.kind --[[@as string]])
-  if not ok then
-    return false, validated --[[@as table<string, unknown>]]
-  end
-  local stored = validated --[[@as table<string, unknown>]]
-  local contextError = checkReplyContext(state, wanted, stored)
-  if contextError ~= nil then
-    return false, contextError
-  end
-  for _, choice in
-    ipairs(stored.choices --[[@as table<integer, table<string, unknown>>]])
-  do
-    local bindingError = checkChoiceBinding(state, choice, self._admitted, self._battleKind)
-    if bindingError ~= nil then
-      return false, bindingError
-    end
-  end
-  local pending = state.pending --[[@as table<string, unknown>]]
-  local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
-  local reserved = pending.reserved --[[@as table<string, unknown>]]
-  for _, choice in
-    ipairs(stored.choices --[[@as table<integer, table<string, unknown>>]])
-  do
-    local payload = choice.payload --[[@as table<string, unknown>]]
-    if choice.kind == "switch" then
-      local taken = reserved.replacements --[[@as table<integer, integer>]]
-      taken[
-        payload.replacement --[[@as integer]]
-      ] = wanted.requestId --[[@as integer]]
-    elseif choice.kind == "item" then
-      local actor = choice.actor --[[@as table<string, unknown>]]
-      local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
-      local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
-      local held = reserved.items --[[@as table<string, table<string, integer>>]]
-      local inventoryId = participant.inventoryId --[[@as string]]
-      if held[inventoryId] == nil then
-        held[inventoryId] = {}
-      end
-      held[inventoryId][
-        payload.item --[[@as string]]
-      ] = (
-        held[inventoryId][
-          payload.item --[[@as string]]
-        ] or 0
-      ) + 1
-    end
-  end
-  submitted[
-    wanted.requestId --[[@as integer]]
-  ] = copyValue(stored) --[[@as table<string, unknown>]]
-  -- Committed replies retire their pending trainer servings: later
-  -- answers decide against executed stock instead of the proposal.
-  self._trainerProvisional[
-    wanted.requestId --[[@as integer]]
-  ] = nil
-  return true, nil
+  return stored, err
 end
 
 ---@param controller string

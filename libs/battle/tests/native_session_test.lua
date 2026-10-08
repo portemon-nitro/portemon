@@ -4951,4 +4951,312 @@ function T.repeated_views_leave_wild_decisions_deterministic()
   second:dispose()
 end
 
+---@param pack table|nil battle inventory seed for the owning side
+---@param itemFacts table<string, table<string, unknown>>? detached semantic facts for the stocked items
+---@return table detached native battle setup with two owning leads beside a benched reserve
+local function doubleBenchScenario(pack, itemFacts)
+  local Executor = executorOwner()
+  local alphaLead = tackleCombatant(1, 11)
+  local alphaMate = tackleCombatant(3, 31)
+  local alphaBench = tackleCombatant(5, 51)
+  local betaLead = tackleCombatant(2, 23)
+  local seeds = { alphaLead, alphaMate, alphaBench, betaLead }
+  local alphaSpec = SessionFixture.participant(1, 1, "alpha", { alphaLead, alphaMate, alphaBench })
+  if pack ~= nil then
+    alphaSpec.inventoryId = (pack --[[@as table<string, unknown>]]).id
+  end
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = TRAINER_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      alphaSpec,
+      SessionFixture.participant(2, 2, "beta", { betaLead }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 1, { 1 }, 3),
+      SessionFixture.position(3, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  if pack ~= nil then
+    scenario.inventories = { pack }
+  end
+  if itemFacts ~= nil then
+    scenario.itemFacts = itemFacts
+  end
+  return scenario
+end
+
+---@return table<string, unknown> detached generated-style medicine facts
+local function potionFacts()
+  return {
+    kind = "medicine",
+    restore = { kind = "fixed", amount = 20 },
+    cures = { sleep = false, poison = false, burn = false, freeze = false, paralysis = false },
+    revive = "none",
+    mood = 0,
+  }
+end
+
+---@return table detached native battle setup with a wounded trainer lead holding one stocked cure
+local function trainerCureScenario()
+  local Executor = executorOwner()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20);
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local trainer = SessionFixture.participant(2, 2, "trainer:1", { lead })
+  trainer.inventoryId = "trainer-stock"
+  -- Two ordered cure slots over one shared unit: the second slot stays
+  -- answerable only while no serving holds the unit, so repeated answers
+  -- distinguish held servings from retired ones.
+  trainer.context = { aiPasses = { "ai_pass_0", "ai_pass_1" }, trainerItems = { "POTION", "POTION" } }
+  return {
+    ruleset = Executor.RULESET,
+    format = TRAINER_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "player", { foe }),
+      trainer,
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, foe.id),
+      SessionFixture.position(2, 2, { 2 }, lead.id),
+    },
+    inventories = { SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }) },
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts({ lead, foe }),
+    speciesFacts = scenarioSpeciesFacts({ lead, foe }),
+    itemFacts = { POTION = { partyUse = potionFacts() } },
+  }
+end
+
+-- Same-reply reservations stage atomically on native action batches:
+-- two leads answering together cannot book one reserve or spend one
+-- shared unit twice, late failures keep nothing, and a later valid
+-- reply still commits its exchange.
+function T.native_action_batches_stage_same_reply_reservations_atomically()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local session = contracts.Battle.newSession(doubleBenchScenario(nil, nil), content)
+  local waiting = SessionFixture.driveUntilSettled(session)
+  Assert.equal(waiting.status, "waiting", "the doubled turn asks for decisions")
+  local alpha = requestFor(waiting, "alpha")
+  Assert.equal(#alpha.actors, 2, "one reply answers both leads together")
+  local firstActor = assert(alpha.actors[1], "the shared reply addresses its first lead")
+  local secondActor = assert(alpha.actors[2], "the shared reply addresses its second lead")
+  local pristine = session:capture()
+  local doubled, doubleErr = session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.switchChoice(firstActor, 5),
+    SessionFixture.switchChoice(secondActor, 5),
+  }))
+  Assert.isFalse(doubled, "one reserve cannot answer twice in the same reply")
+  Assert.notNil(doubleErr, "rejected double bookings name their input error")
+  Assert.deepEqual(session:capture(), pristine, "rejected replies keep no partial reservation")
+  local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.switchChoice(firstActor, 5),
+    SessionFixture.attackChoice(secondActor, 0, SessionFixture.positionTarget(3)),
+  }))
+  Assert.isTrue(ok, "a later valid reply is accepted: " .. tostring(replyErr))
+  Assert.isNil(replyErr, "accepted replies carry no input error")
+  local beta = requestFor(SessionFixture.driveUntilSettled(session), "beta")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local foeOk, foeErr = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(foeOk, "the waiting peer still answers: " .. tostring(foeErr))
+  Assert.isNil(foeErr, "accepted peer replies carry no input error")
+  session:advance(64)
+  Assert.equal(session:capture().positions[1].occupant, 5, "the completed batch runs its exchange")
+  session:dispose()
+
+  local lead = leveledCombatant(1, 23, "EEVEE", 20);
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 1
+  local mate = leveledCombatant(3, 31, "EEVEE", 20);
+  (mate.mon --[[@as table<string, unknown>]]).condition.currentHp = 1
+  local bench = tackleCombatant(5, 51)
+  local foeLead = tackleCombatant(2, 41)
+  local pack = SessionFixture.inventory("party", { 1 }, { POTION = 1 })
+  local stockedScenario = doubleBenchScenario(nil, nil)
+  stockedScenario.participants[1].roster = { lead, mate, bench }
+  stockedScenario.participants[1].inventoryId = pack.id
+  stockedScenario.inventories = { pack }
+  stockedScenario.itemFacts = { POTION = { partyUse = potionFacts() } }
+  stockedScenario.moveFacts = scenarioMoveFacts({ lead, mate, bench, foeLead })
+  stockedScenario.speciesFacts = scenarioSpeciesFacts({ lead, mate, bench, foeLead })
+  stockedScenario.participants[2].roster = { foeLead }
+  local stocked = contracts.Battle.newSession(stockedScenario, content)
+  local stockedWaiting = SessionFixture.driveUntilSettled(stocked)
+  Assert.equal(stockedWaiting.status, "waiting", "the stocked turn asks for decisions")
+  local stockedAlpha = requestFor(stockedWaiting, "alpha")
+  local stockedFirst = assert(stockedAlpha.actors[1], "the stocked reply addresses its first lead")
+  local stockedSecond = assert(stockedAlpha.actors[2], "the stocked reply addresses its second lead")
+  local stockedPristine = stocked:capture()
+  local spent, spentErr = stocked:submit(SessionFixture.replyFor(stockedAlpha, {
+    bagChoice(stockedFirst, "POTION", 1),
+    bagChoice(stockedSecond, "POTION", 3),
+  }))
+  Assert.isFalse(spent, "one shared unit cannot serve twice in the same reply")
+  Assert.notNil(spentErr, "rejected double spending names its input error")
+  Assert.deepEqual(stocked:capture(), stockedPristine, "rejected spending keeps the shared stock")
+  local healed, healedErr = stocked:submit(SessionFixture.replyFor(stockedAlpha, {
+    bagChoice(stockedFirst, "POTION", 1),
+    SessionFixture.attackChoice(stockedSecond, 0, SessionFixture.positionTarget(3)),
+  }))
+  Assert.isTrue(healed, "spending the single unit once is accepted: " .. tostring(healedErr))
+  Assert.isNil(healedErr, "accepted spending carries no input error")
+  stocked:dispose()
+end
+
+-- Native prompts keep their binding law while sharing admission:
+-- learning answers carry no entry token and replacements address
+-- fainted entries, invalid prompts fail with the batch held, and a
+-- rejected trainer reply never retires its pending serving.
+function T.native_prompts_keep_their_binding_law_and_failed_replies_hold_proposals()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(rewardScenario(), content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  for _, request in ipairs(opening.request.requests) do
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(ok, "opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local boundary = advanceCollecting(session, 64)
+  Assert.equal(boundary.status, "waiting", "the knockout suspends on its learning prompt")
+  local prompt = findLearnPrompt(boundary)
+  Assert.notNil(prompt, "the suspension names the pending learning prompt")
+  local recipient = assert(prompt.actors[1], "the prompt addresses its recipient")
+  local tokenReply = SessionFixture.replyFor(prompt, {
+    {
+      actor = { combatant = recipient.combatant, activation = 1 },
+      kind = "confirm",
+      payload = { decision = "decline" },
+    },
+  })
+  local tokenOk, tokenErr = session:submit(tokenReply)
+  Assert.isFalse(tokenOk, "learning replies carry no entry token")
+  Assert.notNil(tokenErr, "rejected tokens name their input error")
+  local strayReply = SessionFixture.replyFor(prompt, { learnChoice(recipient, "replace", 99) })
+  local strayOk, strayErr = session:submit(strayReply)
+  Assert.isFalse(strayOk, "learning replies name a held move slot")
+  Assert.notNil(strayErr, "rejected slots name their input error")
+  local waiting = SessionFixture.driveUntilSettled(session)
+  Assert.equal(waiting.status, "waiting", "rejected prompts hold the suspension open")
+  local held = findLearnPrompt(waiting)
+  Assert.notNil(held, "the held prompt stays answerable")
+  Assert.equal(held.requestId, prompt.requestId, "the held prompt keeps its request")
+  local learned, learnedErr = session:submit(SessionFixture.replyFor(prompt, { learnChoice(recipient, "replace", 3) }))
+  Assert.isTrue(learned, "the token-free learning reply is accepted: " .. tostring(learnedErr))
+  Assert.isNil(learnedErr, "accepted learning carries no input error")
+  session:dispose()
+
+  local relief = contracts.Battle.newSession(woundedLeadScenario(1), nativeContent())
+  local reliefOpening = SessionFixture.driveUntilSettled(relief)
+  Assert.equal(reliefOpening.status, "waiting", "the relief battle opens its turn")
+  for _, request in ipairs(reliefOpening.request.requests) do
+    local ok, replyErr = relief:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(ok, "relief opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  relief:advance(64)
+  local replacementWaiting = SessionFixture.driveUntilSettled(relief)
+  local replacement = nil
+  for _, request in ipairs(replacementWaiting.request.requests) do
+    if request.controller == "alpha" then
+      replacement = request
+    end
+  end
+  Assert.notNil(replacement, "the bereaved side is asked for its replacement")
+  local fallen = assert(replacement.actors[1], "the replacement addresses its fainted lead")
+  Assert.equal(relief:capture().combatants[fallen.combatant].hp, 0, "the addressed lead stays fainted")
+  local ghostOk, ghostErr =
+    relief:submit(SessionFixture.replyFor(replacement, { SessionFixture.switchChoice(fallen, 99) }))
+  Assert.isFalse(ghostOk, "replacements name a declared reserve")
+  Assert.notNil(ghostErr, "rejected reserves name their input error")
+  local reliefOk, reliefErr =
+    relief:submit(SessionFixture.replyFor(replacement, { SessionFixture.switchChoice(fallen, 3) }))
+  Assert.isTrue(reliefOk, "the fainted-addressed replacement is accepted: " .. tostring(reliefErr))
+  Assert.isNil(reliefErr, "accepted replacements carry no input error")
+  relief:dispose()
+
+  local trainer = contracts.Battle.newSession(trainerCureScenario(), actionContent())
+  local trainerOpening = SessionFixture.driveUntilSettled(trainer)
+  Assert.equal(trainerOpening.status, "waiting", "the trainer duel opens its decision batch")
+  local trainerRequest = requestFor(trainerOpening, "trainer:1")
+  local trainerActor = assert(trainerRequest.actors[1], "the trainer request addresses its lead")
+  local serving = trainer:answerTrainer(trainerRequest)
+  Assert.equal(serving.choices[1].kind, "item", "the stocked cure answers first")
+  local broken, brokenErr =
+    trainer:submit(SessionFixture.replyFor(trainerRequest, { SessionFixture.switchChoice(trainerActor, 99) }))
+  Assert.isFalse(broken, "the invalid trainer reply is rejected")
+  Assert.notNil(brokenErr, "rejected trainer replies name their input error")
+  local again = trainer:answerTrainer(trainerRequest)
+  Assert.equal(again.choices[1].kind, "attack", "the rejected reply never retires its serving")
+  local stored, storeErr = trainer:submit(serving)
+  Assert.isTrue(stored, "the serving submits: " .. tostring(storeErr))
+  Assert.isNil(storeErr, "stored servings carry no input error")
+  local fresh = trainer:answerTrainer(trainerRequest)
+  Assert.equal(fresh.choices[1].kind, "item", "only a stored reply retires the serving")
+  local duplicate, duplicateErr = trainer:submit(fresh)
+  Assert.isFalse(duplicate, "the retired serving cannot answer twice")
+  Assert.notNil(duplicateErr, "duplicate servings name their input error")
+  trainer:dispose()
+end
+
+-- Partially answered batches resume exactly across interruption:
+-- capturing after one side answers restores the identical pending
+-- batch, the twin resumes with the same events and state, and peer
+-- views stay sealed from the stored choice.
+function T.native_partially_answered_batches_restore_and_keep_views_detached()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(healthyDuelScenario(), content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the healthy duel opens its decision batch")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local striker = assert(alpha.actors[1], "the opening request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local sealedBefore = session:view("beta")
+  local ok, replyErr = session:submit(
+    SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(striker, 0, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(ok, "the first reply is accepted: " .. tostring(replyErr))
+  Assert.isNil(replyErr, "accepted replies carry no input error")
+  Assert.deepEqual(session:view("beta"), sealedBefore, "stored choices stay hidden from waiting peers")
+  local partial = session:capture()
+  SessionFixture.assertPlainData(partial, "partial batch")
+  local revived = Executor.restore(partial, content)
+  Assert.deepEqual(revived:capture(), partial, "restored sessions keep the partial batch")
+  Assert.deepEqual(revived:view("beta"), session:view("beta"), "restored views match the live views")
+  local answered, answerErr = revived:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(answered, "the restored twin still answers: " .. tostring(answerErr))
+  Assert.isNil(answerErr, "accepted restored replies carry no input error")
+  local bound, bindErr = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(bound, "the live session still answers: " .. tostring(bindErr))
+  Assert.isNil(bindErr, "accepted live replies carry no input error")
+  local firstFrame = session:advance(64)
+  local secondFrame = revived:advance(64)
+  Assert.deepEqual(secondFrame.events, firstFrame.events, "resumed twins replay identical events")
+  Assert.deepEqual(revived:capture(), session:capture(), "resumed twins reach identical state")
+  Assert.equal(revived:capture().rng.calls, session:capture().rng.calls, "resumed twins consume the stream identically")
+  session:dispose()
+  revived:dispose()
+end
+
 return { tests = T }
