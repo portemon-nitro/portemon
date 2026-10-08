@@ -248,6 +248,10 @@ end
 function HgssMonService:boxMetadata(box)
   return self._boxes:metadata(box)
 end
+---@return boolean[]
+function HgssMonService:boxBonusUnlocks()
+  return self._boxes:bonusUnlocks()
+end
 function HgssMonService:activeBox()
   return self._boxes:activeBox()
 end

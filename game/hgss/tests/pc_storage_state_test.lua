@@ -1056,4 +1056,173 @@ function T.completed_release_scan_includes_the_last_box_and_respects_first_move_
   reverseState:dispose()
 end
 
+function T.populated_boxes_keep_idle_projection_off_full_capture()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0xA11CE01, mons:catalog())
+  local activeMon = mons:partyMon(0)
+  local offscreen = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))
+  local seeded = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, {
+    boxUpdates = {
+      { box = 0, slot = 0, mon = activeMon },
+      { box = 1, slot = 0, mon = offscreen },
+      { box = 1, slot = 1, mon = offscreen },
+      { box = 2, slot = 5, mon = offscreen },
+    },
+    bonusUnlocks = { true, false, true, false, false, false, false, false },
+  }))
+  seeded.publish()
+  local fullCaptures = 0
+  local originalSnapshot = mons.boxSnapshot
+  mons.boxSnapshot = function(self)
+    fullCaptures = fullCaptures + 1
+    return originalSnapshot(self)
+  end
+  local boxMonReads = 0
+  local originalBoxMon = mons.boxMon
+  mons.boxMon = function(self, box, slot)
+    boxMonReads = boxMonReads + 1
+    return originalBoxMon(self, box, slot)
+  end
+  local ok, failure = pcall(function()
+    local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+    local view = state:_view()
+    Assert.notNil(view.boxSlots[1], "the active box projection keeps its visible mon")
+    Assert.deepEqual(
+      view.wallpaperUnlocks,
+      { true, false, true, false, false, false, false, false },
+      "visible flags match the domain unlocks"
+    )
+    Assert.equal(fullCaptures, 0, "opening projection never copies whole storage for flags")
+    Assert.isTrue(boxMonReads <= 30, "opening reads at most the thirty visible slots")
+    local settledReads = boxMonReads
+    state:updateFixed({})
+    local idleStatus = state:status()
+    Assert.notNil(idleStatus.boxSlots[1], "idle update keeps the visible mon")
+    state:_view()
+    Assert.equal(fullCaptures, 0, "idle update and status never copy whole storage")
+    Assert.equal(boxMonReads, settledReads, "unchanged identity reuses bounded visible contents")
+    state:updateFixed({ { type = "storage_target", target = { kind = "box", slot = 0 } } })
+    state:updateFixed({ { type = "action", action = "wallpaper" } })
+    Assert.equal(state:status().phase, "editor", "wallpaper editing opens over the bounded projection")
+    state:updateFixed({ { type = "navigate", direction = "right" } })
+    state:updateFixed({ { type = "wallpaper_choice", id = 2 } })
+    Assert.equal(fullCaptures, 0, "wallpaper editing never copies whole storage")
+    state:dispose()
+  end)
+  mons.boxSnapshot = originalSnapshot
+  mons.boxMon = originalBoxMon
+  Assert.isTrue(ok, "bounded projection gate: " .. tostring(failure))
+  Assert.equal(fullCaptures, 0, "no full storage capture on any display path")
+end
+
+function T.visible_contents_follow_revisions_and_box_identity_while_overlays_advance()
+  local mons = monService()
+  Assert.notNil(mons.boxBonusUnlocks, "the service exposes the narrow unlock read")
+  local factory = CatalogFixture.makeFactory(0xB0111111, mons:catalog())
+  local firstBoxMon = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))
+  local secondBoxMon = mons:partyMon(0)
+  local seeded = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, {
+    boxUpdates = {
+      { box = 0, slot = 0, mon = firstBoxMon },
+      { box = 1, slot = 0, mon = secondBoxMon },
+    },
+  }))
+  seeded.publish()
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", slot = 5 } } })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 5 }, "focus starts on a known slot")
+  local added = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))
+  local mutated = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, {
+    boxUpdates = { { box = 0, slot = 1, mon = added } },
+    bonusUnlocks = { true, true, false, false, false, false, false, false },
+  }))
+  mutated.publish()
+  state:updateFixed({})
+  local refreshed = state:status()
+  Assert.notNil(refreshed.boxSlots[2], "a box revision refreshes the visible second slot")
+  Assert.deepEqual(
+    state:_view().wallpaperUnlocks,
+    { true, true, false, false, false, false, false, false },
+    "an unlock revision is visible on the next update"
+  )
+  Assert.deepEqual(refreshed.focus, { domain = "box", slot = 5 }, "content refresh leaves cursor focus alone")
+  state:updateFixed({ { type = "action", action = "move" } })
+  Assert.equal(state:status().phase, "carry", "carry starts from the refreshed projection")
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 1, slot = 0 } } })
+  state:updateFixed({ { type = "cancel" } })
+  local moved = state:status()
+  Assert.equal(moved.activeBox, 1, "changing the active box follows the requested identity")
+  Assert.notNil(moved.boxSlots[1], "the new active box shows its own visible mon")
+  Assert.equal(moved.phase, "browse", "cancelling carry returns to browsing the new box")
+  state:dispose()
+end
+
+function T.published_status_stays_detached_and_survives_failed_refresh()
+  local mons = monService()
+  local first = mons:boxBonusUnlocks()
+  Assert.equal(#first, 8, "the narrow unlock read returns eight flags")
+  for index = 1, 8 do
+    Assert.equal(type(first[index]), "boolean", "each unlock flag is an isolated boolean")
+  end
+  first[1] = not first[1]
+  local second = mons:boxBonusUnlocks()
+  Assert.equal(second[1], not first[1], "mutating a returned vector never touches the domain flags")
+  local factory = CatalogFixture.makeFactory(0xCAFE011, mons:catalog())
+  local boxed = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))
+  local seeded = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = boxed } } }))
+  seeded.publish()
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  local before = state:status()
+  local beforeSlot = assert(before.boxSlots[1], "the seeded slot is visible before mutation")
+  local beforePersonality = beforeSlot.personality
+  before.boxSlots[1] = false
+  before.party[1].nickname = "TAMPERED"
+  Assert.equal(
+    assert(mons:boxMon(0, 0)).personality,
+    beforePersonality,
+    "mutating published slots never reaches stored mons"
+  )
+  local afterTamper = state:status()
+  Assert.equal(
+    assert(afterTamper.boxSlots[1]).personality,
+    beforePersonality,
+    "mutating published slots never alters cached render facts"
+  )
+  local originalBoxMon = mons.boxMon
+  local extra = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))
+  local drifted = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 2, mon = extra } } }))
+  drifted.publish()
+  mons.boxMon = function()
+    error("injected narrow read failure", 0)
+  end
+  local failed = pcall(function()
+    state:updateFixed({})
+  end)
+  mons.boxMon = originalBoxMon
+  Assert.isFalse(failed, "a narrow read failure propagates instead of fabricating contents")
+  local retained = state:status()
+  Assert.equal(
+    assert(retained.boxSlots[1]).personality,
+    beforePersonality,
+    "a failed refresh never publishes a mixed or empty view"
+  )
+  Assert.equal(before.boxSlots[1], false, "successful replacement leaves the previously held status stable")
+  state:dispose()
+end
+
 return { tests = T }

@@ -13,6 +13,8 @@ local StorageInterface = require("game.hgss.src.pc.StorageInterface")
 ---@field _measureDisplay fun(): DisplayMeasurement
 ---@field _session ApplicationPresentation
 ---@field _activeBox integer
+---@field _contents table<string, unknown>?
+---@field _publishedView table<string, unknown>?
 ---@field _focus table<string, unknown>
 ---@field _carry table<string, unknown>?
 ---@field _menu { actions: string[], selected: integer, address: table<string, unknown> }?
@@ -67,6 +69,8 @@ function StorageScreenState.new(options)
     _portraits = options.portraits,
     _children = options.childFactories or {},
     _activeBox = options.mons:activeBox(),
+    _contents = nil,
+    _publishedView = nil,
     _focus = { domain = options.mode == 1 and "box" or "party", slot = 0 },
     _carry = nil,
     _menu = nil,
@@ -88,23 +92,80 @@ function StorageScreenState.new(options)
   return self
 end
 
-function StorageScreenState:_view()
-  local metadata = self._mons:boxMetadata(self._activeBox)
-  local boxSlots, party = {}, {}
-  for slot = 0, 29 do
-    local mon = self._mons:boxMon(self._activeBox, slot)
-    if mon ~= nil then
-      mon.iconKey = self._mons:catalog():iconSelection(mon)
-      mon.itemIconKey = self._bag:catalog():item(mon.heldItem).icon
+-- Refreshes the private visible-box/party snapshot when its identity moved.
+-- The identity is the pair of live revisions plus the screen's active box, so
+-- off-screen boxes never widen display reads. Publication is all-or-nothing:
+-- every narrow read must succeed and the revisions must still match, otherwise
+-- the prior complete contents stay in place for that attempt.
+function StorageScreenState:_refreshContents()
+  local current = self._contents
+  if
+    current ~= nil
+    and current.boxRevision == self._mons:boxRevision()
+    and current.partyRevision == self._mons:partyRevision()
+    and current.activeBox == self._activeBox
+  then
+    return
+  end
+  for _ = 1, 2 do
+    local boxRevision = self._mons:boxRevision()
+    local partyRevision = self._mons:partyRevision()
+    local activeBox = self._activeBox
+    local metadata = self._mons:boxMetadata(activeBox)
+    local unlocks = self._mons:boxBonusUnlocks()
+    local boxSlots = {}
+    for slot = 0, 29 do
+      boxSlots[slot + 1] = self._mons:boxMon(activeBox, slot) or false
     end
-    boxSlots[slot + 1] = mon or false
+    local party = {}
+    for slot = 0, self._mons:partyCount() - 1 do
+      party[slot + 1] = self._mons:partyMon(slot)
+    end
+    if boxRevision == self._mons:boxRevision() and partyRevision == self._mons:partyRevision() then
+      self._contents = {
+        boxRevision = boxRevision,
+        partyRevision = partyRevision,
+        activeBox = activeBox,
+        metadata = metadata,
+        unlocks = unlocks,
+        boxSlots = boxSlots,
+        party = party,
+      }
+      return
+    end
+    if self._contents ~= nil then
+      return
+    end
   end
-  for slot = 0, self._mons:partyCount() - 1 do
-    local mon = self._mons:partyMon(slot)
-    mon.iconKey = self._mons:catalog():iconSelection(mon)
-    mon.itemIconKey = self._bag:catalog():item(mon.heldItem).icon
-    party[slot + 1] = mon
+  assert(self._contents ~= nil, "Storage projection requires settled revisions")
+end
+
+-- Builds a transient display view from the retained contents plus live
+-- interaction state. Selection, menus, carry, release progress, editor drafts
+-- and transition ticks stay outside the revision-keyed contents, so they keep
+-- advancing while the domain snapshot is unchanged. Every returned fact is a
+-- detached copy; the retained rows never escape.
+function StorageScreenState:_buildView()
+  local contents = assert(self._contents, "Storage projection refreshes before building its view")
+  local boxSlots = {}
+  for index, mon in ipairs(contents.boxSlots) do
+    if mon == false then
+      boxSlots[index] = false
+    else
+      local shown = copy(mon)
+      shown.iconKey = self._mons:catalog():iconSelection(shown)
+      shown.itemIconKey = self._bag:catalog():item(shown.heldItem).icon
+      boxSlots[index] = shown
+    end
   end
+  local party = {}
+  for index, mon in ipairs(contents.party) do
+    local shown = copy(mon)
+    shown.iconKey = self._mons:catalog():iconSelection(shown)
+    shown.itemIconKey = self._bag:catalog():item(shown.heldItem).icon
+    party[index] = shown
+  end
+  local metadata = contents.metadata
   return {
     mode = self._mode,
     state = self._state,
@@ -117,8 +178,13 @@ function StorageScreenState:_view()
     carry = copy(self._carry),
     menu = copy(self._menu),
     editor = copy(self._editor),
-    wallpaperUnlocks = self._mons:boxSnapshot().bonusUnlocks,
+    wallpaperUnlocks = copy(contents.unlocks),
   }
+end
+
+function StorageScreenState:_view()
+  self:_refreshContents()
+  return self:_buildView()
 end
 
 function StorageScreenState:_defaultBoxName()
@@ -241,7 +307,7 @@ function StorageScreenState:_updateEditor(events)
       action = { kind = "markings", source = editor.source, mask = editor.mask }
     else
       local wallpaperId = editor.selected < 16 and editor.selected or editor.selected + 16
-      local unlocks = self._mons:boxSnapshot().bonusUnlocks
+      local unlocks = self._mons:boxBonusUnlocks()
       local unlocked = editor.selected < 16 or unlocks[editor.selected - 15] == true
       if unlocked then
         if wallpaperId ~= self._mons:boxMetadata(editor.box).wallpaperId then
@@ -289,7 +355,7 @@ function StorageScreenState:_updateEditor(events)
     elseif event.type == "wallpaper_choice" and editor.kind == "wallpaper" then
       local choice = event.id
       if type(choice) == "number" and choice % 1 == 0 and choice >= 0 and choice < 24 then
-        local unlocks = self._mons:boxSnapshot().bonusUnlocks
+        local unlocks = self._mons:boxBonusUnlocks()
         if choice < 16 or unlocks[choice - 15] == true then
           local storedId = choice < 16 and choice or choice + 16
           if storedId ~= self._mons:boxMetadata(editor.box).wallpaperId then
@@ -418,7 +484,10 @@ end
 
 function StorageScreenState:_resolve()
   assert(not self._disposed, "disposed Storage has no plan")
-  self._session:resolve(self._measureDisplay(), self:_view())
+  self:_refreshContents()
+  local view = self:_buildView()
+  self._session:resolve(self._measureDisplay(), view)
+  self._publishedView = view
 end
 
 ---@param events table<string, unknown>[] an ordered batch of normalized events
@@ -433,8 +502,10 @@ function StorageScreenState:updateFixed(events)
     self:_resolve()
     return
   end
-  local view = self:_view()
+  self:_refreshContents()
+  local view = self:_buildView()
   self._session:resolve(self._measureDisplay(), view)
+  self._publishedView = view
   events = self._session:mapInput(events, view)
   if self._editor ~= nil then
     self:_updateEditor(events)
@@ -601,7 +672,13 @@ function StorageScreenState:draw(resources)
     end
     return
   end
-  ApplicationPresentation.draw(assert(love.graphics), resources, self:_view(), self._session:plan())
+  local published = self._publishedView
+  if published == nil then
+    self:_refreshContents()
+    published = self:_buildView()
+    self._publishedView = published
+  end
+  ApplicationPresentation.draw(assert(love.graphics), resources, published, self._session:plan())
 end
 
 function StorageScreenState:result()
@@ -643,6 +720,8 @@ function StorageScreenState:dispose()
     return
   end
   self._disposed = true
+  self._contents = nil
+  self._publishedView = nil
   self:_disposeChild()
   self._session:dispose()
 end
