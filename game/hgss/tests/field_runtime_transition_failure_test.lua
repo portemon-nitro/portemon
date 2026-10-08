@@ -74,7 +74,7 @@ local function presentationState(runtime)
   return state
 end
 
-function T.runtime_freezes_simulation_and_warmup_after_promoting_transition_error()
+function T.transition_failure_propagates_after_the_session_tick()
   local tostringCalls = 0
   local transitionError = setmetatable({}, {
     __tostring = function()
@@ -84,14 +84,13 @@ function T.runtime_freezes_simulation_and_warmup_after_promoting_transition_erro
   })
   local runtime, calls = runtimeWithTransitionError(transitionError)
 
-  runtime:update(1 / 30)
+  local ok, err = pcall(function()
+    runtime:update(1 / 30)
+  end)
+  Assert.isFalse(ok, "transition failures reach LÖVE's callback error handler")
+  Assert.equal(tostring(err), "destination preparation failed\nsource map 61 warp 0 -> map 60 warp 0")
   Assert.equal(calls.session, 1, "the failing update completes its session tick")
-  Assert.equal(runtime.errorText, "destination preparation failed\nsource map 61 warp 0 -> map 60 warp 0")
-
-  runtime:update(1 / 30)
-  Assert.equal(calls.session, 1, "terminal runtime does not continue session updates")
   Assert.equal(tostringCalls, 1, "the transition failure is formatted once")
-  Assert.equal(runtime.errorText, "destination preparation failed\nsource map 61 warp 0 -> map 60 warp 0")
 end
 
 function T.pc_presentation_failure_cancels_its_script_task_before_freezing_runtime()
@@ -149,13 +148,16 @@ function T.pc_presentation_failure_cancels_its_script_task_before_freezing_runti
     },
   }, FieldRuntime)
   Assert.isNil(runtime:captureGameSave(), "an active script refuses save capture")
-  presentationState(runtime):update(0)
+  local ok, failure = pcall(function()
+    presentationState(runtime):update(0)
+  end)
 
   Assert.isFalse(host.active, "the task cancellation releases the active child")
   Assert.equal(host.cancellations, 1, "the application child is cancelled exactly once")
   Assert.isNil(scheduler:foregroundEnvironmentId(), "the failed script releases foreground ownership")
   Assert.deepEqual(runtime:captureGameSave(), { stable = true }, "save capture recovers after task cleanup")
-  Assert.equal(runtime.errorText, "PC application presentation failed: injected", "the diagnostic remains visible")
+  Assert.isFalse(ok, "PC presentation failures reach LÖVE's callback error handler")
+  Assert.equal(tostring(failure), "PC application presentation failed: injected")
 end
 
 return { tests = T }

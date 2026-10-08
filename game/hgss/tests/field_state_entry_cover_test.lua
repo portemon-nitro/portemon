@@ -143,7 +143,6 @@ local function boot(withCover)
       end,
       dispose = function() end,
       update = function() end,
-      errorText = nil,
       runtimeMap = {
         mapId = 61,
         mapSymbol = "MAP_NEW_BARK",

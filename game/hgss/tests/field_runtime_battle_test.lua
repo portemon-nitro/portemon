@@ -55,7 +55,6 @@ local function fakeRuntime(overrides)
     pendingEncounterId = nil,
     pendingEncounter = nil,
     _lastBattleResult = nil,
-    errorText = nil,
     _encounters = nil,
     _launchCounter = nil,
     monService = {
@@ -190,12 +189,17 @@ function T.startBattle_rejects_a_second_launch_and_failed_battles_fault()
   local failedRuntime = fakeRuntime()
   local broken = failedRuntime:startBattle({ request = wildRequest("launch-broken"), scenario = {} })
   Assert.notNil(broken)
+  local ok, failure
   for _ = 1, 10 do
-    failedRuntime:updateBattle()
+    ok, failure = pcall(failedRuntime.updateBattle, failedRuntime)
+    if not ok then
+      break
+    end
   end
   Assert.equal(broken:status().phase, "failed")
   Assert.isNil(failedRuntime.battleRuntime, "failures release the owned lifetime")
-  Assert.notNil(failedRuntime.errorText, "failures fault loudly instead of resuming the story")
+  Assert.isFalse(ok, "failed battles reach LÖVE's callback error handler")
+  Assert.notNil(failure)
 end
 
 function T.host_launch_issues_unique_identities_and_reports_status()
@@ -298,11 +302,12 @@ function T.host_application_failure_never_publishes_a_battle_result()
       return { phase = "failed", error = "battle application failed" }
     end,
   }
-  runtime:updateBattle()
+  local ok, failure = pcall(runtime.updateBattle, runtime)
   local status = runtime:battleStatus("matrix-failure")
   Assert.isFalse(status.committed, "a failure has no committed battle result")
   Assert.notNil(status.error, "the task host retains the application failure")
-  Assert.notNil(runtime.errorText, "the existing application error remains visible")
+  Assert.isFalse(ok, "the battle application failure reaches LÖVE's callback error handler")
+  Assert.equal(tostring(failure), "battle application failed")
 end
 
 function T.prepared_encounters_are_consumed_exactly_once()

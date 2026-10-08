@@ -519,6 +519,13 @@ function T.tests.summary_return_restores_the_displayed_member_without_mutating()
     local child = liveChild(status)
     Assert.equal(child.slot, 0, "the summary opens on the requested member")
     Assert.equal(child.group, "info", "the summary opens on its first native group")
+    local messageProvider = assert(game.runtime.messageProvider, "field runtime owns generated message banks")
+    local sinjohBank, bankError = messageProvider:acquireBank(146)
+    Assert.notNil(
+      sinjohBank,
+      "the Sinjoh stage message bank is available during the summary journey: " .. tostring(bankError)
+    )
+    messageProvider:releaseBank(146)
 
     status = drive(flow, { { type = "navigate", direction = "right" } })
     Assert.equal(liveChild(status).group, "skills", "moving right turns to the second group")

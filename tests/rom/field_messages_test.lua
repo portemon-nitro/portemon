@@ -12,6 +12,7 @@ local FieldFontDecoder = require("romdump.src.digest.ui.FieldFontDecoder")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local Hashing = require("romdump.src.digest.Hashing")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local charmap = require("romdump.src.reference.hgss.charmap")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local PngReader = require("tests.support.PngReader")
@@ -96,6 +97,16 @@ function T.map_header_bank_associations_are_emitted(romFs)
   end
   Assert.equal(associations[60], 542)
   Assert.equal(associations[61], 543)
+end
+
+function T.sinjoh_mystery_zone_message_bank_is_selected_for_the_runtime_cache()
+  local map = MapCatalog.require("MAP_SINJOH_RUINS_MYSTRI_STAGE")
+  Assert.equal(map.messageMemberId, 146, "the map header assigns the stage its message bank")
+  local selected = {}
+  for _, bankId in ipairs(FieldMessageCompiler.requiredBankIds()) do
+    selected[bankId] = true
+  end
+  Assert.isTrue(selected[map.messageMemberId] == true, "the runtime cache includes every map-header message bank")
 end
 
 function T.opposite_protagonist_name_bank_is_selected_for_the_derived_cache(_)

@@ -174,7 +174,6 @@ end
 ---@field viewportWidth integer
 ---@field viewportHeight integer
 ---@field screenTopology ScreenTopology?
----@field errorText string?
 ---@field fieldPixelScale FieldPixelScale
 ---@field saveStatus string?
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
@@ -1568,7 +1567,6 @@ function FieldRuntime.new(game, options)
     weatherClock = options.weatherClock,
     presentationOverrides = options.presentationOverrides,
     martStockResolver = options.martStockResolver,
-    errorText = nil,
     fieldPixelScale = FieldPixelScale.new(options.fieldScaleConfig or FieldPresentation.fieldScale),
     overworld = FieldOverworldLifecycle.new(),
     propAnimations = FieldScriptPropAnimations.new(),
@@ -1610,8 +1608,7 @@ function FieldRuntime:_load(loadOptions)
   end)
   -- Construction is binary: a failed boot releases everything acquired so
   -- far exactly once, then the original failure propagates to the caller.
-  -- There is no half-constructed runtime; errorText never records boot
-  -- failures (warp failures after a successful boot do).
+  -- There is no half-constructed runtime; boot failures always propagate.
   if not ok then
     self:_releaseAll()
     error(err, 0)
@@ -1619,9 +1616,6 @@ function FieldRuntime:_load(loadOptions)
 end
 
 function FieldRuntime:update(dt)
-  if self.errorText then
-    return
-  end
   local maxSemanticDt = FieldSession.FIXED_DT * FieldSession.MAX_CATCH_UP_TICKS
   local acceptedDt = math.min(dt, maxSemanticDt)
   if self.playTime then
@@ -1679,11 +1673,9 @@ function FieldRuntime:update(dt)
     if self.starterChoice and self.starterChoice:isActive() then
       self.starterChoice:update()
     end
-    if self.applicationHost:error() and not self.errorText then
-      self.errorText = tostring(self.applicationHost:error())
-    end
-    if self.errorText then
-      break
+    local applicationError = self.applicationHost:error()
+    if applicationError ~= nil then
+      error(applicationError, 0)
     end
     self.transition:updateSourceFrame()
     self.screenFade:updateSourceFrame()
@@ -1723,19 +1715,22 @@ function FieldRuntime:update(dt)
   if self.audioSink then
     self.audioSink:update()
   end
-  if self.transition.error and not self.errorText then
+  if self.transition.error then
     local context = self.transition.warpContext
     if context then
-      self.errorText = string.format(
-        "%s\nsource map %s warp %s -> map %s warp %s",
-        tostring(self.transition.error),
-        tostring(context.sourceMapId),
-        tostring(context.sourceWarpId),
-        tostring(context.destinationMapId),
-        tostring(context.destinationWarpId)
+      error(
+        string.format(
+          "%s\nsource map %s warp %s -> map %s warp %s",
+          tostring(self.transition.error),
+          tostring(context.sourceMapId),
+          tostring(context.sourceWarpId),
+          tostring(context.destinationMapId),
+          tostring(context.destinationWarpId)
+        ),
+        0
       )
     else
-      self.errorText = tostring(self.transition.error)
+      error(self.transition.error, 0)
     end
   end
   local completed = self.transition:consumeCompleted()
@@ -2040,7 +2035,7 @@ function FieldRuntime:failPcApplicationPresentation(reason)
     local host = self.pcApplicationHost
     host:cancel(reason)
   end
-  self.errorText = reason
+  error(reason, 0)
 end
 
 function FieldRuntime:_captureManualSaveFromMenu()
@@ -2300,8 +2295,7 @@ function FieldRuntime:updateBattle()
     if failure ~= nil or phase == "failed" then
       launch.phase = "failed"
       launch.error = failure
-      self.errorText = tostring(failure or "overworld leave failed")
-      return
+      error(failure or "overworld leave failed", 0)
     end
     if phase ~= "absent" then
       return
@@ -2316,8 +2310,7 @@ function FieldRuntime:updateBattle()
     if failure ~= nil or phase == "failed" then
       launch.phase = "failed"
       launch.error = failure
-      self.errorText = tostring(failure or "overworld restore failed")
-      return
+      error(failure or "overworld restore failed", 0)
     end
     if phase ~= "present" then
       return
@@ -2345,14 +2338,14 @@ function FieldRuntime:updateBattle()
   battle:dispose()
   self.battleRuntime = nil
   if status.phase == "failed" then
-    self.errorText = tostring(status.error or "the battle reported a failure")
+    local failure = status.error or "the battle reported a failure"
     if launch ~= nil then
       launch.phase = "failed"
-      launch.error = status.error or self.errorText
+      launch.error = failure
       self._battleReceipt = launch
       self._battleLaunch = nil
     end
-    return
+    error(failure, 0)
   end
   if launch ~= nil and status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
     launch.result = status.result

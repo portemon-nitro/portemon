@@ -180,6 +180,24 @@ function T.tests.transition_start_receives_post_field_source_frame()
   Assert.deepEqual(calls, { "field", "presentation", "screen_fade" })
 end
 
+function T.tests.application_host_failure_propagates_from_the_field_update()
+  local calls = {}
+  local runtime = runtimeWithoutAudio(calls)
+  runtime.applicationHost.error = function()
+    return "message bank 146 is unavailable in the generated cache"
+  end
+
+  local ok, err = pcall(function()
+    runtime:update(1 / 30)
+  end)
+
+  Assert.isFalse(ok, "a fatal application failure must reach LÖVE's callback error handler")
+  Assert.isTrue(
+    tostring(err):find("message bank 146 is unavailable in the generated cache", 1, true) ~= nil,
+    "the propagated failure retains its original diagnostic"
+  )
+end
+
 function T.tests.audio_follows_post_field_presentation_stage()
   local calls = {}
   local runtime = runtimeWithAudio(calls)

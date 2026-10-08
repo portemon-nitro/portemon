@@ -212,7 +212,6 @@ function T.tests.zero_interactive_actions_make_the_menu_edge_a_noop_and_the_fiel
     local status = runtime.applicationHost:status()
     Assert.notNil(status.menu, "the menu must open with source-present entries")
     Assert.equal(status.menu.open, true, "the menu must be in open state")
-    Assert.equal(runtime.errorText, nil, "opening the menu must not fail the runtime")
     Assert.equal(runtime.input.uiActive, true, "opening the menu must acquire the modal input lifetime")
 
     -- All menu entries are disabled, so confirming a selection is a no-op.
@@ -343,7 +342,9 @@ function T.tests.manual_save_publishes_then_updates_through_the_menu_host()
 
     game:failNextSave()
     openMenu(game)
-    activateActionById(game, "vanilla.save")
+    local saveOk, saveFailure = pcall(activateActionById, game, "vanilla.save")
+    Assert.isFalse(saveOk, "a failed write reaches LÖVE's callback error handler")
+    Assert.notNil(saveFailure)
     Assert.equal(
       runtime.applicationHost:status().phase,
       "failed",

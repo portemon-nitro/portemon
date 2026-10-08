@@ -19,7 +19,6 @@ local function stateFor(preparationResults)
     end,
   }
   local runtime = {
-    errorText = nil,
     pokemonNaming = naming,
     update = function(_) end,
   }
@@ -46,23 +45,20 @@ function T.pending_preparation_can_become_ready()
   local state, calls = stateFor({ { false, nil }, { true, nil } })
   FieldState.update(state, 0)
   Assert.isFalse(state._namingPresentationReady, "pending naming presentation stays hidden")
-  Assert.isNil(state.runtime.errorText, "pending preparation is not a field failure")
   FieldState.update(state, 0)
   Assert.isTrue(state._namingPresentationReady, "later readiness publishes the naming presentation")
   Assert.deepEqual(calls.readiness, { false, true }, "naming state receives each readiness result")
 end
 
-function T.permanent_preparation_failure_sets_terminal_error_without_retry()
+function T.permanent_preparation_failure_propagates_to_the_host()
   local state, calls = stateFor({ { false, "page failed" }, { true, nil } })
-  FieldState.update(state, 0)
+  local ok, failure = pcall(function()
+    FieldState.update(state, 0)
+  end)
   Assert.isFalse(state._namingPresentationReady, "failed naming presentation stays hidden")
-  Assert.equal(
-    state.runtime.errorText,
-    "Pokemon naming presentation failed: page failed",
-    "provider failure uses the terminal field error surface"
-  )
-  FieldState.update(state, 0)
-  Assert.equal(calls.preparations, 1, "terminal runtime state never retries naming preparation")
+  Assert.isFalse(ok, "a permanent naming preparation failure reaches LÖVE's callback error handler")
+  Assert.equal(tostring(failure), "Pokemon naming presentation failed: page failed")
+  Assert.equal(calls.preparations, 1, "the callback stops at the failed preparation")
   Assert.deepEqual(calls.readiness, { false }, "the failed naming state remains not ready")
 end
 

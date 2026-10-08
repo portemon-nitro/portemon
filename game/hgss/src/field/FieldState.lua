@@ -4,7 +4,6 @@ local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
-local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local PixelScale = require("libs.ui.src.PixelScale")
@@ -160,9 +159,7 @@ function FieldState:update(dt)
     end
   end
   local pokemonNaming = self.runtime.pokemonNaming
-  if self.runtime.errorText ~= nil then
-    self._namingPresentationReady = false
-  elseif pokemonNaming:isActive() then
+  if pokemonNaming:isActive() then
     local namingStatus = assert(pokemonNaming:status(), "an active Pokemon naming task publishes its status")
     local ready, failure =
       assert(self.presentationResources, "field presentation resources are unavailable"):preparePokemonNamingSubject(
@@ -171,7 +168,7 @@ function FieldState:update(dt)
     if failure ~= nil then
       pokemonNaming:setPresentationReady(false)
       self._namingPresentationReady = false
-      self.runtime.errorText = "Pokemon naming presentation failed: " .. tostring(failure)
+      error("Pokemon naming presentation failed: " .. tostring(failure), 0)
     else
       pokemonNaming:setPresentationReady(ready == true)
       self._namingPresentationReady = ready == true
@@ -608,13 +605,6 @@ end
 function FieldState:draw()
   local lg = love.graphics
   local resources = assert(self.presentationResources, "field presentation resources are unavailable")
-  if self.runtime.errorText then
-    local margin, line = DevScreenLayout.MARGIN, DevScreenLayout.LINE_HEIGHT
-    lg.setColor(1, 0.5, 0.5)
-    lg.print("Field runtime failed:", margin, margin)
-    lg.printf(self.runtime.errorText, margin, margin + line, lg.getWidth() - 2 * margin)
-    return
-  end
   local width = self.runtime.viewport.width
   local height = self.runtime.viewport.height
   if self._pollPresentationTopology then
