@@ -3020,158 +3020,211 @@ local function stepStruggle(ctx, frame)
   return outcome
 end
 
+-- Closed damage bindings: one definition per bound move, assembled in
+-- the same precedence the long selection chain used. A step entry names
+-- its shared body; a build entry produces a fresh configured handler per
+-- move, so aliases share behavior but never wrapper identity. The table
+-- rejects duplicate authored identities instead of replacing them, and
+-- registration wraps a fresh handler for each member in member order.
+---@class DamageBinding
+---@field step fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> | nil shared body under a fresh wrapper
+---@field build (fun(): fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown>) | nil factory producing a fresh handler per move
+
+---@type table<string, DamageBinding>
+local BINDINGS = {}
+
+---@param key string damage move identity under definition
+---@param entry DamageBinding binding definition for the move
+local function define(key, entry)
+  assert(type(key) == "string" and key ~= "", "damage bindings carry their move identity")
+  assert(type(entry) == "table", "damage bindings carry their definition")
+  if BINDINGS[key] ~= nil then
+    error(BattleErrors.invalidState("damage bindings carry each move identity once", { key = key }))
+  end
+  BINDINGS[key] = entry
+end
+
+---@param sense string friendship sense under derivation, "return" or "frustration"
+---@return DamageBinding binding definition producing a fresh friendship handler per move
+local function friendshipBinding(sense)
+  local function buildFriendship()
+    return makeFriendship(sense)
+  end
+  return { build = buildFriendship }
+end
+
+---@param amount integer fixed damage amount under the handler
+---@return DamageBinding binding definition producing a fresh fixed handler per move
+local function fixedBinding(amount)
+  local function buildFixed()
+    return makeFixed(amount)
+  end
+  return { build = buildFixed }
+end
+
+---@param mode string item operation under the intent
+---@return DamageBinding binding definition producing a fresh intent handler per move
+local function stealBinding(mode)
+  local function buildSteal()
+    return makeStealIntent(mode)
+  end
+  return { build = buildSteal }
+end
+
+---@param params table<string, unknown> curated strike parameters owning the hit
+---@return DamageBinding binding definition producing a fresh strike handler per move
+local function strikerBinding(params)
+  local function buildStrike()
+    return makeStriker(params)
+  end
+  return { build = buildStrike }
+end
+
+---@param params table<string, unknown> curated strike controls owning the hit
+---@param rainy string field definition identity always landing the strike
+---@param sunny string|nil field definition identity halving the strike
+---@return DamageBinding binding definition producing a fresh weather strike handler per move
+local function weatherStrikeBinding(params, rainy, sunny)
+  local function buildWeatherStrike()
+    return makeWeatherStrike(params, rainy, sunny)
+  end
+  return { build = buildWeatherStrike }
+end
+
+---@param category string staged category selecting the recorded damage
+---@return DamageBinding binding definition producing a fresh reaction handler per move
+local function reactionBinding(category)
+  local function buildReaction()
+    return makeReaction(category)
+  end
+  return { build = buildReaction }
+end
+
+---@return DamageBinding binding definition producing a fresh sampled handler per move
+local function sampledBinding()
+  local function buildSampled()
+    return makeSampledHits(nil)
+  end
+  return { build = buildSampled }
+end
+
+define("BEAT_UP", { step = stepBeatUp })
+define("DREAM_EATER", { step = stepDreamEater })
+define("STRUGGLE", { step = stepStruggle })
+define("LAST_RESORT", { step = stepLastResort })
+define("WEATHER_BALL", { step = stepWeatherBall })
+define("NATURAL_GIFT", { step = stepNaturalGift })
+define("FLING", { step = stepFling })
+define("HIDDEN_POWER", { step = stepHiddenPower })
+define("PRESENT", { step = stepPresent })
+define("SNORE", { step = stepSnore })
+define("STOMP", { step = stepStomp })
+define("WAKE_UP_SLAP", { step = stepWakeUpSlap })
+define("FRUSTRATION", friendshipBinding("frustration"))
+define("RETURN", friendshipBinding("return"))
+define("MAGNITUDE", { step = stepMagnitude })
+define("SUPER_FANG", { step = stepSuperFang })
+define("ENDEAVOR", { step = stepEndeavor })
+
+for key, amount in pairs(FIXED) do
+  local fixedKey = key
+  local fixedAmount = amount
+  define(fixedKey, fixedBinding(fixedAmount))
+end
+
+for key in pairs(LEVEL_FIXED) do
+  define(key, { step = stepLevelFixed })
+end
+
+for key in pairs(WEIGHT) do
+  define(key, { step = stepWeight })
+end
+
+define("PAY_DAY", { step = stepPayday })
+define("BRICK_BREAK", { step = stepBrickBreak })
+define("KNOCK_OFF", stealBinding("remove"))
+define("COVET", stealBinding("steal"))
+define("PLUCK", stealBinding("eat"))
+define("BUG_BITE", stealBinding("eat"))
+define("FALSE_SWIPE", strikerBinding({ leaveOne = true }))
+define("FEINT", { step = stepFeint })
+define("THUNDER", weatherStrikeBinding({ secondaries = { { status = "paralysis" } } }, "raindance", "sunnyday"))
+define("BLIZZARD", weatherStrikeBinding({ secondaries = { { status = "freeze" } } }, "hail", nil))
+define("REVENGE", { step = stepRevenge })
+define("AVALANCHE", { step = stepRevenge })
+define("PAYBACK", { step = stepPayback })
+define("ASSURANCE", { step = stepAssurance })
+define("BRINE", { step = stepBrine })
+define("FACADE", { step = stepFacade })
+define("COUNTER", reactionBinding("physical"))
+define("MIRROR_COAT", reactionBinding("special"))
+define("ERUPTION", { step = stepEruption })
+define("WATER_SPOUT", { step = stepEruption })
+define("FLAIL", { step = stepFlail })
+define("REVERSAL", { step = stepFlail })
+define("WRING_OUT", { step = stepWringOut })
+define("GYRO_BALL", { step = stepGyroBall })
+
+for key in pairs(OHKO) do
+  define(key, { step = stepOhko })
+end
+
+for key in pairs(GATED) do
+  define(key, { step = stepGated })
+end
+
+define("TRIPLE_KICK", { step = stepTripleKick })
+define("DOUBLE_HIT", strikerBinding({ hits = 2, shareCritical = true }))
+define("TWINEEDLE", strikerBinding({ hits = 2, shareCritical = true, secondaries = { { status = "poison" } } }))
+
+for key in pairs(SAMPLED_25) do
+  define(key, sampledBinding())
+end
+
+for key, params in pairs(STRIKERS) do
+  local strikerKey = key
+  local strikerParams = params
+  define(strikerKey, strikerBinding(strikerParams))
+end
+
+-- Members without an authored binding keep the explicit unmodeled
+-- failure; identities outside the family never gain a handler here.
+local CANONICAL = {}
+for _, key in ipairs(DamageMoves.MEMBERS) do
+  if BINDINGS[key] == nil then
+    CANONICAL[key] = true
+  end
+end
+
 ---@param key string damage move identity under binding
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> distinct per-move handler for the registry
 local function bodyFor(key)
-  if key == "BEAT_UP" then
-    return bind(stepBeatUp)
+  local entry = BINDINGS[key]
+  if entry ~= nil then
+    local step = entry.step
+    if step ~= nil then
+      return bind(step)
+    end
+    local build = entry.build
+    assert(build ~= nil, "damage bindings carry either a step or a factory")
+    return bind(build())
   end
-  if key == "DREAM_EATER" then
-    return bind(stepDreamEater)
+  if CANONICAL[key] == true then
+    return bind(stepCanonical)
   end
-  if key == "STRUGGLE" then
-    return bind(stepStruggle)
-  end
-  if key == "LAST_RESORT" then
-    return bind(stepLastResort)
-  end
-  if key == "WEATHER_BALL" then
-    return bind(stepWeatherBall)
-  end
-  if key == "NATURAL_GIFT" then
-    return bind(stepNaturalGift)
-  end
-  if key == "FLING" then
-    return bind(stepFling)
-  end
-  if key == "HIDDEN_POWER" then
-    return bind(stepHiddenPower)
-  end
-  if key == "PRESENT" then
-    return bind(stepPresent)
-  end
-  if key == "SNORE" then
-    return bind(stepSnore)
-  end
-  if key == "STOMP" then
-    return bind(stepStomp)
-  end
-  if key == "WAKE_UP_SLAP" then
-    return bind(stepWakeUpSlap)
-  end
-  if key == "FRUSTRATION" then
-    return bind(makeFriendship("frustration"))
-  end
-  if key == "RETURN" then
-    return bind(makeFriendship("return"))
-  end
-  if key == "MAGNITUDE" then
-    return bind(stepMagnitude)
-  end
-  if key == "SUPER_FANG" then
-    return bind(stepSuperFang)
-  end
-  if key == "ENDEAVOR" then
-    return bind(stepEndeavor)
-  end
-  if FIXED[key] ~= nil then
-    return bind(makeFixed(FIXED[key]))
-  end
-  if LEVEL_FIXED[key] == true then
-    return bind(stepLevelFixed)
-  end
-  if WEIGHT[key] == true then
-    return bind(stepWeight)
-  end
-  if key == "PAY_DAY" then
-    return bind(stepPayday)
-  end
-  if key == "BRICK_BREAK" then
-    return bind(stepBrickBreak)
-  end
-  if key == "KNOCK_OFF" then
-    return bind(makeStealIntent("remove"))
-  end
-  if key == "COVET" then
-    return bind(makeStealIntent("steal"))
-  end
-  if key == "PLUCK" or key == "BUG_BITE" then
-    return bind(makeStealIntent("eat"))
-  end
-  if key == "FALSE_SWIPE" then
-    return bind(makeStriker({ leaveOne = true }))
-  end
-  if key == "FEINT" then
-    return bind(stepFeint)
-  end
-  if key == "THUNDER" then
-    return bind(makeWeatherStrike({ secondaries = { { status = "paralysis" } } }, "raindance", "sunnyday"))
-  end
-  if key == "BLIZZARD" then
-    return bind(makeWeatherStrike({ secondaries = { { status = "freeze" } } }, "hail", nil))
-  end
-  if key == "REVENGE" or key == "AVALANCHE" then
-    return bind(stepRevenge)
-  end
-  if key == "PAYBACK" then
-    return bind(stepPayback)
-  end
-  if key == "ASSURANCE" then
-    return bind(stepAssurance)
-  end
-  if key == "BRINE" then
-    return bind(stepBrine)
-  end
-  if key == "FACADE" then
-    return bind(stepFacade)
-  end
-  if key == "COUNTER" then
-    return bind(makeReaction("physical"))
-  end
-  if key == "MIRROR_COAT" then
-    return bind(makeReaction("special"))
-  end
-  if key == "ERUPTION" or key == "WATER_SPOUT" then
-    return bind(stepEruption)
-  end
-  if key == "FLAIL" or key == "REVERSAL" then
-    return bind(stepFlail)
-  end
-  if key == "WRING_OUT" then
-    return bind(stepWringOut)
-  end
-  if key == "GYRO_BALL" then
-    return bind(stepGyroBall)
-  end
-  if OHKO[key] == true then
-    return bind(stepOhko)
-  end
-  if GATED[key] == true then
-    return bind(stepGated)
-  end
-  if key == "TRIPLE_KICK" then
-    return bind(stepTripleKick)
-  end
-  if key == "DOUBLE_HIT" then
-    return bind(makeStriker({ hits = 2, shareCritical = true }))
-  end
-  if key == "TWINEEDLE" then
-    return bind(makeStriker({ hits = 2, shareCritical = true, secondaries = { { status = "poison" } } }))
-  end
-  if SAMPLED_25[key] == true then
-    return bind(makeSampledHits(nil))
-  end
-  if STRIKERS[key] ~= nil then
-    return bind(makeStriker(STRIKERS[key]))
-  end
-  return bind(stepCanonical)
+  error(BattleErrors.invalidState("damage bindings admit only their family members", { key = key }))
 end
 
 --- Binds the damage family handlers into the owner table.
 ---@param owned table<string, fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown>> handler owner receiving the family bindings
 function DamageMoves.register(owned)
   assert(type(owned) == "table", "damage moves register into their owner table")
+  local seen = {}
   for _, key in ipairs(DamageMoves.MEMBERS) do
+    if seen[key] ~= nil then
+      error(BattleErrors.invalidState("damage moves register each member once", { key = key }))
+    end
+    seen[key] = true
     owned[key] = bodyFor(key)
   end
 end

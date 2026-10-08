@@ -1772,200 +1772,210 @@ local function stepNightmare(ctx, frame)
   return { kind = "complete", result = "hit" }
 end
 
+-- Closed condition bindings: one definition per bound move, assembled in
+-- the same precedence the long selection chain used. A step entry names
+-- its shared body; a build entry produces a fresh configured handler per
+-- move, so aliases share behavior but never wrapper identity. The table
+-- rejects duplicate authored identities instead of replacing them, and
+-- registration wraps a fresh handler for each member in member order.
+---@class ConditionBinding
+---@field step fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> | nil shared body under a fresh wrapper
+---@field build (fun(): fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown>) | nil factory producing a fresh handler per move
+
+---@type table<string, ConditionBinding>
+local BINDINGS = {}
+
+---@param key string condition move identity under definition
+---@param entry ConditionBinding binding definition for the move
+local function define(key, entry)
+  assert(type(key) == "string" and key ~= "", "condition bindings carry their move identity")
+  assert(type(entry) == "table", "condition bindings carry their definition")
+  if BINDINGS[key] ~= nil then
+    error(BattleErrors.invalidState("condition bindings carry each move identity once", { key = key }))
+  end
+  BINDINGS[key] = entry
+end
+
+---@param screen string screen identity under the move
+---@return ConditionBinding binding definition producing a fresh screen handler per move
+local function screenBinding(screen)
+  local function buildScreen()
+    return makeScreen(screen)
+  end
+  return { build = buildScreen }
+end
+
+---@param sky string weather identity under the move
+---@return ConditionBinding binding definition producing a fresh weather handler per move
+local function weatherBinding(sky)
+  local function buildSky()
+    return makeWeather(sky)
+  end
+  return { build = buildSky }
+end
+
+---@param status string major condition under the move
+---@return ConditionBinding binding definition producing a fresh status handler per move
+local function statusBinding(status)
+  local function buildStatus()
+    return makeStatus(status)
+  end
+  return { build = buildStatus }
+end
+
+---@param spec StageSpec stage family under the move
+---@return ConditionBinding binding definition producing a fresh stage handler per move
+local function stageBinding(spec)
+  local function buildStage()
+    return makeStage(spec)
+  end
+  return { build = buildStage }
+end
+
+---@param arena string sport identity under the move
+---@return ConditionBinding binding definition producing a fresh sport handler per move
+local function sportBinding(arena)
+  local function buildSport()
+    return stepSport(arena)
+  end
+  return { build = buildSport }
+end
+
+---@param spec table<string, unknown> confusion shape under the move
+---@return ConditionBinding binding definition producing a fresh confusion handler per move
+local function swaggerBinding(spec)
+  local function buildSwagger()
+    return swaggerLike(spec)
+  end
+  return { build = buildSwagger }
+end
+
+define("SPLASH", { step = stepSplash })
+define("PAIN_SPLIT", { step = stepPainSplit })
+define("MEMENTO", { step = stepMemento })
+define("WISH", { step = stepWish })
+define("ROOST", { step = stepRoost })
+define("PERISH_SONG", { step = stepPerishSong })
+define("LEECH_SEED", { step = stepLeechSeed })
+define("CURSE", { step = stepCurse })
+define("AQUA_RING", { step = stepAquaRing })
+define("REFLECT", screenBinding("reflect"))
+define("LIGHT_SCREEN", screenBinding("lightscreen"))
+define("SAFEGUARD", screenBinding("safeguard"))
+define("MIST", screenBinding("mist"))
+define("RAIN_DANCE", weatherBinding("raindance"))
+define("SUNNY_DAY", weatherBinding("sunnyday"))
+define("SANDSTORM", weatherBinding("sandstorm"))
+define("HAIL", weatherBinding("hail"))
+define("RECOVER", { step = stepRecover })
+define("SOFTBOILED", { step = stepRecover })
+define("MILK_DRINK", { step = stepRecover })
+define("SLACK_OFF", { step = stepRecover })
+define("HEAL_ORDER", { step = stepRecover })
+define("REFRESH", { step = stepRefresh })
+define("HEAL_BELL", { step = stepHealBell })
+define("AROMATHERAPY", { step = stepHealBell })
+define("PSYCH_UP", { step = stepPsychUp })
+define("HAZE", { step = stepHaze })
+
+for key, spec in pairs(STAGE_MOVES) do
+  local stageKey = key
+  local stageSpec = spec
+  define(stageKey, stageBinding(stageSpec))
+end
+
+for key in pairs(SLEEP_MOVES) do
+  define(key, statusBinding("sleep"))
+end
+
+for key in pairs(PARALYSIS_MOVES) do
+  define(key, statusBinding("paralysis"))
+end
+
+for key in pairs(POISON_MOVES) do
+  define(key, statusBinding("poison"))
+end
+
+define("TOXIC", statusBinding("toxic"))
+define("WILL_O_WISP", statusBinding("burn"))
+define("CONFUSE_RAY", { step = stepConfuse })
+define("SUPERSONIC", { step = stepConfuse })
+define("SWEET_KISS", { step = stepConfuse })
+define("ATTRACT", { step = stepAttract })
+define("TAUNT", { step = stepTaunt })
+define("TORMENT", { step = stepTorment })
+define("ENCORE", { step = stepEncore })
+define("DISABLE", { step = stepDisable })
+define("YAWN", { step = stepYawn })
+define("NIGHTMARE", { step = stepNightmare })
+define("SPIKES", { step = stepSpikes })
+define("TOXIC_SPIKES", { step = stepToxicSpikes })
+define("STEALTH_ROCK", { step = stepStealthRock })
+define("MEAN_LOOK", { step = stepTrapHold })
+define("SPIDER_WEB", { step = stepTrapHold })
+define("REST", { step = stepRest })
+define("MOONLIGHT", { step = stepDawnHeal })
+define("SYNTHESIS", { step = stepDawnHeal })
+define("BELLY_DRUM", { step = stepBellyDrum })
+define("ACUPRESSURE", { step = stepAcupressure })
+define("LOCK_ON", { step = stepLockOn })
+define("MIND_READER", { step = stepLockOn })
+define("FORESIGHT", { step = stepForesight })
+define("ODOR_SLEUTH", { step = stepForesight })
+define("MAGNET_RISE", { step = stepMagnetRise })
+define("TAILWIND", { step = stepTailwind })
+define("LUCKY_CHANT", { step = stepLuckyChant })
+define("GRAVITY", { step = stepGravity })
+define("TRICK_ROOM", { step = stepTrickRoom })
+define("MUD_SPORT", sportBinding("mudsport"))
+define("WATER_SPORT", sportBinding("watersport"))
+define("SPITE", { step = stepSpite })
+define("TELEPORT", { step = stepTeleport })
+define("CAPTIVATE", { step = stepCaptivate })
+define("SWAGGER", swaggerBinding({ stat = "attack", delta = 2 }))
+define("FLATTER", swaggerBinding({ stat = "specialAttack", delta = 1 }))
+define("TEETER_DANCE", swaggerBinding({}))
+define("FOCUS_ENERGY", { step = stepFocusEnergy })
+define("INGRAIN", { step = stepIngrain })
+
+-- Members without an authored binding keep the explicit unmodeled
+-- failure; identities outside the family never gain a handler here.
+local CANONICAL = {}
+for _, key in ipairs(ConditionMoves.MEMBERS) do
+  if BINDINGS[key] == nil then
+    CANONICAL[key] = true
+  end
+end
+
 ---@param key string condition move identity under binding
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> distinct per-move handler for the registry
 local function bodyFor(key)
-  if key == "SPLASH" then
-    return bind(stepSplash)
+  local entry = BINDINGS[key]
+  if entry ~= nil then
+    local step = entry.step
+    if step ~= nil then
+      return bind(step)
+    end
+    local build = entry.build
+    assert(build ~= nil, "condition bindings carry either a step or a factory")
+    return bind(build())
   end
-  if key == "PAIN_SPLIT" then
-    return bind(stepPainSplit)
+  if CANONICAL[key] == true then
+    return bind(stepCanonical)
   end
-  if key == "MEMENTO" then
-    return bind(stepMemento)
-  end
-  if key == "WISH" then
-    return bind(stepWish)
-  end
-  if key == "ROOST" then
-    return bind(stepRoost)
-  end
-  if key == "PERISH_SONG" then
-    return bind(stepPerishSong)
-  end
-  if key == "LEECH_SEED" then
-    return bind(stepLeechSeed)
-  end
-  if key == "CURSE" then
-    return bind(stepCurse)
-  end
-  if key == "AQUA_RING" then
-    return bind(stepAquaRing)
-  end
-  if key == "REFLECT" then
-    return bind(makeScreen("reflect"))
-  end
-  if key == "LIGHT_SCREEN" then
-    return bind(makeScreen("lightscreen"))
-  end
-  if key == "SAFEGUARD" then
-    return bind(makeScreen("safeguard"))
-  end
-  if key == "MIST" then
-    return bind(makeScreen("mist"))
-  end
-  if key == "RAIN_DANCE" then
-    return bind(makeWeather("raindance"))
-  end
-  if key == "SUNNY_DAY" then
-    return bind(makeWeather("sunnyday"))
-  end
-  if key == "SANDSTORM" then
-    return bind(makeWeather("sandstorm"))
-  end
-  if key == "HAIL" then
-    return bind(makeWeather("hail"))
-  end
-  if key == "RECOVER" or key == "SOFTBOILED" or key == "MILK_DRINK" or key == "SLACK_OFF" or key == "HEAL_ORDER" then
-    return bind(stepRecover)
-  end
-  if key == "REFRESH" then
-    return bind(stepRefresh)
-  end
-  if key == "HEAL_BELL" or key == "AROMATHERAPY" then
-    return bind(stepHealBell)
-  end
-  if key == "PSYCH_UP" then
-    return bind(stepPsychUp)
-  end
-  if key == "HAZE" then
-    return bind(stepHaze)
-  end
-  if STAGE_MOVES[key] ~= nil then
-    return bind(makeStage(STAGE_MOVES[key]))
-  end
-  if SLEEP_MOVES[key] == true then
-    return bind(makeStatus("sleep"))
-  end
-  if PARALYSIS_MOVES[key] == true then
-    return bind(makeStatus("paralysis"))
-  end
-  if POISON_MOVES[key] == true then
-    return bind(makeStatus("poison"))
-  end
-  if key == "TOXIC" then
-    return bind(makeStatus("toxic"))
-  end
-  if key == "WILL_O_WISP" then
-    return bind(makeStatus("burn"))
-  end
-  if key == "CONFUSE_RAY" or key == "SUPERSONIC" or key == "SWEET_KISS" then
-    return bind(stepConfuse)
-  end
-  if key == "ATTRACT" then
-    return bind(stepAttract)
-  end
-  if key == "TAUNT" then
-    return bind(stepTaunt)
-  end
-  if key == "TORMENT" then
-    return bind(stepTorment)
-  end
-  if key == "ENCORE" then
-    return bind(stepEncore)
-  end
-  if key == "DISABLE" then
-    return bind(stepDisable)
-  end
-  if key == "YAWN" then
-    return bind(stepYawn)
-  end
-  if key == "NIGHTMARE" then
-    return bind(stepNightmare)
-  end
-  if key == "SPIKES" then
-    return bind(stepSpikes)
-  end
-  if key == "TOXIC_SPIKES" then
-    return bind(stepToxicSpikes)
-  end
-  if key == "STEALTH_ROCK" then
-    return bind(stepStealthRock)
-  end
-  if key == "MEAN_LOOK" or key == "SPIDER_WEB" then
-    return bind(stepTrapHold)
-  end
-  if key == "REST" then
-    return bind(stepRest)
-  end
-  if key == "MOONLIGHT" or key == "SYNTHESIS" then
-    return bind(stepDawnHeal)
-  end
-  if key == "BELLY_DRUM" then
-    return bind(stepBellyDrum)
-  end
-  if key == "ACUPRESSURE" then
-    return bind(stepAcupressure)
-  end
-  if key == "LOCK_ON" or key == "MIND_READER" then
-    return bind(stepLockOn)
-  end
-  if key == "FORESIGHT" or key == "ODOR_SLEUTH" then
-    return bind(stepForesight)
-  end
-  if key == "MAGNET_RISE" then
-    return bind(stepMagnetRise)
-  end
-  if key == "TAILWIND" then
-    return bind(stepTailwind)
-  end
-  if key == "LUCKY_CHANT" then
-    return bind(stepLuckyChant)
-  end
-  if key == "GRAVITY" then
-    return bind(stepGravity)
-  end
-  if key == "TRICK_ROOM" then
-    return bind(stepTrickRoom)
-  end
-  if key == "MUD_SPORT" then
-    return bind(stepSport("mudsport"))
-  end
-  if key == "WATER_SPORT" then
-    return bind(stepSport("watersport"))
-  end
-  if key == "SPITE" then
-    return bind(stepSpite)
-  end
-  if key == "TELEPORT" then
-    return bind(stepTeleport)
-  end
-  if key == "CAPTIVATE" then
-    return bind(stepCaptivate)
-  end
-  if key == "SWAGGER" then
-    return bind(swaggerLike({ stat = "attack", delta = 2 }))
-  end
-  if key == "FLATTER" then
-    return bind(swaggerLike({ stat = "specialAttack", delta = 1 }))
-  end
-  if key == "TEETER_DANCE" then
-    return bind(swaggerLike({}))
-  end
-  if key == "FOCUS_ENERGY" then
-    return bind(stepFocusEnergy)
-  end
-  if key == "INGRAIN" then
-    return bind(stepIngrain)
-  end
-  return bind(stepCanonical)
+  error(BattleErrors.invalidState("condition bindings admit only their family members", { key = key }))
 end
 
 --- Binds the condition family handlers into the owner table.
 ---@param owned table<string, fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown>> handler owner receiving the family bindings
 function ConditionMoves.register(owned)
   assert(type(owned) == "table", "condition moves register into their owner table")
+  local seen = {}
   for _, key in ipairs(ConditionMoves.MEMBERS) do
+    if seen[key] ~= nil then
+      error(BattleErrors.invalidState("condition moves register each member once", { key = key }))
+    end
+    seen[key] = true
     owned[key] = bodyFor(key)
   end
 end
