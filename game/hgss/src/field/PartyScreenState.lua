@@ -17,7 +17,6 @@ local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 
 ---@class PartyScreenState
----@field _service HgssMonService the live mon service
 ---@field _manifest table<string, unknown> the validated party presentation manifest
 ---@field _policy table<string, unknown> the injected action policy
 ---@field _promptShape table<string, unknown> the yes/no prompt shape for confirmations
@@ -155,7 +154,6 @@ function PartyScreenState.new(opts)
     assert(targetPromptKey == nil, "only target contexts carry a target prompt")
   end
   local self = setmetatable({
-    _service = service,
     _manifest = manifest,
     _policy = opts.actionPolicy or productionPolicy(service, manifestLabels(manifest)),
     _promptShape = promptShape,
@@ -239,15 +237,17 @@ function PartyScreenState:_measured()
   return assert(measurement, "the party screen requires current display facts")
 end
 
--- The icon keys behind the current view: occupied slots only, in slot
--- order. Read-only: preparation advances on update, never on status/draw.
+-- The icon keys behind the current facts: occupied slots only, in slot
+-- order. Facts come from the controller-owned projection, never a
+-- second model. Read-only: preparation advances on update, never on
+-- status/draw.
 ---@return string[] keys
 ---@return string joined
 function PartyScreenState:_currentIconKeys()
-  local service = assert(self._service, "the party screen keeps its mon service")
-  local model = PartyScreenModel.build(service)
+  local controller = assert(self._controller, "the party screen keeps its controller")
+  local facts = controller:refreshFacts()
   local keys = {}
-  for _, slot in ipairs(model.slots) do
+  for _, slot in ipairs(assert(facts.slots, "party facts carry six slot records")) do
     if slot.occupied and type(slot.iconKey) == "string" then
       keys[#keys + 1] = slot.iconKey
     end

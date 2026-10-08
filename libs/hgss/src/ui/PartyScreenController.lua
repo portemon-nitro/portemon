@@ -20,6 +20,8 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@class PartyScreenController
 ---@field _context "browse"|"pick"|"item_target"|"give_target"|"give_resume"
 ---@field _model PartyScreenController.Model
+---@field _facts PartyScreenController.View? the retained projection owned by refreshFacts
+---@field _factsModel PartyScreenController.Model? the model that produced the retained projection
 ---@field _layout fun(): table<string, unknown>
 ---@field _swap PartyScreenController.SwapPort?
 ---@field _effect fun(sequence: string)? the borrowed Party semantic sound boundary; screens without it stay silent and still transition
@@ -29,6 +31,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _cancellable boolean
 ---@field _view PartyScreenController.View
 ---@field _observedRevision integer
+---@field _reconciledRevision integer the revision staged menus, prompts, and cursor were reconciled against
 ---@field _state string
 ---@field _cursorNode integer|"cancel"
 ---@field _menu PartyScreenController.MenuEntry[]?
@@ -291,6 +294,7 @@ function PartyScreenController.new(opts)
     self._state = "give_resume"
   end
   local view = self:_refresh()
+  self._reconciledRevision = view.revision
   ---@type integer|string?
   local start = opts.initialFocus
   if start == "cancel" and not self:_selectable(view, start) then
@@ -310,11 +314,39 @@ function PartyScreenController.new(opts)
   return self
 end
 
----@return PartyScreenController.View
-function PartyScreenController:_refresh()
-  local view = self._model.refresh()
+---@param view PartyScreenController.View
+local function checkView(view)
   assert(type(view) == "table" and type(view.slots) == "table", "the party view needs six slot records")
   assert(#view.slots == 6, "the party view needs six slot records")
+end
+
+---@return PartyScreenController.View
+function PartyScreenController:_refresh()
+  return self:refreshFacts()
+end
+
+-- The one retained party projection: the last completed view is reused
+-- while its model still owns the facts and the live revision through
+-- the swap port matches. Every refresh path shares this change check,
+-- so wrapper icon queries and controller ticks never build twice for
+-- one revision. Refreshing advances no animation, press, reveal, or
+-- swap clock and consumes no input; the fixed update still runs its
+-- native clocks exactly once around this read.
+---@return PartyScreenController.View
+function PartyScreenController:refreshFacts()
+  local cached = self._facts
+  local port = self._swap
+  if cached ~= nil and self._factsModel == self._model and port ~= nil then
+    if port.partyRevision() == cached.revision then
+      self._view = cached
+      self._observedRevision = cached.revision
+      return cached
+    end
+  end
+  local view = self._model.refresh()
+  checkView(view)
+  self._facts = view
+  self._factsModel = self._model
   self._view = view
   self._observedRevision = view.revision
   return view
@@ -779,6 +811,7 @@ end
 function PartyScreenController:_abortSwap()
   self._swapOp = nil
   local view = self:_refresh()
+  self._reconciledRevision = view.revision
   local source = self._originSlot
   if source ~= nil and self:_selectable(view, source) then
     self._cursorNode = source
@@ -836,6 +869,7 @@ function PartyScreenController:_advanceSwap()
   self._swapOp = nil
   local view = self:_refresh()
   assert(view.revision == op.revision + 1, "a committed swap observes exactly one party revision increment")
+  self._reconciledRevision = view.revision
   if self:_selectable(view, op.destination) then
     self._cursorNode = op.destination
   end
@@ -1634,8 +1668,8 @@ function PartyScreenController:updateFixed(uiInput)
     return
   end
   self._tick = self._tick + 1
-  local previousRevision = self._observedRevision
-  local view = self:_refresh()
+  local previousRevision = self._reconciledRevision
+  local view = self:refreshFacts()
   self:_trackSequences(view)
   self:_advanceSlide()
   do
@@ -1667,7 +1701,10 @@ function PartyScreenController:updateFixed(uiInput)
     -- Staged menu/prompt state derived from the old revision never
     -- advances against the new one; the reconciled tick ends here so the
     -- same event batch cannot act on the rebuilt state. The active swap
-    -- keeps its own frozen-revision commit ownership.
+    -- keeps its own frozen-revision commit ownership. The marker trails
+    -- the shared facts by design: a wrapper icon query may publish new
+    -- facts between ticks without reconciling staged state itself.
+    self._reconciledRevision = view.revision
     if self:_reconcileRevision(view) then
       return
     end
@@ -1799,7 +1836,7 @@ end
 
 -- The presentation snapshot: context, state, cursor, open menu, pending
 -- swap visuals, animation clocks, and the current immutable view. The
--- view is the model's own fresh record; callers must not mutate it.
+-- view is the retained facts record; callers must not mutate it.
 -- Animation numbers are read-only presentation facts: draw never
 -- advances them.
 ---@class PartyScreenController.Status
@@ -1946,7 +1983,8 @@ function PartyScreenController:completeAction(outcome)
   assert(self._state == "waiting_action", "action completion resolves a pending intent")
   assert(self._intent == nil, "the flow takes the intent before completing it")
   local origin = assert(self._origin, "waiting remembers its origin")
-  self:_refresh()
+  local refreshed = self:_refresh()
+  self._reconciledRevision = refreshed.revision
   self._origin = nil
   if self._giveDisposition ~= nil then
     self._cursorNode = self:_reconciledCursor(self._view, origin.cursorNode)

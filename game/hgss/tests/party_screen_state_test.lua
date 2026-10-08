@@ -130,10 +130,88 @@ local function sourceManifest()
   }
 end
 
+---@param species string
+---@param form integer?
+local function monRecord(species, form)
+  return {
+    species = species,
+    form = form or 0,
+    isEgg = false,
+    personality = 0,
+    nickname = species,
+    heldItem = "NONE",
+    moves = { { move = "TACKLE", pp = 35, ppUps = 0 } },
+    condition = { currentHp = 20, effects = {} },
+  }
+end
+
+-- A live party service with observable reads: settable members and
+-- revision plus a partyMon read counter, so tests can tell one shared
+-- projection from two independent rebuilds.
+---@param calls table<string, unknown>
+---@param members table[]?
+local function mutableService(calls, members)
+  local catalog = fakeCatalog()
+  local revision = 1
+  local slots = members or { monRecord("CHIKORITA"), monRecord("CYNDAQUIL") }
+  local reads = 0
+  local service = {}
+  function service:partyCount()
+    return #slots
+  end
+  function service:partyRevision()
+    return revision
+  end
+  function service:partyMon(slot0)
+    reads = reads + 1
+    return assert(slots[slot0 + 1], "reads address a live member")
+  end
+  function service:partyMonDerived(_)
+    return { maxHp = 20, level = 5 }
+  end
+  function service:catalog()
+    return catalog
+  end
+  function service:swapPartyMons(a, b)
+    calls.swaps[#calls.swaps + 1] = { a, b }
+    slots[a + 1], slots[b + 1] = slots[b + 1], slots[a + 1]
+    revision = revision + 1
+  end
+  return {
+    service = service,
+    reads = function()
+      return reads
+    end,
+    setMon = function(slot0, mon)
+      slots[slot0 + 1] = mon
+      revision = revision + 1
+    end,
+    removeSlot = function(slot0)
+      table.remove(slots, slot0 + 1)
+      revision = revision + 1
+    end,
+    clear = function()
+      for index = #slots, 1, -1 do
+        slots[index] = nil
+      end
+      revision = revision + 1
+    end,
+  }
+end
+
 local function openParty(ready, failure, calls, screenOptions)
   local preparations = 0
   local cancels = 0
   local service = fakeService(calls)
+  local prepareOverride = nil
+  local effect = nil
+  if screenOptions ~= nil then
+    if screenOptions.service ~= nil then
+      service = screenOptions.service
+    end
+    prepareOverride = screenOptions.prepare
+    effect = screenOptions.effect
+  end
   local measurement = {
     width = 800,
     height = 600,
@@ -156,13 +234,17 @@ local function openParty(ready, failure, calls, screenOptions)
     measureDisplay = function()
       return measurement
     end,
-    prepareIcons = function(_)
+    prepareIcons = function(keys)
       preparations = preparations + 1
+      if prepareOverride ~= nil then
+        return prepareOverride(keys)
+      end
       return ready, failure
     end,
     cancelIconPreparation = function()
       cancels = cancels + 1
     end,
+    effect = effect,
   })
   return state,
     {
@@ -1018,6 +1100,144 @@ function T.closing_after_interactive_uses_the_existing_close_path()
   Assert.isNil(state:takeResult(), "a second take reports nothing further")
   Assert.equal(probes.cancels(), 1, "closing releases the preparation interest exactly once")
   state:dispose()
+end
+
+-- Idle ticks share one retained party projection: opening builds it
+-- once, and later ticks plus status reads reuse it while the reveal
+-- still advances through its fixed cadence to interactive.
+function T.idle_ticks_reuse_one_shared_projection_without_rebuilding()
+  local calls = { swaps = {} }
+  local backing = mutableService(calls)
+  local state = openParty(true, nil, calls, { service = backing.service })
+  Assert.equal(backing.reads(), 2, "opening projects each member once")
+  for _ = 1, 6 do
+    state:updateFixed({})
+    state:status()
+  end
+  Assert.equal(backing.reads(), 2, "idle ticks and status reads project nothing new at unchanged revision")
+  local waited = state:status()
+  Assert.equal(waited.phase, "opening", "the reveal still owns the screen while idle")
+  local progress = assert(waited.opening, "the reveal publishes its progress")
+  Assert.equal(progress.subStep, 5, "the first pane clears one step per tick")
+  Assert.equal(progress.mainStep, 0, "the second pane waits for the first")
+  for _ = 1, 20 do
+    if state:status().phase == "interactive" then
+      break
+    end
+    state:updateFixed({})
+  end
+  Assert.equal(state:status().phase, "interactive", "the reveal hands over on its fixed recurrence")
+  Assert.equal(backing.reads(), 2, "the whole reveal projects nothing new at unchanged revision")
+  state:dispose()
+end
+
+-- Icon preparation follows the live party through one shared
+-- projection: a form change rebuilds once for the current keys, a stale
+-- readiness cannot survive the next change, selection reconciles after a
+-- removal, and emptying the party never errors.
+function T.preparation_follows_the_live_party_through_one_projection()
+  local calls = { swaps = {} }
+  local backing = mutableService(calls)
+  local seen = {}
+  local gate = { ready = false }
+  local state = openParty(false, nil, calls, {
+    service = backing.service,
+    prepare = function(keys)
+      seen[#seen + 1] = table.concat(keys, ",")
+      return gate.ready
+    end,
+  })
+  state:updateFixed({})
+  Assert.equal(state:status().preparationState, "pending", "the screen waits while icons prepare")
+  Assert.deepEqual(seen, { "CHIKORITA/f0,CYNDAQUIL/f0" }, "preparation starts from the current keys")
+  local readsAfterOpen = backing.reads()
+  backing.setMon(0, monRecord("CHIKORITA", 1))
+  gate.ready = true
+  state:updateFixed({})
+  Assert.equal(backing.reads() - readsAfterOpen, 2, "the change projects once through the shared facts")
+  Assert.deepEqual(seen[#seen], "CHIKORITA/f1,CYNDAQUIL/f0", "readiness uses the changed keys")
+  local ready = state:status()
+  Assert.equal(ready.preparationState, "ready", "current keys satisfy readiness")
+  Assert.equal(ready.view.slots[1].iconKey, "CHIKORITA/f1", "the shared facts carry the changed member")
+  backing.setMon(1, monRecord("TOTODILE"))
+  gate.ready = false
+  state:updateFixed({})
+  Assert.equal(state:status().preparationState, "pending", "a newer change discards the stale readiness")
+  gate.ready = true
+  state:updateFixed({})
+  Assert.deepEqual(seen[#seen], "CHIKORITA/f1,TOTODILE/f0", "re-preparation uses the newest keys")
+  Assert.equal(state:status().preparationState, "ready", "the newest keys satisfy readiness")
+  drainReveal(state)
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(state:status().cursorNode, 1, "setup focuses the second slot")
+  backing.removeSlot(1)
+  state:updateFixed({})
+  state:updateFixed({})
+  local reconciled = state:status()
+  Assert.equal(reconciled.cursorNode, 0, "a removed focus reconciles to the live slot")
+  Assert.isFalse(reconciled.view.slots[2].occupied, "the shared facts drop the removed member")
+  backing.clear()
+  state:updateFixed({})
+  local emptied = state:status()
+  Assert.isTrue(emptied.open, "emptying the party closes nothing by itself")
+  state:dispose()
+end
+
+-- A facts refresh between ticks advances nothing: repeated reads return
+-- the same facts with the tick, cursor, action, and sounds untouched,
+-- the reveal then runs its fixed wipe, and a waiting screen still
+-- cancels to the existing close.
+function T.facts_refresh_between_ticks_advances_nothing()
+  local calls = { swaps = {} }
+  local backing = mutableService(calls)
+  local sounds = {}
+  local state = openParty(true, nil, calls, {
+    service = backing.service,
+    effect = function(sequence)
+      sounds[#sounds + 1] = sequence
+    end,
+  })
+  state:updateFixed({})
+  local controller = state._controller
+  local before = controller:status()
+  local facts = controller:refreshFacts()
+  Assert.isTrue(controller:refreshFacts() == facts, "repeated refreshes share the retained facts")
+  local untouched = controller:status()
+  Assert.equal(untouched.anim.tick, before.anim.tick, "refreshing advances no animation tick")
+  Assert.equal(untouched.cursorNode, before.cursorNode, "refreshing moves no cursor")
+  Assert.equal(untouched.action, before.action, "refreshing starts no action")
+  Assert.deepEqual(sounds, {}, "refreshing requests no sound")
+  local trajectory = {}
+  for _ = 1, 12 do
+    state:updateFixed({})
+    local now = state:status()
+    local progress = assert(now.opening, "the reveal keeps publishing progress")
+    trajectory[#trajectory + 1] = { sub = progress.subStep, main = progress.mainStep }
+  end
+  local expected = {}
+  for step = 1, 6 do
+    expected[#expected + 1] = { sub = step, main = 0 }
+  end
+  for step = 1, 6 do
+    expected[#expected + 1] = { sub = 6, main = step }
+  end
+  Assert.deepEqual(trajectory, expected, "the reveal still clears the first pane before the second")
+  state:updateFixed({})
+  Assert.equal(state:status().phase, "interactive", "the reveal hands over after twelve steps")
+  state:dispose()
+  local waitingCalls = { swaps = {} }
+  local waitingBacking = mutableService(waitingCalls)
+  local waiting = openParty(false, nil, waitingCalls, { service = waitingBacking.service })
+  waiting:updateFixed({})
+  waiting._controller:refreshFacts()
+  waiting._controller:refreshFacts()
+  for _ = 1, 7 do
+    waiting:updateFixed({ { type = "cancel" } })
+  end
+  local result = waiting:takeResult()
+  Assert.notNil(result, "a waiting screen still closes on cancel")
+  Assert.equal(result.kind, "close", "close keeps its existing host translation")
+  waiting:dispose()
 end
 
 return { tests = T }
