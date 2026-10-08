@@ -739,4 +739,117 @@ function T.quantity_keyboard_and_touch_use_their_distinct_endpoint_rules()
   end
 end
 
+local function watchedResources(balance, entryCount)
+  local root = ItemFixture.buildAssetRoot()
+  root.items.POTION.price = 100
+  local items = ItemCatalog.new(root)
+  local reads = { catalog = 0 }
+  local rawItem = items.item
+  items.item = function(self, key)
+    reads.catalog = reads.catalog + 1
+    return rawItem(self, key)
+  end
+  local bag = HgssBagService.new({ catalog = items, bag = BagSave.empty() })
+  local profile = { money = balance or 1000, badges = 0, nationalDex = false }
+  local service = MartService.new({
+    profile = profile,
+    bag = bag,
+    itemCatalog = items,
+    catalog = { cards = {}, apricorns = {}, seals = {}, decorations = {} },
+    bucket = MartSave.empty(),
+  })
+  local session = service:openBuy(stock(10, entryCount or 7))
+  reads.catalog = 0
+  return { service = service, bag = bag, profile = profile, session = session, reads = reads }
+end
+
+function T.idle_status_and_selected_reads_reuse_the_session_projection()
+  local state = watchedResources(1000, 7)
+  local controller = newController(state.session)
+  local first = controller:status()
+  Assert.equal(first.entryCount, 7)
+  Assert.equal(first.balance, 1000)
+  local built = state.reads.catalog
+  Assert.isTrue(built > 0, "the first status resolves catalog facts")
+
+  controller:status()
+  controller:status()
+  Assert.equal(state.reads.catalog, built, "idle status reads do not reproject stock")
+
+  local selected = controller:_entry()
+  Assert.notNil(selected)
+  Assert.equal(selected.entryKey, "offer-1")
+  controller:_entry()
+  Assert.equal(state.reads.catalog, built, "selected-entry reads do not rebuild all stock")
+  controller:dispose()
+  state.session:close()
+end
+
+function T.balance_bag_and_purchase_changes_refresh_controller_status()
+  local state = watchedResources(1000, 2)
+  local controller = newController(state.session)
+  Assert.equal(controller:status().balance, 1000)
+  Assert.equal(controller:status().entries[1].maxQuantity, 10)
+
+  state.profile.money = 950
+  local refreshed = controller:status()
+  Assert.equal(refreshed.balance, 950, "a balance change alone refreshes the display")
+  Assert.equal(refreshed.entries[1].maxQuantity, 9)
+
+  Assert.isTrue(state.bag:add("POTION", 3))
+  Assert.equal(controller:status().entries[1].ownedQuantity, 3, "a Bag change refreshes owned counts")
+
+  local token = assert(state.session:quoteBuy("offer-1", 1))
+  Assert.notNil(state.session:commit(token))
+  local after = controller:status()
+  Assert.equal(after.balance, 850)
+  Assert.equal(after.entries[1].ownedQuantity, 4)
+
+  state.profile.money = 50
+  Assert.equal(controller:status().balance, 50)
+  local retry, retryReason = state.session:quoteBuy("offer-1", 2)
+  Assert.isNil(retry)
+  Assert.equal(retryReason, "insufficient_money", "a stale affordable display cannot authorize a purchase")
+  controller:dispose()
+  state.session:close()
+end
+
+function T.mutated_status_cannot_reach_the_session_and_flows_close_cleanly()
+  local state = watchedResources(1000, 7)
+  local controller = newController(state.session)
+  local status = controller:status()
+  status.balance = 1
+  status.entries[1].ownedQuantity = 77
+  status.entries[1].bindings.itemName = "changed"
+  status.entries[1].description = "changed"
+  status.currentEntry.ownedQuantity = 77
+  local fresh = controller:status()
+  Assert.equal(fresh.balance, 1000, "mutated outputs cannot alter the retained projection")
+  Assert.equal(fresh.entries[1].ownedQuantity, 0)
+  Assert.equal(fresh.entries[1].bindings.itemName, "Potion")
+  Assert.equal(fresh.description, "Potion description")
+  Assert.equal(fresh.currentEntry.ownedQuantity, 0)
+
+  local built = state.reads.catalog
+  controller:step({ { type = "navigate", direction = "right" } })
+  Assert.equal(controller:status().selection, 1)
+  Assert.equal(state.reads.catalog, built, "presentation navigation needs no catalog work")
+  controller:step({ { type = "navigate", direction = "left" } })
+
+  controller:step({ { type = "confirm" } })
+  for _ = 1, 60 do
+    if controller:status().state == "quantity" then
+      break
+    end
+    controller:step({ { type = "confirm" } })
+  end
+  Assert.equal(controller:status().state, "quantity", "the quantity flow progresses on schedule")
+  controller:step({ { type = "cancel" } })
+  finishControlFeedback(controller, manifest())
+  Assert.equal(controller:status().state, "browse", "cancellation returns to browse")
+  controller:dispose()
+  controller:dispose()
+  state.session:close()
+end
+
 return { tests = T }

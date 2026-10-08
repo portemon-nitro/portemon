@@ -360,36 +360,79 @@ local function failure(service, entry, currency, balance)
   return nil
 end
 
-local function sessionView(session)
+local function staticEntry(service, entry)
+  local item = service._items:item(entry.displayItemKey)
+  return {
+    entryKey = entry.key,
+    displayItemKey = entry.displayItemKey,
+    bindings = { itemName = item.name, pocketName = service._items:pocketName(item.pocket) },
+    unitPrice = entry.unitPrice,
+    description = copy(entry.description),
+    descriptionText = entry.description.kind == "literal" and entry.description.value or item.description,
+  }
+end
+
+local function copyEntry(entry)
+  return {
+    entryKey = entry.entryKey,
+    displayItemKey = entry.displayItemKey,
+    bindings = { itemName = entry.bindings.itemName, pocketName = entry.bindings.pocketName },
+    unitPrice = entry.unitPrice,
+    description = copy(entry.description),
+    descriptionText = entry.descriptionText,
+    priceVisible = entry.priceVisible,
+    ownedQuantity = entry.ownedQuantity,
+    maxQuantity = entry.maxQuantity,
+    selectionFailure = entry.selectionFailure,
+  }
+end
+
+local function ensureProjection(session)
+  local generation = session:projectionKey()
+  local projection = session.projection
+  if projection ~= nil and projection.generation == generation then
+    return projection
+  end
   local service = session.service
   local balance = session.currency == "money" and service._profile.money or service._bucket.athletePoints
-  local view = {
-    key = session.stock.key,
-    currency = session.currency,
-    presentationKind = session.stock.presentationKind,
-    quantityMode = session.stock.quantityMode,
-    balance = balance,
-    entries = {},
-  }
-  for index, entry in ipairs(session.stock.entries) do
+  -- The candidate is fully built before publication, so a failed build
+  -- never replaces the last complete projection with partial data.
+  local candidate = { generation = generation, balance = balance, entries = {} }
+  for index, static in ipairs(session.staticEntries) do
+    local entry = session.stock.entries[index]
     local owned = ownedCount(service, entry)
     local selectionFailure = failure(service, entry, session.currency, balance)
-    local item = service._items:item(entry.displayItemKey)
-    local descriptionText = entry.description.kind == "literal" and entry.description.value or item.description
     local maximum = session.stock.quantityMode == "single" and 1
       or (entry.unitPrice == 0 and 99 or math.min(99, math.floor(balance / entry.unitPrice)))
-    view.entries[index] = {
-      entryKey = entry.key,
-      displayItemKey = entry.displayItemKey,
-      bindings = { itemName = item.name, pocketName = service._items:pocketName(item.pocket) },
-      unitPrice = entry.unitPrice,
-      description = copy(entry.description),
-      descriptionText = descriptionText,
+    candidate.entries[index] = {
+      entryKey = static.entryKey,
+      displayItemKey = static.displayItemKey,
+      bindings = { itemName = static.bindings.itemName, pocketName = static.bindings.pocketName },
+      unitPrice = static.unitPrice,
+      description = copy(static.description),
+      descriptionText = static.descriptionText,
       priceVisible = selectionFailure ~= "bought_today" and selectionFailure ~= "already_owned",
       ownedQuantity = owned,
       maxQuantity = maximum,
       selectionFailure = selectionFailure,
     }
+  end
+  session.projection = candidate
+  return candidate
+end
+
+local function sessionView(session)
+  local projection = ensureProjection(session)
+  local view = {
+    key = session.stock.key,
+    currency = session.currency,
+    presentationKind = session.stock.presentationKind,
+    quantityMode = session.stock.quantityMode,
+    balance = projection.balance,
+    entries = {},
+  }
+  for index, entry in ipairs(projection.entries) do
+    view.entries[index] = copyEntry(entry)
   end
   return view
 end
@@ -404,9 +447,51 @@ function MartService:openBuy(stock)
     closed = false,
     bagRevision = self._bag:revision(),
     serviceRevision = self._revision,
+    generation = 0,
+    projection = nil,
+    staticEntries = {},
   }
+  for index, entry in ipairs(owned.entries) do
+    session.staticEntries[index] = staticEntry(self, entry)
+  end
   self._active = session
   return setmetatable(session, { __index = sessionMethods })
+end
+
+function sessionMethods:projectionKey()
+  assert(not self.closed, "mart session is closed")
+  -- The tuple samples every live input behind the dynamic projection:
+  -- Bag work, service work, both balances, and the service date identity.
+  -- It advances only a session-local generation, so keys never order
+  -- across sessions and never authorize a transaction.
+  local service = self.service
+  local date = service._date
+  local money = service._profile.money
+  local points = service._bucket.athletePoints
+  local bagRevision = service._bag:revision()
+  local serviceRevision = service._revision
+  local weekday = date ~= nil and date.weekday or -1
+  local dayOrdinal = date ~= nil and date.dayOrdinal or service._bucket.lastProcessedDay
+  if
+    self.keyMoney ~= money
+    or self.keyPoints ~= points
+    or self.keyBagRevision ~= bagRevision
+    or self.keyServiceRevision ~= serviceRevision
+    or self.keyWeekday ~= weekday
+    or self.keyDay ~= dayOrdinal
+  then
+    self.keyMoney, self.keyPoints = money, points
+    self.keyBagRevision, self.keyServiceRevision = bagRevision, serviceRevision
+    self.keyWeekday, self.keyDay = weekday, dayOrdinal
+    self.generation = self.generation + 1
+  end
+  return self.generation
+end
+
+function sessionMethods:entryView(index)
+  assert(not self.closed, "mart session is closed")
+  assert(integer(index, 1, #self.stock.entries), "mart entry index is out of range")
+  return copyEntry(ensureProjection(self).entries[index])
 end
 
 function sessionMethods:view()
@@ -558,6 +643,9 @@ function MartService:openSell()
     closed = false,
     bagRevision = self._bag:revision(),
     serviceRevision = self._revision,
+    generation = 0,
+    projection = nil,
+    staticEntries = {},
   }
   self._active = session
   return setmetatable(session, { __index = sessionMethods })
@@ -647,6 +735,7 @@ function sessionMethods:close()
     return
   end
   self.closed, self.quote, self.receipt, self.receiptState = true, nil, nil, nil
+  self.projection, self.staticEntries = nil, nil
   if self.service._active == self then
     self.service._active = nil
   end

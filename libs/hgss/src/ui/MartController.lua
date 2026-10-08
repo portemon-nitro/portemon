@@ -8,6 +8,9 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 ---@class MartController
 ---@field private _session table<string, unknown>
+---@field private _retainedSession table<string, unknown>?
+---@field private _retainedKey integer?
+---@field private _retainedView table<string, unknown>?
 ---@field private _manifest table<string, unknown>
 ---@field private _fontDef table<string, unknown>
 ---@field private _effect (fun(sequence: string|integer))?
@@ -140,6 +143,9 @@ function MartController.new(opts)
 
   local self = setmetatable({
     _session = session,
+    _retainedSession = nil,
+    _retainedKey = nil,
+    _retainedView = nil,
     _manifest = manifest,
     _fontDef = fontDef,
     _effect = opts.effect,
@@ -201,12 +207,26 @@ function MartController.new(opts)
 end
 
 function MartController:_view()
-  return self._session:view()
+  -- Incidental reads share the last returned view while the session
+  -- projection generation holds. A failed rebuild propagates without
+  -- replacing the last complete view.
+  local session = self._session
+  local key = session:projectionKey()
+  if self._retainedView ~= nil and self._retainedSession == session and self._retainedKey == key then
+    return self._retainedView
+  end
+  local view = session:view()
+  self._retainedSession, self._retainedKey, self._retainedView = session, key, view
+  return view
 end
 
 function MartController:_entry()
   local view = self:_view()
-  return view.entries[self._page * 6 + self._selection + 1]
+  local index = self._page * 6 + self._selection + 1
+  if index < 1 or index > #view.entries then
+    return nil
+  end
+  return self._session:entryView(index)
 end
 
 function MartController:_play(sequence)
@@ -962,6 +982,7 @@ function MartController:dispose()
   self._result = nil
   self._controlFeedback = nil
   self._amountAnimations = {}
+  self._retainedSession, self._retainedKey, self._retainedView = nil, nil, nil
   self._state = "closed"
 end
 

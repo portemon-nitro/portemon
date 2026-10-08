@@ -6,6 +6,10 @@ local MartInterface = require("game.hgss.src.mart.MartInterface")
 
 ---@class MartScreenState
 ---@field private _controller MartController
+---@field private _session table<string, unknown>
+---@field private _published table<string, unknown>?
+---@field private _publishedKey integer?
+---@field private _publishedValid boolean
 ---@field private _presentation ApplicationPresentation
 ---@field private _measureDisplay fun(): DisplayMeasurement
 ---@field private _disposed boolean
@@ -22,6 +26,17 @@ MartScreenState.__index = MartScreenState
 ---@field measureDisplay fun(): DisplayMeasurement
 ---@field frameIndex integer
 ---@field overrides table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>?
+
+local function copyPublic(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, child in pairs(value) do
+    result[key] = copyPublic(child)
+  end
+  return result
+end
 
 ---@param opts MartScreenState.Options
 ---@return MartScreenState
@@ -64,6 +79,10 @@ function MartScreenState.new(opts)
   end
   local self = setmetatable({
     _controller = assert(controller),
+    _session = assert(opts.session, "mart screen requires the active session"),
+    _published = nil,
+    _publishedKey = nil,
+    _publishedValid = false,
     _presentation = presentation,
     _measureDisplay = opts.measureDisplay,
     _disposed = false,
@@ -85,7 +104,15 @@ function MartScreenState:_measured()
 end
 
 function MartScreenState:_view()
-  return self._controller:status()
+  -- One status serves each input/publication stage. The published status
+  -- is reused while the controller left it untouched and the session
+  -- projection generation holds; the caller-visible copy stays detached.
+  if self._publishedValid and self._published ~= nil and self._publishedKey == self._session:projectionKey() then
+    return self._published
+  end
+  local fresh = self._controller:status()
+  self._published, self._publishedKey, self._publishedValid = fresh, self._session:projectionKey(), true
+  return fresh
 end
 
 ---@return ApplicationPlan
@@ -100,31 +127,38 @@ function MartScreenState:step(uiEvents)
   assert(type(uiEvents) == "table", "mart screen input is an ordered event array")
   local presentation = self._presentation
   local measured = self:_measured()
-  presentation:resolve(measured, self:_view())
-  local mapped = presentation:mapInput(uiEvents, self:_view())
+  local before = self:_view()
+  presentation:resolve(measured, before)
+  local mapped = presentation:mapInput(uiEvents, before)
   self._controller:step(mapped)
+  self._publishedValid = false
   presentation:resolve(measured, self:_view())
 end
 
 ---@return table<string, unknown>
 function MartScreenState:status()
   assert(not self._disposed, "a disposed mart screen has no status")
-  local status = self._controller:status()
-  status.presentation = self._presentation:plan()
-  status.plan = status.presentation
-  return status
+  local public = copyPublic(self:_view())
+  public.presentation = self._presentation:plan()
+  public.plan = public.presentation
+  return public
 end
 
 ---@return table<string, unknown>?
 function MartScreenState:takeResult()
   assert(not self._disposed, "a disposed mart screen has no result")
-  return self._controller:takeResult()
+  local result = self._controller:takeResult()
+  if result ~= nil then
+    self._publishedValid = false
+  end
+  return result
 end
 
 function MartScreenState:cancelPointerCapture()
   assert(not self._disposed, "a disposed mart screen has no capture")
   self._presentation:cancelPointers()
   self._controller:cancelPointerCapture()
+  self._publishedValid = false
 end
 
 function MartScreenState:dispose()
@@ -132,6 +166,7 @@ function MartScreenState:dispose()
     return
   end
   self._disposed = true
+  self._published, self._publishedKey, self._publishedValid = nil, nil, false
   self._presentation:dispose()
   self._controller:dispose()
 end
