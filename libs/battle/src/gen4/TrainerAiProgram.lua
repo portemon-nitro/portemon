@@ -9172,7 +9172,7 @@ local function maxDamageClass(state)
   state.scratch = 0
   for _, moveId in ipairs(battlerMoveIds(state, atk)) do
     if moveId ~= 0 then
-      local class = previewDamageClass(state, atk, moveId)
+      local class = previewDamageClass(state, moveId)
       if class > state.scratch then
         state.scratch = class
       end
@@ -10604,7 +10604,7 @@ function executeCommand(state, op, pc)
     end
     return after
   elseif op == 53 or op == 54 then
-    local target = knockoutGate(state, arg(1), arg(2))
+    local target = knockoutGate(state, arg(1), arg(2), op)
     if target ~= nil then
       return after + target
     end

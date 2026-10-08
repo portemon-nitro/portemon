@@ -66,7 +66,7 @@ function T.ready_preparation_transfers_exactly_once()
   Assert.equal(readyCalls, 1, "readiness transfers exactly once")
 end
 
-function T.failed_preparation_latches_its_error_without_transferring()
+function T.failed_preparation_raises_without_transferring()
   local host = {
     requestMilestone = function()
       return false, "intro milestone failed"
@@ -83,11 +83,15 @@ function T.failed_preparation_latches_its_error_without_transferring()
     end,
     onCancel = function() end,
   })
-  state:update(0)
-  state:update(0)
+  local ok, err = pcall(function()
+    state:update(0)
+  end)
+  Assert.isFalse(ok, "a failed milestone raises instead of latching a failed phase")
+  Assert.isTrue(
+    string.find(tostring(err), "intro milestone failed", 1, true) ~= nil,
+    "the milestone failure is preserved"
+  )
   Assert.equal(readyCalls, 0, "a failed milestone never transfers")
-  Assert.equal(state.phase, "failed")
-  Assert.equal(state.error, "intro milestone failed")
 end
 
 function T.escape_cancels_back_to_menu_without_a_later_transfer()
@@ -260,7 +264,7 @@ function T.preparation_renders_an_empty_bar_while_membership_is_unknown()
   Assert.equal(fill, 0, "an unknown denominator fills nothing")
 end
 
-function T.preparation_failure_hides_the_progress_bar()
+function T.preparation_failure_raises_before_any_draw()
   local host = {
     requestMilestone = function()
       return false, "intro milestone failed"
@@ -277,15 +281,11 @@ function T.preparation_failure_hides_the_progress_bar()
     end,
     onCancel = function() end,
   })
-  state:update(0)
-  Assert.equal(state.phase, "failed")
-  Assert.equal(readyCalls, 0, "a failed milestone never transfers")
-  local drawn = recordDraw(function()
-    state:draw()
+  local ok = pcall(function()
+    state:update(0)
   end)
-  Assert.isTrue(drawn.ok, "drawing the failure never fails")
-  Assert.equal(#drawn.rectangles, 0, "the failure view renders no progress bar")
-  Assert.isTrue(hasPrint(drawn.prints, "failed"), "the failure view names the failure")
+  Assert.isFalse(ok, "the milestone failure raises instead of latching a drawable failed phase")
+  Assert.equal(readyCalls, 0, "a failed milestone never transfers")
 end
 
 return { tests = T }

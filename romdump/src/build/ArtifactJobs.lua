@@ -212,12 +212,13 @@ local FIELD_PLANNING_JOBS = {
 
 -- The static generated services the field runtime consumes eagerly: world
 -- and cell catalogs, presentation services, actor/mon/item/bag catalogs,
--- the two protocol menu label banks (Start Menu plus the standard list
--- menu script hosts acquire synchronously), the shared transition/door
--- sound-effect bank (transition exitSound/door symbols live in Lua constant
--- tables no map closure can reach), the audio catalog and the script
--- summary. It never contains intro setup, whole-family summaries, or a
--- per-map/per-bank corpus enumeration.
+-- the battle input families (battle facts, trainers, encounters) field
+-- boot composes unconditionally, the two protocol menu label banks (Start
+-- Menu plus the standard list menu script hosts acquire synchronously),
+-- the shared transition/door sound-effect bank (transition exitSound/door
+-- symbols live in Lua constant tables no map closure can reach), the audio
+-- catalog and the script summary. It never contains intro setup, whole-
+-- family summaries, or a per-map/per-bank corpus enumeration.
 local FIELD_RUNTIME_JOBS = {
   "world-catalog:global",
   "field-cell-index:global",
@@ -232,6 +233,9 @@ local FIELD_RUNTIME_JOBS = {
   "mon-layout:global",
   "items:global",
   "follower-interactions:global",
+  "battle-data:global",
+  "trainers:global",
+  "encounters:global",
   "bag:global",
   "party:global",
   "pc:global",

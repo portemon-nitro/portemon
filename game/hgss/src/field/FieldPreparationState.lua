@@ -9,9 +9,10 @@ local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 -- even while the static runtime is still pending. New Game derives and
 -- demands its target the same way, and both entries transfer to the
 -- already-composed field exactly once, only when the target and the
--- runtime are both ready. Failures are visible and cancellable; no
--- invalid candidate or save is repaired or published, and cancellation
--- publishes nothing.
+-- runtime are both ready. A failure raises directly: no invalid candidate
+-- or save is repaired or published, and preparation owns no error
+-- presentation of its own. Cancellation remains available while pending
+-- and publishes nothing.
 
 ---@class FieldPreparationOptions
 ---@field kind "continue"|"newgame"
@@ -35,13 +36,12 @@ local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 ---@field loader table<string, unknown>? retained planning loader, built once planning is ready
 ---@field enterField fun(record: table<string, unknown>, extraOptions: table<string, unknown>?)
 ---@field onCancel fun()?
----@field phase "assets"|"location"|"done"|"failed"
+---@field phase "assets"|"location"|"done"
 ---@field planningReady boolean entry planning observed ready
 ---@field runtimeReady boolean static field runtime observed ready
 ---@field loadAttempted boolean Continue only: the one-shot save load already ran
 ---@field record table<string, unknown>?
 ---@field target { idOrSymbol: integer|string, fieldX: integer, fieldZ: integer }?
----@field error unknown?
 ---@field transferred boolean
 ---@field cancelled boolean
 local FieldPreparationState = {}
@@ -79,17 +79,9 @@ function FieldPreparationState.new(options)
     loadAttempted = false,
     record = nil,
     target = nil,
-    error = nil,
     transferred = false,
     cancelled = false,
   }, FieldPreparationState)
-end
-
-function FieldPreparationState:_fail(err)
-  if self.phase ~= "failed" then
-    self.phase = "failed"
-    self.error = err
-  end
 end
 
 ---@param name string milestone interest to observe
@@ -98,15 +90,10 @@ function FieldPreparationState:_pollMilestone(name, kind)
   -- The semantic host is a plain function table (dot calls, no self).
   -- Repeating the required interest re-affirms it; the host answers with
   -- current readiness, so a pending prerequisite is simply observed again
-  -- on the next update.
-  local ok, ready, failure = pcall(self.derivedAssets.requestMilestone, name, "required")
-  if not ok then
-    self:_fail(ready)
-    return
-  end
+  -- on the next update. A reported failure raises directly.
+  local ready, failure = self.derivedAssets.requestMilestone(name, "required")
   if failure ~= nil then
-    self:_fail(failure)
-    return
+    error(failure, 0)
   end
   if ready then
     if kind == "planning" then
@@ -118,21 +105,13 @@ function FieldPreparationState:_pollMilestone(name, kind)
 end
 
 function FieldPreparationState:_ensureLoader()
-  -- The planning loader is legal once entry planning is ready: build
-  -- it exactly once, then reuse the retained loader for every later
-  -- update. A failed build is a visible preparation failure, never a
-  -- retried probe.
+  -- The planning loader is legal once entry planning is ready: build it
+  -- exactly once, then reuse the retained loader for every later update.
   if self.loader ~= nil then
-    return true
+    return
   end
   local factory = assert(self.createLoader, "field preparation requires its metadata-only loader factory")
-  local ok, loaderOrError = pcall(factory)
-  if not ok then
-    self:_fail(loaderOrError)
-    return false
-  end
-  self.loader = assert(loaderOrError)
-  return true
+  self.loader = assert(factory())
 end
 
 function FieldPreparationState:_loadContinue()
@@ -142,19 +121,12 @@ function FieldPreparationState:_loadContinue()
   self.loadAttempted = true
   local store = assert(self.saveStore, "Continue preparation requires the save store")
   local saveId = assert(self.saveId, "Continue preparation requires a saveId")
-  local ok, recordOrError = pcall(store.load, store, saveId)
-  if not ok then
-    self:_fail(recordOrError)
-    return
+  local record = store.load(store, saveId)
+  if record == nil then
+    error("save could not be loaded: " .. tostring(saveId), 0)
   end
-  if recordOrError == nil then
-    self:_fail("save could not be loaded: " .. tostring(saveId))
-    return
-  end
-  local record = assert(recordOrError)
   if type(record.mapId) ~= "number" or type(record.fieldX) ~= "number" or type(record.fieldZ) ~= "number" then
-    self:_fail("loaded save carries no field location: " .. tostring(saveId))
-    return
+    error("loaded save carries no field location: " .. tostring(saveId), 0)
   end
   self.record = record
   self.target = { idOrSymbol = record.mapId, fieldX = record.fieldX, fieldZ = record.fieldZ }
@@ -164,24 +136,15 @@ function FieldPreparationState:_planNewGameTarget()
   local candidate = assert(self.candidate, "New Game preparation requires the finalized candidate")
   local location = candidate.location
   if type(location) ~= "table" or type(location.mapSymbol) ~= "string" then
-    self:_fail("finalized candidate carries no map location")
-    return
+    error("finalized candidate carries no map location", 0)
   end
   if type(location.fieldX) ~= "number" or type(location.fieldZ) ~= "number" then
-    self:_fail("finalized candidate carries no local field position")
-    return
+    error("finalized candidate carries no local field position", 0)
   end
   -- A new game's location is local to its map; the loader converts it to
   -- the same global domain normal loading uses.
   local loader = assert(self.loader, "target planning requires the retained planning loader")
-  local ok, positionOrError = pcall(function()
-    return loader:globalPosition(location.mapSymbol, location.fieldX, location.fieldZ)
-  end)
-  if not ok then
-    self:_fail(positionOrError)
-    return
-  end
-  local position = assert(positionOrError)
+  local position = loader:globalPosition(location.mapSymbol, location.fieldX, location.fieldZ)
   self.record = candidate
   self.target = { idOrSymbol = location.mapSymbol, fieldX = position.x, fieldZ = position.z }
   self.phase = "location"
@@ -190,15 +153,9 @@ end
 function FieldPreparationState:_pollGeometry()
   local target = assert(self.target, "geometry demand requires its target")
   local loader = assert(self.loader, "geometry demand requires the retained planning loader")
-  local ok, ready, failure =
-    pcall(loader.requestLocation, loader, target.idOrSymbol, target.fieldX, target.fieldZ, "required")
-  if not ok then
-    self:_fail(ready)
-    return
-  end
+  local ready, failure = loader:requestLocation(target.idOrSymbol, target.fieldX, target.fieldZ, "required")
   if failure ~= nil then
-    self:_fail(failure)
-    return
+    error(failure, 0)
   end
   if not ready then
     return
@@ -209,42 +166,27 @@ function FieldPreparationState:_pollGeometry()
     return
   end
   local record = assert(self.record, "field transfer requires its record")
-  local transferOk, transferError = pcall(function()
-    if self.kind == "newgame" then
-      self.enterField(record, { initialFadeIn = true })
-    else
-      self.enterField(record)
-    end
-  end)
-  if not transferOk then
-    self:_fail(transferError)
-    return
+  if self.kind == "newgame" then
+    self.enterField(record, { initialFadeIn = true })
+  else
+    self.enterField(record)
   end
   self.transferred = true
   self.phase = "done"
 end
 
 function FieldPreparationState:update(_)
-  if self.transferred or self.cancelled or self.phase == "failed" or self.phase == "done" then
+  if self.transferred or self.cancelled or self.phase == "done" then
     return
   end
   if self.kind == "continue" and not self.loadAttempted then
     self:_loadContinue()
-    if self.phase == "failed" then
-      return
-    end
   end
   if not self.planningReady then
     self:_pollMilestone("field-planning", "planning")
-    if self.phase == "failed" then
-      return
-    end
   end
   if not self.runtimeReady then
     self:_pollMilestone("field-runtime", "runtime")
-    if self.phase == "failed" then
-      return
-    end
   end
   if self.loader == nil then
     -- The loader needs entry planning, and for Continue the loaded
@@ -254,18 +196,13 @@ function FieldPreparationState:update(_)
     if not canBuild then
       return
     end
-    if not self:_ensureLoader() then
-      return
-    end
+    self:_ensureLoader()
   end
   if self.target == nil then
     if self.kind == "continue" then
       return
     end
     self:_planNewGameTarget()
-    if self.phase == "failed" or self.target == nil then
-      return
-    end
   end
   if self.phase ~= "location" then
     self.phase = "location"
@@ -277,14 +214,6 @@ function FieldPreparationState:draw()
   local lg = love.graphics
   local margin, line = DevScreenLayout.MARGIN, DevScreenLayout.LINE_HEIGHT
   lg.setColor(1, 1, 1)
-  if self.phase == "failed" then
-    lg.setColor(1, 0.5, 0.5)
-    lg.print("Field entry failed:", margin, margin)
-    lg.printf(tostring(self.error), margin, margin + line, lg.getWidth() - 2 * margin)
-    lg.setColor(0.7, 0.7, 0.75)
-    lg.print("Press escape to return.", margin, margin + 3 * line)
-    return
-  end
   lg.print("Preparing field entry...", margin, margin)
   lg.setColor(0.7, 0.7, 0.75)
   lg.print("Phase: " .. self.phase, margin, margin + line)

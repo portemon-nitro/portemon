@@ -214,7 +214,7 @@ function T.escape_before_readiness_never_builds_a_loader()
   state:dispose()
 end
 
-function T.failed_loader_build_is_visible_and_never_retried()
+function T.failed_loader_build_raises_directly()
   local builds = 0
   local state = FieldPreparationState.new(continueOptions({
     createLoader = function()
@@ -222,20 +222,13 @@ function T.failed_loader_build_is_visible_and_never_retried()
       error("injected world metadata failure", 0)
     end,
   }))
-  settle(state)
-  Assert.equal(state.phase, "failed", "a failed build fails preparation visibly")
-  Assert.isTrue(state.error ~= nil, "the failure carries its diagnostic")
-  Assert.equal(
-    string.find(tostring(state.error), "injected world metadata failure", 1, true) ~= nil,
-    true,
+  local ok, err = pcall(settle, state)
+  Assert.isFalse(ok, "a failed build raises instead of latching a failed phase")
+  Assert.isTrue(
+    string.find(tostring(err), "injected world metadata failure", 1, true) ~= nil,
     "the original build error is preserved"
   )
   Assert.equal(builds, 1, "the failed build ran exactly once")
-  for _ = 1, 5 do
-    state:update(1 / 60)
-  end
-  Assert.equal(builds, 1, "a failed build is never retried")
-  Assert.equal(state.phase, "failed")
   state:dispose()
 end
 
@@ -268,34 +261,31 @@ function T.transfer_waits_for_target_and_runtime_together()
   state:dispose()
 end
 
-function T.runtime_failure_is_visible_while_the_target_is_pending()
+function T.runtime_failure_raises_while_the_target_is_pending()
   local log = {}
   local calls = {}
   local gates = { planning = true, runtime = false, runtimeFailure = "injected runtime failure" }
   local state = FieldPreparationState.new(newGameOptions(gates, log, calls, { ready = false }))
-  settle(state)
-  Assert.equal(state.phase, "failed", "a runtime failure fails preparation visibly")
+  local ok, err = pcall(settle, state)
+  Assert.isFalse(ok, "a runtime failure raises instead of latching a failed phase")
   Assert.isTrue(
-    string.find(tostring(state.error), "injected runtime failure", 1, true) ~= nil,
+    string.find(tostring(err), "injected runtime failure", 1, true) ~= nil,
     "the runtime cause is preserved"
   )
   Assert.equal(calls.transfers or 0, 0, "a failed runtime never transfers")
-  settle(state)
-  Assert.equal(state.phase, "failed")
-  Assert.equal(calls.transfers or 0, 0, "the failure surfaces exactly once")
   state:dispose()
 end
 
-function T.target_failure_is_visible_while_runtime_is_pending()
+function T.target_failure_raises_while_runtime_is_pending()
   local log = {}
   local calls = {}
   local gates = { planning = true, runtime = false }
   local state =
     FieldPreparationState.new(newGameOptions(gates, log, calls, { ready = false, failure = "injected target failure" }))
-  settle(state)
-  Assert.equal(state.phase, "failed", "a target failure fails preparation visibly")
+  local ok, err = pcall(settle, state)
+  Assert.isFalse(ok, "a target failure raises instead of latching a failed phase")
   Assert.isTrue(
-    string.find(tostring(state.error), "injected target failure", 1, true) ~= nil,
+    string.find(tostring(err), "injected target failure", 1, true) ~= nil,
     "the target cause is preserved"
   )
   Assert.equal(calls.transfers or 0, 0, "a failed target never transfers")
@@ -331,8 +321,8 @@ function T.continue_rejects_a_save_without_a_field_location()
       transfers = transfers + 1
     end,
   }))
-  settle(state)
-  Assert.equal(state.phase, "failed", "an unvalidated save fails preparation visibly")
+  local ok = pcall(settle, state)
+  Assert.isFalse(ok, "an unvalidated save raises instead of latching a failed phase")
   Assert.equal(transfers, 0, "an unvalidated save never transfers")
   state:dispose()
 end
@@ -420,7 +410,7 @@ function T.transfer_waits_for_location_and_runtime_together()
   state:dispose()
 end
 
-function T.location_failure_is_visible_before_transfer()
+function T.location_failure_raises_before_transfer()
   local log = {}
   local calls = {}
   local gates = { planning = true, runtime = true }
@@ -432,10 +422,10 @@ function T.location_failure_is_visible_before_transfer()
   })
   options.derivedAssets = host
   local state = FieldPreparationState.new(options)
-  settle(state)
-  Assert.equal(state.phase, "failed", "a location failure fails preparation visibly")
+  local ok, err = pcall(settle, state)
+  Assert.isFalse(ok, "a location failure raises instead of latching a failed phase")
   Assert.isTrue(
-    string.find(tostring(state.error), "injected location failure", 1, true) ~= nil,
+    string.find(tostring(err), "injected location failure", 1, true) ~= nil,
     "the location cause is preserved"
   )
   Assert.equal(calls.transfers or 0, 0, "a failed location never transfers")
@@ -535,7 +525,7 @@ function T.continue_demands_its_destination_while_runtime_is_still_pending()
   state:dispose()
 end
 
-function T.continue_save_failure_fails_while_closures_are_still_pending()
+function T.continue_save_failure_raises_while_closures_are_still_pending()
   local log = {}
   local storeCalls = {}
   local loaderCalls = {}
@@ -543,16 +533,14 @@ function T.continue_save_failure_fails_while_closures_are_still_pending()
   local state = FieldPreparationState.new(
     continueGatedOptions(gates, log, storeCalls, loaderCalls, { ready = false }, { failure = "injected save failure" })
   )
-  settle(state)
-  Assert.equal(state.phase, "failed", "a save failure fails preparation even while closures are pending")
+  local ok, err = pcall(settle, state)
+  Assert.isFalse(ok, "a save failure raises even while closures are pending")
   Assert.isTrue(
-    string.find(tostring(state.error), "injected save failure", 1, true) ~= nil,
+    string.find(tostring(err), "injected save failure", 1, true) ~= nil,
     "the save cause is preserved"
   )
   Assert.equal(loaderCalls.transfers or 0, 0, "a failed save never transfers")
   Assert.equal(storeCalls.loads or 0, 1, "the failed load ran exactly once")
-  settle(state)
-  Assert.equal(storeCalls.loads, 1, "a failed load is never retried")
   state:dispose()
 end
 

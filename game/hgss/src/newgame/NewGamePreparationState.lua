@@ -3,9 +3,10 @@ local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 -- Pending New Game ownership between the Main Menu intent and Oak
 -- composition. It requests the semantic New Game intro milestone as
 -- required, then transfers to the already-registered ready callback exactly
--- once. Failures are visible and cancellable; cancellation returns to the
--- menu without composing Oak or reserving a candidate, and it never
--- retires the selected generation's compiled output.
+-- once. A reported failure raises directly: this state owns no error
+-- presentation of its own. Cancellation remains available while pending and
+-- returns to the menu without composing Oak or reserving a candidate; it
+-- never retires the selected generation's compiled output.
 
 ---@class NewGamePreparationOptions
 ---@field derivedAssets table<string, function> semantic derived-asset host
@@ -16,9 +17,8 @@ local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 ---@field derivedAssets table<string, function>
 ---@field onReady fun()?
 ---@field onCancel fun()?
----@field phase "pending"|"failed"|"done"
+---@field phase "pending"|"done"
 ---@field progress { state: string, ready: integer, total: integer|nil, failure: unknown }?
----@field error unknown?
 ---@field fired boolean
 ---@field cancelled boolean
 local NewGamePreparationState = {}
@@ -39,40 +39,21 @@ function NewGamePreparationState.new(options)
     onCancel = options.onCancel,
     phase = "pending",
     progress = nil,
-    error = nil,
     fired = false,
     cancelled = false,
   }, NewGamePreparationState)
 end
 
-function NewGamePreparationState:_fail(err)
-  if self.phase ~= "failed" then
-    self.phase = "failed"
-    self.error = err
-  end
-end
-
 function NewGamePreparationState:update(_)
-  if self.fired or self.cancelled or self.phase == "failed" or self.phase == "done" then
+  if self.fired or self.cancelled or self.phase == "done" then
     return
   end
   -- The semantic host is a plain function table (dot calls, no self).
-  local ok, ready, failure = pcall(self.derivedAssets.requestMilestone, "new-game-intro", "required")
-  if not ok then
-    self:_fail(ready)
-    return
-  end
+  local ready, failure = self.derivedAssets.requestMilestone("new-game-intro", "required")
   -- Progress is a read-only observation of the same milestone: it never
   -- enrolls work and never substitutes for the readiness request above.
-  local progressOk, progress = pcall(self.derivedAssets.milestoneStatus, "new-game-intro")
-  if not progressOk then
-    self:_fail(progress)
-    return
-  end
-  if type(progress) ~= "table" then
-    self:_fail("derived-asset progress is unavailable")
-    return
-  end
+  local progress = self.derivedAssets.milestoneStatus("new-game-intro")
+  assert(type(progress) == "table", "derived-asset progress is unavailable")
   self.progress = {
     state = progress.state,
     ready = progress.ready,
@@ -80,13 +61,12 @@ function NewGamePreparationState:update(_)
     failure = progress.failure,
   }
   if failure ~= nil then
-    self:_fail(failure)
-    return
+    error(failure, 0)
   end
   if ready then
     -- The ready transfer composes the candidate and Oak; a failure there
-    -- is composition behavior, never relabeled as cache work. The latch
-    -- is set before the call so a reentrant update cannot transfer twice.
+    -- is composition behavior and raises directly. The latch is set
+    -- before the call so a reentrant update cannot transfer twice.
     self.fired = true
     self.phase = "done"
     local transfer = assert(self.onReady, "New Game preparation requires its ready transfer")
@@ -98,14 +78,6 @@ function NewGamePreparationState:draw()
   local lg = love.graphics
   local margin, line = DevScreenLayout.MARGIN, DevScreenLayout.LINE_HEIGHT
   lg.setColor(1, 1, 1)
-  if self.phase == "failed" then
-    lg.setColor(1, 0.5, 0.5)
-    lg.print("New Game preparation failed:", margin, margin)
-    lg.printf(tostring(self.error), margin, margin + line, lg.getWidth() - 2 * margin)
-    lg.setColor(0.7, 0.7, 0.75)
-    lg.print("Press escape to return.", margin, margin + 3 * line)
-    return
-  end
   lg.print("Preparing New Game...", margin, margin)
   local fraction = 0
   local snapshot = self.progress
