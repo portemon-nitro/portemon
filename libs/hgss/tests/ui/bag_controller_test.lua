@@ -2089,4 +2089,407 @@ function T.acknowledgement_dismissal_stays_terminal_and_unknown_events_raise()
   end)
 end
 
+-- Sell-context harness: the controller with a stub sale session that quotes
+-- one fixed resale value, refuses the protected bicycle, and stales quotes
+-- across unrelated inventory revisions like the real mart session. The stub
+-- owns balance and commit counting; the controller under test owns every
+-- state transition.
+local function saleTemplates()
+  local function text(value)
+    return { segments = { { kind = "text", value = value } } }
+  end
+  return {
+    selectedItem = text("selected"),
+    movePrompt = text("move"),
+    tossConfirm = text("toss?"),
+    tossResult = text("tossed"),
+    sale = {
+      notSellable = text("cannot be sold"),
+      quantity = text("how many?"),
+      offer = text("offer"),
+      result = text("sold"),
+    },
+  }
+end
+
+---@param bag HgssBagService
+---@param money integer
+local function stubSaleSession(bag, money)
+  local state = { balance = money, quote = nil, commits = 0 }
+  local session = {}
+  function session.view(_self)
+    return { balance = state.balance }
+  end
+  function session.quoteSell(_self, itemKey, quantity)
+    if itemKey == "BICYCLE" then
+      return nil, "not_sellable"
+    end
+    local token = {}
+    state.quote = {
+      token = token,
+      item = itemKey,
+      quantity = quantity,
+      bagRevision = bag:revision(),
+      balance = state.balance,
+      committed = false,
+    }
+    return token, { total = quantity * 150 }
+  end
+  function session.commit(_self, token)
+    state.commits = state.commits + 1
+    local quote = state.quote
+    if quote == nil or token ~= quote.token or quote.committed then
+      return nil, "stale"
+    end
+    if quote.bagRevision ~= bag:revision() or quote.balance ~= state.balance then
+      return nil, "stale"
+    end
+    quote.committed = true
+    Assert.isTrue(bag:take(quote.item, quote.quantity), "the sale removes the quoted stack")
+    state.balance = state.balance + quote.quantity * 150
+    return { terms = { total = quote.quantity * 150 } }
+  end
+  function session.commitCount(_self)
+    return state.commits
+  end
+  function session.balance(_self)
+    return state.balance
+  end
+  return session
+end
+
+---@param bag HgssBagService
+---@param cursor BagCursor
+---@param session table
+---@return BagController
+local function sellController(bag, cursor, session)
+  local layoutManifest = manifest()
+  local function resolveLayout()
+    return BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  end
+  return BagController.new({
+    model = {
+      refresh = function()
+        return BagModel.build(bag, cursor)
+      end,
+    },
+    cursor = cursor,
+    context = "sell",
+    resolveLayout = resolveLayout,
+    promptShape = promptShape(),
+    tossPrompt = tossPrompt(),
+    salePrompt = tossPrompt(),
+    saleSession = session,
+    messages = saleTemplates(),
+    itemSelectTicks = 3,
+    textPolicy = textPolicy(),
+    commands = {
+      toss = function(itemKey, quantity)
+        return bag:take(itemKey, quantity)
+      end,
+      move = function(pocketKey, fromIndex, toIndex)
+        return bag:move(pocketKey, fromIndex, toIndex)
+      end,
+      register = function(itemKey)
+        return bag:tryRegister(itemKey)
+      end,
+      unregister = function(itemKey)
+        return bag:unregister(itemKey)
+      end,
+    },
+    resolveActions = BagActionPolicy.forService(bag),
+  })
+end
+
+-- Drains sale ticks until the acknowledgement owns the flow.
+---@param control BagController
+local function settleSaleAck(control)
+  for _ = 1, 512 do
+    if control:status().state == "sale_ack" then
+      return
+    end
+    control:updateFixed({})
+  end
+  Assert.equal(control:status().state, "sale_ack", "the typed sale result settles into acknowledgement")
+end
+
+-- Drains sale ticks until the named substate owns the flow.
+---@param control BagController
+---@param state string
+local function settleSaleState(control, state)
+  for _ = 1, 512 do
+    if control:status().state == state then
+      return
+    end
+    control:updateFixed({})
+  end
+  Assert.equal(control:status().state, state, "the sale settles into " .. state)
+end
+
+-- Drains sale ticks until the quantity prompt finishes typing.
+---@param control BagController
+local function settleSaleQuantityPrompt(control)
+  for _ = 1, 64 do
+    if control:status().lowerMessage == nil then
+      return
+    end
+    control:updateFixed({})
+  end
+  Assert.isNil(control:status().lowerMessage, "the quantity prompt finishes typing before input")
+end
+
+-- Exclusive clips own their ticks: latched activation and the move commit
+-- clip ignore ordinary input behind terminal dismissal, keep their own
+-- completion totals, and never replay input into browsing.
+function T.exclusive_clips_keep_their_timing_and_input_policy()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5))
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control = controller(bag, cursor)
+  control:updateFixed({})
+  control:updateFixed({ { type = "confirm" } })
+  settleEntry(control)
+  chooseActionSlot(control, 1)
+  Assert.isTrue(control:status().feedback ~= nil, "choosing toss latches activation feedback")
+  local focused = control:status().focusedAbsoluteIndex
+  local revision = bag:revision()
+  control:updateFixed({ navigate("down"), { type = "pointer_cancel" } })
+  Assert.isTrue(control:status().feedback ~= nil, "navigation and pointer cancel never end the clip")
+  Assert.equal(control:status().focusedAbsoluteIndex, focused, "navigation behind a clip steers nothing")
+  Assert.isNil(control:takeResult(), "the clip closes nothing")
+  Assert.equal(bag:revision(), revision, "the clip mutates nothing")
+  control:updateFixed({ navigate("up"), { type = "dismiss" }, { type = "confirm" } })
+  Assert.deepEqual(control:takeResult(), { kind = "closed" }, "dismissal behind a clip still closes")
+  Assert.isNil(control:takeResult(), "the close result drains exactly once")
+  Assert.equal(bag:quantity("POTION"), 5, "the dismissed clip changes no quantities")
+  local freshBag = service()
+  Assert.isTrue(freshBag:add("POTION", 5))
+  local freshCursor = BagCursor.new()
+  freshCursor:setPocket("medicine")
+  local fresh = controller(freshBag, freshCursor)
+  fresh:updateFixed({})
+  fresh:updateFixed({ { type = "confirm" } })
+  settleEntry(fresh)
+  chooseActionSlot(fresh, 1)
+  local ticks = 0
+  while fresh:status().feedback ~= nil and ticks < 64 do
+    fresh:updateFixed({})
+    ticks = ticks + 1
+  end
+  Assert.equal(ticks, 4, "the latched activation completes on its generated total")
+  Assert.equal(fresh:status().state, "toss_quantity", "the clip hands off without replaying input")
+  Assert.equal(fresh:status().quantity, 1, "the clip hands off with a preselected copy")
+  local moveBag = stockEightItems(service())
+  local moveCursor = BagCursor.new()
+  moveCursor:setPocket("items")
+  local move = controller(moveBag, moveCursor)
+  move:updateFixed({})
+  move:updateFixed({ { type = "confirm" } })
+  settleEntry(move)
+  chooseActionSlot(move, 3)
+  Assert.equal(move:status().state, "move_select", "choosing move enters target selection")
+  move:updateFixed({ navigate("right") })
+  move:updateFixed({ { type = "confirm" } })
+  local transition = assert(move:status().moveTransition, "confirming a new target starts the commit clip")
+  Assert.equal(transition.kind, "changed", "a moved target runs the changed clip")
+  move:updateFixed({ navigate("left"), { type = "pointer_cancel" } })
+  Assert.equal(move:status().moveTarget, 1, "navigation behind the commit clip steers nothing")
+  Assert.isTrue(move:status().moveTransition ~= nil, "ordinary input never ends the clip")
+  Assert.isNil(move:takeResult(), "the clip closes nothing")
+  local beforeMove = moveBag:revision()
+  move:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(move:takeResult(), { kind = "closed" }, "dismissal behind the commit clip still closes")
+  Assert.equal(moveBag:revision(), beforeMove, "the dismissed clip reorders nothing")
+  local commitBag = stockEightItems(service())
+  local commitCursor = BagCursor.new()
+  commitCursor:setPocket("items")
+  local commit = controller(commitBag, commitCursor)
+  commit:updateFixed({})
+  commit:updateFixed({ { type = "confirm" } })
+  settleEntry(commit)
+  chooseActionSlot(commit, 3)
+  commit:updateFixed({ navigate("right") })
+  commit:updateFixed({ { type = "confirm" } })
+  local clipTicks = 0
+  while commit:status().moveTransition ~= nil and clipTicks < 64 do
+    commit:updateFixed({})
+    clipTicks = clipTicks + 1
+  end
+  Assert.equal(clipTicks, 5, "the changed clip completes on its generated total")
+  Assert.equal(commit:status().state, "browsing", "the clip hands off without replaying input")
+  Assert.equal(BagModel.build(commitBag, commitCursor).slots[1].item, "ITEM_12", "the clip reorders once")
+  local settledRevision = commitBag:revision()
+  commit:updateFixed({})
+  commit:updateFixed({})
+  Assert.equal(BagModel.build(commitBag, commitCursor).slots[1].item, "ITEM_12", "later ticks reorder nothing")
+  Assert.equal(commitBag:revision(), settledRevision, "later ticks mutate nothing")
+end
+
+-- Sale and toss stay transactional across every substate: prices and
+-- messages match the quote, revisions gate the commit, and each committed
+-- change happens exactly once no matter how often the result is ticked.
+function T.sale_and_toss_flows_commit_exactly_once_across_substates()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5))
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local session = stubSaleSession(bag, 1000)
+  local control = sellController(bag, cursor, session)
+  control:updateFixed({})
+  control:updateFixed({ { type = "confirm" } })
+  settleSaleState(control, "sale_quantity")
+  settleSaleQuantityPrompt(control)
+  control:updateFixed({ navigate("up") })
+  control:updateFixed({ navigate("up") })
+  Assert.equal(control:status().quantity, 3, "quantity navigation accumulates before confirmation")
+  local beforeRevision = bag:revision()
+  control:updateFixed({ { type = "confirm" } })
+  settleFeedback(control)
+  Assert.equal(control:status().state, "sale_offer", "confirming the quantity opens the offer")
+  Assert.isTrue(control:status().yesNoPrompt ~= nil, "the offer opens its modal prompt")
+  Assert.equal(control:status().saleTotal, 450, "the offer presents the quoted total")
+  control:updateFixed({ { type = "confirm" } })
+  settlePromptChoice(control)
+  settleSaleAck(control)
+  Assert.equal(session.commitCount(), 1, "the result commits its quote exactly once")
+  Assert.equal(bag:quantity("POTION"), 2, "the sale removes only the quoted copies")
+  Assert.equal(session.balance(), 1450, "the sale credits the quoted total once")
+  Assert.equal(bag:revision(), beforeRevision + 1, "the sale mutates the inventory exactly once")
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "browsing", "acknowledging returns to browsing")
+  Assert.equal(session.commitCount(), 1, "acknowledgement never recommits")
+  Assert.equal(bag:quantity("POTION"), 2, "acknowledgement removes nothing more")
+  local refuseBag = service()
+  Assert.isTrue(refuseBag:add("BICYCLE", 1))
+  local refuseCursor = BagCursor.new()
+  refuseCursor:setPocket("key_items")
+  local refuseSession = stubSaleSession(refuseBag, 1000)
+  local refuse = sellController(refuseBag, refuseCursor, refuseSession)
+  refuse:updateFixed({})
+  refuse:updateFixed({ { type = "confirm" } })
+  settleSaleAck(refuse)
+  Assert.equal(refuseSession.commitCount(), 0, "a refusal never commits")
+  Assert.equal(refuseBag:quantity("BICYCLE"), 1, "a refusal mutates nothing")
+  Assert.equal(refuseSession.balance(), 1000, "a refusal credits nothing")
+  refuse:updateFixed({ { type = "confirm" } })
+  Assert.equal(refuse:status().state, "browsing", "acknowledging a refusal returns to browsing")
+  local staleBag = service()
+  Assert.isTrue(staleBag:add("POTION", 3))
+  local staleCursor = BagCursor.new()
+  staleCursor:setPocket("medicine")
+  local staleSession = stubSaleSession(staleBag, 1000)
+  local stale = sellController(staleBag, staleCursor, staleSession)
+  stale:updateFixed({})
+  stale:updateFixed({ { type = "confirm" } })
+  settleSaleState(stale, "sale_quantity")
+  settleSaleQuantityPrompt(stale)
+  stale:updateFixed({ { type = "confirm" } })
+  settleFeedback(stale)
+  Assert.equal(stale:status().state, "sale_offer", "setup stages a live quote")
+  Assert.isTrue(staleBag:add("GREAT_BALL", 1), "an unrelated stock change advances the revision")
+  stale:updateFixed({ { type = "confirm" } })
+  settlePromptChoice(stale)
+  settleSaleAck(stale)
+  Assert.equal(staleSession.commitCount(), 1, "the stale quote reaches the session once")
+  Assert.equal(staleBag:quantity("POTION"), 3, "a stale quote never removes stock")
+  Assert.equal(staleSession.balance(), 1000, "a stale quote never credits money")
+  local tossBag = service()
+  Assert.isTrue(tossBag:add("POTION", 1))
+  local tossCursor = BagCursor.new()
+  tossCursor:setPocket("medicine")
+  local toss = controller(tossBag, tossCursor)
+  toss:updateFixed({})
+  toss:updateFixed({ { type = "confirm" } })
+  settleEntry(toss)
+  chooseActionSlot(toss, 1)
+  settleFeedback(toss)
+  settleTossPrompt(toss)
+  toss:updateFixed({ { type = "confirm" } })
+  settlePromptChoice(toss)
+  settleTossAck(toss)
+  local tossRevision = tossBag:revision()
+  toss:updateFixed({ { type = "confirm" } })
+  Assert.equal(tossBag:quantity("POTION"), 0, "acknowledgement commits the toss once")
+  Assert.equal(tossBag:revision(), tossRevision + 1, "acknowledgement mutates exactly once")
+  Assert.equal(toss:status().state, "browsing", "the toss hands off without replaying input")
+  toss:updateFixed({ { type = "confirm" } })
+  Assert.equal(tossBag:quantity("POTION"), 0, "repeated ticks never recommit")
+  Assert.equal(tossBag:revision(), tossRevision + 1, "the emptied cell reopens nothing")
+end
+
+-- Event ordering and read purity remain: a batch that emits an intent
+-- never validates later events, a nested menu that loses its selection
+-- collapses without mutation, and status never advances flow state.
+function T.batches_stop_at_the_intent_boundary_and_status_stays_read_only()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 3))
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control = fieldController(bag, cursor, "pick_held")
+  control:updateFixed({})
+  control:updateFixed({ { type = "confirm" }, { type = "warp" } })
+  local intent = assert(control:takeIntent(), "the pick emits before the batch ends")
+  Assert.equal(intent.kind, "pick", "the picker emits selections")
+  Assert.equal(intent.item, "POTION", "the pick snapshots the item identity")
+  Assert.isNil(control:takeResult(), "the stopped batch closes nothing")
+  local staleBag = service()
+  Assert.isTrue(staleBag:add("POTION", 5))
+  local staleCursor = BagCursor.new()
+  staleCursor:setPocket("medicine")
+  local stale = controller(staleBag, staleCursor)
+  stale:updateFixed({})
+  stale:updateFixed({ { type = "confirm" } })
+  settleEntry(stale)
+  Assert.equal(stale:status().state, "action_menu", "setup opens the action menu")
+  Assert.isTrue(staleBag:take("POTION", 5))
+  local staleRevision = staleBag:revision()
+  stale:updateFixed({ { type = "confirm" } })
+  Assert.equal(stale:status().state, "browsing", "a stale menu collapses instead of dispatching a ghost")
+  Assert.isNil(stale:takeIntent(), "the collapsed menu emits nothing")
+  Assert.isNil(stale:takeResult(), "the collapsed menu closes nothing")
+  Assert.equal(staleBag:revision(), staleRevision, "collapsing a stale menu mutates nothing")
+  local clipBag = service()
+  Assert.isTrue(clipBag:add("POTION", 5))
+  local clipCursor = BagCursor.new()
+  clipCursor:setPocket("medicine")
+  local clip = controller(clipBag, clipCursor)
+  clip:updateFixed({})
+  clip:updateFixed({ { type = "confirm" } })
+  settleEntry(clip)
+  chooseActionSlot(clip, 1)
+  local latched = assert(clip:status().feedback, "setup latches activation feedback")
+  local clipRevision = clipBag:revision()
+  clip:status()
+  clip:status()
+  local reread = clip:status()
+  Assert.equal(reread.feedback.elapsed, latched.elapsed, "status never advances the latched clock")
+  Assert.equal(reread.state, "action_menu", "status never advances the flow")
+  Assert.equal(clipBag:revision(), clipRevision, "status never touches the inventory")
+  clip:updateFixed({})
+  Assert.equal(clip:status().feedback.elapsed, latched.elapsed + 1, "only ticks advance the clock")
+  local ackBag = service()
+  Assert.isTrue(ackBag:add("POTION", 1))
+  local ackCursor = BagCursor.new()
+  ackCursor:setPocket("medicine")
+  local ack = controller(ackBag, ackCursor)
+  ack:updateFixed({})
+  ack:updateFixed({ { type = "confirm" } })
+  settleEntry(ack)
+  chooseActionSlot(ack, 1)
+  settleFeedback(ack)
+  settleTossPrompt(ack)
+  ack:updateFixed({ { type = "confirm" } })
+  settlePromptChoice(ack)
+  settleTossAck(ack)
+  local ackRevision = ackBag:revision()
+  ack:status()
+  ack:status()
+  Assert.equal(ack:status().state, "toss_ack", "status never advances the acknowledgement")
+  Assert.equal(ackBag:quantity("POTION"), 1, "status never commits")
+  Assert.equal(ackBag:revision(), ackRevision, "status never mutates")
+  ack:updateFixed({ { type = "confirm" } })
+  Assert.equal(ackBag:quantity("POTION"), 0, "only the acknowledgement input commits")
+end
+
 return { tests = T }

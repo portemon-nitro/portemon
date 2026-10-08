@@ -1343,13 +1343,8 @@ function BagController:_stepSaleQuantity(uiInput)
 end
 
 function BagController:_stepSaleOffer(uiInput)
-  for _, event in ipairs(uiInput) do
-    validateBagEvent(event)
-    if event.type == "dismiss" then
-      self._result = { kind = "closed" }
-      self._closed = true
-      return
-    end
+  if self:_consumeDismiss(uiInput) then
+    return
   end
   if not self:_messageComplete() then
     local accelerate = false
@@ -1380,13 +1375,8 @@ function BagController:_stepSaleOffer(uiInput)
 end
 
 function BagController:_stepSaleResult(uiInput)
-  for _, event in ipairs(uiInput) do
-    validateBagEvent(event)
-    if event.type == "dismiss" then
-      self._result = { kind = "closed" }
-      self._closed = true
-      return
-    end
+  if self:_consumeDismiss(uiInput) then
+    return
   end
   if not self:_messageComplete() then
     local accelerate = false
@@ -1413,13 +1403,8 @@ function BagController:_stepSaleResult(uiInput)
 end
 
 function BagController:_stepSaleRefusal(uiInput)
-  for _, event in ipairs(uiInput) do
-    validateBagEvent(event)
-    if event.type == "dismiss" then
-      self._result = { kind = "closed" }
-      self._closed = true
-      return
-    end
+  if self:_consumeDismiss(uiInput) then
+    return
   end
   if not self:_messageComplete() then
     self:_stepMessage(false)
@@ -1430,17 +1415,7 @@ function BagController:_stepSaleRefusal(uiInput)
 end
 
 function BagController:_stepSaleAck(uiInput)
-  local acknowledge, dismiss = false, false
-  for _, event in ipairs(uiInput) do
-    validateBagEvent(event)
-    if event.type == "dismiss" then
-      dismiss = true
-    elseif event.type == "confirm" or event.type == "cancel" then
-      acknowledge = true
-    elseif event.type == "pointer_down" and pressInsidePane(event) then
-      acknowledge = true
-    end
-  end
+  local acknowledge, dismiss = self:_scanAcknowledgement(uiInput)
   if dismiss then
     self._result = { kind = "closed" }
     self._closed = true
@@ -2130,13 +2105,8 @@ end
 -- acknowledgement state, and only an open prompt sees prompt input.
 ---@param uiInput table[]
 function BagController:_stepTossConfirm(uiInput)
-  for _, event in ipairs(uiInput) do
-    validateBagEvent(event)
-    if event.type == "dismiss" then
-      self._result = { kind = "closed" }
-      self._closed = true
-      return
-    end
+  if self:_consumeDismiss(uiInput) then
+    return
   end
   if not self:_messageComplete() then
     local accelerate = false
@@ -2168,48 +2138,114 @@ function BagController:_stepTossConfirm(uiInput)
   self:_resolveTossPrompt()
 end
 
--- Owns one fixed tick that begins in the post-choice acknowledgement
--- state: dismissal closes without mutation, A/B or a fresh in-pane press
--- commits exactly once, and anything else waits. The scan finishes before
--- any terminal action so batch position never decides the outcome, and
--- the caller returns before the ordinary loop so the newly entered
--- browsing state never sees this batch.
+-- Consumes a terminal dismissal ahead of message work: validates the batch
+-- in order and closes without mutation, reporting whether the tick is
+-- fully handled. Events after dismissal stay unprocessed.
 ---@param uiInput table[]
-function BagController:_stepTossAck(uiInput)
-  local hasDismiss = false
-  local hasAcknowledgement = false
+---@return boolean
+function BagController:_consumeDismiss(uiInput)
   for _, event in ipairs(uiInput) do
     validateBagEvent(event)
     if event.type == "dismiss" then
-      hasDismiss = true
-    elseif event.type == "confirm" or event.type == "cancel" then
-      hasAcknowledgement = true
-    elseif event.type == "pointer_down" then
-      if pressInsidePane(event) then
-        hasAcknowledgement = true
-      end
-    elseif
-      event.type == "navigate"
-      or event.type == "menu"
-      or event.type == "pointer_move"
-      or event.type == "pointer_up"
-      or event.type == "pointer_cancel"
-      or event.type == "pointer_scroll"
-    then
-      -- Inert while waiting for acknowledgement.
-    else
-      error("unknown bag event type " .. tostring(event.type), 2)
+      self._result = { kind = "closed" }
+      self._closed = true
+      return true
     end
   end
-  if hasDismiss then
+  return false
+end
+
+-- Scans one acknowledgement batch in order: dismissal stays terminal,
+-- confirmation/cancellation or a fresh in-pane press acknowledges, and
+-- every other known event waits. Unknown events stay programming errors
+-- through validation. The scan finishes before any terminal action so
+-- batch position never decides the outcome. Returns the two flags for
+-- the caller to complete with its own flow policy.
+---@param uiInput table[]
+---@return boolean acknowledge
+---@return boolean dismiss
+function BagController:_scanAcknowledgement(uiInput)
+  local acknowledge, dismiss = false, false
+  for _, event in ipairs(uiInput) do
+    validateBagEvent(event)
+    if event.type == "dismiss" then
+      dismiss = true
+    elseif event.type == "confirm" or event.type == "cancel" then
+      acknowledge = true
+    elseif event.type == "pointer_down" and pressInsidePane(event) then
+      acknowledge = true
+    end
+  end
+  return acknowledge, dismiss
+end
+
+-- Owns one fixed tick that begins in the post-choice acknowledgement
+-- state: dismissal closes without mutation, A/B or a fresh in-pane press
+-- commits exactly once, and anything else waits. The caller returns before
+-- the ordinary loop so the newly entered browsing state never sees this
+-- batch.
+---@param uiInput table[]
+function BagController:_stepTossAck(uiInput)
+  local acknowledge, dismiss = self:_scanAcknowledgement(uiInput)
+  if dismiss then
     self._result = { kind = "closed" }
     self._closed = true
     return
   end
-  if hasAcknowledgement then
+  if acknowledge then
     self:_commitToss()
   end
 end
+
+-- Owns one fixed tick inside the active exclusive context and reports
+-- whether a context owned the tick. The two contexts stay explicit:
+-- latched activation feedback still clears a held pointer capture while a
+-- running move commit clip accepts only terminal dismissal. Both close
+-- terminally with the cancel-equivalent sound and otherwise wait for
+-- their generated total, so no input replays into the flow below.
+-- Feedback keeps priority over the move clip, matching the previous
+-- check order.
+---@param uiInput table[]
+---@return boolean
+function BagController:_stepExclusiveClip(uiInput)
+  local feedback = self._feedback ~= nil
+  local moveClip = not feedback and self._state == "move_select" and self._moveClip ~= nil
+  if not feedback and not moveClip then
+    return false
+  end
+  for _, event in ipairs(uiInput) do
+    validateBagEvent(event)
+    if event.type == "dismiss" then
+      self:_playDismissSound()
+      self._result = { kind = "closed" }
+      self._closed = true
+      return true
+    elseif feedback and event.type == "pointer_cancel" then
+      self:cancelPointerCapture()
+    end
+  end
+  if feedback then
+    self:_stepFeedback()
+  else
+    self:_stepMoveClip()
+  end
+  return true
+end
+
+-- Closed per-tick dispatch for the states with dedicated step methods.
+-- Feedback and the move commit clip keep priority above this map in
+-- updateFixed; every other state falls through to ordinary event
+-- processing. The table holds immutable code references only.
+local SUBFLOW_STEPS = {
+  item_select = BagController._stepItemSelect,
+  sale_quantity = BagController._stepSaleQuantity,
+  sale_offer = BagController._stepSaleOffer,
+  sale_result = BagController._stepSaleResult,
+  sale_refusal = BagController._stepSaleRefusal,
+  sale_ack = BagController._stepSaleAck,
+  toss_confirm = BagController._stepTossConfirm,
+  toss_ack = BagController._stepTossAck,
+}
 
 ---@param uiInput table[]
 function BagController:updateFixed(uiInput)
@@ -2233,72 +2269,15 @@ function BagController:updateFixed(uiInput)
   if not self:_syncNested() then
     return
   end
-  -- Latched activation and move commit clips own their ticks: terminal
-  -- dismissal still closes, everything else waits for the generated total.
-  if self._feedback ~= nil then
-    for _, event in ipairs(uiInput) do
-      validateBagEvent(event)
-      if event.type == "dismiss" then
-        self:_playDismissSound()
-        self._result = { kind = "closed" }
-        self._closed = true
-        return
-      elseif event.type == "pointer_cancel" then
-        self:cancelPointerCapture()
-      end
-    end
-    if self._closed then
-      return
-    end
-    self:_stepFeedback()
+  -- Latched activation and move commit clips own their ticks ahead of
+  -- subflow dispatch; the closed map below owns the stepped sale, toss,
+  -- and selection-entry states.
+  if self:_stepExclusiveClip(uiInput) then
     return
   end
-  if self._state == "move_select" and self._moveClip ~= nil then
-    for _, event in ipairs(uiInput) do
-      validateBagEvent(event)
-      if event.type == "dismiss" then
-        self:_playDismissSound()
-        self._result = { kind = "closed" }
-        self._closed = true
-        return
-      end
-    end
-    if self._closed then
-      return
-    end
-    self:_stepMoveClip()
-    return
-  end
-  if self._state == "item_select" then
-    self:_stepItemSelect(uiInput)
-    return
-  end
-  if self._state == "sale_quantity" then
-    self:_stepSaleQuantity(uiInput)
-    return
-  end
-  if self._state == "sale_offer" then
-    self:_stepSaleOffer(uiInput)
-    return
-  end
-  if self._state == "sale_result" then
-    self:_stepSaleResult(uiInput)
-    return
-  end
-  if self._state == "sale_refusal" then
-    self:_stepSaleRefusal(uiInput)
-    return
-  end
-  if self._state == "sale_ack" then
-    self:_stepSaleAck(uiInput)
-    return
-  end
-  if self._state == "toss_confirm" then
-    self:_stepTossConfirm(uiInput)
-    return
-  end
-  if self._state == "toss_ack" then
-    self:_stepTossAck(uiInput)
+  local subflow = SUBFLOW_STEPS[self._state]
+  if subflow ~= nil then
+    subflow(self, uiInput)
     return
   end
   for _, event in ipairs(uiInput) do
@@ -2338,6 +2317,75 @@ function BagController:updateFixed(uiInput)
     else
       error("unknown bag event type " .. tostring(event.type), 2)
     end
+  end
+end
+
+-- Read-only flow presentation for the renderer: each helper copies the
+-- current flow facts onto the record without stepping clocks, opening
+-- prompts, or reconciling inventory. The dispatch conditions stay at the
+-- caller so overlay and per-state visibility never change.
+---@param record table<string, unknown>
+function BagController:_presentActionMenu(record)
+  record.actions = self._actions
+  record.actionNode = self._actionNode
+end
+
+---@param record table<string, unknown>
+function BagController:_presentItemSelect(record)
+  record.itemSelectElapsed = self._itemSelectElapsed
+  record.itemSelectTotal = self._itemSelectTicks
+end
+
+---@param record table<string, unknown>
+function BagController:_presentToss(record)
+  record.quantity = self._quantity
+  record.quantityMax = self._quantityMax
+  if self._state == "toss_quantity" and self._quantityPressedTicks > 0 then
+    record.quantityPressedControl = self._quantityPressedControl
+  end
+  if self._state == "toss_confirm" or self._state == "toss_ack" then
+    record.tossBase = self._tossBase
+    local promptStatus = self._prompt:status()
+    if promptStatus.active then
+      record.yesNoPrompt = promptStatus
+    end
+  end
+end
+
+---@param record table<string, unknown>
+function BagController:_presentSaleQuantity(record)
+  record.quantity = self._quantity
+  record.quantityMax = self._quantityMax
+  record.saleBalance = self._saleBalance
+  record.saleTotal = self._saleDisplayedTotal
+  if self._quantityPressedTicks > 0 then
+    record.quantityPressedControl = self._quantityPressedControl
+  end
+end
+
+---@param record table<string, unknown>
+function BagController:_presentSaleFlow(record)
+  record.saleQuantity = self._quantity
+  record.saleBalance = self._saleBalance
+  record.saleTotal = self._saleDisplayedTotal
+  if self._state == "sale_offer" then
+    local promptStatus = self._prompt:status()
+    if promptStatus.active then
+      record.yesNoPrompt = promptStatus
+    end
+  end
+end
+
+---@param record table<string, unknown>
+function BagController:_presentMoveSelect(record)
+  record.moveTarget = self._moveTarget
+  record.moveOrigin = self._moveFromPos
+  if self._moveClip ~= nil then
+    record.moveTransition = {
+      kind = self._moveClip.changed and "changed" or "unchanged",
+      elapsed = self._moveClip.elapsed,
+      total = self._moveClip.total,
+    }
   end
 end
 
@@ -2416,60 +2464,25 @@ function BagController:status()
     record.feedback = { kind = self._feedback.kind, elapsed = self._feedback.elapsed, total = self._feedback.total }
   end
   if self._state == "action_menu" and not self._overlay then
-    record.actions = self._actions
-    record.actionNode = self._actionNode
+    self:_presentActionMenu(record)
   elseif self._state == "item_select" and not self._overlay then
-    record.itemSelectElapsed = self._itemSelectElapsed
-    record.itemSelectTotal = self._itemSelectTicks
+    self:_presentItemSelect(record)
   elseif
     (self._state == "toss_quantity" or self._state == "toss_confirm" or self._state == "toss_ack")
     and not self._overlay
   then
-    record.quantity = self._quantity
-    record.quantityMax = self._quantityMax
-    if self._state == "toss_quantity" and self._quantityPressedTicks > 0 then
-      record.quantityPressedControl = self._quantityPressedControl
-    end
-    if self._state == "toss_confirm" or self._state == "toss_ack" then
-      record.tossBase = self._tossBase
-      local promptStatus = self._prompt:status()
-      if promptStatus.active then
-        record.yesNoPrompt = promptStatus
-      end
-    end
+    self:_presentToss(record)
   elseif self._state == "sale_quantity" and not self._overlay then
-    record.quantity = self._quantity
-    record.quantityMax = self._quantityMax
-    record.saleBalance = self._saleBalance
-    record.saleTotal = self._saleDisplayedTotal
-    if self._quantityPressedTicks > 0 then
-      record.quantityPressedControl = self._quantityPressedControl
-    end
+    self:_presentSaleQuantity(record)
   elseif
     self._state == "sale_offer"
     or self._state == "sale_result"
     or self._state == "sale_refusal"
     or self._state == "sale_ack"
   then
-    record.saleQuantity = self._quantity
-    record.saleBalance = self._saleBalance
-    record.saleTotal = self._saleDisplayedTotal
-    if self._state == "sale_offer" then
-      local promptStatus = self._prompt:status()
-      if promptStatus.active then
-        record.yesNoPrompt = promptStatus
-      end
-    end
+    self:_presentSaleFlow(record)
   elseif self._state == "move_select" and not self._overlay then
-    record.moveTarget = self._moveTarget
-    record.moveOrigin = self._moveFromPos
-    if self._moveClip ~= nil then
-      record.moveTransition = {
-        kind = self._moveClip.changed and "changed" or "unchanged",
-        elapsed = self._moveClip.elapsed,
-        total = self._moveClip.total,
-      }
-    end
+    self:_presentMoveSelect(record)
   end
   return record
 end
