@@ -19,6 +19,7 @@ local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 local T = {}
 local LONG_FLAG_NAME = "FLAG_HIDE_GOLDENROD_DEPT_STORE_5F_RETURN_FRUSTRATION_LADY"
@@ -1673,6 +1674,72 @@ function T.location_grid_shows_status_and_controls_on_compact_wide_tall_and_dual
   draw(scope, 256, 384, dual, "location-dual-touch", "Location")
 end
 
+local function contextPane(plan)
+  for _, pane in ipairs(plan.panes) do
+    if not pane.interactive then
+      return pane
+    end
+  end
+  error("the dual-display layout must publish a context pane")
+end
+
+local function statusCallsForContext(paletteCalls)
+  local startIndex
+  for index, call in ipairs(paletteCalls) do
+    if call.value == "Location context" then
+      startIndex = index
+    end
+  end
+  assert(startIndex ~= nil, "the context pane paints its heading")
+  local statusCalls = {}
+  for index = startIndex + 1, #paletteCalls do
+    local call = paletteCalls[index]
+    if call.y >= 64 then
+      statusCalls[#statusCalls + 1] = call
+    end
+  end
+  return statusCalls
+end
+
+local function callHasVisiblePixels(data, pane, call, lineHeight, measure)
+  local hostLeft, hostTop = LayoutGeometry.logicalToHost(pane.placement, call.x, call.y)
+  local hostRight, hostBottom = LayoutGeometry.logicalToHost(
+    pane.placement,
+    call.x + measure(call.value),
+    call.y + lineHeight
+  )
+  local blankX, blankY = LayoutGeometry.logicalToHost(
+    pane.placement,
+    pane.placement.logicalWidth - 2,
+    math.min(pane.placement.logicalHeight - 2, call.y + math.floor(lineHeight / 2))
+  )
+  local backgroundR, backgroundG, backgroundB = data:getPixel(math.floor(blankX), math.floor(blankY))
+  for y = math.floor(hostTop), math.ceil(hostBottom) - 1 do
+    for x = math.floor(hostLeft), math.ceil(hostRight) - 1 do
+      local red, green, blue = data:getPixel(x, y)
+      if
+        math.abs(red - backgroundR) > 0.08
+        or math.abs(green - backgroundG) > 0.08
+        or math.abs(blue - backgroundB) > 0.08
+      then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+local function hasWholeUtf8Glyphs(text)
+  for glyph in Utf8Glyphs.iter(text) do
+    local first = glyph:byte(1)
+    local expectedWidth = first < 0x80 and 1 or first < 0xE0 and 2 or first < 0xF0 and 3 or 4
+    if #glyph ~= expectedWidth then
+      return false
+    end
+  end
+  return true
+end
+
 function T.typed_location_failure_from_service_renders_with_map_identity_and_context(scope)
   local topology = ScreenTopology.dualDisplay(
     { id = "upper", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
@@ -1728,7 +1795,7 @@ function T.typed_location_failure_from_service_renders_with_map_identity_and_con
   Assert.isTrue(reason:find(FieldErrors.MAP_PROP_UNCOVERED_DOOR, 1, true) ~= nil)
   Assert.isTrue(reason:find("nearestDistance=9.01387818866", 1, true) ~= nil)
 
-  local _, renderedText, _, _, _, view = draw(
+  local data, renderedText, _, _, _, view, _, _, paletteCalls, plan = draw(
     scope,
     256,
     384,
@@ -1750,6 +1817,96 @@ function T.typed_location_failure_from_service_renders_with_map_identity_and_con
   Assert.isTrue(renderedText:find("A_VERY_LONG_SOURCE_{unknown}", 1, true) ~= nil, "the map header keeps its braces literal")
   Assert.isTrue(renderedText:find("MAP_PROP_UNCOVERED_DOOR", 1, true) ~= nil, "the failed Map cause remains displayed")
   Assert.isTrue(renderedText:find("nearestDistance=9.01387818866", 1, true) ~= nil, "the failed Map context remains displayed")
+
+  local pane = contextPane(plan)
+  Assert.equal(pane.placement.logicalWidth, 256, "the standard context pane uses its 256-pixel logical width")
+  Assert.equal(pane.placement.logicalHeight, 192, "the standard context pane uses its 192-pixel logical height")
+  local statusCalls = statusCallsForContext(paletteCalls)
+  Assert.isTrue(#statusCalls > 1, "the long structured error wraps across visible lines")
+  local joined = {}
+  for _, call in ipairs(statusCalls) do
+    joined[#joined + 1] = call.value
+    Assert.isTrue(call.x >= 8 and call.x + view.textMetrics.measure(call.value) <= 248)
+    Assert.isTrue(call.y >= 64 and call.y + view.textMetrics.lineHeight <= 184)
+    Assert.isTrue(
+      callHasVisiblePixels(data, pane, call, view.textMetrics.lineHeight, view.textMetrics.measure),
+      "each diagnostic line paints visible pixels"
+    )
+  end
+  local visibleStatus = table.concat(joined, " ")
+  Assert.isTrue(visibleStatus:find("MAP_PROP_UNCOVERED_DOOR", 1, true) ~= nil, "the error code appears in a painted line")
+  Assert.isTrue(visibleStatus:find("nearestDistance=9.01387818866", 1, true) ~= nil, "the nearest distance appears in a painted line")
+  local literalMapCall = assert(
+    findPaletteCall(paletteCalls, "A_VERY_LONG_SOURCE_{unknown}"),
+    "the map identity is drawn as literal brace text"
+  )
+  Assert.isTrue(
+    callHasVisiblePixels(data, pane, literalMapCall, view.textMetrics.lineHeight, view.textMetrics.measure),
+    "literal map identity glyphs are present in the context pane"
+  )
+end
+
+function T.long_location_diagnostics_truncate_at_utf8_boundaries(scope)
+  local dual = ScreenTopology.dualDisplay(
+    { id = "upper", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+    { id = "lower", rect = { x = 0, y = 192, width = 256, height = 96 }, touch = true, role = "auxiliary" }
+  )
+  local reason = "MAP_PROP_UNCOVERED_DOOR: " .. string.rep("long-token-é", 40) .. " nearestDistance=9.01387818866"
+  local data, _, _, _, _, view, _, _, paletteCalls, plan = draw(
+    scope,
+    256,
+    288,
+    dual,
+    "location-huge-diagnostic-short-pane",
+    "Location",
+    "location-literal-error",
+    nil,
+    function(_, preparedView, preparedPlan)
+      preparedView.location.status = { state = "failed", reason = reason }
+      local pane = contextPane(preparedPlan)
+      pane.placement.logicalHeight = 96
+      pane.placement.scale = 1
+    end
+  )
+
+  local pane = contextPane(plan)
+  Assert.isTrue(
+    pane.placement.logicalHeight < 192 or pane.placement.logicalWidth < 256,
+    "the context layout exercises a shorter logical pane"
+  )
+  Assert.equal(view.location.status.reason, reason, "truncation leaves the structured diagnostic unchanged")
+  local statusCalls = statusCallsForContext(paletteCalls)
+  Assert.isTrue(#statusCalls > 0, "long diagnostics retain a visible status line")
+  if pane.placement.logicalHeight == 192 then
+    Assert.isTrue(#statusCalls > 1, "standard-height diagnostics wrap across visible lines")
+  end
+  local visibleStatus = {}
+  for _, call in ipairs(statusCalls) do
+    visibleStatus[#visibleStatus + 1] = call.value
+    Assert.isTrue(hasWholeUtf8Glyphs(call.value), "a wrapped line never splits a UTF-8 glyph")
+    Assert.isTrue(
+      call.x >= 8 and call.x + view.textMetrics.measure(call.value) <= pane.placement.logicalWidth - 8,
+      "each diagnostic line fits the context pane's horizontal gutter"
+    )
+    Assert.isTrue(
+      call.y >= 64 and call.y + view.textMetrics.lineHeight <= pane.placement.logicalHeight - 8,
+      "each diagnostic line fits the context pane's vertical gutter"
+    )
+    Assert.isTrue(
+      callHasVisiblePixels(data, pane, call, view.textMetrics.lineHeight, view.textMetrics.measure),
+      "truncated lines remain visibly painted"
+    )
+  end
+  local joinedStatus = table.concat(visibleStatus, " ")
+  Assert.isTrue(joinedStatus:find("MAP_PROP_UNCOVERED_DOOR", 1, true) ~= nil, "the leading error code remains visible")
+  Assert.isTrue(statusCalls[#statusCalls].value:find("…", 1, true) ~= nil, "the final visible line signals truncation")
+  local identityCall = assert(
+    findPaletteCall(paletteCalls, "A_VERY_LONG_SOURCE_{unknown}"),
+    "the context retains the location identity before truncation"
+  )
+  Assert.isTrue(
+    callHasVisiblePixels(data, pane, identityCall, view.textMetrics.lineHeight, view.textMetrics.measure)
+  )
 end
 
 function T.location_grid_focus_cue_remains_visible_over_grid_tiles(scope)

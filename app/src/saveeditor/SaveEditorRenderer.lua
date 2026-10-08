@@ -1637,6 +1637,8 @@ drawLocation = function(self, view, layout)
   end
 end
 
+local drawWrappedContextStatus
+
 local function paintLocationContext(self, view, pane)
   local graphics = self.graphics
   local location = assert(view.location)
@@ -1668,7 +1670,86 @@ local function paintLocationContext(self, view, pane)
   end
   local status = location.status
   local statusPalette = status.state == "failed" and pageErrorPalette(self.skin) or pageMutedPalette(self.skin)
-  drawText(self, status.state == "ready" and "Map ready" or status.reason or "Preparing map data", 8, 64, statusPalette)
+  drawWrappedContextStatus(
+    self,
+    status.state == "ready" and "Map ready" or status.reason or "Preparing map data",
+    pane,
+    statusPalette
+  )
+end
+
+drawWrappedContextStatus = function(self, value, pane, palette)
+  local text = assert(self.text)
+  local lineHeight = assert(text.fontDef.lineHeight)
+  local width = pane.placement.logicalWidth - 16
+  local maxLines = math.floor((pane.placement.logicalHeight - 8 - 64) / lineHeight)
+  if maxLines <= 0 or width <= 0 then
+    return
+  end
+
+  local lines = {}
+  local line = ""
+  local truncated = false
+  local function pushLine()
+    if line ~= "" then
+      lines[#lines + 1] = line
+      line = ""
+    end
+  end
+  local function fits(candidate)
+    return text:textWidth(candidate) <= width
+  end
+
+  for token in value:gmatch("%S+") do
+    local candidate = line == "" and token or line .. " " .. token
+    if fits(candidate) then
+      line = candidate
+    else
+      pushLine()
+      if #lines >= maxLines then
+        truncated = true
+        break
+      end
+
+      local tokenLine = ""
+      for glyph in Utf8Glyphs.iter(token) do
+        local glyphCandidate = tokenLine .. glyph
+        if fits(glyphCandidate) then
+          tokenLine = glyphCandidate
+        else
+          if tokenLine == "" then
+            truncated = true
+            break
+          end
+          lines[#lines + 1] = tokenLine
+          tokenLine = glyph
+          if #lines >= maxLines then
+            truncated = true
+            break
+          end
+        end
+      end
+      if truncated then
+        break
+      end
+      line = tokenLine
+    end
+  end
+
+  if not truncated and line ~= "" then
+    if #lines < maxLines then
+      lines[#lines + 1] = line
+    else
+      truncated = true
+    end
+  end
+
+  if truncated and #lines > 0 then
+    lines[#lines] = fitText(self, lines[#lines] .. "…", width)
+  end
+  for index, wrappedLine in ipairs(lines) do
+    drawText(self, wrappedLine, 8, 64 + (index - 1) * lineHeight, palette)
+  end
 end
 
 function Renderer:draw(view, plan)
