@@ -47,6 +47,66 @@ local function listRowExtent(metrics)
   return math.max(18, math.ceil(metrics.lineHeight * 0.75 + 4))
 end
 
+function Layout.preferredListWidth(view, metrics, height)
+  local projection, trailingValueWidth
+  if view.valueEditor ~= nil and view.valueEditor.kind == "choice" then
+    projection = view.valueEditor
+  elseif view.section == "Location" and view.location ~= nil and view.locationNavigation ~= nil
+    and (view.locationNavigation.page == "root" or view.locationNavigation.page == "group") then
+    projection = assert(view.location.mapModel, "Map list sizing uses its indexed projection")
+    trailingValueWidth = math.max(metrics.measure("OFF"), metrics.measure("›"), metrics.measure("99"))
+  elseif view.section == "Progress" then
+    projection = assert(view.flagModel, "Flags list sizing uses its indexed projection")
+    trailingValueWidth = metrics.measure("OFF")
+  end
+  if projection == nil then return nil end
+  local rowAt = assert(projection.rowAt, "list sizing reads its bounded row projection")
+  local rowHeight = listRowExtent(metrics)
+  local query = projection.query or view.query or ""
+  local filterText = projection.pending and "Filtering…" or query == "" and "Type to filter" or ("Filter: " .. query)
+  local hintText = view.section == "Location" and view.location and view.location.breadcrumb
+      and (view.location.breadcrumb .. "  ·  " .. filterText) or filterText
+  return SaveEditorList.preferredWidth({
+    bounds = { x = 0, y = 0, width = 640, height = height },
+    rowCount = projection.count,
+    rowHeight = rowHeight,
+    gap = 0,
+    headerHeight = metrics.lineHeight,
+    hasTrailingValue = trailingValueWidth ~= nil,
+    trailingValueWidth = trailingValueWidth,
+    minimumLabelWidth = metrics.measure(hintText) * 0.75,
+    font = { lineHeight = metrics.lineHeight, measure = metrics.measure },
+    textScale = 0.75,
+    rowAt = function(index)
+      local row = assert(rowAt(index), "sampled list rows remain in the current projection")
+      local value = trailingValueWidth ~= nil and (view.section == "Location"
+          and (row.kind == "group" and "›" or row.section) or (row.value and "ON" or "OFF")) or nil
+      return { label = row.displayName or row.label or row.name, value = value }
+    end,
+  })
+end
+
+function Layout.minimumListCanvasWidth(view, metrics, height)
+  local bodyGlyphHeight = math.ceil(metrics.lineHeight * 0.75)
+  local contentTop = 4 + bodyGlyphHeight + 8 + 2
+  if view.section == "Location" or view.section == "Progress" then
+    contentTop = contentTop + ApplicationLayout.applicationFrameInsets().top + 8
+  end
+  local bodyHeight = math.max(1, height - bodyGlyphHeight - 12 - 2 - contentTop)
+  if view.valueEditor ~= nil and view.valueEditor.kind == "choice" then bodyHeight = math.max(1, bodyHeight - 40) end
+  local listWidth = Layout.preferredListWidth(view, metrics, bodyHeight)
+  if listWidth == nil then return nil end
+  local stripWidth = 0
+  for _, label in ipairs({ "Map", "Player", "Party", "Bag", "Flags" }) do
+    stripWidth = stripWidth + metrics.measure(label) * 0.75 + 8
+  end
+  local actionWidth = 8
+  for _, label in ipairs({ "Save", "Discard", view.locationSave and "Cancel check" or "Back" }) do
+    actionWidth = actionWidth + math.max(40, metrics.measure(label) * 0.75 + 24)
+  end
+  return math.min(256, math.max(listWidth, stripWidth, actionWidth) + 16)
+end
+
 local function locationReason(reason)
   assert(type(reason) == "string" and reason ~= "", "unavailable tiles carry a policy reason")
   return LOCATION_REASONS[reason] or reason:gsub("_", " ")
@@ -93,6 +153,8 @@ local function newContext(view, width, height, metrics)
   local contentTop = margin
   local footerReserve = view.modal ~= nil and (margin + 2) or footerHeight
   local contentBottom = math.max(contentTop + 1, height - footerReserve - 2)
+  local listHeight = math.max(1, contentBottom - contentTop)
+  local preferredListWidth = Layout.preferredListWidth(view, metrics, listHeight)
   return {
     view = view,
     width = width,
@@ -313,7 +375,7 @@ local function buildLocationMapList(ctx)
     rowCount = mapModel.count,
     rowHeight = compactRowExtent,
     gap = 0,
-    maxWidth = innerWidth,
+    maxWidth = preferredListWidth or innerWidth,
     headerHeight = metrics.lineHeight,
     scrollOffset = storedMapOffset,
   })
@@ -471,7 +533,7 @@ local function buildProgress(ctx)
     rowCount = flagModel.count,
     rowHeight = compactRowExtent,
     gap = 0,
-    maxWidth = innerWidth,
+    maxWidth = preferredListWidth or innerWidth,
     headerHeight = metrics.lineHeight,
     scrollOffset = storedFlagOffset,
   })
@@ -937,7 +999,7 @@ local function buildChoiceScope(ctx)
       rowCount = dialog.count,
       rowHeight = compactRowExtent,
       gap = 0,
-      maxWidth = innerWidth,
+      maxWidth = preferredListWidth or innerWidth,
       headerHeight = metrics.lineHeight,
       scrollOffset = offset,
     })

@@ -99,9 +99,13 @@ function Interface.resolve(context, view)
   local bounds = surface.usableBounds
   local pixelRatio = context.measurement.pixelRatio or 1
   local physicalWidth, physicalHeight = bounds.width * pixelRatio, bounds.height * pixelRatio
+  local metrics = assert(view.textMetrics, "save editor layout requires borrowed font metrics")
   local authoredWidth, authoredHeight = WIDTH, HEIGHT
   if context.configuration == "wide" or (physicalWidth >= 800 and physicalHeight >= 600) then
     authoredWidth, authoredHeight = 400, 300
+  end
+  if context.secondary == nil and (physicalWidth < authoredWidth or physicalHeight < authoredHeight) then
+    authoredWidth = Layout.minimumListCanvasWidth(view, metrics, authoredHeight) or authoredWidth
   end
   local logicalWidth, logicalHeight, placement
   if physicalWidth < authoredWidth or physicalHeight < authoredHeight then
@@ -119,7 +123,6 @@ function Interface.resolve(context, view)
     logicalWidth, logicalHeight = covered.logicalViewport.width, covered.logicalViewport.height
     placement = covered.placement
   end
-  local metrics = assert(view.textMetrics, "save editor layout requires borrowed font metrics")
   local layout = Layout.compute(view, logicalWidth, logicalHeight, metrics)
   local pane = { id = "editor", placement = placement, interactive = true }
   local panes = { pane }

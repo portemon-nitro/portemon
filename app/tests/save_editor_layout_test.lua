@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
+local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local Navigation = require("app.src.saveeditor.SaveEditorNavigation")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
@@ -1248,6 +1249,99 @@ function T.tests.save_editor_list_and_card_geometry_is_bounded_and_row_major()
       maxWidth = 720,
     })
   end, "card count cannot exceed the six visible cells")
+end
+
+function T.tests.save_editor_list_preferred_width_measures_a_bounded_stable_sample()
+  local List = require("app.src.saveeditor.SaveEditorList")
+  local measuredRows = {}
+  local labels = { "short", "a much longer flag label", "later catalog row" }
+  local preferred = List.preferredWidth({
+    bounds = { x = 0, y = 0, width = 180, height = 72 },
+    rowCount = 10000,
+    rowHeight = 18,
+    gap = 0,
+    hasTrailingValue = true,
+    trailingValueWidth = 18,
+    font = {
+      lineHeight = 16,
+      measure = function(text)
+        return #text * 6
+      end,
+    },
+    rowAt = function(index)
+      measuredRows[#measuredRows + 1] = index
+      return { label = labels[index] or "later catalog row" }
+    end,
+  })
+
+  Assert.equal(
+    preferred,
+    math.ceil(math.min(24 * 6, #labels[2] * 6) + 10 + 18 + 4 + 10),
+    "the measured row and value fit their C02 gutters"
+  )
+  Assert.equal(#measuredRows, 8, "measurement visits at most two viewport windows")
+  Assert.deepEqual(measuredRows, { 1, 2, 3, 4, 5, 6, 7, 8 }, "the intrinsic sample is stable from the projection head")
+end
+
+function T.tests.measured_map_surface_fits_its_labels_and_narrow_host_loses_no_canvas_width()
+  local view = locationView()
+  local rowTargets, indexByTarget, maps = {}, {}, {}
+  for index = 1, 12 do
+    local targetId = "location:map:" .. tostring(index)
+    local row = {
+      mapId = index,
+      kind = "map",
+      displayName = "ROUTE_" .. tostring(index),
+      section = "Johto",
+    }
+    rowTargets[index], indexByTarget[targetId], maps[index] = targetId, index, row
+  end
+  view.locationNavigation.page = "root"
+  view.location.maps = maps
+  view.location.mapListId = "location:root"
+  view.location.mapModel = {
+    count = #maps,
+    rowTargets = rowTargets,
+    indexByTarget = indexByTarget,
+    rowAt = function(index)
+      return maps[index]
+    end,
+    idAt = function(index)
+      return rowTargets[index]
+    end,
+  }
+  view.scope = { id = "section:Location", epoch = 1, kind = "section" }
+  view.textMetrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+
+  local function resolve(width, height)
+    local surface = { id = "primary", touch = false }
+    return Interface.resolve({
+      configuration = "nativeLike",
+      measurement = { pixelRatio = 1 },
+      primary = { surface = surface, usableBounds = { x = 0, y = 0, width = width, height = height } },
+      secondary = nil,
+    }, view)
+  end
+
+  local narrow = resolve(200, 300)
+  local native = resolve(256, 192)
+  local mapList = assert(narrow.content.layout.lists["location:root"])
+  Assert.isTrue(narrow.content.width < 256, "a narrow non-dual host does not preserve the unused native canvas floor")
+  Assert.equal(native.content.width, 256, "the canonical DS pane keeps native logical width")
+  Assert.isTrue(
+    mapList.surfaceRect.width < narrow.content.layout.content.width,
+    "Map rows center a measured surface inside the body"
+  )
+  Assert.equal(
+    mapList.surfaceRect.x,
+    narrow.content.layout.content.x + (narrow.content.layout.content.width - mapList.surfaceRect.width) / 2,
+    "the narrower Map surface remains centered"
+  )
 end
 
 function T.tests.list_rows_publish_shared_text_and_marker_geometry_for_value_modes()

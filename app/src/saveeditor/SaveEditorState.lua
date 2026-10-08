@@ -2051,6 +2051,62 @@ function State:_storeListOffset(list, offset)
   end
 end
 
+---@param layout table<string, unknown>
+---@param targetId string
+---@param navigationReveal { viewportId:string, index:integer }?
+---@return table<string, unknown> layout the current layout, refreshed once after an offset change
+function State:_revealFocusedTarget(layout, targetId, navigationReveal)
+  local revealByTarget = layout.revealByTarget
+  local anchor = type(revealByTarget) == "table" and revealByTarget[targetId] or nil
+  local viewportId = anchor and anchor.viewportId or nil
+  local itemStart = anchor and anchor.start or nil
+  local itemExtent = anchor and anchor.extent or nil
+  local list
+  if anchor == nil and navigationReveal ~= nil then
+    viewportId = navigationReveal.viewportId
+    local viewport = layout.viewports and layout.viewports[viewportId]
+    if viewport ~= nil then
+      itemStart = (navigationReveal.index - 1) * (viewport.rowExtent + (viewport.gap or 0))
+      itemExtent = viewport.rowExtent
+    end
+  elseif viewportId == nil then
+    for _, candidate in pairs(layout.lists or {}) do
+      local index = candidate.indexByTarget and candidate.indexByTarget[targetId]
+      if index ~= nil then
+        list = candidate
+        viewportId = candidate.viewportId
+        local viewport = layout.viewports and layout.viewports[viewportId]
+        if viewport ~= nil then
+          itemStart = (index - 1) * (viewport.rowExtent + (viewport.gap or 0))
+          itemExtent = viewport.rowExtent
+        end
+        break
+      end
+    end
+  end
+  if viewportId == nil or itemStart == nil or itemExtent == nil then
+    return layout
+  end
+  local viewport = layout.viewports and layout.viewports[viewportId]
+  if viewport == nil then
+    return layout
+  end
+  if list == nil then
+    list = findListByViewportId(layout.lists or {}, viewportId)
+  end
+  local revealed = ScrollViewport.reveal(viewport.offset, viewport.clip.height, itemStart, itemExtent)
+  local offset = ScrollViewport.clamp(revealed, viewport.contentExtent, viewport.clip.height)
+  if offset == viewport.offset then
+    return layout
+  end
+  if list ~= nil then
+    self:_storeListOffset(list, offset)
+  else
+    self:_setScrollOffset(self:_snapshot(), layout, viewportId, offset)
+  end
+  return self:_resolve(self:_snapshot()).content.layout
+end
+
 ---@param list table<string, unknown>
 ---@param viewport table<string, unknown>
 ---@param offset number
@@ -2153,37 +2209,14 @@ function State:_filterFocusedList(list, rowIndex, operation, text)
   if hadRowFocus then
     if focusLive then
       self.controller:setListCursor(fresh.id, previousFocus)
-      local viewport = assert(layout.viewports[fresh.viewportId], "filtering keeps its scroll viewport")
-      local survived = fresh.indexByTarget ~= nil and fresh.indexByTarget[previousFocus] or nil
-      local revealed = ScrollViewport.clamp(
-        ScrollViewport.reveal(
-          viewport.offset,
-          viewport.clip.height,
-          (assert(survived, "surviving focus stays within its rows") - 1) * viewport.rowExtent,
-          viewport.rowExtent
-        ),
-        viewport.contentExtent,
-        viewport.clip.height
-      )
-      self:_storeListOffset(fresh, revealed)
-      self:_reconcileFocus(previousFocus, self:_resolve(self:_snapshot()).content.layout)
+      layout = self:_revealFocusedTarget(layout, previousFocus)
+      self:_reconcileFocus(previousFocus, layout)
     else
       local nearestIndex = math.min(assert(rowIndex, "focused rows have a logical index"), #fresh.rowTargets)
       local nearestTarget = fresh.rowTargets[nearestIndex]
       self.controller:setListCursor(fresh.id, nearestTarget)
-      local viewport = assert(layout.viewports[fresh.viewportId], "filtering keeps its scroll viewport")
-      local revealed = ScrollViewport.clamp(
-        ScrollViewport.reveal(
-          viewport.offset,
-          viewport.clip.height,
-          (nearestIndex - 1) * viewport.rowExtent,
-          viewport.rowExtent
-        ),
-        viewport.contentExtent,
-        viewport.clip.height
-      )
-      self:_storeListOffset(fresh, revealed)
-      self:_reconcileFocus(nearestTarget, self:_resolve(self:_snapshot()).content.layout)
+      layout = self:_revealFocusedTarget(layout, nearestTarget)
+      self:_reconcileFocus(nearestTarget, layout)
     end
   else
     self:_reconcileListCursor(fresh)
@@ -2215,14 +2248,7 @@ function State:_reconcilePublishedChoiceFilter()
   self.controller:setListCursor(list.id, targetId)
   if previous.targetId ~= nil and previous.targetId ~= list.targetId then
     self.controller:setFocus(targetId)
-    local viewport = assert(layout.viewports[list.viewportId])
-    local offset = ScrollViewport.clamp(
-      ScrollViewport.reveal(viewport.offset, viewport.clip.height, (index - 1) * viewport.rowExtent, viewport.rowExtent),
-      viewport.contentExtent,
-      viewport.clip.height
-    )
-    self:_storeListOffset(list, offset)
-    layout = self:_resolve(self:_snapshot()).content.layout
+    layout = self:_revealFocusedTarget(layout, targetId)
     self:_reconcileFocus(targetId, layout)
   end
 end
@@ -2241,20 +2267,8 @@ function State:_handleListConfirm(list, rowIndex, layout)
   end
   self.controller:setListCursor(list.id, cursor)
   local resolved = layout or self:_resolve(self:_snapshot()).content.layout
-  local viewport = assert(resolved.viewports[list.viewportId], "list confirmation needs its scroll viewport")
-  local cursorIndex = list.indexByTarget ~= nil and list.indexByTarget[cursor] or nil
-  local revealed = ScrollViewport.clamp(
-    ScrollViewport.reveal(
-      viewport.offset,
-      viewport.clip.height,
-      (assert(cursorIndex, "entered cursor stays within its rows") - 1) * viewport.rowExtent,
-      viewport.rowExtent
-    ),
-    viewport.contentExtent,
-    viewport.clip.height
-  )
-  self:_storeListOffset(list, revealed)
-  self:_reconcileFocus(cursor, self:_resolve(self:_snapshot()).content.layout)
+  resolved = self:_revealFocusedTarget(resolved, cursor)
+  self:_reconcileFocus(cursor, resolved)
 end
 
 ---@param preferred string?
@@ -2315,6 +2329,7 @@ function State:_reconcileFocus(preferred, layout)
       self:_reconcileListCursor(list)
     end
   end
+  freshLayout = self:_revealFocusedTarget(freshLayout, self.controller.focus)
   return freshLayout
 end
 
@@ -3634,24 +3649,13 @@ function State:_applyNavigationMove(layout, resolved)
   local regionId = assert(resolved.regionId)
   self.controller:setFocus(targetId)
   self.controller:rememberRegionFocus(regionId, targetId)
-  if resolved.reveal == nil then
-    return
-  end
   for _, region in ipairs(layout.focusNavigation.regions) do
     if region.id == regionId and region.kind == "list" then
       self.controller:setListCursor(region.id, targetId)
       break
     end
   end
-  local reveal = resolved.reveal
-  local viewport = assert(layout.viewports[reveal.viewportId], "logical focus reveal has a published viewport")
-  local offset = ScrollViewport.reveal(
-    viewport.offset,
-    viewport.clip.height,
-    (reveal.index - 1) * viewport.rowExtent,
-    viewport.rowExtent
-  )
-  self:_setScrollOffset(self:_snapshot(), layout, reveal.viewportId, offset)
+  self:_revealFocusedTarget(layout, targetId, resolved.reveal)
 end
 
 ---@param layout table<string, unknown>

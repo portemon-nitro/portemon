@@ -280,6 +280,24 @@ local function resolvedOutdoorPlacement(graph, service)
   return placement
 end
 
+local function advanceEditorUntil(state, predicate, label)
+  for _ = 1, 5000 do
+    state:update(0)
+    local view = state:view()
+    if predicate(view) then
+      return view
+    end
+  end
+  error("the production editor did not reach " .. label, 2)
+end
+
+local function rectInside(inner, outer)
+  return inner.x >= outer.x
+    and inner.y >= outer.y
+    and inner.x + inner.width <= outer.x + outer.width
+    and inner.y + inner.height <= outer.y + outer.height
+end
+
 local function activateTarget(state, targetId)
   local view = state:view()
   local target = assert(view.layout.targets[targetId], "the product layout exposes " .. targetId)
@@ -1374,6 +1392,99 @@ function T.tests.stable_editor_views_reuse_the_session_snapshot_until_owner_or_r
       state:dispose()
     end)
   end
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_visible()
+  local fixture = Fixture.new()
+  local State = require("app.src.saveeditor.SaveEditorState")
+  local originalGlobal = SaveFs.global
+  local state
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+
+  local ok, err = xpcall(function()
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 800,
+      height = 600,
+      derivedAssets = readyHost(),
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "production Save Editor composition opens the isolated save")
+
+    withoutRendering(function()
+      local rootView = advanceEditorUntil(state, function(view)
+        local list = view.layout.lists["location:root"]
+        return list ~= nil and #list.rowTargets > 0 and not list.pending
+      end, "the production Map root list")
+      local mapList = assert(rootView.layout.lists["location:root"])
+      local mapFitsMeasuredContent = mapList.surfaceRect.width < rootView.layout.content.width
+
+      state.controller:setSection("Progress")
+      local flagView = advanceEditorUntil(state, function(view)
+        local list = view.layout.lists.flags
+        return list ~= nil and #list.rowTargets > 0 and not list.pending
+      end, "the production Flags list")
+      local flagList = assert(flagView.layout.lists.flags)
+      local flagsFitMeasuredContent = flagList.surfaceRect.width < flagView.layout.content.width
+      local flagsAreCentered = math.abs(
+        flagList.surfaceRect.x
+          + flagList.surfaceRect.width / 2
+          - (flagView.layout.content.x + flagView.layout.content.width / 2)
+      ) < 1
+
+      local initialViewport = assert(flagView.layout.viewports.flags)
+      local targetIndex = math.min(#flagList.rowTargets, initialViewport.lastIndex + 2)
+      Assert.isTrue(targetIndex > initialViewport.lastIndex, "the real Flags catalog has an offscreen logical row")
+      state:keypressed("return")
+      for _ = 1, targetIndex do
+        if state.controller.focus == flagList.rowTargets[targetIndex] then
+          break
+        end
+        state:keypressed("down")
+        state:keyreleased("down")
+      end
+
+      local focused = state.controller.focus
+      Assert.equal(focused, flagList.rowTargets[targetIndex], "keyboard navigation preserves the chosen flag identity")
+      local revealed = state:view()
+      local viewport = assert(revealed.layout.viewports.flags)
+      Assert.isTrue(
+        viewport.firstIndex <= targetIndex and targetIndex <= viewport.lastIndex,
+        "the keyboard-focused logical flag is revealed by the production State"
+      )
+      Assert.isTrue(
+        rectInside(assert(revealed.layout.rowMarkers[focused]), viewport.clip),
+        "the focused flag marker remains wholly inside the actual viewport"
+      )
+      Assert.isTrue(
+        rectInside(assert(revealed.layout.rowLabelRects[focused]), viewport.clip),
+        "the focused flag label remains wholly inside the actual viewport"
+      )
+      Assert.isTrue(
+        mapFitsMeasuredContent,
+        "the Map root surface uses measured labels instead of filling the full editor body"
+      )
+      Assert.isTrue(flagsFitMeasuredContent, "the Flags surface reserves only measured label and ON/OFF content")
+      Assert.isTrue(flagsAreCentered, "the narrower Flags surface stays centered in its available body")
+    end)
+  end, debug.traceback)
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  SaveFs.global = originalGlobal
   fixture.cleanup()
   if not ok then
     error(err, 0)

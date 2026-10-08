@@ -7,6 +7,7 @@ local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local SaveEditorList = {}
 
 local PADDING = 8
+local LABEL_CHARACTER_BUDGET = 24
 
 local function finite(value)
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
@@ -24,6 +25,56 @@ end
 
 local function rect(x, y, width, height)
   return { x = x, y = y, width = width, height = height }
+end
+
+---@param spec { bounds: { x:number, y:number, width:number, height:number }, rowCount: integer, rowHeight: number, gap: number, headerHeight?: number, hasTrailingValue?: boolean, trailingValueWidth?: number, minimumLabelWidth?: number, font: { lineHeight:number, measure: fun(text:string):number }, textScale?: number, rowAt: fun(index:integer): { label:string, value?:string } }
+---@return number preferredWidth
+---@return number trailingValueWidth
+function SaveEditorList.preferredWidth(spec)
+  assert(type(spec) == "table" and validRect(spec.bounds), "list measurement bounds must be finite and positive")
+  assert(type(spec.rowCount) == "number" and spec.rowCount >= 0 and spec.rowCount % 1 == 0)
+  assert(finite(spec.rowHeight) and spec.rowHeight > 0 and finite(spec.gap) and spec.gap >= 0)
+  assert(type(spec.rowAt) == "function", "list width measurement needs a bounded row projection")
+  local font = assert(spec.font, "list width measurement needs current font metrics")
+  assert(type(font.measure) == "function" and finite(font.lineHeight) and font.lineHeight > 0)
+  local textScale = spec.textScale or 1
+  assert(finite(textScale) and textScale > 0)
+  local headerHeight = spec.headerHeight or 0
+  local availableHeight = math.max(0, spec.bounds.height - PADDING * 2 - headerHeight)
+  local visibleRows = math.ceil(availableHeight / (spec.rowHeight + spec.gap))
+  local sampleCount = math.min(spec.rowCount, visibleRows * 2)
+  local labelBudget = font.measure(string.rep("W", LABEL_CHARACTER_BUDGET)) * textScale
+  local trailingWidth = (spec.trailingValueWidth or 0) * textScale
+  local measuredTrailingWidth = spec.trailingValueWidth or 0
+  local widestLabel = math.min(spec.minimumLabelWidth or 0, labelBudget)
+  for index = 1, sampleCount do
+    local row = spec.rowAt(index)
+    assert(type(row) == "table" and type(row.label) == "string", "measured rows need displayed labels")
+    widestLabel = math.max(widestLabel, math.min(font.measure(row.label) * textScale, labelBudget))
+    if spec.hasTrailingValue == true and row.value ~= nil then
+      assert(type(row.value) == "string", "measured trailing values must be displayed text")
+      measuredTrailingWidth = math.max(measuredTrailingWidth, font.measure(row.value))
+      trailingWidth = measuredTrailingWidth * textScale
+    end
+  end
+  local probeWidth = labelBudget + trailingWidth + 32
+  local probeCount = math.max(1, sampleCount)
+  local probeHeight = math.max(1, PADDING * 2 + headerHeight + probeCount * (spec.rowHeight + spec.gap))
+  local geometry = SaveEditorList.resolve({
+    bounds = { x = 0, y = 0, width = probeWidth, height = probeHeight },
+    rowCount = probeCount,
+    rowHeight = spec.rowHeight,
+    gap = spec.gap,
+    maxWidth = probeWidth,
+    headerHeight = headerHeight,
+    hasTrailingValue = spec.hasTrailingValue,
+    trailingValueWidth = trailingWidth,
+    font = { lineHeight = font.lineHeight, measure = font.measure },
+  })
+  local row = assert(geometry.rows[1], "the list geometry probe contains its first sample row")
+  local leftGutter = row.labelRect.x - row.rect.x
+  local rightGutter = row.rect.x + row.rect.width - row.labelRect.x - row.labelRect.width
+  return math.ceil(widestLabel + leftGutter + rightGutter), trailingWidth
 end
 
 ---@param spec { bounds: { x:number, y:number, width:number, height:number }, rowCount: integer, rowHeight: number, gap: number, maxWidth: number, headerHeight?: number, scrollOffset?: number, hasTrailingValue?: boolean, trailingValueWidth?: number, font?: { lineHeight:number, measure: fun(text:string):number } }

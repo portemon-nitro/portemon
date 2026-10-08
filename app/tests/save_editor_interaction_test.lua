@@ -1036,6 +1036,44 @@ function T.tests.focused_list_row_navigation_uses_logical_adjacency_and_back_exi
   Assert.equal(#harness.activations, 0, "row navigation and Back never activate")
 end
 
+function T.tests.reconciling_a_logical_list_focus_reveals_it_once_and_honors_variable_anchors()
+  local harness = progressListHarness(progressFlagCatalog(40))
+  local controller, state = harness.controller, harness.state
+  local list = assert(harness.current.layout.lists.flags)
+  local viewport = assert(harness.current.layout.viewports.flags)
+  local offscreen = list.rowTargets[#list.rowTargets]
+
+  controller:setFocus(offscreen)
+  state:_reconcileFocus(offscreen, harness.current.layout)
+  Assert.equal(
+    controller.scrollOffsets.flags,
+    viewport.contentExtent - viewport.clip.height,
+    "focus reconciliation reveals a distant uniform row"
+  )
+  harness.sync()
+  local revealed = assert(harness.current.layout.viewports.flags)
+  Assert.isTrue(
+    revealed.firstIndex <= #list.rowTargets and #list.rowTargets <= revealed.lastIndex,
+    "the focused row is in the re-resolved viewport"
+  )
+
+  controller.scrollOffsets.flags = 0
+  controller:setFocus(list.rowTargets[1])
+  harness.sync()
+  local anchorLayout = harness.current.layout
+  local anchoredTarget = anchorLayout.lists.flags.rowTargets[2]
+  anchorLayout.revealByTarget = {
+    [anchoredTarget] = { viewportId = "flags", start = 120, extent = 12 },
+  }
+  controller:setFocus(anchoredTarget)
+  state:_reconcileFocus(anchoredTarget, anchorLayout)
+  Assert.equal(
+    controller.scrollOffsets.flags,
+    math.max(0, math.min(132 - viewport.clip.height, viewport.contentExtent - viewport.clip.height)),
+    "a variable-height anchor determines its exact unscrolled reveal interval"
+  )
+end
+
 function T.tests.typing_filters_the_focused_list_without_a_search_target()
   local harness = progressListHarness(progressFlagCatalog(6))
   local controller, state = harness.controller, harness.state
@@ -2924,7 +2962,7 @@ function T.tests.flag_value_snapshots_do_not_mutate_cached_flag_metadata()
   end
 end
 
-function T.tests.flag_value_reads_are_limited_to_the_visible_window()
+function T.tests.flag_value_reads_stay_within_the_visible_rows_and_two_width_samples()
   local controller = Controller.new()
   controller:setSection("Progress")
   local reads = 0
@@ -2985,8 +3023,12 @@ function T.tests.flag_value_reads_are_limited_to_the_visible_window()
   local visibleCount = math.max(0, viewport.lastIndex - viewport.firstIndex + 1)
   Assert.isTrue(visibleCount > 0 and visibleCount < #catalog, "the test viewport covers only part of the flag list")
   Assert.isTrue(
-    reads <= visibleCount,
-    string.format("the stable snapshot read %d flag values for %d visible rows", reads, visibleCount)
+    reads <= visibleCount * 3,
+    string.format(
+      "the layout read %d flag values for %d visible rows and two bounded width samples",
+      reads,
+      visibleCount
+    )
   )
 end
 
