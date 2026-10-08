@@ -512,4 +512,116 @@ function T.number_modal_uses_native_source_control_geometry_in_a_compact_frame()
   end
 end
 
+local function closeHarness(options)
+  local Controller = require("app.src.saveeditor.SaveEditorController")
+  local State = require("app.src.saveeditor.SaveEditorState")
+  local controller = Controller.new()
+  local results = {}
+  local session = {
+    discards = 0,
+    saveCalls = 0,
+    discard = function(self)
+      self.discards = self.discards + 1
+    end,
+    isDirty = function()
+      return options.dirty == true
+    end,
+    snapshot = function()
+      return { dirtySections = {}, location = { mapId = 7, fieldX = 10, fieldZ = 12 } }
+    end,
+    save = function(self)
+      self.saveCalls = self.saveCalls + 1
+      return { ok = true }
+    end,
+  }
+  local state = setmetatable({
+    approvedExit = false,
+    disposed = false,
+    controller = controller,
+    session = session,
+    valueEditor = options.valueEditor,
+    valuePurpose = options.valuePurpose,
+    valueReturnFocus = options.valueReturnFocus,
+    monDraft = options.monDraft,
+    errorMessage = nil,
+    fieldInput = {
+      beginUi = function() end,
+    },
+    activeScopeId = "section:Player:map-list",
+    scopeEpoch = 0,
+    numberHold = nil,
+    numberPressTarget = nil,
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  }, State)
+  return { controller = controller, session = session, state = state, results = results }
+end
+
+function T.dirty_value_editor_enters_the_leave_flow_and_cancel_restores_focus()
+  local canceled = 0
+  local harness = closeHarness({
+    dirty = true,
+    valueEditor = {
+      cancel = function()
+        canceled = canceled + 1
+      end,
+      snapshot = function()
+        return { kind = "integer" }
+      end,
+    },
+    valuePurpose = "money",
+    valueReturnFocus = "money",
+  })
+  Assert.isTrue(harness.state:requestClose("back"), "staged value work needs an explicit leave decision")
+  Assert.equal(harness.controller.modal, "leave", "the leave decision opens above the value editor")
+  Assert.notNil(harness.state.closeRequest, "the close request waits for its decision")
+  harness.state:_activate("cancel")
+  Assert.equal(canceled, 0, "canceling leave keeps the nested value editor open")
+  Assert.notNil(harness.state.valueEditor, "the value editor survives a canceled leave")
+  Assert.isNil(harness.controller.modal, "canceling leave restores the previous layer")
+  Assert.isNil(harness.state.closeRequest, "canceling leave retires its request")
+  Assert.equal(harness.controller.focus, "money", "canceling leave restores the previous focus")
+  Assert.deepEqual(harness.results, {}, "a canceled leave never leaves the editor")
+end
+
+function T.invalid_party_draft_blocks_close_save_and_keeps_the_leave_decision()
+  local ErrorsModule = require("libs.errors.src.Errors")
+  local harness = closeHarness({})
+  harness.state.monDraft = {
+    validate = function()
+      return nil, ErrorsModule.new("PARTY_DRAFT_INVALID", "level is out of range")
+    end,
+  }
+  harness.state.closeRequest = {
+    reason = "back",
+    phase = "confirm",
+    previousModal = nil,
+    previousModalReturnFocus = nil,
+    previousFocus = "money",
+  }
+  harness.controller:openModal("leave")
+  harness.state:_activate("save")
+  Assert.equal(harness.session.saveCalls, 0, "an invalid draft never reaches the save transaction")
+  Assert.notNil(harness.state.errorMessage, "an invalid draft keeps its diagnostic")
+  Assert.equal(harness.state.closeRequest.phase, "confirm", "an invalid draft keeps the leave decision")
+  Assert.deepEqual(harness.results, {}, "an invalid draft never leaves the editor")
+end
+
+function T.discard_from_leave_clears_staged_work_and_reports_once()
+  local harness = closeHarness({ dirty = true })
+  harness.state.closeRequest = {
+    reason = "back",
+    phase = "confirm",
+    previousModal = nil,
+    previousModalReturnFocus = nil,
+    previousFocus = "money",
+  }
+  harness.controller:openModal("leave")
+  harness.state:_activate("discard")
+  Assert.equal(harness.session.discards, 1, "discard abandons the staged session once")
+  Assert.isNil(harness.state.closeRequest, "discard retires its request")
+  Assert.deepEqual(harness.results, { { kind = "main_menu" } }, "discard reports its result once")
+end
+
 return { tests = T }

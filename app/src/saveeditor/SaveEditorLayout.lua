@@ -1,6 +1,7 @@
 -- Computes the editor's canonical logical rows and hit targets.
 
 local Layout = {}
+local Decisions = require("app.src.saveeditor.SaveEditorDecisions")
 local PixelScale = require("libs.ui.src.PixelScale")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local SaveEditorList = require("app.src.saveeditor.SaveEditorList")
@@ -889,11 +890,13 @@ function Layout.compute(view, width, height, metrics)
         rect(valueModal.x + pad, buttonsY + buttonHeight + gapButtonsError, valueModal.width - pad * 2, errorHeight)
     end
   end
+  local decisionActions
   if view.modal ~= nil then
-    local choices = view.modal == "bag-item" and { "bag:quantity", "bag:remove", "cancel" }
-      or view.modal == "party-move" and { "party-move:move", "party-move:pp", "party-move:pp-ups", "cancel" }
-      or view.modal == "remove" and { "remove", "cancel" }
-      or { "save", "discard", "cancel" }
+    decisionActions = view.decisionActions or Decisions.describe(view.modal, { pendingSave = view.locationSave ~= nil })
+    local choices = {}
+    for _, action in ipairs(decisionActions) do
+      choices[#choices + 1] = action.id
+    end
     local buttonHeight = metrics.lineHeight + 34
     local promptHeight = math.max(1, metrics.lineHeight)
     local needed = promptHeight + 4 + #choices * buttonHeight + (#choices - 1) * 4 + 8
@@ -919,7 +922,8 @@ function Layout.compute(view, width, height, metrics)
       prompt = rect(surface.content.x, surface.content.y, surface.content.width, promptHeight),
       rows = {},
     }
-    for index, id in ipairs(choices) do
+    for index, action in ipairs(assert(decisionActions, "the decision surface needs its described actions")) do
+      local id = action.id
       local buttonWidth = math.min(128, surface.content.width)
       local rowRect = rect(
         surface.content.x + math.floor((surface.content.width - buttonWidth) / 2),
@@ -927,37 +931,30 @@ function Layout.compute(view, width, height, metrics)
         buttonWidth,
         buttonHeight
       )
-      targets[id] = rowRect
       decisionList.rows[index] = {
         targetId = id,
-        label = id == "bag:quantity" and "Quantity"
-          or id == "bag:remove" and "Remove"
-          or id == "party-move:move" and "Move"
-          or id == "party-move:pp" and "Current PP"
-          or id == "party-move:pp-ups" and "PP Ups"
-          or view.modal == "leave" and id == "save" and "Save & exit"
-          or view.modal == "leave" and id == "discard" and "Discard all"
-          or id:sub(1, 1):upper() .. id:sub(2),
-        semantic = id == "save" and "primary"
-          or (id == "discard" or id == "remove" or id == "bag:remove") and "destructive"
-          or "secondary",
-        enabled = true,
+        label = action.label,
+        semantic = action.semantic,
+        enabled = action.enabled,
         rect = rowRect,
       }
-      addFocusable(id)
+      if action.enabled then
+        targets[id] = rowRect
+        disabledTargets[id] = nil
+        addFocusable(id)
+      else
+        disabledTargets[id] = true
+      end
     end
   end
   local scopeAllowed
   if scope.kind == "decision" then
-    scopeAllowed = view.modal == "bag-item" and { ["bag:quantity"] = true, ["bag:remove"] = true, cancel = true }
-      or view.modal == "party-move" and {
-        ["party-move:move"] = true,
-        ["party-move:pp"] = true,
-        ["party-move:pp-ups"] = true,
-        cancel = true,
-      }
-      or view.modal == "remove" and { remove = true, cancel = true }
-      or { save = true, discard = true, cancel = true }
+    scopeAllowed = {}
+    for _, action in ipairs(assert(decisionActions, "the decision scope needs its described actions")) do
+      if action.enabled then
+        scopeAllowed[action.id] = true
+      end
+    end
   elseif scope.kind == "value" then
     local editor = assert(view.valueEditor, "value scope needs its active editor")
     scopeAllowed = { confirm = true, cancel = true }
@@ -1407,18 +1404,10 @@ function Layout.hitTest(layout, view, x, y)
       end
     end
   end
+  -- Decision hit testing consults only the resolved active target
+  -- records published by compute; no second modal allowlist exists.
   local allowed
-  if view.modal ~= nil then
-    allowed = view.modal == "bag-item" and { ["bag:quantity"] = true, ["bag:remove"] = true, cancel = true }
-      or view.modal == "party-move" and {
-        ["party-move:move"] = true,
-        ["party-move:pp"] = true,
-        ["party-move:pp-ups"] = true,
-        cancel = true,
-      }
-      or view.modal == "remove" and { remove = true, cancel = true }
-      or { save = true, discard = true, cancel = true }
-  elseif view.valueEditor ~= nil then
+  if view.modal == nil and view.valueEditor ~= nil then
     if view.valueEditor.kind == "choice" then
       allowed = {
         cancel = true,
@@ -1467,7 +1456,9 @@ function Layout.hitTest(layout, view, x, y)
         if not target.activationEnabled then
           return nil
         end
-        if targetId == "save" or targetId == "discard" or targetId == "back" then
+        -- Decision targets carry their own descriptor enablement and are
+        -- never gated on the footer actions that share their spelling.
+        if view.modal == nil and (targetId == "save" or targetId == "discard" or targetId == "back") then
           for _, action in ipairs(layout.actions) do
             if action.id == targetId and not action.enabled then
               return nil

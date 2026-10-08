@@ -12,6 +12,8 @@ local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local Moves = require("libs.mons.src.gen4.Moves")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local Controller = require("app.src.saveeditor.SaveEditorController")
+local Decisions = require("app.src.saveeditor.SaveEditorDecisions")
+local LocationSave = require("app.src.saveeditor.SaveEditorLocationSave")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
@@ -74,8 +76,7 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field dateProvider fun(): table<string, integer>
 ---@field iconStatus string?
 ---@field iconFailure string?
----@field pendingLocationSave { operationId: integer, sessionRevision: integer, location: SaveEditorLocation, leave: boolean, verifier: SaveEditorLocationService }?
----@field locationSaveOperationId integer
+---@field locationSave SaveEditorLocationSave?
 ---@field pendingRemove table<string, unknown>?
 ---@field pendingQuantity table<string, unknown>?
 ---@field numberHold { pointerId: string, targetId: string, delta: integer, scopeEpoch: integer, nextTick: integer }?
@@ -219,8 +220,7 @@ function State.new(options)
     locationServiceMapId = nil,
     locationGridWidthTiles = nil,
     locationGridHeightTiles = nil,
-    pendingLocationSave = nil,
-    locationSaveOperationId = 0,
+    locationSave = nil,
     valueEditor = nil,
     preserveChoiceScroll = false,
     valueReturnFocus = nil,
@@ -302,6 +302,7 @@ function State:update(dt)
       end
     end
   end
+  self:_settleScope()
   if self.status == "opening" then
     local generation = self.generation
     local readyOk, ready = pcall(function()
@@ -346,21 +347,36 @@ function State:update(dt)
       derivedAssets = assert(graphOrError.derivedAssets),
       savedObjects = assert(graphOrError.savedObjects),
     })
+    self.locationSave = LocationSave.new({
+      cacheFs = assert(graphOrError.cacheFs),
+      world = assert(graphOrError.world),
+      derivedAssets = self.derivedAssets,
+      savedObjects = assert(graphOrError.savedObjects),
+    })
     local originalLocation = assert(self.session:snapshot().location)
     self.controller:enterLocation(originalLocation)
     self.controller:setSection("Location")
     self.status, self.errorMessage = "ready", nil
+    self:_settleScope()
     self:_resolve(self:_snapshot())
   end
   if self.status == "ready" and self.locationService then
     self:_updateLocationService()
   end
-  if self.status == "ready" and self.pendingLocationSave then
-    local updated, updateError = pcall(self._updatePendingLocationSave, self)
+  if self.status == "ready" and self.locationSave ~= nil and self.locationSave:status() ~= nil then
+    local updated, updateError = pcall(self._pumpLocationSave, self)
     if not updated then
       self:_cancelPendingLocationSave()
       error(updateError, 0)
     end
+  end
+  if self.status == "ready" and self.dependencies ~= nil and self.renderer ~= nil then
+    local view = self:_snapshot()
+    local plan = self:_resolve(view)
+    self:_adoptGridSize(plan)
+    self.renderer:prepareVisibleIcons(view, plan, self.dependencies.cacheFs, self.derivedAssets)
+    self.iconStatus, self.iconFailure = self.renderer.iconStatus, self.renderer.iconFailure
+    self:_settleScope()
   end
 end
 
@@ -371,7 +387,70 @@ function State:_openingFailed(err)
   self.status = "error"
   self.errorMessage = message(err)
   self.controller.focus = "retry"
+  self:_settleScope()
   self:_resolve(self:_snapshot())
+end
+
+-- Computes the interaction scope identity from navigation facts only. Pure:
+-- scope changes are applied by _settleScope at explicit transition
+-- boundaries, never while a view is being observed.
+local function computeScopeId(controller, valuePurpose, valueSnapshot)
+  if controller.modal then
+    return "decision:" .. controller.modal
+  end
+  if valueSnapshot ~= nil then
+    local query = valueSnapshot.kind == "choice" and valueSnapshot.query or ""
+    return "value:" .. (valuePurpose or "editor") .. ":" .. query
+  end
+  if controller.section == "Party" then
+    return table.concat({
+      "party",
+      tostring(controller.partySlot0),
+      controller.partyTab,
+    }, ":")
+  end
+  if controller.section == "Progress" then
+    return table.concat({
+      "section:Progress",
+      controller.query,
+    }, ":")
+  end
+  if controller.section == "Bag" then
+    return "section:Bag:" .. controller.bagPocket
+  end
+  local scopeId = "section:" .. controller.section .. ":" .. controller.locationPage
+  if controller.section == "Location" and controller.locationPage == "map-list" then
+    scopeId = scopeId .. ":" .. controller.query
+  end
+  return scopeId
+end
+
+-- Applies scope publication, input ownership and page normalization for
+-- the current navigation facts. Called after semantic input, transitions,
+-- opening changes, resize and focus loss; never from view or draw.
+function State:_settleScope()
+  local valueSnapshot = self.valueEditor ~= nil and self.valueEditor:snapshot() or nil
+  local scopeId = computeScopeId(self.controller, self.valuePurpose, valueSnapshot)
+  if scopeId ~= self.activeScopeId then
+    self.activeScopeId = scopeId
+    self.scopeEpoch = self.scopeEpoch + 1
+    self.fieldInput:beginUi(self.inputTick)
+    self.controller:cancelInteraction()
+    self.numberHold = nil
+    self.numberPressTarget = nil
+  end
+  self.controller.scopeId, self.controller.scopeEpoch = scopeId, self.scopeEpoch
+  if self.status == "ready" and self.session ~= nil and self.dependencies ~= nil then
+    if self.controller.section == "Bag" then
+      self:_normalizeBagPage()
+    end
+  end
+end
+
+function State:_normalizeBagPage()
+  local rows = self.session:bagSnapshot(self.controller.bagPocket)
+  local pageCount = math.max(1, math.ceil(#rows / 6))
+  self.controller.bagPage0 = math.max(0, math.min(pageCount - 1, self.controller.bagPage0))
 end
 
 function State:_snapshot()
@@ -454,54 +533,25 @@ function State:_snapshot()
     view.savedLocation = session.originalLocation
     view.pendingLocation = session.locationChanged and session.location or nil
   end
-  view.locationSave = self.pendingLocationSave
+  local saveStatus = self.locationSave ~= nil and self.locationSave:status() or nil
+  view.locationSave = saveStatus
       and {
-        operationId = self.pendingLocationSave.operationId,
+        operationId = saveStatus.operationId,
         state = "pending",
         cancelTarget = "save",
       }
     or nil
+  if self.controller.modal ~= nil then
+    view.decisionActions = Decisions.describe(self.controller.modal, self:_decisionFacts(saveStatus))
+  end
   for key, value in pairs(party) do
     view[key] = value
   end
   for key, value in pairs(bag) do
     view[key] = value
   end
-  local scopeId
-  if self.controller.modal then
-    scopeId = "decision:" .. self.controller.modal
-  elseif self.valueEditor then
-    local value = self.valueEditor:snapshot()
-    local query = value.kind == "choice" and value.query or ""
-    scopeId = "value:" .. (self.valuePurpose or "editor") .. ":" .. query
-  elseif self.controller.section == "Party" then
-    scopeId = table.concat({
-      "party",
-      tostring(self.controller.partySlot0),
-      self.controller.partyTab,
-    }, ":")
-  elseif self.controller.section == "Progress" then
-    scopeId = table.concat({
-      "section:Progress",
-      self.controller.query,
-    }, ":")
-  elseif self.controller.section == "Bag" then
-    scopeId = "section:Bag:" .. self.controller.bagPocket
-  else
-    scopeId = "section:" .. self.controller.section .. ":" .. self.controller.locationPage
-    if self.controller.section == "Location" and self.controller.locationPage == "map-list" then
-      scopeId = scopeId .. ":" .. self.controller.query
-    end
-  end
-  if scopeId ~= self.activeScopeId then
-    self.activeScopeId = scopeId
-    self.scopeEpoch = self.scopeEpoch + 1
-    self.fieldInput:beginUi(self.inputTick)
-    self.controller:cancelInteraction()
-    self.numberHold = nil
-    self.numberPressTarget = nil
-  end
-  self.controller.scopeId, self.controller.scopeEpoch = scopeId, self.scopeEpoch
+  local valueSnapshot = self.valueEditor ~= nil and self.valueEditor:snapshot() or nil
+  local scopeId = computeScopeId(self.controller, self.valuePurpose, valueSnapshot)
   local scopeKind = self.controller.modal and "decision"
     or self.valueEditor and "value"
     or self.controller.section == "Party" and "party"
@@ -752,9 +802,9 @@ function State:_bagView()
     end
   end
   local pageCount = math.max(1, math.ceil(#rows / 6))
-  self.controller.bagPage0 = math.max(0, math.min(pageCount - 1, self.controller.bagPage0))
+  local page0 = math.max(0, math.min(pageCount - 1, self.controller.bagPage0))
   local pageRows = {}
-  for index = self.controller.bagPage0 * 6 + 1, math.min(#rows, self.controller.bagPage0 * 6 + 6) do
+  for index = page0 * 6 + 1, math.min(#rows, page0 * 6 + 6) do
     pageRows[#pageRows + 1] = rows[index]
   end
   local manifest = assert(self.dependencies.bagManifest, "Bag presentation manifest is required")
@@ -770,7 +820,7 @@ function State:_bagView()
     bagPockets = pockets,
     bagRows = rows,
     bagPageRows = pageRows,
-    bagPage0 = self.controller.bagPage0,
+    bagPage0 = page0,
     bagPageCount = pageCount,
     bagAddEnabled = canAdd,
     bagPocketTabRects = manifest.interactive.pocketTabs.rects,
@@ -1040,15 +1090,19 @@ function State:_publishBagQuantity(itemKey, quantity)
   end
 end
 
+-- Resolves the presentation plan for already-settled facts. Pure
+-- observation: grid adoption happens on the update path, never here.
 function State:_resolve(view)
   view.textMetrics = assert(self.renderer):metrics()
-  local plan = self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
+  return self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
+end
+
+function State:_adoptGridSize(plan)
   local grid = plan.content.layout.locationGrid
   if grid ~= nil then
     self.locationGridWidthTiles = grid.columns
     self.locationGridHeightTiles = grid.rows
   end
-  return plan
 end
 
 ---@param layout table<string, unknown>
@@ -1504,95 +1558,55 @@ function State:_prepareLocationForSave(leave)
 end
 
 function State:_cancelPendingLocationSave()
-  local pending = self.pendingLocationSave
-  if pending == nil then
-    return
+  if self.locationSave ~= nil then
+    self.locationSave:cancel()
   end
-  self.pendingLocationSave = nil
-  pending.verifier:dispose()
 end
 
 function State:_startPendingLocationSave(snapshot, leave)
-  if self.pendingLocationSave then
-    return
+  local owner = assert(self.locationSave, "a relocated save needs its destination verifier")
+  if owner:start(snapshot, leave) then
+    self.errorMessage = nil
   end
-  local location = snapshot.location
-  local verifier = LocationService.new({
-    cacheFs = assert(self.dependencies).cacheFs,
-    world = self.dependencies.world,
-    derivedAssets = self.derivedAssets,
-    savedObjects = assert(self.dependencies.savedObjects),
-  })
-  local started, startError = pcall(function()
-    verifier:openMap(location.mapId)
-    verifier:setViewport(location.fieldX, location.fieldZ, 1, 1)
-  end)
-  if not started then
-    verifier:dispose()
-    error(startError, 0)
-  end
-  self.locationSaveOperationId = self.locationSaveOperationId + 1
-  self.pendingLocationSave = {
-    operationId = self.locationSaveOperationId,
-    sessionRevision = snapshot.revision,
-    location = {
-      mapId = location.mapId,
-      fieldX = location.fieldX,
-      fieldZ = location.fieldZ,
-      surfaceId = location.surfaceId,
-      worldY = location.worldY,
-      terrainDependencyHash = location.terrainDependencyHash,
-    },
-    leave = leave,
-    verifier = verifier,
-  }
-  self.errorMessage = nil
 end
 
-function State:_updatePendingLocationSave()
-  local pending = self.pendingLocationSave
-  if pending == nil or self.session == nil then
+-- Advances the pending destination verification and runs the session
+-- transaction once its ticket is fresh. A verified ticket is not save
+-- authorization: revision, placement and open drafts are rechecked here
+-- immediately before the transaction runs. Only this owner invokes
+-- Session.save and emits the final application result.
+function State:_pumpLocationSave()
+  local owner = self.locationSave
+  if owner == nil or self.session == nil or owner:status() == nil then
     return
   end
-  local snapshot = self.session:snapshot()
-  if snapshot.revision ~= pending.sessionRevision or not sameLocation(snapshot.location, pending.location) then
-    self:_cancelPendingLocationSave()
+  local result = owner:step(self.session:snapshot())
+  if result.kind == "pending" then
+    return
+  end
+  if result.kind == "cancelled" then
     self.errorMessage = "The destination check was canceled after the save changed."
     if self.closeRequest then
       self.closeRequest.phase = "confirm"
     end
     return
   end
-  pending.verifier:update()
-  local readiness = pending.verifier:snapshot().status
-  if readiness.state == "pending" then
-    return
-  end
-  if readiness.state ~= "ready" then
-    self:_cancelPendingLocationSave()
-    self.errorMessage = readiness.reason or "The destination could not be verified."
+  if result.kind == "failed" then
+    self.errorMessage = result.reason or "The destination could not be verified."
     if self.closeRequest then
       self.closeRequest.phase = "confirm"
     end
     return
   end
-  local placement, resolution = pending.verifier:resolve(
-    pending.location.mapId,
-    pending.location.fieldX,
-    pending.location.fieldZ,
-    pending.verifier:snapshot().generation
-  )
-  if placement == nil then
-    self:_cancelPendingLocationSave()
-    self.locationActionStatus = resolution
-    self.errorMessage = resolution.reason or "The destination is unavailable."
+  if result.kind == "unresolvable" then
+    self.locationActionStatus = result.tileStatus
+    self.errorMessage = result.reason or "The destination is unavailable."
     if self.closeRequest then
       self.closeRequest.phase = "confirm"
     end
     return
   end
-  if not sameLocation(placement, pending.location) then
-    self:_cancelPendingLocationSave()
+  if result.kind == "drifted" then
     self.locationActionStatus = { state = "unavailable", reason = "destination_changed_during_resolution" }
     self.errorMessage = "The destination changed while it was being checked. Review it and save again."
     if self.closeRequest then
@@ -1600,13 +1614,9 @@ function State:_updatePendingLocationSave()
     end
     return
   end
-  if
-    self.pendingLocationSave ~= pending
-    or self.pendingLocationSave.operationId ~= pending.operationId
-    or self.session:snapshot().revision ~= pending.sessionRevision
-    or not sameLocation(self.session:snapshot().location, pending.location)
-  then
-    self:_cancelPendingLocationSave()
+  assert(result.kind == "verified", "destination verification settles with a known result")
+  local fresh = self.session:snapshot()
+  if fresh.revision ~= result.sessionRevision or not sameLocation(fresh.location, result.location) then
     self.errorMessage = "The destination check was canceled after the save changed."
     if self.closeRequest then
       self.closeRequest.phase = "confirm"
@@ -1614,15 +1624,12 @@ function State:_updatePendingLocationSave()
     return
   end
   if self.valueEditor ~= nil or self.monDraft ~= nil then
-    self:_cancelPendingLocationSave()
     self.errorMessage = "Finish or cancel the open edit before saving."
     if self.closeRequest then
       self.closeRequest.phase = "confirm"
     end
     return
   end
-  self.pendingLocationSave = nil
-  pending.verifier:dispose()
   local saved = self.session:save(false)
   if not saved.ok then
     self.errorMessage = message(assert(saved.error, "failed save result must include its structured error"))
@@ -1632,7 +1639,7 @@ function State:_updatePendingLocationSave()
     return
   end
   self.errorMessage = nil
-  if pending.leave then
+  if result.leave then
     local request = self.closeRequest
     self.closeRequest = nil
     self.controller.modal = nil
@@ -1783,6 +1790,7 @@ function State:_performDeferred(action)
     self.locationViewport = nil
     self.locationActionStatus = nil
     self.errorMessage = nil
+    self:_settleScope()
     return
   elseif action.kind == "location-cursor-move" then
     local width, height = self:_locationGridSize()
@@ -1800,6 +1808,7 @@ function State:_performDeferred(action)
   elseif action.kind == "select_tile" then
     self:_selectLocationTile(action.fieldX, action.fieldZ)
   end
+  self:_settleScope()
 end
 
 function State:_confirmRemoval()
@@ -1823,15 +1832,30 @@ function State:_confirmRemoval()
   self.controller.focus = focusRow and "bag:item:" .. focusRow.item or "bag:add"
 end
 
+-- Reports whether a destination verification is currently pending.
+function State:_locationSavePending()
+  return self.locationSave ~= nil and self.locationSave:status() ~= nil
+end
+
+-- Builds the bounded enablement facts for the canonical decision set.
+-- A save target cancels a running verification only outside a close
+-- decision; inside one it keeps attempting the close save instead.
+---@param saveStatus { state: string, operationId: integer }?
+---@return { pendingSave: boolean }
+function State:_decisionFacts(saveStatus)
+  local pending = saveStatus ~= nil or self:_locationSavePending()
+  return { pendingSave = pending and self.closeRequest == nil }
+end
+
 function State:_save(leave)
   if not self.session then
     return false
   end
-  if self.pendingLocationSave then
+  if self:_locationSavePending() then
     return false
   end
   if not self:_prepareLocationForSave(leave) then
-    if self.pendingLocationSave then
+    if self:_locationSavePending() then
       return false
     end
     if leave and self.closeRequest ~= nil then
@@ -2189,6 +2213,79 @@ function State:onImportAttempt()
   self.notice = "Close the editor before importing another ROM."
 end
 
+-- Executes one canonical decision command for the already-matched
+-- descriptor. Unknown commands are programming errors; targets outside
+-- the published descriptor set never reach this map.
+function State:_performDecisionCommand(kind, command, id)
+  if command == "cancel" then
+    if kind == "leave" and self.closeRequest ~= nil then
+      self:_cancelPendingLocationSave()
+      local request = assert(self.closeRequest)
+      self.closeRequest = nil
+      self.controller.modal = request.previousModal
+      self.controller.modalReturnFocus = request.previousModalReturnFocus
+      self.controller.focus = request.previousFocus
+    elseif kind == "party-move" then
+      self.pendingMoveSlot = nil
+      self.controller:closeModal()
+    elseif kind == "remove" then
+      self.pendingRemove = nil
+      self.controller:closeModal()
+      if self.controller.section == "Bag" and self.controller.bagItemKey then
+        self.controller.focus = "bag:item:" .. self.controller.bagItemKey
+      end
+    elseif kind == "bag-item" then
+      self.controller:closeModal()
+    else
+      error("unknown cancelled decision kind " .. tostring(kind), 0)
+    end
+    return
+  end
+  if kind == "bag-item" then
+    if command == "bag_quantity" then
+      self:_openBagQuantity("set")
+    elseif command == "bag_remove" then
+      self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
+      self.controller:openModal("remove")
+    else
+      error("unknown bag decision command " .. tostring(command), 0)
+    end
+  elseif kind == "party-move" then
+    if command == "party-move:move" or command == "party-move:pp" or command == "party-move:pp-ups" then
+      self:_openMoveChild(id)
+    else
+      error("unknown move decision command " .. tostring(command), 0)
+    end
+  elseif kind == "remove" then
+    if command == "confirm_remove" then
+      self:_confirmRemoval()
+    else
+      error("unknown removal decision command " .. tostring(command), 0)
+    end
+  elseif kind == "leave" then
+    if command == "discard" then
+      if self.closeRequest ~= nil then
+        self:_performClose("discard")
+      else
+        self:_discard(false)
+      end
+    elseif command == "save" then
+      if self.closeRequest ~= nil then
+        self:_performClose("save")
+      else
+        self:_save(true)
+      end
+    elseif command == "cancel_pending_save" then
+      self:_cancelPendingLocationSave()
+      self.errorMessage = "Destination verification canceled."
+    else
+      error("unknown leave decision command " .. tostring(command), 0)
+    end
+  else
+    error("unknown decision kind " .. tostring(kind), 0)
+  end
+end
+
 function State:_activate(targetId)
   if self.status == "error" then
     if targetId == "retry" then
@@ -2224,58 +2321,16 @@ function State:_activate(targetId)
     return
   end
   if self.controller.modal then
-    if self.controller.modal == "bag-item" then
-      if targetId == "bag:quantity" then
-        self:_openBagQuantity("set")
-      elseif targetId == "bag:remove" then
-        self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
-        self.controller:openModal("remove")
-      elseif targetId == "cancel" then
-        self.controller:closeModal()
+    local kind = assert(self.controller.modal, "decision activation needs its open decision")
+    local selected = nil
+    for _, action in ipairs(Decisions.describe(kind, self:_decisionFacts(nil))) do
+      if action.id == targetId then
+        selected = action
+        break
       end
-    elseif self.controller.modal == "party-move" then
-      if targetId == "party-move:move" or targetId == "party-move:pp" or targetId == "party-move:pp-ups" then
-        self:_openMoveChild(targetId)
-      elseif targetId == "cancel" then
-        self.pendingMoveSlot = nil
-        self.controller:closeModal()
-      end
-    elseif self.controller.modal == "remove" then
-      if targetId == "remove" then
-        self:_confirmRemoval()
-      elseif targetId == "cancel" then
-        self.pendingRemove = nil
-        self.controller:closeModal()
-        if self.controller.section == "Bag" and self.controller.bagItemKey then
-          self.controller.focus = "bag:item:" .. self.controller.bagItemKey
-        end
-      end
-    elseif targetId == "cancel" then
-      if self.controller.modal == "leave" and self.closeRequest ~= nil then
-        self:_cancelPendingLocationSave()
-        local request = assert(self.closeRequest)
-        self.closeRequest = nil
-        self.controller.modal = request.previousModal
-        self.controller.modalReturnFocus = request.previousModalReturnFocus
-        self.controller.focus = request.previousFocus
-      else
-        self.controller:closeModal()
-      end
-    elseif targetId == "discard" then
-      if self.closeRequest ~= nil then
-        self:_performClose("discard")
-      else
-        self:_discard(false)
-      end
-    elseif targetId == "save" then
-      if self.closeRequest ~= nil then
-        self:_performClose("save")
-      elseif self.pendingLocationSave then
-        self:_cancelPendingLocationSave()
-        self.errorMessage = "Destination verification canceled."
-      else
-        self:_save(true)
-      end
+    end
+    if selected ~= nil and selected.enabled then
+      self:_performDecisionCommand(kind, selected.command, selected.id)
     end
     return
   end
@@ -2315,7 +2370,7 @@ function State:_activate(targetId)
       self.errorMessage = message(result.error)
     end
   elseif targetId == "save" then
-    if self.pendingLocationSave then
+    if self:_locationSavePending() then
       self:_cancelPendingLocationSave()
       self.errorMessage = "Destination verification canceled."
     else
@@ -2503,6 +2558,7 @@ function State:_pointer(events)
   if self.disposed then
     return
   end
+  self:_settleScope()
   local view = self:_snapshot()
   local plan = self:_resolve(view)
   local mapped = self.presentation:mapInput(events, view)
@@ -2557,7 +2613,7 @@ function State:_pointer(events)
     return plan
   end
   self:_reconcileFocus()
-  self:_resolve(self:_snapshot())
+  self:_settleScope()
   return plan
 end
 
@@ -2569,15 +2625,14 @@ function State:view()
   return view
 end
 
+-- Draw only consumes the settled publication: it never changes scope,
+-- input buffers, focus, drafts, selection, hold counters, verification
+-- state, or resource demand. Visible icon preparation runs on update.
 function State:draw()
   if self.disposed then
     return
   end
   local view = self:view()
-  if self.dependencies then
-    self.renderer:prepareVisibleIcons(view, view.presentation, self.dependencies.cacheFs, self.derivedAssets)
-    self.iconStatus, self.iconFailure = self.renderer.iconStatus, self.renderer.iconFailure
-  end
   ApplicationPresentation.draw(
     self.renderer.graphics,
     { renderer = self.renderer, text = self.renderer.text },
@@ -2595,6 +2650,7 @@ function State:resize(width, height)
   self.locationViewport = nil
   self.locationGridWidthTiles = nil
   self.locationGridHeightTiles = nil
+  self:_settleScope()
 end
 
 function State:focus(focused)
@@ -2605,10 +2661,15 @@ function State:focus(focused)
     self.numberPressTarget = nil
     self.fieldInput:clearAll()
     self.fieldInput:beginUi(self.inputTick)
+    self:_settleScope()
   end
 end
 
+-- Consumes one batch of normalized UI events. Scope settles before the
+-- first event acts, so already-retired captures cannot fire, and after
+-- the batch, so later batches observe the settled epoch.
 function State:_consumeUiInput(events)
+  self:_settleScope()
   for _, event in ipairs(events) do
     if event.type == "navigate" then
       self.controller:markKeyboardNavigation()
@@ -2694,6 +2755,7 @@ function State:_consumeUiInput(events)
     end
   end
   self:_reconcileFocus()
+  self:_settleScope()
 end
 
 function State:keypressed(key, _, isrepeat)
@@ -2761,6 +2823,7 @@ function State:keypressed(key, _, isrepeat)
       end
     end
     self:_reconcileFocus()
+    self:_settleScope()
     return
   end
   if key == "backspace" or key == "delete" then
@@ -2769,6 +2832,7 @@ function State:keypressed(key, _, isrepeat)
     if list ~= nil and list.filterable then
       self:_filterFocusedList(list, rowIndex, key == "delete" and "clear" or "backspace")
       self:_reconcileFocus()
+      self:_settleScope()
     end
     return
   end
@@ -2803,6 +2867,7 @@ function State:textinput(text)
       self.valueEditor:textinput(text)
     end
     self.editorFeedback = nil
+    self:_settleScope()
     return
   end
   local layout = self:_resolve(self:_snapshot()).content.layout
@@ -2811,6 +2876,7 @@ function State:textinput(text)
     return
   end
   self:_filterFocusedList(list, rowIndex, "append", text)
+  self:_settleScope()
 end
 
 function State:keyreleased(key)
@@ -2914,6 +2980,7 @@ function State:wheelmoved(_, y)
   end
   local viewport = assert(layout.viewports[viewportId], "active scroll owner needs a published viewport")
   self:_setScrollOffset(view, layout, viewportId, viewport.offset - y * viewport.rowExtent)
+  self:_settleScope()
 end
 
 function State:dispose()

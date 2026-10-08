@@ -217,6 +217,7 @@ function T.tests.number_repeat_stops_on_pointer_cancel_and_focus_loss()
         scopeEpoch = controller.scopeEpoch,
         nextTick = 1,
       },
+      scopeEpoch = 0,
       _snapshot = function()
         return {}
       end,
@@ -407,6 +408,8 @@ local function progressListHarness(flagCatalog)
   local state = setmetatable({
     status = "ready",
     controller = controller,
+    fieldInput = { beginUi = function() end },
+    scopeEpoch = 0,
     _snapshot = buildView,
     _resolve = function()
       return { content = { layout = buildLayout() } }
@@ -762,6 +765,8 @@ local function locationListHarness()
   local state = setmetatable({
     status = "ready",
     controller = controller,
+    fieldInput = { beginUi = function() end },
+    scopeEpoch = 0,
     _snapshot = buildView,
     _resolve = function()
       return { content = { layout = buildLayout() } }
@@ -887,6 +892,8 @@ local function overflowingLocationListHarness(width, height, count)
   local state = setmetatable({
     status = "ready",
     controller = controller,
+    fieldInput = { beginUi = function() end },
+    scopeEpoch = 0,
     _snapshot = buildView,
     _resolve = function()
       return { content = { layout = buildLayout() } }
@@ -1025,6 +1032,8 @@ local function choiceListHarness()
   local state = setmetatable({
     status = "ready",
     controller = controller,
+    fieldInput = { beginUi = function() end },
+    scopeEpoch = 0,
     valueEditor = editor,
     _snapshot = buildView,
     _resolve = function()
@@ -1142,6 +1151,8 @@ local function mapActivationHarness()
     status = "ready",
     controller = controller,
     locationService = service,
+    fieldInput = { beginUi = function() end },
+    scopeEpoch = 0,
     locationServiceMapId = 12,
     locationViewport = nil,
     locationActionStatus = nil,
@@ -1239,14 +1250,15 @@ function T.tests.confirming_a_map_row_publishes_the_map_without_loading_in_the_i
   )
 end
 
-function T.tests.steady_update_never_prepares_icons()
+function T.tests.steady_update_prepares_icons_from_the_published_selection()
   local harness = mapActivationHarness()
   harness.state.locationViewport = { centerX = 32, centerZ = 48, widthTiles = 7, heightTiles = 5 }
   local iconPrepCalls = 0
+  local iconView, iconPlan = nil, nil
   harness.state.tickRemainder = 0
   harness.state.inputTick = 0
   harness.state.numberHold = nil
-  harness.state.pendingLocationSave = nil
+  harness.state.locationSave = nil
   harness.state.derivedAssets = {
     requestMilestone = function()
       return true
@@ -1256,28 +1268,33 @@ function T.tests.steady_update_never_prepares_icons()
   harness.state.renderer = {
     iconStatus = "ready",
     iconFailure = nil,
-    prepareVisibleIcons = function()
+    prepareVisibleIcons = function(_, view, plan)
       iconPrepCalls = iconPrepCalls + 1
+      iconView, iconPlan = view, plan
     end,
   }
   harness.state.fieldInput = {
     uiSnapshot = function()
       return {}
     end,
+    beginUi = function() end,
   }
+  local published = { section = "Location" }
   local layout = {
     focusGraph = { [harness.controller.focus] = true },
     defaultFocus = harness.controller.focus,
   }
   harness.state._snapshot = function()
-    return {}
+    return published
   end
   harness.state._resolve = function()
     return { content = { layout = layout } }
   end
 
   harness.state:update(1 / 60)
-  Assert.equal(iconPrepCalls, 0, "the steady update path never prepares icons")
+  Assert.equal(iconPrepCalls, 1, "the steady update path prepares icons once per tick")
+  Assert.isTrue(iconView == published, "icon preparation sees the published selection")
+  Assert.isTrue(iconPlan ~= nil and iconPlan.content.layout == layout, "icon preparation sees the resolved plan")
 end
 
 function T.tests.location_service_refresh_reuses_known_grid_size_without_resolving_layout()
@@ -1293,7 +1310,7 @@ function T.tests.location_service_refresh_reuses_known_grid_size_without_resolvi
   Assert.equal(viewport.heightTiles, 1, "an unknown grid falls back to a temporary single tile")
 end
 
-function T.tests.draw_prepares_icons_from_the_same_plan_it_renders()
+function T.tests.draw_renders_the_published_plan_without_requesting_icons()
   local harness = mapActivationHarness()
   harness.state.disposed = false
   harness.state.dependencies.cacheFs = {}
@@ -1308,13 +1325,12 @@ function T.tests.draw_prepares_icons_from_the_same_plan_it_renders()
     resolves = resolves + 1
     return plan
   end
-  local iconView, iconPlan, iconPrepCalls = nil, nil, 0
+  local iconPrepCalls = 0
   harness.state.renderer = {
     graphics = {},
     text = {},
-    prepareVisibleIcons = function(_, view, presentation)
+    prepareVisibleIcons = function()
       iconPrepCalls = iconPrepCalls + 1
-      iconView, iconPlan = view, presentation
     end,
   }
   local drawnView, drawnPresentation = nil, nil
@@ -1329,9 +1345,9 @@ function T.tests.draw_prepares_icons_from_the_same_plan_it_renders()
   Assert.isTrue(ok, "draw runs without platform rendering: " .. tostring(drawError))
   Assert.equal(snapshots, 1, "draw snapshots its view once")
   Assert.equal(resolves, 1, "draw resolves its presentation plan once")
-  Assert.equal(iconPrepCalls, 1, "draw prepares icons from its resolved plan")
-  Assert.isTrue(iconView == drawnView, "icon preparation sees the rendered view")
-  Assert.isTrue(iconPlan == drawnPresentation, "icon preparation sees the rendered plan")
+  Assert.equal(iconPrepCalls, 0, "draw never requests derived icon work")
+  Assert.isTrue(drawnView ~= nil, "draw renders its resolved view")
+  Assert.isTrue(drawnPresentation == plan, "draw renders its resolved plan")
 end
 
 function T.tests.resize_republishes_the_location_viewport_on_the_next_refresh()
@@ -1385,6 +1401,8 @@ local function scrollableChoiceHarness(optionCount)
   local state = setmetatable({
     status = "ready",
     controller = controller,
+    fieldInput = { beginUi = function() end },
+    scopeEpoch = 0,
     valueEditor = editor,
     _snapshot = buildView,
     _resolve = function()
@@ -1979,6 +1997,9 @@ local function backHarness(options)
     end,
     discardedSections = {},
     globalDiscards = 0,
+    bagSnapshot = function()
+      return {}
+    end,
     isDirty = function(self)
       return self.dirty
     end,
@@ -2004,6 +2025,8 @@ local function backHarness(options)
     valueEditor = options.valueEditor,
     monDraft = options.monDraft,
     locationService = options.locationService,
+    fieldInput = { beginUi = function() end },
+    scopeEpoch = 0,
     locationServiceMapId = options.locationServiceMapId,
     locationViewport = options.locationViewport,
     errorMessage = nil,
@@ -2077,6 +2100,8 @@ local function livePartyHarness(memberCount)
     session = session,
     dependencies = { context = fixture.context },
     partyView = PartyView.new(fixture.context),
+    fieldInput = { beginUi = function() end },
+    scopeEpoch = 0,
     monDraft = nil,
     valueEditor = nil,
     valuePurpose = nil,
@@ -2302,6 +2327,8 @@ function T.tests.activating_the_staged_map_keeps_its_coordinates_while_other_map
         byId = { [12] = 1, [34] = 2 },
       },
     },
+    fieldInput = { beginUi = function() end },
+    scopeEpoch = 0,
     session = {
       snapshot = function()
         return { location = { mapId = 12, fieldX = 40, fieldZ = 50 } }
@@ -2367,6 +2394,266 @@ function T.tests.footer_discard_abandons_a_party_draft_with_its_section()
   local fresh = harness.state.monDraft
   Assert.notNil(fresh, "a fresh draft opens for the restored member")
   Assert.isFalse(fresh:isDirty(), "the fresh draft starts clean")
+end
+
+local function observationHarness()
+  local FieldInput = require("libs.hgss.src.field.FieldInput")
+  local controller = Controller.new()
+  controller:pointer({ type = "pointer_down", pointerId = "touch:hold", targetId = "money", x = 4, y = 6 })
+  local session = {
+    snapshot = function()
+      return {
+        flags = {},
+        money = 0,
+        frameIndex = 0,
+        revision = 1,
+        locationChanged = false,
+        location = { mapId = 7, fieldX = 10, fieldZ = 12 },
+        originalLocation = { mapId = 7, fieldX = 10, fieldZ = 12 },
+        dirtySections = {},
+      }
+    end,
+    isDirty = function()
+      return false
+    end,
+  }
+  local iconPrepCalls = 0
+  local state = setmetatable({
+    status = "ready",
+    width = 256,
+    height = 192,
+    controller = controller,
+    session = session,
+    dependencies = { cacheFs = {} },
+    derivedAssets = {},
+    displayContext = {
+      measure = function()
+        return {}
+      end,
+    },
+    renderer = {
+      graphics = {},
+      text = {},
+      metrics = function()
+        return {
+          lineHeight = 14,
+          measure = function(text)
+            return #text * 7
+          end,
+        }
+      end,
+      prepareVisibleIcons = function()
+        iconPrepCalls = iconPrepCalls + 1
+      end,
+    },
+    presentation = {
+      resolve = function()
+        return { content = { layout = {} } }
+      end,
+    },
+    fieldInput = FieldInput.new(),
+    inputTick = 0,
+    activeScopeId = "stale-scope",
+    scopeEpoch = 7,
+    numberHold = {
+      pointerId = "touch:hold",
+      targetId = "number:delta:1",
+      delta = 1,
+      scopeEpoch = 7,
+      nextTick = 100,
+    },
+    numberPressUntilTick = 0,
+    valueEditor = nil,
+    valuePurpose = nil,
+    monDraft = nil,
+    locationService = nil,
+    iconStatus = nil,
+    iconFailure = nil,
+  }, State)
+  controller.scopeId, controller.scopeEpoch = "section:Player:map-list", 7
+  return state, function()
+    return iconPrepCalls
+  end
+end
+
+function T.tests.repeated_observation_keeps_interaction_state_and_resource_requests_still()
+  local state, iconPrepCalls = observationHarness()
+  local heldPointer = state.controller.pointerId
+  local heldTarget = state.controller.capturedTarget
+
+  local first = state:view()
+  Assert.notNil(state.numberHold, "observation never cancels a held repeat")
+  Assert.equal(state.scopeEpoch, 7, "observation never advances the scope epoch")
+  Assert.equal(state.controller.pointerId, heldPointer, "observation never drops a held pointer")
+  Assert.equal(state.controller.capturedTarget, heldTarget, "observation never drops a held capture")
+  Assert.equal(state.controller.focus, "money", "observation never moves focus")
+  local second = state:view()
+  Assert.equal(second.scope.id, first.scope.id, "repeated observations describe the same scope")
+  Assert.equal(second.scope.epoch, first.scope.epoch, "repeated observations describe the same epoch")
+
+  local originalDraw = ApplicationPresentation.draw
+  ApplicationPresentation.draw = function() end
+  local ok, drawError = pcall(function()
+    state:draw()
+  end)
+  ApplicationPresentation.draw = originalDraw
+  Assert.isTrue(ok, "draw runs without platform rendering: " .. tostring(drawError))
+  Assert.equal(iconPrepCalls(), 0, "draw never requests derived icon work")
+  Assert.notNil(state.numberHold, "drawing never cancels a held repeat")
+  Assert.equal(state.scopeEpoch, 7, "drawing never advances the scope epoch")
+end
+
+function T.tests.scope_transitions_cancel_stale_input_before_later_events_act()
+  local controller = Controller.new()
+  controller:pointer({ type = "pointer_down", pointerId = "touch:stale", targetId = "money", x = 4, y = 6 })
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    monDraft = nil,
+    errorMessage = nil,
+    fieldInput = {
+      beginUi = function() end,
+      uiSnapshot = function()
+        return {}
+      end,
+    },
+    activeScopeId = "section:Player:map-list",
+    scopeEpoch = 3,
+    numberHold = {
+      pointerId = "touch:stale",
+      targetId = "number:delta:1",
+      delta = 1,
+      scopeEpoch = 3,
+      nextTick = 100,
+    },
+    numberPressTarget = nil,
+    _reconcileFocus = function()
+      return {}
+    end,
+  }, State)
+  controller.scopeId, controller.scopeEpoch = "section:Player:map-list", 3
+  controller.focus = "section:Bag"
+
+  state:_consumeUiInput({ { type = "confirm" } })
+  Assert.equal(state.scopeEpoch, 4, "the section transition settles its scope before later events act")
+  Assert.equal(controller.scopeId, "section:Bag:items", "the settled scope names the entered section")
+  Assert.equal(controller.scopeEpoch, 4, "the controller observes the settled epoch")
+  Assert.isNil(state.numberHold, "the transition cancels the previous number hold")
+  Assert.isNil(controller.capturedTarget, "the transition cancels the previous capture")
+  Assert.isNil(controller.pointerId, "the transition releases the previous pointer")
+
+  Assert.isNil(
+    controller:pointer({ type = "pointer_up", pointerId = "touch:stale", targetId = "money", x = 4, y = 6 }),
+    "a release from the retired press cannot activate its old target"
+  )
+  Assert.isNil(
+    controller:pointer(
+      { type = "pointer_down", pointerId = "touch:fresh", targetId = "bag:pocket:items", x = 4, y = 6 }
+    ),
+    "a fresh press only captures its target"
+  )
+  Assert.equal(controller.pointerId, "touch:fresh", "fresh navigation works after the transition")
+  Assert.deepEqual(
+    controller:pointer(
+      { type = "pointer_up", pointerId = "touch:fresh", targetId = "bag:pocket:items", x = 4, y = 6 }
+    ),
+    { kind = "activate", targetId = "bag:pocket:items" },
+    "a clean tap on the new section activates"
+  )
+end
+
+function T.tests.every_modal_action_renders_hits_and_executes_from_one_description()
+  local loaded, Decisions = pcall(require, "app.src.saveeditor.SaveEditorDecisions")
+  Assert.isTrue(loaded, "modal actions come from one decision vocabulary")
+  local expectations = {
+    ["bag-item"] = {
+      { id = "bag:quantity", label = "Quantity", semantic = "secondary" },
+      { id = "bag:remove", label = "Remove", semantic = "destructive" },
+      { id = "cancel", label = "Cancel", semantic = "secondary" },
+    },
+    ["party-move"] = {
+      { id = "party-move:move", label = "Move", semantic = "secondary" },
+      { id = "party-move:pp", label = "Current PP", semantic = "secondary" },
+      { id = "party-move:pp-ups", label = "PP Ups", semantic = "secondary" },
+      { id = "cancel", label = "Cancel", semantic = "secondary" },
+    },
+    ["remove"] = {
+      { id = "remove", label = "Remove", semantic = "destructive" },
+      { id = "cancel", label = "Cancel", semantic = "secondary" },
+    },
+    ["leave"] = {
+      { id = "save", label = "Save & exit", semantic = "primary" },
+      { id = "discard", label = "Discard all", semantic = "destructive" },
+      { id = "cancel", label = "Cancel", semantic = "secondary" },
+    },
+  }
+  for kind, expected in pairs(expectations) do
+    local facts = kind == "leave" and { pendingSave = false } or {}
+    local actions = Decisions.describe(kind, facts)
+    Assert.equal(#actions, #expected, kind .. " publishes its closed action set")
+    for index, want in ipairs(expected) do
+      local action = assert(actions[index], kind .. " action " .. index .. " is ordered")
+      Assert.equal(action.id, want.id, kind .. " action " .. index .. " keeps its target spelling")
+      Assert.equal(action.label, want.label, kind .. " action " .. want.id .. " keeps its caption")
+      Assert.equal(action.semantic, want.semantic, kind .. " action " .. want.id .. " keeps its role")
+      Assert.isTrue(action.enabled, kind .. " action " .. want.id .. " stays enabled")
+      Assert.equal(type(action.command), "string", kind .. " action " .. want.id .. " carries a command")
+    end
+    local view = {
+      section = "Player",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      session = { playerName = "PLAYER", money = 0, frameIndex = 0 },
+      modal = kind,
+      focus = "cancel",
+      scope = { id = "decision:" .. kind, epoch = 1, kind = "decision", focusId = "cancel" },
+      decisionActions = actions,
+      textMetrics = {
+        lineHeight = 14,
+        measure = function(text)
+          return #text * 7
+        end,
+      },
+    }
+    local layout = Layout.compute(view, 256, 192, view.textMetrics)
+    Assert.notNil(layout.decisionList, kind .. " publishes its decision surface")
+    Assert.equal(#layout.decisionList.rows, #expected, kind .. " renders every described action")
+    for index, want in ipairs(expected) do
+      local row = assert(layout.decisionList.rows[index], kind .. " row " .. index .. " is ordered")
+      Assert.equal(row.targetId, want.id, kind .. " row " .. index .. " keeps its target spelling")
+      Assert.equal(row.label, want.label, kind .. " row " .. want.id .. " paints the described caption")
+      Assert.equal(row.semantic, want.semantic, kind .. " row " .. want.id .. " paints the described role")
+      Assert.notNil(layout.targets[want.id], kind .. " action " .. want.id .. " is hittable")
+      local centerX = row.rect.x + math.floor(row.rect.width / 2)
+      local centerY = row.rect.y + math.floor(row.rect.height / 2)
+      Assert.equal(Layout.hitTest(layout, view, centerX, centerY), want.id, kind .. " action " .. want.id .. " hits its row")
+    end
+  end
+  local publisher, publisherIconPrep = observationHarness()
+  for kind in pairs(expectations) do
+    publisher.controller.modal = kind
+    publisher.controller.focus = "cancel"
+    local published = publisher:_snapshot()
+    Assert.deepEqual(
+      published.decisionActions,
+      Decisions.describe(kind, kind == "leave" and { pendingSave = false } or {}),
+      kind .. " publishes its canonical actions without mutating interaction state"
+    )
+    Assert.notNil(publisher.numberHold, kind .. " publication never cancels a held repeat")
+  end
+  publisher.controller.modal = nil
+  Assert.equal(publisherIconPrep(), 0, "publication never requests derived icon work")
+  local pendingSave = Decisions.describe("leave", { pendingSave = true })
+  Assert.equal(
+    pendingSave[1].command,
+    "cancel_pending_save",
+    "a save target during verification cancels the check instead of saving"
+  )
+  local idleSave = Decisions.describe("leave", { pendingSave = false })
+  Assert.equal(idleSave[1].command, "save", "an idle save target saves")
+  local unknownOk = pcall(Decisions.describe, "leave-everything", {})
+  Assert.isFalse(unknownOk, "an unknown decision kind is a programming error, not an implicit leave")
 end
 
 return T

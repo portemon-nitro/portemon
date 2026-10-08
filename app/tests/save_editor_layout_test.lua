@@ -1524,4 +1524,68 @@ function T.tests.footer_discard_enables_only_for_the_active_section_changes()
   end
 end
 
+function T.tests.decision_targets_derive_from_the_published_descriptors()
+  local view = {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    modal = "bag-item",
+    focus = "bag:quantity",
+    scope = { id = "decision:bag-item", epoch = 1, kind = "decision", focusId = "bag:quantity" },
+    decisionActions = {
+      { id = "bag:quantity", label = "Quantity", semantic = "secondary", enabled = true, command = "bag_quantity" },
+      { id = "bag:remove", label = "Remove", semantic = "destructive", enabled = false, command = "bag_remove" },
+      { id = "cancel", label = "Cancel", semantic = "secondary", enabled = true, command = "cancel" },
+    },
+    textMetrics = {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    },
+  }
+  local layout = Layout.compute(view, 256, 192, view.textMetrics)
+  Assert.notNil(layout.decisionList, "the item decision publishes its surface")
+  Assert.equal(#layout.decisionList.rows, 3, "every described action renders in order")
+  Assert.equal(layout.decisionList.rows[1].label, "Quantity", "rows paint the described captions")
+  Assert.equal(layout.decisionList.rows[2].semantic, "destructive", "rows paint the described roles")
+  Assert.equal(layout.decisionList.rows[2].enabled, false, "rows carry the described enablement")
+  Assert.notNil(layout.targets["bag:quantity"], "an enabled action stays hittable")
+  Assert.notNil(layout.targets.cancel, "Cancel stays hittable")
+  Assert.isNil(layout.targets["bag:remove"], "a disabled action is not a hit target")
+  local disabledRow = assert(layout.decisionList.rows[2], "the disabled row still renders")
+  local centerX = disabledRow.rect.x + math.floor(disabledRow.rect.width / 2)
+  local centerY = disabledRow.rect.y + math.floor(disabledRow.rect.height / 2)
+  Assert.isNil(
+    Layout.hitTest(layout, view, centerX, centerY),
+    "a press on a disabled action never activates"
+  )
+end
+
+function T.tests.decision_targets_keep_their_canonical_shape_without_published_descriptors()
+  local view = {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    modal = "bag-item",
+    focus = "cancel",
+    bagSelectedItem = "ITEM_7",
+    bagSelectedLabel = "Item 7",
+    bagSelectedQuantity = 7,
+    scope = { id = "decision:bag-item", epoch = 1, kind = "decision", focusId = "cancel" },
+    textMetrics = {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    },
+  }
+  local layout = Layout.compute(view, 256, 192, view.textMetrics)
+  Assert.notNil(layout.targets["bag:quantity"], "the item decision offers Quantity")
+  Assert.notNil(layout.targets["bag:remove"], "the item decision offers Remove")
+  Assert.notNil(layout.targets.cancel, "the item decision offers Cancel")
+end
+
 return T
