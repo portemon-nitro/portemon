@@ -958,4 +958,98 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
   Assert.isTrue(resumed.seen.world.flags.FLAG_RESUMED, "the script resumes after the restored task completes")
 end
 
+T["completed choice without a follow-up interaction suspends before reward mutation"] = function()
+  local programs = {
+    motions = {},
+    [10] = {
+      steps = {},
+      friendshipDelta = 1,
+      moodDelta = 2,
+      continuation = { choice0InteractionId = 0, choice1InteractionId = 11 },
+      reward = { kind = "fashion", selector = 4, outcome = "added" },
+    },
+    [11] = { steps = {}, friendshipDelta = 0, moodDelta = 0 },
+  }
+  local task = FollowerInteractionTask
+  local ctx, seen = fixture(programs)
+  local state = task.create({}, ctx)
+  for _ = 1, 8 do
+    task.poll(state, ctx)
+    if seen.choice.active then
+      break
+    end
+  end
+  Assert.isTrue(seen.choice.active, "the continuation owns an active choice before confirmation")
+  seen.choice.selected = 0
+  ctx.input.uiEvents = { { type = "confirm" } }
+  local completed = task.poll(state, ctx)
+  Assert.isFalse(completed.complete, "choice completion suspends instead of finishing")
+  Assert.equal(state.phase, "reward", "a zero target moves to reward")
+  Assert.isNil(state.choiceState, "the completed choice payload is retired")
+  Assert.isNil(state.choiceTargets, "the completed choice targets are retired")
+  Assert.isFalse(state.rewardStarted, "the reward has not started yet")
+  Assert.isNil(state.dialogueState, "no reward dialogue exists before the reward runs")
+  Assert.isNil(task.validate(state), "the pre-reward suspension is restorable")
+  for _, event in ipairs(seen.events) do
+    Assert.isFalse(
+      type(event) == "table" and event[1] == "reward",
+      "the reward mutation waits for the next poll"
+    )
+  end
+  local restored = copy(state)
+  Assert.isNil(task.validate(restored), "the suspended state survives a serialization round trip")
+  ctx.input.uiEvents = nil
+  local resumed = task.poll(restored, ctx)
+  Assert.isFalse(resumed.complete, "the resumed reward dialogue suspends")
+  Assert.isTrue(restored.rewardStarted, "the resumed poll runs the pending reward once")
+  Assert.notNil(restored.dialogueState, "the resumed reward opens its dialogue")
+  Assert.isNil(task.validate(restored), "the resumed reward dialogue is restorable")
+  local rewardCount = 0
+  for _, event in ipairs(seen.events) do
+    if type(event) == "table" and event[1] == "reward" then
+      rewardCount = rewardCount + 1
+    end
+  end
+  Assert.equal(rewardCount, 1, "the pending reward mutates exactly once")
+end
+
+T["completed choice with a follow-up interaction retires its payload"] = function()
+  local programs = {
+    motions = {},
+    [10] = {
+      steps = {},
+      friendshipDelta = 0,
+      moodDelta = 0,
+      continuation = { choice0InteractionId = 0, choice1InteractionId = 11 },
+    },
+    [11] = { steps = {}, friendshipDelta = 0, moodDelta = 0 },
+  }
+  local task = FollowerInteractionTask
+  local ctx, seen = fixture(programs)
+  local state = task.create({}, ctx)
+  for _ = 1, 8 do
+    task.poll(state, ctx)
+    if seen.choice.active then
+      break
+    end
+  end
+  seen.choice.selected = 1
+  ctx.input.uiEvents = { { type = "confirm" } }
+  task.poll(state, ctx)
+  Assert.equal(state.programId, 11, "the selected target becomes the active program")
+  Assert.isNil(state.choiceState, "the completed choice payload is retired")
+  Assert.isNil(state.choiceTargets, "the completed choice targets are retired")
+  Assert.isNil(task.validate(state), "continuation into the next program is restorable")
+end
+
+T["poll on an unknown phase fails instead of yielding"] = function()
+  local task = FollowerInteractionTask
+  local ctx, _seen = fixture({ motions = {}, [10] = { steps = {}, friendshipDelta = 0, moodDelta = 0 } })
+  local state = task.create({}, ctx)
+  state.phase = "not-a-phase"
+  local ok, err = pcall(task.poll, state, ctx)
+  Assert.isFalse(ok, "an unknown phase cannot yield")
+  Assert.isTrue(Errors.is(err), "the failure is a structured task error")
+end
+
 return { tests = T }
