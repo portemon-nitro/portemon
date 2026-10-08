@@ -52,7 +52,6 @@ local SCALAR_TYPES = {
   ability = "string",
   heldItem = "string",
   currentHp = "u32",
-  status = "u32",
 }
 
 local ORIGIN_FIELDS = {
@@ -311,7 +310,7 @@ function SaveEditorMonDraft:setScalar(fieldId, value)
   if kind == nil or not hasPrimitiveType(value, kind) then
     return false
   end
-  if fieldId == "currentHp" or fieldId == "status" then
+  if fieldId == "currentHp" then
     if type(self._record.condition) ~= "table" then
       return false
     end

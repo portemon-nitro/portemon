@@ -166,6 +166,180 @@ function T.tests.unknown_section_reset_fails_loudly()
   end, "an unknown section name is a programming error")
 end
 
+function T.tests.invalid_party_is_rejected_at_session_entry_without_mutating_the_save()
+  local fixture = Fixture.new()
+  local validSession = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  local draft = assert(validSession:beginMonAdd("CHIKORITA", {
+    location = 7,
+    date = { year = 2000, month = 1, day = 1 },
+  }))
+  local invalid = fixture.copy(fixture.initial)
+  local mon = draft:record()
+  mon.condition.effects = nil
+  invalid.mons.party.mons[1] = mon
+  local before = fixture.copy(invalid)
+
+  local session, failure = Session.new({
+    record = invalid,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  })
+
+  Assert.isNil(session, "a current Party record missing typed effects fails before UI projection")
+  Assert.equal(failure.code, "SAVE_EDITOR_PARTY_INVALID", "the opening error identifies the touched Party domain")
+  Assert.equal(failure.context.saveId, fixture.saveId, "the error retains the selected save identity")
+  Assert.isTrue(
+    failure.context.reason:find("effects", 1, true) ~= nil,
+    "the error preserves the domain validation cause"
+  )
+  Assert.deepEqual(invalid, before, "rejected Party validation leaves the source save unchanged")
+  Assert.isNil(fixture.store:load(fixture.saveId).mons.party.mons[1], "validation does not publish a save write")
+end
+
+function T.tests.party_with_non_array_effects_is_rejected_at_session_entry()
+  local fixture = Fixture.new()
+  local validSession = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  local draft = assert(validSession:beginMonAdd("CHIKORITA", {
+    location = 7,
+    date = { year = 2000, month = 1, day = 1 },
+  }))
+  local mon = draft:record()
+  mon.condition.effects = "poison"
+  local invalid = fixture.copy(fixture.initial)
+  invalid.mons.party.mons[1] = mon
+  local before = fixture.copy(invalid)
+
+  local session, failure = Session.new({
+    record = invalid,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  })
+
+  Assert.isNil(session, "typed condition effects must be an array at Party entry")
+  Assert.equal(failure.code, "SAVE_EDITOR_PARTY_INVALID")
+  Assert.isTrue(
+    failure.context.reason:find("condition effects must be an array", 1, true) ~= nil,
+    "the app error preserves the Party validator's malformed-array cause"
+  )
+  Assert.deepEqual(invalid, before, "rejected shape validation leaves the source save unchanged")
+  Assert.isNil(fixture.store:load(fixture.saveId).mons.party.mons[1], "validation does not publish a save write")
+end
+
+function T.tests.canonical_party_conditions_survive_session_entry()
+  local fixture = Fixture.new()
+  local baseSession = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  local draft = assert(baseSession:beginMonAdd("CHIKORITA", {
+    location = 7,
+    date = { year = 2000, month = 1, day = 1 },
+  }))
+  local mon = draft:record()
+  mon.condition.effects = require("libs.mons.src.gen4.StatusCodec").decode(0x8)
+  local input = fixture.copy(fixture.initial)
+  input.mons.party.mons[1] = mon
+
+  local session = assert(Session.new({
+    record = input,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+
+  local member = assert(session:partySnapshot().members[1])
+  Assert.deepEqual(member.mon.condition.effects, mon.condition.effects, "canonical typed status survives entry")
+  Assert.equal(
+    require("libs.hgss.src.ui.PartyScreenTheme").statusKey(member.mon.condition),
+    "poison",
+    "the strict Party presentation projection recognizes canonical poison"
+  )
+  Assert.isNil(member.mon.condition.status, "entry does not add an obsolete status scalar")
+  Assert.deepEqual(input.mons.party.mons[1], mon, "session construction leaves the source Party untouched")
+end
+
+function T.tests.supported_legacy_party_normalizes_before_session_entry()
+  local fixture = Fixture.new()
+  local baseSession = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  local draft = assert(baseSession:beginMonAdd("CHIKORITA", {
+    location = 7,
+    date = { year = 2000, month = 1, day = 1 },
+  }))
+  local legacyMon = draft:record()
+  legacyMon.schema = require("libs.mons.src.Mon").LEGACY_SCHEMA
+  legacyMon.condition = { status = 0x8, currentHp = legacyMon.condition.currentHp }
+  local legacy = fixture.copy(fixture.initial)
+  local GameSave = require("libs.hgss.src.save.GameSave")
+  local MonsSave = require("libs.mons.src.MonsSave")
+  legacy.schema = GameSave.LEGACY_V5_SCHEMA
+  legacy.fashionCase = nil
+  legacy.mailbox = nil
+  legacy.photoAlbum = nil
+  legacy.mons = {
+    schema = MonsSave.LEGACY_SCHEMA,
+    catalogFingerprint = "legacy-catalog",
+    rng = fixture.copy(fixture.initial.mons.rng),
+    party = { max = 6, mons = { legacyMon } },
+  }
+  local original = fixture.copy(legacy)
+  local normalized = assert(GameSave.normalize(legacy))
+
+  Assert.deepEqual(legacy, original, "official normalization leaves the stored legacy record unchanged")
+  local session = assert(Session.new({
+    record = normalized,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  local member = assert(session:partySnapshot().members[1])
+  Assert.equal(member.mon.schema, require("libs.mons.src.Mon").SCHEMA)
+  Assert.deepEqual(
+    member.mon.condition.effects,
+    require("libs.mons.src.gen4.StatusCodec").decode(0x8),
+    "the supported legacy status is migrated by GameSave normalization"
+  )
+  Assert.equal(
+    require("libs.hgss.src.ui.PartyScreenTheme").statusKey(member.mon.condition),
+    "poison",
+    "the normalized Party reaches the strict presentation projection"
+  )
+end
+
 function T.tests.global_reset_still_clears_every_staged_section()
   local session = openSession()
   dirtyEverything(session)

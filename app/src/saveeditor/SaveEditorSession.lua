@@ -8,6 +8,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local Party = require("libs.mons.src.Party")
 local SaveEditorMonDraft = require("app.src.saveeditor.SaveEditorMonDraft")
 
 local SaveEditorSession = {}
@@ -343,6 +344,17 @@ function SaveEditorSession.new(options)
     games = monValidationContext.games,
     languages = monValidationContext.languages,
   }
+  local partyValid, partyError = pcall(Party.validate, baseline.mons.party, monValidationContext)
+  if not partyValid then
+    if Errors.is(partyError) then
+      return nil,
+        Errors.new("SAVE_EDITOR_PARTY_INVALID", "The selected save's Party is invalid.", {
+          saveId = record.saveId,
+          reason = Errors.format(partyError),
+        })
+    end
+    error(partyError, 0)
+  end
   local monService = newMonService(monServiceOptions, baseline.mons --[[@as table<string, unknown>]])
   local session = setmetatable({
     _baseline = baseline,

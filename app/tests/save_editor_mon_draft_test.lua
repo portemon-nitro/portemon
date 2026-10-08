@@ -196,6 +196,23 @@ function T.nature_gender_and_trainer_identity_previews_follow_production_owners(
   Assert.isFalse(draft:projection().shiny)
 end
 
+function T.legacy_status_scalar_is_rejected_without_changing_the_draft()
+  local _, context, original = fixtureMon()
+  local draft = draftFor(original, context)
+  local before = draft:record()
+  local revision = draft:revision()
+
+  Assert.isFalse(draft:setScalar("status", 8), "native status is not a canonical Party scalar")
+  Assert.equal(draft:revision(), revision, "rejected status does not advance the draft revision")
+  Assert.deepEqual(draft:record(), before, "rejected status does not change the draft")
+
+  local nextHp = original.condition.currentHp - 1
+  Assert.isTrue(draft:setScalar("currentHp", nextHp), "canonical current HP remains editable")
+  Assert.equal(draft:revision(), revision + 1, "the valid health edit advances the draft revision")
+  Assert.equal(draft:record().condition.currentHp, nextHp)
+  Assert.isNil(draft:record().condition.status, "no legacy status field enters the canonical condition")
+end
+
 function T.experience_curve_boundaries_shedinja_hp_and_ev_total_use_current_rules()
   local catalog, context = CatalogFixture.makeCatalog(), nil
   context = CatalogFixture.domainContext(catalog)
