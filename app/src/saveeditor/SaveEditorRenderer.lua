@@ -1003,7 +1003,7 @@ local function paintParty(ctx)
     for _, row in ipairs(layout.rows) do
       if row.partyField then
         local y = row.layoutRect.y + 3
-        local fieldRole = row.role == "warning" and "error" or nil
+        local fieldRole = row.role == "warning" and "error" or pagePalette(self.skin)
         drawBodyText(
           renderer,
           fitText(renderer, row.label, row.labelRect.width / BODY_TEXT_SCALE),

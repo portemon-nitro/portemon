@@ -2188,6 +2188,28 @@ function T.party_stats_table_renders_distinct_aligned_columns(scope)
   Assert.isTrue(compactText:find("Level", 1, true) ~= nil, "compact Stats keeps its header facts")
   Assert.notNil(compactLayout.viewports.party, "compact Stats keeps its scroll viewport")
 end
+
+function T.party_stats_summary_uses_white_ink_with_a_dark_shadow(scope)
+  local width, height = 1280, 720
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local _, _, _, _, _, _, _, _, paletteCalls =
+    draw(scope, width, height, topology, "party-stats-readable-summary", "Party", "Stats")
+
+  for _, label in ipairs({ "Level", "12/19", "Stat", "IV", "EV" }) do
+    local call = assert(findPaletteCall(paletteCalls, label), label .. " is drawn with a text palette")
+    local foreground = assert(foregroundAverage(call.palette), label .. " has a foreground color")
+    local shadow = assert(shadowAverage(call.palette), label .. " has a shadow color")
+    Assert.isTrue(foreground > 200, label .. " uses legible white foreground text")
+    Assert.isTrue(shadow < 48, label .. " uses a dark text shadow")
+    Assert.isTrue(foreground - shadow > 128, label .. " keeps strong foreground and shadow contrast")
+  end
+end
+
 function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scope)
   local width, height = 256, 192
   local compact = ScreenTopology.oneDisplay({

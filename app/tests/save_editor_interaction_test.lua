@@ -10,6 +10,7 @@ local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local State = require("app.src.saveeditor.SaveEditorState")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
@@ -1072,6 +1073,77 @@ function T.tests.reconciling_a_logical_list_focus_reveals_it_once_and_honors_var
     math.max(0, math.min(132 - viewport.clip.height, viewport.contentExtent - viewport.clip.height)),
     "a variable-height anchor determines its exact unscrolled reveal interval"
   )
+end
+
+function T.tests.party_navigation_uses_the_exact_unscrolled_body_anchor()
+  local controller = Controller.new()
+  controller:setSection("Party")
+  controller:setFocus("party:field:iv:hp")
+  local statsRows = {}
+  for _, key in ipairs({ "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+    statsRows[#statsRows + 1] = {
+      key = key,
+      label = key,
+      iv = 1,
+      ivEditor = { targetId = "party:field:iv:" .. key, editor = { kind = "integer" } },
+      ev = 2,
+      evEditor = { targetId = "party:field:ev:" .. key, editor = { kind = "integer" } },
+    }
+  end
+  local view = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    partyTab = "Stats",
+    partySlot0 = 0,
+    focus = controller.focus,
+    scope = { id = "section:Party", epoch = controller.scopeEpoch },
+    scrollOffsets = controller.scrollOffsets,
+    partySelector = {
+      slots = {
+        { kind = "member", slot0 = 0, iconKey = "test/member", label = "Member", active = true },
+        { kind = "add", slot0 = 1 },
+        { kind = "empty" },
+        { kind = "empty" },
+        { kind = "empty" },
+        { kind = "empty" },
+      },
+    },
+    partyStats = {
+      header = {
+        { id = "level", label = "Level", value = 5, targetId = "party:field:level", editor = { kind = "integer" } },
+        { id = "experience", label = "Experience", value = 100, targetId = "party:field:experience", editor = { kind = "integer" } },
+        { id = "friendship", label = "Friendship", value = 70, targetId = "party:field:friendship", editor = { kind = "integer" } },
+        { id = "currentHp", label = "HP", value = 12, targetId = "party:field:currentHp", editor = { kind = "integer" } },
+        { id = "status", label = "Status", value = "OK", targetId = "party:readonly:status" },
+      },
+      rows = statsRows,
+    },
+  }
+  local metrics = interactionMetrics()
+  local layout = Layout.compute(view, 256, 260, metrics)
+  local targetId = "party:field:iv:specialDefense"
+  local anchor = assert(layout.revealByTarget[targetId], "Party publishes exact anchors for logical focus targets")
+  local viewport = assert(layout.viewports[anchor.viewportId])
+  local expected = ScrollViewport.reveal(viewport.offset, viewport.clip.height, anchor.start, anchor.extent)
+  local state = stateHarness({
+    controller = controller,
+    status = "ready",
+    _snapshot = function()
+      return view
+    end,
+    _resolve = function()
+      return { content = { layout = layout } }
+    end,
+  })
+
+  for _ = 1, 5 do
+    state:_navigate(layout, "down")
+  end
+
+  Assert.equal(controller.focus, targetId, "Down preserves the IV column across every logical stat row")
+  Assert.equal(controller.scrollOffsets["party:Stats"], expected, "the focused row is revealed from its exact pixel interval")
 end
 
 function T.tests.typing_filters_the_focused_list_without_a_search_target()

@@ -99,8 +99,14 @@ local function entryTarget(snapshot, region, focus, direction)
       target = FocusGraph.spatialCandidate(source.rect, eligibleControls(snapshot, region.id), direction) or target
     end
   end
-  local control = validTarget(snapshot, target)
-  return control and target or nil
+  local control = controlFor(snapshot, target)
+  if control ~= nil then
+    return control.eligible and target or nil
+  end
+  if type(region.viewportId) == "string" and region.viewportId ~= "" and logicalIndex(region, target) ~= nil then
+    return target
+  end
+  return nil
 end
 
 local function resolveOverride(snapshot, override, source, direction)

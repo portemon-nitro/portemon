@@ -660,6 +660,172 @@ function T.tests.live_stats_navigation_preserves_the_iv_ev_column()
   Assert.equal(controller.focus, "party:field:ev:defense", "Right moves to the EV column in the live Stats table")
 end
 
+function T.tests.party_moves_use_a_two_by_two_grid_without_inventing_empty_slots()
+  local view = partyEditorView("Moves")
+  view.partyMoves.slots = {
+    { kind = "move", slot0 = 0, label = "Tackle", targetId = "party:move:0" },
+    { kind = "move", slot0 = 1, label = "Growl", targetId = "party:move:1" },
+    { kind = "move", slot0 = 2, label = "Leer", targetId = "party:move:2" },
+    { kind = "move", slot0 = 3, label = "Bite", targetId = "party:move:3" },
+  }
+  local layout = computeLayout(view, 640, 480)
+  local slots = assert(layout.partyMoves).slots
+  Assert.equal(#slots, 4, "the Moves page publishes exactly four physical slots")
+  for index, targetId in ipairs({ "party:move:0", "party:move:1", "party:move:2", "party:move:3" }) do
+    local slot = assert(slots[index])
+    Assert.equal(slot.targetId, targetId, "row-major cells preserve semantic move identity")
+    Assert.equal(
+      Layout.hitTest(layout, view, slot.rect.x + slot.rect.width / 2, slot.rect.y + slot.rect.height / 2),
+      targetId
+    )
+  end
+  Assert.equal(slots[1].rect.y, slots[2].rect.y, "the first two moves share the top row")
+  Assert.equal(slots[3].rect.y, slots[4].rect.y, "the last two moves share the bottom row")
+  Assert.isTrue(slots[1].rect.x < slots[2].rect.x, "the top row uses left and right columns")
+  Assert.isTrue(slots[3].rect.x < slots[4].rect.x, "the bottom row uses left and right columns")
+  Assert.isTrue(slots[3].rect.y > slots[1].rect.y, "the grid has two distinct rows")
+
+  local controller = Controller.new()
+  controller:setSection("Party")
+  controller:setFocus("party:move:0")
+  navigate(controller, layout, "right")
+  Assert.equal(controller.focus, "party:move:1", "Right stays in the first row")
+  navigate(controller, layout, "down")
+  Assert.equal(controller.focus, "party:move:3", "Down stays in the right column")
+  navigate(controller, layout, "left")
+  Assert.equal(controller.focus, "party:move:2", "Left stays in the second row")
+  navigate(controller, layout, "up")
+  Assert.equal(controller.focus, "party:move:0", "Up stays in the left column")
+
+  for _, slotsToKeep in ipairs({ 0, 1, 3 }) do
+    local sparse = partyEditorView("Moves")
+    sparse.partyMoves.slots = {}
+    for index = 0, slotsToKeep - 1 do
+      sparse.partyMoves.slots[#sparse.partyMoves.slots + 1] = {
+        kind = "move",
+        slot0 = index,
+        label = "Move " .. index,
+        targetId = "party:move:" .. index,
+      }
+    end
+    local sparseLayout = computeLayout(sparse, 640, 480)
+    Assert.equal(#sparseLayout.partyMoves.slots, slotsToKeep, "the grid retains only supplied move slots")
+    for index = 0, 3 do
+      Assert.equal(
+        sparseLayout.targets["party:move:" .. index] ~= nil,
+        index < slotsToKeep,
+        "an absent move slot has no synthetic target"
+      )
+    end
+  end
+end
+
+function T.tests.party_layout_publishes_pixel_anchors_for_each_logical_body_item()
+  local stats = partyEditorView("Stats")
+  local compact = computeLayout(stats, 256, 192)
+  local viewport = assert(compact.viewports.party)
+  local anchors = assert(compact.revealByTarget)
+  local firstStat = assert(anchors["party:field:iv:hp"], "offscreen Stats targets retain a reveal anchor")
+  local firstEv = assert(anchors["party:field:ev:hp"])
+  Assert.equal(firstStat.viewportId, "party")
+  Assert.equal(firstStat.start, firstEv.start, "IV and EV targets share their source row start")
+  Assert.equal(firstStat.extent, firstEv.extent, "IV and EV targets share their source row extent")
+  Assert.isTrue(firstStat.extent > 0, "the Stats source row has a positive pixel extent")
+  Assert.isTrue(firstStat.start >= 0, "the Stats source row uses unscrolled content coordinates")
+  Assert.isTrue(
+    compact.targets["party:field:iv:specialDefense"] == nil,
+    "the compact viewport keeps distant stat geometry unmaterialized"
+  )
+  local distant = assert(anchors["party:field:iv:specialDefense"])
+  Assert.isTrue(distant.start > firstStat.start, "offscreen rows retain their later content-pixel position")
+  Assert.isTrue(viewport.contentExtent > distant.start, "the exact anchor remains inside the logical body")
+
+  local moves = partyEditorView("Moves")
+  moves.partyMoves.slots = {
+    { kind = "move", slot0 = 0, label = "One", targetId = "party:move:0" },
+    { kind = "move", slot0 = 1, label = "Two", targetId = "party:move:1" },
+    { kind = "move", slot0 = 2, label = "Three", targetId = "party:move:2" },
+    { kind = "move", slot0 = 3, label = "Four", targetId = "party:move:3" },
+  }
+  local moveLayout = computeLayout(moves, 256, 192)
+  local moveAnchors = assert(moveLayout.revealByTarget)
+  Assert.equal(moveAnchors["party:move:0"].start, moveAnchors["party:move:1"].start)
+  Assert.equal(moveAnchors["party:move:2"].start, moveAnchors["party:move:3"].start)
+  Assert.isTrue(
+    moveAnchors["party:move:2"].start > moveAnchors["party:move:0"].start,
+    "the second grid row has its own exact source offset"
+  )
+
+  local details = partyEditorView("Details")
+  details.partyDetails.rows = {}
+  for index = 1, 12 do
+    details.partyDetails.rows[index] = {
+      role = "named choice",
+      targetId = "party:field:detail:" .. index,
+      id = "detail:" .. index,
+      label = "Detail " .. index,
+      value = index,
+      editor = { kind = "choice" },
+    }
+  end
+  local detailLayout = computeLayout(details, 256, 192)
+  local detailAnchors = assert(detailLayout.revealByTarget)
+  Assert.isNil(detailLayout.targets["party:field:detail:12"], "distant Details geometry stays offscreen")
+  Assert.isTrue(detailAnchors["party:field:detail:12"].start > detailAnchors["party:field:detail:1"].start)
+  Assert.equal(detailAnchors["party:field:detail:12"].viewportId, "party")
+end
+
+function T.tests.party_stats_header_and_pager_are_explicit_focus_stops()
+  local layout = computeLayout(partyEditorView("Stats"), 800, 600)
+  local headerRegion = nil
+  for _, region in ipairs(layout.focusNavigation.regions) do
+    if region.id == "party:header" then
+      headerRegion = region
+      break
+    end
+  end
+  Assert.notNil(headerRegion, "editable Stats facts own a semantic header region")
+  Assert.notNil(headerRegion.logical, "the header region retains offscreen editable identities")
+  Assert.isTrue(
+    headerRegion.logical.indexOf("party:field:level") ~= nil,
+    "the header region includes editable fact identities"
+  )
+  Assert.isNil(navigationFocus(layout, "party:readonly:status"), "read-only facts do not create focus targets")
+
+  local controller = Controller.new()
+  controller:setSection("Party")
+  controller:setFocus("party:field:iv:hp")
+  navigate(controller, layout, "up")
+  Assert.isTrue(
+    controller.focus == "party:field:level"
+      or controller.focus == "party:field:experience"
+      or controller.focus == "party:field:friendship"
+      or controller.focus == "party:field:currentHp",
+    "Up from the first stat row enters an editable header fact"
+  )
+  navigate(controller, layout, "up")
+  Assert.isTrue(
+    tostring(controller.focus):match("^party:slot:") ~= nil,
+    "Up from the header returns to the member strip"
+  )
+
+  controller:setFocus("back")
+  navigate(controller, layout, "up")
+  Assert.isTrue(
+    controller.focus == "party:page:previous" or controller.focus == "party:page:next",
+    "Up from footer actions enters the pager before the body"
+  )
+  navigate(controller, layout, "up")
+  Assert.isTrue(
+    tostring(controller.focus):match("^party:field:iv:") ~= nil
+      or tostring(controller.focus):match("^party:field:ev:") ~= nil,
+    "Up from the pager enters the active Stats body"
+  )
+  controller:setFocus("party:page:previous")
+  local pagerDown = navigate(controller, layout, "down")
+  Assert.equal(pagerDown.regionId, "global-footer", "Down from the pager enters footer actions")
+end
+
 local function filterMetrics()
   return {
     lineHeight = 14,
@@ -1831,10 +1997,7 @@ function T.tests.compact_content_and_footer_keep_the_minimum_outer_safety_margin
     "compact content stays inside the far safety margin"
   )
   Assert.isTrue(layout.footer.x >= 8, "compact footer keeps the minimum outer safety margin")
-  Assert.isTrue(
-    layout.footer.x + layout.footer.width <= width - 8,
-    "compact footer stays inside the far safety margin"
-  )
+  Assert.isTrue(layout.footer.x + layout.footer.width <= width - 8, "compact footer stays inside the far safety margin")
 end
 
 local function backLabels(layout)
@@ -2421,7 +2584,12 @@ end
 
 function T.tests.layout_publishes_value_and_decision_payloads_without_control_ids()
   local controller = Controller.new()
-  local metrics = { lineHeight = 14, measure = function(text) return #text * 7 end }
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
   local numberView = {
     status = "ready",
     ready = true,

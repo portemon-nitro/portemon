@@ -234,6 +234,43 @@ function T.compact_party_keeps_occupied_member_and_add_cards_reachable()
   Assert.equal(Layout.hitTest(compact, stripView(5), addX, addY), "party:add")
 end
 
+function T.party_strip_and_pager_fit_compact_and_tall_layouts()
+  for _, size in ipairs({ { 256, 192 }, { 360, 640 }, { 800, 600 } }) do
+    local view = stripView(5)
+    view.partyTab = "Stats"
+    view.partyStats = {
+      header = {
+        { id = "level", label = "Level", value = 5, targetId = "party:field:level", editor = { kind = "integer" } },
+      },
+      rows = {},
+    }
+    local layout = computeLayout(view, size[1], size[2])
+    local first = assert(layout.partyStrip.slots[1])
+    Assert.isTrue(first.rect.y > layout.content.y, "Party member cells keep a visible top gutter")
+    for _, slot in ipairs(layout.partyStrip.slots) do
+      Assert.isTrue(slot.rect.x >= layout.content.x, "member cell begins within the content pane")
+      Assert.isTrue(slot.rect.x + slot.rect.width <= layout.content.x + layout.content.width)
+      if slot.iconRect ~= nil then
+        Assert.isTrue(slot.iconRect.y >= slot.rect.y, "member icon remains inside its touch and focus cell")
+        Assert.isTrue(slot.iconRect.y + slot.iconRect.height <= slot.rect.y + slot.rect.height)
+      end
+    end
+    local previous = assert(layout.targets["party:page:previous"]).rect
+    local label = assert(layout.partyPageLabel).rect
+    local nextPage = assert(layout.targets["party:page:next"]).rect
+    Assert.equal(previous.y, label.y, "the pager label and arrows share a baseline")
+    Assert.equal(previous.y, nextPage.y, "pager arrows share a baseline")
+    Assert.equal(previous.height, label.height, "pager components have aligned control bounds")
+    Assert.equal(previous.height, nextPage.height)
+    Assert.isTrue(label.width <= #layout.partyPageLabel.text * 7 + 16, "the pager label uses measured text width and padding")
+    local clusterLeft, clusterRight = previous.x, nextPage.x + nextPage.width
+    Assert.isTrue(
+      math.abs((clusterLeft + clusterRight) / 2 - (layout.content.x + layout.content.width / 2)) <= 1,
+      "the tight pager cluster is centered in the content pane"
+    )
+  end
+end
+
 function T.party_grid_places_members_and_add_in_occupied_six_cell_positions()
   for _, count in ipairs({ 0, 1, 5, 6 }) do
     local layout = computeLayout(stripView(count), 800, 600)

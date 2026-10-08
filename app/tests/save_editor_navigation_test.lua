@@ -183,6 +183,52 @@ function T.tests.entering_a_list_region_focuses_its_remembered_row_without_activ
   Assert.equal(entered.reveal.index, 4, "entry reveals the remembered row when it is offscreen")
 end
 
+function T.tests.entering_a_logical_region_can_reveal_its_offscreen_default()
+  local Navigation = navigationModule()
+  local rowIds = { "party:header:level", "party:header:experience" }
+  local snapshot = {
+    scope = { id = "editor", epoch = 2 },
+    regions = {
+      {
+        id = "footer",
+        kind = "spatial",
+        order = 1,
+        defaultId = "back",
+        exits = { up = { kind = "region", id = "header", entry = "remembered", fallback = "stop" } },
+      },
+      {
+        id = "header",
+        kind = "row",
+        order = 2,
+        viewportId = "party",
+        defaultId = rowIds[1],
+        logical = {
+          count = #rowIds,
+          idAt = function(index)
+            return rowIds[index]
+          end,
+          indexOf = function(id)
+            for index, rowId in ipairs(rowIds) do
+              if rowId == id then
+                return index
+              end
+            end
+            return nil
+          end,
+        },
+      },
+    },
+    controls = { control("back", "footer", 100, 100, 60, 24, 1) },
+  }
+
+  local entered = Navigation.resolve(snapshot, focus("footer", "back"), "up")
+  Assert.equal(entered.kind, "move", "directional entry can select a logical row outside the visible window")
+  Assert.equal(entered.targetId, rowIds[1], "entry chooses the declared logical default")
+  Assert.equal(entered.regionId, "header", "focus enters the requested semantic region")
+  Assert.equal(entered.reveal.viewportId, "party", "entry requests a viewport reveal")
+  Assert.equal(entered.reveal.index, 1, "the offscreen default retains its logical position")
+end
+
 function T.tests.static_logical_regions_do_not_request_viewport_reveals()
   local Navigation = navigationModule()
   local snapshot = {

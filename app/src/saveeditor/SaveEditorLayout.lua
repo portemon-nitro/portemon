@@ -192,6 +192,7 @@ local function newContext(view, width, height, metrics)
     partyStatsTable = nil,
     partyStrip = nil,
     partyMoves = nil,
+    revealByTarget = {},
     partyPageLabel = nil,
     focusableSet = {},
     rowMarkers = {},
@@ -581,8 +582,8 @@ local function buildParty(ctx)
   assert(#selector.slots == 6, "the member strip always spans six positions")
   local tab = view.partyTab or "Stats"
   assert(tab == "Stats" or tab == "Moves" or tab == "Details", "unknown party page " .. tostring(tab))
-  local stripHeight = math.max(34, metrics.lineHeight + 20)
-  local stripY = ctx.contentTop
+  local stripHeight = math.max(30, metrics.lineHeight + 14)
+  local stripY = ctx.contentTop + 4
   local cellWidth = innerWidth / 6
   local stripSlots = {}
   for position, slot in ipairs(selector.slots) do
@@ -613,8 +614,9 @@ local function buildParty(ctx)
   local pageHeight = math.min(30, math.max(22, metrics.lineHeight + 10))
   local pageY = contentBottom - pageHeight
   local arrowWidth = math.min(pageHeight + 8, 44)
-  local labelWidth = math.min(120, math.max(64, innerWidth - arrowWidth * 2 - 16))
-  local pagerX = contentX + math.max(0, (innerWidth - arrowWidth * 2 - labelWidth - 8) / 2)
+  local labelWidth = math.min(metrics.measure(tab) + 8, math.max(1, innerWidth - arrowWidth * 2 - 8))
+  local pagerWidth = arrowWidth * 2 + labelWidth + 8
+  local pagerX = contentX + math.max(0, (innerWidth - pagerWidth) / 2)
   ctx.targets["party:page:previous"] = rect(pagerX, pageY, arrowWidth, pageHeight)
   addFocusable(ctx, "party:page:previous")
   ctx.partyPageLabel = { text = tab, rect = rect(pagerX + arrowWidth + 4, pageY, labelWidth, pageHeight) }
@@ -650,21 +652,30 @@ local function buildParty(ctx)
       bodyItems[#bodyItems + 1] = { kind = "stat-row", stat = stat, extent = math.max(18, metrics.lineHeight + 6) }
     end
   elseif tab == "Moves" and view.partyMoves ~= nil then
-    for _, slot in ipairs(view.partyMoves.slots) do
-      bodyItems[#bodyItems + 1] = { kind = "move", slot = slot, extent = math.max(24, metrics.lineHeight + 12) }
+    for index = 1, #view.partyMoves.slots, 2 do
+      bodyItems[#bodyItems + 1] = {
+        kind = "move-row",
+        slots = { view.partyMoves.slots[index], view.partyMoves.slots[index + 1] },
+        extent = math.max(30, metrics.lineHeight + 14),
+      }
     end
   elseif tab == "Details" and view.partyDetails ~= nil then
     for _, row in ipairs(view.partyDetails.rows) do
-      local extent = row.role == "action" and metrics.lineHeight + 33 or metrics.lineHeight + 8
+      local extent = metrics.lineHeight + 8
       bodyItems[#bodyItems + 1] = { kind = "detail", row = row, extent = extent }
     end
   end
+  local bodyHeight = math.max(1, bodyBottom - bodyTop)
+  local baseExtent = 0
+  for _, item in ipairs(bodyItems) do baseExtent = baseExtent + item.extent end
+  local bodyGap = #bodyItems > 0 and math.min(8, math.floor(math.max(0, bodyHeight - baseExtent) / (#bodyItems + 1))) or 0
   local tops, contentExtent = {}, 0
   for index, item in ipairs(bodyItems) do
+    contentExtent = contentExtent + bodyGap
     tops[index] = contentExtent
     contentExtent = contentExtent + item.extent
   end
-  local bodyHeight = math.max(1, bodyBottom - bodyTop)
+  contentExtent = contentExtent + bodyGap
   local offset = view.scrollOffsets and view.scrollOffsets["party:" .. tab] or 0
   offset = ScrollViewport.clamp(offset, contentExtent, bodyHeight)
   local rowTargets = {}
@@ -678,10 +689,37 @@ local function buildParty(ctx)
     elseif item.kind == "stat-row" then
       rowTargets[#rowTargets + 1] = item.stat.ivEditor.targetId
       rowTargets[#rowTargets + 1] = item.stat.evEditor.targetId
-    elseif item.kind == "move" and item.slot.targetId ~= nil then
-      rowTargets[#rowTargets + 1] = item.slot.targetId
+    elseif item.kind == "move-row" then
+      for _, slot in ipairs(item.slots) do
+        if slot ~= nil and slot.targetId ~= nil then rowTargets[#rowTargets + 1] = slot.targetId end
+      end
     elseif item.kind == "detail" then
-      rowTargets[#rowTargets + 1] = item.row.targetId
+      if item.row.role == "action" or item.row.role == "integer value" or item.row.role == "named choice" then
+        rowTargets[#rowTargets + 1] = item.row.targetId
+      end
+    end
+  end
+  for index, item in ipairs(bodyItems) do
+    local start = tops[index]
+    local function reveal(targetId, itemStart, extent)
+      ctx.revealByTarget[targetId] = { viewportId = "party", start = itemStart, extent = extent }
+    end
+    if item.kind == "facts" then
+      local factHeight = item.extent / math.ceil(#item.facts / item.columns)
+      for factIndex, fact in ipairs(item.facts) do
+        if fact.targetId ~= nil and fact.editor ~= nil then
+          reveal(fact.targetId, start + math.floor((factIndex - 1) / item.columns) * factHeight, factHeight - 2)
+        end
+      end
+    elseif item.kind == "stat-row" then
+      reveal(item.stat.ivEditor.targetId, start, item.extent)
+      reveal(item.stat.evEditor.targetId, start, item.extent)
+    elseif item.kind == "move-row" then
+      for _, slot in ipairs(item.slots) do
+        if slot ~= nil and slot.targetId ~= nil then reveal(slot.targetId, start, item.extent) end
+      end
+    elseif item.kind == "detail" and (item.row.role == "action" or item.row.role == "integer value" or item.row.role == "named choice") then
+      reveal(item.row.targetId, start, item.extent)
     end
   end
   local partyViewport = rect(contentX, bodyTop, innerWidth, bodyHeight)
@@ -766,23 +804,26 @@ local function buildParty(ctx)
           cellX = cellX + columnWidths[column]
         end
         statRows[#statRows + 1] = { key = stat.key, cells = cells }
-      elseif item.kind == "move" then
-        local slot = item.slot
-        local buttonRect = rect(contentX, y, innerWidth, item.extent - 2)
-        if slot.kind == "empty" then
-          moveSlots[#moveSlots + 1] = { kind = "empty", rect = buttonRect }
-        else
-          local buttonTarget = assert(slot.targetId, "visible move slots carry their target")
-          moveSlots[#moveSlots + 1] =
-            { kind = slot.kind, slot0 = slot.slot0, label = slot.label, targetId = buttonTarget, rect = buttonRect }
-          ctx.targets[buttonTarget] = buttonRect
-          ctx.focusPositions[buttonTarget] = buttonRect
-          addFocusable(ctx, buttonTarget)
+      elseif item.kind == "move-row" then
+        local columnWidth = innerWidth / 2
+        for column, slot in ipairs(item.slots) do
+          if slot ~= nil then
+            local buttonRect = rect(contentX + (column - 1) * columnWidth + 2, y, columnWidth - 4, item.extent - 2)
+            if slot.kind == "empty" then
+              moveSlots[#moveSlots + 1] = { kind = "empty", rect = buttonRect }
+            else
+              local buttonTarget = assert(slot.targetId, "visible move slots carry their target")
+              moveSlots[#moveSlots + 1] = { kind = slot.kind, slot0 = slot.slot0, label = slot.label, targetId = buttonTarget, rect = buttonRect }
+              ctx.targets[buttonTarget] = buttonRect
+              ctx.focusPositions[buttonTarget] = buttonRect
+              addFocusable(ctx, buttonTarget)
+            end
+          end
         end
       else
         assert(item.kind == "detail", "party body rows have a known kind")
         local row = item.row
-        local bandHeight = row.role == "action" and item.extent or item.extent - 2
+        local bandHeight = item.extent - 2
         local fieldRect = rect(contentX, y, innerWidth, bandHeight)
         local actionable = row.role == "action" or row.role == "integer value" or row.role == "named choice"
         if actionable then
@@ -1778,6 +1819,7 @@ local function publishPlan(ctx)
     scrollOffset = view.scrollOffset or 0,
     viewports = ctx.viewports,
     lists = ctx.lists,
+    revealByTarget = ctx.revealByTarget,
     rowMarkers = ctx.rowMarkers,
     rowLabelRects = ctx.rowLabelRects,
     scrollOwner = scrollOwner,
