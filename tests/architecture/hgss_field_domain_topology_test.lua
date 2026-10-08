@@ -18,6 +18,7 @@ local DOMAINS = {
     "FieldActorManager",
     "FieldActorOccupancy",
     "FieldActorPersistence",
+    "FieldActorPlacement",
     "FieldActorStateBuffer",
     "FieldActorStore",
     "FieldObjectActor",

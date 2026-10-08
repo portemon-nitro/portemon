@@ -12,7 +12,7 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
-local FieldGrid = require("libs.hgss.src.world.FieldGrid")
+local FieldActorPlacement = require("libs.hgss.src.actors.FieldActorPlacement")
 local FieldObjectActor = require("libs.hgss.src.actors.FieldObjectActor")
 local FieldActorAutonomy = require("libs.hgss.src.actors.FieldActorAutonomy")
 local FieldObjectMovement = require("libs.assets.src.field.FieldObjectMovement")
@@ -258,12 +258,6 @@ local FieldActorManager = {}
 ---@cast FieldActorManager FieldActorManager
 FieldActorManager.__index = FieldActorManager
 
--- MapObject_SetPositionVectorFromObjectEvent uses FX32 source coordinates;
--- object-event Y is expressed in 16 model units per runtime world tile.
-local FX32_ONE = 4096
-local SOURCE_MODEL_UNITS_PER_TILE = 16
-local OBJECT_EVENT_Y_UNITS = SOURCE_MODEL_UNITS_PER_TILE * FX32_ONE
-
 -- MapObject_GetPositionVectorYCoordUInt shifts the source model Y by /8 and
 -- then converts it to FX32 tiles. Runtime world Y is already normalized to
 -- 16 model units per tile, so two source bands fit in one runtime tile.
@@ -271,15 +265,6 @@ local function sourcePositionYBand(worldY)
   local scaled = worldY * 2
   return scaled < 0 and math.ceil(scaled) or math.floor(scaled)
 end
-
--- The terrain-surface failure codes an actor construction can recover from,
--- mapped to the actor-scoped codes the script world observes. A structured
--- error of any other kind propagates unchanged rather than being re-labelled.
-local SURFACE_ERROR_CODES = {
-  [FieldErrors.TERRAIN_SURFACE_NOT_FOUND] = FieldErrors.ACTOR_SURFACE_MISSING,
-  [FieldErrors.TERRAIN_SURFACE_AMBIGUOUS] = FieldErrors.ACTOR_SURFACE_AMBIGUOUS,
-  [FieldErrors.TERRAIN_SURFACE_DISCONNECTED] = FieldErrors.ACTOR_SURFACE_AMBIGUOUS,
-}
 
 ---@class FieldActorManagerOptions
 ---@field assets FieldActorAssets
@@ -360,25 +345,6 @@ end
 
 local sourceIdentityFromPlate = TerrainSurface.sourceIdentity
 
-local function stableSurfaceIdentity(runtimeMap, candidate)
-  assert(type(candidate) == "table", "occupancy candidate is required")
-  if candidate.sourceSurfaceId ~= nil then
-    assert(candidate.cellKey ~= nil, "stable source surface id requires a cell key")
-    return "source", candidate.cellKey, candidate.sourceSurfaceId
-  end
-  local surfaceId = assert(candidate.surfaceId, "occupancy candidate requires a surface identity")
-  local plate = assert(runtimeMap.terrain:plate(surfaceId), "occupancy candidate surface id is unknown")
-  local cellKey, sourceSurfaceId = sourceIdentityFromPlate(plate)
-  if cellKey ~= nil then
-    return "source", cellKey, sourceSurfaceId
-  end
-  return "local", surfaceId, nil
-end
-
-local function sameSurfaceIdentity(leftKind, leftFirst, leftSecond, rightKind, rightFirst, rightSecond)
-  return leftKind == rightKind and leftFirst == rightFirst and leftSecond == rightSecond
-end
-
 ---@param actor FieldActorManager.Actor
 ---@return FieldOccupancyCandidate
 local function candidateForActor(actor)
@@ -456,147 +422,18 @@ local function publishResolvedPosition(entry, actor, position)
   actor:setPosition(position)
 end
 
-local function isResident(runtimeMap, fieldX, fieldZ)
-  return not runtimeMap.coverage or runtimeMap.coverage:containsGlobal(fieldX, fieldZ)
-end
+local isResident = FieldActorPlacement.isResident
+local cellKeyFor = FieldActorPlacement.cellKeyFor
 
-local function cellKeyFor(fieldX, fieldZ)
-  return string.format("%d:%d", math.floor(fieldX / 32), math.floor(fieldZ / 32))
-end
+local resolveSurface = FieldActorPlacement.resolveSurface
+local currentSurfaceFor = FieldActorPlacement.currentSurfaceFor
+local resolveSurfaceAt = FieldActorPlacement.resolveSurfaceAt
 
----@param runtimeMap RuntimeFieldMap
----@param fieldX integer
----@param fieldZ integer
----@param sourceY number
----@param actorId string
----@return FieldActorSurfaceSample
-local function resolveSurfaceAt(runtimeMap, fieldX, fieldZ, sourceY, actorId)
-  local ok, result = pcall(function()
-    local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
-    -- Terrain is sampled at the tile centre, as the player and camera do.
-    local surfaceOptions = {
-      localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,
-      localZ = localZ + FieldCoordinates.TILE_CENTER_OFFSET,
-      currentY = sourceY / OBJECT_EVENT_Y_UNITS,
-    } ---@type FieldActorSurfaceOptions
-    return SurfaceResolver.new(runtimeMap.terrain):resolve(surfaceOptions) --[[@as FieldActorSurfaceSample]]
-  end)
-  if ok then
-    return result --[[@as FieldActorSurfaceSample]]
-  end
-  if not Errors.is(result) then
-    error(result)
-  end
-  -- Only expected surface-resolution conditions are actor-surface failures; a
-  -- structured error of any other kind (e.g. out-of-coverage coordinates)
-  -- propagates unchanged rather than being re-labelled as a missing surface.
-  local structuredError = result --[[@as Errors.Error]]
-  local code = SURFACE_ERROR_CODES[structuredError.code]
-  if not code then
-    error(structuredError)
-  end
-  Errors.raise(
-    code,
-    "actor " .. actorId .. " has no single terrain surface: " .. structuredError.message,
-    { actorId = actorId, fieldX = fieldX, fieldZ = fieldZ, sourceY = sourceY, cause = structuredError.code }
-  )
-  error("unreachable after actor surface error")
-end
-
-local function resolveSurface(runtimeMap, event, actorId)
-  -- A scene-less logical map carries no collision or terrain: actors
-  -- instantiate without surface positioning (the existing nil-surface
-  -- path) and resolve it on visual realization.
-  if runtimeMap.collision == nil or runtimeMap.terrain == nil then
-    return nil
-  end
-  return resolveSurfaceAt(runtimeMap, event.x, event.z, event.y, actorId)
-end
-
-local function currentSurfaceFor(runtimeMap, cellKey, sourceSurfaceId)
-  if runtimeMap.fieldRegion and runtimeMap.fieldRegion.sourceSurface then
-    return runtimeMap.fieldRegion:sourceSurface(cellKey, sourceSurfaceId)
-  end
-  return nil
-end
-
--- Projects one action endpoint into the current physical frame. Resident
--- points reuse the committed terrain/source-surface path; points outside
--- coverage rebase X/Z from the new origin and keep their known height and
--- source identity with resident=false.
----@param runtimeMap RuntimeFieldMap
----@param point FieldActorManager.Actor|FieldActorManager.EndpointPoint
----@return FieldObjectActor.ActionEndpoint
-local function projectEndpoint(runtimeMap, point)
-  local fieldX, fieldZ = point.fieldX, point.fieldZ
-  if not isResident(runtimeMap, fieldX, fieldZ) then
-    local origin = assert(runtimeMap.coordinateOrigin, "runtime map coordinate origin required")
-    local worldX, worldZ = FieldGrid.tileCenterToWorld(fieldX - origin.x, fieldZ - origin.z)
-    return {
-      fieldX = fieldX,
-      fieldZ = fieldZ,
-      surfaceId = point.surfaceId,
-      cellKey = point.cellKey,
-      sourceSurfaceId = point.sourceSurfaceId,
-      worldX = worldX,
-      worldY = point.worldY,
-      worldZ = worldZ,
-      resident = false,
-    }
-  end
-  local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
-  local centerX, centerZ = localX + FieldCoordinates.TILE_CENTER_OFFSET, localZ + FieldCoordinates.TILE_CENTER_OFFSET
-  local surfaceId = point.surfaceId
-  if point.cellKey and point.sourceSurfaceId and runtimeMap.fieldRegion and runtimeMap.fieldRegion.sourceSurface then
-    surfaceId = assert(
-      currentSurfaceFor(runtimeMap, point.cellKey, point.sourceSurfaceId),
-      "actor source surface is absent from coverage"
-    )
-  end
-  if surfaceId == nil or not runtimeMap.terrain:contains(surfaceId, centerX, centerZ) then
-    local sample = resolveSurfaceAt(runtimeMap, fieldX, fieldZ, point.sourceEvent.y, point.actorId)
-    surfaceId = sample.surfaceId
-  end
-  local plate = assert(runtimeMap.terrain:plate(surfaceId), "actor projected surface is missing")
-  local cellKey
-  local sourceSurfaceId
-  if point.sourceSurfaceId ~= nil then
-    assert(point.cellKey ~= nil, "actor source surface id requires a cell key")
-    cellKey = point.cellKey
-    sourceSurfaceId = point.sourceSurfaceId
-  else
-    local plateCellKey, plateSourceSurfaceId = sourceIdentityFromPlate(plate)
-    cellKey = point.cellKey or plateCellKey
-    sourceSurfaceId = plateSourceSurfaceId
-  end
-  local worldY = runtimeMap.terrain:sampleHeight(surfaceId, centerX, centerZ)
-  local world = FieldCoordinates.fieldToWorld(runtimeMap, fieldX, fieldZ, worldY)
-  return {
-    fieldX = fieldX,
-    fieldZ = fieldZ,
-    surfaceId = surfaceId,
-    cellKey = cellKey or cellKeyFor(fieldX, fieldZ),
-    sourceSurfaceId = sourceSurfaceId,
-    worldX = world.x,
-    worldY = world.y,
-    worldZ = world.z,
-    resident = true,
-  }
-end
-
-local function projectionFor(runtimeMap, actor)
-  local state = actor:numericState()
-  return projectEndpoint(runtimeMap, {
-    fieldX = state.fieldX,
-    fieldZ = state.fieldZ,
-    surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
-    cellKey = actor.cellKey,
-    sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil,
-    worldY = state.hasWorldPosition == 1 and state.worldY or nil,
-    sourceEvent = actor.sourceEvent,
-    actorId = actor.actorId,
-  })
-end
+-- Physical surface/endpoint projection lives in FieldActorPlacement; the
+-- manager keeps lifecycle, collision and reservation policy. These locals
+-- are the single seam the remaining manager callers use.
+local projectEndpoint = FieldActorPlacement.projectEndpoint
+local projectionFor = FieldActorPlacement.projectionFor
 
 -- The runtime sprite of an object event. FieldSystem_ResolveObjectSpriteID
 -- redirects the variable range through the VAR_OBJ_* save variables before the
@@ -1484,14 +1321,6 @@ local function withinSourceRange(destination, origin, range)
   return range == -1 or math.abs(destination - origin) <= range
 end
 
-local function movementErrorIsBlocked(err)
-  if not Errors.is(err) then
-    return false
-  end
-  ---@cast err Errors.Error
-  return err.code == FieldErrors.FIELD_COORDINATES_OUT_OF_COVERAGE or SurfaceResolver.isStepRejection(err)
-end
-
 -- The one shared physical placement/step rejection classification: a tile
 -- outside coverage or a destination surface beyond the reachable step is a
 -- placement the caller waits out or steps around. Every other structured
@@ -1501,17 +1330,13 @@ end
 ---@param err unknown
 ---@return boolean
 function FieldActorManager.isPlacementRejection(err)
-  return movementErrorIsBlocked(err)
+  return FieldActorPlacement.isPlacementRejection(err)
 end
 
-local function samePhysicalCandidate(runtimeMap, left, right)
-  if left.fieldX ~= right.fieldX or left.fieldZ ~= right.fieldZ then
-    return false
-  end
-  local leftKind, leftFirst, leftSecond = stableSurfaceIdentity(runtimeMap, left)
-  local rightKind, rightFirst, rightSecond = stableSurfaceIdentity(runtimeMap, right)
-  return sameSurfaceIdentity(leftKind, leftFirst, leftSecond, rightKind, rightFirst, rightSecond)
-end
+local samePhysicalCandidate = FieldActorPlacement.samePhysicalCandidate
+local resolveAdjacentDestination = FieldActorPlacement.resolveAdjacentDestination
+local stableSurfaceIdentity = FieldActorPlacement.stableSurfaceIdentity
+local sameSurfaceIdentity = FieldActorPlacement.sameSurfaceIdentity
 
 local function playerOccupies(runtimeMap, candidate, facts)
   if facts == nil then
@@ -1523,94 +1348,6 @@ local function playerOccupies(runtimeMap, candidate, facts)
     end
   end
   return false
-end
-
----@param runtimeMap RuntimeFieldMap
----@param actor FieldActorManager.Actor
----@param direction FieldDirection
----@param checkStepReachability boolean
----@param probeWithoutStableSourceIdentity boolean
----@return table<string, unknown>? endpoint
----@return boolean blocked
-local function resolveAdjacentDestination(
-  runtimeMap,
-  actor,
-  direction,
-  checkStepReachability,
-  probeWithoutStableSourceIdentity
-)
-  local delta = assert(AUTONOMOUS_DELTAS[direction], "unknown actor direction " .. tostring(direction))
-  local state = actor:numericState()
-  local fieldX, fieldZ = state.fieldX + delta.x, state.fieldZ + delta.z
-  local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
-  local centerX, centerZ = localX + FieldCoordinates.TILE_CENTER_OFFSET, localZ + FieldCoordinates.TILE_CENTER_OFFSET
-  local sample
-  local blocked = false
-  if
-    runtimeMap.probePhysicalCell
-    and (probeWithoutStableSourceIdentity or (actor.cellKey ~= nil and state.hasSourceSurfaceId == 1))
-  then
-    local currentSourceSurfaceId = (state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil) --[[@as integer]]
-    local currentY = (state.hasWorldPosition == 1 and state.worldY or nil) --[[@as number]]
-    local probe = runtimeMap:probePhysicalCell(fieldX, fieldZ, {
-      currentCellKey = actor.cellKey,
-      currentSourceSurfaceId = currentSourceSurfaceId,
-      currentY = currentY,
-      fromFieldX = state.fieldX,
-      fromFieldZ = state.fieldZ,
-    })
-    if probe == nil then
-      return nil, true
-    end
-    assert(type(probe.collision) == "table", "physical probe collision facts are missing")
-    if checkStepReachability and probe.collision.blocked then
-      return nil, true
-    end
-    assert(
-      (probe.cellKey == nil and probe.sourceSurfaceId == nil) or (probe.cellKey ~= nil and probe.sourceSurfaceId ~= nil),
-      "physical probe stable surface identity is incomplete"
-    )
-    assert(type(probe.worldY) == "number", "physical probe world height is missing")
-    sample = {
-      surfaceId = probe.surfaceId,
-      cellKey = probe.cellKey,
-      sourceSurfaceId = probe.sourceSurfaceId,
-      worldY = probe.worldY,
-    }
-  else
-    blocked = runtimeMap.collision.isBlockedLocal ~= nil and runtimeMap.collision:isBlockedLocal(localX, localZ)
-    local surfaceOptions = {
-      localX = centerX,
-      localZ = centerZ,
-      currentY = state.hasWorldPosition == 1 and state.worldY or nil,
-      currentSurfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
-    }
-    if checkStepReachability then
-      surfaceOptions.crossing = {
-        fromX = (state.fieldX - runtimeMap.coordinateOrigin.x) + FieldCoordinates.TILE_CENTER_OFFSET,
-        fromZ = (state.fieldZ - runtimeMap.coordinateOrigin.z) + FieldCoordinates.TILE_CENTER_OFFSET,
-        toX = centerX,
-        toZ = centerZ,
-      }
-    end
-    sample = SurfaceResolver.new(runtimeMap.terrain):resolve(surfaceOptions)
-    local plate = assert(runtimeMap.terrain:plate(sample.surfaceId), "actor destination surface is missing")
-    sample.cellKey, sample.sourceSurfaceId = sourceIdentityFromPlate(plate)
-  end
-
-  local world = FieldCoordinates.fieldToWorld(runtimeMap, fieldX, fieldZ, sample.worldY)
-  return {
-    fieldX = fieldX,
-    fieldZ = fieldZ,
-    surfaceId = sample.surfaceId,
-    cellKey = sample.cellKey or cellKeyFor(fieldX, fieldZ),
-    sourceSurfaceId = sample.sourceSurfaceId,
-    worldX = world.x,
-    worldY = world.y,
-    worldZ = world.z,
-    resident = isResident(runtimeMap, fieldX, fieldZ),
-  },
-    blocked
 end
 
 ---@param self FieldActorManager
@@ -1660,7 +1397,7 @@ local function resolveAutonomousDestination(self, entry, actor, direction, conte
     return endpoint
   end)
   if not ok then
-    if movementErrorIsBlocked(destination) then
+    if FieldActorPlacement.isPlacementRejection(destination) then
       return nil
     end
     error(destination)
