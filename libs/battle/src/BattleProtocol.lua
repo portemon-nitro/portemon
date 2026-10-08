@@ -224,9 +224,54 @@ function BattleProtocol.validateEvent(event)
   if type(record.payload) ~= "table" then
     error(BattleErrors.input("battle events must carry their payload record", {}))
   end
+  -- Event-time semantic checkpoints ride additively beside the payload:
+  -- plain reduced projections, never graphics handles or wall-clock
+  -- fields. Emissions without one stay valid; a present one must be a
+  -- record so snapshots and replays round-trip it as plain data.
+  if record.observation ~= nil and type(record.observation) ~= "table" then
+    error(BattleErrors.input("battle event observations must be records", {}))
+  end
   for _, field in ipairs({ "actionId", "hitIndex" }) do
     if record[field] ~= nil and not isId(record[field]) then
       error(BattleErrors.input("battle event ordinals must be positive integers", { field = field }))
+    end
+  end
+  return record
+end
+
+---@param packet unknown
+---@return table<string, unknown> the validated delivery packet
+function BattleProtocol.validatePacket(packet)
+  if type(packet) ~= "table" then
+    error(BattleErrors.input("delivery packets must be records", {}))
+  end
+  local record = packet --[[@as table<string, unknown>]]
+  if type(record.launchId) ~= "string" or record.launchId == "" then
+    error(BattleErrors.input("delivery packets must carry their launch identity", {}))
+  end
+  if not isId(record.packetId) then
+    error(BattleErrors.input("delivery packets must carry a monotonic per-launch identity", {}))
+  end
+  if type(record.events) ~= "table" then
+    error(BattleErrors.input("delivery packets must carry their ordered events", {}))
+  end
+  for index, event in
+    ipairs(record.events --[[@as table<integer, unknown>]])
+  do
+    if event == nil then
+      error(BattleErrors.input("delivery packets must not skip events", { index = index }))
+    end
+    BattleProtocol.validateEvent(event)
+  end
+  if type(record.before) ~= "table" then
+    error(BattleErrors.input("delivery packets must carry their before view", {}))
+  end
+  if type(record.after) ~= "table" then
+    error(BattleErrors.input("delivery packets must carry their after view", {}))
+  end
+  for _, field in ipairs({ "request", "result", "party", "inventory" }) do
+    if record[field] ~= nil and type(record[field]) ~= "table" then
+      error(BattleErrors.input("delivery packet attachments must be records", { field = field }))
     end
   end
   return record

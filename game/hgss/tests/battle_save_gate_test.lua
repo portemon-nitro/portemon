@@ -27,7 +27,10 @@ local function headlessPort()
     enter = function(_plan)
       return true
     end,
-    present = function(_frame) end,
+    present = function(_packet) end,
+    ready = function()
+      return true
+    end,
     leave = function(_plan)
       return true
     end,

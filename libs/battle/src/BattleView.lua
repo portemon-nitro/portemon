@@ -140,4 +140,106 @@ function BattleView.forDebug(snapshot)
   return copyValue(snapshot) --[[@as table<string, unknown>]]
 end
 
+---@param mon unknown battle-local mon record under condition inspection
+---@return string? major condition key on the canonical mon, nil when healthy
+local function majorConditionOf(mon)
+  if type(mon) ~= "table" then
+    return nil
+  end
+  local condition = (mon --[[@as table<string, unknown>]]).condition --[[@as table<string, unknown>?]]
+  if type(condition) ~= "table" then
+    return nil
+  end
+  local effects = (condition --[[@as table<string, unknown>]]).effects --[[@as table<integer, unknown>?]]
+  if type(effects) ~= "table" then
+    return nil
+  end
+  local current = (effects --[[@as table<integer, unknown>]])[1] --[[@as table<string, unknown>?]]
+  if type(current) ~= "table" or type(current.key) ~= "string" then
+    return nil
+  end
+  return current.key --[[@as string]]
+end
+
+-- Reduced semantic checkpoint of the observable battle at one event: the
+-- active combatants' stable identity, visible health, major condition,
+-- and progression facts. Benched reserves, move stores, inventories,
+-- submitted plans, continuation stacks, and randomness never enter the
+-- projection, so nested event payloads cannot leak unrevealed state.
+-- The projection is pure and deterministic: the same mechanics state
+-- always answers the same checkpoint.
+---@param handle table<string, unknown> live battle state, session, or snapshot under projection
+---@return table<string, unknown> detached event-time checkpoint
+function BattleView.checkpoint(handle)
+  local snapshot = sourceOf(handle --[[@as table<string, unknown>]])
+  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  local participants = snapshot.participants --[[@as table<integer, table<string, unknown>>]]
+  local checkpoint = {
+    hp = {},
+    combatants = {},
+  } --[[@as table<string, unknown>]]
+  local hp = checkpoint.hp --[[@as table<integer, integer>]]
+  local entries = checkpoint.combatants --[[@as table<integer, table<string, unknown>>]]
+  if type(combatants) ~= "table" then
+    return checkpoint
+  end
+  local order = snapshot.combatantOrder --[[@as integer[]?]]
+  local ids = {} ---@type integer[]
+  if type(order) == "table" then
+    for _, id in ipairs(order) do
+      ids[#ids + 1] = id --[[@as integer]]
+    end
+  else
+    for id in pairs(combatants) do
+      ids[#ids + 1] = id --[[@as integer]]
+    end
+    table.sort(ids)
+  end
+  for _, id in ipairs(ids) do
+    local combatant = combatants[id]
+    if type(combatant) == "table" and combatant.active ~= nil then
+      local active = combatant.active --[[@as table<string, unknown>]]
+      hp[id] = combatant.hp
+      local ceiling = combatant.maxHp
+      if type(ceiling) ~= "number" then
+        ceiling = combatant.entryHp
+      end
+      local record = {
+        participant = combatant.participant,
+        position = active.position,
+        activation = active.activation,
+        hp = combatant.hp,
+        maxHp = ceiling,
+        condition = majorConditionOf(combatant.mon),
+      } --[[@as table<string, unknown>]]
+      local mon = combatant.mon --[[@as table<string, unknown>?]]
+      if type(mon) == "table" then
+        if type(mon.species) == "string" then
+          record.species = mon.species
+        end
+        if type(mon.form) == "number" then
+          record.form = mon.form
+        end
+        if type(mon.experience) == "number" then
+          record.experience = mon.experience
+        end
+        if type(mon.level) == "number" then
+          record.level = mon.level
+        end
+      end
+      if type(participants) == "table" then
+        local participant = participants[
+          combatant.participant --[[@as integer]]
+        ] --[[@as table<string, unknown>?]]
+        if type(participant) == "table" then
+          record.side = participant.side
+          record.controller = participant.controller
+        end
+      end
+      entries[id] = record
+    end
+  end
+  return checkpoint
+end
+
 return BattleView
