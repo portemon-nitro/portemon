@@ -6597,4 +6597,122 @@ function T.item_moves_preview_their_projected_power()
   )
 end
 
+-- The literal program tables keep one authority: the facade aliases
+-- reference the same tables the data owner publishes, with entries
+-- and the base word numbering exactly as transcribed, so no second
+-- copy of the word stream or the lookup constants can drift.
+function T.trainer_program_tables_have_a_single_authority()
+  local program = programOwner()
+  local data = requirePresent(
+    "libs.battle.src.gen4.TrainerAiProgramData",
+    "the program data owns the literal tables"
+  )
+  Assert.isTrue(program.WORDS == data.WORDS, "the facade exposes the authoritative word stream")
+  Assert.isTrue(program.ENTRY == data.ENTRY, "the facade exposes the authoritative entries")
+  Assert.equal(program.BASE, data.BASE, "the facade exposes the authoritative base")
+  Assert.isTrue(
+    program.ABILITY_IDS == data.ABILITY_IDS,
+    "the facade exposes the authoritative ability names"
+  )
+  Assert.isTrue(program.TYPE_IDS == data.TYPE_IDS, "the facade exposes the authoritative type names")
+  Assert.equal(program.BASE, 2504, "the base keeps its transcribed word numbering")
+  Assert.equal(data.ENTRY[0], 8355, "the opening entry keeps its transcribed position")
+  Assert.equal(data.ENTRY[9], 10520, "the closing entry keeps its transcribed position")
+  Assert.isTrue(data.ENTRY[4] == nil, "the untranscribed pass keeps no entry")
+end
+
+-- Command dispatch stays closed: the command owner answers through one
+-- entry point with no registration surface, while outside-set opcodes
+-- and untranscribed slots fail closed instead of scoring approximately.
+function T.trainer_commands_dispatch_through_a_closed_table()
+  local commands = requirePresent(
+    "libs.battle.src.gen4.TrainerAiCommands",
+    "the command owner executes opcodes"
+  )
+  Assert.equal(type(commands.execute), "function", "command execution is a single entry point")
+  Assert.isTrue(commands.registerOpcode == nil, "opcode dispatch takes no registrations")
+  local unknown = Assert.throws(function()
+    commands.execute({ bit = 0 }, 200, 2504)
+  end, "an outside-set opcode fails instead of scoring")
+  Assert.equal(
+    unknown.code,
+    "BATTLE_MISSING_BEHAVIOR",
+    "the unknown opcode stays a structured missing behavior"
+  )
+  local gap = Assert.throws(function()
+    commands.execute({ bit = 1 }, 78, 2504)
+  end, "an untranscribed slot fails instead of scoring")
+  Assert.equal(gap.code, "BATTLE_MISSING_BEHAVIOR", "the untranscribed slot stays a structured missing behavior")
+end
+
+-- Sibling ownership loads acyclically: the data, shared readers,
+-- preview arithmetic, and command dispatch owners all load beside the
+-- facade and the trainer policy without import cycles.
+function T.trainer_siblings_load_beside_the_facade_without_cycles()
+  local context = requirePresent(
+    "libs.battle.src.gen4.TrainerAiContext",
+    "the context owns shared native readers"
+  )
+  local preview = requirePresent(
+    "libs.battle.src.gen4.TrainerAiPreview",
+    "the preview owns native preview arithmetic"
+  )
+  local commands = requirePresent(
+    "libs.battle.src.gen4.TrainerAiCommands",
+    "the command owner executes opcodes"
+  )
+  local program = programOwner()
+  local policy = trainerPolicy()
+  Assert.equal(type(context.resolveBattler), "function", "the context reads battler identities")
+  Assert.equal(type(context.battlerFacts), "function", "the context reads battler facts")
+  Assert.equal(type(preview.matchupValue), "function", "the preview ranks move slots")
+  Assert.equal(type(preview.calcPreview), "function", "the preview stages damage")
+  Assert.equal(type(commands.execute), "function", "the command owner executes opcodes")
+  Assert.equal(type(program.run), "function", "the facade keeps the program entrypoint")
+  Assert.equal(policy.OPENING_SCORE, 100, "the trainer policy keeps its opening score")
+end
+
+-- Native preview arithmetic survives decomposition unchanged: a fixed
+-- water-over-fire line with a calibrated previous move scores exactly
+-- as transcribed, drawing only its initialization.
+function T.native_preview_scores_survive_decomposition_unchanged()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "water" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local strike = probeStrike(510, "water", 40, "special")
+  local extra = probePartyContext()
+  extra.fullMoveById = {
+    [600] = { effect = 0, power = 60, moveType = "water", category = "special", accuracy = 100, basePp = 5 },
+  }
+  extra.lastMove = { [0] = 600, [1] = 600, [2] = 600, [3] = 600 }
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(
+    chart,
+    { strike, quietFiller(), quietFiller(), quietFiller() },
+    user,
+    foe,
+    14,
+    { 1 },
+    false,
+    stream,
+    extra
+  )
+  local points = {}
+  for index, entry in ipairs(scored) do
+    points[index] = entry.score
+  end
+  Assert.deepEqual(points, { 102, 0, 0, 0 }, "the transcribed line scores exactly")
+  Assert.deepEqual(stream:drawLabels(), {
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "program_chance",
+    "program_chance",
+    "program_chance",
+    "program_chance",
+  }, "the transcribed line draws exactly")
+end
+
 return { tests = T }
