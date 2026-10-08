@@ -2656,4 +2656,179 @@ function T.tests.every_modal_action_renders_hits_and_executes_from_one_descripti
   Assert.isFalse(unknownOk, "an unknown decision kind is a programming error, not an implicit leave")
 end
 
+local function scopedDecisionView()
+  return {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = true,
+    modal = "bag-item",
+    scope = { id = "decision:bag-item", epoch = 1, kind = "decision", focusId = "cancel" },
+    decisionActions = {
+      { id = "bag:quantity", label = "Quantity", semantic = "secondary", enabled = true, command = "bag_quantity" },
+      { id = "bag:remove", label = "Remove", semantic = "destructive", enabled = false, command = "bag_remove" },
+      { id = "cancel", label = "Cancel", semantic = "secondary", enabled = true, command = "cancel" },
+    },
+    textMetrics = {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    },
+  }
+end
+
+local function scopedBagView()
+  local tabs, pockets = {}, {}
+  for index, key in ipairs({ "items", "balls" }) do
+    tabs[index] = { x = (index - 1) * 32, y = 0, width = 32, height = 32 }
+    pockets[index] = { key = key }
+  end
+  local rows = {
+    { item = "POKE_BALL", label = "Poke Ball", quantity = 3 },
+    { item = "POTION", label = "Potion", quantity = 1 },
+  }
+  return {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    scope = { id = "section:Bag", epoch = 0, kind = "section" },
+    bagPocket = "items",
+    bagPocketTabRects = tabs,
+    bagPockets = pockets,
+    bagRows = rows,
+    bagPageRows = rows,
+    bagPage0 = 0,
+    bagPageCount = 1,
+  }
+end
+
+function T.tests.scoped_focus_and_pointer_hits_agree_on_active_targets()
+  local metrics = interactionMetrics()
+  local decisionView = scopedDecisionView()
+  local decisionLayout = Layout.compute(decisionView, 256, 192, metrics)
+  Assert.isNil(decisionLayout.targets.save, "a decision scope prunes the background save target")
+  Assert.isNil(decisionLayout.targets.discard, "a decision scope prunes the background discard target")
+  Assert.isNil(decisionLayout.targets.back, "a decision scope prunes the background back target")
+  for _, focusId in ipairs(decisionLayout.focusOrder) do
+    Assert.isTrue(
+      focusId == "bag:quantity" or focusId == "cancel",
+      "a decision scope focuses only its enabled actions, found " .. focusId
+    )
+  end
+  local enabledRow = assert(decisionLayout.decisionList.rows[1])
+  Assert.equal(
+    Layout.hitTest(
+      decisionLayout,
+      decisionView,
+      enabledRow.rect.x + 1,
+      enabledRow.rect.y + 1
+    ),
+    "bag:quantity",
+    "a press on an enabled decision activates it"
+  )
+  local disabledRow = assert(decisionLayout.decisionList.rows[2])
+  Assert.isNil(
+    Layout.hitTest(
+      decisionLayout,
+      decisionView,
+      disabledRow.rect.x + math.floor(disabledRow.rect.width / 2),
+      disabledRow.rect.y + math.floor(disabledRow.rect.height / 2)
+    ),
+    "a press on a disabled decision never activates"
+  )
+  local controller = Controller.new()
+  controller:setFocus("cancel")
+  for _, direction in ipairs({ "up", "down", "left", "right" }) do
+    controller:setFocus("cancel")
+    controller:moveFocus(decisionLayout.focusGraph, direction)
+    Assert.isTrue(
+      controller.focus == "cancel" or controller.focus == "bag:quantity",
+      "decision focus stays on enabled actions, got " .. controller.focus
+    )
+  end
+
+  local bagView = scopedBagView()
+  local bagLayout = Layout.compute(bagView, 800, 600, metrics)
+  local firstCell = assert(bagLayout.focusGraph["bag:item:POKE_BALL"], "the first cell joins the focus graph")
+  Assert.deepEqual(firstCell.right, { "bag:item:POTION" }, "the first column reaches right into the second")
+  Assert.equal(firstCell.left[1], "bag:item:POKE_BALL", "the first column clamps left onto itself")
+  local secondCell = assert(bagLayout.focusGraph["bag:item:POTION"], "the second cell joins the focus graph")
+  Assert.deepEqual(secondCell.left, { "bag:item:POKE_BALL" }, "the second column reaches left into the first")
+  Assert.equal(secondCell.right[1], "bag:item:POTION", "the second column clamps right onto itself")
+  Assert.equal(
+    firstCell.up[1],
+    "bag:pocket:items",
+    "the top row rises into its pocket tab"
+  )
+  local pocket = assert(bagLayout.focusGraph["bag:pocket:items"], "pocket tabs join the focus graph")
+  Assert.deepEqual(pocket.right, { "bag:pocket:balls" }, "pocket tabs wrap horizontally")
+  local itemTarget = assert(bagLayout.targets["bag:item:POKE_BALL"]).rect
+  Assert.equal(
+    Layout.hitTest(bagLayout, bagView, itemTarget.x + 1, itemTarget.y + 1),
+    "bag:item:POKE_BALL",
+    "a press on a grid cell resolves to its item"
+  )
+
+  local gridView = {
+    section = "Location",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    scope = { id = "section:Location", epoch = 0, kind = "section" },
+    session = { playerName = "P", money = 0, frameIndex = 0 },
+    location = {
+      mapId = 12,
+      symbol = "MAP_TEST_ROUTE",
+      map = { mapId = 12, symbol = "MAP_TEST_ROUTE", section = "TEST" },
+      section = "TEST",
+      generation = 1,
+      status = { state = "ready" },
+      tiles = { { fieldX = 32, fieldZ = 48, selectable = true } },
+      cursor = { fieldX = 32, fieldZ = 48 },
+    },
+    locationNavigation = {
+      page = "grid",
+      mapId = 12,
+      cursor = { fieldX = 32, fieldZ = 48 },
+      center = { fieldX = 32, fieldZ = 48 },
+      mapOffset = 0,
+    },
+  }
+  local gridLayout = Layout.compute(gridView, 800, 600, metrics)
+  local grid = assert(gridLayout.locationGrid, "coordinate selection publishes its grid")
+  local tileColumn = 32 - grid.firstFieldX
+  local tileRow = 48 - grid.firstFieldZ
+  local tileX = grid.originX + tileColumn * grid.tileSize + 1
+  local tileY = grid.originY + tileRow * grid.tileSize + 1
+  Assert.equal(
+    Layout.hitTest(gridLayout, gridView, tileX, tileY),
+    "location:tile:32:48",
+    "a press inside the grid converts to its field coordinates"
+  )
+  local modalGridView = {
+    section = "Location",
+    status = "ready",
+    ready = true,
+    dirty = true,
+    modal = "leave",
+    scope = { id = "decision:leave", epoch = 2, kind = "decision", focusId = "cancel" },
+    session = gridView.session,
+    location = gridView.location,
+    locationNavigation = gridView.locationNavigation,
+    decisionActions = {
+      { id = "save", label = "Save", semantic = "primary", enabled = false, command = "save" },
+      { id = "discard", label = "Discard", semantic = "destructive", enabled = true, command = "discard" },
+      { id = "cancel", label = "Cancel", semantic = "secondary", enabled = true, command = "cancel" },
+    },
+  }
+  local modalGridLayout = Layout.compute(modalGridView, 800, 600, metrics)
+  local modalTile = Layout.hitTest(modalGridLayout, modalGridView, tileX, tileY)
+  Assert.isTrue(
+    modalTile == nil or modalTile:match("^location:tile:") == nil,
+    "a decision scope never resolves a background grid tile"
+  )
+end
+
 return T

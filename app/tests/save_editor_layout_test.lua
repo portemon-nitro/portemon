@@ -1563,6 +1563,251 @@ function T.tests.decision_targets_derive_from_the_published_descriptors()
   )
 end
 
+local function everySectionScopeView()
+  local bagTabs, bagPockets = {}, {}
+  for index, key in ipairs({ "items", "balls" }) do
+    bagTabs[index] = { x = (index - 1) * 32, y = 0, width = 32, height = 32 }
+    bagPockets[index] = { key = key }
+  end
+  local bagRows = {
+    { item = "POKE_BALL", label = "Poke Ball", quantity = 3 },
+    { item = "POTION", label = "Potion", quantity = 1 },
+  }
+  local options = {}
+  for index = 1, 6 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  return {
+    { name = "Player", view = sectionStripView("Player") },
+    { name = "Location grid", view = locationView() },
+    { name = "Location map-list", view = mapListView() },
+    { name = "Progress", view = progressFilterView(progressFilterFlags(), "") },
+    { name = "Party Stats", view = partyEditorView("Stats") },
+    { name = "Party Moves", view = partyEditorView("Moves") },
+    { name = "Party Details", view = partyEditorView("Details") },
+    {
+      name = "Bag",
+      view = {
+        section = "Bag",
+        status = "ready",
+        ready = true,
+        dirty = false,
+        scope = { id = "section:Bag", epoch = 0, kind = "section" },
+        bagPocket = "balls",
+        bagPocketTabRects = bagTabs,
+        bagPockets = bagPockets,
+        bagRows = bagRows,
+        bagPageRows = bagRows,
+        bagPage0 = 0,
+        bagPageCount = 1,
+      },
+    },
+    {
+      name = "choice scope",
+      view = {
+        section = "Bag",
+        status = "ready",
+        ready = true,
+        dirty = false,
+        bagRows = {},
+        valueEditor = choiceDialog(options, "K01"),
+        scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:K01" },
+        scrollOffsets = {},
+      },
+    },
+    {
+      name = "name scope",
+      view = {
+        section = "Player",
+        status = "ready",
+        ready = true,
+        dirty = false,
+        session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+        valueEditor = {
+          kind = "name",
+          naming = {
+            cursor = { row = 1, column = 1 },
+            controls = { { id = "lower", firstColumn = 1, lastColumn = 1 } },
+          },
+        },
+        scope = { id = "value:name", epoch = 1, kind = "value" },
+        scrollOffsets = {},
+      },
+    },
+    {
+      name = "number scope",
+      view = {
+        section = "Player",
+        status = "ready",
+        ready = true,
+        dirty = false,
+        session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+        valueEditor = { kind = "number", parsedValue = 3, buffer = "3" },
+        numberControls = {
+          { delta = 1, hitRect = { x = 0, y = 0, width = 24, height = 24 } },
+          { delta = -1, hitRect = { x = 0, y = 28, width = 24, height = 24 } },
+        },
+        scope = { id = "value:number", epoch = 1, kind = "value" },
+        scrollOffsets = {},
+      },
+    },
+    {
+      name = "decision scope",
+      view = {
+        section = "Bag",
+        status = "ready",
+        ready = true,
+        dirty = true,
+        modal = "bag-item",
+        scope = { id = "decision:bag-item", epoch = 1, kind = "decision", focusId = "cancel" },
+        decisionActions = {
+          { id = "bag:quantity", label = "Quantity", semantic = "secondary", enabled = true, command = "x" },
+          { id = "bag:remove", label = "Remove", semantic = "destructive", enabled = false, command = "y" },
+          { id = "cancel", label = "Cancel", semantic = "secondary", enabled = true, command = "z" },
+        },
+      },
+    },
+  }
+end
+
+function T.tests.every_section_publishes_the_complete_plan_shape_at_every_topology()
+  local topologies = { { 256, 192 }, { 640, 480 }, { 360, 640 }, { 1280, 720 } }
+  for _, plan in ipairs(everySectionScopeView()) do
+    for _, size in ipairs(topologies) do
+      local label = plan.name .. " at " .. size[1] .. "x" .. size[2]
+      local layout = computeLayout(plan.view, size[1], size[2])
+      for _, key in ipairs({
+        "rows", "targets", "focusGraph", "focusOrder", "navigation", "actions", "viewports", "lists",
+      }) do
+        Assert.notNil(layout[key], label .. " publishes " .. key)
+      end
+      Assert.notNil(layout.defaultFocus, label .. " publishes a default focus")
+      local wantScope = plan.view.scope
+        or { id = "section:" .. tostring(plan.view.section or "Player"), epoch = 0 }
+      Assert.equal(layout.scopeId, wantScope.id, label .. " echoes its active scope")
+      Assert.equal(layout.scopeEpoch, wantScope.epoch, label .. " echoes its scope epoch")
+      Assert.notNil(
+        layout.focusGraph[layout.defaultFocus],
+        label .. " default focus belongs to its graph (" .. layout.defaultFocus .. ")"
+      )
+      local seen, graphCount = {}, 0
+      for targetId in pairs(layout.focusGraph) do
+        graphCount = graphCount + 1
+      end
+      for _, targetId in ipairs(layout.focusOrder) do
+        Assert.isNil(seen[targetId], label .. " keeps one focus record per target: " .. targetId)
+        seen[targetId] = true
+        Assert.notNil(layout.focusGraph[targetId], label .. " orders only graphed targets: " .. targetId)
+      end
+      local orderedCount = 0
+      for _ in pairs(seen) do
+        orderedCount = orderedCount + 1
+      end
+      Assert.equal(orderedCount, graphCount, label .. " orders every graphed target")
+      for targetId, target in pairs(layout.targets) do
+        Assert.notNil(target.rect, label .. " target has geometry: " .. targetId)
+        Assert.isTrue(
+          target.rect.width >= 1 and target.rect.height >= 1,
+          label .. " target keeps positive geometry: " .. targetId
+        )
+        Assert.equal(type(target.activationEnabled), "boolean", label .. " target states enablement: " .. targetId)
+        Assert.equal(type(target.focusable), "boolean", label .. " target states focusability: " .. targetId)
+        Assert.equal(type(target.role), "string", label .. " target states its role: " .. targetId)
+      end
+    end
+  end
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  local stable = sectionStripView("Player")
+  local first = Layout.compute(stable, 256, 192, metrics)
+  local second = Layout.compute(stable, 256, 192, metrics)
+  Assert.deepEqual(second, first, "the same view and measurement produce the same plan")
+end
+
+function T.tests.pointer_hits_resolve_from_published_targets_without_the_full_catalog()
+  local options, rowTargets, indexByTarget = {}, {}, {}
+  for index = 1, 6 do
+    local key = string.format("K%02d", index)
+    options[index] = { key = key, label = "Choice " .. index }
+    rowTargets[index] = "choice:" .. key
+    indexByTarget["choice:" .. key] = index
+  end
+  local choiceView = {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    bagRows = {},
+    valueEditor = {
+      kind = "choice",
+      options = options,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+      selectedKey = "K01",
+      query = "",
+    },
+    scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:K01" },
+    scrollOffsets = {},
+  }
+  local choiceLayout = computeLayout(choiceView, 256, 192)
+  local firstChoice = assert(choiceLayout.targets["choice:K01"]).rect
+  local choiceX, choiceY = firstChoice.x + 1, firstChoice.y + 1
+  Assert.equal(
+    Layout.hitTest(choiceLayout, choiceView, choiceX, choiceY),
+    "choice:K01",
+    "a visible choice resolves while its cached order is present"
+  )
+  local choiceWithoutCatalog = {
+    section = "Bag",
+    status = "ready",
+    valueEditor = { kind = "choice", options = options, query = "" },
+    scope = choiceView.scope,
+  }
+  Assert.equal(
+    Layout.hitTest(choiceLayout, choiceWithoutCatalog, choiceX, choiceY),
+    "choice:K01",
+    "a visible choice resolves from its published target alone"
+  )
+
+  local numberView = {
+    section = "Player",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+    valueEditor = { kind = "number", parsedValue = 3, buffer = "3" },
+    numberControls = {
+      { delta = 1, hitRect = { x = 0, y = 0, width = 24, height = 24 } },
+      { delta = -1, hitRect = { x = 0, y = 28, width = 24, height = 24 } },
+    },
+    scope = { id = "value:number", epoch = 1, kind = "value" },
+    scrollOffsets = {},
+  }
+  local numberLayout = computeLayout(numberView, 256, 192)
+  local delta = assert(numberLayout.targets["number:delta:1"]).rect
+  local deltaX, deltaY = delta.x + 1, delta.y + 1
+  Assert.equal(
+    Layout.hitTest(numberLayout, numberView, deltaX, deltaY),
+    "number:delta:1",
+    "a number control resolves while its manifest is present"
+  )
+  local numberWithoutManifest = {
+    section = "Player",
+    status = "ready",
+    valueEditor = { kind = "number", parsedValue = 3, buffer = "3" },
+    scope = numberView.scope,
+  }
+  Assert.equal(
+    Layout.hitTest(numberLayout, numberWithoutManifest, deltaX, deltaY),
+    "number:delta:1",
+    "a number control resolves from its published target alone"
+  )
+end
+
 function T.tests.decision_targets_keep_their_canonical_shape_without_published_descriptors()
   local view = {
     section = "Bag",
