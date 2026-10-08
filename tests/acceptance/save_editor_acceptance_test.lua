@@ -32,9 +32,16 @@ local T = {
       "map-data:67",
       "map-data:33",
       "map-data:63",
+      "map-data:49",
+      "map-data:9",
+      "map-data:25",
+      "map-data:93",
+      "map-data:180",
       "map:7",
       "map:33",
       "map:63",
+      "map:49",
+      "map:180",
       "audio-bank:730",
       "field-cell:0-534",
       "field-cell:0-538",
@@ -1365,6 +1372,99 @@ function T.tests.stable_editor_views_reuse_the_session_snapshot_until_owner_or_r
   if state then
     pcall(function()
       state:dispose()
+    end)
+  end
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.pallet_and_azalea_map_placement_stays_conservative_with_real_rom_data()
+  local fixture = Fixture.new()
+  local host = readyHost()
+  local graph, service
+  local ok, err = xpcall(function()
+    graph = openComposition(fixture, host)
+    local palletMapId = assert(graph.world.bySymbol.MAP_PALLET, "the real world catalog contains Pallet Town")
+    local azaleaGymMapId = assert(graph.world.bySymbol.MAP_AZALEA_GYM, "the real world catalog contains Azalea Gym")
+    service = locationServiceModule().new({
+      cacheFs = graph.cacheFs,
+      world = graph.world,
+      derivedAssets = host,
+      savedObjects = copy(fixture.initial.world.objects),
+    })
+
+    local function browse(mapId, fieldX, fieldZ, width, height)
+      service:openMap(mapId, { purpose = "browse" })
+      service:setViewport(fieldX, fieldZ, width, height)
+      local view
+      for _ = 1, 5000 do
+        service:update()
+        view = service:snapshot()
+        if view.status.state == "ready" and service.objectEvents ~= nil then
+          return view
+        end
+      end
+      error("the real map did not finish browse preparation: " .. tostring(view and view.status.reason), 2)
+    end
+
+    local palletView = browse(palletMapId, 1033, 364, 3, 3)
+    local palletPlacement
+    local sawAmbiguousSource = false
+    for _, tile in ipairs(palletView.tiles) do
+      local placement, result = service:resolve(palletMapId, tile.fieldX, tile.fieldZ, palletView.generation)
+      if placement ~= nil then
+        palletPlacement = placement
+        break
+      end
+      sawAmbiguousSource = sawAmbiguousSource or result.reason == "ambiguous_source_actor"
+    end
+    Assert.isTrue(
+      palletPlacement ~= nil or sawAmbiguousSource,
+      "Pallet Town either exposes a valid source-safe destination or reports an ambiguous identity conservatively"
+    )
+
+    local beforeInvalidAttempt = graph.session:captureCandidate()
+    local azaleaView = browse(azaleaGymMapId, 32, 7, 1, 1)
+    local invalidPlacement, invalidReason = service:resolve(
+      azaleaGymMapId,
+      32,
+      7,
+      azaleaView.generation
+    )
+    Assert.isNil(invalidPlacement, "Azalea Gym's out-of-permission tile cannot be selected")
+    Assert.equal(invalidReason.state, "unavailable", "Azalea Gym rejects the uncovered point normally")
+    Assert.equal(invalidReason.reason, "outside_map", "the uncovered point retains its normal placement reason")
+    Assert.deepEqual(
+      graph.session:captureCandidate(),
+      beforeInvalidAttempt,
+      "rejecting the invalid point does not change the candidate save"
+    )
+
+    if palletPlacement ~= nil then
+      Assert.isTrue(graph.session:setLocation(palletPlacement).ok, "a valid Pallet tuple stages through the production Session")
+      Assert.isTrue(graph.session:save().ok, "the valid tuple saves through the production composition")
+      local published = assert(fixture.store:load(fixture.saveId))
+      Assert.equal(published.mapId, palletPlacement.mapId, "the native save retains the selected map identity")
+      Assert.equal(published.fieldX, palletPlacement.fieldX, "the native save retains the selected field X")
+      Assert.equal(published.fieldZ, palletPlacement.fieldZ, "the native save retains the selected field Z")
+      Assert.equal(published.surfaceId, palletPlacement.surfaceId, "the native save retains the resolved surface")
+      Assert.equal(
+        published.terrainDependencyHash,
+        palletPlacement.terrainDependencyHash,
+        "the native save retains the resolved terrain dependency"
+      )
+    end
+  end, debug.traceback)
+  if service then
+    pcall(function()
+      service:dispose()
+    end)
+  end
+  if graph then
+    pcall(function()
+      graph:close()
     end)
   end
   fixture.cleanup()

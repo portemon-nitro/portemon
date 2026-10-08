@@ -20,6 +20,8 @@ local SaveEditorLocationPolicy = {}
 ---@field actorIndex integer?
 ---@field eventIndex integer?
 ---@field eventsByMapAndId table<integer, table<integer, SaveEditorLocationPolicyEvent>>?
+---@field eventRejection string?
+---@field ambiguousSourceActor boolean?
 ---@field done boolean
 ---@field result {selectable: boolean, reason: string?}?
 
@@ -148,12 +150,23 @@ local function finish(task, reason)
   task.result = { selectable = reason == nil, reason = reason }
 end
 
+local function sameOccupancy(left, right)
+  return left.movementType == right.movementType
+    and left.x == right.x
+    and left.z == right.z
+    and left.xRange == right.xRange
+    and left.yRange == right.yRange
+end
+
 ---@param facts table<string, unknown>
 ---@return SaveEditorLocationClassificationTask
 function SaveEditorLocationPolicy.beginClassification(facts)
   local result = baseResult(facts)
   if result ~= nil then
     return { done = true, result = result }
+  end
+  if facts.ambiguousSourceActor == true then
+    return { done = true, result = { selectable = false, reason = "ambiguous_source_actor" } }
   end
   assertBounds(facts.mapBounds)
   assert(type(facts.events) == "table", "location facts need source object events")
@@ -238,8 +251,14 @@ function SaveEditorLocationPolicy.advanceClassification(task, maxVisits)
     elseif task.phase == "events" then
       local event = facts.events[task.eventIndex]
       if event == nil then
-        task.phase = "saved_actors"
-        task.actorIndex = 1
+        if task.ambiguousSourceActor then
+          finish(task, "ambiguous_source_actor")
+        elseif task.eventRejection ~= nil then
+          finish(task, task.eventRejection)
+        else
+          task.phase = "saved_actors"
+          task.actorIndex = 1
+        end
       else
         if visits >= maxVisits then
           break
@@ -250,19 +269,23 @@ function SaveEditorLocationPolicy.advanceClassification(task, maxVisits)
           eventsById = {}
           task.eventsByMapAndId[event.mapId] = eventsById
         end
-        assert(eventsById[event.objectEventId] == nil, "source object event identities must be unique per map")
-        eventsById[event.objectEventId] = event
-        local profile = FieldObjectMovement.require(event.movementType)
-        if event.mapId == facts.mapId or profile.kind ~= "special" then
-          local occupied, reason = occupies(event, event.movementType, facts.fieldX, facts.fieldZ, facts.mapBounds)
-          if reason ~= nil then
-            finish(task, reason)
-          elseif occupied then
-            finish(task, "possible_actor")
-          else
-            task.eventIndex = task.eventIndex + 1
+        local previous = eventsById[event.objectEventId]
+        if previous ~= nil then
+          if not sameOccupancy(previous, event) then
+            task.ambiguousSourceActor = true
           end
+          task.eventIndex = task.eventIndex + 1
         else
+          eventsById[event.objectEventId] = event
+          local profile = FieldObjectMovement.require(event.movementType)
+          if event.mapId == facts.mapId or profile.kind ~= "special" then
+            local occupied, reason = occupies(event, event.movementType, facts.fieldX, facts.fieldZ, facts.mapBounds)
+            if reason ~= nil then
+              task.eventRejection = task.eventRejection or reason
+            elseif occupied then
+              task.eventRejection = task.eventRejection or "possible_actor"
+            end
+          end
           task.eventIndex = task.eventIndex + 1
         end
         visits = visits + 1

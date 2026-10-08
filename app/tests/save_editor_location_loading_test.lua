@@ -2111,4 +2111,78 @@ function T.tests.tile_classification_bounds_trigger_and_actor_collection_visits(
   Assert.deepEqual(result, expected, "staged tile classification preserves the established policy result")
 end
 
+function T.tests.repeated_identical_source_events_publish_one_actor_obstacle()
+  local service, loader = loadingService({ taskImmediate = true })
+  local sourceEvent = {
+    objectEventId = 7,
+    movementType = "stationary",
+    x = 10,
+    z = 10,
+    xRange = -1,
+    yRange = -1,
+    eventFlag = 0,
+  }
+  local repeatedEvent = {
+    objectEventId = 7,
+    movementType = "stationary",
+    x = 10,
+    z = 10,
+    xRange = -1,
+    yRange = -1,
+    eventFlag = 0,
+  }
+  loader.runtime.fieldData.events.objects = { sourceEvent, repeatedEvent }
+  service:openMap(11, { purpose = "browse" })
+  service:setViewport(10, 10, 1, 1)
+
+  local ok, err = pcall(function()
+    for _ = 1, 100 do
+      service:update()
+      if service:snapshot().status.state == "ready" and service.objectEvents ~= nil then
+        break
+      end
+    end
+    Assert.equal(service:snapshot().status.state, "ready", "the represented map reaches ready state")
+    Assert.equal(#assert(service.objectEvents), 1, "metadata publication canonicalizes identical source identity rows")
+    Assert.equal(service:_classify(10, 10).reason, "possible_actor", "the canonical actor still blocks its source tile")
+    Assert.isTrue(service:_classify(12, 10).selectable, "an unrelated safe tile remains selectable")
+  end)
+  service:dispose()
+  Assert.isTrue(ok, "identical source event rows must not throw during Map browse: " .. tostring(err))
+end
+
+function T.tests.indoor_outside_permission_is_rejected_before_field_coordinate_conversion()
+  local service, loader = loadingService({ taskImmediate = true })
+  loader.runtime.fieldRegion.cells[1].collision.width = 32
+  loader.runtime.fieldRegion.cells[1].collision.height = 32
+  function loader.runtime.collision:containsLocal(localX, localZ)
+    return localX >= 0 and localX < 32 and localZ >= 0 and localZ < 32
+  end
+  service:openMap(11, { purpose = "browse" })
+  service:setViewport(32, 7, 1, 1)
+
+  local ok, err = pcall(function()
+    for _ = 1, 100 do
+      service:update()
+      if service:snapshot().status.state == "ready" and service.objectEvents ~= nil then
+        break
+      end
+    end
+    local view = service:snapshot()
+    Assert.equal(view.status.state, "ready", "outside visible coordinates do not fail the map request")
+    local visible = service:tileStatus(32, 7)
+    Assert.equal(visible.state, "unavailable", "visible out-of-permission tiles are classified normally")
+    Assert.equal(visible.reason, "outside_map", "visible classification retains the outside-map reason")
+    local outside, outsideStatus = service:resolve(11, 32, 7, view.generation)
+    Assert.isNil(outside, "an outside permission tile is not a destination")
+    Assert.equal(outsideStatus.state, "unavailable", "out-of-coverage is a normal tile outcome")
+    Assert.equal(outsideStatus.reason, "outside_map", "out-of-coverage retains the policy reason")
+    local inside, insideStatus = service:resolve(11, 31, 7, view.generation)
+    Assert.equal(insideStatus.state, "ready", "the neighboring covered point uses ordinary resolution")
+    Assert.notNil(inside, "strict conversion remains available for a valid neighbor")
+  end)
+  service:dispose()
+  Assert.isTrue(ok, "out-of-coverage tiles must not escape through FieldCoordinates: " .. tostring(err))
+end
+
 return T

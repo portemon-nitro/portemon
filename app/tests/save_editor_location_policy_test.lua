@@ -297,6 +297,25 @@ function T.tests.special_actor_fails_closed_and_flag_visibility_does_not_shrink_
   end
 end
 
+function T.tests.conflicting_source_actor_identities_fail_closed_without_precedence()
+  local LocationPolicy = policy()
+  local first = event({ movementType = "stationary", x = 10, z = 10 })
+  local conflicting = event({ movementType = "stationary", x = 11, z = 10 })
+  local saved = actorAt(10, 10, first)
+  local ok, result = pcall(function()
+    return LocationPolicy.classify(facts({
+      fieldX = 12,
+      fieldZ = 12,
+      events = { first, conflicting },
+      savedActors = { saved },
+    }))
+  end)
+
+  Assert.isTrue(ok, "conflicting external source identities must not escape as a raw assertion")
+  Assert.isFalse(result.selectable, "an ambiguous actor identity cannot authorize placement")
+  Assert.equal(result.reason, "ambiguous_source_actor", "the source ambiguity has a stable refusal reason")
+end
+
 function T.tests.staged_classification_bounds_each_actor_and_event_advance()
   local LocationPolicy = policy()
   local events = {}
