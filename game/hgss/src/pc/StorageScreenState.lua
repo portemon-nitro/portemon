@@ -247,6 +247,29 @@ function StorageScreenState:_openMenu()
   self._menu = { actions = actions, selected = 1, address = address }
 end
 
+-- Arms one release decision from a detached address and a single live
+-- preview. Confirmation and protected-move return share the confirmation
+-- path; any other preview outcome records the same cancelled/stale mapping
+-- from either input origin. A second request while one is armed is rejected.
+function StorageScreenState:_startRelease(address)
+  assert(self._releaseCheck == nil, "only one release decision may be armed")
+  local source = copy(address)
+  local intent = self._actions:preview({ kind = "release", source = source })
+  if intent.kind == "confirm" or intent.reason == "hm_return" then
+    self._releaseIntent = intent
+    self._releaseRevisions = copy(intent.expected)
+    self._releaseCheck =
+      { address = copy(source), scanned = 0, total = self._mons:boxCount() * 30 + 6, outcome = "confirm" }
+  else
+    self._releaseCheck = {
+      address = copy(source),
+      scanned = 0,
+      total = self._mons:boxCount() * 30 + 6,
+      outcome = intent.kind == "stale" and "stale" or "cancelled",
+    }
+  end
+end
+
 function StorageScreenState:_beginAction(action, data)
   local source = assert(self._menu and self._menu.address, "Storage actions start at a selected address")
   self._menu = nil
@@ -279,12 +302,7 @@ function StorageScreenState:_beginAction(action, data)
       self._pendingIntent = intent
     end
   elseif action == "release" then
-    self._releaseIntent = self._actions:preview({ kind = action, source = source })
-    if self._releaseIntent.kind == "confirm" then
-      self._releaseRevisions = copy(self._releaseIntent.expected)
-      self._releaseCheck =
-        { address = source, scanned = 0, total = self._mons:boxCount() * 30 + 6, outcome = "confirm" }
-    end
+    self:_startRelease(source)
   elseif action == "markings" then
     local mon = assert(self:_monVisual(source), "markings edit an occupied address")
     self._editor = { kind = "markings", source = source, mask = mon.markings, selected = 0 }
@@ -516,25 +534,7 @@ function StorageScreenState:updateFixed(events)
   for _, event in ipairs(events) do
     assert(type(event) == "table" and type(event.type) == "string", "Storage events are tagged records")
     if event.type == "release" then
-      assert(self._releaseCheck == nil, "only one release decision may be armed")
-      local intent = self._actions:preview({ kind = "release", source = copy(assert(event.address)) })
-      if intent.kind == "confirm" or intent.reason == "hm_return" then
-        self._releaseIntent = intent
-        self._releaseRevisions = copy(intent.expected)
-        self._releaseCheck = {
-          address = copy(event.address),
-          scanned = 0,
-          total = self._mons:boxCount() * 30 + 6,
-          outcome = "confirm",
-        }
-      else
-        self._releaseCheck = {
-          address = copy(event.address),
-          scanned = 0,
-          total = self._mons:boxCount() * 30 + 6,
-          outcome = intent.kind == "stale" and "stale" or "cancelled",
-        }
-      end
+      self:_startRelease(assert(event.address))
     elseif event.type == "confirm" and self._releaseCheck ~= nil and self._releaseCheck.outcome == "confirm" then
       self._releaseCheck.outcome = "pending"
       beganScan = true

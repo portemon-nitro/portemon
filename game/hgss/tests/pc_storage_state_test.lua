@@ -1225,4 +1225,143 @@ function T.published_status_stays_detached_and_survives_failed_refresh()
   state:dispose()
 end
 
+function T.menu_and_mapped_release_share_protected_move_return()
+  local function protectedService()
+    local mons = releaseService()
+    mons:setMove(0, 1, "TACKLE")
+    mons:setMove(0, 0, "FLY")
+    mons:setMove(0, 1, "SURF")
+    return mons
+  end
+  local function settle(state)
+    state:updateFixed({ { type = "confirm" } })
+    local check = state:status().releaseCheck
+    local ticks = 1
+    local maximumTicks = math.ceil(check.total / 15)
+    while check.outcome == "pending" do
+      Assert.isTrue(ticks < maximumTicks, "protected scan completes within the candidate count")
+      state:updateFixed({})
+      ticks = ticks + 1
+      check = state:status().releaseCheck
+    end
+    return check, ticks, maximumTicks
+  end
+
+  local menuMons = protectedService()
+  local menuState = PcStorageState.new(openOptions(menuMons, 2, "wide"))
+  menuState:updateFixed({ { type = "action", action = "release" } })
+  local menuArmed = menuState:status().releaseCheck
+  Assert.notNil(menuArmed, "menu protected-move request opens confirmation")
+  Assert.equal(menuArmed.outcome, "confirm")
+  Assert.deepEqual(menuArmed.address, { kind = "party", slot = 0 })
+  local menuSettled, menuTicks, menuMaximum = settle(menuState)
+  Assert.equal(menuSettled.outcome, "returned", "menu protected-move request returns instead of removing")
+  Assert.equal(menuMons:partyCount(), 2, "menu return keeps party custody")
+  Assert.notNil(menuMons:boxMon(36, 29), "menu return leaves the alternative holder untouched")
+  menuState:dispose()
+
+  local eventMons = protectedService()
+  local eventState = PcStorageState.new(openOptions(eventMons, 2, "wide"))
+  eventState:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  local eventArmed = eventState:status().releaseCheck
+  Assert.notNil(eventArmed, "mapped protected-move request opens confirmation")
+  Assert.equal(eventArmed.outcome, "confirm")
+  local eventSettled, eventTicks, eventMaximum = settle(eventState)
+  Assert.equal(eventSettled.outcome, "returned")
+  Assert.equal(eventMons:partyCount(), 2)
+  Assert.equal(menuArmed.total, eventArmed.total, "both origins scan the same candidate set")
+  Assert.equal(menuSettled.scanned, eventSettled.scanned, "both origins advance the same progress")
+  Assert.equal(menuTicks, eventTicks, "both origins settle on the same timing")
+  Assert.equal(menuMaximum, eventMaximum)
+  eventState:dispose()
+end
+
+function T.menu_and_mapped_release_agree_on_removal_cancel_and_stale()
+  local function settle(state)
+    state:updateFixed({ { type = "confirm" } })
+    local check = state:status().releaseCheck
+    local maximumTicks = math.ceil(check.total / 15)
+    local ticks = 1
+    while check.outcome == "pending" do
+      Assert.isTrue(ticks < maximumTicks, "removal scan completes within the candidate count")
+      state:updateFixed({})
+      ticks = ticks + 1
+      check = state:status().releaseCheck
+    end
+    return check
+  end
+
+  local menuMons = releaseService()
+  local menuState = PcStorageState.new(openOptions(menuMons, 2, "wide"))
+  menuState:updateFixed({ { type = "action", action = "release" } })
+  Assert.equal(menuState:status().releaseCheck.outcome, "confirm")
+  local menuRemoved = settle(menuState)
+  Assert.equal(menuRemoved.outcome, "removed")
+  Assert.equal(menuMons:partyCount(), 1, "menu removal publishes once")
+  local menuCount = menuMons:partyCount()
+  menuState:updateFixed({})
+  menuState:updateFixed({})
+  Assert.equal(menuState:status().releaseCheck.outcome, "removed", "settled menu removal never commits again")
+  Assert.equal(menuMons:partyCount(), menuCount)
+  menuState:dispose()
+
+  local eventMons = releaseService()
+  local eventState = PcStorageState.new(openOptions(eventMons, 2, "wide"))
+  eventState:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  Assert.equal(eventState:status().releaseCheck.outcome, "confirm")
+  local eventRemoved = settle(eventState)
+  Assert.equal(eventRemoved.outcome, "removed")
+  Assert.equal(eventMons:partyCount(), 1, "mapped removal publishes once")
+  local eventCount = eventMons:partyCount()
+  eventState:updateFixed({})
+  Assert.equal(eventMons:partyCount(), eventCount, "settled mapped removal never commits again")
+  eventState:dispose()
+
+  local menuCancelMons = releaseService()
+  local menuCancel = PcStorageState.new(openOptions(menuCancelMons, 2, "wide"))
+  menuCancel:updateFixed({ { type = "action", action = "release" } })
+  menuCancel:updateFixed({ { type = "confirm" } })
+  Assert.equal(menuCancel:status().releaseCheck.outcome, "pending")
+  menuCancel:updateFixed({ { type = "cancel" } })
+  Assert.equal(menuCancel:status().releaseCheck.outcome, "cancelled", "menu cancel stops the scan")
+  Assert.equal(menuCancelMons:partyCount(), 2, "menu cancel never removes")
+  menuCancel:dispose()
+
+  local eventCancelMons = releaseService()
+  local eventCancel = PcStorageState.new(openOptions(eventCancelMons, 2, "wide"))
+  eventCancel:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  eventCancel:updateFixed({ { type = "confirm" } })
+  eventCancel:updateFixed({ { type = "cancel" } })
+  Assert.equal(eventCancel:status().releaseCheck.outcome, "cancelled")
+  Assert.equal(eventCancelMons:partyCount(), 2, "mapped cancel never removes")
+  eventCancel:dispose()
+
+  local menuStaleMons = releaseService()
+  local menuStale = PcStorageState.new(openOptions(menuStaleMons, 2, "wide"))
+  menuStale:updateFixed({ { type = "action", action = "release" } })
+  menuStale:updateFixed({ { type = "confirm" } })
+  local drifting = menuStaleMons:partyMon(1)
+  drifting.heldItem = "SITRUS_BERRY"
+  local preparation = assert(menuStaleMons:preparePartyChanges(menuStaleMons:partyRevision(), { { slot = 1, mon = drifting } }))
+  preparation.publish()
+  menuStale:updateFixed({})
+  Assert.equal(menuStale:status().releaseCheck.outcome, "stale", "menu revision drift cancels the scan")
+  Assert.equal(menuStaleMons:partyCount(), 2, "menu stale scan retains the selected mon")
+  menuStale:dispose()
+
+  local armed = PcStorageState.new(openOptions(releaseService(), 2, "wide"))
+  armed:updateFixed({ { type = "action", action = "release" } })
+  Assert.equal(armed:status().releaseCheck.outcome, "confirm")
+  local secondMenu = pcall(function()
+    armed:updateFixed({ { type = "action", action = "release" } })
+  end)
+  Assert.isFalse(secondMenu, "a second menu request never overwrites the armed decision")
+  local secondEvent = pcall(function()
+    armed:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  end)
+  Assert.isFalse(secondEvent, "a second mapped request never overwrites the armed decision")
+  Assert.deepEqual(armed:status().releaseCheck.address, { kind = "party", slot = 0 })
+  armed:dispose()
+end
+
 return { tests = T }
