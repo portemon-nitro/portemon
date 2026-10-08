@@ -1823,7 +1823,8 @@ function T.location_map_list_labels_fit_button_content_without_losing_map_identi
     touch = false,
     role = "world",
   })
-  local _, renderedText, layout = draw(scope, 1280, 720, wide, "location-map-list-labels", "Location", "map-list")
+  local _, renderedText, layout, _, _, view, _, _, paletteCalls =
+    draw(scope, 1280, 720, wide, "location-map-list-labels", "Location", "map-list")
   local targetId = "location:map:12"
   local found
   for _, row in ipairs(layout.rows) do
@@ -1834,6 +1835,16 @@ function T.location_map_list_labels_fit_button_content_without_losing_map_identi
   end
   Assert.equal(found and found.label, "AZALEA_ILEX_FOREST_GATEHOUSE", "layout retains the complete map display name")
   Assert.isTrue(renderedText:find("AZALEA_ILEX", 1, true) ~= nil, "the painted map label remains recognizable")
+  local labelRect = assert(found.labelRect)
+  local valueRect = assert(found.valueRect)
+  local labelCall = assert(findPaletteCall(paletteCalls, "AZALEA_ILEX"), "the map label has a painted text call")
+  local paintedWidth = view.textMetrics.measure(labelCall.value) * 0.75
+  Assert.isTrue(labelCall.x >= labelRect.x, "the map glyphs begin inside their row label region")
+  Assert.isTrue(labelCall.x + paintedWidth <= labelRect.x + labelRect.width + 0.01, "map glyphs fit their row label region")
+  Assert.isTrue(labelCall.x + paintedWidth + 4 <= valueRect.x, "map glyphs stay clear of the trailing value")
+  local clip = assert(layout.viewports["location:group:1"]).clip
+  Assert.isTrue(labelCall.x >= clip.x and labelCall.x + paintedWidth <= clip.x + clip.width)
+  Assert.isTrue(labelCall.y >= clip.y and labelCall.y + view.textMetrics.lineHeight * 0.75 <= clip.y + clip.height)
 end
 
 function T.compact_progress_fits_a_real_long_flag_inside_separate_row_cells(scope)
@@ -1844,7 +1855,7 @@ function T.compact_progress_fits_a_real_long_flag_inside_separate_row_cells(scop
     touch = false,
     role = "world",
   })
-  local _, renderedText, layout, _, drawnText, view =
+  local _, renderedText, layout, _, drawnText, view, _, _, paletteCalls =
     draw(scope, width, height, compact, "progress-long-flag", "Progress", "long-flag")
   local targetId = "flag:" .. LONG_FLAG_NAME
   local row
@@ -1868,6 +1879,13 @@ function T.compact_progress_fits_a_real_long_flag_inside_separate_row_cells(scop
     view.textMetrics.measure(fittedLabel) * 0.75 <= row.labelRect.width + 0.01,
     "the label fits its measured cell at body scale"
   )
+  local labelCall = assert(findPaletteCall(paletteCalls, "HIDE_GOLDENROD"), "the flag label has a painted text call")
+  local paintedWidth = view.textMetrics.measure(labelCall.value) * 0.75
+  local viewport = assert(layout.viewports.flags)
+  Assert.isTrue(labelCall.x >= row.labelRect.x, "flag glyphs begin inside their row label region")
+  Assert.isTrue(labelCall.x + paintedWidth <= row.labelRect.x + row.labelRect.width + 0.01)
+  Assert.isTrue(labelCall.y >= viewport.clip.y and labelCall.y + view.textMetrics.lineHeight * 0.75 <= viewport.clip.y + viewport.clip.height)
+  Assert.isTrue(labelCall.x + paintedWidth + 4 <= row.valueRect.x, "flag glyphs stay clear of ON/OFF")
 end
 
 function T.selected_member_renders_identity_in_strip_and_stats_header(scope)
@@ -2511,6 +2529,121 @@ function T.choice_list_marks_the_remembered_row_without_outlining_its_surface(sc
   local pointerLayout, pointerCalls = render("choice-pointer", "choice:choice-01", false)
   local pointerRow = assert(pointerLayout.targets["choice:choice-01"]).rect
   Assert.equal(markerAround(pointerRow, pointerCalls), 1, "pointer modality keeps the row marker visible")
+end
+
+function T.map_flags_and_choice_lists_use_only_local_light_row_markers(scope)
+  local cases = {
+    {
+      section = "Location",
+      variant = "map-list",
+      listId = "list:location:group:1",
+      viewportId = "location:group:1",
+      rowId = "location:map:12",
+    },
+    {
+      section = "Progress",
+      variant = "long-flag",
+      listId = "list:flags",
+      viewportId = "flags",
+      rowId = "flag:" .. LONG_FLAG_NAME,
+    },
+    {
+      section = "Player",
+      variant = "choice-list",
+      listId = "list:value:choice",
+      viewportId = "value:choice",
+      rowId = "choice:choice-01",
+    },
+  }
+  for _, scenario in ipairs(cases) do
+    local topology = singleDisplay(640, 480)
+    local activeData, activeLayout, activePlan
+    local activeCalls = recordRectangles(function()
+      local output = { draw(
+        scope,
+        640,
+        480,
+        topology,
+        "local-list-marker-" .. scenario.section,
+        scenario.section,
+        scenario.variant,
+        nil,
+        function(_, view)
+          view.focus = scenario.rowId
+          view.focusVisible = true
+        end
+      ) }
+      activeData, activeLayout, activePlan = output[1], output[3], output[10]
+    end)
+    local clip = assert(activeLayout.viewports[scenario.viewportId]).clip
+    local marker = assert(activeLayout.rowMarkers[scenario.rowId], scenario.section .. " publishes its row marker")
+    for _, call in ipairs(activeCalls) do
+      Assert.isFalse(
+        call.mode == "line" and surrounds(call, clip, 3),
+        scenario.section .. " has no list-wide focus ring"
+      )
+    end
+    local markerCall
+    for _, call in ipairs(activeCalls) do
+      if call.mode == "line" and math.abs(call.x - (marker.x + 1)) <= 1 then
+        markerCall = call
+        break
+      end
+    end
+    Assert.notNil(markerCall, scenario.section .. " draws the local active marker")
+    Assert.isTrue(markerCall.radiusX <= 2, scenario.section .. " active marker has visible straight lateral edges")
+    local pane = assert(activePlan.panes[1])
+    local left, top = LayoutGeometry.logicalToHost(pane.placement, marker.x + 1, marker.y + 3)
+    local _, bottom = LayoutGeometry.logicalToHost(pane.placement, marker.x + 4, marker.y + marker.height - 3)
+    local strongestRed = 0
+    for pixelY = math.floor(top), math.floor(bottom) do
+      for pixelX = math.floor(left), math.floor(left + 3) do
+        local red, green = activeData:getPixel(pixelX, pixelY)
+        strongestRed = math.max(strongestRed, red - green)
+      end
+    end
+    Assert.isTrue(strongestRed > 0.2, scenario.section .. " current item marker stays red")
+
+    if scenario.section ~= "Location" then
+      local rememberedData, rememberedLayout, rememberedPlan
+      local rememberedCalls = recordRectangles(function()
+        local output = { draw(
+          scope,
+          640,
+          480,
+          topology,
+          "remembered-list-marker-" .. scenario.section,
+          scenario.section,
+          scenario.variant,
+          nil,
+          function(_, view)
+            view.focus = scenario.listId
+            view.focusVisible = true
+            view.listCursors = { [scenario.section == "Progress" and "flags" or "value:choice"] = scenario.rowId }
+          end
+        ) }
+        rememberedData, rememberedLayout, rememberedPlan = output[1], output[3], output[10]
+      end)
+      local rememberedClip = assert(rememberedLayout.viewports[scenario.viewportId]).clip
+      local rememberedMarker = assert(rememberedLayout.rowMarkers[scenario.rowId])
+      for _, call in ipairs(rememberedCalls) do
+        Assert.isFalse(
+          call.mode == "line" and surrounds(call, rememberedClip, 3),
+          scenario.section .. " keeps remembered focus local to the item"
+        )
+      end
+      local grayRed, grayGreen, grayBlue = pixelAtLogical(
+        rememberedData,
+        rememberedPlan,
+        rememberedMarker.x + rememberedMarker.width / 2,
+        rememberedMarker.y + 2
+      )
+      Assert.isTrue(
+        grayRed > 0.8 and grayGreen > 0.8 and grayBlue > 0.8,
+        scenario.section .. " remembered marker uses the light inactive button face"
+      )
+    end
+  end
 end
 
 function T.filterable_lists_render_an_inline_hint_without_search_controls(scope)

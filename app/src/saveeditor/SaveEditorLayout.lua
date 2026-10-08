@@ -1632,6 +1632,10 @@ local function publishPlan(ctx)
     local target = targetRecords[row.targetId]
     if target and row.gridCard then
       row.valueText = row.value == nil and nil or tostring(row.value)
+    elseif target and row.listSurface then
+      if row.value ~= nil then
+        row.valueText = type(row.value) == "boolean" and (row.value and "ON" or "OFF") or tostring(row.value)
+      end
     elseif target and row.partyField then
       row.valueTruncated = row.valueText ~= nil and metrics.measure(row.valueText) > row.valueRect.width
       if row.valueTruncated and row.targetId == view.focus then

@@ -26,8 +26,8 @@ local function rect(x, y, width, height)
   return { x = x, y = y, width = width, height = height }
 end
 
----@param spec { bounds: { x:number, y:number, width:number, height:number }, rowCount: integer, rowHeight: number, gap: number, maxWidth: number, headerHeight?: number, scrollOffset?: number }
----@return { surface: { x:number, y:number, width:number, height:number }, content: { x:number, y:number, width:number, height:number }, header: { x:number, y:number, width:number, height:number }, contentHeight:number, firstIndex:integer, lastIndex:integer, rows: { index:integer, rect: { x:number, y:number, width:number, height:number }, hitRect: { x:number, y:number, width:number, height:number }, markerRect: { x:number, y:number, width:number, height:number }, markerRadius:number }[] }
+---@param spec { bounds: { x:number, y:number, width:number, height:number }, rowCount: integer, rowHeight: number, gap: number, maxWidth: number, headerHeight?: number, scrollOffset?: number, hasTrailingValue?: boolean, trailingValueWidth?: number, font?: { lineHeight:number, measure: fun(text:string):number } }
+---@return { surface: { x:number, y:number, width:number, height:number }, content: { x:number, y:number, width:number, height:number }, header: { x:number, y:number, width:number, height:number }, contentHeight:number, firstIndex:integer, lastIndex:integer, rows: { index:integer, rect: { x:number, y:number, width:number, height:number }, hitRect: { x:number, y:number, width:number, height:number }, markerRect: { x:number, y:number, width:number, height:number }, markerRadius:number, labelRect: { x:number, y:number, width:number, height:number }, valueRect?: { x:number, y:number, width:number, height:number } }[] }
 function SaveEditorList.resolve(spec)
   assert(type(spec) == "table" and validRect(spec.bounds), "list bounds must be finite and positive")
   assert(
@@ -41,6 +41,22 @@ function SaveEditorList.resolve(spec)
   assert(finite(headerHeight) and headerHeight >= 0, "list header height must be finite and non-negative")
   local scrollOffset = spec.scrollOffset or 0
   assert(finite(scrollOffset) and scrollOffset >= 0, "list scroll offset must be finite and non-negative")
+  local hasTrailingValue = spec.hasTrailingValue == true
+  local font = spec.font
+  if font ~= nil then
+    assert(
+      type(font) == "table" and finite(font.lineHeight) and font.lineHeight > 0,
+      "list font line height must be finite and positive"
+    )
+    assert(type(font.measure) == "function", "list font must measure text")
+  end
+  local trailingValueWidth = spec.trailingValueWidth
+  if trailingValueWidth ~= nil then
+    assert(
+      finite(trailingValueWidth) and trailingValueWidth >= 0,
+      "list trailing value width must be finite and non-negative"
+    )
+  end
 
   local bounds = spec.bounds
   local width = math.min(bounds.width, spec.maxWidth)
@@ -53,6 +69,7 @@ function SaveEditorList.resolve(spec)
   scrollOffset = ScrollViewport.clamp(scrollOffset, contentHeight, viewportHeight)
   local firstIndex, lastIndex =
     ScrollViewport.visibleRange(scrollOffset, viewportHeight, spec.rowHeight, spec.gap, spec.rowCount)
+  ---@type { index:integer, rect:{ x:number, y:number, width:number, height:number }, hitRect:{ x:number, y:number, width:number, height:number }, markerRect:{ x:number, y:number, width:number, height:number }, markerRadius:number, labelRect:{ x:number, y:number, width:number, height:number }, valueRect?:{ x:number, y:number, width:number, height:number } }[]
   local rows = {}
   for index = firstIndex, lastIndex do
     local row = rect(
@@ -69,12 +86,32 @@ function SaveEditorList.resolve(spec)
       row.width - horizontalInset * 2,
       row.height - verticalInset * 2
     )
+    local textInset = math.min(4, marker.width / 4)
+    local textLeft = marker.x + textInset
+    local textRight = marker.x + marker.width - textInset
+    local textHeight = math.min(font and font.lineHeight or row.height, row.height)
+    local textY = row.y + (row.height - textHeight) / 2
+    local valueRect
+    if hasTrailingValue then
+      local measuredValueWidth = trailingValueWidth
+      if measuredValueWidth == nil and font ~= nil then
+        measuredValueWidth = font.measure("OFF")
+      end
+      local slotWidth = math.min(measuredValueWidth or marker.width * 0.28, marker.width * 0.32)
+      local gap = math.min(4, math.max(0, textRight - textLeft))
+      slotWidth = math.min(slotWidth, math.max(0, textRight - textLeft - gap))
+      valueRect = rect(textRight - slotWidth, textY, slotWidth, textHeight)
+    end
+    local labelRight = valueRect and math.max(textLeft, valueRect.x - math.min(4, math.max(0, valueRect.x - textLeft)))
+      or textRight
     rows[#rows + 1] = {
       index = index,
       rect = row,
       hitRect = rect(row.x, row.y, row.width, row.height),
       markerRect = marker,
-      markerRadius = math.min(6, marker.height / 2),
+      markerRadius = math.min(2, marker.height / 2),
+      labelRect = rect(textLeft, textY, math.max(0, labelRight - textLeft), textHeight),
+      valueRect = valueRect,
     }
   end
   return {

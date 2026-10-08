@@ -1250,6 +1250,50 @@ function T.tests.save_editor_list_and_card_geometry_is_bounded_and_row_major()
   end, "card count cannot exceed the six visible cells")
 end
 
+function T.tests.list_rows_publish_shared_text_and_marker_geometry_for_value_modes()
+  local List = require("app.src.saveeditor.SaveEditorList")
+  for _, size in ipairs({ { 128, 192 }, { 192, 256 }, { 256, 192 }, { 720, 480 }, { 1280, 720 } }) do
+    local bounds = { x = 0, y = 0, width = size[1], height = size[2] }
+    local rows = {}
+    for _, hasTrailingValue in ipairs({ false, true }) do
+      local list = List.resolve({
+        bounds = bounds,
+        rowCount = 1,
+        rowHeight = 18,
+        gap = 0,
+        maxWidth = size[1],
+        headerHeight = 14,
+        hasTrailingValue = hasTrailingValue,
+        font = {
+          lineHeight = 14,
+          measure = function(text)
+            return #text * 7
+          end,
+        },
+      })
+      local row = assert(list.rows[1])
+      local label = assert(row.labelRect, "each row publishes its bounded label region")
+      local marker = row.markerRect
+      Assert.isTrue(row.markerRadius <= 2, "list markers have straight lateral edges")
+      Assert.isTrue(label.x >= marker.x + 4, "the label stays inside the marker with a readable gutter")
+      Assert.isTrue(label.x + label.width <= marker.x + marker.width - 4)
+      Assert.isTrue(label.y >= row.rect.y and label.y + label.height <= row.rect.y + row.rect.height)
+      Assert.isTrue(label.height >= 14, "the label region fits the body font line")
+      Assert.equal(row.valueRect ~= nil, hasTrailingValue, "only valued rows reserve a right text region")
+      if row.valueRect ~= nil then
+        Assert.isTrue(row.valueRect.x >= label.x + label.width + 4, "label and value have a readable gap")
+        Assert.isTrue(row.valueRect.x + row.valueRect.width <= marker.x + marker.width - 4)
+        Assert.isTrue(
+          row.valueRect.y >= row.rect.y and row.valueRect.y + row.valueRect.height <= row.rect.y + row.rect.height
+        )
+      end
+      rows[#rows + 1] = row
+    end
+    Assert.equal(rows[1].markerRect.x, rows[2].markerRect.x, "value presence does not change marker inset")
+    Assert.equal(rows[1].labelRect.x, rows[2].labelRect.x, "value presence preserves the shared label gutter")
+  end
+end
+
 function T.tests.filterable_lists_reserve_a_hint_line_above_their_rows()
   local metrics = filterMetrics()
   local flags = progressFilterFlags()

@@ -370,14 +370,13 @@ local function drawFocusRing(renderer, rectValue, radius)
   graphics.setColor(1, 1, 1, 1)
 end
 
-local function drawRowMarker(renderer, rectValue, active)
+local function drawRowMarker(renderer, rectValue, radius, active)
   local graphics = renderer.graphics
   local savedWidth = graphics.getLineWidth()
   if active then
-    setColor(graphics, renderer.skin.cards.normal.selectedRim)
+    setColor(graphics, { 0.86, 0.16, 0.18, 1 })
   else
-    local muted = renderer.skin.text.hint.foreground
-    graphics.setColor(muted.r / 255, muted.g / 255, muted.b / 255, 1)
+    setColor(graphics, BUTTON_COLORS.inactive.faceBottom)
   end
   graphics.setLineWidth(2)
   graphics.rectangle(
@@ -386,8 +385,8 @@ local function drawRowMarker(renderer, rectValue, active)
     rectValue.y + 1,
     rectValue.width - 2,
     rectValue.height - 2,
-    math.min(6, rectValue.height / 2),
-    math.min(6, rectValue.height / 2)
+    math.min(radius, rectValue.height / 2),
+    math.min(radius, rectValue.height / 2)
   )
   graphics.setLineWidth(savedWidth)
   graphics.setColor(1, 1, 1, 1)
@@ -455,6 +454,16 @@ drawBodyText = function(renderer, value, x, y, role)
   if not ok then
     error(err, 0)
   end
+end
+
+local function drawListText(renderer, value, x, y, role)
+  local graphics = renderer.graphics
+  graphics.push("all")
+  graphics.translate(x, y)
+  graphics.scale(BODY_TEXT_SCALE, BODY_TEXT_SCALE)
+  graphics.translate(-x, -y)
+  drawText(renderer, value, x, y, role)
+  graphics.pop()
 end
 
 local function drawCompactControl(renderer, rectValue, label, active, focused, disabled, semantic, option)
@@ -553,43 +562,31 @@ local function drawSectionControl(renderer, rectValue, label, active, focused)
   )
 end
 
-local function drawListRow(
-  renderer,
-  rectValue,
-  label,
-  focused,
-  value,
-  labelRect,
-  valueRect,
-  markerRect,
-  remembered,
-  muted
-)
+local function drawListRow(renderer, rectValue, label, focused, value, labelRect, valueRect, markerRect, muted)
+  if markerRect == nil and focused then
+    drawFocusRing(renderer, rectValue, 0)
+  end
   local labelBounds = labelRect or { x = rectValue.x + 6, y = rectValue.y + 3, width = rectValue.width - 12 }
-  local labelY = labelBounds.y or rectValue.y + 3
-  drawBodyText(
+  local labelHeight = labelBounds.height or renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE
+  local labelY = labelBounds.y + math.max(0, (labelHeight - renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE) / 2)
+  local labelWidth = labelBounds.width
+  drawListText(
     renderer,
-    fitText(renderer, label, labelBounds.width / BODY_TEXT_SCALE),
+    fitText(renderer, label, labelWidth / BODY_TEXT_SCALE),
     labelBounds.x,
     labelY,
     muted and "hint" or nil
   )
   if value ~= nil then
     local valueText = tostring(value)
-    local bounds = valueRect or { x = rectValue.x, y = rectValue.y + 3, width = rectValue.width * 0.35 }
+    local bounds = valueRect
+      or { x = rectValue.x, y = rectValue.y + 3, width = rectValue.width * 0.35, height = labelHeight }
     local fitted = fitText(renderer, valueText, bounds.width / BODY_TEXT_SCALE)
     local fittedWidth = renderer.text:textWidth(fitted) * BODY_TEXT_SCALE
     local x = valueRect and bounds.x or rectValue.x + rectValue.width - fittedWidth - 6
-    drawBodyText(renderer, fitted, x, bounds.y or rectValue.y + 3, "hint")
-  end
-  if markerRect ~= nil then
-    if focused then
-      drawRowMarker(renderer, markerRect, true)
-    elseif remembered then
-      drawRowMarker(renderer, markerRect, false)
-    end
-  elseif focused then
-    drawFocusRing(renderer, rectValue, 0)
+    local valueY = bounds.y
+      + math.max(0, ((bounds.height or labelHeight) - renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE) / 2)
+    drawListText(renderer, fitted, x, valueY, "hint")
   end
 end
 
@@ -600,6 +597,12 @@ local function findListForTarget(lists, targetId)
     end
   end
   return nil
+end
+
+local function listRowClip(layout, targetId, fallback)
+  local list = findListForTarget(layout.lists, targetId)
+  local viewport = list and layout.viewports[list.viewportId]
+  return viewport and viewport.clip or fallback
 end
 
 fitText = function(renderer, value, width)
@@ -872,7 +875,7 @@ local function paintRows(ctx)
     local rect = targetRect(layout, row.targetId)
     if rect and not row.gridCard and not row.partyField then
       local target = assert(layout.targets[row.targetId])
-      LogicalSurface.clip(graphics, target.clip or rect, function()
+      LogicalSurface.clip(graphics, listRowClip(layout, row.targetId, target.clip or rect), function()
         if row.listSurface then
           local list = findListForTarget(layout.lists, row.targetId)
           drawListRow(
@@ -884,7 +887,6 @@ local function paintRows(ctx)
             row.labelRect,
             row.valueRect,
             layout.rowMarkers[row.targetId],
-            list ~= nil and list.cursorTarget == row.targetId,
             row.muted or list ~= nil and list.pending == true
           )
           return
@@ -1325,7 +1327,6 @@ local function paintValueEditor(ctx)
             local rect = targetRect(layout, "choice:" .. option.key)
             if rect then
               local id = "choice:" .. option.key
-              local list = assert(layout.lists["value:choice"])
               drawListRow(
                 renderer,
                 rect,
@@ -1335,7 +1336,6 @@ local function paintValueEditor(ctx)
                 layout.rowLabelRects[id],
                 nil,
                 layout.rowMarkers[id],
-                list.cursorTarget == id,
                 dialog.pending == true
               )
             end
@@ -1504,6 +1504,17 @@ local function paintFrames(ctx)
     end
     if activeView.modal and activeLayout.decisionList then
       self._windowRenderer:drawApplicationFrame(framedContentRect(activeLayout.decisionList.surface), frameIndex)
+    end
+  end
+  for targetId, markerRect in pairs(layout.rowMarkers or {}) do
+    local list = findListForTarget(layout.lists, targetId)
+    local active = isFocusedVisible(view, targetId)
+    local remembered = list ~= nil and list.cursorTarget == targetId
+    if active or remembered then
+      local target = assert(layout.targets[targetId])
+      LogicalSurface.clip(graphics, listRowClip(layout, targetId, target.clip or target.rect), function()
+        drawRowMarker(self, markerRect, layout.rowMarkerRadii[targetId] or 0, active)
+      end)
     end
   end
 end
