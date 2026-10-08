@@ -58,6 +58,7 @@ local function prepareModel(model, pool)
         mesh = mesh.mesh,
         material = materialById[batch.material],
         center = mesh.center,
+        bounds = mesh.bounds,
         isBillboard = batch.transformMode == PoseContract.BILLBOARD,
         baseTransform = batch.baseTransform,
         alphaClass = batch.alphaClass,
@@ -125,6 +126,7 @@ function FieldActorEmoteRenderer:drawItems(records)
           )
           billboardCenter, billboardScale = BillboardTransform.components(transform)
           modelNormal = IDENTITY_MODEL_NORMAL
+          assert(batch.bounds, "billboard batch needs its mesh bounds for the presentation sprite layer")
         else
           transform = anchorTransform
           modelNormal = Matrix3.modelNormal(transform)
@@ -136,6 +138,8 @@ function FieldActorEmoteRenderer:drawItems(records)
           modelNormal = modelNormal,
           billboardCenter = billboardCenter,
           billboardScale = billboardScale,
+          billboardProjection = batch.isBillboard,
+          bounds = batch.isBillboard and batch.bounds or nil,
           center = batch.center,
           alphaClass = batch.alphaClass,
           cullMode = batch.cullMode,

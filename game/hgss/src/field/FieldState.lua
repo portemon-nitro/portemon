@@ -394,7 +394,24 @@ function FieldState:_worldParts(alpha)
   for index = #spriteItems, 1, -1 do
     spriteItems[index] = nil
   end
+  -- _actorDraws (above) refreshed the actor presentation records with this frame's
+  -- presentation-neutral records, which is the only place activeEmoteKind
+  -- survives; FieldActorDraw's rendered items do not carry it. A movement
+  -- emote composites in the same presentation sprite layer as the acting
+  -- actor's own billboard (matching pokeheartgold's shared depth-biased
+  -- BillboardLists_Draw/FieldEffectManager_Render pass): the bounded-
+  -- resolution world queue resolves first and the sprite layer composites
+  -- unconditionally on top of it, so an emote left in the world queue could
+  -- never win visibility against the actor it floats above.
+  local emoteItems = resources.fieldEmoteRenderer:drawItems(assert(self.actorPresentation):records())
   for _, item in ipairs(actorItems) do
+    if item.billboardProjection == true then
+      spriteItems[#spriteItems + 1] = item
+    else
+      worldActorItems[#worldActorItems + 1] = item
+    end
+  end
+  for _, item in ipairs(emoteItems) do
     if item.billboardProjection == true then
       spriteItems[#spriteItems + 1] = item
     else
@@ -405,10 +422,7 @@ function FieldState:_worldParts(alpha)
   for _, item in ipairs(self:_surfDrawItems(alpha)) do
     worldActorItems[#worldActorItems + 1] = item
   end
-  -- _actorDraws (above) refreshed the actor presentation records with this frame's
-  -- presentation-neutral records, which is the only place activeEmoteKind
-  -- survives; FieldActorDraw's rendered items do not carry it.
-  worldParts[7] = resources.fieldEmoteRenderer:drawItems(assert(self.actorPresentation):records())
+  worldParts[7] = NO_DRAWS
   local terrain = self.runtime.fieldTerrainEffectController
   local terrainRenderer = resources.fieldTerrainEffectRenderer
   local terrainItems = self._terrainItems

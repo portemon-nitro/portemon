@@ -871,6 +871,134 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
   Assert.equal(#received.spriteItems, 1)
 end
 
+-- A billboard movement-emote (the exclamation badge) must composite in the
+-- same presentation sprite layer as the acting actor's own billboard, not the
+-- bounded-resolution world queue: the world queue resolves before the sprite
+-- layer composites unconditionally on top of it, so an emote left in the
+-- world queue could never win visibility against the actor it floats above.
+function T.draw_sends_billboard_emote_items_to_presentation_not_world_queue()
+  local sceneRuntime = {
+    mapDraws = {},
+    staticBuildingDraws = {},
+    animatedBuildingDraws = {},
+  }
+  local emoteItem = { kind = "emote", billboardProjection = true }
+  local received
+  local state = setmetatable({
+    runtime = {
+      pcApplicationHost = idlePcApplicationHost(),
+      runtimeMap = { sceneRuntime = sceneRuntime },
+      playerVisual = {
+        drawRecord = function()
+          return { visible = false }
+        end,
+      },
+      fieldEntranceIndicator = {
+        status = function()
+          return { visible = false }
+        end,
+      },
+      actors = {
+        drawRecords = function()
+          return {}
+        end,
+      },
+      session = {
+        renderAlpha = function()
+          return 0.5
+        end,
+      },
+      destinationWorldPresentable = function()
+        return true
+      end,
+      acknowledgeDestinationPresentation = function() end,
+      viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
+      camera = { zoom = 1 },
+      transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
+      contextChoicePresentation = function()
+        return nil
+      end,
+      signpost = {
+        isModal = function()
+          return false
+        end,
+      },
+      applicationHost = {
+        isActive = function()
+          return false
+        end,
+        status = function()
+          return { phase = "closed", fadeAlpha = 0 }
+        end,
+      },
+      pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
+      menuHost = {
+        presentation = function()
+          return nil
+        end,
+      },
+      yesNoHost = idleChoiceHost(),
+      resizePresentation = function() end,
+    },
+    _pollPresentationTopology = false,
+    presentationResources = {
+      renderer = {
+        draw = function(_, _, _, worldParts, spriteItems)
+          received = { worldParts = worldParts, spriteItems = spriteItems }
+        end,
+      },
+      drawMart = function() end,
+      fieldEntranceIndicatorRenderer = {
+        drawItems = function()
+          return {}
+        end,
+      },
+      fieldEmoteRenderer = {
+        drawItems = function()
+          return { emoteItem }
+        end,
+      },
+      dispose = function() end,
+    },
+    worldParts = {},
+    worldActorItems = {},
+    spriteItems = {},
+    actorPresentation = actorPresentationStub(),
+  }, FieldState)
+  state._actorDraws = function()
+    return {}
+  end
+
+  state:draw()
+
+  Assert.equal(received.spriteItems[1], emoteItem, "a billboard emote composites in the presentation sprite layer")
+  Assert.equal(
+    #received.worldParts[7],
+    0,
+    "the billboard emote must not be left in the bounded-resolution world queue"
+  )
+end
+
 function T.draw_hud_reads_the_player_state()
   local state = stateWith({
     runtimeMap = { mapId = 61, mapSymbol = "MAP_NEW_BARK" },

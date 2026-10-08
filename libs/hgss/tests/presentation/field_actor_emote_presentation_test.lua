@@ -136,13 +136,15 @@ local function fakeExclamationDescriptor(baseTransform)
   }
 end
 
+local FAKE_BOUNDS = { minX = -1, maxX = 1, minY = -1, maxY = 1, minZ = -1, maxZ = 1 }
+
 local function fakePool()
   return {
     build = function(_, fn)
       return fn()
     end,
     meshFor = function()
-      return { mesh = {}, center = { 0, 2, 0 } }
+      return { mesh = {}, center = { 0, 2, 0 }, bounds = FAKE_BOUNDS }
     end,
     imageFor = function()
       return {}
@@ -190,6 +192,15 @@ function T.emote_presentation_follows_the_action_lifetime_independent_of_draw_co
     Assert.near(items[1].transform[15], baseWorldZ + 0.0625, 1e-9, "the emote quad uses the actor's world z anchor")
     Assert.notNil(items[1].billboardCenter, "a billboard batch must carry a camera-independent center")
     Assert.notNil(items[1].billboardScale, "a billboard batch must carry a camera-independent scale")
+    Assert.isTrue(
+      items[1].billboardProjection,
+      "a billboard emote must be routed to the presentation sprite layer like an actor billboard"
+    )
+    Assert.equal(
+      items[1].bounds,
+      FAKE_BOUNDS,
+      "a billboard emote needs its mesh bounds for the presentation sprite layer's projection"
+    )
   end
   mgr:commitScriptedAction(ACTOR_ID)
 
