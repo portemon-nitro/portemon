@@ -262,9 +262,10 @@ function T.tests.numeric_fallback_geometry_stays_inside_available_content()
       end
     end
     if content.width <= 0 or content.height <= 0 then
-      Assert.isNil(layout.targets.cancel, "no positive fallback area has no synthetic Cancel target")
+      Assert.isNil(layout.targets.cancel, "no positive fallback area has no synthetic Back target")
       Assert.isNil(layout.valueModalNotice, "no positive fallback area has no synthetic notice")
-      Assert.equal(layout.defaultFocus, "cancel", "keyboard cancellation remains focused without hit geometry")
+      Assert.equal(#layout.focusNavigation.controls, 0, "zero-area fallback publishes no focus controls")
+      Assert.isNil(layout.defaultFocus, "zero-area fallback publishes no hidden default focus")
     end
   end
 end

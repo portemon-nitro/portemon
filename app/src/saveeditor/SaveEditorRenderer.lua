@@ -1214,9 +1214,18 @@ local function paintValueEditor(ctx)
     end
     if dialog.kind == "number" then
       local modal = assert(layout.valueModal)
-      local number = assert(layout.numberLayout)
       graphics.setColor(1, 1, 1, 1)
       graphics.rectangle("fill", modal.x, modal.y, modal.width, modal.height)
+      local number = layout.numberLayout
+      if number == nil then
+        local notice = assert(layout.valueModalNotice)
+        local noticeText = fitText(renderer, "Expand window to edit this number.", notice.width)
+        local noticeWidth = renderer:metrics().measure(noticeText)
+        drawText(renderer, noticeText, notice.x + math.floor((notice.width - noticeWidth) / 2), notice.y)
+        if layout.targets.cancel ~= nil then
+          drawButtonControl(renderer, targetRect(layout, "cancel"), "Back", false, isFocusedVisible(view, "cancel"), false, "back", false)
+        end
+      else
       graphics.setColor(0.86, 0.88, 0.9, 1)
       graphics.rectangle(
         "fill",
@@ -1302,6 +1311,7 @@ local function paintValueEditor(ctx)
         nil,
         false
       )
+      end
     elseif dialog.kind == "choice" then
       local viewport = assert(layout.viewports["value:choice"])
       LogicalSurface.clip(graphics, viewport.clip, function()

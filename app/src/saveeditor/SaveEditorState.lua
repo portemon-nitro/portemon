@@ -3675,6 +3675,10 @@ function State:_pointer(events)
   self:_settleScope()
   local view = self:_snapshot()
   local plan = self:_resolve(view)
+  local numberEditor = self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number"
+  if numberEditor and self:_numberEditorTooSmall(plan.content.layout) and plan.content.layout.targets.cancel == nil then
+    return plan
+  end
   local mapped = self.presentation:mapInput(events, view)
   for _, event in ipairs(mapped) do
     self._pointerDispatching = event.pointerId == "mouse:1"
@@ -3831,6 +3835,8 @@ function State:_drawNavigationDebug(view)
 end
 
 function State:resize(width, height)
+  local numberEditor = self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number"
+  local wasNumberTooSmall = numberEditor and self:_numberEditorTooSmall() or false
   self.width, self.height = width, height
   self.presentation:cancelPointers()
   self.controller:cancelInteraction()
@@ -3839,6 +3845,18 @@ function State:resize(width, height)
   self.locationViewport = nil
   self.locationGridWidthTiles = nil
   self.locationGridHeightTiles = nil
+  if numberEditor then
+    local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+    if not self:_numberEditorTooSmall(layout) then
+      local preferred
+      if wasNumberTooSmall then
+        preferred = "number:place:" .. tostring(self.valueEditor:snapshot().selectedPlace) .. ":up"
+      end
+      self:_reconcileFocus(preferred, layout)
+    elseif layout.targets.cancel ~= nil then
+      self:_reconcileFocus(nil, layout)
+    end
+  end
   self:_settleScope()
 end
 
@@ -3862,6 +3880,21 @@ function State:_consumeUiInput(events)
     return
   end
   self:_settleScope()
+  if self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number" then
+    local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+    if self:_numberEditorTooSmall(layout) and layout.targets.cancel == nil then
+      for _, event in ipairs(events) do
+        if event.type == "cancel" then
+          self.valueEditor:cancel()
+          self:_finishValueEditor()
+          self:_syncScope()
+          self:_reconcileFocus()
+          break
+        end
+      end
+      return
+    end
+  end
   for _, event in ipairs(events) do
     if event.type == "navigate" then
       local layout = self:_reconcileFocus()
@@ -3923,6 +3956,20 @@ end
 function State:keypressed(key, _, isrepeat)
   if self.disposed or self.resultSent or isrepeat or self.status == "opening" then
     return
+  end
+  if self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number" then
+    local editorLayout = assert(self:_resolve(self:_snapshot()).content.layout)
+    if self:_numberEditorTooSmall(editorLayout) then
+      local source = "key:" .. key
+      if key == "escape" then
+        self.valueEditor:cancel()
+        self:_finishValueEditor()
+      elseif editorLayout.targets.cancel ~= nil and (key == "return" or key == "kpenter") then
+        self.fieldInput:pressAction(source)
+        self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+      end
+      return
+    end
   end
   if key == "tab" then
     local layout = self:_resolve(self:_snapshot()).content.layout

@@ -116,6 +116,7 @@ local function newContext(view, width, height, metrics)
     valueModal = nil,
     valueModalValue = nil,
     valueModalError = nil,
+    valueModalNotice = nil,
     numberLayout = nil,
     decisionList = nil,
     locationHeader = nil,
@@ -1040,27 +1041,33 @@ local function buildNumberScope(ctx)
     modalBottom = height - (margin + 2) - 2
     frame.inset = 4
   end
-  ctx.numberLayout = SaveEditorNumberLayout.resolve({
+  local numberLayout = SaveEditorNumberLayout.resolve({
     available = rect(contentX, modalTop, innerWidth, modalBottom - modalTop),
     projection = dialog,
     font = metrics,
     arrows = { width = arrow.width, height = arrow.height },
     frame = frame,
   })
-  ctx.valueModal = ctx.numberLayout.bodyRect
-  for _, column in ipairs(ctx.numberLayout.columns) do
+  if numberLayout == nil then
+    ctx.valueModal = rect(contentX, contentTop, innerWidth, math.max(1, contentBottom - contentTop))
+    ctx.valueModalNotice = rect(contentX + 4, contentTop + math.floor((contentBottom - contentTop) / 2), innerWidth - 8, metrics.lineHeight)
+    return
+  end
+  ctx.numberLayout = numberLayout
+  ctx.valueModal = numberLayout.bodyRect
+  for _, column in ipairs(numberLayout.columns) do
     for direction, targetRect in pairs({ up = column.upRect, down = column.downRect }) do
       local targetId = "number:place:" .. tostring(column.place) .. ":" .. direction
       ctx.targets[targetId] = targetRect
       addFocusable(ctx, targetId)
     end
   end
-  ctx.targets.confirm = ctx.numberLayout.confirmRect
-  ctx.targets.cancel = ctx.numberLayout.backRect
+  ctx.targets.confirm = numberLayout.confirmRect
+  ctx.targets.cancel = numberLayout.backRect
   addFocusable(ctx, "confirm")
   addFocusable(ctx, "cancel")
-  ctx.valueModalValue = ctx.numberLayout.stripRect
-  ctx.valueModalError = ctx.numberLayout.errorRect
+  ctx.valueModalValue = numberLayout.stripRect
+  ctx.valueModalError = numberLayout.errorRect
 end
 
 local function buildValueScope(ctx)
@@ -1430,7 +1437,9 @@ end
 local function defaultFocusFor(ctx)
   local view, section, scope = ctx.view, ctx.section, ctx.scope
   local defaultFocus
-  if scope.kind == "decision" then
+  if noFocusableNumberFallback then
+    defaultFocus = nil
+  elseif scope.kind == "decision" then
     defaultFocus = "cancel"
   elseif scope.kind == "value" then
     local editor = assert(view.valueEditor)
@@ -1684,6 +1693,7 @@ local function publishPlan(ctx)
     valueModal = ctx.valueModal,
     valueModalValue = ctx.valueModalValue,
     valueModalError = ctx.valueModalError,
+    valueModalNotice = ctx.valueModalNotice,
     numberLayout = ctx.numberLayout,
     decisionList = ctx.decisionList,
     listSurfaces = ctx.listSurfaces,

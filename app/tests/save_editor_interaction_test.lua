@@ -749,6 +749,66 @@ local function interactionMetrics()
   }
 end
 
+local function numberInputHarness(width, height)
+  local controller = Controller.new()
+  local editor = ValueEditor.new({ kind = "integer", value = 123, min = 0, max = 999, base = "decimal" })
+  local metrics = interactionMetrics()
+  local session = {
+    saveId = "number-input",
+    versionId = "heartgold",
+    playerName = "PLAYER",
+    money = 123,
+    frameIndex = 0,
+  }
+  local state = stateHarness({
+    status = "ready",
+    width = width,
+    height = height,
+    session = session,
+    controller = controller,
+    modalStack = ModalStack.new(),
+    modalLayerSequence = 0,
+    presentation = {
+      cancelPointers = function() end,
+      mapInput = function(_, events)
+        return events
+      end,
+    },
+    _snapshot = function(self)
+      local valueEditor = self.valueEditor and self.valueEditor:snapshot() or nil
+      return {
+        status = self.status,
+        ready = true,
+        dirty = false,
+        sectionDirty = false,
+        section = self.controller.section,
+        scope = {
+          id = valueEditor and "value:money" or "section:Player",
+          epoch = self.scopeEpoch,
+          kind = valueEditor and "value" or "section",
+          focusId = self.controller.focus,
+        },
+        focus = self.controller.focus,
+        focusVisible = self.controller.focusVisible,
+        session = session,
+        valueEditor = valueEditor,
+        numberControlVisuals = {
+          increment = { normal = { width = 8, height = 8 }, pressed = { width = 8, height = 8 } },
+          decrement = { normal = { width = 8, height = 8 }, pressed = { width = 8, height = 8 } },
+        },
+        numberPressTicks = 1,
+        textMetrics = metrics,
+      }
+    end,
+    _resolve = function(self, view)
+      return { content = { layout = Layout.compute(view, self.width, self.height, metrics) } }
+    end,
+  })
+  state:_installValueEditor(editor, "money", "money")
+  state:_syncScope()
+  return state, editor
+end
+
 local function indexedMapModel(maps)
   local rowTargets, indexByTarget = {}, {}
   for index, map in ipairs(maps) do
@@ -3510,6 +3570,102 @@ function T.tests.too_small_number_layout_blocks_submission_and_recovers_without_
   state:keypressed("escape")
   Assert.equal(editor:result().kind, "cancel", "Escape remains available in the too-small state")
   Assert.equal(#finishResults, 1, "the cancel path closes the editor exactly once")
+end
+
+function T.tests.zero_area_number_editor_has_no_focus_and_only_back_events_cancel()
+  local state, editor = numberInputHarness(256, 10)
+  local layout = state:_resolve(state:_snapshot()).content.layout
+  Assert.isTrue(layout.numberTooSmall, "zero drawable content enters numeric fallback mode")
+  editor:selectPlace(1)
+
+  local inputsOk, inputFailure = pcall(function()
+    state:keypressed("tab")
+    state:keypressed("up")
+    state:keypressed("down")
+    state:keypressed("return")
+    state:gamepadpressed(nil, "dpup")
+    state:gamepadpressed(nil, "a")
+  end)
+  Assert.isTrue(
+    inputsOk,
+    "focus movement and hidden confirmation are safe without drawable controls: " .. tostring(inputFailure)
+  )
+  Assert.equal(state.valueEditor, editor, "focus movement and hidden confirmation leave the number editor open")
+  Assert.equal(editor:snapshot().buffer, "123", "hidden input cannot change the numeric draft")
+  Assert.isNil(layout.targets.cancel, "zero-area cancellation has no hit target")
+  Assert.equal(#layout.focusNavigation.controls, 0, "zero-area cancellation has no focusable control")
+  Assert.isNil(layout.defaultFocus, "zero-area cancellation has no synthetic focus target")
+
+  state:resize(800, 600)
+  local resized = state:_reconcileFocus()
+  Assert.isFalse(resized.numberTooSmall, "resize restores the normal numeric editor")
+  Assert.equal(state.controller.focus, "number:place:1:up", "resize reconciles focus to the selected visible digit")
+  Assert.equal(editor:snapshot().selectedPlace, 1, "resize preserves the selected numeric place")
+  Assert.equal(editor:snapshot().buffer, "123", "resize preserves the draft")
+
+  for _, cancelInput in ipairs({ "escape", "gamepad-b" }) do
+    local cancelState, cancelEditor = numberInputHarness(256, 10)
+    local cancel = cancelEditor.cancel
+    local canceled = false
+    cancelEditor.cancel = function(self)
+      canceled = cancel(self)
+      return canceled
+    end
+    if cancelInput == "escape" then
+      cancelState:keypressed("escape")
+    else
+      cancelState:gamepadpressed(nil, "b")
+    end
+    Assert.isTrue(canceled, cancelInput .. " produces an explicit cancellation")
+    Assert.isNil(cancelState.valueEditor, cancelInput .. " retires the numeric layer")
+  end
+end
+
+function T.tests.visible_numeric_fallback_back_activates_by_keyboard_gamepad_and_pointer()
+  local function stateWithFallback()
+    local state, editor = numberInputHarness(256, 128)
+    local layout = state:_resolve(state:_snapshot()).content.layout
+    Assert.isTrue(layout.numberTooSmall, "insufficient content publishes the numeric fallback")
+    local back = assert(layout.targets.cancel, "positive fallback content publishes a real Back target").rect
+    Assert.isTrue(back.width > 0 and back.height > 0, "the fallback Back target has drawable geometry")
+    state:_reconcileFocus()
+    Assert.equal(
+      state.controller.focus,
+      "cancel",
+      "the visible fallback Back target is focusable; actual focus=" .. tostring(state.controller.focus)
+    )
+    return state, editor, back
+  end
+
+  local keyboard, keyboardEditor = stateWithFallback()
+  for _, key in ipairs({ "up", "down", "left", "right", "backspace", "delete" }) do
+    keyboard:keypressed(key)
+  end
+  keyboard:textinput("9")
+  Assert.equal(keyboardEditor:snapshot().buffer, "123", "numeric mutation keys are ignored in fallback mode")
+  keyboard:keypressed("return")
+  local keyboardClosed = keyboard.valueEditor == nil
+  Assert.equal(keyboard.session.money, 123, "Back does not publish a numeric change")
+
+  local keypad = stateWithFallback()
+  keypad:keypressed("kpenter")
+  Assert.isNil(keypad.valueEditor, "keypad Enter activates the focused Back target")
+
+  local gamepad = stateWithFallback()
+  gamepad:gamepadpressed(nil, "a")
+  local gamepadClosed = gamepad.valueEditor == nil
+  Assert.equal(gamepad.session.money, 123, "gamepad Back does not publish a numeric change")
+
+  local pointer, _, back = stateWithFallback()
+  local x, y = back.x + math.floor(back.width / 2), back.y + math.floor(back.height / 2)
+  pointer:_pointer({
+    { type = "pointer_down", pointerId = "touch:back", targetId = "cancel", x = x, y = y },
+    { type = "pointer_up", pointerId = "touch:back", targetId = "cancel", x = x, y = y },
+  })
+  Assert.equal(pointer.session.money, 123, "pointer Back does not publish a numeric change")
+  Assert.isTrue(keyboardClosed, "Return activates the visible Back target")
+  Assert.isTrue(gamepadClosed, "gamepad A activates the visible Back target")
+  Assert.isNil(pointer.valueEditor, "pointer activation uses the same visible Back target")
 end
 
 function T.tests.back_closes_only_the_open_decision()

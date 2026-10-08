@@ -3471,6 +3471,44 @@ local function ringsSurrounding(calls, rect, tolerance)
   return matches
 end
 
+function T.numeric_focus_ring_surrounds_the_digit_and_not_its_arrows(scope)
+  local topology = singleDisplay(640, 480)
+  local calls, restore = recordOutlinedRectangles()
+  local layout, bagDrawn
+  local ok, failure = xpcall(function()
+    local _, _, resolved, drawnBag = draw(
+      scope,
+      640,
+      480,
+      topology,
+      "number-modal-digit-focus-ring",
+      "Player",
+      "number-modal",
+      nil,
+      function(_, view)
+        view.focus = "number:place:1:up"
+        view.focusVisible = true
+        view.valueEditor.selectedPlace = 1
+        view.numberHoldTarget = "number:place:1:up"
+      end
+    )
+    layout, bagDrawn = resolved, drawnBag
+  end, debug.traceback)
+  restore()
+  if not ok then
+    error(failure, 0)
+  end
+
+  local columns = assert(layout.numberLayout).columns
+  local selectedDigit = columns[2].digitRect
+  Assert.equal(#ringsSurrounding(calls, selectedDigit, 3), 1, "one outline surrounds the focused digit")
+  for _, column in ipairs(columns) do
+    Assert.equal(#ringsSurrounding(calls, column.upRect, 3), 0, "digit focus draws no ring around an increment arrow")
+    Assert.equal(#ringsSurrounding(calls, column.downRect, 3), 0, "digit focus draws no ring around a decrement arrow")
+  end
+  Assert.isTrue(bagDrawn["bag/inc-pressed"], "the focused column keeps its pressed arrow art")
+end
+
 function T.bag_focused_cards_draw_exactly_one_keyboard_ring(scope)
   local topology = singleDisplay(640, 480)
   local function render(name, focusVisible)
@@ -3629,7 +3667,10 @@ function T.compact_number_fallback_draws_a_cancelable_notice(scope)
   Assert.isTrue(layout.numberTooSmall, "a compact host with insufficient active content publishes fallback mode")
   Assert.isNil(layout.numberLayout, "the fallback draws no invisible numeric geometry")
   Assert.isNil(layout.targets.confirm, "the fallback has no hidden Confirm target")
-  Assert.notNil(layout.targets.cancel, "the fallback retains a visible Cancel target")
+  Assert.notNil(layout.targets.cancel, "the fallback retains a visible Back target")
+  local fallbackText = table.concat(drawnText, " ")
+  Assert.isTrue(fallbackText:find("Back", 1, true) ~= nil, "the visible cancel action is labeled Back")
+  Assert.isNil(fallbackText:find("Cancel", 1, true), "the fallback does not draw the obsolete Cancel label")
   Assert.isTrue(
     table.concat(drawnText, " "):find("Expand window", 1, true) ~= nil,
     "the renderer paints the unavailable-state notice"
