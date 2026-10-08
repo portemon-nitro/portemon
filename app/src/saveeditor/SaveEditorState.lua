@@ -2872,6 +2872,7 @@ function State:_save(leave)
     end
     return false
   end
+  self._uiSessionSnapshot = nil
   self.errorMessage = nil
   self:_syncLocationToSession()
   if leave then

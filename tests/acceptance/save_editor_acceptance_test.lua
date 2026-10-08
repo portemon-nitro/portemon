@@ -486,6 +486,75 @@ function T.tests.combined_editor_save_reloads_and_resumes_at_the_resolved_destin
   end
 end
 
+function T.tests.in_place_save_clears_the_cached_dirty_projection()
+  local fixture = Fixture.new()
+  local State = require("app.src.saveeditor.SaveEditorState")
+  local originalGlobal = SaveFs.global
+  local state
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+
+  local ok, err = xpcall(function()
+    local function actionEnabled(layout, id)
+      for _, action in ipairs(layout.actions) do
+        if action.id == id then
+          return action.enabled
+        end
+      end
+      error("the product layout publishes the " .. id .. " action")
+    end
+
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 640,
+      height = 480,
+      derivedAssets = readyHost(),
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "production Save Editor composition opens the isolated save")
+
+    withoutRendering(function()
+      local money = fixture.initialMoney + 1
+      Assert.isTrue(state.session:setMoney(money).ok, "the production Session stages a money edit")
+      Assert.isTrue(state:view().dirty, "the editor initially publishes the dirty projection")
+      Assert.isTrue(actionEnabled(state:view().layout, "save"), "Save is enabled before publication")
+
+      activateTarget(state, "save")
+
+      Assert.equal(assert(fixture.store:load(fixture.saveId)).playerData.profile.money, money)
+      local saved = state:view()
+      Assert.isFalse(saved.dirty, "the in-place Save immediately clears the published dirty state")
+      for _, section in ipairs({ "money", "frame", "flags", "party", "bag", "location" }) do
+        Assert.isFalse(saved.dirtySections[section], "the saved " .. section .. " section is clean")
+      end
+      Assert.isFalse(actionEnabled(saved.layout, "save"), "Save is disabled after publication")
+      Assert.isFalse(actionEnabled(saved.layout, "discard"), "Discard is disabled after publication")
+
+      Assert.isTrue(state.session:setMoney(money + 1).ok, "a later edit stages normally")
+      local edited = state:view()
+      Assert.isTrue(edited.dirty, "a later revision invalidates the clean projection")
+      Assert.isTrue(edited.dirtySections.money, "the later money edit is dirty")
+      Assert.isTrue(actionEnabled(edited.layout, "save"), "Save is enabled for the later edit")
+    end)
+  end, debug.traceback)
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destination_readiness()
   local fixture = Fixture.new()
   local baseHost = readyHost()

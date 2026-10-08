@@ -5267,4 +5267,30 @@ function T.tests.stable_state_snapshots_reuse_the_session_revision_projection()
   Assert.equal(calls, 3, "identity replacement takes exactly one new snapshot")
 end
 
+function T.tests.failed_save_preserves_the_cached_dirty_projection_until_retry_succeeds()
+  local Errors = require("libs.errors.src.Errors")
+  local harness = livePartyHarness(0)
+  local state = harness.state
+  local session = harness.session
+  local money = session:snapshot().money + 1
+  Assert.isTrue(session:setMoney(money).ok, "the Session stages the edit")
+  local before = state:_snapshot()
+  Assert.isTrue(before.session.dirtySections.money, "the State publishes the staged dirty section")
+
+  local save = session._saveStore.save
+  session._saveStore.save = function()
+    error(Errors.new("SAVE_CONFLICT", "The save changed before publication.", {}))
+  end
+  Assert.isFalse(state:_save(false), "a store failure rejects the Save")
+  local failed = state:_snapshot()
+  Assert.isTrue(rawequal(failed.session, before.session), "failure retains the cached projection")
+  Assert.isTrue(failed.session.dirtySections.money, "failure keeps the staged money dirty")
+  Assert.notNil(state.errorMessage, "the failure remains visible")
+
+  session._saveStore.save = save
+  Assert.isTrue(state:_save(false), "the same staged edit can be retried")
+  local saved = state:_snapshot()
+  Assert.isFalse(saved.session.dirtySections.money, "successful retry publishes a clean projection")
+end
+
 return T
