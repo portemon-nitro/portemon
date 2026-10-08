@@ -18,13 +18,13 @@ local function requireContract(module, behavior)
 end
 
 ---@return table<string, unknown>
-local function customHeldEntry()
+local function customHeldEntry(pocket)
   return {
     name = "Ember Charm",
     nameIndefinite = "an Ember Charm",
     namePlural = "Ember Charms",
     description = "A charm holding leftover warmth.",
-    pocket = "items",
+    pocket = pocket or "items",
     preventToss = false,
     selectable = false,
     isBall = false,
@@ -129,6 +129,33 @@ function T.native_ordering_follows_source_identities_while_customs_sort_after()
   Assert.isTrue(catalog:orderingKey("LUXURY_BALL") < catalog:orderingKey("ember:EMBER_CHARM"))
   Assert.isTrue(catalog:orderingKey("ember:EMBER_CHARM") < catalog:orderingKey("ember:ZEPHYR_CHIME"))
   Assert.equal(catalog:orderingKey("ember:EMBER_CHARM"), catalog:orderingKey("ember:EMBER_CHARM"))
+end
+
+function T.item_keys_enumerate_mixed_catalog_in_semantic_order()
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+
+  local root = ItemFixture.buildAssetRoot()
+  root.items["ember:EMBER_CHARM"] = customHeldEntry("items")
+  root.items["ember:MOON_BALL"] = customHeldEntry("balls")
+  local catalog = ItemCatalog.fromResolved(root)
+
+  local first = catalog:itemKeys()
+  local second = catalog:itemKeys()
+  Assert.deepEqual(first, second, "mixed catalog enumeration is deterministic")
+  local seen = {}
+  for index, key in ipairs(first) do
+    Assert.isFalse(seen[key] == true, "item key appears once: " .. key)
+    seen[key] = true
+    if index > 1 then
+      Assert.isTrue(
+        catalog:orderingKey(first[index - 1]) < catalog:orderingKey(key),
+        "item keys follow the semantic ordering contract"
+      )
+    end
+  end
+  Assert.isTrue(seen["ember:EMBER_CHARM"], "custom items are enumerated")
+  Assert.isTrue(seen["ember:MOON_BALL"], "custom balls are enumerated")
+  Assert.isTrue(catalog:orderingKey("LUXURY_BALL") < catalog:orderingKey("ember:MOON_BALL"))
 end
 
 return { tests = T }

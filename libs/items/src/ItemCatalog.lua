@@ -138,18 +138,15 @@ function ItemCatalog:item(key)
   return definition
 end
 
----@return string[] caller-owned item keys in native identity order
+---@return string[] caller-owned item keys in catalog ordering
 function ItemCatalog:itemKeys()
   local keys = {}
   for key in pairs(self._root.items) do
     keys[#keys + 1] = key
   end
-  local function itemKeyLess(a, b)
-    local aId = self._root.items[a].nativeId
-    local bId = self._root.items[b].nativeId
-    return aId == bId and a < b or aId < bId
-  end
-  table.sort(keys, itemKeyLess)
+  table.sort(keys, function(a, b)
+    return self:orderingKey(a) < self:orderingKey(b)
+  end)
   return keys
 end
 

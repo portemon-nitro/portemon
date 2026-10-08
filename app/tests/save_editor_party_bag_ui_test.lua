@@ -1167,6 +1167,65 @@ function T.shared_pp_arithmetic_drives_items_deposit_and_editors()
     Moves.maxPp(10, 3),
     "the move-child editor offers the shared maximum"
   )
+function T.party_details_project_held_item_and_ball_options_from_mixed_catalog()
+  local _, _, mon, projection = structuredMon("EEVEE", 9)
+  local root = ItemFixture.buildAssetRoot()
+  root.items["ember:EMBER_CHARM"] = {
+    name = "Ember Charm",
+    nameIndefinite = "an Ember Charm",
+    namePlural = "Ember Charms",
+    description = "A custom held item.",
+    pocket = "items",
+    preventToss = false,
+    selectable = false,
+    isBall = false,
+    friendshipBoost = false,
+    icon = "ember:EMBER_CHARM",
+    isHm = false,
+    canHold = true,
+    heldFormEffect = "none",
+    partyUse = { kind = "none" },
+  }
+  root.items["ember:MOON_BALL"] = {
+    name = "Moon Ball",
+    nameIndefinite = "a Moon Ball",
+    namePlural = "Moon Balls",
+    description = "A custom ball.",
+    pocket = "balls",
+    preventToss = false,
+    selectable = true,
+    isBall = true,
+    friendshipBoost = false,
+    icon = "ember:MOON_BALL",
+    isHm = false,
+    canHold = false,
+    heldFormEffect = "none",
+    partyUse = { kind = "none" },
+  }
+  local context = {
+    monCatalog = CatalogFixture.makeCatalog(),
+    itemCatalog = ItemCatalog.fromResolved(root),
+  }
+  local details = PartyView.new(context):details(mon, projection)
+  local rowsById = {}
+  for _, row in ipairs(details.rows) do
+    rowsById[row.id] = row
+  end
+
+  local heldKeys, ballKeys = {}, {}
+  for _, option in ipairs(assert(rowsById.heldItem).editor.options) do
+    heldKeys[option.key] = true
+  end
+  for _, option in ipairs(assert(rowsById.ball).editor.options) do
+    ballKeys[option.key] = true
+    Assert.equal(context.itemCatalog:item(option.key).pocket, "balls", "Ball choices contain only balls")
+  end
+  Assert.isTrue(heldKeys["ember:EMBER_CHARM"], "the namespaced held item is selectable")
+  Assert.isTrue(ballKeys["ember:MOON_BALL"], "the namespaced ball is selectable")
+  Assert.isTrue(ballKeys.POKE_BALL, "native ball choices remain available")
+  Assert.isFalse(ballKeys["ember:EMBER_CHARM"], "non-ball custom items remain outside Ball choices")
+end
+
 function T.bag_snapshot_reuses_catalog_and_pocket_metadata_until_revision_changes()
   local pocket = next(ItemAssetSchema.POCKETS)
   local counts = { itemKeys = 0, item = 0, pocket = 0, bagSnapshot = 0 }
