@@ -654,6 +654,255 @@ function T.launch_suppresses_early_and_failed_battles_fault()
   Assert.isFalse(ok, "failed battles reach the field error handler instead of resuming")
 end
 
+local function syntheticFontDef()
+  return { glyphs = { [0] = { advance = 8 } }, charmap = {}, lineHeight = 16 }
+end
+
+local function syntheticContinueCursor()
+  return { cycle = { 0, 1, 2, 3 }, framePrinterTicks = 4 }
+end
+
+local function modalRecordingInput()
+  local calls = { begun = 0, cleared = 0 }
+  local input = { calls = calls }
+  function input:beginUi(_)
+    calls.begun = calls.begun + 1
+  end
+  function input:clearUi()
+    calls.cleared = calls.cleared + 1
+  end
+  return input
+end
+
+local function modalBoot()
+  return {
+    fontDef = syntheticFontDef(),
+    cacheFs = {
+      loadLua = function()
+        return nil
+      end,
+    },
+    uiManifest = { dialogueFrames = { continueCursor = syntheticContinueCursor() } },
+    loadedGame = nil,
+    restoredAudio = nil,
+  }
+end
+
+local function modalRuntime(topology)
+  return {
+    viewportWidth = 256,
+    viewportHeight = 192,
+    screenTopology = topology,
+    input = modalRecordingInput(),
+    displayContext = {
+      measure = function(_, width, height)
+        return { width = width, height = height }
+      end,
+    },
+    playerData = {
+      profile = { name = "GOLD", gender = 0, trainerId = 1 },
+      options = { textSpeed = "mid", textFrame = 0 },
+    },
+    monCatalog = {},
+    presentationOverrides = nil,
+  }
+end
+
+local function modalCallbacks(audioBuilds, menuBox)
+  return {
+    buildAudio = function(_, _)
+      audioBuilds.count = audioBuilds.count + 1
+      return {
+        play = function() end,
+      }
+    end,
+    menuFactory = function(_)
+      return menuBox.current
+    end,
+    fieldAction = function(_, _)
+      error("composition must not admit field actions", 0)
+    end,
+  }
+end
+
+-- Teardown releases exactly the acquired modal hosts in construction order,
+-- including an open menu, while later-lifetime hosts stay owned by the root.
+function T.modal_release_disposes_only_acquired_hosts_in_order()
+  local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
+  local runtime = modalRuntime(nil)
+  local menuBox = { current = nil }
+  local composer = Coordinator.new(runtime)
+  Assert.isTrue(type(composer.releaseModalHosts) == "function", "the menu coordinator owns modal host release")
+  composer:composeModalHosts(modalBoot(), modalCallbacks({ count = 0 }, menuBox))
+  local released = {}
+  local function recordDispose(host, name)
+    local original = assert(host.dispose, name .. " owns disposal")
+    host.dispose = function(self)
+      local result = original(self)
+      released[#released + 1] = name
+      return result
+    end
+  end
+  recordDispose(runtime.dialogue, "dialogue")
+  recordDispose(runtime.signpost, "signpost")
+  recordDispose(runtime.applicationHost, "applicationHost")
+  menuBox.current = {
+    dispose = function()
+      released[#released + 1] = "menu"
+    end,
+  }
+  Assert.isTrue(runtime.applicationHost:requestOpen(5), "the menu opens before teardown")
+  Assert.isTrue(runtime.applicationHost:isActive(), "the open menu owns the tick")
+  composer:releaseModalHosts()
+  Assert.deepEqual(
+    released,
+    { "dialogue", "signpost", "menu", "applicationHost" },
+    "teardown releases the acquired hosts with the open menu inside its owner"
+  )
+  Assert.isNil(runtime.dialogue, "release clears the dialogue field")
+  Assert.isNil(runtime.signpost, "release clears the signpost field")
+  Assert.isNil(runtime.applicationHost, "release clears the application host field")
+  Assert.notNil(runtime.menuHost, "release keeps later-lifetime hosts")
+  Assert.notNil(runtime.yesNoHost, "release keeps the choice host")
+  Assert.notNil(runtime.starterChoice, "release keeps the starter host")
+  Assert.notNil(runtime.pokemonNaming, "release keeps the naming host")
+  Assert.equal(runtime.input.calls.cleared, 1, "teardown releases the held menu input exactly once")
+  composer:releaseModalHosts()
+  Assert.deepEqual(
+    released,
+    { "dialogue", "signpost", "menu", "applicationHost" },
+    "repeated release stays a no-op"
+  )
+end
+
+-- A constructor failure after the early host groups propagates the original
+-- error with the acquired hosts published, so the shared teardown releases
+-- exactly those hosts.
+function T.failed_modal_construction_publishes_acquired_hosts_for_teardown()
+  local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
+  local StarterChoice = require("game.hgss.src.starters.StarterChoiceState")
+  local originalStarterNew = StarterChoice.new
+  StarterChoice.new = function()
+    error("injected starter failure", 0)
+  end
+  local runtime = setmetatable(modalRuntime(nil), FieldRuntime)
+  runtime.scriptHosts = {
+    audio = {
+      play = function() end,
+    },
+  }
+  runtime.menuComposer = Coordinator.new(runtime)
+  local ok, err = pcall(function()
+    runtime:_composeFieldUi(modalBoot())
+  end)
+  StarterChoice.new = originalStarterNew
+  Assert.isFalse(ok, "construction failure propagates")
+  Assert.isTrue(
+    tostring(err):find("injected starter failure", 1, true) ~= nil,
+    "the original failure surfaces"
+  )
+  Assert.notNil(runtime.menuHost, "acquired hosts publish before the failure")
+  Assert.notNil(runtime.dialogue, "acquired dialogue publishes before the failure")
+  Assert.notNil(runtime.signpost, "acquired signpost publishes before the failure")
+  Assert.isNil(runtime.starterChoice, "the failed host stays unacquired")
+  Assert.isNil(runtime.applicationHost, "later hosts stay unacquired")
+  local disposed = {}
+  local function recordDispose(host, name)
+    local original = assert(host.dispose, name .. " owns disposal")
+    host.dispose = function(self)
+      disposed[#disposed + 1] = name
+      return original(self)
+    end
+  end
+  recordDispose(runtime.dialogue, "dialogue")
+  recordDispose(runtime.signpost, "signpost")
+  local releaseOk, releaseErr = pcall(function()
+    runtime:_releaseAll()
+  end)
+  Assert.isTrue(releaseOk, "teardown completes after partial construction: " .. tostring(releaseErr))
+  Assert.deepEqual(disposed, { "dialogue", "signpost" }, "teardown releases exactly the acquired hosts in order")
+  Assert.isNil(runtime.dialogue, "teardown clears the released dialogue")
+  Assert.isNil(runtime.signpost, "teardown clears the released signpost")
+end
+
+-- The fixed-tick, world-settle, and battle-pump order survives composition
+-- changes: the gate reconciles before the first tick and again after the
+-- pump, a held direct battle suppresses first, and release publishes.
+function T.field_tick_keeps_battle_gate_positions()
+  local FieldSession = require("libs.hgss.src.field.FieldSession")
+  local events = {}
+  local function clearEvents()
+    for index = #events, 1, -1 do
+      events[index] = nil
+    end
+  end
+  local session = {
+    accumulator = 0,
+    setBattleActive = function(_, active)
+      events[#events + 1] = active and "gate-true" or "gate-false"
+    end,
+    updateFixed = function()
+      events[#events + 1] = "tick"
+    end,
+  }
+  local runtime = fakeRuntime({
+    session = session,
+    applicationHost = {
+      error = function()
+        return nil
+      end,
+    },
+    transition = {
+      error = nil,
+      updateSourceFrame = function() end,
+      consumeCompleted = function()
+        return nil
+      end,
+    },
+    screenFade = {
+      updateSourceFrame = function() end,
+    },
+    playTime = {
+      advance = function() end,
+    },
+  })
+  runtime:update(FieldSession.FIXED_DT)
+  Assert.deepEqual(
+    events,
+    { "gate-false", "tick", "gate-false" },
+    "the gate reconciles before the first tick and again after the pump"
+  )
+  local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
+  local party = newPartyOwner()
+  local battle = BattleRuntime.new({
+    request = { id = "gate-direct", kind = "wild", payload = { species = "TOTODILE", level = 4 } },
+    party = party,
+    presentation = headlessPort({ enters = 0, frames = {}, leaves = 0, disposed = 0 }),
+  })
+  runtime.monService = party
+  clearEvents()
+  runtime:update(FieldSession.FIXED_DT)
+  Assert.deepEqual(
+    events,
+    { "gate-true", "tick", "gate-true" },
+    "a held direct battle suppresses before the first tick"
+  )
+  battle:dispose()
+  clearEvents()
+  runtime:update(FieldSession.FIXED_DT)
+  Assert.deepEqual(
+    events,
+    { "gate-false", "tick", "gate-false" },
+    "release publishes instead of latching the suppression"
+  )
+  local launchId = runtime:launchBattle({ kind = "wild", details = { species = "TOTODILE", level = 4 } })
+  Assert.notNil(launchId, "the host launch issues its identity")
+  clearEvents()
+  runtime:updateBattle()
+  Assert.isNil(runtime.battleRuntime, "no battle exists while leaving")
+  Assert.equal(events[#events], "gate-true", "the leaving launch suppresses before the battle exists")
+end
+
 return {
   tests = T,
   metadata = {

@@ -4,6 +4,17 @@
 -- composition.
 
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
+local AuxiliaryFieldUi = require("libs.hgss.src.ui.AuxiliaryFieldUi")
+local ContextChoiceProvider = require("libs.hgss.src.interaction.ContextChoiceProvider")
+local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
+local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
+local FieldApplicationRegistry = require("libs.hgss.src.field.FieldApplicationRegistry")
+local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local FieldMenuHost = require("libs.hgss.src.ui.FieldMenuHost")
+local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
+local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
+local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldAudio = require("game.hgss.src.audio.FieldAudio")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
@@ -735,6 +746,190 @@ function FieldMenuCompositionCoordinator:composeAudio(cacheFs, restoredAudio)
   end
   assert(audioService ~= nil, "field runtime audio composition must produce a service")
   return audioService
+end
+
+---@class FieldModalHostCallbacks root-owned operations borrowed during modal construction
+---@field buildAudio fun(cacheFs: table<string, unknown>, restoredAudio: table<string, unknown>?): table<string, unknown>
+---@field menuFactory fun(rememberedActionId: string?): table<string, unknown>?
+---@field fieldAction fun(actionId: string, request?: table<string, unknown>)
+
+-- The menu and choice presentation hosts share the field text measurement
+-- and viewport topology; the choice anchor reads the live runtime so draw
+-- and pointer mapping resolve one geometry.
+---@param runtime FieldRuntime
+---@param boot table<string, unknown>
+local function composeMenuHosts(runtime, boot)
+  runtime.menuHost = FieldMenuHost.new({
+    width = runtime.viewportWidth,
+    height = runtime.viewportHeight,
+    input = runtime.input,
+    screenTopology = runtime.screenTopology,
+    measureText = FieldDialogueTheme.measureText(boot.fontDef),
+  })
+  local function yesNoPresentationContext()
+    return runtime:yesNoPresentationContext()
+  end
+  runtime.yesNoHost = FieldYesNoHost.new({
+    width = runtime.viewportWidth,
+    height = runtime.viewportHeight,
+    input = runtime.input,
+    screenTopology = runtime.screenTopology,
+    measureText = FieldDialogueTheme.measureText(boot.fontDef),
+    presentation = yesNoPresentationContext,
+  })
+end
+
+-- The shared paginated dialogue layout behind the dialogue and signpost
+-- controllers. Modal dialogue is pure and fixed-tick; presentation later
+-- owns the atlas and drawing.
+---@param boot table<string, unknown>
+local function composeDialogueLayout(boot)
+  local fontMetrics = FieldDialogueTheme.fontMetrics(boot.fontDef)
+  local function formatLayout(formatted)
+    return DialogueLayout.layout(
+      formatted.tokens,
+      fontMetrics,
+      { width = FieldDialogueTheme.textWidth, maxLines = FieldDialogueTheme.maxLines }
+    )
+  end
+  boot.layoutMessage = formatLayout
+end
+
+-- The fixed-tick dialogue and signpost controllers over the shared layout.
+-- The signpost window presents one 27x4-tile window: the single-window
+-- lines shape the signpost controller captures is the first page of the
+-- same paginated dialogue layout. The text-speed cadence is captured from
+-- the player options at construction, so an open request never queries
+-- options afterwards.
+---@param runtime FieldRuntime
+---@param boot table<string, unknown>
+local function composeDialogueHosts(runtime, boot)
+  local function signpostLayout(formatted)
+    local result = boot.layoutMessage(formatted)
+    return { lines = (result.pages[1] or { lines = {} }).lines }
+  end
+  runtime.dialogue = FieldDialogueController.new({
+    layout = boot.layoutMessage,
+    policy = TextSpeedPolicy.forSpeed(runtime.playerData.options.textSpeed),
+    audio = boot.audioService,
+    continueCursor = boot.uiManifest.dialogueFrames.continueCursor,
+  })
+  runtime.signpost = FieldSignpostController.new({
+    layout = signpostLayout,
+    policy = TextSpeedPolicy.forSpeed(runtime.playerData.options.textSpeed),
+  })
+end
+
+-- The auxiliary choice state beside the modal hosts.
+---@param runtime FieldRuntime
+---@param boot table<string, unknown>
+local function composeAuxiliaryHosts(runtime, boot)
+  runtime.auxiliaryFieldUi = boot.loadedGame and AuxiliaryFieldUi.restore(boot.loadedGame.auxiliaryUi)
+    or AuxiliaryFieldUi.new()
+  runtime.contextChoiceProvider = ContextChoiceProvider.new()
+end
+
+-- The initial display measurement and the starter/naming surfaces built
+-- over it. The runtime measures from the boot topology so pointer input
+-- works before any resize; the script-owned starter host borrows the same
+-- record. The hand-editable default roster provider and the modal choice
+-- surface travel to the blocking starter task through scheduler services.
+---@param runtime FieldRuntime
+---@param boot table<string, unknown>
+local function composeStarterHosts(runtime, boot)
+  runtime.presentationDisplay = runtime.displayContext:measure(runtime.viewportWidth, runtime.viewportHeight)
+  runtime.starterProvider = require("game.hgss.src.starters.VanillaStarterProvider")
+  local starterOverrides = runtime.presentationOverrides ~= nil and runtime.presentationOverrides.starter_choice or nil
+  local function starterMeasureDisplay()
+    return runtime.presentationDisplay
+  end
+  runtime.starterChoice = require("game.hgss.src.starters.StarterChoiceState").new({
+    catalog = runtime.monCatalog,
+    cacheFs = boot.cacheFs,
+    frameIndex = runtime.playerData.options.textFrame,
+    measureDisplay = starterMeasureDisplay,
+    overrides = starterOverrides,
+  })
+  local namingOverrides = runtime.presentationOverrides ~= nil and runtime.presentationOverrides.naming_screen or nil
+  runtime.pokemonNaming = require("game.hgss.src.field.PokemonNamingState").new({
+    charmap = boot.fontDef.charmap,
+    measureDisplay = starterMeasureDisplay,
+    overrides = namingOverrides,
+  })
+end
+
+-- The runtime menu input snapshots for modal dispatch.
+---@param runtime FieldRuntime
+local function composeModalKeys(runtime)
+  runtime.actionKeys = HgssInputBindings.actionKeys()
+  runtime.cancelKeys = HgssInputBindings.cancelKeys()
+  runtime.menuKeys = HgssInputBindings.menuKeys()
+end
+
+-- The one application modal owner over the destination catalogue. The menu
+-- factory and field-action handoff stay root-owned callbacks; the effect
+-- boundary plays through the composed audio service.
+---@param runtime FieldRuntime
+---@param descriptors { id: string, factory: fun(...): table<string, unknown> }[]
+---@param callbacks FieldModalHostCallbacks
+local function composeApplicationHost(runtime, descriptors, callbacks)
+  local function playSequence(sequence)
+    if runtime.audio then
+      runtime.audio:play(sequence)
+    end
+  end
+  runtime.applications = FieldApplicationRegistry.new(descriptors)
+  runtime.applicationHost = FieldApplicationHost.new({
+    registry = runtime.applications,
+    menuFactory = callbacks.menuFactory,
+    input = runtime.input,
+    fieldAction = callbacks.fieldAction,
+    effect = playSequence,
+  })
+end
+
+-- Builds the coherent modal-host block beside the menu composition it
+-- serves: menu/choice hosts, shared dialogue layout, fixed-tick dialogue
+-- and signpost controllers, auxiliary choice state, starter/naming
+-- surfaces, menu input keys, and the one application modal owner. Each
+-- host publishes to the runtime's existing fields in the boot order, so a
+-- later constructor failure leaves every acquired host reachable by the
+-- shared teardown; boot.layoutMessage and boot.audioService carry the
+-- shared products onward. The audio build runs at its boot position
+-- through the root callback.
+---@param boot table<string, unknown>
+---@param callbacks FieldModalHostCallbacks
+function FieldMenuCompositionCoordinator:composeModalHosts(boot, callbacks)
+  local runtime = self.runtime
+  composeMenuHosts(runtime, boot)
+  composeDialogueLayout(boot)
+  boot.audioService = callbacks.buildAudio(boot.cacheFs, boot.restoredAudio)
+  composeDialogueHosts(runtime, boot)
+  composeAuxiliaryHosts(runtime, boot)
+  composeStarterHosts(runtime, boot)
+  composeModalKeys(runtime)
+  composeApplicationHost(runtime, self:applicationDescriptors(), callbacks)
+end
+
+-- Releases the dialogue, signpost, and application modal hosts in the boot
+-- order and clears their runtime fields. Later-lifetime hosts and reference
+-- clearing stay with the root teardown boundary.
+function FieldMenuCompositionCoordinator:releaseModalHosts()
+  local runtime = self.runtime
+  if runtime.dialogue then
+    runtime.dialogue:dispose()
+  end
+  runtime.dialogue = nil
+  if runtime.signpost then
+    runtime.signpost:dispose()
+  end
+  runtime.signpost = nil
+  -- The application host disposes its active controller exactly once and
+  -- releases the modal input lifetime.
+  if runtime.applicationHost then
+    runtime.applicationHost:dispose()
+  end
+  runtime.applicationHost = nil
 end
 
 return FieldMenuCompositionCoordinator

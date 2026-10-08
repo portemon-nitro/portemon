@@ -112,6 +112,7 @@ local function disposableState()
     mapLoader = resources.mapLoader,
     saveStore = resources.saveStore,
     session = captureReadySession(),
+    menuComposer = { releaseModalHosts = function() end },
     scripts = fakeScripts(),
     avatar = { id = "hero" },
     playerData = {

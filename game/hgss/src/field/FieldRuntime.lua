@@ -3,29 +3,20 @@
 -- exposes the field warp transition lifecycle.
 
 local CacheFs = require("libs.storage.src.CacheFs")
-local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local PixelScale = require("libs.ui.src.PixelScale")
 local FieldActorDefinitionProvider = require("libs.hgss.src.actors.FieldActorDefinitionProvider")
-local AuxiliaryFieldUi = require("libs.hgss.src.ui.AuxiliaryFieldUi")
-local ContextChoiceProvider = require("libs.hgss.src.interaction.ContextChoiceProvider")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
-local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
-local FieldApplicationRegistry = require("libs.hgss.src.field.FieldApplicationRegistry")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
-local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
-local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
-local FieldMenuHost = require("libs.hgss.src.ui.FieldMenuHost")
-local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
 local FieldInteractionResolver = require("libs.hgss.src.interaction.FieldInteractionResolver")
 local FieldEventResolver = require("libs.hgss.src.interaction.FieldEventResolver")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
@@ -54,7 +45,6 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
 local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local FieldScriptPropAnimations = require("libs.hgss.src.field.FieldScriptPropAnimations")
-local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowStyles = require("libs.hgss.src.field.FieldWindowStyles")
@@ -71,7 +61,6 @@ local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntranceIndicatorRuntime")
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
-local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local FieldPresentation = require("data.manifests.field_presentation")
 local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
@@ -945,115 +934,22 @@ end
 -- Compose the fixed-tick presentation and application hosts.
 ---@param boot table<string, unknown>
 function FieldRuntime:_composeFieldUi(boot)
-  local fontMetrics = FieldDialogueTheme.fontMetrics(boot.fontDef)
-  self.menuHost = FieldMenuHost.new({
-    width = self.viewportWidth,
-    height = self.viewportHeight,
-    input = self.input,
-    screenTopology = self.screenTopology,
-    measureText = FieldDialogueTheme.measureText(boot.fontDef),
-  })
-  -- The live choice host shares the menu host's measurement and topology
-  -- so draw and pointer mapping resolve one geometry. Its dialogue anchor
-  -- reads the live runtime below; resolution only runs while a choice or
-  -- a contextual prompt is presented.
-  local function yesNoPresentationContext()
-    return self:yesNoPresentationContext()
+  -- Modal hosts compose beside the menu composition they serve; the
+  -- callbacks below keep root-owned audio/menu/field-action policy behind
+  -- the root while the coordinator owns the construction algorithm.
+  local function buildAudio(cacheFs, restoredAudio)
+    return self:_composeAudio(cacheFs, restoredAudio)
   end
-  self.yesNoHost = FieldYesNoHost.new({
-    width = self.viewportWidth,
-    height = self.viewportHeight,
-    input = self.input,
-    screenTopology = self.screenTopology,
-    measureText = FieldDialogueTheme.measureText(boot.fontDef),
-    presentation = yesNoPresentationContext,
-  })
-  local function formatLayout(formatted)
-    return DialogueLayout.layout(
-      formatted.tokens,
-      fontMetrics,
-      { width = FieldDialogueTheme.textWidth, maxLines = FieldDialogueTheme.maxLines }
-    )
-  end
-  boot.layoutMessage = formatLayout
-  -- The signpost window presents one 27x4-tile window: the single-window
-  -- lines shape the signpost controller captures is the first page of the
-  -- same paginated dialogue layout. Overflow beyond the window is the
-  -- signpost text path's concern, not this adapter's.
-  local function signpostLayout(formatted)
-    local result = boot.layoutMessage(formatted)
-    return { lines = (result.pages[1] or { lines = {} }).lines }
-  end
-  boot.audioService = self:_composeAudio(boot.cacheFs, boot.restoredAudio)
-  self.dialogue = FieldDialogueController.new({
-    layout = boot.layoutMessage,
-    policy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed),
-    audio = boot.audioService,
-    continueCursor = boot.uiManifest.dialogueFrames.continueCursor,
-  })
-  -- The signpost controller is fixed-tick and pure; the script platform
-  -- advances it once per scheduler tick through the signpost host. The
-  -- text-speed cadence is captured from the player options at construction,
-  -- the same single authority as the dialogue controller.
-  self.signpost = FieldSignpostController.new({
-    layout = signpostLayout,
-    policy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed),
-  })
-  self.auxiliaryFieldUi = boot.loadedGame and AuxiliaryFieldUi.restore(boot.loadedGame.auxiliaryUi)
-    or AuxiliaryFieldUi.new()
-  self.contextChoiceProvider = ContextChoiceProvider.new()
-  -- The initial display measurement: the runtime measures from the boot
-  -- topology (or the actual default) so pointer input works before any
-  -- resize; the menu wrapper consumes this exact record through its
-  -- measurement closure. The script-owned starter host below borrows the
-  -- same record. This precedes the starter composition because the choice
-  -- surface is built eagerly.
-  self.presentationDisplay = self.displayContext:measure(self.viewportWidth, self.viewportHeight)
-  -- The starter composition: the hand-editable default roster provider
-  -- and the modal choice surface. The blocking starter task receives both
-  -- through scheduler services; no starter code requires the concrete
-  -- provider module after this composition step.
-  self.starterProvider = require("game.hgss.src.starters.VanillaStarterProvider")
-  local starterOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.starter_choice or nil
-  local function starterMeasureDisplay()
-    return self.presentationDisplay
-  end
-  self.starterChoice = require("game.hgss.src.starters.StarterChoiceState").new({
-    catalog = self.monCatalog,
-    cacheFs = boot.cacheFs,
-    frameIndex = self.playerData.options.textFrame,
-    measureDisplay = starterMeasureDisplay,
-    overrides = starterOverrides,
-  })
-  local namingOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.naming_screen or nil
-  self.pokemonNaming = require("game.hgss.src.field.PokemonNamingState").new({
-    charmap = boot.fontDef.charmap,
-    measureDisplay = starterMeasureDisplay,
-    overrides = namingOverrides,
-  })
-  self.actionKeys = HgssInputBindings.actionKeys()
-  self.cancelKeys = HgssInputBindings.cancelKeys()
-  self.menuKeys = HgssInputBindings.menuKeys()
-
-  local function playSequence(sequence)
-    if self.audio then
-      self.audio:play(sequence)
-    end
-  end
-  local applicationDescriptors = self:_applicationDescriptors()
   local function menuFactory(rememberedActionId)
     return self:_composeStartMenu(rememberedActionId)
   end
   local function fieldAction(actionId, request)
     return self:_admitFieldAction(actionId, request)
   end
-  self.applications = FieldApplicationRegistry.new(applicationDescriptors)
-  self.applicationHost = FieldApplicationHost.new({
-    registry = self.applications,
+  self.menuComposer:composeModalHosts(boot, {
+    buildAudio = buildAudio,
     menuFactory = menuFactory,
-    input = self.input,
     fieldAction = fieldAction,
-    effect = playSequence,
   })
   -- Interaction discovery: the resolver is pure and consults the same
   -- live-or-probe actor lookup movement collision uses, so both agree about
@@ -1778,11 +1674,6 @@ end
 
 function FieldRuntime:releaseMenu()
   requireLiveInput(self):releaseMenu("runtime")
-end
-
----@return { id: string, factory: fun(...): table<string, unknown> }[] application descriptors for FieldApplicationRegistry.new
-function FieldRuntime:_applicationDescriptors()
-  return self.menuComposer:applicationDescriptors()
 end
 
 ---@param prepare fun(iconKeys: string[]): boolean, string? presented icon preparation
@@ -2929,20 +2820,7 @@ function FieldRuntime:_releaseAll()
   if self.transition then
     self:_disposePreparedSwap(self.transition.resolution, self.transition.prepared)
   end
-  if self.dialogue then
-    self.dialogue:dispose()
-  end
-  self.dialogue = nil
-  if self.signpost then
-    self.signpost:dispose()
-  end
-  self.signpost = nil
-  -- The application host disposes its active controller exactly once and
-  -- releases the modal input lifetime; it must run before the input is
-  -- cleared below.
-  if self.applicationHost then
-    self.applicationHost:dispose()
-  end
+  self.menuComposer:releaseModalHosts()
   if self.martHost then
     self.martHost:dispose()
   end
@@ -2954,7 +2832,7 @@ function FieldRuntime:_releaseAll()
   end
   self.pcApplicationHost, self.pcTerminal = nil, nil
   self.martHost = nil
-  self.applicationHost, self.applications = nil, nil
+  self.applications = nil
   self.displayContext, self.presentationDisplay, self.presentationOverrides = nil, nil, nil
   self._displayTopology = nil
   if self.messageProvider then

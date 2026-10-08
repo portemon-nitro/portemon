@@ -595,6 +595,148 @@ function T.required_coordinators_are_reused_and_never_rebuilt_after_construction
   end, "a missing world-swap coordinator must fail instead of rebuilding a replacement")
 end
 
+local function syntheticFontDef()
+  return { glyphs = { [0] = { advance = 8 } }, charmap = {}, lineHeight = 16 }
+end
+
+local function syntheticContinueCursor()
+  return { cycle = { 0, 1, 2, 3 }, framePrinterTicks = 4 }
+end
+
+local function modalRecordingInput()
+  local calls = { begun = 0, cleared = 0 }
+  local input = { calls = calls }
+  function input:beginUi(_)
+    calls.begun = calls.begun + 1
+  end
+  function input:clearUi()
+    calls.cleared = calls.cleared + 1
+  end
+  return input
+end
+
+local function modalBoot()
+  return {
+    fontDef = syntheticFontDef(),
+    cacheFs = {
+      loadLua = function()
+        return nil
+      end,
+    },
+    uiManifest = { dialogueFrames = { continueCursor = syntheticContinueCursor() } },
+    loadedGame = nil,
+    restoredAudio = nil,
+  }
+end
+
+local function modalRuntime(topology)
+  return {
+    viewportWidth = 256,
+    viewportHeight = 192,
+    screenTopology = topology,
+    input = modalRecordingInput(),
+    displayContext = {
+      measure = function(_, width, height)
+        return { width = width, height = height }
+      end,
+    },
+    playerData = {
+      profile = { name = "GOLD", gender = 0, trainerId = 1 },
+      options = { textSpeed = "mid", textFrame = 0 },
+    },
+    monCatalog = {},
+    presentationOverrides = nil,
+  }
+end
+
+local function modalCallbacks(audioBuilds, menuBox)
+  return {
+    buildAudio = function(_, _)
+      audioBuilds.count = audioBuilds.count + 1
+      return {
+        play = function() end,
+      }
+    end,
+    menuFactory = function(_)
+      return menuBox.current
+    end,
+    fieldAction = function(_, _)
+      error("composition must not admit field actions", 0)
+    end,
+  }
+end
+
+function T.modal_hosts_compose_identically_with_and_without_presentation()
+  local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
+  local probe = Coordinator.new(modalRuntime(nil))
+  Assert.isTrue(
+    type(probe.composeModalHosts) == "function",
+    "the menu coordinator owns modal host construction"
+  )
+  Assert.isTrue(type(probe.releaseModalHosts) == "function", "the menu coordinator owns modal host release")
+  local hostFields = {
+    "menuHost",
+    "yesNoHost",
+    "dialogue",
+    "signpost",
+    "auxiliaryFieldUi",
+    "contextChoiceProvider",
+    "starterProvider",
+    "starterChoice",
+    "pokemonNaming",
+    "applications",
+    "applicationHost",
+  }
+  local function compose(topology)
+    local runtime = modalRuntime(topology)
+    local boot = modalBoot()
+    local audioBuilds = { count = 0 }
+    Coordinator.new(runtime):composeModalHosts(boot, modalCallbacks(audioBuilds, { current = nil }))
+    Assert.equal(audioBuilds.count, 1, "audio builds once per composition")
+    Assert.isTrue(type(boot.layoutMessage) == "function", "composition publishes the message layout")
+    Assert.notNil(boot.audioService, "composition publishes the audio service")
+    return runtime, boot
+  end
+  local presented, presentedBoot = compose({ surfaces = {} })
+  local headless = compose(nil)
+  for _, field in ipairs(hostFields) do
+    Assert.notNil(presented[field], "presented composition owns " .. field)
+    Assert.notNil(headless[field], "headless composition owns " .. field)
+  end
+  for _, field in ipairs({ "actionKeys", "cancelKeys", "menuKeys" }) do
+    Assert.notNil(presented[field], "presented composition owns " .. field)
+    Assert.notNil(headless[field], "headless composition owns " .. field)
+  end
+  Assert.notNil(presented.presentationDisplay, "composition measures the display before starter construction")
+  local paginated = presentedBoot.layoutMessage({ tokens = {} })
+  Assert.notNil(paginated.pages, "the published layout paginates messages")
+  Assert.isFalse(presented.dialogue:isModal(), "dialogue starts closed")
+  presented.dialogue:open({ id = "probe", message = { tokens = {} }, allowCancel = true })
+  Assert.isTrue(presented.dialogue:isModal(), "dialogue opens modally")
+  presented.dialogue:close()
+  Assert.isFalse(presented.dialogue:isModal(), "dialogue closes back to idle")
+  presented.yesNoHost:openChoice({ yesText = "Yes", noText = "No" }, 0)
+  Assert.isTrue(presented.yesNoHost:isModal(), "choice opens modally")
+  presented.yesNoHost:resize(256, 192)
+  presented.menuHost:resize(256, 192)
+  presented.yesNoHost:close()
+  Assert.isFalse(presented.yesNoHost:isModal(), "choice closes back to idle")
+  Assert.equal(presented.input.calls.begun, 1, "one modal lifetime begins for the choice")
+  Assert.equal(presented.input.calls.cleared, 1, "choice close releases its modal lifetime")
+  Assert.equal(presented.applicationHost:status().phase, "closed", "the application host starts closed")
+  Assert.isFalse(presented.applicationHost:requestOpen(3), "an unavailable menu leaves the field running")
+  Assert.isFalse(presented.starterChoice:isActive(), "starter choice starts inactive")
+  Assert.isFalse(presented.pokemonNaming:isActive(), "naming starts inactive")
+  local firstDialogue = presented.dialogue
+  local rebuildAudio = { count = 0 }
+  Coordinator.new(presented):composeModalHosts(modalBoot(), modalCallbacks(rebuildAudio, { current = nil }))
+  Assert.equal(rebuildAudio.count, 1, "recomposition rebuilds audio")
+  Assert.isTrue(
+    presented.dialogue ~= firstDialogue,
+    "recomposition builds fresh hosts instead of retaining them"
+  )
+end
+
 return {
   tests = T,
   metadata = {
