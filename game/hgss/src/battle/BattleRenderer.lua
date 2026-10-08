@@ -535,9 +535,60 @@ local function drawInteraction(resources, view, content)
   drawGauges(resources, view)
 end
 
--- Draws one paired pane in its logical space: "detail" for the
--- battlefield or "interaction" for the lower menu. Unknown pane
--- identities draw nothing.
+-- Draws one compact scene inside the single-pane viewport: the same
+-- selected source scene with the battler pictures at the plan's compact
+-- image centers, clipped to the compact scene viewport without scaling.
+-- The plan may supply compact centers; without them the native centers
+-- apply. The auxiliary selection arrow and party gauges stay hidden in
+-- compact mode because the text cursor and Party action provide the
+-- corresponding interaction. Dynamic HUD facts ride the plan anchors for
+-- the dock composition; this scene path draws images only, never text
+-- or bars, so dock text owns every glyph.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot
+---@param content table<string, unknown> canonical plan content carrying the compact anchors
+local function drawCompactScene(resources, view, content)
+  local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
+  local assets = assert(resources.assets, "the battle render borrows its asset holder")
+  local LogicalSurface = require("libs.ui.src.LogicalSurface")
+  local viewport = content.scene
+  if type(viewport) ~= "table" then
+    viewport = { x = 0, y = 0, width = 256, height = 136 }
+  end
+  local playerCenter = content.playerCenter
+  if type(playerCenter) ~= "table" then
+    playerCenter = BattleRenderer.PLAYER_CENTER
+  end
+  local enemyCenter = content.enemyCenter
+  if type(enemyCenter) ~= "table" then
+    enemyCenter = BattleRenderer.ENEMY_CENTER
+  end
+  LogicalSurface.clip(graphics, viewport, function()
+    local scene = assets:drawable(resources.sceneImageKey --[[@as string]])
+    if scene ~= nil then
+      graphics.draw(scene, 0, 0)
+    end
+    local player, enemy = splitBattlers(view)
+    if enemy ~= nil and enemy.visible ~= false then
+      local front = assets:drawable("mon:enemy:front")
+      if front ~= nil then
+        local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
+        graphics.draw(front, enemyCenter.x + dx, enemyCenter.y)
+      end
+    end
+    if player ~= nil and player.visible ~= false then
+      local back = assets:drawable("mon:player:back")
+      if back ~= nil then
+        local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
+        graphics.draw(back, playerCenter.x + dx, playerCenter.y)
+      end
+    end
+  end)
+end
+
+-- Draws one pane in its logical space: "detail" for the battlefield,
+-- "interaction" for the lower menu, or "compact" for the single-pane
+-- scene viewport. Unknown pane identities draw nothing.
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param paneId string resolved pane identity
@@ -545,7 +596,9 @@ end
 function BattleRenderer.drawPane(resources, view, paneId, content)
   assert(type(resources) == "table", "pane drawing borrows its resources")
   assert(type(view) == "table", "pane drawing reads its snapshot")
-  if paneId == "detail" then
+  if paneId == "compact" then
+    drawCompactScene(resources, view, content or {})
+  elseif paneId == "detail" then
     drawDetail(resources, view)
   elseif paneId == "interaction" then
     drawInteraction(resources, view, content or {})

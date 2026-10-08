@@ -183,28 +183,37 @@ function T.move_and_target_anchors_map()
   Assert.equal(aimed.control.scope, "target", "target anchors carry the target scope")
 end
 
--- A surface that cannot fit a paired pane at 1x reports too-small
--- instead of a squeezed battle, and claims no pointer.
-function T.too_small_reports_instead_of_squeezing()
+-- A pair without room takes the compact pane instead of a squeezed
+-- battle: the full command composition stays reachable and
+-- pointer-operable on the tiny host.
+function T.pair_without_room_takes_the_compact_pane()
   local session = ApplicationPresentation.new(BattleScreenInterface.defaults(), nil)
   local small = resolve(session, tinyMeasurement(), "command")
-  Assert.isTrue(small.content.tooSmall == true, "the too-small plan says so explicitly")
-  Assert.isNil(
-    small.mapInput({ type = "pointer_down", pointerId = "touch:0", x = 10, y = 10 }, view("command"), small),
-    "the too-small plan claims no pointer"
+  Assert.isTrue(small.content.compact == true, "the fallback plan is the compact composition")
+  Assert.isNil(small.content.tooSmall, "the fallback fits its one pane, it is not too small")
+  local pressed = small.mapInput(
+    { type = "pointer_down", pointerId = "touch:0", x = 152, y = 154 },
+    view("command"),
+    small
   )
+  Assert.notNil(pressed, "the fallback Fight cell claims its control")
+  Assert.equal(pressed.control.id, "fight", "the fallback keeps the Fight identity")
 end
 
--- Near-square single surfaces stay noninteractive until the compact
--- adapter lands: a pending plan with no pointer claims.
-function T.square_surfaces_stay_pending()
+-- Near-square single surfaces resolve the compact single pane with
+-- the shared command controls.
+function T.square_surfaces_resolve_the_compact_pane()
   local session = ApplicationPresentation.new(BattleScreenInterface.defaults(), nil)
-  local pending = resolve(session, squareMeasurement(), "command")
-  Assert.isTrue(pending.content.pendingAdapter == true, "the pending plan says so explicitly")
-  Assert.isNil(
-    pending.mapInput({ type = "pointer_down", pointerId = "touch:0", x = 128, y = 83 }, view("command"), pending),
-    "the pending plan claims no pointer"
+  local single = resolve(session, squareMeasurement(), "command")
+  Assert.isTrue(single.content.compact == true, "the single-surface plan is the compact composition")
+  Assert.equal(#single.panes, 1, "the single-surface plan resolves one pane")
+  local pressed = single.mapInput(
+    { type = "pointer_down", pointerId = "touch:0", x = 152, y = 154 },
+    view("command"),
+    single
   )
+  Assert.notNil(pressed, "the single-pane Fight cell claims its control")
+  Assert.equal(pressed.control.id, "fight", "the single pane keeps the Fight identity")
 end
 
 -- Rendering restores borrowed graphics state exactly and draws both

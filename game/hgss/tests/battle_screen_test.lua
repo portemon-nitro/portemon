@@ -830,18 +830,19 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   drawNow()
   Assert.deepEqual(graphicsState(graphics), before, "the paired draw restores borrowed graphics state exactly")
 
-  -- Too small reports instead of squeezing: a surface that cannot fit
-  -- a paired pane at 1x marks its plan and maps every pointer to nil.
+  -- A pair without room takes the compact pane instead of squeezing:
+  -- a surface that cannot fit a paired pane at 1x keeps the logical
+  -- battle on the single-pane composition with every control reachable.
   rig.measurement = tinyMeasurement()
   rig.screen:input({ { type = "pointer_down", pointerId = "touch:5", x = 128, y = 83 + 192 } })
   rig.pump(1)
   local small = rig.screen:status()
   local smallPlan = assert(small.presentation, "the small surface still resolves a plan")
-  Assert.isTrue(smallPlan.content.tooSmall == true, "the too-small plan says so explicitly")
+  Assert.isTrue(smallPlan.content.compact == true, "the small surface takes the compact composition")
   Assert.equal(small.mode, "command", "a small surface keeps the logical battle, only the layout reports")
   Assert.isNil(
     smallPlan.mapInput({ type = "pointer_down", pointerId = "touch:5", x = 10, y = 10 }, rig.screen:view(), smallPlan),
-    "the too-small plan claims no pointer"
+    "the scene claims no command on the compact fallback"
   )
   rig.screen:cancelPointerCapture()
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:5", x = 128, y = 83 + 192 } })
@@ -849,10 +850,8 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   Assert.equal(#rig.submits, 0, "the held press from the roomy layout never activates after the shrink")
   rig.measurement = dualMeasurement()
   rig.pump(2)
-  Assert.isTrue(
-    rig.screen:status().presentation.content.tooSmall ~= true,
-    "restoring room clears the too-small report without rebuilding the battle"
-  )
+  local restored = assert(rig.screen:status().presentation, "the restored surface resolves a plan")
+  Assert.equal(#restored.panes, 2, "restoring room brings back both paired panes without rebuilding the battle")
 
   -- Run closes the battle last: the assured flight seals one reply and
   -- the battle settles fled with both sides standing.

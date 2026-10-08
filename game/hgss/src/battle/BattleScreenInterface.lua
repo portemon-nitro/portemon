@@ -2,11 +2,10 @@
 -- puts the battlefield detail pane on the world surface and interaction
 -- on auxiliary; wide pairs them side by side and tall stacks them
 -- through the existing helpers at one common integer scale with no
--- synthetic gap. A pair that cannot fit at 1x reports an explicit
--- too-small plan instead of a squeezed battle, and near-square single
--- surfaces stay on a noninteractive pending plan until the compact
--- adapter lands. Battles are never outside-dismissible: presses outside
--- every control map to nothing.
+-- synthetic gap. A pair that cannot fit at 1x takes the compact
+-- single-pane plan instead of a squeezed battle, and near-square single
+-- surfaces resolve the compact pane directly. Battles are never
+-- outside-dismissible: presses outside every control map to nothing.
 
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
@@ -145,6 +144,10 @@ local function mapBattleInput(event, view, plan)
   if content.tooSmall == true or content.pendingAdapter == true then
     return nil
   end
+  if content.compact == true then
+    local BattleCompactInterface = require("game.hgss.src.battle.BattleCompactInterface")
+    return BattleCompactInterface.mapInput(event, view, plan)
+  end
   local regions = regionsFor(view)
   if regions == nil then
     if event.type == "pointer_cancel" then
@@ -231,15 +234,16 @@ function BattleScreenInterface.defaults()
     else
       geometry = ApplicationLayout.stacked(context, DETAIL_NATIVE, CONTENT_NATIVE)
     end
-    -- Below 1x the battle reports too-small instead of falling back:
-    -- the compact adapter owns the fallback, not this resolver.
+    -- A pair that cannot fit at 1x takes the compact pane instead of a
+    -- squeezed battle; the compact fallback owns the tiny host.
+    local BattleCompactInterface = require("game.hgss.src.battle.BattleCompactInterface")
     if geometry == nil then
-      return inactivePlan({ kind = "battle", tooSmall = true })
+      return BattleCompactInterface.fallback(context, view)
     end
     local detail = geometry.placements[DETAIL_NATIVE.id]
     local interaction = geometry.placements[CONTENT_NATIVE.id]
     if detail == nil or interaction == nil then
-      return inactivePlan({ kind = "battle", tooSmall = true })
+      return BattleCompactInterface.fallback(context, view)
     end
     return battlePlan({
       { id = DETAIL_NATIVE.id, placement = detail, interactive = false },
@@ -267,13 +271,9 @@ function BattleScreenInterface.defaults()
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
   local function nativeLike(context, view)
-    -- Single-surface native-like stays noninteractive until the compact
-    -- adapter lands: a pending plan, never a falsely completed battle UI.
-    local _ = context
-    local _ = view
-    local plan = inactivePlan({ kind = "battle", pendingAdapter = true })
-    plan.mapInput = mapBattleInput
-    return plan
+    -- Single-surface native-like resolves the compact single pane.
+    local BattleCompactInterface = require("game.hgss.src.battle.BattleCompactInterface")
+    return BattleCompactInterface.nativeLike(context, view)
   end
 
   ---@param context ApplicationLayout.Context
