@@ -3870,16 +3870,23 @@ function State:_consumeUiInput(events)
         local list, rowIndex = self:_activeList(currentLayout)
         self:_handleListConfirm(assert(list), rowIndex, currentLayout)
       elseif self.valueEditor then
-        local confirmTarget = currentLayout.targets.confirm
-        if self.valueEditor:snapshot().kind == "choice" and confirmTarget and not confirmTarget.activationEnabled then
-          self.editorFeedback = "Choose an available option."
-        elseif self.valueEditor:snapshot().kind == "name" then
-          self.valueEditor:press("confirm")
-          self:_finishValueEditor()
+        if self:_numberEditorTooSmall(currentLayout) then
+          local cancelTarget = currentLayout.targets.cancel
+          if self.controller.focus == "cancel" and cancelTarget and cancelTarget.focusable then
+            self:_activateControl("cancel", currentLayout)
+          end
         else
-          local submitted, reason = self.valueEditor:submit()
-          self.editorFeedback = submitted and nil or reason
-          self:_finishValueEditor()
+          local confirmTarget = currentLayout.targets.confirm
+          if self.valueEditor:snapshot().kind == "choice" and confirmTarget and not confirmTarget.activationEnabled then
+            self.editorFeedback = "Choose an available option."
+          elseif self.valueEditor:snapshot().kind == "name" then
+            self.valueEditor:press("confirm")
+            self:_finishValueEditor()
+          else
+            local submitted, reason = self.valueEditor:submit()
+            self.editorFeedback = submitted and nil or reason
+            self:_finishValueEditor()
+          end
         end
       else
         self:_dispatchIntent(self.controller:press("confirm"))
@@ -3928,6 +3935,13 @@ function State:keypressed(key, _, isrepeat)
   if self.valueEditor then
     self.preserveChoiceScroll = false
     local editorLayout = self:_resolve(self:_snapshot()).content.layout
+    if self:_numberEditorTooSmall(editorLayout) then
+      if key == "escape" then
+        self.valueEditor:cancel()
+        self:_finishValueEditor()
+      end
+      return
+    end
     local editorList, editorRow = self:_activeList(editorLayout)
     local choiceList = editorList ~= nil and editorList.id == "value:choice" and editorList or nil
     if key == "return" or key == "kpenter" then
@@ -3997,6 +4011,9 @@ end
 
 function State:textinput(text)
   if self.valueEditor then
+    if self:_numberEditorTooSmall() then
+      return
+    end
     if self.valueEditor:snapshot().kind == "choice" then
       local layout = self:_resolve(self:_snapshot()).content.layout
       local list, rowIndex = self:_activeList(layout)

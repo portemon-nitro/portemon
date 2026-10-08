@@ -3456,6 +3456,62 @@ function T.tests.back_cancels_only_the_open_value_editor()
   Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
 end
 
+function T.tests.too_small_number_layout_blocks_submission_and_recovers_without_losing_the_draft()
+  local controller = Controller.new()
+  local editor = ValueEditor.new({ kind = "integer", value = 123, min = 0, max = 0xFFFFFFFF, base = "decimal" })
+  local layout = { numberTooSmall = true, targets = { cancel = { focusable = true } } }
+  local finishResults = {}
+  local state = stateHarness({
+    status = "ready",
+    controller = controller,
+    modalStack = ModalStack.new(),
+    valueEditor = editor,
+    valuePurpose = "money",
+    inputTick = 0,
+    presentation = { cancelPointers = function() end },
+    _snapshot = function()
+      return { valueEditor = editor:snapshot() }
+    end,
+    _resolve = function()
+      return { content = { layout = layout } }
+    end,
+    _reconcileFocus = function()
+      return layout
+    end,
+    _syncScope = function() end,
+    _finishValueEditor = function()
+      finishResults[#finishResults + 1] = editor:result()
+    end,
+  })
+
+  state:_consumeUiInput({ { type = "confirm" } })
+  state:keypressed("return")
+  state:keypressed("kpenter")
+  state:gamepadpressed(nil, "a")
+  state:keypressed("backspace")
+  state:keypressed("delete")
+  state:textinput("9")
+  state:_dispatchActivationAction({ kind = "value.adjust-number-place", place = 0, direction = "up" })
+  Assert.isNil(editor:result(), "hidden Confirm and direct submit inputs cannot commit the number")
+  Assert.equal(editor:snapshot().buffer, "123", "hidden keyboard, text, and arrow actions cannot mutate the numeric draft")
+  Assert.equal(#finishResults, 0, "blocked submission leaves the value editor open")
+
+  state.numberHold = { targetId = "number:place:0:up" }
+  state.numberPressTarget = "number:place:0:up"
+  state:resize(800, 600)
+  layout = { targets = { confirm = { focusable = true }, cancel = { focusable = true } } }
+  Assert.equal(state.valueEditor, editor, "a larger layout keeps the same draft editor alive")
+  Assert.isNil(state.numberHold, "resizing clears a held arrow from the old geometry")
+  Assert.isNil(state.numberPressTarget, "resizing clears a pressed arrow from the old geometry")
+  Assert.isFalse(layout.numberTooSmall == true, "the resized presentation returns to its normal mode")
+  Assert.equal(editor:snapshot().buffer, "123", "resize preserves the unmodified draft")
+
+  layout = { numberTooSmall = true, targets = { cancel = { focusable = true } } }
+  state:keypressed("escape")
+  Assert.equal(editor:result().kind, "cancel", "Escape remains available in the too-small state")
+  Assert.equal(#finishResults, 1, "the cancel path closes the editor exactly once")
+end
+
 function T.tests.back_closes_only_the_open_decision()
   local harness = backHarness({ section = "Player", dirty = true, modal = "remove" })
   harness.state:_requestBack()

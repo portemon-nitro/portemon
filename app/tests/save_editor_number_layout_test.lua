@@ -58,4 +58,18 @@ function T.tests.range_sized_columns_fit_compact_and_wide_viewports()
   end
 end
 
+function T.tests.measured_content_that_cannot_fit_reports_a_cancelable_geometry_result()
+  Assert.isTrue(loaded, "numeric layout must expose its pure resolve operation")
+  local result, reason = NumberLayout.resolve({
+    available = { x = 24, y = 36, width = 44, height = 30 },
+    projection = { digitCount = 10, digits = { "0", "0", "0", "0", "0", "0", "0", "0", "0", "0" }, selectedPlace = 0 },
+    font = { lineHeight = 14, measure = function(text) return #text * 7 end },
+    arrows = { width = 16, height = 16 },
+    frame = { inset = 4, actionHeight = 34, errorHeight = 16, actionGap = 4 },
+  })
+
+  Assert.isNil(result, "measured content too small for readable controls has no numeric geometry")
+  Assert.equal(reason, "too_small", "valid but insufficient content is an explicit layout outcome")
+end
+
 return T

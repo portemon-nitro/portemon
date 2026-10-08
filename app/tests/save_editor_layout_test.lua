@@ -207,6 +207,68 @@ function T.tests.naming_keyboard_rows_do_not_overlap_the_footer_cancel_target()
   end
 end
 
+function T.tests.numeric_dialog_uses_measured_content_and_publishes_only_a_bounded_cancel_target_when_unfit()
+  local editor = ValueEditor.new({ kind = "integer", value = 123, min = 0, max = 0xFFFFFFFF, base = "decimal" })
+  local view = locationView()
+  view.section = "Player"
+  view.valueEditor = editor:snapshot()
+  view.numberControlVisuals = { increment = { normal = { width = 48, height = 48 } } }
+
+  local layout = computeLayout(view, 256, 128)
+  Assert.isTrue(layout.numberTooSmall, "the measured active content cannot fit the real numeric controls")
+  Assert.isNil(layout.numberLayout, "unavailable geometry publishes no invisible numeric controls")
+  Assert.isNil(layout.targets.confirm, "unavailable geometry has no submission target")
+  Assert.equal(#layout.focusNavigation.controls, 1, "only the visible Cancel control remains focusable")
+  local cancel = assert(layout.targets.cancel).rect
+  Assert.isTrue(cancel.x >= 0 and cancel.y >= 0, "Cancel begins inside the logical surface")
+  Assert.isTrue(cancel.x + cancel.width <= 256 and cancel.y + cancel.height <= 128, "Cancel stays inside the surface")
+end
+
+function T.tests.numeric_fallback_geometry_stays_inside_available_content()
+  for _, viewport in ipairs({
+    { width = 12, height = 128 },
+    { width = 256, height = 16 },
+    { width = 256, height = 10 },
+  }) do
+    local editor = ValueEditor.new({ kind = "integer", value = 123, min = 0, max = 0xFFFFFFFF, base = "decimal" })
+    local view = locationView()
+    view.section = "Player"
+    view.valueEditor = editor:snapshot()
+    view.numberControlVisuals = { increment = { normal = { width = 48, height = 48 } } }
+
+    local layout = computeLayout(view, viewport.width, viewport.height)
+    Assert.isTrue(layout.numberTooSmall, "small content publishes the numeric fallback")
+    local margin = viewport.width <= 280 and 8 or 12
+    local modalBottom = viewport.height <= 220
+        and viewport.height - (margin + 2) - 2
+      or layout.content.y + layout.content.height
+    local content = {
+      x = layout.content.x,
+      y = layout.content.y,
+      width = layout.content.width,
+      height = math.max(0, modalBottom - layout.content.y),
+    }
+    for name, target in pairs({
+      cancel = layout.targets.cancel and layout.targets.cancel.rect,
+      notice = layout.valueModalNotice,
+    }) do
+      if target ~= nil then
+        Assert.isTrue(target.x >= content.x and target.y >= content.y, name .. " begins inside content")
+        Assert.isTrue(
+          target.x + target.width <= content.x + content.width
+            and target.y + target.height <= content.y + content.height,
+          name .. " ends inside content"
+        )
+      end
+    end
+    if content.width <= 0 or content.height <= 0 then
+      Assert.isNil(layout.targets.cancel, "no positive fallback area has no synthetic Cancel target")
+      Assert.isNil(layout.valueModalNotice, "no positive fallback area has no synthetic notice")
+      Assert.equal(layout.defaultFocus, "cancel", "keyboard cancellation remains focused without hit geometry")
+    end
+  end
+end
+
 function T.tests.location_layout_uses_fixed_scale_and_omits_zoom_targets()
   local controller = Controller.new()
   controller:setSection("Location")

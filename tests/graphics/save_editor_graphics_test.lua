@@ -483,9 +483,14 @@ local function fixture(scope, width, height, topology, section, variant, version
       query = "",
     }
     view.scope = { id = "value:choice:species", epoch = 2, kind = "value", focusId = view.focus }
-  elseif variant == "number-modal" or variant == "number-modal-ten-digit" then
-    view.focus = "confirm"
+  elseif
+    variant == "number-modal"
+    or variant == "number-modal-ten-digit"
+    or variant == "number-modal-too-small"
+  then
+    view.focus = variant == "number-modal-too-small" and "cancel" or "confirm"
     local digitCount = variant == "number-modal-ten-digit" and 10 or 3
+    local arrowSize = variant == "number-modal-too-small" and 512 or 12
     local numberControls = {}
     for index = 1, digitCount do
       local placeValue = 10 ^ (digitCount - index)
@@ -506,12 +511,12 @@ local function fixture(scope, width, height, topology, section, variant, version
     view.numberControls = numberControls
     view.numberControlVisuals = {
       increment = {
-        normal = { image = "bag/inc-normal", width = 12, height = 12 },
-        pressed = { image = "bag/inc-pressed", width = 12, height = 12 },
+        normal = { image = "bag/inc-normal", width = arrowSize, height = arrowSize },
+        pressed = { image = "bag/inc-pressed", width = arrowSize, height = arrowSize },
       },
       decrement = {
-        normal = { image = "bag/dec-normal", width = 12, height = 12 },
-        pressed = { image = "bag/dec-pressed", width = 12, height = 12 },
+        normal = { image = "bag/dec-normal", width = arrowSize, height = arrowSize },
+        pressed = { image = "bag/dec-pressed", width = arrowSize, height = arrowSize },
       },
     }
     view.valueEditor = {
@@ -3607,6 +3612,28 @@ function T.active_section_chrome_survives_focus_movement(scope)
     local rect = assert(layout.targets[targetId], "the rail publishes " .. targetId).rect
     Assert.equal(#ringsSurrounding(calls, rect, 3), 0, targetId .. " owns no outline while unfocused")
   end
+end
+
+function T.compact_number_fallback_draws_a_cancelable_notice(scope)
+  local topology = singleDisplay(256, 192)
+  local _, _, layout, _, drawnText = draw(
+    scope,
+    256,
+    192,
+    topology,
+    "number-modal-too-small",
+    "Player",
+    "number-modal-too-small"
+  )
+
+  Assert.isTrue(layout.numberTooSmall, "a compact host with insufficient active content publishes fallback mode")
+  Assert.isNil(layout.numberLayout, "the fallback draws no invisible numeric geometry")
+  Assert.isNil(layout.targets.confirm, "the fallback has no hidden Confirm target")
+  Assert.notNil(layout.targets.cancel, "the fallback retains a visible Cancel target")
+  Assert.isTrue(
+    table.concat(drawnText, " "):find("Expand window", 1, true) ~= nil,
+    "the renderer paints the unavailable-state notice"
+  )
 end
 
 function T.graphics_state_is_restored_after_rings_and_scaled_text(scope)
