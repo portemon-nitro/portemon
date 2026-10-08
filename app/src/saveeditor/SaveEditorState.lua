@@ -3668,7 +3668,7 @@ function State:_navigateTab(layout, direction)
 end
 
 function State:_pointer(events)
-  if self.disposed then
+  if self.disposed or self.resultSent then
     return
   end
   self:_settleScope()
@@ -3708,6 +3708,10 @@ function State:_pointer(events)
     if not (event.type == "pointer_up" and heldNumberTarget ~= nil) then
       self:_dispatchIntent(intent)
     end
+    if self.disposed or self.resultSent then
+      self._pointerDispatching = false
+      return plan
+    end
     if
       event.type == "pointer_down"
       and self.valueEditor ~= nil
@@ -3734,7 +3738,7 @@ function State:_pointer(events)
     self._pointerDispatching = false
     self:_syncScope()
   end
-  if self.disposed then
+  if self.disposed or self.resultSent then
     return plan
   end
   self:_reconcileFocus()
@@ -3853,6 +3857,9 @@ end
 -- first event acts, so already-retired captures cannot fire, and after
 -- the batch, so later batches observe the settled epoch.
 function State:_consumeUiInput(events)
+  if self.disposed or self.resultSent then
+    return
+  end
   self:_settleScope()
   for _, event in ipairs(events) do
     if event.type == "navigate" then
@@ -3901,14 +3908,19 @@ function State:_consumeUiInput(events)
         self:_dispatchIntent(self.controller:press("cancel"))
       end
     end
+    if self.disposed or self.resultSent then
+      return
+    end
     self:_syncScope()
   end
-  self:_reconcileFocus()
-  self:_settleScope()
+  if not self.disposed and not self.resultSent then
+    self:_reconcileFocus()
+    self:_settleScope()
+  end
 end
 
 function State:keypressed(key, _, isrepeat)
-  if self.disposed or isrepeat or self.status == "opening" then
+  if self.disposed or self.resultSent or isrepeat or self.status == "opening" then
     return
   end
   if key == "tab" then
@@ -4010,6 +4022,9 @@ function State:keypressed(key, _, isrepeat)
 end
 
 function State:textinput(text)
+  if self.disposed or self.resultSent then
+    return
+  end
   if self.valueEditor then
     if self:_numberEditorTooSmall() then
       return
@@ -4054,6 +4069,9 @@ local function joystickSource(joystick)
 end
 
 function State:gamepadpressed(joystick, button)
+  if self.disposed or self.resultSent then
+    return
+  end
   local source = joystickSource(joystick) .. ":" .. button
   local directions = { dpup = "up", dpdown = "down", dpleft = "left", dpright = "right" }
   local direction = directions[button]
@@ -4075,6 +4093,9 @@ function State:gamepadreleased(joystick, button)
 end
 
 function State:gamepadaxis(joystick, axis, value)
+  if self.disposed or self.resultSent then
+    return
+  end
   local source = joystickSource(joystick) .. ":left"
   if axis == "leftx" then
     self.fieldInput:setStickAxis(source, "x", value)

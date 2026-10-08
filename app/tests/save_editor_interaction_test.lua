@@ -3952,6 +3952,96 @@ function T.tests.back_from_the_map_list_root_follows_the_normal_leave_path()
   Assert.deepEqual(clean.results, { { kind = "main_menu" } }, "root Back without work leaves the editor")
 end
 
+local function terminalInputHarness()
+  local harness = backHarness({ section = "Location", dirty = false, mapList = true })
+  local state = harness.state
+  local metrics = interactionMetrics()
+  state.width, state.height = 800, 600
+  state.generation = 0
+  state.numberPressUntilTick = 0
+  state._snapshot = function()
+    return {
+      section = "Location",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      sectionDirty = false,
+      scope = state.controller:snapshot().scope,
+      query = "",
+      scrollOffsets = state.controller.scrollOffsets,
+      location = {
+        mapModel = indexedMapModel({}),
+        mapListId = "location:root",
+        status = { state = "ready" },
+        maps = {},
+      },
+      locationNavigation = state.controller:locationSnapshot(),
+      modalLayers = {},
+    }
+  end
+  state.presentation = {
+    mapInput = function(_, events)
+      return events
+    end,
+    dispose = function() end,
+  }
+  state.renderer = {
+    metrics = function()
+      return metrics
+    end,
+    dispose = function() end,
+  }
+  state._resolve = function(_, view)
+    view.textMetrics = metrics
+    local layout = Layout.compute(view, state.width, state.height, metrics)
+    return { content = { layout = layout } }
+  end
+  local originalSyncScope = state._syncScope
+  local postDisposeScopeSyncs = 0
+  state._syncScope = function(self)
+    if self.disposed then
+      postDisposeScopeSyncs = postDisposeScopeSyncs + 1
+    end
+    return originalSyncScope(self)
+  end
+  state.onResult = function(result)
+    harness.results[#harness.results + 1] = result
+    state:dispose()
+  end
+  return harness, function()
+    return postDisposeScopeSyncs
+  end
+end
+
+function T.tests.terminal_escape_input_stops_before_post_disposal_focus_reconciliation()
+  local harness, postDisposeScopeSyncs = terminalInputHarness()
+
+  harness.state:keypressed("escape")
+
+  Assert.deepEqual(harness.results, { { kind = "main_menu" } }, "Escape returns to the menu once")
+  Assert.isTrue(harness.state.disposed, "the result callback disposes the editor synchronously")
+  Assert.equal(postDisposeScopeSyncs(), 0, "terminal input skips scope synchronization after disposal")
+  harness.state:dispose()
+  Assert.equal(#harness.results, 1, "disposing again does not publish another result")
+end
+
+function T.tests.terminal_gamepad_cancel_stops_after_disposal()
+  local gamepad, gamepadPostDisposeScopeSyncs = terminalInputHarness()
+  gamepad.state:gamepadpressed(nil, "b")
+  Assert.deepEqual(gamepad.results, { { kind = "main_menu" } }, "gamepad B returns to the menu once")
+  Assert.equal(gamepadPostDisposeScopeSyncs(), 0, "gamepad cancel skips post-disposal scope work")
+end
+
+function T.tests.terminal_pointer_back_stops_after_disposal()
+  local pointer, pointerPostDisposeScopeSyncs = terminalInputHarness()
+  pointer.state:_pointer({
+    { type = "pointer_down", pointerId = "touch:back", targetId = "back", x = 4, y = 4 },
+    { type = "pointer_up", pointerId = "touch:back", targetId = "back", x = 4, y = 4 },
+  })
+  Assert.deepEqual(pointer.results, { { kind = "main_menu" } }, "pointer Back returns to the menu once")
+  Assert.equal(pointerPostDisposeScopeSyncs(), 0, "pointer Back skips post-disposal scope work")
+end
+
 function T.tests.activating_the_staged_map_keeps_its_coordinates_while_other_maps_use_their_default()
   local controller = Controller.new()
   controller:setSection("Location")
