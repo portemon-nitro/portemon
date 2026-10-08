@@ -330,7 +330,7 @@ function T.raised_speed_stages_reorder_later_strikes()
   local contracts = SessionFixture.sessionContracts()
   local content = nativeContent()
   local alpha = movesetCombatant(1, 11, { moveSlot("AGILITY", 30), moveSlot("TACKLE", 35) })
-  local beta = movesetCombatant(2, 31, { moveSlot("QUICK_ATTACK", 30) })
+  local beta = movesetCombatant(2, 31, { moveSlot("SCRATCH", 35) })
   local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
 
   local _, opening = playTurn(session, strikeAnswer({
@@ -339,7 +339,7 @@ function T.raised_speed_stages_reorder_later_strikes()
   }))
   Assert.deepEqual(
     strikeKeys(opening),
-    { "QUICK_ATTACK", "TACKLE" },
+    { "SCRATCH", "TACKLE" },
     "the naturally faster lead strikes first while stages stay flat"
   )
 
@@ -357,7 +357,7 @@ function T.raised_speed_stages_reorder_later_strikes()
   }))
   Assert.deepEqual(
     strikeKeys(replayed),
-    { "TACKLE", "QUICK_ATTACK" },
+    { "TACKLE", "SCRATCH" },
     "the raised lead strikes first once its stage feeds ordering"
   )
   session:dispose()
