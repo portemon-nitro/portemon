@@ -1352,7 +1352,7 @@ local function paintValueEditor(ctx)
         drawButtonControl(
           renderer,
           rect,
-          id == "cancel" and "Cancel" or "Choose",
+          id == "cancel" and "Back" or "Choose",
           false,
           isFocusedVisible(view, id),
           disabled,

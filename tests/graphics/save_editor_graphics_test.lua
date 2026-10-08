@@ -452,6 +452,11 @@ local function fixture(scope, width, height, topology, section, variant, version
       view.savedLocation = nil
     end
   end
+  if variant == "bag-item" or variant == "remove" then
+    view.modal = variant
+    view.focus = variant == "bag-item" and "bag:quantity" or "remove"
+    view.scope = { id = "decision:" .. variant, epoch = 2, kind = "decision", focusId = view.focus }
+  end
   if variant == "choice-list" then
     local options = {}
     local rowTargets = {}
@@ -721,6 +726,8 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   local visibleActions = view.valueEditor and {}
     or (
       view.modal == "party-move" and { "party-move:move", "party-move:pp", "party-move:pp-ups", "cancel" }
+      or view.modal == "bag-item" and { "bag:quantity", "bag:remove", "cancel" }
+      or view.modal == "remove" and { "remove", "cancel" }
       or view.modal and { "save", "discard", "cancel" }
       or { "save", "discard", "back" }
     )
@@ -784,7 +791,11 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       Assert.isTrue(layout.locationGrid.clip.height >= 16, name .. " keeps at least one complete tile row")
     end
   elseif view.section == "Bag" then
-    if view.valueEditor then
+    if view.modal == "bag-item" then
+      for _, targetId in ipairs({ "bag:quantity", "bag:remove", "cancel" }) do
+        Assert.notNil(layout.targets[targetId], name .. " exposes its item decision " .. targetId)
+      end
+    elseif view.valueEditor then
       Assert.notNil(layout.targets["number:place:0:down"], name .. " exposes the least-significant decrement")
       Assert.notNil(layout.targets["number:place:0:up"], name .. " exposes the least-significant increment")
     else
@@ -984,6 +995,87 @@ function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(s
       Assert.isTrue(renderedText:find(label, 1, true) ~= nil, "leave decision renders " .. label)
     end
     Assert.isNil(layout.header, "shell publishes no header geometry")
+  end
+end
+
+function T.decision_modals_render_ordered_action_labels_in_compact_and_wide_grids(scope)
+  local cases = {
+    {
+      section = "Bag",
+      variant = "bag-item",
+      labels = { "Quantity", "Remove", "Back" },
+    },
+    {
+      section = "Player",
+      variant = "remove",
+      labels = { "Remove", "Back" },
+    },
+    {
+      section = "Player",
+      variant = "leave",
+      labels = { "Save & exit", "Discard all", "Cancel" },
+    },
+    {
+      section = "Party",
+      variant = "party-move",
+      labels = { "Move", "Current PP", "PP Ups", "Back" },
+    },
+  }
+  for _, size in ipairs({ { width = 256, height = 192 }, { width = 640, height = 480 } }) do
+    local topology = ScreenTopology.oneDisplay({
+      id = "decision-" .. size.width,
+      rect = { x = 0, y = 0, width = size.width, height = size.height },
+      touch = true,
+      role = "world",
+    })
+    for _, scenario in ipairs(cases) do
+      local _, renderedText, layout = draw(
+        scope,
+        size.width,
+        size.height,
+        topology,
+        "decision-" .. scenario.variant .. "-" .. size.width,
+        scenario.section,
+        scenario.variant
+      )
+      for _, label in ipairs(scenario.labels) do
+        Assert.isTrue(
+          renderedText:find(label, 1, true) ~= nil,
+          scenario.variant .. " renders " .. label .. " at " .. size.width .. "x" .. size.height
+        )
+      end
+      Assert.notNil(layout.targets.cancel, scenario.variant .. " keeps the stable cancel action ID")
+      local cancelLabel = scenario.variant == "leave" and "Cancel" or "Back"
+      Assert.isTrue(renderedText:find(cancelLabel, 1, true) ~= nil, scenario.variant .. " paints its final cancel label")
+      if cancelLabel == "Back" then
+        Assert.isNil(renderedText:find("Cancel", 1, true), scenario.variant .. " does not display Cancel")
+      end
+    end
+  end
+end
+
+function T.value_editors_render_back_without_changing_cancel_targets(scope)
+  for _, scenario in ipairs({
+    { variant = "choice-list", size = 640 },
+    { variant = "number-modal", size = 640 },
+  }) do
+    local _, renderedText, layout = draw(
+      scope,
+      scenario.size,
+      480,
+      ScreenTopology.oneDisplay({
+        id = "value-back-" .. scenario.variant,
+        rect = { x = 0, y = 0, width = scenario.size, height = 480 },
+        touch = true,
+        role = "world",
+      }),
+      "value-back-" .. scenario.variant,
+      "Player",
+      scenario.variant
+    )
+    Assert.notNil(layout.targets.cancel, scenario.variant .. " retains the typed cancel target")
+    Assert.isTrue(renderedText:find("Back", 1, true) ~= nil, scenario.variant .. " paints Back")
+    Assert.isNil(renderedText:find("Cancel", 1, true), scenario.variant .. " does not paint Cancel")
   end
 end
 
@@ -2060,6 +2152,8 @@ function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scop
   Assert.isTrue(namingText:find("Upper"), "the real naming page controls are rendered")
   Assert.isTrue(namingText:find("Symbols"), "the naming page selector is rendered")
   Assert.isTrue(namingText:find("OK"), "the naming submit control is rendered")
+  Assert.isTrue(namingText:find("Back", 1, true) ~= nil, "the naming cancel control is labeled Back")
+  Assert.isNil(namingText:find("Cancel", 1, true), "the naming page does not label Back as Cancel")
   Assert.notNil(view.layout.targets["2:1"], "the naming glyph grid has reachable cells")
   Assert.notNil(view.layout.targets.confirm, "name submit remains reachable")
   Assert.notNil(view.layout.targets.cancel, "name cancel remains reachable")

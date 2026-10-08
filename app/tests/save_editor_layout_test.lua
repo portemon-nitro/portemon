@@ -2418,4 +2418,145 @@ function T.tests.editor_chrome_is_compact_and_keeps_targets_inside_every_page()
   end
 end
 
+function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
+  local metrics = filterMetrics()
+  local cases = {
+    {
+      kind = "remove",
+      section = "Player",
+      ids = { "remove", "cancel" },
+      labels = { "Remove", "Back" },
+    },
+    {
+      kind = "bag-item",
+      section = "Player",
+      ids = { "bag:quantity", "bag:remove", "cancel" },
+      labels = { "Quantity", "Remove", "Back" },
+    },
+    {
+      kind = "leave",
+      section = "Player",
+      ids = { "save", "discard", "cancel" },
+      labels = { "Save & exit", "Discard all", "Cancel" },
+    },
+    {
+      kind = "party-move",
+      section = "Party",
+      ids = { "party-move:move", "party-move:pp", "party-move:pp-ups", "cancel" },
+      labels = { "Move", "Current PP", "PP Ups", "Back" },
+    },
+  }
+
+  for _, case in ipairs(cases) do
+    for _, size in ipairs({ { width = 256, height = 192 }, { width = 800, height = 600 } }) do
+      local view = case.section == "Party" and partyEditorView("Moves") or sectionStripView("Player")
+      view.section = case.section
+      view.modal = case.kind
+      view.scope = { id = "decision:" .. case.kind, epoch = 1, kind = "decision", focusId = case.ids[1] }
+      local layout = Layout.compute(view, size.width, size.height, metrics)
+      local decision = assert(layout.decisionList, case.kind .. " publishes its action surface")
+      Assert.equal(#decision.rows, #case.ids, case.kind .. " retains every semantic action")
+
+      local previous
+      for index, targetId in ipairs(case.ids) do
+        local row = assert(decision.rows[index])
+        Assert.equal(row.targetId, targetId, case.kind .. " retains semantic action order")
+        local rect = row.rect
+        Assert.isTrue(rect.x >= decision.surface.x and rect.y >= decision.surface.y)
+        Assert.isTrue(rect.x + rect.width <= decision.surface.x + decision.surface.width)
+        Assert.isTrue(rect.y + rect.height <= decision.surface.y + decision.surface.height)
+        local target = assert(layout.targets[targetId], case.kind .. " publishes the action hit rectangle")
+        Assert.equal(target.rect.x, rect.x, targetId .. " draws and hits the same horizontal bound")
+        Assert.equal(target.rect.y, rect.y, targetId .. " draws and hits the same vertical bound")
+        Assert.equal(
+          Layout.hitTest(layout, view, rect.x + rect.width / 2, rect.y + rect.height / 2),
+          targetId,
+          targetId .. " center remains an actionable hit target"
+        )
+        if previous ~= nil and #case.ids <= 3 then
+          Assert.equal(rect.y, previous.y, case.kind .. " places up to three actions in one row")
+          Assert.isTrue(rect.x >= previous.x + previous.width + 4, case.kind .. " keeps a visible horizontal gap")
+        end
+        if previous ~= nil and #case.ids == 4 and index == 2 then
+          Assert.equal(rect.y, previous.y, "Party Move places the first two actions in row one")
+          Assert.isTrue(rect.x >= previous.x + previous.width + 4, "Party Move keeps a gap within row one")
+        elseif previous ~= nil and #case.ids == 4 and index == 3 then
+          Assert.isTrue(rect.y > previous.y, "Party Move starts its second row below row one")
+        elseif previous ~= nil and #case.ids == 4 and index == 4 then
+          Assert.equal(rect.y, previous.y, "Party Move places the final two actions in row two")
+          Assert.isTrue(rect.x >= previous.x + previous.width + 4, "Party Move keeps a gap within row two")
+        end
+        if size.width > 256 then
+          Assert.isTrue(
+            rect.width >= metrics.measure(case.labels[index]) + 16,
+            targetId .. " reserves measured label width and insets"
+          )
+        end
+        Assert.equal(row.label, case.labels[index], case.kind .. " " .. targetId .. " has the intended label")
+        previous = rect
+      end
+      local last = assert(decision.rows[#decision.rows]).rect
+      local first = assert(decision.rows[1]).rect
+      if #case.ids <= 3 then
+        Assert.isTrue(last.x > first.x, case.kind .. " places Back/Cancel last at the right")
+      else
+        Assert.isTrue(last.y > first.y, "Party Move places Back on the bottom row")
+        Assert.isTrue(last.x > assert(decision.rows[3]).rect.x, "Party Move places Back in the bottom-right cell")
+      end
+    end
+  end
+
+  local view = partyEditorView("Moves")
+  view.section = "Party"
+  view.modal = "party-move"
+  view.scope = { id = "decision:party-move", epoch = 1, kind = "decision", focusId = "party-move:move" }
+  local layout = Layout.compute(view, 640, 480, metrics)
+  local controller = Controller.new()
+  controller:setSection("Party")
+  controller:setFocus("party-move:move")
+  navigate(controller, layout, "right")
+  Assert.equal(controller.focus, "party-move:pp", "right moves across the first modal row")
+  navigate(controller, layout, "down")
+  Assert.equal(controller.focus, "cancel", "down enters the bottom-right Back action")
+  navigate(controller, layout, "left")
+  Assert.equal(controller.focus, "party-move:pp-ups", "left moves across the bottom modal row")
+  navigate(controller, layout, "up")
+  Assert.equal(controller.focus, "party-move:move", "up returns to the top-left action")
+end
+
+function T.tests.party_move_actions_follow_a_two_by_two_navigation_grid()
+  local metrics = filterMetrics()
+  local view = partyEditorView("Moves")
+  view.section = "Party"
+  view.modal = "party-move"
+  view.scope = { id = "decision:party-move", epoch = 1, kind = "decision", focusId = "party-move:move" }
+  local layout = Layout.compute(view, 640, 480, metrics)
+  local rows = assert(layout.decisionList).rows
+  local move = assert(rows[1]).rect
+  local currentPp = assert(rows[2]).rect
+  local ppUps = assert(rows[3]).rect
+  local back = assert(rows[4]).rect
+  Assert.equal(rows[1].targetId, "party-move:move")
+  Assert.equal(rows[2].targetId, "party-move:pp")
+  Assert.equal(rows[3].targetId, "party-move:pp-ups")
+  Assert.equal(rows[4].targetId, "cancel", "Back preserves the typed cancel action ID")
+  Assert.equal(move.y, currentPp.y, "Move and Current PP share the top row")
+  Assert.isTrue(move.x < currentPp.x, "Current PP is to the right of Move")
+  Assert.isTrue(ppUps.y > move.y, "PP Ups starts the lower row")
+  Assert.equal(ppUps.y, back.y, "PP Ups and Back share the lower row")
+  Assert.isTrue(ppUps.x < back.x, "Back is the bottom-right action")
+
+  local controller = Controller.new()
+  controller:setSection("Party")
+  controller:setFocus("party-move:move")
+  navigate(controller, layout, "right")
+  Assert.equal(controller.focus, "party-move:pp", "right moves within the top row")
+  navigate(controller, layout, "down")
+  Assert.equal(controller.focus, "cancel", "down enters Back from Current PP")
+  navigate(controller, layout, "left")
+  Assert.equal(controller.focus, "party-move:pp-ups", "left moves within the bottom row")
+  navigate(controller, layout, "up")
+  Assert.equal(controller.focus, "party-move:move", "up returns to Move from PP Ups")
+end
+
 return T

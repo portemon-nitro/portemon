@@ -1458,10 +1458,10 @@ end
 function T.tests.location_map_row_navigation_keeps_offscreen_identity()
   for _, size in ipairs({ { 800, 600 }, { 256, 192 } }) do
     local label = size[1] .. "x" .. size[2]
-    local harness = overflowingLocationListHarness(size[1], size[2], 30)
+    local harness = overflowingLocationListHarness(size[1], size[2], 31)
     local controller, state = harness.controller, harness.state
     local viewport = assert(harness.buildLayout().viewports["location:group:1"])
-    Assert.isTrue(viewport.lastIndex < 30, "the map list must overflow its viewport (" .. label .. ")")
+    Assert.isTrue(viewport.lastIndex < 31, "the map list must overflow its viewport (" .. label .. ")")
 
     controller:setFocus("list:location:group:1")
     state:_reconcileFocus()
@@ -3892,7 +3892,7 @@ function T.tests.move_slot_opens_a_three_action_overlay_returning_from_its_child
   harness.state:_finishValueEditor()
   Assert.isNil(harness.state.valueEditor, "the child editor retires")
   Assert.equal(harness.controller.modal, "party-move", "a finished child returns to its parent overlay")
-  harness.state:_requestBack()
+  activate(harness.state, "cancel")
   Assert.isNil(harness.controller.modal, "Back pops the parent overlay")
   Assert.equal(harness.controller.partyTab, "Moves", "Back lands on the Moves page")
   Assert.isNil(harness.state.closeRequest, "popping the overlay never enters the leave flow")
