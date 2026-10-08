@@ -54,6 +54,8 @@ local DOMAINS = {
   battle = {
     "BattleDataCache",
     "BattleDataSchema",
+    "BattlePresentationCache",
+    "BattlePresentationSchema",
   },
 }
 

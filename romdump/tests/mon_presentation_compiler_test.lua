@@ -23,6 +23,7 @@ local T = {}
 
 local PORTRAIT_CELL = 80
 local FRONT_FACING = 2
+local BACK_FACING = 0
 
 local function u16(v)
   return string.char(v % 256, math.floor(v / 256) % 256)
@@ -152,7 +153,10 @@ end
 -- Serve synthetic members through the two production archive aliases, keyed
 -- by each variant's own selected archive and member exactly as the producer
 -- resolves them. charFor receives (speciesKey, gender, form) and palFor
--- receives (speciesKey, gender, shiny, form).
+-- receives (speciesKey, gender, shiny, form). Both facings resolve: the
+-- fixture serves the same geometry bytes at each facing's own members, so
+-- facing-selection tests use this for shape while dedicated back-pixel
+-- tests serve distinct front/back bytes.
 ---@param catalog { species: table<string, { forms: table<integer, table> }> }
 ---@param charFor fun(speciesKey: string, gender: string, formId: integer): string
 ---@param palFor fun(speciesKey: string, gender: string, shiny: boolean, formId: integer): string
@@ -163,10 +167,12 @@ local function romFsWith(catalog, charFor, palFor)
     local speciesId = assert(MonSources.speciesId(key), key .. " must be a known species")
     for formId in pairs(species.forms) do
       for _, gender in ipairs({ "male", "female" }) do
-        local ids = MonSources.portraitIds(speciesId, gender, FRONT_FACING, false, formId)
-        local charStore = perNarc[ids.narc] or {}
-        perNarc[ids.narc] = charStore
-        charStore[ids.charMemberId] = charFor(key, gender, formId)
+        for _, facing in ipairs({ FRONT_FACING, BACK_FACING }) do
+          local ids = MonSources.portraitIds(speciesId, gender, facing, false, formId)
+          local charStore = perNarc[ids.narc] or {}
+          perNarc[ids.narc] = charStore
+          charStore[ids.charMemberId] = charFor(key, gender, formId)
+        end
         for _, shiny in ipairs({ false, true }) do
           local shinyIds = MonSources.portraitIds(speciesId, gender, FRONT_FACING, shiny, formId)
           local palStore = perNarc[shinyIds.narc] or {}

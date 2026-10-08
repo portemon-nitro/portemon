@@ -41,6 +41,57 @@ local function swapped(reader, offset)
   return string.reverse(reader:ascii(offset, 4))
 end
 
+-- Parse the exact retail-tail envelope: the declared size exceeds the actual
+-- bytes by exactly sixteen, every present block is complete inside the
+-- actual bytes, and the missing sixteen bytes sit wholly after complete
+-- blocks at EOF. Returns the parsed blocks plus the offset where the
+-- missing tail starts so the caller can require its required chunk to end
+-- before it. Anything else (a different over-declaration, a partially
+-- present block, or no missing block at all) stays rejected.
+local function tailBlocks(reader, magic, declaredSize, headerSize, blockCount)
+  local actual = reader:length()
+  if declaredSize - actual ~= 16 then
+    Errors.raise(G2dDecoder.ERROR.TRUNCATED, "G2D resource declares " .. declaredSize .. " bytes but has " .. actual, {
+      declared = declaredSize,
+      size = actual,
+    })
+  end
+  local blocks = {}
+  local offset = headerSize
+  local parsed = 0
+  for _ = 1, blockCount do
+    if offset + 8 > actual then
+      break
+    end
+    local name = swapped(reader, offset)
+    local size = reader:u32le(offset + 4)
+    if size < 8 or offset + size > actual then
+      Errors.raise(G2dDecoder.ERROR.BLOCK_INVALID, "G2D block " .. name .. " extends past the available bytes", {
+        name = name,
+        size = size,
+        offset = offset,
+      })
+    end
+    if blocks[name] ~= nil then
+      Errors.raise(
+        G2dDecoder.ERROR.CHUNK_DUPLICATE,
+        "G2D resource carries duplicate " .. name .. " chunks",
+        { chunk = name, offset = offset }
+      )
+    end
+    blocks[name] = { offset = offset, payload = offset + 8, size = size - 8 }
+    offset = offset + size
+    parsed = parsed + 1
+  end
+  if parsed == blockCount then
+    Errors.raise(G2dDecoder.ERROR.TRUNCATED, "G2D resource declares " .. declaredSize .. " bytes but has " .. actual, {
+      declared = declaredSize,
+      size = actual,
+    })
+  end
+  return magic, blocks, offset
+end
+
 local function _blocks(reader, opts)
   if reader:length() < 4 then
     Errors.raise(G2dDecoder.ERROR.TRUNCATED, "G2D resource is shorter than its magic", { size = reader:length() })
@@ -61,7 +112,13 @@ local function _blocks(reader, opts)
     Errors.raise(G2dDecoder.ERROR.BYTE_ORDER_INVALID, "G2D byte order is not 0xFEFF", { byteOrder = byteOrder })
   end
   local declaredSize = reader:u32le(8)
-  if declaredSize > reader:length() then
+  -- The evidenced retail background CHAR family declares sixteen bytes past
+  -- its complete CHAR block. The producer opts into that exact envelope with
+  -- allowRetailTail; every other caller keeps the strict truncation check.
+  -- Only a wholly-missing trailing block is excused, never a short,
+  -- over-declared, duplicated, or corrupt resource.
+  local tail = opts.allowRetailTail == true and declaredSize > reader:length()
+  if declaredSize > reader:length() and not tail then
     Errors.raise(
       G2dDecoder.ERROR.TRUNCATED,
       "G2D resource declares " .. declaredSize .. " bytes but has " .. reader:length(),
@@ -78,6 +135,9 @@ local function _blocks(reader, opts)
       headerSize = headerSize,
       blockCount = blockCount,
     })
+  end
+  if tail then
+    return tailBlocks(reader, magic, declaredSize, headerSize, blockCount)
   end
   local blocks = {}
   local offset = headerSize
@@ -105,19 +165,19 @@ local function _blocks(reader, opts)
         { chunk = name, offset = offset }
       )
     end
-    blocks[name] = { payload = offset + 8, size = size - 8 }
+    blocks[name] = { offset = offset, payload = offset + 8, size = size - 8 }
     offset = offset + size
   end
-  return magic, blocks
+  return magic, blocks, nil
 end
 
 local function blocks(data, opts, label)
   local reader = BinaryReader.new(data, label)
-  local ok, magic, blks = pcall(_blocks, reader, opts)
+  local ok, magic, blks, missingAt = pcall(_blocks, reader, opts)
   if not ok then
     error(magic, 0)
   end
-  return magic, blks, reader
+  return magic, blks, reader, missingAt
 end
 
 local function mustBlock(blks, name)
@@ -167,8 +227,20 @@ local PLAY_MODE = {
 }
 
 local function decodeCharBlock(data, opts)
-  local _, blks, reader = blocks(data, { magics = CONTAINER_MAGICS }, opts.label or "g2d-char")
+  local _, blks, reader, missingAt =
+    blocks(data, { magics = CONTAINER_MAGICS, allowRetailTail = opts.allowRetailTail }, opts.label or "g2d-char")
   local blk = mustBlock(blks, "CHAR")
+  if missingAt ~= nil then
+    -- The excused tail must sit wholly after the complete CHAR block; the
+    -- exception never manufactures tile data for an incomplete CHAR.
+    local charEnd = blk.offset + 8 + blk.size
+    if charEnd > missingAt then
+      Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "CHAR block is incomplete inside the retail-tail envelope", {
+        charEnd = charEnd,
+        missingAt = missingAt,
+      })
+    end
+  end
   if blk.size < 0x18 then
     Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "CHAR chunk is shorter than its header", { size = blk.size })
   end
@@ -251,7 +323,7 @@ local function decodeScreenBlock(data, opts)
 end
 
 ---@param data string
----@param opts? { label?: string }
+---@param opts? { label?: string, allowRetailTail?: boolean }
 ---@return { depth: integer, tiles: string }?
 ---@return Errors.Error?
 function G2dDecoder.decodeChar(data, opts)
@@ -549,17 +621,15 @@ function G2dDecoder.decodeAnimation(data, opts)
         })
       end
       local frames = {}
+      -- The retail arrow holds its opening cell for zero ticks: a legal
+      -- zero duration is preserved, never rewritten. Only a cyclic
+      -- sequence that can never advance stays rejected below.
+      local totalDuration = 0
       for f = 0, numFrames - 1 do
         local fbase = blk.payload + framesOffset + (firstFrameIndex + f) * 8
         local frameData = reader:u32le(fbase)
         local duration = reader:u16le(fbase + 4)
-        if duration <= 0 then
-          Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "ANIM frame duration must be positive", {
-            duration = duration,
-            animation = a,
-            frame = f,
-          })
-        end
+        totalDuration = totalDuration + duration
         local propBase = blk.payload + dataOffset + frameData
         -- Validate property bounds according to the animation's element type.
         -- The property size is fixed per type: 2 for type 0 (plus dword padding),
@@ -664,6 +734,12 @@ function G2dDecoder.decodeAnimation(data, opts)
             rotation = rotation,
           }
         end
+      end
+      if totalDuration == 0 and (playMode == "forward_loop" or playMode == "reverse_loop") then
+        Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "ANIM looping sequence can never advance", {
+          animation = a,
+          playMode = playMode,
+        })
       end
       anims[a + 1] = {
         frames = frames,

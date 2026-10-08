@@ -358,6 +358,17 @@ DerivedAssetContract.trainerCatalog = {
   schema = "g4-trainer-catalog-v2",
 }
 
+-- The battle presentation class carries the source-backed ordinary battle
+-- UI: the shared menu/HUD definitions with their staged slices, lazily
+-- compiled persistent scene variants, and the exact per-launch demand
+-- (portrait pages resolve through the mon class). The global manifest
+-- stages apart from scenes; one scene stages per demanded key.
+DerivedAssetContract.battlePresentation = {
+  cacheFormat = "battle-presentation-cache-v1",
+  schema = "g4-battle-presentation-v1",
+  sceneSchema = "g4-battle-scene-v1",
+}
+
 DerivedAssetContract.encounterCatalog = {
   cacheFormat = "encounter-catalog-cache-v1",
   schema = "g4-encounter-catalog-v1",
