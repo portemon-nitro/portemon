@@ -133,7 +133,6 @@ end
 ---@field pocketByKey table<string, table<string, unknown>>
 ---@field optionsByPocket table<string, { key: string, label: string }[]>
 ---@field itemByKey table<string, SaveEditorBagItemMetadata>
----@field nativeIdByKey table<string, integer>
 ---@field sortPocketIndex integer
 ---@field sort SaveEditorIncrementalSort<SaveEditorBagOption>?
 ---@field stage "scan"|"sort"
@@ -1522,7 +1521,6 @@ function State:_advanceBagCatalog(budget)
       pocketByKey = pocketByKey,
       optionsByPocket = optionsByPocket,
       itemByKey = {},
-      nativeIdByKey = {},
       sortPocketIndex = 1,
       stage = "scan",
     }
@@ -1538,7 +1536,6 @@ function State:_advanceBagCatalog(budget)
         used = used + 1
         local item = itemCatalog:item(key)
         task.itemByKey[key] = { item = key, label = item.name or key, iconKey = item.icon }
-        task.nativeIdByKey[key] = item.nativeId
         if key ~= "NONE" then
           local options = task.optionsByPocket[item.pocket]
           if options ~= nil then
@@ -1551,9 +1548,7 @@ function State:_advanceBagCatalog(budget)
       local sort = task.sort
       if sort == nil then
         sort = newIncrementalSort(task.optionsByPocket[pocket], function(a, b)
-          local aId = assert(task.nativeIdByKey[a.key])
-          local bId = assert(task.nativeIdByKey[b.key])
-          return aId == bId and a.key < b.key or aId < bId
+          return itemCatalog:orderingKey(a.key) < itemCatalog:orderingKey(b.key)
         end)
         task.sort = sort
       end

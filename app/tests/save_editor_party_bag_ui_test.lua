@@ -11,6 +11,8 @@ local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
+local ItemCatalog = require("libs.items.src.ItemCatalog")
+local ItemFixture = require("libs.items.tests.item_fixture")
 
 local T = {}
 
@@ -1191,6 +1193,13 @@ function T.bag_snapshot_reuses_catalog_and_pocket_metadata_until_revision_change
       counts.pocket = counts.pocket + 1
       return { nativeId = key == pocket and 1 or 2, maxQuantity = 99 }
     end,
+    orderingKey = function(_, key)
+      local itemIndex = key == "NONE" and 0 or tonumber(key:match("ITEM_(%u+)$"))
+      if itemIndex == nil then
+        itemIndex = ({ ONE = 1, TWO = 2, THREE = 3, FOUR = 4, FIVE = 5, SIX = 6, SEVEN = 7 })[key:match("ITEM_(%u+)$")]
+      end
+      return string.format("0:%06d", assert(itemIndex))
+    end,
   }
   local revision, quantity = 1, 2
   local session = {
@@ -1275,6 +1284,9 @@ function T.first_bag_snapshot_does_not_scan_or_materialize_the_item_catalog()
     pocket = function()
       return { nativeId = 1 }
     end,
+    orderingKey = function(_, key)
+      return string.format("0:%06d", tonumber(key:match("ITEM_(%d+)$")) or 0)
+    end,
   }
   local state = setmetatable({
     dependencies = {
@@ -1326,6 +1338,122 @@ function T.first_bag_snapshot_does_not_scan_or_materialize_the_item_catalog()
   end
   Assert.equal(catalogVisits, 600, "the preparation eventually visits every item key")
   Assert.isTrue(state:_bagView().bagAddEnabled, "the completed catalog publishes its pocket options")
+end
+
+function T.bag_catalog_orders_native_and_custom_items_with_bounded_work()
+  local root = ItemFixture.buildAssetRoot()
+  for key, name in pairs({
+    ["ember:ZEPHYR_CHIME"] = "A Charm",
+    ["ember:EMBER_CHARM"] = "Z Charm",
+    ["ember:MOON_CHARM"] = "Moon Charm",
+  }) do
+    root.items[key] = {
+      name = name,
+      nameIndefinite = "a " .. name,
+      namePlural = name .. "s",
+      description = "A custom item.",
+      pocket = "items",
+      preventToss = false,
+      selectable = true,
+      isBall = false,
+      friendshipBoost = false,
+      icon = key,
+      isHm = false,
+      canHold = true,
+      heldFormEffect = "none",
+      partyUse = { kind = "none" },
+    }
+  end
+  local resolved = ItemCatalog.fromResolved(root)
+  local visits, reads = 0, 0
+  local catalog = {
+    itemKeyIterator = function()
+      local nextKey = resolved:itemKeyIterator()
+      return function()
+        local key = nextKey()
+        if key ~= nil then
+          visits = visits + 1
+        end
+        return key
+      end
+    end,
+    item = function(_, key)
+      reads = reads + 1
+      return resolved:item(key)
+    end,
+    pocket = function(_, key)
+      return resolved:pocket(key)
+    end,
+    orderingKey = function(_, key)
+      return resolved:orderingKey(key)
+    end,
+  }
+  local pocket = "items"
+  local state = setmetatable({
+    dependencies = {
+      context = { itemCatalog = catalog },
+      bagManifest = {
+        interactive = {
+          pocketTabs = { rects = {}, strips = { [pocket] = {} } },
+          focus = { tabs = { visual = {}, targets = {} } },
+          overlays = { quantity = { visuals = {} } },
+        },
+      },
+    },
+    session = {
+      revision = function()
+        return 1
+      end,
+      bagSnapshot = function()
+        return {
+          { item = "SOOTHE_BELL", quantity = 1 },
+          { item = "ember:ZEPHYR_CHIME", quantity = 1 },
+          { item = "ember:EMBER_CHARM", quantity = 1 },
+          { item = "ember:MOON_CHARM", quantity = 1 },
+        }
+      end,
+    },
+    controller = { section = "Bag", bagPocket = pocket, bagPage0 = 0 },
+  }, SaveEditorState)
+
+  local updates = 0
+  while state._bagCatalogMetadata == nil do
+    updates = updates + 1
+    Assert.isTrue(updates <= 2000, "the mixed Bag catalog reaches readiness")
+    local before = visits
+    local used = state:_advanceBagCatalog(7)
+    Assert.isTrue(used <= 7, "each catalog step respects its work budget")
+    Assert.isTrue(visits - before <= 7, "each catalog step scans only its row budget")
+  end
+
+  local options = state._bagCatalogMetadata.optionsByPocket[pocket]
+  local optionKeys, optionSet = {}, {}
+  for _, option in ipairs(options) do
+    optionKeys[#optionKeys + 1] = option.key
+    optionSet[option.key] = true
+  end
+  for index = 2, #optionKeys do
+    Assert.isTrue(
+      catalog:orderingKey(optionKeys[index - 1]) < catalog:orderingKey(optionKeys[index]),
+      "the Bag options follow the authoritative native-first ordering"
+    )
+  end
+  for _, key in ipairs({ "SOOTHE_BELL", "ember:EMBER_CHARM", "ember:MOON_CHARM", "ember:ZEPHYR_CHIME" }) do
+    Assert.isTrue(optionSet[key], "the sorted options retain " .. key)
+  end
+  Assert.isNil(resolved:item("ember:EMBER_CHARM").nativeId, "custom items keep their semantic-only identity")
+
+  local view = state:_bagView()
+  Assert.isTrue(view.bagAddEnabled, "the completed Bag catalog enables item addition")
+  Assert.equal(#view.bagRows, 4, "native and custom saved stacks resolve into Bag rows")
+  Assert.equal(view.bagRows[2].item, "ember:ZEPHYR_CHIME")
+  Assert.equal(view.bagRows[3].item, "ember:EMBER_CHARM")
+  Assert.equal(view.bagRows[4].item, "ember:MOON_CHARM")
+  view.section, view.ready, view.dirty = "Bag", true, false
+  local layout = computeLayout(view, 256, 192)
+  Assert.notNil(layout.targets["bag:item:ember:ZEPHYR_CHIME"], "the custom stack is an actionable Bag card")
+  Assert.notNil(layout.targets["bag:add"], "the completed catalog exposes the Bag add action")
+  Assert.isTrue(visits > 0 and reads > 0, "catalog construction incrementally reads resolved item keys")
 end
 
 return { tests = T }
