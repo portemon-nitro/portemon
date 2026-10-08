@@ -53,6 +53,22 @@ local function assertRevisionBumpedOnce(session, before)
   Assert.equal(session:snapshot().revision, before + 1, "a section reset bumps the revision exactly once")
 end
 
+function T.tests.public_session_snapshots_remain_independent_copies()
+  local session = openSession()
+  local first = session:snapshot()
+  local second = session:snapshot()
+
+  Assert.isFalse(rawequal(first, second), "each public snapshot owns its root table")
+  Assert.isFalse(rawequal(first.flags, second.flags), "each public snapshot owns its flags")
+  Assert.isFalse(rawequal(first.location, second.location), "each public snapshot owns nested location data")
+  first.flags[1] = not first.flags[1]
+  first.location.fieldX = first.location.fieldX + 1
+
+  local current = session:snapshot()
+  Assert.equal(second.flags[1], current.flags[1], "mutating one copy leaves another and the session unchanged")
+  Assert.equal(second.location.fieldX, current.location.fieldX, "nested copies stay detached from the session")
+end
+
 function T.tests.player_reset_restores_money_and_frame_but_keeps_other_sections()
   local session = openSession()
   dirtyEverything(session)

@@ -32,7 +32,12 @@ local function activate(state, targetId)
   state.numberPressUntilTick = state.numberPressUntilTick or 0
   local view = state:_snapshot()
   if view.session ~= nil then
-    view.session.frameIndex = view.session.frameIndex or 0
+    local session = {}
+    for key, value in pairs(view.session) do
+      session[key] = value
+    end
+    session.frameIndex = session.frameIndex or 0
+    view.session = session
   end
   local metrics = view.textMetrics or {
     lineHeight = 14,
@@ -2877,11 +2882,15 @@ function T.tests.flag_value_reads_are_limited_to_the_visible_window()
     money = 0,
   }
   local session = {
+    revision = function()
+      return 0
+    end,
     snapshot = function()
       return snapshot
     end,
-    isDirty = function()
-      return false
+    isDirty = function(self)
+      local dirty = self:snapshot().dirtySections
+      return dirty.money or dirty.frame or dirty.flags or dirty.party or dirty.bag or dirty.location
     end,
   }
   local catalog = {}
@@ -3359,6 +3368,10 @@ local function backHarness(options)
   end
   local session = {
     dirty = options.dirty == true,
+    snapshotRevision = 0,
+    revision = function(self)
+      return self.snapshotRevision
+    end,
     partyRevision = function()
       return 0
     end,
@@ -3378,10 +3391,12 @@ local function backHarness(options)
     end,
     discardSection = function(self, section)
       self.discardedSections[#self.discardedSections + 1] = section
+      self.snapshotRevision = self.snapshotRevision + 1
       return true
     end,
     discard = function(self)
       self.globalDiscards = self.globalDiscards + 1
+      self.snapshotRevision = self.snapshotRevision + 1
       return true
     end,
   }
@@ -5033,6 +5048,77 @@ function T.tests.typed_decision_action_uses_its_declared_decision_and_choice()
   State._dispatchActivationAction(state, { kind = "decision.cancel", decision = "party-move" })
 
   Assert.isTrue(closed, "the typed cancel action closes its decision")
+end
+
+function T.tests.stable_state_snapshots_reuse_the_session_revision_projection()
+  local controller = Controller.new()
+  local calls = 0
+  local revision = 1
+  local flags = { [1] = true }
+  local session = {
+    revision = function()
+      return revision
+    end,
+    snapshot = function()
+      calls = calls + 1
+      return {
+        playerName = "Trainer",
+        money = 100,
+        frameIndex = 0,
+        flags = flags,
+        dirtySections = { money = false, frame = false, flags = false },
+      }
+    end,
+    isDirty = function(self)
+      local dirty = self:snapshot().dirtySections
+      return dirty.money or dirty.frame or dirty.flags or dirty.party or dirty.bag or dirty.location
+    end,
+  }
+  local state = stateHarness({
+    controller = controller,
+    status = "ready",
+    session = session,
+    modalStack = ModalStack.new(),
+    valueEditor = nil,
+    inputTick = 0,
+    numberPressUntilTick = 0,
+    disposed = false,
+  })
+
+  local first = state:_snapshot()
+  local second = state:_snapshot()
+  Assert.equal(calls, 1, "stable State reads reuse their session projection")
+  Assert.equal(second.session.flags[1], true, "stable reads preserve projected flags")
+  Assert.isTrue(rawequal(first.session, second.session), "stable reads borrow the same State-owned projection")
+
+  revision = revision + 1
+  flags[1] = false
+  local refreshed = state:_snapshot()
+  Assert.equal(calls, 2, "a changed session revision refreshes the projection")
+  Assert.equal(refreshed.session.flags[1], false, "the refreshed projection shows the changed flag")
+
+  local sameRevisionReplacement = {
+    revision = function()
+      return revision
+    end,
+    snapshot = function()
+      calls = calls + 1
+      return {
+        playerName = "Replacement",
+        money = 200,
+        frameIndex = 0,
+        flags = {},
+        dirtySections = { money = false, frame = false, flags = false },
+      }
+    end,
+    isDirty = function(self)
+      local dirty = self:snapshot().dirtySections
+      return dirty.money or dirty.frame or dirty.flags or dirty.party or dirty.bag or dirty.location
+    end,
+  }
+  state.session = sameRevisionReplacement
+  Assert.equal(state:_snapshot().session.playerName, "Replacement", "a new Session identity refreshes equal revisions")
+  Assert.equal(calls, 3, "identity replacement takes exactly one new snapshot")
 end
 
 return T

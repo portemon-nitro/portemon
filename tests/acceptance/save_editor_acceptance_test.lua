@@ -1198,4 +1198,110 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
   end
 end
 
+function T.tests.stable_editor_views_reuse_the_session_snapshot_until_owner_or_revision_changes()
+  local fixture = Fixture.new()
+  local host = readyHost()
+  local state
+  local originalGlobal = SaveFs.global
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+  local ok, err = xpcall(function()
+    local State = require("app.src.saveeditor.SaveEditorState")
+    local Session = require("app.src.saveeditor.SaveEditorSession")
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 800,
+      height = 600,
+      derivedAssets = host,
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "the production editor opens the isolated save")
+
+    local firstSession = assert(state.session)
+    local firstOriginalSnapshot = firstSession.snapshot
+    local firstSnapshotRequests = 0
+    firstSession.snapshot = function(self)
+      firstSnapshotRequests = firstSnapshotRequests + 1
+      return firstOriginalSnapshot(self)
+    end
+    state.controller:setSection("Progress")
+    local initial = state:_snapshot()
+    local initialFlags = copy(initial.session.flags)
+    local initialPlan = state:_resolve(initial)
+    state:_reconcileFocus(nil, initialPlan.content.layout)
+    local initialRequests = firstSnapshotRequests
+
+    withoutRendering(function()
+      for _ = 1, 12 do
+        local view = state:view()
+        Assert.deepEqual(view.session.flags, initialFlags, "stable Progress views preserve visible flags")
+        state:_resolve(state:_snapshot())
+        state:_reconcileFocus(nil, view.layout)
+        state:update(0)
+      end
+    end)
+    Assert.equal(
+      firstSnapshotRequests,
+      initialRequests,
+      "steady view, layout, focus, and update requests do not recopy an unchanged session revision"
+    )
+
+    local candidate = firstSession:captureCandidate()
+    local replacement = assert(Session.new({
+      record = candidate,
+      context = assert(state.dependencies).context,
+      saveStore = state.dependencies.saveStore,
+      saveFs = state.dependencies.saveFs,
+    }))
+    local replacementOriginalSnapshot = replacement.snapshot
+    local replacementSnapshotRequests = 0
+    replacement.snapshot = function(self)
+      replacementSnapshotRequests = replacementSnapshotRequests + 1
+      return replacementOriginalSnapshot(self)
+    end
+    Assert.equal(replacement:revision(), firstSession:revision(), "replacement starts at the same numeric revision")
+    state.session = replacement
+    local replacedView = state:view()
+    Assert.equal(replacementSnapshotRequests, 1, "a different session owner refreshes the State projection")
+
+    local flagId = assert(FieldScriptSymbols.flagsByName.FLAG_GOT_POKEDEX)
+    local wasSet = replacedView.session.flags[flagId] == true
+    local changed = replacement:setFlag("FLAG_GOT_POKEDEX", not wasSet)
+    Assert.isTrue(changed.ok and changed.changed, "the production session stages a field-flag edit")
+    local updatedView = state:view()
+    Assert.equal(replacementSnapshotRequests, 2, "a changed session revision refreshes once")
+    Assert.equal(updatedView.session.flags[flagId], not wasSet, "the changed flag is visible immediately")
+
+    local directFirst = replacement:snapshot()
+    local directSecond = replacement:snapshot()
+    Assert.isFalse(rawequal(directFirst, directSecond), "each public snapshot returns an independent root table")
+    Assert.isFalse(rawequal(directFirst.flags, directSecond.flags), "each public snapshot owns its flags table")
+    directFirst.flags[flagId] = wasSet
+    directFirst.location.fieldX = directFirst.location.fieldX + 1
+    local stored = replacement:snapshot()
+    Assert.equal(directSecond.flags[flagId], not wasSet, "mutating one snapshot does not change another")
+    Assert.equal(stored.flags[flagId], not wasSet, "mutating a public snapshot does not change session state")
+    Assert.isFalse(
+      stored.location.fieldX == directFirst.location.fieldX,
+      "nested snapshot records are detached"
+    )
+  end, debug.traceback)
+  SaveFs.global = originalGlobal
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return T

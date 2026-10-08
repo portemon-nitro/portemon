@@ -231,6 +231,7 @@ end
 ---@field indexByTarget table<string, integer>
 
 ---@class SaveEditorState
+---@field _uiSessionSnapshot { owner: SaveEditorSession, revision: integer, value: SaveEditorSnapshot }?
 ---@field valueEditor SaveEditorValueEditor?
 ---@field preserveChoiceScroll boolean
 ---@field valueReturnFocus string?
@@ -814,7 +815,20 @@ function State:_normalizeBagPage()
 end
 
 function State:_snapshot()
-  local session = self.session and self.session:snapshot() or nil
+  local owner = self.session
+  local session
+  if owner == nil then
+    self._uiSessionSnapshot = nil
+  else
+    local revision = owner:revision()
+    local cached = self._uiSessionSnapshot
+    if cached == nil or cached.owner ~= owner or cached.revision ~= revision then
+      local value = owner:snapshot()
+      cached = { owner = owner, revision = revision, value = value }
+      self._uiSessionSnapshot = cached
+    end
+    session = cached.value
+  end
   local section = self.controller.section
   local flagModel, flagRows, flagRowTargets, flagIndexByTarget
   if session ~= nil and section == "Progress" then
@@ -823,6 +837,16 @@ function State:_snapshot()
   end
   local party = session and section == "Party" and self:_partyView() or {}
   local bag = session and section == "Bag" and self:_bagView() or {}
+  local sessionDirty = false
+  if session ~= nil then
+    local dirtySections = session.dirtySections
+    sessionDirty = dirtySections.money
+      or dirtySections.frame
+      or dirtySections.flags
+      or dirtySections.party
+      or dirtySections.bag
+      or dirtySections.location
+  end
   local modalTitle
   if self.controller.modal == "party-move" then
     local slot0 = assert(self.pendingMoveSlot, "move dialog owns its selected move slot")
@@ -864,10 +888,8 @@ function State:_snapshot()
       valueEditorSnapshot.selectedKey
     ) or nil,
     ready = session ~= nil,
-    dirty = self.session ~= nil
-      and (
-        self.session:isDirty() or (self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty()))
-      ),
+    dirty = session ~= nil
+      and (sessionDirty or (self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty()))),
     dirtySections = session and session.dirtySections or { money = false, flags = false },
     sectionDirty = self:_sectionDirty(session),
     section = self.controller.section,
@@ -4131,6 +4153,7 @@ function State:dispose()
   end
   self.valueEditor = nil
   self.session = nil
+  self._uiSessionSnapshot = nil
   self.dependencies = nil
   self.partyView = nil
 end
