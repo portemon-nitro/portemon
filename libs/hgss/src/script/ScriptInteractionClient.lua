@@ -17,6 +17,14 @@
 local ScriptInteractionClient = {}
 ScriptInteractionClient.__index = ScriptInteractionClient
 local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
+local Bindings = require("libs.hgss.src.script.Bindings")
+
+-- The dynamic follower keeps raw script id zero on its synthetic actor event
+-- (see FieldActorManager.partnerEvent), so the generic binding would route
+-- it to the inert no-op. Facing the partner must instead start the
+-- ROM-derived following-mon script, which faces the follower and runs the
+-- follower interaction task. The stable dynamic actor id is the precise
+-- owner; the source object id pins the same retail partner.
 
 -- The consume() outcome protocol shared with FieldSession: a consumed intent
 -- either started a foreground script, found the field already owned, or was
@@ -27,6 +35,22 @@ ScriptInteractionClient.RESULTS = {
   blocked = "blocked",
   unmapped = "unmapped",
 }
+
+-- Retail following-mon interaction script behind a partner Action press.
+ScriptInteractionClient.FOLLOWER_INTERACTION_SCRIPT = "common.following_mon"
+ScriptInteractionClient.PARTNER_ACTOR_ID = "field:partner"
+ScriptInteractionClient.PARTNER_OBJECT_EVENT_ID = 253
+
+---@param intent table<string, unknown>
+---@return boolean
+local function isPartnerIntent(intent)
+  if intent.kind ~= "object" or type(intent.object) ~= "table" then
+    return false
+  end
+  local object = intent.object
+  return object.actorId == ScriptInteractionClient.PARTNER_ACTOR_ID
+    or object.objectEventId == ScriptInteractionClient.PARTNER_OBJECT_EVENT_ID
+end
 
 ---@param opts table<string, unknown>
 ---@return ScriptInteractionClient
@@ -129,6 +153,17 @@ end
 ---@param intent table<string, unknown> InteractionIntent
 ---@return table<string, unknown>|nil { trigger, composed }
 function ScriptInteractionClient:resolve(intent)
+  if isPartnerIntent(intent) then
+    local scriptId = ScriptInteractionClient.FOLLOWER_INTERACTION_SCRIPT
+    local composed = self._compose(scriptId)
+    if composed == nil then
+      error("missing composed follower interaction " .. scriptId)
+    end
+    return {
+      trigger = Bindings.objectTrigger(intent, scriptId, intent.playerFacing),
+      composed = composed,
+    }
+  end
   if intent.kind == "standard" then
     assert(intent.scriptId == "common.pokecenter_pc", "unknown standard field interaction")
     local composed = self._compose(intent.scriptId)

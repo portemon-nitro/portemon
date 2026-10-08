@@ -346,9 +346,25 @@ function T.tests.facing_the_partner_never_traps_the_field()
         end
       end
       game:pressAction()
-      game:advanceUntil("interaction settles without a stuck dialogue", function(candidate)
-        return not candidate.dialogue.modal and not candidate.fieldLocked
-      end, 120)
+      -- Facing the partner starts the following-mon interaction, which owns
+      -- dialogue/choices until it completes: drive semantic confirm edges
+      -- until the field unlocks instead of expecting no dialogue at all.
+      local settled = false
+      for _ = 1, 600 do
+        local candidate = game:snapshot()
+        if not candidate.dialogue.modal and not candidate.fieldLocked and game:contextChoiceStatus() == nil then
+          settled = true
+          break
+        end
+        if candidate.dialogue.modal or game:contextChoiceStatus() ~= nil then
+          game.runtime:pressAction()
+          game:step()
+          game.runtime:releaseAction()
+        else
+          game:step()
+        end
+      end
+      Assert.isTrue(settled, "partner interaction must settle without a stuck dialogue")
       assertNoFault(game, "across repeated partner interaction")
     end
     Assert.isFalse(game:snapshot().dialogue.modal, "no empty partner dialogue may persist")

@@ -103,6 +103,27 @@ T["zero raw script id resolves to the inert script"] = function()
   Assert.equal(resolved.scriptId, Bindings.CANONICAL_INERT_SCRIPT)
 end
 
+-- The dynamic follower keeps raw script id zero on its synthetic event, but
+-- facing it must start the ROM-derived following-mon script, never inert.
+T["partner interaction starts the following-mon script"] = function()
+  local p = platform()
+  local resource = script("common.following_mon", { S.waitTicks({ ticks = 1 }), S.stop() })
+  p.registry:installBase(resource.id, resource, "generated")
+  local client = ScriptInteractionClient.new({
+    bindings = Bindings.new(),
+    compose = function(id)
+      return p.composition:effective(id)
+    end,
+    scheduler = p.scheduler,
+  })
+  local intent = objectIntent(61, "field:partner", "north", 0)
+  intent.object.objectEventId = 253
+  Assert.equal(client:consume(intent, 100), ScriptInteractionClient.RESULTS.started)
+  local instance = assert(p.scheduler:instances()[1])
+  Assert.equal(instance.trigger.scriptId, "common.following_mon")
+  Assert.equal(instance.trigger.selfActor, "field:partner")
+end
+
 -- A std-script sentinel (item ball, apricorn tree, ...) addresses a global
 -- scr_seq member unrelated to the map's own bank, so the field-map producer
 -- hands the binding layer an already-resolved canonical id; the binding

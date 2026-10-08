@@ -171,6 +171,92 @@ function T.tests.compiled_following_mon_script_blocks_on_live_interaction_and_re
   end
 end
 
+function T.tests.facing_the_partner_starts_the_following_mon_script()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local game = boot(versionId)
+  local ok, err = xpcall(function()
+    Assert.isTrue(
+      game.runtime.monService:giveMon({ species = "EEVEE", level = 5, form = 0 }),
+      "the production mon service must add the lead mon"
+    )
+    game:advanceUntil("follower installation after interaction setup", function()
+      return game.runtime.followingMon:partnerActorId() ~= nil
+    end, 120)
+    local partnerId = assert(
+      game.runtime.followingMon:partnerActorId(),
+      "the partner must be discoverable before interaction"
+    )
+    Assert.equal(partnerId, "field:partner", "the follower keeps its stable actor identity")
+    -- The controller births the partner behind the player, so the partner
+    -- is usually already on an adjacent tile: face whichever adjacent tile
+    -- carries it. Only when it is not adjacent (same tile, far tile) take
+    -- one production-planned step so the follower trails onto a facing tile.
+    local deltas = { north = { x = 0, z = -1 }, south = { x = 0, z = 1 }, west = { x = -1, z = 0 }, east = { x = 1, z = 0 } }
+    local function facingFor(player, partner)
+      for _, direction in ipairs({ "north", "south", "west", "east" }) do
+        local delta = deltas[direction]
+        if player.fieldX + delta.x == partner.fieldX and player.fieldZ + delta.z == partner.fieldZ then
+          return direction
+        end
+      end
+      return nil
+    end
+    local snapshot = game:snapshot()
+    local actor = snapshot.actors[partnerId]
+    Assert.notNil(actor, "the partner must be published before interaction")
+    local facing = facingFor(snapshot.player, actor)
+    if facing == nil then
+      local target = { fieldX = snapshot.player.fieldX, fieldZ = snapshot.player.fieldZ + 2 }
+      local okRoute, _ = pcall(function()
+        return game:moveTo(target)
+      end)
+      if not okRoute then
+        target = { fieldX = snapshot.player.fieldX + 2, fieldZ = snapshot.player.fieldZ }
+        game:moveTo(target)
+      end
+      snapshot = game:advanceUntil("follower trails the planned step", function(candidate)
+        local partner = candidate.actors[partnerId]
+        return partner ~= nil
+          and game.runtime.followingMon:isMovementSettled()
+          and facingFor(candidate.player, partner) ~= nil
+      end, 240)
+      actor = assert(snapshot.actors[partnerId], "the partner must trail the planned step")
+      facing = assert(facingFor(snapshot.player, actor), "the trailed follower must sit on a facing tile")
+    end
+    game:face(facing)
+    game:pressAction()
+    Assert.equal(
+      game:interaction().scriptId,
+      SCRIPT_ID,
+      "facing the partner must resolve to the following-mon script, never inert"
+    )
+    game:advanceUntil("the faced interaction starts its script", function()
+      return #game:recordsForScript(SCRIPT_ID) == 1
+    end, 120)
+    local starts = game:recordsForScript(SCRIPT_ID)
+    Assert.equal(#starts, 1, "the faced partner must start the following-mon script exactly once")
+    local instanceId = assert(starts[1].payload.instanceId)
+    game:advanceUntil("the faced script reaches its interaction command", function()
+      return #taskRecordsFor(game, instanceId) == 1 or #game:recordsForScript(SCRIPT_ID, "script.ended") == 1
+    end, 120)
+    Assert.equal(
+      #taskRecordsFor(game, instanceId),
+      1,
+      "the faced interaction must create its registered follower task"
+    )
+    driveScriptToEnd(game)
+    local scriptEnds = game:recordsForScript(SCRIPT_ID, "script.ended")
+    Assert.equal(#scriptEnds, 1, "the faced script must resume and finish once")
+    Assert.isTrue(scriptEnds[1].payload.completed, "the faced script must complete after its interaction")
+    Assert.isNil(game.runtime.errorText, "the faced interaction must not fault the runtime")
+    Assert.equal(game:renderAttempts(), 0, "faced follower acceptance must stop before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 function T.tests.production_terrain_controller_emits_the_generated_follower_reaction()
   local versionId = AcceptanceHarness.defaultVersion()
   local game = boot(versionId)
