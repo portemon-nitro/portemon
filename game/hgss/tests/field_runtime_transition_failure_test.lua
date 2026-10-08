@@ -24,6 +24,7 @@ local function runtimeWithTransitionError(transitionError)
     scripts = {},
     session = {
       accumulator = 0,
+      setBattleActive = function() end,
       updateFixed = function()
         calls.session = calls.session + 1
       end,

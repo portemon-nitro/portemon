@@ -48,6 +48,7 @@ local function runtimeWithAudio(calls, options)
     audioSink = options.audioSink,
     session = {
       accumulator = options.accumulator == nil and FieldSession.FIXED_DT - 1 / 60 or options.accumulator,
+      setBattleActive = function() end,
       updateFixed = function()
         calls[#calls + 1] = "field"
         transition.phase = "fade_out"
@@ -77,6 +78,7 @@ local function runtimeWithoutAudio(calls)
   local runtime = setmetatable({
     session = {
       accumulator = FieldSession.FIXED_DT - 1 / 60,
+      setBattleActive = function() end,
       updateFixed = function()
         calls[#calls + 1] = "field"
         transition.phase = "fade_out"
@@ -106,6 +108,7 @@ local function runtimeForSemanticCatchUp(counters)
     playTime = playTime,
     session = {
       accumulator = 0,
+      setBattleActive = function() end,
       updateFixed = function()
         counters.field = counters.field + 1
       end,
@@ -286,6 +289,7 @@ function T.tests.zero_delta_does_not_advance_any_clock()
   local runtime = setmetatable({
     session = {
       accumulator = 0,
+      setBattleActive = function() end,
       updateFixed = function()
         calls[#calls + 1] = "field"
       end,
@@ -321,6 +325,7 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
     session = {
       accumulator = 0,
       currentMap = { mapId = 61 },
+      setBattleActive = function() end,
       mapEntryController = {
         isActive = function()
           return false
@@ -368,6 +373,7 @@ local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive
     session = {
       accumulator = 0,
       currentMap = { mapId = logicalMapId },
+      setBattleActive = function() end,
       mapEntryController = {
         isActive = function()
           return entryActive

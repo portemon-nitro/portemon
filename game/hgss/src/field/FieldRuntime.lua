@@ -1627,6 +1627,9 @@ function FieldRuntime:update(dt)
   self:_refreshFieldTimeOfDay()
 
   self.session.accumulator = self.session.accumulator + acceptedDt
+  -- Reconcile the battle input gate before any fixed tick can initiate
+  -- player movement, interactions, or menu actions.
+  self:_reconcileBattleGate()
   local FIXED_DT = FieldSession.FIXED_DT
   local MAX_CATCH_UP = FieldSession.MAX_CATCH_UP_TICKS
   local EPSILON = 1e-12
@@ -1689,16 +1692,6 @@ function FieldRuntime:update(dt)
     self.session.accumulator = self.session.accumulator - discarded * FIXED_DT
   end
 
-  -- Directly constructed battles freeze player input through the shared
-  -- live party owner: while one owns decisions, field input never
-  -- initiates, even though the field runtime holds no handle on it.
-  -- Field-owned battles set the same flag through their direct handle.
-  if self.session ~= nil and self.monService ~= nil then
-    local DirectBattle = require("game.hgss.src.battle.BattleRuntime")
-    if DirectBattle.isActiveFor(self.monService) then
-      self.session:setBattleActive(true)
-    end
-  end
   -- The owned battle lifetime pumps once per runtime update, after the
   -- field settles: simulation and presentation acknowledgements advance
   -- together while entry/return readiness still gates phase transitions.
@@ -1707,6 +1700,9 @@ function FieldRuntime:update(dt)
     self:updateBattle()
   end
   self:pollStepEncounters()
+  -- Lifetimes may have settled or released during pumping, so reconcile
+  -- the gate again before the next update observes it.
+  self:_reconcileBattleGate()
   -- The audio output clock: pump PCM from the engine into the host sink once
   -- per runtime update, separate from the field fixed tick (the sink never
   -- advances game-semantic audio state).
@@ -2282,6 +2278,24 @@ function FieldRuntime:startBattle(args)
   return battle
 end
 
+-- Reconciles the derived input gate from the current battle ownership:
+-- a field-owned launch or battle handle plus any directly constructed
+-- battle over the same live party. Both edges assign, so the gate never
+-- latches true and an owned launch or return interval is never cleared
+-- while it still owns the field.
+function FieldRuntime:_reconcileBattleGate()
+  if self.session == nil then
+    return
+  end
+  local owned = self.battleRuntime ~= nil or self._battleLaunch ~= nil
+  local direct = false
+  if self.monService ~= nil then
+    local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
+    direct = BattleRuntime.isActiveFor(self.monService)
+  end
+  self.session:setBattleActive(owned or direct)
+end
+
 -- Drives the owned battle once per runtime update and returns through the
 -- stable field when it settles. A committed battle records its outcome
 -- words for script result reads; a failed battle faults the runtime
@@ -2296,6 +2310,7 @@ function FieldRuntime:updateBattle()
       error(failure or "overworld leave failed", 0)
     end
     if phase ~= "absent" then
+      self:_reconcileBattleGate()
       return
     end
     local request = launch.request
@@ -2311,6 +2326,7 @@ function FieldRuntime:updateBattle()
       error(failure or "overworld restore failed", 0)
     end
     if phase ~= "present" then
+      self:_reconcileBattleGate()
       return
     end
     launch.phase = "complete"
@@ -2318,23 +2334,24 @@ function FieldRuntime:updateBattle()
     self._lastBattleResult = { result = launch.result, sourceResult = launch.sourceResult }
     self._battleReceipt = launch
     self._battleLaunch = nil
+    self:_reconcileBattleGate()
     return
   end
 
   local battle = self.battleRuntime
   if battle == nil then
+    self:_reconcileBattleGate()
     return
   end
   battle:update()
   local status = battle:status()
   if status.phase ~= "complete" and status.phase ~= "failed" then
+    self:_reconcileBattleGate()
     return
-  end
-  if self.session ~= nil then
-    self.session:setBattleActive(false)
   end
   battle:dispose()
   self.battleRuntime = nil
+  self:_reconcileBattleGate()
   if status.phase == "failed" then
     local failure = status.error or "the battle reported a failure"
     if launch ~= nil then
@@ -2361,6 +2378,7 @@ function FieldRuntime:updateBattle()
   elseif status.phase == "complete" and status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
     self._lastBattleResult = { result = status.result, sourceResult = status.sourceResult }
   end
+  self:_reconcileBattleGate()
 end
 
 -- Battle host observation for script result reads: the latest committed

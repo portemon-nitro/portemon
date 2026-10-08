@@ -821,5 +821,53 @@ function T.internal_opponent_answers_advance_the_session_stream()
   battle:dispose()
 end
 
+-- One live party owner carries at most one unsettled battle: a second
+-- direct construction for the same owner fails before replacing the
+-- index or acquiring presentation resources, while a different owner
+-- stays independent and a settled owner accepts its next battle.
+function T.shared_party_owners_reject_a_second_unsettled_battle()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with owner-gated decisions")
+  local firstParty = newPartyOwner()
+  local secondParty = newPartyOwner()
+  local firstPorts = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local first = BattleRuntime.new({
+    request = launchFor("owner-first"),
+    party = firstParty,
+    presentation = headlessPort(firstPorts),
+  })
+  Assert.isTrue(BattleRuntime.isActiveFor(firstParty), "the constructed battle owns its party decisions")
+  Assert.isFalse(BattleRuntime.isActiveFor(secondParty), "an unrelated party owner stays independent")
+  local duplicatePorts = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local ok, secondOrFailure = pcall(BattleRuntime.new, {
+    request = launchFor("owner-duplicate"),
+    party = firstParty,
+    presentation = headlessPort(duplicatePorts),
+  })
+  if ok then
+    (secondOrFailure --[[@as table]]):dispose()
+  end
+  Assert.isFalse(ok, "a second unsettled battle for the same party fails before replacing the owner")
+  Assert.isTrue(BattleRuntime.isActiveFor(firstParty), "the rejected duplicate never replaces the current owner")
+  Assert.equal(duplicatePorts.disposed, 0, "the rejected duplicate acquires no presentation resources")
+  local otherPorts = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local other = BattleRuntime.new({
+    request = launchFor("owner-other"),
+    party = secondParty,
+    presentation = headlessPort(otherPorts),
+  })
+  Assert.isTrue(BattleRuntime.isActiveFor(secondParty), "a different owner runs its own battle")
+  first:dispose()
+  Assert.isFalse(BattleRuntime.isActiveFor(firstParty), "disposal releases its own owner")
+  Assert.isTrue(BattleRuntime.isActiveFor(secondParty), "releasing one battle never clears another owner")
+  other:dispose()
+  local revivedPorts = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local revived = BattleRuntime.new({
+    request = launchFor("owner-revived"),
+    party = firstParty,
+    presentation = headlessPort(revivedPorts),
+  })
+  Assert.isTrue(BattleRuntime.isActiveFor(firstParty), "a released owner accepts its next battle")
+  revived:dispose()
+end
 
 return { tests = T }

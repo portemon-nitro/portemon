@@ -19,7 +19,7 @@ local function runtimeWithEnvironment(clock, environment, sceneRuntime)
   return setmetatable({
     localClock = clock,
     runtimeMap = { renderEnvironment = environment, sceneRuntime = sceneRuntime },
-    session = { accumulator = 0, updateFixed = function() end },
+    session = { accumulator = 0, setBattleActive = function() end, updateFixed = function() end },
     transition = {
       error = nil,
       consumeCompleted = function()

@@ -170,6 +170,7 @@ local function fixture(options)
     session = {
       accumulator = 0,
       currentMap = maps[10],
+      setBattleActive = function() end,
       updateFixed = function() end,
       beginMapEntry = function() end,
     },

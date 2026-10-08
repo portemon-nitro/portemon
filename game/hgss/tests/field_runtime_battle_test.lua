@@ -530,6 +530,130 @@ function T.boot_resolves_a_generated_trainer_identity(context)
   end
 end
 
+-- A directly constructed battle over the live party suppresses field
+-- input before the first fixed tick runs, and disposing it resumes
+-- initiation on the next tick without any field-owned battle handle.
+function T.direct_battle_blocks_the_first_tick_and_releases_the_next()
+  local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
+  local FieldSession = require("libs.hgss.src.field.FieldSession")
+  local party = newPartyOwner()
+  local gate = false
+  local events = {}
+  local session = {
+    accumulator = 0,
+    setBattleActive = function(_, active)
+      gate = active == true
+      events[#events + 1] = gate and "gate-true" or "gate-false"
+    end,
+    updateFixed = function()
+      events[#events + 1] = gate and "tick-blocked" or "tick-initiated"
+    end,
+  }
+  local runtime = fakeRuntime({
+    monService = party,
+    session = session,
+    applicationHost = { error = function()
+      return nil
+    end },
+    transition = {
+      error = nil,
+      updateSourceFrame = function() end,
+      consumeCompleted = function()
+        return nil
+      end,
+    },
+    screenFade = { updateSourceFrame = function() end },
+  })
+  local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local battle = BattleRuntime.new({
+    request = { id = "launch-direct-first-tick", kind = "wild", payload = { species = "TOTODILE", level = 4 } },
+    party = party,
+    presentation = headlessPort(portRecord),
+  })
+  runtime:update(FieldSession.FIXED_DT)
+  Assert.equal(events[1], "gate-true", "the direct owner suppresses input before field simulation")
+  local firstTick = nil
+  for _, event in ipairs(events) do
+    if event == "tick-blocked" or event == "tick-initiated" then
+      firstTick = event
+      break
+    end
+  end
+  Assert.equal(firstTick, "tick-blocked", "held movement never initiates while the direct battle owns decisions")
+  battle:dispose()
+  for index = #events, 1, -1 do
+    events[index] = nil
+  end
+  runtime:update(FieldSession.FIXED_DT)
+  Assert.equal(events[1], "gate-false", "release publishes instead of latching the suppression")
+  local releasedTick = nil
+  for _, event in ipairs(events) do
+    if event == "tick-blocked" or event == "tick-initiated" then
+      releasedTick = event
+      break
+    end
+  end
+  Assert.equal(releasedTick, "tick-initiated", "the next tick resumes without a field-owned handle")
+end
+
+-- The owned launch and return interval stays suppressed from launch
+-- through settlement: the gate never clears mid-interval and a normal
+-- return publishes its release without re-suppressing.
+function T.owned_battle_interval_stays_suppressed_through_return()
+  local party = newPartyOwner()
+  local runtime, battleFlags = fakeRuntime({ monService = party })
+  local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local foe = foeRecord("TOTODILE", 4, 0x5EED0004)
+  local request =
+    { id = "launch-owned-interval", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(
+    request.payload,
+    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+  )
+  local battle = runtime:startBattle({
+    request = request,
+    scenario = scenario,
+    presentation = headlessPort(portRecord),
+  })
+  Assert.isTrue(battleFlags[1], "launch freezes player input")
+  local finished = driveToSettled(runtime, battle)
+  Assert.equal(finished.phase, "complete", "answered decisions finish the owned battle")
+  Assert.isNil(runtime.battleRuntime, "settlement releases the owned lifetime")
+  Assert.isFalse(battleFlags[#battleFlags], "return releases player input")
+  local released = false
+  for _, flag in ipairs(battleFlags) do
+    if released then
+      Assert.isFalse(flag, "release never re-suppresses the field")
+    elseif flag == false then
+      released = true
+    end
+  end
+  Assert.isTrue(released, "settlement publishes its release")
+end
+
+-- A leaving launch suppresses input before any owned battle exists,
+-- and a failed owned battle faults loudly instead of resuming the story.
+function T.launch_suppresses_early_and_failed_battles_fault()
+  local runtime, battleFlags = fakeRuntime()
+  local launchId = runtime:launchBattle({ kind = "wild", details = { species = "TOTODILE", level = 4 } })
+  Assert.notNil(launchId, "the host launch issues its identity")
+  runtime:updateBattle()
+  Assert.isTrue(battleFlags[#battleFlags], "the leaving launch suppresses input before the battle exists")
+  local failedRuntime = fakeRuntime()
+  local broken = failedRuntime:startBattle({ request = wildRequest("launch-interval-broken"), scenario = {} })
+  Assert.notNil(broken, "the broken launch still owns its lifetime")
+  local ok = true
+  for _ = 1, 10 do
+    ok = pcall(failedRuntime.updateBattle, failedRuntime)
+    if not ok then
+      break
+    end
+  end
+  Assert.equal(broken:status().phase, "failed", "an unbuildable owned battle reports failure")
+  Assert.isNil(failedRuntime.battleRuntime, "failures release the owned lifetime")
+  Assert.isFalse(ok, "failed battles reach the field error handler instead of resuming")
+end
+
 return {
   tests = T,
   metadata = {

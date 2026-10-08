@@ -321,6 +321,7 @@ function T.warp_completion_does_not_request_an_implicit_save()
     session = {
       accumulator = 0,
       updateFixed = function() end,
+      setBattleActive = function() end,
     },
     transition = {
       error = nil,

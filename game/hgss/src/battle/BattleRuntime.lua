@@ -288,6 +288,12 @@ function BattleRuntime.new(args)
       "battle seeds stay unsigned 32-bit integers"
     )
   end
+  if args.party ~= nil then
+    local current = ACTIVE_BY_OWNER[args.party]
+    if current ~= nil and not current:isReleased() then
+      error("a battle already owns this party", 0)
+    end
+  end
   local self = setmetatable({
     _request = { id = request.id, kind = request.kind, payload = copyValue(request.payload) },
     _scenario = args.scenario ~= nil and copyValue(args.scenario) or nil,
