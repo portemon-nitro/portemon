@@ -389,7 +389,7 @@ local function drawRowMarker(renderer, rectValue, radius, active)
     graphics,
     rectValue,
     radius,
-    active and { 0.86, 0.16, 0.18, 1 } or BUTTON_COLORS.inactive.faceBottom
+    active and { 0.86, 0.16, 0.18, 1 } or BUTTON_COLORS.disabled.faceBottom
   )
   graphics.setColor(1, 1, 1, 1)
 end

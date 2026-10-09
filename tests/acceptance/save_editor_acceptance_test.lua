@@ -1560,7 +1560,7 @@ function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_
           )
         end
       end
-      local mapFitsMeasuredContent = rootMapList.surfaceRect.width < returnedRootView.layout.content.width
+      local mapUsesAvailableWidth = rootMapList.surfaceRect.width == returnedRootView.layout.content.width
 
       state.controller:setSection("Progress")
       local flagView = advanceEditorUntil(state, function(view)
@@ -1568,12 +1568,8 @@ function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_
         return list ~= nil and #list.rowTargets > 0 and not list.pending
       end, "the production Flags list")
       local flagList = assert(flagView.layout.lists.flags)
-      local flagsFitMeasuredContent = flagList.surfaceRect.width < flagView.layout.content.width
-      local flagsAreCentered = math.abs(
-        flagList.surfaceRect.x
-          + flagList.surfaceRect.width / 2
-          - (flagView.layout.content.x + flagView.layout.content.width / 2)
-      ) < 1
+      local flagsUseAvailableWidth = flagList.surfaceRect.width == flagView.layout.content.width
+      local flagsStartAtContentEdge = flagList.surfaceRect.x == flagView.layout.content.x
 
       local initialViewport = assert(flagView.layout.viewports.flags)
       local targetIndex = math.min(#flagList.rowTargets, initialViewport.lastIndex + 2)
@@ -1604,11 +1600,11 @@ function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_
         "the focused flag label remains wholly inside the actual viewport"
       )
       Assert.isTrue(
-        mapFitsMeasuredContent,
-        "the Map root surface uses measured labels instead of filling the full editor body"
+        mapUsesAvailableWidth,
+        "the Map root surface uses the full available editor body width"
       )
-      Assert.isTrue(flagsFitMeasuredContent, "the Flags surface reserves only measured label and ON/OFF content")
-      Assert.isTrue(flagsAreCentered, "the narrower Flags surface stays centered in its available body")
+      Assert.isTrue(flagsUseAvailableWidth, "the Flags surface uses the full available body width")
+      Assert.isTrue(flagsStartAtContentEdge, "the full-width Flags surface aligns to its available body")
     end)
   end, debug.traceback)
   if state then

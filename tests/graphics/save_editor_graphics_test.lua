@@ -3371,7 +3371,29 @@ function T.choice_list_marks_the_remembered_row_without_outlining_its_surface(sc
   Assert.equal(markerAround(pointerRow, pointerCalls), 1, "pointer modality keeps the row marker visible")
 end
 
-function T.map_flags_and_choice_lists_use_only_local_light_row_markers(scope)
+function T.map_flags_and_choice_lists_use_local_markers_with_distinct_focus_colors(scope)
+  local colorMismatches = {}
+  local disabledData, _, disabledLayout, _, _, _, _, _, _, disabledPlan = draw(
+    scope,
+    640,
+    480,
+    singleDisplay(640, 480),
+    "disabled-save-marker-palette",
+    "Progress",
+    "long-flag",
+    nil,
+    nil,
+    function(view)
+      view.dirty = false
+    end
+  )
+  local saveButton = assert(disabledLayout.targets.save, "a clean editor exposes its disabled Save action").rect
+  local disabledRed, disabledGreen, disabledBlue = pixelAtLogical(
+    disabledData,
+    disabledPlan,
+    saveButton.x + saveButton.width / 2,
+    saveButton.y + saveButton.height * 0.75
+  )
   local cases = {
     {
       section = "Location",
@@ -3463,48 +3485,178 @@ function T.map_flags_and_choice_lists_use_only_local_light_row_markers(scope)
     end
     Assert.isTrue(strongestRed > 0.2, scenario.section .. " current item marker stays red")
 
-    if scenario.section ~= "Location" then
-      local rememberedData, rememberedLayout, rememberedPlan
-      local rememberedCalls = recordRectangles(function()
-        local output = {
-          draw(
-            scope,
-            640,
-            480,
-            topology,
-            "remembered-list-marker-" .. scenario.section,
-            scenario.section,
-            scenario.variant,
-            nil,
-            function(_, view)
-              view.focus = scenario.listId
-              view.focusVisible = true
-              view.listCursors = { [scenario.section == "Progress" and "flags" or "value:choice"] = scenario.rowId }
-            end
-          ),
-        }
-        rememberedData, rememberedLayout, rememberedPlan = output[1], output[3], output[10]
-      end)
-      local rememberedClip = assert(rememberedLayout.viewports[scenario.viewportId]).clip
-      local rememberedMarker = assert(rememberedLayout.rowMarkers[scenario.rowId])
-      for _, call in ipairs(rememberedCalls) do
-        Assert.isFalse(
-          call.mode == "line" and surrounds(call, rememberedClip, 3),
-          scenario.section .. " keeps remembered focus local to the item"
-        )
-      end
-      local grayRed, grayGreen, grayBlue = pixelAtLogical(
-        rememberedData,
-        rememberedPlan,
-        rememberedMarker.x + rememberedMarker.width / 2,
-        rememberedMarker.y + 2
-      )
-      Assert.isTrue(
-        grayRed > 0.8 and grayGreen > 0.8 and grayBlue > 0.8,
-        scenario.section .. " remembered marker uses the light inactive button face"
+    local rememberedData, rememberedLayout, rememberedPlan
+    local rememberedCalls = recordRectangles(function()
+      local output = { draw(
+        scope,
+        640,
+        480,
+        topology,
+        "remembered-list-marker-" .. scenario.section,
+        scenario.section,
+        scenario.variant,
+        nil,
+        function(_, view)
+          view.focus = scenario.listId
+          view.focusVisible = true
+          local cursorKey = scenario.section == "Location" and "location:group:1"
+            or scenario.section == "Progress" and "flags"
+            or "value:choice"
+          view.listCursors = { [cursorKey] = scenario.rowId }
+        end
+      ) }
+      rememberedData, rememberedLayout, rememberedPlan = output[1], output[3], output[10]
+    end)
+    local rememberedClip = assert(rememberedLayout.viewports[scenario.viewportId]).clip
+    local rememberedMarker = assert(rememberedLayout.rowMarkers[scenario.rowId])
+    for _, call in ipairs(rememberedCalls) do
+      Assert.isFalse(
+        call.mode == "line" and surrounds(call, rememberedClip, 3),
+        scenario.section .. " keeps remembered focus local to the item"
       )
     end
+    local markerRed, markerGreen, markerBlue = pixelAtLogical(
+      rememberedData,
+      rememberedPlan,
+      rememberedMarker.x + 1,
+      rememberedMarker.y + rememberedMarker.height / 2
+    )
+    if
+      math.abs(markerRed - disabledRed) > 0.04
+      or math.abs(markerGreen - disabledGreen) > 0.04
+      or math.abs(markerBlue - disabledBlue) > 0.04
+    then
+      colorMismatches[#colorMismatches + 1] = scenario.section
+    end
   end
+  Assert.isTrue(#colorMismatches == 0, "remembered markers match the disabled button palette: " .. table.concat(colorMismatches, ", "))
+end
+
+function T.wide_lists_render_fitting_long_labels_and_ellipsize_only_when_needed(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 600 },
+    touch = false,
+    role = "world",
+  })
+  local fittingLabel = "A_LONG_LABEL_THAT_FITS_THE_WIDE_LIST"
+  local tooLongLabel = string.rep("TOO_LONG_", 20)
+  local cases = {
+    {
+      section = "Location",
+      variant = "map-list",
+      listId = "location:group:1",
+      rowId = "location:map:34",
+      viewportId = "location:group:1",
+      prepare = function(view)
+        local location = view.location
+        location.maps[1].displayName = "AZALEA_ILEX"
+        location.maps[2] = { mapId = 34, symbol = "MAP_LONG", displayName = fittingLabel, section = "TEST_SECTION" }
+        location.maps[3] = { mapId = 47, symbol = "MAP_TOO_LONG", displayName = tooLongLabel, section = "TEST_SECTION" }
+        location.mapRowTargets[2], location.mapRowTargets[3] = "location:map:34", "location:map:47"
+        location.mapIndexByTarget["location:map:34"], location.mapIndexByTarget["location:map:47"] = 2, 3
+        location.mapModel.count = 3
+      end,
+    },
+    {
+      section = "Progress",
+      variant = "long-flag",
+      listId = "flags",
+      rowId = "flag:FLAG_WIDE_FIT",
+      viewportId = "flags",
+      prepare = function(view)
+        view.flagRows[1].displayName = "Short"
+        view.flagRows[2] = { name = "FLAG_WIDE_FIT", displayName = fittingLabel, value = false }
+        view.flagRows[3] = { name = "FLAG_WIDE_TOO_LONG", displayName = tooLongLabel, value = false }
+        view.flagRowTargets[2], view.flagRowTargets[3] = "flag:FLAG_WIDE_FIT", "flag:FLAG_WIDE_TOO_LONG"
+        view.flagIndexByTarget["flag:FLAG_WIDE_FIT"], view.flagIndexByTarget["flag:FLAG_WIDE_TOO_LONG"] = 2, 3
+        view.flagModel.count = 3
+      end,
+    },
+    {
+      section = "Player",
+      variant = "choice-list",
+      listId = "value:choice",
+      rowId = "choice:choice-02",
+      viewportId = "value:choice",
+      prepare = function(view)
+        view.valueEditor.options[1].label = "Short"
+        view.valueEditor.options[2].label = fittingLabel
+        view.valueEditor.options[3].label = tooLongLabel
+      end,
+    },
+  }
+
+  for _, scenario in ipairs(cases) do
+    local _, _, layout, _, drawnText = draw(
+      scope,
+      800,
+      600,
+      topology,
+      "wide-list-" .. scenario.section,
+      scenario.section,
+      scenario.variant,
+      nil,
+      nil,
+      scenario.prepare
+    )
+    local list = assert(layout.lists[scenario.listId], scenario.section .. " publishes its wide list")
+    Assert.equal(list.surfaceRect.width, layout.content.width, scenario.section .. " uses the full available width")
+    local fittingRow = assert(layout.targets[scenario.rowId], scenario.section .. " exposes the later fitting label")
+    Assert.isTrue(fittingRow.rect.width <= list.surfaceRect.width, scenario.section .. " keeps row bounds in the surface")
+    local sawFitting, sawEllipsis = false, false
+    for _, text in ipairs(drawnText) do
+      sawFitting = sawFitting or text == fittingLabel
+      sawEllipsis = sawEllipsis or text:find("…", 1, true) ~= nil
+    end
+    Assert.isTrue(sawFitting, scenario.section .. " paints the later label when it fits")
+    Assert.isTrue(sawEllipsis, scenario.section .. " ellipsizes a label that exceeds the row bounds")
+  end
+end
+
+function T.remembered_list_markers_stay_clipped_at_a_scrolled_viewport_edge(scope)
+  local topology = singleDisplay(256, 192)
+  local function render(remembered)
+    local result
+    local data, _, layout, _, _, _, _, _, _, plan = draw(
+      scope,
+      256,
+      192,
+      topology,
+      remembered and "scrolled-remembered-marker" or "scrolled-marker-clip-baseline",
+      "Player",
+      "choice-list",
+      nil,
+      function(_, view)
+        view.focus = "list:value:choice"
+        view.focusVisible = true
+        if remembered then
+          view.listCursors = { ["value:choice"] = "choice:choice-01" }
+        end
+      end,
+      function(view)
+        view.valueEditor.index = 0
+        view.valueEditor.selectedKey = nil
+        view.scrollOffsets = { ["value:choice"] = 9 }
+      end
+    )
+    result = { data = data, layout = layout, plan = plan }
+    return result
+  end
+
+  local baseline = render(false)
+  local scrolled = render(true)
+  local viewport = assert(scrolled.layout.viewports["value:choice"])
+  local marker = assert(scrolled.layout.rowMarkers["choice:choice-01"])
+  Assert.isTrue(viewport.offset > 0, "the choice viewport is scrolled")
+  Assert.isTrue(marker.y < viewport.clip.y, "the remembered row extends above the viewport clip")
+  Assert.isTrue(marker.y + marker.height > viewport.clip.y, "the remembered row remains partly visible")
+  local outsideX, outsideY = marker.x + 1, viewport.clip.y - 1
+  local beforeRed, beforeGreen, beforeBlue = pixelAtLogical(baseline.data, baseline.plan, outsideX, outsideY)
+  local afterRed, afterGreen, afterBlue = pixelAtLogical(scrolled.data, scrolled.plan, outsideX, outsideY)
+  Assert.near(afterRed, beforeRed, 0.01, "the clipped marker paints no red above the viewport")
+  Assert.near(afterGreen, beforeGreen, 0.01, "the clipped marker paints no green above the viewport")
+  Assert.near(afterBlue, beforeBlue, 0.01, "the clipped marker paints no blue above the viewport")
 end
 
 function T.filterable_lists_render_an_inline_hint_without_search_controls(scope)
