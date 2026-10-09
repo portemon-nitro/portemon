@@ -2,8 +2,10 @@
 
 local Assert = require("tests.support.Assert")
 local Controller = require("app.src.saveeditor.SaveEditorController")
+local FieldInput = require("libs.hgss.src.field.FieldInput")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
+local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 
 local T = { tests = {} }
 
@@ -441,6 +443,165 @@ function T.tests.navigation_debug_overlay_shows_the_current_region_and_resolver_
   Assert.equal(transforms[2].x, 2, "the focus outline uses the interactive pane scale")
   Assert.isTrue(lines[1]:find("body / money", 1, true) ~= nil, "the overlay identifies the active region")
   Assert.isTrue(lines[2]:find("up: stop", 1, true) ~= nil, "the overlay reports the resolver diagnostic reason")
+end
+
+local function choiceDeviceMetrics()
+  return {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+end
+
+local function choiceDeviceHarness(optionCount)
+  local controller = Controller.new()
+  controller:setSection("Bag")
+  local options = {}
+  for index = 1, optionCount or 12 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local editor = ValueEditor.new({ kind = "choice", value = options[5].key, options = options })
+  local metrics = choiceDeviceMetrics()
+  local function buildView()
+    return {
+      section = "Bag",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      bagRows = {},
+      valueEditor = editor:snapshot(),
+      scope = { id = "value:choice", epoch = 1, kind = "value", focusId = controller.focus },
+      scrollOffsets = {},
+    }
+  end
+  local function buildLayout()
+    editor:update(256)
+    return Layout.compute(buildView(), 256, 192, metrics)
+  end
+  local finished = 0
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    fieldInput = FieldInput.new(),
+    inputTick = 1,
+    scopeEpoch = 0,
+    tickRemainder = 0,
+    valueEditor = editor,
+    locationPreviewMemory = {},
+    _snapshot = buildView,
+    _resolve = function()
+      return { content = { layout = buildLayout() } }
+    end,
+    _finishValueEditor = function()
+      finished = finished + 1
+    end,
+  }, SaveEditorState)
+  state:_syncScope()
+  state.fieldInput:beginUi(0)
+  return {
+    state = state,
+    controller = controller,
+    editor = editor,
+    finishedCount = function()
+      return finished
+    end,
+  }
+end
+
+local function driveChoiceMove(harness, device)
+  if device == "keyboard" then
+    harness.state:keypressed("down")
+    harness.state:keyreleased("down")
+  elseif device == "gamepad" then
+    harness.state:gamepadpressed(nil, "dpdown")
+    harness.state:gamepadreleased(nil, "dpdown")
+  else
+    harness.state:_consumeUiInput({ { type = "navigate", direction = "down" } })
+  end
+end
+
+local function driveChoiceConfirm(harness, device)
+  if device == "keyboard" then
+    harness.state:keypressed("return")
+    harness.state:keyreleased("return")
+  elseif device == "gamepad" then
+    harness.state:gamepadpressed(nil, "a")
+    harness.state:gamepadreleased(nil, "a")
+  else
+    harness.state:_consumeUiInput({ { type = "confirm" } })
+  end
+end
+
+function T.tests.keyboard_gamepad_and_semantic_choice_input_agree_and_release_pointer_capture()
+  local navigated = {}
+  for _, device in ipairs({ "keyboard", "gamepad", "semantic" }) do
+    local harness = choiceDeviceHarness()
+    harness.controller:setFocus("choice:K05")
+    harness.controller:pointer({
+      type = "pointer_down",
+      pointerId = "mouse:1",
+      targetId = "choice:K05",
+      x = 10,
+      y = 10,
+    })
+    driveChoiceMove(harness, device)
+    navigated[device] = harness
+  end
+
+  for _, device in ipairs({ "keyboard", "gamepad", "semantic" }) do
+    local harness = navigated[device]
+    Assert.equal(harness.controller.focus, "choice:K06", device .. " Down moves one logical choice row")
+    Assert.isNil(
+      harness.controller.capturedTarget,
+      device .. " navigation releases the in-flight pointer capture"
+    )
+    Assert.isNil(harness.controller.pointerId, device .. " navigation releases the pointer identity")
+    Assert.isTrue(harness.controller.focusVisible, device .. " navigation keeps keyboard focus visible")
+    Assert.isNil(harness.controller.modal, device .. " navigation opens no modal layer")
+    Assert.equal(harness.controller.section, "Bag", device .. " navigation stays in its section")
+  end
+  Assert.equal(
+    navigated.keyboard.controller.scrollOffsets["value:choice"],
+    navigated.gamepad.controller.scrollOffsets["value:choice"],
+    "keyboard and gamepad choice scrolling agree"
+  )
+  Assert.equal(
+    navigated.keyboard.controller.scrollOffsets["value:choice"],
+    navigated.semantic.controller.scrollOffsets["value:choice"],
+    "keyboard and semantic choice scrolling agree"
+  )
+
+  for _, device in ipairs({ "keyboard", "gamepad", "semantic" }) do
+    local stale = navigated[device].controller:pointer({
+      type = "pointer_up",
+      pointerId = "mouse:1",
+      targetId = "choice:K05",
+      x = 10,
+      y = 10,
+    })
+    Assert.isNil(stale, device .. " releases capture so the previous row cannot activate late")
+  end
+
+  local committed = {}
+  for _, device in ipairs({ "keyboard", "gamepad", "semantic" }) do
+    local harness = choiceDeviceHarness()
+    harness.controller:setFocus("choice:K05")
+    driveChoiceConfirm(harness, device)
+    committed[device] = harness
+  end
+  for _, device in ipairs({ "keyboard", "gamepad", "semantic" }) do
+    local harness = committed[device]
+    Assert.deepEqual(
+      harness.editor:result(),
+      { kind = "confirm", value = "K05" },
+      device .. " confirm commits the focused choice exactly once"
+    )
+    Assert.equal(harness.finishedCount(), 1, device .. " confirm retires the editor exactly once")
+    Assert.equal(harness.controller.focus, "choice:K05", device .. " confirm keeps the committed focus")
+    Assert.isNil(harness.state.editorFeedback, device .. " confirm reports no diagnostic")
+    Assert.isNil(harness.controller.modal, device .. " confirm opens no modal layer")
+  end
 end
 
 return T

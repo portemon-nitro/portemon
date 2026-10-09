@@ -1,6 +1,9 @@
 -- User-visible numeric value editing contract for the Save Editor.
 
 local Assert = require("tests.support.Assert")
+local Controller = require("app.src.saveeditor.SaveEditorController")
+local FieldInput = require("libs.hgss.src.field.FieldInput")
+local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
 
 local loaded, SaveEditorValueEditor = pcall(require, "app.src.saveeditor.SaveEditorValueEditor")
 local SaveEditorLayout = require("app.src.saveeditor.SaveEditorLayout")
@@ -911,6 +914,205 @@ function T.discard_from_leave_clears_staged_work_and_reports_once()
   Assert.equal(harness.session.discards, 1, "discard abandons the staged session once")
   Assert.isNil(harness.state.closeRequest, "discard retires its request")
   Assert.deepEqual(harness.results, { { kind = "main_menu" } }, "discard reports its result once")
+end
+
+local function editingMetrics()
+  return {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+end
+
+local function choiceEditingHarness(optionCount)
+  local controller = Controller.new()
+  controller:setSection("Bag")
+  local loadedEditor = require("app.src.saveeditor.SaveEditorValueEditor")
+  local options = {}
+  for index = 1, optionCount or 12 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local editor = loadedEditor.new({ kind = "choice", value = options[5].key, options = options })
+  local metrics = editingMetrics()
+  local function buildView()
+    return {
+      section = "Bag",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      bagRows = {},
+      valueEditor = editor:snapshot(),
+      scope = { id = "value:choice", epoch = 1, kind = "value", focusId = controller.focus },
+      scrollOffsets = {},
+    }
+  end
+  local function buildLayout()
+    editor:update(256)
+    return SaveEditorLayout.compute(buildView(), 256, 192, metrics)
+  end
+  local finished = 0
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    fieldInput = FieldInput.new(),
+    inputTick = 1,
+    scopeEpoch = 0,
+    tickRemainder = 0,
+    valueEditor = editor,
+    locationPreviewMemory = {},
+    _snapshot = buildView,
+    _resolve = function()
+      return { content = { layout = buildLayout() } }
+    end,
+    _finishValueEditor = function()
+      finished = finished + 1
+    end,
+  }, SaveEditorState)
+  state:_syncScope()
+  state.fieldInput:beginUi(0)
+  return {
+    state = state,
+    controller = controller,
+    editor = editor,
+    buildLayout = buildLayout,
+    finishedCount = function()
+      return finished
+    end,
+  }
+end
+
+function T.choice_search_text_and_backspace_edit_the_query_without_navigating()
+  local harness = choiceEditingHarness()
+  local controller, state, editor = harness.controller, harness.state, harness.editor
+  controller:setFocus("choice:K05")
+
+  state:textinput("K1")
+  editor:update(256)
+  state:update(0)
+  local narrowed = harness.buildLayout().lists["value:choice"].rowTargets
+  Assert.isTrue(#narrowed < 12, "typing narrows the choice rows")
+  Assert.isNil(editor:result(), "filtering publishes no result")
+  Assert.equal(editor:snapshot().query, "K1", "typing edits the search query")
+  Assert.isNil(controller.modal, "filtering opens no modal layer")
+  Assert.equal(harness.finishedCount(), 0, "filtering never retires the editor")
+
+  state:keypressed("backspace")
+  state:keyreleased("backspace")
+  editor:update(256)
+  Assert.equal(editor:snapshot().query, "K", "backspace removes one search glyph")
+  Assert.isNil(editor:result(), "query edits publish no result")
+  Assert.isNil(controller.modal, "backspace opens no modal layer")
+  Assert.equal(controller.section, "Bag", "backspace never leaves its section")
+  Assert.equal(harness.finishedCount(), 0, "backspace never retires the editor")
+
+  state:keypressed("delete")
+  state:keyreleased("delete")
+  editor:update(256)
+  local restored = harness.buildLayout().lists["value:choice"].rowTargets
+  Assert.equal(editor:snapshot().query, "", "delete clears the search query")
+  Assert.equal(#restored, 12, "clearing restores every choice row")
+  Assert.isNil(editor:result(), "clearing publishes no result")
+  Assert.equal(harness.finishedCount(), 0, "clearing never retires the editor")
+end
+
+function T.number_place_keys_adjust_digits_and_disabled_confirm_keeps_the_editor_open()
+  local controller = Controller.new()
+  controller:setSection("Player")
+  local loadedEditor = require("app.src.saveeditor.SaveEditorValueEditor")
+  local editor = loadedEditor.new({ kind = "integer", value = 123, min = 0, max = 999, base = "decimal" })
+  local metrics = editingMetrics()
+  local function buildView()
+    return {
+      section = "Player",
+      status = "ready",
+      ready = true,
+      session = { playerName = "PLAYER", money = 123, frameIndex = 0 },
+      valueEditor = editor:snapshot(),
+      scope = { id = "value:integer:money", epoch = 1, kind = "value", focusId = controller.focus },
+      scrollOffsets = {},
+      numberControlVisuals = {
+        increment = { normal = { width = 8, height = 8 } },
+      },
+    }
+  end
+  local function buildLayout()
+    return SaveEditorLayout.compute(buildView(), 640, 480, metrics)
+  end
+  local finished = 0
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    fieldInput = FieldInput.new(),
+    inputTick = 1,
+    scopeEpoch = 0,
+    tickRemainder = 0,
+    valueEditor = editor,
+    locationPreviewMemory = {},
+    _snapshot = buildView,
+    _resolve = function()
+      return { content = { layout = buildLayout() } }
+    end,
+    _finishValueEditor = function()
+      finished = finished + 1
+    end,
+  }, SaveEditorState)
+  state:_syncScope()
+  state.fieldInput:beginUi(0)
+  controller:setFocus("number:place:0:up")
+
+  state:keypressed("up")
+  state:keyreleased("up")
+  Assert.equal(editor:snapshot().parsedValue, 124, "Up adds one to the selected units place")
+  Assert.equal(controller.focus, "number:place:0:up", "place editing keeps its digit focus")
+  Assert.isNil(editor:result(), "place edits publish no result")
+
+  state:keypressed("left")
+  state:keyreleased("left")
+  Assert.equal(editor:snapshot().selectedPlace, 1, "Left selects the tens place")
+  Assert.equal(controller.focus, "number:place:1:up", "place selection follows the selected digit")
+  Assert.isNil(editor:result(), "place selection publishes no result")
+
+  local choice = choiceEditingHarness()
+  choice.controller:setFocus("choice:K05")
+  choice.state:textinput("no matching choice")
+  choice.editor:update(256)
+  choice.state:update(0)
+  Assert.equal(
+    #choice.buildLayout().lists["value:choice"].rowTargets,
+    0,
+    "the disabled-confirm setup leaves zero rows"
+  )
+  choice.controller:setFocus("confirm")
+  choice.state:keypressed("return")
+  choice.state:keyreleased("return")
+  local semantic = choiceEditingHarness()
+  semantic.controller:setFocus("choice:K05")
+  semantic.state:textinput("no matching choice")
+  semantic.editor:update(256)
+  semantic.state:update(0)
+  semantic.controller:setFocus("confirm")
+  semantic.state.fieldInput:pressAction("semantic:confirm")
+  semantic.state:_consumeUiInput(semantic.state.fieldInput:uiSnapshot(semantic.state.inputTick))
+  Assert.equal(
+    choice.state.editorFeedback,
+    semantic.state.editorFeedback,
+    "keyboard and semantic disabled confirms report the same diagnostic"
+  )
+  Assert.isNil(choice.state.editorFeedback, "a disabled confirm stays silent once focus reconciles")
+  Assert.isNil(choice.editor:result(), "a disabled confirm publishes no result")
+  Assert.isNil(semantic.editor:result(), "a semantic disabled confirm publishes no result")
+  Assert.equal(
+    choice.controller.focus,
+    semantic.controller.focus,
+    "keyboard and semantic disabled confirms reconcile to the same focus"
+  )
+  Assert.equal(choice.finishedCount(), 0, "a disabled confirm never retires the editor")
+
+  choice.state:keypressed("escape")
+  choice.state:keyreleased("escape")
+  Assert.deepEqual(choice.editor:result(), { kind = "cancel" }, "escape still cancels the choice editor")
+  Assert.equal(choice.finishedCount(), 1, "escape retires the editor exactly once")
 end
 
 return { tests = T }

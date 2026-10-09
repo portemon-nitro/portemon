@@ -3790,9 +3790,8 @@ function State:_pointer(events)
     return
   end
   self:_settleScope()
-  self:_invalidatePublication()
-  local view = self:_snapshot()
-  local plan = self:_resolve(view)
+  local view = self:_ensurePublished()
+  local plan = assert(self._publishedPlan, "the settled publication owns its plan")
   local numberEditor = self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number"
   if numberEditor and self:_numberEditorTooSmall(plan.content.layout) and plan.content.layout.targets.cancel == nil then
     self:_refreshPublication()
@@ -3867,6 +3866,7 @@ function State:_pointer(events)
   end
   self:_reconcileFocus()
   self:_settleScope()
+  self:_invalidatePublication()
   self:_refreshPublication()
   return self._publishedPlan or plan
 end
@@ -4005,7 +4005,7 @@ function State:_consumeUiInput(events)
   self:_settleScope()
   self:_invalidatePublication()
   if self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number" then
-    local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+    local layout = assert(self:_ensurePublished().layout)
     if self:_numberEditorTooSmall(layout) and layout.targets.cancel == nil then
       for _, event in ipairs(events) do
         if event.type == "cancel" then
@@ -4140,29 +4140,63 @@ function State:keypressed(key, _, isrepeat)
     end
     local editorList, editorRow = self:_activeList(editorLayout)
     local choiceList = editorList ~= nil and editorList.id == "value:choice" and editorList or nil
-    if key == "return" or key == "kpenter" then
-      if choiceList ~= nil then
-        self:_handleListConfirm(choiceList, editorRow, editorLayout)
+    if self.valueEditor:snapshot().kind == "choice" then
+      -- An active choice list shares the gamepad and normalized input
+      -- machinery: physical keys classify once into navigation, confirm and
+      -- cancel events for the shared consumer below. A discrete press builds
+      -- one event instead of latching a held physical source, so repeated
+      -- confirms never depend on release ordering. Filter editing
+      -- (backspace/delete) and text entry stay on their direct
+      -- keyboard-only paths, and space keeps its text behavior instead of
+      -- confirming.
+      if key == "up" or key == "down" or key == "left" or key == "right" then
+        self:_consumeUiInput({ { type = "navigate", direction = key } })
+      elseif key == "backspace" then
+        if choiceList ~= nil then
+          self:_filterFocusedList(choiceList, editorRow, "backspace")
+        else
+          self.valueEditor:press("backspace")
+        end
+        self:_invalidatePublication()
+        self:_syncScope()
+        self:_reconcileFocus()
+        self:_settleScope()
+        self:_refreshPublication()
+      elseif key == "delete" then
+        if choiceList ~= nil then
+          self:_filterFocusedList(choiceList, editorRow, "clear")
+        else
+          self.valueEditor:press("clear_search")
+        end
+        self:_invalidatePublication()
+        self:_syncScope()
+        self:_reconcileFocus()
+        self:_settleScope()
+        self:_refreshPublication()
+      elseif HgssInputBindings.isCancelKey(key) then
+        self:_consumeUiInput({ { type = "cancel" } })
+      elseif key == "return" or key == "kpenter" then
+        self:_consumeUiInput({ { type = "confirm" } })
       else
-        local submitted, reason = self.valueEditor:submit()
-        self.editorFeedback = submitted and nil or reason
-        self:_finishValueEditor()
+        self:_invalidatePublication()
+        self:_syncScope()
+        self:_reconcileFocus()
+        self:_settleScope()
+        self:_refreshPublication()
       end
+      return
+    end
+    if key == "return" or key == "kpenter" then
+      local submitted, reason = self.valueEditor:submit()
+      self.editorFeedback = submitted and nil or reason
+      self:_finishValueEditor()
     elseif key == "escape" then
       self.valueEditor:cancel()
       self:_finishValueEditor()
     elseif key == "backspace" then
-      if choiceList ~= nil then
-        self:_filterFocusedList(choiceList, editorRow, "backspace")
-      else
-        self.valueEditor:press("backspace")
-      end
+      self.valueEditor:press("backspace")
     elseif key == "delete" then
-      if choiceList ~= nil then
-        self:_filterFocusedList(choiceList, editorRow, "clear")
-      else
-        self.valueEditor:press("clear_search")
-      end
+      self.valueEditor:press("clear_search")
     elseif key == "left" or key == "right" or key == "up" or key == "down" then
       self.controller:markKeyboardNavigation()
       self:_navigate(editorLayout, key)
@@ -4235,7 +4269,7 @@ function State:textinput(text)
     self:_refreshPublication()
     return
   end
-  local layout = self:_resolve(self:_snapshot()).content.layout
+  local layout = assert(self:_ensurePublished().layout)
   local list, rowIndex = self:_activeList(layout)
   if list == nil or not list.filterable then
     return
@@ -4347,8 +4381,8 @@ function State:wheelmoved(_, y)
   if y ~= 0 then
     self.controller:markPointerModality()
   end
-  local view = self:_snapshot()
-  local layout = assert(self:_resolve(view).content.layout)
+  local view = self:_ensurePublished()
+  local layout = assert(view.layout)
   local viewportId = layout.scrollOwner
   if viewportId == nil then
     return

@@ -616,7 +616,7 @@ function T.tests.number_repeat_stops_on_pointer_cancel_and_focus_loss()
         return {}
       end,
       _resolve = function()
-        return {}
+        return { content = { layout = {} } }
       end,
       _reconcileFocus = function() end,
       _dispatchIntent = function() end,
