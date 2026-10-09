@@ -1634,4 +1634,131 @@ function T.cancelled_and_stale_scans_admit_fresh_releases_without_replay()
   end
 end
 
+function T.idle_ticks_reuse_the_published_view_and_plan()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  local builds, resolves = 0, 0
+  local buildView = PcStorageState._buildView
+  state._buildView = function(self)
+    builds = builds + 1
+    return buildView(self)
+  end
+  local resolve = state._session.resolve
+  state._session.resolve = function(self, measurement, view)
+    resolves = resolves + 1
+    return resolve(self, measurement, view)
+  end
+  state:updateFixed({})
+  Assert.equal(builds, 0, "a stable idle tick reuses the published contents instead of projecting icons again")
+  Assert.equal(resolves, 0, "a stable idle tick reuses the published layout instead of resolving again")
+  state:updateFixed({})
+  Assert.equal(builds, 0, "a second idle tick still projects nothing new")
+  Assert.equal(resolves, 0, "a second idle tick still resolves nothing new")
+  local status = state:status()
+  Assert.equal(status.activeBox, 0)
+  Assert.equal(status.phase, "browse")
+  Assert.deepEqual(status.focus, { domain = "party", slot = 0 })
+  Assert.equal(status.boxName, "BOX 1")
+  Assert.equal(#status.boxSlots, 30, "the reused projection still covers all thirty box positions")
+  Assert.equal(status.transitionTick, 2, "the transition clock still advances while the layout is reused")
+  status.boxSlots[1] = false
+  local afterTamper = state:status()
+  Assert.equal(#afterTamper.boxSlots, 30, "tampering with a published status never shrinks the next view")
+  state:dispose()
+end
+
+function T.state_changes_publish_once_while_idle_ticks_reuse_the_layout()
+  for _, configuration in ipairs({ "nativeLike", "wide", "dualDisplay" }) do
+    local mons = monService()
+    local state = PcStorageState.new(openOptions(mons, 0, configuration))
+    local builds, resolves = 0, 0
+    local buildView = PcStorageState._buildView
+    state._buildView = function(self)
+      builds = builds + 1
+      return buildView(self)
+    end
+    local resolve = state._session.resolve
+    state._session.resolve = function(self, measurement, view)
+      resolves = resolves + 1
+      return resolve(self, measurement, view)
+    end
+    state:updateFixed({ { type = "storage_target", target = { kind = "box", slot = 3 } } })
+    Assert.equal(builds, 1, configuration .. ": a focus tick maps against the pre-input layout and publishes once")
+    Assert.equal(resolves, 1, configuration .. ": a focus tick resolves once instead of twice")
+    Assert.deepEqual(state:status().focus, { domain = "box", slot = 3 })
+    local settledBuilds, settledResolves = builds, resolves
+    state:updateFixed({})
+    Assert.equal(builds, settledBuilds, configuration .. ": an idle tick projects nothing new")
+    Assert.equal(resolves, settledResolves, configuration .. ": an idle tick resolves nothing new")
+    local menuBuilds, menuResolves = builds, resolves
+    state:updateFixed({ { type = "confirm" } })
+    Assert.equal(builds, menuBuilds + 1, configuration .. ": opening the menu publishes once")
+    Assert.equal(resolves, menuResolves + 1, configuration .. ": opening the menu resolves once")
+    Assert.equal(state:status().phase, "menu")
+    local unmenuBuilds = builds
+    state:updateFixed({ { type = "cancel" } })
+    Assert.equal(builds, unmenuBuilds + 1, configuration .. ": cancelling the menu publishes once")
+    Assert.equal(state:status().phase, "browse")
+    local partyCount = mons:partyCount()
+    state:updateFixed({ { type = "action", action = "move" } })
+    Assert.equal(state:status().phase, "carry")
+    local carriedBuilds, carriedResolves = builds, resolves
+    state:updateFixed({})
+    Assert.equal(builds, carriedBuilds, configuration .. ": a carry idle tick projects nothing")
+    Assert.equal(resolves, carriedResolves, configuration .. ": a carry idle tick resolves nothing")
+    Assert.equal(state:status().phase, "carry", "an idle tick never drops or commits the carry")
+    Assert.equal(mons:partyCount(), partyCount, "an idle tick never moves domain custody")
+    state:updateFixed({ { type = "cancel" } })
+    Assert.equal(state:status().phase, "browse")
+    local factory = CatalogFixture.makeFactory(0xD03F01, mons:catalog())
+    local newcomer = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))
+    local drifted = assert(mons:preparePcChanges({
+      partyRevision = mons:partyRevision(),
+      boxRevision = mons:boxRevision(),
+    }, { boxUpdates = { { box = 0, slot = 6, mon = newcomer } } }))
+    drifted.publish()
+    local driftBuilds, driftResolves = builds, resolves
+    state:updateFixed({})
+    Assert.equal(builds, driftBuilds + 1, configuration .. ": external drift rebuilds once before mapping")
+    Assert.equal(resolves, driftResolves + 1, configuration .. ": external drift resolves once before mapping")
+    Assert.equal(
+      assert(state:status().boxSlots[7]).personality,
+      newcomer.personality,
+      "drifted contents reach the published view"
+    )
+    Assert.deepEqual(state:status().focus, { domain = "box", slot = 3 }, "content refresh leaves focus alone")
+    local switchedBuilds, switchedResolves = builds, resolves
+    state:updateFixed({ { type = "navigate", direction = "right" } })
+    Assert.equal(builds, switchedBuilds + 1, configuration .. ": a box switch publishes once")
+    Assert.equal(resolves, switchedResolves + 1, configuration .. ": a box switch resolves once")
+    Assert.equal(state:status().activeBox, 1)
+    Assert.equal(state:status().boxSlots[7], false, "the new box shows its own empty slot, not stale contents")
+    Assert.deepEqual(state:status().focus, { domain = "box", slot = 0 })
+    state:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 0 } } })
+    state:updateFixed({ { type = "confirm" } })
+    Assert.equal(state:status().phase, "menu")
+    local beforeMarkings = mons:partyMon(0).markings
+    state:updateFixed({ { type = "action", action = "markings" } })
+    Assert.equal(state:status().phase, "editor")
+    local draftMask = state:status().editor.mask
+    local editorBuilds, editorResolves = builds, resolves
+    state:updateFixed({})
+    Assert.equal(builds, editorBuilds, configuration .. ": an idle editor tick projects nothing")
+    Assert.equal(resolves, editorResolves, configuration .. ": an idle editor tick resolves nothing")
+    Assert.equal(state:status().phase, "editor", "an idle editor tick keeps the draft")
+    Assert.equal(state:status().editor.mask, draftMask)
+    state:updateFixed({ { type = "cancel" } })
+    Assert.equal(state:status().phase, "browse")
+    Assert.equal(mons:partyMon(0).markings, beforeMarkings, "cancel discards the editor draft")
+    local hit = assert(state._session:plan().content.hitRegions.boxSlots[1])
+    local x, y = hostPointForRect(state, hit.rect)
+    state:updateFixed({ { type = "pointer_down", pointerId = "republish-touch", x = x, y = y } })
+    Assert.deepEqual(state:status().focus, { domain = "box", slot = 0 })
+    state:cancelPointerCapture()
+    state:updateFixed({ { type = "pointer_up", pointerId = "republish-touch", x = x, y = y } })
+    Assert.deepEqual(state:status().focus, { domain = "box", slot = 0 }, "the stale release activates nothing")
+    state:dispose()
+  end
+end
+
 return { tests = T }

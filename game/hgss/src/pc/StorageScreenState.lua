@@ -15,6 +15,7 @@ local StorageInterface = require("game.hgss.src.pc.StorageInterface")
 ---@field _activeBox integer
 ---@field _contents table<string, unknown>?
 ---@field _publishedView table<string, unknown>?
+---@field _publishedKey string?
 ---@field _focus table<string, unknown>
 ---@field _carry table<string, unknown>?
 ---@field _menu { actions: string[], selected: integer, address: table<string, unknown> }?
@@ -48,6 +49,36 @@ local function copy(value)
   return result
 end
 
+-- Encodes one small semantic fact deterministically so successive ticks can
+-- compare what the published view and layout were built from without
+-- rebuilding them. Table keys sort by their text form; only screen-owned
+-- interaction facts flow through here, never domain rows or GPU objects.
+local function encodeFact(value)
+  local kind = type(value)
+  if kind == "table" then
+    local keys = {}
+    for key in pairs(value) do
+      keys[#keys + 1] = key
+    end
+    table.sort(keys, function(a, b)
+      return tostring(a) .. "#" .. type(a) < tostring(b) .. "#" .. type(b)
+    end)
+    local parts = {}
+    for _, key in ipairs(keys) do
+      parts[#parts + 1] = encodeFact(key) .. "=" .. encodeFact(value[key])
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+  elseif kind == "string" then
+    return "s" .. tostring(#value) .. ":" .. value
+  elseif kind == "number" or kind == "boolean" then
+    return tostring(value)
+  elseif value == nil then
+    return "nil"
+  else
+    return kind .. ":" .. tostring(value)
+  end
+end
+
 function StorageScreenState.new(options)
   assert(type(options) == "table", "Storage opens with concrete collaborators")
   assert(
@@ -71,6 +102,7 @@ function StorageScreenState.new(options)
     _activeBox = options.mons:activeBox(),
     _contents = nil,
     _publishedView = nil,
+    _publishedKey = nil,
     _focus = { domain = options.mode == 1 and "box" or "party", slot = 0 },
     _carry = nil,
     _menu = nil,
@@ -516,8 +548,53 @@ function StorageScreenState:_resolve()
   assert(not self._disposed, "disposed Storage has no plan")
   self:_refreshContents()
   local view = self:_buildView()
-  self._session:resolve(self._measureDisplay(), view)
+  local measurement = self._measureDisplay()
+  self._session:resolve(measurement, view)
   self._publishedView = view
+  self._publishedKey = self:_publishKey(measurement)
+end
+
+-- Identifies everything the published pair was built from: the measured
+-- display signature plus each screen-owned fact the view and its layout
+-- read. Domain revisions cover external party/box drift; the transition
+-- clock and the last action stay out because neither reaches the published
+-- view nor its plan.
+function StorageScreenState:_publishKey(measurement)
+  return table.concat({
+    assert(measurement.signature, "Storage publication keys on a measured display signature"),
+    tostring(self._mode),
+    tostring(self._state),
+    tostring(self._activeBox),
+    tostring(self._mons:boxRevision()),
+    tostring(self._mons:partyRevision()),
+    encodeFact(self._focus),
+    encodeFact(self._carry),
+    encodeFact(self._menu),
+    encodeFact(self._editor),
+    encodeFact(self._releaseCheck),
+    tostring(self._childKind),
+  }, "\0")
+end
+
+-- Returns the view input mapping and rendering must use, rebuilding and
+-- resolving only when the measured display or a semantic fact moved since
+-- the last publication. The first input of a tick therefore maps against
+-- the previously published layout, and a stable idle tick performs no new
+-- projection or resolution. A failed content refresh still propagates
+-- before any mapping happens, retaining the prior complete contents.
+function StorageScreenState:_ensurePublished()
+  assert(not self._disposed, "disposed Storage has no plan")
+  self:_refreshContents()
+  local measurement = self._measureDisplay()
+  local key = self:_publishKey(measurement)
+  if self._publishedView ~= nil and key == self._publishedKey then
+    return self._publishedView
+  end
+  local view = self:_buildView()
+  self._session:resolve(measurement, view)
+  self._publishedView = view
+  self._publishedKey = key
+  return view
 end
 
 -- Only the box-name editor consumes typed text.
@@ -535,17 +612,14 @@ function StorageScreenState:updateFixed(events)
   end
   if self._child ~= nil then
     self:_updateChild(events)
-    self:_resolve()
+    self:_ensurePublished()
     return
   end
-  self:_refreshContents()
-  local view = self:_buildView()
-  self._session:resolve(self._measureDisplay(), view)
-  self._publishedView = view
+  local view = self:_ensurePublished()
   events = self._session:mapInput(events, view)
   if self._editor ~= nil then
     self:_updateEditor(events)
-    self:_resolve()
+    self:_ensurePublished()
     return
   end
   local beganScan = false
@@ -647,7 +721,7 @@ function StorageScreenState:updateFixed(events)
   if not beganScan then
     self._transitionTick = self._transitionTick + 1
   end
-  self:_resolve()
+  self:_ensurePublished()
 end
 
 function StorageScreenState:status()
@@ -740,6 +814,7 @@ function StorageScreenState:dispose()
   self._disposed = true
   self._contents = nil
   self._publishedView = nil
+  self._publishedKey = nil
   self:_disposeChild()
   self._session:dispose()
 end
