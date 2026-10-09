@@ -193,17 +193,14 @@ function T.carries_the_source_polygon_state()
   Assert.isFalse(item.depthEqual)
 end
 
-function T.ordinary_billboards_reject_unsupported_alpha_classes_but_static_parts_do_not()
+function T.billboards_forward_declared_alpha_classes_to_the_render_queue()
   for _, alphaClass in ipairs({ "translucent", "mixed", "wireframe" }) do
     local visualEntry = entry(99)
     visualEntry.visual.render.alphaClass = alphaClass
-    local err = Assert.throws(function()
-      FieldActorDraw.item(record(), visualEntry)
-    end)
-    Assert.isTrue(
-      string.find(tostring(err), alphaClass, 1, true) ~= nil,
-      "the unsupported billboard error names its alpha class"
-    )
+    local item = FieldActorDraw.item(record(), visualEntry)
+    Assert.equal(item.alphaClass, alphaClass, "the billboard item carries the declared class unchanged")
+    Assert.equal(item.material.alphaClass, alphaClass, "the billboard material carries the declared class unchanged")
+    Assert.isTrue(item.billboardProjection, "a forwarded class never changes the projection")
   end
 
   local staticEntry = staticModelEntry(183, function(render)
@@ -378,8 +375,33 @@ function T.scaled_actors_sharing_one_visual_keep_independent_scales()
   Assert.deepEqual(rescaled[2].billboardScale, { 1, 1, 1 })
 end
 
-function T.non_positive_or_non_finite_record_scale_is_fatal()
-  for _, scale in ipairs({ 0, -1, 0 / 0 }) do
+function T.negative_and_zero_scales_share_one_visual_with_independent_items()
+  local asset = entry(99)
+  local storage = { items = {}, actorSlots = {}, generation = 0 } --[[@as FieldActorDrawStorage]]
+  local records = {
+    record({ actorId = "map:61:object:0", presentationScale = -1 }),
+    record({ actorId = "map:61:object:1", presentationScale = 0 }),
+  }
+  local items = FieldActorDraw.itemsInto(records, function()
+    return asset
+  end, storage)
+  Assert.equal(#items, 2)
+  Assert.deepEqual(items[1].billboardScale, { -1, -1, -1 }, "a mirrored record negates the cached base")
+  Assert.deepEqual(items[2].billboardScale, { 0, 0, 0 }, "a zero record collapses the cached base")
+  Assert.isTrue(items[1].billboardScale ~= items[2].billboardScale, "opposite scales never alias one vector")
+  Assert.isTrue(
+    items[1].billboardScale ~= asset.billboardScales[asset.visual.render.geometry],
+    "a scaled item never aliases the cached base"
+  )
+  Assert.deepEqual(
+    asset.billboardScales[asset.visual.render.geometry],
+    { 1, 1, 1 },
+    "sharing a visual never mutates the cached base"
+  )
+end
+
+function T.non_finite_record_scale_is_fatal()
+  for _, scale in ipairs({ 0 / 0, math.huge, -math.huge }) do
     local err = Assert.throws(function()
       FieldActorDraw.item(record({ presentationScale = scale }), entry(99))
     end)

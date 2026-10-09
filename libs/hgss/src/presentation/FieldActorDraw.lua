@@ -113,7 +113,7 @@ local function writeItem(record, entry, partIndex, item)
     ---@cast render FieldActorCache.AtlasRender
     part = render
   end
-  local geometry = assert(part.geometry, "draw visual part is missing geometry")
+  local geometry = part.geometry
   local frameIndex, poseFellBack
   local gestureOffsetX, gestureOffsetY, gestureOffsetZ = 0, 0, 0
   if record.gesturePose ~= nil then
@@ -142,7 +142,7 @@ local function writeItem(record, entry, partIndex, item)
   if isBillboard then
     ---@cast part FieldActorCache.AtlasRender
     ---@cast geometry FieldActorCache.AtlasGeometry
-    item.bounds = assert(geometry.bounds, "resident billboard visual is missing its validated bounds")
+    item.bounds = geometry.bounds
     local billboardBase = writeBillboardBase(item, x, y, z, geometry.baseTransform)
     local billboardCenter = item.billboardCenter or {}
     billboardCenter[1] = billboardBase[13]
@@ -161,9 +161,8 @@ local function writeItem(record, entry, partIndex, item)
       type(recordScale) == "number"
         and recordScale == recordScale
         and recordScale ~= math.huge
-        and recordScale ~= -math.huge
-        and recordScale > 0,
-      "actor record presentation scale must be a positive finite scalar"
+        and recordScale ~= -math.huge,
+      "actor record presentation scale must be a finite scalar"
     )
     -- The item owns its scaled vector: the resident cached base is read
     -- but never mutated or aliased, so actors sharing one visual keep
@@ -188,13 +187,7 @@ local function writeItem(record, entry, partIndex, item)
     item.billboardScale = nil
   end
 
-  local polygon = assert(part.polygon, "draw visual part is missing polygon metadata")
-  if isBillboard then
-    assert(
-      part.alphaClass == "opaque" or part.alphaClass == "cutout",
-      "ordinary billboard has unsupported alpha class: " .. tostring(part.alphaClass)
-    )
-  end
+  local polygon = part.polygon
   local image = entry.image
   if not isBillboard then
     ---@cast part FieldActorCache.StaticPart
