@@ -30,6 +30,7 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _recording table<string, unknown> host-safe recording graphics behind the per-tick refresh
 ---@field _launchId string? active launch identity, nil outside launches
 ---@field _descriptor table<string, unknown>? active launch descriptor from the runtime
+---@field _recoveryPointerId string|number|nil pending recovery press identity awaiting its release
 ---@field _screen table<string, unknown>? live per-launch battle screen
 ---@field _port table<string, unknown>? live five-operation port behind the owned battle
 ---@field _lastStatus table<string, unknown>? latest observed launch status snapshot
@@ -189,6 +190,7 @@ function FieldBattlePresentation.new(opts)
     _portraitPages = {},
     _launchId = nil,
     _descriptor = nil,
+    _recoveryPointerId = nil,
     _screen = nil,
     _port = nil,
     _lastStatus = nil,
@@ -713,11 +715,27 @@ function FieldBattlePresentation:ownsInput()
   return status == nil or status.phase ~= "transfer"
 end
 
--- Routes one semantic input batch to the live battle or child. Batches
+-- Routes one semantic input batch to the live battle or child. While the
+-- owned launch recovers through its defeat message, genuine edges answer
+-- that wait instead: confirm acts, cancel cancels, and only a pointer
+-- release matching its press taps. The disposed battle screen never sees
+-- recovery input, and recovery edges never reach field input. Batches
 -- without a live screen are dropped: focus loss and teardown neither
 -- answer nor cancel a battle request.
 ---@param events table<integer, table<string, unknown>> semantic input batch
 function FieldBattlePresentation:input(events)
+  local descriptor = self._descriptor
+  local host = descriptor ~= nil and descriptor.host or nil
+  if host ~= nil and type(host.recoveryInput) == "function" then
+    local okStatus, status = pcall(function()
+      return host.status()
+    end)
+    if okStatus and type(status) == "table" and status.phase == "recovering" then
+      self:_inputRecovery(host, events)
+      return
+    end
+    self._recoveryPointerId = nil
+  end
   local screen = self:liveScreen()
   if screen == nil then
     return
@@ -725,9 +743,40 @@ function FieldBattlePresentation:input(events)
   screen:input(events)
 end
 
+-- Answers the waiting defeat message with one genuine edge per press:
+-- confirm acts, cancel cancels, and a pointer release taps only its own
+-- matching press. Orphan releases, moves, and anything else stay silent,
+-- and every release forgets its press whether it matched or not.
+---@param host table<string, unknown> owning launch host behind the recovery callback
+---@param events table<integer, table<string, unknown>> semantic input batch
+function FieldBattlePresentation:_inputRecovery(host, events)
+  assert(type(events) == "table", "recovery input arrives as an event list")
+  for _, event in ipairs(events) do
+    if type(event) == "table" then
+      if event.type == "confirm" then
+        host.recoveryInput({ pressedAction = true })
+      elseif event.type == "cancel" then
+        host.recoveryInput({ pressedCancel = true })
+      elseif event.type == "pointer_down" then
+        local pointerId = event.pointerId
+        if type(pointerId) == "string" or type(pointerId) == "number" then
+          self._recoveryPointerId = pointerId
+        end
+      elseif event.type == "pointer_up" then
+        local pressed = self._recoveryPointerId
+        self._recoveryPointerId = nil
+        if pressed ~= nil and event.pointerId == pressed then
+          host.recoveryInput({ touchPressed = true })
+        end
+      end
+    end
+  end
+end
+
 -- Cancels a held press through both owners so a stale release never
 -- activates after remeasure, submission, focus loss, or disposal.
 function FieldBattlePresentation:cancelPointerCapture()
+  self._recoveryPointerId = nil
   local screen = self._screen
   if screen ~= nil then
     screen:cancelPointerCapture()
@@ -986,6 +1035,7 @@ end
 function FieldBattlePresentation:_dropLaunch()
   self._launchId = nil
   self._descriptor = nil
+  self._recoveryPointerId = nil
   self._screen = nil
   self._port = nil
   self._lastStatus = nil

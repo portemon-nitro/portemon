@@ -218,6 +218,90 @@ local function settle(runtime, envelope, choose, budget)
   return turns
 end
 
+-- Drives one defeat leg through kernel decisions and genuine battle
+-- narration acknowledgment until the launch enters automatic recovery.
+-- Every open kernel request is answered through the live battle while
+-- every narration page is acknowledged through the real envelope input
+-- path, exactly as a player would; nothing is synthesized. Stops as soon
+-- as the launch reaches recovering so the later recovery edge stays a
+-- separate genuine press.
+---@param runtime FieldRuntime
+---@param envelope table
+---@param choose fun(request: table): table
+---@param budget integer
+---@return integer answered player turns before recovery began
+local function driveDefeatToRecovery(runtime, envelope, choose, budget)
+  local turns, ticks = 0, 0
+  while ticks < budget do
+    local launch = runtime._battleLaunch
+    if launch ~= nil and launch.phase == "recovering" then
+      return turns
+    end
+    if launch == nil or launch.phase == "failed" then
+      error("the defeat never entered recovery", 0)
+    end
+    local battle = runtime.battleRuntime
+    if battle ~= nil then
+      local current = battle:status()
+      if current.phase == "failed" then
+        error("the presented battle failed: " .. tostring(current.error), 0)
+      end
+      if current.phase == "running" and current.request ~= nil then
+        turns = turns + 1
+        local answer = choose(current.request)
+        local choices = answer
+        if type(answer) == "table" and answer.kind ~= nil then
+          choices = { answer }
+        end
+        local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
+        Assert.isTrue(accepted, "a legal presented decision is accepted: " .. tostring(replyErr))
+      end
+    end
+    local screen = envelope:liveScreen()
+    if screen ~= nil then
+      local shown = screen:status()
+      if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+        envelope:input({ { type = "confirm" } })
+      end
+    end
+    runtime:update(1 / 30)
+    envelope:updateFixed(TICK)
+    ticks = ticks + 1
+  end
+  error("the defeat never entered recovery within its tick budget", 0)
+end
+
+-- Pumps until the recovery flow reports the wanted phase, checking every
+-- tick so even a one-tick wait is still observed. Returns false when the
+-- field restores first or the budget runs out, so the caller can name the
+-- missing wait instead of failing deep inside the pump.
+---@param runtime FieldRuntime
+---@param envelope table
+---@param wanted string recovery phase under wait
+---@param budget integer
+---@return boolean reached true while the flow reported the wanted phase
+local function reachBlackoutPhase(runtime, envelope, wanted, budget)
+  local ticks = 0
+  while ticks < budget do
+    local flow = assert(runtime.blackoutFlow, "the runtime composes its recovery flow")
+    local status = flow:status()
+    if status.phase == wanted then
+      return true
+    end
+    if status.error ~= nil then
+      error("the recovery failed: " .. tostring(status.error), 0)
+    end
+    if runtime.overworld:phase() == "present" then
+      return false
+    end
+    runtime:update(1 / 30)
+    envelope:updateFixed(TICK)
+    ticks = ticks + 1
+  end
+  local flow = assert(runtime.blackoutFlow, "the runtime composes its recovery flow")
+  return flow:status().phase == wanted
+end
+
 -- Answer every exposed request: strikes for commands, prepared fragments
 -- for replacements and learning, learned from the projected options.
 ---@param runtime FieldRuntime
@@ -404,9 +488,11 @@ function T.scripted_defeat_stays_absent_without_recovery()
   end
 end
 
--- An automatic defeat runs the existing recovery exactly once to its
--- message, destination, and follow-up, then returns safely with the gate
--- open and the wallet debited once.
+-- An automatic defeat waits at its recovery message for a real player
+-- edge, then runs the existing recovery exactly once to its message,
+-- destination, and follow-up before returning safely with the gate open
+-- and the wallet debited once. Hundreds of input-free ticks never leave
+-- the wait; one routed confirm resumes it.
 function T.automatic_defeat_recovers_once_and_returns_safely()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
@@ -422,9 +508,23 @@ function T.automatic_defeat_recovers_once_and_returns_safely()
       local moneyAtLoss = runtime.playerData.profile.money
       runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 30 } })
       waitConstructed(runtime, envelope)
-      settle(runtime, envelope, function(request)
+      local turns = driveDefeatToRecovery(runtime, envelope, function(request)
         return sparringChoose(runtime, request)
       end, 15000)
+      Assert.isTrue(turns > 0, "the defeat answers decisions before its recovery")
+      Assert.isTrue(
+        reachBlackoutPhase(runtime, envelope, "message_wait", 1500),
+        "the defeat reaches its recovery message wait"
+      )
+      -- The wait holds without input: it neither restores nor completes.
+      pump(runtime, envelope, 600)
+      local waiting = blackout:status()
+      Assert.equal(waiting.phase, "message_wait", "the recovery waits for a real edge instead of completing alone")
+      Assert.isTrue(waiting.waitingInput, "the wait keeps asking for input")
+      Assert.notNil(waiting.message, "the wait keeps its message visible")
+      Assert.isTrue(runtime.overworld:phase() ~= "present", "the wait restores nothing on its own")
+      -- One real routed confirm resumes the waiting message.
+      envelope:input({ { type = "confirm" } })
       local ticks = 0
       while runtime.overworld:phase() ~= "present" and ticks < 1500 do
         runtime:update(1 / 30)
@@ -442,6 +542,121 @@ function T.automatic_defeat_recovers_once_and_returns_safely()
       Assert.isNil(reason, "the save gate opens at the safe field")
       local snapshot, saveErr = runtime.saveCoordinator:capture(false)
       Assert.notNil(snapshot, "the safe field captures: " .. tostring(saveErr))
+    end, debug.traceback)
+    local unbound = pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    local closed = pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    Assert.isTrue(unbound, "the lifetime releases its factory binding")
+    Assert.isTrue(closed, "teardown releases the presented lifetime")
+  end
+end
+
+-- The recovery message answers only a matched genuine edge: an Action
+-- pressed before the wait, a pointer release with no press, and a press
+-- canceled before its release all leave the wait untouched, while one
+-- matched tap advances it exactly once without replaying or leaking into
+-- field input.
+function T.recovery_message_answers_only_a_matched_genuine_edge()
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("presented-recovery-edges:dual"))
+    local ok, failure = xpcall(function()
+      local blackout = assert(runtime.blackoutFlow, "the runtime composes its recovery flow")
+      local recoveries = 0
+      local realStart = blackout.start
+      blackout.start = function(self, spawnKey)
+        recoveries = recoveries + 1
+        return realStart(self, spawnKey)
+      end
+      local moneyAtLoss = runtime.playerData.profile.money
+      runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 30 } })
+      waitConstructed(runtime, envelope)
+      local turns = driveDefeatToRecovery(runtime, envelope, function(request)
+        return sparringChoose(runtime, request)
+      end, 15000)
+      Assert.isTrue(turns > 0, "the defeat answers decisions before its recovery")
+      Assert.isTrue(
+        reachBlackoutPhase(runtime, envelope, "message_in", 1500),
+        "the defeat reaches its recovery message"
+      )
+      Assert.isTrue(envelope:ownsInput(), "the envelope holds input through the recovery")
+      -- Premature and unmatched edges arrive before the wait: an early
+      -- Action under cover, a release with no matching press, and a press
+      -- canceled before its release.
+      envelope:input({ { type = "confirm" } })
+      envelope:input({ { type = "pointer_up", pointerId = "touch:9", x = 4, y = 4 } })
+      envelope:input({ { type = "pointer_down", pointerId = "touch:9", x = 40, y = 40 } })
+      envelope:cancelPointerCapture()
+      envelope:input({ { type = "pointer_up", pointerId = "touch:9", x = 40, y = 40 } })
+      pump(runtime, envelope, 5)
+      local early = blackout:status()
+      Assert.isTrue(early.complete ~= true, "premature edges never finish the recovery")
+      Assert.isTrue(runtime.overworld:phase() ~= "present", "premature edges never restore the field")
+      Assert.isTrue(
+        reachBlackoutPhase(runtime, envelope, "message_wait", 1500),
+        "the recovery still reaches its message wait"
+      )
+      -- The wait holds without input across hundreds of ticks.
+      pump(runtime, envelope, 600)
+      local waiting = blackout:status()
+      Assert.equal(waiting.phase, "message_wait", "the recovery waits for a real edge instead of completing alone")
+      Assert.isTrue(waiting.waitingInput, "the wait keeps asking for input")
+      -- An outside press records no recovery edge, so its matching
+      -- release stays orphaned and the wait holds.
+      envelope:input({ { type = "pointer_down", pointerId = "touch:8", x = 128, y = 96, outside = true } })
+      pump(runtime, envelope, 2)
+      envelope:input({ { type = "pointer_up", pointerId = "touch:8", x = 128, y = 96 } })
+      pump(runtime, envelope, 5)
+      local outside = blackout:status()
+      Assert.equal(outside.phase, "message_wait", "an outside press never answers the waiting message")
+      Assert.isTrue(outside.waitingInput, "an outside press keeps the wait asking for input")
+      -- One matched tap advances the waiting message.
+      envelope:input({ { type = "pointer_down", pointerId = "touch:7", x = 128, y = 96 } })
+      pump(runtime, envelope, 2)
+      envelope:input({ { type = "pointer_up", pointerId = "touch:7", x = 128, y = 96 } })
+      local advanced = 0
+      while blackout:status().phase == "message_wait" and advanced < 60 do
+        runtime:update(1 / 30)
+        envelope:updateFixed(TICK)
+        advanced = advanced + 1
+      end
+      Assert.isTrue(blackout:status().phase ~= "message_wait", "a matched tap advances the waiting message")
+      local ticks = 0
+      while runtime.overworld:phase() ~= "present" and ticks < 1500 do
+        runtime:update(1 / 30)
+        envelope:updateFixed(TICK)
+        ticks = ticks + 1
+      end
+      blackout.start = realStart
+      Assert.equal(recoveries, 1, "automatic defeat runs the existing recovery exactly once")
+      Assert.equal(runtime.overworld:phase(), "present", "the recovery returns to the live field")
+      Assert.equal(runtime:lastBattleResult().result, "loss", "the automatic loss reports its exact word")
+      Assert.isTrue(runtime.playerData.profile.money < moneyAtLoss, "the defeat debits once")
+      local settledMoney = runtime.playerData.profile.money
+      -- The recovered tile is the reference: the defeat relocates to its
+      -- blackout destination, so only movement past this point would prove
+      -- a post-completion input leak.
+      local before = { fieldX = runtime.player.fieldX, fieldZ = runtime.player.fieldZ }
+      -- A second press after completion replays nothing.
+      envelope:input({ { type = "confirm" } })
+      envelope:input({ { type = "pointer_down", pointerId = "touch:7", x = 128, y = 96 } })
+      envelope:input({ { type = "pointer_up", pointerId = "touch:7", x = 128, y = 96 } })
+      pump(runtime, envelope, 30)
+      Assert.equal(recoveries, 1, "a press after completion starts no second recovery")
+      Assert.equal(runtime.playerData.profile.money, settledMoney, "a press after completion debits nothing")
+      Assert.deepEqual(
+        { fieldX = runtime.player.fieldX, fieldZ = runtime.player.fieldZ },
+        before,
+        "recovery input never moves the player"
+      )
+      local _, reason = runtime.saveCoordinator:capture(false)
+      Assert.isNil(reason, "the save gate opens at the safe field")
     end, debug.traceback)
     local unbound = pcall(function()
       runtime:unbindBattlePresentation(binding)

@@ -2691,16 +2691,19 @@ function FieldRuntime:_beginAutomaticRecovery(launch)
     return
   end
   launch.recoveryRunId = runId
+  launch.pendingRecoveryInput = nil
   launch.phase = "recovering"
 end
 
 -- Pumps the automatic recovery through the existing flow until its
 -- follow-up is scheduled, then waits for the restored present field and
 -- its actual scene readiness before exposing the safe field. The flow is
--- driven directly because no launching script owns its task: the
--- unattended recovery message auto-acknowledges once fully presented,
--- while every other phase pumps dry. The follow-up runs as a background
--- script since no parent task run exists to parent it to.
+-- driven directly because no launching script owns its task: the waiting
+-- recovery message answers only one queued genuine edge per tick, and
+-- every other phase pumps dry. The consumed edge clears whether or not
+-- the flow accepted it, so one held press never acknowledges twice. The
+-- follow-up runs as a background script since no parent task run exists
+-- to parent it to.
 ---@param launch table<string, unknown> presented launch record
 function FieldRuntime:_pumpAutomaticRecovery(launch)
   local flow = self.blackoutFlow
@@ -2719,12 +2722,27 @@ function FieldRuntime:_pumpAutomaticRecovery(launch)
       return
     end
     if status.complete ~= true then
+      local pending = launch.pendingRecoveryInput
+      launch.pendingRecoveryInput = nil
+      local admitted = type(pending) == "table" and pending.runId == launch.recoveryRunId
       flow:updateFixed({
-        pressedAction = status.phase == "message_wait",
-        pressedCancel = false,
-        touchPressed = false,
+        pressedAction = admitted == true and pending.pressedAction == true,
+        pressedCancel = admitted == true and pending.pressedCancel == true,
+        touchPressed = admitted == true and pending.touchPressed == true,
       })
-      return
+      -- A tick that completes the flow falls through to the follow-up
+      -- below instead of waiting another tick: the restored field and
+      -- its committed receipt publish together, never a tick apart.
+      status = flow:status()
+      if status.error ~= nil then
+        launch.phase = "failed"
+        launch.error = status.error
+        self.errorText = tostring(status.error)
+        return
+      end
+      if status.complete ~= true then
+        return
+      end
     end
     local followup = flow:consumeResult(launch.recoveryRunId)
     if type(followup) ~= "string" then
@@ -2942,6 +2960,9 @@ function FieldRuntime:_launchPresentedBattle(launchId, request, method)
   local function presentedNotify(event)
     self:_presentedNotify(launchId, event)
   end
+  local function presentedRecoveryInput(edge)
+    return self:_presentedRecoveryInput(launchId, edge)
+  end
   local descriptor = {
     launchId = launchId,
     kind = request.kind,
@@ -2954,6 +2975,7 @@ function FieldRuntime:_launchPresentedBattle(launchId, request, method)
       advance = presentedAdvance,
       submit = presentedSubmit,
       notify = presentedNotify,
+      recoveryInput = presentedRecoveryInput,
     },
   }
   local ok, port = pcall(binding.make, descriptor)
@@ -3162,6 +3184,49 @@ function FieldRuntime:_presentedLaunchStatus(launchId)
     end
   end
   return snapshot
+end
+
+-- Queues one genuine recovery edge for the waiting defeat message: only
+-- the matching launch admits it, only while recovering, and only while
+-- the recovery flow itself waits for input. Anything else is dropped and
+-- never deferred, so a press under cover or ahead of the wait cannot
+-- answer it later. At most one edge waits per recovery run; the pump
+-- consumes it exactly once on the next tick.
+---@param launchId string owning launch identity
+---@param edge table<string, unknown> one-shot semantic recovery edge
+---@return boolean admitted
+function FieldRuntime:_presentedRecoveryInput(launchId, edge)
+  local launch = self._battleLaunch
+  if launch == nil or launch.launchId ~= launchId or launch.phase ~= "recovering" then
+    return false
+  end
+  local flow = self.blackoutFlow
+  if flow == nil then
+    return false
+  end
+  local okStatus, status = pcall(function()
+    return flow:status()
+  end)
+  if not okStatus or type(status) ~= "table" or status.waitingInput ~= true then
+    return false
+  end
+  if type(edge) ~= "table" then
+    return false
+  end
+  local pending = nil
+  if edge.pressedAction == true then
+    pending = { pressedAction = true }
+  elseif edge.pressedCancel == true then
+    pending = { pressedCancel = true }
+  elseif edge.touchPressed == true then
+    pending = { touchPressed = true }
+  end
+  if pending == nil then
+    return false
+  end
+  pending.runId = launch.recoveryRunId
+  launch.pendingRecoveryInput = pending
+  return true
 end
 
 -- Presented decision submission behind the battle screen's accepted-choice
