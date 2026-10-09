@@ -66,6 +66,15 @@ local function assertPainted(data, width, height, label)
   Assert.isTrue(painted > 8, label .. " draws compiled Storage pixels")
 end
 
+local function assertTransparent(data, width, height, label)
+  for y = 0, height - 1, 8 do
+    for x = 0, width - 1, 8 do
+      local _, _, _, alpha = data:getPixel(x, y)
+      Assert.equal(alpha, 0, label .. " has no fixed surface without a 1x fit")
+    end
+  end
+end
+
 function T.production_storage_draws_with_real_pc_graphics_across_layouts(scope)
   local record, derivedAssets = savedField()
   local state = FieldState.new(record, { derivedAssets = derivedAssets })
@@ -105,7 +114,12 @@ function T.production_storage_draws_with_real_pc_graphics_across_layouts(scope)
       love.graphics.clear(0, 0, 0, 0)
       state.presentationResources:drawPcApplication(host, runtime)
       love.graphics.setCanvas()
-      assertPainted(scope:own(canvas:newImageData()), measured.width, measured.height, layout.label)
+      local imageData = scope:own(canvas:newImageData())
+      if layout.label == "tall" then
+        assertTransparent(imageData, measured.width, measured.height, layout.label)
+      else
+        assertPainted(imageData, measured.width, measured.height, layout.label)
+      end
     end
   end, debug.traceback)
   host:dispose()

@@ -71,8 +71,8 @@ T["frame_text_and_cursor_share_one_transform_across_host_geometries"] = function
     { bounds = { x = 0, y = 0, width = 256, height = 48 }, scale = 1 }, -- reference
     { bounds = { x = 0, y = 0, width = 1600, height = 300 }, scale = 2 }, -- wide
     { bounds = { x = 0, y = 0, width = 256, height = 768 }, scale = 1 }, -- tall
-    { bounds = { x = 12, y = 30, width = 500, height = 90 }, maxScale = 1.75 }, -- resized/offset
-    { bounds = { x = 0, y = 0, width = 900, height = 200 }, scale = 3.5 }, -- zoomed
+    { bounds = { x = 12, y = 30, width = 500, height = 90 }, maxScale = 1 }, -- resized/offset
+    { bounds = { x = 0, y = 0, width = 900, height = 200 }, scale = 3 }, -- zoomed
   }
 
   local textToBoxDelta, cursorToBoxDelta

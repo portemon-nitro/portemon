@@ -66,7 +66,8 @@ local function focusIndex(saves, focus)
 end
 
 local function popupRect(anchor, width, height, margin, popupHeight)
-  local boxWidth, boxHeight = BASE_POPUP_WIDTH, popupHeight
+  local boxWidth = math.max(1, math.min(BASE_POPUP_WIDTH, width - margin * 2))
+  local boxHeight = math.max(1, math.min(popupHeight, height - margin * 2))
   local x = anchor.x + anchor.width - boxWidth
   local y = anchor.y + anchor.height + BASE_POPUP_ANCHOR_GAP
   x = clamp(x, margin, math.max(margin, width - margin - boxWidth))
@@ -224,7 +225,7 @@ function MainMenuLayout.compute(
     local actionCount = (hasEdit and 1 or 0) + (hasDelete and 1 or 0)
     local popupHeight = actionCount > 1 and BASE_POPUP_HEIGHT + 32 or BASE_POPUP_HEIGHT
     local box = popupRect(card.overflow or card.frame, width, height, margin, popupHeight)
-    local inset = BASE_POPUP_INSET
+    local inset = math.min(BASE_POPUP_INSET, math.floor(math.min(box.width, box.height) / 4))
     local actions = {}
     local actionGap = actionCount > 1 and BASE_POPUP_ACTION_GAP or 0
     local actionHeight = math.max(1, math.floor((box.height - inset * 2 - actionGap) / math.max(1, actionCount)))
@@ -257,9 +258,9 @@ function MainMenuLayout.compute(
       width = math.max(1, boxWidth),
       height = math.max(1, boxHeight),
     }
-    local inset = BASE_CONFIRM_INSET
-    local gap = BASE_CONFIRM_ACTION_GAP
-    local actionHeight = BASE_CONFIRM_ACTION_HEIGHT
+    local inset = math.min(BASE_CONFIRM_INSET, math.floor(math.min(box.width, box.height) / 4))
+    local gap = math.min(BASE_CONFIRM_ACTION_GAP, math.max(0, box.width - inset * 2 - 2))
+    local actionHeight = math.min(BASE_CONFIRM_ACTION_HEIGHT, math.max(1, box.height - inset * 2))
     local actionWidth = math.max(1, math.floor((box.width - inset * 2 - gap) / 2))
     local actionY = math.max(box.y + inset, box.y + box.height - BASE_CONFIRM_BOTTOM_OFFSET)
     actionY = math.min(actionY, math.max(box.y + inset, box.y + box.height - actionHeight))

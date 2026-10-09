@@ -949,6 +949,7 @@ function T.tests.pixel_authored_layout_scales_stay_integer_across_host_sizes_and
     },
   }
   local sizes = {
+    { 200, 150 },
     { 256, 192 },
     { 640, 480 },
     { 1280, 720 },

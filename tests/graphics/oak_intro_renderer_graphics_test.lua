@@ -822,16 +822,16 @@ end
 local function attachNamingPlan(edit)
   local interfaces = NamingInterface.defaults()
   local measured = {
-    width = 160,
-    height = 120,
+    width = 256,
+    height = 192,
     topology = ScreenTopology.oneDisplay({
       id = "main",
-      rect = { x = 0, y = 0, width = 160, height = 120 },
+      rect = { x = 0, y = 0, width = 256, height = 192 },
       role = "world",
       touch = false,
     }),
     pixelRatio = 1,
-    signature = "oak-renderer-graphics-test:160x120",
+    signature = "oak-renderer-graphics-test:256x192",
   }
   local selection = ApplicationLayout.selectSurfaces(measured)
   local plan = interfaces.nativeLike({

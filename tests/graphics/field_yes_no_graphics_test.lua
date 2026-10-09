@@ -406,12 +406,11 @@ function T.constrained_single_display_scale_keeps_the_complete_menu_inside_its_h
   local choice = status(1, 1)
   local bounds = { x = 10, y = 12, width = 24, height = 16 }
   local layout = hostLayout(choice, topology, nil, { bounds = bounds, preferredScale = 1 })
-  Assert.equal(layout.placement.scale, 24 / 80)
+  Assert.equal(layout.placement.scale, 1, "adapted pixel art stays at native scale")
+  Assert.deepEqual(layout.placement.clipRect, bounds, "the undersized host clips the native choice")
+  Assert.equal(layout.placement.pixelScale, 1)
   Assert.deepEqual(layout.content, { x = 0, y = 0, width = 40, height = 32 })
-  Assert.deepEqual(
-    layout.placement.frame,
-    { x = 10, y = 12 + 16 - 48 * layout.placement.scale, width = 24, height = 48 * layout.placement.scale }
-  )
+  Assert.deepEqual(layout.placement.frame, { x = -46, y = -20, width = 80, height = 48 })
   renderer:draw(choice, layout)
   Assert.deepEqual(windows[1].box, { x = 0, y = 0, width = 40, height = 32 })
   Assert.deepEqual(texts[2].transformed, {
@@ -468,11 +467,11 @@ function T.adapted_user_frame_fits_inside_constrained_and_portrait_safe_areas()
     Assert.equal(frame.kind, "user")
     Assert.equal(#frame.tiles, #FieldDialogueTheme.frameTilePlacements({ x = 0, y = 0, width = 40, height = 32 }))
     for _, tile in ipairs(frame.tiles) do
-      Assert.isTrue(tile.x >= bounds.x, "frame tile starts inside the host's left edge")
-      Assert.isTrue(tile.y >= bounds.y, "frame tile starts inside the host's top edge")
-      Assert.isTrue(tile.x + tile.width <= bounds.x + bounds.width, "frame tile ends inside the host's right edge")
-      Assert.isTrue(tile.y + tile.height <= bounds.y + bounds.height, "frame tile ends inside the host's bottom edge")
+      Assert.equal(tile.width % FieldDialogueTheme.frameTileSize, 0, "frame tile width remains native")
+      Assert.equal(tile.height % FieldDialogueTheme.frameTileSize, 0, "frame tile height remains native")
     end
+    Assert.deepEqual(layout.placement.clipRect, bounds, "only the host-safe area is visible")
+    Assert.equal(layout.placement.pixelScale, 1, "adapted pixel art keeps native magnification")
     Assert.deepEqual(texts[2].transformed, {
       frame.transformed[1] + 8 * layout.placement.scale,
       frame.transformed[2],
@@ -512,12 +511,10 @@ function T.adapted_choice_width_follows_measured_labels()
     "the compact prompt keeps the two-pixel dialogue gap"
   )
 
-  local wideStatus = { active = true, selectedIndex = 0, yesText = "YES, PLEASE", noText = "NO, THANK YOU", frameIndex = 1 }
+  local wideStatus =
+    { active = true, selectedIndex = 0, yesText = "YES, PLEASE", noText = "NO, THANK YOU", frameIndex = 1 }
   local wide = hostLayout(wideStatus, topology, dialogue, adaptedHost)
-  Assert.isTrue(
-    wide.content.width >= short.content.width,
-    "wider labels must not shrink the adapted body"
-  )
+  Assert.isTrue(wide.content.width >= short.content.width, "wider labels must not shrink the adapted body")
   Assert.equal(wide.content.width % 8, 0, "grown adapted width stays on the 8px tile grid")
   Assert.isTrue(wide.content.width <= 48, "adapted body never exceeds the native source width for padding")
   Assert.equal(wide.content.height, 32, "grown adapted height keeps the source two-row body")

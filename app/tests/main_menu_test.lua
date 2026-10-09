@@ -908,17 +908,8 @@ function T.layout_resize_retains_overscroll_until_navigation_reveals_focus()
   local list = saves(ids)
   local controller = MainMenuController.new(globalActions(), list)
   controller:focusSave("save-12", "body")
-  local compact = MainMenuLayout.compute(
-    globalActions(),
-    list,
-    controller:snapshot().focus,
-    320,
-    180,
-    0,
-    nil,
-    nil,
-    false
-  )
+  local compact =
+    MainMenuLayout.compute(globalActions(), list, controller:snapshot().focus, 320, 180, 0, nil, nil, false)
   local large = MainMenuLayout.compute(
     globalActions(),
     list,
@@ -951,9 +942,7 @@ function T.layout_resize_retains_overscroll_until_navigation_reveals_focus()
   Assert.isTrue(moved.saves.offset < large.saves.offset, "navigation reveals the newly focused preceding card")
   local movedFocus = assert(moved.saves.cards["save-11"])
   Assert.equal(movedFocus.frame.y, moved.saves.viewport.y, "the preceding card aligns to the viewport start")
-  Assert.isTrue(
-    movedFocus.frame.y + movedFocus.frame.height <= moved.saves.viewport.y + moved.saves.viewport.height
-  )
+  Assert.isTrue(movedFocus.frame.y + movedFocus.frame.height <= moved.saves.viewport.y + moved.saves.viewport.height)
 end
 
 local SELECTED_RIM = { 1, 58 / 255, 58 / 255 }
@@ -1487,6 +1476,7 @@ end
 
 function T.popup_and_confirmation_geometry_scales_with_the_menu_scale()
   local cases = {
+    { width = 200, height = 150, scale = 1 },
     { width = 320, height = 240, scale = 1 },
     { width = 640, height = 480, scale = 2 },
     { width = 1280, height = 720, scale = 3 },
@@ -1528,6 +1518,37 @@ function T.popup_and_confirmation_geometry_scales_with_the_menu_scale()
       MainMenuLayout.contains(confirmation.cancel, confirmation.delete.x + 1, confirmation.delete.y + 1),
       "confirmation actions must stay disjoint"
     )
+    if case.width == 200 then
+      local popupLayout = MainMenuLayout.compute(
+        globalActions(),
+        saves({ "one" }),
+        focus,
+        case.width,
+        case.height,
+        0,
+        { saveId = "one", focusedAction = "delete" },
+        nil,
+        false
+      )
+      local popupView = { popup = { saveId = "one" } }
+      local smallPopup = assert(popupLayout.popup)
+      local popupHit = MainMenuLayout.hitTest(
+        popupLayout,
+        popupView,
+        smallPopup.actions.delete.x + smallPopup.actions.delete.width / 2,
+        smallPopup.actions.delete.y + smallPopup.actions.delete.height / 2
+      )
+      Assert.equal(popupHit.region, "popup", "small-host popup actions remain pointer reachable")
+      Assert.equal(popupHit.lane, "delete")
+      local confirmationHit = MainMenuLayout.hitTest(
+        layout,
+        { confirmation = { saveId = "one" } },
+        confirmation.delete.x + confirmation.delete.width / 2,
+        confirmation.delete.y + confirmation.delete.height / 2
+      )
+      Assert.equal(confirmationHit.region, "confirmation", "small-host confirmation remains pointer reachable")
+      Assert.equal(confirmationHit.lane, "delete")
+    end
   end
 end
 

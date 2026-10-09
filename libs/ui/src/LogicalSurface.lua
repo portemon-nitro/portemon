@@ -9,6 +9,8 @@
 -- to observe. It allocates no canvases, images, or fonts and retains
 -- nothing between calls.
 
+local PixelScale = require("libs.ui.src.PixelScale")
+
 local LogicalSurface = {}
 
 -- Runs one callback inside the placement's logical coordinate space: the
@@ -17,6 +19,9 @@ local LogicalSurface = {}
 ---@param placement LayoutGeometry.Placement the already-resolved placement
 ---@param draw fun()
 function LogicalSurface.draw(graphics, placement, draw)
+  if placement.pixelScale ~= nil or placement.pixelRatio ~= nil then
+    PixelScale.assertPlacement(placement)
+  end
   local frame = placement.frame
   local origin = placement.origin or frame
   local clip = placement.clipRect or frame

@@ -1,6 +1,7 @@
 -- Image button composing the generic Button geometry with caller-owned colors.
 
 local Button = require("libs.ui.src.Button")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 local ImageButton = {}
 
@@ -13,10 +14,6 @@ local DEFAULT_SELECTED_RIM = { 255 / 255, 58 / 255, 58 / 255, 1 }
 
 local function finite(value)
   return type(value) == "number" and value == value and value > -math.huge and value < math.huge
-end
-
-local function assertFinitePositiveScale(value)
-  assert(finite(value) and value > 0, "image button scale must be a finite positive number")
 end
 
 local function rectangle(value, name)
@@ -33,8 +30,7 @@ end
 function ImageButton.resolve(spec)
   assert(type(spec) == "table", "image button specification is required")
   local rectValue = rectangle(spec.rect, "image button rectangle")
-  assertFinitePositiveScale(spec.scale)
-  local scale = spec.scale
+  local scale = PixelScale.assertInteger(spec.scale)
   local cornerRadius = 6
   if spec.cornerRadius ~= nil then
     assert(

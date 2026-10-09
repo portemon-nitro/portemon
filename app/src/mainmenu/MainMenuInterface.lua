@@ -2,8 +2,7 @@
 -- responsive placement. Every display case resolves the same fullscreen
 -- interface on the primary/world usable surface: the density rule picks one
 -- integer physical-pixel scale, the logical viewport feeds the canonical
--- Main Menu geometry, and a complete 256x192 viewport with fractional
--- fallback keeps controls reachable on tiny hosts. Dual auxiliaries
+-- Main Menu geometry, and tiny hosts reflow at native 1x. Dual auxiliaries
 -- receive only the neutral background, never a duplicate save menu. A
 -- per-case override replaces the whole render/input pair, never a mode
 -- token. Resolvers require the complete context the owning session supplies.
@@ -20,9 +19,6 @@ local INPUT_KEY = "main-menu"
 local DENSITY_WIDTH = 320
 local DENSITY_HEIGHT = 240
 local MAX_DENSITY_SCALE = 3
-local FALLBACK_WIDTH = NativeDisplay.WIDTH
-local FALLBACK_HEIGHT = NativeDisplay.HEIGHT
-
 local function clampScale(value)
   return math.max(1, math.min(MAX_DENSITY_SCALE, value))
 end
@@ -105,38 +101,12 @@ function MainMenuInterface.resolve(context, view)
   local placement
   local viewportWidth
   local viewportHeight
-  if physicalWidth < FALLBACK_WIDTH or physicalHeight < FALLBACK_HEIGHT then
-    local downscale = math.min(usable.width / FALLBACK_WIDTH, usable.height / FALLBACK_HEIGHT)
-    local frameWidth = FALLBACK_WIDTH * downscale
-    local frameHeight = FALLBACK_HEIGHT * downscale
-    local frameX = usable.x + (usable.width - frameWidth) / 2
-    local frameY = usable.y + (usable.height - frameHeight) / 2
-    placement = {
-      frame = { x = frameX, y = frameY, width = frameWidth, height = frameHeight },
-      origin = { x = frameX, y = frameY },
-      scale = downscale,
-      logicalWidth = FALLBACK_WIDTH,
-      logicalHeight = FALLBACK_HEIGHT,
-      clipRect = {
-        x = math.max(frameX, usable.x),
-        y = math.max(frameY, usable.y),
-        width = math.min(frameX + frameWidth, usable.x + usable.width) - math.max(frameX, usable.x),
-        height = math.min(frameY + frameHeight, usable.y + usable.height) - math.max(frameY, usable.y),
-      },
-      pixelScale = downscale * ratio,
-      pixelRatio = ratio,
-      visibleLogicalRect = { x = 0, y = 0, width = FALLBACK_WIDTH, height = FALLBACK_HEIGHT },
-      crop = { left = 0, right = 0, top = 0, bottom = 0 },
-    }
-    viewportWidth = FALLBACK_WIDTH
-    viewportHeight = FALLBACK_HEIGHT
-  else
-    local density = clampScale(math.floor(math.min(physicalWidth / DENSITY_WIDTH, physicalHeight / DENSITY_HEIGHT)))
-    local covered = PixelScale.cover(usable, density, ratio)
-    placement = covered.placement
-    viewportWidth = covered.logicalViewport.width
-    viewportHeight = covered.logicalViewport.height
-  end
+  local density = (physicalWidth < NativeDisplay.WIDTH or physicalHeight < NativeDisplay.HEIGHT) and 1
+    or clampScale(math.floor(math.min(physicalWidth / DENSITY_WIDTH, physicalHeight / DENSITY_HEIGHT)))
+  local covered = PixelScale.cover(usable, density, ratio)
+  placement = covered.placement
+  viewportWidth = covered.logicalViewport.width
+  viewportHeight = covered.logicalViewport.height
   local layout = MainMenuLayout.compute(
     assert(view.globalActions, "menu resolution needs its global actions"),
     assert(view.saves, "menu resolution needs its saves"),

@@ -1,6 +1,7 @@
 -- Text button composing the generic Button geometry with caller-owned colors.
 
 local Button = require("libs.ui.src.Button")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 ---@class TextAdapter
 ---@field measure fun(label:string):number
@@ -33,10 +34,6 @@ local function finite(value)
   return type(value) == "number" and value == value and value > -math.huge and value < math.huge
 end
 
-local function assertFinitePositiveScale(value)
-  assert(finite(value) and value > 0, "text button scale must be a finite positive number")
-end
-
 local function rectangle(value, name)
   assert(type(value) == "table", name .. " is required")
   for _, field in ipairs({ "x", "y", "width", "height" }) do
@@ -51,8 +48,7 @@ end
 function TextButton.resolve(spec)
   assert(type(spec) == "table", "text button specification is required")
   local rectValue = rectangle(spec.rect, "text button rectangle")
-  assertFinitePositiveScale(spec.scale)
-  local scale = spec.scale
+  local scale = PixelScale.assertInteger(spec.scale)
   local cornerRadius = 3
   if spec.cornerRadius ~= nil then
     assert(
@@ -127,7 +123,7 @@ function TextButton.visualBounds(button, selected)
   assert(type(selected) == "boolean", "text button selected flag must be boolean")
   local body = rectangle(button.rect, "text button rectangle")
   local scale = assert(button.scale, "text button scale is missing")
-  assertFinitePositiveScale(scale)
+  PixelScale.assertInteger(scale)
   if not selected then
     return body
   end
@@ -179,7 +175,11 @@ function TextButton.draw(graphics, button, spec)
   graphics.push()
   graphics.translate(content.x, content.y)
   graphics.scale(scale, scale)
-  spec.text.draw(spec.label, (sourceContentWidth - labelWidth) / 2, (sourceContentHeight - lineHeight) / 2)
+  spec.text.draw(
+    spec.label,
+    PixelScale.snapLogical((sourceContentWidth - labelWidth) / 2),
+    PixelScale.snapLogical((sourceContentHeight - lineHeight) / 2)
+  )
   graphics.pop()
   graphics.setLineWidth(savedLineWidth)
 end

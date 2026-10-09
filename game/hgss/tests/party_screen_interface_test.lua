@@ -228,9 +228,16 @@ end
 
 function T.small_framed_hosts_fall_back_to_native_like()
   local interfaces = partyInterface()
-  local plan = interfaces.wide(contextFor(singleDisplay(200, 150), "wide", interfaces), view(true))
+  local plan = interfaces.wide(contextFor(singleDisplay(256, 192), "wide", interfaces), view(true))
   singlePane(plan, "small wide")
   Assert.deepEqual(plan.frames, {}, "a frame that cannot fit falls back to fullscreen")
+end
+
+function T.tiny_fixed_party_host_stays_inactive_without_a_native_fit()
+  local interfaces = partyInterface()
+  local plan = interfaces.wide(contextFor(singleDisplay(200, 150), "wide", interfaces), view(true))
+  Assert.deepEqual(plan.panes, {}, "a fixed party pane below its 1x crop budget is unavailable")
+  Assert.deepEqual(plan.frames, {}, "an unavailable party pane publishes no frame")
 end
 
 function T.equivalent_measurements_resolve_the_same_geometry()

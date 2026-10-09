@@ -320,9 +320,9 @@ function T.tests.dpi2_dual_pairs_keep_physical_roles()
   end
 end
 
--- A host below 1x still resolves one complete machine pane through
--- the fractional fallback so controls remain reachable.
-function T.tests.tiny_hosts_fall_back_to_a_complete_machine_pane()
+-- Fixed machine art has no responsive reflow below its 1x crop budget.
+-- The semantic chooser stays owned while its presentation plan is inactive.
+function T.tests.tiny_hosts_leave_the_fixed_machine_pane_inactive()
   local interface = starterChoiceInterface()
   local measurement = measurementFor(
     200,
@@ -337,10 +337,8 @@ function T.tests.tiny_hosts_fall_back_to_a_complete_machine_pane()
     "starter-tiny"
   )
   local plan = interface.nativeLike(contextFor(measurement, "nativeLike", interface), nullView())
-  Assert.equal(#plan.panes, 1, "a tiny host still resolves one complete pane")
-  local placement = assert(plan.panes[1].placement, "the tiny pane carries its placement")
-  Assert.equal(placement.logicalWidth, 256, "the fallback keeps the full logical width")
-  Assert.equal(placement.logicalHeight, 192, "the fallback keeps the full logical height")
+  Assert.equal(#plan.panes, 0, "a fixed machine pane below its 1x crop budget is unavailable")
+  Assert.equal(#plan.frames, 0, "an unavailable machine pane publishes no frame")
 end
 
 -- Input clipping: taps outside the machine keep the tap(nil) reversal

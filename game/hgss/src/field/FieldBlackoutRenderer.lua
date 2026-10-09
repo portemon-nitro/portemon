@@ -2,6 +2,7 @@
 
 local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 local FieldBlackoutRenderer = {}
 
@@ -46,10 +47,11 @@ function FieldBlackoutRenderer.draw(status, window, text, bounds)
     end
   end
   local lg = love.graphics
-  local scale = math.min(bounds.width / 256, bounds.height / 192)
-  local originX = bounds.x + (bounds.width - 256 * scale) / 2
-  local originY = bounds.y + (bounds.height - 192 * scale) / 2
+  local scale = PixelScale.assertInteger(math.max(1, math.floor(math.min(bounds.width / 256, bounds.height / 192))))
+  local originX = PixelScale.snapLogical(bounds.x + (bounds.width - 256 * scale) / 2)
+  local originY = PixelScale.snapLogical(bounds.y + (bounds.height - 192 * scale) / 2)
   lg.push("all")
+  lg.intersectScissor(bounds.x, bounds.y, bounds.width, bounds.height)
   lg.push()
   lg.translate(originX, originY)
   lg.scale(scale, scale)

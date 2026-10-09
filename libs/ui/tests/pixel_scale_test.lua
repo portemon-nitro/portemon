@@ -29,7 +29,7 @@ end
 
 function T.preferred_fitting_resolves_an_integer_at_least_one()
   local PixelScale = pixelScaleFor("preferred integer fitting")
-  Assert.keySet(PixelScale, "cover,fitPreferred,placeFixed,snapLogical")
+  Assert.keySet(PixelScale, "assertInteger,assertPlacement,cover,fitPreferred,placeFixed,snapLogical")
   local referenceWidth, referenceHeight = 256, 192
 
   local exact = PixelScale.fitPreferred(rect(0, 0, 512, 384), referenceWidth, referenceHeight, 2)
@@ -71,6 +71,19 @@ function T.preferred_fitting_resolves_an_integer_at_least_one()
   end)
 end
 
+function T.shared_scale_validation_requires_positive_finite_integers()
+  local PixelScale = pixelScaleFor("shared pixel-art scale validation")
+  Assert.isTrue(type(PixelScale.assertInteger) == "function", "shared integer validation is available")
+  for _, scale in ipairs({ 1, 2, 3 }) do
+    PixelScale.assertInteger(scale)
+  end
+  for _, scale in ipairs({ 0, -1, 0.5, 0.75, 1.5, math.huge, -math.huge, 0 / 0 }) do
+    rejects(function()
+      PixelScale.assertInteger(scale)
+    end)
+  end
+end
+
 function T.coverage_descriptor_separates_exact_visible_area_from_ceil_allocation()
   local PixelScale = pixelScaleFor("coverage and coordinate transforms")
   local bounds = rect(17, 29, 641, 479)
@@ -80,8 +93,8 @@ function T.coverage_descriptor_separates_exact_visible_area_from_ceil_allocation
     Assert.keySet(surface, "allocationHeight,allocationWidth,logicalViewport,placement")
     Assert.deepEqual(surface.placement.frame, bounds)
     Assert.isTrue(surface.placement.frame ~= bounds, "coverage copies the placement frame")
-    Assert.equal(surface.placement.origin.x, bounds.x)
-    Assert.equal(surface.placement.origin.y, bounds.y)
+    Assert.equal(surface.placement.origin.x * 1, math.floor(surface.placement.origin.x), "origin x is pixel aligned")
+    Assert.equal(surface.placement.origin.y * 1, math.floor(surface.placement.origin.y), "origin y is pixel aligned")
     Assert.equal(surface.placement.scale, scale)
     Assert.near(surface.placement.logicalWidth, bounds.width / scale)
     Assert.near(surface.placement.logicalHeight, bounds.height / scale)
@@ -160,6 +173,14 @@ function T.coverage_descriptor_separates_exact_visible_area_from_ceil_allocation
   rejects(function()
     PixelScale.cover(rect(0, math.huge, 640, 480), 2)
   end)
+end
+
+function T.cover_snaps_origins_to_the_physical_pixel_grid()
+  local PixelScale = pixelScaleFor("physical-pixel cover placement")
+  local placement = PixelScale.cover(rect(17, 29, 641, 479), 2, 1.25).placement
+  Assert.near(placement.scale * 1.25, 2, 1e-9, "host units resolve to two physical pixels per source pixel")
+  Assert.near(placement.origin.x * 1.25, math.floor(placement.origin.x * 1.25 + 0.5), 1e-9)
+  Assert.near(placement.origin.y * 1.25, math.floor(placement.origin.y * 1.25 + 0.5), 1e-9)
 end
 
 function T.fixed_fit_selects_bounded_integer_bump_and_inverts_through_full_origin()
@@ -248,7 +269,7 @@ function T.fixed_fit_one_pixel_beyond_budget_refuses_the_bump()
   Assert.deepEqual(admitted.visibleLogicalRect, { x = 4, y = 0, width = 248, height = 192 })
 end
 
-function T.fixed_fit_tiny_hosts_crop_once_then_fall_back_to_fractional()
+function T.fixed_fit_tiny_hosts_crop_once_then_report_no_fit()
   local PixelScale = fixedScaleFor("bounded fixed-surface fitting")
   -- 252x188 hides 2 pixels per edge at 1x: inside the default budget.
   local cropped =
@@ -256,18 +277,12 @@ function T.fixed_fit_tiny_hosts_crop_once_then_fall_back_to_fractional()
   Assert.equal(cropped.pixelScale, 1, "admissible 1x cropping applies below the natural fit")
   Assert.deepEqual(cropped.crop, { left = 2, right = 2, top = 2, bottom = 2 })
   Assert.deepEqual(cropped.visibleLogicalRect, { x = 2, y = 2, width = 252, height = 188 })
-  -- 200x150 cannot keep 1x inside any budget: the exact fractional
-  -- downscale keeps every control reachable instead of hiding content.
-  local fractional =
-    assert(PixelScale.placeFixed(rect(0, 0, 200, 150), 256, 192), "a tiny host still presents complete content")
-  Assert.near(fractional.pixelScale, 200 / 256, 1e-9, "the fallback is the exact uniform downscale")
-  Assert.near(fractional.scale, 200 / 256, 1e-9)
-  Assert.deepEqual(fractional.crop, { left = 0, right = 0, top = 0, bottom = 0 })
-  Assert.deepEqual(fractional.visibleLogicalRect, { x = 0, y = 0, width = 256, height = 192 })
-  Assert.isTrue(
-    fractional.pixelScale ~= math.floor(fractional.pixelScale),
-    "the fractional fallback is explicitly not pixel-exact"
-  )
+  -- 200x150 cannot keep 1x inside any budget. Fixed presentation is
+  -- unavailable; responsive callers use an authored-pixel viewport at 1x.
+  Assert.isNil(PixelScale.placeFixed(rect(0, 0, 200, 150), 256, 192))
+  local responsive = PixelScale.cover(rect(0, 0, 200, 150), 1)
+  Assert.equal(responsive.placement.pixelScale, 1)
+  Assert.deepEqual(responsive.logicalViewport, rect(0, 0, 200, 150))
 end
 
 function T.fixed_fit_empty_targets_have_no_placement()

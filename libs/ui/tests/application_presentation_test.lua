@@ -275,6 +275,9 @@ local function staticInterfaces(spy, spoil)
       body.logicalWidth = 0
     elseif spoil.mode == "pane" then
       body.logicalHeight = 0 / 0
+    elseif spoil.mode == "pixel" then
+      body.pixelScale = 1.5
+      body.pixelRatio = 1
     elseif spoil.mode == "frame" then
       frames = {
         {
@@ -406,7 +409,7 @@ function T.tests.a_failed_candidate_keeps_the_previous_plan()
   local view = {}
   local measurement = stubMeasurement(1280, 720)
   local plan = session:resolve(measurement, view)
-  for _, mode in ipairs({ "origin", "clip", "logical", "pane", "frame" }) do
+  for _, mode in ipairs({ "origin", "clip", "logical", "pane", "frame", "pixel" }) do
     spoil.mode = mode
     Assert.throws(function()
       session:resolve(measurement, view)

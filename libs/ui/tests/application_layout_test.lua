@@ -479,7 +479,7 @@ function T.tests.cover_or_frame_prefers_full_coverage_then_decoration()
   local tiny = layoutContext(measure(singleSurface(200, 150), 200, 150), "nativeLike")
   local constrained = policy.coverOrFrame(tiny, native, {})
   Assert.deepEqual(constrained.frames, {}, "a host below any frame keeps no clipped chrome")
-  Assert.notNil(constrained.placements["content"], "the constrained host still places its body")
+  Assert.isNil(constrained.placements["content"], "a fixed source surface with no safe integer fit is unavailable")
 end
 
 -- Same-display pairs share one integer scale with no synthetic gap: the
@@ -517,6 +517,25 @@ function T.tests.paired_panes_are_edge_adjacent_with_a_common_envelope()
     top.logicalHeight + bottom.logicalHeight,
     "the vertical envelope spans both panes"
   )
+end
+
+function T.tests.unequal_pair_subplacements_align_to_hidpi_pixels_at_odd_bounds()
+  local policy = sharedPolicy()
+  local ratio = 1.25
+  local measurement = measure(singleSurface(1281, 721), 1281, 721, ratio)
+  local context = layoutContext(measurement, "wide")
+  local geometry = assert(
+    policy.sideBySide(context, { id = "upper", width = 256, height = 192 }, { id = "lower", width = 240, height = 160 }),
+    "the odd wide host fits an unequal pane pair"
+  )
+  local upper = assert(geometry.placements["upper"])
+  local lower = assert(geometry.placements["lower"])
+  Assert.equal(upper.pixelScale, lower.pixelScale, "paired panes keep one shared physical scale")
+  for _, placement in ipairs({ upper, lower }) do
+    Assert.near(placement.scale * ratio, placement.pixelScale, 1e-9, "host scale resolves to integer pixels")
+    Assert.near(placement.origin.x * ratio, math.floor(placement.origin.x * ratio + 0.5), 1e-9)
+    Assert.near(placement.origin.y * ratio, math.floor(placement.origin.y * ratio + 0.5), 1e-9)
+  end
 end
 
 -- Geometry names no transition coverage and never a settled background

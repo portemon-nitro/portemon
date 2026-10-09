@@ -1,7 +1,6 @@
 -- Resolves one measured editor pane and its canonical logical input mapping.
 
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
-local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local PixelScale = require("libs.ui.src.PixelScale")
 
 local Interface = {}
@@ -109,11 +108,9 @@ function Interface.resolve(context, view)
   end
   local logicalWidth, logicalHeight, placement
   if physicalWidth < authoredWidth or physicalHeight < authoredHeight then
-    logicalWidth, logicalHeight = authoredWidth, authoredHeight
-    placement = LayoutGeometry.centeredFit(bounds, authoredWidth, authoredHeight)
-    placement.pixelScale = placement.scale * pixelRatio
-    placement.pixelRatio = pixelRatio
-    placement.visibleLogicalRect = { x = 0, y = 0, width = authoredWidth, height = authoredHeight }
+    local covered = PixelScale.cover(bounds, 1, pixelRatio)
+    logicalWidth, logicalHeight = covered.logicalViewport.width, covered.logicalViewport.height
+    placement = covered.placement
   else
     local density = math.max(
       1,
@@ -129,8 +126,10 @@ function Interface.resolve(context, view)
   local hostBackgrounds = { copyBounds(bounds) }
   local primary = context.primary
   if context.secondary ~= nil and surface == context.secondary and primary.usableBounds ~= nil then
-    local previewPlacement = LayoutGeometry.centeredFit(primary.usableBounds, WIDTH, HEIGHT)
-    panes[#panes + 1] = { id = "context", placement = previewPlacement, interactive = false }
+    local previewPlacement = PixelScale.placeFixed(primary.usableBounds, WIDTH, HEIGHT, { pixelRatio = pixelRatio })
+    if previewPlacement ~= nil then
+      panes[#panes + 1] = { id = "context", placement = previewPlacement, interactive = false }
+    end
     hostBackgrounds[#hostBackgrounds + 1] = copyBounds(primary.usableBounds)
   end
   local identity = table.concat(

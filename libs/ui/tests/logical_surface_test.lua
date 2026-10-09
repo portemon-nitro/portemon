@@ -168,33 +168,40 @@ function T.repeated_scopes_draw_cleanly_on_a_fresh_namespace_after_failure()
   Assert.deepEqual({ sx, sy, sw, sh }, { 0, 0, 800, 600 }, "the outer scissor is restored on success")
 end
 
-function T.scopes_paint_placements_directly_without_contract_checks()
-  local Surface = logicalSurfaceFor("direct placement painting")
+function T.generic_geometry_scale_remains_legal_without_pixel_art_metadata()
+  local Surface = logicalSurfaceFor("generic geometry drawing")
   local lg = FakeGraphics.new()
-  local unscaled = croppedPlacement()
-  unscaled.scale = 0
+  local unscaled = {
+    frame = { x = 0, y = 0, width = 10, height = 10 },
+    origin = { x = 0, y = 0 },
+    scale = 0.5,
+    logicalWidth = 20,
+    logicalHeight = 20,
+    clipRect = { x = 0, y = 0, width = 10, height = 10 },
+  }
   local calls = 0
   Surface.draw(lg, unscaled, function()
     calls = calls + 1
   end)
-  Assert.equal(calls, 1, "paint runs the callback without proving the placement scale")
+  Assert.equal(calls, 1, "fractional generic geometry remains supported without raster metadata")
   Assert.equal(lg:pushDepth(), 0, "the scope still balances on success")
-  local clipped = croppedPlacement()
-  clipped.clipRect = { x = 0, y = 0, width = -4, height = 10 }
-  local clippedCalls = 0
-  Surface.draw(lg, clipped, function()
-    clippedCalls = clippedCalls + 1
-  end)
-  Assert.equal(clippedCalls, 1, "paint clips to the resolved clip without proving it")
-  Assert.equal(lg:pushDepth(), 0, "the scope still balances on success")
-  local drifted = croppedPlacement()
-  drifted.origin = { x = 0 / 0, y = 0 }
-  local driftedCalls = 0
-  Surface.draw(lg, drifted, function()
-    driftedCalls = driftedCalls + 1
-  end)
-  Assert.equal(driftedCalls, 1, "paint translates to the resolved origin without proving it")
-  Assert.equal(lg:pushDepth(), 0, "the scope still balances on success")
+end
+
+function T.pixel_metadata_is_validated_before_graphics_state_changes()
+  local Surface = logicalSurfaceFor("pixel-aware placement validation")
+  local lg = FakeGraphics.new()
+  local invalid = croppedPlacement()
+  invalid.scale = 1.5
+  invalid.pixelScale = 1.5
+  invalid.pixelRatio = 1
+  local calls = 0
+  Assert.throws(function()
+    Surface.draw(lg, invalid, function()
+      calls = calls + 1
+    end)
+  end, "fractional physical pixel magnification is rejected")
+  Assert.equal(calls, 0, "invalid pixel placements never call the renderer")
+  Assert.equal(lg:pushDepth(), 0, "invalid pixel placements fail before graphics push")
 end
 
 return { tests = T }

@@ -4,6 +4,7 @@
 -- canonical HGSS geometry owner; this module only maps them into host bounds.
 
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 local Layout = {}
 
@@ -90,21 +91,19 @@ function Layout.compute(bounds, options)
   validateBounds(bounds)
   assert(type(options) == "table", "dialogue presentation options must be a table")
   if options.scale ~= nil then
-    finitePositive(options.scale, "dialogue presentation scale")
+    PixelScale.assertInteger(options.scale)
   end
   if options.maxScale ~= nil then
     finitePositive(options.maxScale, "dialogue presentation maxScale")
   end
-  local scale = options.scale or math.min(bounds.width / WIDTH, bounds.height / HEIGHT, options.maxScale or math.huge)
+  local scale = options.scale
+    or math.max(1, math.floor(math.min(bounds.width / WIDTH, bounds.height / HEIGHT, options.maxScale or math.huge)))
   assert(scale > 0, "dialogue presentation does not fit its bounds")
   local fits = WIDTH * scale <= bounds.width + EPSILON and HEIGHT * scale <= bounds.height + EPSILON
-  assert(
-    fits or (options.scale ~= nil and options.allowClipping == true and scale == 1),
-    "dialogue presentation scale does not fit its bounds"
-  )
+  assert(fits or (options.allowClipping == true and scale == 1), "dialogue presentation scale does not fit its bounds")
   local origin = {
-    x = math.floor(bounds.x + (bounds.width - WIDTH * scale) / 2 + 0.5),
-    y = math.floor(bounds.y + bounds.height - HEIGHT * scale + 0.5),
+    x = PixelScale.snapLogical(bounds.x + (bounds.width - WIDTH * scale) / 2),
+    y = PixelScale.snapLogical(bounds.y + bounds.height - HEIGHT * scale),
   }
   local cursorPlacement = assert(options.cursorPlacement, "dialogue presentation requires generated cursor placement")
   validateCursorPlacement(cursorPlacement)
@@ -133,6 +132,8 @@ function Layout.compute(bounds, options)
       frame = { x = outerRect.x, y = outerRect.y, width = outerRect.width, height = outerRect.height },
       origin = { x = origin.x, y = origin.y },
       scale = scale,
+      pixelScale = scale,
+      pixelRatio = 1,
       logicalWidth = WIDTH,
       logicalHeight = HEIGHT,
       clipRect = { x = clipX, y = clipY, width = clipFarX - clipX, height = clipFarY - clipY },

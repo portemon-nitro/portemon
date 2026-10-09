@@ -11,8 +11,8 @@ function T.computes_centered_bottom_aligned_local_geometry()
     { x = 37, y = 11, width = 900, height = 420 },
     { cursorPlacement = CURSOR_PLACEMENT }
   )
-  Assert.near(presentation.scale, 900 / 256, 1e-9)
-  Assert.deepEqual(presentation.origin, { x = 37 + (900 - 256 * presentation.scale) / 2, y = 262 })
+  Assert.equal(presentation.scale, 3)
+  Assert.deepEqual(presentation.origin, { x = 103, y = 287 })
   Assert.deepEqual(presentation.box, { x = 16, y = 8, width = 216, height = 32 })
   Assert.deepEqual(presentation.text, { x = 16, y = 8, width = 216, height = 32 })
   Assert.equal(
@@ -38,15 +38,24 @@ function T.exact_scale_and_cap_are_validated()
   Assert.equal(exact.scale, 2)
   local capped = DialoguePresentationLayout.compute(
     { x = 0, y = 0, width = 640, height = 480 },
-    { maxScale = 1.5, cursorPlacement = CURSOR_PLACEMENT }
+    { maxScale = 2, cursorPlacement = CURSOR_PLACEMENT }
   )
-  Assert.equal(capped.scale, 1.5)
+  Assert.equal(capped.scale, 2)
   Assert.isFalse(pcall(function()
     DialoguePresentationLayout.compute(
       { x = 0, y = 0, width = 100, height = 100 },
       { scale = 1, cursorPlacement = CURSOR_PLACEMENT }
     )
   end))
+  Assert.isFalse(
+    pcall(function()
+      DialoguePresentationLayout.compute(
+        { x = 0, y = 0, width = 640, height = 480 },
+        { scale = 1.5, cursorPlacement = CURSOR_PLACEMENT }
+      )
+    end),
+    "an explicit fractional raster scale is rejected"
+  )
 end
 
 function T.one_x_clipping_is_explicit_and_narrow()
@@ -96,28 +105,17 @@ function T.generated_cursor_placement_maps_to_the_local_strip_without_a_fallback
   )
 end
 
-function T.capped_scale_shrinks_to_fit_constrained_bounds()
+function T.constrained_bounds_keep_native_scale_and_clip_the_raster()
   local bounds = { x = 5, y = 7, width = 200, height = 40 }
-  local cap = 3.90625
   local presentation = DialoguePresentationLayout.compute(bounds, {
-    maxScale = cap,
+    allowClipping = true,
     cursorPlacement = CURSOR_PLACEMENT,
   })
-  local expectedScale = math.min(cap, bounds.width / 256, bounds.height / 48)
-  Assert.near(presentation.scale, expectedScale, 1e-9)
+  Assert.equal(presentation.scale, 1, "an undersized host preserves native source pixels")
   Assert.deepEqual(presentation.bounds, bounds)
-  Assert.near(presentation.outerRect.width, 256 * expectedScale, 1e-9)
-  Assert.near(presentation.outerRect.height, 48 * expectedScale, 1e-9)
-  Assert.isTrue(presentation.outerRect.x >= bounds.x - 1e-9, "the fitted window stays inside the host horizontally")
-  Assert.isTrue(
-    presentation.outerRect.x + presentation.outerRect.width <= bounds.x + bounds.width + 1e-9,
-    "the fitted window stays inside the host horizontally"
-  )
-  Assert.isTrue(presentation.outerRect.y >= bounds.y - 1e-9, "the fitted window stays inside the host vertically")
-  Assert.isTrue(
-    presentation.outerRect.y + presentation.outerRect.height <= bounds.y + bounds.height + 0.5 + 1e-9,
-    "the snapped fitted window stays within the host raster boundary"
-  )
+  Assert.deepEqual(presentation.placement.clipRect, bounds, "only the visible host bounds are painted")
+  Assert.equal(presentation.outerRect.width, 256, "the source strip is never minified")
+  Assert.equal(presentation.outerRect.height, 48, "the source strip is never minified")
 end
 
 return { tests = T }

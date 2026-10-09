@@ -10,6 +10,7 @@
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 ---@class ApplicationPresentation.Capture
 ---@field kind string content press
@@ -47,6 +48,9 @@ local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
 ---@param what string
 local function assertUsablePlacement(placement, what)
   LayoutGeometry.validatePlacement(placement, what)
+  if placement.pixelScale ~= nil or placement.pixelRatio ~= nil then
+    PixelScale.assertPlacement(placement)
+  end
   assert(
     type(placement.logicalWidth) == "number" and placement.logicalWidth > 0 and placement.logicalWidth < math.huge,
     what .. " needs finite positive logical dimensions"

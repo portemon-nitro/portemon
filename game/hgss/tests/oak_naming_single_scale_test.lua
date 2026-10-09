@@ -266,18 +266,14 @@ function T.tests.name_edit_draws_without_application_frame_artwork()
   state:dispose()
 end
 
-function T.tests.tiny_host_keeps_canonical_naming_geometry_without_a_fit_error()
+function T.tests.tiny_host_keeps_naming_inactive_without_a_fit_error()
   local state = nameEditState(240, 180)
   local view = state:view()
   Assert.equal(view.phase, "name_edit")
   local plan = assert(view.namingPresentation, "Oak must own a naming presentation plan on a tiny host")
-  local pane = assert(plan.panes[1], "the tiny-host naming plan carries its content pane")
-  local placement = assert(pane.placement, "the tiny-host naming pane carries its host placement")
-  Assert.equal(placement.logicalWidth, 256, "cropping never shrinks the canonical logical width")
-  Assert.equal(placement.logicalHeight, 192, "cropping never shrinks the canonical logical height")
-  local naming = assert(view.layout.namingScreen, "tiny hosts still publish the canonical Naming Screen")
-  Assert.equal(naming.surface.width, 256)
-  Assert.equal(naming.surface.height, 192)
+  Assert.equal(#plan.panes, 0, "a fixed naming screen with no admissible 1x fit remains inactive")
+  Assert.isNil(view.layout.namingScreen, "an inactive naming plan publishes no child layout")
+  plan.render({}, view, plan)
   state:dispose()
 end
 

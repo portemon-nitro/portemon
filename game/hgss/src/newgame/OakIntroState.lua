@@ -542,7 +542,7 @@ function OakIntroState:view()
     resolved = assert(planOrErr, "Oak naming resolution returned no plan")
     view.namingPresentation = resolved
     local content = assert(resolved.content, "the naming plan needs its canonical content")
-    view.layout.namingScreen = assert(content.layout, "the naming plan needs its canonical child layout")
+    view.layout.namingScreen = content.layout
   else
     self:_disposeNamingSession()
   end

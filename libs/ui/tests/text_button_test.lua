@@ -193,7 +193,7 @@ function T.text_is_centered_and_callback_invoked_once()
   local drawPositions = {}
   local text = {
     measure = function()
-      return 40
+      return 39
     end,
     lineHeight = 16,
     draw = function(_, x, y)
@@ -202,10 +202,11 @@ function T.text_is_centered_and_callback_invoked_once()
   }
   TextButton.draw(g, button, { label = "Yes", selected = false, text = text })
   Assert.equal(#drawPositions, 1)
-  -- Content source is 104x24. Centered within content => (104-40)/2, (24-16)/2
-  local expectedX = (104 - 40) / 2
+  -- Odd spare source width must snap the centered origin to an authored pixel.
+  local expectedX = math.floor((104 - 39) / 2 + 0.5)
   local expectedY = (24 - 16) / 2
-  Assert.near(drawPositions[1].x, expectedX)
+  Assert.equal(drawPositions[1].x, expectedX)
+  Assert.equal(drawPositions[1].x, math.floor(drawPositions[1].x), "glyph origin stays on a source pixel")
   Assert.near(drawPositions[1].y, expectedY)
   Assert.equal(g._calls.pushCount, 1)
   Assert.equal(g._calls.popCount, 1)
@@ -225,6 +226,11 @@ function T.invalid_scales_are_rejected_at_resolve()
   Assert.throws(function()
     TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = -1 })
   end)
+  for _, scale in ipairs({ 0.5, 0.75, 1.5, math.huge, 0 / 0 }) do
+    Assert.throws(function()
+      TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = scale })
+    end, "text button rejects non-integral pixel-art scale")
+  end
 end
 
 function T.callback_failure_propagates_without_generic_restore()
@@ -254,7 +260,7 @@ end
 -- belongs to the layout owner, never to the paint path).
 function T.label_centering_is_invariant_under_host_scale()
   local TextButton = textButtonModule()
-  local scales = { 0.5, 1, 2 }
+  local scales = { 1, 2 }
   local fittingWidth = 50
   local fittingHeight = 16
   local oversizedWidth = 200

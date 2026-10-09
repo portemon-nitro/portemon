@@ -26,6 +26,47 @@ local function assertScale(scale)
   assert(scale > 0 and scale == math.floor(scale), "scale must be a positive integer")
 end
 
+---@param scale number
+---@return integer
+function PixelScale.assertInteger(scale)
+  assertScale(scale)
+  return scale --[[@as integer]]
+end
+
+---@param placement LayoutGeometry.Placement
+---@return LayoutGeometry.Placement
+function PixelScale.assertPlacement(placement)
+  assert(type(placement) == "table", "pixel placement must be a record")
+  local pixelScale = placement.pixelScale
+  local pixelRatio = placement.pixelRatio
+  assert(isFiniteNumber(pixelScale), "pixel placement needs a physical scale")
+  ---@cast pixelScale integer
+  assert(
+    pixelScale > 0 and pixelScale == math.floor(pixelScale),
+    "pixel placement needs a positive integer physical scale"
+  )
+  assert(isFiniteNumber(pixelRatio) and pixelRatio > 0, "pixel placement needs a finite positive pixel ratio")
+  assert(isFiniteNumber(placement.scale) and placement.scale > 0, "pixel placement needs a finite positive scale")
+  local scaleError = math.abs(placement.scale * pixelRatio - pixelScale)
+  assert(
+    scaleError <= 1e-7 * math.max(1, math.abs(pixelScale)),
+    "pixel placement scale does not match its physical scale"
+  )
+  local origin = placement.origin or placement.frame
+  assert(type(origin) == "table", "pixel placement needs an origin or frame")
+  for _, axis in ipairs({ "x", "y" }) do
+    assert(isFiniteNumber(origin[axis]), "pixel placement origin must be finite")
+    local physicalOrigin = origin[axis] * pixelRatio
+    assert(isFiniteNumber(physicalOrigin), "pixel placement origin must be finite")
+    local nearest = math.floor(physicalOrigin + 0.5)
+    assert(
+      math.abs(physicalOrigin - nearest) <= 1e-7 * math.max(1, math.abs(physicalOrigin)),
+      "pixel placement origin must align to the physical pixel grid"
+    )
+  end
+  return placement
+end
+
 ---@param bounds LayoutGeometry.Rect
 ---@param referenceWidth number
 ---@param referenceHeight number
@@ -55,7 +96,18 @@ function PixelScale.cover(bounds, scale, pixelRatio)
   end
   local effectiveScale = scale / ratio
 
-  local frame = LayoutGeometry.rect(bounds, "bounds")
+  local boundsRect = LayoutGeometry.rect(bounds, "bounds")
+  local nearX = math.ceil(boundsRect.x * ratio)
+  local nearY = math.ceil(boundsRect.y * ratio)
+  local farX = math.floor((boundsRect.x + boundsRect.width) * ratio)
+  local farY = math.floor((boundsRect.y + boundsRect.height) * ratio)
+  assert(farX > nearX and farY > nearY, "bounds must contain at least one physical pixel")
+  local frame = {
+    x = nearX / ratio,
+    y = nearY / ratio,
+    width = (farX - nearX) / ratio,
+    height = (farY - nearY) / ratio,
+  }
   local visibleWidth = frame.width / effectiveScale
   local visibleHeight = frame.height / effectiveScale
 
@@ -87,10 +139,8 @@ end
 -- integer pixel scale with at most one safe overdraw bump. Crop budgets are
 -- source-logical pixels per edge (default 4); the bump crops centred whole
 -- source pixels and is refused when it would exceed a budget, hide protected
--- content, or pass the preferred-scale cap. Below 1x, admissible 1x cropping
--- comes first; only then an exact uniform fractional downscale, which is
--- explicitly not pixel-exact. A target without a whole physical pixel has no
--- drawable placement and returns nil.
+-- content, or pass the preferred-scale cap. A target without an admissible
+-- whole-pixel placement returns nil.
 ---@param bounds LayoutGeometry.Rect host-unit target region
 ---@param width integer native logical width
 ---@param height integer native logical height
@@ -224,8 +274,8 @@ function PixelScale.placeFixed(bounds, width, height, options)
   ---@param pixel integer
   ---@return LayoutGeometry.Placement
   local function centredPlacement(pixel)
-    local originX = nearX + (availableWidth - width * pixel) / 2
-    local originY = nearY + (availableHeight - height * pixel) / 2
+    local originX = nearX + math.floor((availableWidth - width * pixel) / 2)
+    local originY = nearY + math.floor((availableHeight - height * pixel) / 2)
     local scale = pixel / ratio
     local frame = {
       x = originX / ratio,
@@ -277,8 +327,7 @@ function PixelScale.placeFixed(bounds, width, height, options)
     return centredPlacement(base)
   end
 
-  -- Below 1x, admissible 1x cropping still applies before giving up
-  -- integer magnification for the exact fractional downscale.
+  -- Below 1x, admissible 1x cropping still applies before reporting no fit.
   local unitWidth = math.min(width, availableWidth)
   local unitHeight = math.min(height, availableHeight)
   if unitWidth > 0 and unitHeight > 0 then
@@ -294,32 +343,7 @@ function PixelScale.placeFixed(bounds, width, height, options)
     end
   end
 
-  local downscale = natural
-  local scale = downscale / ratio
-  local frame = {
-    x = (nearX + (availableWidth - width * downscale) / 2) / ratio,
-    y = (nearY + (availableHeight - height * downscale) / 2) / ratio,
-    width = (width * downscale) / ratio,
-    height = (height * downscale) / ratio,
-  }
-  local clip = {
-    x = math.max(frame.x, target.x),
-    y = math.max(frame.y, target.y),
-    width = math.min(frame.x + frame.width, target.x + target.width) - math.max(frame.x, target.x),
-    height = math.min(frame.y + frame.height, target.y + target.height) - math.max(frame.y, target.y),
-  }
-  return {
-    frame = frame,
-    origin = { x = frame.x, y = frame.y },
-    scale = scale,
-    logicalWidth = width,
-    logicalHeight = height,
-    clipRect = clip,
-    pixelScale = downscale,
-    pixelRatio = ratio,
-    visibleLogicalRect = { x = 0, y = 0, width = width, height = height },
-    crop = { left = 0, right = 0, top = 0, bottom = 0 },
-  }
+  return nil
 end
 
 ---@param value number

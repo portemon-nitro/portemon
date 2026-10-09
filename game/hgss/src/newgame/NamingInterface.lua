@@ -25,9 +25,12 @@ local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 ---@param view table<string, unknown> the naming semantic snapshot
 ---@param plan ApplicationPlan
 local function renderNaming(resources, view, plan)
+  local pane = plan.panes[1]
+  if pane == nil then
+    return
+  end
   local graphics = assert(resources.graphics, "naming render needs its borrowed graphics")
   local renderer = assert(resources.namingRenderer, "naming render needs its borrowed renderer")
-  local pane = assert(plan.panes[1], "the naming plan needs its content pane")
   local content = assert(plan.content, "the naming plan needs its canonical content")
   local layout = assert(content.layout, "the naming plan needs its canonical child layout")
   LogicalSurface.draw(graphics, pane.placement, function()

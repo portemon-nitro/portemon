@@ -414,6 +414,41 @@ function T.draw_and_pointer_input_share_one_resolved_geometry()
   Assert.equal(state.calls, 2, "pointer translation shares the draw geometry without re-resolving")
 end
 
+function T.tiny_host_keeps_native_scale_and_never_hits_clipped_choice_rows()
+  local bounds = { x = 0, y = 0, width = 40, height = 30 }
+  local topology = ScreenTopology.oneDisplay({
+    id = "tiny",
+    rect = bounds,
+    role = "world",
+    touch = true,
+  })
+  local host = openHost({
+    presentation = fixedContext({ topology = topology, bounds = bounds, dialogueBox = nil }),
+  })
+  local layout = assert(host:presentation()).layout
+  Assert.equal(layout.placement.scale, 1, "a constrained prompt keeps source pixels at 1x")
+  Assert.deepEqual(layout.placement.clipRect, bounds, "painting is clipped to visible host bounds")
+  local clippedPoint
+  for row = 0, 1 do
+    local x, y = rowCenter(host, row)
+    if x < bounds.x or x >= bounds.x + bounds.width or y < bounds.y or y >= bounds.y + bounds.height then
+      clippedPoint = { x = x, y = y }
+      break
+    end
+  end
+  Assert.notNil(clippedPoint, "the tiny host has at least one clipped choice row")
+  Assert.deepEqual(
+    host:inputEvents({ { type = "pointer_down", pointerId = "outside", x = clippedPoint.x, y = clippedPoint.y } }),
+    {},
+    "a clipped choice row cannot receive pointer focus"
+  )
+  Assert.deepEqual(
+    host:inputEvents({ { type = "pointer_up", pointerId = "outside", x = clippedPoint.x, y = clippedPoint.y } }),
+    {},
+    "a clipped choice row cannot be activated"
+  )
+end
+
 function T.selection_changes_reuse_resolved_geometry()
   local host, state = countingHost()
   host:presentation()

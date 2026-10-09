@@ -6,6 +6,7 @@
 
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 ---@class FieldYesNoHost.Active
 ---@field yesText string
@@ -278,10 +279,9 @@ function FieldYesNoHost:_resolve(yesText, noText, resolved)
     and surface.rect.width >= REFERENCE.width
     and surface.rect.height >= REFERENCE.height
   then
-    local scale = math.min(safe.width / REFERENCE.width, safe.height / REFERENCE.height)
-    assert(scale > 0, "choice source presentation requires a positive scale")
-    local originX = safe.x + (safe.width - REFERENCE.width * scale) / 2
-    local originY = safe.y + (safe.height - REFERENCE.height * scale) / 2
+    local scale = math.max(1, math.floor(math.min(safe.width / REFERENCE.width, safe.height / REFERENCE.height)))
+    local originX = PixelScale.snapLogical(safe.x + (safe.width - REFERENCE.width * scale) / 2)
+    local originY = PixelScale.snapLogical(safe.y + (safe.height - REFERENCE.height * scale) / 2)
     return {
       surface = surface,
       presentation = "source",
@@ -290,6 +290,8 @@ function FieldYesNoHost:_resolve(yesText, noText, resolved)
         frame = { x = originX, y = originY, width = REFERENCE.width * scale, height = REFERENCE.height * scale },
         origin = { x = originX, y = originY },
         scale = scale,
+        pixelScale = scale,
+        pixelRatio = 1,
         clipRect = safe,
       },
     }
@@ -313,13 +315,7 @@ function FieldYesNoHost:_resolve(yesText, noText, resolved)
   local contentWidth = self:_adaptedContentWidth(yesText, noText)
   local outer = adaptedFrameBounds(contentWidth)
   local hostFit = math.min(bounds.width / outer.width, bounds.height / outer.height)
-  local scale
-  if hostFit >= 1 then
-    scale = math.min(preferredScale, math.floor(hostFit))
-  else
-    scale = hostFit
-  end
-  assert(scale > 0, "choice adapted presentation requires a positive scale")
+  local scale = math.max(1, math.min(preferredScale, math.floor(hostFit)))
   local width = outer.width * scale
   local height = outer.height * scale
   local hostFrame =
@@ -328,9 +324,8 @@ function FieldYesNoHost:_resolve(yesText, noText, resolved)
   if dialogueBox then
     local dialogueRight = dialogueBox.x + dialogueBox.width
     local fitAbove = math.min((dialogueRight - bounds.x) / outer.width, (dialogueBox.y - bounds.y) / (outer.height + 2))
-    if fitAbove > 0 then
-      local fitScale = fitAbove >= 1 and math.floor(fitAbove) or fitAbove
-      scale = math.min(scale, fitScale)
+    if fitAbove >= 1 then
+      scale = math.min(scale, math.floor(fitAbove))
       width = outer.width * scale
       height = outer.height * scale
       hostFrame = {
@@ -343,16 +338,9 @@ function FieldYesNoHost:_resolve(yesText, noText, resolved)
       hostFrame.y = math.max(bounds.y, math.min(hostFrame.y, bounds.y + bounds.height - height))
     end
   end
-  local function fits(rect)
-    return rect.x >= bounds.x
-      and rect.y >= bounds.y
-      and rect.x + rect.width <= bounds.x + bounds.width
-      and rect.y + rect.height <= bounds.y + bounds.height
-  end
-  assert(fits(hostFrame), "choice frame leaves field UI bounds")
   local hostContentOrigin = {
-    x = hostFrame.x - outer.x * scale,
-    y = hostFrame.y - outer.y * scale,
+    x = PixelScale.snapLogical(hostFrame.x - outer.x * scale),
+    y = PixelScale.snapLogical(hostFrame.y - outer.y * scale),
   }
   return {
     surface = surface,
@@ -362,6 +350,8 @@ function FieldYesNoHost:_resolve(yesText, noText, resolved)
       frame = hostFrame,
       origin = hostContentOrigin,
       scale = scale,
+      pixelScale = scale,
+      pixelRatio = 1,
       clipRect = bounds,
     },
   }
@@ -376,7 +366,11 @@ local function rowAt(layout, x, y)
   local placement = assert(layout.placement, "choice layout must publish its placement")
   local origin = assert(placement.origin, "choice placement must publish its content origin")
   local scale = assert(placement.scale, "choice placement must publish its scale")
-  assert(type(scale) == "number" and scale > 0, "choice placement scale must be positive")
+  PixelScale.assertInteger(scale)
+  local clip = assert(placement.clipRect, "choice placement must publish its clip")
+  if x < clip.x or x >= clip.x + clip.width or y < clip.y or y >= clip.y + clip.height then
+    return nil
+  end
   local contentX = (x - origin.x) / scale
   local contentY = (y - origin.y) / scale
   if

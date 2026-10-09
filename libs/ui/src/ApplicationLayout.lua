@@ -523,20 +523,28 @@ end
 ---@return LayoutGeometry.Rect lowerRect
 local function pairRects(envelopeWidth, envelopeHeight, upperNative, lowerNative, horizontal)
   if horizontal then
-    local upper =
-      { x = 0, y = (envelopeHeight - upperNative.height) / 2, width = upperNative.width, height = upperNative.height }
+    local upper = {
+      x = 0,
+      y = PixelScale.snapLogical((envelopeHeight - upperNative.height) / 2),
+      width = upperNative.width,
+      height = upperNative.height,
+    }
     local lower = {
       x = upperNative.width,
-      y = (envelopeHeight - lowerNative.height) / 2,
+      y = PixelScale.snapLogical((envelopeHeight - lowerNative.height) / 2),
       width = lowerNative.width,
       height = lowerNative.height,
     }
     return upper, lower
   end
-  local upper =
-    { x = (envelopeWidth - upperNative.width) / 2, y = 0, width = upperNative.width, height = upperNative.height }
+  local upper = {
+    x = PixelScale.snapLogical((envelopeWidth - upperNative.width) / 2),
+    y = 0,
+    width = upperNative.width,
+    height = upperNative.height,
+  }
   local lower = {
-    x = (envelopeWidth - lowerNative.width) / 2,
+    x = PixelScale.snapLogical((envelopeWidth - lowerNative.width) / 2),
     y = upperNative.height,
     width = lowerNative.width,
     height = lowerNative.height,

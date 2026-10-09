@@ -1,6 +1,6 @@
 -- Integrated render matrix for the shared presentation boundary: exact
 -- integer magnification, bounded cropping, DPI equivalence, translated
--- origins, fractional fallback visibility, and terminal failure propagation
+-- origins, native responsive visibility, and terminal failure propagation
 -- through one logical-surface contract; every migrated interface resolving its
 -- real plans across representative hosts with matched geometry; real
 -- party readability through the borrowed text renderer; and single
@@ -19,6 +19,7 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local MainMenuInterface = require("app.src.mainmenu.MainMenuInterface")
+local SaveEditorInterface = require("app.src.saveeditor.SaveEditorInterface")
 local MonCache = require("libs.assets.src.MonCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local NamingInterface = require("game.hgss.src.newgame.NamingInterface")
@@ -252,22 +253,21 @@ function T.translated_origins_invert_exactly(scope)
   end
 end
 
--- A host smaller than any integer fit keeps every control reachable: the
--- fractional fallback draws the complete logical surface, never a subset.
-function T.fractional_fallback_keeps_everything_visible(scope)
+-- A fixed source surface has no sub-1x fallback; responsive consumers cover
+-- the visible host at native logical scale instead.
+function T.fixed_no_fit_uses_a_native_responsive_viewport(scope)
   local lg = love.graphics
-  local placement = assert(
-    PixelScale.placeFixed({ x = 0, y = 0, width = 200, height = 150 }, 256, 192),
-    "a tiny host must still place its surface"
-  )
-  Assert.isTrue(placement.pixelScale < 1, "the tiny host must fall back below unit scale")
-  Assert.deepEqual(placement.crop, { left = 0, right = 0, top = 0, bottom = 0 }, "the fallback must never crop")
+  local bounds = { x = 0, y = 0, width = 200, height = 150 }
+  Assert.isNil(PixelScale.placeFixed(bounds, 256, 192), "a fixed canvas is unavailable below the integer fit")
+  local surface = PixelScale.cover(bounds, 1)
+  Assert.equal(surface.placement.pixelScale, 1, "responsive coverage keeps source pixels native")
+  Assert.deepEqual(surface.logicalViewport, { x = 0, y = 0, width = 200, height = 150 })
   local canvas = renderToCanvas(scope, 200, 150, function()
-    LogicalSurface.draw(lg, placement, paintSolid({ 0.9, 0.9, 0.1, 1 }, 256, 192))
+    LogicalSurface.draw(lg, surface.placement, paintSolid({ 0.9, 0.9, 0.1, 1 }, 200, 150))
   end)
   local data = scope:own(canvas:newImageData())
-  assertPixelNear(data, 2, 2, 0.9, 0.9, 0.1, 1, "the near corner stays visible")
-  assertPixelNear(data, 197, 147, 0.9, 0.9, 0.1, 1, "the far corner stays visible")
+  assertPixelNear(data, 2, 2, 0.9, 0.9, 0.1, 1, "the near native pixel stays visible")
+  assertPixelNear(data, 197, 147, 0.9, 0.9, 0.1, 1, "the far native pixel stays visible")
 end
 
 -- A failing draw callback propagates the original error without generic
@@ -690,18 +690,22 @@ local function matrixPartyVisuals()
         sequence("test/ball.png"),
       },
     },
-    held = { sequences = {
-      sequence("test/held.png", 8, 8),
-      sequence("test/held.png", 8, 8),
-      sequence("test/held.png", 8, 8),
-    } },
+    held = {
+      sequences = {
+        sequence("test/held.png", 8, 8),
+        sequence("test/held.png", 8, 8),
+        sequence("test/held.png", 8, 8),
+      },
+    },
     cursor = { sequences = { sequence("test/cursor.png", 128, 48) } },
-    buttons = { sequences = {
-      sequence("test/button.png", 56, 32),
-      sequence("test/button-selected.png", 56, 32),
-      sequence("test/button.png", 56, 32),
-      sequence("test/button.png", 56, 32),
-    } },
+    buttons = {
+      sequences = {
+        sequence("test/button.png", 56, 32),
+        sequence("test/button-selected.png", 56, 32),
+        sequence("test/button.png", 56, 32),
+        sequence("test/button.png", 56, 32),
+      },
+    },
     status = {
       paralysis = imageRef("test/status.png", 24, 8),
       freeze = imageRef("test/status.png", 24, 8),
@@ -977,6 +981,94 @@ function T.main_menu_viewport_grows_with_density(scope)
   )
   Assert.isNil(small.content.layout.uiScale, "the small layout must carry no presentation scale")
   Assert.isNil(large.content.layout.uiScale, "the large layout must carry no presentation scale")
+end
+
+function T.launcher_and_editor_keep_native_pixels_on_a_small_host(scope)
+  local _ = scope
+  local menu = MainMenuInterface.defaults()
+  local menuView = {
+    globalActions = { { id = "new-game", kind = "new_game" } },
+    saves = { cards = {} },
+    focus = { region = "global", actionId = "new-game" },
+  }
+  local editor = SaveEditorInterface.defaults()
+  local editorView = {
+    status = "opening",
+    message = "Preparing save editor",
+    section = "Player",
+    scope = { id = "section:Player", epoch = 0 },
+    textMetrics = {
+      lineHeight = 12,
+      measure = function(text)
+        return #text * 6
+      end,
+    },
+  }
+  for _, host in ipairs({
+    { width = 200, height = 150, pixelRatio = 1 },
+    { width = 200, height = 150, pixelRatio = 2 },
+    { width = 128, height = 96, pixelRatio = 1 },
+    { width = 128, height = 96, pixelRatio = 2 },
+  }) do
+    local measured = singleDisplay(host.width, host.height, host.pixelRatio)
+    local label = string.format("%dx%d@%dx", host.width, host.height, host.pixelRatio)
+    local menuPlan = menu.nativeLike(contextFor(measured, "nativeLike", menu), menuView)
+    local menuPane = assert(menuPlan.panes[1], label .. " startup menu remains available")
+    local newGame = assert(menuPlan.content.layout.global.actions["new-game"], label .. " New Game is visible")
+    local menuHit = menuPlan.mapInput({
+      type = "pointer_down",
+      x = newGame.x + newGame.width / 2,
+      y = newGame.y + newGame.height / 2,
+    }, menuView, menuPlan)
+    Assert.equal(menuHit.actionId, "new-game", label .. " New Game remains pointer reachable")
+    Assert.equal(menuPane.placement.pixelScale, 1, label .. " startup menu keeps native pixels")
+    Assert.equal(menuPane.placement.scale, 1 / host.pixelRatio, label .. " host scale reflects the pixel ratio once")
+    Assert.equal(
+      menuPlan.content.width,
+      host.width * host.pixelRatio,
+      label .. " menu reflows to physical visible width"
+    )
+    Assert.equal(
+      menuPlan.content.height,
+      host.height * host.pixelRatio,
+      label .. " menu reflows to physical visible height"
+    )
+    Assert.isNil(
+      menuPlan.mapInput({ type = "pointer_down", x = menuPlan.content.width + 1, y = newGame.y }, menuView, menuPlan),
+      label .. " menu has no offscreen hit target"
+    )
+
+    local editorPlan = editor.nativeLike(contextFor(measured, "nativeLike", editor), editorView)
+    local editorPane = assert(editorPlan.panes[1], label .. " save editor remains available")
+    local section = assert(editorPlan.content.layout.targets["section:Player"], label .. " Player remains visible")
+    local sectionRect = assert(section.rect)
+    local sectionHit = editorPlan.mapInput({
+      type = "pointer_down",
+      x = sectionRect.x + sectionRect.width / 2,
+      y = sectionRect.y + sectionRect.height / 2,
+    }, editorView, editorPlan)
+    Assert.equal(sectionHit.targetId, "section:Player", label .. " Player remains pointer reachable")
+    Assert.equal(editorPane.placement.pixelScale, 1, label .. " save editor keeps native pixels")
+    Assert.equal(editorPane.placement.scale, 1 / host.pixelRatio, label .. " editor host scale reflects DPI once")
+    Assert.equal(
+      editorPlan.content.width,
+      host.width * host.pixelRatio,
+      label .. " editor reflows to physical visible width"
+    )
+    Assert.equal(
+      editorPlan.content.height,
+      host.height * host.pixelRatio,
+      label .. " editor reflows to physical visible height"
+    )
+    Assert.isNil(
+      editorPlan.mapInput(
+        { type = "pointer_down", x = editorPlan.content.width + 1, y = sectionRect.y },
+        editorView,
+        editorPlan
+      ).targetId,
+      label .. " editor has no offscreen hit target"
+    )
+  end
 end
 
 -- Plan drawing through the shared dispatcher restores borrowed graphics
