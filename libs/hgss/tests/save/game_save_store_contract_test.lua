@@ -850,4 +850,95 @@ function T.relaxed_catalog_history_keeps_published_saves_reachable()
   Assert.equal(assert(rewritten.extraMetadata).note, "kept")
 end
 
+---@return table<string, unknown> catalog
+---@return table bag service stocked with one custom stack
+local function alchemyServiceWithBag()
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+  local root = ItemFixture.buildAssetRoot()
+  root.pockets["alchemy"] = { capacity = 8, maxQuantity = 99, ordering = "manual" }
+  local names = {}
+  for key, name in pairs(root.pocketNames) do
+    names[key] = name
+  end
+  names["alchemy"] = "Alchemy"
+  root.pocketNames = names
+  root.items["alchemy:ELIXIR"] = {
+    name = "Alchemist Elixir",
+    nameIndefinite = "an Alchemist Elixir",
+    namePlural = "Alchemist Elixirs",
+    description = "Alchemist Elixir description",
+    pocket = "alchemy",
+    preventToss = false,
+    selectable = false,
+    isBall = false,
+    friendshipBoost = false,
+    icon = "Alchemist Elixir",
+    isHm = false,
+    canHold = true,
+    heldFormEffect = "none",
+    partyUse = { kind = "none" },
+  }
+  local catalog = ItemCatalog.fromResolved(root)
+  local bag = HgssBagService.new({ catalog = catalog })
+  Assert.isTrue(bag:add("alchemy:ELIXIR", 2))
+  return catalog, bag
+end
+
+function T.custom_pocket_save_round_trips_and_missing_catalog_blocks_restore()
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local catalog, bag = alchemyServiceWithBag()
+  Assert.isTrue(bag:add("POTION", 3))
+
+  local backend = FakeCache.new()
+  local store = newStore(backend)
+  local saveId = store:reserve()
+  local value = record(saveId, "heartgold", { bag = bag:capture() })
+  store:publishFirst(value)
+  local loaded = assert(store:load(saveId))
+  Assert.notNil(BagSave.validate(loaded.bag, catalog), "the declaring catalog restores the modded save")
+  local bytesBefore = backend.files[gamePath(saveId)]
+  Assert.notNil(bytesBefore)
+
+  -- Restoring with a catalog missing the mod pocket fails instead of dropping slots.
+  local vanilla = ItemFixture.makeCatalog()
+  local canonical, err = BagSave.validate(loaded.bag, vanilla)
+  Assert.isNil(canonical)
+  Assert.notNil(err)
+  Assert.equal(
+    backend.files[gamePath(saveId)],
+    bytesBefore,
+    "a blocked restore replaces nothing durable"
+  )
+  Assert.deepEqual(assert(store:load(saveId)), value, "the last valid save stays authoritative")
+end
+
+function T.invalid_custom_pocket_slots_never_replace_the_published_save()
+  local catalog, bag = alchemyServiceWithBag()
+
+  local backend = FakeCache.new()
+  local store = newStore(backend)
+  local saveId = store:reserve()
+  store:publishFirst(record(saveId, "heartgold", { bag = bag:capture() }))
+  local bytesBefore = backend.files[gamePath(saveId)]
+
+  -- An empty quantity in a custom slot is rejected before anything stages.
+  local emptyQuantity = bag:capture()
+  emptyQuantity.customPockets["alchemy"][1].quantity = 0
+  local emptyCanonical, emptyErr = BagSave.validate(emptyQuantity, catalog)
+  Assert.isNil(emptyCanonical)
+  Assert.notNil(emptyErr)
+
+  -- A duplicated custom item across two slots is rejected the same way.
+  local duplicated = bag:capture()
+  duplicated.customPockets["alchemy"][2] = { item = "alchemy:ELIXIR", quantity = 1 }
+  local duplicatedCanonical, duplicatedErr = BagSave.validate(duplicated, catalog)
+  Assert.isNil(duplicatedCanonical)
+  Assert.notNil(duplicatedErr)
+
+  Assert.equal(backend.files[gamePath(saveId)], bytesBefore, "rejected slots never reach durable storage")
+  Assert.equal(assert(store:load(saveId)).bag.customPockets["alchemy"][1].quantity, 2)
+end
+
 return { tests = T }

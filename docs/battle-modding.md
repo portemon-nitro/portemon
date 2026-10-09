@@ -123,6 +123,45 @@ native-index lookups refuse content that declares no native identity
 with a clear unknown-identity error instead of a silent neutral
 fallback.
 
+## Custom item pockets
+
+A mod may add a named Bag pocket and items that live in it without
+touching the eight native pockets:
+
+```lua
+local ItemCatalog = require("libs.items.src.ItemCatalog")
+local root = ItemFixture.buildAssetRoot()
+root.pockets["alchemy"] = { capacity = 8, maxQuantity = 99, ordering = "manual" }
+root.pocketNames["alchemy"] = "Alchemy"
+root.items["alchemy:ELIXIR"] = {
+  name = "Alchemist Elixir",
+  nameIndefinite = "an Alchemist Elixir",
+  namePlural = "Alchemist Elixirs",
+  description = "A draught of bottled focus.",
+  pocket = "alchemy",
+  preventToss = false,
+  selectable = false,
+  isBall = false,
+  friendshipBoost = false,
+  icon = "alchemy:ELIXIR",
+  isHm = false,
+  canHold = true,
+  heldFormEffect = "none",
+  partyUse = { kind = "none" },
+}
+local catalog = ItemCatalog.fromResolved(root)
+local bag = HgssBagService.new({ catalog = catalog })
+assert(bag:add("alchemy:ELIXIR", 2))
+local slots = bag:pocketItems("alchemy")
+```
+
+Custom slots persist under the save's optional `customPockets` member
+while vanilla saves emit nothing extra. The retail Bag widget keeps its
+eight native tabs: nothing appears there automatically, so mods read
+custom slots through `pocketItems` or ship their own UI. Loading a
+modded save without the declaring catalog fails the restore instead of
+dropping items, leaving the last valid save in place.
+
 ## Future broker integration
 
 The engine broker remains the only invasive patch mechanism.

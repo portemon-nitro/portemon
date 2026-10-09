@@ -82,6 +82,120 @@ function T.custom_held_entry_resolves_without_a_native_identity()
   Assert.equal(catalog:item("ember:EMBER_CHARM").name, "Ember Charm")
 end
 
+---@return table<string, unknown>
+local function alchemyPocket()
+  return { capacity = 8, maxQuantity = 99, ordering = "manual", notes = "mod metadata rides along" }
+end
+
+---@param pocket string?
+---@return table<string, unknown>
+local function alchemyEntry(pocket)
+  local entry = customHeldEntry(pocket or "alchemy")
+  entry.name = "Alchemist Elixir"
+  entry.price = 70000
+  entry.origin = "ember-mod"
+  return entry
+end
+
+---@param root table<string, unknown>
+local function withAlchemyName(root)
+  local names = {}
+  for key, name in pairs(assert(root.pocketNames)) do
+    names[key] = name
+  end
+  names["alchemy"] = "Alchemy"
+  root.pocketNames = names
+end
+
+---@return table<string, unknown>
+local function alchemyRoot()
+  local root = ItemFixture.buildAssetRoot()
+  root.pockets["alchemy"] = alchemyPocket()
+  withAlchemyName(root)
+  root.items["alchemy:ELIXIR"] = alchemyEntry()
+  return root
+end
+
+function T.custom_pocket_items_compose_without_changing_native_pockets()
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local ResolvedItemSchema = require("libs.items.src.ResolvedItemSchema")
+
+  local root = alchemyRoot()
+  Assert.isTrue(ResolvedItemSchema.assertCatalog(root) ~= false, "the resolved schema admits the custom pocket")
+
+  -- The eight native pocket definitions keep their exact source contract.
+  local native = ItemFixture.buildAssetRoot()
+  for _, key in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+    Assert.deepEqual(root.pockets[key], native.pockets[key], "native pocket " .. key .. " is unchanged")
+    Assert.equal(root.pocketNames[key], native.pocketNames[key])
+  end
+  Assert.isTrue(ResolvedItemSchema.assertCatalog(native) ~= false, "the vanilla catalog still validates")
+
+  local catalog = ItemCatalog.fromResolved(root)
+  local pocket = catalog:pocket("alchemy")
+  Assert.equal(pocket.capacity, 8)
+  Assert.equal(pocket.ordering, "manual")
+  Assert.equal(catalog:pocketName("alchemy"), "Alchemy")
+  local elixir = catalog:item("alchemy:ELIXIR")
+  Assert.equal(elixir.pocket, "alchemy")
+  Assert.isNil(elixir.nativeId)
+
+  -- Native identity lookups are unchanged and custom entries stay out of them.
+  Assert.equal(catalog:itemKeyByNativeId(4), "POKE_BALL")
+  Assert.throws(function()
+    catalog:itemKeyByNativeId(70000)
+  end)
+  Assert.throws(function()
+    catalog:pocketKeyByNativeId(99)
+  end)
+end
+
+function T.custom_pocket_misconfigurations_fail()
+  local ResolvedItemSchema = require("libs.items.src.ResolvedItemSchema")
+
+  -- An item naming a pocket the catalog never declares is rejected.
+  local root = ItemFixture.buildAssetRoot()
+  root.items["alchemy:ELIXIR"] = alchemyEntry()
+  Assert.throws(function()
+    ResolvedItemSchema.assertCatalog(root)
+  end)
+
+  -- Redefining a native pocket loosens the source contract and fails.
+  root = ItemFixture.buildAssetRoot()
+  root.pockets["items"] = { nativeId = 0, capacity = 1, maxQuantity = 999, ordering = "manual" }
+  Assert.throws(function()
+    ResolvedItemSchema.assertCatalog(root)
+  end)
+
+  -- A custom pocket must not carry a native identity.
+  root = alchemyRoot()
+  root.pockets["alchemy"].nativeId = 9
+  Assert.throws(function()
+    ResolvedItemSchema.assertCatalog(root)
+  end)
+
+  -- A custom pocket without a display name fails.
+  root = alchemyRoot()
+  root.pocketNames["alchemy"] = nil
+  Assert.throws(function()
+    ResolvedItemSchema.assertCatalog(root)
+  end)
+
+  -- Only the supported ordering policies are admitted.
+  root = alchemyRoot()
+  root.pockets["alchemy"].ordering = "alpha"
+  Assert.throws(function()
+    ResolvedItemSchema.assertCatalog(root)
+  end)
+
+  -- Declared native prices stay in the source u16 domain.
+  root = ItemFixture.buildAssetRoot()
+  root.items["POTION"].price = 70000
+  Assert.throws(function()
+    ResolvedItemSchema.assertCatalog(root)
+  end)
+end
+
 function T.duplicate_declared_native_identities_fail()
   local ItemCatalog = require("libs.items.src.ItemCatalog")
   local ResolvedItemSchema = require("libs.items.src.ResolvedItemSchema")

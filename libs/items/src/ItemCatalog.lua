@@ -63,7 +63,9 @@ end
 
 -- Index builder for composed catalogs: entries without a declared numeric
 -- identity resolve semantically only and never occupy the native index,
--- while duplicate declared identities fail loudly.
+-- while duplicate declared identities fail loudly. Pockets without a
+-- declared numeric identity stay out of the reverse native lookup, while
+-- duplicate declared pocket identities fail loudly.
 ---@param owned table<string, unknown>
 ---@return table<integer, string> itemByNative
 ---@return table<integer, string> pocketByNative
@@ -84,7 +86,17 @@ local function buildComposedIndexes(owned)
     end
   end
   for key, pocket in pairs(owned.pockets) do
-    pocketByNative[pocket.nativeId] = key
+    local nativeId = pocket.nativeId
+    if nativeId ~= nil then
+      if pocketByNative[nativeId] ~= nil then
+        ItemErrors.raise(
+          ItemErrors.RECORD_INVALID,
+          "duplicate native pocket identity " .. tostring(nativeId),
+          { pocket = key }
+        )
+      end
+      pocketByNative[nativeId] = key
+    end
   end
   return itemByNative, pocketByNative
 end

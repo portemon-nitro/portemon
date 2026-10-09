@@ -5,12 +5,42 @@
 -- empty slot exists. TM/HM and Berry pockets sort by the catalog ordering
 -- key after add (native entries keep ascending native-id order, custom
 -- entries sort after every native entry); other pockets preserve mutable
--- order. Removing an item's
+-- order. Composed custom pockets ride the same mechanics and persist under
+-- the save's optional custom member; the retail Bag widget keeps its eight
+-- native tabs and mods read custom slots through pocketItems. Removing an item's
 -- final copy removes the pocket slot and leaves registration untouched.
 -- The service owns the revision; this mechanism
 -- only reports success. Pure domain code: no love dependency.
 
 local BagSave = require("libs.hgss.src.save.BagSave")
+
+local NATIVE_POCKET_SET = {}
+for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
+  NATIVE_POCKET_SET[pocketKey] = true
+end
+
+-- Stable pocket iteration: the eight native pockets in source order, then
+-- every materialized custom pocket sorted by key. Shared by clone, index,
+-- and capture so custom slots never drop or duplicate.
+---@param pockets table<string, { item: string, quantity: integer }[]>
+---@return string[]
+local function orderedPocketKeys(pockets)
+  local keys = {}
+  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
+    keys[#keys + 1] = pocketKey
+  end
+  local custom = {}
+  for key in pairs(pockets) do
+    if not NATIVE_POCKET_SET[key] then
+      custom[#custom + 1] = key
+    end
+  end
+  table.sort(custom)
+  for _, key in ipairs(custom) do
+    keys[#keys + 1] = key
+  end
+  return keys
+end
 
 ---@class BagInventory
 ---@field private _catalog ItemCatalog
@@ -41,6 +71,18 @@ function BagInventory.new(catalog, bag)
     end
     self._pockets[pocketKey] = slots
   end
+  if record.customPockets ~= nil then
+    assert(type(record.customPockets) == "table", "validated bag carries its custom pockets")
+    for _, pocketKey in ipairs(orderedPocketKeys(record.customPockets)) do
+      if not NATIVE_POCKET_SET[pocketKey] then
+        local slots = {}
+        for index, slot in ipairs(record.customPockets[pocketKey]) do
+          slots[index] = { item = slot.item, quantity = slot.quantity }
+        end
+        self._pockets[pocketKey] = slots
+      end
+    end
+  end
   for index, key in ipairs(record.registered) do
     self._registered[index] = key
   end
@@ -56,7 +98,7 @@ function BagInventory:clone()
     _registered = {},
     _byItem = {},
   }, BagInventory)
-  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
+  for _, pocketKey in ipairs(orderedPocketKeys(self._pockets)) do
     local slots = {}
     for index, slot in ipairs(self._pockets[pocketKey]) do
       slots[index] = { item = slot.item, quantity = slot.quantity }
@@ -72,7 +114,7 @@ end
 
 function BagInventory:_reindex()
   local index = {}
-  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
+  for _, pocketKey in ipairs(orderedPocketKeys(self._pockets)) do
     for slotIndex, slot in ipairs(self._pockets[pocketKey]) do
       index[slot.item] = { pocket = pocketKey, index = slotIndex }
     end
@@ -111,7 +153,11 @@ function BagInventory:_fits(itemKey, quantity)
   if entry ~= nil then
     return self._pockets[entry.pocket][entry.index].quantity + quantity <= pocket.maxQuantity
   end
-  return #self._pockets[definition.pocket] < pocket.capacity
+  local slots = self._pockets[definition.pocket]
+  if slots == nil then
+    return 0 < pocket.capacity
+  end
+  return #slots < pocket.capacity
 end
 
 ---@param itemKey string
@@ -163,6 +209,10 @@ function BagInventory:add(itemKey, quantity)
     slot.quantity = slot.quantity + quantity
   else
     local slots = self._pockets[pocketKey]
+    if slots == nil then
+      slots = {}
+      self._pockets[pocketKey] = slots
+    end
     slots[#slots + 1] = { item = itemKey, quantity = quantity }
     if pocket.ordering == "native_id" then
       -- Canonical order is the catalog's ordering key, shared with save
@@ -207,8 +257,12 @@ end
 ---@return { item: string, quantity: integer }[]
 function BagInventory:pocketItems(pocketKey)
   self:_pocket(pocketKey)
+  local slots = self._pockets[pocketKey]
+  if slots == nil then
+    return {}
+  end
   local out = {}
-  for index, slot in ipairs(self._pockets[pocketKey]) do
+  for index, slot in ipairs(slots) do
     out[index] = { item = slot.item, quantity = slot.quantity }
   end
   return out
@@ -223,6 +277,9 @@ function BagInventory:move(pocketKey, fromIndex, toIndex)
     return false
   end
   local slots = self._pockets[pocketKey]
+  if slots == nil then
+    return false
+  end
   for _, index in ipairs({ fromIndex, toIndex }) do
     if type(index) ~= "number" or index % 1 ~= 0 or index < 1 or index > #slots then
       return false
@@ -290,7 +347,23 @@ function BagInventory:capture()
   for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
     pockets[pocketKey] = self:pocketItems(pocketKey)
   end
-  return { schema = BagSave.SCHEMA, pockets = pockets, registered = self:registeredItems() }
+  local captured = { schema = BagSave.SCHEMA, pockets = pockets, registered = self:registeredItems() }
+  local custom = nil
+  for _, pocketKey in ipairs(orderedPocketKeys(self._pockets)) do
+    if not NATIVE_POCKET_SET[pocketKey] then
+      local slots = self:pocketItems(pocketKey)
+      if #slots > 0 then
+        if custom == nil then
+          custom = {}
+        end
+        custom[pocketKey] = slots
+      end
+    end
+  end
+  if custom ~= nil then
+    captured.customPockets = custom
+  end
+  return captured
 end
 
 return BagInventory

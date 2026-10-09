@@ -31,6 +31,23 @@ HGSS field, script, mon, or presentation knowledge.
 - Icon selection names a generated manifest entry; no source member identity
   enters catalog records.
 
+## Composed pockets versus native persistence
+
+- Exactly eight native pockets exist and their definitions are frozen by
+  the source contract. Composed catalogs may add named custom pockets
+  (finite positive capacity and stack limit, `manual` or `native_id`
+  ordering, no native identity) with a display name per pocket; custom
+  items resolve into them with no numeric identity and may price above
+  the source u16 domain.
+- Composed records may carry extra mod metadata, but every engine-known
+  field stays typed and unknown fields never steer engine behavior.
+  Native TM/HM and berry rules still apply only to the native pockets.
+- Persistence stays strict: saves keep the `hgss-bag-v1` shape with the
+  eight native pockets unchanged, and custom slots persist only under an
+  optional `customPockets` member that vanilla saves never emit. Restoring
+  a modded save without its declaring catalog fails instead of dropping
+  slots, so the last valid save is never replaced by a partial one.
+
 ## Design
 
 - No service, inventory framework, plugin API, or cross-game item-use

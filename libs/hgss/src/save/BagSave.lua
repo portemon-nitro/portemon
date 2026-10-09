@@ -27,8 +27,13 @@ BagSave.POCKET_ORDER = {
   "key_items",
 }
 
-local TOP_LEVEL_FIELDS = { schema = true, pockets = true, registered = true }
+local TOP_LEVEL_FIELDS = { schema = true, pockets = true, registered = true, customPockets = true }
 local SLOT_FIELDS = { item = true, quantity = true }
+
+local NATIVE_POCKET_SET = {}
+for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
+  NATIVE_POCKET_SET[pocketKey] = true
+end
 
 ---@param message string
 ---@param context table<string, unknown>?
@@ -62,6 +67,69 @@ local function checkSlotArray(slots, pocketKey)
       fail("bag pocket " .. pocketKey .. " has a non-contiguous slot array", { pocket = pocketKey })
     end
   end
+end
+
+---@param slots table<string, unknown>
+---@param pocketKey string
+---@param pocket table<string, unknown>
+---@param itemCatalog ItemCatalog
+---@param seen table<string, boolean>
+---@return table<string, unknown>
+local function validateSlots(slots, pocketKey, pocket, itemCatalog, seen)
+  checkSlotArray(slots, pocketKey)
+  assert(type(slots) == "table", "bag pocket carries its slot array")
+  if #slots > pocket.capacity then
+    fail("bag pocket " .. pocketKey .. " exceeds its capacity", { pocket = pocketKey })
+  end
+  local canonicalSlots = {}
+  local previousOrderingKey = nil
+  for index = 1, #slots do
+    local slot = slots[index]
+    if type(slot) ~= "table" then
+      fail("bag pocket " .. pocketKey .. " slot " .. index .. " must be a record", { pocket = pocketKey })
+    end
+    for key in pairs(slot) do
+      if not SLOT_FIELDS[key] then
+        fail("bag slot contains an unknown field", { pocket = pocketKey, field = key })
+      end
+    end
+    local ok, definition = pcall(itemCatalog.item, itemCatalog, slot.item)
+    if not ok or type(definition) ~= "table" then
+      fail("bag slot names an unknown item", { pocket = pocketKey, item = slot.item })
+    end
+    assert(definition ~= nil, "catalog lookup carries the validated definition")
+    if definition.pocket ~= pocketKey then
+      fail("bag item " .. slot.item .. " is stored outside its pocket", { pocket = pocketKey, item = slot.item })
+    end
+    if
+      type(slot.quantity) ~= "number"
+      or slot.quantity % 1 ~= 0
+      or slot.quantity < 1
+      or slot.quantity > pocket.maxQuantity
+    then
+      fail(
+        "bag item " .. slot.item .. " quantity " .. tostring(slot.quantity) .. " is outside 1.." .. pocket.maxQuantity,
+        { pocket = pocketKey, item = slot.item, quantity = slot.quantity }
+      )
+    end
+    if seen[slot.item] then
+      fail("bag item " .. slot.item .. " is stored twice", { item = slot.item })
+    end
+    seen[slot.item] = true
+    -- Canonical pocket order is the catalog's ordering key: native
+    -- entries keep numeric source order while custom entries sort after
+    -- every native entry, ordered by pocket and key. Shared with the
+    -- live inventory, so validation never repairs order on its own.
+    if pocket.ordering == "native_id" then
+      local orderingKey = itemCatalog:orderingKey(slot.item)
+      if previousOrderingKey ~= nil and orderingKey <= previousOrderingKey then
+        fail("bag pocket " .. pocketKey .. " is not in native-id order", { pocket = pocketKey })
+      end
+      previousOrderingKey = orderingKey
+    end
+    canonicalSlots[index] = { item = slot.item, quantity = slot.quantity }
+  end
+  return canonicalSlots
 end
 
 ---@param value unknown
@@ -106,61 +174,45 @@ local function validateRecord(value, itemCatalog)
   local canonicalPockets = {}
   for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
     local slots = value.pockets[pocketKey]
-    checkSlotArray(slots, pocketKey)
-    assert(type(slots) == "table", "bag pocket carries its slot array")
     local pocket = itemCatalog:pocket(pocketKey)
-    if #slots > pocket.capacity then
-      fail("bag pocket " .. pocketKey .. " exceeds its capacity", { pocket = pocketKey })
+    canonicalPockets[pocketKey] = validateSlots(slots, pocketKey, pocket, itemCatalog, seen)
+  end
+  -- Optional modded extras: only slots whose composed catalog pocket
+  -- exists and is not one of the eight native keys. The same strict
+  -- stack, ordering, and uniqueness checks apply with the custom catalog
+  -- capacities. Vanilla records carry no member at all, and empty extras
+  -- canonicalize away; a missing mod or catalog fails the restore instead
+  -- of dropping slots.
+  local canonicalCustom = nil
+  if value.customPockets ~= nil then
+    if type(value.customPockets) ~= "table" then
+      fail("bag custom pockets must be a record")
     end
-    local canonicalSlots = {}
-    local previousOrderingKey = nil
-    for index = 1, #slots do
-      local slot = slots[index]
-      if type(slot) ~= "table" then
-        fail("bag pocket " .. pocketKey .. " slot " .. index .. " must be a record", { pocket = pocketKey })
+    local customKeys = {}
+    for key in pairs(value.customPockets) do
+      if type(key) ~= "string" or key == "" then
+        fail("bag custom pocket keys must be non-empty strings", { pocket = key })
       end
-      for key in pairs(slot) do
-        if not SLOT_FIELDS[key] then
-          fail("bag slot contains an unknown field", { pocket = pocketKey, field = key })
-        end
+      if NATIVE_POCKET_SET[key] then
+        fail("bag pocket " .. key .. " belongs in the native pockets", { pocket = key })
       end
-      local ok, definition = pcall(itemCatalog.item, itemCatalog, slot.item)
-      if not ok or type(definition) ~= "table" then
-        fail("bag slot names an unknown item", { pocket = pocketKey, item = slot.item })
-      end
-      assert(definition ~= nil, "catalog lookup carries the validated definition")
-      if definition.pocket ~= pocketKey then
-        fail("bag item " .. slot.item .. " is stored outside its pocket", { pocket = pocketKey, item = slot.item })
-      end
-      if
-        type(slot.quantity) ~= "number"
-        or slot.quantity % 1 ~= 0
-        or slot.quantity < 1
-        or slot.quantity > pocket.maxQuantity
-      then
-        fail(
-          "bag item " .. slot.item .. " quantity " .. tostring(slot.quantity) .. " is outside 1.." .. pocket.maxQuantity,
-          { pocket = pocketKey, item = slot.item, quantity = slot.quantity }
-        )
-      end
-      if seen[slot.item] then
-        fail("bag item " .. slot.item .. " is stored twice", { item = slot.item })
-      end
-      seen[slot.item] = true
-      -- Canonical pocket order is the catalog's ordering key: native
-      -- entries keep numeric source order while custom entries sort after
-      -- every native entry, ordered by pocket and key. Shared with the
-      -- live inventory, so validation never repairs order on its own.
-      if pocket.ordering == "native_id" then
-        local orderingKey = itemCatalog:orderingKey(slot.item)
-        if previousOrderingKey ~= nil and orderingKey <= previousOrderingKey then
-          fail("bag pocket " .. pocketKey .. " is not in native-id order", { pocket = pocketKey })
-        end
-        previousOrderingKey = orderingKey
-      end
-      canonicalSlots[index] = { item = slot.item, quantity = slot.quantity }
+      customKeys[#customKeys + 1] = key
     end
-    canonicalPockets[pocketKey] = canonicalSlots
+    table.sort(customKeys)
+    for _, customKey in ipairs(customKeys) do
+      local ok, pocket = pcall(itemCatalog.pocket, itemCatalog, customKey)
+      if not ok or type(pocket) ~= "table" then
+        fail("bag pocket is unknown", { pocket = customKey })
+      end
+      assert(pocket ~= nil, "catalog lookup carries the validated pocket")
+      local slots = validateSlots(value.customPockets[customKey], customKey, pocket, itemCatalog, seen)
+      if #slots > 0 then
+        if canonicalCustom == nil then
+          canonicalCustom = {}
+        end
+        canonicalCustom[customKey] = slots
+      end
+    end
   end
   local registered = value.registered
   assert(type(registered) == "table", "bag registered slots carry their array")
@@ -193,7 +245,11 @@ local function validateRecord(value, itemCatalog)
       canonicalRegistered[index] = key
     end
   end
-  return { schema = BagSave.SCHEMA, pockets = canonicalPockets, registered = canonicalRegistered }
+  local canonical = { schema = BagSave.SCHEMA, pockets = canonicalPockets, registered = canonicalRegistered }
+  if canonicalCustom ~= nil then
+    canonical.customPockets = canonicalCustom
+  end
+  return canonical
 end
 
 ---@param value unknown

@@ -175,4 +175,103 @@ function T.prepare_reports_an_unfreeable_add_as_a_recoverable_refusal()
   Assert.equal(bag:revision(), revision, "a refused preparation publishes no revision")
 end
 
+---@return table<string, unknown>
+local function alchemyEntry(name)
+  return {
+    name = name,
+    nameIndefinite = "a " .. name,
+    namePlural = name .. "s",
+    description = name .. " description",
+    pocket = "alchemy",
+    preventToss = false,
+    selectable = false,
+    isBall = false,
+    friendshipBoost = false,
+    icon = name,
+    isHm = false,
+    canHold = true,
+    heldFormEffect = "none",
+    partyUse = { kind = "none" },
+  }
+end
+
+local function alchemyCatalog()
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local root = ItemFixture.buildAssetRoot()
+  root.pockets["alchemy"] = { capacity = 8, maxQuantity = 99, ordering = "manual" }
+  local names = {}
+  for key, name in pairs(root.pocketNames) do
+    names[key] = name
+  end
+  names["alchemy"] = "Alchemy"
+  root.pocketNames = names
+  root.items["alchemy:ELIXIR"] = alchemyEntry("Alchemist Elixir")
+  root.items["alchemy:TONIC"] = alchemyEntry("Alchemist Tonic")
+  return ItemCatalog.fromResolved(root)
+end
+
+local function alchemyService()
+  return HgssBagService.new({ catalog = alchemyCatalog() })
+end
+
+function T.custom_pocket_entries_survive_clone_prepare_capture_and_restore()
+  local BagSave = require("libs.hgss.src.save.BagSave")
+  local bag = alchemyService()
+  Assert.isTrue(bag:add("alchemy:ELIXIR", 2))
+  Assert.isTrue(bag:add("alchemy:TONIC", 1))
+  Assert.isTrue(bag:add("POTION", 3))
+  Assert.isTrue(bag:move("alchemy", 1, 2), "the manual custom pocket supports reordering")
+  local ordered = bag:pocketItems("alchemy")
+  Assert.equal(ordered[1].item, "alchemy:TONIC")
+  Assert.equal(ordered[2].item, "alchemy:ELIXIR")
+
+  local revision = bag:revision()
+  local preparation = assert(
+    bag:prepareInventoryChanges(revision, { { op = "take", item = "alchemy:ELIXIR", quantity = 1 } })
+  )
+  Assert.equal(bag:quantity("alchemy:ELIXIR"), 2, "preparation leaves the live inventory alone")
+  preparation.publish()
+  Assert.equal(bag:quantity("alchemy:ELIXIR"), 1)
+  Assert.equal(bag:revision(), revision + 1)
+
+  local captured = bag:capture()
+  Assert.notNil(captured.customPockets, "added custom slots persist under the optional member")
+  Assert.equal(#assert(captured.customPockets["alchemy"]), 2)
+  Assert.notNil(BagSave.validate(captured, bag:catalog()))
+
+  local restored = HgssBagService.new({ catalog = bag:catalog(), bag = captured })
+  Assert.deepEqual(restored:capture(), captured, "restore keeps every custom slot")
+  Assert.equal(restored:quantity("POTION"), 3, "untouched native stacks survive the custom round trip")
+  Assert.equal(restored:quantity("alchemy:TONIC"), 1)
+
+  -- A vanilla capture emits no optional member and keeps the eight pockets.
+  local plain = alchemyService()
+  Assert.isTrue(plain:add("POTION", 1))
+  local plainCapture = plain:capture()
+  Assert.isNil(plainCapture.customPockets)
+  Assert.keySet(
+    plainCapture.pockets,
+    "balls,battle_items,berries,items,key_items,mail,medicine,tmhm"
+  )
+end
+
+function T.custom_pocket_records_require_a_declaring_catalog()
+  local BagSave = require("libs.hgss.src.save.BagSave")
+  local bag = alchemyService()
+  Assert.isTrue(bag:add("alchemy:ELIXIR", 1))
+  local captured = bag:capture()
+
+  -- A catalog without the mod pocket cannot restore the record.
+  local vanilla = ItemFixture.makeCatalog()
+  local canonical, err = BagSave.validate(captured, vanilla)
+  Assert.isNil(canonical)
+  Assert.notNil(err)
+
+  -- A forged custom pocket outside the composed catalog is rejected, never dropped.
+  captured.customPockets["phantom"] = { { item = "POTION", quantity = 1 } }
+  local forged, forgedErr = BagSave.validate(captured, bag:catalog())
+  Assert.isNil(forged)
+  Assert.notNil(forgedErr)
+end
+
 return { tests = T }

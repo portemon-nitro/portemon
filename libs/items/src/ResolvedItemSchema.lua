@@ -23,31 +23,6 @@ ResolvedItemSchema.MIN_NATIVE_ID = ItemAssetSchema.MIN_NATIVE_ID
 ResolvedItemSchema.MAX_NATIVE_ID = ItemAssetSchema.MAX_NATIVE_ID
 ResolvedItemSchema.MAX_MOVE_NATIVE_ID = ItemAssetSchema.MAX_MOVE_NATIVE_ID
 
-local ITEM_FIELDS = {
-  nativeId = true,
-  price = true,
-  name = true,
-  nameIndefinite = true,
-  namePlural = true,
-  description = true,
-  pocket = true,
-  preventToss = true,
-  selectable = true,
-  isBall = true,
-  friendshipBoost = true,
-  tmhmMoveNativeId = true,
-  berryNameSingular = true,
-  berryNamePlural = true,
-  icon = true,
-  isHm = true,
-  canHold = true,
-  heldFormEffect = true,
-  partyUse = true,
-  heldBehavior = true,
-  fling = true,
-  naturalGift = true,
-}
-
 local function fail(message, context)
   Errors.raise("ITEM_RESOLVED_INVALID", message, context or {})
 end
@@ -283,17 +258,26 @@ local function assertNaturalGift(key, value, context)
   end
 end
 
+---@param value unknown
+---@return boolean
+local function isFiniteInteger(value)
+  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge and value % 1 == 0
+end
+
 ---@param key string
 ---@param record table<string, unknown>
+---@param pockets table<string, unknown>
 ---@param context table<string, unknown>
-local function assertItem(key, record, context)
+local function assertItem(key, record, pockets, context)
   if type(key) ~= "string" or key == "" then
     fail("item keys must be non-empty strings", context)
   end
   if type(record) ~= "table" then
     fail("item " .. key .. " must be a record", context)
   end
-  checkKeys(record, ITEM_FIELDS, context)
+  -- Composed records may carry mod metadata beyond the engine-known
+  -- fields; every known field below stays typed and no unknown field is
+  -- ever read as engine behavior.
   -- Custom entries carry no numeric identity; declared identities stay in
   -- the native range and unique across the catalog.
   if record.nativeId ~= nil then
@@ -309,14 +293,23 @@ local function assertItem(key, record, context)
   checkText(record.nameIndefinite, context, "item " .. key .. " nameIndefinite")
   checkText(record.namePlural, context, "item " .. key .. " namePlural")
   -- Source prices ride the native catalog; custom entries may omit the
-  -- price, while declared prices stay in the source u16 domain.
+  -- price or price above the source u16 domain, while declared native
+  -- prices stay in the source u16 domain and ordinary native serialization
+  -- remains bounded.
   if record.price ~= nil then
-    checkInteger(record.price, 0, 65535, context, "item " .. key .. " price")
+    if record.nativeId ~= nil then
+      checkInteger(record.price, 0, 65535, context, "item " .. key .. " price")
+    elseif not isFiniteInteger(record.price) or record.price < 0 then
+      fail("item " .. key .. " price must be a finite non-negative integer", context)
+    end
   end
   if type(record.description) ~= "string" then
     fail("item " .. key .. " description must be a string", context)
   end
-  if ResolvedItemSchema.POCKETS[record.pocket] == nil then
+  if type(record.pocket) ~= "string" or record.pocket == "" then
+    fail("item " .. key .. " pocket must be a non-empty string", context)
+  end
+  if pockets[record.pocket] == nil then
     fail("item " .. key .. " has an unknown pocket", context)
   end
   checkBoolean(record.preventToss, context, "item " .. key .. " preventToss")
@@ -379,6 +372,30 @@ local function collectNativeIds(items, context)
   end
 end
 
+---@param key string
+---@param definition table<string, unknown>
+---@param context table<string, unknown>
+local function assertCustomPocket(key, definition, context)
+  if type(key) ~= "string" or key == "" then
+    fail("pocket keys must be non-empty strings", context)
+  end
+  if type(definition) ~= "table" then
+    fail("pocket " .. key .. " must be a record", context)
+  end
+  if definition.nativeId ~= nil then
+    fail("pocket " .. key .. " carries a native identity outside the source pockets", context)
+  end
+  if not isFiniteInteger(definition.capacity) or definition.capacity < 1 then
+    fail("pocket " .. key .. " capacity must be a finite positive integer", context)
+  end
+  if not isFiniteInteger(definition.maxQuantity) or definition.maxQuantity < 1 then
+    fail("pocket " .. key .. " maxQuantity must be a finite positive integer", context)
+  end
+  if definition.ordering ~= "manual" and definition.ordering ~= "native_id" then
+    fail("pocket " .. key .. " ordering must be manual or native_id", context)
+  end
+end
+
 ---@param pockets table<string, unknown>
 ---@param context table<string, unknown>
 local function assertPockets(pockets, context)
@@ -388,20 +405,23 @@ local function assertPockets(pockets, context)
   for key, definition in pairs(pockets) do
     local expected = ResolvedItemSchema.POCKETS[key]
     if expected == nil then
-      fail("unknown pocket " .. tostring(key), context)
-    end
-    assert(expected ~= nil, "the pocket contract carries the validated entry")
-    if type(definition) ~= "table" then
-      fail("pocket " .. key .. " must be a record", context)
-    end
-    checkKeys(definition, { nativeId = true, capacity = true, maxQuantity = true, ordering = true }, context)
-    if
-      definition.nativeId ~= expected.nativeId
-      or definition.capacity ~= expected.capacity
-      or definition.maxQuantity ~= expected.maxQuantity
-      or definition.ordering ~= expected.ordering
-    then
-      fail("pocket " .. key .. " does not match the source pocket contract", context)
+      -- Named custom pockets extend the eight source definitions with
+      -- finite positive limits and a supported ordering. Mod metadata may
+      -- ride on the definition; only the engine-known fields are read.
+      assertCustomPocket(key, definition, context)
+    else
+      assert(expected ~= nil, "the pocket contract carries the validated entry")
+      if type(definition) ~= "table" then
+        fail("pocket " .. key .. " must be a record", context)
+      end
+      if
+        definition.nativeId ~= expected.nativeId
+        or definition.capacity ~= expected.capacity
+        or definition.maxQuantity ~= expected.maxQuantity
+        or definition.ordering ~= expected.ordering
+      then
+        fail("pocket " .. key .. " does not match the source pocket contract", context)
+      end
     end
   end
   for key in pairs(ResolvedItemSchema.POCKETS) do
@@ -412,18 +432,19 @@ local function assertPockets(pockets, context)
 end
 
 ---@param pocketNames table<string, unknown>
+---@param pockets table<string, unknown>
 ---@param context table<string, unknown>
-local function assertPocketNames(pocketNames, context)
+local function assertPocketNames(pocketNames, pockets, context)
   if type(pocketNames) ~= "table" then
     fail("pocketNames must be a record", context)
   end
   for key, name in pairs(pocketNames) do
-    if ResolvedItemSchema.POCKETS[key] == nil then
+    if pockets[key] == nil then
       fail("unknown pocket name " .. tostring(key), context)
     end
     checkText(name, context, "pocket name " .. key)
   end
-  for key in pairs(ResolvedItemSchema.POCKETS) do
+  for key in pairs(pockets) do
     if pocketNames[key] == nil then
       fail("pocket name " .. key .. " is missing", context)
     end
@@ -440,13 +461,8 @@ function ResolvedItemSchema.assertCatalog(catalog)
   if type(catalog) ~= "table" then
     fail("catalog must be a record", context)
   end
-  checkKeys(catalog, {
-    schema = true,
-    version = true,
-    items = true,
-    pockets = true,
-    pocketNames = true,
-  }, context)
+  -- Composed roots may carry mod metadata beyond the engine-known
+  -- members; every known member below stays typed and versioned.
   if catalog.schema ~= "g4-item-catalog-v4" then
     fail("catalog schema must be g4-item-catalog-v4", context)
   end
@@ -459,12 +475,16 @@ function ResolvedItemSchema.assertCatalog(catalog)
   if type(catalog.items) ~= "table" or Validate.isArray(catalog.items) then
     fail("items must be a keyed record", context)
   end
+  if type(catalog.pockets) ~= "table" then
+    fail("pockets must be a record", context)
+  end
+  assert(type(catalog.pockets) == "table", "pockets carry the validated record")
   for key, record in pairs(catalog.items) do
-    assertItem(key, record, context)
+    assertItem(key, record, catalog.pockets, context)
   end
   collectNativeIds(catalog.items, context)
   assertPockets(catalog.pockets, context)
-  assertPocketNames(catalog.pocketNames, context)
+  assertPocketNames(catalog.pocketNames, catalog.pockets, context)
   return true
 end
 
