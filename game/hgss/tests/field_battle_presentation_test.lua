@@ -1232,6 +1232,71 @@ function T.portrait_demands_speak_exact_canonical_selectors()
   envelope:dispose()
 end
 
+-- A staged scene whose bytes fail GPU upload reports a terminal keyed
+-- failure instead of an unusable nil: the failed key is attempted once,
+-- later polls replay the latched error without re-entering the driver,
+-- and disposal stays idempotent.
+function T.staged_scene_upload_failure_reports_its_key_once()
+  local sceneKey = "general/plain/day"
+  local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
+  local cacheFs = {
+    versionId = "upload-probe",
+    files = { [imagePath] = "probe-corrupt-bytes" },
+  }
+  function cacheFs:loadLua(_)
+    return nil
+  end
+  function cacheFs:read(path)
+    return self.files[path]
+  end
+  local uploads = 0
+  local graphics = {}
+  function graphics.newImage(_)
+    uploads = uploads + 1
+    error("probe-decode-boom", 0)
+  end
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", {
+    image = {
+      newImageData = function(_)
+        return { probePixels = true }
+      end,
+    },
+    filesystem = {
+      newFileData = function(bytes, name)
+        return { bytes = bytes, name = name }
+      end,
+    },
+  })
+  local ok, failure = pcall(function()
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      windows = recordingWindows(),
+      text = recordingText(),
+      measureDisplay = function()
+        return dualMeasurement("upload-failure:dual")
+      end,
+      graphics = graphics,
+    })
+    local services = envelope:_preparationServices()
+    local handle, reason = services.drawable("scene:" .. sceneKey)
+    Assert.isNil(handle, "the failed upload hands out no image")
+    Assert.isTrue(type(reason) == "string" and reason ~= "", "the failed upload names its reason")
+    Assert.isTrue(reason:find(sceneKey, 1, true) ~= nil, "the failure names its scene key")
+    Assert.isTrue(reason:find(imagePath, 1, true) ~= nil, "the failure names its staged path")
+    local handleAgain, reasonAgain = services.drawable("scene:" .. sceneKey)
+    Assert.isNil(handleAgain, "the failed key stays failed without a substitute")
+    Assert.equal(reasonAgain, reason, "the latched failure replays identically")
+    Assert.equal(uploads, 1, "the failed upload is attempted once, never retried per tick")
+    envelope:dispose()
+    envelope:dispose()
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(failure, 0)
+  end
+end
+
 return {
   tests = T,
   metadata = {

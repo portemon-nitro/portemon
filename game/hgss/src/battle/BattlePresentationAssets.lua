@@ -9,7 +9,7 @@
 
 ---@class BattlePresentationAssets.Services
 ---@field prepare fun(demand: table<string, unknown>): boolean?, string?
----@field drawable fun(key: string): table<string, unknown>?
+---@field drawable fun(key: string): table<string, unknown>?, string?
 ---@field release fun(key: string)
 
 ---@class BattlePresentationAssets
@@ -25,6 +25,7 @@
 ---@field _prepared boolean preparation accepted for the current demand
 ---@field _selectors string[] portrait selectors named so far
 ---@field _owned table<string, boolean> image keys acquired through this holder
+---@field _imageErrors table<string, string> terminal upload failures by key, latched without retry
 ---@field _released boolean release guard
 local BattlePresentationAssets = {}
 BattlePresentationAssets.__index = BattlePresentationAssets
@@ -72,6 +73,7 @@ function BattlePresentationAssets.new(opts)
     _prepared = false,
     _selectors = {},
     _owned = {},
+    _imageErrors = {},
     _released = false,
   }, BattlePresentationAssets)
 end
@@ -122,7 +124,10 @@ local REQUIRED_DRAWABLES = { "hud:enemy", "hud:player", "menu:command", "menu:mo
 
 -- Runs preparation once per demand: an invalid frame selection or a
 -- service failure becomes failed with context; a missing required image
--- stays pending until its drawable resolves instead of failing.
+-- stays pending until its drawable resolves instead of failing. A
+-- drawable that answers a terminal upload error fails closed with that
+-- key's context and never retries; already acquired handles stay owned
+-- until exactly-once disposal.
 function BattlePresentationAssets:update()
   if self._state == "failed" or self._state == "ready" then
     return
@@ -148,12 +153,26 @@ function BattlePresentationAssets:update()
     end
     self._prepared = true
   end
-  if self._assets.drawable(self._sceneImage) == nil then
+  local sceneHandle, sceneFailure = self._assets.drawable(self._sceneImage)
+  if sceneFailure ~= nil then
+    self._state = "failed"
+    self._error = "battle scene image failed for launch " .. self._launchId .. ": " .. tostring(sceneFailure)
+    self._imageErrors[self._sceneImage] = self._error --[[@as string]]
+    return
+  end
+  if sceneHandle == nil then
     return
   end
   self._owned[self._sceneImage] = true
   for _, key in ipairs(REQUIRED_DRAWABLES) do
-    if self._assets.drawable(key) == nil then
+    local handle, failure = self._assets.drawable(key)
+    if failure ~= nil then
+      self._state = "failed"
+      self._error = "battle image failed for launch " .. self._launchId .. ": " .. tostring(failure)
+      self._imageErrors[key] = self._error --[[@as string]]
+      return
+    end
+    if handle == nil then
       return
     end
     self._owned[key] = true
@@ -193,12 +212,27 @@ end
 
 -- Resolves one image through the preparation services, tracking
 -- ownership of every handle acquired here. Unavailable images report
--- nil so cues can hold instead of drawing substitutes.
+-- nil with no error so cues can hold instead of drawing substitutes.
+-- A terminal upload error latches the holder failed with the exact
+-- image key and replays identically without re-entering the services.
 ---@param key string image key under resolution
----@return table<string, unknown>? image handle, nil while unavailable
+---@return table<string, unknown>? image handle, nil while unavailable or after failure
+---@return string? terminal failure naming the exact image key, nil while pending or ready
 function BattlePresentationAssets:drawable(key)
   assert(type(key) == "string" and key ~= "", "image resolution names its key")
-  local handle = self._assets.drawable(key)
+  if self._imageErrors[key] ~= nil then
+    return nil, self._imageErrors[key]
+  end
+  if self._state == "failed" then
+    return nil, self._error
+  end
+  local handle, failure = self._assets.drawable(key)
+  if failure ~= nil then
+    self._state = "failed"
+    self._error = "battle image " .. key .. " failed for launch " .. self._launchId .. ": " .. tostring(failure)
+    self._imageErrors[key] = self._error --[[@as string]]
+    return nil, self._error
+  end
   if handle ~= nil then
     self._owned[key] = true
   end

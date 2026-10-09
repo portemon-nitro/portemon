@@ -44,7 +44,6 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 ---@field _notice string? transient refusal banner
 ---@field _signature string? measurement signature behind the published plan
 ---@field _arrowTick integer selection arrow clock in presentation ticks
----@field _outcomeShown boolean terminal narration displayed
 ---@field _outcomeAcked boolean terminal narration acknowledged once
 ---@field _error string? failure context
 ---@field _disposed boolean
@@ -182,7 +181,6 @@ function BattleScreenState.new(opts)
     _notice = nil,
     _signature = nil,
     _arrowTick = 0,
-    _outcomeShown = false,
     _outcomeAcked = false,
     _error = nil,
     _disposed = false,
@@ -1012,11 +1010,14 @@ function BattleScreenState:_consume(event)
             self._selection = id
           end
         end
-      elseif self._mode == "narration" or self._mode == "outcome" then
-        local control = event.control --[[@as table<string, unknown>?]]
-        if type(control) == "table" and control.scope == self._mode then
-          self._armed = { scope = control.scope, id = control.id, pointerId = event.pointerId }
-        end
+      end
+    elseif self._mode == "narration" or self._mode == "outcome" then
+      -- A dialogue tap arms exactly like a command press so the matched
+      -- release can acknowledge the shown page; an unmatched press never
+      -- arms and its release falls away through the shared capture check.
+      local control = event.control --[[@as table<string, unknown>?]]
+      if type(control) == "table" and control.scope == self._mode then
+        self._armed = { scope = control.scope, id = control.id, pointerId = event.pointerId }
       end
     end
     return
@@ -1204,7 +1205,6 @@ function BattleScreenState:_drain(settledTick)
     self._pendingRequest = nil
     self._request = nil
     self._options = nil
-    self._outcomeShown = true
     self._mode = "outcome"
     self._notice = nil
     self._child = nil
@@ -1320,12 +1320,20 @@ function BattleScreenState:updateFixed(dt)
     if self._mode == "intro" and self._introBuilt and self._timeline:settled() and self._pendingRequest == nil then
       self._mode = "narration"
     end
+    -- A cue-gated portrait that failed upload latches the holder during
+    -- the availability probe above: the screen fails once with that
+    -- context instead of holding the cue forever. The envelope reports
+    -- the failed screen through its existing one-time failure path.
+    if self._assets:state() == "failed" then
+      self._mode = "failed"
+      self._error = self._assets:error()
+    end
   end
   if self._mode == "child" and self._subflows:status().active then
     self._subflows:tick()
     self:_pollChild()
   end
-  if self._mode == "command" or self._mode == "moves" or self._mode == "target" then
+  if self._mode == "command" or self._mode == "moves" then
     self._arrowTick = self._arrowTick + 1
   else
     self._arrowTick = 0

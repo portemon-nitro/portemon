@@ -1356,4 +1356,58 @@ function T.multipage_terminal_acknowledgment_consumes_each_edge_once()
   rig.screen:dispose()
 end
 
+-- A matched dialogue tap acknowledges exactly like a key edge: a
+-- release with no press and a press whose release leaves the pane
+-- never touch the page, while one matched tap per reveal stage
+-- accelerates, turns, then finally acknowledges without sealing.
+function T.matched_dialogue_taps_acknowledge_the_terminal_page()
+  local rig = openLongOutcomeRig("launch-outcome-tap-local")
+  local reached = false
+  for _ = 1, 1200 do
+    rig.pump(1)
+    local status = rig.screen:status()
+    if status.mode == "failed" then
+      error("the tapped outcome failed: " .. tostring(status.error), 0)
+    end
+    if status.mode == "outcome" then
+      reached = true
+      break
+    end
+  end
+  Assert.isTrue(reached, "the long terminal narration reaches its outcome")
+  local function tap(id, downX, downY, upX, upY)
+    rig.screen:input({ { type = "pointer_down", pointerId = id, x = downX, y = downY } })
+    rig.screen:input({ { type = "pointer_up", pointerId = id, x = upX, y = upY } })
+    rig.pump(1)
+  end
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:tap-orphan", x = 128, y = 288 } })
+  rig.pump(1)
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "a release with no press never releases")
+  Assert.isFalse(rig.port.ready(), "a release with no press never settles")
+  tap("touch:tap-early", 128, 288, 128, 288)
+  Assert.equal(rig.screen:status().mode, "outcome", "an early tap keeps the outcome")
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "an early tap only accelerates")
+  Assert.isFalse(rig.port.ready(), "an early tap never settles")
+  tap("touch:tap-turn", 128, 288, 128, 288)
+  Assert.equal(rig.screen:status().mode, "outcome", "a page-turn tap keeps the outcome")
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "a page-turn tap never releases")
+  for _ = 1, 300 do
+    rig.pump(1)
+  end
+  Assert.equal(rig.screen:status().mode, "outcome", "the final page holds before its tap")
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "the final page holds before its tap")
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:tap-drag", x = 128, y = 288 } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:tap-drag", x = 300, y = 300 } })
+  rig.pump(1)
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "a release dragged off the pane never acknowledges")
+  tap("touch:tap-final", 128, 288, 128, 288)
+  for _ = 1, 120 do
+    rig.pump(1)
+  end
+  Assert.isTrue(rig.port.leave({ kind = "wild" }), "the final matched tap acknowledges the outcome")
+  Assert.isTrue(rig.port.ready(), "the tapped acknowledgment settles")
+  Assert.equal(#rig.submits, 0, "dialogue taps seal no decision")
+  rig.screen:dispose()
+end
+
 return { tests = T }

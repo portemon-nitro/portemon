@@ -1526,6 +1526,13 @@ function T.compact_settled_return_shows_the_result_word(scope, context)
     })
     local ticks = 0
     while (screen:status().mode ~= "outcome" or not screen:status().ready) and ticks < DRIVE_BUDGET do
+      -- The terminal result holds its final page until a genuine
+      -- acknowledgment, so the capture advances it exactly as a player
+      -- would instead of expecting it to settle on its own.
+      local mode = screen:status().mode
+      if mode == "intro" or mode == "narration" or mode == "outcome" then
+        screen:input({ { type = "confirm" } })
+      end
       screen:updateFixed(TICK)
       ticks = ticks + 1
     end

@@ -21,6 +21,7 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
 ---@field _images table<string, unknown> owned image handles behind the live screen
+---@field _imageFailures table<string, string> terminal upload failures by key, latched for the envelope lifetime
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
 ---@field _manifest table<string, unknown> staged or planning presentation manifest
@@ -176,6 +177,7 @@ function FieldBattlePresentation.new(opts)
     _drewExternally = false,
     _disposed = false,
     _images = {},
+    _imageFailures = {},
   }, FieldBattlePresentation)
   envelope._recording = recordingGraphics()
   envelope._services = envelope:_preparationServices()
@@ -184,35 +186,44 @@ end
 
 -- Uploads one staged image file through the host graphics namespace:
 -- decode the staged bytes, then build and configure the owned image.
--- Any decode or upload failure answers nil so the caller holds instead
--- of drawing substitutes; only prepare owns typed failures.
+-- Success answers the owned handle. Staged bytes that fail decoding or
+-- GPU upload answer a terminal keyed failure so the caller fails closed
+-- instead of holding forever on a deterministic corrupt image.
 ---@param graphics table<string, unknown> host graphics namespace enabling GPU upload
+---@param key string drawable key behind diagnostics
 ---@param path string cache-relative staged image path behind diagnostics
 ---@param bytes string staged image bytes
----@return table<string, unknown>? owned image handle, nil while unavailable
-local function uploadStaged(graphics, path, bytes)
-  local ok, image = pcall(function()
+---@return table<string, unknown>? owned image handle, nil on terminal failure
+---@return string? terminal failure naming the key and path, nil on success
+local function uploadStaged(graphics, key, path, bytes)
+  local ok, imageOrErr = pcall(function()
     local pixels = love.image.newImageData(love.filesystem.newFileData(bytes, path))
     local uploaded = graphics.newImage(pixels)
+    assert(uploaded ~= nil, "the graphics driver handed out no image")
     uploaded:setFilter("nearest", "nearest")
     return uploaded
   end)
-  if not ok then
-    return nil
+  if ok and imageOrErr ~= nil then
+    return imageOrErr
   end
-  return image
+  local cause = ok and "empty image handle" or tostring(imageOrErr)
+  return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. cause
 end
 
 -- Uploads one staged portrait cell for a canonical portrait selector:
 -- decode the owning atlas page, crop exactly the staged cell, then
--- build and configure the owned image. Any failure answers nil so the
--- caller holds instead of drawing substitutes.
+-- build and configure the owned image. Success answers the owned
+-- handle; staged bytes that fail decoding or GPU upload answer a
+-- terminal failure naming the canonical selector and its page path.
 ---@param graphics table<string, unknown> host graphics namespace enabling GPU upload
 ---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
 ---@param selector string canonical staged portrait selector
----@return table<string, unknown>? owned image handle, nil while unavailable
+---@return table<string, unknown>? owned image handle, nil on terminal failure
+---@return string? terminal failure naming the selector and page path, nil on success
 local function uploadPortraitCell(graphics, cacheFs, selector)
-  local ok, image = pcall(function()
+  ---@type string?
+  local pagePath = nil
+  local ok, imageOrErr = pcall(function()
     local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
     assert(
       type(portraits) == "table" and type(portraits.entries) == "table",
@@ -230,19 +241,26 @@ local function uploadPortraitCell(graphics, cacheFs, selector)
       "the staged portrait names its cell size: " .. tostring(selector)
     )
     local path = MonCache.pageImagePath("portraits", entry.pageId)
+    pagePath = path
     local bytes = cacheFs:read(path)
     assert(type(bytes) == "string", "the staged portrait page is not staged: " .. tostring(path))
     local page = love.image.newImageData(love.filesystem.newFileData(bytes, path))
     local cropped = love.image.newImageData(entry.width, entry.height)
     cropped:paste(page, 0, 0, entry.x, entry.y, entry.width, entry.height)
     local uploaded = graphics.newImage(cropped)
+    assert(uploaded ~= nil, "the graphics driver handed out no portrait image")
     uploaded:setFilter("nearest", "nearest")
     return uploaded
   end)
-  if not ok then
-    return nil
+  if ok and imageOrErr ~= nil then
+    return imageOrErr
   end
-  return image
+  local cause = ok and "empty portrait handle" or tostring(imageOrErr)
+  local label = "mon:" .. tostring(selector)
+  if pagePath ~= nil then
+    label = label .. " " .. tostring(pagePath)
+  end
+  return nil, "battle image " .. label .. " upload failed: " .. cause
 end
 
 -- Resolves one menu or HUD drawable key to its staged image path through
@@ -463,24 +481,36 @@ function FieldBattlePresentation:_preparationServices()
     if images[key] ~= nil then
       return images[key]
     end
+    -- A terminal upload failure replays identically without re-entering
+    -- the driver: the decode already proved deterministic for this
+    -- envelope lifetime.
+    local failures = envelope._imageFailures --[[@as table<string, string>]]
+    if failures[key] ~= nil then
+      return nil, failures[key]
+    end
     if graphics == nil then
       -- Data descriptors carry the validated staged identity without
       -- GPU objects: the recording boundary proves views while pixels
       -- stay unstaged in headless composition.
       return { kind = "staged", key = key }
     end
-    -- Production drawables are real owned handles or nothing: a plain
-    -- table here would raise in host graphics, so unavailable images
-    -- answer nil and cues hold instead of drawing substitutes.
+    -- Production drawables are real owned handles, legitimate waits, or
+    -- terminal failures: staged bytes that fail decoding or GPU upload
+    -- latch one keyed error instead of answering an unusable nil that
+    -- the caller would poll forever. Unknown decorative keys stay
+    -- legitimate nils with no error.
     local sceneKey = tostring(key):match("^scene:(.+)$")
     if sceneKey ~= nil then
-      local bytes = cacheFs:read(BattlePresentationCache.sceneImagePath(sceneKey))
+      local path = BattlePresentationCache.sceneImagePath(sceneKey)
+      local bytes = cacheFs:read(path)
       if type(bytes) ~= "string" then
         return nil
       end
-      local image = uploadStaged(graphics, BattlePresentationCache.sceneImagePath(sceneKey), bytes)
+      local image, failure = uploadStaged(graphics, key, path, bytes)
       if image == nil then
-        return nil
+        assert(type(failure) == "string", "staged upload failures carry their reason")
+        failures[key] = failure --[[@as string]]
+        return nil, failure
       end
       images[key] = image
       return image
@@ -491,18 +521,22 @@ function FieldBattlePresentation:_preparationServices()
       if type(bytes) ~= "string" then
         return nil
       end
-      local image = uploadStaged(graphics, artPath, bytes)
+      local image, failure = uploadStaged(graphics, key, artPath, bytes)
       if image == nil then
-        return nil
+        assert(type(failure) == "string", "staged upload failures carry their reason")
+        failures[key] = failure --[[@as string]]
+        return nil, failure
       end
       images[key] = image
       return image
     end
     local selector = exactPortraitSelector(key)
     if selector ~= nil then
-      local portrait = uploadPortraitCell(graphics, cacheFs, selector)
+      local portrait, failure = uploadPortraitCell(graphics, cacheFs, selector)
       if portrait == nil then
-        return nil
+        assert(type(failure) == "string", "portrait upload failures carry their reason")
+        failures[key] = failure --[[@as string]]
+        return nil, failure
       end
       images[key] = portrait
       return portrait
@@ -705,9 +739,11 @@ function FieldBattlePresentation:_inputRecovery(host, events)
       elseif event.type == "cancel" then
         host.recoveryInput({ pressedCancel = true })
       elseif event.type == "pointer_down" then
-        local pointerId = event.pointerId
-        if type(pointerId) == "string" or type(pointerId) == "number" then
-          self._recoveryPointerId = pointerId
+        if event.outside ~= true then
+          local pointerId = event.pointerId
+          if type(pointerId) == "string" or type(pointerId) == "number" then
+            self._recoveryPointerId = pointerId
+          end
         end
       elseif event.type == "pointer_up" then
         local pressed = self._recoveryPointerId
@@ -1009,6 +1045,9 @@ function FieldBattlePresentation:dispose()
   end
   for key, _ in pairs(self._images) do
     self._images[key] = nil
+  end
+  for key, _ in pairs(self._imageFailures) do
+    self._imageFailures[key] = nil
   end
   self:_dropLaunch()
   self._cover = 0

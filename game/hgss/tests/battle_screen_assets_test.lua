@@ -582,4 +582,97 @@ function T.genderless_and_shiny_forms_resolve_from_the_declared_variant()
   )
 end
 
+-- An incoming portrait whose bytes fail upload fails the holder with the
+-- exact incoming key: no stale image stands in, the failed key is never
+-- retried, and earlier handles still release exactly once.
+function T.incoming_portrait_upload_failure_names_its_exact_key()
+  local MonCache = require("libs.assets.src.MonCache")
+  local incomingKey = "mon:" .. MonCache.portraitSelector("EEVEE", 0, "male", false, "front")
+  local attempts = 0
+  local released = {}
+  local images = {}
+  local services = {}
+  function services.prepare(_)
+    return true
+  end
+  function services.drawable(key)
+    if key == incomingKey then
+      attempts = attempts + 1
+      return nil, "battle image " .. key .. " upload failed: probe-decode-boom"
+    end
+    if images[key] == nil then
+      images[key] = { handle = key }
+    end
+    return images[key]
+  end
+  function services.release(key)
+    released[key] = (released[key] or 0) + 1
+  end
+  local owned = holder(nil, services)
+  owned:update()
+  Assert.equal(owned:state(), "ready", "the opening scene prepares before the switch arrives")
+  local handle, failure = owned:drawable(incomingKey)
+  Assert.isNil(handle, "the failed portrait hands out no image")
+  Assert.isTrue(type(failure) == "string" and failure ~= "", "the failed portrait names its reason")
+  Assert.isTrue(
+    (failure --[[@as string]]):find(incomingKey, 1, true) ~= nil,
+    "the failure names the exact incoming image key"
+  )
+  Assert.equal(owned:state(), "failed", "the cue-time portrait failure stops the holder")
+  Assert.isTrue(
+    type(owned:error()) == "string" and (owned:error() --[[@as string]]):find(incomingKey, 1, true) ~= nil,
+    "the latched error keeps the exact incoming key"
+  )
+  owned:update()
+  local handleAgain, failureAgain = owned:drawable(incomingKey)
+  Assert.isNil(handleAgain, "the failed portrait stays failed without a substitute")
+  Assert.equal(failureAgain, failure, "the latched failure replays identically")
+  Assert.equal(attempts, 1, "the failed upload is attempted once, never retried per tick")
+  owned:dispose()
+  owned:dispose()
+  Assert.equal(released["scene:probe"], 1, "the scene handle releases once")
+  Assert.isNil(released[incomingKey], "the never-uploaded portrait never releases")
+end
+
+-- A genuinely pending image that arrives later advances without failing:
+-- waiting carries no error, readiness follows, and disposal releases once.
+function T.genuinely_pending_images_become_ready_without_failing()
+  local held = { ["scene:probe"] = true }
+  local images, released = {}, {}
+  local services = {}
+  function services.prepare(_)
+    return true
+  end
+  function services.drawable(key)
+    if held[key] then
+      return nil
+    end
+    if images[key] == nil then
+      images[key] = { handle = key }
+    end
+    return images[key]
+  end
+  function services.release(key)
+    released[key] = (released[key] or 0) + 1
+  end
+  local slow = holder(nil, services)
+  slow:update()
+  Assert.equal(slow:state(), "pending", "the missing scene waits without failing")
+  Assert.isNil(slow:error(), "waiting carries no failure context")
+  local waiting, pendingErr = slow:drawable("scene:probe")
+  Assert.isNil(waiting, "the pending scene hands out no image yet")
+  Assert.isNil(pendingErr, "a legitimate wait carries no terminal error")
+  for _ = 1, 10 do
+    slow:update()
+  end
+  Assert.equal(slow:state(), "pending", "repeated polls never fail a legitimate wait")
+  held["scene:probe"] = nil
+  slow:update()
+  Assert.equal(slow:state(), "ready", "the arrived image completes preparation")
+  Assert.notNil(slow:drawable("scene:probe"), "the arrived scene stays drawable through the holder")
+  slow:dispose()
+  slow:dispose()
+  Assert.equal(released["scene:probe"], 1, "the arrived handle releases once")
+end
+
 return { tests = T }
