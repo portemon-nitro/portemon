@@ -233,10 +233,21 @@ function T.target_rows_and_narration_boxes()
   Assert.equal(narrated.narration.origin.y, 146, "narration keeps its text row")
   Assert.equal(narrated.narration.width, 232, "narration keeps its text width")
   local quiet = snapshot("narration", { selection = nil })
-  Assert.isNil(
-    narration.mapInput({ type = "pointer_down", pointerId = "touch:0", x = 152, y = 154 }, quiet, narration),
-    "the hidden command grid claims nothing during narration"
+  local down = narration.mapInput(
+    { type = "pointer_down", pointerId = "touch:0", x = 152, y = 154 },
+    quiet,
+    narration
   )
+  Assert.notNil(down, "the narration dock answers taps")
+  local up = narration.mapInput(
+    { type = "pointer_up", pointerId = "touch:0", x = 152, y = 154 },
+    quiet,
+    narration
+  )
+  Assert.notNil(up, "the narration tap completes")
+  local confirms = up.type == "confirm"
+    or (up.type == "battle_activate" and type(up.control) == "table" and up.control.scope == "narration")
+  Assert.isTrue(confirms, "the narration tap carries confirm semantics")
 end
 
 -- Pointer edges are half-open with a single host-to-logical transform:

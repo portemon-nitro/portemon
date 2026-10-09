@@ -364,6 +364,78 @@ end
 -- framed content boxes, hit cells, cursor and label origins, HUD anchors
 -- and image centers. The controller owns no rectangles; draw and input
 -- mapping consume these same regions.
+---@param child table<string, unknown> detached child view under titling
+---@return string modal title wording
+local function childTitle(child)
+  local kind = child.kind
+  if kind == "target" then
+    return "Use " .. tostring(child.stagedItem or "the item") .. " on whom?"
+  elseif kind == "bag" then
+    if child.empty == true then
+      return "The bag is empty."
+    end
+    local page = child.page --[[@as table<string, unknown>?]]
+    local paging = ""
+    if type(page) == "table" then
+      paging = " " .. tostring(page.current or 1) .. "/" .. tostring(page.count or 1)
+    end
+    return "BAG: " .. tostring(child.currentPocket or "?") .. paging
+  elseif kind == "learn" then
+    return "Forget a move for " .. tostring(child.incomingMove or "?") .. "?"
+  end
+  if child.cancellable == true then
+    return "Choose a Pokemon!"
+  end
+  return "Choose a replacement!"
+end
+
+-- Canonical child plan content with the same row numbers the modal
+-- paint uses: six rows, a footer Back, a learning Confirm, and bag
+-- pocket stepping. Draw and input mapping consume these same rects.
+---@param child table<string, unknown> detached child view under resolution
+---@return table<string, unknown> canonical child plan content
+local function childContent(child)
+  local rows = {}
+  local source = child.rows --[[@as table<integer, table<string, unknown>>?]]
+  if type(source) == "table" then
+    for index, row in ipairs(source) do
+      if index <= 6 then
+        local box = row --[[@as table<string, unknown>]]
+        rows[#rows + 1] = {
+          id = box.id,
+          x = 8,
+          y = 32 + (index - 1) * 20,
+          width = 240,
+          height = 20,
+          label = box.label,
+          detail = box.detail,
+          enabled = box.enabled,
+          empty = box.empty,
+        }
+      end
+    end
+  end
+  local backRect = { x = 8, y = 152, width = 80, height = 40 }
+  local confirmRect = { x = 168, y = 152, width = 80, height = 40 }
+  if child.kind == "learn" then
+    backRect = { x = 8, y = 172, width = 240, height = 20 }
+    confirmRect = { x = 8, y = 152, width = 240, height = 20 }
+  end
+  return {
+    kind = child.kind,
+    focusId = child.focusId,
+    title = childTitle(child),
+    rows = rows,
+    hasBack = child.cancellable == true or child.kind == "learn",
+    hasConfirm = child.kind == "learn" and type(child.confirmation) == "table",
+    hasPocketNav = child.kind == "bag" and child.empty ~= true,
+    back = backRect,
+    confirm = confirmRect,
+    pocketPrev = { x = 96, y = 152, width = 76, height = 40 },
+    pocketNext = { x = 176, y = 152, width = 72, height = 40 },
+  }
+end
+
 ---@param view table<string, unknown> internal semantic snapshot under resolution
 ---@return table<string, unknown> canonical compact plan content
 function BattleCompactInterface.contentFor(view)
@@ -392,6 +464,10 @@ function BattleCompactInterface.contentFor(view)
     local cellX = MOVE_GRID_X + column * MOVE_COLUMN_WIDTH
     local cellY = MOVE_GRID_TOP + row * MOVE_ROW_HEIGHT
     moveLabels[#moveLabels + 1] = { x = cellX + 8, y = cellY + 6, width = MOVE_LABEL_WIDTH, height = 16 }
+  end
+  local childPlan = nil
+  if mode == "child" and type(view.childView) == "table" then
+    childPlan = childContent(view.childView --[[@as table<string, unknown>]])
   end
   return {
     kind = "battle",
@@ -423,6 +499,7 @@ function BattleCompactInterface.contentFor(view)
     },
     moveInfo = moveInfo(view),
     moveLabels = moveLabels,
+    child = childPlan,
     targetBox = contentOf(TARGET_OUTER),
     targetRows = targetRows(view),
     narration = {
@@ -462,10 +539,178 @@ local function hitRegion(regions, x, y)
   return nil
 end
 
+-- Child hit regions from the same canonical rows the modal paints,
+-- plus the footer Back, learning Confirm, and bag pocket stepping.
+---@param child table<string, unknown>? canonical child plan content under mapping
+---@return table<integer, table<string, unknown>>? active hit regions with their scopes
+local function childRegions(child)
+  if type(child) ~= "table" then
+    return nil
+  end
+  local regions = {}
+  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
+  if type(rows) == "table" then
+    for _, row in ipairs(rows) do
+      local box = row --[[@as table<string, unknown>]]
+      if box.empty ~= true and type(box.id) == "string" then
+        regions[#regions + 1] = {
+          id = box.id,
+          x = box.x,
+          y = box.y,
+          width = box.width,
+          height = box.height,
+          scope = "child",
+        }
+      end
+    end
+  end
+  if child.hasBack == true then
+    local back = child.back --[[@as table<string, unknown>]]
+    regions[#regions + 1] =
+      { id = "back", x = back.x, y = back.y, width = back.width, height = back.height, scope = "child" }
+  end
+  if child.hasConfirm == true then
+    local confirm = child.confirm --[[@as table<string, unknown>]]
+    regions[#regions + 1] = {
+      id = "confirm",
+      x = confirm.x,
+      y = confirm.y,
+      width = confirm.width,
+      height = confirm.height,
+      scope = "child",
+    }
+  end
+  if child.hasPocketNav == true then
+    local prev = child.pocketPrev --[[@as table<string, unknown>]]
+    local next = child.pocketNext --[[@as table<string, unknown>]]
+    regions[#regions + 1] = {
+      id = "pocket_prev",
+      x = prev.x,
+      y = prev.y,
+      width = prev.width,
+      height = prev.height,
+      scope = "child",
+    }
+    regions[#regions + 1] = {
+      id = "pocket_next",
+      x = next.x,
+      y = next.y,
+      width = next.width,
+      height = next.height,
+      scope = "child",
+    }
+  end
+  return regions
+end
+
+-- Child taps drive only the bound child owner: rows arm and seal
+-- through the shared child convention with stable row/control ids.
+---@param event table<string, unknown> session-inverted logical input
+---@param regions table<integer, table<string, unknown>>? active child hit regions
+---@return table<string, unknown>? semantic battle input, nil when the battle ignores it
+local function mapChildInput(event, regions)
+  if regions == nil then
+    if event.type == "pointer_cancel" then
+      return { type = "child_cancel", pointerId = event.pointerId }
+    end
+    return nil
+  end
+  local eventType = event.type
+  if eventType == "pointer_down" and type(event.x) == "number" and type(event.y) == "number" then
+    local region = hitRegion(regions, event.x, event.y)
+    if region == nil then
+      return nil
+    end
+    return { type = "child_press", control = { scope = "child", id = region.id }, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_move" and type(event.x) == "number" and type(event.y) == "number" then
+    local region = hitRegion(regions, event.x, event.y)
+    local control = nil
+    if region ~= nil then
+      control = { scope = "child", id = region.id }
+    end
+    return { type = "child_slide", control = control, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
+    local region = hitRegion(regions, event.x, event.y)
+    local control = nil
+    if region ~= nil then
+      control = { scope = "child", id = region.id }
+    end
+    return { type = "child_activate", control = control, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_cancel" then
+    return { type = "child_cancel", pointerId = event.pointerId }
+  end
+  if eventType == "confirm" or eventType == "cancel" then
+    return { type = eventType }
+  end
+  if eventType == "navigate" then
+    return { type = "navigate", direction = event.direction, pointerId = event.pointerId }
+  end
+  return nil
+end
+
+-- Narration and outcome share one full-surface dialogue tap: presses
+-- arm and releases confirm through the dialogue scope, so the screen
+-- can acknowledge the shown page on a matched gesture only.
+---@param event table<string, unknown> session-inverted logical input
+---@param mode string controller mode under mapping
+---@param regions table<integer, table<string, unknown>>? active dialogue hit regions
+---@return table<string, unknown>? semantic battle input, nil when the battle ignores it
+local function mapDialogueInput(event, mode, regions)
+  if regions == nil then
+    if event.type == "pointer_cancel" then
+      return { type = "pointer_cancel", pointerId = event.pointerId }
+    end
+    return nil
+  end
+  local eventType = event.type
+  if eventType == "pointer_down" and type(event.x) == "number" and type(event.y) == "number" then
+    local region = hitRegion(regions, event.x, event.y)
+    if region == nil then
+      return nil
+    end
+    return { type = "battle_press", control = { scope = mode, id = region.id }, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_move" and type(event.x) == "number" and type(event.y) == "number" then
+    local region = hitRegion(regions, event.x, event.y)
+    local control = nil
+    if region ~= nil then
+      control = { scope = mode, id = region.id }
+    end
+    return { type = "battle_slide", control = control, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
+    local region = hitRegion(regions, event.x, event.y)
+    local control = nil
+    if region ~= nil then
+      control = { scope = mode, id = region.id }
+    end
+    return { type = "battle_activate", control = control, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_cancel" then
+    return { type = "pointer_cancel", pointerId = event.pointerId }
+  end
+  if eventType == "confirm" or eventType == "cancel" then
+    return { type = eventType }
+  end
+  if eventType == "navigate" then
+    return { type = "navigate", direction = event.direction, pointerId = event.pointerId }
+  end
+  return nil
+end
+
 ---@param content table<string, unknown> canonical compact plan content
 ---@param mode string controller mode under mapping
 ---@return table<integer, table<string, unknown>>? active hit regions with their scopes
 local function regionsFor(content, mode)
+  if mode == "child" then
+    return childRegions(content.child --[[@as table<string, unknown>?]])
+  end
+  if mode == "narration" or mode == "outcome" then
+    return { { id = "dialogue", x = 0, y = 0, width = 256, height = 192, scope = mode } }
+  end
   if mode == "command" then
     local regions = {}
     for _, cell in ipairs(content.commands.cells) do
@@ -523,6 +768,12 @@ function BattleCompactInterface.mapInput(event, view, plan)
   local eventType = event.type
   if eventType == "pointer_down" and event.outside == true then
     return nil
+  end
+  if view.mode == "child" then
+    return mapChildInput(event, regionsFor(content, view.mode))
+  end
+  if view.mode == "narration" or view.mode == "outcome" then
+    return mapDialogueInput(event, view.mode --[[@as string]], regionsFor(content, view.mode))
   end
   local regions = regionsFor(content, view.mode)
   if regions == nil then
@@ -911,6 +1162,158 @@ local function drawCompactHud(resources, view, content)
   end)
 end
 
+---@param child table<string, unknown> detached child view under guidance wording
+---@return string footer guidance wording
+local function childSubtitle(child)
+  if child.kind == "target" then
+    return "Select the target."
+  elseif child.kind == "bag" then
+    return "Select an item."
+  elseif child.kind == "learn" then
+    return "Select a move to forget."
+  elseif child.cancellable == true then
+    return "Select a reserve."
+  end
+  return "Select its replacement."
+end
+
+---@param child table<string, unknown> detached child view under occupancy wording
+---@return string? occupied roster fraction, nil outside party selection
+local function childOccupancy(child)
+  if child.kind ~= "party" and child.kind ~= "target" then
+    return nil
+  end
+  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
+  if type(rows) ~= "table" then
+    return nil
+  end
+  local occupied = 0
+  for _, row in ipairs(rows) do
+    if type(row) == "table" and row.occupied == true then
+      occupied = occupied + 1
+    end
+  end
+  return tostring(occupied) .. "/" .. tostring(#rows)
+end
+
+-- Draws the open child as a fullscreen 256x192 modal: the title,
+-- every projected row with its focus and disabled marks, the staged
+-- learning confirmation, and the permitted Back/Confirm and pocket
+-- controls. The battlefield stays hidden behind the modal while open.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param content table<string, unknown> canonical compact plan content under drawing
+local function drawChildModal(resources, view, content)
+  local text = assert(resources.text, "the compact render borrows its text services")
+  local windows = assert(resources.windows, "the compact render borrows its window services")
+  local background = backgroundOf(resources)
+  local frame = resources.frameKey
+  local childPlan = assert(content.child, "the child modal carries its plan")
+  local childView = view.childView --[[@as table<string, unknown>?]]
+  fillBox(resources.graphics, background, { x = 0, y = 0, width = 256, height = 192 })
+  local title = childPlan.title --[[@as string?]]
+  drawLabel(text, fitText(text, tostring(title or ""), 200), 12, 10)
+  if type(childView) == "table" then
+    local occupancy = childOccupancy(childView --[[@as table<string, unknown>]])
+    if occupancy ~= nil then
+      drawLabel(text, occupancy, 216, 10)
+    end
+    if childView.kind == "bag" and type(childView.stock) == "number" then
+      drawLabel(text, "Stock: " .. tostring(childView.stock), 176, 10)
+    end
+  end
+  local rows = childPlan.rows --[[@as table<integer, table<string, unknown>>?]]
+  local focusId = type(childView) == "table" and childView.focusId or nil
+  if type(rows) == "table" then
+    for index, row in ipairs(rows) do
+      local box = row --[[@as table<string, unknown>]]
+      if childPlan.kind == "learn" then
+        local label = tostring(box.label or "")
+        if focusId == box.id then
+          label = CURSOR .. " " .. label
+        end
+        label = tostring(index) .. ". " .. label
+        if box.enabled ~= true and box.empty ~= true then
+          label = label .. " [X]"
+        end
+        drawLabel(text, fitText(text, label, 128), box.x --[[@as number]] + 4, box.y --[[@as number]] + 4)
+        if type(box.detail) == "string" and box.detail ~= "" then
+          drawLabel(text, fitText(text, box.detail, 96), box.x --[[@as number]] + 136, box.y --[[@as number]] + 4)
+        end
+      else
+        local head = ((focusId == box.id) and CURSOR or " ") .. " " .. tostring(index) .. "."
+        drawLabel(text, head, box.x --[[@as number]] + 4, box.y --[[@as number]] + 4)
+        local name = tostring(box.label or "")
+        if box.enabled ~= true and box.empty ~= true then
+          name = name .. " [X]"
+        end
+        local nameWidth = 68
+        local subX = 116
+        local detailX = 156
+        local detailWidth = 80
+        if childPlan.kind == "bag" then
+          nameWidth = 100
+          subX = 146
+          detailX = 180
+          detailWidth = 56
+        end
+        drawLabel(text, fitText(text, name, nameWidth), box.x --[[@as number]] + 36, box.y --[[@as number]] + 4)
+        if type(box.sub) == "string" and box.sub ~= "" then
+          drawLabel(text, tostring(box.sub), box.x --[[@as number]] + subX, box.y --[[@as number]] + 4)
+        end
+        if type(box.detail) == "string" and box.detail ~= "" then
+          drawLabel(
+            text,
+            fitText(text, box.detail, detailWidth),
+            box.x --[[@as number]] + detailX,
+            box.y --[[@as number]] + 4
+          )
+        end
+      end
+    end
+  end
+  if type(childView) == "table" and childView.kind == "learn" and type(childView.confirmation) == "table" then
+    local confirmation = childView.confirmation --[[@as table<string, unknown>]]
+    local wording = ""
+    if confirmation.kind == "stop" then
+      wording = "Stop learning " .. tostring(childView.incomingMove or "?") .. "?"
+    elseif confirmation.kind == "decline" then
+      wording = "Do not learn " .. tostring(childView.incomingMove or "?") .. "?"
+    else
+      local name = "?"
+      local planRows = childView.rows --[[@as table<integer, table<string, unknown>>?]]
+      local slot = confirmation.slot --[[@as integer?]]
+      if type(planRows) == "table" and type(slot) == "number" and type(planRows[slot + 1]) == "table" then
+        name = tostring(planRows[slot + 1].label or "?")
+      end
+      wording = "Forget " .. name .. "?"
+    end
+    drawLabel(text, fitText(text, wording, 232), 12, 136)
+  end
+  if childPlan.hasBack == true then
+    local back = childPlan.back --[[@as table<string, unknown>]]
+    drawLabel(text, "BACK", back.x --[[@as number]] + 4, back.y --[[@as number]] + 4)
+  elseif type(childView) == "table" and (childView.kind == "party" or childView.kind == "target") then
+    drawLabel(text, "No retreat!", 12, 156)
+  end
+  if childPlan.hasPocketNav == true then
+    drawLabel(text, "<", 100, 156)
+    drawLabel(text, ">", 232, 156)
+  end
+  if childPlan.hasConfirm == true then
+    local confirm = childPlan.confirm --[[@as table<string, unknown>]]
+    drawLabel(text, "CONFIRM", confirm.x --[[@as number]] + 4, confirm.y --[[@as number]] + 4)
+  end
+  if type(childView) == "table" and type(childView.notice) == "string" and childView.notice ~= "" then
+    if childView.kind ~= "learn" then
+      drawLabel(text, fitText(text, childView.notice, 232), 12, 172)
+    end
+  elseif type(childView) == "table" and childView.kind ~= "learn" then
+    drawLabel(text, fitText(text, childSubtitle(childView --[[@as table<string, unknown>]]), 232), 12, 172)
+  end
+  windows.drawApplicationFrame({ x = 8, y = 8, width = 240, height = 176 }, frame)
+end
+
 -- Draws the resolved compact plan inside its placement: the source scene
 -- and battler images clipped to the scene viewport through the shared
 -- battle renderer, the combatant HUDs at the plan bounds, then the mode
@@ -926,6 +1329,10 @@ function BattleCompactInterface.render(resources, view, plan)
   local placement = assert(pane.placement, "the compact pane carries its placement")
   local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
   LogicalSurface.draw(graphics, placement, function()
+    if view.mode == "child" and type(content.child) == "table" and type(view.childView) == "table" then
+      drawChildModal(resources, view, content)
+      return
+    end
     BattleRenderer.drawPane(resources, view, BattleCompactInterface.NATIVE.id, content)
     drawCompactHud(resources, view, content)
     local mode = view.mode
@@ -945,12 +1352,15 @@ end
 ---@param requestId integer? open request identity under resolution
 ---@param selection string? highlighted semantic identity under resolution
 ---@param signature string? measurement signature under resolution
+---@param view table<string, unknown>? internal semantic snapshot under resolution
 ---@return string stable input-geometry identity for the semantic state
-local function inputKey(mode, requestId, selection, signature)
-  return table.concat(
-    { INPUT_KEY, mode, tostring(selection), tostring(requestId or 0), tostring(signature or "-") },
-    ":"
-  )
+local function inputKey(mode, requestId, selection, signature, view)
+  local parts = { INPUT_KEY, mode, tostring(selection), tostring(requestId or 0), tostring(signature or "-") }
+  if type(view) == "table" and type(view.childView) == "table" then
+    local child = view.childView --[[@as table<string, unknown>]]
+    parts[#parts + 1] = tostring(child.kind or "-") .. ":" .. tostring(child.focusId or "-")
+  end
+  return table.concat(parts, ":")
 end
 
 ---@return nil
@@ -987,7 +1397,8 @@ local function compactPlan(placement, frames, view, signature)
       type(view.mode) == "string" and view.mode or "command",
       view.requestId --[[@as integer?]],
       type(view.selection) == "string" and view.selection or nil,
-      signature
+      signature,
+      view
     ),
     render = BattleCompactInterface.render,
     mapInput = BattleCompactInterface.mapInput,

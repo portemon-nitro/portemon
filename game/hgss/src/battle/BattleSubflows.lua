@@ -1135,6 +1135,237 @@ function BattleSubflows:tick()
   pollBag(self)
 end
 
+---@param entry unknown held move entry under labeling
+---@return string visible move wording
+local function learnMoveLabel(entry)
+  if type(entry) == "table" then
+    for _, key in ipairs({ "move", "name", "key" }) do
+      local wording = entry[key]
+      if type(wording) == "string" and wording ~= "" then
+        return wording
+      end
+    end
+  elseif type(entry) == "string" and entry ~= "" then
+    return entry
+  end
+  return "Unknown"
+end
+
+-- Detached party/target rows for paint and hit regions: every roster
+-- slot lists with its display name, level, health, and eligibility.
+-- Only kernel-projected fragments enable a row; anything else names
+-- its refusal without submitting. No presentation plan or mutable
+-- service crosses this boundary.
+---@param self BattleSubflows
+---@return table<string, unknown> detached party/target child view
+local function partyChildView(self)
+  local shell = {
+    kind = self._active,
+    purpose = self._purpose,
+    interactive = false,
+    notice = self._notice,
+    cancellable = self._cancellable,
+    rows = {},
+    focusId = nil,
+  } --[[@as table<string, unknown>]]
+  local screen = self._partyScreen
+  if screen == nil then
+    return shell
+  end
+  local ok, stated = pcall(screen.status, screen)
+  if not ok or type(stated) ~= "table" then
+    return shell
+  end
+  local view = stated.view --[[@as table<string, unknown>?]]
+  if type(view) ~= "table" or type(view.slots) ~= "table" then
+    return shell
+  end
+  local rows = {}
+  for slot = 0, 5 do
+    local record = view.slots[slot + 1]
+    local label = "Empty"
+    local sub = nil
+    local detail = ""
+    local enabled = false
+    local reason = nil
+    if type(record) == "table" and record.occupied == true then
+      local name = record.displayName
+      label = tostring(type(name) == "string" and name or "Unknown")
+      if type(record.level) == "number" then
+        sub = "Lv" .. tostring(record.level)
+      end
+      local hp = tonumber(record.currentHp) or 0
+      local maxHp = tonumber(record.maxHp) or 0
+      detail = "HP " .. tostring(hp) .. "/" .. tostring(maxHp)
+      local combatants = self._slotCombatants
+      local fragments = self._fragments
+      local combatant = type(combatants) == "table" and combatants[slot] or nil
+      if type(fragments) == "table" and combatant ~= nil and fragments[combatant] ~= nil then
+        enabled = true
+        detail = detail .. " OK"
+      elseif hp <= 0 then
+        reason = "It is fainted."
+        detail = detail .. " KO"
+      else
+        reason = refusalText(nil)
+      end
+    end
+    rows[#rows + 1] = {
+      id = "party:" .. tostring(slot),
+      label = label,
+      sub = sub,
+      detail = detail,
+      enabled = enabled,
+      reason = reason,
+      occupied = type(record) == "table" and record.occupied == true,
+    }
+  end
+  local focusId = nil
+  if type(stated.cursorNode) == "number" then
+    focusId = "party:" .. tostring(stated.cursorNode)
+  elseif stated.cursorNode == "cancel" then
+    focusId = "back"
+  end
+  shell.rows = rows
+  shell.focusId = focusId
+  shell.interactive = stated.phase == "interactive"
+  return shell
+end
+
+-- Detached bag rows for paint and hit regions: the six visible pocket
+-- cells with their catalog names, quantities, and kernel legality,
+-- plus pocket identity and page facts. Empty cells stay visible but
+-- never activate. No presentation plan or mutable service crosses.
+---@param self BattleSubflows
+---@return table<string, unknown> detached bag child view
+local function bagChildView(self)
+  if self._bagEmpty == true then
+    return {
+      kind = "bag",
+      purpose = self._purpose,
+      interactive = true,
+      notice = self._notice or "The bag is empty.",
+      cancellable = self._cancellable,
+      rows = {},
+      focusId = "back",
+      pockets = {},
+      currentPocket = nil,
+      page = { current = 1, count = 1 },
+      empty = true,
+    } --[[@as table<string, unknown>]]
+  end
+  local shell = {
+    kind = "bag",
+    purpose = self._purpose,
+    interactive = false,
+    notice = self._notice,
+    cancellable = self._cancellable,
+    rows = {},
+    focusId = nil,
+  } --[[@as table<string, unknown>]]
+  local stated = self._bagState
+  if stated == nil then
+    return shell
+  end
+  local ok, status = pcall(stated.status, stated)
+  if not ok or type(status) ~= "table" or status.open == false then
+    return shell
+  end
+  local visible = status.visibleSlots
+  if type(visible) ~= "table" then
+    return shell
+  end
+  local options = self._openOptionsValue
+  if type(options) ~= "table" then
+    return shell
+  end
+  local rows = {}
+  for cell = 1, 6 do
+    local entry = visible[cell]
+    if type(entry) == "table" and entry.empty ~= true and type(entry.item) == "string" then
+      local legal, reason = itemLegality(options, entry.item)
+      rows[#rows + 1] = {
+        id = "bag:" .. tostring(cell - 1),
+        label = tostring(entry.name or entry.item),
+        sub = "x" .. tostring(entry.quantity or 0),
+        detail = legal == true and "OK" or refusalText(reason),
+        enabled = legal == true,
+        reason = legal == true and nil or refusalText(reason),
+      }
+    else
+      rows[#rows + 1] = {
+        id = "bag:" .. tostring(cell - 1),
+        label = "Empty",
+        detail = "",
+        enabled = false,
+        empty = true,
+      }
+    end
+  end
+  local focusId = nil
+  if status.focus == "items" and type(status.focusedVisibleIndex) == "number" then
+    focusId = "bag:" .. tostring(status.focusedVisibleIndex)
+  elseif status.focus == "cancel" then
+    focusId = "back"
+  end
+  local pockets = {}
+  if type(status.pockets) == "table" then
+    for _, tab in ipairs(status.pockets) do
+      if type(tab) == "table" and type(tab.pocket) == "string" then
+        pockets[#pockets + 1] = tab.pocket
+      end
+    end
+  end
+  shell.rows = rows
+  shell.focusId = focusId
+  shell.interactive = status.phase == "interactive"
+  shell.pockets = pockets
+  shell.currentPocket = status.pocket
+  shell.page = copyValue(status.page) or { current = 1, count = 1 }
+  if type(status.slots) == "table" then
+    shell.stock = #status.slots
+  else
+    shell.stock = 0
+  end
+  return shell
+end
+
+-- Detached learning rows for paint and hit regions: the four held
+-- moves, the decline entry, the focused row, and the staged
+-- confirmation. Rows never seal on their own; taps route through the
+-- same focus/confirm helpers as keyboard input.
+---@param self BattleSubflows
+---@return table<string, unknown>? detached learning child view, nil without its prompt
+local function learnChildView(self)
+  local learn = self._learn
+  if learn == nil then
+    return nil
+  end
+  local moves = learn.currentMoves --[[@as table<integer, unknown>]]
+  local rows = {}
+  for index = 1, 4 do
+    rows[#rows + 1] = {
+      id = "learn:" .. tostring(index - 1),
+      label = learnMoveLabel(moves[index]),
+      detail = "Replace",
+      enabled = true,
+    }
+  end
+  rows[#rows + 1] = { id = "learn:decline", label = "Decline", detail = "Keep moves", enabled = true }
+  local focus = learn.focus --[[@as integer]]
+  return {
+    kind = "learn",
+    purpose = self._purpose,
+    interactive = true,
+    notice = self._notice,
+    cancellable = false,
+    rows = rows,
+    focusId = focus <= 4 and ("learn:" .. tostring(focus - 1)) or "learn:decline",
+    confirmation = copyValue(learn.confirmation),
+    incomingMove = learn.incomingMove,
+  } --[[@as table<string, unknown>]]
+end
+
 ---@return table<string, unknown> detached child status for the parent plan
 function BattleSubflows:status()
   if self._disposed or self._active == nil then
@@ -1161,7 +1392,254 @@ function BattleSubflows:status()
     record.incomingMove = learn.incomingMove
     record.currentMoves = copyValue(learn.currentMoves)
   end
+  record.childView = self:_projectChildView()
   return record
+end
+
+-- Projects the detached child view for paint and hit regions from the
+-- current native child controller state. Party/target rows read the
+-- owned party screen slots, cursor, and projected fragments; bag rows
+-- read the owned bag screen pocket window and kernel item policy;
+-- learning rows read the staged prompt. Read-only snapshots only.
+---@return table<string, unknown>? detached child view, nil while no child owns input
+function BattleSubflows:_projectChildView()
+  if self._disposed or self._active == nil then
+    return nil
+  end
+  if self._active == "party" or self._active == "target" then
+    return partyChildView(self)
+  elseif self._active == "bag" then
+    return bagChildView(self)
+  elseif self._active == "learn" then
+    return learnChildView(self)
+  end
+  return nil
+end
+
+---@return boolean interactive true once the party screen publishes its interactive phase
+function BattleSubflows:_partyInteractive()
+  local screen = self._partyScreen
+  if screen == nil then
+    return false
+  end
+  local ok, stated = pcall(screen.status, screen)
+  return ok and type(stated) == "table" and stated.phase == "interactive"
+end
+
+---@return boolean interactive true once the bag screen publishes its interactive phase
+function BattleSubflows:_bagInteractive()
+  local stated = self._bagState
+  if stated == nil then
+    return false
+  end
+  local ok, status = pcall(stated.status, stated)
+  return ok and type(status) == "table" and status.open ~= false and status.phase == "interactive"
+end
+
+-- Steps pocket focus through the owned bag screen's own navigation:
+-- up to the tab strip, one step sideways across tabs (which switch
+-- pockets at once in battle context), then down to the grid. Bounded;
+-- the borrowed cursor is never touched directly.
+---@param direction string lateral tab travel under stepping: "left" or "right"
+local function stepPocket(self, direction)
+  local stated = assert(self._bagState, "pocket travel keeps its bag")
+  for _ = 1, 12 do
+    local status = stated:status()
+    if type(status) ~= "table" or status.open == false or status.focus == "tabs" then
+      break
+    end
+    stated:updateFixed({ { type = "navigate", direction = "up" } })
+  end
+  stated:updateFixed({ { type = "navigate", direction = direction } })
+  local status = stated:status()
+  if type(status) == "table" and status.open ~= false and status.focus == "tabs" then
+    stated:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+end
+
+---@param id string stable row/control identity under activation
+---@return boolean consumed true when the tap belonged to the open child
+function BattleSubflows:_activatePartyControl(id)
+  if id == "back" then
+    if not self._cancellable then
+      self._notice = "That choice cannot be cancelled."
+      return true
+    end
+    if not self:_partyInteractive() then
+      return true
+    end
+    self:update({ { type = "cancel" } })
+    return true
+  end
+  local slot = tonumber(id:match("^party:(%d+)$") or "")
+  if slot == nil or slot < 0 or slot > 5 then
+    return false
+  end
+  if not self:_partyInteractive() then
+    return true
+  end
+  local combatants = self._slotCombatants
+  local fragments = self._fragments
+  local combatant = type(combatants) == "table" and combatants[slot] or nil
+  local fragment = type(fragments) == "table" and combatant ~= nil and fragments[combatant] or nil
+  if fragment ~= nil then
+    self._pending = { kind = "choice", reply = self:_bind(fragment) }
+    return true
+  end
+  -- A visibly disabled row explains itself without submitting.
+  local hp = nil
+  if type(self._openPartyValue) == "table" then
+    for _, record in ipairs(self._openPartyValue) do
+      if type(record) == "table" and record.slot == slot and type(record.hp) == "number" then
+        hp = record.hp
+      end
+    end
+  end
+  if hp ~= nil and hp <= 0 then
+    self._notice = "It is fainted."
+  else
+    self._notice = refusalText(nil)
+  end
+  return true
+end
+
+---@param id string stable row/control identity under activation
+---@return boolean consumed true when the tap belonged to the open child
+function BattleSubflows:_activateBagControl(id)
+  if id == "back" then
+    if not self._cancellable then
+      self._notice = "That choice cannot be cancelled."
+      return true
+    end
+    if self._bagEmpty == true then
+      self._pending = {
+        kind = "cancelled",
+        requestId = self._requestId,
+        epoch = self._epoch,
+        controller = self._controller,
+        launchId = self._launchId,
+      }
+      return true
+    end
+    if not self:_bagInteractive() then
+      return true
+    end
+    self:update({ { type = "cancel" } })
+    return true
+  end
+  if self._bagEmpty == true then
+    return false
+  end
+  if id == "pocket_prev" then
+    if not self:_bagInteractive() then
+      return true
+    end
+    stepPocket(self, "left")
+    return true
+  end
+  if id == "pocket_next" then
+    if not self:_bagInteractive() then
+      return true
+    end
+    stepPocket(self, "right")
+    return true
+  end
+  local cell = tonumber(id:match("^bag:(%d+)$") or "")
+  if cell == nil or cell < 0 or cell > 5 then
+    return false
+  end
+  if not self:_bagInteractive() then
+    return true
+  end
+  local stated = assert(self._bagState, "item taps keep their bag")
+  local status = stated:status()
+  local visible = type(status) == "table" and status.visibleSlots or nil
+  local entry = type(visible) == "table" and visible[cell + 1] or nil
+  if type(entry) ~= "table" or entry.empty == true or type(entry.item) ~= "string" then
+    return true
+  end
+  local options = self._openOptionsValue
+  if type(options) ~= "table" then
+    return true
+  end
+  local legal, reason = itemLegality(options, entry.item)
+  if legal == true then
+    self:stageItem(entry.item)
+  else
+    self._notice = refusalText(reason)
+  end
+  return true
+end
+
+---@param id string stable row/control identity under activation
+---@return boolean consumed true when the tap belonged to the open child
+function BattleSubflows:_activateLearnControl(id)
+  local learn = self._learn
+  if learn == nil then
+    return false
+  end
+  if id == "back" then
+    cancelLearn(self)
+    return true
+  end
+  if id == "confirm" then
+    local confirmation = learn.confirmation --[[@as table<string, unknown>?]]
+    if confirmation == nil then
+      return true
+    end
+    if confirmation.kind == "stop" then
+      confirmStopLearn(self)
+    else
+      confirmLearn(self)
+    end
+    return true
+  end
+  local tapped = nil
+  local slot = tonumber(id:match("^learn:(%d+)$") or "")
+  if slot ~= nil and slot >= 0 and slot <= 3 then
+    tapped = slot
+    learn.focus = slot + 1
+  elseif id == "learn:decline" then
+    tapped = "decline"
+    learn.focus = 5
+  else
+    return false
+  end
+  -- Taps stage their explicit confirmation without ever sealing on
+  -- their own: only the shared confirmation helper seals, exactly
+  -- like the keyboard flow. Tapping another row restages instead,
+  -- and tapping away from the stop prompt abandons it.
+  if tapped == "decline" then
+    learn.confirmation = { kind = "decline" }
+  else
+    learn.confirmation = { kind = "replace", slot = tapped }
+  end
+  return true
+end
+
+-- Routes one tap to the current bound fragments through the existing
+-- bind/stage/learn helpers, never a second policy. Party and target
+-- rows bind their already projected switch/item fragment, bag item
+-- rows stage through the existing item path only while visible and
+-- legal, and learn rows share the keyboard focus/confirm helpers. A
+-- tap on a visibly disabled row shows its reason without submitting;
+-- unknown ids never seal. Premature taps before the child publishes
+-- its interactive phase are consumed and dropped, never replayed.
+---@param id string stable row/control identity under activation
+---@return boolean consumed true when the tap belonged to the open child
+function BattleSubflows:activateControl(id)
+  if self._disposed or self._active == nil or self._pending ~= nil then
+    return false
+  end
+  assert(type(id) == "string" and id ~= "", "child taps name their control")
+  if self._active == "party" or self._active == "target" then
+    return self:_activatePartyControl(id)
+  elseif self._active == "bag" then
+    return self:_activateBagControl(id)
+  elseif self._active == "learn" then
+    return self:_activateLearnControl(id)
+  end
+  return false
 end
 
 ---@return table<string, unknown>? staged bound result, exactly once

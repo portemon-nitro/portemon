@@ -492,10 +492,202 @@ local function drawGauges(resources, view)
   end
 end
 
+-- Battle child modal geometry inside one 256x192 interaction surface.
+-- The paired pointer mapper publishes hit regions from these same
+-- numbers, and the compact fullscreen modal reuses them, so a painted
+-- row and its tap target always agree.
+local CHILD_TITLE = { x = 8, y = 8, maxWidth = 240 }
+local CHILD_ROW_X = 8
+local CHILD_ROW_Y0 = 32
+local CHILD_ROW_H = 20
+local CHILD_LABEL_X = 12
+local CHILD_DETAIL_X = 144
+local CHILD_CONFIRM_Y = 136
+local CHILD_BACK_LABEL = { x = 12, y = 156 }
+local CHILD_NOTICE = { x = 12, y = 172, maxWidth = 232 }
+
+---@param child table<string, unknown> detached child view under titling
+---@return string modal title wording
+local function childTitle(child)
+  local kind = child.kind
+  if kind == "target" then
+    return "Use " .. tostring(child.stagedItem or "the item") .. " on whom?"
+  elseif kind == "bag" then
+    if child.empty == true then
+      return "The bag is empty."
+    end
+    local page = child.page --[[@as table<string, unknown>?]]
+    local paging = ""
+    if type(page) == "table" then
+      paging = " " .. tostring(page.current or 1) .. "/" .. tostring(page.count or 1)
+    end
+    return "BAG: " .. tostring(child.currentPocket or "?") .. paging
+  elseif kind == "learn" then
+    return "Forget a move for " .. tostring(child.incomingMove or "?") .. "?"
+  end
+  if child.cancellable == true then
+    return "Choose a Pokemon!"
+  end
+  return "Choose a replacement!"
+end
+
+---@param child table<string, unknown> detached child view under confirmation wording
+---@return string staged confirmation wording
+local function learnConfirmText(child)
+  local confirmation = child.confirmation --[[@as table<string, unknown>?]]
+  if type(confirmation) ~= "table" then
+    return ""
+  end
+  if confirmation.kind == "stop" then
+    return "Stop learning " .. tostring(child.incomingMove or "?") .. "?"
+  end
+  if confirmation.kind == "decline" then
+    return "Do not learn " .. tostring(child.incomingMove or "?") .. "?"
+  end
+  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
+  local slot = confirmation.slot --[[@as integer?]]
+  local name = "?"
+  if type(rows) == "table" and type(slot) == "number" and type(rows[slot + 1]) == "table" then
+    name = tostring(rows[slot + 1].label or "?")
+  end
+  return "Forget " .. name .. "?"
+end
+
+---@param child table<string, unknown> detached child view under guidance wording
+---@return string footer guidance wording
+local function childSubtitle(child)
+  if child.kind == "target" then
+    return "Select the target."
+  elseif child.kind == "bag" then
+    return "Select an item."
+  elseif child.kind == "learn" then
+    return "Select a move to forget."
+  elseif child.cancellable == true then
+    return "Select a reserve."
+  end
+  return "Select its replacement."
+end
+
+---@param child table<string, unknown> detached child view under occupancy wording
+---@return string? occupied roster fraction, nil outside party selection
+local function childOccupancy(child)
+  if child.kind ~= "party" and child.kind ~= "target" then
+    return nil
+  end
+  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
+  if type(rows) ~= "table" then
+    return nil
+  end
+  local occupied = 0
+  for _, row in ipairs(rows) do
+    if type(row) == "table" and row.occupied == true then
+      occupied = occupied + 1
+    end
+  end
+  return tostring(occupied) .. "/" .. tostring(#rows)
+end
+
+-- Draws the open child as a battle-local modal over the lower pane:
+-- the title, every projected row with its focus and disabled marks,
+-- the staged learning confirmation, and the permitted Back/Confirm
+-- and pocket controls. Upper-battlefield drawing is untouched.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot
+---@param child table<string, unknown> detached child view under drawing
+local function drawChild(resources, view, child)
+  local text = assert(resources.text, "the battle render borrows its text services")
+  local windows = assert(resources.windows, "the battle render borrows its window services")
+  windows.drawWindow({ x = 0, y = 0, width = 256, height = 192 }, resources.frameKey, { 0, 0, 0 })
+  text.drawText(fitLabel(text, childTitle(child), CHILD_TITLE.maxWidth), CHILD_TITLE.x, CHILD_TITLE.y)
+  local occupancy = childOccupancy(child)
+  if occupancy ~= nil then
+    text.drawText(occupancy, 216, CHILD_TITLE.y)
+  end
+  if child.kind == "bag" and type(child.stock) == "number" then
+    text.drawText("Stock: " .. tostring(child.stock), 184, CHILD_TITLE.y)
+  end
+  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
+  if type(rows) == "table" then
+    for index, row in ipairs(rows) do
+      if index > 6 then
+        break
+      end
+      local box = row --[[@as table<string, unknown>]]
+      local y = CHILD_ROW_Y0 + (index - 1) * CHILD_ROW_H
+      if child.kind == "learn" then
+        local marker = (child.focusId == box.id) and "> " or "  "
+        local label = marker .. tostring(index) .. ". " .. tostring(box.label or "")
+        text.drawText(fitLabel(text, label, 128), CHILD_LABEL_X, y + 4)
+        if type(box.detail) == "string" and box.detail ~= "" then
+          text.drawText(fitLabel(text, box.detail, 100), CHILD_DETAIL_X, y + 4)
+        end
+      else
+        -- Tabular rows share one column each for the focused number,
+        -- the entry name, its level or quantity, and its health or
+        -- legality facts, so every visible fact has its own draw.
+        local head = ((child.focusId == box.id) and "> " or "  ") .. tostring(index) .. "."
+        text.drawText(head, CHILD_LABEL_X, y + 4)
+        local name = tostring(box.label or "")
+        if box.enabled ~= true and box.empty ~= true then
+          name = name .. " [X]"
+        end
+        local nameWidth = 68
+        local subX = 116
+        local detailX = 156
+        local detailWidth = 80
+        if child.kind == "bag" then
+          nameWidth = 100
+          subX = 146
+          detailX = 180
+          detailWidth = 56
+        end
+        text.drawText(fitLabel(text, name, nameWidth), 44, y + 4)
+        if type(box.sub) == "string" and box.sub ~= "" then
+          text.drawText(box.sub, subX, y + 4)
+        end
+        if type(box.detail) == "string" and box.detail ~= "" then
+          text.drawText(fitLabel(text, box.detail, detailWidth), detailX, y + 4)
+        end
+      end
+    end
+  end
+  if child.kind == "learn" and type(child.confirmation) == "table" then
+    text.drawText(fitLabel(text, learnConfirmText(child), 240), CHILD_ROW_X, CHILD_CONFIRM_Y)
+  end
+  if child.kind == "learn" then
+    if type(child.confirmation) == "table" then
+      text.drawText("CONFIRM", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
+    end
+    text.drawText("BACK", CHILD_NOTICE.x, CHILD_NOTICE.y)
+  else
+    if child.cancellable == true then
+      text.drawText("BACK", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
+    elseif child.kind == "party" or child.kind == "target" then
+      text.drawText("No retreat!", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
+    end
+  end
+  if child.kind == "bag" and child.empty ~= true then
+    text.drawText("<", 100, CHILD_BACK_LABEL.y)
+    text.drawText(">", 232, CHILD_BACK_LABEL.y)
+  end
+  if type(child.notice) == "string" and child.notice ~= "" then
+    if child.kind ~= "learn" then
+      text.drawText(fitLabel(text, child.notice, CHILD_NOTICE.maxWidth), CHILD_NOTICE.x, CHILD_NOTICE.y)
+    end
+  elseif child.kind ~= "learn" then
+    text.drawText(fitLabel(text, childSubtitle(child), CHILD_NOTICE.maxWidth), CHILD_NOTICE.x, CHILD_NOTICE.y)
+  end
+  local _ = view
+end
+
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param content table<string, unknown> canonical plan content carrying the layout
 local function drawInteraction(resources, view, content)
+  if view.mode == "child" and type(view.childView) == "table" then
+    drawChild(resources, view, view.childView --[[@as table<string, unknown>]])
+    return
+  end
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
   local layout = content.layout --[[@as string]]

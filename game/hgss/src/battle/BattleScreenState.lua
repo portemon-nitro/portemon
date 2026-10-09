@@ -261,6 +261,7 @@ function BattleScreenState:_snapshot()
     foeCount = foes,
     arrowFrame = self:_arrowFrame(),
     childIntent = self._child ~= nil and copyValue(self._child) or nil,
+    childView = copyValue(self._subflows:status().childView),
   }
 end
 
@@ -905,10 +906,12 @@ function BattleScreenState:_pollChild()
   end
   if result.kind == "cancelled" then
     if not self:_childIdentityMatches(result) then
+      self._armed = nil
       return
     end
     self._subflows:closeChild()
     self._child = nil
+    self._armed = nil
     self._notice = nil
     if self._request ~= nil then
       self._mode = self:_modeForOptions(self._options)
@@ -922,6 +925,7 @@ function BattleScreenState:_pollChild()
     if not self:_childIdentityMatches(reply) then
       self._subflows:closeChild()
       self._child = nil
+      self._armed = nil
       self._notice = "The selection expired."
       if self._request ~= nil then
         self._mode = self:_modeForOptions(self._options)
@@ -951,6 +955,31 @@ function BattleScreenState:_consume(event)
     if eventType == "confirm" or eventType == "cancel" or eventType == "navigate" then
       self._subflows:update({ event })
       self:_pollChild()
+    elseif eventType == "child_press" then
+      local control = event.control --[[@as table<string, unknown>?]]
+      if type(control) == "table" and type(control.id) == "string" then
+        self._armed = { scope = "child", id = control.id, pointerId = event.pointerId }
+      end
+    elseif eventType == "child_slide" then
+      if
+        not sameControl(self._armed, event.control --[[@as table<string, unknown>?]])
+      then
+        self._armed = nil
+      end
+    elseif eventType == "child_activate" then
+      local armed = self._armed
+      self._armed = nil
+      local control = event.control --[[@as table<string, unknown>?]]
+      if type(control) == "table" and type(control.id) == "string" and sameControl(armed, control) then
+        if
+          self._subflows:activateControl(control.id --[[@as string]])
+        then
+          self:_pollChild()
+        end
+      end
+    elseif eventType == "child_cancel" then
+      self._armed = nil
+      self._subflows:cancelPointerCapture()
     end
     return
   end
@@ -970,6 +999,11 @@ function BattleScreenState:_consume(event)
             self._selection = id
           end
         end
+      elseif self._mode == "narration" or self._mode == "outcome" then
+        local control = event.control --[[@as table<string, unknown>?]]
+        if type(control) == "table" and control.scope == self._mode then
+          self._armed = { scope = control.scope, id = control.id, pointerId = event.pointerId }
+        end
       end
     end
     return
@@ -988,7 +1022,17 @@ function BattleScreenState:_consume(event)
     if
       sameControl(armed, event.control --[[@as table<string, unknown>?]])
     then
-      self:_sealControl(event.control, armed)
+      if self._mode == "narration" or self._mode == "outcome" then
+        local control = event.control --[[@as table<string, unknown>?]]
+        if type(control) == "table" and control.scope == self._mode then
+          self._timeline:ack()
+          if self._mode == "outcome" then
+            self._outcomeAcked = true
+          end
+        end
+      else
+        self:_sealControl(event.control, armed)
+      end
     end
     return
   end

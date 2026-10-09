@@ -13,6 +13,7 @@
 -- learning child owner, so the run stays red until that owner lands.
 
 local Assert = require("tests.support.Assert")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
@@ -152,6 +153,9 @@ local function openRig(opts)
   end
   function rig.windows.drawWindow(box, frameKey, background)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  function rig.windows.drawApplicationFrame(box, frameIndex)
+    rig.windows.calls[#rig.windows.calls + 1] = { applicationBox = box, frame = frameIndex }
   end
   function rig.audio.play(name)
     rig.audio.plays[#rig.audio.plays + 1] = name
@@ -1254,6 +1258,166 @@ function T.children_keep_exclusive_input_and_release_once()
     Assert.equal(pending.screen:status().mode, "disposed", "late readiness never resurrects the child" .. tag)
     Assert.equal(#pending.submits, 0, "late readiness seals no reply" .. tag)
     pending.battle:dispose()
+  end
+end
+
+-- Renders one frame through the recording text boundary and censuses
+-- drawn text by content, so row visibility reads exactly what the
+-- battle puts on screen.
+---@param rig table live screen rig under test driving
+---@return table<string, integer> drawn text census keyed by content
+local function renderedContents(rig)
+  rig.text.draws = {}
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  local census = {}
+  for _, drawn in ipairs(rig.text.draws) do
+    local content = tostring(drawn.content)
+    census[content] = (census[content] or 0) + 1
+  end
+  return census
+end
+
+---@param census table<string, integer> rendered text census under inspection
+---@return integer distinct drawn contents
+local function censusSize(census)
+  local total = 0
+  for _, _ in pairs(census) do
+    total = total + 1
+  end
+  return total
+end
+
+-- The open child paints its own rows instead of the command fallback:
+-- strictly more text appears and at least one entry carries the given
+-- marker that the command view never prints.
+---@param before table<string, integer> command text census under comparison
+---@param after table<string, integer> child text census under comparison
+---@param marker string required new visible marker under comparison
+---@param what string child description under comparison
+local function assertPaintsOwnRows(before, after, marker, what)
+  Assert.isTrue(
+    censusSize(after) >= censusSize(before) + 4,
+    "the open " .. what .. " paints its own rows instead of the command fallback"
+  )
+  local seen = false
+  for content, _ in pairs(after) do
+    if before[content] == nil and tostring(content):find(marker, 1, true) ~= nil then
+      seen = true
+    end
+  end
+  Assert.isTrue(seen, "the open " .. what .. " labels its entries (" .. marker .. ")")
+end
+
+-- Probes the open child with matched press/release taps across the
+-- interaction surface until one tap seals a reply. A tap that closes a
+-- cancellable child without sealing reopens it once and continues, so
+-- a footer cancel never ends the probe early. Two passes cover rows
+-- that focus on the first tap and seal on the second.
+---@param rig table live screen rig under test driving
+---@param yLo integer first host row under probing
+---@param yHi integer last host row under probing
+---@param reopen (fun(rig: table))? reopens a voluntary child after a cancel tap
+---@return boolean sealed true once a tap sealed exactly one reply
+local function tapSealsReply(rig, yLo, yHi, reopen)
+  local taps = 0
+  local cancelled = 0
+  for pass = 1, 2 do
+    local y = yLo
+    while y <= yHi do
+      local x = 8
+      while x <= 248 do
+        if rig.screen:status().mode ~= "child" then
+          if #rig.submits > 0 then
+            return true
+          end
+          if reopen == nil or cancelled >= 1 then
+            return false
+          end
+          cancelled = cancelled + 1
+          reopen(rig)
+          if rig.screen:status().mode ~= "child" then
+            return false
+          end
+        end
+        taps = taps + 1
+        local id = "touch:probe:" .. tostring(pass) .. ":" .. tostring(taps)
+        rig.screen:input({ { type = "pointer_down", pointerId = id, x = x, y = y } })
+        rig.screen:input({ { type = "pointer_up", pointerId = id, x = x, y = y } })
+        rig.pump(1)
+        if #rig.submits > 0 then
+          return true
+        end
+        x = x + 16
+      end
+      y = y + 16
+    end
+  end
+  return #rig.submits > 0
+end
+
+-- Voluntary selection lists every roster slot with its health and
+-- eligibility on both display cases, and a tap on the visible reserve
+-- seals the same stable combatant the kernel projected. Forced
+-- replacement paints the same roster and only the eligible reserve
+-- leaves it, with no executable way out.
+function T.voluntary_party_child_lists_focused_roster_and_pointer_seals_reserve()
+  for _, layout in ipairs({ "paired", "compact" }) do
+    local tag = " (" .. layout .. ")"
+    local yLo, yHi = 8, 184
+    if layout == "paired" then
+      yLo, yHi = 200, 376
+    end
+    local rig = openRig({
+      layout = layout,
+      launchId = "launch-visible-party-" .. layout,
+      party = {
+        { species = "EEVEE", level = 20, seed = 0x33333333 },
+        { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+      },
+      bag = {},
+    })
+    driveToMode(rig, "command")
+    local commandRequest = openScreenRequest(rig)
+    local _, expectedSwitch = projectedReserveSwitch(rig, commandRequest)
+    local commandInk = renderedContents(rig)
+    openPartyFromCommand(rig)
+    local partyInk = renderedContents(rig)
+    assertPaintsOwnRows(commandInk, partyInk, "5", "party roster" .. tag)
+    local function reopen()
+      openPartyFromCommand(rig)
+    end
+    Assert.isTrue(tapSealsReply(rig, yLo, yHi, reopen), "a tap on the visible reserve seals its switch" .. tag)
+    Assert.equal(#rig.submits, 1, "the pointer seals exactly one reply" .. tag)
+    Assert.deepEqual(rig.submits[1].choices[1], expectedSwitch, "the tap names the stable reserve combatant" .. tag)
+    rig.screen:dispose()
+    rig.battle:dispose()
+
+    local forced = openRig({
+      layout = layout,
+      launchId = "launch-visible-forced-" .. layout,
+      party = {
+        { species = "EEVEE", level = 5, seed = 0x55555555 },
+        { species = "EEVEE", level = 5, seed = 0x66666666 },
+      },
+      bag = {},
+      foe = { species = "EEVEE", level = 30, seed = 0x5EED0002 },
+    })
+    driveToMode(forced, "command")
+    local forcedCommandInk = renderedContents(forced)
+    waitForBattleDecision(forced, "replacement")
+    local replacementRequest = waitForScreenDecision(forced, "replacement")
+    Assert.equal(forced.screen:status().mode, "child", "the faint opens the replacement child" .. tag)
+    local _, expectedReplacement = projectedReserveSwitch(forced, replacementRequest)
+    assertPaintsOwnRows(forcedCommandInk, renderedContents(forced), "5", "forced replacement roster" .. tag)
+    chooseReserveThroughChild(forced)
+    Assert.equal(#forced.submits, 1, "the replacement seals exactly one reply" .. tag)
+    Assert.deepEqual(
+      forced.submits[1].choices[1],
+      expectedReplacement,
+      "the replacement names the stable reserve combatant" .. tag
+    )
+    forced.screen:dispose()
+    forced.battle:dispose()
   end
 end
 

@@ -605,8 +605,20 @@ function T.target_and_narration_take_full_width_docks()
   Assert.equal(narrated.narration.origin.x, NARRATION_ORIGIN.x, "narration keeps its text origin")
   Assert.equal(narrated.narration.origin.y, NARRATION_ORIGIN.y, "narration keeps its text row")
   local quiet = snapshot("narration", { selection = nil })
-  Assert.isNil(mappedAt(narration, quiet, 152, 154), "the hidden command grid claims nothing during narration")
-  Assert.isNil(mappedAt(narration, quiet, 128, 60), "narration introduces no full-screen hotspot")
+  local down = mappedAt(narration, quiet, 152, 154)
+  Assert.notNil(down, "the narration dock answers taps")
+  local up = narration.mapInput({ type = "pointer_up", pointerId = "touch:0", x = 152, y = 154 }, quiet, narration)
+  Assert.notNil(up, "the narration tap completes")
+  local confirms = up.type == "confirm"
+    or (up.type == "battle_activate" and type(up.control) == "table" and up.control.scope == "narration")
+  Assert.isTrue(confirms, "the narration tap carries confirm semantics")
+  local sceneDown = mappedAt(narration, quiet, 128, 60)
+  Assert.notNil(sceneDown, "the narration surface answers taps")
+  local sceneUp = narration.mapInput({ type = "pointer_up", pointerId = "touch:0", x = 128, y = 60 }, quiet, narration)
+  Assert.notNil(sceneUp, "the narration scene tap completes")
+  local sceneConfirms = sceneUp.type == "confirm"
+    or (sceneUp.type == "battle_activate" and type(sceneUp.control) == "table" and sceneUp.control.scope == "narration")
+  Assert.isTrue(sceneConfirms, "the narration scene tap carries confirm semantics")
   Assert.isNil(
     narration.mapInput({ type = "pointer_down", pointerId = "touch:0", outside = true }, quiet, narration),
     "outside presses never dismiss narration"
@@ -863,11 +875,507 @@ local function driveToMode(rig, mode)
 end
 
 ---@param rig table live screen rig under test driving
+---@param event table<string, unknown> semantic input batch under test driving
+local function press(rig, event)
+  rig.screen:input({ event })
+  rig.pump(1)
+end
+
+---@param rig table live screen rig under test driving
 ---@param x number display horizontal pointer position under test driving
 ---@param y number display vertical pointer position under test driving
 local function tap(rig, x, y)
   rig.screen:input({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
+end
+
+---@param request table battle request under inspection
+---@return string the decision kind carried by the request
+local function requestKind(request)
+  if type(request.kind) == "string" and request.kind ~= "action" then
+    return request.kind --[[@as string]]
+  end
+  if type(request.legalChoices) == "table" and type(request.legalChoices.kinds) == "table" then
+    local attack = false
+    local switch = false
+    for _, kind in ipairs(request.legalChoices.kinds) do
+      if kind == "attack" then
+        attack = true
+      end
+      if kind == "switch" then
+        switch = true
+      end
+    end
+    if switch and not attack then
+      return "replacement"
+    end
+  end
+  if type(request.kind) == "string" then
+    return request.kind --[[@as string]]
+  end
+  return "action"
+end
+
+---@param rig table live screen rig under test driving
+---@param request table open request under projection
+---@return table detached native decision options for the open request
+local function optionsFor(rig, request)
+  local options, optionsErr = rig.battle:decisionOptions(request.requestId)
+  Assert.notNil(options, "the runtime projects options for the open request: " .. tostring(optionsErr))
+  return options --[[@as table<string, unknown>]]
+end
+
+---@param rig table live screen rig under test driving
+---@param wanted string awaited battle decision kind under test driving
+---@return table the battle request once the kernel asks for the wanted decision
+local function waitForBattleDecision(rig, wanted)
+  for _ = 1, 60 do
+    for _ = 1, 40 do
+      rig.pump(1)
+      local status = rig.battle:status()
+      if status.phase == "failed" then
+        error("the battle failed while awaiting " .. wanted .. ": " .. tostring(status.error), 0)
+      end
+      if status.phase == "complete" then
+        error("the battle settled before asking for " .. wanted, 0)
+      end
+      if status.phase ~= "running" then
+        break
+      end
+      if status.request ~= nil and requestKind(status.request) ~= "action" then
+        if requestKind(status.request) == wanted then
+          return status.request
+        end
+        error("the battle asked for " .. requestKind(status.request) .. " instead of " .. wanted, 0)
+      end
+    end
+    local current = rig.battle:status()
+    if current.request ~= nil and requestKind(current.request) == "action" then
+      local fragment = nil
+      for _, actor in ipairs(optionsFor(rig, current.request).actors) do
+        for _, choice in ipairs(actor.choices) do
+          if choice.role == "move" and choice.enabled == true then
+            fragment = fragment or choice.choice
+          end
+        end
+      end
+      Assert.notNil(fragment, "the action request carries an enabled move")
+      local ok, submitErr = rig.battle:submit({
+        requestId = current.request.requestId,
+        epoch = current.request.epoch,
+        controller = current.request.controller,
+        choices = { fragment },
+      })
+      Assert.isTrue(ok, "the kernel accepts the projected move: " .. tostring(submitErr))
+    end
+  end
+  error("the battle never asked for " .. wanted, 0)
+end
+
+---@param rig table live screen rig under test driving
+---@param wanted string awaited battle decision kind under test driving
+---@return table the mirrored screen request once the screen catches up
+local function waitForScreenDecision(rig, wanted)
+  for _ = 1, 600 do
+    rig.pump(1)
+    local status = rig.screen:status()
+    if status.mode == "failed" then
+      error("the screen failed while awaiting " .. wanted .. ": " .. tostring(status.error), 0)
+    end
+    if status.request ~= nil and requestKind(status.request) == wanted then
+      local current = rig.battle:status()
+      if current.request == nil or current.request.requestId == status.request.requestId then
+        return status.request
+      end
+    end
+  end
+  error("the screen never mirrored " .. wanted, 0)
+end
+
+---@param layout string "paired" or "compact" surface arrangement under test driving
+---@return table live rig with a learning battle one knockout away
+local function openLearnRig(layout)
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  local fullSet = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "TAIL_WHIP", pp = 30, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "LEER", pp = 30, ppUps = 0 },
+  }
+  local catalog = CatalogFixture.makeCatalog()
+  local owner = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+    mapSection = 7,
+    date = CatalogFixture.metDate(),
+  })
+  local specs = {
+    { species = "EEVEE", level = 7, seed = 0x33333333, experience = 511 },
+    {
+      species = "EEVEE",
+      level = 7,
+      seed = 0x44444444,
+      ability = "RUN_AWAY",
+      experience = 511,
+      heldItem = "EXP__SHARE",
+    },
+  }
+  for _, member in ipairs(specs) do
+    local factory = CatalogFixture.makeFactory(member.seed, catalog)
+    local record =
+      factory:createNormal(CatalogFixture.normalRequest({ species = member.species, level = member.level }))
+    record.moves = fullSet
+    record.experience = member.experience
+    if member.heldItem ~= nil then
+      record.heldItem = member.heldItem
+    end
+    Assert.isTrue(owner:addMon(record), "the learning battle needs its live party member")
+  end
+  local foeFactory = CatalogFixture.makeFactory(0x5EED0002, catalog)
+  local foe = foeFactory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 8 }))
+  foe.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+  foe.condition.currentHp = 1
+  local measurement = dualMeasurement()
+  if layout == "compact" then
+    measurement = compactMeasurement()
+  end
+  local BattleRuntime = require(RUNTIME_MODULE)
+  local BattleScreenState = require(STATE_MODULE)
+  local Model = require(MODEL_MODULE)
+  local ScenarioFactory = require(SCENARIO_FACTORY_MODULE)
+  local holder = {}
+  local launchId = "launch-visible-learn-" .. layout
+  local rig = { submits = {}, measurement = measurement, layout = layout }
+  rig.text = {
+    draws = {},
+    measure = function(content)
+      return { width = 8 * #tostring(content), height = 16 }
+    end,
+    drawText = function(content, x, y)
+      rig.text.draws[#rig.text.draws + 1] = { content = content, x = x, y = y }
+    end,
+  }
+  rig.windows = { calls = {} }
+  function rig.windows.drawWindow(box, frameKey, background)
+    rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  function rig.windows.drawApplicationFrame(box, frameIndex)
+    rig.windows.calls[#rig.windows.calls + 1] = { applicationBox = box, frame = frameIndex }
+  end
+  rig.audio = { plays = {} }
+  function rig.audio.play(name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  rig.assets = { images = {}, prepared = {}, released = {} }
+  function rig.assets.prepare(demand)
+    rig.assets.prepared[#rig.assets.prepared + 1] = demand
+    return true
+  end
+  function rig.assets.drawable(key)
+    if rig.assets.images[key] == nil then
+      rig.assets.images[key] = { handle = key }
+    end
+    return rig.assets.images[key]
+  end
+  function rig.assets.release(key)
+    rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
+  end
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  local scenario = ScenarioFactory.fromEncounter(
+    { attemptId = launchId .. "-attempt", mon = foe },
+    { party = owner, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+  )
+  local screen = BattleScreenState.new({
+    launchId = launchId,
+    manifest = {
+      schema = "test",
+      version = { id = "t", language = "english" },
+      verified = false,
+      scenes = { { key = "general/plain/day" } },
+    },
+    model = Model,
+    submit = function(reply)
+      rig.submits[#rig.submits + 1] = reply
+      return holder.battle:submit(reply)
+    end,
+    measureDisplay = function()
+      return rig.measurement
+    end,
+    itemCatalog = ItemFixture.makeCatalog(),
+    assets = rig.assets,
+    text = rig.text,
+    windows = rig.windows,
+    audio = rig.audio,
+  })
+  rig.screen = screen
+  holder.battle = BattleRuntime.new({
+    request = {
+      id = launchId,
+      kind = "wild",
+      payload = {
+        attemptId = launchId .. "-attempt",
+        species = "EEVEE",
+        form = 0,
+        level = 8,
+        personality = 1,
+        ability = "RUN_AWAY",
+      },
+    },
+    scenario = scenario,
+    party = owner,
+    bag = bag,
+    presentation = screen:presentationPort(),
+    seed = 0x12345678,
+  })
+  rig.battle = holder.battle
+  rig.party = owner
+  rig.scenario = scenario
+  function rig.pump(ticks, dt)
+    for _ = 1, ticks or 1 do
+      rig.battle:update()
+      rig.screen:updateFixed(dt or TICK)
+    end
+  end
+  return rig
+end
+
+---@param rig table live screen rig under test driving
+---@return table<string, integer> drawn text census keyed by content for one render
+local function renderedContents(rig)
+  rig.text.draws = {}
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  local census = {}
+  for _, drawn in ipairs(rig.text.draws) do
+    local content = tostring(drawn.content)
+    census[content] = (census[content] or 0) + 1
+  end
+  return census
+end
+
+-- Probes the open learning prompt with matched press/release taps
+-- across the interaction surface until one tap seals a reply. Two
+-- passes cover entries that focus on the first tap and seal on the
+-- second; learning never dismisses outward, so no reopen applies.
+---@param rig table live screen rig under test driving
+---@param yLo integer first host row under probing
+---@param yHi integer last host row under probing
+---@return boolean sealed true once a tap sealed exactly one reply
+local function tapSealsLearnReply(rig, yLo, yHi)
+  local taps = 0
+  for pass = 1, 2 do
+    local y = yLo
+    while y <= yHi do
+      local x = 8
+      while x <= 248 do
+        if rig.screen:status().mode ~= "child" then
+          return #rig.submits > 0
+        end
+        taps = taps + 1
+        local id = "touch:learn:" .. tostring(pass) .. ":" .. tostring(taps)
+        rig.screen:input({ { type = "pointer_down", pointerId = id, x = x, y = y } })
+        rig.screen:input({ { type = "pointer_up", pointerId = id, x = x, y = y } })
+        rig.pump(1)
+        if #rig.submits > 0 then
+          return true
+        end
+        x = x + 16
+      end
+      y = y + 16
+    end
+  end
+  return #rig.submits > 0
+end
+
+-- Taps the dialogue dock through the live plan with a narration and an
+-- outcome probe: both must answer with confirm semantics and never
+-- dismiss outward, while keyboard input keeps passing through.
+---@param rig table live screen rig under test driving
+---@param what string layout description under probing
+local function assertDialogueTapConfirms(rig, what)
+  local plan = rig.screen:status().presentation
+  Assert.notNil(plan, "the screen publishes its plan" .. what)
+  for _, mode in ipairs({ "narration", "outcome" }) do
+    local probe = snapshot(mode, { selection = nil })
+    local down = plan.mapInput(
+      { type = "pointer_down", pointerId = "touch:dialogue", x = 128, y = 164 },
+      probe,
+      plan
+    )
+    Assert.notNil(down, "the " .. mode .. " dialogue answers taps" .. what)
+    local up = plan.mapInput(
+      { type = "pointer_up", pointerId = "touch:dialogue", x = 128, y = 164 },
+      probe,
+      plan
+    )
+    Assert.notNil(up, "the " .. mode .. " dialogue completes taps" .. what)
+    local confirms = up.type == "confirm"
+      or (up.type == "battle_activate" and type(up.control) == "table" and up.control.scope == mode)
+    Assert.isTrue(confirms, "the " .. mode .. " tap carries confirm semantics" .. what)
+  end
+end
+
+-- The learning prompt lists the four held moves with the incoming move
+-- and its five decisions on both display cases, a tap seals exactly
+-- one projected learning fragment, the remaining recipient still
+-- decides through explicit confirmation, and dialogue taps confirm
+-- without reaching the field.
+function T.learning_prompt_lists_choices_and_tap_seals_one_fragment()
+  for _, layout in ipairs({ "paired", "compact" }) do
+    local tag = " (" .. layout .. ")"
+    local yLo, yHi = 8, 184
+    if layout == "paired" then
+      yLo, yHi = 200, 376
+    end
+    local rig = openLearnRig(layout)
+    local leadId = nil
+    for _ = 1, 60 do
+      local peeked = nil
+      for _ = 1, 40 do
+        rig.pump(1)
+        local status = rig.battle:status()
+        if status.phase == "failed" then
+          error("the battle failed before learning: " .. tostring(status.error), 0)
+        end
+        if status.phase == "complete" then
+          error("the battle settled before learning", 0)
+        end
+        if status.request ~= nil then
+          peeked = status.request
+          break
+        end
+      end
+      if peeked ~= nil then
+        if requestKind(peeked) == "action" then
+          if leadId == nil then
+            leadId = peeked.actors[1].combatant
+          end
+          local fragment = nil
+          for _, actor in ipairs(optionsFor(rig, peeked).actors) do
+            for _, choice in ipairs(actor.choices) do
+              if choice.role == "move" and choice.enabled == true then
+                fragment = fragment or choice.choice
+              end
+            end
+          end
+          Assert.notNil(fragment, "the opener carries an enabled move" .. tag)
+          local ok, submitErr = rig.battle:submit({
+            requestId = peeked.requestId,
+            epoch = peeked.epoch,
+            controller = peeked.controller,
+            choices = { fragment },
+          })
+          Assert.isTrue(ok, "the kernel accepts the projected move: " .. tostring(submitErr))
+        else
+          break
+        end
+      end
+    end
+    Assert.notNil(leadId, "the opener fights the learning battle" .. tag)
+    waitForBattleDecision(rig, "learn_move")
+    local firstPrompt = waitForScreenDecision(rig, "learn_move")
+    Assert.equal(rig.screen:status().mode, "child", "the learning prompt opens its child" .. tag)
+    Assert.isTrue(type(firstPrompt.incomingMove) == "string", "the prompt names its incoming move" .. tag)
+    local incomingStem = tostring(firstPrompt.incomingMove):sub(1, 4):lower()
+    local ink = renderedContents(rig)
+    local namesIncoming = false
+    local namesHeld = false
+    for content, _ in pairs(ink) do
+      local lowered = tostring(content):lower()
+      if lowered:find(incomingStem, 1, true) ~= nil then
+        namesIncoming = true
+      end
+      if lowered:find("growl", 1, true) ~= nil then
+        namesHeld = true
+      end
+    end
+    Assert.isTrue(namesIncoming, "the prompt shows its incoming move" .. tag)
+    Assert.isTrue(namesHeld, "the prompt shows its held moves" .. tag)
+    local firstOptions = optionsFor(rig, firstPrompt)
+    Assert.equal(firstOptions.actors[1].kind, "learn_move", "learning options mirror the prompt" .. tag)
+    local starterSubmits = #rig.submits
+    Assert.isTrue(tapSealsLearnReply(rig, yLo, yHi), "a tap on the learning list seals one reply" .. tag)
+    Assert.equal(#rig.submits, starterSubmits + 1, "the tap seals exactly one learning reply" .. tag)
+    local sealed = rig.submits[#rig.submits].choices[1]
+    local sealedId = nil
+    for _, choice in ipairs(firstOptions.actors[1].choices) do
+      local ok = pcall(Assert.deepEqual, sealed, choice.choice, "the tap matches its fragment" .. tag)
+      if ok then
+        sealedId = choice.id
+      end
+    end
+    Assert.notNil(sealedId, "the tap seals a projected learning fragment" .. tag)
+    local firstRecipient = firstPrompt.actors[1].combatant
+    waitForBattleDecision(rig, "learn_move")
+    local secondPrompt = waitForScreenDecision(rig, "learn_move")
+    Assert.isTrue(secondPrompt.requestId ~= firstPrompt.requestId, "the consecutive prompt is genuinely new" .. tag)
+    local secondOptions = optionsFor(rig, secondPrompt)
+    local declineFragment = nil
+    for _, choice in ipairs(secondOptions.actors[1].choices) do
+      if choice.id == "learn:decline" then
+        declineFragment = choice.choice
+      end
+    end
+    Assert.notNil(declineFragment, "the second prompt stays declinable" .. tag)
+    press(rig, { type = "navigate", direction = "down" })
+    press(rig, { type = "navigate", direction = "down" })
+    press(rig, { type = "navigate", direction = "down" })
+    press(rig, { type = "navigate", direction = "down" })
+    press(rig, { type = "confirm" })
+    Assert.equal(#rig.submits, starterSubmits + 1, "selecting a row seals no reply" .. tag)
+    press(rig, { type = "confirm" })
+    Assert.equal(#rig.submits, starterSubmits + 2, "confirming the decline seals one reply" .. tag)
+    Assert.deepEqual(
+      rig.submits[#rig.submits].choices[1],
+      declineFragment,
+      "the decline matches its fragment" .. tag
+    )
+    assertDialogueTapConfirms(rig, tag)
+    press(rig, { type = "cancel" })
+    Assert.isTrue(#rig.submits <= starterSubmits + 2, "keyboard input passes through without extra seals" .. tag)
+    for _ = 1, 400 do
+      rig.pump(1)
+      if rig.battle:status().phase == "complete" or rig.battle:status().phase == "failed" then
+        break
+      end
+      local current = rig.battle:status()
+      if current.request ~= nil and requestKind(current.request) == "action" then
+        local fragment = nil
+        for _, actor in ipairs(optionsFor(rig, current.request).actors) do
+          for _, choice in ipairs(actor.choices) do
+            if choice.role == "move" and choice.enabled == true then
+              fragment = fragment or choice.choice
+            end
+          end
+        end
+        if fragment ~= nil then
+          rig.battle:submit({
+            requestId = current.request.requestId,
+            epoch = current.request.epoch,
+            controller = current.request.controller,
+            choices = { fragment },
+          })
+        end
+      end
+    end
+    Assert.equal(rig.battle:status().phase, "complete", "the answered prompts settle the battle" .. tag)
+    if firstRecipient == leadId and sealedId ~= "learn:decline" then
+      local leadMoves = rig.party:partyMon(0).moves
+      Assert.equal(leadMoves[3].move, "SAND_ATTACK", "the tap replace commits through the kernel" .. tag)
+    end
+    local reserveMoves = rig.party:partyMon(1).moves
+    Assert.equal(#reserveMoves, 4, "the declined set keeps its four moves" .. tag)
+    rig.screen:dispose()
+    rig.battle:dispose()
+  end
 end
 
 ---@param reply table<string, unknown> sealed decision reply under comparison

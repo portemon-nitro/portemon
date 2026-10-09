@@ -65,6 +65,137 @@ local function hitRegion(regions, x, y)
   return nil
 end
 
+-- Battle child hit regions inside one 256x192 interaction surface.
+-- Row numbers match the paired child modal paint geometry, so a
+-- painted row and its tap target always agree. Footer controls expose
+-- Back, learning Confirm, and bag pocket stepping with stable ids.
+---@param child table<string, unknown>? detached child view under mapping
+---@return table<string, unknown>? child hit regions, nil while the child is not interactive
+local function childRegions(child)
+  if type(child) ~= "table" or child.interactive ~= true then
+    return nil
+  end
+  local regions = {}
+  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
+  if type(rows) == "table" then
+    for index, row in ipairs(rows) do
+      if index <= 6 then
+        local box = row --[[@as table<string, unknown>]]
+        if box.empty ~= true and type(box.id) == "string" then
+          regions[#regions + 1] = { id = box.id, x = 8, y = 32 + (index - 1) * 20, w = 240, h = 20 }
+        end
+      end
+    end
+  end
+  if child.cancellable == true or child.kind == "learn" then
+    if child.kind == "learn" then
+      regions[#regions + 1] = { id = "back", x = 8, y = 172, w = 240, h = 20 }
+    else
+      regions[#regions + 1] = { id = "back", x = 8, y = 152, w = 80, h = 40 }
+    end
+  end
+  if child.kind == "learn" and type(child.confirmation) == "table" then
+    regions[#regions + 1] = { id = "confirm", x = 8, y = 152, w = 240, h = 20 }
+  end
+  if child.kind == "bag" and child.empty ~= true then
+    regions[#regions + 1] = { id = "pocket_prev", x = 96, y = 152, w = 76, h = 40 }
+    regions[#regions + 1] = { id = "pocket_next", x = 176, y = 152, w = 72, h = 40 }
+  end
+  return regions
+end
+
+-- Narration and outcome share one full-surface dialogue tap region:
+-- any tap on the interactive surface carries confirm semantics,
+-- while outside presses still map to nothing and never dismiss.
+local DIALOGUE_REGION = { id = "dialogue", x = 0, y = 0, w = 256, h = 192 }
+
+---@param event table<string, unknown> session-inverted logical input
+---@param view table<string, unknown> internal semantic snapshot carrying the mode scope
+---@return table<string, unknown>? semantic battle input, nil when the battle ignores it
+local function mapDialogue(event, view)
+  local eventType = event.type
+  local mode = view.mode --[[@as string]]
+  if eventType == "pointer_down" and event.outside == true then
+    return nil
+  end
+  if eventType == "pointer_down" and type(event.x) == "number" and type(event.y) == "number" then
+    local hit = hitRegion({ DIALOGUE_REGION }, event.x --[[@as number]], event.y --[[@as number]])
+    if hit == nil then
+      return nil
+    end
+    return { type = "battle_press", control = { scope = mode, id = "dialogue" }, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_move" and type(event.x) == "number" and type(event.y) == "number" then
+    local hit = hitRegion({ DIALOGUE_REGION }, event.x --[[@as number]], event.y --[[@as number]])
+    local control = nil
+    if hit ~= nil then
+      control = { scope = mode, id = "dialogue" }
+    end
+    return { type = "battle_slide", control = control, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
+    local hit = hitRegion({ DIALOGUE_REGION }, event.x --[[@as number]], event.y --[[@as number]])
+    local control = nil
+    if hit ~= nil then
+      control = { scope = mode, id = "dialogue" }
+    end
+    return { type = "battle_activate", control = control, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_cancel" then
+    return { type = "pointer_cancel", pointerId = event.pointerId }
+  end
+  if eventType == "confirm" or eventType == "cancel" then
+    return { type = eventType }
+  end
+  if eventType == "navigate" then
+    return { type = "navigate", direction = event.direction, pointerId = event.pointerId }
+  end
+  return nil
+end
+
+---@param event table<string, unknown> session-inverted logical input
+---@param regions table<string, unknown>[] active child hit regions
+---@return table<string, unknown>? semantic battle input, nil when the battle ignores it
+local function mapChildPointer(event, regions)
+  local eventType = event.type
+  if eventType == "pointer_down" and event.outside == true then
+    return nil
+  end
+  if eventType == "pointer_down" and type(event.x) == "number" and type(event.y) == "number" then
+    local region = hitRegion(regions, event.x --[[@as number]], event.y --[[@as number]])
+    if region == nil then
+      return nil
+    end
+    return { type = "child_press", control = { scope = "child", id = region.id }, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_move" and type(event.x) == "number" and type(event.y) == "number" then
+    local region = hitRegion(regions, event.x --[[@as number]], event.y --[[@as number]])
+    local control = nil
+    if region ~= nil then
+      control = { scope = "child", id = region.id }
+    end
+    return { type = "child_slide", control = control, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
+    local region = hitRegion(regions, event.x --[[@as number]], event.y --[[@as number]])
+    local control = nil
+    if region ~= nil then
+      control = { scope = "child", id = region.id }
+    end
+    return { type = "child_activate", control = control, pointerId = event.pointerId }
+  end
+  if eventType == "pointer_cancel" then
+    return { type = "child_cancel", pointerId = event.pointerId }
+  end
+  if eventType == "confirm" or eventType == "cancel" then
+    return { type = eventType }
+  end
+  if eventType == "navigate" then
+    return { type = "navigate", direction = event.direction, pointerId = event.pointerId }
+  end
+  return nil
+end
+
 ---@param view table<string, unknown> internal semantic snapshot under mapping
 ---@return table<string, unknown>? active hit regions, nil while no layout owns input
 local function regionsFor(view)
@@ -75,6 +206,8 @@ local function regionsFor(view)
     return MOVE_REGIONS
   elseif mode == "target" then
     return TARGET_REGIONS
+  elseif mode == "child" then
+    return childRegions(view.childView --[[@as table<string, unknown>?]])
   end
   return nil
 end
@@ -149,6 +282,18 @@ local function mapBattleInput(event, view, plan)
     return BattleCompactInterface.mapInput(event, view, plan)
   end
   local regions = regionsFor(view)
+  if view.mode == "child" then
+    if regions == nil then
+      if event.type == "pointer_cancel" then
+        return { type = "child_cancel", pointerId = event.pointerId }
+      end
+      return nil
+    end
+    return mapChildPointer(event, regions)
+  end
+  if view.mode == "narration" or view.mode == "outcome" then
+    return mapDialogue(event, view)
+  end
   if regions == nil then
     if event.type == "pointer_cancel" then
       return { type = "pointer_cancel", pointerId = event.pointerId }
@@ -197,9 +342,15 @@ end
 ---@param mode string controller mode under resolution
 ---@param requestId integer? open request identity under resolution
 ---@param signature string? measurement signature under resolution
+---@param view table<string, unknown>? internal semantic snapshot under resolution
 ---@return string stable input-geometry identity for the semantic state
-local function inputKey(mode, requestId, signature)
-  return table.concat({ INPUT_KEY, mode, tostring(requestId or 0), tostring(signature or "-") }, ":")
+local function inputKey(mode, requestId, signature, view)
+  local parts = { INPUT_KEY, mode, tostring(requestId or 0), tostring(signature or "-") }
+  if type(view) == "table" and type(view.childView) == "table" then
+    local child = view.childView --[[@as table<string, unknown>]]
+    parts[#parts + 1] = tostring(child.kind or "-") .. ":" .. tostring(child.focusId or "-")
+  end
+  return table.concat(parts, ":")
 end
 
 -- Binds no manifest: battle regions are fixed source geometry and the
@@ -217,7 +368,7 @@ function BattleScreenInterface.defaults()
       panes = panes,
       frames = frames,
       content = { kind = "battle", layout = scopeFor(view), armed = view.armed },
-      inputKey = inputKey(view.mode --[[@as string]], view.requestId --[[@as integer]], signature),
+      inputKey = inputKey(view.mode --[[@as string]], view.requestId --[[@as integer]], signature, view),
       render = renderBattle,
       mapInput = mapBattleInput,
     }
