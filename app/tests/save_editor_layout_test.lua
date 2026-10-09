@@ -2932,4 +2932,58 @@ function T.tests.party_move_actions_follow_a_two_by_two_navigation_grid()
   Assert.equal(controller.focus, "party-move:move", "up returns to Move from PP Ups")
 end
 
+function T.tests.resize_publishes_before_the_next_draw_without_resolving_in_draw()
+  local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+  local FieldInput = require("libs.hgss.src.field.FieldInput")
+  local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
+  local controller = Controller.new()
+  controller:setSection("Player")
+  local snapshots, resolves = 0, 0
+  local stateHolder = {}
+  local state = setmetatable({
+    status = "ready",
+    width = 800,
+    height = 600,
+    controller = controller,
+    modalStack = ModalStack.new(),
+    fieldInput = FieldInput.new(),
+    scopeEpoch = 0,
+    inputTick = 0,
+    session = nil,
+    presentation = { cancelPointers = function() end },
+    renderer = { graphics = {}, text = {} },
+    _snapshot = function()
+      snapshots = snapshots + 1
+      return { section = "Player", width = stateHolder.state.width }
+    end,
+    _resolve = function()
+      resolves = resolves + 1
+      return { content = { layout = { width = stateHolder.state.width } } }
+    end,
+  }, SaveEditorState)
+  stateHolder.state = state
+  state:_syncScope()
+  local published = state:view()
+  Assert.equal(published.width, 800, "the observation publishes the opening measurement")
+  snapshots, resolves = 0, 0
+  state:resize(1024, 600)
+  Assert.equal(resolves, 1, "resize publishes the new measurement in the same turn")
+  snapshots, resolves = 0, 0
+  local drawnView = nil
+  local originalDraw = ApplicationPresentation.draw
+  ApplicationPresentation.draw = function(_, _, view)
+    drawnView = view
+  end
+  local ok, drawError = pcall(function()
+    state:draw()
+  end)
+  ApplicationPresentation.draw = originalDraw
+  Assert.isTrue(ok, "draw runs without platform rendering: " .. tostring(drawError))
+  Assert.isTrue(drawnView ~= nil, "draw renders the settled publication")
+  Assert.equal(drawnView.width, 1024, "the next draw shows the resized measurement without another update")
+  Assert.equal(drawnView.layout.width, 1024, "the drawn layout matches the resized measurement")
+  Assert.equal(snapshots, 0, "the draw performs no fresh snapshot")
+  Assert.equal(resolves, 0, "the draw performs no fresh resolve")
+end
+
 return T

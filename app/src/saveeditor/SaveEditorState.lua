@@ -307,6 +307,17 @@ end
 ---@field _bagCatalogTask SaveEditorBagCatalogTask?
 ---@field _flagCatalogTask SaveEditorFlagCatalogTask?
 ---@field _bagProjection SaveEditorBagProjection?
+---@field _publishedView table<string, unknown>?
+---@field _publishedPlan table<string, unknown>?
+---@field _publishedDirty boolean?
+---@field _publishedWidth number?
+---@field _publishedHeight number?
+---@field _publishedScopeEpoch integer?
+---@field _publishedSession SaveEditorSession?
+---@field _publishedSessionRevision integer?
+---@field _publishedScopeId string?
+---@field _publishedScopeRevision string?
+---@field _publishedSignature string?
 local State = {}
 State.__index = State
 local FIELD_DIRECTIONS = { up = "north", down = "south", left = "west", right = "east" }
@@ -554,10 +565,22 @@ function State.new(options)
     activeScopeRevision = nil,
     scopeEpoch = 0,
     editorFeedback = nil,
+    _publishedView = nil,
+    _publishedPlan = nil,
+    _publishedDirty = nil,
+    _publishedWidth = nil,
+    _publishedHeight = nil,
+    _publishedScopeEpoch = nil,
+    _publishedSession = nil,
+    _publishedSessionRevision = nil,
+    _publishedScopeId = nil,
+    _publishedScopeRevision = nil,
+    _publishedSignature = nil,
   }, State)
   self:_syncScope()
+  -- The opening pair is published before any draw observes the state.
   local resolveOk, resolveError = pcall(function()
-    self:_resolve(self:_snapshot())
+    self:_publishPublication()
   end)
   if not resolveOk then
     self.presentation:dispose()
@@ -717,8 +740,8 @@ function State:update(dt)
     self:_syncScope()
     self._locationCatalogLocation = originalLocation
     self.status, self.errorMessage = "ready", nil
+    self:_invalidatePublication()
     self:_settleScope()
-    self:_resolve(self:_snapshot())
   end
   if self.status == "ready" and self.locationService then
     self:_updateLocationService()
@@ -731,8 +754,9 @@ function State:update(dt)
     end
   end
   if self.status == "ready" and self.dependencies ~= nil and self.renderer ~= nil then
-    local view = self:_snapshot()
-    local plan = self:_resolve(view)
+    self:_invalidatePublication()
+    local view = self:_ensurePublished()
+    local plan = assert(self._publishedPlan, "the settled publication owns its plan")
     self:_adoptGridSize(plan)
     self.renderer:prepareVisibleIcons(view, plan, self.dependencies.cacheFs, self.derivedAssets, true)
     self.iconStatus, self.iconFailure = self.renderer.iconStatus, self.renderer.iconFailure
@@ -746,8 +770,8 @@ function State:_openingFailed(err)
   self.status = "error"
   self.errorMessage = message(err)
   self.controller.focus = "retry"
+  self:_invalidatePublication()
   self:_settleScope()
-  self:_resolve(self:_snapshot())
 end
 
 -- Computes the interaction scope identity from navigation facts only. Pure:
@@ -1914,6 +1938,103 @@ end
 function State:_resolve(view)
   view.textMetrics = assert(self.renderer):metrics()
   return self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
+end
+
+-- Probes the owning session revision without failing on partial states.
+-- States that can snapshot always answer; anything else keeps a nil mark.
+---@param owner SaveEditorSession?
+---@return integer?
+local function publishedSessionRevision(owner)
+  if owner == nil then
+    return nil
+  end
+  local ok, revision = pcall(function()
+    return owner:revision()
+  end)
+  if ok then
+    return revision
+  end
+  return nil
+end
+
+-- Reads the current host measurement signature without resolving a
+-- plan. States without a display context keep a nil mark.
+---@param state SaveEditorState
+---@return string?
+local function publicationSignature(state)
+  local display = state.displayContext
+  if display == nil then
+    return nil
+  end
+  local ok, measurement = pcall(function()
+    return display:measure(state.width, state.height)
+  end)
+  if ok and type(measurement) == "table" then
+    return measurement.signature
+  end
+  return nil
+end
+
+-- Marks the settled pair stale. Called at input, mutation, resize,
+-- focus and async publication boundaries; the owning funnel exit
+-- refreshes the pair before any draw observes the state.
+function State:_invalidatePublication()
+  self._publishedDirty = true
+end
+
+-- Publishes one matched (view, plan) pair atomically. A failed
+-- candidate keeps the previously published pair and propagates the
+-- existing failure; half-updated state is never exposed.
+function State:_publishPublication()
+  local view = self:_snapshot()
+  local plan = self:_resolve(view)
+  view.presentation = plan
+  view.layout = plan.content.layout
+  self._publishedView = view
+  self._publishedPlan = plan
+  self._publishedDirty = false
+  self._publishedWidth, self._publishedHeight = self.width, self.height
+  self._publishedScopeEpoch = self.scopeEpoch
+  self._publishedSession = self.session
+  self._publishedSessionRevision = publishedSessionRevision(self.session)
+  self._publishedScopeId, self._publishedScopeRevision = scopeDescription(self)
+  self._publishedSignature = publicationSignature(self)
+  return view
+end
+
+-- Returns the settled pair, republishing when a boundary marked it
+-- stale, when the measurement, scope epoch or owning session revision
+-- moved on, or when no pair was published yet. A plan is never paired
+-- with an older view.
+function State:_ensurePublished()
+  if self._publishedView == nil then
+    self:_publishPublication()
+    return assert(self._publishedView, "the editor publishes its settled pair before observing it")
+  end
+  local scopeId, scopeRevision = scopeDescription(self)
+  if
+    self._publishedDirty
+    or self._publishedWidth ~= self.width
+    or self._publishedHeight ~= self.height
+    or self._publishedScopeEpoch ~= self.scopeEpoch
+    or self._publishedSession ~= self.session
+    or self._publishedSessionRevision ~= publishedSessionRevision(self.session)
+    or self._publishedScopeId ~= scopeId
+    or self._publishedScopeRevision ~= scopeRevision
+    or self._publishedSignature ~= publicationSignature(self)
+  then
+    self:_publishPublication()
+  end
+  return assert(self._publishedView, "the editor publishes its settled pair before observing it")
+end
+
+-- Refreshes an already-published pair after a funnel exit. States that
+-- never published (hand-built harnesses, disposed editors) keep their
+-- legacy observation instead of resolving a pair nobody owns yet.
+function State:_refreshPublication()
+  if self._publishedDirty and self._publishedView ~= nil and not self.disposed then
+    self:_ensurePublished()
+  end
 end
 
 function State:_adoptGridSize(plan)
@@ -3669,11 +3790,13 @@ function State:_pointer(events)
     return
   end
   self:_settleScope()
+  self:_invalidatePublication()
   local view = self:_snapshot()
   local plan = self:_resolve(view)
   local numberEditor = self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number"
   if numberEditor and self:_numberEditorTooSmall(plan.content.layout) and plan.content.layout.targets.cancel == nil then
-    return plan
+    self:_refreshPublication()
+    return self._publishedPlan or plan
   end
   local mapped = self.presentation:mapInput(events, view)
   for _, event in ipairs(mapped) do
@@ -3744,15 +3867,14 @@ function State:_pointer(events)
   end
   self:_reconcileFocus()
   self:_settleScope()
-  return plan
+  self:_refreshPublication()
+  return self._publishedPlan or plan
 end
 
+-- Synchronous fresh-observation API: republishes when a boundary
+-- marked the pair stale and otherwise returns the coherent pair.
 function State:view()
-  local view = self:_snapshot()
-  local plan = self:_resolve(view)
-  view.presentation = plan
-  view.layout = plan.content.layout
-  return view
+  return self:_ensurePublished()
 end
 
 -- Draw only consumes the settled publication: it never changes scope,
@@ -3762,12 +3884,13 @@ function State:draw()
   if self.disposed then
     return
   end
-  local view = self:view()
+  local view = assert(self._publishedView, "draw consumes the settled publication")
+  local plan = assert(self._publishedPlan, "the settled publication owns its plan")
   ApplicationPresentation.draw(
     self.renderer.graphics,
     { renderer = self.renderer, text = self.renderer.text },
     view,
-    view.presentation
+    plan
   )
   self:_drawNavigationDebug(view)
 end
@@ -3831,6 +3954,7 @@ function State:_drawNavigationDebug(view)
 end
 
 function State:resize(width, height)
+  self:_invalidatePublication()
   local numberEditor = self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number"
   local wasNumberTooSmall = numberEditor and self:_numberEditorTooSmall() or false
   self.width, self.height = width, height
@@ -3854,10 +3978,12 @@ function State:resize(width, height)
     end
   end
   self:_settleScope()
+  self:_refreshPublication()
 end
 
 function State:focus(focused)
   if not focused then
+    self:_invalidatePublication()
     self.presentation:cancelPointers()
     self.controller:cancelInteraction()
     self.numberHold = nil
@@ -3865,6 +3991,7 @@ function State:focus(focused)
     self.fieldInput:clearAll()
     self.fieldInput:beginUi(self.inputTick)
     self:_settleScope()
+    self:_refreshPublication()
   end
 end
 
@@ -3876,6 +4003,7 @@ function State:_consumeUiInput(events)
     return
   end
   self:_settleScope()
+  self:_invalidatePublication()
   if self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number" then
     local layout = assert(self:_resolve(self:_snapshot()).content.layout)
     if self:_numberEditorTooSmall(layout) and layout.targets.cancel == nil then
@@ -3888,6 +4016,8 @@ function State:_consumeUiInput(events)
           break
         end
       end
+      self:_settleScope()
+      self:_refreshPublication()
       return
     end
   end
@@ -3946,6 +4076,7 @@ function State:_consumeUiInput(events)
   if not self.disposed and not self.resultSent then
     self:_reconcileFocus()
     self:_settleScope()
+    self:_refreshPublication()
   end
 end
 
@@ -3960,6 +4091,9 @@ function State:keypressed(key, _, isrepeat)
       if key == "escape" then
         self.valueEditor:cancel()
         self:_finishValueEditor()
+        self:_invalidatePublication()
+        self:_settleScope()
+        self:_refreshPublication()
       elseif editorLayout.targets.cancel ~= nil and (key == "return" or key == "kpenter") then
         self.fieldInput:pressAction(source)
         self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
@@ -3972,6 +4106,9 @@ function State:keypressed(key, _, isrepeat)
     local direction = love.keyboard.isDown("lshift", "rshift") and "previous" or "next"
     self:_navigateTab(layout, direction)
     self.controller:cancelInteraction()
+    self:_invalidatePublication()
+    self:_settleScope()
+    self:_refreshPublication()
     return
   end
   if self.controller.modal then
@@ -3995,6 +4132,9 @@ function State:keypressed(key, _, isrepeat)
       if key == "escape" then
         self.valueEditor:cancel()
         self:_finishValueEditor()
+        self:_invalidatePublication()
+        self:_settleScope()
+        self:_refreshPublication()
       end
       return
     end
@@ -4027,9 +4167,11 @@ function State:keypressed(key, _, isrepeat)
       self.controller:markKeyboardNavigation()
       self:_navigate(editorLayout, key)
     end
+    self:_invalidatePublication()
     self:_syncScope()
     self:_reconcileFocus()
     self:_settleScope()
+    self:_refreshPublication()
     return
   end
   if key == "backspace" or key == "delete" then
@@ -4037,8 +4179,10 @@ function State:keypressed(key, _, isrepeat)
     local list, rowIndex = self:_activeList(layout)
     if list ~= nil and list.filterable then
       self:_filterFocusedList(list, rowIndex, key == "delete" and "clear" or "backspace")
+      self:_invalidatePublication()
       self:_reconcileFocus()
       self:_settleScope()
+      self:_refreshPublication()
     end
     return
   end
@@ -4069,6 +4213,7 @@ function State:textinput(text)
   if self.disposed or self.resultSent then
     return
   end
+  self:_invalidatePublication()
   if self.valueEditor then
     if self:_numberEditorTooSmall() then
       return
@@ -4087,6 +4232,7 @@ function State:textinput(text)
     end
     self.editorFeedback = nil
     self:_settleScope()
+    self:_refreshPublication()
     return
   end
   local layout = self:_resolve(self:_snapshot()).content.layout
@@ -4096,6 +4242,7 @@ function State:textinput(text)
   end
   self:_filterFocusedList(list, rowIndex, "append", text)
   self:_settleScope()
+  self:_refreshPublication()
 end
 
 function State:keyreleased(key)
@@ -4207,8 +4354,10 @@ function State:wheelmoved(_, y)
     return
   end
   local viewport = assert(layout.viewports[viewportId], "active scroll owner needs a published viewport")
+  self:_invalidatePublication()
   self:_setScrollOffset(view, layout, viewportId, viewport.offset - y * viewport.rowExtent)
   self:_settleScope()
+  self:_refreshPublication()
 end
 
 function State:dispose()
@@ -4216,6 +4365,9 @@ function State:dispose()
     return
   end
   self.disposed = true
+  self._publishedView = nil
+  self._publishedPlan = nil
+  self._publishedDirty = true
   self.numberHold = nil
   self.numberPressTarget = nil
   self.generation = self.generation + 1

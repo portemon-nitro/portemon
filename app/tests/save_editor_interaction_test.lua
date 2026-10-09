@@ -2897,21 +2897,30 @@ function T.tests.draw_renders_the_published_plan_without_requesting_icons()
       iconPrepCalls = iconPrepCalls + 1
     end,
   }
+  local published = harness.state:view()
+  Assert.equal(snapshots, 1, "the observation publishes the settled pair once")
+  Assert.equal(resolves, 1, "the observation resolves the settled plan once")
+  Assert.isTrue(published.presentation == plan, "the observation pairs the view with its plan")
+  snapshots, resolves = 0, 0
   local drawnView, drawnPresentation = nil, nil
   local originalDraw = ApplicationPresentation.draw
   ApplicationPresentation.draw = function(_, _, view, presentation)
     drawnView, drawnPresentation = view, presentation
   end
-  local ok, drawError = pcall(function()
+  local firstOk, firstError = pcall(function()
+    harness.state:draw()
+  end)
+  local secondOk, secondError = pcall(function()
     harness.state:draw()
   end)
   ApplicationPresentation.draw = originalDraw
-  Assert.isTrue(ok, "draw runs without platform rendering: " .. tostring(drawError))
-  Assert.equal(snapshots, 1, "draw snapshots its view once")
-  Assert.equal(resolves, 1, "draw resolves its presentation plan once")
+  Assert.isTrue(firstOk, "the first draw runs without platform rendering: " .. tostring(firstError))
+  Assert.isTrue(secondOk, "the second draw runs without platform rendering: " .. tostring(secondError))
+  Assert.equal(snapshots, 0, "settled draws never snapshot again")
+  Assert.equal(resolves, 0, "settled draws never resolve again")
   Assert.equal(iconPrepCalls, 0, "draw never requests derived icon work")
-  Assert.isTrue(drawnView ~= nil, "draw renders its resolved view")
-  Assert.isTrue(drawnPresentation == plan, "draw renders its resolved plan")
+  Assert.isTrue(drawnView == published, "draw renders the settled view")
+  Assert.isTrue(drawnPresentation == plan, "draw renders the settled plan")
 end
 
 function T.tests.resize_republishes_the_location_viewport_on_the_next_refresh()
@@ -6108,6 +6117,151 @@ function T.tests.failed_save_preserves_the_cached_dirty_projection_until_retry_s
   Assert.isTrue(state:_save(false), "the same staged edit can be retried")
   local saved = state:_snapshot()
   Assert.isFalse(saved.session.dirtySections.money, "successful retry publishes a clean projection")
+end
+
+function T.tests.draw_consumes_the_settled_publication_without_resolving()
+  local controller = Controller.new()
+  controller:setSection("Player")
+  local snapshots, resolves = 0, 0
+  local plan = { content = { layout = { scopeId = "section:Player" } } }
+  local state = stateHarness({
+    status = "ready",
+    controller = controller,
+    modalStack = ModalStack.new(),
+    fieldInput = FieldInput.new(),
+    scopeEpoch = 0,
+    inputTick = 0,
+    session = nil,
+    _snapshot = function()
+      snapshots = snapshots + 1
+      return { section = "Player", focus = controller.focus }
+    end,
+    _resolve = function()
+      resolves = resolves + 1
+      return plan
+    end,
+    renderer = { graphics = {}, text = {} },
+  })
+  local published = state:view()
+  Assert.equal(snapshots, 1, "the synchronous observation publishes the pair once")
+  Assert.equal(resolves, 1, "the synchronous observation resolves the plan once")
+  snapshots, resolves = 0, 0
+  local focusBefore = controller.focus
+  local epochBefore = state.scopeEpoch
+  local drawn = {}
+  local originalDraw = ApplicationPresentation.draw
+  ApplicationPresentation.draw = function(_, _, view, presentation)
+    drawn[#drawn + 1] = { view = view, presentation = presentation }
+  end
+  local firstOk, firstError = pcall(function()
+    state:draw()
+  end)
+  local secondOk, secondError = pcall(function()
+    state:draw()
+  end)
+  ApplicationPresentation.draw = originalDraw
+  Assert.isTrue(firstOk, "the first settled draw runs without platform rendering: " .. tostring(firstError))
+  Assert.isTrue(secondOk, "the second settled draw runs without platform rendering: " .. tostring(secondError))
+  Assert.equal(snapshots, 0, "settled draws never snapshot again")
+  Assert.equal(resolves, 0, "settled draws never resolve again")
+  Assert.equal(#drawn, 2, "both settled draws render")
+  Assert.isTrue(drawn[1].view == published, "the first draw renders the settled view")
+  Assert.isTrue(drawn[2].view == published, "the second draw renders the same settled view")
+  Assert.isTrue(drawn[1].presentation == plan, "the first draw renders the settled plan")
+  Assert.isTrue(drawn[2].presentation == plan, "the second draw renders the same settled plan")
+  Assert.equal(controller.focus, focusBefore, "drawing never moves focus")
+  Assert.equal(state.scopeEpoch, epochBefore, "drawing never advances the scope epoch")
+  Assert.isNil(state.numberHold, "drawing never invents a held repeat")
+end
+
+function T.tests.retained_flag_and_bag_records_stay_detached_across_quantity_updates()
+  local controller = Controller.new()
+  controller:setSection("Progress")
+  local catalog = {}
+  for index = 1, 4 do
+    local name = string.format("FLAG_TEST_%04d", index)
+    catalog[index] = { name = name, displayName = name, id = index, targetId = "flag:" .. name }
+  end
+  local flagState = stateHarness({
+    status = "ready",
+    controller = controller,
+    fieldInput = FieldInput.new(),
+    inputTick = 0,
+    scopeEpoch = 0,
+    numberPressUntilTick = 0,
+    preserveChoiceScroll = false,
+    _flagCatalog = catalog,
+  })
+  local beforeFlags = flagState:_flagProjection({ [1] = true })
+  local oldFlagRow = assert(beforeFlags.rowAt(1), "the retained projection materializes its row")
+  Assert.isTrue(oldFlagRow.value, "the retained row reads the flag value at publication")
+  local afterFlags = flagState:_flagProjection({ [1] = false })
+  local newFlagRow = assert(afterFlags.rowAt(1), "the new projection materializes its row")
+  Assert.isFalse(newFlagRow.value, "the new projection reads the toggled flag value")
+  Assert.isTrue(oldFlagRow.value, "toggling a flag never mutates the retained row record")
+  Assert.isTrue(oldFlagRow ~= newFlagRow, "each publication materializes a fresh row record")
+  Assert.equal(afterFlags.idAt(1), beforeFlags.idAt(1), "toggling a flag keeps stable row identity")
+  Assert.isTrue(rawequal(flagState._flagCatalog, catalog), "flag reads never reenumerate the catalog")
+
+  local bagController = Controller.new()
+  bagController:setSection("Bag")
+  local itemCatalog = {}
+  local bagMetadata = {
+    catalog = itemCatalog,
+    pockets = { { key = "items" } },
+    pocketByKey = { items = { key = "items" } },
+    optionsByPocket = { items = { { key = "POTION", label = "Potion" } } },
+    itemByKey = { POTION = { item = "POTION", label = "Potion", iconKey = "potion" } },
+  }
+  local bagRevision = 1
+  local bagQuantity = 5
+  local bagManifest = {
+    interactive = {
+      pocketTabs = { rects = {}, strips = { items = {} } },
+      focus = { tabs = { visual = {}, targets = {} } },
+      overlays = { quantity = { visuals = {} } },
+    },
+  }
+  local bagSession = {
+    revision = function()
+      return bagRevision
+    end,
+    bagSnapshot = function()
+      return { { item = "POTION", quantity = bagQuantity } }
+    end,
+  }
+  local bagState = stateHarness({
+    status = "ready",
+    controller = bagController,
+    fieldInput = FieldInput.new(),
+    inputTick = 0,
+    scopeEpoch = 0,
+    modalStack = ModalStack.new(),
+    dependencies = { context = { itemCatalog = itemCatalog }, bagManifest = bagManifest },
+    session = bagSession,
+    _bagCatalogMetadata = bagMetadata,
+  })
+  local firstBag = bagState:_bagView()
+  local oldPageRow = assert(firstBag.bagPageRows[1], "the retained bag page materializes its row")
+  Assert.equal(oldPageRow.quantity, 5, "the retained page reads the quantity at publication")
+  bagRevision = 2
+  bagQuantity = 7
+  local secondBag = bagState:_bagView()
+  Assert.equal(secondBag.bagPageRows[1].quantity, 7, "the new page reads the changed quantity")
+  Assert.equal(oldPageRow.quantity, 5, "changing a quantity never mutates the retained page row")
+  Assert.isTrue(rawequal(bagState._bagCatalogMetadata, bagMetadata), "bag reads never reenumerate the catalog")
+  Assert.isTrue(
+    secondBag.bagRows[1] == firstBag.bagRows[1],
+    "catalog metadata rows are shared while page rows stay detached"
+  )
+  bagRevision = 3
+  bagSession.bagSnapshot = function()
+    return { { item = "UNKNOWN", quantity = 1 } }
+  end
+  local unknownOk = pcall(function()
+    bagState:_bagView()
+  end)
+  Assert.isFalse(unknownOk, "entries outside the item catalog fail instead of guessing")
 end
 
 return T
