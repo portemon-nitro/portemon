@@ -440,8 +440,24 @@ function T.label_clip_regions_bound_drawn_text()
     sceneImageKey = "scene:test",
   }, snapshot("command", { message = string.rep("Abcdefghij ", 20) }), promptPlan)
   local promptBox = assert(promptPlan.content.prompt, "the prompt plan carries its prompt").content
+  local promptHud = assert(promptPlan.content.hud, "the prompt plan carries its HUD bounds")
+  local promptHudRegions = {}
+  for _, side in ipairs({ promptHud.enemy, promptHud.player }) do
+    for _, region in ipairs(side.regions) do
+      if type(region.text) == "string" and region.text ~= "" then
+        promptHudRegions[#promptHudRegions + 1] = region
+      end
+    end
+  end
   for _, entry in ipairs(promptText.draws) do
-    if entry.x < 112 then
+    local hudScoped = false
+    for _, region in ipairs(promptHudRegions) do
+      if entry.content == region.text and entry.x == region.x and entry.y == region.y then
+        hudScoped = true
+        break
+      end
+    end
+    if not hudScoped and entry.x < 112 then
       Assert.isTrue(entry.y >= promptBox.y + 2, "wrapped prompt text stays below the cap-overlap row")
       Assert.isTrue(
         entry.y + 16 <= promptBox.y + promptBox.height - 1,

@@ -117,6 +117,9 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field private overworld table<string, unknown>|nil
 ---@field childResumePending boolean
 ---@field battleActive boolean whether an application battle owns player input
+---@field foregroundHold boolean whether a presented battle holds field gameplay advancement
+---@field _committedStepSerial integer monotonic identity behind unclaimed completed steps
+---@field _committedStep table<string, unknown>? latest unclaimed completed step, consumed once
 ---@field tick integer
 ---@field accumulator number
 ---@field navigationBoundary table<string, unknown>?
@@ -394,6 +397,9 @@ function FieldSession.new(options)
     }),
     childResumePending = false,
     battleActive = false,
+    foregroundHold = false,
+    _committedStepSerial = 0,
+    _committedStep = nil,
     navigationBoundary = options.navigationBoundary,
     fieldMoves = options.fieldMoves,
     overworld = options.overworld,
@@ -463,6 +469,55 @@ end
 ---@return boolean
 function FieldSession:isBattleActive()
   return self.battleActive == true
+end
+
+-- Marks the presented foreground hold: while active, ordinary field
+-- player/NPC/world gameplay advancement freezes but the script
+-- scheduler, overworld lifecycle, and audio clocks keep their ticks, so
+-- a launching script still polls its blocked battle task. This never
+-- touches the ambient battle flag, which keeps its player-only meaning
+-- outside the presented envelope.
+---@param active boolean
+function FieldSession:setForegroundHold(active)
+  self.foregroundHold = active == true
+end
+
+---@return boolean
+function FieldSession:isForegroundHoldActive()
+  return self.foregroundHold == true
+end
+
+-- Reports the latest completed step no higher-priority owner claimed,
+-- exactly once. Turning, bumping, interpolation, and steps consumed by
+-- a coordinate script, warp, zone change, modal, or battle launch never
+-- surface; re-entering a tile on a later committed movement reports anew
+-- under a distinct serial.
+---@return table<string, unknown>? { serial, fieldX, fieldZ, surfaceId, cellKey, sourceSurfaceId }
+function FieldSession:takeCommittedStep()
+  local step = self._committedStep
+  self._committedStep = nil
+  return step
+end
+
+---@param self FieldSession
+function FieldSession:_recordCommittedStep()
+  self._committedStepSerial = self._committedStepSerial + 1
+  self._committedStep = {
+    serial = self._committedStepSerial,
+    fieldX = self.player.fieldX,
+    fieldZ = self.player.fieldZ,
+    surfaceId = self.player.surfaceId,
+    cellKey = self.player.committedSourceCellKey,
+    sourceSurfaceId = self.player.committedSourceSurfaceId,
+  }
+end
+
+---@return boolean true while ordinary gameplay advancement stays suspended
+function FieldSession:_gameplaySuspended()
+  if self.foregroundHold == true then
+    return true
+  end
+  return self.overworld ~= nil and not self.overworld:isPresent()
 end
 
 -- A seamless connection never leaves the world: it stays outside the fade
@@ -960,7 +1015,7 @@ function FieldSession:updateFixed(inputSnapshot)
     return
   end
 
-  if self.overworld ~= nil and not self.overworld:isPresent() then
+  if self:_gameplaySuspended() then
     if self.audio then
       self.audio:updateField()
     end
@@ -1285,6 +1340,10 @@ function FieldSession:updateFixed(inputSnapshot)
         self:_advanceTick()
         return
       end
+      -- No higher-priority owner claimed this completed step: report it
+      -- once for encounter admission. Claimed steps never surface, so a
+      -- warp, script, or boundary never becomes a delayed encounter.
+      self:_recordCommittedStep()
     end
   end
   if completionDirection then

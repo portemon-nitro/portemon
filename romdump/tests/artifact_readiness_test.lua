@@ -519,6 +519,10 @@ local function publishMapDataRecord(cache, mapId, marker)
     initScripts = {},
     transitionEnvironment = "outdoors",
     renderEnvironment = validRenderEnvironment(),
+    -- Every compiled field record carries its catalog battle background
+    -- and its encounter table member; readiness requires both facts.
+    battleBackground = "general",
+    wildEncounterMemberId = 0,
     fieldUse = {
       flyAllowed = true,
       teleportAllowed = true,

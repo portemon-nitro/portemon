@@ -374,9 +374,252 @@ function T.attempts_wait_while_a_battle_or_preparation_owns_the_field()
   runtime:attemptEncounter({})
   Assert.equal(attempts, 1, "an active battle skips attempts")
   runtime.battleRuntime = nil
+  runtime._battleLaunch = { launchId = "launch-covering", phase = "covering" }
+  runtime:attemptEncounter({})
+  Assert.equal(attempts, 1, "an in-progress launch skips attempts without sampling")
+  runtime._battleLaunch = nil
   Assert.isNil(fakeRuntime()._encounters, "an absent service attempts nothing")
   local quiet = fakeRuntime()
   Assert.isNil(quiet:attemptEncounter({}), "an absent service attempts nothing")
+end
+
+function T.committed_steps_resolve_their_map_table_member()
+  local seen = {}
+  local service = {
+    attempt = function(_, context, _)
+      seen[#seen + 1] = context
+      return { kind = "miss", reason = "no_opportunity" }
+    end,
+  }
+  local runtime = fakeRuntime({
+    _encounters = service,
+    player = { fieldX = 665, fieldZ = 404 },
+    playerData = { profile = {} },
+    session = {
+      setBattleActive = function() end,
+      tick = 7,
+      takeCommittedStep = function()
+        return { serial = 1, fieldX = 665, fieldZ = 404 }
+      end,
+      mapEntryController = {
+        isActive = function()
+          return false
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      currentMap = {
+        mapId = 16,
+        coordinateOrigin = { x = 0, z = 0 },
+        collision = {
+          containsLocal = function()
+            return true
+          end,
+          getLocal = function()
+            return { behavior = 2 }
+          end,
+        },
+        fieldData = { wildEncounterMemberId = 1 },
+      },
+    },
+  })
+  runtime:_consumeCommittedStep()
+  Assert.equal(#seen, 1, "the committed step attempts once")
+  Assert.equal(seen[1].mapId, 1, "the attempt resolves the map's table member, not its map identity")
+end
+
+-- The token-guarded per-launch factory binding: one owner, monotonic
+-- identities, and stale unbinds never detach a replacement.
+function T.battle_presentation_binding_rejects_stale_teardown()
+  local runtime = fakeRuntime()
+  local first = runtime:bindBattlePresentation(function(_)
+    return headlessPort({ enters = 0, frames = {}, leaves = 0, disposed = 0 })
+  end)
+  Assert.isTrue(type(first) == "number", "binding issues an identity")
+  Assert.isTrue(not pcall(runtime.bindBattlePresentation, runtime, function(_) end), "one binding owns the lifetime")
+  runtime:unbindBattlePresentation(first + 1)
+  Assert.notNil(runtime._battlePresentationFactory, "a stale unbind never drops the owner")
+  runtime:unbindBattlePresentation(first)
+  Assert.isNil(runtime._battlePresentationFactory, "the matching unbind releases")
+  runtime:unbindBattlePresentation(first)
+  local second = runtime:bindBattlePresentation(function(_)
+    return headlessPort({ enters = 0, frames = {}, leaves = 0, disposed = 0 })
+  end)
+  Assert.isTrue(second ~= first, "identities never recycle across bindings")
+end
+
+-- A factory failure fails the admission loudly with no partial claim:
+-- no launch record, no input hold, no music claim, and no battle.
+function T.presented_admission_fails_closed_without_a_port()
+  local holds = {}
+  local runtime = fakeRuntime({
+    session = {
+      setBattleActive = function(_, active)
+        holds[#holds + 1] = active
+      end,
+      setForegroundHold = function(_, _)
+        error("no hold may precede a constructed port", 2)
+      end,
+      currentMap = { mapId = 61, fieldData = { battleBackground = "general" } },
+    },
+    input = {
+      clearAll = function()
+        error("no input may clear before a constructed port", 2)
+      end,
+    },
+    player = { fieldX = 1, fieldZ = 2, surfaceId = 0 },
+  })
+  runtime:bindBattlePresentation(function(_)
+    error("composition lost its screen", 0)
+  end)
+  local ok, err = pcall(runtime.launchBattle, runtime, {
+    kind = "wild",
+    details = { species = "TOTODILE", level = 4 },
+  })
+  Assert.isFalse(ok, "admission without a port fails loudly")
+  Assert.isTrue(tostring(err):find("admission failed", 1) ~= nil, "the failure names the admission")
+  Assert.notNil(runtime.errorText, "the failure enters the visible failed state")
+  Assert.isNil(runtime._battleLaunch, "no launch record impersonates a battle")
+  Assert.isNil(runtime.battleRuntime, "no battle constructs without a port")
+  Assert.deepEqual(holds, {}, "no input hold precedes a constructed port")
+end
+
+-- Launch environments resolve from compiled map facts and live avatar
+-- state without consuming randomness: surfing overrides to ocean,
+-- standing behavior selects terrain ahead of the background default,
+-- indoor backgrounds pin day, and explicit request overrides ride along.
+local function environmentRuntime(overrides)
+  local base = {
+    session = { currentMap = { mapId = 33, fieldData = { battleBackground = "general" } } },
+    player = { fieldX = 5, fieldZ = 6, surfaceId = 0 },
+    playerAvatar = {
+      status = function()
+        return { durableState = "walking" }
+      end,
+    },
+    localClock = {
+      nowLocal = function()
+        return { hour = 12 }
+      end,
+    },
+  }
+  for key, value in pairs(overrides or {}) do
+    base[key] = value
+  end
+  return fakeRuntime(base)
+end
+
+function T.launch_environments_resolve_from_compiled_facts()
+  local runtime = environmentRuntime()
+  local environment = runtime:_captureLaunchEnvironment({ kind = "wild", payload = {} }, "grass")
+  Assert.equal(environment.background, "general", "the compiled background resolves")
+  Assert.equal(environment.terrain, "plain", "general defaults to plain without a behavior")
+  Assert.equal(environment.time, "day", "midday reads day")
+  Assert.equal(environment.sceneKey, "general/plain/day", "the scene key joins its facts")
+  Assert.equal(environment.method, "grass", "the step method rides along")
+end
+
+function T.launch_environments_apply_the_surfing_override()
+  local runtime = environmentRuntime({
+    playerAvatar = {
+      status = function()
+        return { durableState = "surfing" }
+      end,
+    },
+  })
+  local environment = runtime:_captureLaunchEnvironment({ kind = "wild", payload = {} }, "surf")
+  Assert.equal(environment.background, "ocean", "surfing overrides to ocean")
+  Assert.equal(environment.sceneKey, "ocean/water/day", "surfing water selects its scene")
+end
+
+function T.launch_environments_pin_indoor_time_and_keep_overrides()
+  local runtime = environmentRuntime({
+    session = { currentMap = { mapId = 61, fieldData = { battleBackground = "building_1" } } },
+    localClock = {
+      nowLocal = function()
+        return { hour = 22 }
+      end,
+    },
+  })
+  local environment = runtime:_captureLaunchEnvironment({
+    kind = "trainer",
+    payload = { trainer = "rival", environment = { weather = "none" } },
+  }, nil)
+  Assert.equal(environment.background, "building_1", "interiors resolve their background")
+  Assert.equal(environment.time, "day", "indoor backgrounds pin day")
+  Assert.equal(environment.terrain, "building", "buildings default to building")
+  Assert.deepEqual(environment.sourceEnvironment, { weather = "none" }, "explicit overrides ride untouched")
+end
+
+function T.launch_environments_reject_unknown_scenes_loudly()
+  local runtime = environmentRuntime({
+    session = { currentMap = { mapId = 7, fieldData = { battleBackground = "moon" } } },
+  })
+  local ok, err = pcall(runtime._captureLaunchEnvironment, runtime, { kind = "wild", payload = {} }, "grass")
+  Assert.isFalse(ok, "an unmapped background fails the launch")
+  Assert.isTrue(tostring(err):find("unknown scene context", 1) ~= nil, "the failure names the scene")
+end
+
+-- Committed money adopts into the live wallet exactly once: the receipt
+-- candidate replaces the live record, and a second observation changes
+-- nothing.
+function T.committed_money_adopts_into_the_live_wallet_once()
+  local runtime = fakeRuntime({
+    playerData = { profile = { money = 3000 } },
+  })
+  local launch = {}
+  runtime:_adoptBattlePlayerMoney(launch, { player = { profile = { money = 2928 } } })
+  Assert.equal(runtime.playerData.profile.money, 2928, "the debit reaches the live wallet")
+  runtime.playerData.profile.money = 2928
+  runtime:_adoptBattlePlayerMoney(launch, { player = { profile = { money = 2000 } } })
+  Assert.equal(runtime.playerData.profile.money, 2928, "a second observation publishes nothing")
+  local untouched = fakeRuntime({ playerData = { profile = { money = 3000 } } })
+  untouched:_adoptBattlePlayerMoney({}, {})
+  Assert.equal(untouched.playerData.profile.money, 3000, "a receipt without a candidate changes nothing")
+end
+
+-- A failed screen fails its launch before commitment without publishing:
+-- the battle releases, holds clear, music restores, and the error is
+-- retained for the launching task. Past commitment the failure is
+-- ignored instead of rolling mechanics back.
+function T.screen_failures_before_commitment_publish_nothing()
+  local released = {}
+  local resumed = {}
+  local runtime = fakeRuntime({
+    battleRuntime = {
+      dispose = function()
+        released[#released + 1] = true
+      end,
+    },
+    session = {
+      setBattleActive = function(_, active)
+        released[#released + 1] = active
+      end,
+      setForegroundHold = function(_, active)
+        released[#released + 1] = active
+      end,
+    },
+    audio = {
+      resumeFieldPolicy = function(_, token, restore)
+        resumed[#resumed + 1] = { token = token, restore = restore }
+      end,
+    },
+  })
+  runtime._battleLaunch =
+    { launchId = "screen-fail#1", phase = "active", presented = true, request = { id = "screen-fail#1" } }
+  runtime:_presentedNotify("screen-fail#1", "screen-failed")
+  Assert.equal(runtime._battleLaunch, nil, "no launch impersonates a battle after its screen fails")
+  Assert.notNil(runtime.errorText, "the failure is retained loudly")
+  Assert.notNil(runtime._battleReceipt, "the launching task observes the failure")
+  Assert.equal(#released, 3, "the battle and both holds release exactly once")
+  Assert.equal(resumed[1].restore, true, "failure restores the field policy")
+  local committed = { launchId = "screen-fail#2", phase = "terminal", presented = true }
+  runtime._battleLaunch = committed
+  runtime:_presentedNotify("screen-fail#2", "screen-failed")
+  Assert.isTrue(runtime._battleLaunch == committed, "post-commit visuals never roll mechanics back")
 end
 
 local function readyVersions()

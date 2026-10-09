@@ -98,7 +98,7 @@ local function resolve(measurement, view)
   return session:resolve(measurement, view)
 end
 
----@return table recording text boundary that must stay silent for HUD content
+---@return table recording text boundary behind one draw
 local function recordingText()
   local text = { draws = {}, measures = 0 }
   function text.measure(content)

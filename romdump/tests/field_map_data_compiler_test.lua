@@ -77,12 +77,22 @@ function T.compiles_catalog_identity_source_and_events()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
   Assert.equal(bundle.mapId, 60)
-  Assert.equal(bundle.field.schema, "g4-field-map-v12")
+  Assert.equal(bundle.field.schema, "g4-field-map-v13")
   Assert.equal(bundle.field.mapSymbol, "MAP_NEW_BARK")
   Assert.equal(bundle.field.cameraType, 0)
   -- Source identity lives only in the dependency record; the runtime asset
   -- carries normalized events plus the semantic bank associations.
   Assert.isNil(bundle.field.source)
+  Assert.equal(bundle.field.battleBackground, "general", "the field record lowers its catalog battle background")
+  Assert.isTrue(
+    FieldMapDataCache.hasBattleBackground(bundle.field.battleBackground),
+    "the lowered background satisfies the readiness rule"
+  )
+  Assert.equal(bundle.field.wildEncounterMemberId, 0, "the field record carries its catalog encounter member")
+  Assert.isTrue(
+    FieldMapDataCache.hasEncounterMember(bundle.field.wildEncounterMemberId),
+    "the carried member satisfies the readiness rule"
+  )
   Assert.equal(bundle.field.events.warps[1].x, 684)
   Assert.equal(bundle.dependencies.eventMemberId, 57)
   Assert.equal(bundle.dependencies.eventMemberSha1, "member-sha")
@@ -100,7 +110,7 @@ end
 function T.emits_strict_init_script_array_for_every_map()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  Assert.equal(bundle.field.schema, "g4-field-map-v12")
+  Assert.equal(bundle.field.schema, "g4-field-map-v13")
   Assert.deepEqual(bundle.field.initScripts, {})
 end
 
@@ -111,12 +121,13 @@ end
 function T.emits_normalized_render_environment_without_a_visual_scene()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  Assert.equal(bundle.field.schema, "g4-field-map-v12")
+  Assert.equal(bundle.field.schema, "g4-field-map-v13")
   local environment = bundle.field.renderEnvironment
   Assert.notNil(environment, "the field record carries its render environment")
   environment = assert(environment)
   Assert.isTrue(
-    type(environment.lighting) == "table" and type(environment.lighting.records) == "table"
+    type(environment.lighting) == "table"
+      and type(environment.lighting.records) == "table"
       and #environment.lighting.records >= 1,
     "the environment carries parsed lighting records"
   )
@@ -133,18 +144,15 @@ function T.emits_normalized_render_environment_without_a_visual_scene()
   )
   Assert.equal(bundle.dependencies.areaDataMemberId, 2, "the area source member is provenanced")
   Assert.isTrue(
-    type(bundle.dependencies.areaDataMemberSha1) == "string"
-      and #bundle.dependencies.areaDataMemberSha1 > 0,
+    type(bundle.dependencies.areaDataMemberSha1) == "string" and #bundle.dependencies.areaDataMemberSha1 > 0,
     "the area source hash is provenanced"
   )
   Assert.isTrue(
-    type(bundle.dependencies.fieldLightSourcePath) == "string"
-      and #bundle.dependencies.fieldLightSourcePath > 0,
+    type(bundle.dependencies.fieldLightSourcePath) == "string" and #bundle.dependencies.fieldLightSourcePath > 0,
     "the field-light source path is provenanced"
   )
   Assert.isTrue(
-    type(bundle.dependencies.fieldLightSourceSha1) == "string"
-      and #bundle.dependencies.fieldLightSourceSha1 > 0,
+    type(bundle.dependencies.fieldLightSourceSha1) == "string" and #bundle.dependencies.fieldLightSourceSha1 > 0,
     "the field-light source hash is provenanced"
   )
 end

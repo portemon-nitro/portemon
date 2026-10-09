@@ -836,17 +836,19 @@ local function drawNarrationDock(resources, view, content)
 end
 
 -- Draws one side HUD inside the scene clip: the selected source artwork
--- composite unscaled at the plan bounds with the health bar beside the
+-- composite unscaled at the plan bounds, the resolved name, level,
+-- condition, health and experience wording through the borrowed text
+-- services at the plan region origins, and the health bar beside the
 -- numeric health region. Missing artwork draws nothing, never a
--- substitute, and the bar always draws so actual health stays visible.
--- Glyph regions resolve through the plan content; this path issues only
--- graphics-service draws, never text-service draws.
+-- substitute, and the bar and the wording always draw so actual health
+-- stays visible.
 ---@param graphics table<string, unknown> injected host graphics
 ---@param assets table<string, unknown> injected asset holder
+---@param text table<string, unknown> borrowed text services
 ---@param artKey string artwork identity under drawing
 ---@param battler table<string, unknown>? combatant facts under drawing
 ---@param side table<string, unknown>? anchored HUD box content under drawing
-local function drawHudSide(graphics, assets, artKey, battler, side)
+local function drawHudSide(graphics, assets, text, artKey, battler, side)
   if type(side) ~= "table" then
     return
   end
@@ -856,6 +858,13 @@ local function drawHudSide(graphics, assets, artKey, battler, side)
   local art = assets:drawable(artKey)
   if art ~= nil then
     graphics.draw(art, side.x, side.y)
+  end
+  if type(side.regions) == "table" then
+    for _, region in ipairs(side.regions) do
+      if type(region.text) == "string" and region.text ~= "" then
+        text.drawText(region.text, region.x, region.y)
+      end
+    end
   end
   local bar = side.bar
   if type(bar) == "table" then
@@ -886,6 +895,7 @@ end
 local function drawCompactHud(resources, view, content)
   local graphics = assert(resources.graphics, "the compact render borrows its host graphics")
   local assets = assert(resources.assets, "the compact render borrows its asset holder")
+  local text = assert(resources.text, "the compact render borrows its text services")
   local hud = content.hud
   if type(hud) ~= "table" then
     return
@@ -896,8 +906,8 @@ local function drawCompactHud(resources, view, content)
   end
   local player, enemy = splitBattlers(view)
   LogicalSurface.clip(graphics, viewport, function()
-    drawHudSide(graphics, assets, "hud:enemy", enemy, hud.enemy --[[@as table<string, unknown>?]])
-    drawHudSide(graphics, assets, "hud:player", player, hud.player --[[@as table<string, unknown>?]])
+    drawHudSide(graphics, assets, text, "hud:enemy", enemy, hud.enemy --[[@as table<string, unknown>?]])
+    drawHudSide(graphics, assets, text, "hud:player", player, hud.player --[[@as table<string, unknown>?]])
   end)
 end
 

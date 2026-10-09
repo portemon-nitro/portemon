@@ -147,7 +147,9 @@ function FieldResidencyCoordinator:_acquireResident(mapId)
 end
 
 function FieldResidencyCoordinator:_ensureResident(mapId, countFallback)
-  if self.residents[mapId] then
+  local resident = self.residents[mapId]
+  if resident then
+    self:_upgradeStagedResident(resident)
     return
   end
   self:_acquireResident(mapId)
@@ -210,9 +212,27 @@ end
 
 function FieldResidencyCoordinator:_syncResidentViews()
   for _, resident in pairs(self.residents) do
+    self:_upgradeStagedResident(resident)
     if type(resident.runtimeMap.syncPhysicalFields) == "function" then
       resident.runtimeMap:syncPhysicalFields()
     end
+  end
+end
+
+-- A halo resident staged bare (its runtime view is the logical map itself)
+-- upgrades to its composed view once coverage can serve it. The upgrade is
+-- best-effort: a coverage that cannot serve the map keeps the bare view
+-- rather than failing the committed step.
+---@param resident FieldResidencyCoordinator.Resident
+function FieldResidencyCoordinator:_upgradeStagedResident(resident)
+  if resident.runtimeMap ~= resident.logicalMap then
+    return
+  end
+  local ok, composed = pcall(function()
+    return self.composeMap(resident.logicalMap, self.coverage)
+  end)
+  if ok and composed ~= nil and composed ~= resident.logicalMap then
+    resident.runtimeMap = composed
   end
 end
 

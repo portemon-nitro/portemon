@@ -13,7 +13,7 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map:7" },
+    derivedAssets = { "field-runtime", "map:7", "map-data:7" },
     tags = { "field", "dialogue", "yes-no", "acceptance" },
   },
   tests = {},

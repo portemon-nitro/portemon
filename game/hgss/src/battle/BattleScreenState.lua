@@ -82,6 +82,25 @@ local TARGET_NAV = {
 -- hold their authored counts. A bounded scan skips the empty entry.
 local ARROW_DURATIONS = { 0, 4, 4, 4, 16, 6 }
 
+-- Collects the staged battle-music and interface role symbols behind the
+-- launch demand: every staged wild, trainer, rival, and select symbol the
+-- manifest verifies. A planning manifest stages no roles and demands
+-- none; the preparation services fail closed on unstaged roles where
+-- pixels are actually required.
+---@param manifest table<string, unknown> staged or planning presentation manifest
+---@return string[] staged audio role symbols
+local function stagedAudioRoles(manifest)
+  local roles = {}
+  if type(manifest) == "table" and manifest.verified == true and type(manifest.audioRoles) == "table" then
+    for _, role in ipairs({ "wild", "trainer", "rival", "select" }) do
+      if type(manifest.audioRoles[role]) == "string" then
+        roles[#roles + 1] = manifest.audioRoles[role]
+      end
+    end
+  end
+  return roles
+end
+
 ---@param value unknown
 ---@return unknown detached copy without shared mutable state
 local function copyValue(value)
@@ -143,6 +162,7 @@ function BattleScreenState.new(opts)
       assets = opts.assets,
       launchId = opts.launchId,
       sceneKey = sceneKey --[[@as string]],
+      audioRoles = stagedAudioRoles(manifest),
       sceneImage = overrides.sceneImage --[[@as string?]],
       frameKey = overrides.frameKey --[[@as string?]],
       frames = overrides.frames --[[@as table<string, table<string, unknown>>?]],
@@ -1338,7 +1358,20 @@ function BattleScreenState:draw(resources)
     frameKey = self._assets:frameKey(),
     sceneImageKey = self._assets:sceneImage(),
   }
-  ApplicationPresentation.draw(resources.graphics, owned, self:_snapshot(), plan)
+  -- The render runs under a bounded guard with the pushed scope owned
+  -- here: a production-data render failure becomes failed with context
+  -- instead of an unhandled host error, and the scope always pops so the
+  -- host observes no graphics leak. Draws never substitute, never paint
+  -- a blank success, and never raise.
+  local snapshot = self:_snapshot()
+  local graphics = resources.graphics
+  graphics.push("all")
+  local renderOk, renderErr = pcall(plan.render, owned, snapshot, plan)
+  graphics.pop()
+  if not renderOk then
+    self._mode = "failed"
+    self._error = "battle render failed for launch " .. self._launchId .. ": " .. tostring(renderErr)
+  end
 end
 
 -- Idempotent release of the launch lifetime: owned handles release

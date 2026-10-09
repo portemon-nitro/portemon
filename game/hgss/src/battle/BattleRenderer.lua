@@ -541,9 +541,9 @@ end
 -- The plan may supply compact centers; without them the native centers
 -- apply. The auxiliary selection arrow and party gauges stay hidden in
 -- compact mode because the text cursor and Party action provide the
--- corresponding interaction. Dynamic HUD facts ride the plan anchors for
--- the dock composition; this scene path draws images only, never text
--- or bars, so dock text owns every glyph.
+-- corresponding interaction. The compact HUD draws its own region wording
+-- through the text services at the plan anchors; this scene path draws
+-- images only, never text or bars.
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param content table<string, unknown> canonical plan content carrying the compact anchors

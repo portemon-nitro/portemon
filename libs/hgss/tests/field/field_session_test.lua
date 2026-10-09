@@ -4752,4 +4752,125 @@ function T.battle_ownership_freezes_player_input_initiation()
   Assert.isFalse(session:isBattleActive(), "returning clears the battle flag")
 end
 
+-- A step that completes its tile without being claimed by a coordinate
+-- script, warp, zone change, or modal is reported exactly once with its
+-- completion identity; turning, bumping, and idle ticks report nothing.
+local function steppingPlayer()
+  local player = defaultPlayer()
+  player.collapseRenderInterpolation = function() end
+  player.updateFixed = function(self, _)
+    self.fieldX = self.fieldX + 1
+    self.committedSourceCellKey = "cell:" .. tostring(self.fieldX)
+    self.committedSourceSurfaceId = 0
+    return true
+  end
+  return player
+end
+
+function T.committed_steps_are_reported_once_per_completion()
+  local player = steppingPlayer()
+  local session = FieldSession.new(baseOptions({ player = player }))
+  Assert.isNil(session:takeCommittedStep(), "no step completes before movement")
+  session:updateFixed({})
+  local first = session:takeCommittedStep()
+  Assert.notNil(first, "an unclaimed completed step is reported")
+  Assert.equal(first.fieldX, 5, "the report carries the committed tile")
+  Assert.isTrue(type(first.serial) == "number", "the report carries a completion identity")
+  Assert.isNil(session:takeCommittedStep(), "the report is consume-once")
+  session:updateFixed({})
+  local second = session:takeCommittedStep()
+  Assert.notNil(second, "a later committed movement is a new step")
+  Assert.isTrue(second.serial ~= first.serial, "completions carry distinct identities")
+end
+
+function T.turning_reports_no_committed_step()
+  local player = defaultPlayer()
+  local session = FieldSession.new(baseOptions({ player = player }))
+  session:updateFixed({ pressedDirection = "north" })
+  Assert.isNil(session:takeCommittedStep(), "a turn-in-place is not a step")
+  session:updateFixed({})
+  Assert.isNil(session:takeCommittedStep(), "an idle tick is not a step")
+end
+
+-- A completed step claimed by a higher-priority coordinate script is
+-- marked handled: it never surfaces as a delayed encounter.
+function T.coordinate_claimed_steps_never_surface()
+  local player = steppingPlayer()
+  local intent = { mapId = 61, scriptId = "route.greeter" }
+  local consumed = 0
+  local session = FieldSession.new(baseOptions({
+    player = player,
+    eventResolver = {
+      resolveCoordinate = function()
+        return intent
+      end,
+      resolvePassiveSign = function()
+        return nil
+      end,
+    },
+    scriptClient = {
+      consume = function(_, received, _)
+        consumed = consumed + 1
+        Assert.isTrue(received == intent, "the arrival script owns the step")
+        return "started"
+      end,
+    },
+  }))
+  session:updateFixed({})
+  Assert.equal(consumed, 1, "the coordinate script claims the arrival")
+  Assert.isNil(session:takeCommittedStep(), "the claimed step never surfaces")
+end
+
+-- The scoped presented foreground hold freezes player, actor, and camera
+-- advancement while the launching script, overworld lifecycle, and audio
+-- clocks keep their ticks. It never touches the ambient battle flag.
+function T.foreground_hold_freezes_gameplay_but_not_script_polling()
+  local schedulerSteps = 0
+  local actorSteps = 0
+  local player = steppingPlayer()
+  local session = FieldSession.new(baseOptions({
+    player = player,
+    overworld = FieldOverworldLifecycle.new(),
+    scriptScheduler = {
+      step = function()
+        schedulerSteps = schedulerSteps + 1
+      end,
+      playerInputLocked = function()
+        return false
+      end,
+      playerInputOwned = function()
+        return false
+      end,
+      foregroundEnvironmentId = function()
+        return nil
+      end,
+      autonomousActorsLocked = function()
+        return false
+      end,
+      autonomousActorLocked = function()
+        return false
+      end,
+    },
+    actors = {
+      beginFixedStep = function() end,
+      step = function()
+        actorSteps = actorSteps + 1
+      end,
+    },
+  }))
+  Assert.isFalse(session:isForegroundHoldActive(), "sessions start without a foreground hold")
+  session:setForegroundHold(true)
+  Assert.isTrue(session:isForegroundHoldActive(), "the hold reports its owner")
+  session:updateFixed({ pressedDirection = "east" })
+  Assert.equal(schedulerSteps, 1, "script polling continues under the hold")
+  Assert.equal(actorSteps, 0, "actors freeze under the hold")
+  Assert.isNil(session:takeCommittedStep(), "no step completes under the hold")
+  Assert.isFalse(session:isBattleActive(), "the hold never implies the ambient battle flag")
+  session:setForegroundHold(false)
+  Assert.isFalse(session:isForegroundHoldActive(), "releasing clears the hold")
+  session:updateFixed({})
+  Assert.equal(actorSteps, 1, "actors resume after the hold")
+  Assert.notNil(session:takeCommittedStep(), "steps complete after the hold")
+end
+
 return { tests = T }

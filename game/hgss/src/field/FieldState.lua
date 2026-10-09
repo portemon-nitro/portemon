@@ -1,6 +1,7 @@
 -- Interactive presentation over the non-rendering field runtime.
 
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
@@ -27,8 +28,56 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field martStockResolver (fun(descriptor: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>): table<string, unknown>)? game-root provider for live script mart stock
 ---@field preparedEntry table<string, unknown>? one-shot staged New Game entry; the runtime claims its loader and queue
 
+-- Borrowed battle draw services over the shared field renderers: text
+-- measures through the live field font at the field line height, and
+-- window borders resolve the selected application frame through the live
+-- player frame option. Only the player-selected default frame exists in
+-- production; any other key fails explicitly instead of substituting.
+---@param state FieldState
+---@param resources FieldPresentationResources
+---@param runtime FieldRuntime
+---@return table<string, unknown> text services
+---@return table<string, unknown> window services
+local function battleDrawServices(state, resources, runtime)
+  local textRenderer = assert(resources.textRenderer, "battle text borrows the field text renderer")
+  local windowRenderer = assert(resources.windowRenderer, "battle windows borrow the field window renderer")
+  local _ = state
+  local text = {}
+  text.fontDef = textRenderer.fontDef
+  function text.drawText(content, x, y)
+    return textRenderer:drawText(content, x, y)
+  end
+  if type(textRenderer.drawTextWithPalette) == "function" then
+    function text.drawTextWithPalette(content, x, y, palette)
+      return textRenderer:drawTextWithPalette(content, x, y, palette)
+    end
+  end
+  function text.measure(content)
+    return { width = textRenderer:textWidth(content), height = 16 }
+  end
+  local windows = {}
+  local function frameIndexOf(frameKey)
+    if frameKey == nil or frameKey == "default" then
+      local playerData = assert(runtime.playerData, "battle frames read the player frame option")
+      return assert(playerData.options.textFrame, "battle frames read the player frame option")
+    end
+    error("unknown battle frame: " .. tostring(frameKey), 0)
+  end
+  function windows.drawWindow(box, frameKey, background)
+    return windowRenderer:drawWindow(box, frameIndexOf(frameKey), background)
+  end
+  function windows.drawApplicationFrame(box, frameKey)
+    return windowRenderer:drawApplicationFrame(box, frameIndexOf(frameKey))
+  end
+  return text, windows
+end
+
 ---@class FieldState
 ---@field runtime FieldRuntime?
+---@field battleEnvelope FieldBattlePresentation? the field-local presented-battle envelope
+---@field _battleText table<string, unknown>? borrowed battle text services
+---@field _battleWindows table<string, unknown>? borrowed battle window services
+---@field _battlePresentationBinding integer? factory binding identity behind the envelope
 ---@field presentationResources FieldPresentationResources?
 ---@field actorPresentation FieldActorPresentation?
 ---@field _lastGeometrySignature string? the structural presentation-geometry signature the last sync consumed
@@ -138,6 +187,29 @@ function FieldState.new(game, options)
     end)
     self.actorPresentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]])
     self.actorPresentation:sync()
+    -- The field-local presented-battle envelope: borrows the field text
+    -- and window renderers plus the player frame selection, carries the
+    -- live host graphics namespace so battle drawables upload as real
+    -- owned handles, and binds one fresh presentation port per launch
+    -- through the runtime factory seam. Runtimes without the battle
+    -- presentation seam (minimal test doubles) keep their headless
+    -- behavior instead of failing construction.
+    self._battleText, self._battleWindows =
+      battleDrawServices(self, assert(self.presentationResources, "battle draw needs its resources"), runtime)
+    local function battleDisplay()
+      return runtime.presentationDisplay
+    end
+    self.battleEnvelope = FieldBattlePresentation.new({
+      cacheFs = runtime.cacheFs,
+      graphics = love.graphics,
+      windows = self._battleWindows,
+      text = self._battleText,
+      audio = runtime.audio,
+      measureDisplay = battleDisplay,
+    })
+    if type(runtime.bindBattlePresentation) == "function" then
+      self._battlePresentationBinding = runtime:bindBattlePresentation(self.battleEnvelope:factory())
+    end
   end)
   if not ok then
     self:dispose()
@@ -148,6 +220,12 @@ end
 
 function FieldState:update(dt)
   self.runtime:update(dt)
+  -- The presented battle envelope runs its fixed cover, screen, and
+  -- launch driver on the same accepted time, exactly once. The runtime
+  -- never advances presented launches through its own update as well.
+  if self.battleEnvelope ~= nil then
+    self.battleEnvelope:updateFixed(dt)
+  end
   local pcHost = self.runtime.pcApplicationHost
   if pcHost ~= nil and pcHost:isActive() then
     local handle = assert(pcHost:activeHandle(), "active PC host publishes its handle")
@@ -480,6 +558,11 @@ function FieldState:resize(width, height)
   local provider = assert(self.topologyProvider, "field presentation needs its topology provider")
   local topology = provider(width, height)
   self.runtime:resizePresentation(width, height, topology)
+  -- Atomic display changes cancel held pointer capture so a stale
+  -- release can never activate after remeasure, in either owner.
+  if self.battleEnvelope ~= nil then
+    self.battleEnvelope:cancelPointerCapture()
+  end
   local pcHost = self.runtime.pcApplicationHost
   if pcHost ~= nil then
     pcHost:cancelPointerCapture()
@@ -736,6 +819,26 @@ function FieldState:draw()
     lg.setColor(color, color, color, blackoutStatus.coverAlpha)
     lg.rectangle("fill", 0, 0, width, height)
   end
+  -- The presented battle draws through its live screen owner with the
+  -- borrowed field services, then the envelope cover blacks the full
+  -- surface: dimensions read fresh every frame so a mid-cover layout
+  -- change never exposes a stale strip or the hidden field. A fully
+  -- opaque cover skips the hidden screen; a disposed port never draws.
+  local envelope = self.battleEnvelope
+  if envelope ~= nil and (envelope:ownsInput() or envelope:cover().coefficient > 0) then
+    if envelope:cover().coefficient < FieldBattlePresentation.COVER_MAX then
+      envelope:drawBattle({
+        graphics = lg,
+        text = assert(self._battleText, "battle draw needs its text services"),
+        windows = assert(self._battleWindows, "battle draw needs its window services"),
+      })
+    end
+    local coefficient = envelope:cover().coefficient
+    if coefficient > 0 then
+      lg.setColor(0, 0, 0, coefficient / FieldBattlePresentation.COVER_MAX)
+      lg.rectangle("fill", 0, 0, width, height)
+    end
+  end
   if self.development and self._developmentOverlayVisible then
     self._fpsFrames = self._fpsFrames + 1
     self:_drawHud()
@@ -915,6 +1018,92 @@ function FieldState:_drawHud()
   end
 end
 
+-- Routes one semantic batch to the presented battle while it owns the
+-- foreground, ahead of zoom, menu, and field handling. Each physical
+-- event has exactly one semantic owner; keyboard and gamepad releases
+-- stay on their existing clear paths so nothing sticks.
+---@param events table<integer, table<string, unknown>> semantic batch
+---@return boolean owned true when the envelope consumed the batch
+function FieldState:_routeBattleInput(events)
+  local envelope = self.battleEnvelope
+  if envelope == nil or not envelope:ownsInput() then
+    return false
+  end
+  envelope:input(events)
+  return true
+end
+
+-- Translates one pressed key while the battle owns the foreground:
+-- directions navigate, Action confirms, Cancel cancels, and every other
+-- key (menu, zoom, unbound) is owned and swallowed so the field never
+-- sees it. Never synthesizes presses from held state.
+---@param key string
+---@return boolean owned
+function FieldState:_routeBattleKey(key)
+  local envelope = self.battleEnvelope
+  if envelope == nil or not envelope:ownsInput() then
+    return false
+  end
+  local direction = KEY_DIRECTIONS[key]
+  if direction ~= nil then
+    envelope:input({ { type = "navigate", direction = direction } })
+    return true
+  end
+  if self.runtime.actionKeys[key] then
+    envelope:input({ { type = "confirm" } })
+    return true
+  end
+  if self.runtime.cancelKeys[key] then
+    envelope:input({ { type = "cancel" } })
+    return true
+  end
+  return true
+end
+
+-- Translates one pressed gamepad button while the battle owns the
+-- foreground, mirroring the keyboard translation above.
+---@param source string physical source identity under translation
+---@param button string pressed button under translation
+---@return boolean owned
+function FieldState:_routeBattleGamepadButton(source, button)
+  local envelope = self.battleEnvelope
+  if envelope == nil or not envelope:ownsInput() then
+    return false
+  end
+  local _ = source
+  if button == "a" then
+    envelope:input({ { type = "confirm" } })
+    return true
+  end
+  if button == "b" then
+    envelope:input({ { type = "cancel" } })
+    return true
+  end
+  local direction = GAMEPAD_DIRECTIONS[button]
+  if direction ~= nil then
+    envelope:input({ { type = "navigate", direction = direction } })
+    return true
+  end
+  return true
+end
+
+-- Routes one pointer edge to the live battle or child while the envelope
+-- owns the foreground. Outside taps never dismiss the battle; mapping
+-- through the published plan decides every hit.
+---@param eventType string pointer_down, pointer_move, or pointer_up
+---@param pointerId string
+---@param x number
+---@param y number
+---@return boolean owned
+function FieldState:_routeBattlePointer(eventType, pointerId, x, y)
+  local envelope = self.battleEnvelope
+  if envelope == nil or not envelope:ownsInput() then
+    return false
+  end
+  envelope:input({ { type = eventType, pointerId = pointerId, x = x, y = y } })
+  return true
+end
+
 ---@param key string
 function FieldState:keypressed(key, _, _)
   -- The developer overlay toggle precedes every gameplay gate (including
@@ -927,6 +1116,9 @@ function FieldState:keypressed(key, _, _)
     return
   end
   if self:_entryCoverActive() then
+    return
+  end
+  if self:_routeBattleKey(key) then
     return
   end
   if key == "-" or key == "kp-" then
@@ -990,6 +1182,11 @@ end
 ---@param focused boolean
 function FieldState:focus(focused)
   if not focused then
+    -- Focus loss clears held, edge, and capture state across both
+    -- owners, but neither answers nor cancels a battle request.
+    if self.battleEnvelope ~= nil then
+      self.battleEnvelope:cancelPointerCapture()
+    end
     self.runtime.input:clearAll()
     local host = self.runtime.applicationHost
     if host ~= nil and type(host.cancelPointerCapture) == "function" then
@@ -1033,6 +1230,9 @@ function FieldState:gamepadpressed(joystick, button)
     return
   end
   local source = "gamepad:" .. joystick:getID() .. ":" .. button
+  if self:_routeBattleGamepadButton(source, button) then
+    return
+  end
   if button == "a" then
     self.runtime.input:pressAction(source)
   end
@@ -1079,6 +1279,10 @@ function FieldState:gamepadaxis(joystick, axis, value)
   if self:_entryCoverActive() then
     return
   end
+  local envelope = self.battleEnvelope
+  if envelope ~= nil and envelope:ownsInput() then
+    return
+  end
   local source = "gamepad:" .. joystick:getID() .. ":left"
   self.runtime.input:setStickAxis(source, axis == "leftx" and "x" or "y", value)
 end
@@ -1094,6 +1298,9 @@ function FieldState:mousepressed(x, y, button, _, _)
     return
   end
   if button == 1 then
+    if self:_routeBattlePointer("pointer_down", "mouse:1", x, y) then
+      return
+    end
     self.runtime.input:pointerDown("mouse:1", x, y)
   end
 end
@@ -1109,6 +1316,9 @@ function FieldState:mousemoved(x, y, _, _, istouch)
     return
   end
   if not istouch then
+    if self:_routeBattlePointer("pointer_move", "mouse:1", x, y) then
+      return
+    end
     self.runtime.input:pointerMove("mouse:1", x, y)
   end
 end
@@ -1118,6 +1328,9 @@ end
 ---@param button integer
 function FieldState:mousereleased(x, y, button, _, _)
   if button == 1 then
+    if self:_routeBattlePointer("pointer_up", "mouse:1", x, y) then
+      return
+    end
     self.runtime.input:pointerUp("mouse:1", x, y)
   end
 end
@@ -1129,6 +1342,10 @@ function FieldState:wheelmoved(x, y)
     return
   end
   if self:_starterPresentationHolding() then
+    return
+  end
+  local envelope = self.battleEnvelope
+  if envelope ~= nil and envelope:ownsInput() then
     return
   end
   self.runtime.input:pointerScroll("mouse", x, y)
@@ -1144,6 +1361,9 @@ function FieldState:touchpressed(id, x, y)
   if self:_starterPresentationHolding() then
     return
   end
+  if self:_routeBattlePointer("pointer_down", "touch:" .. tostring(id), x, y) then
+    return
+  end
   self.runtime.input:pointerDown("touch:" .. tostring(id), x, y)
 end
 
@@ -1157,6 +1377,9 @@ function FieldState:touchmoved(id, x, y)
   if self:_starterPresentationHolding() then
     return
   end
+  if self:_routeBattlePointer("pointer_move", "touch:" .. tostring(id), x, y) then
+    return
+  end
   self.runtime.input:pointerMove("touch:" .. tostring(id), x, y)
 end
 
@@ -1164,12 +1387,29 @@ end
 ---@param x number
 ---@param y number
 function FieldState:touchreleased(id, x, y)
+  if self:_routeBattlePointer("pointer_up", "touch:" .. tostring(id), x, y) then
+    return
+  end
   self.runtime.input:pointerUp("touch:" .. tostring(id), x, y)
 end
 
 function FieldState:dispose()
   self._entryFade = nil
   self._entryAccumulator = 0
+  -- Borrowers release before their owner: the envelope drops its live
+  -- screen and removes only its own factory binding while the runtime
+  -- binding is still installed; the runtime teardown follows.
+  if self.battleEnvelope ~= nil then
+    self.battleEnvelope:dispose()
+    self.battleEnvelope = nil
+  end
+  if self._battlePresentationBinding ~= nil and self.runtime ~= nil then
+    if type(self.runtime.unbindBattlePresentation) == "function" then
+      self.runtime:unbindBattlePresentation(self._battlePresentationBinding)
+    end
+    self._battlePresentationBinding = nil
+  end
+  self._battleText, self._battleWindows = nil, nil
   self._starterUiSuspended = false
   self._dialogueGeometry = nil
   self._fadeCover = nil

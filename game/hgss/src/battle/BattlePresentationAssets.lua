@@ -17,6 +17,7 @@
 ---@field _launchId string owning launch identity
 ---@field _sceneKey string semantic scene identity for the demand
 ---@field _sceneImage string selected scene image key
+---@field _audioRoles string[] staged audio role symbols behind the demand
 ---@field _frameKey string selected window frame key
 ---@field _frames table<string, table<string, unknown>>? per-instance frame declarations
 ---@field _state "pending"|"ready"|"failed"
@@ -34,6 +35,7 @@ BattlePresentationAssets.DEFAULT_FRAME = "default"
 ---@field assets BattlePresentationAssets.Services preparation services carrying prepare/drawable/release
 ---@field launchId string owning launch identity
 ---@field sceneKey string semantic scene identity for the demand
+---@field audioRoles string[]? staged audio role symbols behind the demand, none when absent
 ---@field sceneImage string? selected scene image key, derived from the scene key when absent
 ---@field frameKey string? selected window frame key, the built-in default when absent
 ---@field frames table<string, table<string, unknown>>? per-instance frame declarations
@@ -54,10 +56,14 @@ function BattlePresentationAssets.new(opts)
   if opts.frames ~= nil then
     assert(type(opts.frames) == "table", "frame declarations arrive as a keyed record")
   end
+  if opts.audioRoles ~= nil then
+    assert(type(opts.audioRoles) == "table", "staged audio roles arrive as an array")
+  end
   return setmetatable({
     _assets = opts.assets,
     _launchId = opts.launchId,
     _sceneKey = opts.sceneKey,
+    _audioRoles = opts.audioRoles or {},
     _sceneImage = opts.sceneImage or ("scene:" .. opts.sceneKey),
     _frameKey = opts.frameKey or BattlePresentationAssets.DEFAULT_FRAME,
     _frames = opts.frames,
@@ -84,16 +90,38 @@ function BattlePresentationAssets:_demand()
   for _, selector in ipairs(self._selectors) do
     selectors[#selectors + 1] = selector
   end
+  local roles = {}
+  for _, role in ipairs(self._audioRoles) do
+    roles[#roles + 1] = role
+  end
+  local seenCries, cries = {}, {}
+  for _, selector in ipairs(selectors) do
+    local species = tostring(selector):match("^([^/]+)")
+    if type(species) == "string" and species ~= "" then
+      local cry = "cry:" .. species
+      if not seenCries[cry] then
+        seenCries[cry] = true
+        cries[#cries + 1] = cry
+      end
+    end
+  end
+  table.sort(cries)
   return {
     launchId = self._launchId,
     scenes = { self._sceneKey },
     pages = selectors,
-    audio = { roles = {}, banks = {}, cries = {} },
+    audio = { roles = roles, banks = {}, cries = cries },
   }
 end
 
+-- Image keys the launch always draws: the selected scene, both HUD
+-- composites, and all three menu surfaces. Battler portraits stay
+-- cue-gated through their side keys instead: their selectors arrive
+-- after the opening delivery, so readiness cannot wait on them.
+local REQUIRED_DRAWABLES = { "hud:enemy", "hud:player", "menu:command", "menu:moves", "menu:target" }
+
 -- Runs preparation once per demand: an invalid frame selection or a
--- service failure becomes failed with context; a missing scene image
+-- service failure becomes failed with context; a missing required image
 -- stays pending until its drawable resolves instead of failing.
 function BattlePresentationAssets:update()
   if self._state == "failed" or self._state == "ready" then
@@ -124,6 +152,12 @@ function BattlePresentationAssets:update()
     return
   end
   self._owned[self._sceneImage] = true
+  for _, key in ipairs(REQUIRED_DRAWABLES) do
+    if self._assets.drawable(key) == nil then
+      return
+    end
+    self._owned[key] = true
+  end
   self._state = "ready"
 end
 

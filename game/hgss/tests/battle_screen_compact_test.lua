@@ -377,7 +377,9 @@ end
 -- Dock drawing establishes the shared window background under both panels,
 -- draws prompt and command text, then borders both content boxes with the
 -- one selected frame; text stays clear of the cap-overlap rows and no dock
--- fill is black or a new hard-coded white.
+-- fill is black or a new hard-coded white. HUD name, level and health
+-- wording draws through the same text boundary at the published HUD region
+-- origins inside the scene viewport.
 function T.dock_draws_background_text_before_shared_borders()
   local plan = resolve(compactMeasurement(), snapshot("command"))
   local content = singlePaneContent(plan)
@@ -428,7 +430,37 @@ function T.dock_draws_background_text_before_shared_borders()
   Assert.isTrue(textsBefore > 0, "text draws before the border draws, never underneath it")
   local promptBox = content.prompt.content --[[@as table<string, unknown>]]
   local commandBox = content.commands.content --[[@as table<string, unknown>]]
+  local hud = content.hud --[[@as table<string, unknown>]]
+  local scene = content.scene --[[@as table<string, unknown>]]
+  -- HUD wording draws through the same text boundary at the published
+  -- region origins, so the dock checks below scope to every other draw: a
+  -- draw counts as HUD-scoped exactly when its wording and origin match a
+  -- published non-empty HUD region.
+  local expectedHud = {}
+  for _, side in ipairs({ hud.enemy, hud.player }) do
+    for _, region in ipairs(side.regions) do
+      if type(region.text) == "string" and region.text ~= "" then
+        expectedHud[#expectedHud + 1] = region
+      end
+    end
+  end
+  local function hudRegionOf(drawn)
+    for _, region in ipairs(expectedHud) do
+      if drawn.content == region.text and drawn.x == region.x and drawn.y == region.y then
+        return region
+      end
+    end
+    return nil
+  end
+  local dockDraws, hudDraws = {}, {}
   for _, drawn in ipairs(text.draws) do
+    if hudRegionOf(drawn) ~= nil then
+      hudDraws[#hudDraws + 1] = drawn
+    else
+      dockDraws[#dockDraws + 1] = drawn
+    end
+  end
+  for _, drawn in ipairs(dockDraws) do
     local box = drawn.x < COMMAND_OUTER.x and promptBox or commandBox
     Assert.isTrue(
       drawn.y >= box.y --[[@as number]] + 2,
@@ -440,7 +472,7 @@ function T.dock_draws_background_text_before_shared_borders()
     )
   end
   local labels = {}
-  for _, drawn in ipairs(text.draws) do
+  for _, drawn in ipairs(dockDraws) do
     if drawn.x >= COMMAND_OUTER.x then
       labels[#labels + 1] = drawn.x
     end
@@ -449,6 +481,45 @@ function T.dock_draws_background_text_before_shared_borders()
   for _, x in ipairs(labels) do
     local onGrid = x == 128 or x == 192
     Assert.isTrue(onGrid, "command labels begin eight pixels right of their cursor column")
+  end
+  -- HUD-scoped bounds: every published wording draws exactly once at its
+  -- own origin, inside its side bounds and the scene viewport at unit
+  -- scale.
+  Assert.equal(#hudDraws, #expectedHud, "every published HUD wording draws exactly once")
+  for _, region in ipairs(expectedHud) do
+    local found = 0
+    for _, drawn in ipairs(hudDraws) do
+      if drawn.content == region.text and drawn.x == region.x and drawn.y == region.y then
+        found = found + 1
+      end
+    end
+    Assert.equal(found, 1, "the " .. region.id .. " wording draws once at its published origin")
+  end
+  for _, side in ipairs({ hud.enemy, hud.player }) do
+    for _, region in ipairs(side.regions) do
+      if type(region.text) == "string" and region.text ~= "" then
+        Assert.isTrue(region.x >= side.x, region.id .. " starts inside its side bounds")
+        Assert.isTrue(region.y >= side.y, region.id .. " sits inside its side bounds")
+        Assert.isTrue(
+          region.x + region.width <= side.x + side.width,
+          region.id .. " ends inside its side bounds"
+        )
+        Assert.isTrue(
+          region.y + region.height <= side.y + side.height,
+          region.id .. " stays inside its side bounds"
+        )
+        Assert.isTrue(region.x >= scene.x, region.id .. " starts inside the scene viewport")
+        Assert.isTrue(region.y >= scene.y, region.id .. " sits inside the scene viewport")
+        Assert.isTrue(
+          region.x + region.width <= scene.x + scene.width,
+          region.id .. " ends inside the scene viewport"
+        )
+        Assert.isTrue(
+          region.y + region.height <= scene.y + scene.height,
+          region.id .. " stays inside the scene viewport"
+        )
+      end
+    end
   end
   local fills = 0
   for _, rectangle in ipairs(graphics.rectangles) do
