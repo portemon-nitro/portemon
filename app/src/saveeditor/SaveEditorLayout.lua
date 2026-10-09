@@ -41,10 +41,9 @@ local function rect(x, y, width, height)
 end
 
 -- Compact list rows stay visually distinct from roomy form and action controls.
--- The extent fits the 0.75-scale body text with a small inset; it grows only when
--- the surrounding metrics require more room for that text.
+-- Native glyphs fit with a small inset; rows grow only when font metrics require it.
 local function listRowExtent(metrics)
-  return math.max(18, math.ceil(metrics.lineHeight * 0.75 + 4))
+  return math.max(18, math.ceil(metrics.lineHeight + 4))
 end
 
 function Layout.preferredListWidth(view, metrics, height)
@@ -82,9 +81,9 @@ function Layout.preferredListWidth(view, metrics, height)
     headerHeight = metrics.lineHeight,
     hasTrailingValue = trailingValueWidth ~= nil,
     trailingValueWidth = trailingValueWidth,
-    minimumLabelWidth = metrics.measure(hintText) * 0.75,
+    minimumLabelWidth = metrics.measure(hintText),
     font = { lineHeight = metrics.lineHeight, measure = metrics.measure },
-    textScale = 0.75,
+    textScale = PixelScale.assertInteger(1),
     rowAt = function(index)
       local row = assert(rowAt(index), "sampled list rows remain in the current projection")
       local value = trailingValueWidth ~= nil and (row.value and "ON" or "OFF") or nil
@@ -92,13 +91,13 @@ function Layout.preferredListWidth(view, metrics, height)
     end,
   })
   if view.section == "Location" then
-    preferredWidth = math.max(preferredWidth, math.ceil(metrics.measure(hintText) * 0.75 + 16))
+    preferredWidth = math.max(preferredWidth, math.ceil(metrics.measure(hintText) + 16))
   end
   return preferredWidth, measuredTrailingValueWidth
 end
 
 function Layout.minimumListCanvasWidth(view, metrics, height)
-  local bodyGlyphHeight = math.ceil(metrics.lineHeight * 0.75)
+  local bodyGlyphHeight = math.ceil(metrics.lineHeight)
   local contentTop = 4 + bodyGlyphHeight + 8 + 2
   if view.section == "Location" or view.section == "Progress" then
     contentTop = contentTop + ApplicationLayout.applicationFrameInsets().top + 8
@@ -113,11 +112,11 @@ function Layout.minimumListCanvasWidth(view, metrics, height)
   end
   local stripWidth = 0
   for _, label in ipairs({ "Map", "Player", "Party", "Bag", "Flags" }) do
-    stripWidth = stripWidth + metrics.measure(label) * 0.75 + 8
+    stripWidth = stripWidth + metrics.measure(label) + 8
   end
   local actionWidth = 8
   for _, label in ipairs({ "Save", "Discard", view.locationSave and "Cancel check" or "Back" }) do
-    actionWidth = actionWidth + math.max(40, metrics.measure(label) * 0.75 + 24)
+    actionWidth = actionWidth + math.max(40, metrics.measure(label) + 24)
   end
   return math.min(256, math.max(listWidth, stripWidth, actionWidth) + 16)
 end
@@ -284,7 +283,7 @@ local function newContext(view, width, height, metrics)
   assert(type(metrics) == "table" and type(metrics.measure) == "function" and metrics.lineHeight > 0)
   local wideShell = width >= 400 and width >= height
   local margin = width <= 280 and 8 or wideShell and 8 or 12
-  local bodyGlyphHeight = math.ceil(metrics.lineHeight * 0.75)
+  local bodyGlyphHeight = math.ceil(metrics.lineHeight)
   local footerHeight = bodyGlyphHeight + 12
   local hasRail = wideShell
   local railWidth = hasRail and 88 or 0
@@ -1081,13 +1080,13 @@ local function buildBag(ctx)
     maxCellHeight = 44,
   })
   local cards = {}
-  local textScale = compactBag and 0.5 or 0.75
-  local lineHeight = math.max(1, math.floor(metrics.lineHeight * textScale + 0.5))
+  local textScale = PixelScale.assertInteger(1)
+  local lineHeight = math.max(1, math.ceil(metrics.lineHeight))
   for index, item in ipairs(view.bagPageRows or {}) do
     local cell = cells[index]
     local iconSize = cell.rect.height > 32 and 24 or 16
     local iconRect = rect(cell.rect.x + 4, cell.rect.y + (cell.rect.height - iconSize) / 2, iconSize, iconSize)
-    local quantityWidth = math.ceil(metrics.measure("x" .. tostring(item.quantity)) * textScale) + 6
+    local quantityWidth = math.ceil(metrics.measure("x" .. tostring(item.quantity))) + 6
     local textY = cell.rect.y + (cell.rect.height - lineHeight) / 2
     local quantityRect = rect(cell.rect.x + cell.rect.width - 4 - quantityWidth, textY, quantityWidth, lineHeight)
     local nameRect =

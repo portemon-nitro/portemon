@@ -473,8 +473,8 @@ function T.tests.action_control_geometry_fits_labels_with_padding_on_compact_and
     for _, action in ipairs(layout.actions) do
       local rect = assert(layout.targets[action.id]).rect
       Assert.isTrue(
-        rect.height >= math.ceil(metrics.lineHeight * 0.75) + 8,
-        action.label .. " has measured body-text padding"
+        rect.height >= metrics.lineHeight + 8,
+        action.label .. " has measured native-text padding"
       )
       Assert.isTrue(rect.width >= metrics.measure(action.label) + 16, action.label .. " has horizontal text padding")
     end
@@ -1679,7 +1679,7 @@ function T.tests.list_rows_use_a_compact_extent_independent_of_form_controls()
   local viewport = assert(layout.viewports.flags, "the flag list publishes its scroll viewport")
   Assert.equal(viewport.rowExtent, 18, "list rows use the compact list extent")
   Assert.equal(viewport.gap, 0, "list rows have no inter-row gap")
-  local bodyTextHeight = math.ceil(14 * 0.75)
+  local bodyTextHeight = 14
   Assert.isTrue(viewport.rowExtent >= bodyTextHeight, "the compact extent still contains the body text")
   local first = assert(layout.targets["flag:" .. flags[1].name]).rect
   local second = assert(layout.targets["flag:" .. flags[2].name]).rect
@@ -2726,7 +2726,7 @@ function T.tests.editor_chrome_is_compact_and_keeps_targets_inside_every_page()
       local layout = computeLayout(page.view, size.width, size.height)
       local activeSection = assert(layout.targets["section:" .. page.section])
       local sectionRect = activeSection.rect
-      local glyphHeight = math.ceil(metrics.lineHeight * 0.75)
+      local glyphHeight = metrics.lineHeight
       local minButtonHeight = glyphHeight + 8
       if size.compact then
         Assert.isTrue(sectionRect.y >= 4, page.name .. " section strip has a visible outer top inset")

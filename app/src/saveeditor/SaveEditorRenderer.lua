@@ -9,6 +9,7 @@ local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetPro
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local ListSurface = require("libs.ui.src.ListSurface")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local PixelScale = require("libs.ui.src.PixelScale")
 local TextButton = require("libs.ui.src.TextButton")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
@@ -33,8 +34,6 @@ local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
 
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local Button = require("libs.ui.src.Button")
-
-local BODY_TEXT_SCALE = 0.75
 
 local function midpoint(top, bottom)
   return {
@@ -330,6 +329,7 @@ local function actionSemantic(targetId)
 end
 
 local function drawText(renderer, value, x, y, role)
+  x, y = PixelScale.snapLogical(x), PixelScale.snapLogical(y)
   local textRole = role == "error" and "error"
     or role == "information" and "information"
     or role == "hint" and "hint"
@@ -425,15 +425,15 @@ local function drawShadedControl(renderer, rect, label, active, focused, disable
   local colors = assert(BUTTON_COLORS[role], "unknown save editor button role: " .. tostring(role))
   local labelPalette = optionLabelPalette(renderer, disabled, option, active)
   local button = TextButton.resolve({ rect = rect, scale = 1 })
-  local fitted = fitText(renderer, label, button.contentRect.width / BODY_TEXT_SCALE)
+  local fitted = fitText(renderer, label, button.contentRect.width)
   TextButton.draw(renderer.graphics, button, {
     label = fitted,
     selected = false,
     colors = colors,
     text = {
-      lineHeight = renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE,
+      lineHeight = renderer.text.fontDef.lineHeight,
       measure = function(value)
-        return renderer.text:textWidth(value) * BODY_TEXT_SCALE
+        return renderer.text:textWidth(value)
       end,
       draw = function(value, x, y)
         drawBodyText(renderer, value, x, y, labelPalette)
@@ -451,9 +451,7 @@ drawBodyText = function(renderer, value, x, y, role)
   local graphics = renderer.graphics
   graphics.push("all")
   local ok, err = pcall(function()
-    graphics.translate(math.floor(x + 0.5), math.floor(y + 0.5))
-    graphics.scale(BODY_TEXT_SCALE, BODY_TEXT_SCALE)
-    drawText(renderer, value, 0, 0, role)
+    drawText(renderer, value, x, y, role)
   end)
   graphics.pop()
   if not ok then
@@ -462,13 +460,7 @@ drawBodyText = function(renderer, value, x, y, role)
 end
 
 local function drawListText(renderer, value, x, y, role)
-  local graphics = renderer.graphics
-  graphics.push("all")
-  graphics.translate(x, y)
-  graphics.scale(BODY_TEXT_SCALE, BODY_TEXT_SCALE)
-  graphics.translate(-x, -y)
-  drawText(renderer, value, x, y, role)
-  graphics.pop()
+  drawBodyText(renderer, value, x, y, role)
 end
 
 local function drawCompactControl(renderer, rectValue, label, active, focused, disabled, semantic, option)
@@ -497,10 +489,10 @@ local function drawCompactControl(renderer, rectValue, label, active, focused, d
   graphics.setColor(colors.innerBorder[1], colors.innerBorder[2], colors.innerBorder[3], colors.innerBorder[4])
   graphics.rectangle("fill", innerRect.x, splitY - 1, innerRect.width, 2)
   local content = button.contentRect
-  local fitted = fitText(renderer, label, content.width / BODY_TEXT_SCALE)
+  local fitted = fitText(renderer, label, content.width)
   local labelPalette = optionLabelPalette(renderer, disabled, option, active)
-  local textWidth = renderer.text:textWidth(fitted) * BODY_TEXT_SCALE
-  local textHeight = renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE
+  local textWidth = renderer.text:textWidth(fitted)
+  local textHeight = renderer.text.fontDef.lineHeight
   drawBodyText(
     renderer,
     fitted,
@@ -530,7 +522,7 @@ end
 
 local function drawSectionControl(renderer, rectValue, label, active, focused)
   local palette = active and buttonPalette(renderer.skin) or buttonInactivePalette(renderer.skin)
-  local fitted = fitText(renderer, label, math.max(0, (rectValue.width - 8) / BODY_TEXT_SCALE))
+  local fitted = fitText(renderer, label, math.max(0, rectValue.width - 8))
   if rectValue.height >= renderer.text.fontDef.lineHeight + 33 then
     local role = optionRole(false, nil, true, active)
     local button = TextButton.resolve({ rect = rectValue, scale = 1 })
@@ -539,9 +531,9 @@ local function drawSectionControl(renderer, rectValue, label, active, focused)
       selected = false,
       colors = assert(BUTTON_COLORS[role]),
       text = {
-        lineHeight = renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE,
+        lineHeight = renderer.text.fontDef.lineHeight,
         measure = function(value)
-          return renderer.text:textWidth(value) * BODY_TEXT_SCALE
+          return renderer.text:textWidth(value)
         end,
         draw = function(value, x, y)
           drawBodyText(renderer, value, x, y, palette)
@@ -555,8 +547,8 @@ local function drawSectionControl(renderer, rectValue, label, active, focused)
     return
   end
   drawButtonControl(renderer, rectValue, "", active, focused, false, nil, true)
-  local textWidth = renderer.text:textWidth(fitted) * BODY_TEXT_SCALE
-  local textHeight = renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE
+  local textWidth = renderer.text:textWidth(fitted)
+  local textHeight = renderer.text.fontDef.lineHeight
   drawBodyText(
     renderer,
     fitted,
@@ -571,25 +563,18 @@ local function drawListRow(renderer, rectValue, label, focused, value, labelRect
     drawFocusRing(renderer, rectValue, 0)
   end
   local labelBounds = labelRect or { x = rectValue.x + 6, y = rectValue.y + 3, width = rectValue.width - 12 }
-  local labelHeight = labelBounds.height or renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE
-  local labelY = labelBounds.y + math.max(0, (labelHeight - renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE) / 2)
+  local labelHeight = labelBounds.height or renderer.text.fontDef.lineHeight
+  local labelY = labelBounds.y + math.max(0, (labelHeight - renderer.text.fontDef.lineHeight) / 2)
   local labelWidth = labelBounds.width
-  drawListText(
-    renderer,
-    fitText(renderer, label, labelWidth / BODY_TEXT_SCALE),
-    labelBounds.x,
-    labelY,
-    muted and "hint" or nil
-  )
+  drawListText(renderer, fitText(renderer, label, labelWidth), labelBounds.x, labelY, muted and "hint" or nil)
   if value ~= nil then
     local valueText = tostring(value)
     local bounds = valueRect
       or { x = rectValue.x, y = rectValue.y + 3, width = rectValue.width * 0.35, height = labelHeight }
-    local fitted = fitText(renderer, valueText, bounds.width / BODY_TEXT_SCALE)
-    local fittedWidth = renderer.text:textWidth(fitted) * BODY_TEXT_SCALE
+    local fitted = fitText(renderer, valueText, bounds.width)
+    local fittedWidth = renderer.text:textWidth(fitted)
     local x = valueRect and bounds.x or rectValue.x + rectValue.width - fittedWidth - 6
-    local valueY = bounds.y
-      + math.max(0, ((bounds.height or labelHeight) - renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE) / 2)
+    local valueY = bounds.y + math.max(0, ((bounds.height or labelHeight) - renderer.text.fontDef.lineHeight) / 2)
     drawListText(renderer, fitted, x, valueY, "hint")
   end
 end
@@ -655,34 +640,13 @@ local function drawBagCard(renderer, card, focused)
     drawCenteredIcon(renderer, icon, card.iconRect)
   end
   local palette = buttonInactivePalette(renderer.skin)
-  local scale = card.textScale or 1
-  graphics.push("all")
-  local ok, err = pcall(function()
-    graphics.translate(math.floor(bounds.x + 0.5), math.floor(bounds.y + 0.5))
-    graphics.scale(scale, scale)
-    local name = card.nameRect
-    drawText(
-      renderer,
-      fitText(renderer, card.label, name.width / scale),
-      (name.x - bounds.x) / scale,
-      (name.y - bounds.y) / scale,
-      palette
-    )
-    local quantity = "x" .. tostring(card.quantity)
-    local quantityWidth = renderer.text:textWidth(quantity)
-    local slot = card.quantityRect
-    drawText(
-      renderer,
-      quantity,
-      (slot.x - bounds.x) / scale + math.max(0, slot.width / scale - quantityWidth),
-      (slot.y - bounds.y) / scale,
-      palette
-    )
-  end)
-  graphics.pop()
-  if not ok then
-    error(err, 0)
-  end
+  assert(PixelScale.assertInteger(card.textScale) == 1, "Bag card text uses native glyph scale")
+  local name = card.nameRect
+  drawText(renderer, fitText(renderer, card.label, name.width), name.x, name.y, palette)
+  local quantity = "x" .. tostring(card.quantity)
+  local quantityWidth = renderer.text:textWidth(quantity)
+  local slot = card.quantityRect
+  drawText(renderer, quantity, slot.x + math.max(0, slot.width - quantityWidth), slot.y, palette)
   if focused then
     drawFocusRing(
       renderer,
@@ -924,20 +888,14 @@ local function paintRows(ctx)
         local labelRole = row.role == "warning" and "error" or row.role == "read-only value" and "hint" or nil
         drawBodyText(
           renderer,
-          fitText(renderer, row.displayName or row.label, labelRect.width / BODY_TEXT_SCALE),
+          fitText(renderer, row.displayName or row.label, labelRect.width),
           labelRect.x,
           rect.y + 3,
           labelRole
         )
         if row.valueText ~= nil and row.valueRect ~= nil then
           local valueRect = row.valueRect
-          drawBodyText(
-            renderer,
-            fitText(renderer, row.valueText, valueRect.width / BODY_TEXT_SCALE),
-            valueRect.x,
-            rect.y + 3,
-            "hint"
-          )
+          drawBodyText(renderer, fitText(renderer, row.valueText, valueRect.width), valueRect.x, rect.y + 3, "hint")
         end
       end)
     end
@@ -999,13 +957,7 @@ local function paintParty(ctx)
           if row.partyField then
             local y = row.layoutRect.y + 3
             local fieldRole = row.role == "warning" and "error" or pagePalette(renderer.skin)
-            drawBodyText(
-              renderer,
-              fitText(renderer, row.label, row.labelRect.width / BODY_TEXT_SCALE),
-              row.labelRect.x,
-              y,
-              fieldRole
-            )
+            drawBodyText(renderer, fitText(renderer, row.label, row.labelRect.width), row.labelRect.x, y, fieldRole)
             if row.editable then
               drawButtonControl(
                 renderer,
@@ -1029,13 +981,7 @@ local function paintParty(ctx)
                 false
               )
             elseif row.valueText ~= nil then
-              drawBodyText(
-                renderer,
-                fitText(renderer, row.valueText, row.valueRect.width / BODY_TEXT_SCALE),
-                row.valueRect.x,
-                y,
-                "hint"
-              )
+              drawBodyText(renderer, fitText(renderer, row.valueText, row.valueRect.width), row.valueRect.x, y, "hint")
             end
           end
         end
@@ -1044,20 +990,11 @@ local function paintParty(ctx)
           local headerColor = renderer.skin.cards.normal.border
           local function drawCellText(text, target, role)
             local lineHeight = renderer.text.fontDef.lineHeight
-            local scale = math.min(1, target.height / lineHeight)
-            graphics.push("all")
-            local ok, err = pcall(function()
-              graphics.translate(target.x + 4, target.y + math.max(0, (target.height - lineHeight * scale) / 2))
-              graphics.scale(scale, scale)
-              local palette = role == "hint" and pageMutedPalette(renderer.skin)
-                or role == "error" and pageErrorPalette(renderer.skin)
-                or pagePalette(renderer.skin)
-              drawText(renderer, fitText(renderer, text, (target.width - 8) / scale), 0, 0, palette)
-            end)
-            graphics.pop()
-            if not ok then
-              error(err, 0)
-            end
+            local y = target.y + math.max(0, (target.height - lineHeight) / 2)
+            local palette = role == "hint" and pageMutedPalette(renderer.skin)
+              or role == "error" and pageErrorPalette(renderer.skin)
+              or pagePalette(renderer.skin)
+            drawText(renderer, fitText(renderer, text, target.width - 8), target.x + 4, y, palette)
           end
           for _, header in ipairs(stats.headers) do
             setColor(graphics, headerColor)
@@ -1468,7 +1405,7 @@ local function paintListHints(ctx)
       local query = list.query or ""
       local filterText = list.pending and "Filtering…" or query == "" and "Type to filter" or ("Filter: " .. query)
       local hintText = list.breadcrumb and (list.breadcrumb .. "  ·  " .. filterText) or filterText
-      drawBodyText(renderer, fitText(renderer, hintText, hint.width / BODY_TEXT_SCALE), hint.x, hint.y, "hint")
+      drawBodyText(renderer, fitText(renderer, hintText, hint.width), hint.x, hint.y, "hint")
     end
   end
 end

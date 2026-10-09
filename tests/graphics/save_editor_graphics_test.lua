@@ -638,6 +638,20 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   local view, presentation, plan = fixture(scope, width, height, topology, section, variant, versionId, beforeResolve)
   local drawnText = {}
   local paletteCalls = {}
+  local activeScaleX, activeScaleY = 1, 1
+  local function recordText(value, x, y, palette)
+    if value == "" then
+      return
+    end
+    paletteCalls[#paletteCalls + 1] = {
+      value = value,
+      x = x,
+      y = y,
+      palette = palette,
+      transformScaleX = activeScaleX,
+      transformScaleY = activeScaleY,
+    }
+  end
   local text = {
     fontDef = { lineHeight = 14, charmap = DISPLAY_CHARMAP },
     textWidth = function(_, value)
@@ -645,12 +659,12 @@ local function draw(scope, width, height, topology, name, section, variant, vers
     end,
     drawTextWithPalette = function(_, value, x, y, palette)
       drawnText[#drawnText + 1] = value
-      paletteCalls[#paletteCalls + 1] = { value = value, x = x, y = y, palette = palette }
+      recordText(value, x, y, palette)
       graphics.print(value, x, y)
     end,
     drawText = function(_, value, x, y)
       drawnText[#drawnText + 1] = value
-      paletteCalls[#paletteCalls + 1] = { value = value, x = x, y = y, palette = nil }
+      recordText(value, x, y, nil)
       graphics.print(value, x, y)
     end,
   }
@@ -711,7 +725,37 @@ local function draw(scope, width, height, topology, name, section, variant, vers
     return originalDraw(drawable, ...)
   end
   local callerState = captureCallerGraphicsState(graphics)
-  ApplicationPresentation.draw(graphics, { renderer = renderer }, view, plan)
+  local oldPush, oldPop = graphics.push, graphics.pop
+  local oldOrigin, oldScale = graphics.origin, graphics.scale
+  local scaleStack = {}
+  graphics.push = function(...)
+    scaleStack[#scaleStack + 1] = { activeScaleX, activeScaleY }
+    return oldPush(...)
+  end
+  graphics.pop = function(...)
+    local result = oldPop(...)
+    local restored = assert(table.remove(scaleStack), "graphics scale tracking has a matching push")
+    activeScaleX, activeScaleY = restored[1], restored[2]
+    return result
+  end
+  graphics.origin = function(...)
+    local result = oldOrigin(...)
+    activeScaleX, activeScaleY = 1, 1
+    return result
+  end
+  graphics.scale = function(x, y)
+    activeScaleX = activeScaleX * x
+    activeScaleY = activeScaleY * (y or x)
+    return oldScale(x, y)
+  end
+  local drawOk, drawFailure = xpcall(function()
+    ApplicationPresentation.draw(graphics, { renderer = renderer }, view, plan)
+  end, debug.traceback)
+  graphics.push, graphics.pop = oldPush, oldPop
+  graphics.origin, graphics.scale = oldOrigin, oldScale
+  if not drawOk then
+    error(drawFailure, 0)
+  end
   assertCallerGraphicsStateRestored(graphics, callerState, name)
   graphics.draw = originalDraw
   graphics.setCanvas()
@@ -805,10 +849,9 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       Assert.notNil(layout.targets["bag:add"], name .. " exposes Add item")
       if width <= 280 then
         local card = assert(layout.bagGrid[1], name .. " exposes a compact item card")
-        Assert.equal(card.textScale, 0.5, name .. " uses compact text that fits the card")
         Assert.isTrue(
-          card.rect.height >= view.textMetrics.lineHeight * card.textScale,
-          name .. " fits one readable compact text line"
+          card.nameRect.height >= view.textMetrics.lineHeight,
+          name .. " reserves a native-height item label line"
         )
         Assert.isTrue(card.iconRect.width >= 16 and card.iconRect.height >= 16, name .. " fits the provider icon")
         for _, key in ipairs({ "iconRect", "nameRect", "quantityRect" }) do
@@ -2090,7 +2133,7 @@ function T.location_map_list_labels_fit_button_content_without_losing_map_identi
   Assert.isNil(found.value, "Map rows omit their redundant trailing section value")
   Assert.isNil(found.valueRect, "Map rows do not reserve a trailing value rectangle")
   local labelCall = assert(findPaletteCall(paletteCalls, "AZALEA_ILEX"), "the map label has a painted text call")
-  local paintedWidth = view.textMetrics.measure(labelCall.value) * 0.75
+  local paintedWidth = view.textMetrics.measure(labelCall.value)
   Assert.isTrue(labelCall.x >= labelRect.x, "the map glyphs begin inside their row label region")
   Assert.isTrue(
     labelCall.x + paintedWidth <= labelRect.x + labelRect.width + 0.01,
@@ -2100,7 +2143,7 @@ function T.location_map_list_labels_fit_button_content_without_losing_map_identi
   Assert.isTrue(labelRect.width >= targetRect.width - 20, "the map label uses the full row after its marker inset")
   local clip = assert(layout.viewports["location:group:1"]).clip
   Assert.isTrue(labelCall.x >= clip.x and labelCall.x + paintedWidth <= clip.x + clip.width)
-  Assert.isTrue(labelCall.y >= clip.y and labelCall.y + view.textMetrics.lineHeight * 0.75 <= clip.y + clip.height)
+  Assert.isTrue(labelCall.y >= clip.y and labelCall.y + view.textMetrics.lineHeight <= clip.y + clip.height)
 end
 
 function T.compact_progress_fits_a_real_long_flag_inside_separate_row_cells(scope)
@@ -2132,17 +2175,17 @@ function T.compact_progress_fits_a_real_long_flag_inside_separate_row_cells(scop
   end
   fittedLabel = assert(fittedLabel, "the stripped flag label is still rendered")
   Assert.isTrue(
-    view.textMetrics.measure(fittedLabel) * 0.75 <= row.labelRect.width + 0.01,
-    "the label fits its measured cell at body scale"
+    view.textMetrics.measure(fittedLabel) <= row.labelRect.width + 0.01,
+    "the label fits its measured cell at native size"
   )
   local labelCall = assert(findPaletteCall(paletteCalls, "HIDE_GOLDENROD"), "the flag label has a painted text call")
-  local paintedWidth = view.textMetrics.measure(labelCall.value) * 0.75
+  local paintedWidth = view.textMetrics.measure(labelCall.value)
   local viewport = assert(layout.viewports.flags)
   Assert.isTrue(labelCall.x >= row.labelRect.x, "flag glyphs begin inside their row label region")
   Assert.isTrue(labelCall.x + paintedWidth <= row.labelRect.x + row.labelRect.width + 0.01)
   Assert.isTrue(
     labelCall.y >= viewport.clip.y
-      and labelCall.y + view.textMetrics.lineHeight * 0.75 <= viewport.clip.y + viewport.clip.height
+      and labelCall.y + view.textMetrics.lineHeight <= viewport.clip.y + viewport.clip.height
   )
   Assert.isTrue(labelCall.x + paintedWidth + 4 <= row.valueRect.x, "flag glyphs stay clear of ON/OFF")
 end
@@ -2526,10 +2569,8 @@ function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scop
   end
   Assert.notNil(fittedHint, "the focused map list renders its inline filter hint")
   local hintRect = assert(focusedLayout.lists["location:group:1"].hintRect, "the map list reserves its hint line")
-  Assert.isTrue(
-    focusedView.textMetrics.measure(fittedHint) * 0.75 <= hintRect.width + 0.01,
-    "hint text fits the reserved line at body scale"
-  )
+    Assert.isTrue(focusedView.textMetrics.measure(fittedHint) <= hintRect.width + 0.01,
+      "hint text fits the reserved line at native size")
   Assert.isNil(focusedText:find(longQuery, 1, true), "the full query is not emitted")
   local unfocusedHint
   for _, value in ipairs(normalDrawnText) do
@@ -2539,10 +2580,8 @@ function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scop
   end
   Assert.notNil(unfocusedHint, "the unfocused map list renders its inline filter hint")
   local normalHintRect = assert(normalLayout.lists["location:group:1"].hintRect)
-  Assert.isTrue(
-    normalView.textMetrics.measure(unfocusedHint) * 0.75 <= normalHintRect.width + 0.01,
-    "unfocused hint text also fits"
-  )
+    Assert.isTrue(normalView.textMetrics.measure(unfocusedHint) <= normalHintRect.width + 0.01,
+      "unfocused hint text also fits at native size")
 end
 
 function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scope)
@@ -3418,8 +3457,8 @@ function T.shaded_action_ink_is_centered_on_its_painted_content(scope)
 
   for _, label in ipairs({ "Save", "Discard all" }) do
     local ink = assert(records[label], label .. " is rendered through the shaded text adapter")
-    local expectedWidth = font:getWidth(label) * 0.75
-    local expectedHeight = font:getHeight() * 0.75
+    local expectedWidth = font:getWidth(label)
+    local expectedHeight = font:getHeight()
     Assert.near(ink.width, expectedWidth, 0.01, label .. " measurement uses painted glyph width")
     Assert.near(ink.lineHeight, expectedHeight, 0.01, label .. " line height uses painted glyph height")
     Assert.near(
@@ -3464,17 +3503,16 @@ function T.shaded_action_fit_uses_painted_content_width(scope)
       renderer.text.fontDef.lineHeight = font:getHeight()
       plan.content.layout = Layout.compute(view, plan.content.width, plan.content.height, view.textMetrics)
       local targetWidth = assert(plan.content.layout.targets.save).rect.width
-      local fitBudget = targetWidth - 16
-      local paintedBudget = (targetWidth - 12) / 0.75
+      local fitRect = assert(plan.content.layout.targets.save).rect
+      local contentWidth = TextButton.resolve({ rect = fitRect, scale = 1 }).contentRect.width
       for count = 1, 80 do
         local candidate = string.rep("M", count)
         local width = font:getWidth(candidate)
-        if fitLabel == nil and width > fitBudget and width <= paintedBudget then
+        if fitLabel == nil and width <= contentWidth and width > contentWidth - font:getWidth("M") then
           fitLabel = candidate
         end
-        if width > math.max(paintedBudget, 112) then
+        if longLabel == nil and width > contentWidth and width <= contentWidth / 0.75 then
           longLabel = candidate
-          break
         end
       end
       assert(fitLabel, "the test font supplies a label between native and painted fit widths")
@@ -3493,12 +3531,8 @@ function T.shaded_action_fit_uses_painted_content_width(scope)
   local fitRect = assert(layout.targets.save).rect
   local fitContent = TextButton.resolve({ rect = fitRect, scale = 1 }).contentRect
   Assert.isTrue(
-    font:getWidth(fitLabel) > fitRect.width - 16,
-    "the fitting label exceeds the earlier source-width budget"
-  )
-  Assert.isTrue(
-    font:getWidth(fitLabel) * 0.75 <= fitContent.width + 1,
-    "the same label fits the actual painted content width"
+    font:getWidth(fitLabel) <= fitContent.width + 1,
+    "the same label fits the actual painted content width at native size"
   )
   local fullFitLabelPainted, fullLongLabelPainted = false, false
   for _, value in ipairs(drawnText) do
@@ -3506,7 +3540,7 @@ function T.shaded_action_fit_uses_painted_content_width(scope)
     fullLongLabelPainted = fullLongLabelPainted or value == longLabel
   end
   Assert.isTrue(fullFitLabelPainted, "a label that fits at painted scale is not prematurely ellipsized")
-  Assert.isFalse(fullLongLabelPainted, "the genuinely oversized source label is fitted")
+  Assert.isFalse(fullLongLabelPainted, "a label wider than native content is ellipsized")
   local fittedLongLabel
   for _, value in ipairs(drawnText) do
     if value:sub(1, 1) == longLabel:sub(1, 1) and value:find("…", 1, true) then
@@ -3520,8 +3554,8 @@ function T.shaded_action_fit_uses_painted_content_width(scope)
     local content = TextButton.resolve({ rect = rect, scale = 1 }).contentRect
     assert(findPaletteCall(paletteCalls, entry.label), "the fitted label is painted")
     Assert.isTrue(
-      font:getWidth(entry.label) * 0.75 <= content.width + 1,
-      "painted text stays within the shaded content width"
+      font:getWidth(entry.label) <= content.width + 1,
+      "painted text stays within the shaded content width at native size"
     )
   end
 end
@@ -3592,7 +3626,7 @@ function T.wide_host_resizes_keep_the_content_column_clamped_and_hits_inside_it(
   end
 end
 
-function T.section_labels_reuse_party_game_font_and_body_scale(scope)
+function T.section_labels_reuse_party_game_font_and_palette(scope)
   for _, size in ipairs({ { width = 256, height = 192 }, { width = 1280, height = 720 } }) do
     local width, height = size.width, size.height
     local view, _, plan = fixture(scope, width, height, singleDisplay(width, height), "Party", "Stats")
@@ -3604,16 +3638,14 @@ function T.section_labels_reuse_party_game_font_and_body_scale(scope)
       renderer._bagImages[path] = scope:own(love.graphics.newImage(love.image.newImageData(12, 12)))
     end
     renderer:preparePresentationAssets(cache, assert(cache:loadLua(FieldUiAssetCache.manifestPath())))
-    local calls, currentScale = {}, 1
-    local oldScale = love.graphics.scale
+    local calls = {}
     local oldDraw = text.drawTextWithPalette
-    love.graphics.scale = function(x, y)
-      currentScale = x
-      return oldScale(x, y)
-    end
     text.drawTextWithPalette = function(self, value, x, y, palette)
       if value == "Map" or value == "Flags" or value == "Party" or value == "Chikorita" then
-        calls[value] = { scale = currentScale, width = self:textWidth(value), palette = palette }
+        calls[value] = {
+          width = self:textWidth(value),
+          palette = palette,
+        }
       end
       return oldDraw(self, value, x, y, palette)
     end
@@ -3624,7 +3656,6 @@ function T.section_labels_reuse_party_game_font_and_body_scale(scope)
       ApplicationPresentation.draw(love.graphics, { renderer = renderer, text = text }, view, plan)
     end, debug.traceback)
     love.graphics.setCanvas()
-    love.graphics.scale = oldScale
     text.drawTextWithPalette = oldDraw
     local normal = renderer.skin.text.normal
     renderer:dispose()
@@ -3633,7 +3664,6 @@ function T.section_labels_reuse_party_game_font_and_body_scale(scope)
     end
     for _, label in ipairs({ "Map", "Flags" }) do
       local call = assert(calls[label], label .. " uses the field-text renderer")
-      Assert.equal(call.scale, 0.75, label .. " uses the list body-label scale at " .. width .. "x" .. height)
       Assert.equal(call.width, view.textMetrics.measure(label), label .. " uses the field-text metric adapter")
       Assert.equal(call.palette.foreground.r, normal.foreground.r, label .. " uses the normal body foreground")
       Assert.equal(call.palette.foreground.g, normal.foreground.g, label .. " uses the normal body foreground")
@@ -3648,6 +3678,57 @@ function T.section_labels_reuse_party_game_font_and_body_scale(scope)
       "the active section remains visually distinct from neutral inactive sections"
     )
     Assert.isNil(calls.Chikorita, "occupied Party slots do not paint their descriptive labels")
+  end
+end
+
+function T.save_editor_glyphs_keep_native_scale_across_the_visible_content(scope)
+  local cases = {
+    { name = "section", width = 640, height = 480, section = "Player" },
+    { name = "section-wide", width = 1280, height = 720, section = "Party", variant = "Stats" },
+    { name = "shaded-action", width = 640, height = 480, section = "Player", variant = "leave" },
+    { name = "ordinary-list", width = 256, height = 192, section = "Progress" },
+    { name = "party-stats", width = 640, height = 480, section = "Party", variant = "Stats" },
+    { name = "bag-compact", width = 256, height = 192, section = "Bag", variant = "bag-cards" },
+    { name = "bag-wide", width = 640, height = 480, section = "Bag", variant = "bag-cards" },
+  }
+  for _, case in ipairs(cases) do
+    local _, renderedText, layout, _, _, _, _, _, paletteCalls, plan = draw(
+      scope,
+      case.width,
+      case.height,
+      singleDisplay(case.width, case.height),
+      "native-glyphs-" .. case.name,
+      case.section,
+      case.variant
+    )
+    local placementScale = assert(plan.panes[1]).placement.scale
+    Assert.isTrue(#paletteCalls > 0, case.name .. " paints text into the real graphics target")
+    for _, call in ipairs(paletteCalls) do
+      Assert.near(
+        call.transformScaleX / placementScale,
+        1,
+        0.001,
+        case.name .. " paints " .. call.value .. " at native horizontal scale"
+      )
+      Assert.near(
+        call.transformScaleY / placementScale,
+        1,
+        0.001,
+        case.name .. " paints " .. call.value .. " at native vertical scale"
+      )
+      Assert.near(call.x, math.floor(call.x + 0.5), 0.001, case.name .. " snaps glyph origin x to a pixel")
+      Assert.near(call.y, math.floor(call.y + 0.5), 0.001, case.name .. " snaps glyph origin y to a pixel")
+    end
+    if case.name == "party-stats" then
+      Assert.isTrue(renderedText:find("Stats", 1, true) ~= nil, "the Stats header remains rasterized")
+      Assert.isTrue(renderedText:find("HP", 1, true) ~= nil, "the IV/EV table remains rasterized")
+      Assert.notNil(layout.partyStatsTable, "the same frame publishes Stats table geometry")
+    elseif case.name == "bag-compact" or case.name == "bag-wide" then
+      Assert.isTrue(renderedText:find("Potion", 1, true) ~= nil, "the item name remains rasterized")
+      Assert.notNil(layout.bagGrid[1].nameRect, "the item label stays in its measured card cell")
+    elseif case.name == "shaded-action" then
+      Assert.isTrue(renderedText:find("Save", 1, true) ~= nil, "the action label remains rasterized")
+    end
   end
 end
 
