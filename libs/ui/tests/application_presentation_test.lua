@@ -860,4 +860,126 @@ function T.tests.framed_plans_publish_outer_frames_and_starter_ignores_outside_p
   end
 end
 
+-- A malformed candidate never replaces the published plan and never
+-- disturbs a held press: the failure propagates, the previous plan stays
+-- published by identity, no cancellation is queued, and the held release
+-- still maps through the leaf mapper.
+function T.tests.a_rejected_candidate_preserves_the_published_plan_and_held_capture()
+  local sessionModule = sharedSession()
+  local render = function(_, _, _) end
+  local leafCalls = 0
+  local map = function(event, _, _)
+    leafCalls = leafCalls + 1
+    return event
+  end
+  local function goodPlacement()
+    return {
+      frame = { x = 0, y = 0, width = 256, height = 192 },
+      origin = { x = 0, y = 0 },
+      scale = 1,
+      logicalWidth = 256,
+      logicalHeight = 192,
+      clipRect = { x = 0, y = 0, width = 256, height = 192 },
+    }
+  end
+  local armed = false
+  local function resolver(_, _)
+    if armed then
+      return {
+        panes = nil,
+        frames = {},
+        content = {},
+        inputKey = "rejected-stub",
+        render = render,
+        mapInput = map,
+      }
+    end
+    return {
+      panes = { { id = "content", placement = goodPlacement(), interactive = true } },
+      frames = {},
+      content = {},
+      inputKey = "admitted-stub",
+      render = render,
+      mapInput = map,
+    }
+  end
+  local interfaces = { dualDisplay = resolver, nativeLike = resolver, wide = resolver, tall = resolver }
+  local session = sessionModule.new(interfaces)
+  local view = {}
+  local plan = session:resolve(stubMeasurement(256, 192), view)
+  local held = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 10 } }, view)
+  Assert.equal(#held, 1, "the down captures its pane before the malformed candidate")
+  armed = true
+  Assert.throws(function()
+    session:resolve(stubMeasurement(256, 192), view)
+  end, "a candidate without its mandatory panes fails before publication")
+  Assert.isTrue(session:plan() == plan, "the failed candidate never replaces the published plan")
+  Assert.deepEqual(session:mapInput({}, view), {}, "the failed resolve queues no cancellation")
+  armed = false
+  local release = session:mapInput({ { type = "pointer_up", pointerId = "touch:1", x = 10, y = 10 } }, view)
+  Assert.equal(#release, 1, "the held press survives the rejected candidate")
+  Assert.equal(release[1].type, "pointer_up", "the release still maps through the leaf mapper")
+  Assert.equal(leafCalls, 2, "only the held down and its release reach the leaf mapper")
+end
+
+-- A same-signature reflow that only narrows the placement clip ends the
+-- held press with exactly one ordered cancellation: the next batch carries
+-- one pointer_cancel, the stale release activates nothing, no second
+-- cancellation follows, and a fresh press starts a new gesture.
+function T.tests.a_clip_only_reflow_cancels_the_held_press_once()
+  local sessionModule = sharedSession()
+  local render = function(_, _, _) end
+  local leafCalls = 0
+  local map = function(event, _, _)
+    leafCalls = leafCalls + 1
+    return event
+  end
+  local clipWidth = 256
+  local function resolver(_, _)
+    return {
+      panes = {
+        {
+          id = "content",
+          placement = {
+            frame = { x = 0, y = 0, width = 256, height = 192 },
+            origin = { x = 0, y = 0 },
+            scale = 1,
+            logicalWidth = 256,
+            logicalHeight = 192,
+            clipRect = { x = 0, y = 0, width = clipWidth, height = 192 },
+          },
+          interactive = true,
+        },
+      },
+      frames = {},
+      content = {},
+      inputKey = "clip-stub",
+      render = render,
+      mapInput = map,
+    }
+  end
+  local interfaces = { dualDisplay = resolver, nativeLike = resolver, wide = resolver, tall = resolver }
+  local session = sessionModule.new(interfaces)
+  local view = {}
+  local measurement = stubMeasurement(256, 192)
+  session:resolve(measurement, view)
+  local held = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 10 } }, view)
+  Assert.equal(#held, 1, "the down captures its pane before the clip change")
+  clipWidth = 128
+  session:resolve(measurement, view)
+  local cancelled = session:mapInput({}, view)
+  Assert.equal(#cancelled, 1, "the clip change queues exactly one cancellation")
+  Assert.equal(cancelled[1].type, "pointer_cancel", "the queued event cancels the held press")
+  Assert.equal(cancelled[1].pointerId, "touch:1", "the cancellation names the held pointer")
+  Assert.deepEqual(
+    session:mapInput({ { type = "pointer_up", pointerId = "touch:1", x = 10, y = 10 } }, view),
+    {},
+    "the stale release activates nothing"
+  )
+  Assert.deepEqual(session:mapInput({}, view), {}, "no second cancellation follows")
+  local fresh = session:mapInput({ { type = "pointer_down", pointerId = "touch:2", x = 10, y = 10 } }, view)
+  Assert.equal(#fresh, 1, "a fresh press starts a new gesture after the cancellation")
+  Assert.isTrue(leafCalls >= 2, "the fresh press reaches the leaf mapper")
+end
+
 return T

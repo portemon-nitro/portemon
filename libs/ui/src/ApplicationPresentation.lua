@@ -43,22 +43,16 @@ ApplicationPresentation.__index = ApplicationPresentation
 
 local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
 
----@param value unknown
----@return boolean
-local function isFiniteNumber(value)
-  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
-end
-
 ---@param placement LayoutGeometry.Placement
 ---@param what string
-local function assertCompletePlacement(placement, what)
+local function assertUsablePlacement(placement, what)
   LayoutGeometry.validatePlacement(placement, what)
   assert(
-    isFiniteNumber(placement.logicalWidth) and placement.logicalWidth > 0,
+    type(placement.logicalWidth) == "number" and placement.logicalWidth > 0 and placement.logicalWidth < math.huge,
     what .. " needs finite positive logical dimensions"
   )
   assert(
-    isFiniteNumber(placement.logicalHeight) and placement.logicalHeight > 0,
+    type(placement.logicalHeight) == "number" and placement.logicalHeight > 0 and placement.logicalHeight < math.huge,
     what .. " needs finite positive logical dimensions"
   )
 end
@@ -75,26 +69,19 @@ local function assertValidPlan(plan)
     ids[pane.id] = true
     assert(type(pane.interactive) == "boolean", "a pane needs its interaction flag")
     assert(type(pane.placement) == "table", "a pane needs its placement")
-    assertCompletePlacement(pane.placement, "pane placement")
+    assertUsablePlacement(pane.placement, "pane placement")
   end
   assert(type(plan.frames) == "table", "the plan needs its frames")
   for index, frame in ipairs(plan.frames) do
     assert(type(frame) == "table", "plan.frames[" .. index .. "] must be a record")
     assert(type(frame.placement) == "table", "a frame needs its placement")
-    assertCompletePlacement(frame.placement, "frame placement")
+    assertUsablePlacement(frame.placement, "frame placement")
     assert(type(frame.contentBox) == "table", "a frame needs its content box")
-    LayoutGeometry.rect(frame.contentBox, "frame.contentBox[" .. index .. "]")
   end
   assert(type(plan.content) == "table", "the plan needs its content")
   assert(type(plan.inputKey) == "string", "the plan needs its input key")
   assert(type(plan.render) == "function", "the plan needs its render callback")
   assert(type(plan.mapInput) == "function", "the plan needs its input mapper")
-  -- The retired schema leaves no reader: index through an untyped alias so
-  -- the absence check itself introduces no legacy field reference.
-  local untyped = plan --[[@as table<string, unknown>]]
-  assert(untyped.window == nil, "static plans carry no window")
-  assert(untyped.backgroundColor == nil, "static plans carry no settled background color")
-  assert(untyped.coverage == nil, "the renamed fade coverage leaves no legacy coverage field")
 end
 
 ---@param key string
@@ -146,45 +133,71 @@ function ApplicationPresentation.new(defaults, overrides)
   }, ApplicationPresentation)
 end
 
----@param placement LayoutGeometry.Placement
----@return string structural identity of one placement
-local function placementIdentity(placement)
-  local frame = placement.frame
-  local origin = placement.origin or frame
-  local clip = placement.clipRect or frame
-  return table.concat({
-    tostring(frame.x),
-    tostring(frame.y),
-    tostring(frame.width),
-    tostring(frame.height),
-    tostring(origin.x),
-    tostring(origin.y),
-    tostring(placement.scale),
-    tostring(clip.x),
-    tostring(clip.y),
-    tostring(clip.width),
-    tostring(clip.height),
-  }, "|")
+---@param a LayoutGeometry.Placement
+---@param b LayoutGeometry.Placement
+---@return boolean true when both placements hit-test and render identically
+local function placementsEqual(a, b)
+  local aFrame, bFrame = a.frame, b.frame
+  if aFrame.x ~= bFrame.x or aFrame.y ~= bFrame.y or aFrame.width ~= bFrame.width or aFrame.height ~= bFrame.height then
+    return false
+  end
+  local aOrigin = a.origin or aFrame
+  local bOrigin = b.origin or bFrame
+  if aOrigin.x ~= bOrigin.x or aOrigin.y ~= bOrigin.y then
+    return false
+  end
+  if a.scale ~= b.scale then
+    return false
+  end
+  local aClip = a.clipRect or aFrame
+  local bClip = b.clipRect or bFrame
+  return aClip.x == bClip.x and aClip.y == bClip.y and aClip.width == bClip.width and aClip.height == bClip.height
 end
 
----@param plan ApplicationPlan
----@param resolver fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan
----@return string structural identity; table identity alone is irrelevant
-local function planIdentity(plan, resolver)
-  local parts = { tostring(resolver), tostring(plan.render), tostring(plan.mapInput), plan.inputKey }
-  for _, pane in ipairs(plan.panes) do
-    parts[#parts + 1] = pane.id .. ":" .. tostring(pane.interactive) .. ":" .. placementIdentity(pane.placement)
+---@param candidate ApplicationPlan
+---@param candidateResolver fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan
+---@param published ApplicationPlan
+---@param publishedResolver fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan
+---@return boolean true when the candidate preserves the published capture identity
+local function plansEqual(candidate, candidateResolver, published, publishedResolver)
+  if candidateResolver ~= publishedResolver then
+    return false
   end
-  for index, frame in ipairs(plan.frames) do
-    local box = frame.contentBox
-    parts[#parts + 1] = "frame"
-      .. index
-      .. ":"
-      .. placementIdentity(frame.placement)
-      .. ":"
-      .. table.concat({ tostring(box.x), tostring(box.y), tostring(box.width), tostring(box.height) }, ",")
+  if candidate.render ~= published.render then
+    return false
   end
-  return table.concat(parts, "#")
+  if candidate.mapInput ~= published.mapInput then
+    return false
+  end
+  if candidate.inputKey ~= published.inputKey then
+    return false
+  end
+  if #candidate.panes ~= #published.panes then
+    return false
+  end
+  for index, pane in ipairs(candidate.panes) do
+    local other = published.panes[index]
+    if pane.id ~= other.id or pane.interactive ~= other.interactive then
+      return false
+    end
+    if not placementsEqual(pane.placement, other.placement) then
+      return false
+    end
+  end
+  if #candidate.frames ~= #published.frames then
+    return false
+  end
+  for index, frame in ipairs(candidate.frames) do
+    local other = published.frames[index]
+    if not placementsEqual(frame.placement, other.placement) then
+      return false
+    end
+    local aBox, bBox = frame.contentBox, other.contentBox
+    if aBox.x ~= bBox.x or aBox.y ~= bBox.y or aBox.width ~= bBox.width or aBox.height ~= bBox.height then
+      return false
+    end
+  end
+  return true
 end
 
 -- Resolves a complete plan against fresh host facts without advancing
@@ -215,8 +228,7 @@ function ApplicationPresentation:resolve(measurement, view)
   assertValidPlan(candidate)
   local previous = self._plan
   local capture = self._capture
-  local identityChanged = previous ~= nil
-    and planIdentity(candidate, resolver) ~= planIdentity(previous, self._resolver or resolver)
+  local identityChanged = previous ~= nil and not plansEqual(candidate, resolver, previous, self._resolver or resolver)
   local externalReflow = false
   if previous ~= nil then
     local signatureChanged = self._signature ~= nil and measurement.signature ~= self._signature
