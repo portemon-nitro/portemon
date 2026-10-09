@@ -2437,4 +2437,126 @@ function T.request_map_assets_shares_the_demand_readiness_convention()
   hostless:release()
 end
 
+function T.map_cell_domain_advances_by_descriptor_and_excludes_adjacent_map_cells()
+  local cache, world = fixture(2)
+  local loader = FieldMapLoader.new(cache, world)
+  loader.fieldCellIndex = {
+    matrices = {
+      {
+        matrixMemberId = 1,
+        cells = {
+          { x = 0, z = 0, mapHeaderId = 1 },
+          { x = 1, z = 0, mapHeaderId = 0 },
+          { x = 2, z = 0, mapHeaderId = 99 },
+          { x = 3, z = 0, mapHeaderId = 1 },
+          { x = 4, z = 0, mapHeaderId = 0 },
+        },
+      },
+    },
+  }
+  local domain = loader:mapCellDomain(1)
+  local firstVisits, firstCells, firstDone = domain:advance(2)
+  Assert.equal(firstVisits, 2, "skipped descriptors still consume the bounded walk")
+  Assert.equal(#firstCells, 1, "the first bounded pass returns selected-map ownership")
+  Assert.isFalse(firstDone, "the remaining indexed descriptors stay pending")
+  local lastVisits, lastCells, lastDone = domain:advance(4)
+  Assert.equal(lastVisits, 4, "the final owner batch visits only its remaining descriptors")
+  Assert.equal(#lastCells, 1, "the owner pass yields selected-map descriptors without filler")
+  Assert.isFalse(lastDone, "a second bounded pass attributes only in-extent filler")
+  local fillerVisits, fillerCells, fillerDone = domain:advance(5)
+  Assert.equal(fillerVisits, 5, "filler attribution charges every indexed descriptor")
+  Assert.equal(#fillerCells, 1, "only physical-only filler within the selected extent is included")
+  Assert.isTrue(fillerDone, "the finite map-cell domain reports completion")
+  Assert.equal(fillerCells[1].x, 1, "in-extent filler inherits the selected map")
+  loader:release()
+end
+
+function T.map_cell_domain_defers_large_matrix_lookup_into_bounded_advances()
+  local cache, world = fixture(2)
+  local loader = FieldMapLoader.new(cache, world)
+  local matrices = {}
+  for index = 1, 512 do
+    matrices[index] = { matrixMemberId = 1000 + index, cells = {} }
+  end
+  matrices[#matrices + 1] = {
+    matrixMemberId = 1,
+    cells = {
+      { x = 0, z = 0, mapHeaderId = 1 },
+      { x = 1, z = 0, mapHeaderId = 0 },
+    },
+  }
+  loader.fieldCellIndex = { matrices = matrices }
+
+  local domain = loader:mapCellDomain(1)
+  Assert.equal(domain._matrixIndex, 1, "domain construction does not scan the matrix catalog")
+  local firstVisits, firstCells, firstDone = domain:advance(128)
+  Assert.equal(firstVisits, 128, "one bounded advance inspects at most its matrix candidates")
+  Assert.equal(domain._matrixIndex, 129, "matrix lookup stops after its bounded batch")
+  Assert.equal(#firstCells, 0, "cell descriptors wait for selected-matrix lookup")
+  Assert.isFalse(firstDone, "a late matrix remains pending")
+
+  local visits = 0
+  while domain._phase == "findMatrix" do
+    local batchVisits = domain:advance(128)
+    Assert.isTrue(batchVisits <= 128, "every matrix-search batch stays bounded")
+    visits = visits + batchVisits
+  end
+  Assert.isTrue(visits > 0 and visits <= 512, "the selected matrix is found through charged batches")
+  loader:release()
+end
+
+function T.logical_metadata_task_defers_work_and_transfers_its_result_once()
+  local cache, world = fixture(1)
+  local loader = FieldMapLoader.new(cache, world)
+  local task = loader:beginLogicalMetadata(0)
+  Assert.equal(task:advance(0), 0, "a zero budget does not acquire semantic metadata")
+  Assert.isFalse(task:isReady(), "metadata stays unavailable until a positive update budget")
+  Assert.equal(task:advance(1), 1, "logical metadata acquisition consumes one bounded task unit")
+  Assert.isTrue(task:isReady(), "the selected map's event facts become available")
+  local map = task:takeResult()
+  Assert.equal(map.mapId, 0, "the task binds its result to the requested logical map")
+  Assert.equal(map.fieldData.events.objects[1], nil, "the fixture has an empty source event catalog")
+  Assert.isFalse(map.released, "result transfer moves resource ownership to the caller")
+  task:release()
+  task:release()
+  Assert.isFalse(map.released, "release after transfer cannot release the caller's map")
+  Assert.throws(function()
+    task:takeResult()
+  end, "a transferred metadata result cannot be taken twice")
+  map:release()
+  loader:release()
+end
+
+function T.logical_metadata_task_bounds_large_event_validation_across_advances()
+  local cache, world, _, _, files = fixture(1)
+  local field = files[FieldMapDataCache.fieldPath(0)]
+  for index = 1, 128 do
+    field.events.background[index] = { hiddenItem = false }
+    field.events.objects[index] = {
+      movementType = "stationary",
+      xRange = 0,
+      yRange = 0,
+    }
+  end
+  local loader = FieldMapLoader.new(cache, world)
+  local task = loader:beginLogicalMetadata(0)
+
+  Assert.equal(task:advance(1), 1, "metadata acquisition stays within the one-unit budget")
+  Assert.isFalse(task:isReady(), "large background and object catalogs remain pending")
+
+  local totalWork = 1
+  while not task:isReady() do
+    local work = task:advance(8)
+    Assert.isTrue(work <= 8, "event validation never exceeds the update budget")
+    Assert.isTrue(work > 0, "pending event validation makes progress")
+    totalWork = totalWork + work
+  end
+  Assert.isTrue(totalWork >= 256, "both large event catalogs consume bounded work units")
+  local map = task:takeResult()
+  Assert.equal(#map.fieldData.events.background, 128)
+  Assert.equal(#map.fieldData.events.objects, 128)
+  map:release()
+  loader:release()
+end
+
 return { tests = T }

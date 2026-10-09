@@ -4,12 +4,78 @@ local Assert = require("tests.support.Assert")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local Moves = require("libs.mons.src.gen4.Moves")
+local Navigation = require("app.src.saveeditor.SaveEditorNavigation")
 local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
+local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
 local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
+local ItemCatalog = require("libs.items.src.ItemCatalog")
+local ItemFixture = require("libs.items.tests.item_fixture")
 
 local T = {}
+
+local function modalStackWith(kind)
+  local stack = ModalStack.new()
+  stack:push({
+    id = "test:" .. kind,
+    kind = kind,
+    payload = {},
+    opener = { controlId = "test:opener", regionId = "test", scrollAnchor = 0 },
+  })
+  return stack
+end
+
+local function hasFocus(layout, targetId)
+  for _, region in ipairs(layout.focusNavigation.regions) do
+    if region.logical and region.logical.indexOf and region.logical.indexOf(targetId) ~= nil then
+      return true
+    end
+  end
+  for _, control in ipairs(layout.focusNavigation.controls) do
+    if control.id == targetId then
+      return true
+    end
+  end
+  return false
+end
+
+local function navigate(controller, layout, direction)
+  local snapshot = {
+    scope = { id = layout.scopeId, epoch = layout.scopeEpoch },
+    regions = layout.focusNavigation.regions,
+    controls = layout.focusNavigation.controls,
+    remembered = controller.listCursors,
+  }
+  local focus
+  for _, control in ipairs(snapshot.controls) do
+    if control.id == controller.focus then
+      focus = { scopeId = layout.scopeId, regionId = control.regionId, targetId = controller.focus }
+      break
+    end
+  end
+  if focus == nil then
+    for _, region in ipairs(snapshot.regions) do
+      if region.logical and region.logical.indexOf and region.logical.indexOf(controller.focus) ~= nil then
+        focus = { scopeId = layout.scopeId, regionId = region.id, targetId = controller.focus }
+        break
+      end
+    end
+  end
+  focus = Navigation.reconcile(snapshot, focus or {
+    scopeId = layout.scopeId,
+    regionId = "",
+    targetId = controller.focus,
+  }, { layout.defaultFocus })
+  controller:setFocus(focus.targetId)
+  local result = Navigation.resolve(snapshot, focus, direction)
+  if result.kind == "move" then
+    controller:setFocus(result.targetId)
+  end
+  return result
+end
+
 local function computeLayout(view, width, height)
   return Layout.compute(view, width, height, {
     lineHeight = 14,
@@ -108,10 +174,7 @@ function T.bag_cards_expose_icon_name_and_quantity_regions_without_descriptions(
         local region = assert(card[key], "cards publish " .. key)
         Assert.isTrue(region.width > 0 and region.height > 0, key .. " stays positive")
         Assert.isTrue(region.x >= card.rect.x, key .. " starts inside its card")
-        Assert.isTrue(
-          region.x + region.width <= card.rect.x + card.rect.width + 0.01,
-          key .. " ends inside its card"
-        )
+        Assert.isTrue(region.x + region.width <= card.rect.x + card.rect.width + 0.01, key .. " ends inside its card")
         Assert.isTrue(region.y >= card.rect.y, key .. " stays below the card top")
         Assert.isTrue(
           region.y + region.height <= card.rect.y + card.rect.height + 0.01,
@@ -121,10 +184,7 @@ function T.bag_cards_expose_icon_name_and_quantity_regions_without_descriptions(
       end
       for first = 1, #regions do
         for second = first + 1, #regions do
-          Assert.isFalse(
-            regionsOverlap(regions[first], regions[second]),
-            "card content regions never overlap"
-          )
+          Assert.isFalse(regionsOverlap(regions[first], regions[second]), "card content regions never overlap")
         end
       end
       Assert.notNil(layout.targets[card.targetId], "cards keep their hit targets")
@@ -174,12 +234,60 @@ function T.compact_party_keeps_occupied_member_and_add_cards_reachable()
   Assert.equal(Layout.hitTest(compact, stripView(5), addX, addY), "party:add")
 end
 
+function T.party_strip_and_pager_fit_compact_and_tall_layouts()
+  for _, size in ipairs({ { 256, 192 }, { 360, 640 }, { 800, 600 } }) do
+    local view = stripView(5)
+    view.partyTab = "Stats"
+    view.partyStats = {
+      header = {
+        { id = "level", label = "Level", value = 5, targetId = "party:field:level", editor = { kind = "integer" } },
+      },
+      rows = {},
+    }
+    local layout = computeLayout(view, size[1], size[2])
+    local first = assert(layout.partyStrip.slots[1])
+    Assert.isTrue(first.rect.y > layout.content.y, "Party member cells keep a visible top gutter")
+    for _, slot in ipairs(layout.partyStrip.slots) do
+      Assert.isTrue(slot.rect.x >= layout.content.x, "member cell begins within the content pane")
+      Assert.isTrue(slot.rect.x + slot.rect.width <= layout.content.x + layout.content.width)
+      if slot.iconRect ~= nil then
+        Assert.isTrue(slot.iconRect.y >= slot.rect.y, "member icon remains inside its touch and focus cell")
+        Assert.isTrue(slot.iconRect.y + slot.iconRect.height <= slot.rect.y + slot.rect.height)
+      end
+    end
+    local previous = assert(layout.targets["party:page:previous"]).rect
+    local label = assert(layout.partyPageLabel).rect
+    local nextPage = assert(layout.targets["party:page:next"]).rect
+    Assert.equal(previous.y, label.y, "the pager label and arrows share a baseline")
+    Assert.equal(previous.y, nextPage.y, "pager arrows share a baseline")
+    Assert.equal(previous.height, label.height, "pager components have aligned control bounds")
+    Assert.equal(previous.height, nextPage.height)
+    Assert.isTrue(
+      label.width <= #layout.partyPageLabel.text * 7 + 16,
+      "the pager label uses measured text width and padding"
+    )
+    local clusterLeft, clusterRight = previous.x, nextPage.x + nextPage.width
+    Assert.isTrue(
+      math.abs((clusterLeft + clusterRight) / 2 - (layout.content.x + layout.content.width / 2)) <= 1,
+      "the tight pager cluster is centered in the content pane"
+    )
+  end
+end
+
 function T.party_grid_places_members_and_add_in_occupied_six_cell_positions()
   for _, count in ipairs({ 0, 1, 5, 6 }) do
     local layout = computeLayout(stripView(count), 800, 600)
     Assert.equal(#layout.partyStrip.slots, 6, "the strip always spans six positions")
     for index = 0, count - 1 do
-      Assert.notNil(layout.targets["party:slot:" .. index], "every member stays selectable")
+      local targetId = "party:slot:" .. index
+      Assert.notNil(layout.targets[targetId], "every member stays selectable")
+      local slot = assert(layout.partyStrip.slots[index + 1])
+      Assert.isNil(slot.textRect, "occupied slots expose no member text geometry")
+      Assert.equal(
+        slot.iconRect.x,
+        slot.rect.x + (slot.rect.width - slot.iconRect.width) / 2,
+        "member icons stay centered"
+      )
     end
     if count < 6 then
       Assert.notNil(layout.targets["party:add"], "Add marks the first empty position")
@@ -196,10 +304,8 @@ function T.party_cards_use_bounded_icon_left_geometry_and_keep_grid_edges()
     local layout = computeLayout(stripView(5), width, width == 256 and 192 or 720)
     local first = assert(layout.partyStrip.slots[1])
     Assert.isTrue(first.rect.x >= layout.content.x, "strip positions stay within the content bounds")
-    Assert.isTrue(
-      first.iconRect.x + first.iconRect.width <= first.textRect.x,
-      "icon and text use side-by-side regions"
-    )
+    Assert.isNil(first.textRect, "occupied Party slots have no text geometry")
+    Assert.equal(first.iconRect.x, first.rect.x + (first.rect.width - first.iconRect.width) / 2)
     if width > 280 then
       local last = assert(layout.partyStrip.slots[6])
       local stripWidth = last.rect.x + last.rect.width - first.rect.x
@@ -207,16 +313,65 @@ function T.party_cards_use_bounded_icon_left_geometry_and_keep_grid_edges()
     end
     local stripController = Controller.new()
     stripController:setFocus("party:slot:0")
-    stripController:moveFocus(layout.focusGraph, "left")
-    if width <= 280 then
-      Assert.equal(stripController.focus, "party:slot:0", "Left stays inside the rail-less strip")
-    else
-      Assert.equal(stripController.focus, "section:Party", "Left reaches the section rail like every section")
-    end
-    stripController:setFocus("party:add")
-    stripController:moveFocus(layout.focusGraph, "right")
-    Assert.equal(stripController.focus, "party:add", "Right stays inside the strip")
+    navigate(stripController, layout, "right")
+    Assert.equal(stripController.focus, "party:slot:1", "Right follows the declared member strip order")
+    stripController:setFocus("party:slot:1")
+    navigate(stripController, layout, "right")
+    Assert.equal(stripController.focus, "party:slot:2", "Right follows the declared member strip order")
   end
+end
+
+function T.party_detail_actions_use_compact_rows_without_losing_reachability()
+  local view = stripView(1)
+  view.partyTab = "Details"
+  view.partyDetails = {
+    rows = {
+      {
+        role = "integer value",
+        targetId = "party:field:trainerId",
+        id = "trainerId",
+        label = "Trainer ID",
+        value = 123,
+        enabled = true,
+      },
+      {
+        role = "action",
+        targetId = "party:field:trainerName",
+        id = "trainerName",
+        label = "Trainer name",
+        enabled = true,
+      },
+      { role = "action", targetId = "party:field:nickname", id = "nickname", label = "Nickname", enabled = true },
+      {
+        role = "action",
+        targetId = "party:use-species-name",
+        id = "use-species-name",
+        label = "Use species name",
+        enabled = true,
+      },
+    },
+  }
+  local normalHeight
+  for _, size in ipairs({ { 800, 600 }, { 1280, 720 } }) do
+    local layout = computeLayout(view, size[1], size[2])
+    normalHeight = assert(layout.targets["party:field:trainerId"]).rect.height
+    for _, targetId in ipairs({ "party:field:trainerName", "party:field:nickname", "party:use-species-name" }) do
+      local rect = assert(layout.targets[targetId], targetId .. " stays reachable").rect
+      Assert.isTrue(rect.height <= normalHeight + 2, targetId .. " uses compact body height")
+      Assert.isTrue(rect.height >= 20, targetId .. " keeps a usable hit target")
+      Assert.equal(
+        Layout.hitTest(layout, view, rect.x + rect.width / 2, rect.y + rect.height / 2),
+        targetId,
+        targetId .. " remains pointer reachable"
+      )
+    end
+  end
+  local compact = computeLayout(view, 256, 192)
+  Assert.notNil(compact.viewports.party, "compact Details keeps its body viewport")
+  Assert.isTrue(
+    compact.viewports.party.contentExtent >= normalHeight * #view.partyDetails.rows,
+    "compact rows remain part of the scrollable body"
+  )
 end
 function T.bag_pages_six_items_and_keeps_add_outside_grid()
   local rows = {}
@@ -227,13 +382,13 @@ function T.bag_pages_six_items_and_keeps_add_outside_grid()
   local firstLayout = computeLayout(first, 256, 192)
   Assert.equal(#firstLayout.bagGrid, 6, "the first page publishes six occupied cells")
   Assert.isNil(firstLayout.targets["bag:item:ITEM_7"], "later page cards are not hit targets")
-  Assert.isFalse(firstLayout.focusGraph["bag:page:previous"] ~= nil, "Previous is not focusable on the first page")
+  Assert.isFalse(hasFocus(firstLayout, "bag:page:previous"), "Previous is not focusable on the first page")
   Assert.notNil(firstLayout.targets["bag:add"], "Add remains a separate control")
   local second = bagView(rows, 1)
   local secondLayout = computeLayout(second, 256, 192)
   Assert.equal(#secondLayout.bagGrid, 1, "the last page has no empty cards")
   Assert.notNil(secondLayout.targets["bag:item:ITEM_7"], "Next page exposes its first occupied item")
-  Assert.isFalse(secondLayout.focusGraph["bag:page:next"] ~= nil, "Next is not focusable on the last page")
+  Assert.isFalse(hasFocus(secondLayout, "bag:page:next"), "Next is not focusable on the last page")
   local actionModal = bagView(rows, 1)
   actionModal.modal = "bag-item"
   actionModal.bagSelectedItem, actionModal.bagSelectedLabel, actionModal.bagSelectedQuantity = "ITEM_7", "Item 7", 7
@@ -280,9 +435,14 @@ function T.nickname_blank_and_clear_have_distinct_raw_results()
       result = function()
         return { kind = "confirm", value = "" }
       end,
+      snapshot = function()
+        return { kind = "name" }
+      end,
+      dispose = function() end,
     },
     activeDraftField = nickname.editor,
     monDraft = draft,
+    modalStack = modalStackWith("name"),
   }, SaveEditorState)
   blankState:_finishValueEditor()
   Assert.equal(assignedField, "nickname")
@@ -320,7 +480,7 @@ function T.nickname_blank_and_clear_have_distinct_raw_results()
   draft.basePartyRevision = function()
     return 0
   end
-  clearState:_activate("party:use-species-name")
+  SaveEditorState._dispatchActivationAction(clearState, { kind = "party.use-species-name" })
   Assert.equal(assignedField, "nickname")
   Assert.isNil(assignedValue, "the explicit action stores nil")
 end
@@ -363,6 +523,7 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
     renderer:prepareVisibleIcons({ section = "Party" }, {
       content = {
         layout = {
+          targets = {},
           rows = { { iconKey = "0001:0" }, { iconKey = "0004:0" } },
           partyStrip = { slots = { { iconKey = "0007:0" } } },
         },
@@ -408,6 +569,15 @@ function T.close_cancel_restores_an_open_removal_decision_without_resolving_it()
   }
   local state = setmetatable({
     controller = controller,
+    modalStack = modalStackWith("bag-remove"),
+    modalLayerSequence = 0,
+    activeScopeId = "decision:remove",
+    activeScopeRevision = "decision:remove",
+    scopeEpoch = 0,
+    inputTick = 0,
+    fieldInput = { beginUi = function() end },
+    numberHold = nil,
+    numberPressTarget = nil,
     session = session,
     monDraft = draft,
     valueEditor = valueEditor,
@@ -498,6 +668,24 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
   end
   view.flagRowTargets = rowTargets
   view.flagIndexByTarget = indexByTarget
+  view.flagRowAt = function(index)
+    return view.flagRows[index]
+  end
+  view.flagModel = {
+    revision = 1,
+    queryRevision = 0,
+    pending = false,
+    count = #rowTargets,
+    rowTargets = rowTargets,
+    indexByTarget = indexByTarget,
+    idAt = function(index)
+      return rowTargets[index]
+    end,
+    indexOf = function(targetId)
+      return indexByTarget[targetId]
+    end,
+    rowAt = view.flagRowAt,
+  }
 
   local layout = computeLayout(view, 800, 600)
   local middleIndex = 600
@@ -509,19 +697,18 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
     "the viewport keeps the logical index of every semantic row"
   )
   Assert.isNil(layout.targets[middle], "an offscreen semantic row shares no per-frame target")
-  Assert.isNil(layout.focusGraph[middle], "an offscreen semantic row shares no per-frame focus node")
+  Assert.isTrue(hasFocus(layout, middle), "an offscreen semantic row remains logically focusable")
   local visibleFirst = layout.viewports.flags.firstIndex
   local firstTarget = rowTargets[visibleFirst]
-  local firstNode = assert(
-    layout.focusGraph[firstTarget],
-    "the first visible semantic row keeps its focus node"
-  )
+  Assert.isTrue(hasFocus(layout, firstTarget), "the first visible semantic row keeps its navigation control")
   if visibleFirst > 1 then
-    Assert.deepEqual(
-      firstNode.up,
-      {},
-      "the window edge has no offscreen neighbor inside the materialized graph"
-    )
+    local listRegion
+    for _, region in ipairs(layout.focusNavigation.regions) do
+      if region.id == "flags" then
+        listRegion = region
+      end
+    end
+    Assert.notNil(listRegion, "the list region retains its logical order")
   end
   Assert.isTrue(
     table.concat(layout.viewports.flags.rowTargets, "\n"):find(middle, 1, true) ~= nil,
@@ -535,25 +722,25 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
     dirty = view.dirty,
     flagFilter = view.flagFilter,
     flagRows = view.flagRows,
+    flagRowAt = view.flagRowAt,
+    flagModel = view.flagModel,
     flagRowTargets = view.flagRowTargets,
     flagIndexByTarget = view.flagIndexByTarget,
     scrollOffsets = { flags = (middleIndex - 2) * layout.viewports.flags.rowExtent },
   }
   local scrolled = computeLayout(scrolledView, 800, 600)
-  local middleNode = assert(scrolled.focusGraph[middle], "the revealed semantic row joins the focus graph")
+  Assert.isTrue(hasFocus(scrolled, middle), "the revealed semantic row joins the navigation controls")
   local previous = "flag:" .. view.flagRows[middleIndex - 1].name
   local following = "flag:" .. view.flagRows[middleIndex + 1].name
   Assert.isTrue(
-    scrolled.focusGraph[previous] ~= nil and scrolled.focusGraph[following] ~= nil,
+    hasFocus(scrolled, previous) and hasFocus(scrolled, following),
     "the revealed window also materializes the immediate semantic neighbors"
   )
-  Assert.deepEqual(middleNode.up, { previous }, "a revealed row links to its immediate semantic predecessor")
-  Assert.deepEqual(middleNode.down, { following }, "a revealed row links to its immediate semantic successor")
   Assert.notNil(scrolled.targets[middle], "the same semantic row can be revealed by its viewport")
 
   local controller = Controller.new()
   controller:setFocus(firstTarget)
-  controller:moveFocus(layout.focusGraph, "down")
+  navigate(controller, layout, "down")
   Assert.equal(
     controller.focus,
     rowTargets[visibleFirst + 1],
@@ -570,7 +757,7 @@ function T.disabled_bag_and_footer_actions_are_not_focusable_or_pointer_targets(
       Layout.hitTest(layout, view, target.rect.x + target.rect.width / 2, target.rect.y + target.rect.height / 2),
       targetId .. " is not an activatable pointer target"
     )
-    Assert.isFalse(layout.focusGraph[targetId] ~= nil, targetId .. " is absent from the active focus graph")
+    Assert.isFalse(hasFocus(layout, targetId), targetId .. " is absent from active navigation")
     for _, focusId in ipairs(layout.focusOrder) do
       Assert.isFalse(focusId == targetId, targetId .. " is absent from focus order")
     end
@@ -587,7 +774,7 @@ function T.disabled_bag_and_footer_actions_are_not_focusable_or_pointer_targets(
   local stats = stripView(2)
   stats.dirty = false
   local statsLayout = computeLayout(stats, 800, 600)
-  assertDisabled(statsLayout, stats, "party:page:previous")
+  Assert.isTrue(statsLayout.targets["party:page:previous"].activationEnabled, "Party Previous wraps from Stats")
   assertDisabled(statsLayout, stats, "save")
   Assert.isNil(statsLayout.targets["party:move-up"], "reorder controls are removed")
   Assert.isNil(statsLayout.targets["party:move-down"], "reorder controls are removed")
@@ -596,7 +783,7 @@ function T.disabled_bag_and_footer_actions_are_not_focusable_or_pointer_targets(
   local details = stripView(2)
   details.partyTab = "Details"
   local detailsLayout = computeLayout(details, 800, 600)
-  assertDisabled(detailsLayout, details, "party:page:next")
+  Assert.isTrue(detailsLayout.targets["party:page:next"].activationEnabled, "Party Next wraps from Details")
   Assert.notNil(detailsLayout.targets["back"], "the normal Back affordance remains available")
 end
 function T.bag_cards_stay_bounded_and_centered_on_large_screens()
@@ -641,20 +828,25 @@ function T.wide_bag_pocket_tabs_keep_left_and_right_on_pockets()
   local keys = { "items", "medicine", "balls", "battle_items", "berries", "mail", "key_items", "machines" }
   for index, key in ipairs(keys) do
     local targetId = "bag:pocket:" .. key
-    local node = assert(layout.focusGraph[targetId], targetId .. " stays in the focus graph")
     local previous = keys[(index - 2) % #keys + 1]
     local following = keys[index % #keys + 1]
-    Assert.deepEqual(node.left, { "bag:pocket:" .. previous }, targetId .. " Left stays on pockets")
-    Assert.deepEqual(node.right, { "bag:pocket:" .. following }, targetId .. " Right stays on pockets")
+    Assert.isTrue(hasFocus(layout, targetId), targetId .. " stays in its navigation region")
+    local controller = Controller.new()
+    controller:setSection("Bag")
+    controller:setFocus(targetId)
+    navigate(controller, layout, "left")
+    Assert.equal(controller.focus, "bag:pocket:" .. previous, targetId .. " Left stays on pockets")
+    navigate(controller, layout, "right")
+    Assert.equal(controller.focus, targetId, targetId .. " returns to its pocket")
   end
 
   local controller = Controller.new()
   controller:setSection("Bag")
   controller:setFocus("bag:pocket:balls")
-  controller:moveFocus(layout.focusGraph, "left")
+  navigate(controller, layout, "left")
   Assert.equal(controller.focus, "bag:pocket:medicine", "Left from a middle pocket selects the previous pocket")
   controller:setFocus("bag:pocket:items")
-  controller:moveFocus(layout.focusGraph, "left")
+  navigate(controller, layout, "left")
   Assert.equal(controller.focus, "bag:pocket:machines", "Left from the first pocket wraps to the last")
 end
 
@@ -697,13 +889,47 @@ function T.persistent_selector_lists_members_first_add_and_empty_positions()
   Assert.isFalse(slots[2].active or slots[3].active, "only one member stays selected")
   for index = 1, 3 do
     Assert.notNil(slots[index].iconKey, "member position " .. index .. " carries its sprite identity")
-    Assert.notNil(slots[index].level, "member position " .. index .. " carries its level")
+    Assert.notNil(slots[index].descriptiveLabel, "member position " .. index .. " retains descriptive metadata")
   end
   Assert.equal(slots[4].slot0, 3, "the add control marks the first empty position")
 
   local emptySlots = view:selector({}, nil).slots
   Assert.equal(emptySlots[1].kind, "add", "an empty party offers + Add first")
   Assert.isNil(emptySlots[1].active, "no member is selected when the party is empty")
+end
+
+function T.details_projects_canonical_nature_names_without_mutating_personality()
+  local catalog, view = structuredView()
+  local _, context, record = structuredMon("EEVEE", 9, "Sparky")
+  local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
+  local Personality = require("libs.mons.src.gen4.Personality")
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  for nature = 0, 24 do
+    record.personality = nature
+    local projection = Draft.projectRecord(record, { catalog = catalog })
+    local details = view:details(record, projection)
+    local row
+    for _, detail in ipairs(details.rows) do
+      if detail.id == "nature" then
+        row = detail
+      end
+    end
+    Assert.notNil(row, "Details keeps the derived nature row")
+    Assert.equal(projection.nature, Personality.nature(record.personality))
+    Assert.equal(row.value, HgssMonService.natureName(nature), "nature is displayed by its canonical name")
+    Assert.equal(record.personality, nature, "display projection leaves personality untouched")
+  end
+
+  local draft = Draft.new({
+    mode = "edit",
+    slot0 = 0,
+    basePartyRevision = 0,
+    record = record,
+    context = context,
+  })
+  local personality = draft:record().personality
+  Assert.isTrue(draft:setScalar("friendship", 150), "an unrelated current stat remains editable")
+  Assert.equal(draft:record().personality, personality, "editing a current stat preserves nature source data")
 end
 
 function T.stats_projection_exposes_header_and_iv_ev_table_without_derived_values()
@@ -743,10 +969,7 @@ function T.moves_projection_publishes_four_slots_with_allowance_labels()
   local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
   local slots = view:moves(mon).slots
   Assert.equal(#slots, 4, "the moves page always spans four slots")
-  Assert.deepEqual(
-    { slots[1].kind, slots[2].kind, slots[3].kind, slots[4].kind },
-    { "move", "move", "add", "empty" }
-  )
+  Assert.deepEqual({ slots[1].kind, slots[2].kind, slots[3].kind, slots[4].kind }, { "move", "move", "add", "empty" })
   for index = 1, 2 do
     local definition = catalog:move(mon.moves[index].move)
     local maxPp = Moves.maxPp(definition.basePp, mon.moves[index].ppUps)
@@ -767,9 +990,26 @@ function T.details_projection_keeps_player_facing_fields_and_omits_technical_sta
     rowsById[row.id] = row
   end
   for _, id in ipairs({
-    "species", "form", "nickname", "use-species-name", "nature", "gender", "shiny", "ability",
-    "heldItem", "trainerName", "trainerGender", "trainerId", "ball", "game", "language", "location",
-    "year", "month", "day", "metLevel",
+    "species",
+    "form",
+    "nickname",
+    "use-species-name",
+    "nature",
+    "gender",
+    "shiny",
+    "ability",
+    "heldItem",
+    "trainerName",
+    "trainerGender",
+    "trainerId",
+    "ball",
+    "game",
+    "language",
+    "location",
+    "year",
+    "month",
+    "day",
+    "metLevel",
   }) do
     Assert.notNil(rowsById[id], "details keeps " .. id)
   end
@@ -778,9 +1018,21 @@ function T.details_projection_keeps_player_facing_fields_and_omits_technical_sta
   Assert.isNil(rowsById.gender.editor, "gender stays derived")
   Assert.isNil(rowsById.shiny.editor, "shininess stays derived")
   for _, id in ipairs({
-    "personality", "species-native-id", "form-native-id", "ability-native-id", "pid-ability-slot",
-    "growth-curve", "exp-interval", "terrain", "move", "native-id", "type", "power", "accuracy",
-    "base-pp", "allowed-pp",
+    "personality",
+    "species-native-id",
+    "form-native-id",
+    "ability-native-id",
+    "pid-ability-slot",
+    "growth-curve",
+    "exp-interval",
+    "terrain",
+    "move",
+    "native-id",
+    "type",
+    "power",
+    "accuracy",
+    "base-pp",
+    "allowed-pp",
   }) do
     Assert.isNil(rowsById[id], "details omits technical field " .. id)
   end
@@ -929,8 +1181,7 @@ function T.shared_pp_arithmetic_drives_items_deposit_and_editors()
   local draftContext = CatalogFixture.domainContext(catalog)
   local record = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 5 }))
   record.moves = { { move = "TOXIC", pp = 8, ppUps = 0 } }
-  local draft =
-    Draft.new({ mode = "edit", slot0 = 0, basePartyRevision = 0, record = record, context = draftContext })
+  local draft = Draft.new({ mode = "edit", slot0 = 0, basePartyRevision = 0, record = record, context = draftContext })
   Assert.isTrue(draft:setMove(0, "ppUps", 3))
   Assert.isFalse(
     draft:setMove(0, "pp", Moves.maxPp(10, 3) + 1),
@@ -944,17 +1195,372 @@ function T.shared_pp_arithmetic_drives_items_deposit_and_editors()
   )
   local childState = setmetatable({
     pendingMoveSlot = 0,
+    modalLayerSequence = 0,
+    modalStack = require("app.src.saveeditor.SaveEditorModalStack").new(),
     monDraft = draft,
     dependencies = { context = { monCatalog = catalog } },
-    controller = { focus = "party-move:pp" },
+    controller = Controller.new(),
     valueEditor = nil,
   }, SaveEditorState)
+  childState.controller:setFocus("party-move:pp")
   childState:_openMoveChild("party-move:pp")
   Assert.equal(
     childState.valueEditor:snapshot().maximum,
     Moves.maxPp(10, 3),
     "the move-child editor offers the shared maximum"
   )
+end
+
+function T.party_details_project_held_item_and_ball_options_from_mixed_catalog()
+  local _, _, mon, projection = structuredMon("EEVEE", 9)
+  local root = ItemFixture.buildAssetRoot()
+  root.items["ember:EMBER_CHARM"] = {
+    name = "Ember Charm",
+    nameIndefinite = "an Ember Charm",
+    namePlural = "Ember Charms",
+    description = "A custom held item.",
+    pocket = "items",
+    preventToss = false,
+    selectable = false,
+    isBall = false,
+    friendshipBoost = false,
+    icon = "ember:EMBER_CHARM",
+    isHm = false,
+    canHold = true,
+    heldFormEffect = "none",
+    partyUse = { kind = "none" },
+  }
+  root.items["ember:MOON_BALL"] = {
+    name = "Moon Ball",
+    nameIndefinite = "a Moon Ball",
+    namePlural = "Moon Balls",
+    description = "A custom ball.",
+    pocket = "balls",
+    preventToss = false,
+    selectable = true,
+    isBall = true,
+    friendshipBoost = false,
+    icon = "ember:MOON_BALL",
+    isHm = false,
+    canHold = false,
+    heldFormEffect = "none",
+    partyUse = { kind = "none" },
+  }
+  local context = {
+    monCatalog = CatalogFixture.makeCatalog(),
+    itemCatalog = ItemCatalog.fromResolved(root),
+  }
+  local details = PartyView.new(context):details(mon, projection)
+  local rowsById = {}
+  for _, row in ipairs(details.rows) do
+    rowsById[row.id] = row
+  end
+
+  local heldKeys, ballKeys = {}, {}
+  for _, option in ipairs(assert(rowsById.heldItem).editor.options) do
+    heldKeys[option.key] = true
+  end
+  for _, option in ipairs(assert(rowsById.ball).editor.options) do
+    ballKeys[option.key] = true
+    Assert.equal(context.itemCatalog:item(option.key).pocket, "balls", "Ball choices contain only balls")
+  end
+  Assert.isTrue(heldKeys["ember:EMBER_CHARM"], "the namespaced held item is selectable")
+  Assert.isTrue(ballKeys["ember:MOON_BALL"], "the namespaced ball is selectable")
+  Assert.isTrue(ballKeys.POKE_BALL, "native ball choices remain available")
+  Assert.isFalse(ballKeys["ember:EMBER_CHARM"], "non-ball custom items remain outside Ball choices")
+end
+
+function T.bag_snapshot_reuses_catalog_and_pocket_metadata_until_revision_changes()
+  local pocket = next(ItemAssetSchema.POCKETS)
+  local counts = { itemKeys = 0, item = 0, pocket = 0, bagSnapshot = 0 }
+  local catalog = {
+    itemKeyIterator = function()
+      local key = 0
+      return function()
+        key = key + 1
+        if key > 8 then
+          return nil
+        end
+        return ({ "NONE", "ITEM_ONE", "ITEM_TWO", "ITEM_THREE", "ITEM_FOUR", "ITEM_FIVE", "ITEM_SIX", "ITEM_SEVEN" })[key]
+      end
+    end,
+    itemKeys = function()
+      counts.itemKeys = counts.itemKeys + 1
+      return { "NONE", "ITEM_ONE", "ITEM_TWO", "ITEM_THREE", "ITEM_FOUR", "ITEM_FIVE", "ITEM_SIX", "ITEM_SEVEN" }
+    end,
+    item = function(_, key)
+      counts.item = counts.item + 1
+      return { name = key == "NONE" and "None" or key, icon = key, pocket = pocket, nativeId = counts.item }
+    end,
+    pocket = function(_, key)
+      counts.pocket = counts.pocket + 1
+      return { nativeId = key == pocket and 1 or 2, maxQuantity = 99 }
+    end,
+    orderingKey = function(_, key)
+      local itemIndex = key == "NONE" and 0 or tonumber(key:match("ITEM_(%u+)$"))
+      if itemIndex == nil then
+        itemIndex = ({ ONE = 1, TWO = 2, THREE = 3, FOUR = 4, FIVE = 5, SIX = 6, SEVEN = 7 })[key:match("ITEM_(%u+)$")]
+      end
+      return string.format("0:%06d", assert(itemIndex))
+    end,
+  }
+  local revision, quantity = 1, 2
+  local session = {
+    revision = function()
+      return revision
+    end,
+    bagSnapshot = function()
+      counts.bagSnapshot = counts.bagSnapshot + 1
+      local entries = {}
+      for index = 1, 7 do
+        entries[index] = {
+          item = "ITEM_" .. ({ "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN" })[index],
+          quantity = index == 1 and quantity or index,
+        }
+      end
+      return entries
+    end,
+  }
+  local manifest = {
+    interactive = {
+      pocketTabs = { rects = {}, strips = { [pocket] = {} } },
+      focus = { tabs = { visual = {}, targets = {} } },
+      overlays = { quantity = { visuals = {} } },
+    },
+  }
+  local state = setmetatable({
+    dependencies = { context = { itemCatalog = catalog }, bagManifest = manifest },
+    session = session,
+    controller = { bagPocket = pocket, bagPage0 = 0, bagItemKey = "ITEM_ONE" },
+  }, SaveEditorState)
+  while state._bagCatalogMetadata == nil do
+    state:_advanceBagCatalog(256)
+  end
+  local first = state:_bagView()
+  local firstCounts = { itemKeys = counts.itemKeys, item = counts.item, pocket = counts.pocket }
+  local second = state:_bagView()
+  Assert.equal(counts.itemKeys, firstCounts.itemKeys, "stable snapshots never rescan catalog keys")
+  Assert.equal(counts.item, firstCounts.item, "stable snapshots reuse item descriptors")
+  Assert.equal(counts.pocket, firstCounts.pocket, "stable snapshots reuse pocket descriptors")
+  Assert.equal(counts.bagSnapshot, 1, "an unchanged session revision reuses its pocket rows")
+  Assert.isTrue(rawequal(first.bagRows, second.bagRows), "stable snapshots retain cached row metadata")
+
+  state.controller.bagPage0 = 1
+  local secondPage = state:_bagView()
+  Assert.equal(secondPage.bagPageRows[1].item, "ITEM_SEVEN", "page changes materialize the selected six-row slice")
+  Assert.equal(counts.bagSnapshot, 1, "changing pages does not reread the pocket snapshot")
+  Assert.isTrue(rawequal(first.bagRows, secondPage.bagRows), "page changes retain the cached row metadata")
+
+  quantity = 3
+  revision = revision + 1
+  state.controller.bagPage0 = 0
+  local changed = state:_bagView()
+  Assert.equal(counts.itemKeys, firstCounts.itemKeys, "a bag revision does not rebuild catalog availability")
+  Assert.equal(changed.bagPageRows[1].quantity, 3, "the next revision materializes current quantities")
+  Assert.equal(first.bagPageRows[1].quantity, 2, "an earlier page keeps its published quantity")
+  Assert.equal(counts.bagSnapshot, 2, "a new session revision rebuilds the selected pocket once")
+end
+
+function T.first_bag_snapshot_does_not_scan_or_materialize_the_item_catalog()
+  local pocket = next(ItemAssetSchema.POCKETS)
+  local controller = Controller.new()
+  controller:setSection("Bag")
+  controller:selectBagPocket(pocket)
+  local catalogVisits, itemReads, iteratorCalls = 0, 0, 0
+  local catalog = {
+    itemKeyIterator = function()
+      iteratorCalls = iteratorCalls + 1
+      local key = 0
+      return function()
+        key = key + 1
+        if key > 600 then
+          return nil
+        end
+        catalogVisits = catalogVisits + 1
+        return "ITEM_" .. key
+      end
+    end,
+    itemKeys = function()
+      error("Bag snapshots must not request a complete item-key list")
+    end,
+    item = function(_, key)
+      itemReads = itemReads + 1
+      return { name = key, pocket = pocket, nativeId = itemReads }
+    end,
+    pocket = function()
+      return { nativeId = 1 }
+    end,
+    orderingKey = function(_, key)
+      return string.format("0:%06d", tonumber(key:match("ITEM_(%d+)$")) or 0)
+    end,
+  }
+  local state = setmetatable({
+    dependencies = {
+      context = { itemCatalog = catalog },
+      bagManifest = {
+        interactive = {
+          pocketTabs = { rects = {}, strips = { [pocket] = {} } },
+          focus = { tabs = { visual = {}, targets = {} } },
+          overlays = { quantity = { visuals = {} } },
+        },
+      },
+    },
+    session = {
+      revision = function()
+        return 1
+      end,
+      bagSnapshot = function()
+        return {}
+      end,
+    },
+    controller = controller,
+    tickRemainder = 0,
+    inputTick = 0,
+    scopeEpoch = 0,
+    numberHold = nil,
+    valueEditor = nil,
+    disposed = false,
+    status = "ready",
+  }, SaveEditorState)
+
+  local initial = state:_bagView()
+  Assert.equal(iteratorCalls, 0, "the first snapshot does not start catalog enumeration")
+  Assert.equal(catalogVisits, 0, "the first snapshot does not visit item keys")
+  Assert.equal(itemReads, 0, "the first snapshot does not materialize item definitions")
+  Assert.equal(#initial.bagRows, 0, "the pending catalog publishes an empty Bag projection")
+
+  local fieldInput = require("libs.hgss.src.field.FieldInput")
+  state.fieldInput = fieldInput.new()
+  state:update(0)
+  Assert.isTrue(catalogVisits > 0 and catalogVisits <= 256, "one update prepares only its row budget")
+  Assert.isTrue(itemReads > 0 and itemReads <= 256, "one update materializes only its row budget")
+  for _ = 1, 2 do
+    state:_advanceBagCatalog(256)
+  end
+  Assert.isNil(state._bagCatalogMetadata, "catalog enumeration does not synchronously sort and publish all options")
+  while state._bagCatalogMetadata == nil do
+    local before = catalogVisits
+    state:update(0)
+    Assert.isTrue(catalogVisits - before <= 256, "later updates keep catalog enumeration bounded")
+  end
+  Assert.equal(catalogVisits, 600, "the preparation eventually visits every item key")
+  Assert.isTrue(state:_bagView().bagAddEnabled, "the completed catalog publishes its pocket options")
+end
+
+function T.bag_catalog_orders_native_and_custom_items_with_bounded_work()
+  local root = ItemFixture.buildAssetRoot()
+  for key, name in pairs({
+    ["ember:ZEPHYR_CHIME"] = "A Charm",
+    ["ember:EMBER_CHARM"] = "Z Charm",
+    ["ember:MOON_CHARM"] = "Moon Charm",
+  }) do
+    root.items[key] = {
+      name = name,
+      nameIndefinite = "a " .. name,
+      namePlural = name .. "s",
+      description = "A custom item.",
+      pocket = "items",
+      preventToss = false,
+      selectable = true,
+      isBall = false,
+      friendshipBoost = false,
+      icon = key,
+      isHm = false,
+      canHold = true,
+      heldFormEffect = "none",
+      partyUse = { kind = "none" },
+    }
+  end
+  local resolved = ItemCatalog.fromResolved(root)
+  local visits, reads = 0, 0
+  local catalog = {
+    itemKeyIterator = function()
+      local nextKey = resolved:itemKeyIterator()
+      return function()
+        local key = nextKey()
+        if key ~= nil then
+          visits = visits + 1
+        end
+        return key
+      end
+    end,
+    item = function(_, key)
+      reads = reads + 1
+      return resolved:item(key)
+    end,
+    pocket = function(_, key)
+      return resolved:pocket(key)
+    end,
+    orderingKey = function(_, key)
+      return resolved:orderingKey(key)
+    end,
+  }
+  local pocket = "items"
+  local state = setmetatable({
+    dependencies = {
+      context = { itemCatalog = catalog },
+      bagManifest = {
+        interactive = {
+          pocketTabs = { rects = {}, strips = { [pocket] = {} } },
+          focus = { tabs = { visual = {}, targets = {} } },
+          overlays = { quantity = { visuals = {} } },
+        },
+      },
+    },
+    session = {
+      revision = function()
+        return 1
+      end,
+      bagSnapshot = function()
+        return {
+          { item = "SOOTHE_BELL", quantity = 1 },
+          { item = "ember:ZEPHYR_CHIME", quantity = 1 },
+          { item = "ember:EMBER_CHARM", quantity = 1 },
+          { item = "ember:MOON_CHARM", quantity = 1 },
+        }
+      end,
+    },
+    controller = { section = "Bag", bagPocket = pocket, bagPage0 = 0 },
+  }, SaveEditorState)
+
+  local updates = 0
+  while state._bagCatalogMetadata == nil do
+    updates = updates + 1
+    Assert.isTrue(updates <= 2000, "the mixed Bag catalog reaches readiness")
+    local before = visits
+    local used = state:_advanceBagCatalog(7)
+    Assert.isTrue(used <= 7, "each catalog step respects its work budget")
+    Assert.isTrue(visits - before <= 7, "each catalog step scans only its row budget")
+  end
+
+  local options = state._bagCatalogMetadata.optionsByPocket[pocket]
+  local optionKeys, optionSet = {}, {}
+  for _, option in ipairs(options) do
+    optionKeys[#optionKeys + 1] = option.key
+    optionSet[option.key] = true
+  end
+  for index = 2, #optionKeys do
+    Assert.isTrue(
+      catalog:orderingKey(optionKeys[index - 1]) < catalog:orderingKey(optionKeys[index]),
+      "the Bag options follow the authoritative native-first ordering"
+    )
+  end
+  for _, key in ipairs({ "SOOTHE_BELL", "ember:EMBER_CHARM", "ember:MOON_CHARM", "ember:ZEPHYR_CHIME" }) do
+    Assert.isTrue(optionSet[key], "the sorted options retain " .. key)
+  end
+  Assert.isNil(resolved:item("ember:EMBER_CHARM").nativeId, "custom items keep their semantic-only identity")
+
+  local view = state:_bagView()
+  Assert.isTrue(view.bagAddEnabled, "the completed Bag catalog enables item addition")
+  Assert.equal(#view.bagRows, 4, "native and custom saved stacks resolve into Bag rows")
+  Assert.equal(view.bagRows[2].item, "ember:ZEPHYR_CHIME")
+  Assert.equal(view.bagRows[3].item, "ember:EMBER_CHARM")
+  Assert.equal(view.bagRows[4].item, "ember:MOON_CHARM")
+  view.section, view.ready, view.dirty = "Bag", true, false
+  local layout = computeLayout(view, 256, 192)
+  Assert.notNil(layout.targets["bag:item:ember:ZEPHYR_CHIME"], "the custom stack is an actionable Bag card")
+  Assert.notNil(layout.targets["bag:add"], "the completed catalog exposes the Bag add action")
+  Assert.isTrue(visits > 0 and reads > 0, "catalog construction incrementally reads resolved item keys")
 end
 
 return { tests = T }

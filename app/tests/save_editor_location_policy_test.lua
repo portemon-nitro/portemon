@@ -297,4 +297,154 @@ function T.tests.special_actor_fails_closed_and_flag_visibility_does_not_shrink_
   end
 end
 
+function T.tests.duplicate_source_identity_does_not_preempt_a_clear_tile()
+  local LocationPolicy = policy()
+  local first = event({ movementType = "stationary", x = 10, z = 10 })
+  local conflicting = event({ movementType = "stationary", x = 11, z = 10 })
+  local saved = actorAt(10, 10, first)
+  local ok, result = pcall(function()
+    return LocationPolicy.classify(facts({
+      fieldX = 12,
+      fieldZ = 12,
+      events = { first, conflicting },
+      savedActors = { saved },
+    }))
+  end)
+
+  Assert.isTrue(ok, "conflicting external source identities must not escape as a raw assertion")
+  Assert.isTrue(result.selectable, "a matching source candidate and clear tile remain usable")
+  Assert.isNil(result.reason, "multiplicity alone does not refuse a clear destination")
+end
+
+function T.tests.duplicate_neighbor_identity_keeps_each_occupancy_footprint()
+  local LocationPolicy = policy()
+  local first = event({ mapId = 13, x = 10, z = 10 })
+  local second = event({ mapId = 13, x = 20, z = 10 })
+  local source = facts({
+    fieldX = 20,
+    fieldZ = 10,
+    events = { first, second },
+    representedMapIds = { [12] = true, [13] = true },
+  })
+
+  for _, events in ipairs({ { first, second }, { second, first } }) do
+    source.events = events
+    local blocked = LocationPolicy.classify(source)
+    Assert.equal(blocked.reason, "possible_actor", "the second same-ID neighbor footprint blocks occupancy")
+    source.fieldX = 30
+    source.fieldZ = 30
+    Assert.isTrue(LocationPolicy.classify(source).selectable, "duplicate identity alone does not reject a clear tile")
+    source.fieldX = 20
+    source.fieldZ = 10
+  end
+end
+
+function T.tests.ambiguous_saved_actor_unions_motion_for_every_source_candidate_incrementally()
+  local LocationPolicy = policy()
+  local first = event({ mapId = 13, movementType = "stationary", x = 10, z = 10, xRange = 2, yRange = 2 })
+  local second = event({ mapId = 13, movementType = "look_north", x = 40, z = 40, xRange = 2, yRange = 2 })
+  local saved = actorAt(80, 80, second, { mapId = 13, movementType = "wander_around" })
+  local source = facts({
+    fieldX = 11,
+    fieldZ = 10,
+    events = { first, second },
+    savedActors = { saved },
+    representedMapIds = { [12] = true, [13] = true },
+  })
+
+  for _, events in ipairs({ { first, second }, { second, first } }) do
+    source.events = events
+    Assert.equal(
+      LocationPolicy.classify(source).reason,
+      "possible_actor",
+      "changed movement at the first candidate footprint blocks despite source identity matching the second"
+    )
+  end
+
+  source.fieldX, source.fieldZ = 70, 70
+  local expected = LocationPolicy.classify(source)
+  local task = LocationPolicy.beginClassification(source)
+  local advances = 0
+  while not task.done do
+    for _, budget in ipairs({ 0, 1, 2, 5 }) do
+      local visits = LocationPolicy.advanceClassification(task, budget)
+      Assert.isTrue(visits <= budget, "candidate correlation stays within each visit budget")
+      advances = advances + visits
+      if task.done then
+        break
+      end
+    end
+  end
+  Assert.isTrue(advances >= 5, "both candidate records and actor correlation are charged")
+  Assert.deepEqual(task.result, expected, "staged classification matches synchronous ambiguity handling")
+
+  saved.sourceMovementType = "wander_around"
+  Assert.equal(
+    LocationPolicy.classify(source).reason,
+    "ambiguous_source_actor",
+    "ambiguous identity without a candidate matching saved source movement is rejected"
+  )
+
+  local unique = event({ mapId = 12, movementType = "stationary", x = 90, z = 90 })
+  local uniqueActor = actorAt(80, 80, unique, { sourceMovementType = "wander_around" })
+  local ok = pcall(function()
+    LocationPolicy.classify(facts({ events = { unique }, savedActors = { uniqueActor } }))
+  end)
+  Assert.isFalse(ok, "a unique source movement mismatch remains a hard invariant")
+
+  local manyCandidates = {}
+  for index = 1, 32 do
+    manyCandidates[index] = event({
+      mapId = 13,
+      objectEventId = 8,
+      movementType = index == 32 and "wander_around" or "stationary",
+      x = 1000 + index,
+      z = 1000,
+      xRange = 1,
+      yRange = 1,
+    })
+  end
+  local manyActor = actorAt(80, 80, manyCandidates[32], { mapId = 13, movementType = "wander_around" })
+  source.fieldX, source.fieldZ = 70, 70
+  source.events, source.savedActors = manyCandidates, { manyActor }
+  local manyTask = LocationPolicy.beginClassification(source)
+  local visits = 0
+  while not manyTask.done do
+    local used = LocationPolicy.advanceClassification(manyTask, 1)
+    Assert.isTrue(used <= 1, "large ambiguous groups advance within a one-visit budget")
+    visits = visits + used
+  end
+  Assert.isTrue(visits >= 65, "classification charges every event and every candidate correlation")
+  Assert.isTrue(manyTask.result.selectable, "a matched large identity group preserves a clear tile")
+end
+
+function T.tests.staged_classification_bounds_each_actor_and_event_advance()
+  local LocationPolicy = policy()
+  local events = {}
+  local actors = {}
+  for index = 1, 300 do
+    events[index] = event({ objectEventId = index, x = 0x1000 + index, z = 0x1000 })
+    actors[index] = {
+      actorId = "unrepresented:" .. index,
+      mapId = 1000 + index,
+      objectEventId = 1,
+      sourceMovementType = "stationary",
+      movementType = "stationary",
+      fieldX = 0x2000 + index,
+      fieldZ = 0x2000,
+    }
+  end
+  local source = facts({ events = events, savedActors = actors })
+  local expected = LocationPolicy.classify(source)
+  local task = LocationPolicy.beginClassification(source)
+  local totalVisits = 0
+  while not task.done do
+    local visits = LocationPolicy.advanceClassification(task, 17)
+    Assert.isTrue(visits <= 17, "one staged policy advance never visits more than its supplied budget")
+    totalVisits = totalVisits + visits
+  end
+  Assert.isTrue(totalVisits >= #events + #actors * 2, "all retained policy passes charge their array visits")
+  Assert.deepEqual(task.result, expected, "staged classification preserves the synchronous policy result")
+end
+
 return T

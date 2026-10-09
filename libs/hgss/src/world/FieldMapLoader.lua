@@ -210,8 +210,9 @@ end
 -- environment. Visual realization never revalidates these.
 ---@param cacheFs CacheFs
 ---@param record table<string, unknown>
+---@param validateEvents boolean? whether to validate all event records synchronously; defaults to true
 ---@return table<string, unknown>
-local function loadSemanticFieldData(cacheFs, record)
+local function loadSemanticFieldData(cacheFs, record, validateEvents)
   local fieldData =
     loadRequired(cacheFs, FieldMapDataCache.fieldPath(record.id), FieldErrors.FIELD_MAP_DATA_CACHE_MISSING)
   if fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA or fieldData.mapId ~= record.id then
@@ -221,7 +222,7 @@ local function loadSemanticFieldData(cacheFs, record)
       { mapId = record.id, schema = fieldData.schema }
     )
   end
-  if not FieldMapDataCache.hasRequiredEvents(fieldData.events) then
+  if validateEvents and not FieldMapDataCache.hasRequiredEvents(fieldData.events) then
     Errors.raise(
       FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
       "field cache event collections are missing or malformed; rebuild the derived cache",
@@ -491,30 +492,20 @@ end
 -- validated generated field record. Reads no scene, collision, terrain,
 -- model, presentation, or physical resource.
 ---@param record table<string, unknown>
+---@param validateEvents boolean? whether to validate all event records synchronously; defaults to true
 ---@return table<string, unknown>
-function FieldMapLoader:_acquireSemantic(record)
+function FieldMapLoader:_acquireSemantic(record, validateEvents)
   checkWorldIdentity(record)
   if self.derivedAssets then
     self.derivedAssets.ensureLogicalField(record.id)
   end
-  return loadSemanticFieldData(self.cacheFs, record)
+  return loadSemanticFieldData(self.cacheFs, record, validateEvents ~= false)
 end
 
--- Acquires the scene-free semantic map for logical residency: scripts,
--- actors, zone identity, weather/audio selection, interactions, transition
--- metadata, and world coordinates. Consults only the semantic readiness
--- edge, never the full visual one, and caches nothing: every call
--- reasserts readiness and builds a fresh semantic owner. The caller owns
--- reuse; the loader's entry cache holds fully realized maps only.
----@param idOrSymbol string|integer
+---@param record table<string, unknown>
+---@param fieldData table<string, unknown>
 ---@return LogicalFieldMap
-function FieldMapLoader:loadLogical(idOrSymbol)
-  assert(not self.released, "field map loader is released")
-  local record = worldRecord(self.world, idOrSymbol)
-  local fieldData = self:_acquireSemantic(record)
-  -- The coordinate origin comes from the structural world record alone:
-  -- the constructor rejects non-structural worlds, so the manifest origin
-  -- is always present and no visual scene fallback exists.
+local function makeLogicalMap(record, fieldData)
   local originX, originZ = record.worldOriginX, record.worldOriginZ
   local logicalMap = {
     mapId = record.id,
@@ -539,6 +530,190 @@ function FieldMapLoader:loadLogical(idOrSymbol)
     return nil
   end
   return logicalMap
+end
+
+-- Acquires the scene-free semantic map for logical residency: scripts,
+-- actors, zone identity, weather/audio selection, interactions, transition
+-- metadata, and world coordinates. Consults only the semantic readiness
+-- edge, never the full visual one, and caches nothing: every call
+-- reasserts readiness and builds a fresh semantic owner. The caller owns
+-- reuse; the loader's entry cache holds fully realized maps only.
+---@param idOrSymbol string|integer
+---@return LogicalFieldMap
+function FieldMapLoader:loadLogical(idOrSymbol)
+  assert(not self.released, "field map loader is released")
+  local record = worldRecord(self.world, idOrSymbol)
+  local fieldData = self:_acquireSemantic(record)
+  return makeLogicalMap(record, fieldData)
+end
+
+---@class FieldMapLoader.LogicalMetadataTask
+---@field _loader FieldMapLoader
+---@field _mapId integer
+---@field _result LogicalFieldMap?
+---@field _fieldData table<string, unknown>?
+---@field _record table<string, unknown>?
+---@field _eventValidation FieldMapDataCache.RequiredEventsValidation?
+---@field _ready boolean
+---@field _taken boolean
+---@field _released boolean
+---@field advance fun(self: FieldMapLoader.LogicalMetadataTask, workUnits: integer): integer
+---@field isReady fun(self: FieldMapLoader.LogicalMetadataTask): boolean
+---@field takeResult fun(self: FieldMapLoader.LogicalMetadataTask): LogicalFieldMap
+---@field release fun(self: FieldMapLoader.LogicalMetadataTask)
+
+-- Stages acquisition of scene-free event and logical facts behind the same
+-- bounded task shape as complete-map loading. Lua/cache reads remain atomic;
+-- the service budgets each represented map before chunking its events.
+---@param idOrSymbol string|integer
+---@return FieldMapLoader.LogicalMetadataTask
+function FieldMapLoader:beginLogicalMetadata(idOrSymbol)
+  assert(not self.released, "field map loader is released")
+  local record = worldRecord(self.world, idOrSymbol)
+  local task = {
+    _loader = self,
+    _mapId = record.id,
+    _result = nil,
+    _fieldData = nil,
+    _record = record,
+    _eventValidation = nil,
+    _ready = false,
+    _taken = false,
+    _released = false,
+  }
+  function task:advance(workUnits)
+    assert(not self._released and not self._ready, "logical metadata task cannot advance")
+    assert(type(workUnits) == "number" and workUnits >= 0 and workUnits % 1 == 0)
+    if workUnits == 0 then
+      return 0
+    end
+    local consumed = 0
+    if not self._fieldData then
+      self._fieldData = self._loader:_acquireSemantic(assert(self._record), false)
+      self._eventValidation = FieldMapDataCache.beginRequiredEventsValidation(self._fieldData.events)
+      consumed = consumed + 1
+    end
+    local eventWork, complete, valid = assert(self._eventValidation):advance(workUnits - consumed)
+    consumed = consumed + eventWork
+    if not valid then
+      Errors.raise(
+        FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+        "field cache event collections are missing or malformed; rebuild the derived cache",
+        { mapId = self._mapId }
+      )
+    end
+    if complete then
+      self._result = makeLogicalMap(assert(self._record), assert(self._fieldData))
+      self._fieldData = nil
+      self._ready = true
+    end
+    return consumed
+  end
+  function task:isReady()
+    return self._ready
+  end
+  function task:takeResult()
+    assert(self._ready and not self._released and not self._taken, "logical metadata result is unavailable")
+    self._taken = true
+    return assert(self._result)
+  end
+  function task:release()
+    if self._released or self._taken then
+      return
+    end
+    self._released = true
+    if self._result then
+      self._result:release()
+      self._result = nil
+    end
+    self._fieldData = nil
+  end
+  return task
+end
+
+---@class FieldMapLoader.MapCellDomain
+---@field _cells table[]
+---@field _mapId integer
+---@field _cursor integer
+---@field _phase string
+---@field _extent { minX: integer, maxX: integer, minZ: integer, maxZ: integer }?
+---@field _ready boolean
+---@field advance fun(self: FieldMapLoader.MapCellDomain, workUnits: integer): integer, table[], boolean
+
+-- Returns a lazy walk over the indexed cells physically attributed to one
+-- logical map. Each inspected descriptor consumes one unit, including cells
+-- belonging to adjacent maps that are skipped.
+---@param mapId integer
+---@return FieldMapLoader.MapCellDomain
+function FieldMapLoader:mapCellDomain(mapId)
+  assert(not self.released, "field map loader is released")
+  local record = worldRecord(self.world, mapId)
+  local matrixMemberId = assert(record.matrix and record.matrix.memberId, "outdoor map matrix metadata is required")
+  local index = assert(self.fieldCellIndex, "field cell cache is unavailable")
+  local domain = {
+    _matrices = assert(index.matrices),
+    _matrixMemberId = matrixMemberId,
+    _matrixIndex = 1,
+    _cells = nil,
+    _mapId = mapId,
+    _cursor = 1,
+    _phase = "findMatrix",
+    _ready = false,
+  }
+  function domain:advance(workUnits)
+    assert(type(workUnits) == "number" and workUnits >= 0 and workUnits % 1 == 0)
+    local consumed, selected = 0, {}
+    while consumed < workUnits and not self._ready do
+      if self._phase == "findMatrix" then
+        local candidate = self._matrices[self._matrixIndex]
+        assert(candidate, "map matrix is missing from its validated field-cell index")
+        self._matrixIndex = self._matrixIndex + 1
+        consumed = consumed + 1
+        if candidate.matrixMemberId == self._matrixMemberId then
+          self._cells = candidate.cells
+          self._phase = "owners"
+        end
+      elseif self._cursor > #assert(self._cells) then
+        if self._phase == "owners" then
+          assert(self._extent, "logical map has no indexed physical cells")
+          self._phase = "filler"
+          self._cursor = 1
+        else
+          self._ready = true
+        end
+      else
+        local descriptor = assert(self._cells)[self._cursor]
+        self._cursor = self._cursor + 1
+        consumed = consumed + 1
+        local header = assert(descriptor.mapHeaderId, "indexed physical cells carry their map header")
+        if self._phase == "owners" and header == self._mapId then
+          local extent = self._extent
+          if extent == nil then
+            self._extent = { minX = descriptor.x, maxX = descriptor.x, minZ = descriptor.z, maxZ = descriptor.z }
+          else
+            extent.minX, extent.maxX = math.min(extent.minX, descriptor.x), math.max(extent.maxX, descriptor.x)
+            extent.minZ, extent.maxZ = math.min(extent.minZ, descriptor.z), math.max(extent.maxZ, descriptor.z)
+          end
+          selected[#selected + 1] = descriptor
+        elseif self._phase == "filler" and FieldZoneIdentity.isPhysicalOnlyCell(header) then
+          local extent = assert(self._extent)
+          if
+            descriptor.x >= extent.minX
+            and descriptor.x <= extent.maxX
+            and descriptor.z >= extent.minZ
+            and descriptor.z <= extent.maxZ
+          then
+            selected[#selected + 1] = descriptor
+          end
+        end
+        if self._cursor > #self._cells and self._phase == "filler" then
+          self._ready = true
+        end
+      end
+    end
+    return consumed, selected, self._ready
+  end
+  return domain
 end
 
 -- Synchronous preparation for one load transaction: structural world

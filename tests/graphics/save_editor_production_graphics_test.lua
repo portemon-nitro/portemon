@@ -15,6 +15,8 @@ local T = {
     derivedAssets = {
       "field-planning",
       "field-runtime",
+      "encounters:global",
+      "trainers:global",
       "audio-bank:702",
       "audio-bank:709",
       "map-data:7",
@@ -63,8 +65,7 @@ local function clickTarget(state, targetId)
     local layout = assert(view.layout)
     local target = assert(layout.targets[targetId], "the visible editor publishes " .. targetId)
     local rect = target.rect or target.hitRect or target
-    local x, y =
-      LayoutGeometry.logicalToHost(assert(pane.placement), rect.x + rect.width / 2, rect.y + rect.height / 2)
+    local x, y = LayoutGeometry.logicalToHost(assert(pane.placement), rect.x + rect.width / 2, rect.y + rect.height / 2)
     state:mousepressed(x, y, 1, false)
     state:mousereleased(x, y, 1, false)
   end
@@ -158,9 +159,36 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       local pane = assert(view.presentation.panes[1], name .. " publishes the interactive pane")
       local x, y = LayoutGeometry.logicalToHost(assert(pane.placement), 1, 1)
       local red, green, blue = actual:getPixel(x, y)
-      Assert.near(red, state.renderer.skin.background[1], 1 / 255, name .. " uses the editor palette red")
-      Assert.near(green, state.renderer.skin.background[2], 1 / 255, name .. " uses the editor palette green")
-      Assert.near(blue, state.renderer.skin.background[3], 1 / 255, name .. " uses the editor palette blue")
+      local scrimCount = 0
+      for _, layer in ipairs(view.modalLayers or {}) do
+        if layer.kind == "leave" or layer.kind == "bag-item" or layer.kind == "bag-remove" or layer.kind == "move" then
+          scrimCount = scrimCount + 1
+        end
+      end
+      if view.valueEditor ~= nil then
+        scrimCount = scrimCount + 1
+      end
+      local backgroundScale = (1 - 0.42) ^ scrimCount
+      local backgroundLabel = scrimCount == 0 and "uses the editor palette" or "uses the modal-dimmed editor palette"
+      local tolerance = scrimCount == 0 and 1 / 255 or 2 / 255
+      Assert.near(
+        red,
+        state.renderer.skin.background[1] * backgroundScale,
+        tolerance,
+        name .. " " .. backgroundLabel .. " red"
+      )
+      Assert.near(
+        green,
+        state.renderer.skin.background[2] * backgroundScale,
+        tolerance,
+        name .. " " .. backgroundLabel .. " green"
+      )
+      Assert.near(
+        blue,
+        state.renderer.skin.background[3] * backgroundScale,
+        tolerance,
+        name .. " " .. backgroundLabel .. " blue"
+      )
       local explicit = {}
       for _, surface in ipairs(view.layout.listSurfaces or {}) do
         explicit[#explicit + 1] = surface
@@ -179,19 +207,11 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
           local frameHeight = math.floor(surface.height / 8) * 8
           local frameX = math.floor(surface.x + (surface.width - frameWidth) / 2 + 0.5)
           local frameY = math.floor(surface.y + (surface.height - frameHeight) / 2 + 0.5)
-          if
-            frame.x == frameX
-            and frame.y == frameY
-            and frame.width == frameWidth
-            and frame.height == frameHeight
-          then
+          if frame.x == frameX and frame.y == frameY and frame.width == frameWidth and frame.height == frameHeight then
             owned = true
           end
         end
-        Assert.isTrue(
-          owned,
-          name .. " draws only explicit list/modal frames without a blanket content frame"
-        )
+        Assert.isTrue(owned, name .. " draws only explicit list/modal frames without a blanket content frame")
       end
       if #frameDraws - frameCount > 0 then
         Assert.equal(
@@ -250,53 +270,95 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
         ),
       },
     }
-    -- Location opens on the map list, so grid captures first narrow the
-    -- list to the staged map through the real filter path and then enter
-    -- coordinate selection through the real map-row activation path.
+    -- Location opens on its section list, so grid captures filter to the
+    -- staged map, enter its section, and activate the real map-row path.
     -- Only the staged map's assets are provisioned for these captures.
     local function enterStagedGrid(context)
       state:keypressed("delete")
       state:keyreleased("delete")
-      local stagedMapId =
-        assert(assert(state.session, context .. " stages a session"):snapshot().location).mapId
+      local stagedMapId = assert(assert(state.session, context .. " stages a session"):snapshot().location).mapId
       local stagedName
-      local summaries =
-        assert(state.locationService, context .. " owns its location service"):mapSummaries()
+      local stagedSectionId
+      local summaryTask = assert(state.locationService, context .. " owns its location service"):newMapSummaryTask()
+      local summariesReady = false
+      while not summariesReady do
+        local _, complete = summaryTask:advance(256)
+        summariesReady = complete
+      end
+      local summaries = summaryTask:take()
       for _, summary in ipairs(summaries) do
         if summary.mapId == stagedMapId then
           stagedName = assert(summary.displayName, context .. " names the staged map")
+          stagedSectionId = summary.mapSectionNativeId
         end
       end
       state:textinput(assert(stagedName, context .. " catalogs the staged map"))
-      local mapTargets = {}
-      for targetId in pairs(assert(state:view().layout).targets) do
-        if targetId:match("^location:map:%d+$") ~= nil then
-          mapTargets[targetId] = true
-        end
-      end
-      local activated = assert(
-        mapTargets["location:map:" .. stagedMapId] and "location:map:" .. stagedMapId,
-        context .. " publishes the staged map row"
-      )
-      clickTarget(state, activated)
-      state:update(0)
-      clickTarget(state, activated)
-      state:update(0)
+      local stagedMapTarget = "location:map:" .. stagedMapId
+      local stagedGroupTarget = "location:group:" .. assert(stagedSectionId, context .. " groups the staged map")
+      local activated
       for _ = 1, 120 do
-        local snapshot =
-          assert(state.locationService, context .. " owns its location service"):snapshot()
-        local classified = false
-        for _, tile in ipairs(snapshot.tiles) do
-          if tile.selectable == false then
-            classified = true
-            break
-          end
-        end
-        if classified then
+        local currentView = state:view()
+        if currentView.layout.targets[stagedGroupTarget] ~= nil and not currentView.location.mapModel.pending then
+          activated = stagedGroupTarget
           break
         end
         state:update(0)
       end
+      assert(activated, context .. " eventually publishes the staged map section")
+      clickTarget(state, activated)
+      state:update(0)
+      for _ = 1, 120 do
+        local currentView = state:view()
+        if currentView.layout.targets[stagedMapTarget] ~= nil and not currentView.location.mapModel.pending then
+          break
+        end
+        state:update(0)
+      end
+      local groupView = state:view()
+      assert(
+        groupView.layout.targets[stagedMapTarget] ~= nil,
+        context
+          .. " carries the filter to its map section (query="
+          .. groupView.query
+          .. ", group="
+          .. tostring(groupView.location.breadcrumb)
+          .. ", page="
+          .. groupView.locationNavigation.page
+          .. ", focus="
+          .. groupView.focus
+          .. ", count="
+          .. tostring(groupView.location.mapModel.count)
+          .. ")"
+      )
+      clickTarget(state, stagedMapTarget)
+      state:update(0)
+      local service = assert(state.locationService, context .. " owns its location service")
+      local ready = false
+      for _ = 1, 120 do
+        if service:snapshot().status.state == "ready" then
+          ready = true
+          break
+        end
+        state:update(0)
+      end
+      assert(ready, context .. " prepares the selected map before positioning the test viewport")
+      state.locationAutoCenterToken = nil
+      state.controller:setLocationCursor(0, 0)
+      state:update(0)
+      local unavailableTileVisible = false
+      for _ = 1, 120 do
+        for _, tile in ipairs(service:snapshot().tiles) do
+          if tile.selectable == false then
+            unavailableTileVisible = true
+            break
+          end
+        end
+        if unavailableTileVisible then
+          break
+        end
+        state:update(0)
+      end
+      assert(unavailableTileVisible, context .. " classifies out-of-bounds cells at the map boundary")
     end
     for _, case in ipairs(cases) do
       width, height, topology = case.width, case.height, case.topology
@@ -328,6 +390,15 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       end
     end
     Assert.isTrue(crowdedItems >= 10, "the selected ROM catalog provides a crowded item pocket")
+    local bagPocketReady = false
+    for _ = 1, 120 do
+      if state:view().layout.targets["bag:pocket:items"] ~= nil then
+        bagPocketReady = true
+        break
+      end
+      state:update(0)
+    end
+    Assert.isTrue(bagPocketReady, "the production Bag pocket tab is published")
     clickTarget(state, "bag:pocket:items")
     local crowdedBag = capture("crowded-bag", width, height)
     Assert.isTrue(#crowdedBag.bagRows >= 10, "the production Bag view contains a long item list")
@@ -350,6 +421,14 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     state.controller:setSection("Party")
     clickTarget(state, "party:add")
     state:textinput("NO MATCHING SPECIES")
+    Assert.isTrue(state.valueEditor:snapshot().pending, "the production species filter starts pending")
+    for _ = 1, 120 do
+      if not state.valueEditor:snapshot().pending then
+        break
+      end
+      state:update(0)
+    end
+    Assert.isFalse(state.valueEditor:snapshot().pending, "the production species filter eventually publishes")
     local emptyChoice = capture("no-results", width, height)
     Assert.isTrue(emptyChoice.valueEditor.empty, "the production species picker exposes its no-result state")
 
@@ -418,12 +497,10 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
         Assert.notNil(icon.quad, "the selected ROM supplies the Party icon frame")
         Assert.equal(icon.dimensions.width, iconDimensions.width, "the renderer retains provider width")
         Assert.equal(icon.dimensions.height, iconDimensions.height, "the renderer retains provider height")
-        local scale =
-          math.min(1, rect.width / iconDimensions.width, rect.height / iconDimensions.height)
+        local scale = math.min(1, rect.width / iconDimensions.width, rect.height / iconDimensions.height)
         Assert.isTrue(scale > 0 and scale <= 1, "strip icons never upscale beyond provider pixels")
         Assert.isTrue(
-          iconDimensions.width * scale <= rect.width + 0.001
-            and iconDimensions.height * scale <= rect.height + 0.001,
+          iconDimensions.width * scale <= rect.width + 0.001 and iconDimensions.height * scale <= rect.height + 0.001,
           "the scaled real icon fits its strip cell"
         )
         centeredIcons = centeredIcons + 1
@@ -495,10 +572,7 @@ function T.tests.production_party_uses_generic_selector_without_retail_manifest(
 
     local dependencies = assert(state.dependencies, "ready composition publishes its manifests")
     local bagManifest = assert(dependencies.bagManifest, "the Bag manifest is already composed")
-    Assert.isNil(
-      dependencies.partyManifest,
-      "composition no longer publishes the retail Party manifest to the editor"
-    )
+    Assert.isNil(dependencies.partyManifest, "composition no longer publishes the retail Party manifest to the editor")
 
     state.controller:setSection("Party")
     state:update(0)
@@ -528,12 +602,16 @@ function T.tests.production_party_uses_generic_selector_without_retail_manifest(
       end
     end
     probeKey = assert(probeKey, "the catalog offers an item for the current pocket")
-    Assert.isTrue(
-      state.session:setBagQuantity(probeKey, 1).ok,
-      "the production session stages one probe stack"
-    )
+    Assert.isTrue(state.session:setBagQuantity(probeKey, 1).ok, "the production session stages one probe stack")
     state:update(0)
     local bagView = state:view()
+    for _ = 1, 32 do
+      if #bagView.bagPageRows > 0 then
+        break
+      end
+      state:update(0)
+      bagView = state:view()
+    end
     local pageRows = assert(bagView.bagPageRows, "the Bag view publishes its visible page rows")
     Assert.isTrue(#pageRows > 0, "the production Bag page exposes its item rows")
     for _, row in ipairs(pageRows) do

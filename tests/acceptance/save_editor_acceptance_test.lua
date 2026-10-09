@@ -17,6 +17,8 @@ local T = {
     derivedAssets = {
       "field-planning",
       "field-runtime",
+      "encounters:global",
+      "trainers:global",
       "items:global",
       "bag:global",
       "party:global",
@@ -30,10 +32,23 @@ local T = {
       "map-data:67",
       "map-data:33",
       "map-data:63",
+      "map-data:49",
+      "map-data:9",
+      "map-data:25",
+      "map-data:93",
+      "map-data:180",
       "map:7",
       "map:33",
       "map:63",
+      "map:49",
+      "map:180",
       "audio-bank:730",
+      "field-cell:0-534",
+      "field-cell:0-538",
+      "field-cell:0-581",
+      "field-cell:0-585",
+      "field-cell:0-628",
+      "field-cell:0-632",
     },
     tags = { "save-editor", "location", "production" },
   },
@@ -152,7 +167,7 @@ local function resolvedHousePlacement(graph, fixture, host)
   local ok, placement = xpcall(function()
     service:openMap(houseMapId)
     service:setViewport(4, 5, 1, 1)
-    for _ = 1, 8 do
+    for _ = 1, 5000 do
       service:update()
       local view = service:snapshot()
       if view.status.state == "ready" then
@@ -183,7 +198,7 @@ local function resolvedHousePlacement(graph, fixture, host)
     service:openMap(mapId)
     service:setViewport(fieldX, fieldZ, 1, 1)
     local view
-    for _ = 1, 8 do
+    for _ = 1, 5000 do
       service:update()
       view = service:snapshot()
       if view.status.state == "ready" then
@@ -245,7 +260,7 @@ local function resolvedOutdoorPlacement(graph, service)
   service:openMap(mapId)
   service:setViewport(viewportX, viewportZ, 1, 1)
   local view
-  for _ = 1, 8 do
+  for _ = 1, 5000 do
     service:update()
     view = service:snapshot()
     if view.status.state == "ready" then
@@ -263,6 +278,24 @@ local function resolvedOutdoorPlacement(graph, service)
   Assert.equal(placement.fieldZ, destinationZ)
   Assert.equal(placement.mapId, mapId)
   return placement
+end
+
+local function advanceEditorUntil(state, predicate, label)
+  for _ = 1, 5000 do
+    state:update(0)
+    local view = state:view()
+    if predicate(view) then
+      return view
+    end
+  end
+  error("the production editor did not reach " .. label, 2)
+end
+
+local function rectInside(inner, outer)
+  return inner.x >= outer.x
+    and inner.y >= outer.y
+    and inner.x + inner.width <= outer.x + outer.width
+    and inner.y + inner.height <= outer.y + outer.height
 end
 
 local function activateTarget(state, targetId)
@@ -478,6 +511,75 @@ function T.tests.combined_editor_save_reloads_and_resumes_at_the_resolved_destin
   end
 end
 
+function T.tests.in_place_save_clears_the_cached_dirty_projection()
+  local fixture = Fixture.new()
+  local State = require("app.src.saveeditor.SaveEditorState")
+  local originalGlobal = SaveFs.global
+  local state
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+
+  local ok, err = xpcall(function()
+    local function actionEnabled(layout, id)
+      for _, action in ipairs(layout.actions) do
+        if action.id == id then
+          return action.enabled
+        end
+      end
+      error("the product layout publishes the " .. id .. " action")
+    end
+
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 640,
+      height = 480,
+      derivedAssets = readyHost(),
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "production Save Editor composition opens the isolated save")
+
+    withoutRendering(function()
+      local money = fixture.initialMoney + 1
+      Assert.isTrue(state.session:setMoney(money).ok, "the production Session stages a money edit")
+      Assert.isTrue(state:view().dirty, "the editor initially publishes the dirty projection")
+      Assert.isTrue(actionEnabled(state:view().layout, "save"), "Save is enabled before publication")
+
+      activateTarget(state, "save")
+
+      Assert.equal(assert(fixture.store:load(fixture.saveId)).playerData.profile.money, money)
+      local saved = state:view()
+      Assert.isFalse(saved.dirty, "the in-place Save immediately clears the published dirty state")
+      for _, section in ipairs({ "money", "frame", "flags", "party", "bag", "location" }) do
+        Assert.isFalse(saved.dirtySections[section], "the saved " .. section .. " section is clean")
+      end
+      Assert.isFalse(actionEnabled(saved.layout, "save"), "Save is disabled after publication")
+      Assert.isFalse(actionEnabled(saved.layout, "discard"), "Discard is disabled after publication")
+
+      Assert.isTrue(state.session:setMoney(money + 1).ok, "a later edit stages normally")
+      local edited = state:view()
+      Assert.isTrue(edited.dirty, "a later revision invalidates the clean projection")
+      Assert.isTrue(edited.dirtySections.money, "the later money edit is dirty")
+      Assert.isTrue(actionEnabled(edited.layout, "save"), "Save is enabled for the later edit")
+    end)
+  end, debug.traceback)
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destination_readiness()
   local fixture = Fixture.new()
   local baseHost = readyHost()
@@ -567,11 +669,11 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       )
 
       destinationReady = true
-      for _ = 1, 8 do
+      local updates = 0
+      while recordWrites == 0 do
+        updates = updates + 1
+        Assert.isTrue(updates <= 5000, "the ready destination publishes the pending save")
         state:update(0)
-        if recordWrites > 0 then
-          break
-        end
       end
       Assert.equal(recordWrites, 1, "one Save intent publishes exactly one save after readiness")
       Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), expected, "the authorized tuple and edits publish")
@@ -597,11 +699,11 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       Assert.equal(recordWrites, 2, "the canonical save changes through the real store")
 
       destinationReady = true
-      for _ = 1, 8 do
+      local updates = 0
+      while state:view().locationSave ~= nil do
+        updates = updates + 1
+        Assert.isTrue(updates <= 5000, "the ready verifier completes the final save attempt")
         state:update(0)
-        if state:view().locationSave == nil then
-          break
-        end
       end
       local failureView = state:view()
       Assert.isNil(failureView.locationSave, "the ready verifier is disposed after the final save attempt")
@@ -677,6 +779,12 @@ local function openBagEditor(fixture, host)
     error(stateError, 0)
   end
   assert(state).controller:setSection("Bag")
+  local catalogUpdates = 0
+  while state._bagCatalogMetadata == nil do
+    catalogUpdates = catalogUpdates + 1
+    Assert.isTrue(catalogUpdates <= 5000, "the bounded Bag catalog reaches readiness")
+    state:update(0)
+  end
   local potionPocket = assert(state.dependencies.context.itemCatalog:item("POTION")).pocket
   assert(state).controller:selectBagPocket(potionPocket)
   local seeded = assert(state).session:setBagQuantity("POTION", 20)
@@ -694,7 +802,8 @@ function T.tests.bag_item_actions_and_quantity_commit_are_staged_until_outer_sav
     withoutRendering(function()
       local initial = state.session:captureCandidate()
       local view = state:view()
-      local row = assert(view.bagRows[1], "the production save contains a Bag item to edit")
+      local row = assert(view.bagPageRows[1], "the production Bag page publishes a card to edit")
+      local item = assert(view.bagRows[1], "the production Bag catalog supplies item limits")
       local originalQuantity = row.quantity
       local itemTarget = "bag:item:" .. row.item
 
@@ -716,12 +825,15 @@ function T.tests.bag_item_actions_and_quantity_commit_are_staged_until_outer_sav
       local expected = math.max(1, originalQuantity)
       state:keypressed("up")
       state:keyreleased("up")
-      expected = math.min(expected + 1, row.maxQuantity or 999)
+      expected = math.min(expected + 1, item.maxQuantity or 999)
       Assert.equal(state:view().valueEditor.value, expected, "Up changes transient quantity by one")
-      state:keypressed("right")
-      state:keyreleased("right")
-      expected = math.min(expected + 10, row.maxQuantity or 999)
-      Assert.equal(state:view().valueEditor.value, expected, "Right changes transient quantity by ten")
+      state:keypressed("left")
+      state:keyreleased("left")
+      Assert.equal(state:view().valueEditor.value, expected, "Left selects the tens place")
+      state:keypressed("up")
+      state:keyreleased("up")
+      expected = math.min(expected + 10, item.maxQuantity or 999)
+      Assert.equal(state:view().valueEditor.value, expected, "Up adjusts the selected tens place")
       state:keypressed("escape")
       Assert.equal(
         state.session:bagSnapshot(view.bagPocket)[1].quantity,
@@ -777,7 +889,13 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
       state:textinput("POTION")
       choice = state:view().valueEditor
       Assert.equal(choice.query, "POTION", "typing filters the Add catalog")
-      state:keypressed("return")
+      local updates = 0
+      while choice.pending do
+        updates = updates + 1
+        Assert.isTrue(updates <= 5000, "the bounded Add query publishes a result")
+        state:update(0)
+        choice = assert(state:view().valueEditor)
+      end
       state:keypressed("return")
       local quantity = assert(state:view().valueEditor, "choosing an item opens quantity entry")
       local expected = assert(quantity.parsedValue or quantity.value) + 1
@@ -785,17 +903,27 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
       state:keyreleased("up")
       quantity = state:view().valueEditor
       Assert.equal(quantity.parsedValue or quantity.value, expected, "Up changes transient quantity by one")
-      state:keypressed("right")
-      state:keyreleased("right")
+      state:keypressed("left")
+      state:keyreleased("left")
+      Assert.equal(quantity.parsedValue or quantity.value, expected, "Left selects the tens place")
+      state:keypressed("up")
+      state:keyreleased("up")
       quantity = state:view().valueEditor
-      Assert.equal(quantity.parsedValue or quantity.value, expected + 10, "Right changes transient quantity by ten")
+      Assert.equal(quantity.parsedValue or quantity.value, expected + 10, "Up adjusts the selected tens place")
       state:keypressed("escape")
       Assert.deepEqual(state.session:captureCandidate(), initial, "canceling Add quantity leaves inventory unchanged")
       Assert.equal(state:view().focus, "bag:add", "cancel returns to the separate Add control")
 
       activateTarget(state, "bag:add")
       state:textinput("POTION")
-      state:keypressed("return")
+      local updates = 0
+      local choice = assert(state:view().valueEditor)
+      while choice.pending do
+        updates = updates + 1
+        Assert.isTrue(updates <= 5000, "the bounded Add query publishes a result")
+        state:update(0)
+        choice = assert(state:view().valueEditor)
+      end
       state:keypressed("return")
       state:keypressed("return")
       Assert.equal(
@@ -874,14 +1002,8 @@ function T.tests.party_stats_edit_uses_number_modal_and_keeps_draft_staged()
       Assert.isNil(detail.layout.targets["party:edit"], "selecting a member edits immediately without an Edit action")
       Assert.isNil(detail.layout.targets["party:apply"], "the member editor has no local Apply action")
       Assert.isNil(detail.layout.targets["party:back"], "the member editor has no local Back action")
-      Assert.isNil(
-        detail.layout.targets["party:subpage:Stats"],
-        "the member editor has no top subpage tab bar"
-      )
-      Assert.notNil(
-        detail.layout.targets["party:page:previous"],
-        "the bottom pager exposes the previous page arrow"
-      )
+      Assert.isNil(detail.layout.targets["party:subpage:Stats"], "the member editor has no top subpage tab bar")
+      Assert.notNil(detail.layout.targets["party:page:previous"], "the bottom pager exposes the previous page arrow")
       Assert.notNil(detail.layout.targets["party:page:next"], "the bottom pager exposes the next page arrow")
       Assert.equal(detail.partyTab, "Stats", "the selected member opens on the Stats page")
 
@@ -947,6 +1069,633 @@ function T.tests.party_stats_edit_uses_number_modal_and_keeps_draft_staged()
     end)
   end
   SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changing_the_save()
+  local fixture = Fixture.new()
+  local State = require("app.src.saveeditor.SaveEditorState")
+  local originalGlobal = SaveFs.global
+  local state
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor must use the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+
+  local ok, err = xpcall(function()
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 640,
+      height = 480,
+      derivedAssets = readyHost(),
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+
+    withoutRendering(function()
+      local openingView = state:view()
+      Assert.equal(
+        openingView.status,
+        "ready",
+        "production Save Editor composition opens the selected save: " .. tostring(openingView.errorMessage)
+      )
+      local originalLocation = copy(state.session:snapshot().location)
+      local world = assert(state.dependencies.world)
+      local selectedMaps = {
+        assert(world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_1F),
+        assert(world.bySymbol.MAP_ROUTE_29),
+      }
+
+      local firstMap = assert(world.maps[assert(world.byId[selectedMaps[1]])])
+      state.controller:chooseLocationMap(selectedMaps[1], firstMap.worldOriginX + 16, firstMap.worldOriginZ + 16)
+      state:update(0)
+      Assert.equal(
+        assert(state:view().location).status.state,
+        "pending",
+        "the first browse request remains cancellable while its preparation is pending"
+      )
+      local replacementMap = assert(world.maps[assert(world.byId[selectedMaps[2]])])
+      state.controller:chooseLocationMap(
+        selectedMaps[2],
+        replacementMap.worldOriginX + 16,
+        replacementMap.worldOriginZ + 16
+      )
+      state:update(0)
+      Assert.equal(
+        assert(state:view().location).mapId,
+        selectedMaps[2],
+        "a replacement browse request owns the service after cancellation"
+      )
+      state.controller:chooseLocationMap(selectedMaps[1], firstMap.worldOriginX + 16, firstMap.worldOriginZ + 16)
+      state:update(0)
+      Assert.equal(
+        assert(state:view().location).mapId,
+        selectedMaps[1],
+        "the canceled map can be re-entered without accepting a stale result"
+      )
+
+      local finalSuggestion
+      for mapIndex, mapId in ipairs(selectedMaps) do
+        state:_performDeferred({ kind = "location-map-select", mapId = mapId })
+        state:update(0)
+
+        local updates = 0
+        local view = assert(state:view().location)
+        local requestGeneration = assert(view.initialCursor).generation
+        while view.status.state == "pending" do
+          updates = updates + 1
+          Assert.isTrue(updates <= 5000, "map preparation reaches a semantic ready or failure state")
+          state:update(0)
+          view = assert(state:view().location)
+        end
+        Assert.equal(
+          view.status.state,
+          "ready",
+          "the selected source map is prepared: " .. tostring(view.status.reason)
+        )
+
+        local suggestion = view.initialCursor
+        Assert.notNil(suggestion, "real map browsing publishes its surveyed initial cursor")
+        Assert.equal(
+          suggestion.state,
+          "ready",
+          "the survey finds a selectable tile in " .. tostring(view.symbol) .. ": " .. tostring(suggestion.state)
+        )
+        Assert.equal(suggestion.mapId, mapId, "the suggestion remains bound to the selected map")
+        Assert.equal(
+          suggestion.generation,
+          requestGeneration,
+          "the suggestion remains bound to the active browse request"
+        )
+        local resolved, resolution =
+          state.locationService:resolve(mapId, assert(suggestion.fieldX), assert(suggestion.fieldZ), view.generation)
+        Assert.notNil(resolved, "the surveyed coordinate passes the production placement classifier")
+        Assert.equal(resolution.state, "ready", "the suggestion is fully prepared for explicit selection")
+        if mapIndex == 1 then
+          Assert.deepEqual(
+            assert(state:view().locationNavigation.cursor),
+            { fieldX = suggestion.fieldX, fieldZ = suggestion.fieldZ },
+            "the production browse flow centers the cursor on its valid-tile suggestion"
+          )
+          local beforeMove = assert(state:view().locationNavigation.cursor)
+          state:keypressed("right")
+          state:keyreleased("right")
+          Assert.equal(
+            assert(state:view().locationNavigation.cursor).fieldX,
+            beforeMove.fieldX + 1,
+            "the centered grid remains responsive to movement"
+          )
+        elseif mapIndex == 2 then
+          local navigation = assert(state:view().locationNavigation)
+          local originalCenter = copy(navigation.center)
+          local originalCursor = copy(navigation.cursor)
+          local moves = 0
+          while state:view().locationNavigation.center.fieldX == originalCenter.fieldX
+            and state:view().locationNavigation.center.fieldZ == originalCenter.fieldZ
+          do
+            moves = moves + 1
+            Assert.isTrue(moves <= 100, "manual grid navigation pans the real map viewport")
+            state:keypressed("right")
+            state:keyreleased("right")
+            state:update(0)
+          end
+          local remembered = assert(state:view().locationNavigation)
+          Assert.isFalse(
+            remembered.cursor.fieldX == originalCursor.fieldX
+              and remembered.cursor.fieldZ == originalCursor.fieldZ,
+            "manual navigation changes the preview cursor"
+          )
+          Assert.isFalse(
+            remembered.center.fieldX == originalCenter.fieldX
+              and remembered.center.fieldZ == originalCenter.fieldZ,
+            "manual navigation changes the preview viewport"
+          )
+
+          local previousGeneration = assert(state:view().location).generation
+          state:_requestBack()
+          state:update(0)
+          Assert.isFalse(
+            state:view().locationNavigation.page == "grid",
+            "Back leaves coordinate selection before the same map is re-entered"
+          )
+          state:_performDeferred({ kind = "location-map-select", mapId = mapId })
+          state:update(0)
+          local reentered = assert(state:view().location)
+          Assert.isFalse(
+            reentered.generation == previousGeneration,
+            "re-entering the same map starts a new C05 browse generation"
+          )
+          local reentryUpdates = 0
+          while reentered.status.state == "pending" do
+            reentryUpdates = reentryUpdates + 1
+            Assert.isTrue(reentryUpdates <= 5000, "the re-entered map completes C05 preparation")
+            state:update(0)
+            reentered = assert(state:view().location)
+          end
+          Assert.equal(reentered.status.state, "ready", "C05 revalidates the remembered preview point")
+          local _, revalidation = state.locationService:resolve(
+            mapId,
+            remembered.cursor.fieldX,
+            remembered.cursor.fieldZ,
+            reentered.generation
+          )
+          Assert.isTrue(
+            revalidation.state == "ready" or revalidation.state == "unavailable",
+            "C05 classifies the restored preview point for the active generation"
+          )
+          Assert.deepEqual(
+            state:view().locationNavigation.cursor,
+            remembered.cursor,
+            "point revalidation does not replace the user's preview cursor"
+          )
+          Assert.deepEqual(
+            state:view().locationNavigation.center,
+            remembered.center,
+            "point revalidation does not replace the user's viewport center"
+          )
+        end
+        Assert.deepEqual(
+          state.session:snapshot().location,
+          originalLocation,
+          "browsing and surveying never stage or mutate the saved destination"
+        )
+        finalSuggestion = suggestion
+      end
+
+      local accepted = assert(finalSuggestion, "the final browse request publishes a suggestion")
+      state.controller:chooseLocationMap(accepted.mapId, assert(accepted.fieldX), assert(accepted.fieldZ))
+      state:update(0)
+      state:_performDeferred({ kind = "select_tile", fieldX = accepted.fieldX, fieldZ = accepted.fieldZ })
+      local stagedLocation = assert(state.session:snapshot().location)
+      Assert.equal(stagedLocation.mapId, accepted.mapId, "explicit activation accepts the surveyed map")
+      Assert.equal(stagedLocation.fieldX, accepted.fieldX, "explicit activation accepts the surveyed x coordinate")
+      Assert.equal(stagedLocation.fieldZ, accepted.fieldZ, "explicit activation accepts the surveyed z coordinate")
+      Assert.isTrue(state.session:snapshot().locationChanged, "acceptance stages the destination only after activation")
+    end)
+  end, debug.traceback)
+
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.stable_editor_views_reuse_the_session_snapshot_until_owner_or_revision_changes()
+  local fixture = Fixture.new()
+  local host = readyHost()
+  local state
+  local originalGlobal = SaveFs.global
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+  local ok, err = xpcall(function()
+    local State = require("app.src.saveeditor.SaveEditorState")
+    local Session = require("app.src.saveeditor.SaveEditorSession")
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 800,
+      height = 600,
+      derivedAssets = host,
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "the production editor opens the isolated save")
+
+    local firstSession = assert(state.session)
+    local firstOriginalSnapshot = firstSession.snapshot
+    local firstSnapshotRequests = 0
+    firstSession.snapshot = function(self)
+      firstSnapshotRequests = firstSnapshotRequests + 1
+      return firstOriginalSnapshot(self)
+    end
+    state.controller:setSection("Progress")
+    local initial = state:_snapshot()
+    local initialFlags = copy(initial.session.flags)
+    local initialPlan = state:_resolve(initial)
+    state:_reconcileFocus(nil, initialPlan.content.layout)
+    local initialRequests = firstSnapshotRequests
+
+    withoutRendering(function()
+      for _ = 1, 12 do
+        local view = state:view()
+        Assert.deepEqual(view.session.flags, initialFlags, "stable Progress views preserve visible flags")
+        state:_resolve(state:_snapshot())
+        state:_reconcileFocus(nil, view.layout)
+        state:update(0)
+      end
+    end)
+    Assert.equal(
+      firstSnapshotRequests,
+      initialRequests,
+      "steady view, layout, focus, and update requests do not recopy an unchanged session revision"
+    )
+
+    local candidate = firstSession:captureCandidate()
+    local replacement = assert(Session.new({
+      record = candidate,
+      context = assert(state.dependencies).context,
+      saveStore = state.dependencies.saveStore,
+      saveFs = state.dependencies.saveFs,
+    }))
+    local replacementOriginalSnapshot = replacement.snapshot
+    local replacementSnapshotRequests = 0
+    replacement.snapshot = function(self)
+      replacementSnapshotRequests = replacementSnapshotRequests + 1
+      return replacementOriginalSnapshot(self)
+    end
+    Assert.equal(replacement:revision(), firstSession:revision(), "replacement starts at the same numeric revision")
+    state.session = replacement
+    local replacedView = state:view()
+    Assert.equal(replacementSnapshotRequests, 1, "a different session owner refreshes the State projection")
+
+    local flagId = assert(FieldScriptSymbols.flagsByName.FLAG_GOT_POKEDEX)
+    local wasSet = replacedView.session.flags[flagId] == true
+    local changed = replacement:setFlag("FLAG_GOT_POKEDEX", not wasSet)
+    Assert.isTrue(changed.ok and changed.changed, "the production session stages a field-flag edit")
+    local updatedView = state:view()
+    Assert.equal(replacementSnapshotRequests, 2, "a changed session revision refreshes once")
+    Assert.equal(updatedView.session.flags[flagId], not wasSet, "the changed flag is visible immediately")
+
+    local directFirst = replacement:snapshot()
+    local directSecond = replacement:snapshot()
+    Assert.isFalse(rawequal(directFirst, directSecond), "each public snapshot returns an independent root table")
+    Assert.isFalse(rawequal(directFirst.flags, directSecond.flags), "each public snapshot owns its flags table")
+    directFirst.flags[flagId] = wasSet
+    directFirst.location.fieldX = directFirst.location.fieldX + 1
+    local stored = replacement:snapshot()
+    Assert.equal(directSecond.flags[flagId], not wasSet, "mutating one snapshot does not change another")
+    Assert.equal(stored.flags[flagId], not wasSet, "mutating a public snapshot does not change session state")
+    Assert.isFalse(
+      stored.location.fieldX == directFirst.location.fieldX,
+      "nested snapshot records are detached"
+    )
+  end, debug.traceback)
+  SaveFs.global = originalGlobal
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_visible()
+  local fixture = Fixture.new()
+  local State = require("app.src.saveeditor.SaveEditorState")
+  local originalGlobal = SaveFs.global
+  local state
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+
+  local ok, err = xpcall(function()
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 800,
+      height = 600,
+      derivedAssets = readyHost(),
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "production Save Editor composition opens the isolated save")
+
+    withoutRendering(function()
+      state.controller:setSection("Location")
+      local rootView = advanceEditorUntil(state, function(view)
+        local list = view.layout.lists["location:root"]
+        return list ~= nil and #list.rowTargets > 0 and not list.pending
+      end, "the production Map root list")
+      state:resize(256, 192)
+      rootView = advanceEditorUntil(state, function(view)
+        local list = view.layout.lists["location:root"]
+        return list ~= nil and #list.rowTargets > 0 and not list.pending
+      end, "the compact production Map root list")
+      local rootMapList = assert(rootView.layout.lists["location:root"])
+
+      local groupTarget, groupSize
+      local rootMapModel = assert(rootView.location).mapModel
+      for rowIndex = 1, #rootMapList.rowTargets do
+        local row = assert(rootMapModel.rowAt(rowIndex))
+        if row.kind == "group" then
+          local matchingMaps = 0
+          for _, map in ipairs(assert(row.maps)) do
+            if map.displayName:lower():find("r", 1, true) ~= nil then
+              matchingMaps = matchingMaps + 1
+            end
+          end
+          if groupSize == nil or matchingMaps > groupSize then
+            groupTarget, groupSize = row.targetId, matchingMaps
+          end
+        end
+      end
+      local selectedGroup = assert(groupTarget, "the production Map root has a selectable group")
+      local rootGroupCursor = selectedGroup
+      state.controller:setFocus(selectedGroup)
+      state:keypressed("return")
+      state:keyreleased("return")
+      local groupView = advanceEditorUntil(state, function(view)
+        local list = view.locationNavigation.page == "group"
+          and view.layout.lists[assert(view.location).mapListId]
+        return list ~= nil and #list.rowTargets > 0 and not list.pending
+      end, "the selected production Map group")
+      local groupListId = assert(groupView.location).mapListId
+      local groupList = assert(groupView.layout.lists[groupListId])
+      Assert.equal(groupView.locationNavigation.groupId, selectedGroup, "confirm enters the selected group identity")
+
+      state:textinput("r")
+      groupView = advanceEditorUntil(state, function(view)
+        local list = view.layout.lists[groupListId]
+        return list ~= nil and list.query == "r" and not list.pending
+      end, "the filtered production Map group")
+      groupList = assert(groupView.layout.lists[groupListId])
+      local groupViewport = assert(groupView.layout.viewports[groupListId])
+      local targetIndex = groupViewport.lastIndex + 1
+      Assert.isTrue(targetIndex <= #groupList.rowTargets, "the Map group has a row beyond its compact viewport")
+      local rememberedMap = groupList.rowTargets[targetIndex]
+      for _ = 1, targetIndex do
+        if state.controller.focus == rememberedMap then
+          break
+        end
+        state:keypressed("down")
+        state:keyreleased("down")
+      end
+      Assert.equal(state.controller.focus, rememberedMap, "keyboard selection reaches the offscreen map identity")
+      local focusedGroupView = state:view()
+      local focusedGroupViewport = assert(focusedGroupView.layout.viewports[groupListId])
+      Assert.isTrue(
+        focusedGroupViewport.firstIndex <= targetIndex and targetIndex <= focusedGroupViewport.lastIndex,
+        "the production Map State reveals its focused logical row"
+      )
+      local rememberedQuery = state.controller.query
+      local rememberedScroll = state.controller.scrollOffset
+
+      state:keypressed("escape")
+      state:keyreleased("escape")
+      Assert.equal(
+        state.controller.focus,
+        rootGroupCursor,
+        "Back from a nested Map row restores the root group cursor"
+      )
+      Assert.equal(state.controller.locationPage, "root", "Back from a nested Map list ascends one level")
+
+      state:keypressed("escape")
+      state:keyreleased("escape")
+      Assert.equal(state.controller.focus, "section:Location", "root-list Back transfers focus to Location")
+      Assert.equal(state.controller.locationPage, "root", "root-list Back keeps the Map hierarchy at its root")
+
+      state:keypressed("tab")
+      Assert.equal(state.controller.focus, rootGroupCursor, "Tab re-enters the remembered root group row")
+      state:keypressed("return")
+      state:keyreleased("return")
+      local restoredGroupView = advanceEditorUntil(state, function(view)
+        return view.locationNavigation.page == "group"
+          and view.locationNavigation.groupId == selectedGroup
+          and view.location.mapListId == groupListId
+      end, "the remembered production Map group")
+      Assert.equal(state.controller.focus, rememberedMap, "re-entering the group restores the remembered Map row")
+      Assert.equal(state.controller.query, rememberedQuery, "re-entering the group restores its query")
+      Assert.equal(state.controller.scrollOffset, rememberedScroll, "re-entering the group restores its scroll")
+      local restoredViewport = assert(restoredGroupView.layout.viewports[groupListId])
+      Assert.isTrue(
+        restoredViewport.firstIndex <= targetIndex and targetIndex <= restoredViewport.lastIndex,
+        "re-entering the Map group reveals the remembered row"
+      )
+      for _, row in ipairs(restoredGroupView.layout.rows) do
+        if groupList.indexByTarget[row.targetId] ~= nil then
+          Assert.isNil(row.value, "Map rows use their complete label without a trailing value")
+          Assert.isNil(row.valueRect, "Map rows do not reserve a trailing value cell")
+          local rowTarget = assert(restoredGroupView.layout.targets[row.targetId]).rect
+          Assert.isTrue(
+            row.labelRect.x + row.labelRect.width >= rowTarget.x + rowTarget.width - 12,
+            "Map labels reach the full text width after the marker inset"
+          )
+        end
+      end
+
+      state:keypressed("escape")
+      state:keyreleased("escape")
+      local returnedRootView = advanceEditorUntil(state, function(view)
+        return view.locationNavigation.page == "root"
+      end, "the Map root after Back from its group")
+      Assert.equal(state.controller.focus, rootGroupCursor, "Back from the group restores the root cursor")
+      for _, row in ipairs(returnedRootView.layout.rows) do
+        if rootMapList.indexByTarget[row.targetId] ~= nil then
+          Assert.isNil(row.value, "Map group rows use their complete label without a trailing value")
+          Assert.isNil(row.valueRect, "Map group rows do not reserve a trailing value cell")
+          local rowTarget = assert(returnedRootView.layout.targets[row.targetId]).rect
+          Assert.isTrue(
+            row.labelRect.x + row.labelRect.width >= rowTarget.x + rowTarget.width - 12,
+            "Map group labels reach the full text width after the marker inset"
+          )
+        end
+      end
+      local mapFitsMeasuredContent = rootMapList.surfaceRect.width < returnedRootView.layout.content.width
+
+      state.controller:setSection("Progress")
+      local flagView = advanceEditorUntil(state, function(view)
+        local list = view.layout.lists.flags
+        return list ~= nil and #list.rowTargets > 0 and not list.pending
+      end, "the production Flags list")
+      local flagList = assert(flagView.layout.lists.flags)
+      local flagsFitMeasuredContent = flagList.surfaceRect.width < flagView.layout.content.width
+      local flagsAreCentered = math.abs(
+        flagList.surfaceRect.x
+          + flagList.surfaceRect.width / 2
+          - (flagView.layout.content.x + flagView.layout.content.width / 2)
+      ) < 1
+
+      local initialViewport = assert(flagView.layout.viewports.flags)
+      local targetIndex = math.min(#flagList.rowTargets, initialViewport.lastIndex + 2)
+      Assert.isTrue(targetIndex > initialViewport.lastIndex, "the real Flags catalog has an offscreen logical row")
+      state:keypressed("return")
+      for _ = 1, targetIndex do
+        if state.controller.focus == flagList.rowTargets[targetIndex] then
+          break
+        end
+        state:keypressed("down")
+        state:keyreleased("down")
+      end
+
+      local focused = state.controller.focus
+      Assert.equal(focused, flagList.rowTargets[targetIndex], "keyboard navigation preserves the chosen flag identity")
+      local revealed = state:view()
+      local viewport = assert(revealed.layout.viewports.flags)
+      Assert.isTrue(
+        viewport.firstIndex <= targetIndex and targetIndex <= viewport.lastIndex,
+        "the keyboard-focused logical flag is revealed by the production State"
+      )
+      Assert.isTrue(
+        rectInside(assert(revealed.layout.rowMarkers[focused]), viewport.clip),
+        "the focused flag marker remains wholly inside the actual viewport"
+      )
+      Assert.isTrue(
+        rectInside(assert(revealed.layout.rowLabelRects[focused]), viewport.clip),
+        "the focused flag label remains wholly inside the actual viewport"
+      )
+      Assert.isTrue(
+        mapFitsMeasuredContent,
+        "the Map root surface uses measured labels instead of filling the full editor body"
+      )
+      Assert.isTrue(flagsFitMeasuredContent, "the Flags surface reserves only measured label and ON/OFF content")
+      Assert.isTrue(flagsAreCentered, "the narrower Flags surface stays centered in its available body")
+    end)
+  end, debug.traceback)
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.pallet_and_azalea_map_placement_stays_conservative_with_real_rom_data()
+  local fixture = Fixture.new()
+  local host = readyHost()
+  local graph, service
+  local ok, err = xpcall(function()
+    graph = openComposition(fixture, host)
+    local palletMapId = assert(graph.world.bySymbol.MAP_PALLET, "the real world catalog contains Pallet Town")
+    local azaleaGymMapId = assert(graph.world.bySymbol.MAP_AZALEA_GYM, "the real world catalog contains Azalea Gym")
+    service = locationServiceModule().new({
+      cacheFs = graph.cacheFs,
+      world = graph.world,
+      derivedAssets = host,
+      savedObjects = copy(fixture.initial.world.objects),
+    })
+
+    local function browse(mapId, fieldX, fieldZ, width, height)
+      service:openMap(mapId, { purpose = "browse" })
+      service:setViewport(fieldX, fieldZ, width, height)
+      local view
+      for _ = 1, 5000 do
+        service:update()
+        view = service:snapshot()
+        if view.status.state == "ready" and service.objectEvents ~= nil then
+          return view
+        end
+      end
+      error("the real map did not finish browse preparation: " .. tostring(view and view.status.reason), 2)
+    end
+
+    local palletView = browse(palletMapId, 1033, 364, 3, 3)
+    local suggestion = assert(palletView.initialCursor, "the real map survey publishes its selected safe point")
+    Assert.equal(suggestion.state, "ready", "Pallet Town's real map survey finds an actually selectable tile")
+    local palletPlacement, palletResult = service:resolve(
+      palletMapId,
+      assert(suggestion.fieldX),
+      assert(suggestion.fieldZ),
+      palletView.generation
+    )
+    Assert.notNil(palletPlacement, "the surveyed Pallet destination passes production classification")
+    Assert.equal(palletResult.state, "ready", "the surveyed Pallet destination is ready to stage")
+
+    local beforeInvalidAttempt = graph.session:captureCandidate()
+    local azaleaView = browse(azaleaGymMapId, 32, 7, 1, 1)
+    local invalidPlacement, invalidReason = service:resolve(
+      azaleaGymMapId,
+      32,
+      7,
+      azaleaView.generation
+    )
+    Assert.isNil(invalidPlacement, "Azalea Gym's out-of-permission tile cannot be selected")
+    Assert.equal(invalidReason.state, "unavailable", "Azalea Gym rejects the uncovered point normally")
+    Assert.equal(invalidReason.reason, "outside_map", "the uncovered point retains its normal placement reason")
+    Assert.deepEqual(
+      graph.session:captureCandidate(),
+      beforeInvalidAttempt,
+      "rejecting the invalid point does not change the candidate save"
+    )
+
+    Assert.isTrue(graph.session:setLocation(palletPlacement).ok, "a valid Pallet tuple stages through the production Session")
+    Assert.isTrue(graph.session:save().ok, "the valid tuple saves through the production composition")
+    local published = assert(fixture.store:load(fixture.saveId))
+    Assert.equal(published.mapId, palletPlacement.mapId, "the native save retains the selected map identity")
+    Assert.equal(published.fieldX, palletPlacement.fieldX, "the native save retains the selected field X")
+    Assert.equal(published.fieldZ, palletPlacement.fieldZ, "the native save retains the selected field Z")
+    Assert.equal(published.surfaceId, palletPlacement.surfaceId, "the native save retains the resolved surface")
+    Assert.equal(
+      published.terrainDependencyHash,
+      palletPlacement.terrainDependencyHash,
+      "the native save retains the resolved terrain dependency"
+    )
+  end, debug.traceback)
+  if service then
+    pcall(function()
+      service:dispose()
+    end)
+  end
+  if graph then
+    pcall(function()
+      graph:close()
+    end)
+  end
   fixture.cleanup()
   if not ok then
     error(err, 0)

@@ -6,7 +6,6 @@ local Errors = require("libs.errors.src.Errors")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Moves = require("libs.mons.src.gen4.Moves")
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
-local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
 
 local PartyView = {}
 PartyView.__index = PartyView
@@ -18,8 +17,7 @@ PartyView.__index = PartyView
 ---@field kind "member"|"add"|"empty"
 ---@field slot0 integer?
 ---@field iconKey string?
----@field label string?
----@field level integer?
+---@field descriptiveLabel string?
 ---@field active boolean?
 
 ---@class SaveEditorPartyHeaderFact
@@ -139,13 +137,11 @@ function PartyView:selector(members, selectedSlot0)
     if member ~= nil then
       local mon = assert(member.mon)
       local species = catalog:species(mon.species)
-      local projection = Draft.projectRecord(mon, { catalog = catalog })
       slots[position] = {
         kind = "member",
         slot0 = member.slot0,
         iconKey = catalog:iconSelection(mon),
-        label = mon.nickname ~= nil and mon.nickname ~= "" and mon.nickname or species.name or mon.species,
-        level = projection.level,
+        descriptiveLabel = mon.nickname ~= nil and mon.nickname ~= "" and mon.nickname or species.name or mon.species,
         active = member.slot0 == selectedSlot0,
       }
     elseif position == #members + 1 then
@@ -445,7 +441,7 @@ function PartyView:details(record, projection)
     label = "Use species name",
     enabled = true,
   }
-  readonly("nature", "Nature", projection.nature)
+  readonly("nature", "Nature", HgssMonService.natureName(assert(projection.nature)))
   readonly("gender", "Gender", projection.gender)
   readonly("shiny", "Shiny", projection.shiny == nil and "Unavailable" or (projection.shiny and "Yes" or "No"))
   local formOk, form = pcall(catalog.form, catalog, record.species, record.form)

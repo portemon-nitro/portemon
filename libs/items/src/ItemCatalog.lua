@@ -138,18 +138,26 @@ function ItemCatalog:item(key)
   return definition
 end
 
----@return string[] caller-owned item keys in native identity order
+---@return string[] caller-owned item keys in catalog ordering
 function ItemCatalog:itemKeys()
   local keys = {}
   for key in pairs(self._root.items) do
     keys[#keys + 1] = key
   end
   table.sort(keys, function(a, b)
-    local aId = self._root.items[a].nativeId
-    local bId = self._root.items[b].nativeId
-    return aId == bId and a < b or aId < bId
+    return self:orderingKey(a) < self:orderingKey(b)
   end)
   return keys
+end
+
+---@return fun(): string? next item key in catalog iteration order
+function ItemCatalog:itemKeyIterator()
+  local iterator, state, key = pairs(self._root.items)
+  local function nextItemKey()
+    key = iterator(state, key)
+    return key
+  end
+  return nextItemKey
 end
 
 ---@param nativeId integer

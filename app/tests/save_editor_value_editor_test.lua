@@ -21,6 +21,12 @@ local function integerEditor(value, minimum, maximum)
   })
 end
 
+local function finishChoiceFilter(editor)
+  while editor:snapshot().pending do
+    editor:update(256)
+  end
+end
+
 function T.direct_decimal_entry_confirms_the_exact_value()
   local editor = integerEditor(2400, 0, 999999)
 
@@ -37,7 +43,7 @@ function T.directional_adjustment_confirms_without_typing()
   Assert.deepEqual(editor:result(), { kind = "confirm", value = 129 })
 end
 
-function T.integer_editors_share_retail_adjustment_steps_and_preserve_display_base()
+function T.directional_input_selects_places_and_applies_radix_power_arithmetic()
   local decimal = SaveEditorValueEditor.new({
     kind = "integer",
     value = 20,
@@ -49,9 +55,14 @@ function T.integer_editors_share_retail_adjustment_steps_and_preserve_display_ba
   Assert.isTrue(decimal:press("up"))
   Assert.equal(decimal:snapshot().parsedValue, 21)
   Assert.isTrue(decimal:press("left"))
-  Assert.equal(decimal:snapshot().parsedValue, 11, "Left subtracts ten")
+  Assert.equal(decimal:snapshot().selectedPlace, 1, "Left selects the tens place")
+  Assert.equal(decimal:snapshot().parsedValue, 21, "selecting a place does not mutate the value")
+  Assert.isTrue(decimal:press("up"))
+  Assert.equal(decimal:snapshot().parsedValue, 25, "Up adjusts by the selected place and clamps")
   Assert.isTrue(decimal:press("right"))
-  Assert.equal(decimal:snapshot().parsedValue, 21, "Right adds ten")
+  Assert.equal(decimal:snapshot().selectedPlace, 0, "Right selects the units place")
+  Assert.isTrue(decimal:press("down"))
+  Assert.equal(decimal:snapshot().parsedValue, 24, "Down subtracts one from the selected units place")
 
   local hexadecimal = SaveEditorValueEditor.new({
     kind = "integer",
@@ -61,11 +72,14 @@ function T.integer_editors_share_retail_adjustment_steps_and_preserve_display_ba
     base = "hex",
   })
   Assert.equal(hexadecimal:snapshot().kind, "number", "raw values use the same modal kind")
-  Assert.isTrue(hexadecimal:press("right"))
-  Assert.equal(hexadecimal:snapshot().parsedValue, 0x1AC, "hex-backed fields also add ten")
-  Assert.equal(hexadecimal:snapshot().buffer, "1AC", "hexadecimal presentation remains hexadecimal")
-  Assert.isTrue(hexadecimal:adjustInteger(-0x100))
-  Assert.equal(hexadecimal:snapshot().buffer, "AC", "direct adjustments preserve the display base")
+  Assert.isTrue(hexadecimal:press("left"))
+  Assert.equal(hexadecimal:snapshot().selectedPlace, 1)
+  Assert.isTrue(hexadecimal:press("up"))
+  Assert.equal(hexadecimal:snapshot().parsedValue, 0x1B2, "hexadecimal tens use a radix-sixteen place")
+  Assert.equal(hexadecimal:snapshot().buffer, "1B2", "hexadecimal presentation remains uppercase")
+  Assert.isTrue(hexadecimal:selectPlace(2))
+  Assert.isTrue(hexadecimal:adjustPlace(-1))
+  Assert.equal(hexadecimal:snapshot().buffer, "0B2", "direct adjustments restore padded hexadecimal display")
 end
 
 function T.cancel_discards_partial_numeric_input()
@@ -181,6 +195,81 @@ function T.hexadecimal_high_bit_values_and_digit_edits_remain_unsigned()
   end
 end
 
+function T.integer_projection_uses_maximum_radix_and_pads_valid_digits()
+  local cases = {
+    { minimum = 0, maximum = 0, base = "decimal", count = 1, value = 0, digits = "0" },
+    { minimum = 7, maximum = 7, base = "decimal", count = 1, value = 7, digits = "7" },
+    { minimum = 0, maximum = 9, base = "decimal", count = 1, value = 1, digits = "1" },
+    { minimum = 0, maximum = 10, base = "decimal", count = 2, value = 1, digits = "01" },
+    { minimum = 1, maximum = 100, base = "decimal", count = 3, value = 1, digits = "001" },
+    { minimum = 0, maximum = 255, base = "decimal", count = 3, value = 1, digits = "001" },
+    { minimum = 2000, maximum = 2255, base = "decimal", count = 4, value = 2000, digits = "2000" },
+    { minimum = 0, maximum = 999999, base = "decimal", count = 6, value = 1, digits = "000001" },
+    { minimum = 0, maximum = 0xFFFFFFFF, base = "decimal", count = 10, value = 1, digits = "0000000001" },
+    { minimum = 0, maximum = 0xFFFFFFFF, base = "hex", count = 8, value = 0xAF, digits = "000000AF" },
+  }
+
+  for _, case in ipairs(cases) do
+    local editor = SaveEditorValueEditor.new({
+      kind = "integer",
+      value = case.value,
+      min = case.minimum,
+      max = case.maximum,
+      base = case.base,
+    })
+    local snapshot = editor:snapshot()
+    Assert.equal(snapshot.digitCount, case.count, "digit count follows the maximum in " .. case.base)
+    Assert.equal(table.concat(snapshot.digits), case.digits, "valid display digits are padded in " .. case.base)
+    Assert.equal(snapshot.selectedPlace, 0, "opening selects the least-significant place")
+    if case.minimum == case.maximum then
+      Assert.isFalse(editor:adjustPlace(1), "a fixed range cannot be changed")
+      Assert.equal(editor:snapshot().parsedValue, case.value, "a fixed range remains exact")
+    end
+  end
+end
+
+function T.place_selection_and_arithmetic_use_radix_powers_with_bounds()
+  local decimal = SaveEditorValueEditor.new({
+    kind = "integer",
+    value = 99,
+    min = 0,
+    max = 2255,
+    base = "decimal",
+  })
+  Assert.isTrue(type(decimal.selectPlace) == "function", "numeric editing exposes place selection")
+  Assert.isTrue(type(decimal.adjustPlace) == "function", "numeric editing exposes place arithmetic")
+  Assert.isTrue(decimal:selectPlace(0))
+  Assert.isTrue(decimal:adjustPlace(1))
+  Assert.equal(decimal:snapshot().parsedValue, 100, "adding one to 99 carries into the next place")
+  Assert.equal(decimal:snapshot().buffer, "0100", "accepted arithmetic restores padded display")
+  Assert.isTrue(decimal:selectPlace(1))
+  Assert.isTrue(decimal:adjustPlace(-1))
+  Assert.equal(decimal:snapshot().parsedValue, 90, "the selected tens place subtracts ten")
+
+  local hexadecimal = SaveEditorValueEditor.new({
+    kind = "integer",
+    value = 0xFF,
+    min = 0,
+    max = 0xFFFFFFFF,
+    base = "hex",
+  })
+  Assert.isTrue(hexadecimal:adjustPlace(1))
+  Assert.equal(hexadecimal:snapshot().parsedValue, 0x100, "hex place arithmetic carries in radix sixteen")
+  Assert.equal(table.concat(hexadecimal:snapshot().digits), "00000100")
+
+  local bounded = SaveEditorValueEditor.new({
+    kind = "integer",
+    value = 9,
+    min = 1,
+    max = 10,
+    base = "decimal",
+  })
+  Assert.isTrue(bounded:adjustPlace(1))
+  Assert.equal(bounded:snapshot().parsedValue, 10, "increment clamps at the exact maximum")
+  Assert.isFalse(bounded:adjustPlace(1), "a second increment at the maximum is not a mutation")
+  Assert.equal(bounded:snapshot().parsedValue, 10)
+end
+
 function T.large_choice_catalog_reuses_its_filtered_order_until_the_query_changes()
   Assert.isTrue(loaded)
   local options = {}
@@ -196,18 +285,106 @@ function T.large_choice_catalog_reuses_its_filtered_order_until_the_query_change
   Assert.isTrue(editor:snapshot().options == opening.options, "browsing never rebuilds the cached order")
   Assert.equal(editor:snapshot().selectedKey, "K00006", "browsing still advances the selection")
   Assert.isTrue(editor:textinput("K000"), "filtering narrows the catalog")
+  finishChoiceFilter(editor)
   local narrowed = editor:snapshot()
   Assert.isFalse(narrowed.options == opening.options, "a changed query rebuilds the filtered order once")
   Assert.isTrue(#narrowed.options < 10000 and #narrowed.options > 0, "the filter narrows without emptying")
   Assert.isTrue(editor:snapshot().options == narrowed.options, "the rebuilt filter is reused while stable")
   Assert.isTrue(editor:press("backspace"), "backspace edits the query")
+  finishChoiceFilter(editor)
   local widened = editor:snapshot()
   Assert.isFalse(widened.options == narrowed.options, "query edits rebuild exactly once")
   Assert.isTrue(editor:snapshot().options == widened.options, "the widened filter is reused while stable")
   Assert.isTrue(editor:press("clear_search"), "clearing restores the catalog")
+  finishChoiceFilter(editor)
   local restored = editor:snapshot()
   Assert.equal(#restored.options, 10000, "clearing restores every logical choice")
   Assert.isTrue(editor:snapshot().options == restored.options, "the restored order is reused while stable")
+end
+
+function T.stable_large_choice_snapshots_and_layout_do_not_walk_the_logical_catalog()
+  local function stableVisits(count)
+    local options = {}
+    for index = 1, count do
+      local key = string.format("K%05d", index)
+      options[index] = { key = key, label = "Choice " .. index }
+    end
+    local editor = SaveEditorValueEditor.new({
+      kind = "choice",
+      value = options[count].key,
+      options = options,
+    })
+    local opening = editor:snapshot()
+    local watched = { [opening.options] = "options", [opening.rowTargets] = "row targets" }
+    local visits = { options = 0, ["row targets"] = 0 }
+    local originalIpairs = ipairs
+    _G.ipairs = function(value)
+      local kind = watched[value]
+      if kind == nil then
+        return originalIpairs(value)
+      end
+      local function nextValue(_, index)
+        index = index + 1
+        local item = value[index]
+        if item == nil then
+          return nil
+        end
+        visits[kind] = visits[kind] + 1
+        return index, item
+      end
+      return nextValue, value, 0
+    end
+    local ok, result = xpcall(function()
+      for _ = 1, 3 do
+        editor:snapshot()
+      end
+      local layout = SaveEditorLayout.compute(
+        {
+          section = "Bag",
+          status = "ready",
+          ready = true,
+          dirty = false,
+          bagRows = {},
+          valueEditor = opening,
+          scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:" .. options[count].key },
+          scrollOffsets = {},
+        },
+        256,
+        192,
+        {
+          lineHeight = 14,
+          measure = function(text)
+            return #text * 7
+          end,
+        }
+      )
+      return layout
+    end, debug.traceback)
+    _G.ipairs = originalIpairs
+    if not ok then
+      error(result, 0)
+    end
+    return visits, result
+  end
+
+  local smallVisits = stableVisits(100)
+  local largeVisits, largeLayout = stableVisits(10000)
+  local total = largeVisits.options + largeVisits["row targets"]
+  local smallTotal = smallVisits.options + smallVisits["row targets"]
+  Assert.isTrue(
+    total <= smallTotal + 8,
+    string.format(
+      "stable work grew with catalog size: 100=%d/%d, 10000=%d/%d",
+      smallVisits.options,
+      smallVisits["row targets"],
+      largeVisits.options,
+      largeVisits["row targets"]
+    )
+  )
+  Assert.isTrue(
+    largeLayout.targets["choice:K10000"] ~= nil and largeLayout.viewports["value:choice"].offset > 0,
+    "the selected logical row near the end remains addressable and visible"
+  )
 end
 
 function T.choice_snapshot_carries_stable_row_identity_for_visible_layout()
@@ -224,9 +401,53 @@ function T.choice_snapshot_carries_stable_row_identity_for_visible_layout()
   Assert.isTrue(editor:snapshot().rowTargets == snapshot.rowTargets, "the row order is reused while stable")
   Assert.isTrue(editor:snapshot().indexByTarget == snapshot.indexByTarget, "the index map is reused while stable")
   editor:textinput("K1")
+  finishChoiceFilter(editor)
   local narrowed = editor:snapshot()
   Assert.isFalse(narrowed.rowTargets == snapshot.rowTargets, "a changed query rebuilds the row identity once")
   Assert.equal(narrowed.indexByTarget[narrowed.rowTargets[1]], 1, "the rebuilt index map stays consistent")
+end
+
+function T.choice_selection_uses_index_membership_without_submitting_or_scanning()
+  Assert.isTrue(loaded)
+  local options = {}
+  for index = 1, 10000 do
+    local key = string.format("K%05d", index)
+    options[index] = { key = key, label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K00001", options = options })
+  local snapshot = editor:snapshot()
+  local sourceOptions = editor._options
+  local scans = 0
+  local originalIpairs = ipairs
+  _G.ipairs = function(value)
+    if value ~= sourceOptions then
+      return originalIpairs(value)
+    end
+    return function(_, index)
+      index = index + 1
+      if value[index] == nil then
+        return nil
+      end
+      scans = scans + 1
+      return index, value[index]
+    end,
+      value,
+      0
+  end
+  local ok, failure = xpcall(function()
+    Assert.isTrue(type(editor.selectChoice) == "function", "choice owners expose direct indexed selection")
+    Assert.isTrue(editor:selectChoice("K09999"), "a current logical key selects directly")
+    Assert.equal(editor:snapshot().selectedKey, "K09999")
+    Assert.equal(scans, 0, "direct selection does not scan the catalog")
+    Assert.isFalse(editor:selectChoice("unknown"), "an unknown key cannot reuse a stale numeric index")
+    Assert.equal(editor:snapshot().selectedKey, "K09999", "a rejected key leaves selection unchanged")
+    Assert.isNil(editor:result(), "selection remains separate from submission")
+  end, debug.traceback)
+  _G.ipairs = originalIpairs
+  if not ok then
+    error(failure, 0)
+  end
+  Assert.equal(snapshot.selectedKey, "K00001", "selection never mutates its earlier snapshot")
 end
 
 function T.choice_browsing_uses_the_full_filtered_sequence()
@@ -300,6 +521,7 @@ function T.choice_filter_keeps_the_opening_identity_visible_and_recovers_from_no
   editor:textinput("no matching choice")
   local backspaceRecovered = editor:press("backspace")
   local clearRecovered = editor:press("clear_search")
+  finishChoiceFilter(editor)
   local recovered = editor:snapshot()
   local allOptionsReturned = #recovered.options == 24 and recovered.query == "" and recovered.selectedKey == "K18"
   local selected = editor:submit()
@@ -369,7 +591,7 @@ function T.name_action_key_activates_the_selected_glyph_without_submitting()
   Assert.isTrue(editor:snapshot().naming.text ~= beforeAction, "the selected glyph is inserted into the active name")
 end
 
-function T.repeated_adjustment_preserves_decimal_and_hexadecimal_display()
+function T.repeated_key_adjustment_preserves_decimal_and_hexadecimal_display()
   local decimal = integerEditor(128, 0, 999)
   Assert.isTrue(decimal:press("up"))
   Assert.isTrue(decimal:press("up"))
@@ -382,9 +604,11 @@ function T.repeated_adjustment_preserves_decimal_and_hexadecimal_display()
     max = 0xFFF,
     base = "hex",
   })
-  Assert.isTrue(hexadecimal:press("right"))
-  Assert.isTrue(hexadecimal:press("right"))
-  Assert.equal(hexadecimal:snapshot().buffer, "1B6", "ten-step adjustments preserve hexadecimal display")
+  Assert.isTrue(hexadecimal:press("left"))
+  Assert.isTrue(hexadecimal:press("left"))
+  Assert.equal(hexadecimal:snapshot().selectedPlace, 2, "Left selects the hundreds place")
+  Assert.isTrue(hexadecimal:press("up"))
+  Assert.equal(hexadecimal:snapshot().buffer, "2A2", "Up adjusts by the selected hexadecimal place")
 end
 
 function T.cleared_choice_filter_restores_the_opening_selection_without_publishing()
@@ -395,9 +619,11 @@ function T.cleared_choice_filter_restores_the_opening_selection_without_publishi
   end
   local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K18", options = options })
   Assert.isTrue(editor:textinput("no matching choice"), "typing filters the choice rows")
+  finishChoiceFilter(editor)
   Assert.deepEqual(editor:snapshot().options, {}, "a query without matches leaves zero rows")
   Assert.isNil(editor:result(), "filtering publishes no result")
   Assert.isTrue(editor:press("clear_search"), "Delete clears the choice query")
+  finishChoiceFilter(editor)
   local recovered = editor:snapshot()
   Assert.equal(recovered.query, "")
   Assert.equal(#recovered.options, 24, "clearing restores every row")
@@ -417,6 +643,7 @@ function T.multibyte_choice_query_backspace_removes_one_glyph_without_publishing
   Assert.isTrue(editor:textinput("é"), "typing accepts a multibyte glyph")
   Assert.equal(editor:snapshot().query, "é")
   Assert.isTrue(editor:press("backspace"), "Backspace removes the complete multibyte glyph")
+  finishChoiceFilter(editor)
   Assert.equal(editor:snapshot().query, "", "the query is empty after removing its only glyph")
   Assert.equal(#editor:snapshot().options, 8, "the cleared query restores every row")
   Assert.isNil(editor:result(), "query edits publish no result")
@@ -456,29 +683,57 @@ function T.name_variant_uses_naming_snapshot_and_submits_real_text()
   Assert.deepEqual(cancelEditor:result(), { kind = "cancel" })
 end
 
-function T.number_modal_uses_native_source_control_geometry_in_a_compact_frame()
+function T.disposal_cancels_pending_choice_work_and_is_idempotent()
+  local options = {}
+  for index = 1, 500 do
+    options[index] = { key = string.format("K%03d", index), label = "Choice " .. tostring(index) }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K001", options = options })
+  Assert.isTrue(editor:textinput("unmatched"), "typing starts choice filtering")
+  Assert.isTrue(editor:snapshot().pending, "the test owns pending sliced work")
+
+  editor:dispose()
+  editor:dispose()
+
+  Assert.equal(editor:update(256), 0, "disposed filtering cannot advance or publish")
+  Assert.isFalse(editor:submit(), "disposed editors cannot submit late input")
+  Assert.isFalse(editor:cancel(), "disposed editors cannot accept late cancellation")
+end
+
+function T.number_modal_uses_range_columns_in_a_content_sized_frame()
   local metrics = {
     lineHeight = 14,
     measure = function(text)
       return #text * 7
     end,
   }
-  local sourceControls = {
-    { delta = 100, role = "increment", hitRect = { x = 120, y = 88, width = 32, height = 24 } },
-    { delta = 10, role = "increment", hitRect = { x = 152, y = 88, width = 32, height = 24 } },
-    { delta = 1, role = "increment", hitRect = { x = 184, y = 88, width = 32, height = 24 } },
-    { delta = -100, role = "decrement", hitRect = { x = 120, y = 136, width = 32, height = 24 } },
-    { delta = -10, role = "decrement", hitRect = { x = 152, y = 136, width = 32, height = 24 } },
-    { delta = -1, role = "decrement", hitRect = { x = 184, y = 136, width = 32, height = 24 } },
-  }
   local view = {
     section = "Player",
     status = "ready",
     ready = true,
     session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
-    valueEditor = { kind = "number", buffer = "123", parsedValue = 123, minimum = 0, maximum = 999 },
+    valueEditor = {
+      kind = "number",
+      buffer = "123",
+      parsedValue = 123,
+      minimum = 0,
+      maximum = 999,
+      radix = 10,
+      digitCount = 3,
+      digits = { "1", "2", "3" },
+      selectedPlace = 0,
+    },
     scope = { id = "value:integer:money", epoch = 2, kind = "value", focusId = "confirm" },
-    numberControls = sourceControls,
+    numberControlVisuals = {
+      increment = {
+        normal = { image = "up", width = 12, height = 12 },
+        pressed = { image = "up-p", width = 12, height = 12 },
+      },
+      decrement = {
+        normal = { image = "down", width = 12, height = 12 },
+        pressed = { image = "down-p", width = 12, height = 12 },
+      },
+    },
   }
   local layout = SaveEditorLayout.compute(view, 640, 480, metrics)
   local modal = assert(layout.valueModal, "the number editor owns a framed modal")
@@ -486,18 +741,12 @@ function T.number_modal_uses_native_source_control_geometry_in_a_compact_frame()
     modal.width < 384 and modal.height < 192,
     "the modal stays close to its source cluster instead of scaling a 256x192 system"
   )
-  for _, control in ipairs(sourceControls) do
-    local target = assert(layout.targets["number:delta:" .. tostring(control.delta)]).rect
-    Assert.equal(target.width, control.hitRect.width, "delta controls keep native width")
-    Assert.equal(target.height, control.hitRect.height, "delta controls keep native height")
-    Assert.isTrue(
-      target.x >= modal.x and target.x + target.width <= modal.x + modal.width,
-      "delta controls stay inside the modal"
-    )
-    Assert.isTrue(
-      target.y >= modal.y and target.y + target.height <= modal.y + modal.height,
-      "delta controls stay inside the modal"
-    )
+  Assert.equal(#layout.numberLayout.columns, 3, "the integer maximum defines three columns")
+  for _, column in ipairs(layout.numberLayout.columns) do
+    for _, target in ipairs({ column.upRect, column.digitRect, column.downRect }) do
+      Assert.isTrue(target.x >= modal.x and target.x + target.width <= modal.x + modal.width)
+      Assert.isTrue(target.y >= modal.y and target.y + target.height <= modal.y + modal.height)
+    end
   end
   for _, id in ipairs({ "confirm", "cancel" }) do
     local button = assert(layout.targets[id]).rect
@@ -514,10 +763,15 @@ end
 
 local function closeHarness(options)
   local Controller = require("app.src.saveeditor.SaveEditorController")
+  local Layout = require("app.src.saveeditor.SaveEditorLayout")
   local State = require("app.src.saveeditor.SaveEditorState")
+  local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
   local controller = Controller.new()
   local results = {}
   local session = {
+    revision = function()
+      return 0
+    end,
     discards = 0,
     saveCalls = 0,
     discard = function(self)
@@ -527,7 +781,13 @@ local function closeHarness(options)
       return options.dirty == true
     end,
     snapshot = function()
-      return { dirtySections = {}, location = { mapId = 7, fieldX = 10, fieldZ = 12 } }
+      return {
+        dirtySections = { money = false, frame = false, flags = false, party = false, bag = false, location = false },
+        playerName = "PLAYER",
+        money = 0,
+        frameIndex = 0,
+        location = { mapId = 7, fieldX = 10, fieldZ = 12 },
+      }
     end,
     save = function(self)
       self.saveCalls = self.saveCalls + 1
@@ -538,12 +798,32 @@ local function closeHarness(options)
     approvedExit = false,
     disposed = false,
     controller = controller,
+    modalStack = ModalStack.new(),
+    modalLayerSequence = 0,
     session = session,
+    width = 256,
+    height = 192,
+    renderer = {
+      metrics = function()
+        return { lineHeight = 14, measure = function(text)
+          return #text * 7
+        end }
+      end,
+    },
+    displayContext = { measure = function()
+      return {}
+    end },
+    presentation = { resolve = function(_, _, view)
+      local metrics = view.textMetrics
+      return { content = { layout = Layout.compute(view, 256, 192, metrics) } }
+    end },
     valueEditor = options.valueEditor,
     valuePurpose = options.valuePurpose,
     valueReturnFocus = options.valueReturnFocus,
     monDraft = options.monDraft,
     errorMessage = nil,
+    inputTick = 0,
+    numberPressUntilTick = 0,
     fieldInput = {
       beginUi = function() end,
     },
@@ -569,6 +849,9 @@ function T.dirty_value_editor_enters_the_leave_flow_and_cancel_restores_focus()
       snapshot = function()
         return { kind = "integer" }
       end,
+      result = function()
+        return { kind = "cancel" }
+      end,
     },
     valuePurpose = "money",
     valueReturnFocus = "money",
@@ -589,6 +872,12 @@ function T.invalid_party_draft_blocks_close_save_and_keeps_the_leave_decision()
   local ErrorsModule = require("libs.errors.src.Errors")
   local harness = closeHarness({})
   harness.state.monDraft = {
+    mode = function()
+      return "replace"
+    end,
+    isDirty = function()
+      return true
+    end,
     validate = function()
       return nil, ErrorsModule.new("PARTY_DRAFT_INVALID", "level is out of range")
     end,

@@ -28,19 +28,19 @@ function Decisions.describe(kind, facts)
     return {
       action("bag:quantity", "Quantity", "secondary", "bag_quantity"),
       action("bag:remove", "Remove", "destructive", "bag_remove"),
-      action("cancel", "Cancel", "secondary", "cancel"),
+      action("cancel", "Back", "back", "cancel"),
     }
   elseif kind == "party-move" then
     return {
       action("party-move:move", "Move", "secondary", "party-move:move"),
       action("party-move:pp", "Current PP", "secondary", "party-move:pp"),
       action("party-move:pp-ups", "PP Ups", "secondary", "party-move:pp-ups"),
-      action("cancel", "Cancel", "secondary", "cancel"),
+      action("cancel", "Back", "back", "cancel"),
     }
   elseif kind == "remove" then
     return {
       action("remove", "Remove", "destructive", "confirm_remove"),
-      action("cancel", "Cancel", "secondary", "cancel"),
+      action("cancel", "Back", "back", "cancel"),
     }
   elseif kind == "leave" then
     return {
