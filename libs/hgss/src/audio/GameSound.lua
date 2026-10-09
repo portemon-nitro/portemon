@@ -63,7 +63,7 @@ local PlayerFaderTimeline = require("libs.hgss.src.audio.PlayerFaderTimeline")
 ---@field currentMusic fun(self: GameSound): integer?
 ---@field playFanfare fun(self: GameSound, idOrSymbol: integer|string)
 ---@field isFanfarePlaying fun(self: GameSound): boolean
----@field playCry fun(self: GameSound, species: integer, pattern: integer)
+---@field playCry fun(self: GameSound, species: integer, pattern: integer, form: integer?)
 ---@field isCryFinished fun(self: GameSound): boolean
 ---@field fadeMusicOut fun(self: GameSound, spec: { target: integer, durationTicks: integer })
 ---@field fadeMusicIn fun(self: GameSound, spec: { durationTicks: integer })
@@ -426,14 +426,15 @@ end
 -- the wait and stability predicates.
 ---@param species integer
 ---@param pattern integer
-function GameSound:playCry(species, pattern)
+---@param form integer? the mon's form; nil plays the species cry
+function GameSound:playCry(species, pattern, form)
   if self._cry == nil then
     Errors.raise(AudioErrors.AUDIO_CRY_UNAVAILABLE, "no cry subsystem is available", {
       species = species,
       pattern = pattern,
     })
   end
-  self._cry:play(species, pattern)
+  self._cry:play(species, pattern, form)
   self._cryActive = true
 end
 

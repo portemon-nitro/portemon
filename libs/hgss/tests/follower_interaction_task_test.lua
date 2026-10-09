@@ -176,8 +176,8 @@ local function fixture(programs, options)
   function audio:play(sound)
     self.played[#self.played + 1] = sound
   end
-  function audio:playCry(species, pattern)
-    self.cries[#self.cries + 1] = { species, pattern }
+  function audio:playCry(species, pattern, form)
+    self.cries[#self.cries + 1] = { species, pattern, form }
   end
   function audio:isEffectWaitComplete(effect)
     Assert.equal(effect, "SEQ_ME_ACCE")
@@ -205,9 +205,13 @@ local function fixture(programs, options)
     mood = 126,
     leaves = 0,
     speciesBySlot = { [0] = 133, [1] = 25 },
+    formBySlot = { [0] = 0, [1] = 0 },
     partyMonSpecies = function(self, slot)
       self.lastSpeciesSlot = slot
       return self.speciesBySlot[slot]
+    end,
+    partyMon = function(self, slot)
+      return { form = self.formBySlot[slot] }
     end,
   }
   local ctx = {
@@ -376,6 +380,7 @@ T["tagged motion sounds dispatch effects and cries through their existing servic
     end
     local state = FollowerInteractionTask.create({}, ctx)
     seen.mons.speciesBySlot[0] = 151
+    seen.mons.formBySlot[1] = 1
     FollowerInteractionTask.poll(state, ctx)
     return seen
   end
@@ -385,12 +390,12 @@ T["tagged motion sounds dispatch effects and cries through their existing servic
   Assert.deepEqual(effect.audio.cries, {}, "effect dispatch does not call the cry service")
 
   local ordinaryCry = dispatch({ kind = "cry", pattern = 0 }, 1)
-  Assert.deepEqual(ordinaryCry.audio.cries, { { 25, 0 } }, "the captured lead slot supplies the native cry species")
+  Assert.deepEqual(ordinaryCry.audio.cries, { { 25, 0, 1 } }, "the captured lead slot supplies the cry species and form")
   Assert.equal(ordinaryCry.mons.lastSpeciesSlot, 1, "cry dispatch keeps the selected lead slot")
   Assert.deepEqual(ordinaryCry.audio.played, {}, "cry dispatch does not treat its tag as an effect ID")
 
   local patternCry = dispatch({ kind = "cry", pattern = 11 }, 1)
-  Assert.deepEqual(patternCry.audio.cries, { { 25, 11 } }, "the alternate cry pattern is preserved")
+  Assert.deepEqual(patternCry.audio.cries, { { 25, 11, 1 } }, "the alternate cry pattern is preserved")
 end
 
 T["reward dialogue stays open until acquisition fanfare and needs a fresh edge"] = function()

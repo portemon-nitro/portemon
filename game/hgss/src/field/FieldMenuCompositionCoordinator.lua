@@ -472,9 +472,9 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
   end
   -- Summary cries play through the composed field audio service under
   -- the same borrowed-audio rule: a host without audio stays silent.
-  local function playSummaryCry(species, pattern)
+  local function playSummaryCry(species, pattern, form)
     if runtime.audio then
-      runtime.audio:playCry(species, pattern)
+      runtime.audio:playCry(species, pattern, form)
     end
   end
   local bagTextPolicy = TextSpeedPolicy.forSpeed(

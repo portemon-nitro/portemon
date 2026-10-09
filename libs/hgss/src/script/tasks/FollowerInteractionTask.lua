@@ -219,7 +219,8 @@ local function motionPhase(state, ctx)
         if sound.kind == "effect" then
           svc.audio:play(sound.id)
         elseif sound.kind == "cry" then
-          svc.audio:playCry(svc.mons:partyMonSpecies(state.leadSlot), sound.pattern)
+          local lead = svc.mons:partyMon(state.leadSlot)
+          svc.audio:playCry(svc.mons:partyMonSpecies(state.leadSlot), sound.pattern, lead.form)
         else
           error("validated follower interaction sound kind is invalid")
         end

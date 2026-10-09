@@ -26,7 +26,7 @@ local SummaryScreenInterface = require("game.hgss.src.field.SummaryScreenInterfa
 ---@field _readNavigation fun(): table<string, unknown>? read-only navigation sample
 ---@field _acquirePreparation fun(): table<string, unknown> per-open lease factory
 ---@field _effect (fun(sequence: string))? the production semantic sound boundary
----@field _playCry (fun(species: integer, pattern: integer))? the production cry boundary
+---@field _playCry (fun(species: integer, pattern: integer, form: integer))? the production cry boundary
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
 ---@field _lease table<string, unknown>? the per-open preparation lease
 ---@field _demandKey string? the qualified demand behind the ready bundle
@@ -63,7 +63,7 @@ SummaryScreenState.__index = SummaryScreenState
 ---@field readNavigation fun(): table<string, unknown>? the read-only navigation sample
 ---@field acquirePreparation fun(): table<string, unknown> the per-open lease factory
 ---@field effect (fun(sequence: string))? the production semantic sound boundary
----@field playCry (fun(species: integer, pattern: integer))? the production cry boundary
+---@field playCry (fun(species: integer, pattern: integer, form: integer))? the production cry boundary
 ---@field textPolicy table<string, unknown>? the copied player text-speed cadence
 ---@field overrides table<string, unknown>? per-case layout overrides
 ---@field allowCancel boolean? cancel permission, default true
@@ -648,7 +648,7 @@ local function dispatchEffect(self, effect, status)
     assert(type(numbers) == "table", "dex numbers carry per-species entries")
     local national = assert(numbers.national, "dex numbers carry the national entry")
     assert(type(national) == "number" and national % 1 == 0, "cry species stay numeric")
-    self._playCry(national, 0)
+    self._playCry(national, 0, assert(identity.form, "identities carry their form"))
     return
   end
   if effect.kind == "sound" then

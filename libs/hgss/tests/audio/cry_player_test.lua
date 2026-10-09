@@ -104,6 +104,17 @@ function T.replacing_a_cry_stops_the_previous_handle()
   Assert.isFalse(cry:isFinished(), "the replacement cry remains busy")
 end
 
+function T.sky_forme_shaymin_cries_from_its_own_bank()
+  -- PlayCry/PlayCryEx (sub_02006A0C) send Shaymin's form 1 to bank 494.
+  local cry, state = newRecordingCry()
+  cry:play(492, 0, 1)
+  Assert.equal(state.bankId, 494)
+  cry:play(492, 0, 0)
+  Assert.equal(state.bankId, 492, "Land Forme keeps the species bank")
+  cry:play(487, 0, 1)
+  Assert.equal(state.bankId, 487, "other species' forms share the species bank")
+end
+
 function T.unsupported_cry_patterns_fail_at_the_semantic_boundary()
   local cry = newRecordingCry()
   local err = Assert.throws(function()

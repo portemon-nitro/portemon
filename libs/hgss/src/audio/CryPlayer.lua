@@ -10,6 +10,8 @@ CryPlayer.__index = CryPlayer
 
 local STANDARD_CRY_SEQUENCE_ID = 2
 local MAX_STANDARD_SPECIES = 493
+local SHAYMIN = 492
+local SHAYMIN_SKY_BANK = 494
 local PRIMARY_VOLUME = 100
 local SECONDARY_VOLUME = 70
 
@@ -63,7 +65,7 @@ end
 
 ---@class CryPlayer
 ---@field new fun(opts: { player: SequencePlayer, provider: AudioAssetProvider, waveOut: WaveOutPlayer?, faderTimeline: PlayerFaderTimeline? }): CryPlayer
----@field play fun(self: CryPlayer, species: integer, pattern: integer|nil)
+---@field play fun(self: CryPlayer, species: integer, pattern: integer|nil, form: integer|nil)
 ---@field update fun(self: CryPlayer)
 ---@field isFinished fun(self: CryPlayer): boolean
 
@@ -150,9 +152,19 @@ local function startSequence(self, handle, sequence, bank, action, species, patt
   end
 end
 
+-- The cry bank for a species and form: Sky Forme Shaymin has its own bank
+-- (sub_02006A0C); every other form shares its species bank.
+local function cryBank(species, form)
+  if species == SHAYMIN and form == 1 then
+    return SHAYMIN_SKY_BANK
+  end
+  return species
+end
+
 ---@param species integer
 ---@param pattern integer|nil
-function CryPlayer:play(species, pattern)
+---@param form integer|nil form id; nil plays the species bank, as callers passing form 0 do
+function CryPlayer:play(species, pattern, form)
   if pattern == nil then
     pattern = 0
   end
@@ -166,7 +178,7 @@ function CryPlayer:play(species, pattern)
   assert(descriptor ~= nil, "cry pattern descriptor must be available")
 
   -- Resolve every asset before replacing the currently valid request.
-  local bank = self._provider:bank(species)
+  local bank = self._provider:bank(cryBank(species, form))
   local sequence
   local sample
   if descriptor.primary ~= nil or descriptor.secondary ~= nil then

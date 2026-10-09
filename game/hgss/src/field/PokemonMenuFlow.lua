@@ -35,7 +35,7 @@ local PAGE = {
 
 ---@class PokemonMenuFlow
 ---@field private _effect (fun(sequence: string))? the production semantic sound boundary for menu children
----@field private _playCry (fun(species: integer, pattern: integer))? the production cry boundary for summary children
+---@field private _playCry (fun(species: integer, pattern: integer, form: integer))? the production cry boundary for summary children
 ---@field private _textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
 ---@field private _root string
 ---@field private _mons table<string, unknown>

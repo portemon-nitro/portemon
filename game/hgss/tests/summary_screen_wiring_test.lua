@@ -219,8 +219,8 @@ function T.delayed_cries_reach_audio_once_and_drop_after_disposal()
   gift(service, "CHIKORITA")
   local cries = {}
   local sounded = SummaryScreenState.new(composition(service, {
-    playCry = function(species, pattern)
-      cries[#cries + 1] = { species = species, pattern = pattern }
+    playCry = function(species, pattern, form)
+      cries[#cries + 1] = { species = species, pattern = pattern, form = form }
     end,
   }))
   settle(sounded)
@@ -230,6 +230,7 @@ function T.delayed_cries_reach_audio_once_and_drop_after_disposal()
   Assert.equal(#cries, 1, "the delayed entry cry reaches audio exactly once")
   Assert.equal(cries[1].species, 152, "the cry carries the displayed national species")
   Assert.equal(cries[1].pattern, 0, "the cry plays its default pattern")
+  Assert.equal(cries[1].form, 0, "the cry carries the displayed form")
   for _ = 1, 12 do
     sounded:updateFixed({})
   end

@@ -64,7 +64,7 @@ local PokemonMenuComposition = {}
 ---@field fieldTravel table<string, unknown>? durable travel owner (borrowed)
 ---@field overrides table<string, unknown>? per-case application overrides
 ---@field effect (fun(sequence: string))? the production semantic sound boundary for bag children
----@field playCry (fun(species: integer, pattern: integer))? the production cry boundary for summary children
+---@field playCry (fun(species: integer, pattern: integer, form: integer))? the production cry boundary for summary children
 ---@field textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
 ---@field summaryManifest table<string, unknown>? the borrowed summary family for summary children
 ---@field summaryContext fun(): table<string, unknown>? the explicit summary display context per refresh
