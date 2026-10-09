@@ -391,28 +391,35 @@ function Controller:moveLocationCursor(direction, visibleWidth, visibleHeight)
   if self.locationCursorX == nil or self.locationCursorZ == nil then
     return
   end
+  local cursorX, cursorZ = self.locationCursorX, self.locationCursorZ
   if direction == "left" then
-    self.locationCursorX = math.max(0, self.locationCursorX - 1)
+    cursorX = math.max(0, cursorX - 1)
   elseif direction == "right" then
-    self.locationCursorX = math.min(65535, self.locationCursorX + 1)
+    cursorX = math.min(65535, cursorX + 1)
   elseif direction == "up" then
-    self.locationCursorZ = math.max(0, self.locationCursorZ - 1)
+    cursorZ = math.max(0, cursorZ - 1)
   else
-    self.locationCursorZ = math.min(65535, self.locationCursorZ + 1)
+    cursorZ = math.min(65535, cursorZ + 1)
   end
-  local halfWidth, halfHeight = math.floor(visibleWidth / 2), math.floor(visibleHeight / 2)
-  local centerX = self.locationCenterX or self.locationCursorX
-  local centerZ = self.locationCenterZ or self.locationCursorZ
-  local firstX, firstZ = centerX - halfWidth, centerZ - halfHeight
-  if self.locationCursorX < firstX then
-    centerX = self.locationCursorX + halfWidth
-  elseif self.locationCursorX >= firstX + visibleWidth then
-    centerX = self.locationCursorX - halfWidth
+  if cursorX == self.locationCursorX and cursorZ == self.locationCursorZ then
+    return
   end
-  if self.locationCursorZ < firstZ then
-    centerZ = self.locationCursorZ + halfHeight
-  elseif self.locationCursorZ >= firstZ + visibleHeight then
-    centerZ = self.locationCursorZ - halfHeight
+  self.locationCursorX, self.locationCursorZ = cursorX, cursorZ
+  local centerX = self.locationCenterX or cursorX
+  local centerZ = self.locationCenterZ or cursorZ
+  local firstX = centerX - math.floor(visibleWidth / 2)
+  local firstZ = centerZ - math.floor(visibleHeight / 2)
+  local lastX = firstX + visibleWidth - 1
+  local lastZ = firstZ + visibleHeight - 1
+  if cursorX < firstX then
+    centerX = centerX - visibleWidth
+  elseif cursorX > lastX then
+    centerX = centerX + visibleWidth
+  end
+  if cursorZ < firstZ then
+    centerZ = centerZ - visibleHeight
+  elseif cursorZ > lastZ then
+    centerZ = centerZ + visibleHeight
   end
   self.locationCenterX = math.max(0, math.min(65535, centerX))
   self.locationCenterZ = math.max(0, math.min(65535, centerZ))

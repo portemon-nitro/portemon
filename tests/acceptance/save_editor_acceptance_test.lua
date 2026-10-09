@@ -1269,8 +1269,16 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
       end
 
       local accepted = assert(finalSuggestion, "the final browse request publishes a suggestion")
-      state.controller:chooseLocationMap(accepted.mapId, assert(accepted.fieldX), assert(accepted.fieldZ))
-      state:update(0)
+      state:_performDeferred({ kind = "location-map-select", mapId = accepted.mapId })
+      local activationView = assert(state:view().location)
+      local activationUpdates = 0
+      while activationView.status.state == "pending" do
+        activationUpdates = activationUpdates + 1
+        Assert.isTrue(activationUpdates <= 5000, "the production map selection prepares the activation viewport")
+        state:update(0)
+        activationView = assert(state:view().location)
+      end
+      Assert.equal(activationView.status.state, "ready", "the activation point is prepared before selection")
       state:_performDeferred({ kind = "select_tile", fieldX = accepted.fieldX, fieldZ = accepted.fieldZ })
       local stagedLocation = assert(state.session:snapshot().location)
       Assert.equal(stagedLocation.mapId, accepted.mapId, "explicit activation accepts the surveyed map")

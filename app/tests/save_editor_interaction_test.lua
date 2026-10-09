@@ -3280,6 +3280,126 @@ function T.tests.location_grid_directions_share_the_common_navigation_intent()
   Assert.equal(harness.service.updateCalls, 1, "grid movement still advances loading through the service")
 end
 
+function T.tests.location_grid_cursor_pages_a_full_visible_window_at_each_edge()
+  for _, grid in ipairs({ { width = 11, height = 7 }, { width = 12, height = 8 } }) do
+    for _, center in ipairs({ 20, 30000 }) do
+      for _, edge in ipairs({ "left", "right", "up", "down" }) do
+        local centerX, centerZ = center, center
+        local firstX = centerX - math.floor(grid.width / 2)
+        local firstZ = centerZ - math.floor(grid.height / 2)
+        local cursorX = edge == "left" and firstX or edge == "right" and firstX + grid.width - 1 or centerX
+        local cursorZ = edge == "up" and firstZ or edge == "down" and firstZ + grid.height - 1 or centerZ
+        local controller = Controller.new()
+        controller:setSection("Location")
+        controller:enterLocation({ mapId = 7, fieldX = cursorX, fieldZ = cursorZ })
+        controller:chooseLocationMap(7, cursorX, cursorZ)
+        controller.locationCenterX, controller.locationCenterZ = centerX, centerZ
+
+        controller:moveLocationCursor(edge, grid.width, grid.height)
+
+        local location = controller:locationSnapshot()
+        local expectedX = cursorX + (edge == "left" and -1 or edge == "right" and 1 or 0)
+        local expectedZ = cursorZ + (edge == "up" and -1 or edge == "down" and 1 or 0)
+        local expectedCenterX = centerX + (edge == "left" and -grid.width or edge == "right" and grid.width or 0)
+        local expectedCenterZ = centerZ + (edge == "up" and -grid.height or edge == "down" and grid.height or 0)
+        Assert.deepEqual(
+          location.cursor,
+          { fieldX = expectedX, fieldZ = expectedZ },
+          "an edge step advances one field tile (" .. grid.width .. "x" .. grid.height .. ", " .. edge .. ")"
+        )
+        Assert.deepEqual(
+          location.center,
+          { fieldX = expectedCenterX, fieldZ = expectedCenterZ },
+          "an edge step pages one full visible window (" .. grid.width .. "x" .. grid.height .. ", " .. edge .. ")"
+        )
+        local newFirstX = expectedCenterX - math.floor(grid.width / 2)
+        local newFirstZ = expectedCenterZ - math.floor(grid.height / 2)
+        Assert.equal(
+          expectedX,
+          edge == "left" and newFirstX + grid.width - 1 or edge == "right" and newFirstX or expectedX,
+          "horizontal paging puts the cursor at the opposite edge"
+        )
+        Assert.equal(
+          expectedZ,
+          edge == "up" and newFirstZ + grid.height - 1 or edge == "down" and newFirstZ or expectedZ,
+          "vertical paging puts the cursor at the opposite edge"
+        )
+      end
+    end
+  end
+
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:enterLocation({ mapId = 7, fieldX = 25, fieldZ = 25 })
+  controller:chooseLocationMap(7, 25, 25)
+  controller:moveLocationCursor("right", 11, 7)
+  Assert.deepEqual(
+    controller:locationSnapshot().center,
+    { fieldX = 25, fieldZ = 25 },
+    "a move that remains inside the visible window leaves its center fixed"
+  )
+end
+
+function T.tests.location_grid_paging_respects_native_limits_drag_and_measured_bounds()
+  for _, limit in ipairs({ 0, 65535 }) do
+    local controller = Controller.new()
+    controller:setSection("Location")
+    controller:enterLocation({ mapId = 7, fieldX = limit, fieldZ = limit })
+    controller:chooseLocationMap(7, limit, limit)
+    local before = controller:locationSnapshot()
+    controller:moveLocationCursor(limit == 0 and "left" or "right", 11, 7)
+    Assert.deepEqual(
+      controller:locationSnapshot(),
+      before,
+      "an outward move at the native coordinate limit does not wrap or pan"
+    )
+  end
+
+  local saturated = Controller.new()
+  saturated:setSection("Location")
+  saturated:enterLocation({ mapId = 7, fieldX = 65534, fieldZ = 100 })
+  saturated:chooseLocationMap(7, 65534, 100)
+  saturated.locationCenterX = 65529
+  saturated:moveLocationCursor("right", 11, 7)
+  Assert.deepEqual(
+    saturated:locationSnapshot().cursor,
+    { fieldX = 65535, fieldZ = 100 },
+    "the final in-range cursor step is retained at the native maximum"
+  )
+  Assert.deepEqual(
+    saturated:locationSnapshot().center,
+    { fieldX = 65535, fieldZ = 100 },
+    "a full page center clamps at the native maximum while keeping the cursor visible"
+  )
+
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:enterLocation({ mapId = 7, fieldX = 100, fieldZ = 100 })
+  controller:chooseLocationMap(7, 100, 100)
+  controller:panLocation("right", 11, 7)
+  Assert.deepEqual(
+    controller:locationSnapshot().center,
+    { fieldX = 105, fieldZ = 100 },
+    "pointer panning keeps its existing half-screen step"
+  )
+
+  local harness = mapActivationHarness()
+  harness.state.locationGridWidthTiles, harness.state.locationGridHeightTiles = 11, 7
+  harness.state:_performDeferred({ kind = "location-cursor-move", direction = "right" })
+  Assert.deepEqual(
+    harness.service.viewportCalls[#harness.service.viewportCalls],
+    { centerX = 32, centerZ = 48, widthTiles = 11, heightTiles = 7 },
+    "the Location service receives the currently measured grid bounds"
+  )
+  harness.state.locationGridWidthTiles, harness.state.locationGridHeightTiles = 12, 8
+  harness.state:_performDeferred({ kind = "location-cursor-move", direction = "down" })
+  Assert.deepEqual(
+    harness.service.viewportCalls[#harness.service.viewportCalls],
+    { centerX = 32, centerZ = 48, widthTiles = 12, heightTiles = 8 },
+    "a resized grid publishes its new measured bounds to LocationService"
+  )
+end
+
 function T.tests.modal_navigation_does_not_move_the_underlying_location_grid()
   local controller = Controller.new()
   controller:setSection("Location")
