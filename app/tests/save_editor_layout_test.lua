@@ -8,6 +8,7 @@ local Navigation = require("app.src.saveeditor.SaveEditorNavigation")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
+local SaveEditorList = require("app.src.saveeditor.SaveEditorList")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
 local T = { tests = {} }
@@ -2763,7 +2764,11 @@ function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
   }
 
   for _, case in ipairs(cases) do
-    for _, size in ipairs({ { width = 256, height = 192 }, { width = 800, height = 600 } }) do
+    for _, size in ipairs({
+      { width = 256, height = 192 },
+      { width = 400, height = 300 },
+      { width = 800, height = 600 },
+    }) do
       local view = case.section == "Party" and partyEditorView("Moves") or sectionStripView("Player")
       view.section = case.section
       view.modal = case.kind
@@ -2771,6 +2776,13 @@ function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
       local layout = Layout.compute(view, size.width, size.height, metrics)
       local decision = assert(layout.decisionList, case.kind .. " publishes its action surface")
       Assert.equal(#decision.rows, #case.ids, case.kind .. " retains every semantic action")
+      local resolved = SaveEditorList.resolve({
+        bounds = decision.surface,
+        rowCount = 0,
+        rowHeight = 1,
+        gap = 0,
+        maxWidth = decision.surface.width,
+      })
 
       local previous
       for index, targetId in ipairs(case.ids) do
@@ -2780,9 +2792,21 @@ function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
         Assert.isTrue(rect.x >= decision.surface.x and rect.y >= decision.surface.y)
         Assert.isTrue(rect.x + rect.width <= decision.surface.x + decision.surface.width)
         Assert.isTrue(rect.y + rect.height <= decision.surface.y + decision.surface.height)
+        Assert.isTrue(rect.x >= resolved.content.x, targetId .. " clears the padded left edge")
+        Assert.isTrue(rect.y >= resolved.content.y, targetId .. " clears the padded top edge")
+        Assert.isTrue(
+          rect.x + rect.width <= resolved.content.x + resolved.content.width,
+          targetId .. " clears the padded right edge"
+        )
+        Assert.isTrue(
+          rect.y + rect.height <= resolved.content.y + resolved.content.height,
+          targetId .. " clears the padded bottom edge"
+        )
         local target = assert(layout.targets[targetId], case.kind .. " publishes the action hit rectangle")
         Assert.equal(target.rect.x, rect.x, targetId .. " draws and hits the same horizontal bound")
         Assert.equal(target.rect.y, rect.y, targetId .. " draws and hits the same vertical bound")
+        Assert.equal(target.rect.width, rect.width, targetId .. " shares its painted and hit width")
+        Assert.equal(target.rect.height, rect.height, targetId .. " shares its painted and hit height")
         Assert.equal(
           Layout.hitTest(layout, view, rect.x + rect.width / 2, rect.y + rect.height / 2),
           targetId,

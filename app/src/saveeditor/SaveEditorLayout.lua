@@ -1422,24 +1422,42 @@ local function buildDecisionScope(ctx)
   local rowCount = math.ceil(#choices / columns)
   local buttonHeight = metrics.lineHeight + 34
   local promptHeight = math.max(1, metrics.lineHeight)
-  local needed = promptHeight + 4 + rowCount * buttonHeight + (rowCount - 1) * 4 + 8
-  if contentBottom - contentTop < needed then
-    buttonHeight = 26
-    needed = promptHeight + 4 + rowCount * buttonHeight + (rowCount - 1) * 4 + 8
+  local availableHeight = contentBottom - contentTop
+  local function resolveSurface(height)
+    return SaveEditorList.resolve({
+      bounds = rect(contentX, contentTop + math.floor((availableHeight - height) / 2), innerWidth, height),
+      rowCount = rowCount,
+      rowHeight = buttonHeight,
+      gap = 4,
+      maxWidth = 360,
+    })
   end
-  local modalHeight = math.min(contentBottom - contentTop, needed)
-  local surface = SaveEditorList.resolve({
-    bounds = rect(
-      contentX,
-      contentTop + math.floor((contentBottom - contentTop - modalHeight) / 2),
-      innerWidth,
-      modalHeight
-    ),
-    rowCount = rowCount,
-    rowHeight = buttonHeight,
-    gap = 4,
-    maxWidth = 360,
-  })
+  local availableSurface = resolveSurface(availableHeight)
+  local function requiredContentHeight()
+    return promptHeight + 4 + rowCount * buttonHeight + (rowCount - 1) * 4
+  end
+  local function fitSurface()
+    local verticalInsets = availableSurface.surface.height - availableSurface.content.height
+    local height = requiredContentHeight() + verticalInsets
+    if height > availableHeight then
+      return nil
+    end
+    local resolved = resolveSurface(height)
+    if resolved.content.height < requiredContentHeight() then
+      return nil
+    end
+    return resolved
+  end
+  local surface = fitSurface()
+  if surface == nil and buttonHeight > 26 then
+    buttonHeight = 26
+    availableSurface = resolveSurface(availableHeight)
+    surface = fitSurface()
+  end
+  if surface == nil then
+    ctx.decisionList = { surface = availableSurface.surface, prompt = availableSurface.content, rows = {} }
+    return
+  end
   ctx.decisionList = {
     surface = surface.surface,
     prompt = rect(surface.content.x, surface.content.y, surface.content.width, promptHeight),
@@ -1456,6 +1474,10 @@ local function buildDecisionScope(ctx)
   end
   if totalWidth > surface.content.width then
     local compressedWidth = math.max(1, math.floor((surface.content.width - 4 * (columns - 1)) / columns))
+    if compressedWidth < 40 then
+      ctx.decisionList = { surface = surface.surface, prompt = surface.content, rows = {} }
+      return
+    end
     for column = 1, columns do
       columnWidths[column] = compressedWidth
     end

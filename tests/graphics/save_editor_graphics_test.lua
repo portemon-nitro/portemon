@@ -16,6 +16,7 @@ local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local SaveEditorList = require("app.src.saveeditor.SaveEditorList")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -2722,6 +2723,71 @@ local function singleDisplay(width, height)
     touch = true,
     role = "world",
   })
+end
+
+function T.decision_action_pixels_survive_the_frame_at_compact_and_wide_sizes(scope)
+  for _, scenario in ipairs({
+    { section = "Party", variant = "party-move", targetId = "cancel" },
+    { section = "Player", variant = "leave", targetId = "cancel" },
+  }) do
+    for _, size in ipairs({ { width = 256, height = 192 }, { width = 640, height = 480 } }) do
+      local topology = singleDisplay(size.width, size.height)
+      local function render(focused)
+        return draw(
+          scope,
+          size.width,
+          size.height,
+          topology,
+          "decision-frame-pixels-" .. scenario.variant .. "-" .. size.width .. "-" .. tostring(focused),
+          scenario.section,
+          scenario.variant,
+          nil,
+          function(_, view)
+            view.focus = scenario.targetId
+            view.focusVisible = focused
+            view.scope.focusId = scenario.targetId
+          end
+        )
+      end
+      local data, _, layout, _, _, _, _, _, _, plan = render(true)
+      local unfocusedData, _, _, _, _, _, _, _, _, unfocusedPlan = render(false)
+      local decision = assert(layout.decisionList)
+      local row
+      for _, candidate in ipairs(decision.rows) do
+        if candidate.targetId == scenario.targetId then
+          row = candidate.rect
+        end
+      end
+      row = assert(row, scenario.variant .. " publishes its final focused action")
+      local padded = SaveEditorList.resolve({
+        bounds = decision.surface,
+        rowCount = 0,
+        rowHeight = 1,
+        gap = 0,
+        maxWidth = decision.surface.width,
+      }).content
+      Assert.isTrue(
+        row.y + row.height <= padded.y + padded.height,
+        scenario.variant .. " keeps the final action inside the framed content"
+      )
+
+      local faceX, faceY = row.x + row.width / 2, row.y + row.height - 4
+      local facePixel = { pixelAtLogical(data, plan, faceX, faceY) }
+      local gapPixel = { pixelAtLogical(data, plan, row.x - 2, faceY) }
+      local faceContrast = math.abs(facePixel[1] - gapPixel[1])
+        + math.abs(facePixel[2] - gapPixel[2])
+        + math.abs(facePixel[3] - gapPixel[3])
+      Assert.isTrue(faceContrast > 0.12, scenario.variant .. " keeps lower button-face pixels visible after frame paint")
+
+      local ringX, ringY = row.x + row.width / 2, row.y + row.height - 2
+      local focusedPixel = { pixelAtLogical(data, plan, ringX, ringY) }
+      local unfocusedPixel = { pixelAtLogical(unfocusedData, unfocusedPlan, ringX, ringY) }
+      local focusContrast = math.abs(focusedPixel[1] - unfocusedPixel[1])
+        + math.abs(focusedPixel[2] - unfocusedPixel[2])
+        + math.abs(focusedPixel[3] - unfocusedPixel[3])
+      Assert.isTrue(focusContrast > 0.12, scenario.variant .. " keeps the lower focus ring visible after frame paint")
+    end
+  end
 end
 
 local function recordRectangles(drawFn)
