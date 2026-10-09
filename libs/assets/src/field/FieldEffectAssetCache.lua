@@ -101,7 +101,7 @@ local function validSurfPresentation(presentation)
   return finiteNumber(yaw.north) and finiteNumber(yaw.south) and finiteNumber(yaw.west) and finiteNumber(yaw.east)
 end
 
-local function validSurfDefinition(definition)
+local function validSurfDefinition(definition, _)
   return type(definition) == "table"
     and type(definition.model) == "table"
     and definition.model.kind == "static"
@@ -109,49 +109,55 @@ local function validSurfDefinition(definition)
     and validSurfPresentation(definition.presentation)
 end
 
-local function validGrassDefinition(definition)
-  local model = definition.model
-  local animations = type(model) == "table" and model.animations
+-- Shared by the single-model animated effects (grass, trainer reveal,
+-- follower reaction): exactly one dynamic model carrying one compiled clip.
+-- Each caller keeps its own lifecycle mode and effect-specific metadata
+-- restrictions; this helper only unifies the repeated shape check.
+local function singleDynamicClip(model)
+  if type(model) ~= "table" or model.kind ~= "nitro-dynamic" then
+    return nil
+  end
+  local animations = model.animations
   local clip = type(animations) == "table" and animations[1]
-  local lifecycle = definition.lifecycle
-  local placementOffset = definition.placementOffset
-  return type(definition.lifetime) == "nil"
-    and type(definition.animation) == "nil"
-    and type(model) == "table"
-    and model.kind == "nitro-dynamic"
-    and type(animations) == "table"
-    and #animations == 1
-    and type(clip) == "table"
-    and type(lifecycle) == "table"
-    and lifecycle.mode == "hold_until_owner_moves"
-    and validLifecycle(lifecycle, clip.frameCount)
-    and validPlacement(placementOffset)
+  if type(animations) ~= "table" or #animations ~= 1 or type(clip) ~= "table" then
+    return nil
+  end
+  return clip
 end
 
-local function validTrainerRevealDefinition(definition)
-  local model = definition.model
-  local animations = type(model) == "table" and model.animations
-  local clip = type(animations) == "table" and animations[1]
+-- The expected lifecycle for the single clip plus the normalized placement
+-- offset shared by grass and trainer reveal.
+local function validSingleClipPlacement(definition, expectedMode)
+  local clip = singleDynamicClip(definition.model)
+  if clip == nil then
+    return false
+  end
   local lifecycle = definition.lifecycle
-  local placementOffset = definition.placementOffset
-  return type(definition.lifetime) == "nil"
-    and type(definition.animation) == "nil"
-    and validPlacement(placementOffset)
-    and type(model) == "table"
-    and model.kind == "nitro-dynamic"
-    and type(animations) == "table"
-    and #animations == 1
-    and type(clip) == "table"
-    and type(lifecycle) == "table"
-    and lifecycle.mode == "once"
-    and validLifecycle(lifecycle, clip.frameCount)
+  if type(lifecycle) ~= "table" or lifecycle.mode ~= expectedMode then
+    return false
+  end
+  return validLifecycle(lifecycle, clip.frameCount) and validPlacement(definition.placementOffset)
+end
+
+local function validGrassDefinition(definition, _)
+  if type(definition.lifetime) ~= "nil" or type(definition.animation) ~= "nil" then
+    return false
+  end
+  return validSingleClipPlacement(definition, "hold_until_owner_moves")
+end
+
+local function validTrainerRevealDefinition(definition, _)
+  if type(definition.lifetime) ~= "nil" or type(definition.animation) ~= "nil" then
+    return false
+  end
+  return validSingleClipPlacement(definition, "once")
 end
 
 -- The follower-transition definition: exactly two compiled models (one
 -- static companion, one animated model carrying the single source clip),
 -- the once lifecycle with the traced prelude tick count and the exact
 -- compiled clip frame count, and the normalized placement offset.
-local function validTransitionDefinition(definition)
+local function validTransitionDefinition(definition, _)
   if type(definition.lifetime) ~= "nil" or type(definition.animation) ~= "nil" then
     return false
   end
@@ -190,12 +196,6 @@ local function validTransitionDefinition(definition)
   return validLifecycle(lifecycle, animatedClip.frameCount) and validPlacement(definition.placementOffset)
 end
 
-local function isFollowerReaction(kind)
-  local selector = type(kind) == "string" and kind:match("^follower_reaction_(%d+)$")
-  local number = tonumber(selector)
-  return number ~= nil and number >= 1 and number <= 14
-end
-
 local function validReactionDefinition(definition, kind)
   local selector = assert(kind:match("^follower_reaction_(%d+)$"))
   if type(definition) ~= "table" or definition.definition ~= kind then
@@ -205,25 +205,28 @@ local function validReactionDefinition(definition, kind)
   for _ in pairs(definition) do
     fieldCount = fieldCount + 1
   end
+  if fieldCount ~= 3 then
+    return false
+  end
   local model = definition.model
-  local animations = type(model) == "table" and model.animations
-  local clip = type(animations) == "table" and animations[1]
-  return fieldCount == 3
-    and type(model) == "table"
-    and model.key == "field-effect:follower-reaction-" .. selector
-    and model.kind == "nitro-dynamic"
-    and type(model.dynamic) == "table"
-    and type(animations) == "table"
-    and #animations == 1
-    and type(clip) == "table"
-    and clip.category == "material"
-    and clip.kind == "pattern"
-    and type(definition.lifecycle) == "table"
-    and definition.lifecycle.mode == "once"
-    and validLifecycle(definition.lifecycle, clip.frameCount)
+  local clip = singleDynamicClip(model)
+  if clip == nil then
+    return false
+  end
+  if model.key ~= "field-effect:follower-reaction-" .. selector or type(model.dynamic) ~= "table" then
+    return false
+  end
+  if clip.category ~= "material" or clip.kind ~= "pattern" then
+    return false
+  end
+  local lifecycle = definition.lifecycle
+  if type(lifecycle) ~= "table" or lifecycle.mode ~= "once" then
+    return false
+  end
+  return validLifecycle(lifecycle, clip.frameCount)
 end
 
-local function validPokemonCenterHealDefinition(definition)
+local function validPokemonCenterHealDefinition(definition, _)
   local fieldCount = 0
   local allowed = {
     models = true,
@@ -329,6 +332,37 @@ local function validPokemonCenterHealDefinition(definition)
   return true
 end
 
+local function validWarpDefinition(definition, _)
+  return type(definition.lifetime) == "number" and definition.lifetime > 0
+end
+
+-- The single closed inventory of published field effects: each entry carries
+-- its index key, the expected index entry kind, and the definition
+-- validator. This table is the only source for required index coverage and
+-- deterministic declaration checks below, and the fourteen follower
+-- reactions are generated from the same builder so the declared set cannot
+-- drift from the validated set.
+local function followerReactionEntry(selector)
+  return {
+    key = "follower_reaction_" .. selector,
+    entryKind = "reaction",
+    validator = validReactionDefinition,
+  }
+end
+
+local FIELD_EFFECT_INVENTORY = {
+  { key = "warp_entrance", entryKind = "model", validator = validWarpDefinition },
+  { key = "tall_grass", entryKind = "animated_model", validator = validGrassDefinition },
+  { key = "very_tall_grass", entryKind = "animated_model", validator = validGrassDefinition },
+  { key = "trainer_reveal", entryKind = "animated_model", validator = validTrainerRevealDefinition },
+  { key = "surf_attachment", entryKind = "model", validator = validSurfDefinition },
+  { key = "follower_transition", entryKind = "transition", validator = validTransitionDefinition },
+  { key = "pokemon_center_heal", entryKind = "healing", validator = validPokemonCenterHealDefinition },
+}
+for selector = 1, 14 do
+  FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = followerReactionEntry(selector)
+end
+
 function FieldEffectAssetCache.indexPath()
   return INDEX
 end
@@ -360,18 +394,6 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
   if not loaded or type(index) ~= "table" or index.schema ~= Contract.fieldEffects.indexSchema then
     return false
   end
-  local required = {
-    "warp_entrance",
-    "tall_grass",
-    "very_tall_grass",
-    "trainer_reveal",
-    "surf_attachment",
-    "follower_transition",
-    "pokemon_center_heal",
-  }
-  for selector = 1, 14 do
-    required[#required + 1] = "follower_reaction_" .. selector
-  end
   if type(index.effects) ~= "table" then
     return false
   end
@@ -379,27 +401,16 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
   for _ in pairs(index.effects) do
     effectCount = effectCount + 1
   end
-  if effectCount ~= #required then
+  if effectCount ~= #FIELD_EFFECT_INVENTORY then
     return false
   end
-  local expectedKinds = {
-    warp_entrance = "model",
-    tall_grass = "animated_model",
-    very_tall_grass = "animated_model",
-    trainer_reveal = "animated_model",
-    surf_attachment = "model",
-    follower_transition = "transition",
-    pokemon_center_heal = "healing",
-  }
-  for selector = 1, 14 do
-    expectedKinds["follower_reaction_" .. selector] = "reaction"
-  end
-  for _, kind in ipairs(required) do
+  for _, spec in ipairs(FIELD_EFFECT_INVENTORY) do
+    local kind = spec.key
     local entry = index.effects and index.effects[kind]
 
     if
       type(entry) ~= "table"
-      or entry.kind ~= expectedKinds[kind]
+      or entry.kind ~= spec.entryKind
       or entry.definition ~= kind
       or entry.path ~= FieldEffectAssetCache.definitionPath(kind)
     then
@@ -409,8 +420,7 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     if not definitionLoaded or type(definition) ~= "table" then
       return false
     end
-    local isReaction = isFollowerReaction(kind)
-    if isReaction and not validReactionDefinition(definition, kind) then
+    if spec.entryKind == "reaction" and not spec.validator(definition, kind) then
       return false
     end
     local descriptors = definition.models or { definition.model }
@@ -439,29 +449,8 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
         end
       end
     end
-    if kind == "warp_entrance" and (type(definition.lifetime) ~= "number" or definition.lifetime <= 0) then
+    if spec.entryKind ~= "reaction" and not spec.validator(definition, kind) then
       return false
-    end
-    if kind == "tall_grass" or kind == "very_tall_grass" then
-      if not validGrassDefinition(definition) then
-        return false
-      end
-    elseif kind == "trainer_reveal" then
-      if not validTrainerRevealDefinition(definition) then
-        return false
-      end
-    elseif kind == "surf_attachment" then
-      if not validSurfDefinition(definition) then
-        return false
-      end
-    elseif kind == "follower_transition" then
-      if not validTransitionDefinition(definition) then
-        return false
-      end
-    elseif kind == "pokemon_center_heal" then
-      if not validPokemonCenterHealDefinition(definition) then
-        return false
-      end
     end
   end
   return true

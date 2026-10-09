@@ -188,6 +188,23 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
   if extra.omitTrainerReveal then
     index.effects.trainer_reveal = nil
   end
+  if extra.omitKinds ~= nil then
+    for _, kind in ipairs(extra.omitKinds) do
+      index.effects[kind] = nil
+    end
+  end
+  if extra.extraKind ~= nil then
+    index.effects[extra.extraKind] = {
+      kind = "model",
+      definition = extra.extraKind,
+      path = FieldEffectAssetCache.definitionPath(extra.extraKind),
+    }
+  end
+  if extra.entryOverrides ~= nil then
+    for kind, entry in pairs(extra.entryOverrides) do
+      index.effects[kind] = entry
+    end
+  end
   -- When extra.unknownLifecycleMode is set, keep the index unchanged;
   -- the definition will have the unknown mode.
   return {
@@ -200,7 +217,7 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       end
       local kind = path:match("/([^/]+)%.lua$")
       if kind == "warp_entrance" then
-        return { model = model, lifetime = 1, kind = "model" }
+        return { model = model, lifetime = extra.warpLifetime or 1, kind = "model" }
       end
       if kind == "surf_attachment" then
         local surfModel = validModel()
@@ -768,6 +785,114 @@ T.tests["rejects the transition without lifecycle or placement metadata"] = func
     EXPECTED_MARKER
   )
   Assert.isFalse(missingPlacement, "the transition without placement metadata must not be ready")
+end
+
+T.tests["rejects individually omitted effect kinds without staging partial state"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local omitted = { "warp_entrance", "tall_grass", "follower_reaction_7", "follower_transition", "pokemon_center_heal" }
+  for _, kind in ipairs(omitted) do
+    local ready = FieldEffectAssetCache.isReady(
+      cache(validModel(), present, EXPECTED_MARKER, false, false, { omitKinds = { kind } }),
+      EXPECTED_MARKER
+    )
+    Assert.isFalse(ready, "omitting " .. kind .. " must not be ready")
+  end
+  local restored, restoredErr = FieldEffectAssetCache.isReady(cache(validModel(), present), EXPECTED_MARKER)
+  Assert.isTrue(restored, tostring(restoredErr))
+end
+
+T.tests["rejects a non-positive or non-finite warp lifetime"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local function readyWithWarpLifetime(lifetime)
+    return FieldEffectAssetCache.isReady(
+      cache(validModel(), present, EXPECTED_MARKER, false, false, { warpLifetime = lifetime }),
+      EXPECTED_MARKER
+    )
+  end
+  Assert.isFalse(readyWithWarpLifetime(0), "a zero warp lifetime must not be ready")
+  Assert.isFalse(readyWithWarpLifetime(-2), "a negative warp lifetime must not be ready")
+  Assert.isFalse(readyWithWarpLifetime(0 / 0), "a non-numeric warp lifetime must not be ready")
+end
+
+T.tests["rejects an extra undeclared effect kind"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local ready = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, { extraKind = "follower_reaction_15" }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(ready, "a reaction beyond the published fourteen must not be ready")
+end
+
+T.tests["rejects mismatched or duplicated index entries"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local function readyWithEntry(kind, entry)
+    return FieldEffectAssetCache.isReady(
+      cache(validModel(), present, EXPECTED_MARKER, false, false, { entryOverrides = { [kind] = entry } }),
+      EXPECTED_MARKER
+    )
+  end
+  local function entryFor(kind, entryKind, definition, path)
+    return {
+      kind = entryKind,
+      definition = definition,
+      path = path or FieldEffectAssetCache.definitionPath(kind),
+    }
+  end
+  Assert.isFalse(
+    readyWithEntry("tall_grass", entryFor("tall_grass", "model", "tall_grass")),
+    "a grass entry with the wrong entry kind must not be ready"
+  )
+  Assert.isFalse(
+    readyWithEntry("tall_grass", entryFor("tall_grass", "animated_model", "very_tall_grass")),
+    "a grass entry pointing at another definition must not be ready"
+  )
+  Assert.isFalse(
+    readyWithEntry(
+      "tall_grass",
+      entryFor("tall_grass", "animated_model", "tall_grass", FieldEffectAssetCache.definitionPath("very_tall_grass"))
+    ),
+    "a grass entry with the wrong definition path must not be ready"
+  )
+  Assert.isFalse(
+    readyWithEntry(
+      "very_tall_grass",
+      entryFor(
+        "very_tall_grass",
+        "animated_model",
+        "tall_grass",
+        FieldEffectAssetCache.definitionPath("tall_grass")
+      )
+    ),
+    "a duplicated definition reference must not be ready"
+  )
+  Assert.isFalse(
+    readyWithEntry("follower_transition", entryFor("follower_transition", "reaction", "follower_transition")),
+    "a transition entry with the wrong entry kind must not be ready"
+  )
+  Assert.isFalse(
+    readyWithEntry("follower_reaction_3", entryFor("follower_reaction_3", "transition", "follower_reaction_3")),
+    "a reaction entry with the wrong entry kind must not be ready"
+  )
 end
 
 return T
