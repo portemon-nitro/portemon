@@ -69,14 +69,6 @@ local MOVE_NAV = {
   cancel = { up = "move:2", down = "cancel", left = "cancel", right = "cancel" },
 }
 
-local TARGET_NAV = {
-  ["target:0"] = { up = "target:3", down = "cancel", left = "target:0", right = "target:2" },
-  ["target:1"] = { up = "target:1", down = "target:2", left = "target:3", right = "target:1" },
-  ["target:2"] = { up = "target:1", down = "cancel", left = "target:0", right = "target:2" },
-  ["target:3"] = { up = "target:3", down = "target:0", left = "target:3", right = "target:1" },
-  cancel = { up = "target:0", down = "cancel", left = "cancel", right = "cancel" },
-}
-
 -- Six-cell arrow cycle: the zero-time entry never displays, the rest
 -- hold their authored counts. A bounded scan skips the empty entry.
 local ARROW_DURATIONS = { 0, 4, 4, 4, 16, 6 }
@@ -847,7 +839,8 @@ function BattleScreenState:_defaultMoveSelection()
 end
 
 ---@param id string move control identity under activation
-function BattleScreenState:_activateMove(id)
+---@param armed table<string, unknown>? pressed control behind the release
+function BattleScreenState:_activateMove(id, armed)
   if id == "cancel" then
     self._mode = "command"
     self._selection = "fight"
@@ -860,15 +853,11 @@ function BattleScreenState:_activateMove(id)
     self:_refuse(reason --[[@as string]])
     return
   end
-  self._selection = id
-  self._notice = nil
-end
-
----@param id string target control identity under activation
-function BattleScreenState:_activateTarget(id)
-  if id == "cancel" then
-    self._mode = "moves"
-    self._notice = nil
+  -- A matched release whose press began on the already-focused slot
+  -- seals the projected fragment exactly like semantic confirm; any
+  -- other release only moves focus.
+  if armed ~= nil and armed.focused == true and self._selection == id then
+    self:_submitMove(entry)
     return
   end
   self._selection = id
@@ -876,13 +865,12 @@ function BattleScreenState:_activateTarget(id)
 end
 
 ---@param control table<string, unknown> sealed control under dispatch
-function BattleScreenState:_sealControl(control)
+---@param armed table<string, unknown>? pressed control behind the release
+function BattleScreenState:_sealControl(control, armed)
   if self._mode == "command" then
     self:_activateCommand(control.id --[[@as string]])
   elseif self._mode == "moves" then
-    self:_activateMove(control.id --[[@as string]])
-  elseif self._mode == "target" then
-    self:_activateTarget(control.id --[[@as string]])
+    self:_activateMove(control.id --[[@as string]], armed)
   end
 end
 
@@ -967,7 +955,7 @@ function BattleScreenState:_consume(event)
     return
   end
   if eventType == "battle_press" then
-    if self._mode == "command" or self._mode == "moves" or self._mode == "target" then
+    if self._mode == "command" or self._mode == "moves" then
       self._armed = { scope = event.control.scope, id = event.control.id, pointerId = event.pointerId }
       if event.control.scope == "command" then
         self._selection = event.control.id --[[@as string]]
@@ -976,11 +964,12 @@ function BattleScreenState:_consume(event)
         if id ~= "cancel" then
           local entry = moveFragment(self._options or {}, id)
           if entry ~= nil and entry.enabled == true then
+            -- Remember whether the press began on the focused slot so
+            -- the matched release can tell a focusing tap from a seal.
+            self._armed.focused = (self._selection == id)
             self._selection = id
           end
         end
-      elseif event.control.scope == "target" then
-        self._selection = event.control.id --[[@as string]]
       end
     end
     return
@@ -999,7 +988,7 @@ function BattleScreenState:_consume(event)
     if
       sameControl(armed, event.control --[[@as table<string, unknown>?]])
     then
-      self:_sealControl(event.control)
+      self:_sealControl(event.control, armed)
     end
     return
   end
@@ -1033,13 +1022,6 @@ function BattleScreenState:_confirm()
         self:_submitMove(entry)
       end
     end
-  elseif self._mode == "target" and type(self._selection) == "string" then
-    local selection = self._selection --[[@as string]]
-    if selection == "cancel" then
-      self:_activateTarget("cancel")
-    else
-      self:_submitTarget(selection)
-    end
   elseif self._mode == "narration" or self._mode == "intro" then
     self._timeline:ack()
   elseif self._mode == "outcome" then
@@ -1048,63 +1030,18 @@ function BattleScreenState:_confirm()
   end
 end
 
----@param entry table<string, unknown> accepted move option under targeting
+---@param entry table<string, unknown> accepted move option under sealing
 function BattleScreenState:_submitMove(entry)
-  local fragment = copyValue(entry.choice) --[[@as table<string, unknown>]]
-  local payload = fragment.payload --[[@as table<string, unknown>?]]
-  local target = payload ~= nil and payload.target or nil
-  -- Singles resolve through the prepared fragment alone when the
-  -- kernel supplies one complete legal target or no targeting at all;
-  -- anything else opens explicit target selection.
-  if target == nil or target.kind == "none" or target.kind == "position" or target.kind == "combatant" then
-    self:_seal(fragment)
-  else
-    self._mode = "target"
-    self._selection = "target:0"
-    self._notice = nil
-  end
-end
-
----@param selection string admitted target identity under submission
-function BattleScreenState:_submitTarget(selection)
-  if self._options == nil or self._request == nil then
-    return
-  end
-  local slot = (self._selection or ""):match("^move:(%d+)$")
-  local moveId = slot ~= nil and "move:" .. slot or nil
-  local entry = moveId ~= nil and moveFragment(self._options, moveId) or nil
-  if entry == nil or entry.enabled ~= true then
-    self:_refuse("empty")
-    return
-  end
-  local index = tonumber(selection:match("^target:(%d+)$") or "") or 0
-  local target = nil
-  for _, battler in ipairs(self._timeline:battlers()) do
-    if battler.side ~= 1 and battler.visible ~= false then
-      if index == 0 then
-        target = { kind = "combatant", combatant = battler.combatant }
-        break
-      end
-      index = index - 1
-    end
-  end
-  if target == nil then
-    self:_refuse("empty")
-    return
-  end
-  local fragment = copyValue(entry.choice) --[[@as table<string, unknown>]]
-  fragment.payload = fragment.payload or {}
-  fragment.payload.target = target
-  self:_seal(fragment)
+  -- Every enabled move option already carries its complete legal
+  -- fragment: the choice seals detached and unchanged, whatever target
+  -- kind the kernel projected, with no target rewrite.
+  self:_seal(copyValue(entry.choice) --[[@as table<string, unknown>]])
 end
 
 function BattleScreenState:_cancel()
   if self._mode == "moves" then
     self._mode = "command"
     self._selection = "fight"
-    self._notice = nil
-  elseif self._mode == "target" then
-    self._mode = "moves"
     self._notice = nil
   elseif self._mode == "child" and self._child ~= nil then
     if self._child.cancellable == true then
@@ -1128,8 +1065,6 @@ function BattleScreenState:_navigate(direction)
     table_ = COMMAND_NAV
   elseif self._mode == "moves" then
     table_ = MOVE_NAV
-  elseif self._mode == "target" then
-    table_ = TARGET_NAV
   end
   if table_ == nil or type(self._selection) ~= "string" then
     return

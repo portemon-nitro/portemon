@@ -2,8 +2,8 @@
 -- mode walking with reentrant edges, source identity maps, empty and
 -- unusable slots with their reasons, narration acknowledgement
 -- consumption, input-key rules, per-case overrides, the selection arrow
--- cycle, screen-level draw restoration, and the defensive explicit
--- target path. Synthetic fixtures only.
+-- cycle, screen-level draw restoration, and sealed projected fragments.
+-- Synthetic fixtures only.
 
 local Assert = require("tests.support.Assert")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
@@ -285,6 +285,231 @@ function T.spent_slots_refuse_with_their_reason()
   rig.battle:dispose()
 end
 
+local openSealingScreen ---@type fun(launchId: string, specs: table[], requestId: integer): table
+
+-- Paired pointer focus then confirmation seals the focused move once:
+-- the first complete press on a new slot only moves focus, the second
+-- matched press seals the exact projected fragment, and a later orphan
+-- release seals nothing more.
+function T.paired_second_tap_seals_the_focused_move_once()
+  local rig = openSealingScreen("launch-paired-confirm-local", {
+    { id = "move:0", slot = 0, move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, target = { kind = "position", position = 2 } },
+    { id = "move:1", slot = 1, move = "GROWL", name = "Growl", pp = 40, maxPp = 40, target = { kind = "position", position = 2 } },
+  }, 9010)
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "moves", "Fight opens move selection")
+  Assert.equal(rig.screen:view().selection, "move:0", "move selection rests on the first slot")
+  local x, y = 192, 236
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:focus", x = x, y = y } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:focus", x = x, y = y } })
+  rig.pump(1)
+  Assert.equal(rig.screen:view().selection, "move:1", "the first tap focuses the new slot")
+  Assert.equal(#rig.submits, 0, "the first tap seals nothing")
+  local request = assert(rig.screen:status().request, "the prompt mirrors its request")
+  local projected = rig.expectedById["move:1"]
+  Assert.notNil(projected, "the focused slot carries its projected fragment")
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:seal", x = x, y = y } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:seal", x = x, y = y } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, 1, "the second matched tap seals once")
+  Assert.equal(rig.screen:status().mode, "awaiting_resolution", "the sealed move waits for resolution")
+  local sealed = assert(rig.submits[1], "the sealed reply is recorded")
+  Assert.equal(sealed.requestId, request.requestId, "the reply answers the open request")
+  Assert.equal(sealed.epoch, request.epoch, "the reply carries the open epoch")
+  Assert.equal(sealed.controller, request.controller, "the reply carries the open controller")
+  Assert.deepEqual(sealed.choices[1], projected, "the sealed fragment keeps its actor and target")
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:orphan", x = x, y = y } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, 1, "an orphan release seals nothing more")
+  rig.screen:dispose()
+end
+
+---@param launchId string owning launch identity under test driving
+---@param specs table[] projected move specs with id, move, name, pp, maxPp, and target under test driving
+---@param requestId integer synthetic request identity under test driving
+---@return table live screen-only rig with an accepting submit boundary
+function openSealingScreen(launchId, specs, requestId)
+  local BattleScreenState = require(STATE_MODULE)
+  local Model = require(MODEL_MODULE)
+  local rig = { submits = {}, measurement = dualMeasurement(), text = recordingText() }
+  rig.windows = { calls = {} }
+  function rig.windows.drawWindow(box, frameKey, background)
+    rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  rig.audio = { plays = {} }
+  function rig.audio.play(name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
+  function rig.assets.prepare(demand)
+    rig.assets.prepared[#rig.assets.prepared + 1] = demand
+    return true
+  end
+  function rig.assets.drawable(key)
+    if rig.assets.images[key] == nil then
+      rig.assets.images[key] = { handle = key }
+    end
+    return rig.assets.images[key]
+  end
+  function rig.assets.release(key)
+    rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
+  end
+  local screen = BattleScreenState.new({
+    launchId = launchId,
+    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    model = Model,
+    submit = function(reply)
+      rig.submits[#rig.submits + 1] = reply
+      return true
+    end,
+    measureDisplay = function()
+      return rig.measurement
+    end,
+    assets = rig.assets,
+    text = rig.text,
+    windows = rig.windows,
+    audio = rig.audio,
+  })
+  rig.screen = screen
+  rig.port = screen:presentationPort()
+  function rig.pump(ticks, dt)
+    for _ = 1, ticks or 1 do
+      rig.screen:updateFixed(dt or TICK)
+    end
+  end
+  local BattleProtocol = require("libs.battle.src.BattleProtocol")
+  local offered = {}
+  rig.expectedById = {}
+  for _, spec in ipairs(specs) do
+    local choice = {
+      actor = { combatant = 1, activation = 1 },
+      kind = "attack",
+      payload = { moveSlot = spec.slot, target = spec.target },
+    }
+    BattleProtocol.validateTarget(spec.target)
+    BattleProtocol.validateChoice(choice, "action")
+    offered[#offered + 1] = {
+      id = spec.id,
+      role = "move",
+      display = { move = spec.move, name = spec.name, pp = spec.pp, maxPp = spec.maxPp },
+      enabled = true,
+      choice = choice,
+    }
+    rig.expectedById[spec.id] = choice
+  end
+  local actors = {
+    {
+      combatant = 1,
+      activation = 1,
+      kind = "action",
+      choices = offered,
+    },
+  }
+  local decision = {
+    requestId = requestId,
+    epoch = 1,
+    controller = "player",
+    kind = "action",
+    actors = actors,
+  }
+  decision.options = {
+    requestId = requestId,
+    epoch = 1,
+    controller = "player",
+    kind = "action",
+    actors = actors,
+  }
+  local function ownRecord()
+    return {
+      combatant = 1,
+      participant = 1,
+      side = 1,
+      controller = "player",
+      active = true,
+      hp = 52,
+      maxHp = 52,
+      species = "EEVEE",
+      form = 0,
+      name = "LEAD",
+      level = 20,
+      selector = "back",
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+    }
+  end
+  local function foeRecordEntry()
+    return {
+      combatant = 3,
+      participant = 3,
+      side = 2,
+      controller = "wild",
+      active = true,
+      hp = 57,
+      maxHp = 57,
+      species = "EEVEE",
+      form = 0,
+      name = "FOE",
+      level = 20,
+      selector = "front",
+    }
+  end
+  rig.expectedChoice = rig.expectedById[specs[1].id]
+  rig.port.present({
+    launchId = launchId,
+    packetId = 4242,
+    events = {},
+    before = { own = { ownRecord() }, foes = { foeRecordEntry() } },
+    after = { own = { ownRecord() }, foes = { foeRecordEntry() } },
+    request = decision,
+    result = nil,
+  })
+  for _ = 1, 600 do
+    rig.pump(1)
+    local status = rig.screen:status()
+    if status.mode == "failed" then
+      error("the sealing screen failed while driving to command: " .. tostring(status.error), 0)
+    end
+    if status.mode == "command" and status.request ~= nil and status.request.requestId == requestId then
+      return rig
+    end
+  end
+  error("the sealing screen never reached its command decision", 0)
+  return rig
+end
+
+-- Complete projected intents seal unchanged: side-wide and field-wide
+-- fragments never open a picker and never rewrite their target.
+function T.projected_side_and_field_targets_seal_unchanged()
+  local side = openSealingScreen("launch-sealed-side-local", {
+    { id = "move:0", slot = 0, move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, target = { kind = "side", side = 2 } },
+  }, 9001)
+  side.screen:input({ { type = "confirm" } })
+  side.pump(1)
+  Assert.equal(side.screen:status().mode, "moves", "Fight opens move selection for the side intent")
+  side.screen:input({ { type = "confirm" } })
+  side.pump(1)
+  Assert.equal(#side.submits, 1, "the side intent seals without a picker")
+  Assert.isTrue(side.screen:status().mode ~= "target", "the side intent never opens target selection")
+  local sideSealed = assert(side.submits[1], "the side reply is recorded")
+  Assert.deepEqual(sideSealed.choices[1], side.expectedChoice, "the side fragment keeps its target")
+  side.screen:dispose()
+  local field = openSealingScreen("launch-sealed-field-local", {
+    { id = "move:0", slot = 0, move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, target = { kind = "field" } },
+  }, 9002)
+  field.screen:input({ { type = "confirm" } })
+  field.pump(1)
+  Assert.equal(field.screen:status().mode, "moves", "Fight opens move selection for the field intent")
+  field.screen:input({ { type = "pointer_down", pointerId = "touch:field", x = 64, y = 237 } })
+  field.screen:input({ { type = "pointer_up", pointerId = "touch:field", x = 64, y = 237 } })
+  field.pump(1)
+  Assert.equal(#field.submits, 1, "touch on the focused slot seals the field intent")
+  Assert.isTrue(field.screen:status().mode ~= "target", "the field intent never opens target selection")
+  local fieldSealed = assert(field.submits[1], "the field reply is recorded")
+  Assert.deepEqual(fieldSealed.choices[1], field.expectedChoice, "the field fragment keeps its target")
+  field.screen:dispose()
+end
+
 -- Overlong labels never escape their regions: narration and menu text
 -- truncate through the borrowed measure service.
 function T.long_labels_truncate_inside_their_regions()
@@ -410,92 +635,6 @@ function T.screen_draw_restores_borrowed_state()
   rig.screen:draw({ graphics = graphics })
   Assert.deepEqual(state(), before, "the screen draw restores borrowed graphics state exactly")
   Assert.isTrue(#graphics.draws > 0, "the screen draw reaches the recording boundary")
-  rig.screen:dispose()
-  rig.battle:dispose()
-end
-
--- An explicit multi-target decision opens the admitted target layout
--- instead of inventing a target; cancelling walks back to moves.
-function T.explicit_targets_open_the_target_layout()
-  local rig = openRig({ launchId = "launch-screen-target-local" })
-  driveToMode(rig, "command")
-  local request = assert(rig.screen:status().request, "the prompt mirrors its request")
-  local synthetic = {
-    launchId = "launch-screen-target-local",
-    packetId = 4242,
-    events = {},
-    before = { own = {}, foes = {} },
-    after = {
-      own = {
-        { combatant = 1, participant = 1, side = 1, controller = "player", active = true, hp = 52, maxHp = 52, species = "EEVEE", form = 0, name = "LEAD", level = 20, selector = "back", moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } } },
-      },
-      foes = {
-        { combatant = 3, participant = 3, side = 2, controller = "wild", active = true, hp = 57, maxHp = 57, species = "EEVEE", form = 0, name = "FOE", level = 20, selector = "front" } },
-      },
-    request = {
-      requestId = request.requestId + 100,
-      epoch = request.epoch,
-      controller = "player",
-      kind = "action",
-      actors = {
-        {
-          combatant = 1,
-          activation = 1,
-          kind = "action",
-          choices = {
-            {
-              id = "move:0",
-              role = "move",
-              display = { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 },
-              enabled = true,
-              choice = { actor = { combatant = 1, activation = 1 }, kind = "attack", payload = { moveSlot = 0, target = { kind = "side", side = 2 } } },
-            },
-          },
-        },
-      },
-      options = {
-        requestId = request.requestId + 100,
-        epoch = request.epoch,
-        controller = "player",
-        kind = "action",
-        actors = {
-          {
-            combatant = 1,
-            activation = 1,
-            kind = "action",
-            choices = {
-              {
-                id = "move:0",
-                role = "move",
-                display = { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 },
-                enabled = true,
-                choice = { actor = { combatant = 1, activation = 1 }, kind = "attack", payload = { moveSlot = 0, target = { kind = "side", side = 2 } } },
-              },
-            },
-          },
-        },
-      },
-    },
-    result = nil,
-  }
-  rig.port.present(synthetic)
-  for _ = 1, 120 do
-    rig.pump(1)
-    if rig.screen:status().request ~= nil and rig.screen:status().request.requestId == request.requestId + 100 then
-      break
-    end
-  end
-  Assert.equal(rig.screen:status().mode, "command", "the synthetic request opens")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "moves", "Fight opens move selection")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "target", "a non-singular target opens explicit selection")
-  Assert.equal(#rig.submits, 0, "entering target selection seals nothing")
-  rig.screen:input({ { type = "cancel" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "moves", "cancel from target returns to moves")
   rig.screen:dispose()
   rig.battle:dispose()
 end

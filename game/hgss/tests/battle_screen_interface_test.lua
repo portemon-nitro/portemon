@@ -11,6 +11,10 @@ local FakeGraphics = require("tests.support.FakeGraphics")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
+local TICK = 1 / 60
+
+local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
+local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
 
 ---@return table caller-owned paired display facts with a 256x192 detail pane over a 256x192 interaction pane
 local function dualMeasurement()
@@ -260,6 +264,218 @@ function T.render_restores_borrowed_state()
   ApplicationPresentation.draw(graphics, resources, view("command"), plan)
   Assert.deepEqual(state(), before, "the paired draw restores borrowed graphics state exactly")
   Assert.isTrue(#graphics.draws > 0, "the composition draws through the recording boundary")
+end
+
+---@return table caller-owned paired display facts
+local function interfaceDualMeasurement()
+  return {
+    width = 256,
+    height = 384,
+    topology = ScreenTopology.dualDisplay(
+      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+      { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" },
+      "battle-pointer-test:dual"
+    ),
+    pixelRatio = 1,
+    signature = "battle-pointer-test:dual",
+  }
+end
+
+---@param opts table? rig options: launchId
+---@return table live screen-only rig with an accepting submit boundary
+local function openInterfaceRig(opts)
+  opts = opts or {}
+  local BattleScreenState = require(STATE_MODULE)
+  local Model = require(MODEL_MODULE)
+  local rig = { submits = {}, measurement = interfaceDualMeasurement(), text = nil }
+  rig.text = {
+    draws = {},
+    measure = function(content)
+      return { width = 8 * #tostring(content), height = 16 }
+    end,
+    drawText = function(content, x, y)
+      rig.text.draws[#rig.text.draws + 1] = { content = tostring(content), x = x, y = y }
+    end,
+  }
+  rig.windows = { calls = {} }
+  function rig.windows.drawWindow(box, frameKey, background)
+    rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  rig.audio = { plays = {} }
+  function rig.audio.play(name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
+  function rig.assets.prepare(demand)
+    rig.assets.prepared[#rig.assets.prepared + 1] = demand
+    return true
+  end
+  function rig.assets.drawable(key)
+    if rig.assets.images[key] == nil then
+      rig.assets.images[key] = { handle = key }
+    end
+    return rig.assets.images[key]
+  end
+  function rig.assets.release(key)
+    rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
+  end
+  local launchId = opts.launchId or "launch-pointer-cancel"
+  local screen = BattleScreenState.new({
+    launchId = launchId,
+    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    model = Model,
+    submit = function(reply)
+      rig.submits[#rig.submits + 1] = reply
+      return true
+    end,
+    measureDisplay = function()
+      return rig.measurement
+    end,
+    assets = rig.assets,
+    text = rig.text,
+    windows = rig.windows,
+    audio = rig.audio,
+  })
+  rig.screen = screen
+  rig.port = screen:presentationPort()
+  function rig.pump(ticks, dt)
+    for _ = 1, ticks or 1 do
+      rig.screen:updateFixed(dt or TICK)
+    end
+  end
+  local target = { kind = "position", position = 2 }
+  local choice = {
+    actor = { combatant = 1, activation = 1 },
+    kind = "attack",
+    payload = { moveSlot = 0, target = target },
+  }
+  local BattleProtocol = require("libs.battle.src.BattleProtocol")
+  BattleProtocol.validateTarget(target)
+  BattleProtocol.validateChoice(choice, "action")
+  local decision = {
+    requestId = 9101,
+    epoch = 1,
+    controller = "player",
+    kind = "action",
+    actors = {
+      {
+        combatant = 1,
+        activation = 1,
+        kind = "action",
+        choices = {
+          {
+            id = "move:0",
+            role = "move",
+            display = { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 },
+            enabled = true,
+            choice = choice,
+          },
+        },
+      },
+    },
+  }
+  decision.options = {
+    requestId = 9101,
+    epoch = 1,
+    controller = "player",
+    kind = "action",
+    actors = decision.actors,
+  }
+  local function ownRecord()
+    return {
+      combatant = 1,
+      participant = 1,
+      side = 1,
+      controller = "player",
+      active = true,
+      hp = 52,
+      maxHp = 52,
+      species = "EEVEE",
+      form = 0,
+      name = "LEAD",
+      level = 20,
+      selector = "back",
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+    }
+  end
+  local function foeRecord()
+    return {
+      combatant = 3,
+      participant = 3,
+      side = 2,
+      controller = "wild",
+      active = true,
+      hp = 57,
+      maxHp = 57,
+      species = "EEVEE",
+      form = 0,
+      name = "FOE",
+      level = 20,
+      selector = "front",
+    }
+  end
+  rig.port.present({
+    launchId = launchId,
+    packetId = 4242,
+    events = {},
+    before = { own = { ownRecord() }, foes = { foeRecord() } },
+    after = { own = { ownRecord() }, foes = { foeRecord() } },
+    request = decision,
+    result = nil,
+  })
+  for _ = 1, 600 do
+    rig.pump(1)
+    local status = rig.screen:status()
+    if status.mode == "failed" then
+      error("the pointer screen failed while driving to command: " .. tostring(status.error), 0)
+    end
+    if status.mode == "command" and status.request ~= nil and status.request.requestId == 9101 then
+      return rig
+    end
+  end
+  error("the pointer screen never reached its command decision", 0)
+  return rig
+end
+
+-- Cancelled and refused pointer edges spend nothing: a disabled slot
+-- reports its reason and keeps focus, orphan and outside releases seal
+-- nothing, a reflow between press and release cancels the hold, and a
+-- later matched tap on the focused slot still seals exactly once.
+function T.cancelled_and_refused_pointer_edges_spend_nothing()
+  local rig = openInterfaceRig({ launchId = "launch-pointer-cancel-local" })
+  Assert.equal(rig.screen:status().mode, "command", "the pointer decision opens")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "moves", "Fight opens move selection")
+  Assert.equal(rig.screen:view().selection, "move:0", "move selection rests on the first slot")
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:disabled", x = 192, y = 236 } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:disabled", x = 192, y = 236 } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, 0, "the disabled slot seals nothing")
+  Assert.equal(rig.screen:view().selection, "move:0", "the refused slot keeps its focus")
+  Assert.isTrue(rig.screen:view().message ~= "", "the refused slot reports its reason")
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:orphan", x = 64, y = 237 } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, 0, "a release with no press seals nothing")
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:outside", x = 64, y = 237 } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:outside", x = 10, y = 10 } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, 0, "a release outside the pane seals nothing")
+  Assert.equal(rig.screen:status().mode, "moves", "the outside release keeps the decision")
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:reflow", x = 64, y = 237 } })
+  rig.measurement.signature = "battle-pointer-test:reflowed"
+  rig.pump(2)
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:reflow", x = 64, y = 237 } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, 0, "a reflowed hold seals nothing")
+  Assert.equal(rig.screen:status().mode, "moves", "the cancelled hold keeps the decision")
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:valid", x = 64, y = 237 } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:valid", x = 64, y = 237 } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, 1, "a matched tap on the focused slot seals once")
+  Assert.equal(rig.screen:status().mode, "awaiting_resolution", "the sealed move waits for resolution")
+  rig.screen:dispose()
 end
 
 return { tests = T }
