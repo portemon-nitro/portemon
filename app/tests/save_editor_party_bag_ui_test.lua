@@ -490,6 +490,16 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
   local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
   local queueNew, providerNew = AssetPreparationQueue.new, MonIconAssetProvider.new
   local prepared, released = {}, 0
+  local sourceDimensions = {
+    ["0001:0"] = { width = 32, height = 32 },
+    ["0004:0"] = { width = 24, height = 32 },
+    ["0007:0"] = { width = 16, height = 32 },
+  }
+  local expectedDimensions = {
+    ["0001:0"] = { width = 32, height = 32 },
+    ["0004:0"] = { width = 24, height = 32 },
+    ["0007:0"] = { width = 16, height = 32 },
+  }
   AssetPreparationQueue.new = function()
     return {
       release = function()
@@ -509,8 +519,8 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
       quadFor = function()
         return {}
       end,
-      dimensions = function()
-        return { width = 32, height = 32 }
+      dimensions = function(_, iconKey)
+        return sourceDimensions[iconKey]
       end,
       release = function()
         released = released + 1
@@ -530,6 +540,7 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
       },
     }, {}, {})
     Assert.deepEqual(prepared, { "0001:0", "0004:0", "0007:0" }, "visible party icons must be prepared outside draw")
+    Assert.deepEqual(sourceDimensions, expectedDimensions, "sizing does not mutate provider-owned dimension facts")
     renderer:dispose()
   end, debug.traceback)
   AssetPreparationQueue.new, MonIconAssetProvider.new = queueNew, providerNew

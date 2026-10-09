@@ -41,6 +41,7 @@ local NumberLayout = {}
 ---@field downRect SaveEditorNumberLayoutRect
 
 ---@class SaveEditorNumberLayoutResult
+---@field arrowScale 1
 ---@field bodyRect SaveEditorNumberLayoutRect
 ---@field stripRect SaveEditorNumberLayoutRect
 ---@field columns SaveEditorNumberLayoutColumn[]
@@ -76,19 +77,16 @@ function NumberLayout.resolve(spec)
   local actionsWidth = confirmWidth + buttonsGap + backWidth
   local fixedHeight = pad * 2 + font.lineHeight + gap * 2 + frame.actionGap + frame.actionHeight + 2 + frame.errorHeight
   local maxColumnWidth = math.floor((available.width - pad * 2 - (count - 1) * columnGap) / count)
-  local maxScale = math.min(1, maxColumnWidth / arrows.width)
   local maxDigitWidth = 0
   for _, digit in ipairs(projection.digits) do
     maxDigitWidth = math.max(maxDigitWidth, math.ceil(font.measure(digit)))
   end
   local maxArrowHeight = math.floor((available.height - fixedHeight) / 2)
-  local scale = math.min(maxScale, maxArrowHeight / arrows.height)
-  if actionsWidth + pad * 2 > available.width or scale < 0.5 or maxScale <= 0 then
+  if actionsWidth + pad * 2 > available.width or maxColumnWidth < arrows.width or maxArrowHeight < arrows.height then
     return nil, "too_small"
   end
-  local arrowWidth = math.floor(arrows.width * scale)
-  local arrowHeight = math.floor(arrows.height * scale)
-  if arrowWidth < maxDigitWidth or arrowWidth < math.ceil(arrows.width * 0.5) then
+  local arrowWidth, arrowHeight = arrows.width, arrows.height
+  if arrowWidth < maxDigitWidth then
     return nil, "too_small"
   end
   local columnsWidth = count * arrowWidth + (count - 1) * columnGap
@@ -124,6 +122,7 @@ function NumberLayout.resolve(spec)
   local backRect = rect(actionsX + confirmWidth + buttonsGap, actionsY, backWidth, frame.actionHeight)
   local errorRect = rect(body.x + pad, actionsY + frame.actionHeight + 2, body.width - pad * 2, frame.errorHeight)
   return {
+    arrowScale = 1,
     bodyRect = body,
     stripRect = rect(startX, stripY, columnsWidth, stripHeight),
     columns = columns,

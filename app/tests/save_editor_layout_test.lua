@@ -2560,7 +2560,7 @@ function T.tests.pointer_hits_resolve_from_published_targets_without_the_full_ca
     dirty = false,
     session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
     valueEditor = { kind = "number", parsedValue = 3, buffer = "3", digitCount = 1, digits = { "3" } },
-    numberControlVisuals = { increment = { normal = { width = 48, height = 48 } } },
+    numberControlVisuals = { increment = { normal = { width = 32, height = 32 } } },
     numberControls = {
       { delta = 1, hitRect = { x = 0, y = 0, width = 24, height = 24 } },
       { delta = -1, hitRect = { x = 0, y = 28, width = 24, height = 24 } },

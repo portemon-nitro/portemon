@@ -9,6 +9,9 @@ local ListSurface = require("libs.ui.src.ListSurface")
 local SaveEditorCard = require("app.src.saveeditor.SaveEditorCard")
 local SaveEditorNumberLayout = require("app.src.saveeditor.SaveEditorNumberLayout")
 
+local BAG_ICON_SIZE_COMPACT = 16
+local BAG_ICON_SIZE_EXPANDED = 24
+
 local LOCATION_REASONS = {
   blocked = "Impassable tile",
   wrong_logical_map = "Another map",
@@ -1090,7 +1093,7 @@ local function buildBag(ctx)
   local lineHeight = math.max(1, math.ceil(metrics.lineHeight))
   for index, item in ipairs(view.bagPageRows or {}) do
     local cell = cells[index]
-    local iconSize = cell.rect.height > 32 and 24 or 16
+    local iconSize = cell.rect.height > 32 and BAG_ICON_SIZE_EXPANDED or BAG_ICON_SIZE_COMPACT
     local iconRect = rect(cell.rect.x + 4, cell.rect.y + (cell.rect.height - iconSize) / 2, iconSize, iconSize)
     local quantityWidth = math.ceil(metrics.measure("x" .. tostring(item.quantity))) + 6
     local textY = cell.rect.y + (cell.rect.height - lineHeight) / 2

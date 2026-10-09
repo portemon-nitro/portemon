@@ -660,6 +660,7 @@ local function drawPageArrow(renderer, target, visuals, angle, focused, pressed,
   local visual = (pressed == true and not disabled) and visuals.pressed or visuals.normal
   local image = assert(renderer._bagImages[assert(visual.image)])
   local width, height = image:getDimensions()
+  local scale = PixelScale.assertInteger(1)
   if disabled then
     renderer.graphics.setColor(1, 1, 1, 0.35)
   else
@@ -667,11 +668,11 @@ local function drawPageArrow(renderer, target, visuals, angle, focused, pressed,
   end
   renderer.graphics.draw(
     image,
-    target.x + target.width / 2,
-    target.y + target.height / 2,
+    PixelScale.snapLogical(target.x + target.width / 2),
+    PixelScale.snapLogical(target.y + target.height / 2),
     angle,
-    1,
-    1,
+    scale,
+    scale,
     width / 2,
     height / 2
   )
@@ -702,29 +703,17 @@ end
 
 drawCenteredIcon = function(renderer, icon, bounds)
   local dimensions = icon.dimensions
-  local scale = math.min(1, bounds.width / dimensions.width, bounds.height / dimensions.height)
-  local width, height = dimensions.width * scale, dimensions.height * scale
+  local scale = PixelScale.assertInteger(1)
+  local x = PixelScale.snapLogical(bounds.x + (bounds.width - dimensions.width) / 2)
+  local y = PixelScale.snapLogical(bounds.y + (bounds.height - dimensions.height) / 2)
   renderer.graphics.setColor(1, 1, 1, 1)
-  if icon.quad ~= nil then
-    renderer.graphics.draw(
-      icon.image,
-      icon.quad,
-      bounds.x + (bounds.width - width) / 2,
-      bounds.y + (bounds.height - height) / 2,
-      0,
-      scale,
-      scale
-    )
-  else
-    renderer.graphics.draw(
-      icon.image,
-      bounds.x + (bounds.width - width) / 2,
-      bounds.y + (bounds.height - height) / 2,
-      0,
-      scale,
-      scale
-    )
-  end
+  LogicalSurface.clip(renderer.graphics, bounds, function()
+    if icon.quad ~= nil then
+      renderer.graphics.draw(icon.image, icon.quad, x, y, 0, scale, scale)
+    else
+      renderer.graphics.draw(icon.image, x, y, 0, scale, scale)
+    end
+  end)
 end
 
 local function drawStripSlot(renderer, slot, focused)
@@ -882,7 +871,7 @@ local function paintRows(ctx)
         local icon = row.iconKey and renderer._icons[row.iconKey]
         if icon and graphics.draw then
           graphics.setColor(1, 1, 1, 1)
-          graphics.draw(icon.image, icon.quad, rect.x + 3, rect.y + 2)
+          graphics.draw(icon.image, icon.quad, PixelScale.snapLogical(rect.x + 3), PixelScale.snapLogical(rect.y + 2))
         end
         local labelRect = assert(row.labelRect, "layout rows own their label text bounds")
         local labelRole = row.role == "warning" and "error" or row.role == "read-only value" and "hint" or nil
@@ -1044,7 +1033,7 @@ local function paintBag(ctx)
     local stripImage = renderer._bagImages[assert(view.bagPocketStrip).image]
     assert(stripImage, "selected Bag pocket strip was prepared before drawing")
     graphics.setColor(1, 1, 1, 1)
-    graphics.draw(stripImage, strip.x, strip.y)
+    graphics.draw(stripImage, PixelScale.snapLogical(strip.x), PixelScale.snapLogical(strip.y))
     for _, targetId in ipairs(layout.bagTabs or {}) do
       if isFocusedVisible(view, targetId) and view.bagTabFocusVisual ~= nil then
         local tabIndex = tonumber(targetId:match("bag:pocket:(%d+)$"))
@@ -1060,7 +1049,11 @@ local function paintBag(ctx)
         local image = assert(renderer._bagImages[descriptor.image])
         local offset = descriptor.offset or { x = 0, y = 0 }
         graphics.setColor(1, 1, 1, 1)
-        graphics.draw(image, strip.x + point.x + offset.x, strip.y + point.y + offset.y)
+        graphics.draw(
+          image,
+          PixelScale.snapLogical(strip.x + point.x + offset.x),
+          PixelScale.snapLogical(strip.y + point.y + offset.y)
+        )
       end
     end
     for _, card in ipairs(layout.bagGrid or {}) do
@@ -1214,12 +1207,13 @@ local function paintValueEditor(ctx)
             { image = upImage, target = column.upRect, visual = upVisual, targetId = upId },
             { image = downImage, target = column.downRect, visual = downVisual, targetId = downId },
           }) do
-            local scale = math.min(item.target.width / item.visual.width, item.target.height / item.visual.height)
+            local scale = PixelScale.assertInteger(number.arrowScale)
+            assert(item.visual.width == item.target.width and item.visual.height == item.target.height)
             graphics.setColor(1, 1, 1, 1)
             graphics.draw(
               item.image,
-              item.target.x + (item.target.width - item.visual.width * scale) / 2,
-              item.target.y + (item.target.height - item.visual.height * scale) / 2,
+              PixelScale.snapLogical(item.target.x + (item.target.width - item.visual.width) / 2),
+              PixelScale.snapLogical(item.target.y + (item.target.height - item.visual.height) / 2),
               0,
               scale,
               scale

@@ -490,10 +490,16 @@ local function fixture(scope, width, height, topology, section, variant, version
       query = "",
     }
     view.scope = { id = "value:choice:species", epoch = 2, kind = "value", focusId = view.focus }
-  elseif variant == "number-modal" or variant == "number-modal-ten-digit" or variant == "number-modal-too-small" then
+  elseif
+    variant == "number-modal"
+    or variant == "number-modal-ten-digit"
+    or variant == "number-modal-source-arrows"
+    or variant == "number-modal-too-small"
+  then
     view.focus = variant == "number-modal-too-small" and "cancel" or "confirm"
-    local digitCount = variant == "number-modal-ten-digit" and 10 or 3
-    local arrowSize = variant == "number-modal-too-small" and 512 or 12
+    local tenDigit = variant == "number-modal-ten-digit"
+    local digitCount = tenDigit and 10 or 3
+    local arrowSize = variant == "number-modal-too-small" and 512 or variant == "number-modal-source-arrows" and 32 or 12
     local numberControls = {}
     for index = 1, digitCount do
       local placeValue = 10 ^ (digitCount - index)
@@ -524,13 +530,13 @@ local function fixture(scope, width, height, topology, section, variant, version
     }
     view.valueEditor = {
       kind = "number",
-      buffer = variant == "number-modal-ten-digit" and "0000000001" or "123",
-      parsedValue = variant == "number-modal-ten-digit" and 1 or 123,
+      buffer = tenDigit and "0000000001" or "123",
+      parsedValue = tenDigit and 1 or 123,
       minimum = 0,
-      maximum = variant == "number-modal-ten-digit" and 0xFFFFFFFF or 999,
+      maximum = tenDigit and 0xFFFFFFFF or 999,
       base = "decimal",
       digitCount = digitCount,
-      digits = variant == "number-modal-ten-digit" and { "0", "0", "0", "0", "0", "0", "0", "0", "0", "1" }
+      digits = tenDigit and { "0", "0", "0", "0", "0", "0", "0", "0", "0", "1" }
         or { "1", "2", "3" },
       selectedPlace = 0,
     }
@@ -714,12 +720,21 @@ local function draw(scope, width, height, topology, name, section, variant, vers
     for path, image in pairs(renderer._bagImages) do
       if drawable == image then
         bagDrawn[path] = true
-        bagDrawOrder[#bagDrawOrder + 1] = { path = path, args = { ... } }
+        local imageWidth, imageHeight = image:getDimensions()
+        bagDrawOrder[#bagDrawOrder + 1] = {
+          path = path,
+          args = { ... },
+          sourceDimensions = { width = imageWidth, height = imageHeight },
+        }
       end
     end
     for iconKey, icon in pairs(renderer._icons) do
       if drawable == icon.image then
-        bagDrawOrder[#bagDrawOrder + 1] = { path = "icon:" .. iconKey, args = { ... } }
+        bagDrawOrder[#bagDrawOrder + 1] = {
+          path = "icon:" .. iconKey,
+          args = { ... },
+          sourceDimensions = icon.dimensions,
+        }
       end
     end
     return originalDraw(drawable, ...)
@@ -887,7 +902,9 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   end
   Assert.isTrue(changed > 20, name .. " must render visible editor chrome")
   local renderedText = table.concat(drawnText, " ")
-  if section == "Player" and variant ~= "leave" and variant ~= "choice-list" and variant ~= "number-modal" then
+  if section == "Player" and variant ~= "leave" and variant ~= "choice-list" and variant ~= "number-modal"
+    and variant ~= "number-modal-source-arrows"
+  then
     Assert.isTrue(renderedText:find("PLAYER"), name .. " shows the player identity")
   end
   if view.section == "Progress" then
@@ -1518,12 +1535,15 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
   local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
   local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
   local image = scope:own(love.graphics.newImage(love.image.newImageData(64, 64)))
-  local quad = scope:own(love.graphics.newQuad(0, 0, 1, 1, 64, 64))
   local dimensions = {
     small = { width = 14, height = 9 },
     large = { width = 23, height = 17 },
     oversized = { width = 32, height = 32 },
   }
+  local quads = {}
+  for key, source in pairs(dimensions) do
+    quads[key] = scope:own(love.graphics.newQuad(0, 0, source.width, source.height, 64, 64))
+  end
   local provider = {
     prepareKeys = function()
       return true
@@ -1531,8 +1551,8 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     image = function()
       return image
     end,
-    quadFor = function()
-      return quad
+    quadFor = function(_, key)
+      return quads[key]
     end,
     dimensions = function(_, key)
       return dimensions[key]
@@ -1590,9 +1610,9 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
       slot.iconRect = spec.rect
       iconRects[spec.key] = spec.rect
       renderer:prepareVisibleIcons(view, plan, {}, {})
-      love.graphics.draw = function(drawable, drawQuad, x, y, ...)
+      love.graphics.draw = function(drawable, drawQuad, x, y, _, scaleX, scaleY, ...)
         if drawable == image then
-          draws[#draws + 1] = { x = x, y = y }
+          draws[#draws + 1] = { x = x, y = y, scaleX = scaleX or 1, scaleY = scaleY or scaleX or 1, quad = drawQuad }
           iconColors[#iconColors + 1] = { love.graphics.getColor() }
         end
         return oldDraw(drawable, drawQuad, x, y, ...)
@@ -1621,7 +1641,7 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     local compactDraw
     love.graphics.draw = function(drawable, drawQuad, x, y, _, scaleX, scaleY, ...)
       if drawable == image then
-        compactDraw = { x = x, y = y, scaleX = scaleX, scaleY = scaleY }
+        compactDraw = { x = x, y = y, scaleX = scaleX or 1, scaleY = scaleY or scaleX or 1, quad = drawQuad }
       end
       return oldDraw(drawable, drawQuad, x, y, _, scaleX, scaleY, ...)
     end
@@ -1659,8 +1679,17 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     }
   end
   for index, point in ipairs(expected) do
-    Assert.near(draws[index].x, point.x, 0.01, "icon x uses provider-reported width and layout icon bounds")
-    Assert.near(draws[index].y, point.y, 0.01, "icon y uses provider-reported height and layout icon bounds")
+    Assert.equal(draws[index].scaleX, 1, "provider source frames draw at native horizontal scale")
+    Assert.equal(draws[index].scaleY, 1, "provider source frames draw at native vertical scale")
+    Assert.near(draws[index].x, point.x, 0.51, "icon x stays centered within half a logical pixel")
+    Assert.near(draws[index].y, point.y, 0.51, "icon y stays centered within half a logical pixel")
+    local key = index == 1 and "small" or "large"
+    Assert.equal(draws[index].quad, quads[key], "the provider source quad is drawn unchanged")
+    local _, _, quadWidth, quadHeight = draws[index].quad:getViewport()
+    Assert.equal(quadWidth, dimensions[key].width, "the icon quad keeps its source frame width")
+    Assert.equal(quadHeight, dimensions[key].height, "the icon quad keeps its source frame height")
+    Assert.equal(draws[index].x, math.floor(draws[index].x + 0.5), "icon x is a logical pixel anchor")
+    Assert.equal(draws[index].y, math.floor(draws[index].y + 0.5), "icon y is a logical pixel anchor")
   end
   Assert.isTrue(
     table.concat(drawnText, " "):find("Chikorita", 1, true) == nil,
@@ -1675,22 +1704,100 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     "long descriptive labels remain metadata and never reach the strip"
   )
   local compactDraw = assert(draws.oversized, "compact strip draws its prepared icon")
-  local compactBounds = iconRects.oversized
-  Assert.isTrue(compactDraw.scaleX < 1 and compactDraw.scaleY < 1, "compact slots scale a full-size icon to fit")
-  Assert.isTrue(
-    compactDraw.x >= compactBounds.x
-      and compactDraw.y >= compactBounds.y
-      and compactDraw.x + dimensions.oversized.width * compactDraw.scaleX <= compactBounds.x + compactBounds.width
-      and compactDraw.y + dimensions.oversized.height * compactDraw.scaleY <= compactBounds.y + compactBounds.height,
-    "scaled icon stays inside its compact icon rectangle"
-  )
-  Assert.near(
-    compactDraw.x,
-    compactBounds.x + (compactBounds.width - dimensions.oversized.width * compactDraw.scaleX) / 2,
-    0.01,
-    "scaled icon stays centered in its target"
-  )
+  Assert.equal(compactDraw.scaleX, 1, "an oversized compact icon is not fractionally minified")
+  Assert.equal(compactDraw.scaleY, 1, "an oversized compact icon keeps native vertical scale")
+  Assert.equal(compactDraw.quad, quads.oversized, "compact rendering keeps the source icon quad")
+  Assert.equal(compactDraw.x, math.floor(compactDraw.x + 0.5), "compact icon x is a logical pixel anchor")
+  Assert.equal(compactDraw.y, math.floor(compactDraw.y + 0.5), "compact icon y is a logical pixel anchor")
 end
+
+local function spriteDrawGeometry(record)
+  local args = record.args
+  local iconQuad = record.path:match("^icon:") ~= nil
+  local xIndex, scaleXIndex, scaleYIndex
+  if iconQuad then
+    xIndex, scaleXIndex, scaleYIndex = 2, 5, 6
+  else
+    xIndex, scaleXIndex, scaleYIndex = 1, 4, 5
+  end
+  local scaleX = args[scaleXIndex] or 1
+  return {
+    x = args[xIndex],
+    y = args[xIndex + 1],
+    scaleX = scaleX,
+    scaleY = args[scaleYIndex] or scaleX,
+    quad = iconQuad and args[1] or nil,
+  }
+end
+
+function T.save_editor_sprites_keep_integer_scale_and_logical_anchors(scope)
+  local cases = {
+    { width = 256, height = 192, section = "Party", name = "party-compact" },
+    { width = 360, height = 640, section = "Party", name = "party-tall" },
+    { width = 1280, height = 720, section = "Party", name = "party-wide" },
+    { width = 256, height = 192, section = "Bag", variant = "bag-cards", name = "bag-compact" },
+    { width = 360, height = 640, section = "Bag", variant = "bag-cards", name = "bag-tall" },
+    { width = 640, height = 480, section = "Bag", variant = "bag-cards", name = "bag-wide" },
+    { width = 256, height = 192, section = "Player", variant = "number-modal", name = "quantity-compact" },
+    {
+      width = 360,
+      height = 640,
+      section = "Player",
+      variant = "number-modal-source-arrows",
+      name = "quantity-tall-source-size",
+    },
+    {
+      width = 1280,
+      height = 720,
+      section = "Player",
+      variant = "number-modal-source-arrows",
+      name = "quantity-wide-source-size",
+    },
+  }
+  for _, case in ipairs(cases) do
+    local _, _, layout, _, _, _, _, records = draw(
+      scope,
+      case.width,
+      case.height,
+      ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = case.width, height = case.height },
+        touch = true,
+        role = "world",
+      }),
+      "sprite-scale-" .. case.name,
+      case.section,
+      case.variant
+    )
+    local seen = {}
+    for _, record in ipairs(records) do
+      local geometry = spriteDrawGeometry(record)
+      Assert.isTrue(geometry.scaleX > 0 and geometry.scaleX % 1 == 0, case.name .. " keeps integer horizontal sprite scale")
+      Assert.isTrue(geometry.scaleY > 0 and geometry.scaleY % 1 == 0, case.name .. " keeps integer vertical sprite scale")
+      Assert.equal(geometry.x, math.floor(geometry.x + 0.5), case.name .. " snaps sprite x to a logical pixel")
+      Assert.equal(geometry.y, math.floor(geometry.y + 0.5), case.name .. " snaps sprite y to a logical pixel")
+      if geometry.quad ~= nil then
+        local _, _, width, height = geometry.quad:getViewport()
+        Assert.equal(width, record.sourceDimensions.width, case.name .. " draws the provider source frame width")
+        Assert.equal(height, record.sourceDimensions.height, case.name .. " draws the provider source frame height")
+      end
+      seen[record.path] = true
+    end
+    Assert.isTrue(#records > 0, case.name .. " paints through the production renderer")
+    if case.section == "Party" then
+      Assert.isTrue(seen["bag/dec-normal"] and seen["bag/inc-normal"], case.name .. " paints the Party pager sprites")
+    elseif case.section == "Bag" then
+      Assert.isTrue(seen["bag/items-strip"], case.name .. " paints the authored pocket strip")
+      Assert.isTrue(seen["bag/dec-normal"] and seen["bag/inc-normal"], case.name .. " paints the Bag pager sprites")
+    elseif layout.numberLayout ~= nil then
+      Assert.isTrue(seen["bag/dec-normal"] and seen["bag/inc-normal"], case.name .. " paints numeric arrow sprites")
+    else
+      Assert.isTrue(layout.numberTooSmall, case.name .. " publishes explicit fallback instead of minifying arrows")
+      Assert.isFalse(seen["bag/dec-normal"] or seen["bag/inc-normal"], case.name .. " omits unavailable numeric sprites")
+    end
+  end
+end
+
 function T.location_grid_shows_status_and_controls_on_compact_wide_tall_and_dual_touch(scope)
   local compact = ScreenTopology.oneDisplay({
     id = "main",
