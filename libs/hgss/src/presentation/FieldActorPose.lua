@@ -12,16 +12,10 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 
 local FieldActorPose = {}
 
-local FACINGS = { north = true, south = true, west = true, east = true }
-
 -- Walk the pose's per-frame durations. A looping pose wraps on its total
--- duration; a one-shot pose holds its last frame.
+-- duration; a one-shot pose holds its last frame. Poses arrive compiled:
+-- the frame list, durations, and total are trusted and read directly.
 function FieldActorPose.sampleAt(pose, tick)
-  assert(type(pose) == "table" and #pose.frames > 0, "a pose needs at least one frame")
-  assert(
-    type(tick) == "number" and tick >= 0 and tick == math.floor(tick),
-    "a pose clock is a non-negative integer tick"
-  )
   local total = pose.durationTicks
   local position = pose.loop and (tick % total) or math.min(tick, total - 1)
   for _, frame in ipairs(pose.frames) do
@@ -40,18 +34,9 @@ end
 -- Resolve the pose set for a facing. `poseName` is "idle" or "walk"; an actor
 -- class whose compiled definition lacks the requested clip falls back to its
 -- verified idle pose and reports that it did, so the caller can warn once.
+-- Facings resolve through the compiled direction sets directly: a declared
+-- extra direction samples, while a missing set raises.
 function FieldActorPose.select(visualDef, facing, poseName)
-  assert(
-    type(visualDef) == "table" and type(visualDef.directions) == "table",
-    "pose selection needs a compiled actor visual"
-  )
-  if not FACINGS[facing] then
-    Errors.raise(
-      FieldErrors.ACTOR_FACING_INVALID,
-      "unsupported actor facing " .. tostring(facing),
-      { spriteId = visualDef.spriteId, facing = facing }
-    )
-  end
   local set = visualDef.directions[facing]
   if not set then
     Errors.raise(
@@ -82,15 +67,6 @@ function FieldActorPose.frameIndex(visualDef, facing, poseName, tick)
 end
 
 function FieldActorPose.gestureFrameIndex(visualDef, gestureName, tick)
-  assert(
-    type(visualDef) == "table" and type(visualDef.gestures) == "table",
-    "pose selection needs a compiled actor visual"
-  )
-  assert(type(gestureName) == "string" and gestureName ~= "", "gesture name is required")
-  assert(
-    type(tick) == "number" and tick >= 0 and tick == math.floor(tick),
-    "a gesture pose clock is a non-negative integer tick"
-  )
   local record = visualDef.gestures[gestureName]
   if not record or type(record.pose) ~= "table" then
     Errors.raise(

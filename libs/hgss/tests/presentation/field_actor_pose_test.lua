@@ -64,9 +64,51 @@ function T.a_missing_walk_clip_falls_back_to_idle_and_reports_it()
   Assert.isTrue(fellBack, "the caller must be able to warn once about the substitution")
 end
 
-function T.rejects_an_unsupported_facing()
+function T.compiled_timelines_pin_boundaries_wrap_and_final_hold_without_mutating_the_pose()
+  local pose = unevenPose(true)
+  Assert.equal(FieldActorPose.frameIndexAt(pose, 0), 7, "tick zero shows the first frame")
+  Assert.equal(FieldActorPose.frameIndexAt(pose, 1), 7)
+  Assert.equal(FieldActorPose.frameIndexAt(pose, 2), 9, "the boundary tick advances to the next duration")
+  Assert.equal(FieldActorPose.frameIndexAt(pose, 5), 7, "a looping pose wraps on its total duration")
+  local oneShot = unevenPose(false)
+  Assert.equal(FieldActorPose.frameIndexAt(oneShot, 4), 9)
+  Assert.equal(FieldActorPose.frameIndexAt(oneShot, 400), 9, "a one-shot pose holds its last frame")
   local visual = FieldActorFixture.visual(29)
-  throwsCode("ACTOR_FACING_INVALID", function()
+  visual.gestures = {
+    give = {
+      pose = unevenPose(false),
+      displayOffset = { x = 0, y = 0, z = 1 / 32 },
+    },
+  }
+  Assert.equal(FieldActorPose.gestureFrameIndex(visual, "give", 0), 7, "the gesture clip wins over the facing pose")
+  Assert.equal(FieldActorPose.gestureFrameIndex(visual, "give", 100), 9, "the gesture one-shot clamps at its last frame")
+  Assert.equal(FieldActorPose.frameIndex(visual, "south", "walk", 0), 2, "cardinal facing ticks are unchanged")
+  Assert.deepEqual(pose, unevenPose(true), "sampling leaves the compiled pose untouched")
+  Assert.throws(function()
+    FieldActorPose.sampleAt({}, 0)
+  end, "a malformed pose fails instead of fabricating a frame")
+end
+
+function T.a_declared_extra_direction_samples_without_a_cardinal_whitelist()
+  local visual = FieldActorFixture.visual(29)
+  visual.directions.diagonal = {
+    idle = { frames = { { frameIndex = 6, ticks = 1 } }, loop = true, durationTicks = 1 },
+    walk = {
+      frames = { { frameIndex = 6, ticks = 2 }, { frameIndex = 7, ticks = 3 } },
+      loop = true,
+      durationTicks = 5,
+    },
+  }
+  Assert.equal(FieldActorPose.frameIndex(visual, "diagonal", "idle", 0), 6)
+  Assert.equal(FieldActorPose.frameIndex(visual, "diagonal", "walk", 2), 7)
+  throwsCode("ACTOR_POSE_DIRECTION_MISSING", function()
+    FieldActorPose.select(visual, "up", "idle")
+  end)
+end
+
+function T.rejects_a_facing_without_a_declared_direction_set()
+  local visual = FieldActorFixture.visual(29)
+  throwsCode("ACTOR_POSE_DIRECTION_MISSING", function()
     FieldActorPose.select(visual, "northeast", "idle")
   end)
 end
