@@ -191,14 +191,9 @@ local function load(self, spriteId)
 end
 
 -- Acquire a shared visual. Every acquire must be matched by exactly one release.
+-- Sprites absent from the compiled index still load on demand through the same
+-- cache path; `knows` stays the prewarm-membership answer, not an admission test.
 function FieldActorAssetProvider:acquire(spriteId)
-  if not self._known[spriteId] then
-    Errors.raise(
-      FieldErrors.FIELD_ACTOR_SPRITE_NOT_COMPILED,
-      "spriteId " .. tostring(spriteId) .. " is not in the compiled actor set",
-      { spriteId = spriteId }
-    )
-  end
   local entry = self._entries[spriteId]
   if entry then
     self._stats.hits = self._stats.hits + 1

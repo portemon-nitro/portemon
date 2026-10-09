@@ -173,11 +173,49 @@ local function throwsCode(code, fn)
   Assert.equal(err.code, code)
 end
 
-function T.rejects_an_uncompiled_sprite()
-  local p = provider({ 0 })
-  throwsCode("FIELD_ACTOR_SPRITE_NOT_COMPILED", function()
-    p:acquire(1032)
+function T.acquires_a_visual_missing_from_the_compiled_index_and_evicts_it_once()
+  local created = {}
+  local cache = seed({ 0 })
+  cache:writeLua(FieldActorCache.visualPath(900), FieldActorFixture.visual(900, { frameCount = 8 }))
+  cache:write(FieldActorCache.atlasPath(900), "png-bytes")
+  local p = FieldActorAssetProvider.new(cache, { graphics = stubGraphics(created), idleLimit = 1 })
+  Assert.isFalse(p:knows(900), "the compiled index still omits the modded sprite")
+  local first = p:acquire(900)
+  local second = p:acquire(900)
+  Assert.isTrue(first == second, "repeated acquires share one entry")
+  Assert.equal(#created, 1, "one image per sprite while referenced")
+  Assert.equal(p:stats().loads, 1)
+  Assert.equal(p:stats().hits, 1)
+  p:release(900)
+  p:release(900)
+  Assert.equal(p:stats().references, 0)
+  Assert.equal(p:stats().live, 1, "the idle unindexed entry stays resident under the limit")
+  p:acquire(0)
+  p:release(0)
+  Assert.equal(p:stats().evictions, 1)
+  Assert.equal(p:stats().disposals, 1)
+  Assert.isTrue(created[1].released, "the evicted unindexed entry released its image exactly once")
+end
+
+function T.unindexed_sprite_without_a_cached_visual_fails_without_leaking()
+  local created = {}
+  local p = provider({ 0 }, nil, created)
+  Assert.isFalse(p:knows(900), "the compiled index omits the modded sprite")
+  local err = Assert.throws(function()
+    p:acquire(900)
   end)
+  Assert.isTrue(Errors.is(err), "expected an Errors object, got " .. tostring(err))
+  Assert.equal(err.code, "FIELD_ACTOR_VISUAL_UNAVAILABLE")
+  Assert.equal(#created, 0, "no GPU image is created for a missing visual")
+  Assert.equal(p:stats().loads, 0)
+  Assert.equal(p:stats().live, 0)
+  Assert.equal(p:stats().references, 0)
+end
+
+function T.knows_still_reports_compiled_index_membership_only()
+  local p = provider({ 0 })
+  Assert.isTrue(p:knows(0))
+  Assert.isFalse(p:knows(1032), "knows is prewarm membership, not resolvability")
 end
 
 function T.rejects_unbalanced_release()
