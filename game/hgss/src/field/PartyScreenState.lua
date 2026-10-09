@@ -337,10 +337,14 @@ local function isNativeLikePlan(plan)
   return false
 end
 
--- One fixed tick: resolve, cancel stale presses across measurement
--- changes, map once, advance the controller once, then resolve again for
--- the resulting snapshot. pointer_cancel flows in batch order; the
--- controller absorbs it without changing selection.
+-- One fixed tick: cancel stale presses across measurement changes,
+-- map once through the published plan, advance the controller once, and
+-- republish only when the visible plan inputs demand it. The published
+-- plan is reused while the host signature, the native-like shape, and
+-- overlay visibility still match; a host menu toggle publishes the
+-- changed hit geometry once before the remaining batch maps, never as a
+-- redundant pre-toggle plan plus a second publish. pointer_cancel flows
+-- in batch order; the controller absorbs it without changing selection.
 ---@param uiInput table[]
 function PartyScreenState:updateFixed(uiInput)
   assert(not self._disposed, "a disposed party wrapper steps nothing")
@@ -419,21 +423,27 @@ function PartyScreenState:updateFixed(uiInput)
   local session = self._session
   local measurement = self:_measured()
   local signature = measurement.signature
-  if signature ~= nil and signature ~= self._signature then
+  local signatureChanged = signature ~= nil and signature ~= self._signature
+  if signatureChanged then
     if self._signature ~= nil then
       self:cancelPointerCapture()
     end
     self._signature = signature
   end
-  session:resolve(measurement, self:_view())
   local raw = assert(uiInput, "the party input must be an event list")
+  -- A measurement change republishes first so the toggle scan below
+  -- reads the effective geometry: a reflow out of the native-like shape
+  -- must forward the menu press instead of consuming it as a toggle.
+  if signatureChanged then
+    session:resolve(measurement, self:_view())
+  end
   local remaining = raw
+  local toggled = false
   if isNativeLikePlan(session:plan()) then
     -- The host toggle consumes its own events in order: each menu press
     -- flips host visibility only and never reaches the native controller,
     -- while every other event keeps its order in the forwarded batch.
     local kept = {}
-    local toggled = false
     for _, event in ipairs(raw) do
       assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
       if event.type == "menu" then
@@ -445,12 +455,34 @@ function PartyScreenState:updateFixed(uiInput)
     end
     if toggled then
       remaining = kept
-      session:resolve(measurement, self:_view())
     end
   end
+  if toggled then
+    -- The changed hit geometry publishes once before the remaining batch
+    -- maps; there is no redundant pre-toggle publish on this path.
+    session:resolve(measurement, self:_view())
+  elseif not signatureChanged then
+    -- Without a measurement or overlay change the published plan still
+    -- matches: overlay visibility is compared so a previously failed
+    -- publish recovers on the next tick instead of mapping stale hits.
+    local published = session:plan()
+    if isNativeLikePlan(published) then
+      local overlayShown = #published.panes == 2
+      if overlayShown ~= (self._detailOverlay == true) then
+        session:resolve(measurement, self:_view())
+      end
+    end
+  end
+  -- The plan carries only placement and cancel permission, so only a
+  -- permission change across the controller tick republishes: cursor,
+  -- menu, prompt, swap, and icon-clock facts reach draw through the
+  -- fresh view, never through a rebuilt plan.
+  local cancellableBefore = self._controller:cancellable()
   local mapped = session:mapInput(remaining, self:_view())
   self._controller:updateFixed(mapped)
-  session:resolve(measurement, self:_view())
+  if self._controller:cancellable() ~= cancellableBefore then
+    session:resolve(measurement, self:_view())
+  end
 end
 
 -- The presentation snapshot: the preparation wait plus its resolved plan

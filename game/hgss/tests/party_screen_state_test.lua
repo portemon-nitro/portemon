@@ -1240,4 +1240,169 @@ function T.facts_refresh_between_ticks_advances_nothing()
   waiting:dispose()
 end
 
+-- A host menu press combined with pointer input publishes the changed
+-- hit geometry once: the same tap selects the same native target as the
+-- same tap without the toggle, the overlay shows, native geometry and
+-- cursor survive, and the tick resolves once instead of repeating
+-- pre-toggle and post-tick plans. An unknown event still fails loudly.
+function T.menu_toggle_with_pointer_input_publishes_once_with_matching_target()
+  local function openNative(signature)
+    local calls = { swaps = {} }
+    local measure = function()
+      return displayMeasurement(800, 600, oneDisplayTopo(800, 600), signature)
+    end
+    local state, _ = openOnDisplay(calls, measure)
+    state:updateFixed({})
+    drainReveal(state)
+    return state
+  end
+  local state = openNative("publish-once:800x600")
+  local resolves = 0
+  local session = state._session
+  local baseResolve = session.resolve
+  session.resolve = function(self, measurement, view)
+    resolves = resolves + 1
+    return baseResolve(self, measurement, view)
+  end
+  local before = state:status()
+  local frame = contentPaneFrame(before)
+  local x = frame.x + frame.width / 2
+  local y = frame.y + frame.height / 2
+  local tap = tapGesture(x, y, "touch:publish-once")
+  local reference = openNative("publish-once:800x600")
+  Assert.deepEqual(contentPaneFrame(reference:status()), frame, "both screens share the same content frame")
+  reference:updateFixed(tap)
+  state:updateFixed({ { type = "menu" }, tap[1], tap[2] })
+  local shown = state:status()
+  local expected = reference:status()
+  Assert.equal(resolves, 1, "a toggle tick publishes the changed geometry once")
+  Assert.equal(paneSignature(shown), "content+,overlay-", "the toggle shows the overlay")
+  Assert.equal(
+    shown.cursorNode,
+    expected.cursorNode,
+    "the same tap selects the same target under the toggle"
+  )
+  Assert.equal(shown.action, expected.action, "the same tap starts the same action under the toggle")
+  Assert.deepEqual(nativeGeometry(shown), nativeGeometry(before), "the toggle changes no native geometry")
+  local bad = pcall(function()
+    state:updateFixed({ { type = "menu" }, { type = "bogus" } })
+  end)
+  Assert.isFalse(bad, "an unknown event still fails instead of mapping quietly")
+  Assert.isTrue(state:status().open, "the failed batch closes nothing")
+  state:dispose()
+  reference:dispose()
+end
+
+-- Stable interactive ticks reuse the published plan while clocks and
+-- controller state keep advancing: idle ticks resolve nothing, icon
+-- animation ticks advance, navigation and taps act without new plans, a
+-- live external revision reads fresh without rebuilding geometry, a swap
+-- reconciles without a new plan, and a measurement change publishes once
+-- with the paired layout. Unknown events still fail.
+function T.stable_ticks_reuse_the_published_plan_and_refresh_on_demand()
+  local function openReuse(backing, getMeasure)
+    local cancels = 0
+    local state = PartyScreenState.new({
+      service = backing.service,
+      manifest = sourceManifest(),
+      measureDisplay = getMeasure,
+      prepareIcons = function(_)
+        return true
+      end,
+      cancelIconPreparation = function()
+        cancels = cancels + 1
+      end,
+    })
+    state:updateFixed({})
+    drainReveal(state)
+    return state, function()
+      return cancels
+    end
+  end
+  local callsA = { swaps = {} }
+  local backingA = mutableService(callsA)
+  local current = displayMeasurement(800, 600, oneDisplayTopo(800, 600), "reuse:native")
+  local state, cancelsOf = openReuse(backingA, function()
+    return current
+  end)
+  local callsB = { swaps = {} }
+  local backingB = mutableService(callsB)
+  local reference = openReuse(backingB, function()
+    return displayMeasurement(800, 600, oneDisplayTopo(800, 600), "reuse:native")
+  end)
+  local resolves = 0
+  local session = state._session
+  local baseResolve = session.resolve
+  session.resolve = function(self, measurement, view)
+    resolves = resolves + 1
+    return baseResolve(self, measurement, view)
+  end
+  local tickBefore = state:status().anim.tick
+  local cursorBefore = state:status().cursorNode
+  for _ = 1, 3 do
+    state:updateFixed({})
+  end
+  Assert.equal(resolves, 0, "stable idle ticks publish nothing new")
+  Assert.equal(state:status().anim.tick, tickBefore + 3, "icon clocks advance without new plans")
+  Assert.equal(state:status().cursorNode, cursorBefore, "idle ticks move no cursor")
+  Assert.equal(cursorBefore, reference:status().cursorNode, "idling keeps the reference cursor")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  reference:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(resolves, 0, "navigation acts without a new plan")
+  Assert.equal(
+    state:status().cursorNode,
+    reference:status().cursorNode,
+    "navigation lands identically without a new plan"
+  )
+  local frame = contentPaneFrame(state:status())
+  local tap = tapGesture(frame.x + frame.width / 2, frame.y + frame.height / 2, "touch:reuse-tap")
+  state:updateFixed(tap)
+  reference:updateFixed(tap)
+  Assert.equal(resolves, 0, "pointer input maps through the published plan")
+  Assert.equal(
+    state:status().cursorNode,
+    reference:status().cursorNode,
+    "the same tap selects the same target without a new plan"
+  )
+  Assert.equal(state:status().action, reference:status().action, "the same tap starts the same action")
+  backingA.setMon(0, monRecord("TOTODILE"))
+  state:updateFixed({})
+  Assert.equal(resolves, 0, "a live revision reads fresh without rebuilding geometry")
+  Assert.equal(
+    state:status().view.slots[1].iconKey,
+    "TOTODILE/f0",
+    "the shared facts carry the changed member"
+  )
+  backingA.service:swapPartyMons(0, 1)
+  state:updateFixed({})
+  state:updateFixed({})
+  Assert.equal(resolves, 0, "a swap reconciles without a new plan")
+  Assert.equal(
+    state:status().view.slots[1].iconKey,
+    "CYNDAQUIL/f0",
+    "the shared facts carry the swapped member"
+  )
+  current = displayMeasurement(1280, 720, oneDisplayTopo(1280, 720), "reuse:wide")
+  state:updateFixed({})
+  Assert.equal(resolves, 1, "a measurement change publishes once")
+  Assert.equal(paneSignature(state:status()), "detail-,content+", "reflow presents the paired layout")
+  Assert.isTrue(state:status().open, "reflow closes nothing")
+  current = displayMeasurement(800, 600, oneDisplayTopo(800, 600), "reuse:back")
+  state:updateFixed({})
+  Assert.equal(resolves, 2, "returning publishes once more")
+  local signature = paneSignature(state:status())
+  Assert.isTrue(
+    signature == "content+" or signature == "content+,overlay-",
+    "returning to single-display stays a valid native-like plan"
+  )
+  local bad = pcall(function()
+    state:updateFixed({ { type = "bogus" } })
+  end)
+  Assert.isFalse(bad, "an unknown event still fails instead of mapping quietly")
+  Assert.isTrue(state:status().open, "the failed batch closes nothing")
+  state:dispose()
+  reference:dispose()
+  Assert.equal(cancelsOf(), 1, "disposal releases preparation exactly once")
+end
+
 return { tests = T }
