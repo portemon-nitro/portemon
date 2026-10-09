@@ -489,4 +489,68 @@ function T.exposes_independent_cell_markers_without_weakening_corpus_readiness()
   Assert.isFalse(FieldCellCache.isReady(cache, "cell-marker"), "a cell marker cannot attest the corpus")
 end
 
+-- A published index is trusted at runtime: loading reads the exact
+-- generated path and checks only presence and schema identity, while the
+-- explicit readiness gate still rejects nested malformed records.
+function T.trusted_load_returns_the_published_index_without_revalidating_cells()
+  local value = index()
+  local duplicate = {}
+  for key, item in pairs(value.matrices[1].cells[1]) do
+    duplicate[key] = item
+  end
+  duplicate.index = 2
+  value.matrices[1].cells[2] = duplicate
+  local fs = {
+    read = function()
+      return "marker"
+    end,
+    loadLua = function(_, path)
+      if path == FieldCellCache.indexPath() then
+        return value
+      end
+      return nil
+    end,
+  }
+  Assert.isFalse(FieldCellCache.isReady(fs, "marker"), "the readiness gate still rejects the corrupted index")
+  local loaded = FieldCellCache.loadIndex(fs)
+  Assert.isTrue(loaded == value, "the trusted runtime read returns the published index record")
+  Assert.equal(loaded.schema, FieldCellCache.INDEX_SCHEMA, "the published index carries the current schema")
+  local again = FieldCellCache.loadIndex(fs)
+  Assert.isTrue(again == value, "repeated runtime loads return the published index without rescanning it")
+end
+
+-- Presence and schema identity stay mandatory: a missing or mistyped
+-- index fails the trusted read instead of loading an empty topology.
+function T.trusted_load_still_fails_on_a_missing_or_mistyped_index()
+  local missing = {
+    loadLua = function()
+      return nil
+    end,
+  }
+  Assert.throws(function()
+    FieldCellCache.loadIndex(missing)
+  end, "a missing index must fail the trusted read")
+  local mistyped = {
+    loadLua = function(_, path)
+      if path == FieldCellCache.indexPath() then
+        return { schema = "wrong-field-cell-schema", matrices = {} }
+      end
+      return nil
+    end,
+  }
+  Assert.throws(function()
+    FieldCellCache.loadIndex(mistyped)
+  end, "a mistyped index must fail the trusted read")
+  local valid = index()
+  local present = {
+    loadLua = function(_, path)
+      if path == FieldCellCache.indexPath() then
+        return valid
+      end
+      return nil
+    end,
+  }
+  Assert.isTrue(FieldCellCache.loadIndex(present) == valid, "a present schema-correct index still loads")
+end
+
 return { metadata = { capabilities = {} }, tests = T }

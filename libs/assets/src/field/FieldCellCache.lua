@@ -342,10 +342,15 @@ function FieldCellCache.isReady(cacheFs, expectedMarker)
   return true
 end
 
+-- Trusted runtime load: presence plus the current schema identity is
+-- sufficient. Whole-index validation stays with the producer writers,
+-- schema tests, and explicit audit (see isReady).
+---@param cacheFs CacheFs|FieldCellCache.FileSystem
+---@return table<string, unknown>
 function FieldCellCache.loadIndex(cacheFs)
   local index = cacheFs:loadLua(FieldCellCache.indexPath())
-  assert(validateIndex(index), "field cell index is malformed")
-  return index
+  assert(type(index) == "table" and index.schema == FieldCellCache.INDEX_SCHEMA, "field cell index is malformed")
+  return index --[[@as table<string, unknown>]]
 end
 
 function FieldCellCache.find(index, matrixMemberId, x, z)

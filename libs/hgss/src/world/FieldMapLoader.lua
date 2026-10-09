@@ -143,24 +143,29 @@ local function loadRequired(cacheFs, path, code)
   return value --[[@as table]]
 end
 
+-- Trusted runtime read of the published field-cell index: the cache owner
+-- checks presence and schema identity, so this boundary only translates a
+-- failed read into the loader's missing/malformed distinction. The
+-- presence probe runs solely on the failure path; successful loads read once.
 ---@param cacheFs CacheFs
 ---@return table<string, unknown>
 local function loadFieldCellIndex(cacheFs)
   local path = FieldCellCache.indexPath()
-  local index, err = cacheFs:loadLua(path)
-  if index == nil then
+  local ok, indexOrErr = pcall(FieldCellCache.loadIndex, cacheFs)
+  if ok then
+    return indexOrErr --[[@as table<string, unknown>]]
+  end
+  local probe, err = cacheFs:loadLua(path)
+  if probe == nil then
     Errors.raise(FieldErrors.FIELD_CELL_CACHE_MISSING, "field cell index is unavailable; rebuild the derived cache", {
       path = path,
       cause = err and Errors.format(err),
     })
   end
-  local loadedIndex = index --[[@as table]]
-  if not FieldCellCache.validateIndex(loadedIndex) then
-    Errors.raise(FieldErrors.FIELD_CELL_CACHE_INVALID, "field cell index is malformed; rebuild the derived cache", {
-      path = path,
-    })
-  end
-  return loadedIndex
+  Errors.raise(FieldErrors.FIELD_CELL_CACHE_INVALID, "field cell index is malformed; rebuild the derived cache", {
+    path = path,
+  })
+  error("unreachable after field cell index error", 0)
 end
 
 local function releaseAggregate(runtimeMap)

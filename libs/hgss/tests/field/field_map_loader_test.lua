@@ -2556,4 +2556,149 @@ function T.logical_metadata_task_bounds_large_event_validation_across_advances()
   loader:release()
 end
 
+-- The runtime trusts the published field-cell index: outdoor loads across
+-- two maps share one cached index read even when an unrelated matrix
+-- carries records the readiness gate would reject.
+function T.outdoor_loads_across_two_maps_share_one_trusted_cell_index()
+  local cache, world, sceneLoader, _, files = fixture(2)
+  for mapId = 0, 1 do
+    local scene = files[string.format("data/generated/maps/%04d/scene.lua", mapId)]
+    scene.type = "outdoor"
+    world.maps[mapId + 1].matrix = { memberId = 0 }
+  end
+  sceneLoader.loadEnvironment = function(_, environmentScene)
+    return {
+      scene = environmentScene,
+      release = function() end,
+    }
+  end
+  local function corruptCell(memberId, cellIndex)
+    return {
+      matrixMemberId = memberId,
+      index = cellIndex,
+      x = 0,
+      z = 0,
+      mapHeaderId = 5,
+      altitude = 0,
+      landDataMemberId = 0,
+      areaDataMemberId = 0,
+      file = FieldCellCache.cellPath(memberId, cellIndex),
+    }
+  end
+  local published = {
+    schema = FieldCellCache.INDEX_SCHEMA,
+    matrices = {
+      {
+        matrixMemberId = 0,
+        width = 2,
+        height = 1,
+        cells = {
+          {
+            matrixMemberId = 0,
+            index = 0,
+            x = 0,
+            z = 0,
+            mapHeaderId = 0,
+            altitude = 0,
+            landDataMemberId = 0,
+            areaDataMemberId = 0,
+            file = FieldCellCache.cellPath(0, 0),
+          },
+        },
+      },
+      {
+        matrixMemberId = 99,
+        width = 2,
+        height = 1,
+        cells = { corruptCell(99, 0), corruptCell(99, 1) },
+      },
+    },
+  }
+  Assert.isFalse(
+    FieldCellCache.validateIndex(published),
+    "the fixture index carries nested records the readiness gate rejects"
+  )
+  files[FieldCellCache.indexPath()] = published
+  local indexReads = 0
+  local realLoadLua = cache.loadLua
+  cache.loadLua = function(_, path)
+    if path == FieldCellCache.indexPath() then
+      indexReads = indexReads + 1
+    end
+    return realLoadLua(cache, path)
+  end
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local firstMap = loader:load(0)
+  Assert.equal(firstMap.mapId, 0)
+  local secondMap = loader:load(1)
+  Assert.equal(secondMap.mapId, 1)
+  Assert.equal(indexReads, 1, "two outdoor loads share one published index read")
+  Assert.isTrue(
+    loader.fieldCellIndex == published,
+    "the published index stays cached on the loader without rescanning"
+  )
+  Assert.isNil(firstMap.collision, "outdoor logical maps carry no representative collision")
+  loader:release()
+end
+
+-- Missing or mistyped cell indexes keep their typed errors, a missing
+-- field record keeps its own typed error, and unknown maps still fail
+-- loudly instead of falling back to another map.
+function T.cell_index_and_field_record_failures_keep_typed_errors_without_map_fallback()
+  local cache, world, sceneLoader = outdoorCacheFixture("missing")
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local absent = Assert.throws(function()
+    loader:load(0)
+  end)
+  Assert.isTrue(
+    Errors.is(absent) and absent.code == FieldErrors.FIELD_CELL_CACHE_MISSING,
+    "a missing cell index keeps its typed error"
+  )
+  loader:release()
+
+  local badCache, badWorld, badSceneLoader = outdoorCacheFixture("invalid")
+  local badLoader = FieldMapLoader.new(badCache, badWorld, { sceneLoader = badSceneLoader })
+  local malformed = Assert.throws(function()
+    badLoader:load(0)
+  end)
+  Assert.isTrue(
+    Errors.is(malformed) and malformed.code == FieldErrors.FIELD_CELL_CACHE_INVALID,
+    "a mistyped cell index keeps its typed error"
+  )
+  local unknownId = Assert.throws(function()
+    badLoader:load(999)
+  end)
+  Assert.isTrue(
+    Errors.is(unknownId) and unknownId.code == FieldErrors.FIELD_MAP_UNKNOWN,
+    "an unknown map id never falls back to another map"
+  )
+  local unknownSymbol = Assert.throws(function()
+    badLoader:loadLogical("MAP_MISSING")
+  end)
+  Assert.isTrue(
+    Errors.is(unknownSymbol) and unknownSymbol.code == FieldErrors.FIELD_MAP_UNKNOWN,
+    "an unknown map symbol never falls back to another map"
+  )
+  badLoader:release()
+
+  local fieldCache, fieldWorld, fieldSceneLoader, _, fieldFiles = fixture(1)
+  fieldFiles[FieldMapDataCache.fieldPath(0)] = nil
+  local fieldLoader = FieldMapLoader.new(fieldCache, fieldWorld, { sceneLoader = fieldSceneLoader })
+  local missingSemantic = Assert.throws(function()
+    fieldLoader:loadLogical(0)
+  end)
+  Assert.isTrue(
+    Errors.is(missingSemantic) and missingSemantic.code == FieldErrors.FIELD_MAP_DATA_CACHE_MISSING,
+    "a missing field record keeps its typed error"
+  )
+  local missingFull = Assert.throws(function()
+    fieldLoader:load(0)
+  end)
+  Assert.isTrue(
+    Errors.is(missingFull) and missingFull.code == FieldErrors.FIELD_MAP_DATA_CACHE_MISSING,
+    "a missing field record fails the full load at the same boundary"
+  )
+  fieldLoader:release()
+end
+
 return { tests = T }
