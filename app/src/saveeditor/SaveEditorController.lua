@@ -653,7 +653,7 @@ function Controller:pointer(event)
       if fieldX ~= nil then
         self:setFocus("location:grid")
         self.locationCursorX, self.locationCursorZ = tonumber(fieldX), tonumber(fieldZ)
-        return { kind = "activate", targetId = target }
+        return { kind = "select_tile", fieldX = tonumber(fieldX), fieldZ = tonumber(fieldZ) }
       end
     end
     return { kind = "activate", targetId = target }

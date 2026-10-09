@@ -1496,22 +1496,32 @@ function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_
       state:keyreleased("escape")
       Assert.equal(
         state.controller.focus,
-        "section:Location",
-        "the first Back from a focused Map row transfers focus to the Location section control"
+        rootGroupCursor,
+        "Back from a nested Map row restores the root group cursor"
       )
-      local escapedGroupView = state:view()
-      Assert.equal(escapedGroupView.locationNavigation.page, "group", "first Back leaves the Map hierarchy unchanged")
-      Assert.equal(escapedGroupView.locationNavigation.groupId, selectedGroup, "first Back retains the selected group")
-      Assert.equal(state.controller.query, rememberedQuery, "first Back preserves the group query")
-      Assert.equal(state.controller.scrollOffset, rememberedScroll, "first Back preserves the group scroll")
+      Assert.equal(state.controller.locationPage, "root", "Back from a nested Map list ascends one level")
+
+      state:keypressed("escape")
+      state:keyreleased("escape")
+      Assert.equal(state.controller.focus, "section:Location", "root-list Back transfers focus to Location")
+      Assert.equal(state.controller.locationPage, "root", "root-list Back keeps the Map hierarchy at its root")
 
       state:keypressed("tab")
-      local restoredGroupView = state:view()
-      Assert.equal(state.controller.focus, rememberedMap, "Tab re-enters the remembered Map row")
+      Assert.equal(state.controller.focus, rootGroupCursor, "Tab re-enters the remembered root group row")
+      state:keypressed("return")
+      state:keyreleased("return")
+      local restoredGroupView = advanceEditorUntil(state, function(view)
+        return view.locationNavigation.page == "group"
+          and view.locationNavigation.groupId == selectedGroup
+          and view.location.mapListId == groupListId
+      end, "the remembered production Map group")
+      Assert.equal(state.controller.focus, rememberedMap, "re-entering the group restores the remembered Map row")
+      Assert.equal(state.controller.query, rememberedQuery, "re-entering the group restores its query")
+      Assert.equal(state.controller.scrollOffset, rememberedScroll, "re-entering the group restores its scroll")
       local restoredViewport = assert(restoredGroupView.layout.viewports[groupListId])
       Assert.isTrue(
         restoredViewport.firstIndex <= targetIndex and targetIndex <= restoredViewport.lastIndex,
-        "re-entering the Map list reveals the remembered row"
+        "re-entering the Map group reveals the remembered row"
       )
       for _, row in ipairs(restoredGroupView.layout.rows) do
         if groupList.indexByTarget[row.targetId] ~= nil then
@@ -1527,12 +1537,10 @@ function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_
 
       state:keypressed("escape")
       state:keyreleased("escape")
-      state:keypressed("escape")
-      state:keyreleased("escape")
       local returnedRootView = advanceEditorUntil(state, function(view)
         return view.locationNavigation.page == "root"
-      end, "the Map root after Back from section chrome")
-      Assert.equal(state.controller.focus, rootGroupCursor, "Back from section chrome restores the root group cursor")
+      end, "the Map root after Back from its group")
+      Assert.equal(state.controller.focus, rootGroupCursor, "Back from the group restores the root cursor")
       for _, row in ipairs(returnedRootView.layout.rows) do
         if rootMapList.indexByTarget[row.targetId] ~= nil then
           Assert.isNil(row.value, "Map group rows use their complete label without a trailing value")

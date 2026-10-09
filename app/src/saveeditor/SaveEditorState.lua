@@ -2985,7 +2985,7 @@ function State:_requestBack()
     self.valueEditor == nil
     and self.controller.modal == nil
     and self.controller.section == "Location"
-    and (self.controller.locationPage == "root" or self.controller.locationPage == "group")
+    and self.controller.locationPage == "root"
     and focus ~= nil
     and (
       focus == "list:location:root"

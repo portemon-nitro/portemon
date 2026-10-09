@@ -2149,6 +2149,150 @@ function T.tests.pending_manual_tile_selection_cancels_survey_ownership()
   Assert.equal(harness.service.cancelInitialSurveyCalls or 0, 1, "a pending survey is canceled before tile resolution")
 end
 
+local function tappedLocationHarness(width, height)
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:enterLocation({ mapId = 12, fieldX = 32, fieldZ = 48 })
+  controller:chooseLocationMap(12, 30, 46)
+  local metrics = interactionMetrics()
+  local view
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local context = DisplayContext.new({
+    graphics = love.graphics,
+    topologyProvider = function()
+      return topology
+    end,
+  })
+  local presentation = ApplicationPresentation.new(Interface.defaults())
+  local measurement = context:measure(width, height)
+  local attempts, writes = {}, {}
+  local service = {
+    snapshot = function()
+      return { generation = 3, status = { state = "ready" } }
+    end,
+    resolve = function(_, mapId, fieldX, fieldZ, generation)
+      attempts[#attempts + 1] = { mapId = mapId, fieldX = fieldX, fieldZ = fieldZ, generation = generation }
+      if fieldX == 32 and fieldZ == 48 then
+        return { mapId = mapId, fieldX = fieldX, fieldZ = fieldZ }, { state = "ready" }
+      end
+      if fieldX == 33 then
+        return nil, { state = "blocked", reason = "blocked tile" }
+      end
+      return nil, { state = "pending", reason = "preparing tile" }
+    end,
+    setViewport = function() end,
+    update = function() end,
+    cancelInitialSurvey = function() end,
+  }
+  local session = {
+    snapshot = function()
+      return { location = writes[#writes] or { mapId = 12, fieldX = 30, fieldZ = 46 } }
+    end,
+    setLocation = function(_, placement)
+      writes[#writes + 1] = placement
+      return { ok = true }
+    end,
+  }
+  local state = stateHarness({
+    status = "ready",
+    controller = controller,
+    presentation = presentation,
+    session = session,
+    locationService = service,
+    locationServiceMapId = 12,
+    locationGridWidthTiles = 7,
+    locationGridHeightTiles = 5,
+    locationPreviewMemory = {},
+    errorMessage = nil,
+    _snapshot = function()
+      local navigation = controller:locationSnapshot()
+      view = {
+        ready = true,
+        status = "ready",
+        dirty = false,
+        sectionDirty = false,
+        section = "Location",
+        scope = controller:snapshot().scope,
+        focus = controller.focus,
+        textMetrics = metrics,
+        scrollOffsets = controller.scrollOffsets,
+        location = {
+          mapId = 12,
+          map = { symbol = "MAP_TEST" },
+          status = { state = "ready" },
+          tiles = {},
+          maps = {},
+          cursor = navigation.cursor,
+        },
+        locationNavigation = navigation,
+      }
+      return view
+    end,
+    _resolve = function(_, currentView)
+      return presentation:resolve(measurement, currentView)
+    end,
+  })
+  return {
+    controller = controller,
+    state = state,
+    presentation = presentation,
+    attempts = attempts,
+    writes = writes,
+    view = function()
+      return state:_snapshot()
+    end,
+    close = function()
+      presentation:dispose()
+    end,
+  }
+end
+
+local function pointerAtGridTile(harness, fieldX, fieldZ)
+  local view = harness.view()
+  local plan = harness.state:_resolve(view)
+  local grid = assert(plan.content.layout.locationGrid)
+  local x = grid.originX + (fieldX - grid.firstFieldX + 0.5) * grid.tileSize
+  local y = grid.originY + (fieldZ - grid.firstFieldZ + 0.5) * grid.tileSize
+  local pane = assert(plan.panes[1])
+  return LayoutGeometry.logicalToHost(pane.placement, x, y)
+end
+
+function T.tests.map_tile_taps_use_location_policy_and_grid_drags_only_pan()
+  for _, size in ipairs({ { 256, 192 }, { 256, 400 }, { 800, 600 } }) do
+    local harness = tappedLocationHarness(size[1], size[2])
+    local x, y = pointerAtGridTile(harness, 32, 48)
+    harness.state:_pointer({
+      { type = "pointer_down", pointerId = "touch:safe", x = x, y = y },
+      { type = "pointer_up", pointerId = "touch:safe", x = x, y = y },
+    })
+    Assert.equal(#harness.attempts, 1, "a safe tap reaches location policy at " .. size[1] .. "x" .. size[2])
+    Assert.equal(#harness.writes, 1, "the accepted tile updates the staged destination")
+
+    for _, tile in ipairs({ { 33, 48, "blocked" }, { 34, 48, "pending" } }) do
+      x, y = pointerAtGridTile(harness, tile[1], tile[2])
+      harness.state:_pointer({
+        { type = "pointer_down", pointerId = "touch:" .. tile[3], x = x, y = y },
+        { type = "pointer_up", pointerId = "touch:" .. tile[3], x = x, y = y },
+      })
+      Assert.equal(#harness.writes, 1, tile[3] .. " taps cannot change the staged destination")
+      Assert.equal(harness.attempts[#harness.attempts].fieldX, tile[1], tile[3] .. " tile reaches policy")
+    end
+
+    x, y = pointerAtGridTile(harness, 32, 48)
+    harness.state:_pointer({ { type = "pointer_down", pointerId = "touch:drag", x = x, y = y } })
+    harness.state:_pointer({ { type = "pointer_move", pointerId = "touch:drag", x = x + 48, y = y } })
+    harness.state:_pointer({ { type = "pointer_up", pointerId = "touch:drag", x = x + 48, y = y } })
+    Assert.equal(#harness.writes, 1, "a grid drag pans without staging another destination")
+    Assert.equal(#harness.attempts, 3, "a grid drag never resolves a destination")
+    harness.close()
+  end
+end
+
 function T.tests.location_map_browsing_moves_only_focus_and_never_starts_map_work()
   local harness = locationListHarness()
   local controller, state = harness.controller, harness.state
@@ -4510,29 +4654,28 @@ function T.tests.back_from_the_map_list_root_follows_the_normal_leave_path()
   Assert.deepEqual(clean.results, { { kind = "main_menu" } }, "root Back without work leaves the editor")
 end
 
-function T.tests.first_back_from_a_focused_map_row_moves_focus_to_the_location_section()
+function T.tests.back_from_a_map_group_ascends_to_the_root_before_the_section()
   local harness = locationListHarness()
   local controller, state = harness.controller, harness.state
   state._requestBack = State._requestBack
-  controller:setFocus("list:location:group:1")
-  state:_reconcileFocus()
-  state:_consumeUiInput({ { type = "navigate", direction = "down" } })
-  local rememberedFocus = controller.focus
-  local rememberedCursor = controller:listCursor("location:group:1")
-  local rememberedQuery = controller.query
-  local rememberedScroll = controller.locationMapOffset
-  Assert.equal(rememberedFocus, "location:map:34", "the setup focuses a logical map row")
+  controller.locationMemory.root = { query = "route", cursor = "location:group:1", scroll = 2 }
+  controller.query = "cave"
+  controller.scrollOffset = 3
+  controller.locationMapOffset = 3
+  controller:setListCursor("location:group:1", "location:map:47")
+  controller:setFocus("location:map:47")
 
   state:_requestBack()
 
-  Assert.equal(controller.focus, "section:Location", "first Back from a list row enters section chrome")
-  Assert.equal(controller.locationPage, "group", "first Back leaves the Map hierarchy unchanged")
-  Assert.equal(controller.locationGroupId, "location:group:1", "the same Map group remains active")
-  Assert.equal(controller:listCursor("location:group:1"), rememberedCursor, "the list cursor is remembered")
-  Assert.equal(controller.query, rememberedQuery, "the list filter is preserved")
-  Assert.equal(controller.locationMapOffset, rememberedScroll, "the list scroll is preserved")
-  state:_requestBack()
-  Assert.equal(controller.locationPage, "root", "a second Back uses the existing hierarchy transition")
+  Assert.equal(controller.locationPage, "root", "Back from a group ascends to the root first")
+  Assert.equal(controller.focus, "location:group:1", "root Back restores its remembered group cursor")
+  Assert.equal(controller.query, "route", "root Back restores its filter")
+  Assert.equal(controller.locationMapOffset, 2, "root Back restores its scroll offset")
+  Assert.deepEqual(
+    controller.locationMemory.groups["location:group:1"],
+    { query = "cave", cursor = "location:map:47", scroll = 3 },
+    "group Back remembers its filter, cursor, and scroll for re-entry"
+  )
 end
 
 local function terminalInputHarness()

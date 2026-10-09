@@ -1924,6 +1924,45 @@ function T.tests.exact_verification_prepares_only_its_requested_point()
   end
 end
 
+function T.tests.resolving_an_off_cursor_tile_runs_its_own_placement_classification()
+  local service = loadingService({ taskImmediate = true })
+  local ok, err = xpcall(function()
+    service:openMap(11, {
+      purpose = "browse",
+      rememberedCursor = { fieldX = 16, fieldZ = 16 },
+    })
+    service:setViewport(16, 16, 1, 1)
+    service:update()
+
+    local view = service:snapshot()
+    Assert.deepEqual(
+      { fieldX = view.initialCursor.fieldX, fieldZ = view.initialCursor.fieldZ },
+      { fieldX = 16, fieldZ = 16 },
+      "the prepared preview cursor is distinct from the requested tile"
+    )
+    local classified
+    local classify = service._classify
+    function service:_classify(fieldX, fieldZ)
+      classified = { fieldX = fieldX, fieldZ = fieldZ }
+      return classify(self, fieldX, fieldZ)
+    end
+
+    local placement, status = service:resolve(11, 17, 16, view.generation)
+
+    Assert.deepEqual(classified, { fieldX = 17, fieldZ = 16 }, "resolution classifies the requested off-cursor tile")
+    Assert.equal(status.state, "ready", "the safe neighboring tile is accepted by placement policy")
+    Assert.deepEqual(
+      { mapId = placement.mapId, fieldX = placement.fieldX, fieldZ = placement.fieldZ },
+      { mapId = 11, fieldX = 17, fieldZ = 16 },
+      "the accepted placement preserves the tapped coordinates"
+    )
+  end, debug.traceback)
+  service:dispose()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 function T.tests.remembered_cursor_is_revalidated_without_starting_a_browse_survey()
   local service = loadingService({ taskImmediate = true })
   local ok, err = xpcall(function()
