@@ -646,11 +646,7 @@ function T.tests.failed_browse_request_stays_terminal_across_updates_viewports_a
   Assert.notNil(failed.initialCursor, "failed browse requests keep an inspectable cursor")
   Assert.equal(failed.initialCursor.state, "failed", "the browse cursor is terminal with the request")
   Assert.equal(failed.initialCursor.mapId, 11, "the failed cursor identifies its map")
-  Assert.equal(
-    failed.initialCursor.generation,
-    service.requestGeneration,
-    "the failed cursor identifies its request"
-  )
+  Assert.equal(failed.initialCursor.generation, service.requestGeneration, "the failed cursor identifies its request")
   Assert.equal(failed.initialCursor.reason, failed.status.reason, "the cursor retains the failure reason")
 
   local task = assert(loader.tasks[1])
@@ -761,7 +757,11 @@ function T.tests.asset_and_location_failures_are_terminal_for_browse_requests()
   local requestsAtLocationFailure = requests
   locationService:update()
   Assert.equal(requests, requestsAtLocationFailure, "failed location readiness is not retried")
-  Assert.equal(assert(locationLoader.tasks[1]).releases, 0, "a successfully published map task is not released on closure failure")
+  Assert.equal(
+    assert(locationLoader.tasks[1]).releases,
+    0,
+    "a successfully published map task is not released on closure failure"
+  )
   locationService:dispose()
 end
 
@@ -785,11 +785,7 @@ function T.tests.same_map_retry_rearms_only_after_explicit_open()
 
   local beginsAtFailure = #loader.begins
   pcall(service.update, service)
-  Assert.equal(
-    #loader.begins,
-    beginsAtFailure,
-    "a failed generation does not implicitly begin replacement work"
-  )
+  Assert.equal(#loader.begins, beginsAtFailure, "a failed generation does not implicitly begin replacement work")
 
   local failedGeneration = service.requestGeneration
   service:openMap(11, { purpose = "browse", rememberedCursor = { fieldX = 18, fieldZ = 16 } })
@@ -821,7 +817,11 @@ function T.tests.uncovered_door_failure_retains_map_identity_and_typed_diagnosti
   local snapshot = service:snapshot()
   Assert.equal(snapshot.mapId, 11, "the failed request retains its map identity")
   Assert.equal(snapshot.status.state, "failed", "the typed door error remains a loader failure")
-  Assert.equal(snapshot.status.reason, Errors.format(failure), "the status preserves the original typed code and context")
+  Assert.equal(
+    snapshot.status.reason,
+    Errors.format(failure),
+    "the status preserves the original typed code and context"
+  )
   Assert.isTrue(snapshot.status.reason:find(FieldErrors.MAP_PROP_UNCOVERED_DOOR, 1, true) ~= nil)
   Assert.isTrue(snapshot.status.reason:find("nearestDistance=9.01387818866", 1, true) ~= nil)
   Assert.isNil(service.runtimeMap, "a failed map is not published as loaded")
@@ -872,10 +872,7 @@ function T.tests.same_map_viewport_changes_keep_the_pending_map_task()
 
   service:setViewport(OUTSIDE_CENTER + 1, OUTSIDE_CENTER, 1, 1)
   service:setViewport(OUTSIDE_CENTER + 1, OUTSIDE_CENTER, 2, 2)
-  Assert.isTrue(
-    service:snapshot().generation ~= generationBeforePan,
-    "panning and resizing invalidate tile freshness"
-  )
+  Assert.isTrue(service:snapshot().generation ~= generationBeforePan, "panning and resizing invalidate tile freshness")
 
   service:update()
   service:update()
@@ -909,11 +906,7 @@ function T.tests.one_update_shares_a_single_work_budget_between_map_and_coverage
 
   local mapTask = loader.tasks[1]
   Assert.equal(#loader.coverageBegins, 1, "outdoor preparation stages its coverage work through a task")
-  Assert.equal(
-    #loader.blockingCoverages,
-    0,
-    "staged preparation never builds coverage through the blocking call"
-  )
+  Assert.equal(#loader.blockingCoverages, 0, "staged preparation never builds coverage through the blocking call")
   local coverageTask = loader.coverageTasks[1]
   Assert.equal(preparationConsumed, 8, "map and coverage preparation report their combined work")
   Assert.equal(mapTask.consumedTotal, 5, "the map reports the work it consumed")
@@ -926,11 +919,7 @@ function T.tests.one_update_shares_a_single_work_budget_between_map_and_coverage
     mapTask.consumedTotal + coverageTask.consumedTotal <= 8,
     "one update spends no more than the single location budget"
   )
-  Assert.equal(
-    service:snapshot().status.state,
-    "pending",
-    "a pending replacement coverage keeps the viewport pending"
-  )
+  Assert.equal(service:snapshot().status.state, "pending", "a pending replacement coverage keeps the viewport pending")
   service:dispose()
 end
 
@@ -1142,11 +1131,7 @@ function T.tests.real_loader_and_coverage_need_repeated_bounded_updates()
   service:update()
 
   local first = service:snapshot()
-  Assert.equal(
-    first.status.state,
-    "pending",
-    "one bounded update cannot finish real map and coverage work"
-  )
+  Assert.equal(first.status.state, "pending", "one bounded update cannot finish real map and coverage work")
   Assert.isNil(service.coverage, "no synchronously built coverage appears after one update")
 
   local guard = 0
@@ -1358,10 +1343,7 @@ function T.tests.destination_verification_rejects_stale_results_and_disposes_onc
   Assert.isTrue(retired.disposed, "cancel releases the retired verifier")
   Assert.isNil(owner:status(), "cancel retires the operation")
   Assert.isTrue(owner:start(destinationSnapshot(2), false), "the owner restarts after a cancel")
-  Assert.isTrue(
-    owner:status().operationId ~= first.operationId,
-    "a restarted check owns a fresh identity"
-  )
+  Assert.isTrue(owner:status().operationId ~= first.operationId, "a restarted check owns a fresh identity")
   owner:cancel()
 
   local setupOk = pcall(owner.start, owner, destinationSnapshot(9, 10), false)
@@ -1494,6 +1476,8 @@ function T.tests.relocated_save_failure_keeps_the_leave_decision_without_a_resul
   Assert.deepEqual(results, {}, "a failed save emits no result")
   Assert.notNil(state.errorMessage, "a failed save keeps its diagnostic")
   Assert.equal(state.closeRequest.phase, "confirm", "a failed save returns its leave decision")
+end
+
 function T.tests.represented_matrix_lookup_advances_under_the_metadata_budget()
   local service, loader = loadingService({})
   service:openMap(11)
@@ -1580,7 +1564,11 @@ function T.tests.represented_map_ids_are_ordered_under_the_metadata_budget()
     service:_advanceRepresented(1)
   end
   Assert.equal(service.metadata.phase, "representedCatalog", "catalog ordering is staged after descriptor enumeration")
-  Assert.equal(service.metadata.catalogIndex, 127, "descriptor work shares its remaining item budget with catalog traversal")
+  Assert.equal(
+    service.metadata.catalogIndex,
+    127,
+    "descriptor work shares its remaining item budget with catalog traversal"
+  )
   local consumed = service:_advanceRepresented(1)
   Assert.equal(consumed, 1, "catalog ordering consumes one metadata unit")
   Assert.equal(service.metadata.catalogIndex, 255, "one unit visits no more than 128 source maps")
@@ -1914,10 +1902,7 @@ function T.tests.exact_verification_prepares_only_its_requested_point()
     local view = service:snapshot()
     Assert.equal(view.status.state, "ready", "the exact destination reaches normal prepared status")
     Assert.notNil(service:tileStatus(16, 16), "the requested destination has ordinary placement facts")
-    Assert.isNil(
-      view.initialCursor,
-      "an exact destination verification does not create a whole-map browse survey"
-    )
+    Assert.isNil(view.initialCursor, "an exact destination verification does not create a whole-map browse survey")
     Assert.equal(#loader.begins, 1, "point verification prepares only its requested logical map")
     Assert.equal(#loader.coverageBegins, 0, "indoor point verification does not acquire unrelated physical coverage")
   end, debug.traceback)
@@ -1942,18 +1927,14 @@ function T.tests.remembered_cursor_is_revalidated_without_starting_a_browse_surv
     Assert.isNil(service.survey, "remembered-point preparation does not start a whole-map survey")
     Assert.isNil(service.surveyDomain, "remembered-point preparation does not enumerate the map domain")
     Assert.equal(view.status.state, "ready", "remembered-point preparation reaches normal ready state")
-    Assert.deepEqual(
-      view.initialCursor,
-      {
-        state = "ready",
-        mapId = 11,
-        generation = requestGeneration,
-        factsRevision = service.factsRevision,
-        fieldX = 16,
-        fieldZ = 16,
-      },
-      "the remembered point is revalidated and returned as the active initial cursor"
-    )
+    Assert.deepEqual(view.initialCursor, {
+      state = "ready",
+      mapId = 11,
+      generation = requestGeneration,
+      factsRevision = service.factsRevision,
+      fieldX = 16,
+      fieldZ = 16,
+    }, "the remembered point is revalidated and returned as the active initial cursor")
   end, debug.traceback)
   service:dispose()
   if not ok then

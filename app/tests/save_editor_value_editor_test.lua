@@ -725,8 +725,14 @@ function T.number_modal_uses_range_columns_in_a_content_sized_frame()
     },
     scope = { id = "value:integer:money", epoch = 2, kind = "value", focusId = "confirm" },
     numberControlVisuals = {
-      increment = { normal = { image = "up", width = 12, height = 12 }, pressed = { image = "up-p", width = 12, height = 12 } },
-      decrement = { normal = { image = "down", width = 12, height = 12 }, pressed = { image = "down-p", width = 12, height = 12 } },
+      increment = {
+        normal = { image = "up", width = 12, height = 12 },
+        pressed = { image = "up-p", width = 12, height = 12 },
+      },
+      decrement = {
+        normal = { image = "down", width = 12, height = 12 },
+        pressed = { image = "down-p", width = 12, height = 12 },
+      },
     },
   }
   local layout = SaveEditorLayout.compute(view, 640, 480, metrics)
@@ -757,10 +763,15 @@ end
 
 local function closeHarness(options)
   local Controller = require("app.src.saveeditor.SaveEditorController")
+  local Layout = require("app.src.saveeditor.SaveEditorLayout")
   local State = require("app.src.saveeditor.SaveEditorState")
+  local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
   local controller = Controller.new()
   local results = {}
   local session = {
+    revision = function()
+      return 0
+    end,
     discards = 0,
     saveCalls = 0,
     discard = function(self)
@@ -770,7 +781,13 @@ local function closeHarness(options)
       return options.dirty == true
     end,
     snapshot = function()
-      return { dirtySections = {}, location = { mapId = 7, fieldX = 10, fieldZ = 12 } }
+      return {
+        dirtySections = { money = false, frame = false, flags = false, party = false, bag = false, location = false },
+        playerName = "PLAYER",
+        money = 0,
+        frameIndex = 0,
+        location = { mapId = 7, fieldX = 10, fieldZ = 12 },
+      }
     end,
     save = function(self)
       self.saveCalls = self.saveCalls + 1
@@ -781,12 +798,32 @@ local function closeHarness(options)
     approvedExit = false,
     disposed = false,
     controller = controller,
+    modalStack = ModalStack.new(),
+    modalLayerSequence = 0,
     session = session,
+    width = 256,
+    height = 192,
+    renderer = {
+      metrics = function()
+        return { lineHeight = 14, measure = function(text)
+          return #text * 7
+        end }
+      end,
+    },
+    displayContext = { measure = function()
+      return {}
+    end },
+    presentation = { resolve = function(_, _, view)
+      local metrics = view.textMetrics
+      return { content = { layout = Layout.compute(view, 256, 192, metrics) } }
+    end },
     valueEditor = options.valueEditor,
     valuePurpose = options.valuePurpose,
     valueReturnFocus = options.valueReturnFocus,
     monDraft = options.monDraft,
     errorMessage = nil,
+    inputTick = 0,
+    numberPressUntilTick = 0,
     fieldInput = {
       beginUi = function() end,
     },
@@ -812,6 +849,9 @@ function T.dirty_value_editor_enters_the_leave_flow_and_cancel_restores_focus()
       snapshot = function()
         return { kind = "integer" }
       end,
+      result = function()
+        return { kind = "cancel" }
+      end,
     },
     valuePurpose = "money",
     valueReturnFocus = "money",
@@ -832,6 +872,12 @@ function T.invalid_party_draft_blocks_close_save_and_keeps_the_leave_decision()
   local ErrorsModule = require("libs.errors.src.Errors")
   local harness = closeHarness({})
   harness.state.monDraft = {
+    mode = function()
+      return "replace"
+    end,
+    isDirty = function()
+      return true
+    end,
     validate = function()
       return nil, ErrorsModule.new("PARTY_DRAFT_INVALID", "level is out of range")
     end,

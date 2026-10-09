@@ -40,12 +40,13 @@ local function activate(state, targetId)
     session.frameIndex = session.frameIndex or 0
     view.session = session
   end
-  local metrics = view.textMetrics or {
-    lineHeight = 14,
-    measure = function(text)
-      return #text * 7
-    end,
-  }
+  local metrics = view.textMetrics
+    or {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    }
   view.numberControlVisuals = { increment = { normal = { width = 8, height = 8 } } }
   local layout = Layout.compute(view, 800, 600, metrics)
   state:_activateControl(targetId, layout)
@@ -149,32 +150,37 @@ function T.tests.progress_section_navigation_does_not_request_scrolling()
   local controller = Controller.new()
   controller:setSection("Progress")
   controller:setFocus("section:Progress")
-  local layout = Layout.compute({
-    ready = true,
-    status = "ready",
-    dirty = false,
-    sectionDirty = false,
-    section = "Progress",
-    scope = controller:snapshot().scope,
-    query = "",
-    scrollOffsets = {},
-    flagModel = {
-      count = 0,
-      rowTargets = {},
-      indexByTarget = {},
-      rowAt = function()
-        return nil
-      end,
-      idAt = function()
-        return nil
-      end,
+  local layout = Layout.compute(
+    {
+      ready = true,
+      status = "ready",
+      dirty = false,
+      sectionDirty = false,
+      section = "Progress",
+      scope = controller:snapshot().scope,
+      query = "",
+      scrollOffsets = {},
+      flagModel = {
+        count = 0,
+        rowTargets = {},
+        indexByTarget = {},
+        rowAt = function()
+          return nil
+        end,
+        idAt = function()
+          return nil
+        end,
+      },
     },
-  }, 800, 600, {
-    lineHeight = 14,
-    measure = function(text)
-      return #text * 7
-    end,
-  })
+    800,
+    600,
+    {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    }
+  )
   local sectionTargets = {}
   for _, control in ipairs(layout.focusNavigation.controls) do
     if control.regionId == "sections" then
@@ -910,7 +916,7 @@ local function progressListHarness(flagCatalog)
   local state = stateHarness({
     status = "ready",
     controller = controller,
-    fieldInput = { beginUi = function() end },
+    fieldInput = FieldInput.new(),
     scopeEpoch = 0,
     _snapshot = buildView,
     _resolve = function()
@@ -1113,9 +1119,27 @@ function T.tests.party_navigation_uses_the_exact_unscrolled_body_anchor()
     partyStats = {
       header = {
         { id = "level", label = "Level", value = 5, targetId = "party:field:level", editor = { kind = "integer" } },
-        { id = "experience", label = "Experience", value = 100, targetId = "party:field:experience", editor = { kind = "integer" } },
-        { id = "friendship", label = "Friendship", value = 70, targetId = "party:field:friendship", editor = { kind = "integer" } },
-        { id = "currentHp", label = "HP", value = 12, targetId = "party:field:currentHp", editor = { kind = "integer" } },
+        {
+          id = "experience",
+          label = "Experience",
+          value = 100,
+          targetId = "party:field:experience",
+          editor = { kind = "integer" },
+        },
+        {
+          id = "friendship",
+          label = "Friendship",
+          value = 70,
+          targetId = "party:field:friendship",
+          editor = { kind = "integer" },
+        },
+        {
+          id = "currentHp",
+          label = "HP",
+          value = 12,
+          targetId = "party:field:currentHp",
+          editor = { kind = "integer" },
+        },
         { id = "status", label = "Status", value = "OK", targetId = "party:readonly:status" },
       },
       rows = statsRows,
@@ -1143,7 +1167,11 @@ function T.tests.party_navigation_uses_the_exact_unscrolled_body_anchor()
   end
 
   Assert.equal(controller.focus, targetId, "Down preserves the IV column across every logical stat row")
-  Assert.equal(controller.scrollOffsets["party:Stats"], expected, "the focused row is revealed from its exact pixel interval")
+  Assert.equal(
+    controller.scrollOffsets["party:Stats"],
+    expected,
+    "the focused row is revealed from its exact pixel interval"
+  )
 end
 
 function T.tests.typing_filters_the_focused_list_without_a_search_target()
@@ -1398,7 +1426,7 @@ local function locationListHarness()
   local state = stateHarness({
     status = "ready",
     controller = controller,
-    fieldInput = { beginUi = function() end },
+    fieldInput = FieldInput.new(),
     scopeEpoch = 0,
     _snapshot = buildView,
     _resolve = function()
@@ -1515,7 +1543,7 @@ local function overflowingLocationListHarness(width, height, count)
   local state = stateHarness({
     status = "ready",
     controller = controller,
-    fieldInput = { beginUi = function() end },
+    fieldInput = FieldInput.new(),
     scopeEpoch = 0,
     _snapshot = buildView,
     _resolve = function()
@@ -1808,7 +1836,7 @@ local function mapActivationHarness()
     status = "ready",
     controller = controller,
     locationService = service,
-    fieldInput = { beginUi = function() end },
+    fieldInput = FieldInput.new(),
     scopeEpoch = 0,
     locationServiceMapId = 12,
     locationViewport = nil,
@@ -1950,7 +1978,6 @@ function T.tests.confirming_a_map_row_publishes_the_map_without_loading_in_the_i
   Assert.equal(harness.service.updateCalls, 0, "the input path performs no service update before the next update")
 end
 
-function T.tests.steady_update_prepares_icons_from_the_published_selection()
 function T.tests.location_grid_direction_moves_the_cursor_without_a_list_viewport()
   local harness = mapActivationHarness()
   harness.state.locationAutoCenterToken = { mapId = 12 }
@@ -2013,27 +2040,32 @@ function T.tests.pointer_pan_takes_location_cursor_ownership_before_the_next_upd
     end,
     _reconcileFocus = function() end,
     _syncScope = function() end,
+    _settleScope = function() end,
     _dispatchIntent = function() end,
   })
 
-  state:_pointer({ {
-    type = "pointer_down",
-    pointerId = "touch:grid-pan",
-    targetId = "location:grid",
-    grid = { tileSize = 16 },
-    x = 10,
-    y = 10,
-    scopeId = controller.scopeId,
-    scopeEpoch = controller.scopeEpoch,
-  } })
-  state:_pointer({ {
-    type = "pointer_move",
-    pointerId = "touch:grid-pan",
-    x = 30,
-    y = 10,
-    scopeId = controller.scopeId,
-    scopeEpoch = controller.scopeEpoch,
-  } })
+  state:_pointer({
+    {
+      type = "pointer_down",
+      pointerId = "touch:grid-pan",
+      targetId = "location:grid",
+      grid = { tileSize = 16 },
+      x = 10,
+      y = 10,
+      scopeId = controller.scopeId,
+      scopeEpoch = controller.scopeEpoch,
+    },
+  })
+  state:_pointer({
+    {
+      type = "pointer_move",
+      pointerId = "touch:grid-pan",
+      x = 30,
+      y = 10,
+      scopeId = controller.scopeId,
+      scopeEpoch = controller.scopeEpoch,
+    },
+  })
 
   Assert.isNil(state.locationAutoCenterToken, "manual map panning owns the preview before an update can recenter it")
   Assert.equal(canceled, 1, "starting a pointer pan cancels the automatic survey")
@@ -3586,7 +3618,7 @@ local function backHarness(options)
     valueEditor = options.valueEditor,
     monDraft = options.monDraft,
     locationService = options.locationService,
-    fieldInput = { beginUi = function() end },
+    fieldInput = FieldInput.new(),
     scopeEpoch = 0,
     locationServiceMapId = options.locationServiceMapId,
     locationViewport = options.locationViewport,
@@ -3667,7 +3699,11 @@ function T.tests.too_small_number_layout_blocks_submission_and_recovers_without_
   state:textinput("9")
   state:_dispatchActivationAction({ kind = "value.adjust-number-place", place = 0, direction = "up" })
   Assert.isNil(editor:result(), "hidden Confirm and direct submit inputs cannot commit the number")
-  Assert.equal(editor:snapshot().buffer, "123", "hidden keyboard, text, and arrow actions cannot mutate the numeric draft")
+  Assert.equal(
+    editor:snapshot().buffer,
+    "123",
+    "hidden keyboard, text, and arrow actions cannot mutate the numeric draft"
+  )
   Assert.equal(#finishResults, 0, "blocked submission leaves the value editor open")
 
   state.numberHold = { targetId = "number:place:0:up" }
@@ -4357,7 +4393,7 @@ function T.tests.activating_the_staged_map_keeps_its_coordinates_while_other_map
         byId = { [12] = 1, [34] = 2 },
       },
     },
-    fieldInput = { beginUi = function() end },
+    fieldInput = FieldInput.new(),
     scopeEpoch = 0,
     session = {
       snapshot = function()
@@ -4431,6 +4467,9 @@ local function observationHarness()
   local controller = Controller.new()
   controller:pointer({ type = "pointer_down", pointerId = "touch:hold", targetId = "money", x = 4, y = 6 })
   local session = {
+    revision = function()
+      return 1
+    end,
     snapshot = function()
       return {
         flags = {},
@@ -4453,8 +4492,15 @@ local function observationHarness()
     width = 256,
     height = 192,
     controller = controller,
+    modalStack = ModalStack.new(),
+    modalLayerSequence = 0,
     session = session,
-    dependencies = { cacheFs = {} },
+    dependencies = {
+      cacheFs = {},
+      context = { monCatalog = { move = function()
+        return { name = "Move" }
+      end } },
+    },
     derivedAssets = {},
     displayContext = {
       measure = function()
@@ -4483,11 +4529,11 @@ local function observationHarness()
     },
     fieldInput = FieldInput.new(),
     inputTick = 0,
-    activeScopeId = "stale-scope",
+    activeScopeId = "section:Player",
     scopeEpoch = 7,
     numberHold = {
       pointerId = "touch:hold",
-      targetId = "number:delta:1",
+      targetId = "number:place:0:up",
       delta = 1,
       scopeEpoch = 7,
       nextTick = 100,
@@ -4495,12 +4541,13 @@ local function observationHarness()
     numberPressUntilTick = 0,
     valueEditor = nil,
     valuePurpose = nil,
+    pendingMoveSlot = 0,
     monDraft = nil,
     locationService = nil,
     iconStatus = nil,
     iconFailure = nil,
   }, State)
-  controller.scopeId, controller.scopeEpoch = "section:Player:map-list", 7
+  controller.scopeId, controller.scopeEpoch = "section:Player", 7
   return state, function()
     return iconPrepCalls
   end
@@ -4547,26 +4594,41 @@ function T.tests.scope_transitions_cancel_stale_input_before_later_events_act()
         return {}
       end,
     },
-    activeScopeId = "section:Player:map-list",
+    activeScopeId = "section:Player",
+    activeScopeRevision = "section:Player",
     scopeEpoch = 3,
     numberHold = {
       pointerId = "touch:stale",
-      targetId = "number:delta:1",
+      targetId = "number:place:0:up",
       delta = 1,
       scopeEpoch = 3,
       nextTick = 100,
     },
     numberPressTarget = nil,
     _reconcileFocus = function()
-      return {}
+      return {
+        focusNavigation = {
+          controls = {
+            {
+              id = "section:Bag",
+              eligible = true,
+              action = { kind = "section.select", section = "Bag" },
+            },
+          },
+        },
+      }
     end,
   }, State)
-  controller.scopeId, controller.scopeEpoch = "section:Player:map-list", 3
+  controller.scopeId, controller.scopeEpoch = "section:Player", 3
   controller.focus = "section:Bag"
 
   state:_consumeUiInput({ { type = "confirm" } })
-  Assert.equal(state.scopeEpoch, 4, "the section transition settles its scope before later events act")
-  Assert.equal(controller.scopeId, "section:Bag:items", "the settled scope names the entered section")
+  Assert.equal(
+    state.scopeEpoch,
+    4,
+    "the section transition settles its scope before later events act (got " .. tostring(state.scopeEpoch) .. ")"
+  )
+  Assert.equal(controller.scopeId, "section:Bag", "the settled scope names the entered section")
   Assert.equal(controller.scopeEpoch, 4, "the controller observes the settled epoch")
   Assert.isNil(state.numberHold, "the transition cancels the previous number hold")
   Assert.isNil(controller.capturedTarget, "the transition cancels the previous capture")
@@ -4577,16 +4639,18 @@ function T.tests.scope_transitions_cancel_stale_input_before_later_events_act()
     "a release from the retired press cannot activate its old target"
   )
   Assert.isNil(
-    controller:pointer(
-      { type = "pointer_down", pointerId = "touch:fresh", targetId = "bag:pocket:items", x = 4, y = 6 }
-    ),
+    controller:pointer({
+      type = "pointer_down",
+      pointerId = "touch:fresh",
+      targetId = "bag:pocket:items",
+      x = 4,
+      y = 6,
+    }),
     "a fresh press only captures its target"
   )
   Assert.equal(controller.pointerId, "touch:fresh", "fresh navigation works after the transition")
   Assert.deepEqual(
-    controller:pointer(
-      { type = "pointer_up", pointerId = "touch:fresh", targetId = "bag:pocket:items", x = 4, y = 6 }
-    ),
+    controller:pointer({ type = "pointer_up", pointerId = "touch:fresh", targetId = "bag:pocket:items", x = 4, y = 6 }),
     { kind = "activate", targetId = "bag:pocket:items" },
     "a clean tap on the new section activates"
   )
@@ -4599,17 +4663,17 @@ function T.tests.every_modal_action_renders_hits_and_executes_from_one_descripti
     ["bag-item"] = {
       { id = "bag:quantity", label = "Quantity", semantic = "secondary" },
       { id = "bag:remove", label = "Remove", semantic = "destructive" },
-      { id = "cancel", label = "Cancel", semantic = "secondary" },
+      { id = "cancel", label = "Back", semantic = "back" },
     },
     ["party-move"] = {
       { id = "party-move:move", label = "Move", semantic = "secondary" },
       { id = "party-move:pp", label = "Current PP", semantic = "secondary" },
       { id = "party-move:pp-ups", label = "PP Ups", semantic = "secondary" },
-      { id = "cancel", label = "Cancel", semantic = "secondary" },
+      { id = "cancel", label = "Back", semantic = "back" },
     },
     ["remove"] = {
       { id = "remove", label = "Remove", semantic = "destructive" },
-      { id = "cancel", label = "Cancel", semantic = "secondary" },
+      { id = "cancel", label = "Back", semantic = "back" },
     },
     ["leave"] = {
       { id = "save", label = "Save & exit", semantic = "primary" },
@@ -4657,13 +4721,31 @@ function T.tests.every_modal_action_renders_hits_and_executes_from_one_descripti
       Assert.notNil(layout.targets[want.id], kind .. " action " .. want.id .. " is hittable")
       local centerX = row.rect.x + math.floor(row.rect.width / 2)
       local centerY = row.rect.y + math.floor(row.rect.height / 2)
-      Assert.equal(Layout.hitTest(layout, view, centerX, centerY), want.id, kind .. " action " .. want.id .. " hits its row")
+      Assert.equal(
+        Layout.hitTest(layout, view, centerX, centerY),
+        want.id,
+        kind .. " action " .. want.id .. " hits its row"
+      )
     end
   end
   local publisher, publisherIconPrep = observationHarness()
   for kind in pairs(expectations) do
     publisher.controller.modal = kind
     publisher.controller.focus = "cancel"
+    if kind == "party-move" then
+      publisher.pendingMoveSlot = 0
+      publisher.monDraft = {
+        mode = function()
+          return "edit"
+        end,
+        isDirty = function()
+          return false
+        end,
+        record = function()
+          return { moves = { { move = "MOVE" } } }
+        end,
+      }
+    end
     local published = publisher:_snapshot()
     Assert.deepEqual(
       published.decisionActions,
@@ -4749,12 +4831,7 @@ function T.tests.scoped_focus_and_pointer_hits_agree_on_active_targets()
   end
   local enabledRow = assert(decisionLayout.decisionList.rows[1])
   Assert.equal(
-    Layout.hitTest(
-      decisionLayout,
-      decisionView,
-      enabledRow.rect.x + 1,
-      enabledRow.rect.y + 1
-    ),
+    Layout.hitTest(decisionLayout, decisionView, enabledRow.rect.x + 1, enabledRow.rect.y + 1),
     "bag:quantity",
     "a press on an enabled decision activates it"
   )
@@ -4772,7 +4849,8 @@ function T.tests.scoped_focus_and_pointer_hits_agree_on_active_targets()
   controller:setFocus("cancel")
   for _, direction in ipairs({ "up", "down", "left", "right" }) do
     controller:setFocus("cancel")
-    controller:moveFocus(decisionLayout.focusGraph, direction)
+    local state = setmetatable({ controller = controller, valueEditor = nil }, State)
+    state:_navigate(decisionLayout, direction)
     Assert.isTrue(
       controller.focus == "cancel" or controller.focus == "bag:quantity",
       "decision focus stays on enabled actions, got " .. controller.focus
@@ -4787,11 +4865,7 @@ function T.tests.scoped_focus_and_pointer_hits_agree_on_active_targets()
   local secondCell = assert(bagLayout.focusGraph["bag:item:POTION"], "the second cell joins the focus graph")
   Assert.deepEqual(secondCell.left, { "bag:item:POKE_BALL" }, "the second column reaches left into the first")
   Assert.equal(secondCell.right[1], "bag:item:POTION", "the second column clamps right onto itself")
-  Assert.equal(
-    firstCell.up[1],
-    "bag:pocket:items",
-    "the top row rises into its pocket tab"
-  )
+  Assert.equal(firstCell.up[1], "bag:pocket:items", "the top row rises into its pocket tab")
   local pocket = assert(bagLayout.focusGraph["bag:pocket:items"], "pocket tabs join the focus graph")
   Assert.deepEqual(pocket.right, { "bag:pocket:balls" }, "pocket tabs wrap horizontally")
   local itemTarget = assert(bagLayout.targets["bag:item:POKE_BALL"]).rect
@@ -5067,6 +5141,10 @@ local function paintPartyView()
     session = { playerName = "PLAYER", money = 3000 },
     partyTab = "Stats",
     partySlot0 = 0,
+    bagQuantityVisuals = {
+      decrement = { normal = { image = "dec/n" }, pressed = { image = "dec/p" } },
+      increment = { normal = { image = "inc/n" }, pressed = { image = "inc/p" } },
+    },
     partySelector = selector,
     partyStats = {
       header = {
@@ -5131,6 +5209,9 @@ local function paintLocationView()
 end
 
 local function paintProgressView()
+  local rows = { { name = "FLAG_A", displayName = "Flag A", id = 1, targetId = "flag:FLAG_A", value = false } }
+  local rowTargets = { "flag:FLAG_A" }
+  local indexByTarget = { ["flag:FLAG_A"] = 1 }
   return {
     section = "Progress",
     status = "ready",
@@ -5141,9 +5222,26 @@ local function paintProgressView()
     focusVisible = true,
     query = "",
     session = { playerName = "PLAYER", money = 3000 },
-    flagRows = { { name = "FLAG_A", displayName = "Flag A", id = 1, value = false } },
-    flagRowTargets = { "flag:FLAG_A" },
-    flagIndexByTarget = { ["flag:FLAG_A"] = 1 },
+    flagRows = rows,
+    flagRowTargets = rowTargets,
+    flagIndexByTarget = indexByTarget,
+    flagModel = {
+      revision = 1,
+      queryRevision = 0,
+      pending = false,
+      count = #rows,
+      rowTargets = rowTargets,
+      indexByTarget = indexByTarget,
+      idAt = function(index)
+        return rowTargets[index]
+      end,
+      indexOf = function(targetId)
+        return indexByTarget[targetId]
+      end,
+      rowAt = function(index)
+        return rows[index]
+      end,
+    },
     flagFilter = "Named",
     flagGroupLabel = "Named",
   }
@@ -5159,14 +5257,28 @@ local function paintNumberEditorView()
     focus = "confirm",
     focusVisible = true,
     session = { playerName = "PLAYER", money = 3000 },
-    valueEditor = { kind = "number", parsedValue = 3, buffer = "3", valid = true },
+    valueEditor = {
+      kind = "number",
+      parsedValue = 3,
+      buffer = "3",
+      digitCount = 1,
+      digits = { "3" },
+      selectedPlace = 0,
+      valid = true,
+    },
     numberControls = {
       { delta = 1, role = "increment", hitRect = { x = 0, y = 0, width = 24, height = 24 } },
       { delta = -1, role = "decrement", hitRect = { x = 0, y = 28, width = 24, height = 24 } },
     },
     numberControlVisuals = {
-      increment = { normal = { image = "num/inc" }, pressed = { image = "num/inc-pressed" } },
-      decrement = { normal = { image = "num/dec" }, pressed = { image = "num/dec-pressed" } },
+      increment = {
+        normal = { image = "num/inc", width = 48, height = 48 },
+        pressed = { image = "num/inc-pressed", width = 48, height = 48 },
+      },
+      decrement = {
+        normal = { image = "num/dec", width = 48, height = 48 },
+        pressed = { image = "num/dec-pressed", width = 48, height = 48 },
+      },
     },
   }
 end
@@ -5231,6 +5343,7 @@ end
 
 local function drawPaintView(view, width, height, graphics, text, cacheReads)
   local renderer = Renderer.new({ text = text.object, graphics = graphics, versionId = "heartgold" })
+  renderer._windowRenderer = { drawApplicationFrame = function() end, release = function() end }
   local plan = paintPlanFor(view, width, height)
   local cacheFs = {
     read = function(_, path)
@@ -5346,14 +5459,14 @@ function T.tests.repeated_and_failing_draws_keep_observation_and_graphics_state_
   Assert.equal(first.drawImages, 0, "Party draws without decoding new images")
   local firstStream = serializePaintOps(graphics.ops)
   Assert.equal(serializePaintOperand(view, {}), beforeView, "drawing never mutates the published view")
-  Assert.equal(serializePaintOperand(first.plan.content.layout, {}), serializePaintOperand(paintPlanFor(view, 640, 480).content.layout, {}), "drawing never mutates the resolved layout")
+  Assert.equal(
+    serializePaintOperand(first.plan.content.layout, {}),
+    serializePaintOperand(paintPlanFor(view, 640, 480).content.layout, {}),
+    "drawing never mutates the resolved layout"
+  )
   local repeatGraphics = recordingPaintGraphics()
   drawPaintView(view, 640, 480, repeatGraphics, recordingPaintText(), {})
-  Assert.deepEqual(
-    serializePaintOps(repeatGraphics.ops),
-    firstStream,
-    "repeated draws emit identical commands"
-  )
+  Assert.deepEqual(serializePaintOps(repeatGraphics.ops), firstStream, "repeated draws emit identical commands")
   local failure = { message = "injected stats paint failure" }
   local failingText = recordingPaintText({
     error = failure,
@@ -5367,6 +5480,13 @@ function T.tests.repeated_and_failing_draws_keep_observation_and_graphics_state_
     graphics = failingGraphics,
     versionId = "heartgold",
   })
+  failingRenderer._windowRenderer = { drawApplicationFrame = function() end, release = function() end }
+  for _, direction in ipairs({ "decrement", "increment" }) do
+    for _, state in ipairs({ "normal", "pressed" }) do
+      local imagePath = view.bagQuantityVisuals[direction][state].image
+      failingRenderer._bagImages[imagePath] = { getDimensions = function() return 16, 16 end }
+    end
+  end
   local failingPlan = paintPlanFor(view, 640, 480)
   local depthBefore = failingGraphics.depth
   local ok, caught = pcall(function()
@@ -5378,7 +5498,11 @@ function T.tests.repeated_and_failing_draws_keep_observation_and_graphics_state_
   Assert.isTrue(
     failingGraphics.depth == depthBefore + 1,
     "a failing draw unwinds every painter-owned scope and keeps only the host surface scope"
-      .. " (depth " .. failingGraphics.depth .. ", base " .. depthBefore .. ")"
+      .. " (depth "
+      .. failingGraphics.depth
+      .. ", base "
+      .. depthBefore
+      .. ")"
   )
   Assert.equal(serializePaintOperand(view, {}), beforeView, "a failing draw never mutates the published view")
   local recoveryGraphics = recordingPaintGraphics()
@@ -5389,6 +5513,8 @@ function T.tests.repeated_and_failing_draws_keep_observation_and_graphics_state_
     "drawing recovers with identical commands after a failure"
   )
   Assert.equal(recoveryGraphics.depth, 0, "a successful draw balances every graphics scope")
+end
+
 function T.tests.snapshot_does_not_publish_or_mutate_the_active_scope()
   local controller = Controller.new()
   controller.capturedTarget = "money"

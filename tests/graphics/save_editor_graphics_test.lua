@@ -2768,6 +2768,9 @@ function T.choice_list_marks_the_remembered_row_without_outlining_its_surface(sc
       local _, _, layout = draw(scope, 640, 480, topology, name, "Player", "choice-list", nil, function(_, view)
         view.focus = focusId
         view.focusVisible = focusVisible
+        if focusId == "list:value:choice" then
+          view.listCursors = { ["value:choice"] = "choice:choice-01" }
+        end
       end)
       rendered = layout
     end)
@@ -2793,7 +2796,13 @@ function T.choice_list_marks_the_remembered_row_without_outlining_its_surface(sc
   local containerLayout, containerCalls = render("choice-container", "list:value:choice", true)
   local surface = assert(containerLayout.listSurfaces[1], "the choice list owns one surface")
   local remembered = assert(containerLayout.targets["choice:choice-01"]).rect
-  Assert.equal(markerAround(remembered, containerCalls), 1, "the remembered row keeps a rounded inset marker")
+  Assert.equal(
+    markerAround(remembered, containerCalls),
+    1,
+    "the remembered row keeps a rounded inset marker (cursor "
+      .. tostring(containerLayout.lists["value:choice"].cursorTarget)
+      .. ")"
+  )
   local marker = assert(containerLayout.rowMarkers["choice:choice-01"])
   local label = assert(containerLayout.rowLabelRects["choice:choice-01"])
   Assert.isTrue(label.x - (marker.x + 1) >= 3, "choice glyph bounds clear the marker stroke by at least three pixels")
@@ -2855,7 +2864,24 @@ function T.map_flags_and_choice_lists_use_only_local_light_row_markers(scope)
     for _, call in ipairs(activeCalls) do
       Assert.isFalse(
         call.mode == "line" and surrounds(call, clip, 3),
-        scenario.section .. " has no list-wide focus ring"
+        scenario.section
+          .. " has no list-wide focus ring ("
+          .. tostring(call.x)
+          .. ","
+          .. tostring(call.y)
+          .. ","
+          .. tostring(call.width)
+          .. ","
+          .. tostring(call.height)
+          .. ") around clip ("
+          .. tostring(clip.x)
+          .. ","
+          .. tostring(clip.y)
+          .. ","
+          .. tostring(clip.width)
+          .. ","
+          .. tostring(clip.height)
+          .. ")"
       )
     end
     local markerCall
@@ -4109,6 +4135,32 @@ function T.graphics_state_is_restored_after_rings_and_scaled_text(scope)
     love.graphics.setScissor(0, 0, 640, 480)
   end)
   Assert.equal(love.graphics.getLineWidth(), 3, "bag cards restore the non-default caller line width")
+end
+
+function T.deferred_icon_preparation_uses_the_draw_time_presentation(_)
+  local renderer = Renderer.new({ text = {}, graphics = {}, versionId = "heartgold" })
+  local oldView, oldPlan = { section = "Party" }, { content = { layout = {} }, panes = {} }
+  local currentView, currentPlan = { section = "Bag" }, { content = { layout = {} }, panes = {} }
+  local cacheFs, derivedAssets = {}, {}
+  renderer:prepareVisibleIcons(oldView, oldPlan, cacheFs, derivedAssets, true)
+
+  local preparedView, preparedPlan, preparedCacheFs, preparedDerivedAssets
+  renderer.prepareVisibleIcons = function(_, view, plan, currentCacheFs, currentDerivedAssets)
+    preparedView, preparedPlan = view, plan
+    preparedCacheFs, preparedDerivedAssets = currentCacheFs, currentDerivedAssets
+  end
+  renderer:draw(currentView, currentPlan)
+
+  Assert.isTrue(preparedView == currentView, "deferred preparation uses the latest view")
+  Assert.isTrue(preparedPlan == currentPlan, "deferred preparation uses the latest plan")
+  Assert.isTrue(preparedCacheFs == cacheFs, "deferred preparation retains its cache provider")
+  Assert.isTrue(preparedDerivedAssets == derivedAssets, "deferred preparation retains its asset provider")
+  renderer:dispose()
+
+  local disposedRenderer = Renderer.new({ text = {}, graphics = {}, versionId = "heartgold" })
+  disposedRenderer:prepareVisibleIcons(oldView, oldPlan, cacheFs, derivedAssets, true)
+  disposedRenderer:dispose()
+  Assert.isNil(disposedRenderer._pendingIconPreparation, "dispose releases deferred presentation references")
 end
 
 return GraphicsSmoke.suite(T, { capabilities = { "graphics" } })

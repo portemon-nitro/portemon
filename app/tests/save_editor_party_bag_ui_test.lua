@@ -262,7 +262,10 @@ function T.party_strip_and_pager_fit_compact_and_tall_layouts()
     Assert.equal(previous.y, nextPage.y, "pager arrows share a baseline")
     Assert.equal(previous.height, label.height, "pager components have aligned control bounds")
     Assert.equal(previous.height, nextPage.height)
-    Assert.isTrue(label.width <= #layout.partyPageLabel.text * 7 + 16, "the pager label uses measured text width and padding")
+    Assert.isTrue(
+      label.width <= #layout.partyPageLabel.text * 7 + 16,
+      "the pager label uses measured text width and padding"
+    )
     local clusterLeft, clusterRight = previous.x, nextPage.x + nextPage.width
     Assert.isTrue(
       math.abs((clusterLeft + clusterRight) / 2 - (layout.content.x + layout.content.width / 2)) <= 1,
@@ -1178,8 +1181,7 @@ function T.shared_pp_arithmetic_drives_items_deposit_and_editors()
   local draftContext = CatalogFixture.domainContext(catalog)
   local record = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 5 }))
   record.moves = { { move = "TOXIC", pp = 8, ppUps = 0 } }
-  local draft =
-    Draft.new({ mode = "edit", slot0 = 0, basePartyRevision = 0, record = record, context = draftContext })
+  local draft = Draft.new({ mode = "edit", slot0 = 0, basePartyRevision = 0, record = record, context = draftContext })
   Assert.isTrue(draft:setMove(0, "ppUps", 3))
   Assert.isFalse(
     draft:setMove(0, "pp", Moves.maxPp(10, 3) + 1),
@@ -1193,17 +1195,22 @@ function T.shared_pp_arithmetic_drives_items_deposit_and_editors()
   )
   local childState = setmetatable({
     pendingMoveSlot = 0,
+    modalLayerSequence = 0,
+    modalStack = require("app.src.saveeditor.SaveEditorModalStack").new(),
     monDraft = draft,
     dependencies = { context = { monCatalog = catalog } },
-    controller = { focus = "party-move:pp" },
+    controller = Controller.new(),
     valueEditor = nil,
   }, SaveEditorState)
+  childState.controller:setFocus("party-move:pp")
   childState:_openMoveChild("party-move:pp")
   Assert.equal(
     childState.valueEditor:snapshot().maximum,
     Moves.maxPp(10, 3),
     "the move-child editor offers the shared maximum"
   )
+end
+
 function T.party_details_project_held_item_and_ball_options_from_mixed_catalog()
   local _, _, mon, projection = structuredMon("EEVEE", 9)
   local root = ItemFixture.buildAssetRoot()
@@ -1356,6 +1363,9 @@ end
 
 function T.first_bag_snapshot_does_not_scan_or_materialize_the_item_catalog()
   local pocket = next(ItemAssetSchema.POCKETS)
+  local controller = Controller.new()
+  controller:setSection("Bag")
+  controller:selectBagPocket(pocket)
   local catalogVisits, itemReads, iteratorCalls = 0, 0, 0
   local catalog = {
     itemKeyIterator = function()
@@ -1403,9 +1413,10 @@ function T.first_bag_snapshot_does_not_scan_or_materialize_the_item_catalog()
         return {}
       end,
     },
-    controller = { section = "Bag", bagPocket = pocket, bagPage0 = 0 },
+    controller = controller,
     tickRemainder = 0,
     inputTick = 0,
+    scopeEpoch = 0,
     numberHold = nil,
     valueEditor = nil,
     disposed = false,

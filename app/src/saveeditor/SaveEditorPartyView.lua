@@ -6,7 +6,6 @@ local Errors = require("libs.errors.src.Errors")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Moves = require("libs.mons.src.gen4.Moves")
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
-local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
 
 local PartyView = {}
 PartyView.__index = PartyView

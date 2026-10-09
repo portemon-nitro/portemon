@@ -710,8 +710,7 @@ function State:update(dt)
       derivedAssets = self.derivedAssets,
       savedObjects = assert(graphOrError.savedObjects),
     })
-    self._locationMapCatalog = MapCatalog.new(self.locationService:mapSummaries())
-    self:_prepareLocationListCaches()
+    self._locationMapSummaryTask = self.locationService:newMapSummaryTask()
     local originalLocation = assert(self.session:snapshot().location)
     self.controller:enterLocation(originalLocation)
     self.controller:setSection("Location")
@@ -735,9 +734,8 @@ function State:update(dt)
     local view = self:_snapshot()
     local plan = self:_resolve(view)
     self:_adoptGridSize(plan)
-    self.renderer:prepareVisibleIcons(view, plan, self.dependencies.cacheFs, self.derivedAssets)
+    self.renderer:prepareVisibleIcons(view, plan, self.dependencies.cacheFs, self.derivedAssets, true)
     self.iconStatus, self.iconFailure = self.renderer.iconStatus, self.renderer.iconFailure
-    self:_settleScope()
   end
 end
 
@@ -755,45 +753,15 @@ end
 -- Computes the interaction scope identity from navigation facts only. Pure:
 -- scope changes are applied by _settleScope at explicit transition
 -- boundaries, never while a view is being observed.
-local function computeScopeId(controller, valuePurpose, valueSnapshot)
-  if controller.modal then
-    return "decision:" .. controller.modal
-  end
-  if valueSnapshot ~= nil then
-    local query = valueSnapshot.kind == "choice" and valueSnapshot.query or ""
-    return "value:" .. (valuePurpose or "editor") .. ":" .. query
-  end
-  if controller.section == "Party" then
-    return table.concat({
-      "party",
-      tostring(controller.partySlot0),
-      controller.partyTab,
-    }, ":")
-  end
-  if controller.section == "Progress" then
-    return table.concat({
-      "section:Progress",
-      controller.query,
-    }, ":")
-  end
-  if controller.section == "Bag" then
-    return "section:Bag:" .. controller.bagPocket
-  end
-  local scopeId = "section:" .. controller.section .. ":" .. controller.locationPage
-  if controller.section == "Location" and controller.locationPage == "map-list" then
-    scopeId = scopeId .. ":" .. controller.query
-  end
-  return scopeId
-end
-
 -- Applies scope publication, input ownership and page normalization for
 -- the current navigation facts. Called after semantic input, transitions,
 -- opening changes, resize and focus loss; never from view or draw.
 function State:_settleScope()
-  local valueSnapshot = self.valueEditor ~= nil and self.valueEditor:snapshot() or nil
-  local scopeId = computeScopeId(self.controller, self.valuePurpose, valueSnapshot)
-  if scopeId ~= self.activeScopeId then
+  local scopeId, scopeRevision = scopeDescription(self)
+  assert(scopeRevision ~= nil, "active focus scopes publish a layout revision")
+  if scopeId ~= self.activeScopeId or scopeRevision ~= self.activeScopeRevision then
     self.activeScopeId = scopeId
+    self.activeScopeRevision = scopeRevision
     self.scopeEpoch = self.scopeEpoch + 1
     self.fieldInput:beginUi(self.inputTick)
     self.controller:cancelInteraction()
@@ -962,12 +930,7 @@ function State:_snapshot()
   for key, value in pairs(bag) do
     view[key] = value
   end
-  local valueSnapshot = self.valueEditor ~= nil and self.valueEditor:snapshot() or nil
-  local scopeId = computeScopeId(self.controller, self.valuePurpose, valueSnapshot)
-  local scopeKind = self.controller.modal and "decision"
-    or self.valueEditor and "value"
-    or self.controller.section == "Party" and "party"
-    or "section"
+  local scopeId, _, scopeKind = scopeDescription(self)
   view.scope = {
     id = scopeId,
     epoch = self.scopeEpoch,
@@ -1301,10 +1264,6 @@ function State:_locationListCache(listId)
   end
   self:_startLocationListCache(listId)
   return nil
-end
-
-function State:_prepareLocationListCaches()
-  self:_locationListCache("location:root")
 end
 
 function State:_startLocationListCache(listId)
@@ -1679,7 +1638,7 @@ function State:_bagView()
     bagPockets = catalog.pockets,
     bagRows = projection.rows,
     bagPageRows = pageRows,
-    bagPage0 = page0,
+    bagPage0 = self.controller.bagPage0,
     bagPageCount = pageCount,
     bagAddEnabled = #options > 0,
     bagPocketTabRects = manifest.interactive.pocketTabs.rects,
@@ -3343,98 +3302,42 @@ function State:_performDecisionCommand(kind, command, id)
   end
 end
 
-function State:_activate(targetId)
-  local listTask = self._listFilterTask
-  if listTask ~= nil and (targetId:match("^flag:") or targetId:match("^location:map:")) then
+function State:_activateControl(targetId, layout)
+  local control
+  for _, candidate in ipairs(layout.focusNavigation.controls) do
+    if candidate.id == targetId then
+      control = candidate
+      break
+    end
+  end
+  if control == nil or not control.eligible then
     return
   end
-  if self.status == "error" then
-    if targetId == "retry" then
-      self.generation = self.generation + 1
-      self.status, self.errorMessage = "opening", nil
-    elseif targetId == "back" then
-      self:_sendResult()
-    end
+  local action = assert(control.action, "active controls publish an action record")
+  self:_dispatchActivationAction(action, layout)
+end
+
+function State:_numberEditorTooSmall(layout)
+  if self.valueEditor == nil or self.valueEditor:snapshot().kind ~= "number" then
+    return false
+  end
+  local currentLayout = layout or self:_resolve(self:_snapshot()).content.layout
+  return currentLayout.numberTooSmall == true
+end
+
+function State:_dispatchActivationAction(action, layout)
+  if action.kind:match("^decision%.") and action.command ~= nil then
+    self:_performDecisionCommand(assert(action.decision), action.command, assert(action.id))
     return
   end
-  if self.valueEditor and self.controller.modal == nil then
-    local valueKind = self.valueEditor:snapshot().kind
-    local digitAction = targetId:match("^digit%-(.+)$")
-    if digitAction then
-      self.valueEditor:press(digitAction)
-    elseif targetId == "page-next" then
-      self.valueEditor:press("page_next")
-    elseif targetId == "page-previous" then
-      self.valueEditor:press("page_previous")
-    elseif targetId:sub(1, 7) == "choice:" then
-      self.valueEditor:activateTarget(targetId:sub(8))
-    elseif valueKind == "name" then
-      local controlId = targetId:match("^name%-control:(.+)$")
-      self.valueEditor:activateTarget(controlId or targetId)
-    elseif targetId == "confirm" then
-      self.valueEditor:press("confirm")
-    elseif valueKind == "number" then
-      local place, direction = targetId:match("^number:place:(%d+):([^:]+)$")
-      if place ~= nil then
-        assert(direction == "up" or direction == "down")
-        self:_adjustNumberPlace(assert(tonumber(place)), direction == "up" and 1 or -1)
-      else
-        self.valueEditor:activateTarget(targetId)
-      end
-    else
-      self.valueEditor:activateTarget(targetId)
-    end
-    self:_finishValueEditor()
-    return
-  end
-  if self.controller.modal then
-    local kind = assert(self.controller.modal, "decision activation needs its open decision")
-    local selected = nil
-    for _, action in ipairs(Decisions.describe(kind, self:_decisionFacts(nil))) do
-      if action.id == targetId then
-        selected = action
-        break
-      end
-    end
-    if selected ~= nil and selected.enabled then
-      self:_performDecisionCommand(kind, selected.command, selected.id)
-    end
-    return
-  end
-  if self.controller.section == "Location" then
-    local groupId = targetId:match("^location:group:%d+$")
-    if groupId ~= nil then
-      self:_performDeferred({ kind = "location-group-select", groupId = groupId })
-      return
-    end
-    local mapId = targetId:match("^location:map:(%d+)$")
-    if mapId ~= nil then
-      self:_performDeferred({ kind = "location-map-select", mapId = assert(tonumber(mapId)) })
-      return
-    end
-    local fieldX, fieldZ = targetId:match("^location:tile:(%-?%d+):(%-?%d+)$")
-    if fieldX ~= nil then
-      self:_performDeferred({
-        kind = "select_tile",
-        fieldX = assert(tonumber(fieldX)),
-        fieldZ = assert(tonumber(fieldZ)),
-      })
-      return
-    end
-    if targetId == "location:grid" then
-      local cursor = self.controller:locationSnapshot().cursor
-      if cursor ~= nil then
-        self:_performDeferred({ kind = "select_tile", fieldX = cursor.fieldX, fieldZ = cursor.fieldZ })
-      end
+  if action.kind == "value.confirm" or action.kind == "value.adjust-number-place" or action.kind == "value.press" then
+    if self:_numberEditorTooSmall(layout) then
       return
     end
   end
-  local section = targetId:match("^section:(.+)$")
-  if section ~= nil then
-    self:_requestDraftResolution({ kind = "section", section = section })
-    return
-  end
-  if targetId == "money" then
+  if action.kind == "section.select" then
+    self:_requestDraftResolution({ kind = "section", section = action.section })
+  elseif action.kind == "player.edit-money" then
     self:_cancelPendingLocationSave()
     local money = assert(self.session:snapshot().money)
     self:_installValueEditor(
@@ -3466,7 +3369,65 @@ function State:_activate(targetId)
     if not result.ok then
       self.errorMessage = message(result.error)
     end
-  elseif targetId == "save" then
+  elseif action.kind == "value.confirm" then
+    assert(self.valueEditor):press("confirm")
+    self:_finishValueEditor()
+  elseif action.kind == "value.cancel" then
+    assert(self.valueEditor):cancel()
+    self:_finishValueEditor()
+  elseif action.kind == "value.adjust-number-place" then
+    assert(action.direction == "up" or action.direction == "down")
+    self:_adjustNumberPlace(action.place, action.direction == "up" and 1 or -1)
+    self:_finishValueEditor()
+  elseif action.kind == "value.choose-option" then
+    assert(self.valueEditor):activateTarget(action.key)
+    self:_finishValueEditor()
+  elseif action.kind == "value.activate-name-control" then
+    assert(self.valueEditor):activateTarget(action.control)
+    self:_finishValueEditor()
+  elseif action.kind == "value.activate-name-key" then
+    assert(self.valueEditor):activateTarget(tostring(action.row) .. ":" .. tostring(action.column))
+    self:_finishValueEditor()
+  elseif action.kind == "value.change-page" then
+    assert(action.direction == "next" or action.direction == "previous")
+    assert(self.valueEditor):press(action.direction == "next" and "page_next" or "page_previous")
+    self:_finishValueEditor()
+  elseif action.kind == "value.press" then
+    assert(self.valueEditor):press(action.key)
+    self:_finishValueEditor()
+  elseif action.kind == "value.focus-choice-list" then
+    return
+  elseif action.kind == "decision.cancel" then
+    self:_popDecision(action.decision)
+  elseif action.kind == "decision.edit-bag-quantity" then
+    self:_openBagQuantity("set")
+  elseif action.kind == "decision.remove-bag-item" then
+    self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
+    self:_openDecision("remove")
+  elseif action.kind == "decision.edit-move" then
+    self:_openMoveChild("party-move:move")
+  elseif action.kind == "decision.edit-move-pp" then
+    self:_openMoveChild("party-move:pp")
+  elseif action.kind == "decision.edit-move-pp-ups" then
+    self:_openMoveChild("party-move:pp-ups")
+  elseif action.kind == "decision.confirm-remove" then
+    self:_confirmRemoval()
+  elseif action.kind == "decision.save-and-exit" then
+    if self.closeRequest ~= nil then
+      self:_performClose("save")
+    elseif self:_locationSavePending() then
+      self:_cancelPendingLocationSave()
+      self.errorMessage = "Destination verification canceled."
+    else
+      self:_save(true)
+    end
+  elseif action.kind == "decision.discard-and-exit" then
+    if self.closeRequest ~= nil then
+      self:_performClose("discard")
+    else
+      self:_discard(false)
+    end
+  elseif action.kind == "editor.save" then
     if self:_locationSavePending() then
       self:_cancelPendingLocationSave()
       self.errorMessage = "Destination verification canceled."
@@ -3569,6 +3530,10 @@ function State:_activate(targetId)
   else
     error("unknown Save Editor activation action: " .. tostring(action.kind), 2)
   end
+end
+
+function State:_activate(targetId)
+  self:_activateControl(targetId, self:_reconcileFocus())
 end
 
 function State:_dispatchIntent(intent)
@@ -3792,7 +3757,7 @@ end
 
 -- Draw only consumes the settled publication: it never changes scope,
 -- input buffers, focus, drafts, selection, hold counters, verification
--- state, or resource demand. Visible icon preparation runs on update.
+-- state, or derived-asset demand. Visible icon images are prepared for drawing.
 function State:draw()
   if self.disposed then
     return

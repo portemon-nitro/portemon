@@ -240,8 +240,7 @@ function T.tests.numeric_fallback_geometry_stays_inside_available_content()
     local layout = computeLayout(view, viewport.width, viewport.height)
     Assert.isTrue(layout.numberTooSmall, "small content publishes the numeric fallback")
     local margin = viewport.width <= 280 and 8 or 12
-    local modalBottom = viewport.height <= 220
-        and viewport.height - (margin + 2) - 2
+    local modalBottom = viewport.height <= 220 and viewport.height - (margin + 2) - 2
       or layout.content.y + layout.content.height
     local content = {
       x = layout.content.x,
@@ -2164,10 +2163,7 @@ function T.tests.decision_targets_derive_from_the_published_descriptors()
   local disabledRow = assert(layout.decisionList.rows[2], "the disabled row still renders")
   local centerX = disabledRow.rect.x + math.floor(disabledRow.rect.width / 2)
   local centerY = disabledRow.rect.y + math.floor(disabledRow.rect.height / 2)
-  Assert.isNil(
-    Layout.hitTest(layout, view, centerX, centerY),
-    "a press on a disabled action never activates"
-  )
+  Assert.isNil(Layout.hitTest(layout, view, centerX, centerY), "a press on a disabled action never activates")
 end
 
 local function everySectionScopeView()
@@ -2249,7 +2245,8 @@ local function everySectionScopeView()
         ready = true,
         dirty = false,
         session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
-        valueEditor = { kind = "number", parsedValue = 3, buffer = "3" },
+        valueEditor = { kind = "number", parsedValue = 3, buffer = "3", digitCount = 1, digits = { "3" } },
+        numberControlVisuals = { increment = { normal = { width = 48, height = 48 } } },
         numberControls = {
           { delta = 1, hitRect = { x = 0, y = 0, width = 24, height = 24 } },
           { delta = -1, hitRect = { x = 0, y = 28, width = 24, height = 24 } },
@@ -2268,9 +2265,9 @@ local function everySectionScopeView()
         modal = "bag-item",
         scope = { id = "decision:bag-item", epoch = 1, kind = "decision", focusId = "cancel" },
         decisionActions = {
-          { id = "bag:quantity", label = "Quantity", semantic = "secondary", enabled = true, command = "x" },
-          { id = "bag:remove", label = "Remove", semantic = "destructive", enabled = false, command = "y" },
-          { id = "cancel", label = "Cancel", semantic = "secondary", enabled = true, command = "z" },
+          { id = "bag:quantity", label = "Quantity", semantic = "secondary", enabled = true, command = "bag_quantity" },
+          { id = "bag:remove", label = "Remove", semantic = "destructive", enabled = false, command = "bag_remove" },
+          { id = "cancel", label = "Cancel", semantic = "back", enabled = true, command = "cancel" },
         },
       },
     },
@@ -2284,13 +2281,19 @@ function T.tests.every_section_publishes_the_complete_plan_shape_at_every_topolo
       local label = plan.name .. " at " .. size[1] .. "x" .. size[2]
       local layout = computeLayout(plan.view, size[1], size[2])
       for _, key in ipairs({
-        "rows", "targets", "focusGraph", "focusOrder", "navigation", "actions", "viewports", "lists",
+        "rows",
+        "targets",
+        "focusGraph",
+        "focusOrder",
+        "navigation",
+        "actions",
+        "viewports",
+        "lists",
       }) do
         Assert.notNil(layout[key], label .. " publishes " .. key)
       end
       Assert.notNil(layout.defaultFocus, label .. " publishes a default focus")
-      local wantScope = plan.view.scope
-        or { id = "section:" .. tostring(plan.view.section or "Player"), epoch = 0 }
+      local wantScope = plan.view.scope or { id = "section:" .. tostring(plan.view.section or "Player"), epoch = 0 }
       Assert.equal(layout.scopeId, wantScope.id, label .. " echoes its active scope")
       Assert.equal(layout.scopeEpoch, wantScope.epoch, label .. " echoes its scope epoch")
       Assert.notNil(
@@ -2332,7 +2335,23 @@ function T.tests.every_section_publishes_the_complete_plan_shape_at_every_topolo
   local stable = sectionStripView("Player")
   local first = Layout.compute(stable, 256, 192, metrics)
   local second = Layout.compute(stable, 256, 192, metrics)
-  Assert.deepEqual(second, first, "the same view and measurement produce the same plan")
+  local function withoutCallbacks(value)
+    if type(value) ~= "table" then
+      return value
+    end
+    local result = {}
+    for key, item in pairs(value) do
+      if type(item) ~= "function" then
+        result[key] = withoutCallbacks(item)
+      end
+    end
+    return result
+  end
+  Assert.deepEqual(
+    withoutCallbacks(second),
+    withoutCallbacks(first),
+    "the same view and measurement produce the same public plan semantics"
+  )
 end
 
 function T.tests.pointer_hits_resolve_from_published_targets_without_the_full_catalog()
@@ -2356,6 +2375,13 @@ function T.tests.pointer_hits_resolve_from_published_targets_without_the_full_ca
       indexByTarget = indexByTarget,
       selectedKey = "K01",
       query = "",
+      count = #options,
+      idAt = function(index)
+        return rowTargets[index]
+      end,
+      rowAt = function(index)
+        return options[index]
+      end,
     },
     scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:K01" },
     scrollOffsets = {},
@@ -2386,7 +2412,8 @@ function T.tests.pointer_hits_resolve_from_published_targets_without_the_full_ca
     ready = true,
     dirty = false,
     session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
-    valueEditor = { kind = "number", parsedValue = 3, buffer = "3" },
+    valueEditor = { kind = "number", parsedValue = 3, buffer = "3", digitCount = 1, digits = { "3" } },
+    numberControlVisuals = { increment = { normal = { width = 48, height = 48 } } },
     numberControls = {
       { delta = 1, hitRect = { x = 0, y = 0, width = 24, height = 24 } },
       { delta = -1, hitRect = { x = 0, y = 28, width = 24, height = 24 } },
@@ -2395,22 +2422,23 @@ function T.tests.pointer_hits_resolve_from_published_targets_without_the_full_ca
     scrollOffsets = {},
   }
   local numberLayout = computeLayout(numberView, 256, 192)
-  local delta = assert(numberLayout.targets["number:delta:1"]).rect
+  local numberTargetId = "number:place:0:up"
+  local delta = assert(numberLayout.targets[numberTargetId]).rect
   local deltaX, deltaY = delta.x + 1, delta.y + 1
   Assert.equal(
     Layout.hitTest(numberLayout, numberView, deltaX, deltaY),
-    "number:delta:1",
+    numberTargetId,
     "a number control resolves while its manifest is present"
   )
   local numberWithoutManifest = {
     section = "Player",
     status = "ready",
-    valueEditor = { kind = "number", parsedValue = 3, buffer = "3" },
+    valueEditor = { kind = "number", parsedValue = 3, buffer = "3", digitCount = 1, digits = { "3" } },
     scope = numberView.scope,
   }
   Assert.equal(
     Layout.hitTest(numberLayout, numberWithoutManifest, deltaX, deltaY),
-    "number:delta:1",
+    numberTargetId,
     "a number control resolves from its published target alone"
   )
 end
@@ -2537,11 +2565,13 @@ function T.tests.painting_follows_resolved_geometry_without_recomputing_layout()
   end
   local firstOps, secondOps = {}, {}
   local ok, drawError = pcall(function()
-    local renderer = Renderer.new({ text = layoutPaintText(), graphics = layoutPaintGraphics(firstOps), versionId = "heartgold" })
+    local renderer =
+      Renderer.new({ text = layoutPaintText(), graphics = layoutPaintGraphics(firstOps), versionId = "heartgold" })
     renderer:draw(view, plan)
     renderer:dispose()
     saveRect.x = saveRect.x + 7
-    local shifted = Renderer.new({ text = layoutPaintText(), graphics = layoutPaintGraphics(secondOps), versionId = "heartgold" })
+    local shifted =
+      Renderer.new({ text = layoutPaintText(), graphics = layoutPaintGraphics(secondOps), versionId = "heartgold" })
     shifted:draw(view, plan)
     shifted:dispose()
   end)
@@ -2560,6 +2590,8 @@ function T.tests.painting_follows_resolved_geometry_without_recomputing_layout()
   Assert.isTrue(hasFillAt(firstOps, saveRect.x - 7), "the footer paints at its resolved save position")
   Assert.isTrue(hasFillAt(secondOps, saveRect.x), "the footer follows the resolved save rectangle")
   Assert.isFalse(hasFillAt(secondOps, saveRect.x - 7), "the footer does not repaint the old position")
+end
+
 function T.tests.layout_publishes_semantic_activation_actions()
   local controller = Controller.new()
   local layout = computeLayout({
