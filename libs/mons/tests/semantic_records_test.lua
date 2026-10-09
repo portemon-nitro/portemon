@@ -533,4 +533,31 @@ function T.numeric_boundaries_and_domain_relationships_hold_at_the_validation_bo
   end)
 end
 
+function T.failed_encodes_preserve_the_last_known_good_state()
+  local catalog = CatalogFixture.makeCatalog()
+  local context = CatalogFixture.domainContext(catalog)
+  local Mon = require("libs.mons.src.Mon")
+  local BoxCodec = require("libs.mons.src.gen4.BoxCodec")
+
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local valid = factory:createNormal(CatalogFixture.normalRequest())
+  valid = Mon.validate(valid, context)
+  local snapshot = copy(valid)
+  local firstBytes = BoxCodec.encode(valid, context)
+  local restored = BoxCodec.decode(firstBytes, context)
+  Assert.equal(restored.met.level, valid.met.level)
+  Assert.equal(restored.moves[1].move, valid.moves[1].move)
+  Assert.equal(restored.moves[1].pp, valid.moves[1].pp)
+
+  local overPp = copy(valid)
+  overPp.moves[1].pp = 99
+  throwsEither({ "MON_RECORD_INVALID", "MON_LEGALITY_INVALID" }, function()
+    BoxCodec.encode(overPp, context)
+  end)
+  Assert.equal(overPp.moves[1].pp, 99, "the rejected encode never clamps its input into range")
+  Assert.deepEqual(valid, snapshot, "the last known-good record survives the rejection")
+  Assert.deepEqual(BoxCodec.encode(valid, context), firstBytes, "the next encode still emits the known-good bytes")
+  Assert.equal(BoxCodec.decode(firstBytes, context).met.level, valid.met.level)
+end
+
 return { tests = T }

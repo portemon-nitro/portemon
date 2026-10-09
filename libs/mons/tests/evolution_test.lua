@@ -987,4 +987,85 @@ function T.trade_blocker_exempts_one_source_species_while_controls_stay_blocked(
   Assert.equal(freed.target, "EEVEE", "the ordinary trade slot answers")
 end
 
+function T.custom_matchers_answer_in_slot_order_while_native_gates_hold()
+  local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
+  local seen = {}
+  local calls = 0
+  local catalog = buildCatalog(function(root)
+    local species = root.species --[[@as table<string, table<string, unknown>>]]
+    local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+    forms[0].evolutions = {
+      {
+        method = "ember:OATH",
+        target = "TOTODILE",
+        form = 0,
+        matches = function(mon, context, catalogArg, slot)
+          calls = calls + 1
+          seen = { mon = mon, context = context, catalogArg = catalogArg, slot = slot }
+          return context.oathKept == true
+        end,
+      },
+      {
+        method = "ember:NEVER",
+        target = "EEVEE",
+        form = 0,
+        matches = function()
+          return false
+        end,
+      },
+      { method = "level", level = 10, target = "EEVEE", form = 0 },
+    }
+  end)
+  local sworn = pinLevel(makeMon(catalog, 11, {}), catalog, 12)
+  local swornBefore = copy(sworn)
+  local found = Evolution.check(sworn, vectorContext({ oathKept = true }), catalog)
+  Assert.notNil(found, "a satisfied custom matcher answers")
+  Assert.equal(found.target, "TOTODILE", "the first matching custom slot wins")
+  Assert.equal(calls, 1, "the custom matcher runs once per check")
+  Assert.isTrue(seen.mon == sworn, "the matcher receives the mon first")
+  Assert.isTrue(seen.slot == found, "the matcher receives its own slot")
+  Assert.deepEqual(sworn, swornBefore, "checking never mutates its input")
+  local plain = pinLevel(makeMon(catalog, 13, {}), catalog, 12)
+  local fallback = Evolution.check(plain, vectorContext(), catalog)
+  Assert.notNil(fallback, "an unsatisfied custom matcher falls through")
+  Assert.equal(fallback.target, "EEVEE", "the false matchers are skipped and the native slot answers")
+  local held = pinLevel(makeMon(catalog, 17, {}), catalog, 12)
+  held.heldItem = "EVERSTONE"
+  Assert.isTrue(
+    Evolution.check(held, vectorContext({ oathKept = true }), catalog) == nil,
+    "the held blocker still stops custom level matches"
+  )
+  local trapped = buildCatalog(function(root)
+    local forms = root.species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+    forms[0].evolutions = {
+      { method = "ember:NOPE", target = "TOTODILE", form = 0 },
+    }
+  end)
+  local probe = pinLevel(makeMon(trapped, 19, {}), trapped, 12)
+  local probeBefore = copy(probe)
+  Assert.throws(function()
+    Evolution.check(probe, vectorContext(), trapped)
+  end, "an unknown method without a callable fails")
+  Assert.deepEqual(probe, probeBefore, "a failing check leaves its input alone")
+  local volatile = buildCatalog(function(root)
+    local forms = root.species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+    forms[0].evolutions = {
+      {
+        method = "ember:VOLATILE",
+        target = "TOTODILE",
+        form = 0,
+        matches = function()
+          error("volatile matcher blew up")
+        end,
+      },
+    }
+  end)
+  local gambler = pinLevel(makeMon(volatile, 23, {}), volatile, 12)
+  local gamblerBefore = copy(gambler)
+  Assert.throws(function()
+    Evolution.check(gambler, vectorContext(), volatile)
+  end, "a throwing matcher propagates")
+  Assert.deepEqual(gambler, gamblerBefore, "a throwing matcher leaves its input alone")
+end
+
 return { tests = T }

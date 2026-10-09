@@ -28,6 +28,20 @@ LÖVE, source ROM, game, HGSS field, script, or presentation knowledge.
   silent repair. Unknown fields, duplicate native identities, unencodable
   text, and inconsistent derivations fail loudly with structured package
   errors; programming invariants use `assert`.
+- Composed catalog admission (`MonCatalog.fromResolved`) trusts author
+  metadata while native identities and save legality stay strict: unknown
+  extra keys pass through at catalog, species, form, move, ability,
+  learnset, and evolution entries without changing required engine field
+  types; form compatibility lists keep uniqueness and declared order with
+  no sorting; form base stats and species base experience admit finite
+  magnitudes above the native byte caps while native numeric identities
+  stay source-bounded and derivation-threshold fields keep their ranges.
+  Custom evolution methods are namespaced and carry a callable
+  `matches(mon, context, catalog, slot)` predicate evaluated once in source
+  slot order by the existing evolution owner; unknown methods without a
+  callable fail. Predicate references live in the detached in-memory
+  catalog only and never enter save payloads. Save legality (`Mon`,
+  `NativeLegality`, `BoxCodec`) is a separate boundary and stays strict.
 - Reads over already-owned records never rerun admission: derivation, view,
   and status projections compute from the borrowed record and propagate
   calculation errors without validating or copying unrelated fields.

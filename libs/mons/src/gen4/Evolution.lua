@@ -305,7 +305,14 @@ function Evolution.check(mon, context, catalog)
   for _, slot in ipairs(slots) do
     assert(type(slot) == "table", "evolution slots are records")
     local matched = false
-    if kind == "level" then
+    -- Composed methods are namespaced slots carrying their own callable
+    -- predicate, evaluated once in source order; native methods dispatch
+    -- through the exact matchers below. A composed predicate may throw,
+    -- and the failure propagates with the input untouched.
+    local custom = slot.matches
+    if type(custom) == "function" and KNOWN_METHODS[slot.method] == nil then
+      matched = custom(mon, context, catalog, slot) == true
+    elseif kind == "level" then
       matched = matchesLevel(slot, mon, context, catalog, assert(level, "level checks derive the level"))
     elseif kind == "item" then
       matched = matchesItemUse(slot, mon, context, catalog, assert(usedItem, "item uses name their item"))

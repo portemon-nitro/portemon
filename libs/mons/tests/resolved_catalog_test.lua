@@ -256,5 +256,57 @@ function T.custom_move_numbers_beyond_native_limits_stay_readable_while_native_b
   Assert.isTrue(Errors.is(legalityErr), "the save-boundary failure is structured")
   Assert.equal(legalityErr.code, MonsErrors.LEGALITY_INVALID)
 end
+function T.composed_metadata_unsorted_tmhm_and_large_base_values_survive()
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local ResolvedMonSchema = require("libs.mons.src.ResolvedMonSchema")
+
+  local root = CatalogFixture.buildAssetRoot()
+  root.catalogNote = "ember catalog note"
+  root.moves.TACKLE.designNote = "ember tackle note"
+  root.abilities.OVERGROW.designNote = "ember overgrow note"
+
+  local species = copy(root.species.CHIKORITA)
+  species.name = "EMBERPUP"
+  species.nativeId = nil
+  species.baseExpYield = 300
+  species.researchNote = { author = "ember", tags = { "custom" } }
+  local form = species.forms[0]
+  form.baseStats.hp = 300
+  form.fieldNote = "ember field note"
+  form.tmhm = { "TOXIC", "CUT" }
+  form.levelUpMoves = {
+    { level = 1, move = "TACKLE", note = "opener" },
+  }
+  local evoMatches = function(_, context)
+    return context.oathKept == true
+  end
+  form.evolutions = {
+    { method = "ember:OATH", target = "TOTODILE", form = 0, note = "oathbound", matches = evoMatches },
+  }
+  root.species["ember:EMBERPUP"] = species
+
+  Assert.isTrue(ResolvedMonSchema.assertCatalog(root) ~= false, "the composed schema accepts open metadata")
+
+  local catalog = MonCatalog.fromResolved(root, CatalogFixture.makeItemCatalog())
+  local kept = catalog:species("ember:EMBERPUP")
+  Assert.equal(kept.forms[0].baseStats.hp, 300)
+  Assert.equal(kept.baseExpYield, 300)
+  Assert.deepEqual(kept.forms[0].tmhm, { "TOXIC", "CUT" })
+  Assert.equal(kept.researchNote.author, "ember")
+  Assert.equal(kept.forms[0].fieldNote, "ember field note")
+  Assert.equal(catalog:move("TACKLE").designNote, "ember tackle note")
+  Assert.isTrue(kept.forms[0].evolutions[1].matches == evoMatches, "the composed catalog keeps the predicate reference")
+
+  root.species["ember:EMBERPUP"] = nil
+  Assert.equal(catalog:species("ember:EMBERPUP").name, "EMBERPUP")
+
+  Assert.equal(catalog:species("CHIKORITA").forms[0].baseStats.hp, 45)
+
+  local doubled = CatalogFixture.buildAssetRoot()
+  doubled.species.CHIKORITA.forms[0].tmhm = { "CUT", "CUT" }
+  Assert.throws(function()
+    ResolvedMonSchema.assertCatalog(doubled)
+  end)
+end
 
 return { tests = T }

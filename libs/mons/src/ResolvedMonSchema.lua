@@ -83,9 +83,10 @@ end
 ---@param record unknown
 ---@param allowed table<string, boolean>
 ---@param context table<string, unknown>
-local function checkKeys(record, allowed, context)
+---@param allowExtra boolean? when true, unknown composed metadata keys pass through
+local function checkKeys(record, allowed, context, allowExtra)
   for key in pairs(record) do
-    if allowed[key] == nil then
+    if allowed[key] == nil and not allowExtra then
       fail("unknown field " .. tostring(key), context)
     end
   end
@@ -103,6 +104,29 @@ local function checkInt(value, lower, upper, context, field)
     else
       fail(field .. " must be an integer in " .. tostring(lower) .. ".." .. tostring(upper), context)
     end
+  end
+end
+
+---@param value unknown
+---@param lower integer
+---@param context table<string, unknown>
+---@param field string
+local function checkFiniteInt(value, lower, context, field)
+  -- Composed transient magnitudes (form base stats, species base
+  -- experience) admit finite integers above the native byte caps:
+  -- in-memory stat and experience arithmetic supports wider magnitudes.
+  -- Native numeric identities stay source-bounded and
+  -- derivation-threshold fields keep their ranges, since that arithmetic
+  -- depends on them.
+  if
+    type(value) ~= "number"
+    or value % 1 ~= 0
+    or value < lower
+    or value ~= value
+    or value == math.huge
+    or value == -math.huge
+  then
+    fail(field .. " must be a finite integer at least " .. tostring(lower), context)
   end
 end
 
@@ -135,7 +159,7 @@ local function checkStats(values, context, field)
   end
   checkKeys(values, STAT_SET, context)
   for _, key in ipairs(STAT_KEYS) do
-    checkInt(values[key], 0, 255, context, field .. "." .. key)
+    checkFiniteInt(values[key], 0, context, field .. "." .. key)
   end
 end
 
@@ -170,7 +194,7 @@ local function assertForm(form, context)
   if type(form) ~= "table" then
     fail("form must be a record", context)
   end
-  checkKeys(form, FORM_FIELDS, context)
+  checkKeys(form, FORM_FIELDS, context, true)
   checkStats(form.baseStats, context, "baseStats")
   -- Type keys stay open: native and custom types alike are non-empty
   -- strings, and chart membership is the battle composition's check.
@@ -194,7 +218,9 @@ local function assertForm(form, context)
   if not Validate.isArray(form.tmhm) then
     fail("tmhm must be an array", context)
   end
-  local lastMachine = nil
+  -- Compatibility lists keep uniqueness and declared iteration order only:
+  -- unsorted but distinct keys are accepted without sorting behind the
+  -- author's back.
   local seenMachines = {}
   for _, moveKey in ipairs(form.tmhm) do
     checkText(moveKey, context, "tmhm move")
@@ -202,10 +228,6 @@ local function assertForm(form, context)
       fail("duplicate tmhm move " .. moveKey, context)
     end
     seenMachines[moveKey] = true
-    if lastMachine ~= nil and moveKey <= lastMachine then
-      fail("tmhm moves must be sorted", context)
-    end
-    lastMachine = moveKey
   end
   if not Validate.isArray(form.levelUpMoves) then
     fail("levelUpMoves must be an array", context)
@@ -214,7 +236,7 @@ local function assertForm(form, context)
     if type(entry) ~= "table" then
       fail("learnset entry must be a record", context)
     end
-    checkKeys(entry, { level = true, move = true }, context)
+    checkKeys(entry, { level = true, move = true }, context, true)
     checkInt(entry.level, 1, 100, context, "learnset level")
     checkText(entry.move, context, "learnset move")
   end
@@ -222,8 +244,22 @@ local function assertForm(form, context)
     fail("evolutions must be an array", context)
   end
   for _, entry in ipairs(form.evolutions) do
-    if type(entry) ~= "table" or type(entry.method) ~= "string" or EVO_METHODS[entry.method] == nil then
+    local method = type(entry) == "table" and entry.method or nil
+    if type(entry) ~= "table" or type(method) ~= "string" then
       fail("evolution method is unknown", context)
+    end
+    assert(type(method) == "string", "evolution slots carry their method")
+    if EVO_METHODS[method] == nil then
+      -- Composed methods are namespaced and carry their own callable
+      -- predicate; anything else stays an unknown method.
+      if not method:find(":", 1, true) then
+        fail("evolution method is unknown", context)
+      end
+      if type(entry.matches) ~= "function" then
+        fail("evolution method " .. method .. " needs a callable matches predicate", context)
+      end
+    elseif entry.matches ~= nil and type(entry.matches) ~= "function" then
+      fail("evolution matches must be a callable predicate", context)
     end
     checkText(entry.target, context, "evolution target")
     checkInt(entry.form, 0, nil, context, "evolution form")
@@ -277,7 +313,7 @@ local function assertSpecies(key, species, context)
     flip = true,
     forms = true,
     weight = true,
-  }, context)
+  }, context, true)
   checkOptionalNativeId(species.nativeId, 495, context, "species " .. key .. " nativeId")
   checkText(species.name, context, "species " .. key .. " name")
   if GROWTH_KEYS[species.growthCurve] == nil then
@@ -287,7 +323,7 @@ local function assertSpecies(key, species, context)
   checkInt(species.genderRatio, 0, 255, context, "species " .. key .. " genderRatio")
   checkInt(species.eggCycles, 0, 255, context, "species " .. key .. " eggCycles")
   checkInt(species.catchRate, 0, 255, context, "species " .. key .. " catchRate")
-  checkInt(species.baseExpYield, 0, 255, context, "species " .. key .. " baseExpYield")
+  checkFiniteInt(species.baseExpYield, 0, context, "species " .. key .. " baseExpYield")
   if not Validate.isArray(species.eggGroups) or #species.eggGroups ~= 2 then
     fail("species " .. key .. " must carry two egg groups", context)
   end
@@ -338,7 +374,7 @@ local function assertMove(key, move, context)
     unknownC = true,
     contestType = true,
     battle = true,
-  }, context)
+  }, context, true)
   checkOptionalNativeId(move.nativeId, 467, context, "move " .. key .. " nativeId")
   checkText(move.name, context, "move " .. key .. " name")
   if type(move.description) ~= "string" then
@@ -370,7 +406,7 @@ local function assertAbility(key, ability, context)
   if type(ability) ~= "table" then
     fail("ability " .. key .. " must be a record", context)
   end
-  checkKeys(ability, { nativeId = true, name = true, description = true }, context)
+  checkKeys(ability, { nativeId = true, name = true, description = true }, context, true)
   checkOptionalNativeId(ability.nativeId, 123, context, "ability " .. key .. " nativeId")
   checkText(ability.name, context, "ability " .. key .. " name")
   if type(ability.description) ~= "string" then
@@ -489,7 +525,7 @@ function ResolvedMonSchema.assertCatalog(catalog)
     moves = true,
     abilities = true,
     growthCurves = true,
-  }, context)
+  }, context, true)
   if catalog.schema ~= "g4-mon-catalog-v4" then
     fail("catalog schema must be g4-mon-catalog-v4", context)
   end
