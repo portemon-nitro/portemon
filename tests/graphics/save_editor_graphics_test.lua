@@ -3065,6 +3065,172 @@ function T.buttons_use_full_size_labels_with_coherent_middle_tones(scope)
   end
 end
 
+function T.shaded_action_ink_is_centered_on_its_painted_content(scope)
+  local TextButton = require("libs.ui.src.TextButton")
+  local font = love.graphics.getFont()
+  local size = { width = 640, height = 480 }
+  local records = {}
+  local originalDraw = TextButton.draw
+  TextButton.draw = function(graphics, button, options)
+    local text = options.text
+    local originalTextDraw = text.draw
+    text.draw = function(label, x, y)
+      if label == "Save" or label == "Discard all" then
+        records[label] = {
+          content = button.contentRect,
+          x = x,
+          y = y,
+          width = text.measure(label),
+          lineHeight = text.lineHeight,
+        }
+      end
+      return originalTextDraw(label, x, y)
+    end
+    return originalDraw(graphics, button, options)
+  end
+  local ok, result = xpcall(function()
+    return draw(
+      scope,
+      size.width,
+      size.height,
+      singleDisplay(size.width, size.height),
+      "shaded-action-ink-centering",
+      "Player",
+      "leave",
+      nil,
+      function(renderer, view, plan)
+        view.textMetrics.lineHeight = font:getHeight()
+        view.textMetrics.measure = function(value)
+          return font:getWidth(value)
+        end
+        view.decisionActions = {
+          { id = "save", label = "Save", semantic = "primary", enabled = true, command = "save" },
+          { id = "discard", label = "Discard all", semantic = "destructive", enabled = true, command = "discard" },
+          { id = "cancel", label = "Cancel", semantic = "secondary", enabled = true, command = "cancel" },
+        }
+        renderer.text.fontDef.lineHeight = font:getHeight()
+        plan.content.layout = Layout.compute(view, plan.content.width, plan.content.height, view.textMetrics)
+        view.layout = plan.content.layout
+      end
+    )
+  end, debug.traceback)
+  TextButton.draw = originalDraw
+  if not ok then
+    error(result, 0)
+  end
+  local data = result
+
+  local visibleInk = false
+  for y = 0, size.height - 1 do
+    for x = 0, size.width - 1 do
+      local red, green, blue = data:getPixel(x, y)
+      if red > 0.99 and green > 0.99 and blue > 0.99 then
+        visibleInk = true
+        break
+      end
+    end
+    if visibleInk then
+      break
+    end
+  end
+  Assert.isTrue(visibleInk, "the completed renderer frame contains visible glyph pixels")
+
+  for _, label in ipairs({ "Save", "Discard all" }) do
+    local ink = assert(records[label], label .. " is rendered through the shaded text adapter")
+    local expectedWidth = font:getWidth(label) * 0.75
+    local expectedHeight = font:getHeight() * 0.75
+    Assert.near(ink.width, expectedWidth, 0.01, label .. " measurement uses painted glyph width")
+    Assert.near(ink.lineHeight, expectedHeight, 0.01, label .. " line height uses painted glyph height")
+    Assert.near(ink.x + expectedWidth / 2, ink.content.width / 2, 1,
+      label .. " rendered glyph bounds center horizontally in button content")
+    Assert.near(ink.y + expectedHeight / 2, ink.content.height / 2, 1,
+      label .. " rendered glyph bounds center vertically in button content")
+  end
+end
+
+function T.shaded_action_fit_uses_painted_content_width(scope)
+  local TextButton = require("libs.ui.src.TextButton")
+  local font = love.graphics.getFont()
+  local fitLabel, longLabel
+
+  local _, _, layout, _, drawnText, _, _, _, paletteCalls = draw(
+    scope,
+    640,
+    480,
+    singleDisplay(640, 480),
+    "shaded-action-painted-fit",
+    "Player",
+    "leave",
+    nil,
+    function(renderer, view, plan)
+      view.textMetrics.lineHeight = font:getHeight()
+      view.textMetrics.measure = function(value)
+        return font:getWidth(value)
+      end
+      view.decisionActions = {
+        { id = "save", label = string.rep("M", 40), semantic = "primary", enabled = true, command = "save" },
+        { id = "discard", label = string.rep("W", 40), semantic = "destructive", enabled = true, command = "discard" },
+        { id = "cancel", label = string.rep("C", 40), semantic = "back", enabled = true, command = "cancel" },
+      }
+      renderer.text.fontDef.lineHeight = font:getHeight()
+      plan.content.layout = Layout.compute(view, plan.content.width, plan.content.height, view.textMetrics)
+      local targetWidth = assert(plan.content.layout.targets.save).rect.width
+      local fitBudget = targetWidth - 16
+      local paintedBudget = (targetWidth - 12) / 0.75
+      for count = 1, 80 do
+        local candidate = string.rep("M", count)
+        local width = font:getWidth(candidate)
+        if fitLabel == nil and width > fitBudget and width <= paintedBudget then
+          fitLabel = candidate
+        end
+        if width > math.max(paintedBudget, 112) then
+          longLabel = candidate
+          break
+        end
+      end
+      assert(fitLabel, "the test font supplies a label between native and painted fit widths")
+      assert(longLabel, "the test font supplies a label wider than the painted content")
+      view.decisionActions = {
+        { id = "save", label = fitLabel, semantic = "primary", enabled = true, command = "save" },
+        { id = "discard", label = longLabel, semantic = "destructive", enabled = true, command = "discard" },
+        { id = "cancel", label = string.rep("C", 40), semantic = "back", enabled = true, command = "cancel" },
+      }
+      plan.content.layout = Layout.compute(view, plan.content.width, plan.content.height, view.textMetrics)
+      view.layout = plan.content.layout
+    end
+  )
+
+  Assert.notNil(layout.targets.save, "the fitting shaded action retains its target")
+  local fitRect = assert(layout.targets.save).rect
+  local fitContent = TextButton.resolve({ rect = fitRect, scale = 1 }).contentRect
+  Assert.isTrue(font:getWidth(fitLabel) > fitRect.width - 16,
+    "the fitting label exceeds the earlier source-width budget")
+  Assert.isTrue(font:getWidth(fitLabel) * 0.75 <= fitContent.width + 1,
+    "the same label fits the actual painted content width")
+  local fullFitLabelPainted, fullLongLabelPainted = false, false
+  for _, value in ipairs(drawnText) do
+    fullFitLabelPainted = fullFitLabelPainted or value == fitLabel
+    fullLongLabelPainted = fullLongLabelPainted or value == longLabel
+  end
+  Assert.isTrue(fullFitLabelPainted, "a label that fits at painted scale is not prematurely ellipsized")
+  Assert.isFalse(fullLongLabelPainted, "the genuinely oversized source label is fitted")
+  local fittedLongLabel
+  for _, value in ipairs(drawnText) do
+    if value:sub(1, 1) == longLabel:sub(1, 1) and value:find("…", 1, true) then
+      fittedLongLabel = value
+    end
+  end
+  Assert.notNil(fittedLongLabel, "the oversized label uses the existing ellipsis fitter")
+
+  for _, entry in ipairs({ { id = "save", label = fitLabel }, { id = "discard", label = fittedLongLabel } }) do
+    local rect = assert(layout.targets[entry.id]).rect
+    local content = TextButton.resolve({ rect = rect, scale = 1 }).contentRect
+    assert(findPaletteCall(paletteCalls, entry.label), "the fitted label is painted")
+    Assert.isTrue(font:getWidth(entry.label) * 0.75 <= content.width + 1,
+      "painted text stays within the shaded content width")
+  end
+end
+
 function T.wide_host_resizes_keep_the_content_column_clamped_and_hits_inside_it(scope)
   local cases = {
     { width = 256, height = 192, wide = false },

@@ -428,23 +428,25 @@ local function optionLabelPalette(renderer, disabled, option, active)
 end
 
 local drawBodyText
+local fitText
 
 local function drawShadedControl(renderer, rect, label, active, focused, disabled, semantic, option)
   local role = optionRole(disabled, semantic, option, active)
   local colors = assert(BUTTON_COLORS[role], "unknown save editor button role: " .. tostring(role))
   local labelPalette = optionLabelPalette(renderer, disabled, option, active)
   local button = TextButton.resolve({ rect = rect, scale = 1 })
+  local fitted = fitText(renderer, label, button.contentRect.width / BODY_TEXT_SCALE)
   TextButton.draw(renderer.graphics, button, {
-    label = label,
+    label = fitted,
     selected = false,
     colors = colors,
     text = {
-      lineHeight = renderer.text.fontDef.lineHeight,
+      lineHeight = renderer.text.fontDef.lineHeight * BODY_TEXT_SCALE,
       measure = function(value)
-        return renderer.text:textWidth(value)
+        return renderer.text:textWidth(value) * BODY_TEXT_SCALE
       end,
       draw = function(value, x, y)
-        drawBodyText(renderer, value, x / BODY_TEXT_SCALE, y / BODY_TEXT_SCALE, labelPalette)
+        drawBodyText(renderer, value, x, y, labelPalette)
       end,
     },
   })
@@ -454,8 +456,6 @@ local function drawShadedControl(renderer, rect, label, active, focused, disable
   end
   return button.contentRect
 end
-
-local fitText
 
 drawBodyText = function(renderer, value, x, y, role)
   local graphics = renderer.graphics
@@ -532,11 +532,10 @@ end
 
 local function drawButtonControl(renderer, rectValue, label, active, focused, disabled, semantic, option)
   local lineHeight = renderer.text.fontDef.lineHeight
-  local fitted = fitText(renderer, label, rectValue.width - 16)
   if rectValue.height >= lineHeight + 32 + 1 then
-    return drawShadedControl(renderer, rectValue, fitted, active, focused, disabled, semantic, option)
+    return drawShadedControl(renderer, rectValue, label, active, focused, disabled, semantic, option)
   end
-  return drawCompactControl(renderer, rectValue, fitted, active, focused, disabled, semantic, option)
+  return drawCompactControl(renderer, rectValue, label, active, focused, disabled, semantic, option)
 end
 
 local function drawSectionControl(renderer, rectValue, label, active, focused)
