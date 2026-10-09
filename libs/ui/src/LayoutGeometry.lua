@@ -1,8 +1,7 @@
--- Game-independent rectangle, fit, and coordinate-transform geometry. Every operation validates finite positive dimensions, copies owned
--- rectangles, and scales uniformly; the placement record carries the exact
--- frame, scale, and logical dimensions rendering uses, so pointer mapping
--- inverts the same record with no second transform. No knowledge of
--- game surfaces, menus, pockets, love, or devices.
+-- Game-independent rectangle, fit, and coordinate-transform geometry. Construction and admission validate finite positive dimensions; hit
+-- predicates are pure arithmetic over admitted rectangles. The placement record carries the exact frame, scale, and logical dimensions
+-- rendering uses, so pointer mapping inverts the same record with no second transform. No knowledge of game surfaces, menus, pockets, love,
+-- or devices.
 
 ---@class LayoutGeometry
 local LayoutGeometry = {}
@@ -61,8 +60,6 @@ end
 ---@param inner LayoutGeometry.Rect
 ---@return boolean
 function LayoutGeometry.contains(outer, inner)
-  checkRect(outer, "outer")
-  checkRect(inner, "inner")
   return inner.x >= outer.x
     and inner.y >= outer.y
     and inner.x + inner.width <= outer.x + outer.width
@@ -76,8 +73,6 @@ end
 ---@param y number
 ---@return boolean
 function LayoutGeometry.containsPoint(rect, x, y)
-  checkRect(rect, "rect")
-  assert(isFiniteNumber(x) and isFiniteNumber(y), "hit testing needs finite coordinates")
   return x >= rect.x and y >= rect.y and x < rect.x + rect.width and y < rect.y + rect.height
 end
 
@@ -85,8 +80,6 @@ end
 ---@param b LayoutGeometry.Rect
 ---@return boolean
 function LayoutGeometry.overlaps(a, b)
-  checkRect(a, "a")
-  checkRect(b, "b")
   return a.x < b.x + b.width and b.x < a.x + a.width and a.y < b.y + b.height and b.y < a.y + a.height
 end
 

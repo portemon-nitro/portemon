@@ -61,6 +61,63 @@ function T.overlaps_matches_axis_aligned_intersection()
   Assert.isFalse(LayoutGeometry.overlaps(rect(0, 0, 10, 10), rect(20, 20, 5, 5)))
 end
 
+function T.hit_predicates_use_direct_arithmetic_over_negative_and_fractional_geometry()
+  local negative = rect(-50, -40, 100, 80)
+  Assert.isTrue(LayoutGeometry.containsPoint(negative, -50, -40), "the origin edge of a negative rect is inside")
+  Assert.isTrue(LayoutGeometry.containsPoint(negative, -12.5, 39.75), "fractional interior points are inside")
+  Assert.isFalse(LayoutGeometry.containsPoint(negative, 50, 0), "the far edge of a negative rect is outside")
+  Assert.isFalse(LayoutGeometry.containsPoint(negative, -50.25, 0), "points left of a negative rect are outside")
+  Assert.isTrue(LayoutGeometry.contains(negative, rect(-50, -40, 100, 80)), "touching edges contain on negative origins")
+  Assert.isTrue(LayoutGeometry.contains(negative, rect(-10.5, 0.25, 20, 20)), "fractional inner rects are contained")
+  Assert.isFalse(LayoutGeometry.contains(negative, rect(-50, -40, 100.5, 80)), "a fractional overhang is not contained")
+  Assert.isTrue(
+    LayoutGeometry.overlaps(rect(-10, -10, 10, 10), rect(-5.5, -5.5, 20, 20)),
+    "fractional negative rects overlap by positive area"
+  )
+  Assert.isFalse(
+    LayoutGeometry.overlaps(rect(-10, -10, 10, 10), rect(0, -10, 10, 10)),
+    "edge touch on negative rects is not overlap"
+  )
+end
+
+function T.hot_predicates_trust_admitted_rectangles_without_per_call_checks()
+  Assert.isFalse(
+    LayoutGeometry.containsPoint(rect(0, 0, 0, 10), 0, 0),
+    "a zero-width rect has no interior at its origin edge"
+  )
+  Assert.isFalse(
+    LayoutGeometry.containsPoint(rect(0, 0, 10, 10), 0 / 0, 0),
+    "a non-finite coordinate never hit-tests inside"
+  )
+  Assert.isTrue(
+    LayoutGeometry.contains(rect(0, 0, 100, 100), rect(10, 10, 0, 5)),
+    "degenerate inner edges compare arithmetically"
+  )
+  Assert.isFalse(
+    LayoutGeometry.overlaps(rect(0, 0, 10, 10), rect(0, 0, -5, 5)),
+    "negative dimensions compare arithmetically"
+  )
+end
+
+function T.admission_owners_reject_invalid_dimensions()
+  local nothing = nil ---@type any
+  Assert.throws(function()
+    LayoutGeometry.rect(rect(0, 0, 0, 10), "frame")
+  end, "zero-width construction is rejected at admission")
+  Assert.throws(function()
+    LayoutGeometry.rect(rect(0, 0, 10, 0 / 0), "frame")
+  end, "non-finite construction is rejected at admission")
+  Assert.throws(function()
+    LayoutGeometry.rect(nothing, "frame")
+  end, "missing construction is rejected at admission")
+  Assert.throws(function()
+    LayoutGeometry.validatePlacement({ frame = rect(0, 0, -4, 10), scale = 2 }, "placement")
+  end, "a malformed frame is rejected at admission")
+  Assert.throws(function()
+    LayoutGeometry.validatePlacement({ frame = rect(0, 0, 100, 50), scale = 0 }, "placement")
+  end, "a non-positive scale is rejected at admission")
+end
+
 function T.inset_shrinks_symmetrically_and_rejects_overflow()
   Assert.deepEqual(LayoutGeometry.inset(rect(0, 0, 100, 80), 8), rect(8, 8, 84, 64))
   Assert.throws(function()
