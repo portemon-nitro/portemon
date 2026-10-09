@@ -94,7 +94,6 @@ local SaveEditorMapSurvey = require("app.src.saveeditor.SaveEditorMapSurvey")
 ---@field disposed boolean
 ---@field preparedMapId integer?
 ---@field objectEvents table[]?
----@field ambiguousObjectIds table<integer, table<integer, boolean>>?
 ---@field warpEvents table[]?
 ---@field coordinateEvents table[]?
 ---@field metadata SaveEditorLocationMetadata?
@@ -415,7 +414,6 @@ function SaveEditorLocationService:_releaseMap()
   self.mapBounds = nil
   self.representedMapIds = nil
   self.objectEvents = nil
-  self.ambiguousObjectIds = nil
   self.warpEvents = nil
   self.coordinateEvents = nil
   if self.survey then
@@ -566,7 +564,6 @@ function SaveEditorLocationService:_collectRepresented(coverage, candidate)
     events = nil,
     objectEvents = {},
     objectEventIdentities = {},
-    ambiguousObjectIds = {},
     warpEvents = {},
     coordinateEvents = {},
     matrixMemberId = matrixMemberId,
@@ -701,23 +698,21 @@ function SaveEditorLocationService:_advanceRepresented(maxWorkUnits)
                 identities = {}
                 metadata.objectEventIdentities[representedMapId] = identities
               end
-              local previous = identities[event.objectEventId]
-              if previous == nil then
-                identities[event.objectEventId] = event
+              local footprints = identities[event.objectEventId]
+              if footprints == nil then
+                footprints = {}
+                identities[event.objectEventId] = footprints
+              end
+              local footprint = table.concat({
+                event.movementType,
+                event.x,
+                event.z,
+                event.xRange,
+                event.yRange,
+              }, "\0")
+              if not footprints[footprint] then
+                footprints[footprint] = true
                 target[#target + 1] = event
-              elseif
-                previous.movementType ~= event.movementType
-                or previous.x ~= event.x
-                or previous.z ~= event.z
-                or previous.xRange ~= event.xRange
-                or previous.yRange ~= event.yRange
-              then
-                local ambiguous = metadata.ambiguousObjectIds[representedMapId]
-                if ambiguous == nil then
-                  ambiguous = {}
-                  metadata.ambiguousObjectIds[representedMapId] = ambiguous
-                end
-                ambiguous[event.objectEventId] = true
               end
             else
               target[#target + 1] = event
@@ -801,7 +796,6 @@ function SaveEditorLocationService:_advanceRepresented(maxWorkUnits)
         return consumed + 1, true
       end
       self.objectEvents = metadata.objectEvents
-      self.ambiguousObjectIds = metadata.ambiguousObjectIds
       self.warpEvents = metadata.warpEvents
       self.coordinateEvents = metadata.coordinateEvents
       self.representedMapIds = metadata.idsSet
@@ -885,7 +879,6 @@ function SaveEditorLocationService:_publishCandidateCoverage()
   self.coverage = candidate
   self.candidateCoverage = nil
   self.objectEvents = metadata.objectEvents
-  self.ambiguousObjectIds = metadata.ambiguousObjectIds
   self.warpEvents = metadata.warpEvents
   self.coordinateEvents = metadata.coordinateEvents
   self.representedMapIds = metadata.idsSet
@@ -1184,7 +1177,6 @@ function SaveEditorLocationService:_tileFacts(fieldX, fieldZ)
     mapBounds = self.mapBounds,
     representedMapIds = self.representedMapIds,
     savedActors = self.savedActors,
-    ambiguousSourceActor = self.ambiguousObjectIds ~= nil and self.ambiguousObjectIds[self.mapId] ~= nil,
   }
 
   if fieldX < 0 or fieldX > 0xFFFF or fieldZ < 0 or fieldZ > 0xFFFF then

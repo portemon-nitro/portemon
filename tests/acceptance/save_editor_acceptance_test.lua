@@ -1637,20 +1637,16 @@ function T.tests.pallet_and_azalea_map_placement_stays_conservative_with_real_ro
     end
 
     local palletView = browse(palletMapId, 1033, 364, 3, 3)
-    local palletPlacement
-    local sawAmbiguousSource = false
-    for _, tile in ipairs(palletView.tiles) do
-      local placement, result = service:resolve(palletMapId, tile.fieldX, tile.fieldZ, palletView.generation)
-      if placement ~= nil then
-        palletPlacement = placement
-        break
-      end
-      sawAmbiguousSource = sawAmbiguousSource or result.reason == "ambiguous_source_actor"
-    end
-    Assert.isTrue(
-      palletPlacement ~= nil or sawAmbiguousSource,
-      "Pallet Town either exposes a valid source-safe destination or reports an ambiguous identity conservatively"
+    local suggestion = assert(palletView.initialCursor, "the real map survey publishes its selected safe point")
+    Assert.equal(suggestion.state, "ready", "Pallet Town's real map survey finds an actually selectable tile")
+    local palletPlacement, palletResult = service:resolve(
+      palletMapId,
+      assert(suggestion.fieldX),
+      assert(suggestion.fieldZ),
+      palletView.generation
     )
+    Assert.notNil(palletPlacement, "the surveyed Pallet destination passes production classification")
+    Assert.equal(palletResult.state, "ready", "the surveyed Pallet destination is ready to stage")
 
     local beforeInvalidAttempt = graph.session:captureCandidate()
     local azaleaView = browse(azaleaGymMapId, 32, 7, 1, 1)
@@ -1669,20 +1665,18 @@ function T.tests.pallet_and_azalea_map_placement_stays_conservative_with_real_ro
       "rejecting the invalid point does not change the candidate save"
     )
 
-    if palletPlacement ~= nil then
-      Assert.isTrue(graph.session:setLocation(palletPlacement).ok, "a valid Pallet tuple stages through the production Session")
-      Assert.isTrue(graph.session:save().ok, "the valid tuple saves through the production composition")
-      local published = assert(fixture.store:load(fixture.saveId))
-      Assert.equal(published.mapId, palletPlacement.mapId, "the native save retains the selected map identity")
-      Assert.equal(published.fieldX, palletPlacement.fieldX, "the native save retains the selected field X")
-      Assert.equal(published.fieldZ, palletPlacement.fieldZ, "the native save retains the selected field Z")
-      Assert.equal(published.surfaceId, palletPlacement.surfaceId, "the native save retains the resolved surface")
-      Assert.equal(
-        published.terrainDependencyHash,
-        palletPlacement.terrainDependencyHash,
-        "the native save retains the resolved terrain dependency"
-      )
-    end
+    Assert.isTrue(graph.session:setLocation(palletPlacement).ok, "a valid Pallet tuple stages through the production Session")
+    Assert.isTrue(graph.session:save().ok, "the valid tuple saves through the production composition")
+    local published = assert(fixture.store:load(fixture.saveId))
+    Assert.equal(published.mapId, palletPlacement.mapId, "the native save retains the selected map identity")
+    Assert.equal(published.fieldX, palletPlacement.fieldX, "the native save retains the selected field X")
+    Assert.equal(published.fieldZ, palletPlacement.fieldZ, "the native save retains the selected field Z")
+    Assert.equal(published.surfaceId, palletPlacement.surfaceId, "the native save retains the resolved surface")
+    Assert.equal(
+      published.terrainDependencyHash,
+      palletPlacement.terrainDependencyHash,
+      "the native save retains the resolved terrain dependency"
+    )
   end, debug.traceback)
   if service then
     pcall(function()

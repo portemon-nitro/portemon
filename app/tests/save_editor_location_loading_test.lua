@@ -1236,9 +1236,17 @@ function T.tests.represented_bounds_derive_from_descriptor_headers_in_a_single_p
       { x = 3, z = 0, mapHeaderId = 99 },
     }
   end
+  service.runtimeMap.fieldData.events.objects = {
+    { objectEventId = 7, movementType = "stationary", x = 10, z = 10, xRange = -1, yRange = -1 },
+  }
   function loader:beginLogicalMetadata(mapId)
     assert(mapId == 22, "only the represented neighbor loads beside the selected map")
     local neighbor = indoorRuntime()
+    neighbor.fieldData.events.objects = {
+      { objectEventId = 7, movementType = "stationary", x = 20, z = 10, xRange = -1, yRange = -1 },
+      { objectEventId = 7, movementType = "stationary", x = 20, z = 10, xRange = -1, yRange = -1, eventFlag = 1 },
+      { objectEventId = 7, movementType = "stationary", x = 30, z = 10, xRange = -1, yRange = -1 },
+    }
     function neighbor:release() end
     local task = { ready = false, taken = false }
     function task:advance(workUnits)
@@ -1270,6 +1278,10 @@ function T.tests.represented_bounds_derive_from_descriptor_headers_in_a_single_p
     { minX = 0, maxX = 95, minZ = 0, maxZ = 63 },
     "filler cells inherit the selected map and foreign cells stay outside the union"
   )
+  Assert.equal(#assert(service.objectEvents), 3, "selected and represented maps retain distinct source footprints")
+  Assert.equal(service.objectEvents[1].mapId, 11, "the selected event retains its logical source map")
+  Assert.equal(service.objectEvents[2].mapId, 22, "the first neighbor footprint retains its logical source map")
+  Assert.equal(service.objectEvents[3].x, 30, "an equivalent neighbor record is deduplicated without losing another footprint")
   Assert.equal(lookups, 0, "the whole-matrix pass performs no coordinate lookup")
   service:dispose()
 end
@@ -2092,7 +2104,7 @@ function T.tests.tile_classification_bounds_trigger_and_actor_collection_visits(
   Assert.deepEqual(result, expected, "staged tile classification preserves the established policy result")
 end
 
-function T.tests.repeated_identical_source_events_publish_one_actor_obstacle()
+function T.tests.source_footprint_dedup_preserves_distinct_actor_obstacles()
   local service, loader = loadingService({ taskImmediate = true })
   local sourceEvent = {
     objectEventId = 7,
@@ -2112,7 +2124,16 @@ function T.tests.repeated_identical_source_events_publish_one_actor_obstacle()
     yRange = -1,
     eventFlag = 0,
   }
-  loader.runtime.fieldData.events.objects = { sourceEvent, repeatedEvent }
+  local secondFootprint = {
+    objectEventId = 7,
+    movementType = "stationary",
+    x = 11,
+    z = 10,
+    xRange = -1,
+    yRange = -1,
+    eventFlag = 1,
+  }
+  loader.runtime.fieldData.events.objects = { sourceEvent, repeatedEvent, secondFootprint }
   service:openMap(11, { purpose = "browse" })
   service:setViewport(10, 10, 1, 1)
 
@@ -2124,12 +2145,13 @@ function T.tests.repeated_identical_source_events_publish_one_actor_obstacle()
       end
     end
     Assert.equal(service:snapshot().status.state, "ready", "the represented map reaches ready state")
-    Assert.equal(#assert(service.objectEvents), 1, "metadata publication canonicalizes identical source identity rows")
+    Assert.equal(#assert(service.objectEvents), 2, "metadata deduplicates equal footprints but retains distinct ones")
     Assert.equal(service:_classify(10, 10).reason, "possible_actor", "the canonical actor still blocks its source tile")
+    Assert.equal(service:_classify(11, 10).reason, "possible_actor", "the second same-ID source footprint also blocks")
     Assert.isTrue(service:_classify(12, 10).selectable, "an unrelated safe tile remains selectable")
   end)
   service:dispose()
-  Assert.isTrue(ok, "identical source event rows must not throw during Map browse: " .. tostring(err))
+  Assert.isTrue(ok, "duplicate source event rows must not throw during Map browse: " .. tostring(err))
 end
 
 function T.tests.indoor_outside_permission_is_rejected_before_field_coordinate_conversion()
