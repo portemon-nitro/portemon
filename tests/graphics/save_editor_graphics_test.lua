@@ -4643,6 +4643,8 @@ function T.compact_number_fallback_draws_a_cancelable_notice(scope)
 end
 
 function T.graphics_state_is_restored_after_rings_and_scaled_text(scope)
+  local graphics = love.graphics
+  local initialState = captureCallerGraphicsState(graphics)
   local topology = singleDisplay(640, 480)
   draw(scope, 640, 480, topology, "state-restore-choice", "Player", "choice-list")
   Assert.equal(love.graphics.getLineWidth(), 1, "focus rings restore the line width")
@@ -4659,6 +4661,53 @@ function T.graphics_state_is_restored_after_rings_and_scaled_text(scope)
     love.graphics.setScissor(0, 0, 640, 480)
   end)
   Assert.equal(love.graphics.getLineWidth(), 3, "bag cards restore the non-default caller line width")
+  graphics.setShader(initialState.shader)
+  if initialState.scissor[1] == nil then
+    graphics.setScissor()
+  else
+    graphics.setScissor(unpack(initialState.scissor))
+  end
+  graphics.setBlendMode(initialState.blend[1], initialState.blend[2])
+  graphics.setColor(unpack(initialState.color))
+  graphics.setLineWidth(initialState.lineWidth)
+end
+
+function T.editor_painters_preserve_the_callers_graphics_state(scope)
+  local graphics = love.graphics
+  local topology = singleDisplay(640, 480)
+  for _, section in ipairs({ "Player", "Bag", "Party" }) do
+    local expected
+    draw(scope, 640, 480, topology, "caller-state-" .. section, section, "draft", nil, function()
+      graphics.setColor(0.2, 0.4, 0.6, 0.8)
+      graphics.setBlendMode("multiply", "premultiplied")
+      graphics.setLineWidth(3)
+      graphics.setScissor(7, 9, 600, 450)
+      local red, green, blue, alpha = graphics.getColor()
+      local blend, alphaMode = graphics.getBlendMode()
+      local x, y, width, height = graphics.getScissor()
+      expected = {
+        color = { red, green, blue, alpha },
+        blend = { blend, alphaMode },
+        lineWidth = graphics.getLineWidth(),
+        scissor = { x, y, width, height },
+        shader = graphics.getShader(),
+      }
+    end)
+
+    local red, green, blue, alpha = graphics.getColor()
+    local blend, alphaMode = graphics.getBlendMode()
+    local x, y, width, height = graphics.getScissor()
+    Assert.deepEqual({ red, green, blue, alpha }, expected.color, section .. " restores color")
+    Assert.deepEqual({ blend, alphaMode }, expected.blend, section .. " restores blend mode")
+    Assert.equal(graphics.getLineWidth(), expected.lineWidth, section .. " restores line width")
+    Assert.deepEqual({ x, y, width, height }, expected.scissor, section .. " restores scissor")
+    Assert.isTrue(graphics.getShader() == expected.shader, section .. " restores shader")
+    graphics.setShader()
+    graphics.setScissor()
+    graphics.setBlendMode("alpha", "alphamultiply")
+    graphics.setColor(1, 1, 1, 1)
+    graphics.setLineWidth(1)
+  end
 end
 
 function T.party_body_paint_failure_restores_clip_and_graphics_state(scope)
@@ -4666,29 +4715,46 @@ function T.party_body_paint_failure_restores_clip_and_graphics_state(scope)
   local topology = singleDisplay(640, 480)
   local originalDraw = graphics.draw
   local originalPush, originalPop = graphics.push, graphics.pop
-  local originalLineWidth = graphics.getLineWidth()
   local function scissorState()
     local x, y, width, height = graphics.getScissor()
     return x == nil and { enabled = false }
       or { enabled = true, x = x, y = y, width = width, height = height }
   end
+  local function graphicsState()
+    local red, green, blue, alpha = graphics.getColor()
+    local blend, alphaMode = graphics.getBlendMode()
+    return {
+      color = { red, green, blue, alpha },
+      blend = { blend, alphaMode },
+      lineWidth = graphics.getLineWidth(),
+      scissor = scissorState(),
+      shader = graphics.getShader(),
+    }
+  end
   local pushStates, restoredStates = {}, {}
+  local partyClip
   graphics.push = function(...)
     originalPush(...)
-    pushStates[#pushStates + 1] = scissorState()
+    pushStates[#pushStates + 1] = graphicsState()
   end
   graphics.pop = function(...)
+    local activeState = graphicsState()
     originalPop(...)
     local pushedState = table.remove(pushStates)
     if pushedState ~= nil then
-      restoredStates[#restoredStates + 1] = { pushedState, scissorState() }
+      restoredStates[#restoredStates + 1] = { pushedState, activeState, graphicsState() }
     end
   end
   local ok, err = pcall(function()
     draw(scope, 640, 480, topology, "party-body-paint-failure", "Party", "draft", nil, function(renderer)
+      graphics.setColor(0.2, 0.4, 0.6, 0.8)
+      graphics.setBlendMode("multiply", "premultiplied")
+      graphics.setLineWidth(3)
+      graphics.setScissor(7, 9, 600, 450)
       local drawTextWithPalette = renderer.text.drawTextWithPalette
       renderer.text.drawTextWithPalette = function(textRenderer, text, x, y, palette)
         if text == "Level" then
+          partyClip = scissorState()
           graphics.setLineWidth(7)
           error("party body paint failed")
         end
@@ -4704,11 +4770,27 @@ function T.party_body_paint_failure_restores_clip_and_graphics_state(scope)
   graphics.setCanvas()
   Assert.isFalse(ok, "the injected Party body paint failure propagates")
   Assert.isTrue(tostring(err):find("party body paint failed", 1, true) ~= nil)
-  Assert.equal(graphics.getLineWidth(), originalLineWidth, "Party body failure restores graphics state")
-  Assert.isTrue(#restoredStates >= 3, "Party body failure unwinds text, clip and section scopes")
+  Assert.notNil(partyClip, "the injected failure occurs inside the Party body clip")
+  Assert.isTrue(
+    partyClip.enabled
+      and (partyClip.x ~= 7 or partyClip.y ~= 9 or partyClip.width ~= 600 or partyClip.height ~= 450),
+    "Party body uses its narrower scissor"
+  )
+  local partyClipRestored = false
   for _, states in ipairs(restoredStates) do
-    Assert.deepEqual(states[2], states[1], "each popped Party paint scope restores its prior clip")
+    local activeScissor = states[2].scissor
+    local pushedScissor = states[1].scissor
+    if activeScissor.enabled and activeScissor.x == partyClip.x and activeScissor.y == partyClip.y
+      and activeScissor.width == partyClip.width and activeScissor.height == partyClip.height
+      and pushedScissor.enabled
+      and (pushedScissor.x ~= partyClip.x or pushedScissor.y ~= partyClip.y
+        or pushedScissor.width ~= partyClip.width or pushedScissor.height ~= partyClip.height)
+    then
+      Assert.deepEqual(states[3], states[1], "Party clip pop restores its full pushed graphics state")
+      partyClipRestored = true
+    end
   end
+  Assert.isTrue(partyClipRestored, "Party clip pop restores its prior scissor and full graphics state")
 end
 
 function T.deferred_icon_preparation_uses_the_draw_time_presentation(_)
