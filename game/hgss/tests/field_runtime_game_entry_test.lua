@@ -741,6 +741,6 @@ return {
   tests = T,
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "field-runtime", "map:7", "map:64" },
+    derivedAssets = { "field-runtime", "map:7", "map-data:7", "map:64", "map-data:64", "audio-bank:730" },
   },
 }
