@@ -47,7 +47,7 @@ local function fixture(programs, options)
     facing = "west",
     offset = { x = 0, y = 0, z = 0 },
   }
-  local anchorReads = 0
+  local turnGrassQueries = {}
   local engine = {
     select = function()
       events[#events + 1] = "select"
@@ -66,15 +66,10 @@ local function fixture(programs, options)
     partnerMetatileBehavior = function()
       return options.metatileBehavior or 0
     end,
-    partnerEffectAnchor = function()
-      anchorReads = anchorReads + 1
-      return {
-        fieldX = actor.x,
-        fieldZ = actor.z,
-        worldY = actor.worldY,
-        cellKey = "upper-" .. anchorReads,
-        sourceSurfaceId = actor.sourceSurfaceId + anchorReads - 1,
-      }
+    partnerTurnGrass = function(_, savedFacing)
+      turnGrassQueries[#turnGrassQueries + 1] = savedFacing
+      local grass = options.turnGrass
+      return grass and { kind = grass.kind, fieldX = grass.fieldX, fieldZ = grass.fieldZ, worldY = grass.worldY }
     end,
     bindings = function(_, _leadSlot)
       return { [0] = "Sparky", [1] = "EEVEE", [2] = "Red", [3] = "New Bark Town", [4] = "" }
@@ -240,9 +235,7 @@ local function fixture(programs, options)
       mons = mons,
       terrainEffects = terrainEffects,
       world = world,
-      anchorReads = function()
-        return anchorReads
-      end,
+      turnGrassQueries = turnGrassQueries,
     }
 end
 
@@ -477,6 +470,7 @@ T["a reaction plays as a partner emote that finishes before the interaction mess
     { { "emote", "test-follower-reaction", REACTION_TICKS } },
     "the reaction begins one partner emote action with its clip-derived duration"
   )
+  Assert.deepEqual(seen.audio.played, { "SEQ_SE_DP_DECIDE" }, "the reaction balloon plays its pop sound")
   Assert.isFalse(seen.dialogue.open, "the message waits for the reaction like the source subtask")
   for tick = 2, REACTION_TICKS - 1 do
     task.poll(state, ctx)
@@ -496,51 +490,96 @@ T["a reaction plays as a partner emote that finishes before the interaction mess
   Assert.isTrue(seen.dialogue.open, "the interaction message opens after the reaction")
 end
 
-T["interaction turns emit grass effects only for actual facing changes"] = function()
-  local function emissions(behavior)
-    local programs = {
-      motions = {
-        [4] = {
-          { x = 0, y = 0, z = 0, facing = "north", ticks = 0 },
-          { x = 0, y = 0, z = 0, facing = "north", ticks = 0 },
-          { x = 0, y = 0, z = 0, facing = 0, ticks = 0 },
-        },
+T["interaction turns emit the partner's turn grass only for actual facing changes"] = function()
+  local programs = {
+    motions = {
+      [4] = {
+        { x = 0, y = 0, z = 0, facing = "north", ticks = 1 },
+        { x = 0, y = 0, z = 0, facing = "north", ticks = 1 },
       },
-      [10] = { steps = { { motionId = 4, messageId = 1 } }, friendshipDelta = 0, moodDelta = 0 },
-    }
-    local ctx, seen = fixture(programs, { metatileBehavior = behavior })
-    local state = FollowerInteractionTask.create({}, ctx)
-    for _ = 1, 8 do
-      FollowerInteractionTask.poll(state, ctx)
-      if state.phase == "dialogue" then
-        break
-      end
+    },
+    [10] = { steps = { { motionId = 4, messageId = 1 } }, friendshipDelta = 0, moodDelta = 0 },
+  }
+  local grass = { kind = "tall_grass", fieldX = 13, fieldZ = 8, worldY = 2.5 }
+  local ctx, seen = fixture(programs, { turnGrass = grass })
+  local state = FollowerInteractionTask.create({}, ctx)
+  for _ = 1, 8 do
+    FollowerInteractionTask.poll(state, ctx)
+    if state.phase == "dialogue" then
+      break
     end
-    return seen.terrainEffects.emitted, seen.actor.facing, seen.anchorReads()
   end
+  local emitted = seen.terrainEffects.emitted
+  Assert.equal(#emitted, 2, "one motion turn and normal facing restoration emit two effects")
+  Assert.deepEqual(emitted[1], { kind = "tall_grass", fieldX = 13, fieldZ = 8, worldY = 2.5, direction = "north" })
+  Assert.deepEqual(emitted[2], { kind = "tall_grass", fieldX = 13, fieldZ = 8, worldY = 2.5, direction = "west" })
+  Assert.deepEqual(seen.turnGrassQueries, { "west", "west" }, "grass follows the facing saved at interaction start")
+  Assert.equal(seen.actor.facing, "west")
 
-  for _, vector in ipairs({
-    { behavior = 2, kind = "tall_grass" },
-    { behavior = 3, kind = "very_tall_grass" },
-  }) do
-    local emitted, facing, reads = emissions(vector.behavior)
-    Assert.equal(#emitted, 2, "one motion turn and normal facing restoration emit two effects")
-    Assert.equal(emitted[1].kind, vector.kind)
-    Assert.equal(emitted[1].direction, "north", "effect direction follows the new motion facing")
-    Assert.equal(emitted[1].fieldX, 12)
-    Assert.equal(emitted[1].fieldZ, 8)
-    Assert.equal(emitted[1].worldY, 2.5)
-    Assert.equal(emitted[1].cellKey, "upper-1")
-    Assert.equal(emitted[1].sourceSurfaceId, 9)
-    Assert.equal(emitted[2].kind, vector.kind, "normal facing restoration disturbs the same grass")
-    Assert.equal(emitted[2].direction, "west", "restoration effect uses the restored facing")
-    Assert.equal(emitted[2].cellKey, "upper-2", "each emission reacquires the current committed anchor")
-    Assert.equal(emitted[2].sourceSurfaceId, 10)
-    Assert.equal(reads, 2, "the task requests one engine anchor per terrain effect")
-    Assert.equal(facing, "west")
+  local ordinaryCtx, ordinary = fixture(programs)
+  local ordinaryState = FollowerInteractionTask.create({}, ordinaryCtx)
+  poll(FollowerInteractionTask, ordinaryState, ordinaryCtx, 8)
+  Assert.equal(#ordinary.terrainEffects.emitted, 0, "no turn grass emits nothing")
+end
+
+T["blank and zero-tick motion records last one frame without ending the motion"] = function()
+  local programs = {
+    motions = {
+      [4] = {
+        { x = 0, y = 0, z = 0, facing = 0, ticks = 0 },
+        { x = 0, y = 0.3125, z = 0, facing = 0, ticks = 1, sound = true },
+        { x = 0, y = -0.3125, z = 0, facing = 0, ticks = 1 },
+      },
+    },
+    [10] = { steps = { { motionId = 4, messageId = 1, sound = { kind = "effect", id = 42 } } }, friendshipDelta = 0, moodDelta = 0 },
+  }
+  local ctx, seen = fixture(programs)
+  local state = FollowerInteractionTask.create({}, ctx)
+  FollowerInteractionTask.poll(state, ctx)
+  Assert.deepEqual(seen.actor.offset, { x = 0, y = 0, z = 0 }, "the blank record holds its frame")
+  Assert.deepEqual(seen.audio.played, {}, "the blank record plays nothing")
+  FollowerInteractionTask.poll(state, ctx)
+  Assert.deepEqual(seen.actor.offset, { x = 0, y = 0.3125, z = 0 }, "the hop record follows the blank record")
+  Assert.deepEqual(seen.audio.played, { 42 }, "the hop record plays the step sound")
+  FollowerInteractionTask.poll(state, ctx)
+  Assert.equal(state.phase, "motion", "the landing record still plays")
+  Assert.isFalse(seen.dialogue.open)
+end
+
+T["a final message before a follow-up choice stays open without input until answered"] = function()
+  local programs = {
+    motions = {},
+    [10] = {
+      steps = { { messageId = 1 }, { messageId = 5, delayTicks = 1 } },
+      friendshipDelta = 0,
+      moodDelta = 0,
+      continuation = { choice0InteractionId = 0, choice1InteractionId = 0 },
+    },
+  }
+  local ctx, seen = fixture(programs)
+  local state = FollowerInteractionTask.create({}, ctx)
+  seen.dialogue.finished = true
+  for _ = 1, 6 do
+    FollowerInteractionTask.poll(state, ctx)
   end
-  local ordinary, _facing = emissions(0)
-  Assert.equal(#ordinary, 0, "ordinary terrain emits no turn-grass effects")
+  Assert.equal(#seen.dialogue.messages, 1, "an earlier step still waits for input")
+  ctx.input.pressedAction = true
+  FollowerInteractionTask.poll(state, ctx)
+  ctx.input.pressedAction = nil
+  for _ = 1, 8 do
+    FollowerInteractionTask.poll(state, ctx)
+    if seen.choice.active then
+      break
+    end
+  end
+  Assert.equal(#seen.dialogue.messages, 2)
+  Assert.isTrue(seen.choice.active, "the choice opens without an input wait")
+  Assert.isTrue(seen.dialogue.open, "the final message stays visible under the choice")
+  local closes = seen.dialogue.closes
+  ctx.input.uiEvents = { { type = "confirm" } }
+  FollowerInteractionTask.poll(state, ctx)
+  Assert.isFalse(seen.dialogue.open, "answering the choice closes the message")
+  Assert.equal(seen.dialogue.closes, closes + 1)
 end
 
 T["continuation uses the selected target without selecting or rolling again"] = function()
@@ -606,7 +645,7 @@ T["interaction deltas precede Fashion success and full reward branches"] = funct
   }, "deltas commit before Fashion inventory mutation")
   Assert.equal(success.dialogue.messages[1].message.bank, 40)
   Assert.equal(success.dialogue.messages[1].message.id, 32)
-  Assert.deepEqual(success.dialogue.messages[1].bindings, { "Red", "Accessory" })
+  Assert.deepEqual(success.dialogue.messages[1].bindings, { [0] = "Red", [1] = "Accessory" })
   Assert.deepEqual(success.audio.played, { "SEQ_ME_ACCE" })
 
   local fullCtx, full = fixture(programs)
@@ -623,7 +662,7 @@ T["interaction deltas precede Fashion success and full reward branches"] = funct
   })
   Assert.equal(full.dialogue.messages[1].message.bank, 40)
   Assert.equal(full.dialogue.messages[1].message.id, 95)
-  Assert.deepEqual(full.dialogue.messages[1].bindings, { "Red", "an Accessory" })
+  Assert.deepEqual(full.dialogue.messages[1].bindings, { [0] = "Red", [1] = "an Accessory" })
   Assert.equal(#full.audio.played, 0, "full Fashion Case has no success fanfare")
 end
 
@@ -651,7 +690,7 @@ T["new and duplicate Shiny Leaf branches have exact durable effects"] = function
   Assert.isTrue(fresh.world.flags[0x99C], "new leaf sets the retail world flag")
   Assert.deepEqual(fresh.events[3], { "reward", 0, "leaf", 2 })
   Assert.equal(fresh.dialogue.messages[1].message.id, 97)
-  Assert.deepEqual(fresh.dialogue.messages[1].bindings, { "Red", "Sparky" })
+  Assert.deepEqual(fresh.dialogue.messages[1].bindings, { [0] = "Red", [1] = "Sparky" })
   Assert.equal(fresh.audio.played[1], "SEQ_ME_ACCE")
 
   local duplicateCtx, duplicate = fixture(programs)
@@ -672,7 +711,7 @@ T["cancellation during motion clears the offset and restores facing"] = function
     motions = { [4] = { { x = 1, y = 1, z = 0, facing = "north", ticks = 5 } } },
     [10] = { steps = { { motionId = 4, messageId = 1 } }, friendshipDelta = 0, moodDelta = 0 },
   }
-  local ctx, seen = fixture(programs, { metatileBehavior = 2 })
+  local ctx, seen = fixture(programs, { turnGrass = { kind = "tall_grass", fieldX = 13, fieldZ = 8, worldY = 2.5 } })
   local task = FollowerInteractionTask
   local state = task.create({}, ctx)
   task.poll(state, ctx)
@@ -877,6 +916,7 @@ T["reaction restore rebuilds the derived partner emote at its saved tick"] = fun
     { { "emote", "test-follower-reaction", REACTION_TICKS } },
     "restore rebuilds the derived partner emote once"
   )
+  Assert.deepEqual(resumedSeen.audio.played, {}, "restore does not replay the reaction sound")
   Assert.deepEqual(resumedSeen.events[#resumedSeen.events], { "advance", 3, REACTION_TICKS })
   task.poll(saved, resumedCtx)
   Assert.equal(saved.phase, "dialogue", "the restored reaction completes into its message")
@@ -892,7 +932,7 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
     local ctx, seen = fixture({
       motions = { [4] = { { x = 2, y = 3, z = -1, facing = "north", ticks = 4, sound = true } } },
       [10] = { steps = { { motionId = 4, sound = { kind = "effect", id = 43 } } }, friendshipDelta = 0, moodDelta = 0 },
-    }, { metatileBehavior = 2 })
+    }, { turnGrass = { kind = "tall_grass", fieldX = 13, fieldZ = 8, worldY = 2.5 } })
     local registry = Registry.new()
     local composition = ScriptComposition.new(registry)
     registry:installBase(resource.id, resource, "generated")

@@ -19,12 +19,11 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local FollowerInteractionEngine = {}
 FollowerInteractionEngine.__index = FollowerInteractionEngine
 
----@class FollowerEffectAnchor
+---@class FollowerTurnGrass
+---@field kind "tall_grass"|"very_tall_grass"
 ---@field fieldX integer
 ---@field fieldZ integer
 ---@field worldY number
----@field cellKey string?
----@field sourceSurfaceId integer?
 
 ---@class FollowerInteractionRng
 ---@field chance fun(self: FollowerInteractionRng, numerator: integer, denominator: integer): boolean
@@ -298,7 +297,9 @@ function FollowerInteractionEngine:_context(leadSlot)
     weatherClass = assert(self.runtimeMap.effectiveWeatherId, "current runtime weather is required") == 0 and 1
       or self.runtimeMap.effectiveWeatherId == 1 and 3
       or 0,
-    timeClass = time.hour <= 3 and 1 or time.hour <= 9 and 2 or time.hour <= 16 and 3 or time.hour <= 19 and 4 or 5,
+    -- ov02_0224F64C: Field_GetTimeOfDay (morning 4-9, day 10-16, evening
+    -- 17-19, night 20-23, late night 0-3) plus one.
+    timeClass = time.hour <= 3 and 5 or time.hour <= 9 and 1 or time.hour <= 16 and 2 or time.hour <= 19 and 3 or 4,
     facingClass = ({ east = 1, west = 2, north = 3, south = 4 })[partner.facing],
     typeClass = 0,
     pokeathlonClass = self:_pokeathlonClass(mon, time),
@@ -380,24 +381,34 @@ function FollowerInteractionEngine:partnerMetatileBehavior()
   return partnerCell(self.runtimeMap, partnerState).behavior
 end
 
----@return FollowerEffectAnchor
-function FollowerInteractionEngine:partnerEffectAnchor()
+-- The grass a turning partner rustles (ov02_0224FE70): only a partner with a
+-- nonzero source state whose interaction-start facing was west or east, on
+-- the tall-grass tile behind that facing (ov02_0224FF04).
+---@param savedFacing string
+---@return FollowerTurnGrass?
+function FollowerInteractionEngine:partnerTurnGrass(savedFacing)
+  local dx = savedFacing == "west" and 1 or savedFacing == "east" and -1 or nil
+  if dx == nil or self.followingMon:partnerSourceState() == 0 then
+    return nil
+  end
   local actorId = assert(self.followingMon:partnerActorId(), "partner actor is unavailable")
   local partner = assert(self.actors:getById(actorId), "partner actor is unavailable")
   local state = assert(partner:numericState(), "partner actor state is unavailable")
   assert(state.hasWorldPosition == 1, "partner actor world position is unavailable")
-  local anchor = {
-    fieldX = state.fieldX,
-    fieldZ = state.fieldZ,
-    worldY = state.worldY,
-  }
-  local cellKey = partner.cellKey
-  local sourceSurfaceId = partner:getSourceSurfaceId()
-  if cellKey ~= nil and sourceSurfaceId ~= nil then
-    anchor.cellKey = cellKey
-    anchor.sourceSurfaceId = sourceSurfaceId
+  local fieldX, fieldZ = state.fieldX + dx, state.fieldZ
+  local localX, localZ = fieldX - self.runtimeMap.coordinateOrigin.x, fieldZ - self.runtimeMap.coordinateOrigin.z
+  local collision = assert(self.runtimeMap.collision, "partner turn grass requires the map collision")
+  if not collision:containsLocal(localX, localZ) then
+    return nil
   end
-  return anchor
+  local behavior = collision:getLocal(localX, localZ).behavior
+  local kind = MetatileBehavior.isTallGrass(behavior) and "tall_grass"
+    or MetatileBehavior.isVeryTallGrass(behavior) and "very_tall_grass"
+    or nil
+  if kind == nil then
+    return nil
+  end
+  return { kind = kind, fieldX = fieldX, fieldZ = fieldZ, worldY = state.worldY }
 end
 
 function FollowerInteractionEngine:program(programId)

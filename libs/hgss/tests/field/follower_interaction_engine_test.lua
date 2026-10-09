@@ -232,6 +232,9 @@ local function engine(ruleSpecs, formPerformance, options)
     partnerActorId = function()
       return "field:partner"
     end,
+    partnerSourceState = function()
+      return options.partnerSourceState or 1
+    end,
   }
   local data = catalog(ruleSpecs, options.speciesClassBySpeciesId)
   local testPlayer = options.player or { facing = "south", fieldX = 0, fieldZ = 0 }
@@ -263,11 +266,16 @@ local function engine(ruleSpecs, formPerformance, options)
       effectiveWeatherId = options.weatherId or 0,
       coordinateOrigin = { x = 0, z = 0 },
       collision = {
+        containsLocal = function(_, localX, localZ)
+          return options.regionBounds == nil
+            or localX >= 0 and localZ >= 0 and localX < options.regionBounds and localZ < options.regionBounds
+        end,
         getLocal = function(_, localX, localZ)
           if options.collisionQueries then
             options.collisionQueries[#options.collisionQueries + 1] = { x = localX, z = localZ }
           end
-          return { behavior = options.metatileBehaviorId or 0 }
+          local tileBehavior = options.behaviorAt and options.behaviorAt[localX .. "," .. localZ]
+          return { behavior = tileBehavior or options.metatileBehaviorId or 0 }
         end,
       },
       fieldData = { events = { objects = options.objects or {}, background = options.background or {} } },
@@ -342,30 +350,22 @@ T["earliest passing flattened row wins and stops later RNG draws"] = function()
   Assert.deepEqual(rng:serialize(), expectedRng:serialize(), "selection persists exactly the reached RNG state")
 end
 
-T["partner effect anchor exposes the committed stacked surface"] = function()
-  local position = { fieldX = 12, fieldZ = 8, worldY = 2.5, cellKey = "upper", sourceSurfaceId = 9 }
-  local subject = engine({}, nil, {
-    followerPosition = position,
-  })
+T["partner turn grass sits behind the saved horizontal facing"] = function()
+  local TALL, VERY_TALL = 2, 3
+  local function grass(savedFacing, options)
+    options = options or {}
+    options.followerPosition = { fieldX = 12, fieldZ = 8, worldY = 2.5, cellKey = "upper", sourceSurfaceId = 9 }
+    options.behaviorAt = options.behaviorAt or { ["13,8"] = TALL, ["11,8"] = VERY_TALL, ["12,9"] = TALL, ["12,7"] = TALL }
+    return engine({}, nil, options):partnerTurnGrass(savedFacing)
+  end
 
-  local first = subject:partnerEffectAnchor()
-  Assert.deepEqual(first, {
-    fieldX = 12,
-    fieldZ = 8,
-    worldY = 2.5,
-    cellKey = "upper",
-    sourceSurfaceId = 9,
-  })
-  position.fieldX, position.fieldZ, position.worldY = 13, 9, 3.5
-  position.cellKey, position.sourceSurfaceId = "lower", 10
-  Assert.deepEqual(subject:partnerEffectAnchor(), {
-    fieldX = 13,
-    fieldZ = 9,
-    worldY = 3.5,
-    cellKey = "lower",
-    sourceSurfaceId = 10,
-  })
-  Assert.equal(first.fieldX, 12, "an earlier anchor remains a snapshot")
+  Assert.deepEqual(grass("west"), { kind = "tall_grass", fieldX = 13, fieldZ = 8, worldY = 2.5 })
+  Assert.deepEqual(grass("east"), { kind = "very_tall_grass", fieldX = 11, fieldZ = 8, worldY = 2.5 })
+  Assert.isNil(grass("north"), "a vertical saved facing never rustles grass")
+  Assert.isNil(grass("south"), "a vertical saved facing never rustles grass")
+  Assert.isNil(grass("west", { behaviorAt = { ["12,8"] = TALL } }), "the partner's own tile is not consulted")
+  Assert.isNil(grass("west", { partnerSourceState = 0 }), "a zero partner source state never rustles grass")
+  Assert.isNil(grass("west", { regionBounds = 13 }), "a tile outside the composed region has no grass")
 end
 
 T["a reaction selector resolves its catalog kind and composed emote duration"] = function()
@@ -757,17 +757,18 @@ end
 
 T["time, weather, and hidden-item classifiers use live field values"] = function()
   Assert.notNil(FollowerInteractionEngine, "live field context classification must exist")
+  -- The class is the GF_RTC time of day plus one, so late night is last.
   local timeVectors = {
-    { 0, 1 },
-    { 3, 1 },
-    { 4, 2 },
-    { 9, 2 },
-    { 10, 3 },
-    { 16, 3 },
-    { 17, 4 },
-    { 19, 4 },
-    { 20, 5 },
-    { 23, 5 },
+    { 0, 5 },
+    { 3, 5 },
+    { 4, 1 },
+    { 9, 1 },
+    { 10, 2 },
+    { 16, 2 },
+    { 17, 3 },
+    { 19, 3 },
+    { 20, 4 },
+    { 23, 4 },
   }
   for _, vector in ipairs(timeVectors) do
     local subject = engine(
@@ -902,26 +903,6 @@ T["nearby-object selection counts local actors and recognizes special sprites"] 
       "special sprite " .. spriteId .. " does not count as an ordinary nearby object"
     )
   end
-end
-
-T["partner effect anchor omits absent source-surface identity"] = function()
-  local subject = engine({}, nil, {
-    followerPosition = { fieldX = 12, fieldZ = 8, worldY = 2.5 },
-  })
-  Assert.deepEqual(subject:partnerEffectAnchor(), {
-    fieldX = 12,
-    fieldZ = 8,
-    worldY = 2.5,
-  })
-
-  local halfStable = engine({}, nil, {
-    followerPosition = { fieldX = 12, fieldZ = 8, worldY = 2.5, cellKey = "upper" },
-  })
-  Assert.deepEqual(halfStable:partnerEffectAnchor(), {
-    fieldX = 12,
-    fieldZ = 8,
-    worldY = 2.5,
-  })
 end
 
 T["daily performance modifiers keep the retail winner on the boundary vector"] = function()

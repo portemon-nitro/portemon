@@ -85,23 +85,14 @@ function FollowerInteractionTask.create(_, ctx)
   }
 end
 
-local function effectAnchor(svc, direction)
-  local anchor = svc.followerInteraction:partnerEffectAnchor()
-  anchor.direction = direction
-  return anchor
-end
-
-local function emitGrassTurn(svc, engine, previousFacing, facing)
+local function emitGrassTurn(svc, state, previousFacing, facing)
   if previousFacing == facing then
     return
   end
-  local behavior = engine:partnerMetatileBehavior()
-  local kind = MetatileBehavior.isTallGrass(behavior) and "tall_grass"
-    or MetatileBehavior.isVeryTallGrass(behavior) and "very_tall_grass"
-  if kind then
-    local anchor = effectAnchor(svc, facing)
-    anchor.kind = kind
-    svc.terrainEffects:emit(anchor)
+  local grass = svc.followerInteraction:partnerTurnGrass(state.savedFacing)
+  if grass then
+    grass.direction = facing
+    svc.terrainEffects:emit(grass)
   end
 end
 
@@ -114,7 +105,7 @@ local function clearMotion(state, svc, normalCompletion)
     local previousFacing = svc.actors:getFacing(actorId)
     svc.actors:setFacing(actorId, state.savedFacing)
     if normalCompletion then
-      emitGrassTurn(svc, svc.followerInteraction, previousFacing, state.savedFacing)
+      emitGrassTurn(svc, state, previousFacing, state.savedFacing)
     end
   end
   state.motionId, state.motionIndex, state.motionTick, state.motionStarted = 0, 1, 0, false
@@ -138,6 +129,10 @@ local function pollReaction(state, svc, step)
   end
   local reaction = svc.followerInteraction:reaction(step.reactionId)
   local actorId = partnerId(svc.followingMon)
+  if state.reactionTick == 0 then
+    -- ov01_02203BB4 plays the balloon's pop sound when it is created.
+    svc.audio:play("SEQ_SE_DP_DECIDE")
+  end
   if state.reactionTick == 0 or not svc.actors:isScriptedMoving(actorId) then
     svc.actors:beginScriptedAction(actorId, { action = "emote", name = reaction.kind, ticks = reaction.ticks })
   end
@@ -151,9 +146,9 @@ local function pollReaction(state, svc, step)
   return true
 end
 
-local function message(ctx, bank, id, bindings)
+local function message(ctx, bank, id, bindings, op)
   assert(services(ctx).dialogue)
-  local node = { op = "say", message = { message = "external", bank = bank, id = id }, bindings = bindings }
+  local node = { op = op or "say", message = { message = "external", bank = bank, id = id }, bindings = bindings }
   return DialogueTask.create({ node = node }, ctx)
 end
 
@@ -191,21 +186,14 @@ local function motionPhase(state, ctx)
   local step = assert(engine:program(state.programId).steps[state.stepIndex])
   while state.phase == "motion" do
     local record = motion[state.motionIndex]
-    if
-      record == nil
-      or (
-        record.x == 0
-        and record.y == 0
-        and record.z == 0
-        and record.facing == 0
-        and record.ticks == 0
-        and not record.sound
-      )
-    then
+    if record == nil then
       clearMotion(state, svc, true)
       state.phase = "reaction"
       break
     end
+    -- ov02_0224FF5C counts a frame before comparing, so a zero-tick record
+    -- still holds one frame.
+    local ticks = math.max(record.ticks, 1)
     if not state.motionStarted then
       state.cumulativeX = state.cumulativeX + record.x
       state.cumulativeZ = state.cumulativeZ + record.z
@@ -216,16 +204,16 @@ local function motionPhase(state, ctx)
       if facing then
         local previousFacing = svc.actors:getFacing(actorId)
         svc.actors:setFacing(actorId, facing)
-        emitGrassTurn(svc, engine, previousFacing, facing)
+        emitGrassTurn(svc, state, previousFacing, facing)
       end
       svc.actors:beginScriptedAction(actorId, {
         action = "presentation_offset",
         x = state.cumulativeX,
         y = state.cumulativeY,
         z = state.cumulativeZ,
-        ticks = record.ticks,
+        ticks = ticks,
       })
-      svc.actors:advanceScriptedAction(actorId, 0, record.ticks)
+      svc.actors:advanceScriptedAction(actorId, 0, ticks)
       if record.sound and step.sound ~= nil then
         local sound = step.sound
         if sound.kind == "effect" then
@@ -237,9 +225,7 @@ local function motionPhase(state, ctx)
         end
       end
       state.motionStarted = true
-      if record.ticks > 0 then
-        return "yield"
-      end
+      return "yield"
     elseif not svc.actors:isScriptedMoving(actorId) then
       -- The partner actor is derived presentation and is absent after restore.
       -- Rebuild the current render action without advancing offsets or replaying
@@ -249,23 +235,17 @@ local function motionPhase(state, ctx)
         x = state.cumulativeX,
         y = state.cumulativeY,
         z = state.cumulativeZ,
-        ticks = record.ticks,
+        ticks = ticks,
       })
-      svc.actors:advanceScriptedAction(actorId, state.motionTick, record.ticks)
+      svc.actors:advanceScriptedAction(actorId, state.motionTick, ticks)
     end
-    if record.ticks == 0 then
-      svc.actors:commitScriptedAction(actorId)
-      state.motionIndex, state.motionTick, state.motionStarted = state.motionIndex + 1, 0, false
-    else
-      state.motionTick = state.motionTick + 1
-      svc.actors:advanceScriptedAction(actorId, state.motionTick, record.ticks)
-      if state.motionTick >= record.ticks then
-        svc.actors:commitScriptedAction(actorId)
-        state.motionIndex, state.motionTick, state.motionStarted = state.motionIndex + 1, 0, false
-      else
-        return "yield"
-      end
+    state.motionTick = state.motionTick + 1
+    svc.actors:advanceScriptedAction(actorId, state.motionTick, ticks)
+    if state.motionTick < ticks then
+      return "yield"
     end
+    svc.actors:commitScriptedAction(actorId)
+    state.motionIndex, state.motionTick, state.motionStarted = state.motionIndex + 1, 0, false
   end
   return "continue"
 end
@@ -280,7 +260,10 @@ local function reactionPhase(state, ctx)
   end
   if step.messageId ~= nil then
     local bindings = engine:bindings(state.leadSlot)
-    state.dialogueState = message(ctx, 265, step.messageId, bindings)
+    -- The final message before a follow-up choice skips the input wait and
+    -- stays open under the choice (ov02_0224F8FC substate 6).
+    local holdsForChoice = program.continuation ~= nil and program.steps[state.stepIndex + 1] == nil
+    state.dialogueState = message(ctx, 265, step.messageId, bindings, holdsForChoice and "message" or "say")
     state.phase = "dialogue"
   else
     state.phase = "delay"
@@ -343,6 +326,9 @@ local function choicePhase(state, ctx)
   end
   local target = state.choiceTargets[result.result == 1 and 2 or 1]
   state.choiceState, state.choiceTargets = nil, nil
+  if svc.dialogue:isOpen() then
+    svc.dialogue:close(true)
+  end
   if target == 0 then
     state.phase = "reward"
   else
@@ -379,14 +365,14 @@ local function rewardPhase(state, ctx)
       local name = type(result) == "table" and (outcome == "added" and result.plain or result.article)
         or outcome == "added" and "Accessory"
         or "an Accessory"
-      bindings = { svc.player and svc.player:name() or "Red", name }
+      bindings = { [0] = svc.player and svc.player:name() or "Red", [1] = name }
       if outcome == "added" then
         svc.audio:play("SEQ_ME_ACCE")
         state.rewardWaitForEffect = true
       end
     else
       bank, id = 40, outcome == "new" and 97 or 98
-      bindings = { svc.player and svc.player:name() or "Red", engine:bindings(state.leadSlot)[0] }
+      bindings = { [0] = svc.player and svc.player:name() or "Red", [1] = engine:bindings(state.leadSlot)[0] }
       if outcome == "new" then
         svc.world:setFlag(0x99C)
         svc.audio:play("SEQ_ME_ACCE")
@@ -554,7 +540,7 @@ local function checkShared(state)
     local dialogue = state.dialogueState
     if
       type(dialogue) ~= "table"
-      or dialogue.mode ~= "say"
+      or (dialogue.mode ~= "say" and dialogue.mode ~= "print")
       or type(dialogue.phase) ~= "string"
       or type(dialogue.message) ~= "table"
       or dialogue.message.message ~= "external"
@@ -583,7 +569,7 @@ local function checkShared(state)
     end
     if
       not (bindingCount == 5 and bindingMinimum == 0 and bindingMaximum == 4)
-      and not (bindingCount == 2 and bindingMinimum == 1 and bindingMaximum == 2)
+      and not (bindingCount == 2 and bindingMinimum == 0 and bindingMaximum == 1)
     then
       return taskStateError(state)
     end
