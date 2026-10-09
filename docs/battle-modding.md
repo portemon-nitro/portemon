@@ -15,6 +15,11 @@ Compose ordered contributions through the battle facade:
 local Battle = require("gen4.battle")
 local resolved, bound, content = Battle.compose({
   { owner = "glimmer-pack", revision = "1", install = function(builder, behaviors)
+    builder:define("types", "normal", {
+      key = "normal",
+      name = "Normal",
+      relations = {},
+    }, "glimmer-pack")
     builder:define("types", "glimmer", {
       key = "glimmer",
       name = "Glimmer",
@@ -117,7 +122,12 @@ path assembles large lineups at scenario construction time.
 Custom types, species, moves, abilities, and effect state resolve
 semantically and carry no native identity. Effectiveness charts are
 scoped per ruleset, so altered relations apply inside one session while
-other running sessions keep their own charts. Session capture, restore,
+other running sessions keep their own charts. A relation may omit directed
+pairs between declared types: every omitted known pair resolves to exactly
+neutral 1/1 once at chart construction. Naming an undeclared type in a
+relation still fails composition, and the native chart declares every
+directed pair itself through the native producer rather than relying on the
+neutral fallback. Session capture, restore,
 and capture flows treat custom records like any other state, while
 native-index lookups refuse content that declares no native identity
 with a clear unknown-identity error instead of a silent neutral

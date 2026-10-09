@@ -153,26 +153,80 @@ function T.chart_relations_stay_exact_and_isolated_to_their_composition()
   end)
 end
 
-function T.chart_with_a_missing_pair_fails_before_freeze()
+function T.sparse_chart_resolves_missing_known_pairs_as_neutral()
   local ContentBuilder = requireContract(
     "libs.content.src.ContentBuilder",
     "ordered type definitions have no composition owner"
+  )
+  local BattleBehaviorBuilder = requireContract(
+    "libs.battle.src.BattleBehaviorBuilder",
+    "typed ruleset registration has no owner"
+  )
+  local BattleContent = requireContract(
+    "libs.battle.src.BattleContent",
+    "frozen executable battle bindings have no owner"
   )
 
   local builder = ContentBuilder.new()
   builder:define(
     "types",
-    "normal",
-    typeRecord("normal", "Normal", { relation("normal", "normal", 1, 1) }),
-    "vanilla"
+    "spark",
+    typeRecord("spark", "Spark", { relation("spark", "ash", 2, 1) }),
+    "mod"
   )
-  builder:define("types", "fire", typeRecord("fire", "Fire", { relation("fire", "fire", 1, 1) }), "vanilla")
+  builder:define(
+    "types",
+    "ash",
+    typeRecord("ash", "Ash", { relation("ash", "ash", 0, 1) }),
+    "mod"
+  )
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerRuleset("test:standard", { key = "test:standard", chart = "test:standard" }, "mod")
+  local content = BattleContent.new(builder:freeze(), behaviors:freeze())
+  local chart = content:typeChart("test:standard")
+  assertRational(chart:effectiveness("spark", "ash"), 2, 1)
+  assertRational(chart:effectiveness("ash", "ash"), 0, 1)
+  assertRational(chart:effectiveness("spark", "spark"), 1, 1)
+  assertRational(chart:effectiveness("ash", "spark"), 1, 1)
+
+  -- A declared edge naming an undeclared type still fails composition.
+  local bad = ContentBuilder.new()
+  bad:define(
+    "types",
+    "spark",
+    typeRecord("spark", "Spark", { relation("spark", "missing", 2, 1) }),
+    "mod"
+  )
+  bad:define("types", "ash", typeRecord("ash", "Ash", {}), "mod")
   Assert.throws(function()
-    builder:freeze()
-  end)
+    bad:freeze()
+  end, "a declared edge naming an unknown type never freezes")
+
+  -- The same directed pair declared twice with different ratios conflicts.
+  local conflict = ContentBuilder.new()
+  conflict:define(
+    "types",
+    "spark",
+    typeRecord("spark", "Spark", { relation("spark", "ash", 2, 1) }),
+    "mod"
+  )
+  conflict:define(
+    "types",
+    "ash",
+    typeRecord("ash", "Ash", { relation("spark", "ash", 1, 2) }),
+    "mod"
+  )
+  Assert.throws(function()
+    conflict:freeze()
+  end, "a conflicting duplicate directed pair never freezes")
+
+  -- Neutral answers are fresh values, never shared mutable state.
+  local seen = chart:effectiveness("spark", "spark")
+  seen.numerator = 99
+  assertRational(chart:effectiveness("spark", "spark"), 1, 1)
 end
 
-function T.native_chart_covers_every_directed_pair_and_rejects_gaps()
+function T.native_chart_declares_every_directed_pair_explicitly()
   local NativeTypeChart = requireContract(
     "libs.battle.src.gen4.NativeTypeChart",
     "the native type matrix installs through content composition"
@@ -213,15 +267,30 @@ function T.native_chart_covers_every_directed_pair_and_rejects_gaps()
   NativeTypeChart.install(builder, "native-chart-tests")
   local behaviors = BattleBehaviorBuilder.new()
   behaviors:registerRuleset("test:native", { key = "test:native", chart = "test:native" }, "native-chart-tests")
-  local content = BattleContent.new(builder:freeze(), behaviors:freeze())
+  local resolved = builder:freeze()
+  local content = BattleContent.new(resolved, behaviors:freeze())
   local chart = content:typeChart("test:native")
+  -- The native inventory declares every ordered pair itself instead of
+  -- leaning on the composed neutral fallback, and the chart agrees.
+  local declared = {} ---@type table<string, table<integer, integer>>
+  for _, attack in ipairs(universe) do
+    local record = resolved:get("types", attack)
+    for _, item in ipairs(assert(record.relations, "frozen native types carry their relations")) do
+      local itemRecord = item --[[@as table<string, unknown>]]
+      local attackKey = assert(itemRecord.attack, "declared relations name their attack") --[[@as string]]
+      local defendKey = assert(itemRecord.defend, "declared relations name their defend") --[[@as string]]
+      declared[attackKey .. "\0" .. defendKey] =
+        { itemRecord.numerator --[[@as integer]], itemRecord.denominator --[[@as integer]] }
+    end
+  end
   for _, attack in ipairs(universe) do
     for _, defend in ipairs(universe) do
+      local hit = declared[attack .. "\0" .. defend]
+      Assert.isTrue(hit ~= nil, "the native inventory declares " .. attack .. " into " .. defend)
+      assert(hit ~= nil, "the declaration check carries the validated pair")
       local pair = chart:effectiveness(attack, defend)
-      Assert.isTrue(
-        type(pair.numerator) == "number" and type(pair.denominator) == "number",
-        "the native chart resolves " .. attack .. " into " .. defend
-      )
+      Assert.equal(pair.numerator, hit[1])
+      Assert.equal(pair.denominator, hit[2])
     end
   end
   assertRational(chart:effectiveness("fire", "grass"), 2, 1)
@@ -233,12 +302,42 @@ function T.native_chart_covers_every_directed_pair_and_rejects_gaps()
   assertRational(chart:effectiveness("electric", "ground"), 0, 1)
   assertRational(chart:effectiveness("poison", "steel"), 0, 1)
 
+  -- Sparse composition freezes, so a gapped native edit stays detectable
+  -- only through its explicit inventory: removing the last declared fire
+  -- relation leaves exactly that ordered pair undeclared.
   local gapped = ContentBuilder.new()
   NativeTypeChart.install(gapped, "native-chart-tests")
-  gapped:patch("types", "fire", { { op = "remove", path = { "relations", 1 } } }, "native-chart-tests")
-  Assert.throws(function()
-    gapped:freeze()
-  end, "a native chart missing one directed pair never freezes")
+  local fireRelations = assert(
+    resolved:get("types", "fire").relations,
+    "the native inventory declares the fire relations"
+  )
+  gapped:patch(
+    "types",
+    "fire",
+    { { op = "remove", path = { "relations", #fireRelations } } },
+    "native-chart-tests"
+  )
+  local gappedResolved = gapped:freeze()
+  local missing = {} ---@type string[]
+  local gappedDeclared = {} ---@type table<string, boolean>
+  for _, attack in ipairs(universe) do
+    local record = gappedResolved:get("types", attack)
+    for _, item in ipairs(assert(record.relations, "frozen native types carry their relations")) do
+      local itemRecord = item --[[@as table<string, unknown>]]
+      local attackKey = assert(itemRecord.attack, "declared relations name their attack") --[[@as string]]
+      local defendKey = assert(itemRecord.defend, "declared relations name their defend") --[[@as string]]
+      gappedDeclared[attackKey .. "\0" .. defendKey] = true
+    end
+  end
+  for _, attack in ipairs(universe) do
+    for _, defend in ipairs(universe) do
+      if gappedDeclared[attack .. "\0" .. defend] == nil then
+        missing[#missing + 1] = attack .. " into " .. defend
+      end
+    end
+  end
+  Assert.equal(#missing, 1)
+  Assert.equal(missing[1], "fire into dark")
 end
 
 function T.separate_compositions_keep_independent_definitions()
@@ -378,7 +477,7 @@ function T.registering_after_freeze_fails_while_freeze_stays_idempotent()
   end)
 end
 
-function T.unknown_rulesets_and_pairs_fail_without_a_neutral_fallback()
+function T.unknown_type_identities_fail_while_charts_stay_detached()
   local ContentBuilder = requireContract(
     "libs.content.src.ContentBuilder",
     "ordered type definitions have no composition owner"

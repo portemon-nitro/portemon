@@ -8,8 +8,9 @@
 -- and an unresolvable reference fails here instead of reaching a session.
 -- The effectiveness chart is a session-scoped view over the
 -- composition's own type matrix with exact integer rationals: zero stays an
--- immunity, halves stay exact, and unknown types or pairs fail instead of
--- falling back to neutral. Separate compositions never share chart state.
+-- immunity, halves stay exact, unknown types fail, and omitted known-known
+-- pairs resolve to neutral once at chart construction. Separate compositions
+-- never share chart state.
 
 local Errors = require("libs.errors.src.Errors")
 
@@ -169,6 +170,15 @@ function BattleContent:typeChart(rulesetKey)
       local row = matrix[relation.attack]
       if row ~= nil then
         row[relation.defend] = { numerator = relation.numerator, denominator = relation.denominator }
+      end
+    end
+  end
+  for _, attack in ipairs(keys) do
+    local row = matrix[attack]
+    assert(row ~= nil, "the chart carries one row per known type")
+    for _, defend in ipairs(keys) do
+      if row[defend] == nil then
+        row[defend] = { numerator = 1, denominator = 1 }
       end
     end
   end

@@ -27,8 +27,11 @@ source ROM, game, presentation, or native-byte decoding knowledge.
   without serializing functions.
 - `BattleContent` is frozen per game instance. Lookups return detached
   copies; separate compositions never share chart or binding state.
-- Charts resolve every directed pair with exact integer rationals. Unknown
-  types, unknown pairs, and unknown rulesets fail explicitly; there is no
-  neutral fallback and no mutable process-global chart.
+- Charts resolve every directed pair between declared types with exact
+  integer rationals, filling each omitted known pair with neutral 1/1 once
+  at chart construction. Unknown types and unknown rulesets fail explicitly;
+  there is no mutable process-global chart. The native type matrix declares
+  every directed pair itself and that coverage is source-fidelity-checked
+  instead of relying on the neutral fallback.
 - Contribution order decides registration precedence only. It never controls
   mechanics timing, which the session layer owns.

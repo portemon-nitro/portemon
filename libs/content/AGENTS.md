@@ -33,5 +33,8 @@ knowledge.
 - Getters return detached copies; the native index carries only declared
   identities and custom entries never receive invented ones.
 - Effectiveness data stays exact: positive-denominator rationals with zero
-  for immunity. A missing directed pair after freeze is an error, never a
-  silent neutral.
+  for immunity. Mod type charts may stay sparse: a relation naming an
+  undeclared type or a conflicting duplicate pair fails, while an omitted
+  pair between declared types freezes cleanly and resolves to neutral at
+  chart construction. Native producer snapshots declare every directed pair
+  completely.

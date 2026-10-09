@@ -436,17 +436,8 @@ local function assertTypeChart(definitions)
       end
     end
   end
-  for attack in pairs(definitions) do
-    for defend in pairs(definitions) do
-      if union[attack .. "\0" .. defend] == nil then
-        Errors.raise("CONTENT_INVALID", "type chart misses a directed pair", {
-          kind = "types",
-          attack = attack,
-          defend = defend,
-        })
-      end
-    end
-  end
+  -- Omitted known-known directed pairs stay sparse here: they resolve
+  -- to neutral at chart construction instead of failing the freeze.
 end
 
 ---@param definitionsByKind table<string, table<string, table<string, unknown>>>
