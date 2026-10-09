@@ -2645,4 +2645,85 @@ function T.hp_target_footer_confirm_requests_cancel_before_unwind()
   Assert.isNil(controller:takeIntent(), "footer confirm emits nothing")
 end
 
+-- Single validation vocabulary: the fixed update rejects an unknown
+-- event, lets an outside dismiss win over same-batch valid input, and
+-- keeps a pointer cancellation from hurrying or duplicating an armed
+-- menu press while valid-but-ignored menu/scroll input stays ignored.
+function T.single_pass_rejects_unknown_and_keeps_dismiss_and_armed_capture_order()
+  local controller = nativeController()
+  local err = Assert.throws(function()
+    controller:updateFixed({ { type = "frobnicate" } })
+  end, "unknown events are rejected")
+  Assert.isTrue(tostring(err):find("frobnicate", 1, true) ~= nil, "the rejection names the event")
+  Assert.isTrue(nativeStatus(controller).open, "a rejected event closes nothing")
+  Assert.isNil(controller:takeIntent(), "a rejected event emits nothing")
+
+  local dismissed = nativeController()
+  dismissed:updateFixed({ { type = "dismiss" }, { type = "confirm" } })
+  Assert.deepEqual(dismissed:takeResult(), { kind = "closed" }, "dismiss wins over a same-batch confirm")
+  Assert.isNil(dismissed:takeResult(), "the close reports exactly once")
+
+  local pointed = nativeController({ hitTarget = { kind = "slot", slot = 1 } })
+  pointed:updateFixed({ { type = "dismiss" }, { type = "pointer_down", pointerId = "p", x = 1, y = 1 } })
+  Assert.deepEqual(pointed:takeResult(), { kind = "closed" }, "dismiss wins over same-batch pointer input")
+  Assert.isNil(pointed:takeIntent(), "dismiss emits no intent")
+
+  local armed = nativeController({ layout = v3Layout() })
+  armed:updateFixed({ { type = "confirm" } })
+  armed:updateFixed({ { type = "confirm" } })
+  Assert.notNil(nativeStatus(armed).menuPress, "setup arms the menu press")
+  armed:updateFixed({ { type = "pointer_cancel" }, { type = "menu" }, { type = "pointer_scroll" } })
+  Assert.notNil(nativeStatus(armed).menuPress, "ignored input never hurries the armed entry")
+  Assert.isNil(armed:takeIntent(), "ignored input dispatches nothing early")
+  for _ = 1, 6 do
+    armed:updateFixed({})
+  end
+  Assert.deepEqual(
+    armed:takeIntent(),
+    { kind = "summary", slot = 0, partyRevision = 11 },
+    "the armed entry still dispatches exactly once on its own cadence"
+  )
+  Assert.isNil(armed:takeIntent(), "the armed entry never dispatches twice")
+end
+
+-- Source tick order: a party revision change reconciles staged menus
+-- before anything else runs, a held press consumes its own tick, and a
+-- prompt cancellation returns to the arming menu without publishing.
+function T.fixed_tick_preserves_source_order_across_revision_press_and_prompt()
+  local controller, _, control = nativeController()
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "context", "setup opens the context menu")
+  control.setSpecs({ [1] = { heldItem = "POTION" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.isNil(controller:takeIntent(), "the reconciling tick never acts on the rebuilt menu")
+  Assert.equal(nativeStatus(controller).state, "context", "the menu rebuilds from the live record")
+  Assert.isTrue(nativeStatus(controller).menu ~= nil, "the rebuilt menu stays usable")
+
+  local footer = nativeController()
+  footer:updateFixed({ { type = "cancel" } })
+  Assert.notNil(nativeStatus(footer).cancelPress, "setup arms the footer press")
+  footer:updateFixed({ { type = "confirm" } })
+  Assert.isNil(footer:takeResult(), "a held press consumes its own tick")
+  Assert.isTrue(nativeStatus(footer).open, "a held press closes nothing early")
+  for _ = 1, 5 do
+    footer:updateFixed({})
+  end
+  Assert.deepEqual(footer:takeResult(), { kind = "closed" }, "the held press still closes on its own tick")
+
+  local confirming = nativeController({ specs = { [1] = { heldItem = "SITRUS_BERRY" } } })
+  confirming:updateFixed({ { type = "confirm" } })
+  confirming:updateFixed({ { type = "navigate", direction = "down" } })
+  confirming:updateFixed({ { type = "navigate", direction = "down" } })
+  confirming:updateFixed({ { type = "confirm" } })
+  pressThrough(confirming)
+  Assert.equal(nativeStatus(confirming).state, "item_context", "setup opens the item submenu")
+  confirming:updateFixed({ { type = "confirm" } })
+  pressThrough(confirming)
+  Assert.equal(nativeStatus(confirming).state, "confirm", "setup opens the yes/no prompt")
+  confirming:updateFixed({ { type = "cancel" } })
+  Assert.equal(nativeStatus(confirming).state, "item_context", "prompt cancellation returns to the arming menu")
+  Assert.isNil(confirming:takeIntent(), "prompt cancellation publishes nothing")
+  Assert.isNil(confirming:takeResult(), "prompt cancellation completes nothing")
+end
+
 return { tests = T }

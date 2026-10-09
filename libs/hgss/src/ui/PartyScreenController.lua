@@ -137,6 +137,32 @@ local PANEL_SLIDE_STEPS = { 0, 12, 24, 36, 40 }
 -- open state targets 0.
 local MENU_OPEN_STATES = { context = true, item_context = true, mail_context = true, confirm = true }
 
+-- The one closed party input vocabulary: every fixed tick validates its
+-- batch against this set exactly once up front, so the armed-press,
+-- prompt, and ordinary dispatch paths below never recheck membership.
+-- Dismiss still wins over same-batch valid input after that single
+-- validation, while the tick clock advances first as always.
+local ALLOWED_PARTY_EVENTS = {
+  navigate = true,
+  confirm = true,
+  cancel = true,
+  dismiss = true,
+  pointer_down = true,
+  pointer_move = true,
+  pointer_up = true,
+  pointer_cancel = true,
+  menu = true,
+  pointer_scroll = true,
+}
+
+---@param event table<string, unknown>
+local function checkEvent(event)
+  assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
+  if not ALLOWED_PARTY_EVENTS[event.type] then
+    error("unknown party event type " .. tostring(event.type), 2)
+  end
+end
+
 ---@param node integer|string
 ---@return boolean
 local function isSlotNode(node)
@@ -1359,12 +1385,13 @@ function PartyScreenController:_finishGive()
   end
 end
 
--- Owns one fixed tick inside the yes/no confirm: unknown events raise
--- in prompt states exactly like ordinary states, cancel
--- declines immediately without publishing, and every other event batch
--- drives the owned prompt exactly once before the tick-owned resolution
--- consumes a published result. Prompt rows latch on press through the
--- owned prompt; the release never activates by itself.
+-- Owns one fixed tick inside the yes/no confirm: cancel declines
+-- immediately without publishing, and every other event batch drives
+-- the owned prompt exactly once before the tick-owned resolution
+-- consumes a published result. Unknown events were already rejected by
+-- the tick's single validation pass, so only the cancel edge is scanned
+-- here. Prompt rows latch on press through the owned prompt; the
+-- release never activates by itself.
 ---@param uiInput table[]
 function PartyScreenController:_stepPrompt(uiInput)
   for _, event in ipairs(uiInput) do
@@ -1372,18 +1399,6 @@ function PartyScreenController:_stepPrompt(uiInput)
     if event.type == "cancel" then
       self:_declinePrompt()
       return
-    end
-    if
-      event.type ~= "navigate"
-      and event.type ~= "confirm"
-      and event.type ~= "pointer_down"
-      and event.type ~= "pointer_move"
-      and event.type ~= "pointer_up"
-      and event.type ~= "pointer_cancel"
-      and event.type ~= "menu"
-      and event.type ~= "pointer_scroll"
-    then
-      error("unknown party event type " .. tostring(event.type), 2)
     end
   end
   local prompt = assert(self._prompt, "prompt ticks need the owned prompt")
@@ -1675,21 +1690,9 @@ function PartyScreenController:updateFixed(uiInput)
   do
     local foundDismiss = false
     for _, event in ipairs(uiInput) do
-      assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
+      checkEvent(event)
       if event.type == "dismiss" then
         foundDismiss = true
-      elseif
-        event.type ~= "navigate"
-        and event.type ~= "confirm"
-        and event.type ~= "cancel"
-        and event.type ~= "pointer_down"
-        and event.type ~= "pointer_move"
-        and event.type ~= "pointer_up"
-        and event.type ~= "pointer_cancel"
-        and event.type ~= "menu"
-        and event.type ~= "pointer_scroll"
-      then
-        error("unknown party event type " .. tostring(event.type), 2)
       end
     end
     if foundDismiss then
@@ -1755,21 +1758,10 @@ function PartyScreenController:updateFixed(uiInput)
       -- The armed press owns the tick: further navigation, activation,
       -- cancellation, and pointer presses wait for its single dispatch.
       -- Pointer cancellation still clears a held capture without
-      -- duplicating or hurrying the armed entry.
+      -- duplicating or hurrying the armed entry; membership was already
+      -- validated once up front, so every other event simply waits.
       if event.type == "pointer_cancel" then
         self:cancelPointerCapture()
-      elseif event.type == "menu" or event.type == "pointer_scroll" then
-        -- A child application's own input policy applies.
-      elseif
-        event.type ~= "navigate"
-        and event.type ~= "confirm"
-        and event.type ~= "cancel"
-        and event.type ~= "dismiss"
-        and event.type ~= "pointer_down"
-        and event.type ~= "pointer_move"
-        and event.type ~= "pointer_up"
-      then
-        error("unknown party event type " .. tostring(event.type), 2)
       end
     elseif event.type == "navigate" then
       self:_navigate(event)
@@ -1790,8 +1782,8 @@ function PartyScreenController:updateFixed(uiInput)
     elseif event.type == "menu" or event.type == "pointer_scroll" then
       -- A child application's own input policy applies: the synthesized
       -- menu edge and scroll events never drive the party screen.
-    else
-      error("unknown party event type " .. tostring(event.type), 2)
+      -- Membership was already validated once up front, so no trailing
+      -- unknown-type branch remains here.
     end
     if self._closed then
       break
