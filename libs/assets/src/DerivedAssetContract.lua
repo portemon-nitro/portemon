@@ -165,8 +165,9 @@ DerivedAssetContract.map = {
   -- edge-color table (scene.edgeColors), every batch/material record carries
   -- the per-polygon fog gate (fogEnabled, PolygonState.FIELDS), and scenes
   -- carry the map's base weather ID plus its resolved global HGSS fog preset
-  -- (scene.weatherId, scene.fog).
-  sceneSchema = "g4-map-scene-v11",
+  -- (scene.weatherId, scene.fog). v12 names each field-light record's
+  -- threshold endHalfSeconds: a record is active until that time.
+  sceneSchema = "g4-map-scene-v12",
   terrainSchema = "g4-terrain-surfaces-v1",
   collisionVersion = 1,
 }
@@ -219,7 +220,8 @@ DerivedAssetContract.fieldMapData = {
   -- v11 carries the normalized renderer environment (parsed field-light
   -- records, the area edge-color table, the catalog weather id, and its
   -- fog preset) so logical maps stay drawable without a visual scene.
-  fieldSchema = "g4-field-map-v11",
+  -- v12 names each field-light record's threshold endHalfSeconds.
+  fieldSchema = "g4-field-map-v12",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.

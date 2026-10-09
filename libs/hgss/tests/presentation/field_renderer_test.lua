@@ -8,9 +8,9 @@ local Matrix4 = require("libs.math.src.Matrix4")
 
 local T = {}
 
-local function lightingRecord(startHalfSeconds, diffuseRgb555)
+local function lightingRecord(endHalfSeconds, diffuseRgb555)
   return {
-    startHalfSeconds = startHalfSeconds,
+    endHalfSeconds = endHalfSeconds,
     lights = {
       { enabled = true, colorRgb555 = diffuseRgb555, vectorFx12 = { 0, 0, -4096 } },
       { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },
@@ -64,8 +64,8 @@ local function fixtureDraw(gxRenderer, includeSprites)
     center = { 0, 0, 0 },
     transform = view,
   }
-  local morning = lightingRecord(0, 1)
-  local evening = lightingRecord(10, 2)
+  local morning = lightingRecord(10, 1)
+  local evening = lightingRecord(43200, 2)
   local sceneRuntime = {
     lighting = { records = { morning, evening } },
     fieldTimeSeconds = 20,

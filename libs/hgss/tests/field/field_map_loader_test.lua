@@ -24,7 +24,7 @@ local function validRenderEnvironment()
     lighting = {
       records = {
         {
-          startHalfSeconds = 0,
+          endHalfSeconds = 0,
           lights = {},
           diffuseRgb555 = 0,
           ambientRgb555 = 0,

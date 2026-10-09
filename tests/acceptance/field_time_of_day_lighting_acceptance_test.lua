@@ -10,7 +10,7 @@ local LocalClock = require("game.src.LocalClock")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map-data:60", "map:60" },
+    derivedAssets = { "field-runtime", "map-data:60", "map:60", "map-data:33" },
     tags = { "field", "lighting", "time-of-day", "acceptance" },
   },
   tests = {},

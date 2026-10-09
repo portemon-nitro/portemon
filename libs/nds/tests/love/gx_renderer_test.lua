@@ -2155,7 +2155,7 @@ function T.draw_renders_only_given_parts_into_persistent_scratch()
   renderer:release()
 end
 
-local function lightingRecord(startHalfSeconds, diffuseRgb555, vectorX)
+local function lightingRecord(endHalfSeconds, diffuseRgb555, vectorX)
   local lights = {}
   for i = 1, 4 do
     lights[i] = {
@@ -2165,7 +2165,7 @@ local function lightingRecord(startHalfSeconds, diffuseRgb555, vectorX)
     }
   end
   return {
-    startHalfSeconds = startHalfSeconds,
+    endHalfSeconds = endHalfSeconds,
     lights = lights,
     diffuseRgb555 = diffuseRgb555,
     ambientRgb555 = diffuseRgb555,

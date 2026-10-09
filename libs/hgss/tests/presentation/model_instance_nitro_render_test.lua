@@ -298,7 +298,7 @@ local function litRuntime()
     lighting = {
       records = {
         {
-          startHalfSeconds = 0,
+          endHalfSeconds = 0,
           lights = {
             { enabled = true, colorRgb555 = white, vectorFx12 = { 0, -4096, 0 } },
             { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },

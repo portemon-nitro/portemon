@@ -997,7 +997,7 @@ function T.polygon_light_mask_changes_the_rendered_result(scope)
   runtime.lighting = {
     records = {
       {
-        startHalfSeconds = 0,
+        endHalfSeconds = 0,
         lights = {
           { enabled = true, colorRgb555 = white, vectorFx12 = { 0, 0, -4096 } },
           { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },
@@ -1079,7 +1079,7 @@ function T.emission_passes_through_for_static_materials(scope)
   runtime.lighting = {
     records = {
       {
-        startHalfSeconds = 0,
+        endHalfSeconds = 0,
         lights = {
           { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },
           { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },
@@ -1147,7 +1147,7 @@ function T.stored_material_colors_never_dim_the_profile(scope)
   runtime.lighting = {
     records = {
       {
-        startHalfSeconds = 0,
+        endHalfSeconds = 0,
         lights = {
           { enabled = true, colorRgb555 = white, vectorFx12 = { 0, 0, -4096 } },
           { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },
@@ -1220,7 +1220,7 @@ function T.color_animated_materials_replace_the_profile(scope)
   runtime.lighting = {
     records = {
       {
-        startHalfSeconds = 0,
+        endHalfSeconds = 0,
         lights = {
           { enabled = true, colorRgb555 = white, vectorFx12 = { 0, 0, -4096 } },
           { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },
@@ -1295,7 +1295,7 @@ function T.lit_then_unlit_scene_does_not_inherit_lighting(scope)
   litRuntime.lighting = {
     records = {
       {
-        startHalfSeconds = 0,
+        endHalfSeconds = 0,
         lights = {
           { enabled = true, colorRgb555 = white, vectorFx12 = { 0, 0, -4096 } },
           { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },
@@ -1460,7 +1460,7 @@ local function specularOnlyRuntime(vectorFx12)
   runtime.lighting = {
     records = {
       {
-        startHalfSeconds = 0,
+        endHalfSeconds = 0,
         lights = {
           { enabled = true, colorRgb555 = white, vectorFx12 = vectorFx12 },
           { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },
@@ -1575,7 +1575,7 @@ function T.ambient_lit_triangle_matches_the_hand_derived_melonds_rgb6(scope)
   runtime.lighting = {
     records = {
       {
-        startHalfSeconds = 0,
+        endHalfSeconds = 0,
         lights = {
           { enabled = true, colorRgb555 = 20 + 20 * 32 + 20 * 1024, vectorFx12 = { 0, 0, -4096 } },
           { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },
@@ -3528,7 +3528,7 @@ local function litRuntimeForRenderer()
   runtime.lighting = {
     records = {
       {
-        startHalfSeconds = 0,
+        endHalfSeconds = 0,
         lights = {
           { enabled = true, colorRgb555 = white, vectorFx12 = { 0, 0, -4096 } },
           { enabled = false, colorRgb555 = 0, vectorFx12 = { 0, 0, 0 } },

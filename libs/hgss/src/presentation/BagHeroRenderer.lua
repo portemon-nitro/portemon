@@ -235,7 +235,7 @@ local function buildSceneRuntime(lights, materials, edgeFacts)
     lighting = {
       records = {
         {
-          startHalfSeconds = 0,
+          endHalfSeconds = 0,
           lights = slots,
           diffuseRgb555 = toRgb555(materials.diffuse, "the hero material diffuse register"),
           ambientRgb555 = toRgb555(materials.ambient, "the hero material ambient register"),

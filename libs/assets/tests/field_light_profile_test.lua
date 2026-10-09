@@ -1,4 +1,4 @@
--- Tests for the runtime half of FieldLightProfile: cyclic time-of-day
+-- Tests for the runtime half of FieldLightProfile: time-of-day
 -- selection over normalized records. Parsing of the HGSS source text lives
 -- with HgssFieldLightProfile under romdump.
 
@@ -10,7 +10,7 @@ local T = {}
 -- One record with the given half-second threshold.
 local function record(threshold)
   return {
-    startHalfSeconds = threshold,
+    endHalfSeconds = threshold,
     enabledLightMask = 1,
     lights = {},
     diffuseRgb555 = 0,
@@ -20,21 +20,25 @@ local function record(threshold)
   }
 end
 
-function T.selects_record_by_time()
-  local p = { records = { record(0), record(21600) } }
-  -- 21600 half-seconds == noon (43200s). Noon selects the second record.
-  Assert.equal(FieldLightProfile.select(p, 43200).startHalfSeconds, 21600)
-  -- Just before noon selects the first.
-  Assert.equal(FieldLightProfile.select(p, 43198).startHalfSeconds, 0)
+function T.threshold_ends_the_record_interval()
+  -- area00light.txt thresholds: a record is active until its own threshold,
+  -- so 11:00 (19800 hs) shows the record ending at 11:30 (20700 hs).
+  local p = { records = { record(0), record(14400), record(20700), record(21600), record(43200) } }
+  Assert.equal(FieldLightProfile.select(p, 39600).endHalfSeconds, 20700) -- 11:00
+  Assert.equal(FieldLightProfile.select(p, 41398).endHalfSeconds, 20700) -- 11:29:58
+  Assert.equal(FieldLightProfile.select(p, 41400).endHalfSeconds, 21600) -- 11:30
+  Assert.equal(FieldLightProfile.select(p, 43200).endHalfSeconds, 43200) -- noon
+  -- A zero threshold ends at midnight, so it never stays selected.
+  Assert.equal(FieldLightProfile.select(p, 0).endHalfSeconds, 14400)
 end
 
-function T.selection_wraps_before_first_threshold()
-  -- Elm's area01 profile starts at 900, not midnight; a pre-threshold time must
-  -- carry over the day's final record rather than fail.
+function T.selection_wraps_to_first_record_after_last_threshold()
+  -- area01light.txt opens at 900; times past the final threshold carry into
+  -- the first record, as does the time before it.
   local p = { records = { record(900), record(21600) } }
-  Assert.equal(FieldLightProfile.select(p, 0).startHalfSeconds, 21600) -- midnight -> wrap to last
-  Assert.equal(FieldLightProfile.select(p, 800).startHalfSeconds, 21600) -- 400 hs (< 900) -> wrap
-  Assert.equal(FieldLightProfile.select(p, 2000).startHalfSeconds, 900) -- 1000 hs -> first record
+  Assert.equal(FieldLightProfile.select(p, 0).endHalfSeconds, 900)
+  Assert.equal(FieldLightProfile.select(p, 2000).endHalfSeconds, 21600)
+  Assert.equal(FieldLightProfile.select(p, 43200).endHalfSeconds, 900)
 end
 
 function T.default_time_is_noon()

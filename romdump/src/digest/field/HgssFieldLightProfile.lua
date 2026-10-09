@@ -149,16 +149,16 @@ function HgssFieldLightProfile.parse(text, context)
     local thresholdLine = lines[base]
     local tnums = numbers(thresholdLine.text)
     checkColumns(tnums, 1, thresholdLine.lineNo, context)
-    local startHalfSeconds = tnums[1]
-    checkRange(startHalfSeconds, 0, SECONDS_PER_DAY / 2, "FIELD_LIGHT_BAD_THRESHOLD", thresholdLine.lineNo, context)
-    if lastThreshold and startHalfSeconds <= lastThreshold then
+    local endHalfSeconds = tnums[1]
+    checkRange(endHalfSeconds, 0, SECONDS_PER_DAY / 2, "FIELD_LIGHT_BAD_THRESHOLD", thresholdLine.lineNo, context)
+    if lastThreshold and endHalfSeconds <= lastThreshold then
       Errors.raise(
         "FIELD_LIGHT_BAD_THRESHOLD",
-        string.format("threshold %d at line %d is not strictly increasing", startHalfSeconds, thresholdLine.lineNo),
+        string.format("threshold %d at line %d is not strictly increasing", endHalfSeconds, thresholdLine.lineNo),
         { line = thresholdLine.lineNo, source = context }
       )
     end
-    lastThreshold = startHalfSeconds
+    lastThreshold = endHalfSeconds
 
     local lights, enabledLightMask = {}, 0
     for i = 1, LIGHT_SLOTS do
@@ -180,7 +180,7 @@ function HgssFieldLightProfile.parse(text, context)
     end
 
     records[#records + 1] = {
-      startHalfSeconds = startHalfSeconds,
+      endHalfSeconds = endHalfSeconds,
       enabledLightMask = enabledLightMask,
       lights = lights,
       diffuseRgb555 = colors[1],

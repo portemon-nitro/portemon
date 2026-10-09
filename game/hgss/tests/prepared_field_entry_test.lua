@@ -45,7 +45,7 @@ local function bedroomField(mapId, symbol)
     music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },
     soundplates = {},
     renderEnvironment = {
-      lighting = { records = { { startHalfSeconds = 0 } } },
+      lighting = { records = { { endHalfSeconds = 0 } } },
       edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
       weatherId = 0,
       fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = density },

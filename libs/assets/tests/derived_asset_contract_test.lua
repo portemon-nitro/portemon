@@ -40,7 +40,7 @@ function T.contract_pins_the_current_asset_identities()
     revision = 12,
     map = {
       cacheFormat = "map-cache-v7",
-      sceneSchema = "g4-map-scene-v11",
+      sceneSchema = "g4-map-scene-v12",
       terrainSchema = "g4-terrain-surfaces-v1",
       collisionVersion = 1,
     },
@@ -63,7 +63,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     fieldMapData = {
       cacheFormat = "g4-field-map-cache-v1",
-      fieldSchema = "g4-field-map-v11",
+      fieldSchema = "g4-field-map-v12",
       spawnIndexSchema = "g4-field-spawn-index-v3",
     },
     messages = {

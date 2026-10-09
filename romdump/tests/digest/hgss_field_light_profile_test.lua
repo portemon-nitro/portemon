@@ -34,7 +34,7 @@ function T.parses_records_and_channels()
   local p = assert(HgssFieldLightProfile.parse(profileText(record(0, 11, -296), record(7200, 18, 4096))))
   Assert.equal(#p.records, 2)
   local r0 = p.records[1]
-  Assert.equal(r0.startHalfSeconds, 0)
+  Assert.equal(r0.endHalfSeconds, 0)
   Assert.equal(r0.enabledLightMask, 0x1) -- only light 0 enabled
   Assert.equal(#r0.lights, 4)
   Assert.isTrue(r0.lights[1].enabled)

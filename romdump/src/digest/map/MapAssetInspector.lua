@@ -553,7 +553,7 @@ function MapAssetInspector.inspect(romFs, idOrSymbol)
       sourcePath = selected.sourcePath,
       sourceSha1 = sha1(lightText),
       recordCount = #profile.records,
-      noonStartHalfSeconds = noonRecord.startHalfSeconds,
+      noonEndHalfSeconds = noonRecord.endHalfSeconds,
       noonEnabledLightMask = noonRecord.enabledLightMask,
     },
     source = {
@@ -803,7 +803,7 @@ function MapAssetInspector.lines(report)
     lt.profileId,
     lt.sourcePath,
     lt.recordCount,
-    lt.noonStartHalfSeconds,
+    lt.noonEndHalfSeconds,
     lt.noonEnabledLightMask
   )
   if #report.warnings == 0 then

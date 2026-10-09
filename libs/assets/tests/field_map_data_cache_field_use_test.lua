@@ -29,7 +29,7 @@ end
 
 function T.current_policy_passes_readiness()
   local bundle = compile(60)
-  Assert.equal(bundle.field.schema, "g4-field-map-v11")
+  Assert.equal(bundle.field.schema, "g4-field-map-v12")
   Assert.isTrue(FieldMapDataCache.hasFieldUsePolicy(bundle.field.fieldUse))
   Assert.isTrue(FieldMapDataCache.isReady(publishedCache(bundle), 60, bundle.marker))
 end
