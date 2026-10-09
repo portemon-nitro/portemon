@@ -857,6 +857,13 @@ local function tickMessage(self, cue)
   if speed > 0 then
     target = math.min(full, math.floor(cue.elapsed --[[@as integer]] / speed) + 1)
   end
+  -- A fast-forwarded reveal persists: an accelerated page never
+  -- collapses back into its typewriter run on the next tick, so the
+  -- following edge can turn the page instead of accelerating again.
+  local shown = cue.revealedCount
+  if type(shown) == "number" and shown > target then
+    target = math.min(full, shown)
+  end
   if
     cue.revealed ~= true
     and cue.elapsed --[[@as integer]]
@@ -874,6 +881,11 @@ local function tickMessage(self, cue)
     cue.page --[[@as integer]]
     < #pages
   then
+    -- An acknowledged page turns only on its explicit edge; ordinary
+    -- narration still turns on its hold so pacing never waits.
+    if cue.ackable == true then
+      return false
+    end
     cue.hold = (cue.hold or 0) + 1
     if cue.hold >= BattleTimeline.MESSAGE_HOLD_TICKS then
       cue.page = cue.page --[[@as integer]] + 1
@@ -882,7 +894,9 @@ local function tickMessage(self, cue)
     return false
   end
   if cue.ackable == true then
-    return true
+    -- A fully revealed terminal page holds until its explicit final
+    -- acknowledgment; glyph completion alone never releases it.
+    return cue.acknowledged == true
   end
   cue.hold = (cue.hold or 0) + 1
   return cue.hold >= BattleTimeline.MESSAGE_HOLD_TICKS
@@ -1031,8 +1045,11 @@ end
 
 -- Completes the revealed page (or advances to the next one) for an
 -- acknowledgement edge. The edge is always consumed while narration is
--- active so it never leaks into command input.
+-- active so it never leaks into command input. An edge that finishes a
+-- running reveal never acknowledges in the same edge; only an edge on a
+-- fully revealed final ackable page reports its completion.
 ---@return boolean consumed
+---@return boolean completedFinalPage true exactly on the explicit final-page acknowledgment
 function BattleTimeline:ack()
   local current = self._active
   if current == nil then
@@ -1040,7 +1057,7 @@ function BattleTimeline:ack()
     -- belongs to that page when the page is already queued first.
     local head = self._queue[1]
     if head == nil or head.kind ~= "message" then
-      return false
+      return false, false
     end
     table.remove(self._queue, 1)
     self._active = head
@@ -1048,7 +1065,7 @@ function BattleTimeline:ack()
     current = head
   end
   if current.kind ~= "message" then
-    return false
+    return false, false
   end
   local pages = current.pages --[[@as string[] ]]
   local page = pages[
@@ -1064,7 +1081,7 @@ function BattleTimeline:ack()
   if (current.revealedCount or 0) < total then
     current.revealedCount = total
     self._message = page
-    return true
+    return true, false
   end
   if
     current.page --[[@as integer]]
@@ -1073,10 +1090,21 @@ function BattleTimeline:ack()
     current.page = current.page --[[@as integer]] + 1
     current.hold = 0
     current.revealedCount = 0
-    return true
+    return true, false
+  end
+  if current.ackable == true then
+    -- The same edge never both accelerates and acknowledges: arrival
+    -- here means the final page was already fully revealed, so this
+    -- edge is the explicit acknowledgment. A repeated edge on an
+    -- already acknowledged page consumes without completing again.
+    if current.acknowledged == true then
+      return true, false
+    end
+    current.acknowledged = true
+    return true, true
   end
   current.hold = BattleTimeline.MESSAGE_HOLD_TICKS
-  return true
+  return true, false
 end
 
 ---@return boolean true when no cue is waiting or consuming ticks

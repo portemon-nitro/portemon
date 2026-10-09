@@ -311,6 +311,17 @@ local function press(rig, event)
   rig.pump(1)
 end
 
+-- Terminal leave carries an explicit final-page acknowledgment: while
+-- narration plays, one genuine confirm through the real screen path
+-- advances it exactly as a player would, so the battle can settle.
+---@param rig table live screen rig under test driving
+local function ackNarration(rig)
+  local mode = rig.screen:status().mode
+  if mode == "intro" or mode == "narration" or mode == "outcome" then
+    rig.screen:input({ { type = "confirm" } })
+  end
+end
+
 ---@param rig table live screen rig under test driving, resting on its command prompt
 local function openPartyFromCommand(rig)
   press(rig, { type = "navigate", direction = "down" })
@@ -672,6 +683,7 @@ function T.voluntary_switch_and_forced_replacement_keep_field_order()
       if current.request ~= nil and requestKind(current.request) == "action" then
         submitFirstEnabledMove(wiped, current.request)
       end
+      ackNarration(wiped)
       wiped.pump(20)
     end
     Assert.equal(wiped.battle:status().phase, "complete", "the wiped side settles the battle" .. tag)
@@ -780,6 +792,7 @@ function T.bag_selection_consumes_only_through_native_execution()
       if current.request ~= nil and requestKind(current.request) == "action" then
         submitFirstEnabledMove(healing, current.request)
       end
+      ackNarration(healing)
       healing.pump(20)
     end
     Assert.equal(healing.battle:status().phase, "complete", "the serving battle settles" .. tag)
@@ -832,6 +845,7 @@ function T.bag_selection_consumes_only_through_native_execution()
     -- The capture narration needs about seven hundred fixed ticks; the
     -- authored budget stops mid-drain.
     for _ = 1, 800 do
+      ackNarration(capture)
       capture.pump(1)
       if capture.battle:status().phase == "complete" or capture.battle:status().phase == "failed" then
         break
@@ -1095,6 +1109,7 @@ function T.move_learning_confirms_replace_or_decline_for_held_recipients()
       if current.request ~= nil and requestKind(current.request) == "action" then
         submitFirstEnabledMove(rig, current.request)
       end
+      ackNarration(rig)
     end
     Assert.equal(rig.battle:status().phase, "complete", "the answered prompts settle the battle" .. tag)
     local leadMoves = rig.party:partyMon(0).moves

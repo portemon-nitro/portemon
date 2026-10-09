@@ -429,6 +429,23 @@ local function settleBattle(game, envelope, choose, budget)
       local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
       Assert.isTrue(accepted, "a legal presented decision is accepted: " .. tostring(replyErr))
     end
+    -- Terminal leave carries an explicit final-page acknowledgment, so
+    -- every narration page is acknowledged through the real envelope
+    -- input path exactly as a player would, alongside the decisions.
+    -- Once the defeat enters recovery the disposed screen is gone, so
+    -- the waiting defeat message gets its own genuine routed edge.
+    local launch = runtime._battleLaunch
+    if launch ~= nil and launch.phase == "recovering" then
+      envelope:input({ { type = "confirm" } })
+    else
+      local screen = envelope:liveScreen()
+      if screen ~= nil then
+        local shown = screen:status()
+        if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+          envelope:input({ { type = "confirm" } })
+        end
+      end
+    end
     game:step()
     envelope:updateFixed(TICK)
     ticks = ticks + 1
@@ -981,6 +998,14 @@ function T.tests.host_lifetime_survives_schedules_and_second_launches()
         local accepted, replyErr =
           battle:submit(SessionFixture.replyFor(current.request, { fightElseSwitch(runtime, current.request) }))
         Assert.isTrue(accepted, "a legal decision is accepted: " .. tostring(replyErr))
+      end
+      -- The terminal leave needs its explicit final-page acknowledgment.
+      local screen = envelope:liveScreen()
+      if screen ~= nil then
+        local shown = screen:status()
+        if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+          envelope:input({ { type = "confirm" } })
+        end
       end
       for _ = 1, stepsPerPump do
         game:step()

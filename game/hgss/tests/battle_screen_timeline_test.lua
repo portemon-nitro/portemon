@@ -318,4 +318,206 @@ function T.acknowledgement_completes_pages_and_muted_drains()
   Assert.isTrue(timeline:messageId() ~= firstId or timeline:message() ~= nil, "narration keeps its identity")
 end
 
+-- First delivery keeps its event cues behind the opening: the encounter
+-- narration plays first and the accepted strike narration and health
+-- checkpoint follow exactly once with no replay of the packet identity.
+function T.first_packet_events_play_after_the_opening_once()
+  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local Model = require("game.hgss.src.battle.BattlePresentationModel")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local measurement = {
+    width = 256,
+    height = 384,
+    topology = ScreenTopology.dualDisplay(
+      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+      { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" },
+      "timeline-first-packet:dual"
+    ),
+    pixelRatio = 1,
+    signature = "timeline-first-packet:dual",
+  }
+  local text = { draws = {} }
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(content, x, y)
+    text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y }
+  end
+  local windows = { calls = {} }
+  function windows.drawWindow(box, frameKey, background)
+    windows.calls[#windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  local audio = { plays = {} }
+  function audio.play(name)
+    audio.plays[#audio.plays + 1] = name
+    return true
+  end
+  local assets = { hold = {}, images = {}, prepared = {}, released = {} }
+  function assets.prepare(demand)
+    assets.prepared[#assets.prepared + 1] = demand
+    return true
+  end
+  function assets.drawable(key)
+    if assets.images[key] == nil then
+      assets.images[key] = { handle = key }
+    end
+    return assets.images[key]
+  end
+  function assets.release(key)
+    assets.released[key] = (assets.released[key] or 0) + 1
+  end
+  local launchId = "launch-first-packet-local"
+  local submits = {}
+  local screen = BattleScreenState.new({
+    launchId = launchId,
+    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    model = Model,
+    submit = function(reply)
+      submits[#submits + 1] = reply
+      return true
+    end,
+    measureDisplay = function()
+      return measurement
+    end,
+    assets = assets,
+    text = text,
+    windows = windows,
+    audio = audio,
+  })
+  local port = screen:presentationPort()
+  local function ownRecord()
+    return {
+      combatant = 1,
+      participant = 1,
+      side = 1,
+      controller = "player",
+      active = true,
+      hp = 52,
+      maxHp = 52,
+      species = "EEVEE",
+      form = 0,
+      name = "LEAD",
+      level = 20,
+      selector = "back",
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+    }
+  end
+  local function foeRecordEntry(hp)
+    return {
+      combatant = 3,
+      participant = 3,
+      side = 2,
+      controller = "wild",
+      active = true,
+      hp = hp,
+      maxHp = 57,
+      species = "EEVEE",
+      form = 0,
+      name = "FOE",
+      level = 20,
+      selector = "front",
+    }
+  end
+  local function beforeView()
+    return { own = { ownRecord() }, foes = { foeRecordEntry(57) } }
+  end
+  local function afterView()
+    return { own = { ownRecord() }, foes = { foeRecordEntry(43) } }
+  end
+  local struck = event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 })
+  local decisionActors = {
+    {
+      combatant = 1,
+      activation = 1,
+      kind = "action",
+      choices = {
+        {
+          id = "move:0",
+          role = "move",
+          display = { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 },
+          enabled = true,
+          choice = {
+            actor = { combatant = 1, activation = 1 },
+            kind = "attack",
+            payload = { moveSlot = 0, target = { kind = "position", position = 2 } },
+          },
+        },
+      },
+    },
+  }
+  local decision = {
+    requestId = 777001,
+    epoch = 1,
+    controller = "player",
+    kind = "action",
+    actors = decisionActors,
+  }
+  decision.options = {
+    requestId = 777001,
+    epoch = 1,
+    controller = "player",
+    kind = "action",
+    actors = decisionActors,
+  }
+  port.present({
+    launchId = launchId,
+    packetId = 1,
+    events = { struck },
+    before = beforeView(),
+    after = afterView(),
+    request = decision,
+    result = nil,
+  })
+  local seen = {}
+  local foeHp = nil
+  local commanded = false
+  for _ = 1, 1200 do
+    screen:updateFixed(TICK)
+    local view = screen:view()
+    seen[#seen + 1] = tostring(view.message or "")
+    for _, battlerEntry in ipairs(view.battlers or {}) do
+      if battlerEntry.side == 2 then
+        foeHp = battlerEntry.hp
+      end
+    end
+    local status = screen:status()
+    if status.mode == "failed" then
+      error("the first-packet route failed: " .. tostring(status.error), 0)
+    end
+    if status.mode == "command" and status.request ~= nil then
+      commanded = true
+      break
+    end
+  end
+  Assert.isTrue(commanded, "the first packet still exposes its decision")
+  local appearedAt = nil
+  local usedAt = nil
+  for index, message in ipairs(seen) do
+    if appearedAt == nil and message:find("appeared", 1, true) ~= nil then
+      appearedAt = index
+    end
+    if message:find("used", 1, true) ~= nil then
+      usedAt = index
+    end
+  end
+  Assert.notNil(appearedAt, "the opening narration plays")
+  Assert.notNil(usedAt, "the accepted first-packet strike still narrates after the opening")
+  Assert.isTrue(usedAt > appearedAt, "the strike follows the opening instead of vanishing inside it")
+  Assert.equal(foeHp, 43, "the event checkpoint lands through its cue")
+  port.present({
+    launchId = launchId,
+    packetId = 1,
+    events = { struck },
+    before = beforeView(),
+    after = afterView(),
+    request = decision,
+    result = nil,
+  })
+  for _ = 1, 30 do
+    screen:updateFixed(TICK)
+  end
+  Assert.equal(foeHp, 43, "a repeated packet identity never replays its events")
+  screen:dispose()
+end
+
 return { tests = T }

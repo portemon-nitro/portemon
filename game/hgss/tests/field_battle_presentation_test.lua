@@ -200,6 +200,16 @@ local function settle(runtime, envelope, choose, budget)
       local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
       Assert.isTrue(accepted, "a legal presented decision is accepted: " .. tostring(replyErr))
     end
+    -- Terminal leave carries an explicit final-page acknowledgment, so
+    -- every narration page is acknowledged through the real envelope
+    -- input path exactly as a player would, alongside the decisions.
+    local screen = envelope:liveScreen()
+    if screen ~= nil then
+      local shown = screen:status()
+      if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+        envelope:input({ { type = "confirm" } })
+      end
+    end
     runtime:update(1 / 30)
     envelope:updateFixed(TICK)
     ticks = ticks + 1
@@ -672,6 +682,14 @@ function T.continuing_receipts_wait_for_the_reveal()
           local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
           Assert.isTrue(accepted, "a legal presented decision is accepted: " .. tostring(replyErr))
         end
+        -- The terminal leave needs its explicit final-page acknowledgment.
+        local screen = envelope:liveScreen()
+        if screen ~= nil then
+          local shown = screen:status()
+          if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+            envelope:input({ { type = "confirm" } })
+          end
+        end
         runtime:update(1 / 30)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
@@ -723,6 +741,14 @@ function T.schedules_and_layouts_settle_identically()
           local actor = assert(current.request.actors[1], "every decision addresses its combatant")
           local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, { strike(actor) }))
           Assert.isTrue(accepted, "a legal decision is accepted: " .. tostring(replyErr))
+        end
+      end
+      -- The terminal leave needs its explicit final-page acknowledgment.
+      local screen = envelope:liveScreen()
+      if screen ~= nil then
+        local shown = screen:status()
+        if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+          envelope:input({ { type = "confirm" } })
         end
       end
       for _ = 1, stepsPerPump do

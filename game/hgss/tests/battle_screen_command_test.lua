@@ -1049,4 +1049,311 @@ function T.rejecting_cue_sink_fails_the_screen_with_context()
   rig.battle:dispose()
 end
 
+-- Terminal narration holds for an explicit acknowledgment: hundreds of
+-- ticks without input keep the readable outcome and refuse leave and
+-- readiness, while one real confirm after the reveal releases exactly
+-- once through the normal return.
+---@param launchId string owning launch identity under test driving
+---@return table live rig with a weak foe for a quick terminal route
+local function openWeakTerminalRig(launchId)
+  local BattleRuntime = require(RUNTIME_MODULE)
+  local BattleScreenState = require(STATE_MODULE)
+  local Model = require(MODEL_MODULE)
+  local holder = {}
+  local rig = { submits = {}, measurement = dualMeasurement(), text = recordingText() }
+  rig.windows = { calls = {} }
+  function rig.windows.drawWindow(box, frameKey, background)
+    rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  rig.audio = { plays = {} }
+  function rig.audio.play(name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
+  function rig.assets.prepare(demand)
+    rig.assets.prepared[#rig.assets.prepared + 1] = demand
+    return true
+  end
+  function rig.assets.drawable(key)
+    if rig.assets.images[key] == nil then
+      rig.assets.images[key] = { handle = key }
+    end
+    return rig.assets.images[key]
+  end
+  function rig.assets.release(key)
+    rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
+  end
+  local party = makeParty(
+    { species = "EEVEE", level = 20, seed = 0x33333333 },
+    { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" }
+  )
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  local launch = {
+    id = launchId,
+    kind = "wild",
+    payload = { attemptId = launchId .. "-attempt", species = "EEVEE", form = 0, level = 4, personality = 1, ability = "RUN_AWAY" },
+  }
+  local ScenarioFactory = require(SCENARIO_FACTORY_MODULE)
+  local scenario = ScenarioFactory.fromEncounter(
+    { attemptId = launchId .. "-attempt", mon = foeRecord("EEVEE", 4, 0x5EED0002) },
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+  )
+  local screen = BattleScreenState.new({
+    launchId = launchId,
+    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    model = Model,
+    submit = function(reply)
+      rig.submits[#rig.submits + 1] = reply
+      return holder.battle:submit(reply)
+    end,
+    measureDisplay = function()
+      return rig.measurement
+    end,
+    assets = rig.assets,
+    text = rig.text,
+    windows = rig.windows,
+    audio = rig.audio,
+  })
+  rig.screen = screen
+  rig.port = screen:presentationPort()
+  holder.battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    bag = bag,
+    presentation = rig.port,
+    seed = 0x12345678,
+  })
+  rig.battle = holder.battle
+  rig.party = party
+  function rig.pump(ticks, dt)
+    for _ = 1, ticks or 1 do
+      rig.battle:update()
+      rig.screen:updateFixed(dt or TICK)
+    end
+  end
+  return rig
+end
+
+function T.terminal_narration_holds_until_an_explicit_acknowledgment()
+  local rig = openWeakTerminalRig("launch-terminal-hold-local")
+  local reached = false
+  for _ = 1, 40 do
+    for _ = 1, 600 do
+      rig.pump(1)
+      local status = rig.screen:status()
+      if status.mode == "failed" then
+        error("the terminal route failed: " .. tostring(status.error), 0)
+      end
+      if status.mode == "outcome" then
+        reached = true
+        break
+      end
+      if status.mode == "command" and status.request ~= nil then
+        break
+      end
+      if rig.battle:status().phase == "complete" or rig.battle:status().phase == "failed" then
+        break
+      end
+    end
+    if rig.screen:status().mode == "outcome" then
+      reached = true
+      break
+    end
+    if rig.battle:status().phase == "complete" or rig.battle:status().phase == "failed" then
+      break
+    end
+    if rig.screen:status().mode == "command" then
+      rig.screen:input({ { type = "confirm" } })
+      rig.pump(1)
+      if rig.screen:status().mode == "moves" then
+        rig.screen:input({ { type = "confirm" } })
+        rig.pump(1)
+      end
+    elseif rig.screen:status().mode == "child" then
+      error("the weak-foe terminal route never opens a child", 0)
+    end
+  end
+  Assert.isTrue(reached, "the winning route presents its terminal narration")
+  local shown = assert(rig.screen:view().message, "the terminal page stays readable")
+  Assert.isTrue(shown ~= "", "the terminal page stays readable without input")
+  for _ = 1, 600 do
+    rig.pump(1)
+  end
+  Assert.equal(rig.screen:status().mode, "outcome", "hundreds of ticks without input keep the outcome")
+  local held = assert(rig.screen:view().message, "the held outcome stays readable")
+  Assert.isTrue(held ~= "", "the held outcome stays readable without input")
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "leave refuses before the final acknowledgment")
+  Assert.isFalse(rig.port.ready(), "readiness waits for the final acknowledgment")
+  Assert.isTrue(rig.battle:status().phase ~= "complete", "the runtime does not return before acknowledgment")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  for _ = 1, 120 do
+    rig.pump(1)
+  end
+  Assert.isTrue(rig.port.leave({ kind = "wild" }), "one explicit acknowledgment releases the terminal page")
+  Assert.isTrue(rig.port.ready(), "the acknowledged outcome settles")
+  for _ = 1, 120 do
+    rig.pump(1)
+  end
+  Assert.equal(rig.battle:status().phase, "complete", "the acknowledged battle returns through its normal phase")
+  local sealed = #rig.submits
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, sealed, "a repeated edge after the terminal ack seals nothing more")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+---@param launchId string owning launch identity under test driving
+---@return table live screen-only rig holding a two-page terminal narration
+local function openLongOutcomeRig(launchId)
+  local BattleScreenState = require(STATE_MODULE)
+  local Model = require(MODEL_MODULE)
+  local rig = { submits = {}, measurement = dualMeasurement(), text = recordingText() }
+  rig.windows = { calls = {} }
+  function rig.windows.drawWindow(box, frameKey, background)
+    rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  rig.audio = { plays = {} }
+  function rig.audio.play(name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
+  function rig.assets.prepare(demand)
+    rig.assets.prepared[#rig.assets.prepared + 1] = demand
+    return true
+  end
+  function rig.assets.drawable(key)
+    if rig.assets.images[key] == nil then
+      rig.assets.images[key] = { handle = key }
+    end
+    return rig.assets.images[key]
+  end
+  function rig.assets.release(key)
+    rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
+  end
+  local screen = BattleScreenState.new({
+    launchId = launchId,
+    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    model = Model,
+    submit = function(reply)
+      rig.submits[#rig.submits + 1] = reply
+      return true
+    end,
+    measureDisplay = function()
+      return rig.measurement
+    end,
+    assets = rig.assets,
+    text = rig.text,
+    windows = rig.windows,
+    audio = rig.audio,
+  })
+  rig.screen = screen
+  rig.port = screen:presentationPort()
+  function rig.pump(ticks, dt)
+    for _ = 1, ticks or 1 do
+      rig.screen:updateFixed(dt or TICK)
+    end
+  end
+  local foeName = string.rep("FOE ", 20)
+  local function ownRecord()
+    return {
+      combatant = 1,
+      participant = 1,
+      side = 1,
+      controller = "player",
+      active = true,
+      hp = 52,
+      maxHp = 52,
+      species = "EEVEE",
+      form = 0,
+      name = "LEAD",
+      level = 20,
+      selector = "back",
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+    }
+  end
+  local function foeEntry()
+    return {
+      combatant = 3,
+      participant = 3,
+      side = 2,
+      controller = "wild",
+      active = true,
+      hp = 57,
+      maxHp = 57,
+      species = "EEVEE",
+      form = 0,
+      name = foeName,
+      level = 20,
+      selector = "front",
+    }
+  end
+  rig.port.present({
+    launchId = launchId,
+    packetId = 1,
+    events = {},
+    before = { own = { ownRecord() }, foes = { foeEntry() } },
+    after = { own = { ownRecord() }, foes = { foeEntry() } },
+    request = nil,
+    result = { word = "win" },
+  })
+  return rig
+end
+
+-- A two-page terminal narration consumes one edge per stage: an early
+-- edge only finishes the running reveal, the next edge turns the page,
+-- and only the final revealed page acknowledges without spilling into
+-- another decision.
+function T.multipage_terminal_acknowledgment_consumes_each_edge_once()
+  local rig = openLongOutcomeRig("launch-outcome-pages-local")
+  local reached = false
+  for _ = 1, 1200 do
+    rig.pump(1)
+    local status = rig.screen:status()
+    if status.mode == "failed" then
+      error("the paged outcome failed: " .. tostring(status.error), 0)
+    end
+    if status.mode == "outcome" then
+      reached = true
+      break
+    end
+  end
+  Assert.isTrue(reached, "the long terminal narration reaches its outcome")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "outcome", "an early edge keeps the outcome")
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "an early accelerate never releases")
+  Assert.isFalse(rig.port.ready(), "an early accelerate never settles")
+  Assert.equal(#rig.submits, 0, "an early accelerate seals nothing")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "outcome", "a page turn keeps the outcome")
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "a page turn never releases")
+  Assert.isFalse(rig.port.ready(), "a page turn never settles")
+  Assert.equal(#rig.submits, 0, "a page turn seals nothing")
+  for _ = 1, 300 do
+    rig.pump(1)
+  end
+  Assert.equal(rig.screen:status().mode, "outcome", "the final page holds before its acknowledgment")
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "the final page holds before its acknowledgment")
+  Assert.isFalse(rig.port.ready(), "the final page stays unsettled before its acknowledgment")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  for _ = 1, 120 do
+    rig.pump(1)
+  end
+  Assert.isTrue(rig.port.leave({ kind = "wild" }), "the final acknowledgment releases the outcome")
+  Assert.isTrue(rig.port.ready(), "the final acknowledgment settles")
+  local sealed = #rig.submits
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, sealed, "a repeated edge after the final ack seals nothing more")
+  Assert.equal(rig.screen:status().mode, "outcome", "a repeated edge never leaves the outcome")
+  rig.screen:dispose()
+end
+
 return { tests = T }

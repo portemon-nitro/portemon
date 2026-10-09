@@ -16,6 +16,7 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local MonCache = require("libs.assets.src.MonCache")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
@@ -240,7 +241,50 @@ local function moveChoice(id, name, pp, maxPp, moveType, slot)
   }
 end
 
-local function openingPacket(launchId)
+-- Resolves one staged exact portrait selector for the species and facing
+-- through the derived cache, preferring the plain male cell: demands
+-- name exact canonical selectors only, so the synthetic opening packet
+-- must carry them (never shorthand) for the demand to grow and the
+-- send-out cue to resolve through the production drawables.
+---@param cacheFs table versioned derived cache under inspection
+---@param species string staged species under lookup
+---@param facing string "back" for own sprites, "front" for foes
+---@return string exact canonical portrait selector with a ready staged page
+local function stagedPortraitSelector(cacheFs, species, facing)
+  local portraits = assert(
+    cacheFs:loadLua(MonCache.portraitManifestPath()),
+    "the staged cache carries its portrait manifest"
+  )
+  local entries = assert(portraits.entries, "the staged cache plans its portrait entries")
+  local markers =
+    assert(cacheFs:loadLua(MonCache.indexPath()), "the staged cache carries its mon page markers").portraitPages
+  local fallback = nil
+  local keys = {}
+  for selector in pairs(entries) do
+    keys[#keys + 1] = selector
+  end
+  table.sort(keys)
+  for _, selector in ipairs(keys) do
+    local entry = entries[selector]
+    local isBack = selector:sub(-5) == "/back"
+    if
+      selector:sub(1, #species + 1) == species .. "/"
+      and ((facing == "back") == isBack)
+      and type(entry) == "table"
+      and type(entry.pageId) == "number"
+      and MonCache.isPageReady(cacheFs, "portraits", entry.pageId, markers[entry.pageId + 1])
+    then
+      if selector:find("/male/plain", 1, true) ~= nil then
+        return selector
+      end
+      fallback = fallback or selector
+    end
+  end
+  assert(fallback ~= nil, "the staged cache stages a ready " .. facing .. " portrait for " .. species)
+  return fallback --[[@as string]]
+end
+
+local function openingPacket(launchId, portraits)
   local after = {
     own = {
       {
@@ -249,6 +293,7 @@ local function openingPacket(launchId)
         species = LEAD_SPECIES,
         form = 0,
         selector = "back",
+        portraitSelector = portraits.leadBack,
         name = LEAD_SPECIES,
         level = 9,
         hp = 30,
@@ -261,6 +306,7 @@ local function openingPacket(launchId)
         species = LEAD_SPECIES,
         form = 0,
         selector = "back",
+        portraitSelector = portraits.leadBack,
         name = LEAD_SPECIES,
         level = 9,
         hp = 28,
@@ -275,6 +321,7 @@ local function openingPacket(launchId)
         species = FOE_SPECIES,
         form = 0,
         selector = "front",
+        portraitSelector = portraits.foeFront,
         name = FOE_SPECIES,
         level = 3,
         hp = 12,
@@ -342,8 +389,9 @@ end
 ---@param port table entered presentation port under driving
 ---@param launchId string owning launch identity under driving
 ---@param versionId string ready game version under driving
-local function driveToCommand(envelope, port, launchId, versionId)
-  port.present(openingPacket(launchId))
+---@param portraits table exact staged portrait selectors under demand
+local function driveToCommand(envelope, port, launchId, versionId, portraits)
+  port.present(openingPacket(launchId, portraits))
   local ticks = 0
   while ticks < DRIVE_BUDGET do
     envelope:updateFixed(TICK)
@@ -440,7 +488,11 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
       end
     end
     Assert.isTrue(carriesWild, versionId .. " demands its staged wild music role")
-    driveToCommand(envelope, port, launchId, versionId)
+    local portraits = {
+      leadBack = stagedPortraitSelector(cacheFs, LEAD_SPECIES, "back"),
+      foeFront = stagedPortraitSelector(cacheFs, FOE_SPECIES, "front"),
+    }
+    driveToCommand(envelope, port, launchId, versionId, portraits)
     local grown = envelope:preparedDemands()
     local pages, cries = {}, {}
     for _, demand in ipairs(grown) do
@@ -451,8 +503,8 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
         cries[cry] = true
       end
     end
-    Assert.isTrue(pages[LEAD_SPECIES .. "/0/back"] == true, versionId .. " grows its lead portrait demand")
-    Assert.isTrue(pages[FOE_SPECIES .. "/0/front"] == true, versionId .. " grows its foe portrait demand")
+    Assert.isTrue(pages[portraits.leadBack] == true, versionId .. " grows its lead portrait demand")
+    Assert.isTrue(pages[portraits.foeFront] == true, versionId .. " grows its foe portrait demand")
     Assert.isTrue(cries["cry:" .. LEAD_SPECIES] == true, versionId .. " demands its lead cry")
     Assert.isTrue(cries["cry:" .. FOE_SPECIES] == true, versionId .. " demands its foe cry")
     local screen = assert(envelope:liveScreen(), versionId .. " keeps its live screen")

@@ -38,7 +38,6 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 ---@field _pendingFinal table<string, unknown>? retained final view behind playing cues
 ---@field _pendingRequest table<string, unknown>? retained request behind playing cues
 ---@field _pendingResult table<string, unknown>? retained terminal result behind playing cues
----@field _openingReceived boolean first delivery arrived
 ---@field _introBuilt boolean opening cues queued
 ---@field _kind string battle kind wording for the opening narration
 ---@field _queue table<integer, table<string, unknown>> queued raw input batches
@@ -177,7 +176,6 @@ function BattleScreenState.new(opts)
     _pendingFinal = nil,
     _pendingRequest = nil,
     _pendingResult = nil,
-    _openingReceived = false,
     _introBuilt = false,
     _kind = "wild",
     _queue = {},
@@ -539,10 +537,26 @@ function BattleScreenState:_portPresent(packet)
     self._error = "malformed battle packet for launch " .. self._launchId
     return
   end
+  if not self._introBuilt then
+    -- The first delivery installs the opening facts and queues the
+    -- introduction before its events translate, so the accepted event
+    -- cues play behind the opening instead of being reset away.
+    local opening = packet.before
+    if type(opening) ~= "table" then
+      opening = packet.after
+    end
+    if type(opening) == "table" then
+      self._timeline:reset(opening)
+      self._timeline:intro(opening, self._kind ~= "trainer")
+      self._introBuilt = true
+      if self._mode == "preparing" then
+        self._mode = "intro"
+      end
+    end
+  end
   if not self._timeline:present(packet) then
     return
   end
-  self._openingReceived = true
   if type(packet.after) == "table" then
     self._latestView = packet.after
     self._assets:addSelectors(selectorsOf(packet.after))
@@ -578,10 +592,11 @@ function BattleScreenState:_portLeave(plan)
   if self._disposed or self._mode == "failed" then
     return false
   end
-  -- Leave cover is permitted once the terminal narration shows; the
+  -- Leave cover is permitted only after the terminal narration's final
+  -- page was explicitly acknowledged and its cues fully settled; the
   -- mode stays on the outcome until host teardown so the shown result
   -- and the completed lifetime can be observed together.
-  if self._outcomeShown or self._mode == "leaving" then
+  if self._outcomeAcked and self._timeline:settled() then
     return true
   end
   return false
@@ -1025,8 +1040,8 @@ function BattleScreenState:_consume(event)
       if self._mode == "narration" or self._mode == "outcome" then
         local control = event.control --[[@as table<string, unknown>?]]
         if type(control) == "table" and control.scope == self._mode then
-          self._timeline:ack()
-          if self._mode == "outcome" then
+          local _, completedFinalPage = self._timeline:ack()
+          if self._mode == "outcome" and completedFinalPage == true then
             self._outcomeAcked = true
           end
         end
@@ -1069,8 +1084,10 @@ function BattleScreenState:_confirm()
   elseif self._mode == "narration" or self._mode == "intro" then
     self._timeline:ack()
   elseif self._mode == "outcome" then
-    self._timeline:ack()
-    self._outcomeAcked = true
+    local _, completedFinalPage = self._timeline:ack()
+    if completedFinalPage == true then
+      self._outcomeAcked = true
+    end
   end
 end
 
@@ -1289,17 +1306,6 @@ function BattleScreenState:updateFixed(dt)
     self._session:resolve(measurement, self:_snapshot())
   end
   if self._mode ~= "failed" then
-    if not self._introBuilt and self._openingReceived and self._assets:state() == "ready" then
-      local opening = self._latestView
-      if opening ~= nil then
-        self._timeline:reset(opening)
-        self._timeline:intro(opening, self._kind ~= "trainer")
-        self._introBuilt = true
-        if self._mode == "preparing" then
-          self._mode = "intro"
-        end
-      end
-    end
     ---@param key string image key under availability probe
     ---@return boolean available true while the preparation services resolve the key
     local function isAvailable(key)

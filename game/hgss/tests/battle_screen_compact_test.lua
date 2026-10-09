@@ -881,6 +881,17 @@ local function press(rig, event)
   rig.pump(1)
 end
 
+-- Terminal leave carries an explicit final-page acknowledgment: while
+-- narration plays, one genuine confirm through the real screen path
+-- advances it exactly as a player would, so the battle can settle.
+---@param rig table live screen rig under test driving
+local function ackNarration(rig)
+  local mode = rig.screen:status().mode
+  if mode == "intro" or mode == "narration" or mode == "outcome" then
+    rig.screen:input({ { type = "confirm" } })
+  end
+end
+
 ---@param rig table live screen rig under test driving
 ---@param x number display horizontal pointer position under test driving
 ---@param y number display vertical pointer position under test driving
@@ -1365,6 +1376,7 @@ function T.learning_prompt_lists_choices_and_tap_seals_one_fragment()
           })
         end
       end
+      ackNarration(rig)
     end
     Assert.equal(rig.battle:status().phase, "complete", "the answered prompts settle the battle" .. tag)
     if firstRecipient == leadId and sealedId ~= "learn:decline" then

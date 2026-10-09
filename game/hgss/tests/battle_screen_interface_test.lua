@@ -698,6 +698,17 @@ local function press(rig, event)
   rig.pump(1)
 end
 
+-- Terminal leave carries an explicit final-page acknowledgment: while
+-- narration plays, one genuine confirm through the real screen path
+-- advances it exactly as a player would, so the battle can settle.
+---@param rig table live screen rig under test driving
+local function ackNarration(rig)
+  local mode = rig.screen:status().mode
+  if mode == "intro" or mode == "narration" or mode == "outcome" then
+    rig.screen:input({ { type = "confirm" } })
+  end
+end
+
 ---@param rig table live screen rig under test driving, resting on its command prompt
 local function openBagFromCommand(rig)
   press(rig, { type = "navigate", direction = "down" })
@@ -953,6 +964,7 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
         })
         Assert.isTrue(ok, "the kernel accepts the projected move: " .. tostring(submitErr))
       end
+      ackNarration(rig)
       rig.pump(20)
     end
     Assert.equal(rig.battle:status().phase, "complete", "the serving battle settles" .. tag)

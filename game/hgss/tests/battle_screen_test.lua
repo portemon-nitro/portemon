@@ -500,6 +500,36 @@ local function tap(rig, x, y)
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
 end
 
+-- Collects every exact portrait selector the launch demanded through
+-- the preparation boundary, in demand order. Demands name exact
+-- canonical selectors only, never the generic side keys.
+---@param rig table live screen rig under test driving
+---@return string[] exact canonical portrait selectors demanded so far
+local function demandedPortraits(rig)
+  local selectors = {}
+  local seen = {}
+  for _, demand in ipairs(rig.assets.prepared) do
+    for _, page in ipairs(type(demand) == "table" and demand.pages or {}) do
+      if type(page) == "string" and not seen[page] then
+        seen[page] = true
+        selectors[#selectors + 1] = page
+      end
+    end
+  end
+  return selectors
+end
+
+-- Terminal leave carries an explicit final-page acknowledgment: while
+-- narration plays, one genuine confirm through the real screen path
+-- advances it exactly as a player would, so the battle can settle.
+---@param rig table live screen rig under test driving
+local function ackNarration(rig)
+  local mode = rig.screen:status().mode
+  if mode == "intro" or mode == "narration" or mode == "outcome" then
+    rig.screen:input({ { type = "confirm" } })
+  end
+end
+
 -- Player commands reach the kernel exactly once: the opening decision
 -- stays open with no automatic choice, Fight opens the true move slots
 -- with their PP and type facts, cancels walk back without leaving the
@@ -715,6 +745,11 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   tap(rig, 128, 83 + 192)
   rig.pump(1)
   Assert.equal(rig.screen:status().mode, "moves", "the top anchor opens move selection")
+  -- Focus then seal: the first tap on a new slot only moves focus, so
+  -- stepping focus away first keeps the anchor tap from sealing the
+  -- already-focused slot while still proving the anchor selects it.
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
   tap(rig, 64, 45 + 192)
   rig.pump(1)
   Assert.equal(rig.screen:view().selection, "move:0", "the first move anchor selects the first slot")
@@ -763,6 +798,10 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- remaining anchors leave the selection alone.
   tap(rig, 128, 83 + 192)
   rig.pump(1)
+  -- See the focus note above: stepping focus away first keeps the
+  -- anchor tap to a focus move instead of a seal.
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
   tap(rig, 64, 45 + 192)
   rig.pump(1)
   Assert.equal(rig.screen:view().selection, "move:0", "the first move anchor selects the known slot")
@@ -805,8 +844,16 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- state returns exactly.
   local playerBack = { handle = "mon:player:back" }
   local enemyFront = { handle = "mon:enemy:front" }
-  rig.assets.images["mon:player:back"] = playerBack
-  rig.assets.images["mon:enemy:front"] = enemyFront
+  -- Battlers draw their own exact canonical portraits, never the
+  -- generic side keys: back selectors keep the back handle, front
+  -- selectors the front handle, so each drawn image stays identifiable.
+  for _, selector in ipairs(demandedPortraits(rig)) do
+    if selector:sub(-5) == "/back" then
+      rig.assets.images["mon:" .. selector] = playerBack
+    else
+      rig.assets.images["mon:" .. selector] = enemyFront
+    end
+  end
   rig.pump(2)
   drawNow()
   local function wasDrawn(image)
@@ -861,6 +908,7 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   Assert.equal(rig.screen:status().mode, "awaiting_resolution", "the run anchor submits the flight")
   Assert.equal(#rig.submits, 1, "the run seals exactly one reply")
   for _ = 1, 600 do
+    ackNarration(rig)
     rig.pump(1)
     if rig.battle:status().phase == "complete" then
       break
@@ -965,6 +1013,7 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
     twin.screen:input({ { type = "confirm" } })
     local graphics = FakeGraphics.new({})
     for _ = 1, 900 do
+      ackNarration(twin)
       twin.pump(1)
       for _ = 1, drawsPerTick do
         twin.screen:draw({ graphics = graphics })
@@ -998,7 +1047,7 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
   -- unavailable the displayed health stays at its earlier checkpoint
   -- and readiness stays false; releasing it completes exactly.
   do
-    local heldAssets = stubAssets({ heldKeys = { "mon:enemy:front" } })
+    local heldAssets = stubAssets({})
     local held = openWildRig(
       modules,
       "launch-screen-held",
@@ -1008,6 +1057,16 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
       { assets = heldAssets }
     )
     driveToMode(held, "command", 600)
+    -- The strike cue gates on the foe's exact incoming portrait, never
+    -- the generic side key: holding that demanded key holds the cue.
+    local heldFoeKey = nil
+    for _, selector in ipairs(demandedPortraits(held)) do
+      if selector:sub(-5) ~= "/back" then
+        heldFoeKey = heldFoeKey or selector
+      end
+    end
+    heldFoeKey = assert(heldFoeKey, "the launch demands its exact foe portrait")
+    heldAssets.hold["mon:" .. heldFoeKey] = true
     tap(held, 128, 83 + 192)
     held.pump(1)
     tap(held, 64, 45 + 192)
@@ -1024,7 +1083,7 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
       "a cue needing an unavailable drawable never leaks its later health"
     )
     Assert.isFalse(held.screen:status().ready, "the held cue reports unready instead of skipping ahead")
-    heldAssets.hold["mon:enemy:front"] = nil
+    heldAssets.hold["mon:" .. heldFoeKey] = nil
     driveToMode(held, "command", 900)
     Assert.isTrue(held.screen:status().ready, "releasing the drawable completes the held cue")
     held.screen:dispose()
@@ -1051,6 +1110,7 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
     local outcomeId = nil
     local outcomePages = 0
     for _ = 1, 1200 do
+      ackNarration(twin)
       twin.pump(1)
       local view = twin.screen:view()
       if twin.battle:status().phase == "complete" and twin.screen:status().mode == "outcome" then
@@ -1284,6 +1344,7 @@ function T.definitions_and_leases_follow_single_ownership()
     tap(probe, 128, 176 + 192)
     probe.pump(1)
     for _ = 1, 600 do
+      ackNarration(probe)
       probe.pump(1)
       if probe.battle:status().phase == "complete" then
         break
