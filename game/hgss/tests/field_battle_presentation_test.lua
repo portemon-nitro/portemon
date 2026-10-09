@@ -9,6 +9,7 @@
 
 local Assert = require("tests.support.Assert")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
@@ -757,6 +758,134 @@ function T.schedules_and_layouts_settle_identically()
   Assert.equal(batched.turns, single.turns, "batched fixed ticks answer the same turns")
   local compact = runSettled(compactMeasurement("presented-clocks:compact"), 1)
   Assert.deepEqual(compact.result, single.result, "the compact surface settles the same words")
+end
+
+-- The launch scene keeps its background, time-of-day, and fallback rules
+-- while standing tiles select their own terrain classes: surfing still
+-- forces the ocean background while the terrain follows the standing tile,
+-- interiors still pin day, unknown tiles still fall back to the background
+-- default, and scene selection stays deterministic across repeated captures.
+-- Both wild step and scripted trainer launches share the one capture path.
+local function launchHarness(overrides)
+  local base = {
+    session = { currentMap = { mapId = 33, fieldData = { battleBackground = "general" } } },
+    player = { fieldX = 5, fieldZ = 6, surfaceId = 0 },
+    playerAvatar = {
+      status = function()
+        return { durableState = "walking" }
+      end,
+    },
+    localClock = {
+      nowLocal = function()
+        return { hour = 12 }
+      end,
+    },
+  }
+  for key, value in pairs(overrides or {}) do
+    base[key] = value
+  end
+  return setmetatable(base, FieldRuntime)
+end
+
+local function launchStandingMap(background, behavior)
+  return {
+    mapId = 33,
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function()
+        return true
+      end,
+      getLocal = function()
+        return { behavior = behavior }
+      end,
+    },
+    fieldData = { battleBackground = background },
+  }
+end
+
+function T.surfing_background_time_and_fallback_rules_hold_for_both_launch_kinds()
+  local kinds = {
+    { kind = "wild", method = "grass", payload = {} },
+    { kind = "trainer", method = nil, payload = {} },
+  }
+  for _, launch in ipairs(kinds) do
+    local function capture(overrides, method)
+      local runtime = launchHarness(overrides)
+      return runtime:_captureLaunchEnvironment({ kind = launch.kind, payload = launch.payload }, method)
+    end
+    -- Outdoor night without a readable tile keeps the background default.
+    local night = capture({
+      session = { currentMap = { mapId = 33, fieldData = { battleBackground = "general" } } },
+      localClock = {
+        nowLocal = function()
+          return { hour = 22 }
+        end,
+      },
+    }, launch.method)
+    Assert.equal(night.background, "general", "the compiled background resolves")
+    Assert.equal(night.terrain, "plain", "an unreadable tile keeps the background default")
+    Assert.equal(night.time, "night", "outdoor night reads night")
+    Assert.equal(night.sceneKey, "general/plain/night", "the fallback joins its scene")
+    -- Interiors pin day even at night.
+    local interior = capture({
+      session = { currentMap = { mapId = 61, fieldData = { battleBackground = "building_1" } } },
+      localClock = {
+        nowLocal = function()
+          return { hour = 22 }
+        end,
+      },
+    }, launch.method)
+    Assert.equal(interior.background, "building_1", "interiors resolve their background")
+    Assert.equal(interior.time, "day", "indoor backgrounds pin day")
+    Assert.equal(interior.terrain, "building", "buildings default to building")
+    -- A pond tile selects water without surfing.
+    local pond = capture({
+      session = { currentMap = launchStandingMap("general", 42) },
+    }, launch.method)
+    Assert.equal(pond.background, "general", "the compiled background resolves")
+    Assert.equal(pond.terrain, "water", "a pond tile selects water without surfing")
+    Assert.equal(pond.sceneKey, "general/water/day", "the water tile joins its scene")
+    -- Surfing forces the ocean background while the terrain still follows
+    -- the standing tile.
+    local surfing = { durableState = "surfing" }
+    local surfedPond = capture({
+      session = { currentMap = launchStandingMap("general", 42) },
+      playerAvatar = {
+        status = function()
+          return surfing
+        end,
+      },
+    }, launch.method)
+    Assert.equal(surfedPond.background, "ocean", "surfing overrides to ocean")
+    Assert.equal(surfedPond.terrain, "water", "the standing tile still selects the terrain")
+    Assert.equal(surfedPond.sceneKey, "ocean/water/day", "surfing water selects its scene")
+    local surfedIce = capture({
+      session = { currentMap = launchStandingMap("general", 32) },
+      playerAvatar = {
+        status = function()
+          return surfing
+        end,
+      },
+    }, launch.method)
+    Assert.equal(surfedIce.background, "ocean", "surfing overrides to ocean")
+    Assert.equal(surfedIce.terrain, "ice", "the standing tile selects the terrain while surfing")
+    -- An unrecognized tile falls back to the background default.
+    local unknown = capture({
+      session = { currentMap = launchStandingMap("general", 99) },
+    }, launch.method)
+    Assert.equal(unknown.terrain, "plain", "an unknown tile keeps the background default")
+    Assert.equal(unknown.sceneKey, "general/plain/day", "the unknown tile joins its fallback scene")
+    -- The step method rides along, and repeated captures stay identical.
+    Assert.equal(pond.method, launch.method, "the step method rides along")
+    local again = capture({
+      session = { currentMap = launchStandingMap("general", 42) },
+    }, launch.method)
+    Assert.deepEqual(again, pond, "scene selection consumes no hidden state between captures")
+    Assert.notNil(
+      BattlePresentationCache.parseSceneKey(surfedIce.sceneKey),
+      "the surfing override scene passes the staged scene parser"
+    )
+  end
 end
 
 -- The host-update pump never advances a presented launch: without the

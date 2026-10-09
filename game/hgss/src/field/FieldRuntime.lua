@@ -275,6 +275,62 @@ local OUTDOOR_BATTLE_BACKGROUNDS = {
   snow = true,
 }
 
+-- Battle-private standing-tile water set behind MetatileBehavior_IsSurfableWater
+-- (src/metatile_behavior.c). Battle scene selection keeps its own copy so
+-- field movement keeps using MetatileBehavior.isSurfableWater unchanged.
+local BATTLE_SURFABLE_WATER_BEHAVIORS = {
+  [16] = true,
+  [17] = true,
+  [18] = true,
+  [19] = true,
+  [20] = true,
+  [21] = true,
+  [25] = true,
+  [42] = true,
+  [80] = true,
+  [81] = true,
+  [82] = true,
+  [83] = true,
+  [115] = true,
+  [120] = true,
+  [124] = true,
+}
+
+-- Battle terrain class for one standing metatile behavior, in the precedence
+-- of FieldSystem_GetTerrainFromStandingTile (src/battle/battle_setup.c):
+-- ice, tall/very tall grass, sand, snow, marsh mud, cave floor
+-- (include/constants/metatile_behavior.h), then the surfable-water flag set.
+-- Returns nil when no special class applies so the background default holds.
+---@param behavior integer?
+---@return string? battle terrain class, nil when the background default applies
+local function battleTerrainForStandingBehavior(behavior)
+  if behavior == nil then
+    return nil
+  end
+  if behavior == 32 then
+    return "ice"
+  end
+  if MetatileBehavior.isTallGrass(behavior) or MetatileBehavior.isVeryTallGrass(behavior) then
+    return "grass"
+  end
+  if behavior == 33 then
+    return "sand"
+  end
+  if behavior == 168 then
+    return "snow"
+  end
+  if behavior == 164 then
+    return "great_marsh"
+  end
+  if behavior == 8 then
+    return "cave"
+  end
+  if BATTLE_SURFABLE_WATER_BEHAVIORS[behavior] == true then
+    return "water"
+  end
+  return nil
+end
+
 -- Default battle terrain per background family when the standing behavior
 -- names none explicitly.
 local DEFAULT_BATTLE_TERRAINS = {
@@ -2995,12 +3051,9 @@ function FieldRuntime:_captureLaunchEnvironment(request, method)
     band = "day"
   end
   local terrain = DEFAULT_BATTLE_TERRAINS[background] or "plain"
-  if behavior ~= nil then
-    if MetatileBehavior.isTallGrass(behavior) or MetatileBehavior.isVeryTallGrass(behavior) then
-      terrain = "grass"
-    elseif MetatileBehavior.isSurfableWater(behavior) then
-      terrain = "water"
-    end
+  local standingTerrain = battleTerrainForStandingBehavior(behavior)
+  if standingTerrain ~= nil then
+    terrain = standingTerrain
   end
   local sceneKey = background .. "/" .. terrain .. "/" .. band
   if BattlePresentationCache.parseSceneKey(sceneKey) == nil then

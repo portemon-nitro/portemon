@@ -9,6 +9,7 @@
 
 local Assert = require("tests.support.Assert")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -561,6 +562,89 @@ function T.launch_environments_reject_unknown_scenes_loudly()
   local ok, err = pcall(runtime._captureLaunchEnvironment, runtime, { kind = "wild", payload = {} }, "grass")
   Assert.isFalse(ok, "an unmapped background fails the launch")
   Assert.isTrue(tostring(err):find("unknown scene context", 1) ~= nil, "the failure names the scene")
+end
+
+-- The standing metatile behavior selects the battle terrain ahead of the
+-- compiled map background default, in native standing-tile precedence
+-- (pret/pokeheartgold FieldSystem_GetTerrainFromStandingTile): ice, tall
+-- and very tall grass, sand, snow, marsh mud, cave floor, then the native
+-- surfable-water flag set. Every classified scene key passes the staged
+-- scene parser instead of falling back to the background default.
+local function standingMap(background, behavior)
+  return {
+    mapId = 33,
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function()
+        return true
+      end,
+      getLocal = function()
+        return { behavior = behavior }
+      end,
+    },
+    fieldData = { battleBackground = background },
+  }
+end
+
+function T.standing_tile_behavior_selects_terrain_before_background_default()
+  local cases = {
+    { behavior = 32, terrain = "ice" },
+    { behavior = 2, terrain = "grass" },
+    { behavior = 3, terrain = "grass" },
+    { behavior = 33, terrain = "sand" },
+    { behavior = 168, terrain = "snow" },
+    { behavior = 164, terrain = "great_marsh" },
+    { behavior = 8, terrain = "cave" },
+    { behavior = 16, terrain = "water" },
+    { behavior = 17, terrain = "water" },
+    { behavior = 18, terrain = "water" },
+    { behavior = 19, terrain = "water" },
+    { behavior = 20, terrain = "water" },
+    { behavior = 21, terrain = "water" },
+    { behavior = 25, terrain = "water" },
+    { behavior = 42, terrain = "water" },
+    { behavior = 80, terrain = "water" },
+    { behavior = 81, terrain = "water" },
+    { behavior = 82, terrain = "water" },
+    { behavior = 83, terrain = "water" },
+    { behavior = 115, terrain = "water" },
+    { behavior = 120, terrain = "water" },
+    { behavior = 124, terrain = "water" },
+  }
+  for _, case in ipairs(cases) do
+    local runtime = environmentRuntime({
+      session = { currentMap = standingMap("general", case.behavior) },
+    })
+    local environment = runtime:_captureLaunchEnvironment({ kind = "wild", payload = {} }, "grass")
+    Assert.equal(environment.behavior, case.behavior, "the launch reports its standing behavior")
+    Assert.equal(environment.background, "general", "the compiled background resolves")
+    Assert.equal(
+      environment.terrain,
+      case.terrain,
+      "standing behavior " .. case.behavior .. " selects " .. case.terrain
+    )
+    Assert.equal(
+      environment.sceneKey,
+      "general/" .. case.terrain .. "/day",
+      "the classified tile joins its scene"
+    )
+    Assert.notNil(
+      BattlePresentationCache.parseSceneKey(environment.sceneKey),
+      "the classified scene passes the staged scene parser"
+    )
+  end
+  -- An explicit class beats the compiled background default: ice on a
+  -- forest map reads ice, not the forest grass default.
+  local forestRuntime = environmentRuntime({
+    session = { currentMap = standingMap("forest", 32) },
+  })
+  local forest = forestRuntime:_captureLaunchEnvironment({ kind = "wild", payload = {} }, "grass")
+  Assert.equal(forest.terrain, "ice", "the standing tile overrides the background default")
+  Assert.equal(forest.sceneKey, "forest/ice/day", "the override joins its scene")
+  Assert.notNil(
+    BattlePresentationCache.parseSceneKey(forest.sceneKey),
+    "the override scene passes the staged scene parser"
+  )
 end
 
 -- Committed money adopts into the live wallet exactly once: the receipt
