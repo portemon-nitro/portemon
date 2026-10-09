@@ -3,9 +3,11 @@
 -- records, encounter tables) published by the native import pipeline. Each
 -- family stages its whole semantic payload plus a completion marker; a
 -- family reads as ready only when its marker is exact and its payload still
--- satisfies the semantic schema. Paths are cache-relative; all IO goes
+-- satisfies the semantic schema. Runtime loads trust the staged root
+-- identity and never rescan whole catalogs; explicit readiness revalidates
+-- the payload through its semantic schema. Paths are cache-relative; all IO goes
 -- through a CacheFs. No native decoding happens here and no ROM handle is
--- retained: loaders validate staged semantic data only.
+-- retained.
 
 ---@class BattleDataCache
 local BattleDataCache = {}
@@ -88,7 +90,10 @@ end
 ---@return table<string, unknown> compiled move battle facts
 function BattleDataCache.loadBattleData(cacheFs)
   local compiled = assert(cacheFs:loadLua(BattleDataCache.battleDataPath()))
-  BattleDataSchema.assertBattleData(compiled)
+  assert(
+    type(compiled) == "table" and compiled.schema == BattleDataCache.BATTLE_DATA_SCHEMA,
+    "battle data is unavailable"
+  )
   return compiled
 end
 
@@ -96,7 +101,10 @@ end
 ---@return table<string, unknown> projected trainer catalog
 function BattleDataCache.loadTrainers(cacheFs)
   local compiled = assert(cacheFs:loadLua(BattleDataCache.trainersPath()))
-  BattleDataSchema.assertTrainerCatalog(compiled)
+  assert(
+    type(compiled) == "table" and compiled.schema == BattleDataCache.TRAINER_SCHEMA,
+    "trainer catalog is unavailable"
+  )
   return compiled
 end
 
@@ -104,7 +112,10 @@ end
 ---@return table<string, unknown> projected encounter catalog
 function BattleDataCache.loadEncounters(cacheFs)
   local compiled = assert(cacheFs:loadLua(BattleDataCache.encountersPath()))
-  BattleDataSchema.assertEncounterCatalog(compiled)
+  assert(
+    type(compiled) == "table" and compiled.schema == BattleDataCache.ENCOUNTER_SCHEMA,
+    "encounter catalog is unavailable"
+  )
   return compiled
 end
 
@@ -118,7 +129,9 @@ function BattleDataCache.isBattleDataReady(cacheFs, expectedMarker)
   if cacheFs:read(BattleDataCache.battleDataMarkerPath()) ~= expectedMarker then
     return false
   end
-  local ok = pcall(BattleDataCache.loadBattleData, cacheFs)
+  local ok = pcall(function()
+    BattleDataSchema.assertBattleData(assert(cacheFs:loadLua(BattleDataCache.battleDataPath())))
+  end)
   return ok
 end
 
@@ -129,7 +142,9 @@ function BattleDataCache.isTrainersReady(cacheFs, expectedMarker)
   if cacheFs:read(BattleDataCache.trainersMarkerPath()) ~= expectedMarker then
     return false
   end
-  local ok = pcall(BattleDataCache.loadTrainers, cacheFs)
+  local ok = pcall(function()
+    BattleDataSchema.assertTrainerCatalog(assert(cacheFs:loadLua(BattleDataCache.trainersPath())))
+  end)
   return ok
 end
 
@@ -140,7 +155,9 @@ function BattleDataCache.isEncountersReady(cacheFs, expectedMarker)
   if cacheFs:read(BattleDataCache.encountersMarkerPath()) ~= expectedMarker then
     return false
   end
-  local ok = pcall(BattleDataCache.loadEncounters, cacheFs)
+  local ok = pcall(function()
+    BattleDataSchema.assertEncounterCatalog(assert(cacheFs:loadLua(BattleDataCache.encountersPath())))
+  end)
   return ok
 end
 

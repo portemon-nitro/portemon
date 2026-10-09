@@ -3,6 +3,9 @@
 -- constants so producers and consumers cannot drift apart.
 
 local Assert = require("tests.support.Assert")
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeCache = require("tests.support.FakeCache")
+local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local AudioBank = require("libs.assets.src.audio.AudioBank")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
@@ -296,6 +299,189 @@ function T.superseded_cursor_manifests_fail_the_manifest_gate()
   )
   local ok = pcall(SummaryAssetSchema.assertManifest, { schema = "g4-summary-manifest-v3" })
   Assert.isFalse(ok, "a manifest carrying the earlier cursor pixels never validates")
+end
+
+local function battleCacheFs()
+  return CacheFs.forVersion("heartgold", FakeCache.new())
+end
+
+local function validBattlePayloads()
+  return {
+    battleData = {
+      schema = BattleDataCache.BATTLE_DATA_SCHEMA,
+      version = { id = "test" },
+      moves = {},
+    },
+    trainers = {
+      schema = BattleDataCache.TRAINER_SCHEMA,
+      version = { id = "test" },
+      trainers = {},
+    },
+    encounters = {
+      schema = BattleDataCache.ENCOUNTER_SCHEMA,
+      version = { id = "test" },
+      tables = {},
+    },
+  }
+end
+
+-- Runtime loads trust the published schema identity instead of rescanning
+-- whole catalogs; full structural rejection stays with explicit readiness.
+function T.battle_runtime_loads_skip_full_schema_validation()
+  local payloads = validBattlePayloads()
+  local c = battleCacheFs()
+  c:writeLua(BattleDataCache.battleDataPath(), payloads.battleData)
+  c:writeLua(BattleDataCache.trainersPath(), payloads.trainers)
+  c:writeLua(BattleDataCache.encountersPath(), payloads.encounters)
+  local calls = { battleData = 0, trainers = 0, encounters = 0 }
+  local originals = {
+    assertBattleData = BattleDataSchema.assertBattleData,
+    assertTrainerCatalog = BattleDataSchema.assertTrainerCatalog,
+    assertEncounterCatalog = BattleDataSchema.assertEncounterCatalog,
+  }
+  BattleDataSchema.assertBattleData = function(compiled)
+    calls.battleData = calls.battleData + 1
+    return originals.assertBattleData(compiled)
+  end
+  BattleDataSchema.assertTrainerCatalog = function(compiled)
+    calls.trainers = calls.trainers + 1
+    return originals.assertTrainerCatalog(compiled)
+  end
+  BattleDataSchema.assertEncounterCatalog = function(compiled)
+    calls.encounters = calls.encounters + 1
+    return originals.assertEncounterCatalog(compiled)
+  end
+  local ok, err = pcall(function()
+    Assert.deepEqual(
+      BattleDataCache.loadBattleData(c),
+      payloads.battleData,
+      "the published move facts load exactly"
+    )
+    Assert.deepEqual(
+      BattleDataCache.loadTrainers(c),
+      payloads.trainers,
+      "the published trainer catalog loads exactly"
+    )
+    Assert.deepEqual(
+      BattleDataCache.loadEncounters(c),
+      payloads.encounters,
+      "the published encounter catalog loads exactly"
+    )
+    Assert.equal(calls.battleData, 0, "an ordinary battle-data load never rescans the catalog")
+    Assert.equal(calls.trainers, 0, "an ordinary trainer load never rescans the catalog")
+    Assert.equal(calls.encounters, 0, "an ordinary encounter load never rescans the catalog")
+  end)
+  BattleDataSchema.assertBattleData = originals.assertBattleData
+  BattleDataSchema.assertTrainerCatalog = originals.assertTrainerCatalog
+  BattleDataSchema.assertEncounterCatalog = originals.assertEncounterCatalog
+  if not ok then
+    error(err, 0)
+  end
+  -- A payload carrying the wrong schema identity still fails at first use.
+  local foreign = battleCacheFs()
+  foreign:writeLua(BattleDataCache.battleDataPath(), {
+    schema = "g4-other-v1",
+    version = { id = "test" },
+    moves = {},
+  })
+  local foreignOk = pcall(BattleDataCache.loadBattleData, foreign)
+  Assert.isFalse(foreignOk, "a battle payload with the wrong schema never loads")
+end
+
+-- Explicit readiness still rejects malformed nested records per family,
+-- even when the completion marker matches, and accepts valid payloads.
+function T.battle_readiness_rejects_malformed_nested_records()
+  local sha = string.rep("c", 40)
+  local dep = "readiness-fixture"
+  local markers = {
+    battleData = BattleDataCache.marker(sha, dep),
+    trainers = BattleDataCache.trainersMarker(sha, dep),
+    encounters = BattleDataCache.encountersMarker(sha, dep),
+  }
+  local malformed = {
+    battleData = {
+      schema = BattleDataCache.BATTLE_DATA_SCHEMA,
+      version = { id = "test" },
+      moves = { BROKEN = {} },
+    },
+    trainers = {
+      schema = BattleDataCache.TRAINER_SCHEMA,
+      version = { id = "test" },
+      trainers = { [1] = {} },
+    },
+    encounters = {
+      schema = BattleDataCache.ENCOUNTER_SCHEMA,
+      version = { id = "test" },
+      tables = { [1] = {} },
+    },
+  }
+  local bad = battleCacheFs()
+  bad:writeLua(BattleDataCache.battleDataPath(), malformed.battleData)
+  bad:write(BattleDataCache.battleDataMarkerPath(), markers.battleData)
+  bad:writeLua(BattleDataCache.trainersPath(), malformed.trainers)
+  bad:write(BattleDataCache.trainersMarkerPath(), markers.trainers)
+  bad:writeLua(BattleDataCache.encountersPath(), malformed.encounters)
+  bad:write(BattleDataCache.encountersMarkerPath(), markers.encounters)
+  Assert.isFalse(
+    BattleDataCache.isBattleDataReady(bad, markers.battleData),
+    "malformed nested move facts fail readiness"
+  )
+  Assert.isFalse(
+    BattleDataCache.isTrainersReady(bad, markers.trainers),
+    "malformed nested trainer records fail readiness"
+  )
+  Assert.isFalse(
+    BattleDataCache.isEncountersReady(bad, markers.encounters),
+    "malformed nested encounter tables fail readiness"
+  )
+  local payloads = validBattlePayloads()
+  local good = battleCacheFs()
+  good:writeLua(BattleDataCache.battleDataPath(), payloads.battleData)
+  good:write(BattleDataCache.battleDataMarkerPath(), markers.battleData)
+  good:writeLua(BattleDataCache.trainersPath(), payloads.trainers)
+  good:write(BattleDataCache.trainersMarkerPath(), markers.trainers)
+  good:writeLua(BattleDataCache.encountersPath(), payloads.encounters)
+  good:write(BattleDataCache.encountersMarkerPath(), markers.encounters)
+  Assert.isTrue(
+    BattleDataCache.isBattleDataReady(good, markers.battleData),
+    "valid move facts with a matching marker stay ready"
+  )
+  Assert.isTrue(
+    BattleDataCache.isTrainersReady(good, markers.trainers),
+    "valid trainer records with a matching marker stay ready"
+  )
+  Assert.isTrue(
+    BattleDataCache.isEncountersReady(good, markers.encounters),
+    "valid encounter tables with a matching marker stay ready"
+  )
+  local unmarked = battleCacheFs()
+  unmarked:writeLua(BattleDataCache.battleDataPath(), payloads.battleData)
+  unmarked:writeLua(BattleDataCache.trainersPath(), payloads.trainers)
+  unmarked:writeLua(BattleDataCache.encountersPath(), payloads.encounters)
+  Assert.isFalse(
+    BattleDataCache.isBattleDataReady(unmarked, markers.battleData),
+    "a missing marker is never ready even when the payload exists"
+  )
+  Assert.isFalse(
+    BattleDataCache.isTrainersReady(unmarked, markers.trainers),
+    "a missing trainer marker is never ready even when the payload exists"
+  )
+  Assert.isFalse(
+    BattleDataCache.isEncountersReady(unmarked, markers.encounters),
+    "a missing encounter marker is never ready even when the payload exists"
+  )
+  -- Failed readiness stages nothing: the malformed payload is preserved
+  -- verbatim for diagnosis.
+  Assert.deepEqual(
+    bad:loadLua(BattleDataCache.battleDataPath()),
+    malformed.battleData,
+    "failed readiness preserves the staged payload"
+  )
+  Assert.equal(
+    bad:read(BattleDataCache.battleDataMarkerPath()),
+    markers.battleData,
+    "failed readiness preserves the staged marker"
+  )
 end
 
 return { tests = T }
