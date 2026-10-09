@@ -132,10 +132,6 @@ function FieldState.new(game, options)
     -- stores the Start Menu placement as soon as the graphics dimensions are
     -- known.
     self:resize(width, height)
-    runtime.menuHost:setPresentationMetrics(function(text)
-      local font = love.graphics.getFont() --[[@as FieldState.Font]]
-      return font:getWidth(text)
-    end)
     self.actorPresentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]])
     self.actorPresentation:sync()
   end)
@@ -700,7 +696,10 @@ function FieldState:draw()
   end
   local presentation = self.runtime.menuHost:presentation()
   if presentation then
-    resources.menuRenderer:draw(presentation)
+    resources.menuRenderer:draw(
+      presentation,
+      assert(resources.applicationFrameIndex, "field presentation requires the player-owned frame index")
+    )
   end
   resources:drawMart(self.runtime.martHost)
   if self.runtime.pcApplicationHost:isActive() then

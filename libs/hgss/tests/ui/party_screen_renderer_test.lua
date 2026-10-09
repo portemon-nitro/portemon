@@ -98,11 +98,13 @@ local function sourceManifest()
           sequence("assets/generated/party/ball-1.png"),
         },
       },
-      held = { sequences = {
-        sequence("assets/generated/party/held.png", 8, 8),
-        sequence("assets/generated/party/mail.png", 8, 8),
-        sequence("assets/generated/party/capsule.png", 8, 8),
-      } },
+      held = {
+        sequences = {
+          sequence("assets/generated/party/held.png", 8, 8),
+          sequence("assets/generated/party/mail.png", 8, 8),
+          sequence("assets/generated/party/capsule.png", 8, 8),
+        },
+      },
       cursor = { sequences = { sequence("assets/generated/party/cursor.png", 128, 48) } },
       buttons = {
         sequences = {
@@ -434,7 +436,11 @@ function T.numeric_cursor_and_normal_cancel_use_their_manifest_anchors()
   local cancelAnchor = manifest.controls.cancel.anchor
   local renderer = newRenderer(graphics, stubText({}), manifest)
 
-  renderer:draw(presentation({ cursorNode = 0 }), PartyScreenLayout.resolve({ manifest = manifest, cancellable = true }), icons())
+  renderer:draw(
+    presentation({ cursorNode = 0 }),
+    PartyScreenLayout.resolve({ manifest = manifest, cancellable = true }),
+    icons()
+  )
 
   local cursorDraw, buttonDraw
   for _, draw in ipairs(graphics.draws) do
@@ -798,14 +804,16 @@ function T.target_and_swap_states_draw_their_source_lower_prompts()
     local renderer = newRenderer(graphics, stubText(texts), manifest)
     local status = presentation({ state = case.state })
     status.targetPromptKey = case.targetPromptKey
-    status.swap = case.state == "swapping" and {
-      source = 0,
-      destination = 1,
-      xOffset = 4,
-      offsets = { [0] = -32, [1] = 32 },
-      directions = { [0] = -1, [1] = 1 },
-      exchanged = false,
-    } or nil
+    status.swap = case.state == "swapping"
+        and {
+          source = 0,
+          destination = 1,
+          xOffset = 4,
+          offsets = { [0] = -32, [1] = 32 },
+          directions = { [0] = -1, [1] = 1 },
+          exchanged = false,
+        }
+      or nil
     renderer:draw(status, v5Layout(manifest), icons())
     Assert.isTrue(hasString(texts, case.prompt), case.state .. " draws its lower-window prompt")
   end
@@ -1249,7 +1257,13 @@ function T.status_sequences_draw_without_healthy_bob()
   local renderer = newRenderer(graphics, paletteText({}), manifest)
   local status = contextStatus({
     cursorNode = 0,
-    anim = { tick = 3, sequences = { 5, 1, 1, 1, 1, 1 }, phases = { 1, 0, 0, 0, 0, 0 }, sequenceTicks = { 3, 0, 0, 0, 0, 0 }, panelSlide = 0 },
+    anim = {
+      tick = 3,
+      sequences = { 5, 1, 1, 1, 1, 1 },
+      phases = { 1, 0, 0, 0, 0, 0 },
+      sequenceTicks = { 3, 0, 0, 0, 0, 0 },
+      panelSlide = 0,
+    },
   })
   status.view.slots[1] = occupiedSlot(0, { status = "poison", currentHp = 4, maxHp = 20, hpFraction = 0.2 })
   renderer:draw(status, v5Layout(manifest), frameIcons(iconCalls))
@@ -1766,16 +1780,8 @@ function T.context_menu_uses_semantic_roles_with_brightness_confined_below_the_m
       palettes[call.value] = call.palette
     end
   end
-  Assert.deepEqual(
-    palettes.CMD_ONE,
-    roles.command.raised,
-    "unfocused command entries use the raised command role"
-  )
-  Assert.deepEqual(
-    palettes.FIELD_FIVE,
-    roles.field.depressed,
-    "the focused field entry uses the depressed field role"
-  )
+  Assert.deepEqual(palettes.CMD_ONE, roles.command.raised, "unfocused command entries use the raised command role")
+  Assert.deepEqual(palettes.FIELD_FIVE, roles.field.depressed, "the focused field entry uses the depressed field role")
   Assert.deepEqual(palettes.QUIT, roles.cancel.raised, "cancel keeps command ink through its own role")
   Assert.isTrue(
     roles.command.raised.foreground.r ~= roles.field.raised.foreground.r,
@@ -1798,11 +1804,7 @@ function T.context_menu_uses_semantic_roles_with_brightness_confined_below_the_m
     roles.command.depressed,
     "the focused command entry uses the depressed command role"
   )
-  Assert.deepEqual(
-    palettes2.FIELD_FIVE,
-    roles.field.raised,
-    "unfocused field entries use the raised field role"
-  )
+  Assert.deepEqual(palettes2.FIELD_FIVE, roles.field.raised, "unfocused field entries use the raised field role")
   local fills = {}
   for _, entry in ipairs(graphics.sequence) do
     if entry.kind == "rectangle" and isBrighteningFill(graphics.base.rectangles[entry.index]) then
@@ -1830,10 +1832,7 @@ function T.context_menu_uses_semantic_roles_with_brightness_confined_below_the_m
   Assert.notNil(firstMenuDraw, "menu button frames draw")
   for seqIndex, entry in ipairs(graphics.sequence) do
     if entry.kind == "rectangle" and isBrighteningFill(graphics.base.rectangles[entry.index]) then
-      Assert.isTrue(
-        seqIndex < firstMenuDraw,
-        "brightening stays at the content/context boundary, never over the menu"
-      )
+      Assert.isTrue(seqIndex < firstMenuDraw, "brightening stays at the content/context boundary, never over the menu")
     end
   end
   local browseGraphics = sequenceGraphics()
@@ -1865,8 +1864,7 @@ function T.context_brightness_covers_the_full_generated_backdrop()
   for _, panel in ipairs(assert(manifest.panels, "the manifest carries panels")) do
     local origin = assert(panel.origin, "panels carry origins")
     local size = assert(panel.size, "panels carry sizes")
-    panelBottom =
-      math.max(panelBottom, assert(origin.y, "origins carry y") + assert(size.height, "sizes carry height"))
+    panelBottom = math.max(panelBottom, assert(origin.y, "origins carry y") + assert(size.height, "sizes carry height"))
   end
   Assert.isTrue(panelBottom < backdropHeight, "the panel union ends above the backdrop edge")
   local resolved = v5Layout(manifest)
@@ -1925,10 +1923,7 @@ function T.context_brightness_covers_the_full_generated_backdrop()
     end
   end
   Assert.notNil(firstMenuDraw, "menu button frames draw")
-  Assert.isTrue(
-    fillSeq < firstMenuDraw,
-    "brightening stays at the content boundary, never over the menu"
-  )
+  Assert.isTrue(fillSeq < firstMenuDraw, "brightening stays at the content boundary, never over the menu")
   local browseGraphics = sequenceGraphics()
   local browse = presentation({ cursorNode = 0 })
   browse.view.slots[1] = occupiedSlot(0)
@@ -2143,10 +2138,7 @@ function T.switch_selection_uses_generated_bank_seven_chrome()
   Assert.isTrue(chromeDrawn(switchImage, 3), "the current candidate uses switch-selection chrome")
   local faintedImage = renderer._images["asset:" .. manifest.panels[2].chrome.fainted.image]
   Assert.isTrue(chromeDrawn(faintedImage, 1), "uninvolved fainted slots keep fainted chrome")
-  Assert.isFalse(
-    chromeDrawn(faintedImage, 0),
-    "the fainted source never falls back to fainted chrome plus tint"
-  )
+  Assert.isFalse(chromeDrawn(faintedImage, 0), "the fainted source never falls back to fainted chrome plus tint")
   local normalImage = renderer._images["asset:" .. manifest.panels[3].chrome.normal.image]
   Assert.isTrue(chromeDrawn(normalImage, 2), "uninvolved healthy slots keep normal chrome")
 end
@@ -2254,10 +2246,7 @@ function T.generated_action_descriptors_render_in_the_action_window()
   local err = Assert.throws(function()
     renderer:draw(bad, resolved, frameIcons({}))
   end, "unknown template keys fail instead of defaulting")
-  Assert.isTrue(
-    tostring(err):find("noSuchTemplate", 1, true) ~= nil,
-    "the failure names the unknown template key"
-  )
+  Assert.isTrue(tostring(err):find("noSuchTemplate", 1, true) ~= nil, "the failure names the unknown template key")
 end
 
 -- The generated empty-take template leads with the acting mon's name:
@@ -2426,11 +2415,7 @@ function T.switch_animation_moves_slot_text_and_icons_with_their_panels()
   local renderer = newRenderer(graphics, stubText(texts), manifest)
   renderer:draw(swappingStatus(0, 1, 4, false), resolved, icons())
   local nameRect = manifest.panels[2].text.name
-  Assert.equal(
-    textDrawX(texts, "MON1"),
-    nameRect.x + 32,
-    "the odd slot name exits right with its panel"
-  )
+  Assert.equal(textDrawX(texts, "MON1"), nameRect.x + 32, "the odd slot name exits right with its panel")
   local movedIconX = iconDrawX(graphics, "MON1/f0")
   Assert.notNil(movedIconX, "the animation still draws the odd slot icon")
   Assert.equal(movedIconX - baseIconX, 32, "the odd slot icon exits right with its panel")
@@ -2579,11 +2564,7 @@ function T.switch_moving_panels_clip_while_sprites_travel_free()
     homeKey(panel0),
     "the even panel chrome draws inside its home panel"
   )
-  Assert.equal(
-    scissorKey(chromeBySlot[1].scissor),
-    homeKey(panel1),
-    "the odd panel chrome draws inside its home panel"
-  )
+  Assert.equal(scissorKey(chromeBySlot[1].scissor), homeKey(panel1), "the odd panel chrome draws inside its home panel")
   for _, record in ipairs(textScissors) do
     if record.value == "MON0" then
       Assert.equal(scissorKey(record.scissor), homeKey(panel0), "the even name draws inside its home panel")
@@ -2604,10 +2585,7 @@ function T.switch_moving_panels_clip_while_sprites_travel_free()
   for _, record in ipairs(imageScissors) do
     if panelImages[record.image] then
       hpDraws = hpDraws + 1
-      Assert.isTrue(
-        homeKeys[scissorKey(record.scissor)],
-        "HP numerals and bars draw inside their home panel"
-      )
+      Assert.isTrue(homeKeys[scissorKey(record.scissor)], "HP numerals and bars draw inside their home panel")
     end
   end
   Assert.isTrue(hpDraws >= 4, "HP numerals and bars draw through the clipped text pass")
@@ -2665,11 +2643,7 @@ function T.switch_clipped_panel_restores_the_prior_scissor_when_its_draw_fails()
     renderer:draw(swappingStatus(0, 1, 4, false), resolved, icons())
   end, "a failing clipped panel draw still propagates its error")
   local x, y, width, height = graphics.getScissor()
-  Assert.deepEqual(
-    { x, y, width, height },
-    { 1, 2, 3, 4 },
-    "the failed clip restores the exact prior scissor"
-  )
+  Assert.deepEqual({ x, y, width, height }, { 1, 2, 3, 4 }, "the failed clip restores the exact prior scissor")
 end
 
 function T.switch_settled_zero_offset_keeps_the_cursor_hidden()

@@ -58,19 +58,28 @@ function T.explicit_mailbox_validation_still_rejects_malformed_snapshots()
   end
   local drifted = populatedSnapshot()
   drifted.schema = "g4-mailbox-v0"
-  Assert.equal(codeOf(function()
-    Mailbox.validate(drifted)
-  end), "GAME_SAVE_BUCKET_INVALID")
+  Assert.equal(
+    codeOf(function()
+      Mailbox.validate(drifted)
+    end),
+    "GAME_SAVE_BUCKET_INVALID"
+  )
   local sparse = populatedSnapshot()
   sparse.slots[20] = nil
-  Assert.equal(codeOf(function()
-    Mailbox.validate(sparse)
-  end), "GAME_SAVE_BUCKET_INVALID")
+  Assert.equal(
+    codeOf(function()
+      Mailbox.validate(sparse)
+    end),
+    "GAME_SAVE_BUCKET_INVALID"
+  )
   local foreign = populatedSnapshot()
   foreign.extra = true
-  Assert.equal(codeOf(function()
-    Mailbox.validate(foreign)
-  end), "GAME_SAVE_BUCKET_INVALID")
+  Assert.equal(
+    codeOf(function()
+      Mailbox.validate(foreign)
+    end),
+    "GAME_SAVE_BUCKET_INVALID"
+  )
   Assert.isTrue(Mailbox.validate(snapshot), "explicit validation still accepts the authored snapshot")
 end
 

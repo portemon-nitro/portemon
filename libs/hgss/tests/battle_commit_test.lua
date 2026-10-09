@@ -130,10 +130,15 @@ function T.stale_candidates_fail_at_commit_before_any_swap()
   local update = party:partyMon(0)
   update.heldItem = "SITRUS_BERRY"
   local partyPrep = assert(party:preparePartyChanges(partyRevision, { { slot = 0, mon = update } }))
-  local bagPrep = assert(bag:prepareInventoryChanges(bag:revision(), { { op = "take", item = "POKE_BALL", quantity = 1 } }))
+  local bagPrep =
+    assert(bag:prepareInventoryChanges(bag:revision(), { { op = "take", item = "POKE_BALL", quantity = 1 } }))
 
   local Committer = requirePresent(COMMITTER_MODULE, "cross-owner result publication")
-  local prepared = Committer.prepare({ outcome = { id = "outcome-stale-at-commit", result = "win" }, party = partyPrep, bag = bagPrep })
+  local prepared = Committer.prepare({
+    outcome = { id = "outcome-stale-at-commit", result = "win" },
+    party = partyPrep,
+    bag = bagPrep,
+  })
   Assert.isTrue(bag:add("POKE_BALL", 1), "a live restock moves the bag revision after staging")
   Assert.isFalse(bagPrep.isCurrent(), "the staged bag candidate is stale now")
 
@@ -148,8 +153,10 @@ end
 function T.receipt_accessor_returns_only_committed_outcomes()
   local Committer = requirePresent(COMMITTER_MODULE, "cross-owner result publication")
   Assert.isNil(Committer.receipt("outcome-never-committed"), "an unknown outcome has no receipt")
-  local prepared =
-    Committer.prepare({ outcome = { id = "outcome-receipt-roundtrip", result = "win" }, rewards = { kind = "money", amount = 10 } })
+  local prepared = Committer.prepare({
+    outcome = { id = "outcome-receipt-roundtrip", result = "win" },
+    rewards = { kind = "money", amount = 10 },
+  })
   local receipt = Committer.commit(prepared)
   local stored = Committer.receipt("outcome-receipt-roundtrip")
   Assert.deepEqual(stored, receipt, "the accessor returns the recorded receipt")
@@ -211,7 +218,13 @@ function T.failing_roamer_writeback_leaves_staged_owners_alone()
   local prepared = Committer.prepare({
     outcome = { id = "outcome-roamer-stale-rejected", result = "flee" },
     party = partyPrep,
-    roamer = { owner = state, key = "roamer-eevee", outcome = "fled", expectedRevision = 4, details = { location = 12 } },
+    roamer = {
+      owner = state,
+      key = "roamer-eevee",
+      outcome = "fled",
+      expectedRevision = 4,
+      details = { location = 12 },
+    },
   })
   local ok, err = pcall(Committer.commit, prepared)
   Assert.isFalse(ok, "a stale roamer delta never commits: " .. tostring(err))

@@ -688,7 +688,12 @@ T["session script phase"] = function()
         return false
       end,
     },
-    pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
+    pcApplications = {
+      isActive = function()
+        return false
+      end,
+      cancelPointerCapture = function() end,
+    },
     bagUnlocked = function()
       return true
     end,

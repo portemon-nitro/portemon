@@ -186,7 +186,11 @@ local function assertProjectable(mon, label)
   )
   local ivs = assert(mon.ivs, label .. " carries individual values")
   for _, stat in ipairs({ "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
-    Assert.equal(ivs[stat], 0, label .. " " .. stat .. " maps the template difficulty through floor(difficulty*31/255) to 0")
+    Assert.equal(
+      ivs[stat],
+      0,
+      label .. " " .. stat .. " maps the template difficulty through floor(difficulty*31/255) to 0"
+    )
   end
   local condition = assert(mon.condition, label .. " carries its battle condition")
   Assert.isTrue(
@@ -288,16 +292,12 @@ function T.custom_moves_and_held_items_survive_all_party_shapes()
   local mons = assert(party.mons, "built parties carry their ordered mons")
   Assert.equal(#mons, 4, "every party shape occupies its ordered slot")
   Assert.isTrue(#mons[2].moves == 4, "custom moves keep all four slots")
-  Assert.deepEqual(
-    mons[2].moves,
-    {
-      { move = "SCRATCH", pp = 35, ppUps = 0 },
-      { move = "LEER", pp = 30, ppUps = 0 },
-      { move = "WATER_GUN", pp = 25, ppUps = 0 },
-      { move = "TACKLE", pp = 35, ppUps = 0 },
-    },
-    "custom moves survive in source order with catalog power points"
-  )
+  Assert.deepEqual(mons[2].moves, {
+    { move = "SCRATCH", pp = 35, ppUps = 0 },
+    { move = "LEER", pp = 30, ppUps = 0 },
+    { move = "WATER_GUN", pp = 25, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }, "custom moves survive in source order with catalog power points")
   Assert.equal(mons[2].heldItem, "NONE", "moves-only members carry no held item")
   Assert.equal(mons[3].heldItem, "SITRUS_BERRY", "item-only members keep their held item")
   Assert.deepEqual(
@@ -305,16 +305,12 @@ function T.custom_moves_and_held_items_survive_all_party_shapes()
     { { move = "TACKLE", pp = 35, ppUps = 0 }, { move = "TAIL_WHIP", pp = 30, ppUps = 0 } },
     "item-only members still resolve their native initial learnset"
   )
-  Assert.deepEqual(
-    mons[4].moves,
-    {
-      { move = "SCRATCH", pp = 35, ppUps = 0 },
-      { move = "LEER", pp = 30, ppUps = 0 },
-      { move = "WATER_GUN", pp = 25, ppUps = 0 },
-      { move = "TACKLE", pp = 35, ppUps = 0 },
-    },
-    "combined members keep custom moves in source order"
-  )
+  Assert.deepEqual(mons[4].moves, {
+    { move = "SCRATCH", pp = 35, ppUps = 0 },
+    { move = "LEER", pp = 30, ppUps = 0 },
+    { move = "WATER_GUN", pp = 25, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }, "combined members keep custom moves in source order")
   Assert.equal(mons[4].heldItem, "SITRUS_BERRY", "combined members keep their held item")
   Assert.equal(mons[4].friendship, 0, "the zero-friendship edge survives generation")
   local loyal = plainMember({
@@ -389,9 +385,8 @@ function T.rival_selection_follows_the_saved_name_and_story_branch()
   local late = factory:build(buildContext(catalog, 27, spyStream(FIXED_SEED), { storyVariant = "finals" }))
   Assert.equal(late.name, "SILVER", "the name indirection holds across branches")
   Assert.equal(late.mons[1].species, "TOTODILE", "the late branch deals its ordered party")
-  local renamed = factory:build(
-    buildContext(catalog, 27, spyStream(FIXED_SEED), { storyVariant = "elm", rivalName = "GARY" })
-  )
+  local renamed =
+    factory:build(buildContext(catalog, 27, spyStream(FIXED_SEED), { storyVariant = "elm", rivalName = "GARY" }))
   Assert.equal(renamed.name, "GARY", "renaming the rival flows through the indirection")
 end
 
@@ -643,28 +638,25 @@ function T.native_generation_follows_the_source_seed_and_identity_formula()
         }),
         shedinja,
       }),
-      [9] = numericTrainerRecord(
-        {
-          vectorMember({
-            species = "EEVEE",
-            level = 6,
-            difficulty = 200,
-            heldItem = "SITRUS_BERRY",
-            identityParams = { genderOverride = 1, abilityOverride = 1, capsule = 7 },
-          }),
-          vectorMember({
-            species = "EEVEE",
-            form = 1,
-            level = 10,
-            difficulty = 255,
-            heldItem = "NONE",
-            friendship = 255,
-            moves = { "FRUSTRATION", "TACKLE" },
-            identityParams = { genderOverride = 2, abilityOverride = 2, capsule = 0 },
-          }),
-        },
-        { trainerClass = 1, nameReference = { trainerIndex = 9 } }
-      ),
+      [9] = numericTrainerRecord({
+        vectorMember({
+          species = "EEVEE",
+          level = 6,
+          difficulty = 200,
+          heldItem = "SITRUS_BERRY",
+          identityParams = { genderOverride = 1, abilityOverride = 1, capsule = 7 },
+        }),
+        vectorMember({
+          species = "EEVEE",
+          form = 1,
+          level = 10,
+          difficulty = 255,
+          heldItem = "NONE",
+          friendship = 255,
+          moves = { "FRUSTRATION", "TACKLE" },
+          identityParams = { genderOverride = 2, abilityOverride = 2, capsule = 0 },
+        }),
+      }, { trainerClass = 1, nameReference = { trainerIndex = 9 } }),
     },
     programs = {},
   })
@@ -700,16 +692,12 @@ function T.native_generation_follows_the_source_seed_and_identity_formula()
     { { move = "TACKLE", pp = 35, ppUps = 0 }, { move = "GROWL", pp = 40, ppUps = 0 } },
     "plain members learn their native initial moveset with catalog power points"
   )
-  Assert.deepEqual(
-    mons[2].moves,
-    {
-      { move = "SCRATCH", pp = 35, ppUps = 0 },
-      { move = "LEER", pp = 30, ppUps = 0 },
-      { move = "WATER_GUN", pp = 25, ppUps = 0 },
-      { move = "TACKLE", pp = 35, ppUps = 0 },
-    },
-    "custom moves keep source order with catalog power points"
-  )
+  Assert.deepEqual(mons[2].moves, {
+    { move = "SCRATCH", pp = 35, ppUps = 0 },
+    { move = "LEER", pp = 30, ppUps = 0 },
+    { move = "WATER_GUN", pp = 25, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }, "custom moves keep source order with catalog power points")
   Assert.equal(mons[2].heldItem, "SITRUS_BERRY", "the held item survives generation")
   Assert.equal(mons[1].friendship, 70, "template friendship survives without the disappointment move")
   Assert.equal(mons[3].friendship, 255, "an absent template friendship defaults to full")

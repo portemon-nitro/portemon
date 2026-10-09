@@ -152,7 +152,11 @@ function T.facts_carry_egg_held_capsule_move_and_leaf_records()
   local lead = view.slots[1]
   Assert.isTrue(lead.isEgg, "egg state projects for presentation policy")
   Assert.equal(lead.heldItem, "SITRUS_BERRY", "the held semantic key projects, never a source id")
-  Assert.equal(lead.heldItemName, catalog:item("SITRUS_BERRY").name, "detail presentation uses the catalog display name")
+  Assert.equal(
+    lead.heldItemName,
+    catalog:item("SITRUS_BERRY").name,
+    "detail presentation uses the catalog display name"
+  )
   Assert.equal(lead.heldMarkerKind, "item", "ordinary held items project the ordinary marker kind")
   Assert.deepEqual(lead.capsule, { id = 3, seals = {} }, "the capsule record projects for its indicator")
   Assert.deepEqual(

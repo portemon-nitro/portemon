@@ -23,11 +23,7 @@ local function fillMedicineExcept(bag, excluded)
       Assert.isTrue(bag:add(key, 1), "setup must occupy the medicine pocket")
     end
   end
-  Assert.equal(
-    #bag:pocketItems("medicine"),
-    catalog:pocket("medicine").capacity,
-    "setup fills every medicine slot"
-  )
+  Assert.equal(#bag:pocketItems("medicine"), catalog:pocket("medicine").capacity, "setup fills every medicine slot")
 end
 
 local function firstMedicineKeyExcept(bag, excluded)
@@ -148,9 +144,8 @@ function T.prepare_clones_owner_state_without_whole_bucket_validation()
   Assert.equal(refuseReason, "bag_full")
   Assert.deepEqual(bag:capture(), before, "a refused preparation mutates nothing live")
 
-  local preparation = assert(
-    bag:prepareInventoryChanges(revision, { { op = "take", item = "SITRUS_BERRY", quantity = 1 } })
-  )
+  local preparation =
+    assert(bag:prepareInventoryChanges(revision, { { op = "take", item = "SITRUS_BERRY", quantity = 1 } }))
   Assert.isTrue(preparation.isCurrent())
   preparation.publish()
   Assert.equal(bag:quantity("SITRUS_BERRY"), 0)

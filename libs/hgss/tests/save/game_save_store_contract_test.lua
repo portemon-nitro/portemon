@@ -19,7 +19,6 @@ local GameSave = require("libs.hgss.src.save.GameSave")
 
 local T = {}
 
-
 local GAME_SCHEMA = GameSave.SCHEMA
 
 local function newStoreAtFs(saveFs)

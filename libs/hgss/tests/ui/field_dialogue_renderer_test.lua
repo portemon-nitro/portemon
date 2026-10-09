@@ -806,13 +806,19 @@ end
 function T.resolved_placement_draws_identically_without_draw_time_layout_work()
   local cursorPlacement = MANIFEST.dialogueFrames.continueCursor.placement
   local geometries = {
-    { bounds = { x = 0, y = 0, width = 256, height = 192 }, options = { scale = 1, cursorPlacement = cursorPlacement } },
+    {
+      bounds = { x = 0, y = 0, width = 256, height = 192 },
+      options = { scale = 1, cursorPlacement = cursorPlacement },
+    },
     {
       bounds = { x = 0, y = 0, width = 255, height = 48 },
       options = { scale = 1, allowClipping = true, cursorPlacement = cursorPlacement },
     },
     { bounds = { x = 37, y = 11, width = 900, height = 420 }, options = { cursorPlacement = cursorPlacement } },
-    { bounds = { x = 0, y = 0, width = 256, height = 768 }, options = { scale = 1, cursorPlacement = cursorPlacement } },
+    {
+      bounds = { x = 0, y = 0, width = 256, height = 768 },
+      options = { scale = 1, cursorPlacement = cursorPlacement },
+    },
   }
   local validateCalls = 0
   local originalValidate = DialoguePresentationLayout.validate
@@ -847,11 +853,7 @@ function T.resolved_placement_draws_identically_without_draw_time_layout_work()
       )
       Assert.isTrue(#lg.draws > 0, "the resolved placement draws the dialogue")
       Assert.isTrue(presentation.visible == true, "a fitting host resolves a visible placement")
-      Assert.deepEqual(
-        presentation.placement.frame,
-        presentation.outerRect,
-        "the resolved frame is the outer strip"
-      )
+      Assert.deepEqual(presentation.placement.frame, presentation.outerRect, "the resolved frame is the outer strip")
       Assert.deepEqual(presentation.placement.origin, presentation.origin, "the resolved origin is shared")
       Assert.equal(presentation.placement.scale, presentation.scale, "the resolved scale is shared")
       Assert.equal(presentation.placement.logicalWidth, 256, "the strip keeps its source width")

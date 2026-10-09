@@ -1171,13 +1171,11 @@ function T.door_and_prop_lookup_use_the_owning_cell_frame_not_the_coverage_ancho
       runtime.descriptor = descriptor
       runtime.mapProps = {
         doorAt = function(_, view, fieldX, fieldZ)
-          calls[#calls + 1] =
-            { operation = "door", cellKey = cellKey, view = view, fieldX = fieldX, fieldZ = fieldZ }
+          calls[#calls + 1] = { operation = "door", cellKey = cellKey, view = view, fieldX = fieldX, fieldZ = fieldZ }
           return "door:" .. cellKey
         end,
         propAt = function(_, view, fieldX, fieldZ)
-          calls[#calls + 1] =
-            { operation = "prop", cellKey = cellKey, view = view, fieldX = fieldX, fieldZ = fieldZ }
+          calls[#calls + 1] = { operation = "prop", cellKey = cellKey, view = view, fieldX = fieldX, fieldZ = fieldZ }
           return "prop:" .. cellKey
         end,
       }
@@ -1472,10 +1470,7 @@ function T.initial_coverage_result_transfers_exactly_once()
   Assert.isNil(next(releases), "releasing after transfer never touches caller-owned cells")
   local ok, err = pcall(task.takeResult, task)
   Assert.isFalse(ok, "a second ownership transfer must fail")
-  Assert.isTrue(
-    tostring(err):find("once", 1, true) ~= nil,
-    "the repeated transfer names its one-shot ownership"
-  )
+  Assert.isTrue(tostring(err):find("once", 1, true) ~= nil, "the repeated transfer names its one-shot ownership")
   coverage:release()
   for cellKey, count in pairs(releases) do
     Assert.equal(count, 1, "caller-owned cell " .. cellKey .. " releases exactly once")

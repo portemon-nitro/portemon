@@ -49,17 +49,12 @@ local function throwsCode(code, fn)
   Assert.equal(err.code, code)
 end
 
-local function sourcePlacement(x, y)
-  return { system = MenuProtocol.BOTTOM_SCREEN_TILE_PLACEMENT, x = x, y = y }
-end
-
 -- Matching message IDs must still use different banks based on the original
 -- builder operation, and entry result values must not become visual indexes.
 function T.resolves_standard_and_script_messages_without_changing_item_values()
   local h = host()
   local standardBuilder = h:beginMenu({
     messageSource = "standard",
-    sourcePlacement = sourcePlacement(4, 5),
     initialCursor = 0,
     cancellable = false,
     result = "VAR_RESULT",
@@ -69,11 +64,9 @@ function T.resolves_standard_and_script_messages_without_changing_item_values()
   Assert.equal(standardMenu.items[1].text.text, "Standard")
   Assert.equal(standardMenu.items[1].value, 42)
   Assert.equal(standardMenu.items[1].vanillaMetadata, 255)
-  Assert.equal(standardMenu.sourcePlacement.x, 4)
 
   local scriptBuilder = h:beginMenu({
     messageSource = { kind = "script", bank = 2 },
-    sourcePlacement = sourcePlacement(6, 7),
     initialCursor = 0,
     cancellable = false,
     result = "VAR_RESULT",
@@ -90,7 +83,6 @@ function T.retains_var_derived_item_operands_as_concrete_values()
   local h = host()
   local builder = h:beginMenu({
     messageSource = "standard",
-    sourcePlacement = sourcePlacement(0, 0),
     initialCursor = 0,
     cancellable = false,
     result = "VAR_RESULT",
@@ -120,16 +112,13 @@ function T.publishes_semantic_choices_without_entering_the_imported_builder()
     cancellable = true,
     cancelValue = 20,
     initialCursor = 1,
-    placement = { mode = "docked", anchor = "bottom", surface = "main" },
   })
   Assert.equal(menu.items[1].text.text, "Take")
   Assert.equal(menu.items[1].value, 10)
   Assert.equal(menu.items[1].metadata.hgss, 255)
-  Assert.equal(menu.placementPreference.mode, "docked")
   Assert.equal(menu.initialCursor, 1)
   h:beginMenu({
     messageSource = "standard",
-    sourcePlacement = sourcePlacement(0, 0),
     initialCursor = 0,
     cancellable = false,
     result = "VAR_RESULT",
@@ -144,7 +133,6 @@ function T.semantic_choices_keep_local_text_out_of_the_vanilla_message_resolver(
   local menu = h:choose({
     items = { { text = "Take", value = 10 } },
     cancellable = false,
-    placement = { mode = "auto", anchor = "auto", surface = "auto" },
   })
   Assert.equal(menu.items[1].text.text, "Take")
 end
@@ -157,7 +145,6 @@ function T.semantic_choices_keep_msg_prefixed_local_text_out_of_the_vanilla_mess
   local menu = h:choose({
     items = { { text = "msg.custom", value = 10 } },
     cancellable = false,
-    placement = { mode = "auto", anchor = "auto", surface = "auto" },
   })
   Assert.equal(menu.items[1].text.text, "msg.custom")
 end
@@ -171,7 +158,6 @@ function T.semantic_choices_resolve_external_message_references()
   local menu = h:choose({
     items = { { text = { message = "external", bank = 2, id = 0 }, value = 10 } },
     cancellable = false,
-    placement = { mode = "auto", anchor = "auto", surface = "auto" },
   })
   Assert.equal(menu.items[1].text.text, "External")
 end
@@ -182,7 +168,6 @@ function T.semantic_choices_fault_before_publication_when_text_cannot_resolve()
     h:choose({
       items = { { text = { message = "external", bank = 2, id = 0 }, value = 10 } },
       cancellable = false,
-      placement = { mode = "auto", anchor = "auto", surface = "auto" },
     })
   end)
 end
@@ -204,7 +189,6 @@ function T.unresolved_messages_release_the_provider_without_publishing_a_menu()
   local h, provider = host()
   local builder = h:beginMenu({
     messageSource = "standard",
-    sourcePlacement = sourcePlacement(0, 0),
     initialCursor = 0,
     cancellable = false,
     result = "VAR_RESULT",
@@ -216,7 +200,6 @@ function T.unresolved_messages_release_the_provider_without_publishing_a_menu()
   Assert.equal(provider:stats().references, 0)
   local nextBuilder = h:beginMenu({
     messageSource = "standard",
-    sourcePlacement = sourcePlacement(0, 0),
     initialCursor = 0,
     cancellable = false,
     result = "VAR_RESULT",
@@ -228,7 +211,6 @@ function T.retains_an_explicit_zero_cancellation_value()
   local h = host()
   local builder = h:beginMenu({
     messageSource = "standard",
-    sourcePlacement = sourcePlacement(0, 0),
     initialCursor = 0,
     cancellable = true,
     cancelValue = 0,

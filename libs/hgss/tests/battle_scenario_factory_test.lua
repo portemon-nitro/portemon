@@ -342,22 +342,16 @@ end
 -- the build instead of riding the decision context or counting stock.
 function T.trainer_gap_entries_fail_instead_of_riding_through()
   local party = mixedParty()
-  Assert.isTrue(
-    not pcall(ScenarioFactory.fromTrainer, {
-      trainers = {
-        { id = "a", party = { fullRecord() }, items = { "POTION", "NONE", "NONE", "NONE" } },
-      },
-    }, { party = party, bag = stockedBag() }),
-    "a gap entry fails the trainer build"
-  )
-  Assert.isTrue(
-    not pcall(ScenarioFactory.fromTrainer, {
-      trainers = {
-        { id = "a", party = { fullRecord() }, items = { "NONE" } },
-      },
-    }, { party = party, bag = stockedBag() }),
-    "a lone gap entry fails the trainer build"
-  )
+  Assert.isTrue(not pcall(ScenarioFactory.fromTrainer, {
+    trainers = {
+      { id = "a", party = { fullRecord() }, items = { "POTION", "NONE", "NONE", "NONE" } },
+    },
+  }, { party = party, bag = stockedBag() }), "a gap entry fails the trainer build")
+  Assert.isTrue(not pcall(ScenarioFactory.fromTrainer, {
+    trainers = {
+      { id = "a", party = { fullRecord() }, items = { "NONE" } },
+    },
+  }, { party = party, bag = stockedBag() }), "a lone gap entry fails the trainer build")
 end
 
 function T.trainer_pass_facts_ride_the_decision_context()
@@ -393,11 +387,7 @@ function T.trainer_item_lists_keep_source_order_beside_finite_stock()
     "the decision context preserves source-relative order and multiplicity"
   )
   local stock = inventoryOf(scenario, assert(foe.inventoryId, "the trainer keeps its stock identity"))
-  Assert.deepEqual(
-    stock.quantities,
-    { POTION = 2, POKE_BALL = 1 },
-    "the battle inventory counts quantities separately"
-  )
+  Assert.deepEqual(stock.quantities, { POTION = 2, POKE_BALL = 1 }, "the battle inventory counts quantities separately")
   Assert.isNil(foe.context.quantities, "no mutable quantity field rides the decision context")
   items[1] = "FULL_RESTORE"
   items[3] = "FULL_RESTORE"
@@ -429,11 +419,7 @@ function T.simultaneous_trainer_lists_stay_compact_detached_and_isolated()
     { "POTION", "POKE_BALL", "POTION" },
     "the first context preserves compact order and multiplicity"
   )
-  Assert.deepEqual(
-    second.context.trainerItems,
-    { "POTION" },
-    "the second context preserves its compact list"
-  )
+  Assert.deepEqual(second.context.trainerItems, { "POTION" }, "the second context preserves its compact list")
   Assert.deepEqual(
     inventoryOf(scenario, assert(first.inventoryId, "the first trainer keeps its stock identity")).quantities,
     { POTION = 2, POKE_BALL = 1 },
@@ -453,11 +439,7 @@ function T.simultaneous_trainer_lists_stay_compact_detached_and_isolated()
     { "POTION", "POKE_BALL", "POTION" },
     "later caller mutations never reach the first context"
   )
-  Assert.deepEqual(
-    second.context.trainerItems,
-    { "POTION" },
-    "later caller mutations never reach the second context"
-  )
+  Assert.deepEqual(second.context.trainerItems, { "POTION" }, "later caller mutations never reach the second context")
 end
 
 function T.an_empty_live_bag_still_yields_a_valid_player_stock()
@@ -580,11 +562,10 @@ end
 -- fainted lead keeps its roster seat.
 function T.single_trainers_keep_their_single_opening()
   local party = mixedParty()
-  local scenario =
-    ScenarioFactory.fromTrainer({ trainer = "rival", party = { fullRecord(), fullRecord() } }, {
-      party = party,
-      bag = stockedBag(),
-    })
+  local scenario = ScenarioFactory.fromTrainer({ trainer = "rival", party = { fullRecord(), fullRecord() } }, {
+    party = party,
+    bag = stockedBag(),
+  })
   Assert.equal(scenario.format, "single")
   Assert.equal(#scenario.positions, 2)
   local player = playerOf(scenario)
@@ -599,14 +580,11 @@ end
 -- composition fails instead of opening a short side.
 function T.marked_doubles_need_two_conscious_enemies()
   local live = { party = mixedParty(), bag = stockedBag() }
-  Assert.isTrue(
-    not pcall(ScenarioFactory.fromTrainer, {
-      trainers = {
-        { id = "rival-double", party = { fullRecord(), faintedRecord() }, doubleBattle = true },
-      },
-    }, live),
-    "a marked trainer with one conscious member fields no battle"
-  )
+  Assert.isTrue(not pcall(ScenarioFactory.fromTrainer, {
+    trainers = {
+      { id = "rival-double", party = { fullRecord(), faintedRecord() }, doubleBattle = true },
+    },
+  }, live), "a marked trainer with one conscious member fields no battle")
 end
 
 -- Paired trainers open with their first conscious member each: a
@@ -648,31 +626,25 @@ end
 -- party is fainted fails the pair instead of opening short.
 function T.paired_trainers_need_a_conscious_lead_each()
   local live = { party = mixedParty(), bag = stockedBag() }
-  Assert.isTrue(
-    not pcall(ScenarioFactory.fromTrainer, {
-      trainers = {
-        { id = "a", party = { fullRecord() } },
-        { id = "b", party = { faintedRecord() } },
-      },
-    }, live),
-    "a wholly fainted partner fails the pair"
-  )
+  Assert.isTrue(not pcall(ScenarioFactory.fromTrainer, {
+    trainers = {
+      { id = "a", party = { fullRecord() } },
+      { id = "b", party = { faintedRecord() } },
+    },
+  }, live), "a wholly fainted partner fails the pair")
 end
 
 -- A third simultaneous trainer has no native topology here: explicit
 -- staged fights own larger fields.
 function T.a_third_trainer_has_no_native_topology()
   local live = { party = mixedParty(), bag = stockedBag() }
-  Assert.isTrue(
-    not pcall(ScenarioFactory.fromTrainer, {
-      trainers = {
-        { id = "a", party = { fullRecord() } },
-        { id = "b", party = { fullRecord() } },
-        { id = "c", party = { fullRecord() } },
-      },
-    }, live),
-    "three trainers fail instead of guessing a field"
-  )
+  Assert.isTrue(not pcall(ScenarioFactory.fromTrainer, {
+    trainers = {
+      { id = "a", party = { fullRecord() } },
+      { id = "b", party = { fullRecord() } },
+      { id = "c", party = { fullRecord() } },
+    },
+  }, live), "three trainers fail instead of guessing a field")
 end
 
 -- An explicit doubles request with full rosters on both sides fields

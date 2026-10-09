@@ -50,9 +50,6 @@ Schema.ENUMS = {
   fade_direction = { "in", "out" },
   fade_color = { "black", "white" },
   button = { "a", "b" },
-  menu_placement_mode = { "auto", "floating", "docked" },
-  menu_anchor = { "auto", "top_left", "top_right", "bottom_left", "bottom_right", "bottom", "side" },
-  menu_surface = { "auto", "main", "auxiliary" },
   -- The five MAPSIGNCOMMAND_* values as the semantic command enum; numeric
   -- source codes never appear at runtime (lowering converts them).
   signpost_command = { "nop", "show", "wipe_out", "wipe_in", "hide" },
@@ -580,7 +577,7 @@ Schema.OPERATIONS = {
     },
   },
   -- Public semantic menu. Its result values belong to items, never visual
-  -- positions; presentation consumes placement only as a hint.
+  -- positions.
   choose = {
     fields = {
       items = { type = "menu_items", required = true },
@@ -588,7 +585,6 @@ Schema.OPERATIONS = {
       cancellable = { type = "boolean", default = false },
       cancelValue = { type = "scalar_or_value" },
       initialCursor = { type = "integer", default = 0 },
-      placement = { type = "menu_placement", default = { mode = "auto", anchor = "auto", surface = "auto" } },
     },
   },
   -- Generated/advanced HGSS menu-builder operations. Handwritten scripts
@@ -596,7 +592,6 @@ Schema.OPERATIONS = {
   menu_begin = {
     fields = {
       messageSource = { type = "serializable", required = true },
-      sourcePlacement = { type = "serializable", required = true },
       initialCursor = { type = "integer", required = true },
       cancellable = { type = "boolean", required = true },
       result = { type = "value", required = true },
@@ -1396,7 +1391,7 @@ Schema.CONSTRUCTORS = {
       {
         signature = "S.choose(spec)",
         canonical = "op=choose",
-        notes = "Semantic field menu; spec={items,result,cancellable=false,cancelValue=nil,initialCursor=0,placement={mode=auto,anchor=auto,surface=auto}}. Cancellable menus require cancelValue (false is valid); initialCursor must identify an item. Directional navigation follows the resolved layout: single-column left/right is a no-op and multi-column movement uses neighboring rows and columns. No callbacks.",
+        notes = "Semantic field menu; spec={items,result,cancellable=false,cancelValue=nil,initialCursor=0}. Cancellable menus require cancelValue (false is valid); initialCursor must identify an item. Directional navigation follows the resolved layout: single-column left/right is a no-op and multi-column movement uses neighboring rows and columns. No callbacks.",
       },
       {
         signature = "S.waitTicks(spec)",

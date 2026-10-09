@@ -1786,11 +1786,7 @@ function T.toss_states_communicate_their_prompts_in_every_topology()
       if case.state == "toss_confirm" then
         record.lowerMessage = { visibleText = case.expected, fullText = case.expected }
       end
-      draw:draw(
-        record,
-        plan(mode ~= "interactive_only"),
-        { icons = icons() }
-      )
+      draw:draw(record, plan(mode ~= "interactive_only"), { icons = icons() })
       local joined = joinedText(content)
       Assert.isTrue(joined:find(case.expected, 1, true) ~= nil, case.state .. " formats its prompt in " .. mode)
       Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced in " .. mode)
@@ -1815,7 +1811,8 @@ function T.move_highlight_marks_the_target_across_a_page_boundary()
   for index = 1, 6 do
     cells[index] = slot("ITEM_" .. index, 1)
   end
-  local record = status({ state = "move_select", visibleStart = 2, visibleSlots = cells, moveTarget = 7, moveOrigin = 7 })
+  local record =
+    status({ state = "move_select", visibleStart = 2, visibleSlots = cells, moveTarget = 7, moveOrigin = 7 })
   draw:draw(record, plan(true), { icons = icons() })
   local highlight = false
   for _, rectangle in ipairs(graphics.rectangles) do
@@ -3410,10 +3407,8 @@ function T.cancel_feedback_applies_the_generated_offset_exactly_once()
   manifested.interactive.feedback.quantityCancel.selected.offset = { x = 5, y = -3 }
   local cancelFocus = manifested.interactive.focus.cancel
   local target = assert(cancelFocus.target, "the cancel focus carries its target")
-  local quantityCancel = assert(
-    manifested.interactive.overlays.quantity.cancel,
-    "the quantity overlay carries its cancel face"
-  )
+  local quantityCancel =
+    assert(manifested.interactive.overlays.quantity.cancel, "the quantity overlay carries its cancel face")
   local quantityTarget = assert(quantityCancel.center, "the quantity cancel carries its center")
   local function flashDraws(record, visualKey)
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
@@ -3452,16 +3447,8 @@ function T.cancel_feedback_applies_the_generated_offset_exactly_once()
     })
     local found = flashDraws(record, "feedback:quantityCancel:selected")
     Assert.equal(#found, 1, "the quantity picker flashes Cancel exactly once")
-    Assert.equal(
-      found[1].x,
-      quantityTarget.x + 5,
-      "the quantity flash applies the generated horizontal offset once"
-    )
-    Assert.equal(
-      found[1].y,
-      quantityTarget.y - 3,
-      "the quantity flash applies the generated vertical offset once"
-    )
+    Assert.equal(found[1].x, quantityTarget.x + 5, "the quantity flash applies the generated horizontal offset once")
+    Assert.equal(found[1].y, quantityTarget.y - 3, "the quantity flash applies the generated vertical offset once")
   end
 end
 

@@ -355,7 +355,8 @@ T["partner turn grass sits behind the saved horizontal facing"] = function()
   local function grass(savedFacing, options)
     options = options or {}
     options.followerPosition = { fieldX = 12, fieldZ = 8, worldY = 2.5, cellKey = "upper", sourceSurfaceId = 9 }
-    options.behaviorAt = options.behaviorAt or { ["13,8"] = TALL, ["11,8"] = VERY_TALL, ["12,9"] = TALL, ["12,7"] = TALL }
+    options.behaviorAt = options.behaviorAt
+      or { ["13,8"] = TALL, ["11,8"] = VERY_TALL, ["12,9"] = TALL, ["12,7"] = TALL }
     return engine({}, nil, options):partnerTurnGrass(savedFacing)
   end
 
@@ -646,26 +647,34 @@ T["mon context classifiers preserve retail boundary buckets"] = function()
     { leadSlot = 0, programId = 1 },
     "changing only the map preserves the species-owned class match"
   )
-  local rangedSpeciesClass = engine({ {
-    programId = 1,
-    percentage = 100,
-    criteria = { speciesClass = 250 },
-  } }, nil, {
-    mapId = 61,
-    speciesClassBySpeciesId = { [25] = 20 },
-    mon = { species = "PIKACHU" },
-    speciesId = 25,
-  })
+  local rangedSpeciesClass = engine(
+    { {
+      programId = 1,
+      percentage = 100,
+      criteria = { speciesClass = 250 },
+    } },
+    nil,
+    {
+      mapId = 61,
+      speciesClassBySpeciesId = { [25] = 20 },
+      mon = { species = "PIKACHU" },
+      speciesId = 25,
+    }
+  )
   Assert.equal(rangedSpeciesClass:select(), nil, "changing species class must reject the 250 selector")
-  local exactSpeciesClass = engine({ {
-    programId = 3,
-    percentage = 100,
-    criteria = { speciesClass = 7 },
-  } }, nil, {
-    mapId = 62,
-    speciesClassBySpeciesId = { [133] = 7 },
-    mon = { species = "EEVEE" },
-  })
+  local exactSpeciesClass = engine(
+    { {
+      programId = 3,
+      percentage = 100,
+      criteria = { speciesClass = 7 },
+    } },
+    nil,
+    {
+      mapId = 62,
+      speciesClassBySpeciesId = { [133] = 7 },
+      mon = { species = "EEVEE" },
+    }
+  )
   Assert.deepEqual(exactSpeciesClass:select(), { leadSlot = 0, programId = 3 }, "exact species class remains supported")
 
   for _, vector in ipairs({

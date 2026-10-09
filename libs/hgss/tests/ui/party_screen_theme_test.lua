@@ -48,7 +48,11 @@ function T.status_key_follows_the_source_icon_priority()
     "poison",
     "poison outranks paralysis"
   )
-  Assert.equal(PartyScreenTheme.statusKey(condition(0, { effect("poison") })), "faint", "no HP outranks every condition")
+  Assert.equal(
+    PartyScreenTheme.statusKey(condition(0, { effect("poison") })),
+    "faint",
+    "no HP outranks every condition"
+  )
   Assert.equal(
     PartyScreenTheme.statusKey(condition(35, { effect("ember:BOND", { stage = 1 }) })),
     "custom",

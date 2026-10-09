@@ -240,7 +240,10 @@ function T.accepted_flows_publish_the_whole_result_at_once()
   Assert.deepEqual(result.inventoryDeltas, {}, "an ordinary result stages no spends")
   Assert.deepEqual(mon, before, "capturing still leaves the live mon alone")
   Assert.deepEqual(Flow.capture(flow), result, "capturing twice stages nothing further")
-  Assert.isTrue(Flow.start(pinLevel(makeMon(catalog, 313, {}), catalog, 9), vectorContext(), catalog) == nil, "an ineligible mon opens no flow")
+  Assert.isTrue(
+    Flow.start(pinLevel(makeMon(catalog, 313, {}), catalog, 9), vectorContext(), catalog) == nil,
+    "an ineligible mon opens no flow"
+  )
 end
 
 -- A cancelled flow publishes nothing: capture reports no result, the
@@ -305,7 +308,8 @@ function T.side_products_commit_or_cancel_atomically()
   local second = pinLevel(makeMon(catalog, 341, { species = "NINCADA" }), catalog, 20)
   second.moves = copy(mon.moves)
   local frozen = copy(second)
-  local cancelled = Flow.start(second, vectorContext({ party = { second, mate }, inventory = { POKE_BALL = 5 } }), catalog)
+  local cancelled =
+    Flow.start(second, vectorContext({ party = { second, mate }, inventory = { POKE_BALL = 5 } }), catalog)
   Assert.notNil(cancelled, "the second line member opens a flow")
   Flow.respond(cancelled, { choice = "cancel" })
   Assert.equal(Flow.step(cancelled).prompt, "cancelled", "the decline ends cancelled")
@@ -319,10 +323,7 @@ end
 -- stage nothing even when the level alone would qualify.
 function T.post_battle_eligibility_uses_final_state_and_terminal_results()
   local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
-  Assert.isTrue(
-    type(Flow.eligibleAfterBattle) == "function",
-    "the flow owner rechecks eligibility after battles"
-  )
+  Assert.isTrue(type(Flow.eligibleAfterBattle) == "function", "the flow owner rechecks eligibility after battles")
   local catalog = vectorCatalog()
   local grown = pinLevel(makeMon(catalog, 359, {}), catalog, 16)
   grown.moves = {
@@ -333,7 +334,11 @@ function T.post_battle_eligibility_uses_final_state_and_terminal_results()
   }
   local young = pinLevel(makeMon(catalog, 367, {}), catalog, 9)
   local context = vectorContext({ party = { young, grown } })
-  Assert.deepEqual(Flow.eligibleAfterBattle({ young }, "win", context, catalog), {}, "the pre-battle snapshot stages nothing")
+  Assert.deepEqual(
+    Flow.eligibleAfterBattle({ young }, "win", context, catalog),
+    {},
+    "the pre-battle snapshot stages nothing"
+  )
   Assert.deepEqual(
     Flow.eligibleAfterBattle({ grown }, "win", context, catalog),
     { 1 },
@@ -382,7 +387,11 @@ function T.full_sets_pause_learning_for_explicit_decisions()
   local first = Flow.step(flow)
   Assert.equal(first.prompt, "learn_move", "a full set pauses on the first unknown chance")
   Assert.equal(first.move, "LEER", "already-known chances pass silently")
-  Assert.deepEqual(first.currentMoves, { "SCRATCH", "GROWL", "RAZOR_LEAF", "POISONPOWDER" }, "the prompt names the held set")
+  Assert.deepEqual(
+    first.currentMoves,
+    { "SCRATCH", "GROWL", "RAZOR_LEAF", "POISONPOWDER" },
+    "the prompt names the held set"
+  )
   Flow.respond(flow, { choice = "replace", slot = 3 })
   local second = Flow.step(flow)
   Assert.equal(second.prompt, "learn_move", "the next unknown chance pauses as well")

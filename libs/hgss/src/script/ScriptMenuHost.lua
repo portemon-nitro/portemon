@@ -128,7 +128,6 @@ function ScriptMenuHost:choose(spec)
     cancellable = spec.cancellable,
     cancelValue = spec.cancelValue,
     initialCursor = spec.initialCursor,
-    placementPreference = spec.placement,
     result = spec.result,
   }
 end
@@ -140,13 +139,6 @@ end
 function ScriptMenuHost:beginMenu(spec)
   assert(type(spec) == "table", "script menu specification must be a table")
   messageBank(spec.messageSource)
-  assert(type(spec.sourcePlacement) == "table", "script menu source placement is required")
-  assert(
-    spec.sourcePlacement.system == MenuProtocol.BOTTOM_SCREEN_TILE_PLACEMENT,
-    "script menu placement system is invalid"
-  )
-  assertInteger(spec.sourcePlacement.x, "script menu source x")
-  assertInteger(spec.sourcePlacement.y, "script menu source y")
   assertInteger(spec.initialCursor, "script menu initial cursor")
   assert(type(spec.cancellable) == "boolean", "script menu cancellable must be a boolean")
   assert(spec.result ~= nil, "script menu result target is required")
@@ -160,11 +152,6 @@ function ScriptMenuHost:beginMenu(spec)
   end
   return {
     messageSource = messageSource,
-    sourcePlacement = {
-      system = spec.sourcePlacement.system,
-      x = spec.sourcePlacement.x,
-      y = spec.sourcePlacement.y,
-    },
     initialCursor = spec.initialCursor,
     cancellable = spec.cancellable,
     -- HGSS's list-menu cancellation result. This compatibility
@@ -218,7 +205,6 @@ function ScriptMenuHost:execute(builder)
   end
   local request = {
     items = items,
-    sourcePlacement = builder.sourcePlacement,
     initialCursor = builder.initialCursor,
     cancellable = builder.cancellable,
     cancelValue = builder.cancelValue,

@@ -144,7 +144,8 @@ end
 
 function T.mutable_receipt_fields_cannot_suppress_or_repeat_the_acknowledgement_bonus()
   local state = resources({ money = 6000 })
-  local session = state.service:openBuy(stock({ bagEntry("balls", 200, "POKE_BALL") }, { bonusPolicy = "premier_ball" }))
+  local session =
+    state.service:openBuy(stock({ bagEntry("balls", 200, "POKE_BALL") }, { bonusPolicy = "premier_ball" }))
   local token = assert(session:quoteBuy("balls", 10))
   local receipt = assert(session:commit(token))
   Assert.equal(state.bag:quantity("POKE_BALL"), 10)
@@ -168,11 +169,15 @@ function T.stale_bag_and_balance_leave_the_post_drift_capture_unchanged()
   local session = state.service:openBuy(stock({ bagEntry("offer", 12) }))
   local token = assert(session:quoteBuy("offer", 2))
   Assert.isTrue(state.bag:add("GREAT_BALL", 1))
-  local before = { bag = state.bag:capture(), profile = { money = state.profile.money }, mart = state.service:capture() }
+  local before =
+    { bag = state.bag:capture(), profile = { money = state.profile.money }, mart = state.service:capture() }
   local receipt, reason = session:commit(token)
   Assert.isNil(receipt)
   Assert.equal(reason, "stale")
-  Assert.deepEqual({ bag = state.bag:capture(), profile = { money = state.profile.money }, mart = state.service:capture() }, before)
+  Assert.deepEqual(
+    { bag = state.bag:capture(), profile = { money = state.profile.money }, mart = state.service:capture() },
+    before
+  )
   session:close()
 
   local balanceSession = state.service:openBuy(stock({ bagEntry("offer", 12) }))
@@ -182,7 +187,10 @@ function T.stale_bag_and_balance_leave_the_post_drift_capture_unchanged()
   local balanceReceipt, balanceReason = balanceSession:commit(balanceToken)
   Assert.isNil(balanceReceipt)
   Assert.equal(balanceReason, "stale")
-  Assert.deepEqual({ bag = state.bag:capture(), money = state.profile.money, mart = state.service:capture() }, balanceBefore)
+  Assert.deepEqual(
+    { bag = state.bag:capture(), money = state.profile.money, mart = state.service:capture() },
+    balanceBefore
+  )
 end
 
 function T.calendar_handles_leap_day_forward_reset_and_rollback_without_reset()
@@ -258,15 +266,17 @@ function T.ap_spend_apricorn_daily_slots_and_data_card_ownership_share_one_bucke
   Assert.isFalse(state.service:athleteAvailable(athlete), "availability compares against every one of 12 daily slots")
   second:close()
 
-  local cardStock = stock({ {
-    key = "card-zero",
-    displayItemKey = "ITEM_30",
-    description = { kind = "item" },
-    unitPrice = 4,
-    destination = { kind = "card", key = "CARD_0" },
-    restriction = { kind = "owned_card", key = "CARD_0" },
-    capacityProbe = { kind = "bag", key = "CHERI_BERRY" },
-  } }, { key = "card-test", currency = "athlete_points", presentationKind = "athlete_cards", quantityMode = "single" })
+  local cardStock = stock({
+    {
+      key = "card-zero",
+      displayItemKey = "ITEM_30",
+      description = { kind = "item" },
+      unitPrice = 4,
+      destination = { kind = "card", key = "CARD_0" },
+      restriction = { kind = "owned_card", key = "CARD_0" },
+      capacityProbe = { kind = "bag", key = "CHERI_BERRY" },
+    },
+  }, { key = "card-test", currency = "athlete_points", presentationKind = "athlete_cards", quantityMode = "single" })
   local cards = state.service:openBuy(cardStock)
   local cardToken = assert(cards:quoteBuy("card-zero", 1))
   Assert.notNil(cards:commit(cardToken))
@@ -281,14 +291,18 @@ function T.ap_spend_apricorn_daily_slots_and_data_card_ownership_share_one_bucke
   Assert.equal(repeatedReason, "already_owned")
   cards:close()
 
-  local full = resources({ bucket = (function()
-    local seeded = MartSave.empty()
-    seeded.athletePoints = 10
-    return seeded
-  end)() })
+  local full = resources({
+    bucket = (function()
+      local seeded = MartSave.empty()
+      seeded.athletePoints = 10
+      return seeded
+    end)(),
+  })
   local itemKeys = {}
   for key, definition in pairs(ItemFixture.buildAssetRoot().items) do
-    if definition.pocket == "berries" then itemKeys[#itemKeys + 1] = key end
+    if definition.pocket == "berries" then
+      itemKeys[#itemKeys + 1] = key
+    end
   end
   table.sort(itemKeys)
   for _, itemKey in ipairs(itemKeys) do
@@ -309,14 +323,16 @@ function T.seal_capacity_counts_loose_and_all_equipped_copies()
   bucket.sealCase.loose.SEAL_A = 98
   bucket.sealCase.capsules[12][1] = { key = "SEAL_A", x = 4, y = 5 }
   local state = resources({ bucket = bucket })
-  local seals = stock({ {
-    key = "seal-a",
-    displayItemKey = "ITEM_1",
-    description = { kind = "literal", value = "Seal A" },
-    unitPrice = 100,
-    destination = { kind = "seal", key = "SEAL_A" },
-    restriction = { kind = "none" },
-  } }, { key = "seal-test", presentationKind = "seals" })
+  local seals = stock({
+    {
+      key = "seal-a",
+      displayItemKey = "ITEM_1",
+      description = { kind = "literal", value = "Seal A" },
+      unitPrice = 100,
+      destination = { kind = "seal", key = "SEAL_A" },
+      restriction = { kind = "none" },
+    },
+  }, { key = "seal-test", presentationKind = "seals" })
   local session = state.service:openBuy(seals)
   local token, reason = session:quoteBuy("seal-a", 1)
   Assert.isNil(token)
@@ -330,7 +346,11 @@ function T.capacity_is_checked_after_quantity_selection_and_sales_clamp_wallet()
   local state = resources({ money = 1000 })
   Assert.isTrue(state.bag:add("POTION", 990))
   local session = state.service:openBuy(stock({ bagEntry("offer", 1) }))
-  Assert.equal(session:view().entries[1].maxQuantity, 99, "visible maximum is affordability limited, not capacity limited")
+  Assert.equal(
+    session:view().entries[1].maxQuantity,
+    99,
+    "visible maximum is affordability limited, not capacity limited"
+  )
   local token, terms = session:quoteBuy("offer", 10)
   Assert.isNil(token)
   Assert.equal(terms, "bag_full")
@@ -421,7 +441,9 @@ function T.gregorian_century_rules_reject_invalid_dates_and_process_forward_days
   Assert.equal(leapDay.dayOrdinal, februaryLeap.dayOrdinal + 1, "2000 is a leap year")
   local marchLeap = leapCentury.service:processDate(today(2000, 3, 1))
   Assert.equal(marchLeap.dayOrdinal, leapDay.dayOrdinal + 1)
-  Assert.throws(function() leapCentury.service:processDate(today(1900, 2, 29)) end)
+  Assert.throws(function()
+    leapCentury.service:processDate(today(1900, 2, 29))
+  end)
 end
 
 return { tests = T }

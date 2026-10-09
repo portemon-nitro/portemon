@@ -50,14 +50,16 @@ function T.prop_animation_slots_retain_playback_and_die_on_map_rebind()
       } }
     end,
   }
-  local firstMap = { mapProps = {
-    doorAt = function()
-      return nil
-    end,
-    scriptPropAt = function()
-      return prop
-    end,
-  } }
+  local firstMap = {
+    mapProps = {
+      doorAt = function()
+        return nil
+      end,
+      scriptPropAt = function()
+        return prop
+      end,
+    },
+  }
   owner:bindMap(firstMap)
   owner:load(3, 5, 7)
   Assert.equal(playCount, 0, "load must not start playback")
@@ -70,14 +72,16 @@ function T.prop_animation_slots_retain_playback_and_die_on_map_rebind()
   Assert.isFalse(ok)
 
   owner:load(3, 5, 7)
-  owner:bindMap({ mapProps = {
-    doorAt = function()
-      return nil
-    end,
-    scriptPropAt = function()
-      return prop
-    end,
-  } })
+  owner:bindMap({
+    mapProps = {
+      doorAt = function()
+        return nil
+      end,
+      scriptPropAt = function()
+        return prop
+      end,
+    },
+  })
   ok = pcall(owner.play, owner, 3, "forward")
   Assert.isFalse(ok, "map rebinding invalidates loaded slots")
 end
@@ -94,14 +98,16 @@ function T.prop_animation_slots_reject_bad_or_duplicate_references()
       } }
     end,
   }
-  owner:bindMap({ mapProps = {
-    doorAt = function()
-      return nil
-    end,
-    scriptPropAt = function()
-      return prop
-    end,
-  } })
+  owner:bindMap({
+    mapProps = {
+      doorAt = function()
+        return nil
+      end,
+      scriptPropAt = function()
+        return prop
+      end,
+    },
+  })
   local ok = pcall(owner.load, owner, 256, 0, 0)
   Assert.isFalse(ok, "slot values stay in the source byte domain")
   owner:load(0, 0, 0)
@@ -122,11 +128,12 @@ function T.blocking_tasks_observe_the_shared_owners()
   Assert.isTrue(OverworldLifecycleTask.poll(state, context).complete)
 
   local finished = false
-  local waiterContext = { services = { propAnimations = {
-    isFinished = function()
-      return finished
-    end,
-  } } }
+  local waiterContext =
+    { services = { propAnimations = {
+      isFinished = function()
+        return finished
+      end,
+    } } }
   local waitState = PropAnimationWaitTask.create({ slot = 7 }, waiterContext)
   Assert.isFalse(PropAnimationWaitTask.poll(waitState, waiterContext).complete)
   finished = true

@@ -140,7 +140,12 @@ local function sessionOptions(overrides)
       end,
     },
     applicationHost = idleApplicationHost(),
-    pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
+    pcApplications = {
+      isActive = function()
+        return false
+      end,
+      cancelPointerCapture = function() end,
+    },
     interactions = {
       resolve = function()
         return nil

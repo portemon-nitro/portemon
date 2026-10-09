@@ -1,4 +1,4 @@
--- FieldMenuHost forwards script menu presentation preferences to layout.
+-- FieldMenuHost resolves live menu geometry and translates host input through it.
 
 local Assert = require("tests.support.Assert")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
@@ -15,20 +15,6 @@ local function makeHost(opts)
   end
   ---@cast opts FieldMenuHost.Options
   return FieldMenuHost.new(opts --[[@as FieldMenuHost.Options]])
-end
-
-function T.applies_the_semantic_menu_placement_preference()
-  local host = makeHost({ width = 256, height = 192, input = FieldInput.new() })
-  host:sync({
-    menuDefinition = {
-      items = { { text = { text = "Take" }, value = 10 } },
-      cancellable = false,
-      placementPreference = { mode = "docked", anchor = "bottom", surface = "main" },
-    },
-    selectedIndex = 0,
-  }, 100)
-
-  Assert.equal(host:presentation().layout.presentation, "docked")
 end
 
 function T.uses_the_supplied_auxiliary_surface_for_automatic_menus()
@@ -51,7 +37,7 @@ function T.uses_the_supplied_auxiliary_surface_for_automatic_menus()
 
   local layout = host:presentation().layout
   Assert.equal(layout.surface.id, "auxiliary")
-  Assert.equal(layout.presentation, "docked")
+  Assert.equal(layout.placement.scale, 320 / 256, "the auxiliary surface carries the whole reference space")
 end
 
 function T.keeps_the_supplied_topology_when_the_host_resizes()
@@ -160,33 +146,28 @@ function T.default_desktop_host_does_not_create_touch_affordances()
   Assert.isNil(layout.cancelRect)
 end
 
-function T.uses_presentation_text_metrics_and_ui_scale()
+function T.anchors_to_the_supplied_central_region_at_the_field_scale()
+  local bounds = { x = 240, y = 0, width = 1440, height = 1080 }
   local host = makeHost({
-    width = 640,
-    height = 480,
+    width = 1920,
+    height = 1080,
     input = FieldInput.new(),
-    measureText = function(text)
-      Assert.equal(text, "W")
-      return 100
+    presentation = function()
+      return { bounds = bounds, preferredScale = 3 }
     end,
-    uiScale = 2,
   })
-  host:sync({
-    menuDefinition = {
-      items = { { text = "W", value = 10 } },
-      cancellable = false,
-    },
-    selectedIndex = 0,
-  }, 100)
+  host:sync(
+    { menuDefinition = { items = { { text = "W", value = 10 } }, cancellable = false }, selectedIndex = 0 },
+    100
+  )
 
-  Assert.equal(host:presentation().layout.frame.width, 256)
-
-  host:setPresentationMetrics(function(text)
-    Assert.equal(text, "W")
-    return 120
-  end)
-
-  Assert.equal(host:presentation().layout.frame.width, 296)
+  local layout = host:presentation().layout
+  Assert.equal(layout.placement.scale, 3)
+  Assert.equal(layout.placement.origin.x, bounds.x + bounds.width - 256 * 3)
+  local snapshot = host:snapshot()
+  local row = snapshot.itemRects[0]
+  Assert.equal(row.height, 16 * 3, "snapshot rows are published in host coordinates")
+  Assert.isTrue(row.x >= layout.placement.origin.x and row.x + row.width <= layout.placement.origin.x + 256 * 3)
 end
 
 function T.horizontal_navigation_does_not_change_focus_in_a_relaid_out_single_column_menu()
@@ -247,8 +228,8 @@ function T.touch_drag_moves_focus_through_a_clipped_menu()
   end
   host:sync({ menuDefinition = { items = items, cancellable = false }, selectedIndex = 0 }, 100)
   local layout = host:presentation().layout
-  local x = layout.contentRect.x + 4
-  local y = layout.contentRect.y + layout.contentRect.height - 4
+  local x = layout.scrollViewport.x + 4
+  local y = layout.scrollViewport.y + layout.scrollViewport.height - 4
 
   host:inputEvents({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
   local events = host:inputEvents({ { type = "pointer_move", pointerId = "touch:1", x = x, y = y - 80 } })

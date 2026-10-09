@@ -200,11 +200,7 @@ function T.tests.far_jump_uses_the_retail_vertical_profile()
   Assert.equal(expected[8], 0.75, "far jump holds its plateau through update 8")
   Assert.equal(expected[15], 0, "far jump settles before its final update")
   Assert.equal(expected[16], 0, "far jump ends grounded")
-  Assert.equal(
-    MovementCalibration.jumpOffsetAt(action, 0, 16),
-    0,
-    "far jump reports no lift before its first update"
-  )
+  Assert.equal(MovementCalibration.jumpOffsetAt(action, 0, 16), 0, "far jump reports no lift before its first update")
   local badOk = pcall(function()
     MovementCalibration.jumpOffsetAt(action, 1, 8)
   end)

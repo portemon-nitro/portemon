@@ -17,12 +17,18 @@ function T.no_engagement_without_trainers_in_range()
   Assert.isNil(Trigger.check(factsWith({
     { id = "a", fieldX = 0, fieldZ = 0, range = 3 },
   })))
-  Assert.isNil(Trigger.check(factsWith({
-    { id = "a", fieldX = 10, fieldZ = 10, defeated = true, range = 5 },
-  }), "defeated trainers never re-engage"))
-  Assert.isNil(Trigger.check(factsWith({
-    { id = "a", fieldX = 10, fieldZ = 10 },
-  }), "sight without a range never engages"))
+  Assert.isNil(Trigger.check(
+    factsWith({
+      { id = "a", fieldX = 10, fieldZ = 10, defeated = true, range = 5 },
+    }),
+    "defeated trainers never re-engage"
+  ))
+  Assert.isNil(Trigger.check(
+    factsWith({
+      { id = "a", fieldX = 10, fieldZ = 10 },
+    }),
+    "sight without a range never engages"
+  ))
 end
 
 function T.sight_reaches_through_its_range()

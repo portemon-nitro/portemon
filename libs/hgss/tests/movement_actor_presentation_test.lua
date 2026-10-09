@@ -1199,10 +1199,7 @@ function T.source_backed_locomotion_matrix_preserves_timing_and_visible_frames()
         or MovementCalibration.JUMP_HEIGHTS[case.action.distance]
       Assert.notNil(expectedPeak, case.label .. " names a calibrated jump height")
       assert(expectedPeak ~= nil, case.label .. " names a calibrated jump height")
-      Assert.isTrue(
-        peak <= startWorldY + expectedPeak + 1e-9,
-        case.label .. " retains its calibrated jump height"
-      )
+      Assert.isTrue(peak <= startWorldY + expectedPeak + 1e-9, case.label .. " retains its calibrated jump height")
       if case.action.distance == "far" then
         Assert.equal(peak, startWorldY + 0.75, case.label .. " peaks at the retail far height")
       end

@@ -52,7 +52,14 @@ function T.multibyte_player_name_validates_against_the_fixture_charmap()
   local validated = assert(PlayerData.validate(record, context))
   Assert.equal(validated.profile.name, MULTIBYTE)
   local seven = {
-    profile = { name = string.rep(MULTIBYTE, 7), gender = 1, trainerId = 65535, money = 3000, badges = 0, nationalDex = false },
+    profile = {
+      name = string.rep(MULTIBYTE, 7),
+      gender = 1,
+      trainerId = 65535,
+      money = 3000,
+      badges = 0,
+      nationalDex = false,
+    },
     options = { textFrame = 0, textSpeed = "fast" },
   }
   Assert.notNil(PlayerData.validate(seven, context), "seven two-byte glyphs are seven glyphs, not fourteen bytes")

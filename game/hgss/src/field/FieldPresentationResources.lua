@@ -425,7 +425,7 @@ function FieldPresentationResources.new(runtime)
       windowRenderer = self.windowRenderer,
     })
     self.yesNoRenderer = FieldYesNoRenderer.new({ text = textRenderer, window = self.windowRenderer })
-    self.menuRenderer = FieldMenuRenderer.new()
+    self.menuRenderer = FieldMenuRenderer.new({ text = textRenderer, window = self.windowRenderer })
     self.signpostRenderer = FieldSignpostRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,

@@ -465,7 +465,11 @@ T["tagged motion sounds dispatch effects and cries through their existing servic
   Assert.deepEqual(effect.audio.cries, {}, "effect dispatch does not call the cry service")
 
   local ordinaryCry = dispatch({ kind = "cry", pattern = 0 }, 1)
-  Assert.deepEqual(ordinaryCry.audio.cries, { { 25, 0, 1 } }, "the captured lead slot supplies the cry species and form")
+  Assert.deepEqual(
+    ordinaryCry.audio.cries,
+    { { 25, 0, 1 } },
+    "the captured lead slot supplies the cry species and form"
+  )
   Assert.equal(ordinaryCry.mons.lastSpeciesSlot, 1, "cry dispatch keeps the selected lead slot")
   Assert.deepEqual(ordinaryCry.audio.played, {}, "cry dispatch does not treat its tag as an effect ID")
 
@@ -507,7 +511,10 @@ T["reward dialogue stays open until acquisition fanfare and needs a fresh edge"]
   state = copy(state)
   Assert.isFalse(FollowerInteractionTask.poll(state, ctx).complete, "the active acquisition effect keeps input gated")
   seen.audio.effectWaitComplete = true
-  Assert.isFalse(FollowerInteractionTask.poll(state, ctx).complete, "fanfare completion alone does not reuse an old press")
+  Assert.isFalse(
+    FollowerInteractionTask.poll(state, ctx).complete,
+    "fanfare completion alone does not reuse an old press"
+  )
   Assert.notNil(state.dialogueState, "the dialogue still awaits a fresh input edge")
   ctx.input.pressedAction = true
   Assert.isFalse(FollowerInteractionTask.poll(state, ctx).complete, "a fresh edge starts the ordinary close delay")
@@ -616,7 +623,11 @@ T["blank and zero-tick motion records last one frame without ending the motion"]
         { x = 0, y = -0.3125, z = 0, facing = 0, ticks = 1 },
       },
     },
-    [10] = { steps = { { motionId = 4, messageId = 1, sound = { kind = "effect", id = 42 } } }, friendshipDelta = 0, moodDelta = 0 },
+    [10] = {
+      steps = { { motionId = 4, messageId = 1, sound = { kind = "effect", id = 42 } } },
+      friendshipDelta = 0,
+      moodDelta = 0,
+    },
   }
   local ctx, seen = fixture(programs)
   local state = beforeFirstRecord(FollowerInteractionTask, ctx)
@@ -964,10 +975,7 @@ T["reward restore state requires a completed reward mutation and its dialogue"] 
 
   local missingDialogue = copy(state)
   missingDialogue.dialogueState = nil
-  Assert.isTrue(
-    Errors.is(task.validate(missingDialogue)),
-    "a completed reward cannot resume without its dialogue task"
-  )
+  Assert.isTrue(Errors.is(task.validate(missingDialogue)), "a completed reward cannot resume without its dialogue task")
 
   local repeatedMutation = copy(state)
   repeatedMutation.rewardStarted = false
@@ -1117,10 +1125,7 @@ T["completed choice without a follow-up interaction suspends before reward mutat
   Assert.isNil(state.dialogueState, "no reward dialogue exists before the reward runs")
   Assert.isNil(task.validate(state), "the pre-reward suspension is restorable")
   for _, event in ipairs(seen.events) do
-    Assert.isFalse(
-      type(event) == "table" and event[1] == "reward",
-      "the reward mutation waits for the next poll"
-    )
+    Assert.isFalse(type(event) == "table" and event[1] == "reward", "the reward mutation waits for the next poll")
   end
   local restored = copy(state)
   Assert.isNil(task.validate(restored), "the suspended state survives a serialization round trip")

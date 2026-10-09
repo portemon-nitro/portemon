@@ -657,7 +657,6 @@ function T.validates_semantic_choose_and_rejects_malformed_choices()
         result = S.var("choice"),
         cancellable = true,
         cancelValue = 20,
-        placement = { mode = "auto", anchor = "auto", surface = "auto" },
       }),
     },
   })
@@ -665,18 +664,6 @@ function T.validates_semantic_choose_and_rejects_malformed_choices()
     api = 1,
     id = "x",
     steps = { { op = "choose", items = {}, result = S.var("choice"), callback = function() end } },
-  })
-  invalidCode("SCRIPT_SCHEMA_INVALID", {
-    api = 1,
-    id = "x",
-    steps = {
-      {
-        op = "choose",
-        items = { S.choice("msg.project.take", 1) },
-        result = S.var("choice"),
-        placement = { mode = "popup" },
-      },
-    },
   })
   invalidCode("SCRIPT_SCHEMA_INVALID", {
     api = 1,

@@ -265,7 +265,10 @@ function T.single_copy_toss_types_its_confirmation_before_the_prompt_opens()
   Assert.equal(status.state, "toss_confirm", "a single copy confirms without the quantity picker")
   Assert.equal(status.tossBase, "action", "a single-item toss retains the action base")
   local message = assert(status.lowerMessage, "the toss confirmation publishes its lower message")
-  Assert.isTrue(#message.visibleText < #message.fullText, "the confirmation message types out instead of appearing instantly")
+  Assert.isTrue(
+    #message.visibleText < #message.fullText,
+    "the confirmation message types out instead of appearing instantly"
+  )
   Assert.isNil(status.yesNoPrompt, "the prompt stays closed while the confirmation message prints")
   control:updateFixed({ { type = "confirm" } })
   Assert.isNil(control:status().yesNoPrompt, "input that accelerates printing cannot open the prompt in the same tick")
@@ -555,10 +558,7 @@ function T.typed_toss_messages_reveal_multi_byte_names_without_splitting_glyphs(
   Assert.equal(control:status().state, "toss_confirm", "setup reaches toss confirmation")
   local confirmStatus = control:status()
   local message = assert(confirmStatus.lowerMessage, "the toss confirmation publishes its lower message")
-  Assert.isTrue(
-    message.fullText:find("Poké Balls", 1, true) ~= nil,
-    "the confirmation names the multi-byte plural"
-  )
+  Assert.isTrue(message.fullText:find("Poké Balls", 1, true) ~= nil, "the confirmation names the multi-byte plural")
   local snapshots = {}
   for _ = 1, 512 do
     local current = control:status().lowerMessage

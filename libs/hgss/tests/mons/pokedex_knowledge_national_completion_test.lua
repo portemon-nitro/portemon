@@ -6,7 +6,15 @@ local T = {}
 
 function T.national_completion_excludes_all_nine_mythicals_at_the_484_species_boundary()
   local mythicals = {
-    "MEW", "CELEBI", "JIRACHI", "DEOXYS", "PHIONE", "MANAPHY", "DARKRAI", "SHAYMIN", "ARCEUS",
+    "MEW",
+    "CELEBI",
+    "JIRACHI",
+    "DEOXYS",
+    "PHIONE",
+    "MANAPHY",
+    "DARKRAI",
+    "SHAYMIN",
+    "ARCEUS",
   }
   local required = {}
   local species = {}

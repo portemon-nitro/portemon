@@ -204,9 +204,11 @@ local function world(maps)
     playerOf = function()
       return player
     end,
-    transition = { start = function()
-      return true
-    end },
+    transition = {
+      start = function()
+        return true
+      end,
+    },
     mapOf = function(mapId)
       return byId[mapId]
     end,

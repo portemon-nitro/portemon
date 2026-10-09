@@ -48,9 +48,7 @@ local function controlAt(layout, id, x, y)
 end
 
 function T.tests.keyboard_hit_rectangles_use_source_integer_geometry()
-  local layout = NamingScreenLayout.compute(
-    { x = 0, y = 0, width = 256, height = 192 }
-  )
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   Assert.deepEqual(layout.surface, { x = 0, y = 0, width = 256, height = 192 })
   -- First and last glyph cells from the source touch table.
   Assert.deepEqual(layout.cells[2][1], { x = 28, y = 88, width = 17, height = 20 })
@@ -69,9 +67,7 @@ function T.tests.keyboard_hit_rectangles_use_source_integer_geometry()
 end
 
 function T.tests.pointer_presses_map_to_source_semantic_cells()
-  local layout = NamingScreenLayout.compute(
-    { x = 0, y = 0, width = 256, height = 192 }
-  )
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   controlAt(layout, "upper", 30, 70)
   controlAt(layout, "back", 170, 70)
   controlAt(layout, "ok", 210, 70)

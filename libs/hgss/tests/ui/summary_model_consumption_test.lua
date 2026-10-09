@@ -78,12 +78,8 @@ local function setMon(service, slot, edit)
 end
 
 local function build(service, slot, manifest, context)
-  local facts = SummaryModel.build(
-    service,
-    slot,
-    context or SummaryPresentationFixture.context(service:partyCount()),
-    manifest
-  )
+  local facts =
+    SummaryModel.build(service, slot, context or SummaryPresentationFixture.context(service:partyCount()), manifest)
   Assert.notNil(facts.memo, "the projection carries the source memo over the prepared family")
   Assert.notNil(facts.info, "the projection carries native info over the prepared family")
   return facts
@@ -199,20 +195,11 @@ function T.tests.prepared_native_family_drives_facts(context)
       dateParts[#dateParts + 1] = wildLines[wildRule.lines.date + offset] or ""
     end
     local wildDateText = table.concat(dateParts, "\n")
-    Assert.isTrue(
-      wildDateText:find(wildLandmark, 1, true) ~= nil,
-      "the wild date block names the prepared landmark"
-    )
+    Assert.isTrue(wildDateText:find(wildLandmark, 1, true) ~= nil, "the wild date block names the prepared landmark")
     local metDate = CatalogFixture.metDate()
     local monthLabel = labelOf(manifest, manifest.memo.months[metDate.month])
-    Assert.isTrue(
-      wildDateText:find(monthLabel, 1, true) ~= nil,
-      "the wild date block names the prepared month"
-    )
-    Assert.isTrue(
-      wildDateText:find("Lv.", 1, true) ~= nil,
-      "the wild date expands its level binding from segments"
-    )
+    Assert.isTrue(wildDateText:find(monthLabel, 1, true) ~= nil, "the wild date block names the prepared month")
+    Assert.isTrue(wildDateText:find("Lv.", 1, true) ~= nil, "the wild date expands its level binding from segments")
     local characteristics = {}
     for _, row in pairs(manifest.memo.characteristics) do
       for _, key in ipairs(row) do
@@ -240,10 +227,7 @@ function T.tests.prepared_native_family_drives_facts(context)
       mon.personality = 1
     end)
     local lonely = build(service, 0, manifest)
-    Assert.isTrue(
-      containsAny(memoText(lonely.memo.blocks), flavors),
-      "a raised stat resolves a prepared flavor"
-    )
+    Assert.isTrue(containsAny(memoText(lonely.memo.blocks), flavors), "a raised stat resolves a prepared flavor")
     setMon(service, 0, function(mon)
       mon.origin.trainerId = 9
       mon.origin.trainerName = "BLUE"
@@ -265,10 +249,7 @@ function T.tests.prepared_native_family_drives_facts(context)
       lineMap(hatched.memo.blocks)[hatchedRule.lines.characteristic],
       "the hatched characteristic keeps its prepared line"
     )
-    Assert.notNil(
-      lineMap(hatched.memo.blocks)[hatchedRule.lines.flavor],
-      "the hatched flavor keeps its prepared line"
-    )
+    Assert.notNil(lineMap(hatched.memo.blocks)[hatchedRule.lines.flavor], "the hatched flavor keeps its prepared line")
 
     local linkTrade = assert(manifest.memo.locations.linkTrade, "the prepared family carries its trade location")
     setMon(service, 0, function(mon)

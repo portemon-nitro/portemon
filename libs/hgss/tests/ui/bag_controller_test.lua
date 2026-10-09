@@ -1701,7 +1701,11 @@ function T.yes_and_acknowledgement_cannot_share_one_input_batch()
   control:updateFixed({ { type = "confirm" } })
   settlePromptChoice(control)
   settleTossAck(control)
-  Assert.equal(control:status().state, "toss_ack", "the shared batch never decides early; YES still waits for later input")
+  Assert.equal(
+    control:status().state,
+    "toss_ack",
+    "the shared batch never decides early; YES still waits for later input"
+  )
   Assert.equal(bag:revision(), revision, "the shared batch mutates nothing")
   Assert.equal(bag:quantity("POTION"), 5, "the shared batch changes no quantities")
 end

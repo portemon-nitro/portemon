@@ -96,6 +96,12 @@ function T.tests.vanilla_menu_selection_commits_its_script_result()
     local opened = selectSecondItem(game)
     local layout = assert(opened.menu.layout, "modal menu must expose production layout")
     Assert.isTrue(layout.surface.touch == false, "default desktop surface must not claim touch capability")
+    local placement, box = layout.placement, layout.listSurface.surface
+    local frame = game.runtime.viewport.referenceFrame
+    local right = placement.origin.x + (box.x + box.width) * placement.scale
+    Assert.isTrue(right <= frame.x + frame.width, "the menu stays inside the central 4:3 region")
+    Assert.isTrue(frame.x + frame.width - right <= 16 * placement.scale, "the menu anchors to the region's right edge")
+    Assert.isTrue(placement.origin.y + box.y * placement.scale - frame.y <= 16 * placement.scale, "and its top edge")
     Assert.equal(game.runtime.scripts.worldState:getVar(RESULT_VARIABLE), 1)
   end)
 end

@@ -113,14 +113,8 @@ function T.prize_uses_the_final_party_level_class_rate_and_multiplier()
     moneyMultiplier = 2,
   })
   Assert.equal(boostedPair.amount, 1472, "money-up scales every paired prize once")
-  Assert.isFalse(
-    pcall(single, 2, {}, 4, 1),
-    "an empty level array never plans"
-  )
-  Assert.isFalse(
-    pcall(single, 2, { 5 }, nil, 1),
-    "a missing class rate never plans"
-  )
+  Assert.isFalse(pcall(single, 2, {}, 4, 1), "an empty level array never plans")
+  Assert.isFalse(pcall(single, 2, { 5 }, nil, 1), "a missing class rate never plans")
   Assert.isFalse(
     pcall(Rewards.planMoney, {
       trainers = { { trainerClass = "YOUNGSTER", partyLevels = { 5 }, classRate = 4 } },
@@ -140,10 +134,7 @@ function T.prize_uses_the_final_party_level_class_rate_and_multiplier()
     }),
     "a paired battle on a singles field never plans"
   )
-  Assert.isFalse(
-    pcall(single, 2, { 5 }, 4, 3),
-    "an unknown multiplier never plans"
-  )
+  Assert.isFalse(pcall(single, 2, { 5 }, 4, 3), "an unknown multiplier never plans")
 end
 
 function T.blackout_debit_scales_with_badges_and_never_overdraws()
@@ -156,10 +147,7 @@ function T.blackout_debit_scales_with_badges_and_never_overdraws()
   Assert.equal(badged.amount, 216, "each badge follows the native penalty step")
   local broke = Rewards.planLoss({ money = 50, partyLevels = { 60 }, badges = 8 })
   Assert.equal(broke.amount, 50, "the debit never takes more than the pocket holds")
-  Assert.isFalse(
-    pcall(Rewards.planLoss, { money = -5, partyLevels = { 9 } }),
-    "a negative pocket never plans"
-  )
+  Assert.isFalse(pcall(Rewards.planLoss, { money = -5, partyLevels = { 9 } }), "a negative pocket never plans")
 end
 
 -- Blackout loss follows the native badge-penalty table: the debit is the

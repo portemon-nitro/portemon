@@ -16,7 +16,6 @@ return S.script({
       result = S.var("choice"),
       cancellable = true,
       cancelValue = 20,
-      placement = { mode = "auto", anchor = "auto", surface = "auto" },
     }),
     S.stop(),
   },

@@ -1474,7 +1474,6 @@ local function handleChoose(node, run)
     cancellable = node.cancellable,
     cancelValue = cancelValue,
     initialCursor = node.initialCursor,
-    placement = node.placement,
     result = node.result,
   })
   assert(type(request) == "table" and type(request.items) == "table", "script menu host returned an invalid request")
@@ -1487,7 +1486,6 @@ local function handleMenuBegin(node, run)
   end
   run.instance.menuBuilder = requireScriptMenu(run):beginMenu({
     messageSource = node.messageSource,
-    sourcePlacement = node.sourcePlacement,
     initialCursor = node.initialCursor,
     cancellable = node.cancellable,
     result = node.result,

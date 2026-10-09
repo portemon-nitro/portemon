@@ -7,6 +7,7 @@ local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparati
 local Errors = require("libs.errors.src.Errors")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
+local ListSurface = require("libs.ui.src.ListSurface")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local TextButton = require("libs.ui.src.TextButton")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
@@ -384,23 +385,12 @@ end
 
 local function drawRowMarker(renderer, rectValue, radius, active)
   local graphics = renderer.graphics
-  local savedWidth = graphics.getLineWidth()
-  if active then
-    setColor(graphics, { 0.86, 0.16, 0.18, 1 })
-  else
-    setColor(graphics, BUTTON_COLORS.inactive.faceBottom)
-  end
-  graphics.setLineWidth(2)
-  graphics.rectangle(
-    "line",
-    rectValue.x + 1,
-    rectValue.y + 1,
-    rectValue.width - 2,
-    rectValue.height - 2,
-    math.min(radius, rectValue.height / 2),
-    math.min(radius, rectValue.height / 2)
+  ListSurface.drawMarker(
+    graphics,
+    rectValue,
+    radius,
+    active and { 0.86, 0.16, 0.18, 1 } or BUTTON_COLORS.inactive.faceBottom
   )
-  graphics.setLineWidth(savedWidth)
   graphics.setColor(1, 1, 1, 1)
 end
 

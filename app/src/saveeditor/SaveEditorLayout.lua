@@ -5,7 +5,7 @@ local Decisions = require("app.src.saveeditor.SaveEditorDecisions")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local PixelScale = require("libs.ui.src.PixelScale")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
-local SaveEditorList = require("app.src.saveeditor.SaveEditorList")
+local ListSurface = require("libs.ui.src.ListSurface")
 local SaveEditorCard = require("app.src.saveeditor.SaveEditorCard")
 local SaveEditorNumberLayout = require("app.src.saveeditor.SaveEditorNumberLayout")
 
@@ -74,7 +74,7 @@ function Layout.preferredListWidth(view, metrics, height)
       and view.location.breadcrumb
       and (view.location.breadcrumb .. "  ·  " .. filterText)
     or filterText
-  local preferredWidth, measuredTrailingValueWidth = SaveEditorList.preferredWidth({
+  local preferredWidth, measuredTrailingValueWidth = ListSurface.preferredWidth({
     bounds = { x = 0, y = 0, width = 640, height = height },
     rowCount = projection.count,
     rowHeight = rowHeight,
@@ -541,7 +541,7 @@ local function buildLocationMapList(ctx)
   local mapRowTargets = mapModel.rowTargets
   local storedMapOffset = locationNav.mapOffset or 0
   local mapBounds = rect(contentX, contentTop, innerWidth, math.max(1, contentBottom - contentTop))
-  local mapList = SaveEditorList.resolve({
+  local mapList = ListSurface.resolve({
     bounds = mapBounds,
     rowCount = mapModel.count,
     rowHeight = compactRowExtent,
@@ -709,7 +709,7 @@ local function buildProgress(ctx)
   local storedFlagOffset = view.scrollOffsets and view.scrollOffsets.flags or 0
   local bodyTop = contentTop + #ctx.rows * ctx.rowHeight
   local bodyHeight = math.max(0, contentBottom - bodyTop)
-  local flagList = SaveEditorList.resolve({
+  local flagList = ListSurface.resolve({
     bounds = rect(contentX, bodyTop, innerWidth, bodyHeight),
     rowCount = flagModel.count,
     rowHeight = compactRowExtent,
@@ -1228,7 +1228,7 @@ local function buildChoiceScope(ctx)
   local storedChoiceOffset = view.scrollOffsets and view.scrollOffsets["value:choice"] or 0
   local choiceBounds = rect(contentX, bodyTop, innerWidth, bodyHeight)
   local function resolveChoice(offset)
-    return SaveEditorList.resolve({
+    return ListSurface.resolve({
       bounds = choiceBounds,
       rowCount = dialog.count,
       rowHeight = compactRowExtent,
@@ -1423,7 +1423,7 @@ local function buildDecisionScope(ctx)
   local promptHeight = math.max(1, metrics.lineHeight)
   local availableHeight = contentBottom - contentTop
   local function resolveSurface(height)
-    return SaveEditorList.resolve({
+    return ListSurface.resolve({
       bounds = rect(contentX, contentTop + math.floor((availableHeight - height) / 2), innerWidth, height),
       rowCount = rowCount,
       rowHeight = buttonHeight,

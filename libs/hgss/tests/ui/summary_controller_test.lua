@@ -14,7 +14,6 @@ local SummaryPresentationFixture = require("tests.support.SummaryPresentationFix
 
 local T = {}
 
-
 -- Native paired-group behavior below: Left/Right walk info, skills and
 -- performance with wrap, Up/Down scan members without wrapping, eggs gate
 -- group changes while staying reachable from info, detail and ribbon
@@ -529,10 +528,7 @@ function T.ribbon_cursor_walks_every_earned_ribbon_without_absent_stops()
       for _ = 1, 9 do
         local status = nativeStep(controller, { { type = "navigate", direction = direction } })
         local index = status.ribbonIndex
-        Assert.isTrue(
-          type(index) == "number" and index >= 0 and index < 10,
-          "the cursor rests only on earned ribbons"
-        )
+        Assert.isTrue(type(index) == "number" and index >= 0 and index < 10, "the cursor rests only on earned ribbons")
         Assert.equal(status.ribbonPage, math.floor(index / 9), "pages track the logical index")
         Assert.notNil(status.facts.ribbons[index + 1], "every cursor stop resolves its earned record")
         seen[index] = true
@@ -561,10 +557,7 @@ function T.ribbon_boundaries_hold_from_zero_to_a_full_census()
     for _ = 1, 10 do
       status = nativeStep(full, { { type = "navigate", direction = direction } })
       local index = status.ribbonIndex
-      Assert.isTrue(
-        type(index) == "number" and index >= 0 and index < 80,
-        "a full census never strands its cursor"
-      )
+      Assert.isTrue(type(index) == "number" and index >= 0 and index < 80, "a full census never strands its cursor")
       Assert.equal(status.ribbonPage, math.floor(index / 9), "census pages track the logical index")
     end
   end
@@ -1126,9 +1119,11 @@ function T.picker_construction_bars_reorder_commands_and_holds_its_member()
       return { kind = "changed" }
     end,
     resolveLayout = function()
-      return { hitTest = function()
-        return nil
-      end }
+      return {
+        hitTest = function()
+          return nil
+        end,
+      }
     end,
     manifest = SummaryPresentationFixture.manifest(),
   })
@@ -1149,32 +1144,43 @@ end
 function T.mode_construction_rejects_mismatched_shapes()
   local model = nativeModel(nativeState())
   local function resolveLayout()
-    return { hitTest = function()
-      return nil
-    end }
+    return {
+      hitTest = function()
+        return nil
+      end,
+    }
   end
-  Assert.isFalse(pcall(SummaryController.new, {
-    mode = "summary",
-    model = model,
-    request = { context = "pp_restore" },
-    reorderMoves = function()
-      return { kind = "changed" }
-    end,
-    resolveLayout = resolveLayout,
-    manifest = SummaryPresentationFixture.manifest(),
-  }), "ordinary browsing carries no picker request")
-  Assert.isFalse(pcall(SummaryController.new, {
-    mode = "summary",
-    model = model,
-    resolveLayout = resolveLayout,
-    manifest = SummaryPresentationFixture.manifest(),
-  }), "ordinary browsing reorders through its command")
-  Assert.isFalse(pcall(SummaryController.new, {
-    mode = "move_pick",
-    model = model,
-    resolveLayout = resolveLayout,
-    manifest = SummaryPresentationFixture.manifest(),
-  }), "picking carries its request")
+  Assert.isFalse(
+    pcall(SummaryController.new, {
+      mode = "summary",
+      model = model,
+      request = { context = "pp_restore" },
+      reorderMoves = function()
+        return { kind = "changed" }
+      end,
+      resolveLayout = resolveLayout,
+      manifest = SummaryPresentationFixture.manifest(),
+    }),
+    "ordinary browsing carries no picker request"
+  )
+  Assert.isFalse(
+    pcall(SummaryController.new, {
+      mode = "summary",
+      model = model,
+      resolveLayout = resolveLayout,
+      manifest = SummaryPresentationFixture.manifest(),
+    }),
+    "ordinary browsing reorders through its command"
+  )
+  Assert.isFalse(
+    pcall(SummaryController.new, {
+      mode = "move_pick",
+      model = model,
+      resolveLayout = resolveLayout,
+      manifest = SummaryPresentationFixture.manifest(),
+    }),
+    "picking carries its request"
+  )
 end
 
 function T.reorder_command_contract_reports_once_and_rejects_unknown_outcomes()
@@ -1297,17 +1303,9 @@ function T.picture_blend_reaches_status_by_value_detached_by_identity()
   status.picture.paletteBlend.coefficient = -1
   status.picture.paletteBlend.target.r = -1
   local reread = controller:status()
-  Assert.deepEqual(
-    reread.picture.paletteBlend,
-    firstSample.paletteBlend,
-    "external mutation cannot reach later status"
-  )
+  Assert.deepEqual(reread.picture.paletteBlend, firstSample.paletteBlend, "external mutation cannot reach later status")
   nativeStep(controller, {})
-  Assert.deepEqual(
-    controller:status().picture.paletteBlend,
-    firstSample.paletteBlend,
-    "idle ticks keep the blend"
-  )
+  Assert.deepEqual(controller:status().picture.paletteBlend, firstSample.paletteBlend, "idle ticks keep the blend")
 end
 
 function T.move_detail_open_and_close_follow_the_generated_x_track()
@@ -1378,8 +1376,7 @@ function T.ribbon_detail_open_and_close_follow_the_generated_y_track()
   local track = assert(manifest.transitions.ribbonDetail, "the family carries the ribbon detail track")
   Assert.equal(track.axis, "y", "the ribbon track runs along y")
   Assert.deepEqual(track.positions, { 0, 36, 72 }, "the ribbon track carries its source positions")
-  local controller =
-    nativeOpen({ manifest = manifest, state = nativeState({ ribbons = earnedRibbons(10) }) })
+  local controller = nativeOpen({ manifest = manifest, state = nativeState({ ribbons = earnedRibbons(10) }) })
   nativeStep(controller, {})
   nativeStep(controller, { { type = "navigate", direction = "right" } })
   nativeStep(controller, { { type = "navigate", direction = "right" } })

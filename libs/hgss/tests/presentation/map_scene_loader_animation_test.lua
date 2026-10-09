@@ -1308,7 +1308,12 @@ function T.ambient_clip_advances_once_per_session_tick_and_through_dialogue()
     },
     signpost = signpost,
     applicationHost = applicationHost,
-    pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
+    pcApplications = {
+      isActive = function()
+        return false
+      end,
+      cancelPointerCapture = function() end,
+    },
     interactions = {
       resolve = function()
         return nil

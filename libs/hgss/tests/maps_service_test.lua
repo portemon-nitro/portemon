@@ -52,7 +52,11 @@ function T.covered_scripted_warps_can_be_reused_after_success()
     transition = transition,
     loader = fakeLoader(),
     sourceMap = fakeSourceMap(),
-    screen = { isOpaque = function() return true end },
+    screen = {
+      isOpaque = function()
+        return true
+      end,
+    },
   })
 
   service:startWarp(target())
@@ -85,7 +89,11 @@ function T.covered_scripted_warp_failure_is_exposed_and_does_not_poison_reuse()
     transition = transition,
     loader = fakeLoader(),
     sourceMap = fakeSourceMap(),
-    screen = { isOpaque = function() return true end },
+    screen = {
+      isOpaque = function()
+        return true
+      end,
+    },
   })
   local failure = { code = "transition failed" }
 

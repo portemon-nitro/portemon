@@ -115,11 +115,7 @@ function T.unknown_keys_are_discarded_by_canonicalization()
     "badges,gender,money,name,nationalDex,trainerId",
     "canonicalization must drop profile.transientThing"
   )
-  Assert.keySet(
-    validated.options,
-    "battleStyle,textFrame,textSpeed",
-    "canonicalization must drop options.futureThing"
-  )
+  Assert.keySet(validated.options, "battleStyle,textFrame,textSpeed", "canonicalization must drop options.futureThing")
 end
 
 -- The native battle style defaults to shift for records predating the

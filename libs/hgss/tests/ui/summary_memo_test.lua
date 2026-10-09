@@ -378,12 +378,36 @@ function T.migration_fateful_and_hatched_variants_follow_source_order()
   -- Six party slots cover the eight branches in two rounds; every case
   -- keeps its authored branch and line assertions.
   local first = {
-    { slot = 0, expect = "migrated", fields = { traded = false, fateful = false, eggLocation = "none", metLocation = "palPark", metLevel = 5 } },
-    { slot = 1, expect = "fatefulEncounter", fields = { traded = false, fateful = true, eggLocation = "none", metLocation = "wild", metLevel = 5 } },
-    { slot = 2, expect = "fatefulEncounterTraded", fields = { traded = true, fateful = true, eggLocation = "none", metLocation = "wild", metLevel = 5 } },
-    { slot = 3, expect = "eggHatched", fields = { traded = false, fateful = false, eggLocation = "hatched", metLocation = "wild", metLevel = 5 } },
-    { slot = 4, expect = "eggHatchedTraded", fields = { traded = true, fateful = false, eggLocation = "hatched", metLocation = "wild", metLevel = 5 } },
-    { slot = 5, expect = "eggHatchedGift", fields = { traded = false, fateful = false, eggLocation = "giftSet", metLocation = "wild", metLevel = 5 } },
+    {
+      slot = 0,
+      expect = "migrated",
+      fields = { traded = false, fateful = false, eggLocation = "none", metLocation = "palPark", metLevel = 5 },
+    },
+    {
+      slot = 1,
+      expect = "fatefulEncounter",
+      fields = { traded = false, fateful = true, eggLocation = "none", metLocation = "wild", metLevel = 5 },
+    },
+    {
+      slot = 2,
+      expect = "fatefulEncounterTraded",
+      fields = { traded = true, fateful = true, eggLocation = "none", metLocation = "wild", metLevel = 5 },
+    },
+    {
+      slot = 3,
+      expect = "eggHatched",
+      fields = { traded = false, fateful = false, eggLocation = "hatched", metLocation = "wild", metLevel = 5 },
+    },
+    {
+      slot = 4,
+      expect = "eggHatchedTraded",
+      fields = { traded = true, fateful = false, eggLocation = "hatched", metLocation = "wild", metLevel = 5 },
+    },
+    {
+      slot = 5,
+      expect = "eggHatchedGift",
+      fields = { traded = false, fateful = false, eggLocation = "giftSet", metLocation = "wild", metLevel = 5 },
+    },
   }
   for _, kase in ipairs(first) do
     applyMemoFields(manifest, service, kase.slot, kase.fields)
@@ -393,8 +417,16 @@ function T.migration_fateful_and_hatched_variants_follow_source_order()
     checkBranchLines(manifest, facts, kase.expect)
   end
   local second = {
-    { slot = 0, expect = "fatefulEggHatched", fields = { traded = false, fateful = true, eggLocation = "hatched", metLocation = "wild", metLevel = 5 } },
-    { slot = 1, expect = "fatefulEggHatchedArrived", fields = { traded = false, fateful = true, eggLocation = "ranger", metLocation = "wild", metLevel = 5 } },
+    {
+      slot = 0,
+      expect = "fatefulEggHatched",
+      fields = { traded = false, fateful = true, eggLocation = "hatched", metLocation = "wild", metLevel = 5 },
+    },
+    {
+      slot = 1,
+      expect = "fatefulEggHatchedArrived",
+      fields = { traded = false, fateful = true, eggLocation = "ranger", metLocation = "wild", metLevel = 5 },
+    },
   }
   for _, kase in ipairs(second) do
     applyMemoFields(manifest, service, kase.slot, kase.fields)
@@ -885,10 +917,7 @@ function T.date_line_breaks_open_their_own_baselines_without_newline_glyphs()
   end
   local base = assert(branch.lines.date, "the branch places its date line")
   for offset = 0, breaks do
-    Assert.notNil(
-      blockByLine(facts.memo.blocks, base + offset),
-      "break " .. offset .. " opens its own baseline"
-    )
+    Assert.notNil(blockByLine(facts.memo.blocks, base + offset), "break " .. offset .. " opens its own baseline")
   end
 end
 
@@ -976,10 +1005,7 @@ function T.every_canonical_origin_renders_its_generated_migration_wording()
   })
   local ok, err = pcall(build, service, 0, nil, manifest)
   Assert.isFalse(ok, "a missing migration mapping fails instead of guessing")
-  Assert.isTrue(
-    tostring(err):find("heartgold", 1, true) ~= nil,
-    "the failure names the origin game"
-  )
+  Assert.isTrue(tostring(err):find("heartgold", 1, true) ~= nil, "the failure names the origin game")
 end
 
 -- Builds the ordinary wild meeting while swapping the branch date
@@ -1184,11 +1210,7 @@ function T.encounter_years_render_as_two_digit_values_while_the_stored_date_keep
       memoText(facts.memo.blocks):find("SYN met at Lv. 5.", 1, true) ~= nil,
       "the surrounding level wording stays unchanged"
     )
-    Assert.equal(
-      service:partyMon(kase.slot).met.date.year,
-      kase.year,
-      "the stored meeting date keeps its full year"
-    )
+    Assert.equal(service:partyMon(kase.slot).met.date.year, kase.year, "the stored meeting date keeps its full year")
   end
 end
 
@@ -1252,8 +1274,7 @@ function T.hatched_and_arrival_years_share_the_two_digit_rule_without_changing_b
     "the full stored year never reaches the arrival text"
   )
   Assert.isTrue(
-    memoText(arrived.memo.blocks):find(labelOf(manifest, manifest.memo.migrationRegions.heartgold), 1, true)
-      ~= nil,
+    memoText(arrived.memo.blocks):find(labelOf(manifest, manifest.memo.migrationRegions.heartgold), 1, true) ~= nil,
     "the arrival region wording stays unchanged"
   )
   Assert.equal(service:partyMon(1).met.date.year, 2009, "the stored arrival date keeps its full year")

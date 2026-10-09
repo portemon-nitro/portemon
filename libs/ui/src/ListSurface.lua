@@ -1,12 +1,13 @@
--- Resolves the visible window of a Save Editor list surface.
+-- Resolves the visible window of a framed, scrollable list surface.
 -- The total extent always covers every logical row, but only the rows
 -- intersecting the viewport materialize geometry records.
 
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
-local SaveEditorList = {}
+local ListSurface = {}
 
 local PADDING = 8
+ListSurface.PADDING = PADDING
 local LABEL_CHARACTER_BUDGET = 24
 
 local function finite(value)
@@ -30,7 +31,7 @@ end
 ---@param spec { bounds: { x:number, y:number, width:number, height:number }, rowCount: integer, rowHeight: number, gap: number, headerHeight?: number, hasTrailingValue?: boolean, trailingValueWidth?: number, minimumLabelWidth?: number, font: { lineHeight:number, measure: fun(text:string):number }, textScale?: number, rowAt: fun(index:integer): { label:string, value?:string } }
 ---@return number preferredWidth
 ---@return number trailingValueWidth
-function SaveEditorList.preferredWidth(spec)
+function ListSurface.preferredWidth(spec)
   assert(type(spec) == "table" and validRect(spec.bounds), "list measurement bounds must be finite and positive")
   assert(type(spec.rowCount) == "number" and spec.rowCount >= 0 and spec.rowCount % 1 == 0)
   assert(finite(spec.rowHeight) and spec.rowHeight > 0 and finite(spec.gap) and spec.gap >= 0)
@@ -60,7 +61,7 @@ function SaveEditorList.preferredWidth(spec)
   local probeWidth = labelBudget + trailingWidth + 32
   local probeCount = math.max(1, sampleCount)
   local probeHeight = math.max(1, PADDING * 2 + headerHeight + probeCount * (spec.rowHeight + spec.gap))
-  local geometry = SaveEditorList.resolve({
+  local geometry = ListSurface.resolve({
     bounds = { x = 0, y = 0, width = probeWidth, height = probeHeight },
     rowCount = probeCount,
     rowHeight = spec.rowHeight,
@@ -79,7 +80,7 @@ end
 
 ---@param spec { bounds: { x:number, y:number, width:number, height:number }, rowCount: integer, rowHeight: number, gap: number, maxWidth: number, headerHeight?: number, scrollOffset?: number, hasTrailingValue?: boolean, trailingValueWidth?: number, font?: { lineHeight:number, measure: fun(text:string):number } }
 ---@return { surface: { x:number, y:number, width:number, height:number }, content: { x:number, y:number, width:number, height:number }, header: { x:number, y:number, width:number, height:number }, contentHeight:number, firstIndex:integer, lastIndex:integer, rows: { index:integer, rect: { x:number, y:number, width:number, height:number }, hitRect: { x:number, y:number, width:number, height:number }, markerRect: { x:number, y:number, width:number, height:number }, markerRadius:number, labelRect: { x:number, y:number, width:number, height:number }, valueRect?: { x:number, y:number, width:number, height:number } }[] }
-function SaveEditorList.resolve(spec)
+function ListSurface.resolve(spec)
   assert(type(spec) == "table" and validRect(spec.bounds), "list bounds must be finite and positive")
   assert(
     type(spec.rowCount) == "number" and spec.rowCount >= 0 and spec.rowCount == math.floor(spec.rowCount),
@@ -176,4 +177,26 @@ function SaveEditorList.resolve(spec)
   }
 end
 
-return SaveEditorList
+-- Outlines one resolved row marker. The caller owns the color after the call.
+---@param graphics love.graphics
+---@param markerRect { x:number, y:number, width:number, height:number }
+---@param radius number
+---@param color number[]
+function ListSurface.drawMarker(graphics, markerRect, radius, color)
+  local savedWidth = graphics.getLineWidth()
+  local corner = math.min(radius, markerRect.height / 2)
+  graphics.setColor(color[1], color[2], color[3], color[4])
+  graphics.setLineWidth(2)
+  graphics.rectangle(
+    "line",
+    markerRect.x + 1,
+    markerRect.y + 1,
+    markerRect.width - 2,
+    markerRect.height - 2,
+    corner,
+    corner
+  )
+  graphics.setLineWidth(savedWidth)
+end
+
+return ListSurface

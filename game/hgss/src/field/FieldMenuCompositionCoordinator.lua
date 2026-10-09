@@ -759,12 +759,16 @@ end
 ---@param runtime FieldRuntime
 ---@param boot table<string, unknown>
 local function composeMenuHosts(runtime, boot)
+  local function menuPresentationContext()
+    return runtime:menuPresentationContext()
+  end
   runtime.menuHost = FieldMenuHost.new({
     width = runtime.viewportWidth,
     height = runtime.viewportHeight,
     input = runtime.input,
     screenTopology = runtime.screenTopology,
     measureText = FieldDialogueTheme.measureText(boot.fontDef),
+    presentation = menuPresentationContext,
   })
   local function yesNoPresentationContext()
     return runtime:yesNoPresentationContext()

@@ -367,10 +367,7 @@ end
 function T.owned_field_backend_construction_leaves_caller_options_unmutated()
   local callerOpts = headlessBackendOptions()
   local owner = FieldRenderer.new(callerOpts)
-  Assert.isNil(
-    callerOpts.translucencyMode,
-    "the HGSS field default must not leak into the caller-owned options table"
-  )
+  Assert.isNil(callerOpts.translucencyMode, "the HGSS field default must not leak into the caller-owned options table")
   owner:release()
 end
 
@@ -406,11 +403,7 @@ function T.repeated_draws_reuse_the_gx_frame_record()
   Assert.equal(#frames, 2, "both draws reach the backend")
   Assert.isTrue(frames[2] == frames[1], "the Gx frame record is reused across draws")
   Assert.equal(frames[2].cameraZoom, 2, "the reused record carries the overwritten camera zoom")
-  Assert.equal(
-    frames[2].lighting,
-    fixture.evening,
-    "the reused record still carries the selected time-of-day lighting"
-  )
+  Assert.equal(frames[2].lighting, fixture.evening, "the reused record still carries the selected time-of-day lighting")
   Assert.isTrue(
     frames[2].queue.opaque[1] == fixture.ordinaryItem,
     "the reused record still carries the rebuilt world queue"

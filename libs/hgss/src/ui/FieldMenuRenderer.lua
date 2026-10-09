@@ -1,37 +1,40 @@
--- Draws a resolved field-menu presentation snapshot. It neither reads item
--- result values nor decides cancellation policy; those stay in the controller
--- and script task respectively.
+-- Draws a resolved field-menu presentation snapshot as a framed list in the
+-- layout's reference space. It neither reads item result values nor decides
+-- cancellation policy; those stay in the controller and script task
+-- respectively.
 
-local FieldMenuTheme = require("libs.hgss.src.ui.FieldMenuTheme")
+local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local ListSurface = require("libs.ui.src.ListSurface")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
+
+local SELECTED_MARKER = { 0.86, 0.16, 0.18, 1 }
+local CANCEL_COLOR = { 0.42, 0.12, 0.16, 1 }
 
 ---@class FieldMenuRenderer
 ---@field _graphics love.graphics
----@field _theme FieldMenuTheme
+---@field _text FieldTextRenderer
+---@field _window FieldWindowRenderer
 local FieldMenuRenderer = {}
 FieldMenuRenderer.__index = FieldMenuRenderer
 
-local function setColor(graphics, color)
-  graphics.setColor(color[1], color[2], color[3], color[4])
-end
-
-local function intersects(a, b)
-  return a.x < b.x + b.width and b.x < a.x + a.width and a.y < b.y + b.height and b.y < a.y + a.height
-end
-
-local function assertPresentation(presentation)
+local function assertPresentation(presentation, frameIndex)
   assert(type(presentation) == "table" and type(presentation.status) == "table", "field menu renderer requires status")
+  assert(
+    type(frameIndex) == "number" and frameIndex % 1 == 0 and frameIndex >= 0,
+    "field menu renderer requires the player's frame index"
+  )
   local status = presentation.status
   assert(type(status.selectedIndex) == "number", "field menu status requires a selected index")
   local layout = presentation.layout
   assert(
-    type(layout) == "table" and layout.frame and layout.scrollViewport,
+    type(layout) == "table" and layout.placement and layout.listSurface and layout.scrollViewport,
     "field menu renderer requires a resolved layout"
   )
   assert(
     type(layout.itemCount) == "number"
       and layout.itemCount % 1 == 0
       and layout.itemCount >= 0
-      and type(layout.itemRects) == "table"
+      and type(layout.rows) == "table"
       and type(layout.itemTexts) == "table",
     "resolved layout requires item geometry and text"
   )
@@ -42,66 +45,47 @@ local function assertPresentation(presentation)
   return status, layout
 end
 
----@param opts { graphics?: love.graphics, theme?: FieldMenuTheme }?
+---@param opts { graphics?: love.graphics, text: FieldTextRenderer, window: FieldWindowRenderer }
 ---@return FieldMenuRenderer
 function FieldMenuRenderer.new(opts)
-  opts = opts or {}
   assert(type(opts) == "table", "field menu renderer options must be a table")
   local graphics = opts.graphics
   if graphics == nil then
     graphics = love and love.graphics
   end
+  assert(graphics and graphics.rectangle and graphics.push, "FieldMenuRenderer requires love.graphics")
   assert(
-    graphics and graphics.rectangle and graphics.print and graphics.polygon,
-    "FieldMenuRenderer requires love.graphics"
+    type(opts.text) == "table" and type(opts.text.drawTextWithPalette) == "function" and opts.text.fontDef,
+    "FieldMenuRenderer requires the field text renderer"
   )
   assert(
-    graphics.getColor and graphics.setColor and graphics.getScissor and graphics.setScissor,
-    "FieldMenuRenderer requires graphics state access"
+    type(opts.window) == "table" and type(opts.window.drawApplicationFrame) == "function",
+    "FieldMenuRenderer requires the field window renderer"
   )
-  local theme = opts.theme or FieldMenuTheme
-  assert(type(theme) == "table" and type(theme.colors) == "table", "field menu renderer requires a theme")
-  return setmetatable({ _graphics = graphics, _theme = theme }, FieldMenuRenderer)
+  return setmetatable({ _graphics = graphics, _text = opts.text, _window = opts.window }, FieldMenuRenderer)
 end
 
-function FieldMenuRenderer:_drawFrame(layout)
+function FieldMenuRenderer:_drawList(status, layout, frameIndex)
   local graphics = self._graphics
-  setColor(graphics, self._theme.colors.fill)
-  graphics.rectangle("fill", layout.frame.x, layout.frame.y, layout.frame.width, layout.frame.height)
-  setColor(graphics, self._theme.colors.border)
-  graphics.rectangle("line", layout.frame.x, layout.frame.y, layout.frame.width, layout.frame.height)
-end
-
-function FieldMenuRenderer:_drawItems(status, layout)
-  local graphics = self._graphics
-  local viewport = layout.scrollViewport
-  graphics.setScissor(viewport.x, viewport.y, viewport.width, viewport.height)
-  for itemIndex = 0, layout.itemCount - 1 do
-    local itemRect = assert(layout.itemRects[itemIndex], "resolved layout item geometry is missing")
-    if intersects(itemRect, viewport) then
-      if itemIndex == status.selectedIndex then
-        setColor(graphics, self._theme.colors.selected)
-        graphics.rectangle("fill", itemRect.x, itemRect.y, itemRect.width, itemRect.height)
-        setColor(graphics, self._theme.colors.cursor)
-        graphics.polygon(
-          "fill",
-          itemRect.x + 3,
-          itemRect.y + itemRect.height / 2,
-          itemRect.x + 8,
-          itemRect.y + 4,
-          itemRect.x + 8,
-          itemRect.y + itemRect.height - 4
-        )
+  local box = layout.listSurface.surface
+  local background = self._text:windowBackgroundColor()
+  graphics.setColor(background[1], background[2], background[3], background[4])
+  graphics.rectangle("fill", box.x, box.y, box.width, box.height)
+  self._window:drawApplicationFrame(box, frameIndex)
+  local palette = FieldTextRenderer.dialoguePalette(self._text.fontDef)
+  LogicalSurface.clip(graphics, layout.scrollViewport, function()
+    for _, row in ipairs(layout.rows) do
+      if row.itemIndex == status.selectedIndex then
+        ListSurface.drawMarker(graphics, row.marker, row.markerRadius, SELECTED_MARKER)
       end
-      setColor(graphics, self._theme.colors.text)
-      graphics.print(
-        assert(layout.itemTexts[itemIndex], "resolved layout item text is missing"),
-        itemRect.x + self._theme.textInsetX,
-        itemRect.y + self._theme.textInsetY
+      self._text:drawTextWithPalette(
+        assert(layout.itemTexts[row.itemIndex], "resolved layout item text is missing"),
+        row.labelRect.x,
+        row.labelRect.y,
+        palette
       )
     end
-  end
-  graphics.setScissor()
+  end)
 end
 
 function FieldMenuRenderer:_drawScrollIndicators(layout)
@@ -110,66 +94,43 @@ function FieldMenuRenderer:_drawScrollIndicators(layout)
   end
   local graphics = self._graphics
   local viewport = layout.scrollViewport
-  setColor(graphics, self._theme.colors.cursor)
+  local x = viewport.x + viewport.width - 4
+  graphics.setColor(SELECTED_MARKER[1], SELECTED_MARKER[2], SELECTED_MARKER[3], SELECTED_MARKER[4])
   if layout.scrollOffset > 0 then
-    graphics.polygon(
-      "fill",
-      viewport.x + viewport.width - 10,
-      viewport.y + 7,
-      viewport.x + viewport.width - 4,
-      viewport.y + 7,
-      viewport.x + viewport.width - 7,
-      viewport.y + 2
-    )
+    graphics.polygon("fill", x - 3, viewport.y + 4, x + 3, viewport.y + 4, x, viewport.y)
   end
   if layout.scrollOffset < layout.maxScrollOffset then
-    graphics.polygon(
-      "fill",
-      viewport.x + viewport.width - 10,
-      viewport.y + viewport.height - 7,
-      viewport.x + viewport.width - 4,
-      viewport.y + viewport.height - 7,
-      viewport.x + viewport.width - 7,
-      viewport.y + viewport.height - 2
-    )
+    local bottom = viewport.y + viewport.height
+    graphics.polygon("fill", x - 3, bottom - 4, x + 3, bottom - 4, x, bottom)
   end
 end
 
-function FieldMenuRenderer:_drawCancel(layout)
-  if not layout.cancelRect then
+function FieldMenuRenderer:_drawCancel(layout, palette)
+  local rect = layout.cancelRect
+  if not rect then
     return
   end
   local graphics = self._graphics
-  local rect = layout.cancelRect
-  setColor(graphics, self._theme.colors.cancel)
+  graphics.setColor(CANCEL_COLOR[1], CANCEL_COLOR[2], CANCEL_COLOR[3], CANCEL_COLOR[4])
   graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-  graphics.print("Cancel", rect.x + self._theme.textInsetX, rect.y + self._theme.textInsetY)
+  self._text:drawTextWithPalette("Cancel", rect.x + 8, rect.y + (rect.height - 16) / 2, palette)
 end
 
 -- Draws one active menu from an immutable presentation snapshot. The renderer
 -- does not resolve text, reconstruct interaction state, or mutate the snapshot.
 
 ---@param presentation { status: { selectedIndex: integer }, layout: table<string, unknown> }
-function FieldMenuRenderer:draw(presentation)
-  local status, layout = assertPresentation(presentation)
+---@param frameIndex integer the player's chosen window frame
+function FieldMenuRenderer:draw(presentation, frameIndex)
+  local status, layout = assertPresentation(presentation, frameIndex)
   local graphics = self._graphics
-  local color = { graphics.getColor() }
-  local scissor = { graphics.getScissor() }
-  local ok, err = pcall(function()
-    self:_drawFrame(layout)
-    self:_drawItems(status, layout)
+  graphics.push("all")
+  LogicalSurface.draw(graphics, layout.placement, function()
+    self:_drawList(status, layout, frameIndex)
     self:_drawScrollIndicators(layout)
-    self:_drawCancel(layout)
+    self:_drawCancel(layout, FieldTextRenderer.dialoguePalette(self._text.fontDef))
   end)
-  graphics.setColor(color[1], color[2], color[3], color[4])
-  if scissor[1] then
-    graphics.setScissor(scissor[1], scissor[2], scissor[3], scissor[4])
-  else
-    graphics.setScissor()
-  end
-  if not ok then
-    error(err)
-  end
+  graphics.pop()
 end
 
 return FieldMenuRenderer

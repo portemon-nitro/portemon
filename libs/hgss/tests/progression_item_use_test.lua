@@ -218,7 +218,11 @@ function T.declined_stones_cost_nothing_and_stay_retryable()
   local second = ItemUse.planEvolutionItem(mon, "FIRE_STONE", vectorContext(catalog, inventory))
   Assert.notNil(second, "the declined stone stays retryable")
   Assert.equal(second.plan.monAfter.species, "EEVEE", "the retry stages the same target")
-  Assert.deepEqual(second.plan.inventoryDeltas, { { item = "FIRE_STONE", delta = -1 } }, "the retry stages a single spend")
+  Assert.deepEqual(
+    second.plan.inventoryDeltas,
+    { { item = "FIRE_STONE", delta = -1 } },
+    "the retry stages a single spend"
+  )
   Assert.deepEqual(first, second, "repeated planning never diverges")
 end
 

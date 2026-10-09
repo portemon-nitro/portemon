@@ -167,7 +167,10 @@ end
 function T.normalized_printer_callback_runs_once_at_its_position()
   local callbacks = {}
   local c = controller({
-    page({ line({ glyph("A", 1), { kind = "printer_callback", name = "cue", args = { 17 }, raw = {} }, glyph("B", 2) }) }, "eos"),
+    page(
+      { line({ glyph("A", 1), { kind = "printer_callback", name = "cue", args = { 17 }, raw = {} }, glyph("B", 2) }) },
+      "eos"
+    ),
   }, {
     printerDelay = 1,
     onPrinterCallback = function(token)
@@ -211,7 +214,10 @@ end
 function T.callback_at_line_end_runs_before_the_page_scroll()
   local events = {}
   local c = controller({
-    page({ line({ glyph("A", 1), { kind = "printer_callback", name = "between-lines", args = {}, raw = {} } }) }, "line"),
+    page(
+      { line({ glyph("A", 1), { kind = "printer_callback", name = "between-lines", args = {}, raw = {} } }) },
+      "line"
+    ),
     page({ line({ glyph("B", 2) }) }, "eos"),
   }, {
     printerDelay = 1,
@@ -236,7 +242,14 @@ end
 function T.acceleration_consumes_callback_once_and_disposal_cancels_unreached_callback()
   local calls = 0
   local c = controller({
-    page({ line({ glyph("A", 1), { kind = "printer_callback", name = "after-a", args = {}, raw = {} }, glyph("B", 2), glyph("C", 3) }) }, "eos"),
+    page({
+      line({
+        glyph("A", 1),
+        { kind = "printer_callback", name = "after-a", args = {}, raw = {} },
+        glyph("B", 2),
+        glyph("C", 3),
+      }),
+    }, "eos"),
   }, {
     printerDelay = 8,
     onPrinterCallback = function()

@@ -107,7 +107,6 @@ function T.manifest_touch_rects_drive_hit_testing()
   Assert.equal(slot.slot, 4)
 end
 
-
 function T.sealed_layout_carries_no_cancel_targets()
   local layout = PartyScreenLayout.resolve({ manifest = sourceManifest(), cancellable = false })
   Assert.isNil(layout.cancelRect, "no close affordance resolves when forbidden")

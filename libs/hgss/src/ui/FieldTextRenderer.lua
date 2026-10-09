@@ -442,6 +442,38 @@ function FieldTextRenderer:windowBackgroundColor()
   return { r, g, b, 1 }
 end
 
+-- One font palette entry as byte-valued RGB. ROM palettes are byte-valued;
+-- normalized fixture palettes are accepted so the same mapping stays
+-- deterministic in headless UI.
+---@param palette table<integer, unknown>
+---@param entry integer Lua entry carrying the 0-based slot colors
+---@return { r: number, g: number, b: number }
+local function fontByteColor(palette, entry)
+  local color = assert(palette[entry], "field font palette has no entry " .. entry)
+  local r = assert(tonumber(color.r or color[1]))
+  local g = assert(tonumber(color.g or color[2]))
+  local b = assert(tonumber(color.b or color[3]))
+  if r > 1 or g > 1 or b > 1 then
+    r, g, b = r / 255, g / 255, b / 255
+  end
+  return { r = r * 255, g = g * 255, b = b * 255 }
+end
+
+-- The dialogue copy triple: the audited font default band-0 ink/shadow pair
+-- (0-based slots 1 and 2, Lua entries 2 and 3) over the shared window
+-- background (slot 15, Lua entry 16). Constant across user frames, so shadows
+-- stay visible whatever border the player chose.
+---@param fontDef table<string, unknown>
+---@return { foreground: { r: number, g: number, b: number, a: number? }, shadow: { r: number, g: number, b: number, a: number? }, background: { r: number, g: number, b: number, a: number? } }
+function FieldTextRenderer.dialoguePalette(fontDef)
+  local palette = assert(fontDef and fontDef.palette, "dialogue palette requires the field font palette")
+  return {
+    foreground = fontByteColor(palette, 2),
+    shadow = fontByteColor(palette, 3),
+    background = fontByteColor(palette, 16),
+  }
+end
+
 -- The field index of the last focus_indicator token visible in source
 -- order, or nil when none is visible. The one authoritative last-wins scan
 -- the window renderers use: several visible controls draw one frame.

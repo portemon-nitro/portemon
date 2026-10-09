@@ -655,17 +655,6 @@ local function checkScalarList(context, v, path, field)
     end
   end
 end
-local function checkMenuPlacement(context, v, path, field)
-  if type(v) ~= "table" then
-    fail(context, ScriptErrors.SCRIPT_SCHEMA_INVALID, path, "expected a menu placement table", { field = field })
-  end
-  local fields = {
-    mode = { type = "enum:menu_placement_mode", required = true },
-    anchor = { type = "enum:menu_anchor", required = true },
-    surface = { type = "enum:menu_surface", required = true },
-  }
-  checkFields(context, "placement", fields, v, path)
-end
 local function checkMenuItems(context, v, path, field)
   local count = checkArray(context, v, path, field)
   if count == 0 then
@@ -758,7 +747,6 @@ CHECKERS.bindings = checkBindings
 CHECKERS.buffer_slot = checkBufferSlot
 CHECKERS.buttons = checkButtons
 CHECKERS.scalar_list = checkScalarList
-CHECKERS.menu_placement = checkMenuPlacement
 CHECKERS.menu_items = checkMenuItems
 CHECKERS.source_provenance = checkSourceProvenance
 CHECKERS.params = checkDeclarationMap

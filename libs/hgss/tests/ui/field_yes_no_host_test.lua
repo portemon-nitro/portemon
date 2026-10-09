@@ -121,10 +121,7 @@ function T.adapted_body_follows_measured_labels_while_source_stays_fixed()
 
   local wide = openHost({ yesText = "YES, PLEASE", noText = "NO, THANK YOU" })
   local wideLayout = assert(wide:presentation()).layout
-  Assert.isTrue(
-    wideLayout.content.width >= layout.content.width,
-    "wider labels must not shrink the adapted body"
-  )
+  Assert.isTrue(wideLayout.content.width >= layout.content.width, "wider labels must not shrink the adapted body")
   Assert.equal(wideLayout.content.width % 8, 0, "grown adapted width stays on the tile grid")
   Assert.isTrue(wideLayout.content.width <= 48, "adapted body never exceeds the source width for padding")
 
@@ -502,10 +499,19 @@ function T.borrowed_status_shape_fails_loudly()
     measureText = productionMeasure(),
     presentation = fixedContext(),
   })
-  local ok, _ = pcall(idle.inputEventsFor, idle, { active = false, selectedIndex = 0, yesText = "YES", noText = "NO" }, {})
+  local ok, _ = pcall(
+    idle.inputEventsFor,
+    idle,
+    { active = false, selectedIndex = 0, yesText = "YES", noText = "NO" },
+    {}
+  )
   Assert.isFalse(ok, "an inactive borrowed status is a composition error")
-  local badOk, _ =
-    pcall(idle.inputEventsFor, idle, { active = true, selectedIndex = 2, yesText = "YES", noText = "NO" }, {})
+  local badOk, _ = pcall(
+    idle.inputEventsFor,
+    idle,
+    { active = true, selectedIndex = 2, yesText = "YES", noText = "NO" },
+    {}
+  )
   Assert.isFalse(badOk, "a borrowed selection outside the two rows is invalid")
 end
 

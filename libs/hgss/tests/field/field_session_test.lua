@@ -239,7 +239,12 @@ local function baseOptions(overrides)
       end,
     },
     applicationHost = applicationHostFake(),
-    pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
+    pcApplications = {
+      isActive = function()
+        return false
+      end,
+      cancelPointerCapture = function() end,
+    },
     interactions = {
       resolve = function()
         return nil
@@ -834,14 +839,24 @@ function T.absent_overworld_keeps_scripts_running_and_suspends_actor_activity()
   local options = baseOptions({
     overworld = lifecycle,
     scriptScheduler = {
-      step = function() scriptTicks = scriptTicks + 1 end,
-      playerInputLocked = function() return false end,
-      playerInputOwned = function() return false end,
-      foregroundEnvironmentId = function() return nil end,
+      step = function()
+        scriptTicks = scriptTicks + 1
+      end,
+      playerInputLocked = function()
+        return false
+      end,
+      playerInputOwned = function()
+        return false
+      end,
+      foregroundEnvironmentId = function()
+        return nil
+      end,
     },
     actors = {
       beginFixedStep = function() end,
-      step = function() actorSteps = actorSteps + 1 end,
+      step = function()
+        actorSteps = actorSteps + 1
+      end,
       finishFixedStep = function() end,
     },
   })

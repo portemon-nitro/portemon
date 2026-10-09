@@ -212,11 +212,7 @@ local function openActionMenu(control)
     if control:status().state == "action_menu" then
       break
     end
-    Assert.equal(
-      control:status().state,
-      "item_select",
-      "confirming an item must enter the selection entry first"
-    )
+    Assert.equal(control:status().state, "item_select", "confirming an item must enter the selection entry first")
     control:updateFixed({})
   end
   local view = control:status()

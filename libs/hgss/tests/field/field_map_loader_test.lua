@@ -1056,7 +1056,8 @@ function T.logical_load_owns_a_fresh_environment_without_visual_assets()
     Assert.notNil(environment, "a logical map owns its render environment")
     environment = assert(environment)
     Assert.isTrue(
-      type(environment.lighting) == "table" and type(environment.lighting.records) == "table"
+      type(environment.lighting) == "table"
+        and type(environment.lighting.records) == "table"
         and #environment.lighting.records >= 1,
       "the runtime environment carries lighting records"
     )
@@ -1064,10 +1065,7 @@ function T.logical_load_owns_a_fresh_environment_without_visual_assets()
     Assert.notNil(environment.baseFog, "the runtime environment keeps the generated base fog")
     Assert.isTrue(environment.fog == environment.baseFog, "live fog starts at the generated base fog")
   end
-  Assert.isTrue(
-    first.renderEnvironment ~= second.renderEnvironment,
-    "each logical load owns a fresh environment table"
-  )
+  Assert.isTrue(first.renderEnvironment ~= second.renderEnvironment, "each logical load owns a fresh environment table")
   first.renderEnvironment.fog = { name = "live override" }
   Assert.isTrue(
     second.renderEnvironment.fog == second.renderEnvironment.baseFog,
@@ -2406,8 +2404,7 @@ end
 function T.request_map_assets_shares_the_demand_readiness_convention()
   local cache, world = outdoorPlanningFixture()
   local pendingCalls = {}
-  local pendingLoader =
-    FieldMapLoader.new(cache, world, { derivedAssets = planningHost(pendingCalls, false, true) })
+  local pendingLoader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(pendingCalls, false, true) })
   local ready, failure = pendingLoader:requestMapAssets(0, "required")
   Assert.isFalse(ready, "a pending destination asset holds readiness")
   Assert.isNil(failure, "a pending destination asset reports no failure")

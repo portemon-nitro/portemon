@@ -536,7 +536,6 @@ T["field menu commands lower with exact semantics"] = function()
   Assert.deepEqual(lowered.items[4], {
     op = "menu_begin",
     messageSource = "standard",
-    sourcePlacement = { system = "hgss_bottom_screen_tiles", x = 17, y = 5 },
     initialCursor = 2,
     cancellable = true,
     result = { value = "var", id = "VAR_0x4002" },
@@ -545,7 +544,6 @@ T["field menu commands lower with exact semantics"] = function()
   Assert.deepEqual(lowered.items[5], {
     op = "menu_begin",
     messageSource = { kind = "script", bank = 543 },
-    sourcePlacement = { system = "hgss_bottom_screen_tiles", x = 9, y = 8 },
     initialCursor = 7,
     cancellable = false,
     result = { value = "var", id = "VAR_0x4003" },

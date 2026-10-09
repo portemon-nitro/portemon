@@ -128,16 +128,11 @@ function T.weather_state_passes_through_to_its_owning_domain()
   Assert.isTrue(GameSave.normalize(record()) ~= nil)
 end
 
-
 function T.preserves_unrelated_top_level_fields_and_rejects_non_tables()
-
   returnsCode("GAME_SAVE_INVALID", function()
     ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid call
     return GameSave.normalize(nil)
   end)
-
-
-
 
   for _, field in ipairs({ "scenario", "currentState" }) do
     local input = record({ [field] = {} })

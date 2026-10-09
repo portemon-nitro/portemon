@@ -52,7 +52,14 @@ local function stock(_, entries)
       restriction = { kind = "none" },
     }
   end
-  return { key = "controller-test", currency = "money", presentationKind = "items", quantityMode = "multiple", bonusPolicy = "none", entries = result }
+  return {
+    key = "controller-test",
+    currency = "money",
+    presentationKind = "items",
+    quantityMode = "multiple",
+    bonusPolicy = "none",
+    entries = result,
+  }
 end
 
 local function newController(session, martManifest, effect)
@@ -92,11 +99,17 @@ local function tap(control, x, y)
 end
 
 local function advanceControlFeedbackToRelease(controller, martManifest)
-  local ticks = martManifest.feedback.dispatchTicks + martManifest.feedback.selectedTicks + martManifest.feedback.restoredTicks
+  local ticks = martManifest.feedback.dispatchTicks
+    + martManifest.feedback.selectedTicks
+    + martManifest.feedback.restoredTicks
   for _ = 1, ticks do
     controller:step({})
   end
-  Assert.equal(controller:status().controlFeedback.phase, "release", "generic feedback retains its final dispatch boundary")
+  Assert.equal(
+    controller:status().controlFeedback.phase,
+    "release",
+    "generic feedback retains its final dispatch boundary"
+  )
 end
 
 local function finishControlFeedback(controller, martManifest)
@@ -220,7 +233,11 @@ function T.item_received_message_binds_item_and_pocket_separately()
   end
   local received = controller:status()
   Assert.equal(received.messageRole, "itemReceived")
-  Assert.equal(tokenText(received.messageLines[1].tokens or received.messageLines[1]), "A B", "item and pocket have separate named bindings")
+  Assert.equal(
+    tokenText(received.messageLines[1].tokens or received.messageLines[1]),
+    "A B",
+    "item and pocket have separate named bindings"
+  )
   controller:dispose()
   session:close()
 end
@@ -394,7 +411,11 @@ function T.page_publication_waits_for_both_dispatch_boundaries()
   end
   Assert.equal(controller:status().page, 0, "the pending page action remains unpublished through restored feedback")
   controller:step({ { type = "confirm" } })
-  Assert.equal(controller:status().controlFeedback.phase, "release", "restored feedback enters the final task-state dispatch boundary")
+  Assert.equal(
+    controller:status().controlFeedback.phase,
+    "release",
+    "restored feedback enters the final task-state dispatch boundary"
+  )
   Assert.equal(controller:status().page, 0, "the pending action remains unpublished during release")
   Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" }, "ignored input produces no extra cues during release")
   controller:step({ { type = "cancel" } })
@@ -511,9 +532,17 @@ function T.touch_quantity_actions_emit_only_their_source_cues()
   Assert.equal(controller:status().amountAnimations.increment10.frame, 1)
   Assert.isNil(controller:status().controlFeedback, "amount animation does not start the generic gate")
   controller:step({})
-  Assert.equal(controller:status().amountAnimations.increment10.frame, 1, "the generated pressed frame lasts its source duration")
+  Assert.equal(
+    controller:status().amountAnimations.increment10.frame,
+    1,
+    "the generated pressed frame lasts its source duration"
+  )
   controller:step({})
-  Assert.equal(controller:status().amountAnimations.increment10.frame, 2, "the generated clip advances to its idle frame")
+  Assert.equal(
+    controller:status().amountAnimations.increment10.frame,
+    2,
+    "the generated clip advances to its idle frame"
+  )
   controller:step({})
   Assert.isNil(controller:status().amountAnimations.increment10, "the amount clip disappears at totalTicks")
   controller:dispose()
@@ -721,7 +750,11 @@ function T.quantity_keyboard_and_touch_use_their_distinct_endpoint_rules()
       controller:step({ { type = "navigate", direction = "left" } })
       Assert.equal(controller:status().quantity, 1, "keyboard ten-step clamps at one")
       controller:step({ { type = "navigate", direction = "right" } })
-      Assert.equal(controller:status().quantity, math.min(maximum, 11), "keyboard ten-step increments without endpoint wrap")
+      Assert.equal(
+        controller:status().quantity,
+        math.min(maximum, 11),
+        "keyboard ten-step increments without endpoint wrap"
+      )
       for _ = 1, 20 do
         controller:step({ { type = "navigate", direction = "right" } })
       end
@@ -730,7 +763,11 @@ function T.quantity_keyboard_and_touch_use_their_distinct_endpoint_rules()
     local before = controller:status().quantity
     tap(controller, 136, 100)
     if maximum >= 10 then
-      Assert.equal(controller:status().quantity, before == maximum and 1 or math.min(maximum, before + 10), "touch ten-step control uses endpoint wrap")
+      Assert.equal(
+        controller:status().quantity,
+        before == maximum and 1 or math.min(maximum, before + 10),
+        "touch ten-step control uses endpoint wrap"
+      )
     else
       Assert.equal(controller:status().quantity, before, "disabled touch ten-step control is inert")
     end

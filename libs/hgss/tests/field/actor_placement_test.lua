@@ -200,11 +200,14 @@ function T.scripted_step_destination_matches_the_placement_endpoint()
   Assert.equal(motion.destFieldZ, assert(endpoint).fieldZ)
   mgr:commitScriptedAction(actor.actorId)
   Assert.equal(actor:getFieldPosition().fieldX, 3)
-  Assert.equal(assert(mgr:getAt(61, {
-    fieldX = 3,
-    fieldZ = 3,
-    surfaceId = actor:getSurfaceId(),
-  })), actor)
+  Assert.equal(
+    assert(mgr:getAt(61, {
+      fieldX = 3,
+      fieldZ = 3,
+      surfaceId = actor:getSurfaceId(),
+    })),
+    actor
+  )
   mgr:dispose()
 end
 
@@ -251,10 +254,7 @@ function T.waitable_step_outcome_leaves_occupancy_untouched()
   Assert.isNil(endpoint)
   Assert.isTrue(blocked)
   Assert.equal(actor:getFieldPosition().fieldX, 2)
-  Assert.equal(
-    assert(mgr:getAt(61, { fieldX = 2, fieldZ = 3, surfaceId = actor:getSurfaceId() })),
-    actor
-  )
+  Assert.equal(assert(mgr:getAt(61, { fieldX = 2, fieldZ = 3, surfaceId = actor:getSurfaceId() })), actor)
 
   mgr:dispose()
 
@@ -346,10 +346,7 @@ function T.proposals_are_fresh_and_leave_inputs_untouched()
   local endpoint, _ = FieldActorPlacement.resolveAdjacentDestination(map, actor, "east", false, false)
   Assert.notNil(endpoint)
   Assert.equal(actor:getFieldPosition().fieldX, 2, "resolving a proposal must not move the actor")
-  Assert.equal(
-    assert(mgr:getAt(61, { fieldX = 2, fieldZ = 3, surfaceId = actor:getSurfaceId() })),
-    actor
-  )
+  Assert.equal(assert(mgr:getAt(61, { fieldX = 2, fieldZ = 3, surfaceId = actor:getSurfaceId() })), actor)
   mgr:dispose()
 end
 
@@ -370,10 +367,7 @@ function T.physical_proposal_does_not_commit_occupancy()
     mgr:setPosition(mover.actorId, { fieldX = 8, fieldZ = 3 })
   end)
   Assert.equal(mover:getFieldPosition().fieldX, 7, "a rejected commit moves nothing")
-  Assert.equal(
-    assert(mgr:getAt(61, { fieldX = 8, fieldZ = 3, surfaceId = occupant:getSurfaceId() })),
-    occupant
-  )
+  Assert.equal(assert(mgr:getAt(61, { fieldX = 8, fieldZ = 3, surfaceId = occupant:getSurfaceId() })), occupant)
   mgr:dispose()
 end
 
@@ -400,10 +394,7 @@ function T.save_capture_round_trip_keeps_order_and_records()
   Assert.deepEqual(restoredOrder, order)
   local moved = assert(restoredMgr:getById("map:61:object:0"))
   Assert.equal(moved:getFieldPosition().fieldX, 4)
-  Assert.equal(
-    assert(restoredMgr:getAt(61, { fieldX = 4, fieldZ = 3, surfaceId = moved:getSurfaceId() })),
-    moved
-  )
+  Assert.equal(assert(restoredMgr:getAt(61, { fieldX = 4, fieldZ = 3, surfaceId = moved:getSurfaceId() })), moved)
   Assert.notNil(restoredMap)
   mgr:dispose()
   restoredMgr:dispose()
@@ -491,8 +482,7 @@ function T.placement_module_works_from_plain_facts()
     sourceEvent = { y = 0 },
     actorId = "probe:actor",
   }
-  local endpoint, blocked =
-    FieldActorPlacement.resolveAdjacentDestination(map, factActor, "east", false, false)
+  local endpoint, blocked = FieldActorPlacement.resolveAdjacentDestination(map, factActor, "east", false, false)
   Assert.isFalse(blocked)
   Assert.notNil(endpoint)
   Assert.equal(assert(endpoint).fieldX, 3)

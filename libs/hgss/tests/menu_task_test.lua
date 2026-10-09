@@ -53,7 +53,6 @@ end
 function RecordingScriptMenuHost:beginMenu(spec)
   return {
     messageSource = spec.messageSource,
-    sourcePlacement = spec.sourcePlacement,
     initialCursor = spec.initialCursor,
     cancellable = spec.cancellable,
     result = spec.result,
@@ -115,7 +114,6 @@ function T.menu_builder_operations_yield_add_same_tick_and_block_for_the_script_
       S.setVar({ variable = "VAR_VALUE", value = 99 }),
       S.menuBegin({
         messageSource = "standard",
-        sourcePlacement = { system = "hgss_bottom_screen_tiles", x = 17, y = 5 },
         initialCursor = 0,
         cancellable = false,
         result = S.var("VAR_RESULT"),
@@ -139,7 +137,6 @@ function T.menu_builder_operations_yield_add_same_tick_and_block_for_the_script_
   Assert.equal(#h.scriptMenu.requests, 1)
   local request = h.scriptMenu.requests[1]
   Assert.equal(request.messageSource, "standard")
-  Assert.equal(request.sourcePlacement.x, 17)
   Assert.equal(request.items[1].messageId, 0)
   Assert.equal(request.items[1].vanillaMetadata, 73)
   Assert.equal(request.items[1].value, 99)
@@ -160,7 +157,6 @@ function T.menu_builder_survives_save_after_begin_with_a_fresh_stateless_host()
     steps = {
       S.menuBegin({
         messageSource = "standard",
-        sourcePlacement = { system = "hgss_bottom_screen_tiles", x = 17, y = 5 },
         initialCursor = 0,
         cancellable = false,
         result = S.var("VAR_RESULT"),
@@ -195,7 +191,6 @@ function T.semantic_choose_blocks_and_writes_its_stable_item_result()
       S.choose({
         items = { S.choice("Take", 10), S.choice("Leave", 20) },
         result = S.var("VAR_RESULT"),
-        placement = { mode = "docked", anchor = "bottom", surface = "main" },
       }),
       S.stop(),
     },
@@ -204,7 +199,7 @@ function T.semantic_choose_blocks_and_writes_its_stable_item_result()
   h.scheduler:createForeground(assert(h.composition:effective(script.id)), nil, 100)
 
   h.scheduler:step(100, {})
-  Assert.equal(h.scriptMenu.requests[1].placement.mode, "docked")
+  Assert.equal(#h.scriptMenu.requests, 1)
   h.scheduler:step(101, { menuEvents = { { type = "focus", itemIndex = 1 } } })
   h.scheduler:step(102, { menuEvents = { { type = "confirm" } } })
   h.scheduler:step(103, {})

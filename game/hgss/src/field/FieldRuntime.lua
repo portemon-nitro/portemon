@@ -2737,6 +2737,16 @@ function FieldRuntime:contextChoicePresentation()
   }
 end
 
+-- The central 4:3 reference region and field scale that list menus anchor in.
+---@return { bounds: { x: number, y: number, width: number, height: number }, preferredScale: integer }
+function FieldRuntime:menuPresentationContext()
+  local viewport = assert(self.viewport, "menu presentation requires the field viewport")
+  return {
+    bounds = assert(viewport.referenceFrame, "menu presentation requires the 4:3 reference frame"),
+    preferredScale = assert(self.fieldPixelScale, "menu presentation requires the field scale"):resolvedScale(),
+  }
+end
+
 -- Presentation facts for the live choice host: the same bounds, dialogue
 -- anchor, and preferred scale the field draw uses for its attached UI.
 ---@return { topology: ScreenTopology, bounds: { x: number, y: number, width: number, height: number }, dialogueBox: { x: number, y: number, width: number, height: number }?, preferredScale: integer }

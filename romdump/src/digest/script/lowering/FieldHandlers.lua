@@ -5,7 +5,6 @@ local BattleHandlers = require("romdump.src.digest.script.lowering.BattleHandler
 local MovementDecoder = require("romdump.src.digest.script.MovementDecoder")
 local SignpostCommands = require("romdump.src.reference.hgss.signpost_commands")
 local PlayerAvatar = require("romdump.src.reference.hgss.player_avatar")
-local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local Errors = require("libs.errors.src.Errors")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
@@ -1327,11 +1326,6 @@ local function standardMenuBegin(ins)
   return {
     op = "menu_begin",
     messageSource = "standard",
-    sourcePlacement = {
-      system = MenuProtocol.BOTTOM_SCREEN_TILE_PLACEMENT,
-      x = Operands.operandValue(ins.operands[1]),
-      y = Operands.operandValue(ins.operands[2]),
-    },
     initialCursor = Operands.operandValue(ins.operands[3]),
     cancellable = Operands.operandValue(ins.operands[4]) ~= 0,
     result = Operands.varRef(ins.operands[5]),
@@ -1343,11 +1337,6 @@ local function scriptMenuBegin(ins, memberIr)
   return {
     op = "menu_begin",
     messageSource = { kind = "script", bank = memberIr.messageBank },
-    sourcePlacement = {
-      system = MenuProtocol.BOTTOM_SCREEN_TILE_PLACEMENT,
-      x = Operands.operandValue(ins.operands[1]),
-      y = Operands.operandValue(ins.operands[2]),
-    },
     initialCursor = Operands.operandValue(ins.operands[3]),
     cancellable = Operands.operandValue(ins.operands[4]) ~= 0,
     result = Operands.varRef(ins.operands[5]),

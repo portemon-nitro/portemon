@@ -27,7 +27,6 @@ function T.compiles_semantic_choose_as_one_runtime_node()
   local node = graph.nodes[graph.entry]
   Assert.equal(node.op, "choose")
   Assert.equal(node.items[2].value, 20)
-  Assert.equal(node.placement.mode, "auto")
 end
 
 function T.compiles_the_public_semantic_menu_example()

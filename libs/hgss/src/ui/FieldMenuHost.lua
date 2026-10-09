@@ -19,7 +19,7 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 ---@field private _topology ScreenTopology
 ---@field private _topologyFollowsViewport boolean
 ---@field private _measureText fun(text: string): number
----@field private _uiScale number
+---@field private _presentation (fun(): { bounds: ScreenTopology.Rectangle, preferredScale: integer })?
 ---@field private _active FieldMenuHost.Active?
 local FieldMenuHost = {}
 FieldMenuHost.__index = FieldMenuHost
@@ -30,13 +30,20 @@ FieldMenuHost.__index = FieldMenuHost
 ---@field input FieldInput
 ---@field screenTopology ScreenTopology?
 ---@field measureText fun(text: string): number
----@field uiScale number?
+---@field presentation (fun(): { bounds: ScreenTopology.Rectangle, preferredScale: integer })? central 4:3 field UI region
 
 local function contains(rect, x, y)
   return x >= rect.x and y >= rect.y and x < rect.x + rect.width and y < rect.y + rect.height
 end
 
+-- Maps a host point into the layout's reference space.
+local function toLogical(layout, x, y)
+  local placement = layout.placement
+  return (x - placement.origin.x) / placement.scale, (y - placement.origin.y) / placement.scale
+end
+
 local function itemAt(layout, x, y)
+  x, y = toLogical(layout, x, y)
   if not contains(layout.scrollViewport, x, y) then
     return nil
   end
@@ -68,8 +75,10 @@ function FieldMenuHost.new(opts)
   assert(type(opts.width) == "number" and opts.width > 0, "field menu host requires positive width")
   assert(type(opts.height) == "number" and opts.height > 0, "field menu host requires positive height")
   assert(type(opts.measureText) == "function", "field menu host requires presentation text measurement")
-  local uiScale = opts.uiScale or 1
-  assert(type(uiScale) == "number" and uiScale > 0, "field menu host ui scale must be positive")
+  assert(
+    opts.presentation == nil or type(opts.presentation) == "function",
+    "field menu presentation context must be a function"
+  )
   if opts.screenTopology ~= nil then
     assert(
       type(opts.screenTopology) == "table" and type(opts.screenTopology.surfaces) == "table",
@@ -81,7 +90,7 @@ function FieldMenuHost.new(opts)
     _topology = opts.screenTopology or topology(opts.width, opts.height),
     _topologyFollowsViewport = opts.screenTopology == nil,
     _measureText = opts.measureText,
-    _uiScale = uiScale,
+    _presentation = opts.presentation,
     _active = nil,
   }, FieldMenuHost)
 end
@@ -107,22 +116,8 @@ function FieldMenuHost:setScreenTopology(screenTopology)
   end
 end
 
--- Replaces reconstructable presentation metrics and immediately rebuilds the
--- active geometry. Logical menu state remains owned by MenuTask.
----@param measureText fun(text: string): number
----@param uiScale number?
-function FieldMenuHost:setPresentationMetrics(measureText, uiScale)
-  assert(type(measureText) == "function", "field menu presentation requires text measurement")
-  uiScale = uiScale or self._uiScale
-  assert(type(uiScale) == "number" and uiScale > 0, "field menu ui scale must be positive")
-  self._measureText = measureText
-  self._uiScale = uiScale
-  if self._active then
-    self:_resolve(self._active.definition, self._active.selectedIndex)
-  end
-end
-
 function FieldMenuHost:_resolve(definition, selectedIndex)
+  local context = self._presentation and self._presentation() or {}
   local layout = MenuLayout.resolve({
     topology = self._topology,
     menu = {
@@ -130,9 +125,8 @@ function FieldMenuHost:_resolve(definition, selectedIndex)
       selectedIndex = selectedIndex,
       cancellable = definition.cancellable,
     },
-    sourcePlacement = definition.sourcePlacement,
-    placementPreference = definition.placementPreference,
-    uiScale = self._uiScale,
+    bounds = context.bounds,
+    preferredScale = context.preferredScale,
     measureText = self._measureText,
   })
   self._active.layout = layout
@@ -213,8 +207,9 @@ function FieldMenuHost:inputEvents(events)
       local drag = active.pointerDrag
       if drag then
         local rowHeight = assert(layout.itemRects[0], "menu layout needs an item row").height
-        drag.remainder = drag.remainder + drag.y - event.y
-        drag.y = event.y
+        local _, pointerY = toLogical(layout, event.x, event.y)
+        drag.remainder = drag.remainder + drag.y - pointerY
+        drag.y = pointerY
         while math.abs(drag.remainder) >= rowHeight / 2 do
           local direction = drag.remainder > 0 and "down" or "up"
           local itemIndex = MenuLayout.adjacentItem(layout, selectedIndex, direction)
@@ -236,11 +231,12 @@ function FieldMenuHost:inputEvents(events)
         goto continue
       end
       active.pointerId = event.pointerId or "default"
-      if layout.cancelRect and contains(layout.cancelRect, event.x, event.y) then
+      local logicalX, logicalY = toLogical(layout, event.x, event.y)
+      if layout.cancelRect and contains(layout.cancelRect, logicalX, logicalY) then
         active.pointerCancels = true
         translated[#translated + 1] = { type = "pointer_down", itemIndex = nil }
       else
-        active.pointerDrag = { y = event.y, remainder = 0 }
+        active.pointerDrag = { y = logicalY, remainder = 0 }
         translated[#translated + 1] = { type = "pointer_down", itemIndex = itemAt(layout, event.x, event.y) }
       end
     elseif event.type == "pointer_up" then
@@ -252,7 +248,8 @@ function FieldMenuHost:inputEvents(events)
       active.pointerDrag = nil
       if active.pointerCancels then
         active.pointerCancels = false
-        if not event.dragged and layout.cancelRect and contains(layout.cancelRect, event.x, event.y) then
+        local logicalX, logicalY = toLogical(layout, event.x, event.y)
+        if not event.dragged and layout.cancelRect and contains(layout.cancelRect, logicalX, logicalY) then
           translated[#translated + 1] = { type = "cancel" }
         else
           translated[#translated + 1] = { type = "pointer_up", itemIndex = nil, dragged = true }
@@ -285,18 +282,27 @@ function FieldMenuHost:inputEvents(events)
   return translated
 end
 
--- This is semantic presentation state for non-rendering hosts. Closed menus
--- deliberately expose no geometry, so no stale surface state survives.
+-- This is semantic presentation state for non-rendering hosts, in host
+-- coordinates. Closed menus deliberately expose no geometry, so no stale
+-- surface state survives.
 ---@return table<string, unknown>
 function FieldMenuHost:snapshot()
   if self._active == nil then
     return { modal = false }
   end
-  return {
-    modal = true,
-    itemRects = assert(self._active.layout, "active menu layout is missing").itemRects,
-    layout = assert(self._active.layout, "active menu layout is missing"),
-  }
+  local layout = assert(self._active.layout, "active menu layout is missing")
+  local placement = layout.placement
+  local itemRects = {}
+  for itemIndex = 0, layout.itemCount - 1 do
+    local rect = layout.itemRects[itemIndex]
+    itemRects[itemIndex] = {
+      x = placement.origin.x + rect.x * placement.scale,
+      y = placement.origin.y + rect.y * placement.scale,
+      width = rect.width * placement.scale,
+      height = rect.height * placement.scale,
+    }
+  end
+  return { modal = true, itemRects = itemRects, layout = layout }
 end
 
 return FieldMenuHost

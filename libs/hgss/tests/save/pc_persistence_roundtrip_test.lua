@@ -26,8 +26,7 @@ function T.v4_migration_adds_pc_state_without_changing_existing_values()
   originalMons.party.mons[1].schema = require("libs.mons.src.Mon").LEGACY_SCHEMA
   -- A genuine v1 record carries the opaque native status word, not the
   -- semantic effect list: project the healthy condition back to zero.
-  originalMons.party.mons[1].condition =
-    { status = 0, currentHp = originalMons.party.mons[1].condition.currentHp }
+  originalMons.party.mons[1].condition = { status = 0, currentHp = originalMons.party.mons[1].condition.currentHp }
   local v4 = {
     schema = "g4-game-save-v4",
     saveId = "save-00000001",

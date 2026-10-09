@@ -319,10 +319,7 @@ function T.custom_mons_publish_and_save_but_never_pass_as_native()
   local root = customCatalogRoot()
   Assert.isTrue(ResolvedMonSchema.assertCatalog(root) ~= false, "the composed schema accepts the custom entries")
   local catalog = MonCatalog.fromResolved(root, CatalogFixture.makeItemCatalog())
-  Assert.isNil(
-    catalog:species("ember:EMBERPUP").nativeId,
-    "custom species resolve without a native identity"
-  )
+  Assert.isNil(catalog:species("ember:EMBERPUP").nativeId, "custom species resolve without a native identity")
 
   local service = openService(catalog, SEED, NATIVE_SECTION)
   Assert.isTrue(service:addMon(customMon()), "domain-valid custom mons publish into the party")
@@ -375,10 +372,7 @@ function T.materialized_battle_facts_move_only_at_explicit_reload()
   Assert.isTrue(ok, "missing shared battle-stat projection: libs.mons.src.gen4.MonStats is not implemented")
   local MonStats = assert(loaded, "the shared projection loads its module")
   Assert.isTrue(type(MonStats.derive) == "function", "shared projection must expose derive")
-  Assert.isTrue(
-    type(MonStats.adjustHpForMaxChange) == "function",
-    "shared projection must expose adjustHpForMaxChange"
-  )
+  Assert.isTrue(type(MonStats.adjustHpForMaxChange) == "function", "shared projection must expose adjustHpForMaxChange")
 
   local catalog = CatalogFixture.makeCatalog()
   local factory = CatalogFixture.makeFactory(0x12345678, catalog)
@@ -438,11 +432,7 @@ function T.materialized_battle_facts_move_only_at_explicit_reload()
     "health adjustment agrees with the service owner"
   )
   Assert.equal(kept, currentHp + delta, "living mons keep their damage across the reload")
-  Assert.equal(
-    MonStats.adjustHpForMaxChange(materialized.maxHp, reloaded.maxHp, 0),
-    0,
-    "fainted mons stay fainted"
-  )
+  Assert.equal(MonStats.adjustHpForMaxChange(materialized.maxHp, reloaded.maxHp, 0), 0, "fainted mons stay fainted")
   Assert.equal(
     MonStats.adjustHpForMaxChange(reloaded.maxHp, materialized.maxHp, reloaded.maxHp),
     materialized.maxHp,

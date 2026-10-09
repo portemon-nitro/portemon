@@ -1,4 +1,4 @@
--- Pure menu-layout tests exercise deterministic geometry across display
+-- Pure menu-layout tests exercise deterministic list geometry across display
 -- topologies without involving rendering or physical input.
 
 local Assert = require("tests.support.Assert")
@@ -7,8 +7,6 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 
----@class MenuLayoutTest.Spec : MenuLayout.Spec
-
 local function rect(x, y, width, height)
   return { x = x, y = y, width = width, height = height }
 end
@@ -16,12 +14,11 @@ end
 local function topology(width, height, opts)
   opts = opts or {}
   return ScreenTopology.oneDisplay({
-    id = opts.id or "main",
+    id = "main",
     rect = rect(0, 0, width, height),
     safeRect = opts.safeRect,
     role = opts.role or "world",
     touch = opts.touch == true,
-    occupiedRegions = opts.occupiedRegions,
   })
 end
 
@@ -39,16 +36,23 @@ local function menu(count, opts)
 end
 
 local function resolve(spec)
-  spec.uiScale = spec.uiScale or 1
   spec.measureText = spec.measureText or function(text)
     return #text * 8
   end
-  return MenuLayout.resolve(spec --[[@as MenuLayoutTest.Spec]])
+  return MenuLayout.resolve(spec)
 end
 
----@param outer ScreenTopology.Rectangle
----@param inner ScreenTopology.Rectangle
----@return boolean
+-- Maps a logical rectangle through the resolved placement into host space.
+local function physical(layout, logical)
+  local placement = layout.placement
+  return rect(
+    placement.origin.x + logical.x * placement.scale,
+    placement.origin.y + logical.y * placement.scale,
+    logical.width * placement.scale,
+    logical.height * placement.scale
+  )
+end
+
 local function contains(outer, inner)
   return inner.x >= outer.x
     and inner.y >= outer.y
@@ -56,151 +60,81 @@ local function contains(outer, inner)
     and inner.y + inner.height <= outer.y + outer.height
 end
 
-local function overlaps(a, b)
-  return a.x < b.x + b.width and b.x < a.x + a.width and a.y < b.y + b.height and b.y < a.y + a.height
+function T.menus_float_at_the_top_right_of_the_native_four_by_three_region()
+  local layout = resolve({ topology = topology(256, 192), menu = menu(3) })
+
+  Assert.equal(layout.placement.scale, 1)
+  Assert.equal(layout.placement.origin.x, 0)
+  Assert.equal(layout.placement.origin.y, 0)
+  local surface = layout.listSurface.surface
+  Assert.isTrue(surface.x + surface.width < 256, "the frame keeps room for its exterior border")
+  Assert.isTrue(256 - (surface.x + surface.width) <= 16, "the surface hugs the right edge")
+  Assert.isTrue(surface.y <= 16, "the surface hugs the top edge")
+  Assert.equal(surface.width % 8, 0, "framed content stays on the dialogue tile grid")
+  Assert.equal(surface.height % 8, 0, "framed content stays on the dialogue tile grid")
+  Assert.equal(#layout.rows, 3)
+  Assert.equal(layout.itemTexts[2], "Choice")
+  Assert.isTrue(contains(layout.scrollViewport, layout.itemRects[2]))
 end
 
-function T.four_by_three_uses_a_source_anchored_floating_frame_inside_the_safe_region()
+function T.wide_hosts_anchor_inside_the_supplied_four_by_three_bounds()
+  local bounds = rect(240, 0, 1440, 1080)
   local layout = resolve({
-    topology = topology(256, 192),
+    topology = topology(1920, 1080),
     menu = menu(3),
-    sourcePlacement = { system = "hgss_bottom_screen_tiles", x = 2, y = 2 },
+    bounds = bounds,
+    preferredScale = 4,
   })
 
-  Assert.equal(layout.presentation, "floating")
-  Assert.equal(layout.surface.id, "main")
-  Assert.isTrue(contains(layout.surface.safeRect, layout.frame))
-  Assert.notNil(layout.itemRects[0])
-  Assert.notNil(layout.itemRects[2])
-  Assert.isTrue(contains(layout.contentRect, layout.itemRects[0]))
-  Assert.isTrue(contains(layout.scrollViewport, layout.itemRects[0]))
-
-  local right = resolve({
-    topology = topology(256, 192),
-    menu = menu(3),
-    sourcePlacement = { system = "hgss_bottom_screen_tiles", x = 28, y = 2 },
-  })
-  Assert.isTrue(right.frame.x > layout.frame.x, "source x must influence floating placement")
+  Assert.equal(layout.placement.scale, 4, "the integer field scale is honored when the region fits")
+  Assert.equal(layout.placement.origin.x, bounds.x + bounds.width - 256 * 4)
+  Assert.equal(layout.placement.origin.y, bounds.y)
+  local box = physical(layout, layout.listSurface.surface)
+  local region = rect(layout.placement.origin.x, layout.placement.origin.y, 256 * 4, 192 * 4)
+  Assert.isTrue(contains(region, box))
+  Assert.isTrue(region.x + region.width - (box.x + box.width) <= 16 * 4, "right-aligned in the 4:3 region")
+  Assert.isTrue(box.y - region.y <= 16 * 4, "top-aligned in the 4:3 region")
 end
 
-function T.layout_carries_display_text_without_exposing_menu_item_metadata()
-  local layout = resolve({
-    topology = topology(256, 192),
-    menu = {
-      items = {
-        { text = "Take", value = 10, vanillaMetadata = 0xFF },
-        { label = "Leave", value = 20, metadata = { hidden = true } },
-        { text = { text = "Continue" }, value = 30 },
-      },
-      selectedIndex = 0,
-    },
-  })
-
-  Assert.equal(layout.itemCount, 3)
-  Assert.deepEqual(layout.itemTexts, { [0] = "Take", [1] = "Leave", [2] = "Continue" })
+function T.region_smaller_than_one_native_pixel_per_pixel_scales_fractionally()
+  local layout = resolve({ topology = topology(128, 96), menu = menu(2), bounds = rect(0, 0, 128, 96) })
+  Assert.equal(layout.placement.scale, 0.5)
 end
 
-function T.occupied_regions_are_avoided_before_floating_geometry_is_clamped()
-  local dialogue = rect(0, 116, 256, 76)
-  local layout = resolve({
-    topology = topology(256, 192, { occupiedRegions = { dialogue } }),
-    menu = menu(2),
-    sourcePlacement = { system = "hgss_bottom_screen_tiles", x = 17, y = 16 },
-  })
+function T.text_measurement_determines_surface_width_up_to_the_region()
+  local short = resolve({ topology = topology(256, 192), menu = menu(2, { text = "Hi" }) })
+  local long = resolve({ topology = topology(256, 192), menu = menu(2, { text = "A much longer label" }) })
+  local huge = resolve({ topology = topology(256, 192), menu = menu(2, { text = string.rep("W", 80) }) })
 
-  Assert.equal(layout.presentation, "floating")
-  Assert.isFalse(overlaps(layout.frame, dialogue))
-  Assert.isTrue(contains(layout.surface.safeRect, layout.frame))
-end
-
-function T.explicit_floating_keeps_the_source_anchor_when_occupied_regions_cover_every_candidate()
-  local layout = resolve({
-    topology = topology(256, 192),
-    menu = menu(2),
-    sourcePlacement = { system = "hgss_bottom_screen_tiles", x = 0, y = 0 },
-    placementPreference = { mode = "floating" },
-    occupiedRegions = { rect(0, 0, 256, 192) },
-  })
-
-  Assert.equal(layout.presentation, "docked")
-  Assert.isTrue(contains(layout.surface.safeRect, layout.frame))
-end
-
-function T.text_measurement_and_scale_determine_intrinsic_width()
-  local layout = resolve({
-    topology = topology(640, 480),
-    menu = { items = { { text = "W" } }, selectedIndex = 0 },
-    uiScale = 2,
-    measureText = function(text)
-      Assert.equal(text, "W")
-      return 100
-    end,
-  })
-
-  Assert.equal(layout.frame.width, 256)
-end
-
-function T.narrow_safe_regions_cap_the_menu_width()
-  local layout = resolve({
-    topology = topology(80, 100),
-    menu = menu(1),
-  })
-
-  Assert.isTrue(contains(layout.surface.safeRect, layout.frame))
-end
-
-function T.portrait_touch_menu_docks_to_the_safe_bottom_with_touch_sized_rows_and_cancel()
-  local safe = rect(0, 47, 390, 763)
-  local layout = resolve({
-    topology = topology(390, 844, {
-      safeRect = safe,
-      touch = true,
-      occupiedRegions = { rect(0, 700, 120, 110), rect(270, 700, 120, 110) },
-    }),
-    menu = menu(8, { cancellable = true }),
-  })
-
-  Assert.equal(layout.presentation, "docked")
-  Assert.isTrue(contains(safe, layout.frame))
-  Assert.isTrue(layout.frame.y + layout.frame.height <= safe.y + safe.height)
-  Assert.isTrue(layout.frame.y + layout.frame.height >= safe.y + safe.height - 4)
-  Assert.notNil(layout.cancelRect)
-  Assert.isTrue(contains(safe, layout.cancelRect))
-  Assert.isTrue(layout.itemRects[0].height >= MenuLayout.minimumTouchTarget)
+  Assert.isTrue(long.listSurface.surface.width > short.listSurface.surface.width)
+  Assert.isTrue(huge.listSurface.surface.x >= 8, "an over-long label never leaves the region")
 end
 
 function T.large_menus_scroll_without_overflow_and_keep_the_selected_item_visible()
-  local layout = resolve({
-    topology = topology(844, 390, { touch = true }),
-    menu = menu(24, { selectedIndex = 23 }),
-  })
-
-  Assert.notNil(layout.scrollViewport)
-  Assert.isTrue(layout.scrollViewport.height < 24 * MenuLayout.minimumTouchTarget)
-  Assert.equal(layout.selectedIndex, 23)
-  Assert.isTrue(contains(layout.scrollViewport, layout.itemRects[23]))
-  Assert.isTrue(contains(layout.surface.safeRect, layout.frame))
-
-  local visibleRows = {}
-  for itemIndex = 0, layout.itemCount - 1 do
-    if overlaps(layout.itemRects[itemIndex], layout.scrollViewport) then
-      visibleRows[#visibleRows + 1] = itemIndex
+  for _, selected in ipairs({ 0, 7, 19 }) do
+    local layout = resolve({ topology = topology(256, 192), menu = menu(20, { selectedIndex = selected }) })
+    Assert.isTrue(contains(layout.scrollViewport, layout.itemRects[selected]))
+    Assert.isTrue(layout.maxScrollOffset > 0)
+    Assert.isTrue(layout.listSurface.surface.y + layout.listSurface.surface.height <= 192)
+    for _, row in ipairs(layout.rows) do
+      Assert.isTrue(contains(layout.scrollViewport, row.marker) or selected ~= row.itemIndex)
     end
   end
-  Assert.isTrue(#visibleRows > 0)
-  Assert.isTrue(#visibleRows < layout.itemCount)
-  Assert.equal(visibleRows[#visibleRows], layout.selectedIndex)
 end
 
-function T.wide_large_menus_auto_dock_and_dual_screen_menus_prefer_the_auxiliary_surface()
-  local wide = resolve({
-    topology = topology(2560, 1080),
-    menu = menu(18),
+function T.touch_menus_use_touch_sized_rows_and_a_cancel_target()
+  local layout = resolve({
+    topology = topology(256, 192, { touch = true }),
+    menu = menu(2, { cancellable = true }),
   })
-  Assert.equal(wide.presentation, "docked")
-  Assert.equal(wide.surface.id, "main")
-  Assert.isTrue(contains(wide.surface.safeRect, wide.frame))
+  Assert.isTrue(layout.itemRects[0].height * layout.placement.scale >= MenuLayout.minimumTouchTarget)
+  Assert.notNil(layout.cancelRect)
+  Assert.isTrue(layout.cancelRect.y >= layout.listSurface.surface.y + layout.listSurface.surface.height)
+  Assert.isTrue(layout.cancelRect.height * layout.placement.scale >= MenuLayout.minimumTouchTarget)
+  Assert.isNil(resolve({ topology = topology(256, 192), menu = menu(2, { cancellable = true }) }).cancelRect)
+end
 
+function T.dual_screen_menus_prefer_the_auxiliary_surface()
   local dual = ScreenTopology.dualDisplay({
     id = "main",
     rect = rect(0, 0, 400, 240),
@@ -212,29 +146,9 @@ function T.wide_large_menus_auto_dock_and_dual_screen_menus_prefer_the_auxiliary
     role = "auxiliary",
     touch = true,
   })
-  local auxiliary = resolve({ topology = dual, menu = menu(3) })
-  Assert.equal(auxiliary.surface.id, "secondary")
-  Assert.equal(auxiliary.presentation, "docked")
-end
-
-function T.geometry_matrix_keeps_frames_safe_and_selected_rows_visible()
-  local fixtures = {
-    { width = 1280, height = 960, presentation = "floating" },
-    { width = 1920, height = 1080, presentation = "floating" },
-    { width = 1080, height = 1920, presentation = "docked" },
-  }
-
-  for _, fixture in ipairs(fixtures) do
-    local layout = resolve({
-      topology = topology(fixture.width, fixture.height),
-      menu = menu(4, { selectedIndex = 2 }),
-      sourcePlacement = { system = "hgss_bottom_screen_tiles", x = 12, y = 8 },
-    })
-    Assert.equal(layout.presentation, fixture.presentation)
-    Assert.isTrue(contains(layout.surface.safeRect, layout.frame))
-    Assert.isTrue(contains(layout.scrollViewport, layout.itemRects[2]))
-    Assert.isTrue(layout.frame.width > 0 and layout.frame.height > 0)
-  end
+  local layout = resolve({ topology = dual, menu = menu(3) })
+  Assert.equal(layout.surface.id, "secondary")
+  Assert.isTrue(contains(layout.surface.safeRect, physical(layout, layout.listSurface.surface)))
 end
 
 function T.directional_adjacency_follows_item_geometry_and_has_no_wraparound()
@@ -280,22 +194,15 @@ function T.directional_adjacency_prefers_the_same_logical_row_or_column()
   Assert.equal(MenuLayout.adjacentItem(crossAxisLayout, 0, "right"), 2)
 end
 
-function T.rejects_malformed_menu_and_placement_input()
+function T.rejects_malformed_menu_input()
   Assert.throws(function()
     resolve({ topology = topology(256, 192), menu = menu(0) })
   end)
   Assert.throws(function()
-    resolve({ topology = topology(256, 192), menu = menu(1), placementPreference = { mode = "popup" } })
+    resolve({ topology = topology(256, 192), menu = menu(1, { selectedIndex = 1 }) })
   end)
   Assert.throws(function()
-    resolve({ topology = topology(80, 10), menu = menu(1) })
-  end)
-  Assert.throws(function()
-    resolve({
-      topology = topology(256, 192),
-      menu = menu(1),
-      sourcePlacement = { system = "hgss_bottom_screen_tiles", x = 31, y = 0 },
-    })
+    resolve({ topology = topology(256, 192), menu = menu(1), bounds = rect(0, 0, 0, 10) })
   end)
 end
 

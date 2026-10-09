@@ -30,7 +30,8 @@ local TaskRegistry = require("libs.script.src.TaskRegistry")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
 
-local T = { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } }, tests = {} }
+local T =
+  { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } }, tests = {} }
 
 local function readyVersions()
   local versions = {}

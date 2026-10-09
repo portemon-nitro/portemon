@@ -67,19 +67,28 @@ function T.explicit_photo_validation_still_rejects_malformed_snapshots()
   end
   local drifted = populatedSnapshot()
   drifted.schema = "g4-photo-album-v0"
-  Assert.equal(codeOf(function()
-    PhotoAlbum.validate(drifted)
-  end), "GAME_SAVE_BUCKET_INVALID")
+  Assert.equal(
+    codeOf(function()
+      PhotoAlbum.validate(drifted)
+    end),
+    "GAME_SAVE_BUCKET_INVALID"
+  )
   local sparse = populatedSnapshot()
   sparse.slots[36] = nil
-  Assert.equal(codeOf(function()
-    PhotoAlbum.validate(sparse)
-  end), "GAME_SAVE_BUCKET_INVALID")
+  Assert.equal(
+    codeOf(function()
+      PhotoAlbum.validate(sparse)
+    end),
+    "GAME_SAVE_BUCKET_INVALID"
+  )
   local tampered = populatedSnapshot()
   tampered.slots[1].hour = 24
-  Assert.equal(codeOf(function()
-    PhotoAlbum.validate(tampered)
-  end), "GAME_SAVE_BUCKET_INVALID")
+  Assert.equal(
+    codeOf(function()
+      PhotoAlbum.validate(tampered)
+    end),
+    "GAME_SAVE_BUCKET_INVALID"
+  )
   Assert.isTrue(PhotoAlbum.validate(snapshot), "explicit validation still accepts the saved snapshot")
   Assert.throws(function()
     PhotoAlbum.new(drifted)

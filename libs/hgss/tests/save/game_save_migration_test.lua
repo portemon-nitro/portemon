@@ -146,17 +146,12 @@ function T.current_envelope_normalizes_while_old_schemas_migrate_first()
   Assert.equal(migratedV5.schema, GameSave.SCHEMA)
 end
 
-
-
-
 function T.v4_migration_adds_only_national_dex_and_mart_state()
   local source = v4record()
   source.schema = "g4-game-save-v4"
   source.scripts = {
     registryFingerprint = "pre-update-registry",
     taskFingerprint = "pre-update-tasks",
-
-
 
     nextTaskId = 7,
     environments = {},
@@ -286,10 +281,7 @@ function T.future_schemas_reject_while_known_envelopes_stay_listable()
 end
 
 function T.master_records_advance_with_fashion_case_and_current_mons_state()
-  Assert.isTrue(
-    type(GameSave.migrateV5) == "function",
-    "master records advance through a dedicated migration step"
-  )
+  Assert.isTrue(type(GameSave.migrateV5) == "function", "master records advance through a dedicated migration step")
   local source = v5record({ world = { flags = { [10] = true }, variables = {}, objects = {}, rng = { seed = 7 } } })
   local migrated = GameSave.migrateV5(source)
   Assert.notNil(migrated)
@@ -310,9 +302,6 @@ function T.master_records_advance_with_fashion_case_and_current_mons_state()
   local err = Assert.throws(function()
     GameSave.migrateV5(inconsistent)
   end)
-
-
-
 
   Assert.isTrue(Errors.is(err))
   Assert.notNil(inconsistent.fashionCase, "rejection leaves the inconsistent source untouched")

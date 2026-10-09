@@ -45,9 +45,12 @@ end
 
 function T.start_rejects_malformed_specs()
   local host = hostWith({})
-  Assert.isTrue(Errors.is(Assert.throws(function()
-    BattleTask.start({ kind = "wild" }, { services = {} })
-  end)), "a launch without identity or issuing host fails")
+  Assert.isTrue(
+    Errors.is(Assert.throws(function()
+      BattleTask.start({ kind = "wild" }, { services = {} })
+    end)),
+    "a launch without identity or issuing host fails"
+  )
   Assert.isTrue(Errors.is(Assert.throws(function()
     BattleTask.start({ launchId = "x", kind = "safari" }, ctxWith(host))
   end)))
@@ -103,9 +106,7 @@ end
 
 function T.validate_pins_the_persisted_shape()
   Assert.isNil(BattleTask.validate({ launchId = "launch-6", kind = "trainer", completed = false }))
-  Assert.isNil(
-    BattleTask.validate({ launchId = "launch-6", completed = true, result = "draw", sourceResult = 0 })
-  )
+  Assert.isNil(BattleTask.validate({ launchId = "launch-6", completed = true, result = "draw", sourceResult = 0 }))
   Assert.isTrue(Errors.is(BattleTask.validate({ kind = "wild" })))
   Assert.isTrue(Errors.is(BattleTask.validate({ launchId = "launch-6", kind = "safari" })))
   Assert.isTrue(Errors.is(BattleTask.validate({ launchId = "launch-6", result = "triumph" })))

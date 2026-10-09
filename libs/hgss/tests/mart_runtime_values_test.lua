@@ -53,7 +53,11 @@ end
 function T.invalid_mart_selector_and_missing_query_service_fail()
   local run = {
     instance = { scriptId = "test.mart_values" },
-    services = { world = { getVar = function() return "invalid" end } },
+    services = { world = {
+      getVar = function()
+        return "invalid"
+      end,
+    } },
   }
   local selectorOk = pcall(RuntimeValues.martTaskSpec, {
     kind = "special",

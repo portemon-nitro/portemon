@@ -1184,11 +1184,7 @@ function T.hp_bar_tiles_follow_compiled_lengths_and_zero()
   local graphics2 = FakeGraphics.new({})
   local secondText = textDouble({})
   local renderer2 = SummaryRenderer.new({ graphics = graphics2, text = secondText })
-  renderer2:drawPane(
-    openStatus(faint, "info"),
-    "sub",
-    readyBundle(family, secondText, portraits, shader, realized, {})
-  )
+  renderer2:drawPane(openStatus(faint, "info"), "sub", readyBundle(family, secondText, portraits, shader, realized, {}))
   local full2, empty2 = 0, 0
   for _, draw in ipairs(graphics2.draws) do
     if draw.image == realized["hp-full"] then
@@ -1332,8 +1328,10 @@ function T.adjacent_color_runs_share_an_edge_without_separator_space()
     },
   })
   renderer:drawPane(openStatus(record, "info"), "main", bundle)
-  local memoBody =
-    assert(assert(assert(family.windows, "the family carries windows").groups, "windows carry groups").info, "groups carry info").main
+  local memoBody = assert(
+    assert(assert(family.windows, "the family carries windows").groups, "windows carry groups").info,
+    "groups carry info"
+  ).main
   local rect = assert(assert(memoBody.memoBody, "info main carries its memo body").rect, "memo roles carry rects")
   local memoCalls = {}
   for _, call in ipairs(textCalls) do
@@ -1352,11 +1350,7 @@ function T.adjacent_color_runs_share_an_edge_without_separator_space()
   Assert.equal(memoCalls[1].value, "AB", "the first run keeps its text")
   Assert.equal(memoCalls[2].value, "CD", "the second run keeps its text")
   Assert.equal(memoCalls[1].x, rect.x + PAD_X, "the line keeps its source padding")
-  Assert.equal(
-    memoCalls[2].x,
-    memoCalls[1].x + memoCalls[1].width,
-    "the second run starts where the first run ends"
-  )
+  Assert.equal(memoCalls[2].x, memoCalls[1].x + memoCalls[1].width, "the second run starts where the first run ends")
 end
 
 -- Produced memo lines draw on consecutive baselines: the real memo
@@ -1392,7 +1386,8 @@ function T.produced_memo_lines_draw_on_consecutive_baselines()
   end
   Assert.notNil(branch, "the family carries the selected branch")
   assert(branch ~= nil, "branches select above")
-  local segments = assert(assert(branch.dateTemplate, "the branch carries its date template").segments, "templates carry segments")
+  local segments =
+    assert(assert(branch.dateTemplate, "the branch carries its date template").segments, "templates carry segments")
   local breaks = 0
   for _, segment in ipairs(segments) do
     if segment.kind == "lineBreak" then
@@ -1402,16 +1397,17 @@ function T.produced_memo_lines_draw_on_consecutive_baselines()
   Assert.isTrue(breaks >= 1, "the exercised template carries source line breaks")
   local base = assert(branch.lines.date, "the branch places its date line")
   local _, textCalls, _, portraits, shader, renderer = composition()
-  local bundle =
-    readyBundle(fixture, textDouble(textCalls), portraits, shader, realizeVisuals(fixture), {})
+  local bundle = readyBundle(fixture, textDouble(textCalls), portraits, shader, realizeVisuals(fixture), {})
   local record = facts({
     memo = memo,
     pictureKey = "CHIKORITA",
     portraitSelector = "CHIKORITA/f0/male/plain",
   })
   renderer:drawPane(openStatus(record, "info"), "main", bundle)
-  local memoBody =
-    assert(assert(assert(fixture.windows, "the family carries windows").groups, "windows carry groups").info, "groups carry info").main
+  local memoBody = assert(
+    assert(assert(fixture.windows, "the family carries windows").groups, "windows carry groups").info,
+    "groups carry info"
+  ).main
   local rect = assert(assert(memoBody.memoBody, "info main carries its memo body").rect, "memo roles carry rects")
   local drawnY = {}
   for _, call in ipairs(textCalls) do
@@ -1422,10 +1418,7 @@ function T.produced_memo_lines_draw_on_consecutive_baselines()
       and call.x < rect.x + rect.width
       and call.y >= rect.y
     then
-      Assert.isTrue(
-        tostring(call.value):find("\n", 1, true) == nil,
-        "no drawn run carries a newline glyph"
-      )
+      Assert.isTrue(tostring(call.value):find("\n", 1, true) == nil, "no drawn run carries a newline glyph")
       drawnY[call.y] = true
     end
   end
@@ -1573,10 +1566,8 @@ function T.performance_stars_and_modifier_markers_follow_their_facts()
   }
   local record = facts({ performance = rows })
   local graphics, realized = drawWithChrome(family, record, "performance", "main", { spriteTick = 5 })
-  local sprows = assert(
-    assert(family.sprites, "the family carries sprite roles").performance,
-    "roles carry performance rows"
-  ).rows
+  local sprows =
+    assert(assert(family.sprites, "the family carries sprite roles").performance, "roles carry performance rows").rows
   local toneKey = { base = "starBase", above = "starAbove", below = "starBelow" }
   local expected = {}
   for index, row in ipairs(rows) do
@@ -1909,8 +1900,7 @@ function T.sampled_frames_hold_prefix_and_loop_origins_with_visual_offsets()
   }
   family.visuals["syn-moveRowFocus"].offset = { x = 3, y = -2 }
   local cursors = assert(sprites.primaryCursor, "roles carry the primary cursor")
-  local anchor =
-    assert(assert(cursors.anchors, "the cursor carries anchors")[1], "the cursor covers slot 0")
+  local anchor = assert(assert(cursors.anchors, "the cursor carries anchors")[1], "the cursor covers slot 0")
   local record = facts()
   local function cursorAt(animation, tick)
     cursors.rootFocus = animation

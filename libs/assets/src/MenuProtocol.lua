@@ -1,5 +1,5 @@
--- The project-owned list-menu protocol constants. Script lowering (romdump),
--- the script menu host, and menu layout all consume this contract, so the
+-- The project-owned list-menu protocol constants. Script lowering (romdump) and
+-- the script menu host consume this contract, so the
 -- source-bound values live in one place. HGSS list-menu protocol facts from
 -- pret/pokeheartgold's scrcmd.c and list_menu.c; public semantic menus do not
 -- expose them.
@@ -17,6 +17,5 @@ MenuProtocol.STANDARD_MESSAGE_BANK = 191
 -- like the standard list-menu bank rather than discovered from references.
 MenuProtocol.START_MENU_MESSAGE_BANK = 196
 MenuProtocol.CANCEL_RESULT = 0xFFFE
-MenuProtocol.BOTTOM_SCREEN_TILE_PLACEMENT = "hgss_bottom_screen_tiles"
 
 return MenuProtocol
