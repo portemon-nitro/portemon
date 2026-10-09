@@ -297,4 +297,67 @@ function T.truncation_vectors_match_the_literal_table()
   Assert.equal(Accuracy.resolve(minusFive, cannedStream({ 36 })).kind, "miss", "draw 36 rolls 37 past 100 at -5")
 end
 
+-- Modded strikes compose through the same staged arithmetic: a
+-- beyond-retail power with a nonstandard finite bonus resolves
+-- deterministically at a pinned roll, an undeclared attacking type still
+-- fails through the chart owner, and a zero denominator fails before any
+-- draw instead of dividing.
+function T.modded_strikes_compose_through_the_staged_arithmetic()
+  local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  local Effectiveness = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.TypeEffectiveness",
+    "semantic charts own immunity resolution"
+  )
+  local CombatFixture = require("libs.battle.tests.combat_fixture")
+
+  ---@param bonus table<string, integer> exact same-type bonus under the strike
+  ---@return table<string, unknown> staged damage spec carrying the modded facts
+  local function strike(bonus)
+    return {
+      level = 50,
+      power = 400,
+      attack = 120,
+      defense = 90,
+      rawAttack = 120,
+      rawDefense = 90,
+      attackStage = 0,
+      defenseStage = 0,
+      criticalMultiplier = 1,
+      category = "special",
+      burned = false,
+      guts = false,
+      stab = bonus,
+      effectiveness = { numerator = 1, denominator = 1 },
+      effectivenessFactors = { { numerator = 1, denominator = 1 } },
+      targetCount = 1,
+      weather = "none",
+      weatherSuppressed = false,
+      moveType = "sound",
+      solarBeam = false,
+      randomPercent = 100,
+    }
+  end
+
+  -- floor(2*50/5+2) = 22; 22*400*120 = 1056000; floor(/90) = 11733;
+  -- floor(/50) = 234; +2 = 236; the pinned roll keeps 236;
+  -- floor(236*5/4) = 295.
+  local estimated = BattleRng.new(7)
+  local dealt = Damage.calculate(strike({ numerator = 5, denominator = 4 }), estimated)
+  Assert.equal(dealt.amount, 295, "beyond-retail power scales through the staged truncations")
+  Assert.equal(estimated:capture().calls, 0, "pinned rolls estimate without drawing")
+
+  local chart = CombatFixture.chart(CombatFixture.makeVanilla(), CombatFixture.VANILLA_RULESET)
+  Assert.throws(function()
+    Effectiveness.resolve(chart, "plasma", { "fire" }, {})
+  end, "undeclared attacking types fail through the chart owner")
+
+  local doomed = BattleRng.new(7)
+  Assert.throws(function()
+    Damage.calculate(strike({ numerator = 1, denominator = 0 }), doomed)
+  end, "zero denominators fail before division")
+  Assert.equal(doomed:capture().calls, 0, "zero denominators spend no draw")
+end
+
 return { tests = T }

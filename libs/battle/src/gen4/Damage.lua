@@ -82,73 +82,29 @@ local function requireRational(ratio, name)
   )
 end
 
----@param value integer value under test
----@param name string value being read
-local function requireStage(value, name)
-  assert(type(value) == "number" and value % 1 == 0 and value >= -6 and value <= 6, name .. " stays a clamped stage")
-end
-
 ---@param spec DamageSpec staged damage input under test
 local function requireSpec(spec)
   assert(type(spec) == "table", "staged damage reads its specification")
-  requirePositiveInteger(spec.level, "level")
-  requirePositiveInteger(spec.power, "power")
-  requirePositiveInteger(spec.attack, "attack")
+  -- The staged divisions reach only these divisors: the base step divides
+  -- by the staged defense (or the raw defense on the critical fallback),
+  -- and STAB, aggregate effectiveness, and per-type factors divide by
+  -- their exact denominators. Every other fact arrives from the trusted
+  -- strike assembly and fails at first use when truly absent.
   requirePositiveInteger(spec.defense, "defense")
-  requirePositiveInteger(spec.rawAttack, "raw attack")
   requirePositiveInteger(spec.rawDefense, "raw defense")
-  requireStage(spec.attackStage, "attack stage")
-  requireStage(spec.defenseStage, "defense stage")
-  assert(
-    spec.criticalMultiplier == 1 or spec.criticalMultiplier == 2 or spec.criticalMultiplier == 3,
-    "critical multipliers stay native 1, 2, or 3"
-  )
-  assert(spec.category == "physical" or spec.category == "special", "strikes name their physical/special category")
-  assert(type(spec.burned) == "boolean", "strikes name their attacker burn")
-  assert(type(spec.guts) == "boolean", "strikes name their resilient ability")
   requireRational(spec.stab, "stab")
   requireRational(spec.effectiveness, "effectiveness")
-  assert(
-    type(spec.effectivenessFactors) == "table" and #spec.effectivenessFactors >= 1,
-    "strikes carry ordered type factors"
-  )
+  assert(type(spec.effectivenessFactors) == "table", "strikes carry ordered type factors")
   for _, factor in ipairs(spec.effectivenessFactors) do
     requireRational(factor, "type factor")
   end
-  if spec.screenApplies ~= nil then
-    assert(type(spec.screenApplies) == "boolean", "strikes name their guarding screen")
-  end
-  if spec.screenReduction ~= nil then
-    assert(
-      spec.screenReduction == "half" or spec.screenReduction == "two_thirds",
-      "screen reductions stay half or two thirds"
-    )
-  end
+  -- Barrier facts validate before the damage draw: a guarded strike names
+  -- its half or two-thirds reduction, while unguarded strikes never read
+  -- the mode.
   if spec.screenApplies == true then
     assert(
       spec.screenReduction == "half" or spec.screenReduction == "two_thirds",
       "guarded strikes name their half or two-thirds reduction"
-    )
-  end
-  if spec.removesScreens ~= nil then
-    assert(type(spec.removesScreens) == "boolean", "strikes name their screen-shattering case")
-  end
-  if spec.targetCount ~= nil then
-    requirePositiveInteger(spec.targetCount, "target count")
-  end
-  assert(type(spec.weather) == "string" and spec.weather ~= "", "strikes name their field weather")
-  assert(type(spec.weatherSuppressed) == "boolean", "strikes name their weather suppression")
-  assert(type(spec.moveType) == "string" and spec.moveType ~= "", "strikes name their move type")
-  if spec.solarBeam ~= nil then
-    assert(type(spec.solarBeam) == "boolean", "strikes name their charging-grass case")
-  end
-  if spec.randomPercent ~= nil then
-    assert(
-      type(spec.randomPercent) == "number"
-        and spec.randomPercent % 1 == 0
-        and spec.randomPercent >= 1
-        and spec.randomPercent <= 100,
-      "random percentages name an integer roll in 1..100"
     )
   end
 end
@@ -353,12 +309,14 @@ function Damage.trace(spec, stream)
 end
 
 ---@param spec DamageFixedSpec fixed damage input under test
----@param stream BattleRng labeled native battle stream
+---@param stream BattleRng? unused battle stream under the draw-free path
 ---@return DamageResult fixed amount traveling its own draw-free path
 function Damage.fixed(spec, stream)
   assert(type(spec) == "table", "fixed damage reads its specification")
   requirePositiveInteger(spec.amount, "fixed amount")
-  requireStream(stream)
+  if stream ~= nil then
+    requireStream(stream)
+  end
   return { amount = spec.amount, critical = false, effectiveness = { numerator = 1, denominator = 1 } }
 end
 

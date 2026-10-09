@@ -58,7 +58,9 @@ end
 ---@return EffectivenessResult resolved multiplier with its immunity reason
 function TypeEffectiveness.resolve(chart, attack, defendList, context)
   assert(type(chart) == "table" and type(chart.effectiveness) == "function", "effectiveness resolves through its chart")
-  assert(type(attack) == "string" and attack ~= "", "effectiveness names its attacking type")
+  -- Type identities stay owned by the composed chart: unknown keys fail
+  -- through its structured unknown-pair report instead of a second shape
+  -- check here.
   assert(type(defendList) == "table", "effectiveness reads its defending types")
   local seen = context or {}
   assert(type(seen) == "table", "effectiveness reads its immunity checkpoints")
@@ -80,14 +82,11 @@ function TypeEffectiveness.resolve(chart, attack, defendList, context)
   local factors = {} ---@type EffectivenessFactor[]
   local resolved = {} ---@type table<string, boolean>
   for _, defend in ipairs(defendList) do
-    assert(type(defend) == "string" and defend ~= "", "effectiveness names each defending type")
     if resolved[defend] ~= true then
       resolved[defend] = true
+      -- Composed charts carry validated exact rationals; chart immunity
+      -- still resolves to zero through the chart owner.
       local pair = chart:effectiveness(attack, defend)
-      assert(
-        type(pair.numerator) == "number" and type(pair.denominator) == "number",
-        "chart pairs carry their exact rational"
-      )
       if pair.numerator == 0 then
         return {
           numerator = 0,

@@ -1205,4 +1205,32 @@ function T.malformed_barrier_facts_fail_before_the_damage_draw()
   end
 end
 
+-- Fixed damage answers from its amount alone: the draw-free path never
+-- consults the battle stream, so callers without a live stream still get
+-- the exact amount with neutral classification, while non-positive
+-- amounts still fail loudly.
+function T.fixed_damage_answers_without_a_live_stream()
+  local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+
+  local streamless = Damage.fixed({ amount = 40 })
+  Assert.equal(streamless.amount, 40, "fixed amounts pass through without a stream")
+  Assert.isFalse(streamless.critical, "fixed damage never crits")
+  Assert.deepEqual(
+    streamless.effectiveness,
+    { numerator = 1, denominator = 1 },
+    "fixed damage stays neutrally classified"
+  )
+
+  Assert.throws(function()
+    Damage.fixed({ amount = 0 })
+  end, "non-positive fixed amounts fail loudly")
+
+  local stream = BattleRng.new(9)
+  local streamed = Damage.fixed({ amount = 40 }, stream)
+  Assert.equal(streamed.amount, 40, "fixed amounts pass through unmodified")
+  Assert.equal(stream:capture().calls, 0, "fixed damage draws nothing from a supplied stream")
+end
+
 return { tests = T }
