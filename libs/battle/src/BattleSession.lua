@@ -59,88 +59,6 @@ local function copyValue(value)
   return out
 end
 
----@param frameState unknown
----@return boolean
-local function isRoundState(frameState)
-  local record = frameState --[[@as table<string, unknown>]]
-  return type(frameState) == "table"
-    and type(record.round) == "number"
-    and record.round --[[@as integer]]
-      % 1 == 0
-    and record.round --[[@as integer]]
-      >= 1
-end
-
----@param frameState unknown
----@return boolean
-local function isActionState(frameState)
-  local record = frameState --[[@as table<string, unknown>]]
-  return type(frameState) == "table" and type(record.combatant) == "number" and type(record.activation) == "number"
-end
-
----@param frameState unknown
----@return boolean
-local function isSwitchState(frameState)
-  local record = frameState --[[@as table<string, unknown>]]
-  return type(frameState) == "table" and type(record.combatant) == "number" and type(record.replacement) == "number"
-end
-
----@param frame table<string, unknown>
-local function checkFrameKind(frame)
-  local validators = {
-    round = isRoundState,
-    action = isActionState,
-    switch = isSwitchState,
-  }
-  local known = validators[
-    frame.kind --[[@as string]]
-  ]
-  if known == nil then
-    error(BattleErrors.incompatibleSnapshot("continuation frames must name a known kind", {
-      kind = tostring(frame.kind),
-    }))
-  end
-  if
-    not (known --[[@as fun(state: unknown): boolean]])(frame.state)
-  then
-    error(BattleErrors.incompatibleSnapshot("continuation frames must carry kind-shaped state", {
-      kind = tostring(frame.kind),
-    }))
-  end
-end
-
----@param content unknown
----@param ruleset string
-local function checkContent(content, ruleset)
-  if type(content) ~= "table" then
-    error(BattleErrors.missingBehavior("sessions require their frozen battle content", { ruleset = ruleset }))
-  end
-  local contentRecord = content --[[@as table<string, unknown>]]
-  local lookup = contentRecord.ruleset
-  if type(lookup) ~= "function" then
-    error(BattleErrors.missingBehavior("battle content must resolve rulesets", { ruleset = ruleset }))
-  end
-  local ok = pcall(lookup, contentRecord, ruleset)
-  if not ok then
-    error(BattleErrors.missingBehavior("battle content must resolve the scenario ruleset", { ruleset = ruleset }))
-  end
-end
-
----@param kinds unknown candidate admitted vocabulary under copy
----@return string[] detached admitted action kinds
-local function copyKinds(kinds)
-  assert(type(kinds) == "table", "admitted vocabularies stay arrays")
-  local admitted = {} ---@type string[]
-  for _, kind in
-    ipairs(kinds --[[@as string[] ]])
-  do
-    assert(type(kind) == "string" and kind ~= "", "admitted action kinds stay named")
-    admitted[#admitted + 1] = kind
-  end
-  assert(#admitted > 0, "admitted vocabularies stay non-empty")
-  return admitted
-end
-
 -- Resolves the admitted action vocabulary for one format identity.
 -- Registered content formats win over native keys: a content-registered
 -- policy carries its own admitted kinds (or the standard vocabulary when
@@ -162,7 +80,7 @@ local function admittedKindsFor(formatKey, content, validated)
       if kinds == nil then
         return copyValue(BattleSession.DEFAULT_ACTION_KINDS) --[[@as string[] ]]
       end
-      return copyKinds(kinds)
+      return BattleState.copyActionKinds(kinds)
     end
   end
   local okNative, policy = pcall(NativeFormats.policyFor, formatKey)
@@ -174,7 +92,7 @@ local function admittedKindsFor(formatKey, content, validated)
     if kinds == nil then
       return copyValue(BattleSession.DEFAULT_ACTION_KINDS) --[[@as string[] ]]
     end
-    return copyKinds(kinds)
+    return BattleState.copyActionKinds(kinds)
   end
   error(BattleErrors.missingBehavior("unknown battle format " .. formatKey, { format = formatKey }))
 end
@@ -183,7 +101,7 @@ end
 local function checkRestoredShape(state)
   local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
   for _, frame in ipairs(frames) do
-    checkFrameKind(frame)
+    BattleState.checkContinuationFrame(frame)
   end
   if state.status == "waiting" then
     if state.pending == nil then
@@ -216,7 +134,7 @@ end
 function BattleSession.new(scenarioRecord, content)
   assert(type(scenarioRecord) == "table", "session construction requires its scenario record")
   local validated = BattleScenario.validate(scenarioRecord)
-  checkContent(content, validated.ruleset --[[@as string]])
+  BattleState.checkBattleContent(content, validated.ruleset --[[@as string]])
   local admitted = admittedKindsFor(validated.format --[[@as string]], content, validated)
   local live = BattleState.create(validated)
   live.maxRounds = SCRIPTED_MAX_ROUNDS
@@ -237,7 +155,7 @@ function BattleSession.restore(snapshotData, content)
   then
     error(BattleErrors.incompatibleSnapshot("scripted snapshots must carry their round bound", {}))
   end
-  checkContent(content, live.ruleset --[[@as string]])
+  BattleState.checkBattleContent(content, live.ruleset --[[@as string]])
   local admitted = admittedKindsFor(live.format --[[@as string]], content, nil)
   live.rng = Lcrng.restore(live.rng --[[@as table<string, integer>]])
   -- Restored snapshots carry plain effect records; rebuild the live
@@ -255,26 +173,6 @@ function BattleSession:_live()
     error(BattleErrors.invalidState("disposed sessions publish nothing further", {}))
   end
   return self._state
-end
-
----@param state table<string, unknown>
----@return table<integer, table<string, unknown>> drained events in sequence order
-local function drainOutbox(state)
-  local outbox = state.outbox --[[@as table<integer, table<string, unknown>>]]
-  local flushed = {}
-  for _, event in ipairs(outbox) do
-    flushed[#flushed + 1] = event
-  end
-  state.outbox = {}
-  return flushed
-end
-
----@param context table<string, unknown>
----@param frame table<string, unknown>
-local function pushCheckedFrame(context, frame)
-  checkFrameKind(frame)
-  local typed = context --[[@as BattleContext]]
-  typed:pushFrame(frame)
 end
 
 ---@param state table<string, unknown>
@@ -319,7 +217,7 @@ local function buildBatch(state, admitted)
     }
     return
   end
-  pushCheckedFrame(context, {
+  context:pushFrame({
     kind = "round",
     version = 1,
     cursor = "awaiting_replies",
@@ -387,7 +285,7 @@ local function applyChoice(state, context, choice, controller, ordinal)
     activation = actor.activation,
   }
   if choice.kind == "attack" then
-    pushCheckedFrame(context, {
+    typed:pushFrame({
       kind = "action",
       version = 1,
       cursor = "apply",
@@ -412,7 +310,7 @@ local function applyChoice(state, context, choice, controller, ordinal)
     event.actionId = ordinal
     event.hitIndex = 1
   elseif choice.kind == "switch" then
-    pushCheckedFrame(context, {
+    typed:pushFrame({
       kind = "switch",
       version = 1,
       cursor = "apply",
@@ -430,7 +328,7 @@ local function applyChoice(state, context, choice, controller, ordinal)
     })
     event.actionId = ordinal
   elseif choice.kind == "confirm" then
-    pushCheckedFrame(context, {
+    typed:pushFrame({
       kind = "action",
       version = 1,
       cursor = "apply",
@@ -439,7 +337,7 @@ local function applyChoice(state, context, choice, controller, ordinal)
     local event = typed:emit("acknowledge", cause, {})
     event.actionId = ordinal
   elseif choice.kind == "item" then
-    pushCheckedFrame(context, {
+    typed:pushFrame({
       kind = "action",
       version = 1,
       cursor = "apply",
@@ -546,19 +444,19 @@ function BattleSession:advance(operationBudget)
     if state.status == "ended" then
       return {
         status = "ended",
-        events = drainOutbox(state),
+        events = BattleState.drainOutbox(state),
         outcome = copyValue(state.outcome),
       }
     end
     if state.pending == nil then
       if remaining < 1 then
-        return { status = "running", events = drainOutbox(state) }
+        return { status = "running", events = BattleState.drainOutbox(state) }
       end
       buildBatch(state, self._admitted)
       remaining = remaining - 1
     elseif DecisionBatch.isComplete(state) then
       if remaining < 1 then
-        return { status = "running", events = drainOutbox(state) }
+        return { status = "running", events = BattleState.drainOutbox(state) }
       end
       commitBatch(state)
       remaining = remaining - 1
@@ -570,10 +468,10 @@ function BattleSession:advance(operationBudget)
         end
       end
     else
-      return { status = state.status, events = drainOutbox(state), request = DecisionBatch.view(state) }
+      return { status = state.status, events = BattleState.drainOutbox(state), request = DecisionBatch.view(state) }
     end
     if state.pending ~= nil and not DecisionBatch.isComplete(state) then
-      return { status = state.status, events = drainOutbox(state), request = DecisionBatch.view(state) }
+      return { status = state.status, events = BattleState.drainOutbox(state), request = DecisionBatch.view(state) }
     end
   end
 end

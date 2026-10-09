@@ -336,6 +336,121 @@ local function checkSnapshotSequence(data, what)
   return array
 end
 
+---@param frameState unknown
+---@return boolean
+local function isRoundState(frameState)
+  local record = frameState --[[@as table<string, unknown>]]
+  return type(frameState) == "table"
+    and type(record.round) == "number"
+    and record.round --[[@as integer]]
+      % 1 == 0
+    and record.round --[[@as integer]]
+      >= 1
+end
+
+---@param frameState unknown
+---@return boolean
+local function isActionState(frameState)
+  local record = frameState --[[@as table<string, unknown>]]
+  return type(frameState) == "table" and type(record.combatant) == "number" and type(record.activation) == "number"
+end
+
+---@param frameState unknown
+---@return boolean
+local function isSwitchState(frameState)
+  local record = frameState --[[@as table<string, unknown>]]
+  return type(frameState) == "table" and type(record.combatant) == "number" and type(record.replacement) == "number"
+end
+
+-- The one continuation vocabulary shared by both session executors, the
+-- runtime frame admission, and snapshot restore: round frames sequence
+-- decision batches, action frames scope one committed strike, and switch
+-- frames scope one committed exchange. The table stays file-local;
+-- callers reach it only through the checked helper below.
+local CONTINUATION_CHECKS = {
+  round = isRoundState,
+  action = isActionState,
+  switch = isSwitchState,
+}
+
+--- Validates one continuation frame against the shared kind vocabulary
+--- and its kind-shaped state. Session restore, runtime frame admission,
+--- and snapshot validation all dispatch here so the vocabulary cannot
+--- drift between submission and interruption.
+---@param frame table<string, unknown>
+function BattleState.checkContinuationFrame(frame)
+  local known = CONTINUATION_CHECKS[
+    frame.kind --[[@as string]]
+  ]
+  if known == nil then
+    error(BattleErrors.incompatibleSnapshot("continuation frames must name a known kind", {
+      kind = tostring(frame.kind),
+    }))
+  end
+  if
+    not (known --[[@as fun(state: unknown): boolean]])(frame.state)
+  then
+    error(BattleErrors.incompatibleSnapshot("continuation frames must carry kind-shaped state", {
+      kind = tostring(frame.kind),
+    }))
+  end
+end
+
+--- Drains the live event outbox in sequence order, resetting it to empty.
+--- Both session executors share this helper so drained events publish
+--- exactly once on every path.
+---@param state table<string, unknown> live battle state holding the event outbox
+---@return table<integer, table<string, unknown>> drained events in sequence order
+function BattleState.drainOutbox(state)
+  local outbox = state.outbox --[[@as table<integer, table<string, unknown>>]]
+  local flushed = {}
+  for _, event in ipairs(outbox) do
+    flushed[#flushed + 1] = event
+  end
+  state.outbox = {}
+  return flushed
+end
+
+--- Copies one admitted action vocabulary into a detached non-empty array.
+--- Both session executors resolve their decision batches through this
+--- helper so custom registrations keep one copy rule.
+---@param kinds unknown candidate admitted vocabulary under copy
+---@return string[] detached admitted action kinds
+function BattleState.copyActionKinds(kinds)
+  assert(type(kinds) == "table", "admitted vocabularies stay arrays")
+  local admitted = {} ---@type string[]
+  for _, kind in
+    ipairs(kinds --[[@as string[] ]])
+  do
+    assert(type(kind) == "string" and kind ~= "", "admitted action kinds stay named")
+    admitted[#admitted + 1] = kind
+  end
+  assert(#admitted > 0, "admitted vocabularies stay non-empty")
+  return admitted
+end
+
+--- Proves one frozen battle content resolves the scenario ruleset.
+--- Both session executors admit their content through this helper so
+--- unbound rulesets fail with the same missing-behavior error before
+--- anything runs. The check stays duck-typed: resolving through the
+--- content behavior registry itself would rename the failure.
+---@param content unknown frozen executable battle content under admission
+---@param ruleset string scenario ruleset the content must resolve
+function BattleState.checkBattleContent(content, ruleset)
+  if type(content) ~= "table" then
+    error(BattleErrors.missingBehavior("sessions require their frozen battle content", { ruleset = ruleset }))
+  end
+  local contentRecord = content --[[@as table<string, unknown>]]
+  local lookup = contentRecord.ruleset
+  if type(lookup) ~= "function" then
+    error(BattleErrors.missingBehavior("battle content must resolve rulesets", { ruleset = ruleset }))
+  end
+  local ok = pcall(lookup, contentRecord, ruleset)
+  if not ok then
+    error(BattleErrors.missingBehavior("battle content must resolve the scenario ruleset", { ruleset = ruleset }))
+  end
+end
+
 ---@param snapshot table<string, unknown> interruption capture under validation
 function BattleState.validateSnapshot(snapshot)
   if type(snapshot) ~= "table" then
@@ -484,6 +599,10 @@ function BattleState.validateSnapshot(snapshot)
     if type(frame.state) ~= "table" then
       error(BattleErrors.incompatibleSnapshot("continuation frames must carry plain state", {}))
     end
+    -- Restored frames answer the same shared kind vocabulary as live
+    -- admission: unknown kinds and kind-mismatched states reject here
+    -- instead of resuming under a frame no executor understands.
+    BattleState.checkContinuationFrame(frame)
   end
   if type(snapshot.inventories) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("battle snapshots must carry inventories", {}))

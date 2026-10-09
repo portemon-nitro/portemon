@@ -5259,4 +5259,57 @@ function T.native_partially_answered_batches_restore_and_keep_views_detached()
   revived:dispose()
 end
 
+-- The native order sampling stays ahead of decision requests and never
+-- resamples across interruption: the open batch carries exactly four raw
+-- order samples, restore keeps the identical samples and generator
+-- cursor, a rejected reply consumes no draws, and identical replies
+-- replay identical events into identical state.
+function T.open_batches_keep_their_order_samples_across_restore()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(healthyDuelScenario(), content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the native battle opens its decision boundary")
+  local held = session:capture()
+  local rolls = held.pending.nativeOrderRolls
+  Assert.notNil(rolls, "the open batch carries its order samples")
+  Assert.equal(#rolls, 4, "the batch samples exactly four raw order values")
+  for position = 1, 4 do
+    Assert.isTrue(type(rolls[position]) == "number", "order sample " .. position .. " stays a raw value")
+  end
+  local cursor = held.rng.calls
+  local request = assert(opening.request.requests[1], "the boundary carries its request")
+  local badActor = assert(request.actors[1], "the request addresses its actor")
+  local refused, refuseErr = session:submit(
+    SessionFixture.replyFor(request, { SessionFixture.attackChoice(badActor, 0, SessionFixture.positionTarget(99)) })
+  )
+  Assert.isFalse(refused, "a strike at an undeclared position is rejected")
+  Assert.notNil(refuseErr, "rejected replies report their input error")
+  Assert.equal(session:capture().rng.calls, cursor, "rejected replies consume no generator draws")
+  Assert.deepEqual(
+    session:capture().pending.nativeOrderRolls,
+    rolls,
+    "rejected replies keep the open order samples"
+  )
+  local revived = Executor.restore(held, content)
+  local recaptured = revived:capture()
+  Assert.deepEqual(recaptured.pending.nativeOrderRolls, rolls, "restore keeps the identical order samples")
+  Assert.equal(recaptured.rng.calls, cursor, "restore resamples no generator draws")
+  for _, live in ipairs({ session, revived }) do
+    local frame = SessionFixture.driveUntilSettled(live)
+    for _, pending in ipairs(frame.request.requests) do
+      local accepted, replyErr = live:submit(SessionFixture.replyFor(pending, answer(pending)))
+      Assert.isTrue(accepted, "restored sessions accept the open replies")
+      Assert.isNil(replyErr, "accepted replies carry no input error")
+    end
+  end
+  local firstEvents = SessionFixture.driveToEnd(session, 16, answer)
+  local secondEvents = SessionFixture.driveToEnd(revived, 16, answer)
+  Assert.deepEqual(secondEvents, firstEvents, "identical replies replay identical events")
+  Assert.deepEqual(revived:capture(), session:capture(), "identical replies reach identical state")
+  session:dispose()
+  revived:dispose()
+end
+
 return { tests = T }

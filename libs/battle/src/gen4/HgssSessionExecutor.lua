@@ -139,88 +139,6 @@ local function copyValue(value)
   return out
 end
 
----@param frameState unknown
----@return boolean
-local function isRoundState(frameState)
-  local record = frameState --[[@as table<string, unknown>]]
-  return type(frameState) == "table"
-    and type(record.round) == "number"
-    and record.round --[[@as integer]]
-      % 1 == 0
-    and record.round --[[@as integer]]
-      >= 1
-end
-
----@param frameState unknown
----@return boolean
-local function isActionState(frameState)
-  local record = frameState --[[@as table<string, unknown>]]
-  return type(frameState) == "table" and type(record.combatant) == "number" and type(record.activation) == "number"
-end
-
----@param frameState unknown
----@return boolean
-local function isSwitchState(frameState)
-  local record = frameState --[[@as table<string, unknown>]]
-  return type(frameState) == "table" and type(record.combatant) == "number" and type(record.replacement) == "number"
-end
-
----@param frame table<string, unknown>
-local function checkFrameKind(frame)
-  local validators = {
-    round = isRoundState,
-    action = isActionState,
-    switch = isSwitchState,
-  }
-  local known = validators[
-    frame.kind --[[@as string]]
-  ]
-  if known == nil then
-    error(BattleErrors.incompatibleSnapshot("continuation frames must name a known kind", {
-      kind = tostring(frame.kind),
-    }))
-  end
-  if
-    not (known --[[@as fun(state: unknown): boolean]])(frame.state)
-  then
-    error(BattleErrors.incompatibleSnapshot("continuation frames must carry kind-shaped state", {
-      kind = tostring(frame.kind),
-    }))
-  end
-end
-
----@param content unknown
----@param ruleset string
-local function checkContent(content, ruleset)
-  if type(content) ~= "table" then
-    error(BattleErrors.missingBehavior("sessions require their frozen battle content", { ruleset = ruleset }))
-  end
-  local contentRecord = content --[[@as table<string, unknown>]]
-  local lookup = contentRecord.ruleset
-  if type(lookup) ~= "function" then
-    error(BattleErrors.missingBehavior("battle content must resolve rulesets", { ruleset = ruleset }))
-  end
-  local ok = pcall(lookup, contentRecord, ruleset)
-  if not ok then
-    error(BattleErrors.missingBehavior("battle content must resolve the scenario ruleset", { ruleset = ruleset }))
-  end
-end
-
----@param kinds unknown candidate admitted vocabulary under copy
----@return string[] detached admitted action kinds
-local function copyKinds(kinds)
-  assert(type(kinds) == "table", "admitted vocabularies stay arrays")
-  local admitted = {} ---@type string[]
-  for _, kind in
-    ipairs(kinds --[[@as string[] ]])
-  do
-    assert(type(kind) == "string" and kind ~= "", "admitted action kinds stay named")
-    admitted[#admitted + 1] = kind
-  end
-  assert(#admitted > 0, "admitted vocabularies stay non-empty")
-  return admitted
-end
-
 -- Wild encounters admit flight beside the standard vocabulary.
 -- Explicitly registered vocabularies are never rewritten: only the
 -- standard fallback gains the run action, and only for wild battles.
@@ -228,7 +146,7 @@ end
 ---@param validated table<string, unknown>? detached scenario under construction for native topology proof
 ---@return string[] standard admitted action kinds for the encounter kind
 local function defaultKindsFor(formatKey, validated)
-  local kinds = copyKinds(HgssSessionExecutor.DEFAULT_ACTION_KINDS)
+  local kinds = BattleState.copyActionKinds(HgssSessionExecutor.DEFAULT_ACTION_KINDS)
   local scenarioKind = validated ~= nil and validated.kind or nil
   if battleKindFor(formatKey, scenarioKind) == "wild" then
     kinds[#kinds + 1] = "run"
@@ -250,7 +168,7 @@ local function admittedKindsFor(formatKey, content, validated)
       if kinds == nil then
         return defaultKindsFor(formatKey, validated)
       end
-      return copyKinds(kinds)
+      return BattleState.copyActionKinds(kinds)
     end
   end
   local okNative, policy = pcall(NativeFormats.policyFor, formatKey)
@@ -262,7 +180,7 @@ local function admittedKindsFor(formatKey, content, validated)
     if kinds == nil then
       return defaultKindsFor(formatKey, validated)
     end
-    return copyKinds(kinds)
+    return BattleState.copyActionKinds(kinds)
   end
   error(BattleErrors.missingBehavior("unknown battle format " .. formatKey, { format = formatKey }))
 end
@@ -312,7 +230,7 @@ end
 local function checkRestoredShape(state)
   local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
   for _, frame in ipairs(frames) do
-    checkFrameKind(frame)
+    BattleState.checkContinuationFrame(frame)
   end
   if state.status == "waiting" then
     if state.pending == nil then
@@ -350,26 +268,6 @@ local function freshSchedule()
     residualCursor = nil,
     pendingFaints = {},
   }
-end
-
----@param state table<string, unknown>
----@return table<integer, table<string, unknown>> drained events in sequence order
-local function drainOutbox(state)
-  local outbox = state.outbox --[[@as table<integer, table<string, unknown>>]]
-  local flushed = {}
-  for _, event in ipairs(outbox) do
-    flushed[#flushed + 1] = event
-  end
-  state.outbox = {}
-  return flushed
-end
-
----@param context table<string, unknown>
----@param frame table<string, unknown>
-local function pushCheckedFrame(context, frame)
-  checkFrameKind(frame)
-  local typed = context --[[@as BattleContext]]
-  typed:pushFrame(frame)
 end
 
 ---@param state table<string, unknown>
@@ -428,7 +326,7 @@ local function buildBatch(state, admitted)
     )(stream, "quick_claw", { kind = "order_sample", position = position })
   end
   (state.pending --[[@as table<string, unknown>]]).nativeOrderRolls = rolls
-  pushCheckedFrame(context, {
+  context:pushFrame({
     kind = "round",
     version = 1,
     cursor = "awaiting_replies",
@@ -3431,7 +3329,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     elseif action.kind == "switch" then
       executeSwitch(state, context, action, ordinal, cause)
     elseif action.kind == "confirm" then
-      pushCheckedFrame(context, {
+      context:pushFrame({
         kind = "action",
         version = 1,
         cursor = "apply",
@@ -3669,7 +3567,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       reserved = { replacements = {}, items = {} },
       replacement = { obligations = stored },
     }
-    pushCheckedFrame(context, {
+    context:pushFrame({
       kind = "round",
       version = 1,
       cursor = "awaiting_replies",
@@ -3766,7 +3664,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       reserved = { replacements = {}, items = {} },
       learning = { obligations = obligations },
     }
-    pushCheckedFrame(context, {
+    context:pushFrame({
       kind = "round",
       version = 1,
       cursor = "awaiting_replies",
@@ -4207,7 +4105,7 @@ function HgssSessionExecutor.new(scenarioRecord, content)
       ruleset = tostring(validated.ruleset),
     }))
   end
-  checkContent(content, validated.ruleset --[[@as string]])
+  BattleState.checkBattleContent(content, validated.ruleset --[[@as string]])
   local admitted = admittedKindsFor(validated.format --[[@as string]], content, validated)
   local moveFacts = checkMoveFacts(validated)
   local speciesFacts = checkSpeciesFacts(validated)
@@ -4274,7 +4172,7 @@ function HgssSessionExecutor.restore(snapshotData, content)
       ruleset = tostring(live.ruleset),
     }))
   end
-  checkContent(content, live.ruleset --[[@as string]])
+  BattleState.checkBattleContent(content, live.ruleset --[[@as string]])
   local admitted = admittedKindsFor(live.format --[[@as string]], content, nil)
   if type(live.rng) ~= "table" or live.rng.algorithm ~= BattleRng.ALGORITHM then
     error(BattleErrors.incompatibleSnapshot("native snapshots carry the native stream identity", {}))
@@ -4862,13 +4760,13 @@ function HgssSessionExecutor:advance(operationBudget)
       self:_finalizeOnce()
       return {
         status = "ended",
-        events = drainOutbox(state),
+        events = BattleState.drainOutbox(state),
         outcome = copyValue(state.outcome),
       }
     end
     if state.pending == nil then
       if remaining < 1 then
-        return { status = "running", events = drainOutbox(state) }
+        return { status = "running", events = BattleState.drainOutbox(state) }
       end
       buildBatch(state, self._admitted)
       remaining = remaining - 1
@@ -4877,7 +4775,7 @@ function HgssSessionExecutor:advance(operationBudget)
       end
     elseif DecisionBatch.isComplete(state) then
       if remaining < 1 then
-        return { status = "running", events = drainOutbox(state) }
+        return { status = "running", events = BattleState.drainOutbox(state) }
       end
       local completed = state.pending --[[@as table<string, unknown>]]
       if completed.replacement ~= nil then
@@ -4899,10 +4797,10 @@ function HgssSessionExecutor:advance(operationBudget)
         end
       end
     else
-      return { status = state.status, events = drainOutbox(state), request = DecisionBatch.view(state) }
+      return { status = state.status, events = BattleState.drainOutbox(state), request = DecisionBatch.view(state) }
     end
     if state.pending ~= nil and not DecisionBatch.isComplete(state) then
-      return { status = state.status, events = drainOutbox(state), request = DecisionBatch.view(state) }
+      return { status = state.status, events = BattleState.drainOutbox(state), request = DecisionBatch.view(state) }
     end
   end
 end

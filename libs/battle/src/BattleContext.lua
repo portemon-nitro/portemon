@@ -581,6 +581,10 @@ function BattleContext:updateMon(combatantId, patch)
   end
 end
 
+--- Admits one continuation frame onto the owned frame stack. The
+--- envelope checks stay here beside the copy; the round/action/switch
+--- kind vocabulary and per-kind state shapes dispatch to the shared
+--- state owner so live admission and snapshot restore cannot drift.
 ---@param frame table<string, unknown> plain continuation frame
 function BattleContext:pushFrame(frame)
   assert(type(frame) == "table", "continuation frames must be records")
@@ -596,6 +600,7 @@ function BattleContext:pushFrame(frame)
   if type(frame.state) ~= "table" then
     error(BattleErrors.invalidState("continuation frames must carry plain state", {}))
   end
+  BattleState.checkContinuationFrame(frame)
   local frames = self._state.frames --[[@as table<integer, table<string, unknown>>]]
   frames[#frames + 1] = copyValue(frame) --[[@as table<string, unknown>]]
 end
