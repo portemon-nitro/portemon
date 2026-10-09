@@ -1261,6 +1261,10 @@ function T.tests.party_keyboard_focus_reveals_stats_before_their_controls_are_ma
   })
 
   local initial = resolve(snapshot()).content.layout
+  Assert.isTrue(
+    initial.partyStrip.slots[1].rect.height >= 38,
+    "native Stats focus remains composed with the Party strip tall enough for a native icon"
+  )
   local firstIv = "party:field:iv:hp"
   local anchor = assert(initial.revealByTarget[firstIv], "offscreen Stats targets publish exact body coordinates")
   local viewport = assert(initial.viewports.party)
@@ -1437,6 +1441,78 @@ function T.tests.partial_party_details_and_moves_targets_respect_the_body_clip()
       Assert.equal(#actions, 0, "releasing an edit outside the body clip never activates or commits it")
     end
   end
+end
+
+function T.tests.expanded_party_moves_keep_dpad_navigation_and_reveal_the_last_card()
+  local metrics = interactionMetrics()
+  local controller = Controller.new()
+  controller:setSection("Party")
+  controller:selectPartyTab("Moves")
+  controller:setFocus("party:move:0")
+  local view = {
+    status = "ready",
+    ready = true,
+    dirty = false,
+    section = "Party",
+    scope = controller:snapshot().scope,
+    partyTab = "Moves",
+    partySlot0 = 0,
+    partySelector = {
+      slots = {
+        { kind = "member", slot0 = 0, iconKey = "test/member", active = true },
+        { kind = "empty" },
+        { kind = "empty" },
+        { kind = "empty" },
+        { kind = "empty" },
+        { kind = "empty" },
+      },
+    },
+    partyMoves = {
+      slots = {
+        { kind = "move", slot0 = 0, label = "Tackle", targetId = "party:move:0" },
+        { kind = "move", slot0 = 1, label = "Growl", targetId = "party:move:1" },
+        { kind = "move", slot0 = 2, label = "Leer", targetId = "party:move:2" },
+        { kind = "move", slot0 = 3, label = "Bite", targetId = "party:move:3" },
+      },
+    },
+    textMetrics = metrics,
+  }
+  local function snapshot()
+    view.focus = controller.focus
+    view.scope = { id = controller.scopeId, epoch = controller.scopeEpoch }
+    view.scrollOffsets = controller.scrollOffsets
+    return view
+  end
+  local function layout()
+    return Layout.compute(snapshot(), 256, 192, metrics)
+  end
+  local state = stateHarness({
+    status = "ready",
+    controller = controller,
+    _snapshot = snapshot,
+    _resolve = function()
+      return { content = { layout = layout() } }
+    end,
+  })
+
+  local current = layout()
+  local lastAnchor = assert(current.revealByTarget["party:move:3"])
+  local viewport = assert(current.viewports.party)
+  local expectedOffset = ScrollViewport.reveal(viewport.offset, viewport.clip.height, lastAnchor.start, lastAnchor.extent)
+  state:_navigate(current, "right")
+  Assert.equal(controller.focus, "party:move:1", "Right moves between the top row cards")
+  state:_navigate(layout(), "down")
+  Assert.equal(controller.focus, "party:move:3", "Down preserves the right column in the second row")
+  local revealed = layout()
+  local target = assert(revealed.targets["party:move:3"], "the focused last card is physically materialized")
+  local clip = assert(revealed.viewports.party).clip
+  Assert.isTrue(target.rect.y >= clip.y and target.rect.y + target.rect.height <= clip.y + clip.height)
+  Assert.equal(
+    controller.scrollOffsets["party:Moves"] or 0,
+    expectedOffset,
+    "the focused last card applies its exact reveal offset"
+  )
+  Assert.equal(lastAnchor.viewportId, "party", "the last card remains anchored to the shared Party viewport")
 end
 
 function T.tests.party_reveal_keeps_exact_offsets_across_tabs_inputs_and_sizes()

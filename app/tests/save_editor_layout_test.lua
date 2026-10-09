@@ -727,6 +727,97 @@ function T.tests.party_moves_use_a_two_by_two_grid_without_inventing_empty_slots
   end
 end
 
+function T.tests.party_strip_centers_native_icons_and_moves_keep_full_height_across_viewports()
+  for _, size in ipairs({ { 256, 192 }, { 256, 400 }, { 640, 480 } }) do
+    local width, height = size[1], size[2]
+    local view = partyEditorView("Moves")
+    view.partyMoves.slots = {
+      { kind = "move", slot0 = 0, label = "Tackle", targetId = "party:move:0" },
+      { kind = "move", slot0 = 1, label = "Growl", targetId = "party:move:1" },
+      { kind = "move", slot0 = 2, label = "Leer", targetId = "party:move:2" },
+      { kind = "move", slot0 = 3, label = "Bite", targetId = "party:move:3" },
+    }
+    local layout = computeLayout(view, width, height)
+    local strip = assert(layout.partyStrip)
+    Assert.equal(#strip.slots, 6, "the Party strip retains six positions")
+    Assert.equal(strip.slots[3].kind, "add", "+Add remains the first free position")
+    for index = 1, 2 do
+      local slot = assert(strip.slots[index])
+      local icon = assert(slot.iconRect)
+      Assert.isTrue(icon.width >= 32 and icon.height >= 32, "native icon fits without minification")
+      Assert.isTrue(math.abs((icon.x + icon.width / 2) - (slot.rect.x + slot.rect.width / 2)) <= 1)
+      Assert.isTrue(math.abs((icon.y + icon.height / 2) - (slot.rect.y + slot.rect.height / 2)) <= 1)
+      Assert.equal(Layout.hitTest(layout, view, slot.rect.x + slot.rect.width / 2, slot.rect.y + slot.rect.height / 2), slot.targetId)
+    end
+    Assert.equal(Layout.hitTest(layout, view, strip.slots[3].rect.x + 1, strip.slots[3].rect.y + 1), "party:add")
+
+    local anchors = assert(layout.revealByTarget)
+    Assert.isTrue(anchors["party:move:0"].extent >= 36, "Move rows retain their minimum usable height")
+    Assert.equal(anchors["party:move:0"].start, anchors["party:move:1"].start)
+    Assert.equal(anchors["party:move:2"].start, anchors["party:move:3"].start)
+    Assert.isTrue(anchors["party:move:2"].start > anchors["party:move:0"].start)
+    for index = 0, 3 do
+      local anchor = assert(anchors["party:move:" .. index])
+      local viewport = assert(layout.viewports.party)
+      view.scrollOffsets = {
+        ["party:Moves"] = ScrollViewport.reveal(viewport.offset, viewport.clip.height, anchor.start, anchor.extent),
+      }
+      local materialized = computeLayout(view, width, height)
+      local slot = assert(materialized.targets["party:move:" .. index])
+      Assert.isTrue(slot.rect.height >= 36, "Move card " .. index .. " retains its minimum usable height")
+      Assert.equal(
+        Layout.hitTest(
+          materialized,
+          view,
+          slot.rect.x + slot.rect.width / 2,
+          slot.rect.y + slot.rect.height / 2
+        ),
+        "party:move:" .. index,
+        "each expanded Move remains pointer reachable after reveal"
+      )
+    end
+    local lastAnchor = assert(layout.revealByTarget["party:move:3"])
+    Assert.equal(lastAnchor.viewportId, "party")
+    view.scrollOffsets = {
+      ["party:Moves"] = ScrollViewport.reveal(
+        layout.viewports.party.offset,
+        layout.viewports.party.clip.height,
+        lastAnchor.start,
+        lastAnchor.extent
+      ),
+    }
+    local scrolled = computeLayout(view, width, height)
+    Assert.notNil(scrolled.targets["party:move:3"], "the last Move remains materialized after reveal")
+    Assert.equal(scrolled.viewports.party.offset, view.scrollOffsets["party:Moves"])
+  end
+end
+
+function T.tests.party_warning_and_empty_prompt_targets_use_the_body_clip()
+  for _, size in ipairs({ { 256, 192 }, { 256, 400 }, { 640, 480 } }) do
+    local width, height = size[1], size[2]
+    local warning = partyEditorView("Stats")
+    warning.partyWarning = "Party validation warning that may wrap beyond one line"
+    warning.scrollOffsets = { ["party:Stats"] = 12 }
+    local warningLayout = computeLayout(warning, width, height)
+    local warningTarget = assert(warningLayout.targets["party:validation"])
+    local warningClip = assert(warningLayout.viewports.party).clip
+    Assert.equal(warningTarget.clip, warningClip, "warning text inherits the Party body viewport clip")
+    Assert.isNil(
+      Layout.hitTest(warningLayout, warning, warningTarget.rect.x + 1, warningClip.y - 1),
+      "the clipped part of a warning cannot be hit"
+    )
+
+    local empty = partyEditorView("Stats")
+    empty.partyEmpty = true
+    empty.partySlot0 = nil
+    empty.focus = "party:add"
+    empty.scrollOffsets = { ["party:Stats"] = 12 }
+    local emptyLayout = computeLayout(empty, width, height)
+    local prompt = assert(emptyLayout.targets["party:empty"])
+    Assert.equal(prompt.clip, emptyLayout.viewports.party.clip, "the empty prompt inherits the Party body clip")
+  end
+end
+
 function T.tests.party_layout_publishes_pixel_anchors_for_each_logical_body_item()
   local stats = partyEditorView("Stats")
   local compact = computeLayout(stats, 256, 192)

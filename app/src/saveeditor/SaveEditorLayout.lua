@@ -778,7 +778,7 @@ local function buildParty(ctx)
     innerWidth = math.max(innerWidth, shellRight - contentX)
     ctx.innerWidth = innerWidth
   end
-  local stripHeight = math.max(30, metrics.lineHeight + 14)
+  local stripHeight = math.max(40, metrics.lineHeight + 14)
   local stripY = ctx.contentTop + 4
   local cellWidth = innerWidth / 6
   local stripSlots = {}
@@ -789,9 +789,13 @@ local function buildParty(ctx)
       local targetId = "party:slot:" .. assert(slot.slot0, "member positions carry their slot")
       entry.targetId = targetId
       entry.iconKey = slot.iconKey
-      local iconSize = math.min(cell.width - 4, cell.height - 4)
-      entry.iconRect =
-        rect(cell.x + (cell.width - iconSize) / 2, cell.y + (cell.height - iconSize) / 2, iconSize, iconSize)
+      local iconSize = 32
+      entry.iconRect = rect(
+        PixelScale.snapLogical(cell.x + (cell.width - iconSize) / 2),
+        PixelScale.snapLogical(cell.y + (cell.height - iconSize) / 2),
+        iconSize,
+        iconSize
+      )
       ctx.targets[targetId] = cell
       ctx.focusPositions[targetId] = cell
       addFocusable(ctx, targetId)
@@ -846,7 +850,7 @@ local function buildParty(ctx)
       bodyItems[#bodyItems + 1] = {
         kind = "move-row",
         slots = { view.partyMoves.slots[index], view.partyMoves.slots[index + 1] },
-        extent = math.max(30, metrics.lineHeight + 14),
+        extent = math.max(38, metrics.lineHeight + 20),
       }
     end
   elseif tab == "Details" and view.partyDetails ~= nil then
@@ -933,11 +937,13 @@ local function buildParty(ctx)
         local noticeRect = rect(contentX, y, innerWidth, item.extent - 2)
         ctx.rows[#ctx.rows + 1] = { role = "warning", targetId = "party:validation", label = assert(view.partyWarning) }
         ctx.targets["party:validation"] = noticeRect
+        ctx.containerClips["party:validation"] = ctx.viewports.party.clip
       elseif item.kind == "prompt" then
         local promptRect = rect(contentX, y, innerWidth, item.extent - 2)
         ctx.rows[#ctx.rows + 1] =
           { role = "read-only value", targetId = "party:empty", label = "No member selected", value = "Choose + Add" }
         ctx.targets["party:empty"] = promptRect
+        ctx.containerClips["party:empty"] = ctx.viewports.party.clip
       elseif item.kind == "facts" then
         local factWidth = innerWidth / item.columns
         local factHeight = item.extent / (math.ceil(#item.facts / item.columns))

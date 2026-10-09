@@ -1711,6 +1711,171 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
   Assert.equal(compactDraw.y, math.floor(compactDraw.y + 0.5), "compact icon y is a logical pixel anchor")
 end
 
+function T.party_member_icons_stay_native_and_center_distinct_ink_in_the_strip(scope)
+  for _, size in ipairs({ { 256, 192 }, { 256, 400 } }) do
+    local width, height = size[1], size[2]
+    local topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = width, height = height },
+      touch = true,
+      role = "world",
+    })
+    local images, quads = {}, {}
+    for _, icon in ipairs({ "party/chikorita", "party/totodile" }) do
+      local imageData = love.image.newImageData(32, 32)
+      for y = 0, 31 do
+        for x = 0, 31 do
+          local dx, dy = x - 15.5, y - 15.5
+          local inside = icon == "party/chikorita" and dx * dx + dy * dy <= 100
+            or icon == "party/totodile" and math.abs(dx) + math.abs(dy) <= 13
+          if inside then
+            imageData:setPixel(x, y, icon == "party/chikorita" and 0.2 or 0.9, 0.3, 0.3, 1)
+          end
+        end
+      end
+      images[icon] = scope:own(love.graphics.newImage(imageData))
+      quads[icon] = scope:own(love.graphics.newQuad(0, 0, 32, 32, 32, 32))
+    end
+    local function render(name, removeIcons)
+        local data, _, layout, _, _, _, _, drawOrder, _, plan = draw(
+        scope,
+        width,
+        height,
+        topology,
+        name,
+        "Party",
+        "Stats",
+        nil,
+          function(renderer, view, currentPlan)
+          for _, key in ipairs({ "party/chikorita", "party/totodile" }) do
+            renderer._icons[key] = {
+              image = images[key],
+              quad = quads[key],
+              dimensions = { width = 32, height = 32 },
+            }
+          end
+          if removeIcons then
+            for _, slot in ipairs(assert(currentPlan.content.layout.partyStrip).slots) do
+              slot.iconKey = nil
+            end
+            for _, slot in ipairs(view.partySelector.slots) do
+              slot.iconKey = nil
+            end
+          end
+        end
+      )
+      return data, layout, drawOrder, plan
+    end
+    local painted, layout, drawOrder, plan = render("party-native-icons-" .. width .. "x" .. height, false)
+    local reference, _, _, referencePlan = render("party-native-icons-reference-" .. width .. "x" .. height, true)
+    local seen = {}
+    for _, entry in ipairs(drawOrder) do
+      if entry.path == "icon:party/chikorita" or entry.path == "icon:party/totodile" then
+        seen[entry.path] = entry
+        local slotIndex = entry.path == "icon:party/chikorita" and 1 or 2
+        local slot = assert(layout.partyStrip.slots[slotIndex])
+        Assert.isTrue(slot.iconRect.width >= 32 and slot.iconRect.height >= 32, "the native quad fits inside its icon slot")
+        local dimensions = entry.sourceDimensions
+        Assert.equal(entry.args[5], 1, "prepared Party icon stays at native horizontal scale")
+        Assert.equal(entry.args[6], 1, "prepared Party icon stays at native vertical scale")
+        Assert.equal(dimensions.width, 32)
+        Assert.equal(dimensions.height, 32)
+        Assert.near(entry.args[2] + dimensions.width / 2, slot.rect.x + slot.rect.width / 2, 1)
+        Assert.near(entry.args[3] + dimensions.height / 2, slot.rect.y + slot.rect.height / 2, 1)
+        Assert.isTrue(layout.targets["party:add"] ~= nil, "+Add remains available alongside the native icons")
+      end
+    end
+    Assert.notNil(seen["icon:party/chikorita"])
+    Assert.notNil(seen["icon:party/totodile"])
+
+    for slotIndex = 1, 2 do
+      local slot = assert(layout.partyStrip.slots[slotIndex])
+      local count, sumX, sumY = 0, 0, 0
+      for y = math.floor(slot.rect.y), math.ceil(slot.rect.y + slot.rect.height) - 1 do
+        for x = math.floor(slot.rect.x), math.ceil(slot.rect.x + slot.rect.width) - 1 do
+          local red, green, blue = pixelAtLogical(painted, plan, x, y)
+          local oldRed, oldGreen, oldBlue = pixelAtLogical(reference, referencePlan, x, y)
+          if math.abs(red - oldRed) + math.abs(green - oldGreen) + math.abs(blue - oldBlue) > 0.2 then
+            count = count + 1
+            sumX, sumY = sumX + x, sumY + y
+          end
+        end
+      end
+      Assert.isTrue(count > 20, "each distinct Party silhouette contributes visible ink")
+      Assert.near(sumX / count, slot.rect.x + slot.rect.width / 2, 1, "rendered icon ink is centered horizontally")
+      Assert.near(sumY / count, slot.rect.y + slot.rect.height / 2, 1, "rendered icon ink is centered vertically")
+    end
+  end
+end
+
+function T.party_validation_warning_pixels_stay_inside_the_scrolled_body_clip(scope)
+  local width, height = 256, 192
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local warningText = "Validation warning that crosses the clipped Party body"
+  local function render(name, warning, offset)
+    local data, _, layout, _, _, _, _, _, _, plan = draw(
+      scope,
+      width,
+      height,
+      topology,
+      name,
+      "Party",
+      "Stats",
+      nil,
+      nil,
+      function(view)
+        view.partyWarning = warning
+        view.scrollOffsets = { ["party:Stats"] = offset }
+      end
+    )
+    return data, layout, plan
+  end
+
+  local partial, partialLayout, partialPlan = render("party-warning-partial", warningText, 12)
+  local plain, _, plainPlan = render("party-warning-partial-reference", "", 12)
+  local target = assert(partialLayout.targets["party:validation"])
+  local clip = assert(partialLayout.viewports.party).clip
+  Assert.equal(target.clip, clip, "the warning target publishes the Party body clip")
+  local visibleInk = false
+  for y = 0, height - 1 do
+    for x = 0, width - 1 do
+      local red, green, blue = pixelAtLogical(partial, partialPlan, x, y)
+      local oldRed, oldGreen, oldBlue = pixelAtLogical(plain, plainPlan, x, y)
+      local changed = math.abs(red - oldRed) + math.abs(green - oldGreen) + math.abs(blue - oldBlue) > 0.05
+      if
+        y >= clip.y
+        and y < clip.y + clip.height
+        and x >= target.rect.x
+        and x < target.rect.x + target.rect.width
+      then
+        visibleInk = visibleInk or changed
+      else
+        Assert.isFalse(changed, "warning-derived pixels remain inside the Party viewport")
+      end
+    end
+  end
+  Assert.isTrue(visibleInk, "the partial warning still paints its visible intersection")
+
+  local scrolled, scrolledLayout, scrolledPlan = render("party-warning-scrolled-away", warningText, 10000)
+  local scrolledPlain, _, scrolledPlainPlan = render("party-warning-scrolled-away-reference", "", 10000)
+  Assert.isNil(scrolledLayout.targets["party:validation"], "a fully scrolled warning has no target geometry")
+  for y = 0, height - 1 do
+    for x = 0, width - 1 do
+      local red, green, blue = pixelAtLogical(scrolled, scrolledPlan, x, y)
+      local oldRed, oldGreen, oldBlue = pixelAtLogical(scrolledPlain, scrolledPlainPlan, x, y)
+      Assert.isTrue(
+        math.abs(red - oldRed) + math.abs(green - oldGreen) + math.abs(blue - oldBlue) <= 0.05,
+        "a fully scrolled warning leaves no stale pixels"
+      )
+    end
+  end
+end
+
 local function spriteDrawGeometry(record)
   local args = record.args
   local iconQuad = record.path:match("^icon:") ~= nil
