@@ -349,6 +349,7 @@ local function newContext(view, width, height, metrics)
     valueModalNotice = nil,
     numberLayout = nil,
     numberTooSmall = false,
+    choiceTooSmall = false,
     decisionList = nil,
     locationHeader = nil,
     bagGrid = nil,
@@ -1289,11 +1290,35 @@ local function buildChoiceScope(ctx)
     end
     choiceScroll.visibleTargets[#choiceScroll.visibleTargets + 1] = id
   end
-  local footerWidth = math.max(1, math.floor(innerWidth / 2))
-  ctx.targets.confirm = rect(contentX, contentBottom - 34, footerWidth - 2, 34)
-  ctx.targets.cancel = rect(contentX + footerWidth, contentBottom - 34, innerWidth - footerWidth, 34)
-  addFocusable(ctx, "confirm")
-  addFocusable(ctx, "cancel")
+  local chooseGlyphWidth = math.ceil(metrics.measure("Choose"))
+  local backGlyphWidth = math.ceil(metrics.measure("Back"))
+  local actionPadding, actionGap, outerPadding = 12, 6, 8
+  local availableWidth = innerWidth - outerPadding * 2
+  local chooseWidth, backWidth
+  for padding = actionPadding, 4, -1 do
+    chooseWidth = math.max(40, chooseGlyphWidth + padding * 2)
+    backWidth = math.max(40, backGlyphWidth + padding * 2)
+    if chooseWidth + actionGap + backWidth <= availableWidth then
+      break
+    end
+  end
+  local pairWidth = chooseWidth + actionGap + backWidth
+  local footerY = contentBottom - 34
+  if pairWidth > availableWidth then
+    ctx.choiceTooSmall = true
+    ctx.disabledTargets.confirm = true
+    if innerWidth > 0 and contentBottom > bodyBottom then
+      backWidth = math.min(math.max(40, backGlyphWidth + 8), innerWidth)
+      ctx.targets.cancel = rect(contentX + math.floor((innerWidth - backWidth) / 2), footerY, backWidth, 34)
+      addFocusable(ctx, "cancel")
+    end
+  else
+    local actionX = contentX + math.floor((innerWidth - pairWidth) / 2)
+    ctx.targets.confirm = rect(actionX, footerY, chooseWidth, 34)
+    ctx.targets.cancel = rect(actionX + chooseWidth + actionGap, footerY, backWidth, 34)
+    addFocusable(ctx, "confirm")
+    addFocusable(ctx, "cancel")
+  end
   if dialog.count == 0 or dialog.pending then
     ctx.disabledTargets.confirm = true
   end
@@ -2506,6 +2531,7 @@ local function publishPlan(ctx)
     valueModalNotice = ctx.valueModalNotice,
     numberLayout = ctx.numberLayout,
     numberTooSmall = ctx.numberTooSmall,
+    choiceTooSmall = ctx.choiceTooSmall,
     decisionList = ctx.decisionList,
     listSurfaces = ctx.listSurfaces,
     partyStatsTable = ctx.partyStatsTable,

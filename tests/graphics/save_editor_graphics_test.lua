@@ -4877,6 +4877,126 @@ local function ringsSurrounding(calls, rect, tolerance)
   return matches
 end
 
+function T.choice_footer_actions_fit_native_labels_and_keep_focus_in_pending_states(scope)
+  local metrics = realTextMetrics(scope)
+  local function render(width, state, focus)
+    local height = width == 256 and 192 or 600
+    local topology = singleDisplay(width, height)
+    local calls, restore = recordOutlinedRectangles()
+    local data, renderedText, layout, view, textCalls, plan
+    local result
+    local ok, failure = xpcall(function()
+      result = {
+        draw(
+          scope,
+          width,
+          height,
+          topology,
+          "choice-footer-" .. state .. "-" .. focus .. "-" .. width,
+          "Player",
+          "choice-list",
+          nil,
+          nil,
+          function(view)
+            local options, rowTargets, indexByTarget = {}, {}, {}
+            local count = state == "empty" and 0 or 25
+            for index = 1, count do
+              local key = string.format("K%02d", index)
+              local targetId = "choice:" .. key
+              options[index] = { key = key, label = "Choice " .. index }
+              rowTargets[index] = targetId
+              indexByTarget[targetId] = index
+            end
+            view.valueEditor = {
+              kind = "choice",
+              count = count,
+              idAt = function(index)
+                return rowTargets[index]
+              end,
+              indexOf = function(targetId)
+                return indexByTarget[targetId]
+              end,
+              rowAt = function(index)
+                return options[index]
+              end,
+              options = options,
+              rowTargets = rowTargets,
+              indexByTarget = indexByTarget,
+              index = count == 0 and 0 or 1,
+              selectedKey = count == 0 and nil or "K01",
+              query = state == "empty" and "no-match" or state == "pending" and "Choice 1" or "",
+              empty = state == "empty",
+              pending = state == "pending",
+            }
+            view.focus = focus
+            view.focusVisible = true
+            view.scope = { id = "value:choice:species", epoch = 2, kind = "value", focusId = focus }
+          end
+        ),
+      }
+    end, debug.traceback)
+    restore()
+    if not ok then
+      error(failure, 0)
+    end
+    data, renderedText, layout, view, textCalls, plan =
+      result[1], result[2], result[3], result[6], result[9], result[10]
+    return data, renderedText, layout, view, textCalls, plan, calls
+  end
+
+  for _, width in ipairs({ 256, 800 }) do
+    for _, targetId in ipairs({ "confirm", "cancel" }) do
+      local label = targetId == "confirm" and "Choose" or "Back"
+      local data, text, layout, _, textCalls, plan, calls = render(width, "populated", targetId)
+      local rect = assert(layout.targets[targetId], label .. " has a hit rectangle").rect
+      local requiredWidth = math.max(40, math.ceil(metrics.measure(label) + 24))
+      Assert.isTrue(rect.width >= requiredWidth, label .. " keeps its native glyph and 12px side padding")
+      Assert.isTrue(text:find(label, 1, true) ~= nil, label .. " is painted in full")
+      local labelCall
+      for _, call in ipairs(textCalls) do
+        if
+          call.value == label
+          and call.x >= rect.x - 1
+          and call.x + metrics.measure(label) <= rect.x + rect.width + 1
+          and call.y >= rect.y - 1
+          and call.y + metrics.lineHeight <= rect.y + rect.height + 1
+        then
+          labelCall = call
+          break
+        end
+      end
+      labelCall = assert(labelCall, label .. " reaches the text painter")
+      Assert.near(
+        labelCall.x + metrics.measure(label) / 2,
+        rect.x + rect.width / 2,
+        1,
+        label .. " glyphs center inside their painted target"
+      )
+      Assert.equal(#ringsSurrounding(calls, rect, 3), 1, label .. " focus ring follows its published target")
+      Assert.isTrue(
+        rect.x >= layout.content.x and rect.x + rect.width <= layout.content.x + layout.content.width,
+        label .. " remains inside the framed content")
+      Assert.isTrue(data ~= nil and plan ~= nil, label .. " renders through the graphics composition")
+    end
+  end
+
+  for _, state in ipairs({ "empty", "pending" }) do
+    local _, _, layout, _, _, _, calls = render(256, state, "cancel")
+    local back = assert(layout.targets.cancel, state .. " choices retain a Back target").rect
+    local chooseEligible = false
+    for _, control in ipairs(layout.focusNavigation.controls) do
+      if control.id == "confirm" then
+        chooseEligible = control.eligible
+      end
+    end
+    Assert.isFalse(chooseEligible, state .. " choices disable Choose")
+    Assert.equal(#ringsSurrounding(calls, back, 3), 1, state .. " choices keep Back visibly focused")
+    Assert.isTrue(
+      back.width >= math.max(40, math.ceil(metrics.measure("Back") + 24)),
+      state .. " Back retains a usable native-sized target")
+  end
+end
+
 function T.numeric_focus_ring_surrounds_the_digit_and_not_its_arrows(scope)
   local topology = singleDisplay(640, 480)
   local calls, restore = recordOutlinedRectangles()

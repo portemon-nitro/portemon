@@ -1289,7 +1289,8 @@ local function paintValueEditor(ctx)
       if dialog.empty then
         drawBodyText(renderer, "No matching choices.", viewport.clip.x + 3, viewport.clip.y + 3, "hint")
       end
-      for _, id in ipairs({ "confirm", "cancel" }) do
+      local actionIds = layout.choiceTooSmall and { "cancel" } or { "confirm", "cancel" }
+      for _, id in ipairs(actionIds) do
         local rect = targetRect(layout, id)
         assert(rect)
         local disabled = id == "confirm" and dialog.empty == true

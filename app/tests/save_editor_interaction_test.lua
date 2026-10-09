@@ -2121,6 +2121,63 @@ function T.tests.choice_editor_opens_on_a_row_and_back_cancels_the_editor()
   Assert.equal(assert(editor:result()).kind, "cancel", "Back publishes only a cancellation result")
 end
 
+function T.tests.choice_footer_back_remains_available_for_pending_and_empty_filters()
+  local function isEligible(layout, targetId)
+    for _, control in ipairs(layout.focusNavigation.controls) do
+      if control.id == targetId then
+        return control.eligible
+      end
+    end
+    return false
+  end
+
+  local function tapBack(harness, layout)
+    local state = harness.state
+    local rect = assert(layout.targets.cancel, "Back remains a live action").rect
+    state.presentation = {
+      mapInput = function(_, events)
+        return events
+      end,
+      cancelPointers = function() end,
+    }
+    local x, y = rect.x + rect.width / 2, rect.y + rect.height / 2
+    Assert.equal(Layout.hitTest(layout, state:_snapshot(), x, y), "cancel", "Back's published bounds stay hittable")
+    state:_pointer({ { type = "pointer_down", pointerId = "touch:choice-back", targetId = "cancel", x = x, y = y } })
+    state:_pointer({ { type = "pointer_up", pointerId = "touch:choice-back", targetId = "cancel", x = x, y = y } })
+    Assert.equal(assert(harness.editor:result()).kind, "cancel", "tapping Back cancels the choice editor")
+    Assert.equal(harness.finishedCount(), 1, "Back completes the active editor once")
+  end
+
+  local pending = choiceListHarness(10000)
+  pending.controller:setFocus("choice:K05")
+  pending.state:textinput("Choice 1")
+  local pendingLayout = pending.buildLayout()
+  local pendingList = assert(pendingLayout.lists["value:choice"])
+  Assert.isTrue(pendingList.pending, "a large choice filter remains pending after its bounded layout update")
+  Assert.notNil(pendingLayout.targets.cancel, "pending filtering retains Back")
+  Assert.isFalse(isEligible(pendingLayout, "confirm"), "pending filtering disables Choose")
+  pending.state:_activateControl("confirm", pendingLayout)
+  Assert.isNil(pending.editor:result(), "disabled Choose cannot submit a stale option")
+  Assert.equal(pending.finishedCount(), 0, "disabled Choose leaves the editor open")
+  tapBack(pending, pendingLayout)
+
+  local empty = choiceListHarness(12)
+  empty.controller:setFocus("choice:K05")
+  empty.state:textinput("no-match")
+  empty.editor:update(256)
+  local emptyLayout = empty.buildLayout()
+  local emptyList = assert(emptyLayout.lists["value:choice"])
+  Assert.isTrue(emptyList.empty, "a zero-result query publishes an empty choice list")
+  Assert.deepEqual(emptyList.rowTargets, {}, "a zero-result query has no selectable options")
+  Assert.notNil(emptyLayout.viewports["value:choice"], "the empty result keeps its list viewport")
+  Assert.notNil(emptyLayout.targets.cancel, "an empty result retains Back")
+  Assert.isFalse(isEligible(emptyLayout, "confirm"), "an empty result disables Choose")
+  empty.state:_activateControl("confirm", emptyLayout)
+  Assert.isNil(empty.editor:result(), "disabled Choose cannot submit from an empty result")
+  Assert.equal(empty.finishedCount(), 0, "disabled Choose leaves the empty picker open")
+  tapBack(empty, emptyLayout)
+end
+
 function T.tests.choice_typing_reconciles_the_cursor_without_publishing()
   local harness = choiceListHarness()
   local controller, state, editor = harness.controller, harness.state, harness.editor

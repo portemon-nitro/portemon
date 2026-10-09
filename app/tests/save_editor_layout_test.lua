@@ -3206,4 +3206,52 @@ function T.tests.resize_publishes_before_the_next_draw_without_resolving_in_draw
   Assert.equal(resolves, 0, "the draw performs no fresh resolve")
 end
 
+function T.tests.choice_footer_actions_use_measured_centered_rectangles()
+  local options = {}
+  for index = 1, 25 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local metrics = filterMetrics()
+  for _, size in ipairs({ { width = 256, height = 192 }, { width = 800, height = 600 } }) do
+    local view = {
+      section = "Bag",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      bagRows = {},
+      valueEditor = choiceDialog(options, "K05"),
+      scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:K05" },
+      scrollOffsets = {},
+    }
+    local layout = Layout.compute(view, size.width, size.height, metrics)
+    local choose = assert(layout.targets.confirm, "choice confirms remain hittable").rect
+    local back = assert(layout.targets.cancel, "choice Back remains hittable").rect
+    local viewport = assert(layout.viewports["value:choice"], "choice rows retain their scroll viewport")
+    local chooseWidth = math.max(40, math.ceil(metrics.measure("Choose") + 24))
+    local backWidth = math.max(40, math.ceil(metrics.measure("Back") + 24))
+    Assert.isTrue(choose.width >= chooseWidth, "Choose includes its native label and 12px side padding")
+    Assert.isTrue(back.width >= backWidth, "Back includes its native label and 12px side padding")
+    Assert.equal(choose.y, back.y, "choice actions share one footer row")
+    Assert.isTrue(choose.x + choose.width + 6 <= back.x, "choice actions keep a 6px gap")
+    Assert.near(
+      choose.x + (back.x + back.width - choose.x) / 2,
+      layout.content.x + layout.content.width / 2,
+      1,
+      "the action pair is centered within the content column"
+    )
+    Assert.isTrue(back.x + back.width - choose.x < layout.content.width, "choice actions do not fill the content column")
+    Assert.isTrue(choose.x >= layout.content.x + 8, "the action pair keeps outer left padding")
+    Assert.isTrue(back.x + back.width <= layout.content.x + layout.content.width - 8, "the action pair keeps outer right padding")
+    Assert.isTrue(choose.y >= viewport.clip.y + viewport.clip.height, "the footer does not overlap the choice viewport")
+    for targetId, rect in pairs({ confirm = choose, cancel = back }) do
+      Assert.equal(layout.targets[targetId].rect, rect, targetId .. " paints and hits the same rectangle")
+      Assert.equal(
+        Layout.hitTest(layout, view, rect.x + rect.width / 2, rect.y + rect.height / 2),
+        targetId,
+        targetId .. " remains reachable at its center"
+      )
+    end
+  end
+end
+
 return T
