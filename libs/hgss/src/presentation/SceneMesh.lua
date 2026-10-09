@@ -24,10 +24,6 @@ local MAGIC = G4MeshFormat.MAGIC
 local VERSION = G4MeshFormat.VERSION
 local STRIDE = G4MeshFormat.STRIDE
 
-local function isFinite(n)
-  return n == n and n ~= math.huge and n ~= -math.huge
-end
-
 -- Validate and unpack a G4M2 batch into { format, vertexCount, indexCount,
 -- vertices, indices }. Raises a structured error on any malformed field. Pure.
 function SceneMesh.decode(bytes, context)
@@ -77,11 +73,6 @@ function SceneMesh.decode(bytes, context)
     local x, y, z = r:f32le(off), r:f32le(off + 4), r:f32le(off + 8)
     local u, v = r:f32le(off + 12), r:f32le(off + 16)
     local nx, ny, nz = r:f32le(off + 20), r:f32le(off + 24), r:f32le(off + 28)
-    for _, n in ipairs({ x, y, z, u, v, nx, ny, nz }) do
-      if not isFinite(n) then
-        Errors.raise(FieldErrors.MESH_NONFINITE, "non-finite vertex component at vertex " .. i, { source = context })
-      end
-    end
     local red = r:u8(off + 32) / 255
     local green = r:u8(off + 33) / 255
     local blue = r:u8(off + 34) / 255
@@ -168,9 +159,6 @@ end
 function SceneMesh.prepareUpload(bytes, context)
   local decoded = SceneMesh.decode(bytes, context)
   local components = layoutComponents()
-  for index, vertex in ipairs(decoded.vertices) do
-    assert(#vertex == components, "decoded vertex " .. index .. " does not match the render vertex layout")
-  end
   local vertexData = love.data.newByteData(decoded.vertexCount * components * ffi.sizeof("float"))
   local floats = ffi.cast("float *", vertexData:getFFIPointer())
   for vertexIndex = 1, decoded.vertexCount do

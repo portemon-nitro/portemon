@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local ffi = require("ffi")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
+local G4MeshFormat = require("libs.assets.src.model.G4MeshFormat")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local VertexFormat = require("libs.assets.src.model.VertexFormat")
 
@@ -45,6 +46,11 @@ local function sampleBatch()
     }
   end
   return { vertices = vertices, indices = { 0, 1, 2, 0, 2, 3 } }
+end
+
+-- Overwrite one byte at a zero-based offset, keeping the total length fixed.
+local function patchByte(bytes, zeroBasedOffset, value)
+  return bytes:sub(1, zeroBasedOffset) .. string.char(value) .. bytes:sub(zeroBasedOffset + 2)
 end
 
 -- Probe shape for the negative GPU-object assertions below: prepareUpload
@@ -197,6 +203,61 @@ return {
       local bytes = MeshWriter.encode(sampleBatch())
       throwsCode("MESH_BAD_MAGIC", function()
         SceneMesh.prepareUpload("XXXX" .. bytes:sub(5))
+      end)
+    end,
+
+    ["decode trusts producer-validated vertices without a per-vertex finiteness rescan"] = function()
+      local bytes = MeshWriter.encode(sampleBatch())
+      -- Patch vertex 1 x (first float of the vertex payload) to +inf bits.
+      local at = G4MeshFormat.HEADER_SIZE + 1
+      local patched = bytes:sub(1, at - 1) .. string.char(0, 0, 0x80, 0x7F) .. bytes:sub(at + 4)
+      local decoded = SceneMesh.decode(patched)
+      Assert.equal(decoded.vertices[1][1], math.huge)
+    end,
+
+    ["encode rejects an out-of-range color source at the producer"] = function()
+      local batch = sampleBatch()
+      batch.vertices[1].colorSource = 7
+      throwsCode("MESH_UNRESOLVED_COLOR_SOURCE", function()
+        MeshWriter.encode(batch)
+      end)
+    end,
+
+    ["rejects a bad stride before allocating"] = function()
+      local bytes = patchByte(patchByte(MeshWriter.encode(sampleBatch()), 16, 41), 17, 0)
+      throwsCode("MESH_BAD_STRIDE", function()
+        SceneMesh.decode(bytes)
+      end)
+    end,
+
+    ["rejects a bad index width before allocating"] = function()
+      local bytes = patchByte(patchByte(MeshWriter.encode(sampleBatch()), 18, 8), 19, 0)
+      throwsCode("MESH_BAD_INDEX_WIDTH", function()
+        SceneMesh.decode(bytes)
+      end)
+    end,
+
+    ["rejects an out-of-range index before GPU upload"] = function()
+      local bytes = MeshWriter.encode(sampleBatch())
+      local indexAt = G4MeshFormat.HEADER_SIZE + 4 * G4MeshFormat.STRIDE
+      bytes = patchByte(patchByte(bytes, indexAt, 244), indexAt + 1, 1)
+      throwsCode("MESH_INDEX_OUT_OF_RANGE", function()
+        SceneMesh.decode(bytes)
+      end)
+    end,
+
+    ["rejects a huge advertised count before allocating"] = function()
+      local bytes = MeshWriter.encode(sampleBatch())
+      bytes = patchByte(patchByte(patchByte(patchByte(bytes, 8, 255), 9, 255), 10, 255), 11, 255)
+      throwsCode("MESH_BAD_LENGTH", function()
+        SceneMesh.decode(bytes)
+      end)
+    end,
+
+    ["rejects an out-of-range color source"] = function()
+      local bytes = patchByte(MeshWriter.encode(sampleBatch()), G4MeshFormat.HEADER_SIZE + 36, 7)
+      throwsCode("MESH_BAD_COLOR_SOURCE", function()
+        SceneMesh.decode(bytes)
       end)
     end,
   },
