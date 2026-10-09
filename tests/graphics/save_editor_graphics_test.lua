@@ -40,7 +40,7 @@ local function realTextMetrics(scope)
   }
 end
 
-local function fixture(scope, width, height, topology, section, variant, versionId)
+local function fixture(scope, width, height, topology, section, variant, versionId, beforeResolve)
   section = section or "Progress"
   local view
   view = {
@@ -579,6 +579,9 @@ local function fixture(scope, width, height, topology, section, variant, version
       end,
     }
   end
+  if beforeResolve then
+    beforeResolve(view)
+  end
   local context = DisplayContext.new({
     graphics = love.graphics,
     topologyProvider = function()
@@ -634,9 +637,9 @@ local function assertCallerGraphicsStateRestored(graphics, before, name)
   Assert.equal(graphics.getShader(), before.shader, name .. " restores the caller shader")
 end
 
-local function draw(scope, width, height, topology, name, section, variant, versionId, beforeDraw)
+local function draw(scope, width, height, topology, name, section, variant, versionId, beforeDraw, beforeResolve)
   local graphics = love.graphics
-  local view, presentation, plan = fixture(scope, width, height, topology, section, variant, versionId)
+  local view, presentation, plan = fixture(scope, width, height, topology, section, variant, versionId, beforeResolve)
   local drawnText = {}
   local paletteCalls = {}
   local text = {
@@ -2188,6 +2191,295 @@ function T.party_stats_table_renders_distinct_aligned_columns(scope)
     draw(scope, 256, 192, compactTopology, "party-stats-table-compact", "Party", "Stats")
   Assert.isTrue(compactText:find("Level", 1, true) ~= nil, "compact Stats keeps its header facts")
   Assert.notNil(compactLayout.viewports.party, "compact Stats keeps its scroll viewport")
+end
+
+function T.party_stats_draws_the_visible_part_of_a_scrolled_fact_cell(scope)
+  local width, height = 256, 192
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local data, renderedText, layout, _, _, _, _, _, paletteCalls, plan = draw(
+    scope,
+    width,
+    height,
+    topology,
+    "party-partial-stats-fact",
+    "Party",
+    "Stats",
+    nil,
+    nil,
+    function(view)
+      view.scrollOffsets = { ["party:Stats"] = 6 }
+    end
+  )
+  local clip = assert(layout.viewports.party).clip
+  local target = assert(layout.targets["party:field:level"], "a fact cell crossing the viewport edge is painted")
+  Assert.isTrue(target.rect.y < clip.y, "the fact keeps its full untrimmed rectangle")
+  Assert.isTrue(renderedText:find("Level", 1, true) ~= nil, "the visible fact label is rendered")
+  local labelCall = assert(findPaletteCall(paletteCalls, "Level"))
+  Assert.equal(labelCall.value, "Level")
+
+  local referenceData, _, _, _, _, _, _, _, _, referencePlan = draw(
+    scope,
+    width,
+    height,
+    topology,
+    "party-partial-stats-reference",
+    "Party",
+    "Stats",
+    nil,
+    nil,
+    function(view)
+      view.scrollOffsets = { ["party:Stats"] = 6 }
+      view.partyStats = nil
+    end
+  )
+  local visibleInk = false
+  for y = clip.y, math.min(clip.y + clip.height - 1, target.rect.y + target.rect.height - 1) do
+    for x = target.rect.x, target.rect.x + target.rect.width - 1 do
+      local red, green, blue = pixelAtLogical(data, plan, x, y)
+      local referenceRed, referenceGreen, referenceBlue = pixelAtLogical(referenceData, referencePlan, x, y)
+      visibleInk = visibleInk
+        or math.abs(red - referenceRed) + math.abs(green - referenceGreen) + math.abs(blue - referenceBlue) > 0.05
+    end
+  end
+  Assert.isTrue(visibleInk, "the intersecting cell contributes visible pixels inside the clip")
+  for y = target.rect.y, clip.y - 1 do
+    for x = target.rect.x, target.rect.x + target.rect.width - 1 do
+      local red, green, blue = pixelAtLogical(data, plan, x, y)
+      local referenceRed, referenceGreen, referenceBlue = pixelAtLogical(referenceData, referencePlan, x, y)
+      Assert.isTrue(
+        math.abs(red - referenceRed) + math.abs(green - referenceGreen) + math.abs(blue - referenceBlue) <= 0.05,
+        "the partial fact does not paint above the Party viewport"
+      )
+    end
+  end
+end
+
+
+function T.party_partial_stats_headers_rows_moves_and_details_paint_inside_the_body_clip(scope)
+  local width, height = 256, 192
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+
+  local function renderPartial(tab, targetId, setup, clearBody, header)
+    local offset
+    local data, _, layout, _, _, _, _, _, _, plan = draw(
+      scope,
+      width,
+      height,
+      topology,
+      "party-partial-" .. tab .. "-" .. (targetId or "header"),
+      "Party",
+      "partial",
+      nil,
+      nil,
+      function(view)
+        view.partyTab = tab
+        setup(view)
+        local unscrolled = Layout.compute(view, width, height, view.textMetrics)
+        local viewport = assert(unscrolled.viewports.party)
+        if header then
+          local firstStat = assert(unscrolled.revealByTarget["party:field:iv:hp"])
+          local headerHeight = math.max(14, view.textMetrics.lineHeight + 2)
+          offset = firstStat.start - headerHeight + 1
+        else
+          local anchor = assert(unscrolled.revealByTarget[targetId])
+          offset = anchor.start - viewport.clip.height + math.floor(anchor.extent / 2)
+        end
+        view.scrollOffsets = { ["party:" .. tab] = offset }
+      end
+    )
+    local clip = assert(layout.viewports.party).clip
+    local partialRect = header and assert(layout.partyStatsTable).headers[1].rect
+      or assert(layout.targets[targetId]).rect
+    local dataWithoutBody, _, _, _, _, _, _, _, _, referencePlan = draw(
+      scope,
+      width,
+      height,
+      topology,
+      "party-partial-" .. tab .. "-reference-" .. (targetId or "header"),
+      "Party",
+      "partial",
+      nil,
+      nil,
+      function(view)
+        view.partyTab = tab
+        view.scrollOffsets = { ["party:" .. tab] = offset }
+        clearBody(view)
+      end
+    )
+    local clipBottom = clip.y + clip.height
+    Assert.isTrue(partialRect.y < clipBottom and partialRect.y + partialRect.height > clip.y)
+    local visiblePixelsDiffer = false
+    for y = math.max(clip.y, partialRect.y), math.min(clipBottom - 1, partialRect.y + partialRect.height - 1) do
+      for x = partialRect.x, partialRect.x + partialRect.width - 1 do
+        local red, green, blue = pixelAtLogical(data, plan, x, y)
+        local referenceRed, referenceGreen, referenceBlue = pixelAtLogical(dataWithoutBody, referencePlan, x, y)
+        visiblePixelsDiffer = visiblePixelsDiffer
+          or math.abs(red - referenceRed) + math.abs(green - referenceGreen) + math.abs(blue - referenceBlue) > 0.05
+      end
+    end
+    Assert.isTrue(visiblePixelsDiffer, tab .. " paints the intersecting part of its body item")
+    for y = partialRect.y, clip.y - 1 do
+      for x = partialRect.x, partialRect.x + partialRect.width - 1 do
+        local red, green, blue = pixelAtLogical(data, plan, x, y)
+        local referenceRed, referenceGreen, referenceBlue = pixelAtLogical(dataWithoutBody, referencePlan, x, y)
+        Assert.isTrue(
+          math.abs(red - referenceRed) + math.abs(green - referenceGreen) + math.abs(blue - referenceBlue) <= 0.05,
+          tab .. " does not paint above its body clip"
+        )
+      end
+    end
+    for y = clipBottom, partialRect.y + partialRect.height - 1 do
+      for x = partialRect.x, partialRect.x + partialRect.width - 1 do
+        local red, green, blue = pixelAtLogical(data, plan, x, y)
+        local referenceRed, referenceGreen, referenceBlue = pixelAtLogical(dataWithoutBody, referencePlan, x, y)
+        Assert.isTrue(
+          math.abs(red - referenceRed) + math.abs(green - referenceGreen) + math.abs(blue - referenceBlue) <= 0.05,
+          tab .. " does not paint below its body clip"
+        )
+      end
+    end
+  end
+
+  renderPartial(
+    "Stats",
+    nil,
+    function() end,
+    function(view)
+      view.partyStats = nil
+    end,
+    true
+  )
+  renderPartial(
+    "Stats",
+    "party:field:iv:specialDefense",
+    function() end,
+    function(view)
+      view.partyStats = nil
+    end
+  )
+  renderPartial(
+    "Moves",
+    "party:move:12",
+    function(view)
+      view.focus = "party:move:0"
+      view.partyMoves.slots = {}
+      for slot0 = 0, 15 do
+        view.partyMoves.slots[#view.partyMoves.slots + 1] = {
+          kind = "move",
+          slot0 = slot0,
+          label = "Move " .. slot0,
+          targetId = "party:move:" .. slot0,
+        }
+      end
+      view.partyMoves.slots[#view.partyMoves.slots + 1] = {
+        kind = "add",
+        label = "+ Add",
+        targetId = "party:move:add",
+      }
+    end,
+    function(view)
+      view.partyMoves = { slots = {} }
+    end
+  )
+  renderPartial(
+    "Details",
+    "party:field:detail:12",
+    function(view)
+      view.focus = "party:field:detail:1"
+      view.partyDetails.rows = {}
+      for index = 1, 16 do
+        view.partyDetails.rows[index] = {
+          role = "integer value",
+          targetId = "party:field:detail:" .. index,
+          id = "detail:" .. index,
+          label = "Detail " .. index,
+          value = index,
+          editor = { kind = "integer" },
+          enabled = true,
+        }
+      end
+    end,
+    function(view)
+      view.partyDetails = nil
+    end
+  )
+end
+
+function T.party_partial_details_focus_artwork_is_clipped(scope)
+  local width, height = 256, 192
+  local targetId = "party:field:detail:12"
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local function render(focus, name)
+    local data, _, layout, _, _, _, _, _, _, plan = draw(
+      scope,
+      width,
+      height,
+      topology,
+      name,
+      "Party",
+      "partial",
+      nil,
+      nil,
+      function(view)
+        view.partyTab = "Details"
+        view.focus = focus
+        view.focusVisible = true
+        view.partyDetails.rows = {}
+        for index = 1, 16 do
+          view.partyDetails.rows[index] = {
+            role = "integer value",
+            targetId = "party:field:detail:" .. index,
+            id = "detail:" .. index,
+            label = "Detail " .. index,
+            value = index,
+            editor = { kind = "integer" },
+            enabled = true,
+          }
+        end
+        local unscrolled = Layout.compute(view, width, height, view.textMetrics)
+        local anchor = assert(unscrolled.revealByTarget[targetId])
+        local viewport = assert(unscrolled.viewports.party)
+        view.scrollOffsets = {
+          ["party:Details"] = anchor.start - viewport.clip.height + math.floor(anchor.extent / 2),
+        }
+      end
+    )
+    return data, layout, plan
+  end
+
+  local focusedData, focusedLayout, focusedPlan = render(targetId, "party-partial-detail-focused")
+  local plainData, _, plainPlan = render("party:field:detail:1", "party-partial-detail-unfocused")
+  local clip = assert(focusedLayout.viewports.party).clip
+  local partialRect = assert(focusedLayout.targets[targetId]).rect
+  Assert.isTrue(partialRect.y < clip.y + clip.height)
+  local focusDiffersInside = false
+  for y = 0, height - 1 do
+    for x = 0, width - 1 do
+      local red, green, blue = pixelAtLogical(focusedData, focusedPlan, x, y)
+      local plainRed, plainGreen, plainBlue = pixelAtLogical(plainData, plainPlan, x, y)
+      local differs = math.abs(red - plainRed) + math.abs(green - plainGreen) + math.abs(blue - plainBlue) > 0.05
+      if differs then
+        Assert.isTrue(x >= clip.x and x < clip.x + clip.width and y >= clip.y and y < clip.y + clip.height)
+        focusDiffersInside = true
+      end
+    end
+  end
+  Assert.isTrue(focusDiffersInside, "a partially visible focused Details row paints its focus artwork")
 end
 
 function T.party_stats_summary_uses_white_ink_with_a_dark_shadow(scope)
@@ -4367,6 +4659,56 @@ function T.graphics_state_is_restored_after_rings_and_scaled_text(scope)
     love.graphics.setScissor(0, 0, 640, 480)
   end)
   Assert.equal(love.graphics.getLineWidth(), 3, "bag cards restore the non-default caller line width")
+end
+
+function T.party_body_paint_failure_restores_clip_and_graphics_state(scope)
+  local graphics = love.graphics
+  local topology = singleDisplay(640, 480)
+  local originalDraw = graphics.draw
+  local originalPush, originalPop = graphics.push, graphics.pop
+  local originalLineWidth = graphics.getLineWidth()
+  local function scissorState()
+    local x, y, width, height = graphics.getScissor()
+    return x == nil and { enabled = false }
+      or { enabled = true, x = x, y = y, width = width, height = height }
+  end
+  local pushStates, restoredStates = {}, {}
+  graphics.push = function(...)
+    originalPush(...)
+    pushStates[#pushStates + 1] = scissorState()
+  end
+  graphics.pop = function(...)
+    originalPop(...)
+    local pushedState = table.remove(pushStates)
+    if pushedState ~= nil then
+      restoredStates[#restoredStates + 1] = { pushedState, scissorState() }
+    end
+  end
+  local ok, err = pcall(function()
+    draw(scope, 640, 480, topology, "party-body-paint-failure", "Party", "draft", nil, function(renderer)
+      local drawTextWithPalette = renderer.text.drawTextWithPalette
+      renderer.text.drawTextWithPalette = function(textRenderer, text, x, y, palette)
+        if text == "Level" then
+          graphics.setLineWidth(7)
+          error("party body paint failed")
+        end
+        return drawTextWithPalette(textRenderer, text, x, y, palette)
+      end
+    end)
+  end)
+  graphics.draw = originalDraw
+  graphics.push, graphics.pop = originalPush, originalPop
+  for _ = 1, #pushStates do
+    graphics.pop()
+  end
+  graphics.setCanvas()
+  Assert.isFalse(ok, "the injected Party body paint failure propagates")
+  Assert.isTrue(tostring(err):find("party body paint failed", 1, true) ~= nil)
+  Assert.equal(graphics.getLineWidth(), originalLineWidth, "Party body failure restores graphics state")
+  Assert.isTrue(#restoredStates >= 3, "Party body failure unwinds text, clip and section scopes")
+  for _, states in ipairs(restoredStates) do
+    Assert.deepEqual(states[2], states[1], "each popped Party paint scope restores its prior clip")
+  end
 end
 
 function T.deferred_icon_preparation_uses_the_draw_time_presentation(_)

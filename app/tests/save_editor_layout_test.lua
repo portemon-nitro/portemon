@@ -775,6 +775,65 @@ function T.tests.party_layout_publishes_pixel_anchors_for_each_logical_body_item
   Assert.equal(detailAnchors["party:field:detail:12"].viewportId, "party")
 end
 
+function T.tests.party_body_materializes_rows_and_cells_that_overlap_its_viewport()
+  local stats = partyEditorView("Stats")
+  local initialStats = computeLayout(stats, 256, 192)
+  local firstStat = assert(initialStats.revealByTarget["party:field:iv:hp"])
+
+  stats.scrollOffsets = { ["party:Stats"] = 1 }
+  local partialFact = computeLayout(stats, 256, 192)
+  local partyClip = assert(partialFact.viewports.party).clip
+  local level =
+    assert(partialFact.targets["party:field:level"], "a fact cell remains materialized at a one-pixel overlap")
+  Assert.equal(level.clip, partyClip, "the fact target retains the Party body clip")
+  Assert.isTrue(level.rect.y < partyClip.y, "the original fact geometry extends above the viewport")
+  Assert.equal(Layout.hitTest(partialFact, stats, level.rect.x + 1, partyClip.y + 1), "party:field:level")
+  Assert.isNil(
+    Layout.hitTest(partialFact, stats, level.rect.x + 1, partyClip.y - 1),
+    "the clipped part of a fact cell cannot be hit"
+  )
+
+  stats.scrollOffsets = { ["party:Stats"] = firstStat.start + 1 }
+  local partialStat = computeLayout(stats, 256, 192)
+  local hpTarget =
+    assert(partialStat.targets["party:field:iv:hp"], "a stat row remains materialized at a one-pixel overlap")
+  Assert.isTrue(hpTarget.rect.y < partialStat.viewports.party.clip.y, "the stat row keeps its untrimmed rect")
+  local hpRow
+  for _, row in ipairs(assert(partialStat.partyStatsTable).rows) do
+    if row.key == "hp" then
+      hpRow = row
+    end
+  end
+  Assert.notNil(hpRow, "an intersecting Stats table row is published")
+
+  local moves = partyEditorView("Moves")
+  local moveInitial = computeLayout(moves, 256, 160)
+  local moveAnchor = assert(moveInitial.revealByTarget["party:move:0"])
+  moves.scrollOffsets = { ["party:Moves"] = moveAnchor.start + 1 }
+  local partialMove = computeLayout(moves, 256, 160)
+  local move = assert(partialMove.targets["party:move:0"], "an intersecting Moves button is published")
+  Assert.equal(move.clip, partialMove.viewports.party.clip)
+
+  local details = partyEditorView("Details")
+  details.partyDetails.rows = {}
+  for index = 1, 12 do
+    details.partyDetails.rows[index] = {
+      role = "named choice",
+      targetId = "party:field:detail:" .. index,
+      id = "detail:" .. index,
+      label = "Detail " .. index,
+      value = index,
+      editor = { kind = "choice" },
+    }
+  end
+  local detailInitial = computeLayout(details, 256, 192)
+  local detailAnchor = assert(detailInitial.revealByTarget["party:field:detail:1"])
+  details.scrollOffsets = { ["party:Details"] = detailAnchor.start + 1 }
+  local partialDetail = computeLayout(details, 256, 192)
+  local detail = assert(partialDetail.targets["party:field:detail:1"], "an intersecting Details row is published")
+  Assert.equal(detail.clip, partialDetail.viewports.party.clip)
+end
+
 function T.tests.party_stats_header_and_pager_are_explicit_focus_stops()
   local layout = computeLayout(partyEditorView("Stats"), 800, 600)
   local headerRegion = nil
@@ -808,6 +867,38 @@ function T.tests.party_stats_header_and_pager_are_explicit_focus_stops()
     tostring(controller.focus):match("^party:slot:") ~= nil,
     "Up from the header returns to the member strip"
   )
+
+  local offscreenView = partyEditorView("Stats")
+  offscreenView.scrollOffsets = { ["party:Stats"] = 10000 }
+  local offscreenLayout = computeLayout(offscreenView, 256, 192)
+  Assert.isNil(offscreenLayout.targets["party:field:level"], "scrolled-out header geometry stays virtual")
+  local offscreenHeader
+  for _, region in ipairs(offscreenLayout.focusNavigation.regions) do
+    if region.id == "party:header" then
+      offscreenHeader = region
+    end
+  end
+  Assert.notNil(offscreenHeader, "the scrolled-out header keeps its semantic region")
+  Assert.equal(offscreenHeader.logical.indexOf("party:field:level"), 1)
+  local offscreenStats
+  for _, region in ipairs(offscreenLayout.focusNavigation.regions) do
+    if region.id == "party:stats" then
+      offscreenStats = region
+    end
+  end
+  Assert.notNil(offscreenStats, "the visible Stats rows keep their semantic region")
+  Assert.equal(offscreenStats.logical.matrix[1][1], "party:field:iv:hp")
+  local reveal = Navigation.resolve({
+    scope = { id = offscreenLayout.scopeId, epoch = offscreenLayout.scopeEpoch },
+    regions = offscreenLayout.focusNavigation.regions,
+    controls = offscreenLayout.focusNavigation.controls,
+  }, {
+    scopeId = offscreenLayout.scopeId,
+    regionId = "party:stats",
+    targetId = "party:field:iv:hp",
+  }, "up")
+  Assert.equal(reveal.targetId, "party:field:level")
+  Assert.equal(reveal.reveal.viewportId, "party", "offscreen header focus requests the body viewport reveal")
 
   controller:setFocus("back")
   navigate(controller, layout, "up")

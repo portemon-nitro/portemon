@@ -1002,101 +1002,109 @@ local function paintParty(ctx)
     )
   end
   if view.section == "Party" then
-    for _, row in ipairs(layout.rows) do
-      if row.partyField then
-        local y = row.layoutRect.y + 3
-        local fieldRole = row.role == "warning" and "error" or pagePalette(renderer.skin)
-        drawBodyText(
-          renderer,
-          fitText(renderer, row.label, row.labelRect.width / BODY_TEXT_SCALE),
-          row.labelRect.x,
-          y,
-          fieldRole
-        )
-        if row.editable then
-          drawButtonControl(
-            renderer,
-            row.valueRect,
-            row.valueText or "",
-            false,
-            isFocusedVisible(view, row.targetId),
-            false,
-            nil,
-            false
-          )
-        elseif row.role == "action" then
-          drawButtonControl(
-            renderer,
-            row.layoutRect,
-            row.label,
-            false,
-            isFocusedVisible(view, row.targetId),
-            row.enabled == false,
-            row.semantic or actionSemantic(row.targetId),
-            false
-          )
-        elseif row.valueText ~= nil then
-          drawBodyText(
-            renderer,
-            fitText(renderer, row.valueText, row.valueRect.width / BODY_TEXT_SCALE),
-            row.valueRect.x,
-            y,
-            "hint"
-          )
-        end
-      end
-    end
-    if layout.partyStatsTable ~= nil then
-      local stats = layout.partyStatsTable
-      local headerColor = renderer.skin.cards.normal.border
-      local function drawCellText(text, target, role)
-        local lineHeight = renderer.text.fontDef.lineHeight
-        local scale = math.min(1, target.height / lineHeight)
-        graphics.push("all")
-        local ok, err = pcall(function()
-          graphics.translate(target.x + 4, target.y + math.max(0, (target.height - lineHeight * scale) / 2))
-          graphics.scale(scale, scale)
-          local palette = role == "hint" and pageMutedPalette(renderer.skin)
-            or role == "error" and pageErrorPalette(renderer.skin)
-            or pagePalette(renderer.skin)
-          drawText(renderer, fitText(renderer, text, (target.width - 8) / scale), 0, 0, palette)
-        end)
-        graphics.pop()
-        if not ok then
-          error(err, 0)
-        end
-      end
-      for _, header in ipairs(stats.headers) do
-        setColor(graphics, headerColor)
-        graphics.rectangle("fill", header.rect.x, header.rect.y, header.rect.width, header.rect.height)
-        drawCellText(header.label, header.rect)
-      end
-      for _, row in ipairs(stats.rows) do
-        for _, cell in ipairs(row.cells) do
-          local cellRect = cell.rect
-          if isFocusedVisible(view, cell.targetId) then
-            setColor(graphics, SELECTED)
-            graphics.rectangle("line", cellRect.x + 1, cellRect.y + 1, cellRect.width - 2, cellRect.height - 2)
+    local bodySucceeded, bodyFailure
+    LogicalSurface.clip(graphics, assert(layout.viewports.party).clip, function()
+      bodySucceeded, bodyFailure = pcall(function()
+        for _, row in ipairs(layout.rows) do
+          if row.partyField then
+            local y = row.layoutRect.y + 3
+            local fieldRole = row.role == "warning" and "error" or pagePalette(renderer.skin)
+            drawBodyText(
+              renderer,
+              fitText(renderer, row.label, row.labelRect.width / BODY_TEXT_SCALE),
+              row.labelRect.x,
+              y,
+              fieldRole
+            )
+            if row.editable then
+              drawButtonControl(
+                renderer,
+                row.valueRect,
+                row.valueText or "",
+                false,
+                isFocusedVisible(view, row.targetId),
+                false,
+                nil,
+                false
+              )
+            elseif row.role == "action" then
+              drawButtonControl(
+                renderer,
+                row.layoutRect,
+                row.label,
+                false,
+                isFocusedVisible(view, row.targetId),
+                row.enabled == false,
+                row.semantic or actionSemantic(row.targetId),
+                false
+              )
+            elseif row.valueText ~= nil then
+              drawBodyText(
+                renderer,
+                fitText(renderer, row.valueText, row.valueRect.width / BODY_TEXT_SCALE),
+                row.valueRect.x,
+                y,
+                "hint"
+              )
+            end
           end
-          drawCellText(cell.label, cellRect, "normal")
         end
-      end
-    end
-    if layout.partyMoves ~= nil then
-      for _, slot in ipairs(layout.partyMoves.slots) do
-        if slot.kind ~= "empty" then
-          drawButtonControl(
-            renderer,
-            slot.rect,
-            slot.label or "",
-            false,
-            isFocusedVisible(view, slot.targetId),
-            false,
-            slot.kind == "add" and "primary" or nil,
-            false
-          )
+        if layout.partyStatsTable ~= nil then
+          local stats = layout.partyStatsTable
+          local headerColor = renderer.skin.cards.normal.border
+          local function drawCellText(text, target, role)
+            local lineHeight = renderer.text.fontDef.lineHeight
+            local scale = math.min(1, target.height / lineHeight)
+            graphics.push("all")
+            local ok, err = pcall(function()
+              graphics.translate(target.x + 4, target.y + math.max(0, (target.height - lineHeight * scale) / 2))
+              graphics.scale(scale, scale)
+              local palette = role == "hint" and pageMutedPalette(renderer.skin)
+                or role == "error" and pageErrorPalette(renderer.skin)
+                or pagePalette(renderer.skin)
+              drawText(renderer, fitText(renderer, text, (target.width - 8) / scale), 0, 0, palette)
+            end)
+            graphics.pop()
+            if not ok then
+              error(err, 0)
+            end
+          end
+          for _, header in ipairs(stats.headers) do
+            setColor(graphics, headerColor)
+            graphics.rectangle("fill", header.rect.x, header.rect.y, header.rect.width, header.rect.height)
+            drawCellText(header.label, header.rect)
+          end
+          for _, row in ipairs(stats.rows) do
+            for _, cell in ipairs(row.cells) do
+              local cellRect = cell.rect
+              if isFocusedVisible(view, cell.targetId) then
+                setColor(graphics, SELECTED)
+                graphics.rectangle("line", cellRect.x + 1, cellRect.y + 1, cellRect.width - 2, cellRect.height - 2)
+              end
+              drawCellText(cell.label, cellRect, "normal")
+            end
+          end
         end
-      end
+        if layout.partyMoves ~= nil then
+          for _, slot in ipairs(layout.partyMoves.slots) do
+            if slot.kind ~= "empty" then
+              drawButtonControl(
+                renderer,
+                slot.rect,
+                slot.label or "",
+                false,
+                isFocusedVisible(view, slot.targetId),
+                false,
+                slot.kind == "add" and "primary" or nil,
+                false
+              )
+            end
+          end
+        end
+      end)
+    end)
+    if not bodySucceeded then
+      error(bodyFailure, 0)
     end
   end
 end

@@ -1172,6 +1172,256 @@ function T.tests.party_navigation_uses_the_exact_unscrolled_body_anchor()
     expected,
     "the focused row is revealed from its exact pixel interval"
   )
+
+  local partialTargetId = "party:field:iv:attack"
+  local focusedAnchor = assert(layout.revealByTarget[partialTargetId])
+  view.scrollOffsets["party:Stats"] = focusedAnchor.start + 1
+  local partialLayout = Layout.compute(view, 256, 192, metrics)
+  local partialTarget =
+    assert(partialLayout.targets[partialTargetId], "partially visible focused rows remain pointer targets")
+  local clip = assert(partialLayout.viewports.party).clip
+  Assert.isTrue(partialTarget.rect.y < clip.y, "the target keeps its full rectangle above the clip")
+  Assert.equal(
+    Layout.hitTest(partialLayout, view, partialTarget.rect.x + 1, clip.y + 1),
+    partialTargetId,
+    "a pointer hit inside the visible intersection selects the partial row"
+  )
+  Assert.isNil(
+    Layout.hitTest(partialLayout, view, partialTarget.rect.x + 1, clip.y - 1),
+    "a pointer hit in the hidden part of the same row is rejected"
+  )
+end
+
+function T.tests.partial_party_details_and_moves_targets_respect_the_body_clip()
+  local metrics = interactionMetrics()
+  local function partialView(tab)
+    local controller = Controller.new()
+    controller:setSection("Party")
+    controller:selectPartyTab(tab)
+    controller:setFocus(tab == "Details" and "party:field:detail0" or "party:move:0")
+    local view = {
+      section = "Party",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      partyTab = tab,
+      partySlot0 = 0,
+      focus = controller.focus,
+      scope = { id = "section:Party", epoch = controller.scopeEpoch },
+      scrollOffsets = controller.scrollOffsets,
+      partySelector = {
+        slots = {
+          { kind = "member", slot0 = 0 },
+          { kind = "empty" },
+          { kind = "empty" },
+          { kind = "empty" },
+          { kind = "empty" },
+          { kind = "empty" },
+        },
+      },
+      partyMoves = { slots = {} },
+      partyDetails = { rows = {} },
+    }
+    for index = 0, 12 do
+      view.partyMoves.slots[#view.partyMoves.slots + 1] = {
+        kind = "move",
+        slot0 = index,
+        targetId = "party:move:" .. index,
+        name = "Move " .. index,
+      }
+      view.partyDetails.rows[#view.partyDetails.rows + 1] = {
+        role = "integer value",
+        targetId = "party:field:detail" .. index,
+        label = "Detail " .. index,
+        value = index,
+        editor = { kind = "integer" },
+      }
+    end
+    local targetId = tab == "Details" and "party:field:detail0" or "party:move:0"
+    local initial = Layout.compute(view, 256, 192, metrics)
+    local anchor = assert(initial.revealByTarget[targetId])
+    view.scrollOffsets["party:" .. tab] = anchor.start + 1
+    local layout = Layout.compute(view, 256, 192, metrics)
+    return controller, view, layout, targetId
+  end
+
+  for _, tab in ipairs({ "Moves", "Details" }) do
+    local controller, view, layout, targetId = partialView(tab)
+    local target = assert(layout.targets[targetId])
+    local clip = assert(layout.viewports.party).clip
+    Assert.isTrue(target.rect.y < clip.y, tab .. " keeps the full rectangle for a partially visible first row")
+    Assert.equal(
+      Layout.hitTest(layout, view, target.rect.x + 1, clip.y + 1),
+      targetId,
+      tab .. " accepts pointer hits within the visible intersection"
+    )
+    Assert.isNil(
+      Layout.hitTest(layout, view, target.rect.x + 1, clip.y - 1),
+      tab .. " rejects pointer hits in the clipped part"
+    )
+
+    local actions = {}
+    local state = stateHarness({
+      status = "ready",
+      controller = controller,
+      presentation = {
+        cancelPointers = function() end,
+        mapInput = function(_, events)
+          for _, event in ipairs(events) do
+            event.targetId = Layout.hitTest(layout, view, event.x, event.y)
+          end
+          return events
+        end,
+      },
+      _snapshot = function()
+        return view
+      end,
+      _resolve = function()
+        return { content = { layout = layout } }
+      end,
+      _dispatchActivationAction = function(_, action)
+        actions[#actions + 1] = action
+      end,
+    })
+    state:_pointer({ {
+      type = "pointer_down",
+      pointerId = "touch:partial-" .. tab,
+      x = target.rect.x + 1,
+      y = clip.y + 1,
+    } })
+    state:_pointer({ {
+      type = "pointer_up",
+      pointerId = "touch:partial-" .. tab,
+      x = target.rect.x + 1,
+      y = clip.y + 1,
+    } })
+    Assert.equal(#actions, 1, tab .. " dispatches an in-clip partial-control tap on release")
+
+    if tab == "Details" then
+      actions = {}
+      state:_pointer({ {
+        type = "pointer_down",
+        pointerId = "touch:partial-detail-drag",
+        x = target.rect.x + 1,
+        y = clip.y + 1,
+      } })
+      state:_pointer({ {
+        type = "pointer_up",
+        pointerId = "touch:partial-detail-drag",
+        x = target.rect.x + 1,
+        y = clip.y - 1,
+      } })
+      Assert.equal(#actions, 0, "releasing an edit outside the body clip never activates or commits it")
+    end
+  end
+end
+
+function T.tests.party_reveal_keeps_exact_offsets_across_tabs_inputs_and_sizes()
+  local metrics = interactionMetrics()
+  local stats = {}
+  for _, key in ipairs({ "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+    stats[#stats + 1] = {
+      key = key,
+      label = key,
+      iv = 1,
+      ivEditor = { targetId = "party:field:iv:" .. key, editor = { kind = "integer" } },
+      ev = 2,
+      evEditor = { targetId = "party:field:ev:" .. key, editor = { kind = "integer" } },
+    }
+  end
+
+  local function runCase(tab, width, height, steps, navigatedTargetId, targetId)
+    local controller = Controller.new()
+    controller:setSection("Party")
+    controller:selectPartyTab(tab)
+    controller:setFocus(tab == "Stats" and "party:field:iv:hp" or tab == "Moves" and "party:move:0" or "party:field:detail0")
+    local view = {
+      section = "Party",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      partyTab = tab,
+      partySlot0 = 0,
+      partySelector = {
+        slots = {
+          { kind = "member", slot0 = 0 },
+          { kind = "empty" },
+          { kind = "empty" },
+          { kind = "empty" },
+          { kind = "empty" },
+          { kind = "empty" },
+        },
+      },
+      partyStats = { rows = stats, header = {} },
+      partyMoves = { slots = {} },
+      partyDetails = { rows = {} },
+      scrollOffsets = controller.scrollOffsets,
+    }
+    for index = 0, 39 do
+      view.partyMoves.slots[#view.partyMoves.slots + 1] = {
+        kind = "move",
+        slot0 = index,
+        targetId = "party:move:" .. index,
+        name = "Move " .. index,
+      }
+      view.partyDetails.rows[#view.partyDetails.rows + 1] = {
+        role = "integer value",
+        targetId = "party:field:detail" .. index,
+        label = "Detail " .. index,
+        value = index,
+        editor = { kind = "integer" },
+      }
+    end
+    local function snapshot()
+      view.focus = controller.focus
+      view.scope = { id = controller.scopeId, epoch = controller.scopeEpoch }
+      view.scrollOffsets = controller.scrollOffsets
+      return view
+    end
+    local function resolve(current)
+      return { content = { layout = Layout.compute(current, width, height, metrics) } }
+    end
+    local state = stateHarness({
+      status = "ready",
+      controller = controller,
+      _snapshot = snapshot,
+      _resolve = function(_, current)
+        return resolve(current)
+      end,
+    })
+    local before = resolve(snapshot()).content.layout
+    local anchor = assert(before.revealByTarget[targetId], "every logical Party row retains its pixel anchor")
+    local viewport = assert(before.viewports.party)
+    local expected = ScrollViewport.reveal(0, viewport.clip.height, anchor.start, anchor.extent)
+    Assert.isNil(before.targets[targetId], tab .. " starts with the destination offscreen and without hit geometry")
+
+    for _ = 1, steps do
+      state:_navigate(resolve(snapshot()).content.layout, "down")
+    end
+    Assert.equal(
+      controller.focus,
+      navigatedTargetId,
+      tab .. " navigates through its materialized focus region (actual " .. tostring(controller.focus) .. ")"
+    )
+    Assert.equal(controller.focus, targetId, tab .. " preserves logical focus on the requested offscreen row")
+    Assert.equal(controller.scrollOffsets["party:" .. tab], expected, tab .. " reveals from the exact row interval")
+    local wheelFocus = controller.focus
+    state:wheelmoved(0, -1)
+    Assert.equal(controller.focus, wheelFocus, tab .. " wheel scrolling preserves logical focus")
+    Assert.equal(
+      controller.scrollOffsets["party:" .. tab],
+      math.max(0, math.min(expected + 20, viewport.contentExtent - viewport.clip.height)),
+      tab .. " wheel scrolling advances by the published row extent"
+    )
+    local revealed = resolve(snapshot()).content.layout
+    local target = assert(revealed.targets[targetId], tab .. " materializes the destination after logical reveal")
+    local clip = assert(revealed.viewports.party).clip
+    Assert.isTrue(target.rect.y < clip.y + clip.height and target.rect.y + target.rect.height > clip.y)
+  end
+
+  runCase("Stats", 256, 192, 5, "party:field:iv:specialDefense", "party:field:iv:specialDefense")
+  runCase("Moves", 256, 192, 6, "party:move:12", "party:move:12")
+  runCase("Details", 640, 480, 20, "party:field:detail20", "party:field:detail20")
 end
 
 function T.tests.typing_filters_the_focused_list_without_a_search_target()

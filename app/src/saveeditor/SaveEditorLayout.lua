@@ -918,9 +918,8 @@ local function buildParty(ctx)
   local statHeaders, statRows, moveSlots = {}, {}, {}
   for index, item in ipairs(bodyItems) do
     local y = bodyTop + tops[index] - offset
-    local fits = y >= bodyTop and y + item.extent <= bodyBottom
     local overlaps = y < bodyBottom and y + item.extent > bodyTop
-    if fits or (item.kind == "facts" and overlaps) then
+    if overlaps then
       if item.kind == "notice" then
         local noticeRect = rect(contentX, y, innerWidth, item.extent - 2)
         ctx.rows[#ctx.rows + 1] = { role = "warning", targetId = "party:validation", label = assert(view.partyWarning) }
@@ -938,7 +937,7 @@ local function buildParty(ctx)
           local factRow = math.floor((factIndex - 1) / item.columns)
           local cellRect =
             rect(contentX + column * factWidth + 1, y + factRow * factHeight, factWidth - 2, factHeight - 2)
-          if cellRect.y >= bodyTop and cellRect.y + cellRect.height <= bodyBottom then
+          if cellRect.y < bodyBottom and cellRect.y + cellRect.height > bodyTop then
             local layoutRow = {
               role = "integer value",
               targetId = assert(fact.targetId, "header facts carry their editor target"),
@@ -1973,7 +1972,7 @@ local function buildFocusNavigation(ctx, targetRecords)
         or id == "bag:pockets"
       then
         kind = "row"
-      elseif id == "party:moves" then
+      elseif id == "party:moves" or id == "party:details" then
         kind = "column"
       end
       local region = addRegion(id, kind, record.rect)
@@ -2056,11 +2055,17 @@ local function buildFocusNavigation(ctx, targetRecords)
   end
   if ctx.partyMoves ~= nil then
     local matrix = {}
-    for index = 1, #ctx.partyMoves.slots, 2 do
+    local slots
+    if ctx.view.partyEmpty then
+      slots = {}
+    else
+      slots = assert(ctx.view.partyMoves).slots
+    end
+    for index = 1, #slots, 2 do
       local row = {}
-      for column = index, math.min(index + 1, #ctx.partyMoves.slots) do
-        local slot = ctx.partyMoves.slots[column]
-        if slot.targetId ~= nil and targetRecords[slot.targetId] ~= nil then
+      for column = index, math.min(index + 1, #slots) do
+        local slot = slots[column]
+        if slot ~= nil and slot.targetId ~= nil then
           row[#row + 1] = slot.targetId
         end
       end
@@ -2071,16 +2076,36 @@ local function buildFocusNavigation(ctx, targetRecords)
     local region = regionsById["party:moves"]
     if region ~= nil then
       region.logical = { matrix = matrix }
+      region.viewportId = "party"
     end
   end
   if ctx.partyStrip ~= nil then
     for _, regionId in ipairs({ "party:members", "party:header", "party:details", "party:pager" }) do
       local region = regionsById[regionId]
+      if region == nil and regionId == "party:header" and ctx.view.partyStats ~= nil then
+        region = addRegion(regionId, "row", assert(ctx.viewports.party).clip)
+      end
       if region ~= nil then
         local ids = {}
-        for _, targetId in ipairs(ctx.focusOrder) do
-          if targetRecords[targetId] ~= nil and regionFor(targetId) == regionId then
-            ids[#ids + 1] = targetId
+        if regionId == "party:header" and ctx.view.partyStats ~= nil then
+          for _, fact in ipairs(ctx.view.partyStats.header) do
+            if fact.targetId ~= nil and fact.editor ~= nil then
+              ids[#ids + 1] = fact.targetId
+            end
+          end
+          region.viewportId = "party"
+        elseif regionId == "party:details" and ctx.view.partyDetails ~= nil then
+          for _, row in ipairs(ctx.view.partyDetails.rows) do
+            if row.role == "action" or row.role == "integer value" or row.role == "named choice" then
+              ids[#ids + 1] = row.targetId
+            end
+          end
+          region.viewportId = "party"
+        else
+          for _, targetId in ipairs(ctx.focusOrder) do
+            if targetRecords[targetId] ~= nil and regionFor(targetId) == regionId then
+              ids[#ids + 1] = targetId
+            end
           end
         end
         region.logical = {
