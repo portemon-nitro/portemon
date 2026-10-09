@@ -193,10 +193,10 @@ local function advanceTask(task, budget)
       assert(type(summary.symbol) == "string" and summary.symbol ~= "", "map summary needs its source symbol")
       assert(type(summary.displayName) == "string" and summary.displayName ~= "", "map summary needs its display name")
       local groupId, groupName, nativeGroup
-      if summary.symbol:match("^MAP_BATTLE_FRONTIER_") then
-        groupId, groupName = "location:group:battle-frontier", "Battle Frontier"
-      elseif summary.symbol:match("^MAP_ROUTE_") then
-        groupId, groupName = "location:group:routes", "Routes"
+      if summary.symbol == "MAP_BATTLE_FRONTIER" or summary.symbol:match("^MAP_BATTLE_FRONTIER_") ~= nil then
+        groupId, groupName = "location:group:battle-frontier", "BATTLE FRONTIER"
+      elseif summary.symbol:match("^MAP.*_ROUTE_") ~= nil then
+        groupId, groupName = "location:group:routes", "ROUTES"
       else
         groupId = "location:group:" .. nativeId
         groupName = summary.section

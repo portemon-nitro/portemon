@@ -86,6 +86,13 @@ function T.tests.route_and_battle_frontier_prefixes_share_only_their_explicit_gr
     { mapId = 13, symbol = "MAP_BATTLE_FRONTIER_PLAZA", section = "Plaza", mapSectionNativeId = 8, displayName = "PLAZA" },
     { mapId = 14, symbol = "MAP_ROUTEHOUSE", section = "Route House", mapSectionNativeId = 12, displayName = "ROUTE HOUSE" },
     { mapId = 15, symbol = "MAP_ORDINARY", section = "Ordinary", mapSectionNativeId = 9, displayName = "ORDINARY" },
+    { mapId = 16, symbol = "MAP_BATTLE_FRONTIER", section = "Frontier", mapSectionNativeId = 13, displayName = "FRONTIER" },
+    { mapId = 17, symbol = "MAP_BATTLE_FRONTIERS", section = "Frontiers", mapSectionNativeId = 14, displayName = "FRONTIERS" },
+    { mapId = 18, symbol = "MAP_KANTO_ROUTE_1", section = "Kanto Route 1", mapSectionNativeId = 15, displayName = "KANTO ROUTE 1" },
+    { mapId = 19, symbol = "MAP_EAST_ROUTE_2", section = "East Route 2", mapSectionNativeId = 16, displayName = "EAST ROUTE 2" },
+    { mapId = 20, symbol = "MAP_SEVII_ROUTE_3", section = "Sevii Route 3", mapSectionNativeId = 17, displayName = "SEVII ROUTE 3" },
+    { mapId = 21, symbol = "MAP_ROUTER", section = "Router", mapSectionNativeId = 18, displayName = "ROUTER" },
+    { mapId = 22, symbol = "MAP_SOMETHING_ROUTEHOUSE", section = "Routehouse", mapSectionNativeId = 19, displayName = "ROUTEHOUSE" },
   }
   local task = Catalog.newTask(summaries)
   local complete = false
@@ -101,6 +108,13 @@ function T.tests.route_and_battle_frontier_prefixes_share_only_their_explicit_gr
     [13] = "location:group:battle-frontier",
     [14] = "location:group:12",
     [15] = "location:group:9",
+    [16] = "location:group:battle-frontier",
+    [17] = "location:group:14",
+    [18] = "location:group:routes",
+    [19] = "location:group:routes",
+    [20] = "location:group:routes",
+    [21] = "location:group:18",
+    [22] = "location:group:19",
   }
   local occurrences = {}
   local groups = projectedRows(catalog:groups(""))
@@ -115,15 +129,24 @@ function T.tests.route_and_battle_frontier_prefixes_share_only_their_explicit_gr
       Assert.equal(entry.id, expectedGroupByMap[leaf.row.mapId], "only the declared source-symbol prefixes override grouping")
     end
   end
-  Assert.equal(#groups, 4, "the two prefixes add groups without splitting ordinary source sections")
-  Assert.equal(catalog.groupById["location:group:routes"].displayName, "Routes")
-  Assert.equal(catalog.groupById["location:group:battle-frontier"].displayName, "Battle Frontier")
+  Assert.equal(#groups, 7, "synthetic categories coexist with every native fallback group")
+  Assert.equal(catalog.groupById["location:group:routes"].displayName, "ROUTES")
+  Assert.equal(catalog.groupById["location:group:routes"].section, "ROUTES")
+  Assert.equal(catalog.groupById["location:group:battle-frontier"].displayName, "BATTLE FRONTIER")
+  Assert.equal(catalog.groupById["location:group:battle-frontier"].section, "BATTLE FRONTIER")
   for _, summary in ipairs(summaries) do
     Assert.equal(occurrences[summary.mapId], 1, "each source map appears in exactly one group")
   end
   local filtered = projectedRows(catalog:maps("location:group:routes", "30"))
   Assert.equal(#filtered, 1, "synthetic groups retain child-label filtering")
   Assert.equal(filtered[1].row.mapId, 11, "filter results preserve the source map identity")
+  local nestedRouteMatches = projectedRows(catalog:maps("location:group:routes", "route"))
+  Assert.equal(#nestedRouteMatches, 5, "every accepted route symbol remains available through the group filter")
+  Assert.deepEqual(
+    { nestedRouteMatches[1].row.mapId, nestedRouteMatches[2].row.mapId, nestedRouteMatches[3].row.mapId, nestedRouteMatches[4].row.mapId, nestedRouteMatches[5].row.mapId },
+    { 19, 18, 10, 11, 20 },
+    "route filtering returns each matching source leaf in deterministic display order"
+  )
 end
 
 function T.tests.incremental_catalog_preparation_limits_summary_reads_per_advance()
