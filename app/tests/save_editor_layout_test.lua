@@ -2046,6 +2046,43 @@ function T.tests.compact_layouts_offer_five_direct_section_controls_instead_of_a
   end
 end
 
+function T.tests.compact_and_tall_section_navigation_matches_the_horizontal_strip()
+  local rightTargets, leftTargets, downTargets = {}, {}, {}
+  for _, size in ipairs({ { 256, 192 }, { 256, 400 } }) do
+    local layout = computeLayout(sectionStripView("Player"), size[1], size[2])
+    local controller = Controller.new()
+    controller:setSection("Player")
+    controller:setFocus("section:Player")
+
+    navigate(controller, layout, "right")
+    rightTargets[#rightTargets + 1] = controller.focus
+    navigate(controller, layout, "left")
+    leftTargets[#leftTargets + 1] = controller.focus
+    navigate(controller, layout, "down")
+    downTargets[#downTargets + 1] = controller.focus
+  end
+  Assert.deepEqual(rightTargets, { "section:Party", "section:Party" }, "Right advances one section in visible order")
+  Assert.deepEqual(leftTargets, { "section:Player", "section:Player" }, "Left returns to the previous section")
+  for _, targetId in ipairs(downTargets) do
+    Assert.isFalse(targetId:match("^section:") ~= nil, "Down leaves the section strip")
+    Assert.isFalse(targetId == "back", "Down does not enter the footer action")
+  end
+end
+
+function T.tests.wide_section_navigation_keeps_the_vertical_rail_orientation()
+  local layout = computeLayout(sectionStripView("Player"), 800, 600)
+  local controller = Controller.new()
+  controller:setSection("Player")
+  controller:setFocus("section:Player")
+
+  navigate(controller, layout, "up")
+  Assert.equal(controller.focus, "section:Location", "Up moves to the previous rail item")
+  navigate(controller, layout, "down")
+  Assert.equal(controller.focus, "section:Player", "Down returns to the next rail item")
+  navigate(controller, layout, "right")
+  Assert.isFalse(controller.focus:match("^section:") ~= nil, "Right leaves the rail for page content")
+end
+
 function T.tests.wide_shell_is_centered_and_capped_with_footer_inside()
   for _, width in ipairs({ 800, 1200 }) do
     local label = width .. "px"

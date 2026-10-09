@@ -2150,7 +2150,11 @@ local function buildFocusNavigation(ctx, targetRecords)
           return nil
         end,
       }
-      region.kind = regionId == "sections" and "column" or "row"
+      if regionId == "sections" then
+        region.kind = ctx.railWidth > 0 and "column" or "row"
+      else
+        region.kind = "row"
+      end
       region.defaultId = region.defaultId or ids[1]
     end
   end
