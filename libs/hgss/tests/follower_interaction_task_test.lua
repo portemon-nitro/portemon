@@ -105,6 +105,7 @@ local function fixture(programs, options)
     actor.begins = (actor.begins or 0) + 1
     actor.actionX, actor.actionY, actor.actionZ = action.x, action.y, action.z
     actor.heldOffsetFacing = action.heldOffsetFacing
+    actor.actionKind = action.action
     actor.offset = { x = 0, y = 0, z = 0 }
     if action.action == "emote" then
       events[#events + 1] = { "emote", action.name, action.ticks }
@@ -115,7 +116,8 @@ local function fixture(programs, options)
   function actors:advanceScriptedAction(actorId, elapsed, duration)
     Assert.equal(actorId, "partner")
     events[#events + 1] = { "advance", elapsed, duration }
-    if elapsed < duration and actor.motionActive then
+    -- A presentation offset holds until its owner commits or cancels it.
+    if actor.motionActive and (elapsed < duration or actor.actionKind == "presentation_offset") then
       actor.offset = { x = actor.actionX, y = actor.actionY, z = actor.actionZ }
     else
       actor.offset = { x = 0, y = 0, z = 0 }
@@ -265,6 +267,22 @@ local function poll(task, state, ctx, count)
   return result
 end
 
+-- Creates the task and polls through Task_FollowMonInteract's selection
+-- frame, so the next poll runs the first step.
+local function started(task, ctx)
+  local state = task.create({}, ctx)
+  Assert.isFalse(task.poll(state, ctx).complete, "the selection frame yields")
+  return state
+end
+
+-- Starts the task and polls through a leading motion step's hand-off and
+-- setup frames, so the next poll plays its first record.
+local function beforeFirstRecord(task, ctx)
+  local state = started(task, ctx)
+  poll(task, state, ctx, 2)
+  return state
+end
+
 local function finish(task, state, ctx, seen)
   local result
   for _ = 1, 40 do
@@ -306,6 +324,8 @@ T["motion and dialogue preserve actor identity, offsets, facing, and substitutio
   Assert.equal(seen.actor.x, 12, "motion never changes logical actor X")
   Assert.equal(seen.actor.z, 8, "motion never changes logical actor Z")
 
+  poll(task, state, ctx, 3)
+  Assert.equal(seen.actor.begins or 0, 0, "selection, hand-off, and setup frames show no motion")
   local initial = task.poll(state, ctx)
   Assert.isFalse(initial.complete)
   Assert.deepEqual(
@@ -342,13 +362,66 @@ T["motion and dialogue preserve actor identity, offsets, facing, and substitutio
   Assert.deepEqual(seen.actor.offset, { x = 0, y = 0, z = 0 }, "finished motion clears presentation offset")
 end
 
+-- ov02_0224F8FC/ov02_02250004 frame schedule, one poll per frame from the
+-- step's first frame: hand-off and setup frames before the first record, the
+-- last record held through the end-marker frame, restore, the balloon
+-- subtask's call and return frames, and a delay entered and left on frames of
+-- its own.
+T["a step follows the retail frame schedule"] = function()
+  local programs = {
+    motions = { [4] = { { x = 1, y = 0, z = 0, facing = "north", ticks = 2 } } },
+    [10] = {
+      steps = { { motionId = 4, reactionId = 3, messageId = 1, delayTicks = 2 }, { messageId = 2 } },
+      friendshipDelta = 0,
+      moodDelta = 0,
+    },
+  }
+  local ctx, seen = fixture(programs)
+  local task = FollowerInteractionTask
+  local state = started(task, ctx)
+  poll(task, state, ctx, 2)
+  Assert.deepEqual(seen.actor.offset, { x = 0, y = 0, z = 0 }, "hand-off and setup frames show no motion")
+  for frame = 2, 4 do
+    task.poll(state, ctx)
+    Assert.deepEqual(seen.actor.offset, { x = 1, y = 0, z = 0 }, "the record shows on frame " .. frame)
+    Assert.equal(seen.actor.facing, "north")
+  end
+  task.poll(state, ctx)
+  Assert.deepEqual(seen.actor.offset, { x = 0, y = 0, z = 0 }, "the partner is restored on frame 5")
+  Assert.equal(seen.actor.facing, "west")
+  task.poll(state, ctx)
+  Assert.deepEqual(emoteBegins(seen), {}, "frame 6 calls the balloon subtask")
+  task.poll(state, ctx)
+  Assert.equal(#emoteBegins(seen), 1, "the balloon appears on frame 7")
+  poll(task, state, ctx, REACTION_TICKS - 1)
+  Assert.isFalse(seen.dialogue.open, "the balloon's removal frame opens no message")
+  task.poll(state, ctx)
+  Assert.isTrue(seen.dialogue.open, "the message opens on the frame after the balloon")
+
+  seen.dialogue.finished = true
+  local closes = seen.dialogue.closes
+  for _ = 1, 10 do
+    ctx.input.pressedAction = true
+    task.poll(state, ctx)
+    if seen.dialogue.closes > closes then
+      break
+    end
+  end
+  ctx.input.pressedAction = nil
+  Assert.equal(state.phase, "delay", "the closing frame enters the delay")
+  poll(task, state, ctx, 3)
+  Assert.equal(#seen.dialogue.messages, 1, "the delay counts its frames before the next step")
+  task.poll(state, ctx)
+  Assert.equal(#seen.dialogue.messages, 2, "the next step starts two frames after a two-frame delay ends")
+end
+
 T["one-tick motion advances presentation before yielding"] = function()
   local programs = {
     motions = { [4] = { { x = 0.0625, y = 0, z = 0, ticks = 1 } } },
     [10] = { steps = { { motionId = 4 } }, friendshipDelta = 0, moodDelta = 0 },
   }
   local ctx, seen = fixture(programs)
-  local state = FollowerInteractionTask.create({}, ctx)
+  local state = beforeFirstRecord(FollowerInteractionTask, ctx)
   local result = FollowerInteractionTask.poll(state, ctx)
   Assert.isFalse(result.complete, "the one-tick action yields after its visible interval begins")
   Assert.deepEqual(seen.actor.offset, { x = 0.0625, y = 0, z = 0 })
@@ -364,7 +437,7 @@ T["motionless normalized step opens its already-normalized message"] = function(
     [10] = { steps = { { messageId = 0 } }, friendshipDelta = 0, moodDelta = 0 },
   }
   local ctx, seen = fixture(programs)
-  local state = FollowerInteractionTask.create({}, ctx)
+  local state = started(FollowerInteractionTask, ctx)
   FollowerInteractionTask.poll(state, ctx)
   Assert.equal(seen.dialogue.messages[1].message.id, 0, "the semantic message ID is used directly")
   Assert.equal(seen.actor.begins or 0, 0, "an absent motion stays absent")
@@ -380,7 +453,7 @@ T["tagged motion sounds dispatch effects and cries through their existing servic
     ctx.services.followerInteraction.select = function()
       return { leadSlot = leadSlot or 0, programId = 10 }
     end
-    local state = FollowerInteractionTask.create({}, ctx)
+    local state = beforeFirstRecord(FollowerInteractionTask, ctx)
     seen.mons.speciesBySlot[0] = 151
     seen.mons.formBySlot[1] = 1
     FollowerInteractionTask.poll(state, ctx)
@@ -451,8 +524,8 @@ T["reaction emotes are suppressed only on retail reaction-blocking tiles"] = fun
       [10] = { steps = { { messageId = 1, reactionId = 3 } }, friendshipDelta = 0, moodDelta = 0 },
     }
     local ctx, seen = fixture(programs, { metatileBehavior = behavior })
-    local state = FollowerInteractionTask.create({}, ctx)
-    poll(FollowerInteractionTask, state, ctx, REACTION_TICKS)
+    local state = started(FollowerInteractionTask, ctx)
+    poll(FollowerInteractionTask, state, ctx, REACTION_TICKS + 2)
     Assert.equal(
       #emoteBegins(seen),
       (behavior == 46 or behavior == 113 or behavior == 114) and 0 or 1,
@@ -470,7 +543,10 @@ T["a reaction plays as a partner emote that finishes before the interaction mess
   }
   local ctx, seen = fixture(programs)
   local task = FollowerInteractionTask
-  local state = task.create({}, ctx)
+  local state = started(task, ctx)
+  task.poll(state, ctx)
+  Assert.deepEqual(emoteBegins(seen), {}, "the subtask call frame shows no balloon yet")
+  Assert.deepEqual(seen.audio.played, {}, "the balloon sound waits for the balloon")
   task.poll(state, ctx)
   Assert.deepEqual(
     emoteBegins(seen),
@@ -493,6 +569,8 @@ T["a reaction plays as a partner emote that finishes before the interaction mess
   task.poll(state, ctx)
   Assert.equal(seen.events[#seen.events], "commit", "the emote completes on its final tick")
   Assert.isFalse(seen.actor.motionActive, "the partner action is committed before the message")
+  Assert.isFalse(seen.dialogue.open, "the subtask returns on the frame after the balloon is removed")
+  task.poll(state, ctx)
   Assert.equal(state.phase, "dialogue", "the message starts once the reaction completes")
   Assert.isTrue(seen.dialogue.open, "the interaction message opens after the reaction")
 end
@@ -510,7 +588,7 @@ T["interaction turns emit the partner's turn grass only for actual facing change
   local grass = { kind = "tall_grass", fieldX = 13, fieldZ = 8, worldY = 2.5 }
   local ctx, seen = fixture(programs, { turnGrass = grass })
   local state = FollowerInteractionTask.create({}, ctx)
-  for _ = 1, 8 do
+  for _ = 1, 12 do
     FollowerInteractionTask.poll(state, ctx)
     if state.phase == "dialogue" then
       break
@@ -525,7 +603,7 @@ T["interaction turns emit the partner's turn grass only for actual facing change
 
   local ordinaryCtx, ordinary = fixture(programs)
   local ordinaryState = FollowerInteractionTask.create({}, ordinaryCtx)
-  poll(FollowerInteractionTask, ordinaryState, ordinaryCtx, 8)
+  poll(FollowerInteractionTask, ordinaryState, ordinaryCtx, 12)
   Assert.equal(#ordinary.terrainEffects.emitted, 0, "no turn grass emits nothing")
 end
 
@@ -541,7 +619,7 @@ T["blank and zero-tick motion records last one frame without ending the motion"]
     [10] = { steps = { { motionId = 4, messageId = 1, sound = { kind = "effect", id = 42 } } }, friendshipDelta = 0, moodDelta = 0 },
   }
   local ctx, seen = fixture(programs)
-  local state = FollowerInteractionTask.create({}, ctx)
+  local state = beforeFirstRecord(FollowerInteractionTask, ctx)
   FollowerInteractionTask.poll(state, ctx)
   Assert.deepEqual(seen.actor.offset, { x = 0, y = 0, z = 0 }, "the blank record holds its frame")
   Assert.deepEqual(seen.audio.played, {}, "the blank record plays nothing")
@@ -720,7 +798,7 @@ T["cancellation during motion clears the offset and restores facing"] = function
   }
   local ctx, seen = fixture(programs, { turnGrass = { kind = "tall_grass", fieldX = 13, fieldZ = 8, worldY = 2.5 } })
   local task = FollowerInteractionTask
-  local state = task.create({}, ctx)
+  local state = beforeFirstRecord(task, ctx)
   task.poll(state, ctx)
   Assert.deepEqual(seen.actor.offset, { x = 1, y = 1, z = 0 })
   Assert.equal(#seen.terrainEffects.emitted, 1, "the actual interaction turn disturbs the grass once")
@@ -743,8 +821,8 @@ T["cancellation during a reaction cancels the partner emote"] = function()
   }
   local ctx, seen = fixture(programs)
   local task = FollowerInteractionTask
-  local state = task.create({}, ctx)
-  task.poll(state, ctx)
+  local state = started(task, ctx)
+  poll(task, state, ctx, 2)
   Assert.isTrue(seen.actor.motionActive, "the reaction emote is active before cancellation")
   task.cancel(state, "test cancellation", ctx)
   Assert.isFalse(seen.actor.motionActive, "cancel ends the task-owned reaction emote")
@@ -763,7 +841,7 @@ T["cancellation during dialogue closes dialogue"] = function()
   }
   local ctx, seen = fixture(programs)
   local task = FollowerInteractionTask
-  local state = task.create({}, ctx)
+  local state = started(task, ctx)
   task.poll(state, ctx)
   Assert.isTrue(seen.dialogue.open, "the task owns an open dialogue while printing")
   task.cancel(state, "test cancellation", ctx)
@@ -834,7 +912,9 @@ T["task state is plain serialized data and rejects invalid fields or phases"] = 
     { field = "stepIndex", value = 7 },
     { field = "motionId", value = 109 },
     { field = "motionIndex", value = 0 },
-    { field = "motionIndex", value = 11 },
+    { field = "motionIndex", value = 12 },
+    { field = "holdTicks", value = 2 },
+    { field = "holdTicks", value = 0 },
     { field = "motionTick", value = math.huge },
     { field = "cumulativeX", value = 0 / 0 },
     { field = "cumulativeX", value = 0.01 },
@@ -874,7 +954,7 @@ T["reward restore state requires a completed reward mutation and its dialogue"] 
       reward = { kind = "fashion", selector = 4, outcome = "added" },
     },
   })
-  local state = task.create({}, ctx)
+  local state = started(task, ctx)
   task.poll(state, ctx)
   Assert.equal(state.phase, "reward", "reward dialogue remains in the reward phase")
   Assert.isTrue(state.rewardStarted, "inventory mutation is recorded before reward dialogue")
@@ -908,9 +988,8 @@ T["reaction restore rebuilds the derived partner emote at its saved tick"] = fun
   }
   local task = FollowerInteractionTask
   local ctx = fixture(programs)
-  local state = task.create({}, ctx)
-  task.poll(state, ctx)
-  task.poll(state, ctx)
+  local state = started(task, ctx)
+  poll(task, state, ctx, 3)
   Assert.equal(state.phase, "reaction", "the reaction is still presenting")
   Assert.equal(state.reactionTick, 2, "the reaction's progress is serialized")
 
@@ -925,7 +1004,7 @@ T["reaction restore rebuilds the derived partner emote at its saved tick"] = fun
   )
   Assert.deepEqual(resumedSeen.audio.played, {}, "restore does not replay the reaction sound")
   Assert.deepEqual(resumedSeen.events[#resumedSeen.events], { "advance", 3, REACTION_TICKS })
-  task.poll(saved, resumedCtx)
+  poll(task, saved, resumedCtx, 2)
   Assert.equal(saved.phase, "dialogue", "the restored reaction completes into its message")
 end
 
@@ -957,9 +1036,9 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
 
   local original = harness()
   local instanceId = original.scheduler:createForeground(assert(original.composition:effective(resource.id)), nil, 100)
-  original.scheduler:step(100, {})
-  original.scheduler:step(101, {})
-  original.scheduler:step(102, {})
+  for tick = 100, 105 do
+    original.scheduler:step(tick, {})
+  end
   local runningTask = assert(original.scheduler:tasks()[1], "the interaction task is running")
   Assert.equal(runningTask.state.phase, "motion")
   Assert.isTrue(runningTask.state.motionStarted, "the task has begun the render-only motion")
@@ -967,14 +1046,14 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
   Assert.deepEqual(original.seen.actor.offset, { x = 2, y = 3, z = -1 })
   Assert.deepEqual(original.seen.audio.played, { 43 }, "motion sound has played once")
   Assert.equal(#original.seen.terrainEffects.emitted, 1, "the interaction turn emits grass presentation once")
-  local bucket = ScriptSave.capture(original.scheduler, 102)
+  local bucket = ScriptSave.capture(original.scheduler, 105)
   Assert.equal(#bucket.tasks, 1, "the blocked interaction task is captured")
   Assert.equal(bucket.tasks[1].taskType, "follower_interaction")
   Assert.equal(bucket.tasks[1].taskVersion, FollowerInteractionTask.version)
   Assert.equal(bucket.tasks[1].state.phase, "motion")
 
   local resumed = harness()
-  ScriptSave.restore(bucket, resumed.scheduler, 102, {})
+  ScriptSave.restore(bucket, resumed.scheduler, 105, {})
   local task = assert(resumed.scheduler:tasks()[1], "the active interaction task restores")
   Assert.equal(task.taskType, bucket.tasks[1].taskType)
   Assert.equal(task.taskVersion, bucket.tasks[1].taskVersion)
@@ -986,14 +1065,14 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
     "actor persistence omits transient partner presentation"
   )
 
-  resumed.scheduler:step(103, {})
+  resumed.scheduler:step(106, {})
   Assert.isTrue(resumed.seen.actor.motionActive, "the restored task rebuilds its missing actor action")
   Assert.deepEqual(resumed.seen.actor.offset, { x = 2, y = 3, z = -1 }, "resume restores the current cumulative offset")
   Assert.equal(resumed.seen.actor.begins, 1, "resume begins the presentation action exactly once")
   Assert.deepEqual(resumed.seen.audio.played, {}, "resume does not replay the motion sound")
   Assert.equal(#resumed.seen.terrainEffects.emitted, 0, "resume does not replay the grass turn effect")
   Assert.equal(task.state.motionTick, 2, "resume continues from the saved elapsed tick")
-  for tick = 104, 110 do
+  for tick = 107, 116 do
     if task.status == "completed" then
       break
     end
@@ -1001,7 +1080,7 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
   end
   Assert.equal(task.status, "completed", "the restored interaction finishes at its original duration")
   Assert.deepEqual(resumed.seen.actor.offset, { x = 0, y = 0, z = 0 }, "completion clears the transient offset")
-  resumed.scheduler:step(111, {})
+  resumed.scheduler:step(117, {})
   Assert.isTrue(resumed.seen.world.flags.FLAG_RESUMED, "the script resumes after the restored task completes")
 end
 
@@ -1092,7 +1171,7 @@ end
 T["poll on an unknown phase fails instead of yielding"] = function()
   local task = FollowerInteractionTask
   local ctx, _seen = fixture({ motions = {}, [10] = { steps = {}, friendshipDelta = 0, moodDelta = 0 } })
-  local state = task.create({}, ctx)
+  local state = started(task, ctx)
   state.phase = "not-a-phase"
   local ok, err = pcall(task.poll, state, ctx)
   Assert.isFalse(ok, "an unknown phase cannot yield")

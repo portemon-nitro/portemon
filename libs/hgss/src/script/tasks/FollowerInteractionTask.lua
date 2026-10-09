@@ -6,7 +6,7 @@ local DialogueTask = require("libs.hgss.src.script.tasks.DialogueTask")
 local ContextChoiceTask = require("libs.hgss.src.script.tasks.ContextChoiceTask")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 
-local FollowerInteractionTask = { type = "follower_interaction", version = 2 }
+local FollowerInteractionTask = { type = "follower_interaction", version = 3 }
 local STATE_KEYS = {
   leadSlot = true,
   programId = true,
@@ -27,6 +27,7 @@ local STATE_KEYS = {
   delayRemaining = true,
   choiceTargets = true,
   motionStarted = true,
+  holdTicks = true,
 }
 local PHASES = {
   step = true,
@@ -82,6 +83,9 @@ function FollowerInteractionTask.create(_, ctx)
     rewardStarted = false,
     rewardWaitForEffect = false,
     motionStarted = false,
+    -- Task_FollowMonInteract selects on its first frame and runs the first
+    -- step on the next.
+    holdTicks = 1,
   }
 end
 
@@ -114,8 +118,10 @@ end
 
 -- The source spawns a reaction as a blocking subtask (ov02_0224FB54 ->
 -- ov01_02203AB4), so the step's message waits for the partner's emote to
--- finish. The partner action is derived presentation: after restore it is
--- rebuilt at the serialized tick.
+-- finish. The subtask creates the balloon on the frame after the call and
+-- returns control on the frame after the balloon removes itself; reaction
+-- tick k is the balloon's k-th update. The partner action is derived
+-- presentation: after restore it is rebuilt at the serialized tick.
 local function pollReaction(state, svc, step)
   if state.reactionTick == nil then
     local selector = step.reactionId
@@ -126,24 +132,28 @@ local function pollReaction(state, svc, step)
       return true
     end
     state.reactionTick = 0
+    return false
   end
   local reaction = svc.followerInteraction:reaction(step.reactionId)
   local actorId = partnerId(svc.followingMon)
-  if state.reactionTick == 0 then
+  state.reactionTick = state.reactionTick + 1
+  if state.reactionTick > reaction.ticks then
+    state.reactionTick = nil
+    return true
+  end
+  if state.reactionTick == 1 then
     -- ov01_02203BB4 plays the balloon's pop sound when it is created.
     svc.audio:play("SEQ_SE_DP_DECIDE")
   end
-  if state.reactionTick == 0 or not svc.actors:isScriptedMoving(actorId) then
+  if state.reactionTick == 1 or not svc.actors:isScriptedMoving(actorId) then
     svc.actors:beginScriptedAction(actorId, { action = "emote", name = reaction.kind, ticks = reaction.ticks })
   end
-  state.reactionTick = state.reactionTick + 1
   if state.reactionTick < reaction.ticks then
     svc.actors:advanceScriptedAction(actorId, state.reactionTick, reaction.ticks)
-    return false
+  else
+    svc.actors:commitScriptedAction(actorId)
   end
-  svc.actors:commitScriptedAction(actorId)
-  state.reactionTick = nil
-  return true
+  return false
 end
 
 local function message(ctx, bank, id, bindings, op)
@@ -174,6 +184,13 @@ end
 -- finishes the interaction.
 local function stepPhase(state, ctx)
   beginStep(state, ctx)
+  if state.phase == "motion" then
+    -- ov02_0224F8FC hands a motion step to ov02_02250004 on this frame, and
+    -- the motion saves its start state on the next; the first record plays
+    -- on the frame after that.
+    state.holdTicks = 1
+    return "yield"
+  end
   return "continue"
 end
 
@@ -187,9 +204,12 @@ local function motionPhase(state, ctx)
   while state.phase == "motion" do
     local record = motion[state.motionIndex]
     if record == nil then
+      -- ov02_02250004 finds the end marker one frame after the last record
+      -- and restores the partner on the next, which hands over to the
+      -- reaction on the frame after that.
       clearMotion(state, svc, true)
       state.phase = "reaction"
-      break
+      return "yield"
     end
     -- ov02_0224FF5C counts a frame before comparing, so a zero-tick record
     -- still holds one frame.
@@ -251,10 +271,15 @@ local function motionPhase(state, ctx)
     if state.motionTick < ticks then
       return "yield"
     end
+    if motion[state.motionIndex + 1] == nil then
+      -- The last record's presentation holds through the end-marker frame.
+      state.motionIndex, state.motionTick = state.motionIndex + 1, 0
+      return "yield"
+    end
     svc.actors:commitScriptedAction(actorId)
     state.motionIndex, state.motionTick, state.motionStarted = state.motionIndex + 1, 0, false
   end
-  return "continue"
+  error("unreachable follower motion loop exit")
 end
 
 local function reactionPhase(state, ctx)
@@ -283,9 +308,12 @@ local function dialoguePhase(state, ctx)
   if not result.complete then
     return "yield"
   end
+  local held = state.dialogueState.mode == "print"
   state.dialogueState = nil
   state.phase = "delay"
-  return "continue"
+  -- A message held open for the choice hands over on the frame after it
+  -- finishes printing; an answered message closes on its press frame.
+  return held and "yield" or "continue"
 end
 
 local function delayPhase(state, ctx)
@@ -295,8 +323,11 @@ local function delayPhase(state, ctx)
   local step = program.steps[state.stepIndex]
   local delay = step.delayTicks or 0
   if delay > 0 then
-    state.delayRemaining = (state.delayRemaining or delay) - 1
-    if state.delayRemaining > 0 then
+    -- ov02_0224F8FC enters the delay on one frame, counts it over the next
+    -- `delay` frames, and advances the step on the frame after.
+    local remaining = state.delayRemaining or (delay + 1)
+    if remaining > 0 then
+      state.delayRemaining = remaining - 1
       return "yield"
     end
   end
@@ -428,6 +459,10 @@ local PHASE_POLL = {
 }
 
 function FollowerInteractionTask.poll(state, ctx)
+  if state.holdTicks ~= nil then
+    state.holdTicks = state.holdTicks > 1 and state.holdTicks - 1 or nil
+    return { complete = false, state = state }
+  end
   while true do
     local handler = PHASE_POLL[state.phase]
     if handler == nil then
@@ -497,7 +532,7 @@ local function checkShared(state)
     or not integerField(state.programId, 1, 1023)
     or not integerField(state.stepIndex, 1, 6)
     or not integerField(state.motionId, 0, 108)
-    or not integerField(state.motionIndex, 1, 10)
+    or not integerField(state.motionIndex, 1, 11)
     or not integerField(state.motionTick, 0, 254)
     or not finiteField(state.cumulativeX)
     or not finiteField(state.cumulativeY)
@@ -518,10 +553,13 @@ local function checkShared(state)
   then
     return taskStateError(state)
   end
-  if state.delayRemaining ~= nil and not integerField(state.delayRemaining, 1, 0xFF) then
+  if state.delayRemaining ~= nil and not integerField(state.delayRemaining, 0, 0xFF) then
     return taskStateError(state)
   end
-  if state.reactionTick ~= nil and not integerField(state.reactionTick, 1, 0xFF) then
+  if state.reactionTick ~= nil and not integerField(state.reactionTick, 0, 0xFF) then
+    return taskStateError(state)
+  end
+  if state.holdTicks ~= nil and not integerField(state.holdTicks, 1, 1) then
     return taskStateError(state)
   end
   if state.choiceTargets ~= nil then
