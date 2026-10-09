@@ -1,5 +1,5 @@
 -- Compiles every field-actor sprite referenced by the map catalog into normalized
--- `g4-field-actor-v3`
+-- `g4-field-actor-v4`
 -- visual definitions plus one private RGBA atlas each.
 --
 -- Ordinary actors use a shared camera-facing billboard and timeline. Static
@@ -255,11 +255,28 @@ local function decodeAtlas(pack, frames, context)
   }
 end
 
-local function idlePresentation(mode)
-  return {
+-- ov01_021F8E70: the Pokemon draw callback shifts the drawn position per
+-- facing, in source model units. Model key 0xA is the large Pokemon model.
+local LARGE_POKEMON_MODEL_KEY = 0x0A
+local FACING_SHIFT_UNITS = {
+  large = { north = { x = 0, z = 1 }, south = { x = 0, z = -1 }, west = { x = 10, z = 0 }, east = { x = -10, z = 0 } },
+  standard = { north = { x = 0, z = 0 }, south = { x = 0, z = 0 }, west = { x = 2, z = 0 }, east = { x = -2, z = 0 } },
+}
+
+local function idlePresentation(mode, modelKey)
+  local profile = {
     mode = mode,
     cadence = mode == "animated" and 1 or 0,
   }
+  if mode == "animated" then
+    local units = FACING_SHIFT_UNITS[modelKey == LARGE_POKEMON_MODEL_KEY and "large" or "standard"]
+    local offsets = {}
+    for direction, shift in pairs(units) do
+      offsets[direction] = { x = shift.x / SOURCE_MODEL_UNITS_PER_TILE, z = shift.z / SOURCE_MODEL_UNITS_PER_TILE }
+    end
+    profile.facingOffsets = offsets
+  end
+  return profile
 end
 
 local function idleDisplayOffset(phase)
@@ -315,7 +332,7 @@ end
 -- (ov01_021FA44C/021FA458/021FA464) with no single generic runtime meaning, so
 -- unclaimed ranges remain producer-private and only named semantic poses are
 -- published.
-local function buildPoses(perRange, ranges, idleMode)
+local function buildPoses(perRange, ranges, idleMode, modelKey)
   local order = manifest.directionOrder
 
   local function poseFor(index)
@@ -352,7 +369,7 @@ local function buildPoses(perRange, ranges, idleMode)
         walk = idleMode == "animated" and buildAnimatedPose(pose, { direction = direction, pose = "walk" }) or pose,
       }
     end
-    return directions, idlePresentation(idleMode)
+    return directions, idlePresentation(idleMode, modelKey)
   end
   for i, direction in ipairs(order) do
     local walk = poseFor(i)
@@ -372,7 +389,7 @@ local function buildPoses(perRange, ranges, idleMode)
       walk = idleMode == "animated" and buildAnimatedPose(walk, { direction = direction, pose = "walk" }) or walk,
     }
   end
-  return directions, idlePresentation(idleMode)
+  return directions, idlePresentation(idleMode, modelKey)
 end
 
 local function staticDirections()
@@ -537,7 +554,7 @@ local function compileSprite(romFs, spriteId, graphics, archive, staticArchive)
   local frameSet = FieldActorFrames.collect(timeline, descriptor.ranges, #pack.textures, #pack.palettes, context)
   local frames, perRange = frameSet.frames, frameSet.perRange
   local atlas = decodeAtlas(pack, frames, context)
-  local directions, idleProfile = buildPoses(perRange, descriptor.ranges, idleMode)
+  local directions, idleProfile = buildPoses(perRange, descriptor.ranges, idleMode, descriptor.modelKey)
   local gestures = buildGestures(record, perRange, descriptor.ranges, context)
 
   local placement = {

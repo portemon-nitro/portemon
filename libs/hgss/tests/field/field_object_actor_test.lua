@@ -332,6 +332,57 @@ function T.animated_pose_clock_freezes_and_resumes_while_paused()
   Assert.equal(animated:getPoseTick(), 1, "resumed animated actor advances from the held phase")
 end
 
+-- ov01_021F8D80 restarts a Pokemon actor's animation whenever its drawn
+-- facing changes; ordinary actors have no running idle animation to restart.
+function T.animated_actors_restart_their_animation_on_a_facing_change()
+  local visual = animatedBobVisual()
+  local animated = actor({}, { visual = visual, idlePresentation = visual.idlePresentation })
+  for _ = 1, 3 do
+    animated:advancePresentationTick()
+  end
+  animated:setFacing("south")
+  Assert.equal(animated:getPoseTick(), 3, "keeping the facing keeps the animation phase")
+  animated:setFacing("north")
+  Assert.equal(animated:getPoseTick(), 0, "a new facing restarts the animation")
+  animated:advancePresentationTick()
+  local token = animated:pushFacingOverride({ owner = "talk", facing = "east" })
+  Assert.equal(animated:getPoseTick(), 0, "an interaction turn restarts the animation")
+  animated:advancePresentationTick()
+  animated:releaseFacingOverride(token)
+  Assert.equal(animated:getPoseTick(), 0, "restoring the facing restarts the animation")
+end
+
+-- A presentation offset replaces the action's vertical presentation while the
+-- Pokemon idle animation keeps running underneath it, bob included.
+function T.presentation_offset_actions_keep_the_idle_animation_running()
+  local visual = animatedBobVisual()
+  local animated = actor({}, { visual = visual, idlePresentation = visual.idlePresentation })
+  for _ = 1, 4 do
+    animated:advancePresentationTick()
+  end
+  local anchor = { fieldX = 6, fieldZ = 5, worldX = 6.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true }
+  animated:beginAction({
+    action = "presentation_offset",
+    presentationOffsetX = 0.25,
+    presentationOffsetY = 0.5,
+    presentationOffsetZ = 0,
+    heldOffsetFacing = "west",
+    start = anchor,
+    dest = anchor,
+    durationTicks = 3,
+  }, "script")
+  animated:advanceAction(0, 3)
+  Assert.equal(animated:getPoseTick(), 4, "beginning the offset does not advance the animation")
+  Assert.equal(animated:getPresentationOffset().y, 0.5)
+  Assert.equal(animated:heldOffsetFacing(), "west", "the action holds its facing offset")
+  animated:advanceAction(1, 3)
+  Assert.equal(animated:getPoseTick(), 5, "each elapsed tick advances the animation")
+  Assert.equal(animated:getPresentationOffset().y, 0.5 - 0.125, "the bob rides on the offset")
+  Assert.equal(animated:getPresentationOffset().x, 0.25)
+  animated:commitAction()
+  Assert.isNil(animated:heldOffsetFacing(), "only the active offset action holds a facing offset")
+end
+
 function T.facing_override_applies_and_restores()
   local a = actor()
   local token = a:pushFacingOverride({ owner = "pre-script-dialogue", facing = "north" })

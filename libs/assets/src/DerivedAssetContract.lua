@@ -189,7 +189,8 @@ DerivedAssetContract.fieldCells = {
 
 DerivedAssetContract.fieldActors = {
   cacheFormat = "field-actor-cache-v2",
-  schema = "g4-field-actor-v3",
+  -- v4 adds the animated Pokemon idle's per-facing draw offsets.
+  schema = "g4-field-actor-v4",
   indexSchema = "g4-field-actor-index-v3",
 }
 

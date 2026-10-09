@@ -217,6 +217,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field spriteId integer
 ---@field world { x: number, y: number, z: number }
 ---@field facing FieldDirection
+---@field heldOffsetFacing FieldDirection? facing whose draw offset an active presentation offset pins
 ---@field pose string
 ---@field poseTick integer
 ---@field gesturePose string?
@@ -1810,6 +1811,7 @@ function FieldActorManager:drawRecords(alpha)
       record.world.y = base.y + state.presentationOffsetY + gestureOffsetY
       record.world.z = base.z + state.presentationOffsetZ
       record.facing = actor.facing
+      record.heldOffsetFacing = actor:heldOffsetFacing()
       record.pose = actor.pose
       record.poseTick = state.poseTick
       record.gesturePose = presentation.gesturePose
@@ -1980,7 +1982,7 @@ end
 -- Raw facing codes match the pinned field direction table (0 north, 1
 -- south, 2 west, 3 east).
 local PARTNER_FACING_RAW = { north = 0, south = 1, west = 2, east = 3 }
-local PARTNER_FACINGS = { north = true, south = true, west = true, east = true }
+local CARDINAL_FACINGS = { north = true, south = true, west = true, east = true }
 
 ---@class FieldActorManager.PartnerSpec
 ---@field numericId integer must be the source partner object id 253
@@ -2010,7 +2012,7 @@ local function checkPartnerSpec(self, spec)
   if spec.initiallyVisible ~= nil then
     assert(type(spec.initiallyVisible) == "boolean", "partner initial visibility must be boolean when present")
   end
-  if not PARTNER_FACINGS[spec.facing] then
+  if not CARDINAL_FACINGS[spec.facing] then
     Errors.raise(
       FieldErrors.ACTOR_PARTNER_FACING_INVALID,
       "unsupported partner facing " .. tostring(spec.facing),
@@ -2695,6 +2697,10 @@ function FieldActorManager:beginScriptedAction(actorId, action)
         "presentation offset components must be finite numbers"
       )
     end
+    assert(
+      action.heldOffsetFacing == nil or CARDINAL_FACINGS[action.heldOffsetFacing] == true,
+      "presentation offset held facing must be cardinal"
+    )
     durationTicks = action.ticks
   elseif
     kind == "walk"
@@ -2749,6 +2755,7 @@ function FieldActorManager:beginScriptedAction(actorId, action)
     presentationOffsetX = action.x,
     presentationOffsetY = action.y,
     presentationOffsetZ = action.z,
+    heldOffsetFacing = action.heldOffsetFacing,
     start = destInfo.start,
     dest = destInfo.dest,
     durationTicks = durationTicks,

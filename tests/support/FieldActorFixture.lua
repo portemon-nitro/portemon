@@ -220,7 +220,7 @@ function FieldActorFixture.visual(spriteId, opts)
   end
 
   return {
-    schema = "g4-field-actor-v3",
+    schema = "g4-field-actor-v4",
     spriteId = spriteId,
     render = {
       kind = "atlas",

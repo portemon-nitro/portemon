@@ -212,6 +212,9 @@ local function motionPhase(state, ctx)
         y = state.cumulativeY,
         z = state.cumulativeZ,
         ticks = ticks,
+        -- ov01_021F8F08: the drawn facing offset holds the interaction-start
+        -- facing for the whole motion while records turn the partner.
+        heldOffsetFacing = state.savedFacing,
       })
       svc.actors:advanceScriptedAction(actorId, 0, ticks)
       if record.sound and step.sound ~= nil then
@@ -237,6 +240,9 @@ local function motionPhase(state, ctx)
         y = state.cumulativeY,
         z = state.cumulativeZ,
         ticks = ticks,
+        -- ov01_021F8F08: the drawn facing offset holds the interaction-start
+        -- facing for the whole motion while records turn the partner.
+        heldOffsetFacing = state.savedFacing,
       })
       svc.actors:advanceScriptedAction(actorId, state.motionTick, ticks)
     end

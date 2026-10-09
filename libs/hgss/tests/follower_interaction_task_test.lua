@@ -104,6 +104,7 @@ local function fixture(programs, options)
     actor.motionActive = true
     actor.begins = (actor.begins or 0) + 1
     actor.actionX, actor.actionY, actor.actionZ = action.x, action.y, action.z
+    actor.heldOffsetFacing = action.heldOffsetFacing
     actor.offset = { x = 0, y = 0, z = 0 }
     if action.action == "emote" then
       events[#events + 1] = { "emote", action.name, action.ticks }
@@ -313,6 +314,7 @@ T["motion and dialogue preserve actor identity, offsets, facing, and substitutio
     "the first record applies its render offset immediately"
   )
   Assert.equal(seen.actor.facing, "north", "the record applies its facing immediately")
+  Assert.equal(seen.actor.heldOffsetFacing, "west", "the drawn facing offset stays at the interaction-start facing")
   Assert.equal(seen.audio.played[1], 42, "record sound plays once at record start")
 
   state = copy(state)

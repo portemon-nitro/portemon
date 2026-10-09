@@ -86,6 +86,33 @@ function T.places_the_billboard_at_the_world_position_plus_the_source_anchor()
   Assert.equal(item.modelNormal, nextItem.modelNormal, "ordinary actor billboards share one identity normal")
 end
 
+-- Animated Pokemon visuals shift their drawn position by their facing's
+-- offset; a held offset facing pins the shift while the drawn facing turns.
+function T.pokemon_billboards_shift_by_their_facing_offset()
+  local pokemon = entry(99)
+  pokemon.visual.idlePresentation = {
+    mode = "animated",
+    cadence = 1,
+    facingOffsets = {
+      north = { x = 0, z = 1 / 16 },
+      south = { x = 0, z = -1 / 16 },
+      west = { x = 10 / 16, z = 0 },
+      east = { x = -10 / 16, z = 0 },
+    },
+  }
+  local west = FieldActorDraw.item(record({ facing = "west" }), pokemon)
+  Assert.near(west.billboardBase[13], 3 + 10 / 16, 1e-9)
+  Assert.near(west.billboardBase[15], -4, 1e-9)
+  local north = FieldActorDraw.item(record({ facing = "north" }), pokemon)
+  Assert.near(north.billboardBase[13], 3, 1e-9)
+  Assert.near(north.billboardBase[15], -4 + 1 / 16, 1e-9)
+  local held = FieldActorDraw.item(record({ facing = "north", heldOffsetFacing = "east" }), pokemon)
+  Assert.near(held.billboardBase[13], 3 - 10 / 16, 1e-9, "the held facing owns the shift")
+  Assert.near(held.billboardBase[15], -4, 1e-9)
+  local ordinary = FieldActorDraw.item(record({ facing = "west" }), entry(99))
+  Assert.equal(ordinary.billboardBase[13], 3, "ordinary actors keep their anchor in every facing")
+end
+
 -- Actor billboards draw through the depth-biased billboard projection while
 -- static models keep the world projection (see FieldCamera:billboardProjection).
 function T.billboard_actors_select_the_field_billboard_projection()

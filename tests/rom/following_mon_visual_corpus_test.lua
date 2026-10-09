@@ -35,7 +35,8 @@ local LOCOMOTION_POSES = { "idle", "walk" }
 -- the walk pose instead of a one-frame hold, with the source vertical offset
 -- coupled to the animation phase.
 local function assertIdleUsesSourceRange(visual, label)
-  Assert.deepEqual(visual.idlePresentation, { mode = "animated", cadence = 1 }, label .. " native idle presentation")
+  Assert.equal(visual.idlePresentation.mode, "animated", label .. " native idle presentation")
+  Assert.equal(visual.idlePresentation.cadence, 1, label .. " native idle cadence")
   for _, direction in ipairs(manifest.directionOrder) do
     local set = assert(visual.directions[direction], label .. " " .. direction .. " pose set is required")
     local idle = assert(set.idle, label .. " " .. direction .. " idle pose is required")

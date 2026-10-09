@@ -23,6 +23,7 @@ local FieldActorDraw = {}
 ---@field spriteId integer
 ---@field world { x: number, y: number, z: number }
 ---@field facing string
+---@field heldOffsetFacing string? facing whose draw offset stays pinned while the drawn facing turns
 ---@field pose string?
 ---@field poseTick integer?
 ---@field gesturePose string?
@@ -128,9 +129,15 @@ local function writeItem(record, entry, partIndex, item)
   end
 
   local anchor = geometry.anchorTiles
-  local x = record.world.x + gestureOffsetX + anchor.x
+  local facingOffsetX, facingOffsetZ = 0, 0
+  local facingOffsets = visual.idlePresentation.facingOffsets
+  if facingOffsets ~= nil then
+    local facingOffset = assert(facingOffsets[record.heldOffsetFacing or record.facing], "unknown draw facing")
+    facingOffsetX, facingOffsetZ = facingOffset.x, facingOffset.z
+  end
+  local x = record.world.x + gestureOffsetX + facingOffsetX + anchor.x
   local y = record.world.y + gestureOffsetY + anchor.y
-  local z = record.world.z + gestureOffsetZ + anchor.z
+  local z = record.world.z + gestureOffsetZ + facingOffsetZ + anchor.z
   local isBillboard = render.kind ~= "staticModel"
   if isBillboard then
     ---@cast part FieldActorCache.AtlasRender

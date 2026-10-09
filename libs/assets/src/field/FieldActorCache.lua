@@ -81,7 +81,7 @@ local FieldActorCache = {}
 ---@field spriteId integer
 ---@field render FieldActorCache.Render
 ---@field directions table<string, { idle: FieldActorCache.Pose, walk: FieldActorCache.Pose? }>
----@field idlePresentation { mode: "static"|"animated", cadence: integer }
+---@field idlePresentation { mode: "static"|"animated", cadence: integer, facingOffsets: table<string, { x: number, z: number }>? } animated Pokemon idles also shift their drawn position per facing, in tiles
 ---@field gestures table<string, FieldActorCache.Gesture>
 
 local Validate = require("libs.assets.src.Validate")
@@ -407,6 +407,28 @@ local function isValidPose(pose, frameCount, requireDisplayOffsetY)
   return true
 end
 
+local FACING_DIRECTIONS = { "north", "south", "west", "east" }
+
+local function isValidFacingOffsets(offsets)
+  if type(offsets) ~= "table" then
+    return false
+  end
+  local count = 0
+  for _ in pairs(offsets) do
+    count = count + 1
+  end
+  if count ~= #FACING_DIRECTIONS then
+    return false
+  end
+  for _, direction in ipairs(FACING_DIRECTIONS) do
+    local offset = offsets[direction]
+    if type(offset) ~= "table" or type(offset.x) ~= "number" or type(offset.z) ~= "number" then
+      return false
+    end
+  end
+  return true
+end
+
 function FieldActorCache.isValidVisual(visual, spriteId)
   if type(visual) ~= "table" or visual.schema ~= FieldActorCache.SCHEMA then
     return false
@@ -427,6 +449,14 @@ function FieldActorCache.isValidVisual(visual, spriteId)
     or (idlePresentation.mode == "static" and idlePresentation.cadence ~= 0)
     or (idlePresentation.mode == "animated" and idlePresentation.cadence ~= 1)
   then
+    return false
+  end
+  local facingOffsets = idlePresentation.facingOffsets
+  if idlePresentation.mode == "static" then
+    if facingOffsets ~= nil then
+      return false
+    end
+  elseif not isValidFacingOffsets(facingOffsets) then
     return false
   end
   local render = visual.render

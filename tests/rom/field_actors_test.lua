@@ -147,7 +147,8 @@ end
 -- coupled to the animation phase. Ordinary non-Pokemon actors keep a static
 -- one-frame idle.
 local function assertIdleUsesSourceRange(visual, label)
-  Assert.deepEqual(visual.idlePresentation, { mode = "animated", cadence = 1 }, label .. " native idle presentation")
+  Assert.equal(visual.idlePresentation.mode, "animated", label .. " native idle presentation")
+  Assert.equal(visual.idlePresentation.cadence, 1, label .. " native idle cadence")
   for _, direction in ipairs(manifest.directionOrder) do
     local set = assert(visual.directions[direction], label .. " " .. direction .. " pose set is required")
     local idle = assert(set.idle, label .. " " .. direction .. " idle pose is required")
@@ -290,6 +291,29 @@ function T.compiled_visuals_animate_pokemon_idle_from_the_source_range(romFs)
   for _, visual in pairs(bundle.visuals) do
     Assert.isNil(visual.actorFamily, "raw actor family must not cross the generated asset boundary")
   end
+end
+
+-- ov01_021F8E70 shifts a Pokemon actor's drawn position per facing, in
+-- sixteenths of a tile: model key 0xA (the large descriptor) moves N/S on z
+-- and W/E by ten; every other Pokemon model moves W/E by two.
+function T.pokemon_visuals_shift_their_draw_position_per_facing(romFs)
+  local bundle = assert(FieldActorCompiler.compile(romFs))
+  local marill = assert(bundle.visuals[1032], "static Marill visual 1032 must be compiled")
+  Assert.deepEqual(marill.idlePresentation.facingOffsets, {
+    north = { x = 0, z = 0 },
+    south = { x = 0, z = 0 },
+    west = { x = 2 / 16, z = 0 },
+    east = { x = -2 / 16, z = 0 },
+  })
+  local kyogre = assert(bundle.visuals[1043], "static Kyogre visual 1043 must be compiled")
+  Assert.deepEqual(kyogre.idlePresentation.facingOffsets, {
+    north = { x = 0, z = 1 / 16 },
+    south = { x = 0, z = -1 / 16 },
+    west = { x = 10 / 16, z = 0 },
+    east = { x = -10 / 16, z = 0 },
+  })
+  local aide = assert(bundle.visuals[29], "aide visual 29 must be compiled")
+  Assert.isNil(aide.idlePresentation.facingOffsets, "ordinary actors keep their anchor in every facing")
 end
 
 -- The map-actor bob control for the idle phase: Marill rests everywhere

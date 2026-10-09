@@ -403,6 +403,15 @@ function FieldObjectActor:setPresentationScale(scale)
   self._presentationScale = scale
 end
 
+-- Every facing assignment goes through here: a Pokemon actor's draw callback
+-- (ov01_021F8D80) restarts its animation whenever the drawn facing changes.
+local function assignFacing(actor, facing)
+  if facing ~= actor.facing and actor._idlePresentation.mode == "animated" then
+    actor:_numeric().poseTick = 0
+  end
+  actor.facing = facing
+end
+
 -- Temporary facing owned by an interaction client. Only one override may be
 -- live: a foreign owner must not be able to silently take or drop another's.
 function FieldObjectActor:pushFacingOverride(request)
@@ -421,7 +430,7 @@ function FieldObjectActor:pushFacingOverride(request)
     restoreFacing = self.facing,
   }
   self.interactionFacingOverride = token
-  self.facing = token.facing
+  assignFacing(self, token.facing)
   return token
 end
 
@@ -434,7 +443,7 @@ function FieldObjectActor:releaseFacingOverride(token)
       { actorId = actorId }
     )
   end
-  self.facing = token.restoreFacing
+  assignFacing(self, token.restoreFacing)
   self.interactionFacingOverride = nil
 end
 
@@ -445,7 +454,7 @@ function FieldObjectActor:clearFacingOverride()
   if not token then
     return
   end
-  self.facing = token.restoreFacing
+  assignFacing(self, token.restoreFacing)
   self.interactionFacingOverride = nil
 end
 
@@ -549,6 +558,7 @@ function FieldObjectActor:beginAction(descriptor, owner)
     presentationOffsetX = descriptor.presentationOffsetX,
     presentationOffsetY = descriptor.presentationOffsetY,
     presentationOffsetZ = descriptor.presentationOffsetZ,
+    heldOffsetFacing = descriptor.heldOffsetFacing,
     startGesturePose = self._gesturePose,
     startGestureTick = state.hasGestureTick == 1 and state.gestureTick or nil,
     startGestureOffsetY = state.gestureOffsetY,
@@ -666,6 +676,7 @@ function FieldObjectActor:advanceAction(progressTicks, durationTicks)
   if m.owner == "script" then
     state.scriptedPresentationAdvanced = 1
   end
+  local elapsed = progressTicks > m.progressTicks
   m.progressTicks = progressTicks
   m.durationTicks = durationTicks
   applyActionWorldPosition(self, m)
@@ -701,6 +712,11 @@ function FieldObjectActor:advanceAction(progressTicks, durationTicks)
   end
   if m.action == "delay" or m.action == "emote" then
     applyIdlePresentation(self, state.animationPaused == 0)
+  elseif m.action == "presentation_offset" then
+    -- The idle animation keeps running under the offset, one frame per
+    -- elapsed tick, and its bob adds to the offset's height.
+    applyIdlePresentation(self, elapsed and state.animationPaused == 0)
+    state.presentationOffsetY = state.presentationOffsetY + m.presentationOffsetY
   end
 end
 
@@ -844,6 +860,14 @@ function FieldObjectActor:currentAction()
   return self._motion and self._motion.action or nil
 end
 
+-- The facing whose draw offset the active presentation-offset action holds,
+-- or nil when the drawn offset follows the current facing.
+---@return FieldDirection|nil
+function FieldObjectActor:heldOffsetFacing()
+  local motion = self._motion
+  return motion and motion.action == "presentation_offset" and motion.heldOffsetFacing or nil
+end
+
 function FieldObjectActor:scriptedMotionState()
   return self._motion
 end
@@ -873,7 +897,7 @@ end
 -- restore; the script layer is the authority while it owns the field.
 ---@param direction FieldDirection
 function FieldObjectActor:setFacing(direction)
-  self.facing = requireFacing(direction, { actorId = self.actorId })
+  assignFacing(self, requireFacing(direction, { actorId = self.actorId }))
 end
 
 -- Scripted visibility toggle (`show_object`/`hide_object`). The flag-driven
