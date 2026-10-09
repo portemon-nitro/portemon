@@ -9,10 +9,11 @@
 --
 -- Sampling the attachments runs through CompiledNsbcaSampler over the
 -- clips' compiled payloads (NsbcaClipCompiler, digest side) -- the runtime
--- never touches NSBCA bytes -- then, under the backend's at-most-one-joint-
--- attachment invariant, the sampled result composes directly into SRT
--- records via NitroJointState before SBC replay, the same steps the
--- digest-side NsbcaPoseProvider follows over raw decodes.
+-- never touches NSBCA bytes -- then the sampled results compose directly
+-- into SRT records via NitroJointState before SBC replay, the same steps
+-- the digest-side NsbcaPoseProvider follows over raw decodes. Attachments
+-- apply in array order: a later attachment overwrites the node tracks it
+-- shares with an earlier one, and disjoint tracks apply independently.
 --
 -- The output is the PoseState: per-node matrices and visibility plus
 -- per-mesh draw transforms -- a Nitro draw is not one node matrix, so every
@@ -99,9 +100,11 @@ end
 
 -- The effective per-node SRT records from the instance's joint attachments:
 -- sampling per node, with channels the clips leave to the model resolved
--- against the program's bind SRTs. Attach rejects a second same-kind clip,
--- so at most one joint clip plays; the sampled result feeds SRT composition
--- directly instead of another single-contributor blend copy.
+-- against the program's bind SRTs. Attachments apply in array order into
+-- `out`, so a later attachment overwrites the node tracks it shares with
+-- an earlier one (last wins) while disjoint tracks apply independently;
+-- the sampled results feed SRT composition directly instead of another
+-- single-contributor blend copy.
 ---@param program table<string, unknown>
 ---@param attachments table<integer, unknown>
 ---@param out table<integer, table<string, unknown>>
@@ -250,7 +253,9 @@ function NitroPoseBackend.newScratch(definition)
 end
 
 -- Evaluate `instance` into its scratch-owned live pose. Joint attachments
--- drive the program; material attachments do not affect the pose. Every
+-- drive the program in attach order: a later attachment overwrites the
+-- node tracks it shares with an earlier one, and disjoint tracks apply
+-- independently. Material attachments do not affect the pose. Every
 -- optional field is overwritten or cleared each evaluation, so no previous
 -- frame contribution survives an animation stopping. Returns the same pose
 -- containers on every call while the mesh set is unchanged.
@@ -258,18 +263,12 @@ end
 ---@param scratch NitroPoseBackend.Scratch
 ---@return PoseState
 function NitroPoseBackend.evaluateInto(instance, scratch)
-  assert(
-    type(instance) == "table" and instance.definition ~= nil,
-    "NitroPoseBackend.evaluateInto requires a model instance"
-  )
-  assert(type(scratch) == "table" and scratch.pose ~= nil, "NitroPoseBackend.evaluateInto requires pose scratch")
   local def = instance.definition
   local program = requireProgram(def)
   local tileScale = program.tileScale
 
   local jointAttachments =
     instance.animationState:attachmentsInto(AnimationClip.CATEGORIES.joint, scratch._jointAttachments)
-  assert(#jointAttachments <= 1, "NitroPoseBackend supports at most one joint attachment")
   nodeSrt(program, jointAttachments, scratch._srt, scratch._jointSampler, scratch._srtScratch)
   local result = NsbmdSbcEvaluator.evaluateInto(program, scratch.provider, scratch.sbc)
 

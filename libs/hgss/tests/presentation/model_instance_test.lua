@@ -568,4 +568,42 @@ function T.reused_slots_reset_stale_billboard_and_material_state()
   Assert.deepEqual(reset[2].billboardScale, resetScale, "the billboard scale survives the material reset")
 end
 
+-- The draw mapping is admitted at construction: a definition mesh without
+-- Backend coverage and stamped centers are verified once per slot on first
+-- draw instead of per mesh per frame, so construction admits definitions
+-- whose meshes no draw ever touches; a drawn mesh without coverage still
+-- fails with the same named errors, and a complete definition draws from
+-- the admitted mapping.
+function T.construction_admits_mesh_backend_records_and_centers()
+  local noRecord = NitroModelFixture.doorDefinition()
+  noRecord.backend.meshes["draw0.seg0"] = nil
+  local instanceNoRecord = ModelInstance.new(noRecord)
+  instanceNoRecord:evaluatePose()
+  local okRecord, errRecord =
+    pcall(instanceNoRecord.drawItems, instanceNoRecord, rendersFor(noRecord))
+  Assert.isFalse(okRecord, "a drawn mesh without backend coverage fails on first draw")
+  Assert.isTrue(
+    string.find(tostring(errRecord), "backend mesh record missing", 1, true) ~= nil,
+    "the first-draw failure names the missing backend record"
+  )
+
+  local noCenter = NitroModelFixture.doorDefinition()
+  noCenter.meshes[1].center = nil
+  local instanceNoCenter = ModelInstance.new(noCenter)
+  instanceNoCenter:evaluatePose()
+  local okCenter, errCenter =
+    pcall(instanceNoCenter.drawItems, instanceNoCenter, rendersFor(noCenter))
+  Assert.isFalse(okCenter, "a drawn mesh without a stamped center fails on first draw")
+  Assert.isTrue(
+    string.find(tostring(errCenter), "no stamped model-space center", 1, true) ~= nil,
+    "the first-draw failure names the missing center"
+  )
+
+  local instance = newInstance()
+  instance:evaluatePose()
+  local items = instance:drawItems(rendersFor(instance.definition))
+  Assert.equal(#items, 1, "the admitted definition still draws")
+  Assert.deepEqual(items[1].center, { 1, 0, 1 }, "the admitted center reaches the item")
+end
+
 return { tests = T }

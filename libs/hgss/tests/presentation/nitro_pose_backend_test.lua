@@ -355,6 +355,7 @@ function T.restore_slot_sources_resolve_from_the_draw_snapshot()
         nodeIndex = 1,
         materialIndex = 0,
         geometry = "fixtures/draw0.seg0.g4mesh",
+        center = { 0, 2, 0 },
       },
     },
     materials = {
@@ -870,6 +871,197 @@ function T.reusable_srt_composition_toggles_inverse_scale_presence()
   local thirdInv = assert(third.inverseScale, "the retained buffer survives the nil transition")
   Assert.isTrue(thirdInv == buffer, "the surviving buffer is the same retained storage")
   Assert.equal(thirdInv.x, 0.5, "the buffer carries fresh values, not stale ones")
+end
+
+-- ---- ordered multiple joint attachments ----
+
+-- A constant-translation joint clip over the given node targets. `specs`
+-- carries { node, x, y, z } entries in model units; each becomes one
+-- track and one compiled target. Clips of distinct kinds can play
+-- together (the state rejects only a second attachment of the same kind);
+-- the pose backend applies the active joint attachments in attach order.
+local function constTransClip(id, name, kind, specs)
+  local tracks, targets = {}, {}
+  for i, spec in ipairs(specs) do
+    tracks[i] = { target = spec.node, targetIndex = i - 1 }
+    targets[i] = {
+      nodeIndex = spec.node,
+      channels = {
+        trans = {
+          x = { source = "constant", value = spec.x * 4096 },
+          y = { source = "constant", value = spec.y * 4096 },
+          z = { source = "constant", value = spec.z * 4096 },
+        },
+        rot = { source = "model" },
+        scale = {
+          x = { source = "model" },
+          y = { source = "model" },
+          z = { source = "model" },
+        },
+      },
+    }
+  end
+  return {
+    id = id,
+    name = name,
+    category = "joint",
+    kind = kind,
+    frameCount = 8,
+    tracks = tracks,
+    semanticNames = {},
+    source = { type = "nitro", format = "NSBCA" },
+    compiled = {
+      anmFlags = 0,
+      rotData = {},
+      pivotData = {},
+      targets = targets,
+    },
+  }
+end
+
+local function twoNodeProgram()
+  return program({ bindNode(0), bindNode(1) }, {
+    { opcode = 0x06, nodeIndex = 0, parentIndex = 0, flags = 0 },
+    { opcode = 0x06, nodeIndex = 1, parentIndex = 0, flags = 0 },
+    { opcode = 0x02, nodeIndex = 0, visible = true },
+    { opcode = 0x04, materialIndex = 0 },
+    { opcode = 0x05, shapeIndex = 0 },
+    { opcode = 0x02, nodeIndex = 1, visible = true },
+    { opcode = 0x04, materialIndex = 0 },
+    { opcode = 0x05, shapeIndex = 1 },
+    { opcode = 0x01 },
+  })
+end
+
+local function twoNodeMeshState(drawIndex)
+  return {
+    drawIndex = drawIndex,
+    positionSource = "draw",
+    transformMode = "static",
+    cullMode = "back",
+    polygonMode = "modulation",
+    polygonId = 0,
+    lightMask = 5,
+    translucentDepthWrite = false,
+    depthEqual = false,
+    polygonAlpha = 31,
+  }
+end
+
+local function twoNodeDefinition(clips)
+  return ModelDefinition.new({
+    key = "fixture:nitro-duet",
+    nodes = {
+      {
+        index = 0,
+        name = "root",
+        translation = { x = 0, y = 0, z = 0 },
+        rotation = identity9(),
+        scale = { x = 1, y = 1, z = 1 },
+      },
+      {
+        index = 1,
+        name = "arm",
+        translation = { x = 0, y = 0, z = 0 },
+        rotation = identity9(),
+        scale = { x = 1, y = 1, z = 1 },
+      },
+    },
+    meshes = {
+      {
+        id = "root.seg",
+        nodeIndex = 0,
+        materialIndex = 0,
+        geometry = "fixtures/root.seg.g4mesh",
+        center = { 1, 0, 1 },
+      },
+      {
+        id = "arm.seg",
+        nodeIndex = 1,
+        materialIndex = 0,
+        geometry = "fixtures/arm.seg.g4mesh",
+        center = { 0, 1, 0 },
+      },
+    },
+    materials = {
+      {
+        id = 0,
+        name = "mat0",
+        baseColor = { r = 255, g = 255, b = 255, a = 255 },
+        alphaMode = "opaque",
+        doubleSided = false,
+        polygonAlpha = 31,
+        texMtxMode = 0,
+        texWidth = 0,
+        texHeight = 0,
+      },
+    },
+    skins = {},
+    animations = clips,
+    backend = {
+      program = twoNodeProgram(),
+      meshes = {
+        ["root.seg"] = twoNodeMeshState(0),
+        ["arm.seg"] = twoNodeMeshState(1),
+      },
+    },
+  })
+end
+
+-- Two joint attachments of distinct kinds play together: overlapping node
+-- tracks resolve in attach order (the later attachment wins) while
+-- disjoint tracks apply independently, and removing the later attachment
+-- restores the earlier pose with no retained transforms.
+function T.ordered_joint_attachments_apply_in_attach_order_with_last_wins()
+  local base = constTransClip("fixture:base", "base", "trs", { { node = 0, x = 10, y = 0, z = 0 } })
+  local overlay = constTransClip("fixture:overlay", "overlay", "overlay", {
+    { node = 0, x = 20, y = 0, z = 0 },
+    { node = 1, x = 0, y = 32, z = 0 },
+  })
+  local instance = newInstance(twoNodeDefinition({ base, overlay }))
+  instance:play("base")
+  local overlayHandle = instance:play("overlay")
+  instance:evaluatePose()
+  local draws = instance.poseState.drawMatrices
+  Assert.equal(draws["root.seg"].position[13], 20 / 16, "the later attachment wins the shared node")
+  Assert.equal(draws["arm.seg"].position[14], 2, "the disjoint node applies independently")
+
+  instance:stop(overlayHandle)
+  instance:evaluatePose()
+  local reset = instance.poseState.drawMatrices
+  Assert.equal(reset["root.seg"].position[13], 10 / 16, "removing the overlay restores the base node")
+  Assert.equal(
+    reset["arm.seg"].position[13],
+    10 / 16,
+    "the child still follows its parent's base translation through the hierarchy"
+  )
+  Assert.equal(reset["arm.seg"].position[14], 0, "no stale overlay translation survives the removal")
+  Assert.isNil(instance.poseState.nodeVisible[0], "no stale visibility survives the removal")
+  Assert.isNil(instance.poseState.nodeVisible[1], "no stale visibility survives the removal")
+end
+
+-- The compiled-clip guard still fires per attachment when several joint
+-- attachments play: an uncompiled later attachment raises instead of
+-- silently keeping the earlier node's values.
+function T.uncompiled_later_joint_attachment_still_raises()
+  local base = constTransClip("fixture:base", "base", "trs", { { node = 0, x = 10, y = 0, z = 0 } })
+  local broken = {
+    id = "fixture:broken",
+    name = "broken",
+    category = "joint",
+    kind = "overlay",
+    frameCount = 2,
+    tracks = { { target = 0 } },
+    semanticNames = {},
+    source = { type = "nitro", format = "NSBCA" },
+  }
+  local instance = newInstance(twoNodeDefinition({ base, broken }))
+  instance:play("base")
+  instance:play("broken")
+  local err = Assert.throws(function()
+    instance:evaluatePose()
+  end)
+  Assert.equal(err.code, "POSE_NITRO_JOINT_CLIP_NOT_COMPILED")
 end
 
 return { tests = T }

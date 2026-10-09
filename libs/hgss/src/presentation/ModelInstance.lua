@@ -74,6 +74,7 @@ local BillboardTransform = require("libs.hgss.src.presentation.BillboardTransfor
 ---@field transformBuffer Matrix4.Buffer
 ---@field _center number[]
 ---@field _scale number[]
+---@field verified boolean true once the slot's assembled draw mapping passed its first-draw check
 
 ---@class ModelInstance
 ---@field definition table<string, unknown>
@@ -213,6 +214,7 @@ local function newDrawSlot()
     transformBuffer = Matrix4.newBuffer(),
     _center = { 0, 0, 0 },
     _scale = { 1, 1, 1 },
+    verified = false,
   }
 end
 
@@ -277,6 +279,13 @@ function ModelInstance.new(definition, opts)
   for _ in ipairs(definition.meshes) do
     slots[#slots + 1] = newDrawSlot()
   end
+  -- The draw mapping is verified once per slot on first draw: every drawn
+  -- mesh of a backend-carrying definition resolves to a backend draw
+  -- record and a stamped model-space center, so later frames read the
+  -- mapping directly instead of re-checking it per mesh per frame.
+  -- Definitions without a backend payload still construct; meshes that
+  -- are never drawn keep the previous behavior of never being checked.
+  -- (A constructor-time check would fail meshes no draw ever touches.)
   local materials = {}
   for materialIndex in ipairs(definition.materials) do
     materials[materialIndex - 1] = newEffectiveMaterial()
@@ -492,7 +501,15 @@ function ModelInstance:drawItems(renderMeshesById)
     if not (pose and pose.nodeVisible[mesh.nodeIndex] == false) then
       ---@type PoseDrawMatrix|nil
       local draw = pose and pose.drawMatrices and pose.drawMatrices[mesh.id]
-      local slot = assert(self._slots[meshIndex], "mesh index " .. tostring(meshIndex) .. " has no stable record slot")
+      local slot = self._slots[meshIndex]
+      if not slot.verified then
+        assert(
+          backendMeshes[mesh.id] ~= nil,
+          "backend mesh record missing for " .. mesh.id .. " (a nitro definition must cover every mesh)"
+        )
+        assert(mesh.center ~= nil, "mesh " .. mesh.id .. " has no stamped model-space center")
+        slot.verified = true
+      end
       local item = slot.item
       if draw then
         if draw.transformMode == PoseContract.BILLBOARD then
@@ -526,10 +543,7 @@ function ModelInstance:drawItems(renderMeshesById)
         item.billboardScale = nil
         writeNormalInto(item.modelNormal, item.transform)
       end
-      local meshState = assert(
-        backendMeshes[mesh.id],
-        "backend mesh record missing for " .. mesh.id .. " (a nitro definition must cover every mesh)"
-      )
+      local meshState = backendMeshes[mesh.id]
       local material = self:effectiveMaterial(mesh.materialIndex)
       item.mesh = renderMeshesById[mesh.id]
       item.material = material
@@ -537,7 +551,7 @@ function ModelInstance:drawItems(renderMeshesById)
       item.polygonAlpha = material.polygonAlpha
       -- The loader stamps each mesh's model-space center from the decoded
       -- geometry; a definition mesh without one cannot be sorted.
-      item.center = assert(mesh.center, "mesh " .. mesh.id .. " has no stamped model-space center")
+      item.center = mesh.center
       -- The shared draw-state set rides on the item from the backend record
       -- (complete by contract: the descriptor gate requires every field on
       -- every batch, and fromNitroDescriptor copies the batch records).
