@@ -583,6 +583,48 @@ function FieldBattlePresentation:factory()
   return buildPort
 end
 
+-- Adapts one launch behind the screen-owned one-argument cue sink.
+-- A method-based production controller resolves `select` to the staged
+-- interface role and `cry:<species>` to the numeric species cry; every
+-- other role is an explicit failure with launch context. An injected
+-- semantic sink (no cry voice of its own) passes through untouched for
+-- the deliberate headless contract, never as a production fallback.
+---@param launchId string owning launch identity behind failure context
+---@return table<string, unknown> one-argument cue sink behind the screen
+function FieldBattlePresentation:_screenAudioFor(launchId)
+  local controller = self._screenAudio
+  if type(controller.playCry) ~= "function" then
+    return controller
+  end
+  local manifest = self._manifest
+  local monCatalog = self._monCatalog
+  local function play(role)
+    assert(type(role) == "string" and role ~= "", "battle cues name their sound role")
+    if role == "select" then
+      local audioRoles = type(manifest) == "table" and manifest.audioRoles or nil
+      assert(type(audioRoles) == "table", "battle sound needs its staged select role for launch " .. launchId)
+      local symbol = audioRoles.select
+      assert(
+        type(symbol) == "string" and symbol ~= "",
+        "battle sound needs its staged select role for launch " .. launchId
+      )
+      return controller:play(symbol)
+    end
+    local speciesKey = role:match("^cry:(.+)$")
+    if speciesKey ~= nil then
+      assert(monCatalog ~= nil, "battle cries need their mon catalog for launch " .. launchId)
+      local facts = monCatalog:species(speciesKey)
+      assert(
+        type(facts) == "table" and type(facts.nativeId) == "number",
+        "battle cries name a cataloged species for launch " .. launchId .. ": " .. tostring(role)
+      )
+      return controller:playCry(facts.nativeId, 0)
+    end
+    error("unknown battle sound role for launch " .. launchId .. ": " .. tostring(role), 0)
+  end
+  return { play = play }
+end
+
 ---@param descriptor table<string, unknown> detached launch descriptor from the runtime
 ---@return table<string, unknown> fresh five-operation port behind a fresh screen
 function FieldBattlePresentation:_buildPort(descriptor)
@@ -624,7 +666,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
     assets = self._services,
     text = self._text,
     windows = self._windows,
-    audio = self._screenAudio,
+    audio = self:_screenAudioFor(descriptor.launchId),
     itemCatalog = self._itemCatalog,
     monCatalog = self._monCatalog,
     overrides = { sceneKey = sceneKey },

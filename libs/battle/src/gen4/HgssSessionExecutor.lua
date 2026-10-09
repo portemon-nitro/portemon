@@ -4874,7 +4874,11 @@ local function probeChoice(state, choice, decisionKind, admitted, battleKind)
   if not ok then
     return valid --[[@as table<string, unknown>]]
   end
-  return checkChoiceBinding(state, choice, admitted, battleKind)
+  -- Read-only probes evaluate binding exactly as submission would with
+  -- nothing reserved: submission stages its reservation maps privately,
+  -- so the prober supplies empty ones. Submission-time reservation
+  -- ownership and enforcement are unchanged.
+  return checkChoiceBinding(state, choice, admitted, battleKind, { replacements = {}, items = {} })
 end
 
 ---@param state table<string, unknown> live battle state under read-only inspection

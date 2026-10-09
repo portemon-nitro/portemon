@@ -869,4 +869,45 @@ function T.native_arrow_hides_outside_selection_modes()
   rig.battle:dispose()
 end
 
+-- A rejecting cue sink fails the screen with context instead of escaping
+-- as a host error: the send-out cry never reaches an interactive
+-- decision, the failure names the launch and the cue role, nothing
+-- commits, and later ticks replay nothing.
+function T.rejecting_cue_sink_fails_the_screen_with_context()
+  local rig = openRig({ launchId = "launch-cue-failure" })
+  local dispatches = 0
+  rig.audio.play = function(_)
+    dispatches = dispatches + 1
+    error("injected cue fault", 0)
+  end
+  local failed = nil
+  for _ = 1, 600 do
+    local settled, settleErr = pcall(function()
+      rig.pump(1)
+    end)
+    Assert.isTrue(settled, "cue audio never escapes as a host error: " .. tostring(settleErr))
+    local status = rig.screen:status()
+    if status.mode == "failed" then
+      failed = status
+      break
+    end
+  end
+  Assert.notNil(failed, "the rejecting sink fails the screen")
+  local context = tostring(failed.error)
+  Assert.isTrue(context:find("launch-cue-failure", 1, true) ~= nil, "the failure names its launch: " .. context)
+  Assert.isTrue(context:find("cry:EEVEE", 1, true) ~= nil, "the failure names its cue role: " .. context)
+  Assert.isTrue(dispatches >= 1, "the faulty cue was dispatched before failing")
+  Assert.equal(#rig.submits, 0, "no decision commits behind a failed cue")
+  for _ = 1, 30 do
+    local settled, settleErr = pcall(function()
+      rig.pump(1)
+    end)
+    Assert.isTrue(settled, "later ticks stay controlled: " .. tostring(settleErr))
+  end
+  Assert.equal(dispatches, 1, "a failed screen replays no cue")
+  Assert.isTrue(rig.screen:status().mode ~= "command", "the faulty cue never reaches an interactive decision")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
 return { tests = T }

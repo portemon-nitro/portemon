@@ -6,7 +6,9 @@
 -- silent no-op.
 
 local Assert = require("tests.support.Assert")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
+local ItemFixture = require("libs.items.tests.item_fixture")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -28,6 +30,8 @@ local function stubPresentationRuntime(cache)
     cacheFs = cache or FieldStatePresentationFixture.cache(),
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
     uiManifest = FieldUiFixture.fieldStateManifest(),
+    itemCatalog = ItemFixture.makeCatalog(),
+    monCatalog = CatalogFixture.makeCatalog(),
     bindPartyIconPreparation = function(_, _, _)
       return 1
     end,

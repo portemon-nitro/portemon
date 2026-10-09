@@ -49,7 +49,6 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 ---@field _outcomeAcked boolean terminal narration acknowledged once
 ---@field _error string? failure context
 ---@field _disposed boolean
----@field _sounds table<integer, string> queued one-shot sound intents
 local BattleScreenState = {}
 BattleScreenState.__index = BattleScreenState
 
@@ -197,13 +196,7 @@ function BattleScreenState.new(opts)
     _outcomeAcked = false,
     _error = nil,
     _disposed = false,
-    _sounds = {},
   }, BattleScreenState)
-  local screen = self
-  ---@param name string one-shot sound intent under queueing
-  local function queueSound(name)
-    screen._sounds[#screen._sounds + 1] = name
-  end
   -- Foe move sets never enter the detached views, so foe narration
   -- resolves display names through the borrowed mon catalog. The
   -- resolver stays optional: views and raw identities cover its absence.
@@ -221,7 +214,6 @@ function BattleScreenState.new(opts)
     moveNameOf = resolveMoveName
   end
   self._timeline = BattleTimeline.new({
-    sound = queueSound,
     moveName = moveNameOf,
   })
   local cases = nil
@@ -707,6 +699,29 @@ local function moveFragment(options, id)
   return nil
 end
 
+-- Dispatches one semantic cue through the bound one-argument sink. A
+-- rejected cue fails the launch once with launch and role context; the
+-- envelope then reports the failed screen and later ticks replay
+-- nothing because the timeline queue already drained exactly once.
+---@param role string semantic sound role under dispatch
+---@return boolean played true when the sink accepted the cue
+function BattleScreenState:_playCue(role)
+  local ok, err = pcall(self._audio.play, role)
+  if ok then
+    return true
+  end
+  if self._mode ~= "failed" then
+    self._mode = "failed"
+    self._error = "battle sound failed for launch "
+      .. self._launchId
+      .. ": role "
+      .. tostring(role)
+      .. ": "
+      .. tostring(err)
+  end
+  return false
+end
+
 ---@param fragment table<string, unknown> prepared choice fragment under submission
 function BattleScreenState:_seal(fragment)
   assert(self._request ~= nil and self._options ~= nil, "replies answer the open request")
@@ -736,7 +751,7 @@ function BattleScreenState:_seal(fragment)
   self._request = nil
   self._mode = "awaiting_resolution"
   self:cancelPointerCapture()
-  self._audio.play("select")
+  self:_playCue("select")
 end
 
 -- Builds the child intent for the mirrored open request: battle-owned
@@ -1314,7 +1329,9 @@ function BattleScreenState:updateFixed(dt)
     local hadCues = self._timeline:busy()
     self._timeline:update(dt, isAvailable)
     for _, name in ipairs(self._timeline:drainSounds()) do
-      self._audio.play(name)
+      if not self:_playCue(name) then
+        break
+      end
     end
     self:_drain(not hadCues and self._timeline:settled())
     if self._mode == "intro" and self._introBuilt and self._timeline:settled() and self._pendingRequest == nil then

@@ -6,6 +6,8 @@
 -- entries (and post-reveal input) untouched.
 
 local Assert = require("tests.support.Assert")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local ItemFixture = require("libs.items.tests.item_fixture")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
@@ -59,6 +61,8 @@ local function boot(withCover)
       cacheFs = cache,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       uiManifest = FieldUiFixture.fieldStateManifest(),
+      itemCatalog = ItemFixture.makeCatalog(),
+      monCatalog = CatalogFixture.makeCatalog(),
       bindPartyIconPreparation = function(_, _, _)
         return 1
       end,
