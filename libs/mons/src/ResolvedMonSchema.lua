@@ -1,12 +1,14 @@
 -- Validation for composed mon catalog roots. The shape contract mirrors
--- the generated mon asset catalog, with two deliberate policy differences:
+-- the generated mon asset catalog, with deliberate policy differences:
 -- native identities are optional (custom entries resolve semantically with
--- no numeric identity), and form type keys are open (custom types validate
--- through the battle chart, not a native whitelist). Declared native
--- identities must still be unique integers in their native ranges, every
--- species, move, and ability cross-reference must resolve, and growth
--- curves keep their exact native contract. The strict generated-asset
--- validator is untouched: this schema never validates ROM-produced roots.
+-- no numeric identity), form type keys are open (custom types validate
+-- through the battle chart, not a native whitelist), and composed move
+-- power, PP, accuracy, and priority admit finite integral counts outside
+-- native field widths. Declared native identities must still be unique
+-- integers in their native ranges, every species, move, and ability
+-- cross-reference must resolve, and growth curves keep their exact native
+-- contract. The strict generated-asset validator is untouched: this schema
+-- never validates ROM-produced roots.
 
 local Errors = require("libs.errors.src.Errors")
 local Validate = require("libs.assets.src.Validate")
@@ -346,13 +348,13 @@ local function assertMove(key, move, context)
   if CATEGORY_KEYS[move.category] == nil then
     fail("move " .. key .. " has an unknown category", context)
   end
-  checkInt(move.power, 0, 255, context, "move " .. key .. " power")
+  checkInt(move.power, 0, 9007199254740991, context, "move " .. key .. " power")
   checkText(move.moveType, context, "move " .. key .. " moveType")
-  checkInt(move.accuracy, 0, 100, context, "move " .. key .. " accuracy")
-  checkInt(move.basePp, 0, 40, context, "move " .. key .. " basePp")
+  checkInt(move.accuracy, 0, 9007199254740991, context, "move " .. key .. " accuracy")
+  checkInt(move.basePp, 0, 9007199254740991, context, "move " .. key .. " basePp")
   checkInt(move.effectChance, 0, 100, context, "move " .. key .. " effectChance")
   checkInt(move.range, 0, 65535, context, "move " .. key .. " range")
-  checkInt(move.priority, -128, 127, context, "move " .. key .. " priority")
+  checkInt(move.priority, -9007199254740991, 9007199254740991, context, "move " .. key .. " priority")
   checkInt(move.flags, 0, 255, context, "move " .. key .. " flags")
   checkInt(move.unknownC, 0, 255, context, "move " .. key .. " unknownC")
   checkInt(move.contestType, 0, 255, context, "move " .. key .. " contestType")

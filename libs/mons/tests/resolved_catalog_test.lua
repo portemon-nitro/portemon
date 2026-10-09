@@ -158,4 +158,103 @@ function T.strict_native_schema_still_requires_native_identities()
   end)
 end
 
+---@param overrides table<string, unknown>?
+---@return table<string, unknown>
+local function overdriveMove(overrides)
+  local move = copy(CatalogFixture.buildAssetRoot().moves.TACKLE)
+  move.name = "Overdrive Blast"
+  move.nativeId = nil
+  move.power = 300
+  move.basePp = 80
+  move.accuracy = 150
+  move.priority = 200
+  for key, value in pairs(overrides or {}) do
+    move[key] = value
+  end
+  return move
+end
+
+function T.custom_move_numbers_beyond_native_limits_stay_readable_while_native_bounds_hold()
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local ResolvedMonSchema = requireContract(
+    "libs.mons.src.ResolvedMonSchema",
+    "composed mon definitions have no runtime schema"
+  )
+  local Errors = require("libs.errors.src.Errors")
+  local MonsErrors = require("libs.mons.src.errors")
+  local Mon = require("libs.mons.src.Mon")
+  local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
+
+  local root = CatalogFixture.buildAssetRoot()
+  root.moves["ember:OVERDRIVE"] = overdriveMove()
+  Assert.isTrue(ResolvedMonSchema.assertCatalog(root) ~= false, "the composed catalog accepts the custom move")
+  local catalog = MonCatalog.fromResolved(root, CatalogFixture.makeItemCatalog())
+
+  -- The custom move stays readable with its composed numbers unchanged:
+  -- no native clamp is applied at composition.
+  local seen = catalog:move("ember:OVERDRIVE")
+  Assert.equal(seen.power, 300)
+  Assert.equal(seen.basePp, 80)
+  Assert.equal(seen.accuracy, 150)
+  Assert.equal(seen.priority, 200)
+  Assert.isNil(seen.nativeId)
+
+  -- Native entries keep their exact values, priority, and behavior.
+  local tackle = catalog:move("TACKLE")
+  Assert.equal(tackle.power, 35)
+  Assert.equal(tackle.basePp, 35)
+  Assert.equal(tackle.accuracy, 95)
+  Assert.equal(tackle.priority, 0)
+  Assert.equal(tackle.nativeId, 33)
+
+  -- Non-finite, fractional, and negative numbers stay invalid where the
+  -- composed record requires an integer count.
+  local invalid = {
+    overdriveMove({ power = 0 / 0 }),
+    overdriveMove({ accuracy = math.huge }),
+    overdriveMove({ basePp = 80.5 }),
+    overdriveMove({ power = -1 }),
+    overdriveMove({ basePp = -1 }),
+  }
+  for _, move in ipairs(invalid) do
+    local badRoot = CatalogFixture.buildAssetRoot()
+    badRoot.moves["ember:BAD"] = move
+    Assert.throws(function()
+      ResolvedMonSchema.assertCatalog(badRoot)
+    end, "invalid custom move numbers must fail composed validation")
+  end
+
+  -- The strict generated-asset validator is untouched: the overwide custom
+  -- move still fails there.
+  local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
+  Assert.throws(function()
+    MonAssetSchema.assertCatalog(root)
+  end, "the native schema keeps its retail move bounds")
+
+  -- A mon carrying the custom move validates against its own power-point
+  -- ceiling, while power points past that ceiling fail typed validation
+  -- instead of truncating.
+  local context = CatalogFixture.domainContext(catalog)
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local mon = factory:createNormal(CatalogFixture.normalRequest())
+  mon.moves = { { move = "ember:OVERDRIVE", pp = 80, ppUps = 0 } }
+  local validated = Mon.validate(mon, context)
+  Assert.equal(validated.moves[1].pp, 80)
+  local overwide = copy(mon)
+  overwide.moves = { { move = "ember:OVERDRIVE", pp = 129, ppUps = 0 } }
+  local ppErr = Assert.throws(function()
+    Mon.validate(overwide, context)
+  end, "power points past the definition ceiling must fail")
+  Assert.isTrue(Errors.is(ppErr), "the power-point failure is structured")
+  Assert.equal(ppErr.code, MonsErrors.RECORD_INVALID)
+
+  -- The native save boundary still rejects the unrepresentable move with a
+  -- typed failure before anything is written.
+  local legalityErr = Assert.throws(function()
+    NativeLegality.project(validated, context)
+  end, "a custom move without a native identity must fail projection")
+  Assert.isTrue(Errors.is(legalityErr), "the save-boundary failure is structured")
+  Assert.equal(legalityErr.code, MonsErrors.LEGALITY_INVALID)
+end
+
 return { tests = T }

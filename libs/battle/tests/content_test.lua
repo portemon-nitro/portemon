@@ -427,6 +427,100 @@ function T.unknown_rulesets_and_pairs_fail_without_a_neutral_fallback()
   end)
 end
 
+---@param overrides table<string, unknown>?
+---@return table<string, unknown>
+local function customMoveRecord(overrides)
+  local record = {
+    key = "OVERDRIVE",
+    name = "Overdrive",
+    description = "Unleashes everything.",
+    moveType = "fire",
+    category = "special",
+    power = 300,
+    basePp = 80,
+    accuracy = 150,
+    priority = 200,
+    target = "selected",
+    flags = { contact = true },
+    behavior = { key = "test:overdrive" },
+  }
+  for key, value in pairs(overrides or {}) do
+    record[key] = value
+  end
+  return record
+end
+
+function T.custom_move_numbers_beyond_native_limits_compose_without_clamping()
+  local ContentBuilder = requireContract(
+    "libs.content.src.ContentBuilder",
+    "ordered move definitions have no composition owner"
+  )
+  local BattleBehaviorBuilder = requireContract(
+    "libs.battle.src.BattleBehaviorBuilder",
+    "typed behavior registration has no owner"
+  )
+  local BattleContent = requireContract(
+    "libs.battle.src.BattleContent",
+    "frozen executable battle bindings have no owner"
+  )
+
+  local builder = ContentBuilder.new()
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerMove("test:overdrive", { module = "test.overdrive", version = 1 }, "mod")
+  builder:define("moves", "OVERDRIVE", customMoveRecord(), "mod")
+  -- A native-range move in the same composition keeps its exact values.
+  builder:define("moves", "TACKLE", {
+    key = "TACKLE",
+    name = "Tackle",
+    description = "Charges the foe.",
+    moveType = "normal",
+    category = "physical",
+    power = 35,
+    basePp = 35,
+    accuracy = 95,
+    priority = 0,
+    target = "selected",
+    flags = { contact = true },
+    behavior = { key = "test:overdrive" },
+  }, "vanilla")
+  local resolved = builder:freeze()
+
+  -- The resolved record carries the composed numbers unchanged: no native
+  -- clamp is applied at composition.
+  local seen = resolved:get("moves", "OVERDRIVE")
+  Assert.equal(seen.power, 300)
+  Assert.equal(seen.basePp, 80)
+  Assert.equal(seen.accuracy, 150)
+  Assert.equal(seen.priority, 200)
+  local native = resolved:get("moves", "TACKLE")
+  Assert.equal(native.power, 35)
+  Assert.equal(native.basePp, 35)
+  Assert.equal(native.accuracy, 95)
+  Assert.equal(native.priority, 0)
+
+  -- The composed behavior reference binds, so the move runs through the
+  -- test behavior instead of failing composition.
+  local content = BattleContent.new(resolved, behaviors:freeze())
+  Assert.equal(content:behavior("moves", "test:overdrive").module, "test.overdrive")
+
+  -- Non-finite, fractional, and negative numbers stay invalid where the
+  -- composed record requires an integer count.
+  local cases = {
+    customMoveRecord({ key = "NAN_POWER", power = 0 / 0 }),
+    customMoveRecord({ key = "INF_ACCURACY", accuracy = math.huge }),
+    customMoveRecord({ key = "FRACTION_PP", basePp = 80.5 }),
+    customMoveRecord({ key = "NEGATIVE_POWER", power = -1 }),
+    customMoveRecord({ key = "NEGATIVE_PP", basePp = -1 }),
+  }
+  for _, record in ipairs(cases) do
+    local bad = ContentBuilder.new()
+    bad:define("moves", record.key, record, "mod")
+    Assert.throws(function()
+      bad:freeze()
+    end, "invalid move number must fail composition")
+  end
+end
+
 function T.composition_entrypoint_builds_an_isolated_bundle()
   requireContract(
     "libs.content.src.ContentBuilder",

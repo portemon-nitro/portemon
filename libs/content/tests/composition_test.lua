@@ -251,7 +251,7 @@ function T.failed_freeze_publishes_nothing_and_leaves_the_builder_usable()
 
   local builder = ContentBuilder.new()
   builder:define("moves", "TACKLE", moveRecord(), "vanilla")
-  builder:patch("moves", "TACKLE", { { op = "set", path = { "power" }, value = 999 } }, "balance")
+  builder:patch("moves", "TACKLE", { { op = "set", path = { "power" }, value = -1 } }, "balance")
   Assert.throws(function()
     builder:freeze()
   end)

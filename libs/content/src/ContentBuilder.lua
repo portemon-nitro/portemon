@@ -321,6 +321,10 @@ end
 
 ---@param key string
 ---@param record table<string, unknown>
+-- Composed move numbers admit any finite integral count the runtime can
+-- represent: power, PP, and accuracy stay non-negative, priority stays
+-- signed, and non-integers never pass. Native field widths stay with the
+-- producer and the save codec, which still reject what they cannot encode.
 local function assertMove(key, record)
   local context = { kind = "moves", key = key }
   if record.key ~= key then
@@ -335,22 +339,22 @@ local function assertMove(key, record)
     Errors.raise("CONTENT_INVALID", "move " .. key .. " has an unknown category", context)
   end
   checkInteger(record.power, "move " .. key .. " power", context)
-  if record.power < 0 or record.power > 255 then
-    Errors.raise("CONTENT_INVALID", "move " .. key .. " power must be 0..255", context)
+  if record.power < 0 or record.power > 9007199254740991 then
+    Errors.raise("CONTENT_INVALID", "move " .. key .. " power must be 0..9007199254740991", context)
   end
   checkInteger(record.basePp, "move " .. key .. " basePp", context)
-  if record.basePp < 0 or record.basePp > 40 then
-    Errors.raise("CONTENT_INVALID", "move " .. key .. " basePp must be 0..40", context)
+  if record.basePp < 0 or record.basePp > 9007199254740991 then
+    Errors.raise("CONTENT_INVALID", "move " .. key .. " basePp must be 0..9007199254740991", context)
   end
   if record.accuracy ~= nil then
     checkInteger(record.accuracy, "move " .. key .. " accuracy", context)
-    if record.accuracy < 0 or record.accuracy > 100 then
-      Errors.raise("CONTENT_INVALID", "move " .. key .. " accuracy must be 0..100", context)
+    if record.accuracy < 0 or record.accuracy > 9007199254740991 then
+      Errors.raise("CONTENT_INVALID", "move " .. key .. " accuracy must be 0..9007199254740991", context)
     end
   end
   checkInteger(record.priority, "move " .. key .. " priority", context)
-  if record.priority < -128 or record.priority > 127 then
-    Errors.raise("CONTENT_INVALID", "move " .. key .. " priority must be -128..127", context)
+  if record.priority < -9007199254740991 or record.priority > 9007199254740991 then
+    Errors.raise("CONTENT_INVALID", "move " .. key .. " priority must be -9007199254740991..9007199254740991", context)
   end
   checkText(record.target, "move " .. key .. " target", context)
   if type(record.flags) ~= "table" then
