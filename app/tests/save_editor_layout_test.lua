@@ -482,10 +482,7 @@ function T.tests.action_control_geometry_fits_labels_with_padding_on_compact_and
     local layout = Layout.compute(view, size[1], size[2], metrics)
     for _, action in ipairs(layout.actions) do
       local rect = assert(layout.targets[action.id]).rect
-      Assert.isTrue(
-        rect.height >= metrics.lineHeight + 8,
-        action.label .. " has measured native-text padding"
-      )
+      Assert.isTrue(rect.height >= metrics.lineHeight + 8, action.label .. " has measured native-text padding")
       Assert.isTrue(rect.width >= metrics.measure(action.label) + 16, action.label .. " has horizontal text padding")
     end
     Assert.isNil(layout.targets["party:apply"], "no Party-local Apply bar remains")
@@ -968,8 +965,7 @@ function T.tests.party_stats_header_uses_its_visual_grid_and_skips_readonly_stat
     navigate(controller, layout, "down")
     Assert.equal(
       controller.focus,
-      columns == 3 and "party:field:currentHp" or columns == 2 and "party:field:friendship"
-        or "party:field:iv:hp",
+      columns == 3 and "party:field:currentHp" or columns == 2 and "party:field:friendship" or "party:field:iv:hp",
       "Down follows the next physical header row when one exists"
     )
     if columns ~= 5 then
@@ -984,7 +980,6 @@ function T.tests.party_stats_header_uses_its_visual_grid_and_skips_readonly_stat
       "Up from the first Stats row returns to the final header row; got " .. controller.focus
     )
   end
-
 end
 
 function T.tests.party_offscreen_stats_keeps_a_virtual_matrix_without_hit_targets()
@@ -2979,24 +2974,28 @@ function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
       section = "Player",
       ids = { "remove", "cancel" },
       labels = { "Remove", "Back" },
+      matrix = { { "remove" }, { "cancel" } },
     },
     {
       kind = "bag-item",
       section = "Player",
       ids = { "bag:quantity", "bag:remove", "cancel" },
       labels = { "Quantity", "Remove", "Back" },
+      matrix = { { "bag:quantity", "bag:remove" }, { "cancel" } },
     },
     {
       kind = "leave",
       section = "Player",
       ids = { "save", "discard", "cancel" },
       labels = { "Save & exit", "Discard all", "Cancel" },
+      matrix = { { "save", "discard" }, { "cancel" } },
     },
     {
       kind = "party-move",
       section = "Party",
       ids = { "party-move:move", "party-move:pp", "party-move:pp-ups", "cancel" },
       labels = { "Move", "Current PP", "PP Ups", "Back" },
+      matrix = { { "party-move:move", "party-move:pp" }, { "party-move:pp-ups" }, { "cancel" } },
     },
   }
 
@@ -3013,6 +3012,20 @@ function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
       local layout = Layout.compute(view, size.width, size.height, metrics)
       local decision = assert(layout.decisionList, case.kind .. " publishes its action surface")
       Assert.equal(#decision.rows, #case.ids, case.kind .. " retains every semantic action")
+      local actionMatrix
+      for _, region in ipairs(layout.focusNavigation.regions) do
+        if region.id == "decision:actions" then
+          actionMatrix = assert(region.logical).matrix
+        end
+      end
+      Assert.notNil(actionMatrix, case.kind .. " publishes its visual action matrix")
+      Assert.equal(#actionMatrix, #case.matrix, case.kind .. " groups actions into their displayed rows")
+      for rowIndex, expectedRow in ipairs(case.matrix) do
+        Assert.equal(#actionMatrix[rowIndex], #expectedRow, case.kind .. " publishes each row's visual width")
+        for columnIndex, targetId in ipairs(expectedRow) do
+          Assert.equal(actionMatrix[rowIndex][columnIndex], targetId, case.kind .. " focuses in visual order")
+        end
+      end
       local resolved = ListSurface.resolve({
         bounds = decision.surface,
         rowCount = 0,
@@ -3049,18 +3062,8 @@ function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
           targetId,
           targetId .. " center remains an actionable hit target"
         )
-        if previous ~= nil and #case.ids <= 3 then
-          Assert.equal(rect.y, previous.y, case.kind .. " places up to three actions in one row")
+        if index < #case.ids and previous ~= nil and rect.y == previous.y then
           Assert.isTrue(rect.x >= previous.x + previous.width + 4, case.kind .. " keeps a visible horizontal gap")
-        end
-        if previous ~= nil and #case.ids == 4 and index == 2 then
-          Assert.equal(rect.y, previous.y, "Party Move places the first two actions in row one")
-          Assert.isTrue(rect.x >= previous.x + previous.width + 4, "Party Move keeps a gap within row one")
-        elseif previous ~= nil and #case.ids == 4 and index == 3 then
-          Assert.isTrue(rect.y > previous.y, "Party Move starts its second row below row one")
-        elseif previous ~= nil and #case.ids == 4 and index == 4 then
-          Assert.equal(rect.y, previous.y, "Party Move places the final two actions in row two")
-          Assert.isTrue(rect.x >= previous.x + previous.width + 4, "Party Move keeps a gap within row two")
         end
         if size.width > 256 then
           Assert.isTrue(
@@ -3072,13 +3075,20 @@ function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
         previous = rect
       end
       local last = assert(decision.rows[#decision.rows]).rect
-      local first = assert(decision.rows[1]).rect
-      if #case.ids <= 3 then
-        Assert.isTrue(last.x > first.x, case.kind .. " places Back/Cancel last at the right")
-      else
-        Assert.isTrue(last.y > first.y, "Party Move places Back on the bottom row")
-        Assert.isTrue(last.x > assert(decision.rows[3]).rect.x, "Party Move places Back in the bottom-right cell")
+      local contentCenterX = resolved.content.x + resolved.content.width / 2
+      Assert.near(last.x + last.width / 2, contentCenterX, 1, case.kind .. " centers Back/Cancel in its own row")
+      for index = 1, #case.ids - 1 do
+        local primary = assert(decision.rows[index]).rect
+        Assert.isTrue(
+          last.y > primary.y + primary.height - 1,
+          case.kind .. " places Back/Cancel strictly below every main action"
+        )
       end
+      local backLabelWidth = metrics.measure(case.labels[#case.labels])
+      Assert.isTrue(
+        last.width >= math.max(56, backLabelWidth + 24),
+        case.kind .. " fits its full native Back/Cancel label"
+      )
     end
   end
 
@@ -3093,14 +3103,15 @@ function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
   navigate(controller, layout, "right")
   Assert.equal(controller.focus, "party-move:pp", "right moves across the first modal row")
   navigate(controller, layout, "down")
-  Assert.equal(controller.focus, "cancel", "down enters the bottom-right Back action")
-  navigate(controller, layout, "left")
-  Assert.equal(controller.focus, "party-move:pp-ups", "left moves across the bottom modal row")
+  Assert.equal(controller.focus, "party-move:pp-ups", "down follows the next visible primary row")
   navigate(controller, layout, "up")
-  Assert.equal(controller.focus, "party-move:move", "up returns to the top-left action")
+  Assert.equal(controller.focus, "party-move:move", "up returns to the nearest main action")
+  controller:setFocus("party-move:pp-ups")
+  navigate(controller, layout, "down")
+  Assert.equal(controller.focus, "cancel", "the final primary action also reaches Back")
 end
 
-function T.tests.party_move_actions_follow_a_two_by_two_navigation_grid()
+function T.tests.party_move_actions_follow_a_standalone_back_row()
   local metrics = filterMetrics()
   local view = partyEditorView("Moves")
   view.section = "Party"
@@ -3119,8 +3130,13 @@ function T.tests.party_move_actions_follow_a_two_by_two_navigation_grid()
   Assert.equal(move.y, currentPp.y, "Move and Current PP share the top row")
   Assert.isTrue(move.x < currentPp.x, "Current PP is to the right of Move")
   Assert.isTrue(ppUps.y > move.y, "PP Ups starts the lower row")
-  Assert.equal(ppUps.y, back.y, "PP Ups and Back share the lower row")
-  Assert.isTrue(ppUps.x < back.x, "Back is the bottom-right action")
+  Assert.isTrue(back.y > ppUps.y + ppUps.height - 1, "Back has its own final row below every primary action")
+  Assert.near(
+    back.x + back.width / 2,
+    assert(layout.decisionList).surface.x + assert(layout.decisionList).surface.width / 2,
+    1,
+    "Back is centered in the modal content"
+  )
 
   local controller = Controller.new()
   controller:setSection("Party")
@@ -3128,11 +3144,12 @@ function T.tests.party_move_actions_follow_a_two_by_two_navigation_grid()
   navigate(controller, layout, "right")
   Assert.equal(controller.focus, "party-move:pp", "right moves within the top row")
   navigate(controller, layout, "down")
-  Assert.equal(controller.focus, "cancel", "down enters Back from Current PP")
-  navigate(controller, layout, "left")
-  Assert.equal(controller.focus, "party-move:pp-ups", "left moves within the bottom row")
+  Assert.equal(controller.focus, "party-move:pp-ups", "down follows the next visible primary row")
   navigate(controller, layout, "up")
-  Assert.equal(controller.focus, "party-move:move", "up returns to Move from PP Ups")
+  Assert.isTrue(controller.focus ~= "cancel", "up from Back returns to a visible primary action")
+  controller:setFocus("party-move:pp-ups")
+  navigate(controller, layout, "down")
+  Assert.equal(controller.focus, "cancel", "the second primary row can reach Back")
 end
 
 function T.tests.resize_publishes_before_the_next_draw_without_resolving_in_draw()

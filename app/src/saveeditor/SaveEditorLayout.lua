@@ -1421,15 +1421,48 @@ local function buildDecisionScope(ctx)
   local decisionActions = view.decisionActions
     or Decisions.describe(view.modal, { pendingSave = view.locationSave ~= nil })
   ctx.decisionActions = decisionActions
-  local choices = {}
-  for _, action in ipairs(decisionActions) do
-    choices[#choices + 1] = action.id
+  assert(#decisionActions >= 2, "a decision modal has a primary action and a final Back action")
+  local back = decisionActions[#decisionActions]
+  assert(back.command == "cancel", "the final decision action is Back or Cancel")
+  for index = 1, #decisionActions - 1 do
+    assert(decisionActions[index].command ~= "cancel", "only the final decision action cancels")
   end
-  local columns = #choices == 4 and 2 or #choices
-  local rowCount = math.ceil(#choices / columns)
+  local primaryCount = #decisionActions - 1
+  local primaryColumnCount = math.min(2, primaryCount)
+  local primaryRowCount = math.ceil(primaryCount / 2)
+  local rowCount = primaryRowCount + 1
   local buttonHeight = metrics.lineHeight + 34
   local promptHeight = math.max(1, metrics.lineHeight)
   local availableHeight = contentBottom - contentTop
+  local function publishTooSmall(surface)
+    local content = surface.content
+    local fallbackHeight = math.max(1, math.min(buttonHeight, content.height))
+    local backRect =
+      rect(content.x, content.y + math.max(0, content.height - fallbackHeight), content.width, fallbackHeight)
+    ctx.decisionList = {
+      surface = surface.surface,
+      prompt = rect(content.x, content.y, content.width, math.max(0, content.height - fallbackHeight)),
+      rows = {
+        {
+          targetId = back.id,
+          label = back.label,
+          semantic = back.semantic,
+          enabled = back.enabled,
+          rect = backRect,
+          rowIndex = 1,
+          columnIndex = 1,
+        },
+      },
+      tooSmall = true,
+    }
+    if back.enabled then
+      ctx.targets[back.id] = backRect
+      ctx.disabledTargets[back.id] = nil
+      addFocusable(ctx, back.id)
+    else
+      ctx.disabledTargets[back.id] = true
+    end
+  end
   local function resolveSurface(height)
     return ListSurface.resolve({
       bounds = rect(contentX, contentTop + math.floor((availableHeight - height) / 2), innerWidth, height),
@@ -1462,7 +1495,7 @@ local function buildDecisionScope(ctx)
     surface = fitSurface()
   end
   if surface == nil then
-    ctx.decisionList = { surface = availableSurface.surface, prompt = availableSurface.content, rows = {} }
+    publishTooSmall(availableSurface)
     return
   end
   ctx.decisionList = {
@@ -1470,51 +1503,90 @@ local function buildDecisionScope(ctx)
     prompt = rect(surface.content.x, surface.content.y, surface.content.width, promptHeight),
     rows = {},
   }
-  local columnWidths, totalWidth = {}, 4 * (columns - 1)
-  for column = 1, columns do
+  local primaryColumnWidths = {}
+  local backWidth = math.max(56, metrics.measure(back.label) + 24)
+  if backWidth > surface.content.width then
+    publishTooSmall(surface)
+    return
+  end
+  for column = 1, primaryColumnCount do
     local minimumWidth = 40
-    for index = column, #decisionActions, columns do
+    for index = column, primaryCount, 2 do
       minimumWidth = math.max(minimumWidth, metrics.measure(decisionActions[index].label) + 16)
     end
-    columnWidths[column] = math.min(128, minimumWidth)
-    totalWidth = totalWidth + columnWidths[column]
+    primaryColumnWidths[column] = math.min(128, minimumWidth)
   end
-  if totalWidth > surface.content.width then
-    local compressedWidth = math.max(1, math.floor((surface.content.width - 4 * (columns - 1)) / columns))
+  local primaryWidth = 4 * (primaryColumnCount - 1)
+  for _, width in ipairs(primaryColumnWidths) do
+    primaryWidth = primaryWidth + width
+  end
+  if primaryWidth > surface.content.width then
+    local compressedWidth = math.floor((surface.content.width - 4 * (primaryColumnCount - 1)) / primaryColumnCount)
     if compressedWidth < 40 then
-      ctx.decisionList = { surface = surface.surface, prompt = surface.content, rows = {} }
+      publishTooSmall(surface)
       return
     end
-    for column = 1, columns do
-      columnWidths[column] = compressedWidth
+    for column = 1, primaryColumnCount do
+      primaryColumnWidths[column] = compressedWidth
     end
-    totalWidth = compressedWidth * columns + 4 * (columns - 1)
+    primaryWidth = compressedWidth * primaryColumnCount + 4 * (primaryColumnCount - 1)
   end
-  local gridX = surface.content.x + math.floor((surface.content.width - totalWidth) / 2)
-  for index, action in ipairs(assert(decisionActions, "the decision surface needs its described actions")) do
-    local id = action.id
-    local rowIndex = math.floor((index - 1) / columns)
-    local column = (index - 1) % columns + 1
-    local x = gridX
-    for priorColumn = 1, column - 1 do
-      x = x + columnWidths[priorColumn] + 4
+  local rowStartY = surface.content.y + promptHeight + 4
+  for index = 1, primaryCount do
+    local action = decisionActions[index]
+    local rowIndex = math.floor((index - 1) / 2) + 1
+    local column = (index - 1) % 2 + 1
+    local firstInRow = (rowIndex - 1) * 2 + 1
+    local lastInRow = math.min(firstInRow + 1, primaryCount)
+    local rowWidth, rowColumns = 0, lastInRow - firstInRow + 1
+    for rowAction = firstInRow, lastInRow do
+      rowWidth = rowWidth + primaryColumnWidths[(rowAction - 1) % 2 + 1]
     end
-    local rowRect =
-      rect(x, surface.content.y + promptHeight + 4 + rowIndex * (buttonHeight + 4), columnWidths[column], buttonHeight)
+    rowWidth = rowWidth + 4 * (rowColumns - 1)
+    local x = surface.content.x + math.floor((surface.content.width - rowWidth) / 2)
+    for priorAction = firstInRow, index - 1 do
+      x = x + primaryColumnWidths[(priorAction - 1) % 2 + 1] + 4
+    end
+    local rowRect = rect(x, rowStartY + (rowIndex - 1) * (buttonHeight + 4), primaryColumnWidths[column], buttonHeight)
     ctx.decisionList.rows[index] = {
-      targetId = id,
+      targetId = action.id,
       label = action.label,
       semantic = action.semantic,
       enabled = action.enabled,
       rect = rowRect,
+      rowIndex = rowIndex,
+      columnIndex = column,
     }
     if action.enabled then
-      ctx.targets[id] = rowRect
-      ctx.disabledTargets[id] = nil
-      addFocusable(ctx, id)
+      ctx.targets[action.id] = rowRect
+      ctx.disabledTargets[action.id] = nil
+      addFocusable(ctx, action.id)
     else
-      ctx.disabledTargets[id] = true
+      ctx.disabledTargets[action.id] = true
     end
+  end
+  local backRowIndex = primaryRowCount + 1
+  local backRect = rect(
+    surface.content.x + math.floor((surface.content.width - backWidth) / 2),
+    rowStartY + primaryRowCount * (buttonHeight + 4),
+    backWidth,
+    buttonHeight
+  )
+  ctx.decisionList.rows[#decisionActions] = {
+    targetId = back.id,
+    label = back.label,
+    semantic = back.semantic,
+    enabled = back.enabled,
+    rect = backRect,
+    rowIndex = backRowIndex,
+    columnIndex = 1,
+  }
+  if back.enabled then
+    ctx.targets[back.id] = backRect
+    ctx.disabledTargets[back.id] = nil
+    addFocusable(ctx, back.id)
+  else
+    ctx.disabledTargets[back.id] = true
   end
 end
 
@@ -2022,9 +2094,8 @@ local function buildFocusNavigation(ctx, targetRecords)
   local decisionMatrix
   if ctx.decisionList ~= nil then
     decisionMatrix = {}
-    local columns = #ctx.decisionList.rows == 4 and 2 or #ctx.decisionList.rows
-    for index, row in ipairs(ctx.decisionList.rows) do
-      local rowIndex = math.floor((index - 1) / columns) + 1
+    for _, row in ipairs(ctx.decisionList.rows) do
+      local rowIndex = assert(row.rowIndex, "decision rows publish their visual row")
       decisionMatrix[rowIndex] = decisionMatrix[rowIndex] or {}
       if targetRecords[row.targetId] ~= nil and targetRecords[row.targetId].activationEnabled then
         decisionMatrix[rowIndex][#decisionMatrix[rowIndex] + 1] = row.targetId

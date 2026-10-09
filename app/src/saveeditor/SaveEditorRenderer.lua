@@ -1374,8 +1374,16 @@ local function paintDecision(ctx)
       prompt = "Save every section before leaving?"
     end
     local decisionList = assert(layout.decisionList)
-    drawText(renderer, prompt, decisionList.prompt.x, decisionList.prompt.y, INK)
-    for _, row in ipairs(decisionList.rows) do
+    local promptRect = decisionList.prompt
+    if decisionList.tooSmall then
+      prompt = "Window too small"
+    end
+    if promptRect.height > 0 then
+      drawText(renderer, fitText(renderer, prompt, promptRect.width), promptRect.x, promptRect.y, INK)
+    end
+    local backIndex = #decisionList.rows
+    for index = 1, backIndex - 1 do
+      local row = decisionList.rows[index]
       drawButtonControl(
         renderer,
         row.rect,
@@ -1387,6 +1395,17 @@ local function paintDecision(ctx)
         false
       )
     end
+    local back = assert(decisionList.rows[backIndex], "decision modal keeps its final Back action")
+    drawButtonControl(
+      renderer,
+      back.rect,
+      back.label,
+      false,
+      isFocusedVisible(view, back.targetId),
+      back.enabled == false,
+      back.semantic,
+      false
+    )
   end
 end
 

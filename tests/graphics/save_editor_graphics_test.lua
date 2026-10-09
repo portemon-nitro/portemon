@@ -3213,11 +3213,13 @@ local function singleDisplay(width, height)
 end
 
 function T.decision_action_pixels_survive_the_frame_at_compact_and_wide_sizes(scope)
+  local metrics = realTextMetrics(scope)
   for _, scenario in ipairs({
-    { section = "Party", variant = "party-move", targetId = "cancel" },
-    { section = "Player", variant = "leave", targetId = "cancel" },
+    { section = "Bag", variant = "bag-item", targetId = "cancel", label = "Back" },
+    { section = "Party", variant = "party-move", targetId = "cancel", label = "Back" },
+    { section = "Player", variant = "leave", targetId = "cancel", label = "Cancel" },
   }) do
-    for _, size in ipairs({ { width = 256, height = 192 }, { width = 640, height = 480 } }) do
+    for _, size in ipairs({ { width = 256, height = 192 }, { width = 800, height = 600 } }) do
       local topology = singleDisplay(size.width, size.height)
       local function render(focused)
         return draw(
@@ -3236,7 +3238,7 @@ function T.decision_action_pixels_survive_the_frame_at_compact_and_wide_sizes(sc
           end
         )
       end
-      local data, _, layout, _, _, _, _, _, _, plan = render(true)
+      local data, renderedText, layout, _, _, _, _, _, _, plan = render(true)
       local unfocusedData, _, _, _, _, _, _, _, _, unfocusedPlan = render(false)
       local decision = assert(layout.decisionList)
       local row
@@ -3253,6 +3255,25 @@ function T.decision_action_pixels_survive_the_frame_at_compact_and_wide_sizes(sc
         gap = 0,
         maxWidth = decision.surface.width,
       }).content
+      for _, candidate in ipairs(decision.rows) do
+        if candidate.targetId ~= scenario.targetId then
+          Assert.isTrue(
+            row.y > candidate.rect.y + candidate.rect.height - 1,
+            scenario.variant .. " places its final action below every primary action"
+          )
+        end
+      end
+      Assert.near(
+        row.x + row.width / 2,
+        padded.x + padded.width / 2,
+        1,
+        scenario.variant .. " centers its final action inside padded modal content"
+      )
+      Assert.isTrue(renderedText:find(scenario.label, 1, true) ~= nil, scenario.variant .. " paints its complete final label")
+      Assert.isTrue(
+        row.width >= math.max(56, metrics.measure(scenario.label) + 24),
+        scenario.variant .. " reserves native label width and button insets"
+      )
       Assert.isTrue(
         row.y + row.height <= padded.y + padded.height,
         scenario.variant .. " keeps the final action inside the framed content"
@@ -3824,7 +3845,7 @@ function T.shaded_action_fit_uses_painted_content_width(scope)
       view.decisionActions = {
         { id = "save", label = string.rep("M", 40), semantic = "primary", enabled = true, command = "save" },
         { id = "discard", label = string.rep("W", 40), semantic = "destructive", enabled = true, command = "discard" },
-        { id = "cancel", label = string.rep("C", 40), semantic = "back", enabled = true, command = "cancel" },
+        { id = "cancel", label = string.rep("C", 20), semantic = "back", enabled = true, command = "cancel" },
       }
       renderer.text.fontDef.lineHeight = font:getHeight()
       plan.content.layout = Layout.compute(view, plan.content.width, plan.content.height, view.textMetrics)
@@ -3846,7 +3867,7 @@ function T.shaded_action_fit_uses_painted_content_width(scope)
       view.decisionActions = {
         { id = "save", label = fitLabel, semantic = "primary", enabled = true, command = "save" },
         { id = "discard", label = longLabel, semantic = "destructive", enabled = true, command = "discard" },
-        { id = "cancel", label = string.rep("C", 40), semantic = "back", enabled = true, command = "cancel" },
+        { id = "cancel", label = string.rep("C", 20), semantic = "back", enabled = true, command = "cancel" },
       }
       plan.content.layout = Layout.compute(view, plan.content.width, plan.content.height, view.textMetrics)
       view.layout = plan.content.layout
@@ -4540,11 +4561,10 @@ end
 
 function T.party_move_dialog_retains_and_composites_the_page(scope)
   local width, height = 640, 480
-  local baseData, _, baseLayout, _, _, _, _, _, _, basePlan =
+  local baseData, _, _, _, _, _, _, _, _, basePlan =
     draw(scope, width, height, singleDisplay(width, height), "party-move-base", "Party", "Moves")
   local data, _, layout, _, _, _, _, _, _, plan =
     draw(scope, width, height, singleDisplay(width, height), "party-move-layers", "Party", "party-move")
-  local uncovered = assert(baseLayout.partyStrip and baseLayout.partyStrip.slots[1]).rect
   local modal = assert(layout.decisionList and layout.decisionList.surface)
   local foundOpaque = false
   for y = modal.y + 4, modal.y + modal.height - 4, 4 do
@@ -4556,12 +4576,19 @@ function T.party_move_dialog_retains_and_composites_the_page(scope)
   Assert.isTrue(foundOpaque, "the modal interior paints an opaque fill over the Party page")
 
   local dimmedPagePixel = false
-  for y = uncovered.y + 2, uncovered.y + uncovered.height - 2, 3 do
-    for x = uncovered.x + 2, uncovered.x + uncovered.width - 2, 3 do
-      local baseR, baseG, baseB = pixelAtLogical(baseData, basePlan, x, y)
-      local modalR, modalG, modalB = pixelAtLogical(data, plan, x, y)
-      if baseR + baseG + baseB - modalR - modalG - modalB > 0.08 then
-        dimmedPagePixel = true
+  local pane = assert(basePlan.panes[1])
+  for y = 2, pane.placement.logicalHeight - 2, 3 do
+    for x = 2, pane.placement.logicalWidth - 2, 3 do
+      local outsideModal = x < modal.x
+        or x >= modal.x + modal.width
+        or y < modal.y
+        or y >= modal.y + modal.height
+      if outsideModal then
+        local baseR, baseG, baseB = pixelAtLogical(baseData, basePlan, x, y)
+        local modalR, modalG, modalB = pixelAtLogical(data, plan, x, y)
+        if baseR + baseG + baseB > 0.6 and baseR + baseG + baseB - modalR - modalG - modalB > 0.08 then
+          dimmedPagePixel = true
+        end
       end
     end
   end
