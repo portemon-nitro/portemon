@@ -11,6 +11,7 @@
 local BattleProtocol = require("libs.battle.src.BattleProtocol")
 local Experience = require("libs.mons.src.gen4.Experience")
 local Mon = require("libs.mons.src.Mon")
+local MonCache = require("libs.assets.src.MonCache")
 local Personality = require("libs.mons.src.gen4.Personality")
 
 ---@class BattlePresentationModel
@@ -189,7 +190,7 @@ end
 
 ---@param mon table<string, unknown> battle-local mon record under projection
 ---@param species table<string, unknown>? species record carrying the gender ratio
----@return string? gender word when the record can answer, nil otherwise
+---@return string? gender word in the shared male/female/genderless vocabulary, nil when unanswerable
 local function visibleGender(mon, species)
   if type(mon.personality) ~= "number" then
     return nil
@@ -198,7 +199,10 @@ local function visibleGender(mon, species)
     return nil
   end
   local ok, gender = pcall(Personality.gender, species.genderRatio --[[@as integer]], mon.personality --[[@as integer]])
-  if not ok or (gender ~= "masculine" and gender ~= "feminine") then
+  if not ok then
+    return nil
+  end
+  if gender ~= "male" and gender ~= "female" and gender ~= "genderless" then
     return nil
   end
   return gender --[[@as string]]
@@ -219,6 +223,82 @@ local function visibleShiny(mon)
     return nil
   end
   return shiny --[[@as boolean]]
+end
+
+---@param deps table<string, unknown>? model dependencies carrying the mon catalog
+---@param mon table<string, unknown> battle-local mon record under projection
+---@param species table<string, unknown>? species record carrying the gender ratio
+---@param facing string portrait facing for the record side: back for own, front for foes
+---@return string? canonical portrait selector, nil when a required production fact is unavailable or invalid
+local function portraitSelectorFor(deps, mon, species, facing)
+  if facing ~= "front" and facing ~= "back" then
+    return nil
+  end
+  local speciesKey = mon.species
+  local form = mon.form
+  local personality = mon.personality
+  if type(speciesKey) ~= "string" or speciesKey == "" then
+    return nil
+  end
+  if type(form) ~= "number" or form % 1 ~= 0 or form < 0 then
+    return nil
+  end
+  if type(personality) ~= "number" then
+    return nil
+  end
+  local origin = mon.origin --[[@as table<string, unknown>?]]
+  if type(origin) ~= "table" or type(origin.trainerId) ~= "number" then
+    return nil
+  end
+  if species == nil or type(species.genderRatio) ~= "number" then
+    return nil
+  end
+  local okGender, gender =
+    pcall(Personality.gender, species.genderRatio --[[@as integer]], personality --[[@as integer]])
+  if not okGender then
+    return nil
+  end
+  local okShiny, shiny = pcall(Personality.shiny, origin.trainerId --[[@as integer]], personality --[[@as integer]])
+  if not okShiny or type(shiny) ~= "boolean" then
+    return nil
+  end
+  local variant = gender
+  if gender == "genderless" then
+    -- Genderless species reuse the generated form's declared portrait
+    -- variant recomposed with the actual shininess, the same source
+    -- rule the summary projection owns; nothing is ever guessed.
+    if type(deps) ~= "table" then
+      return nil
+    end
+    local catalog = (deps --[[@as table<string, unknown>]]).catalog --[[@as table<string, unknown>?]]
+    if type(catalog) ~= "table" or type(catalog.form) ~= "function" then
+      return nil
+    end
+    local formOf = catalog.form --[[@as fun(self: table<string, unknown>, key: string, form: integer): table<string, unknown>?]]
+    local okForm, formRecord = pcall(formOf, catalog, speciesKey --[[@as string]], form --[[@as integer]])
+    if not okForm or type(formRecord) ~= "table" or type(formRecord.portrait) ~= "string" then
+      return nil
+    end
+    local declared = (formRecord.portrait --[[@as string]]):match("^[^/]+/[^/]+/([^/]+)/[^/]+$")
+    if declared ~= "male" and declared ~= "female" then
+      return nil
+    end
+    variant = declared
+  elseif gender ~= "male" and gender ~= "female" then
+    return nil
+  end
+  local okSelector, selector = pcall(
+    MonCache.portraitSelector,
+    speciesKey --[[@as string]],
+    form --[[@as integer]],
+    variant --[[@as string]],
+    shiny --[[@as boolean]],
+    facing --[[@as string]]
+  )
+  if not okSelector or type(selector) ~= "string" then
+    return nil
+  end
+  return selector --[[@as string]]
 end
 
 ---@param deps table<string, unknown>? model dependencies carrying the mon catalog
@@ -274,6 +354,10 @@ local function combatantRecord(deps, snapshot, id, own)
   local shiny = visibleShiny(mon)
   if shiny ~= nil then
     record.shiny = shiny
+  end
+  local portrait = portraitSelectorFor(deps, mon, species, own and "back" or "front")
+  if portrait ~= nil then
+    record.portraitSelector = portrait
   end
   if own then
     -- The owning side reads its own roster in full: party-slot mapping,

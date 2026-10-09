@@ -173,6 +173,22 @@ local function splitBattlers(view)
   return player, enemy
 end
 
+---@param assets table<string, unknown> injected asset holder
+---@param record table<string, unknown> displayed battler facts under drawing
+---@return table<string, unknown>? image handle for the displayed battler, nil while unavailable
+local function battlerImage(assets, record)
+  -- Each displayed battler draws its own exact canonical portrait:
+  -- the selector rides the displayed record, so a switch rebinds the
+  -- image at its reveal instead of reusing a side-role picture.
+  -- A record without a canonical selector draws nothing: nil means
+  -- unavailable, never a substitute picture.
+  local selector = record.portraitSelector
+  if type(selector) == "string" and selector ~= "" then
+    return assets:drawable("mon:" .. selector)
+  end
+  return nil
+end
+
 ---@param hp number
 ---@param maxHp number
 ---@return number fraction clamped to valid pixel bounds
@@ -269,7 +285,7 @@ local function drawDetail(resources, view)
   end
   local player, enemy = splitBattlers(view)
   if enemy ~= nil and enemy.visible ~= false then
-    local front = assets:drawable("mon:enemy:front")
+    local front = battlerImage(assets, enemy)
     if front ~= nil then
       local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
       graphics.draw(front, BattleRenderer.ENEMY_CENTER.x + dx, BattleRenderer.ENEMY_CENTER.y)
@@ -287,7 +303,7 @@ local function drawDetail(resources, view)
     restoreColor(graphics, r, g, b, a)
   end
   if player ~= nil and player.visible ~= false then
-    local back = assets:drawable("mon:player:back")
+    local back = battlerImage(assets, player)
     if back ~= nil then
       local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
       graphics.draw(back, BattleRenderer.PLAYER_CENTER.x + dx, BattleRenderer.PLAYER_CENTER.y)
@@ -762,14 +778,14 @@ local function drawCompactScene(resources, view, content)
     end
     local player, enemy = splitBattlers(view)
     if enemy ~= nil and enemy.visible ~= false then
-      local front = assets:drawable("mon:enemy:front")
+      local front = battlerImage(assets, enemy)
       if front ~= nil then
         local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
         graphics.draw(front, enemyCenter.x + dx, enemyCenter.y)
       end
     end
     if player ~= nil and player.visible ~= false then
-      local back = assets:drawable("mon:player:back")
+      local back = battlerImage(assets, player)
       if back ~= nil then
         local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
         graphics.draw(back, playerCenter.x + dx, playerCenter.y)

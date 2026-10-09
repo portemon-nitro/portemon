@@ -26,7 +26,6 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _manifest table<string, unknown> staged or planning presentation manifest
 ---@field _services table<string, unknown> cache-backed preparation services carrying prepare/drawable/release
 ---@field _preparedDemands table<integer, table<string, unknown>> exact launch demands requested, in order
----@field _portraitPages table<string, string> latest demanded portrait page per facing
 ---@field _recording table<string, unknown> host-safe recording graphics behind the per-tick refresh
 ---@field _launchId string? active launch identity, nil outside launches
 ---@field _descriptor table<string, unknown>? active launch descriptor from the runtime
@@ -78,55 +77,31 @@ local function loadManifest(cacheFs)
   return BattlePresentationCache.load(cacheFs)
 end
 
--- Expands one demand portrait key to the canonical staged selectors it
--- may resolve to. Screen keys name species, numeric form, and facing; the
--- staged manifest carries gender and shininess variants, so one screen key
--- expands to its four canonical candidates. Already-canonical keys pass
--- through untouched.
----@param pageKey string demand portrait key under expansion
----@return string[] canonical staged selectors
-local function expandPortraitKey(pageKey)
-  local species, form, facing = tostring(pageKey):match("^([^/]+)/([0-9]+)/([a-z]+)$")
-  if species == nil or form == nil or (facing ~= "front" and facing ~= "back") then
-    return { pageKey }
-  end
-  local expanded = {}
-  for _, gender in ipairs({ "male", "female" }) do
-    for _, finish in ipairs({ "plain", "shiny" }) do
-      local selector = species .. "/f" .. form .. "/" .. gender .. "/" .. finish
-      if facing == "back" then
-        selector = selector .. "/back"
-      end
-      expanded[#expanded + 1] = selector
-    end
-  end
-  return expanded
-end
-
 ---@param cacheFs table<string, unknown>
----@param pageKey string demand portrait key under validation
+---@param selector string exact canonical portrait selector under validation
 ---@return boolean valid
 ---@return string? reason
-local function checkPortraitKey(cacheFs, pageKey)
+local function checkPortraitKey(cacheFs, selector)
+  -- Demands name exact canonical selectors only: the single staged
+  -- entry must be planned with a ready page. Shorthand keys and
+  -- unknown selectors fail instead of expanding to a guessed variant.
   local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
   if type(portraits) ~= "table" or type(portraits.entries) ~= "table" then
-    return false, "battle demand needs its staged portrait manifest: " .. tostring(pageKey)
+    return false, "battle demand needs its staged portrait manifest: " .. tostring(selector)
   end
   local entries = portraits.entries --[[@as table<string, table<string, unknown>>]]
   local index = cacheFs:loadLua(MonCache.indexPath())
   if type(index) ~= "table" or type(index.portraitPages) ~= "table" then
-    return false, "battle demand needs its staged mon page markers: " .. tostring(pageKey)
+    return false, "battle demand needs its staged mon page markers: " .. tostring(selector)
   end
   local markers = index.portraitPages --[[@as table<integer, string>]]
-  for _, selector in ipairs(expandPortraitKey(pageKey)) do
-    local entry = entries[selector]
-    if type(entry) ~= "table" or type(entry.pageId) ~= "number" then
-      return false, "battle demand names an unstaged portrait: " .. tostring(selector)
-    end
-    local pageId = entry.pageId --[[@as integer]]
-    if not MonCache.isPageReady(cacheFs, "portraits", pageId, markers[pageId + 1]) then
-      return false, "battle portrait page is not staged: " .. tostring(selector)
-    end
+  local entry = entries[selector]
+  if type(entry) ~= "table" or type(entry.pageId) ~= "number" then
+    return false, "battle demand names an unstaged portrait: " .. tostring(selector)
+  end
+  local pageId = entry.pageId --[[@as integer]]
+  if not MonCache.isPageReady(cacheFs, "portraits", pageId, markers[pageId + 1]) then
+    return false, "battle portrait page is not staged: " .. tostring(selector)
   end
   return true
 end
@@ -187,7 +162,6 @@ function FieldBattlePresentation.new(opts)
     _overrides = opts.overrides or {},
     _manifest = loadManifest(opts.cacheFs),
     _preparedDemands = {},
-    _portraitPages = {},
     _launchId = nil,
     _descriptor = nil,
     _recoveryPointerId = nil,
@@ -311,49 +285,23 @@ local function stagedArtPath(envelope, key)
 end
 
 -- Resolves one battler-side drawable key to its canonical staged
--- portrait selector through the latest demanded portrait page for that
--- facing. The first expanded candidate is the deterministic male/plain
--- variant prepare already validated; a facing with no demanded page
--- resolves to nothing so cues hold until the demand names it.
----@param envelope FieldBattlePresentation
----@param key string battler-side drawable key under resolution
----@return string? canonical staged portrait selector, nil while undemanded
-local function sidePortraitSelector(envelope, key)
-  local facing = nil
-  if key == "mon:enemy:front" then
-    facing = "front"
-  elseif key == "mon:player:back" then
-    facing = "back"
-  end
-  if facing == nil then
+-- Resolves one battler drawable key to its exact canonical staged
+-- portrait selector. Anything else resolves to nothing so cues hold
+-- instead of drawing a guessed variant.
+---@param key string battler drawable key under resolution
+---@return string? canonical staged portrait selector, nil unless the key names one exactly
+local function exactPortraitSelector(key)
+  -- Battler drawables name their exact canonical selector after the
+  -- "mon:" prefix. Anything else resolves to nothing so cues hold
+  -- instead of drawing a guessed variant.
+  local selector = tostring(key):match("^mon:(.+)$")
+  if type(selector) ~= "string" or selector == "" then
     return nil
   end
-  local pages = envelope._portraitPages
-  local pageKey = type(pages) == "table" and pages[facing] or nil
-  if type(pageKey) ~= "string" or pageKey == "" then
+  if selector == "player:back" or selector == "enemy:front" then
     return nil
   end
-  local expanded = expandPortraitKey(pageKey)
-  return expanded[1]
-end
-
--- Records the latest demanded portrait page per facing so battler-side
--- drawables resolve to the current combatants. Later demands overwrite
--- earlier ones, so replacements move the side pictures without a second
--- upload path.
----@param envelope FieldBattlePresentation
----@param demand table<string, unknown> exact launch demand under tracking
-local function trackPortraitPages(envelope, demand)
-  local pages = demand.pages
-  if type(pages) ~= "table" then
-    return
-  end
-  for _, pageKey in ipairs(pages) do
-    local facing = tostring(pageKey):match("^[^/]+/[0-9]+/([a-z]+)$")
-    if facing == "front" or facing == "back" then
-      envelope._portraitPages[facing] = pageKey
-    end
-  end
+  return selector
 end
 
 -- Validates the demanded audio members against the staged manifest
@@ -471,7 +419,6 @@ function FieldBattlePresentation:_preparationServices()
       return nil, "battle demands arrive as records"
     end
     envelope._preparedDemands[#envelope._preparedDemands + 1] = demand
-    trackPortraitPages(envelope, demand)
     for _, sceneKey in ipairs(demand.scenes or {}) do
       if BattlePresentationCache.parseSceneKey(sceneKey) == nil then
         return nil, "unknown battle scene key: " .. tostring(sceneKey)
@@ -551,7 +498,7 @@ function FieldBattlePresentation:_preparationServices()
       images[key] = image
       return image
     end
-    local selector = sidePortraitSelector(envelope, key)
+    local selector = exactPortraitSelector(key)
     if selector ~= nil then
       local portrait = uploadPortraitCell(graphics, cacheFs, selector)
       if portrait == nil then

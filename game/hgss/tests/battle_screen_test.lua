@@ -842,8 +842,8 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- Both battlers draw from their own images with narration framed by
   -- the selected window, redraws are inert, and borrowed graphics
   -- state returns exactly.
-  local playerBack = { handle = "mon:player:back" }
-  local enemyFront = { handle = "mon:enemy:front" }
+  local playerBack = { handle = "battler:player-back" }
+  local enemyFront = { handle = "battler:enemy-front" }
   -- Battlers draw their own exact canonical portraits, never the
   -- generic side keys: back selectors keep the back handle, front
   -- selectors the front handle, so each drawn image stays identifiable.

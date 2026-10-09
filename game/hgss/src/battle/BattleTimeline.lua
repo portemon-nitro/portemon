@@ -153,7 +153,7 @@ end
 ---@param record table<string, unknown> model battler record under display
 ---@return table<string, unknown> displayed facts for one battler
 local function displayedOf(record)
-  return {
+  local shown = {
     combatant = record.combatant,
     side = record.side,
     hp = record.hp,
@@ -167,6 +167,10 @@ local function displayedOf(record)
     condition = record.condition,
     moves = copyValue(record.moves),
   }
+  if type(record.portraitSelector) == "string" and record.portraitSelector ~= "" then
+    shown.portraitSelector = record.portraitSelector
+  end
+  return shown
 end
 
 -- Installs the opening displayed facts from the first detached view:
@@ -326,7 +330,7 @@ local function translateStruck(self, event)
     kind = "hit",
     combatant = target,
     duration = BattleTimeline.HIT_TICKS,
-    requiresImage = self:_sideOf(target),
+    requiresImage = self:_imageKeyFor(target),
   })
   local after = event.after --[[@as table<string, unknown>]]
   local hp = after.hp --[[@as table<string, unknown>?]]
@@ -335,14 +339,38 @@ local function translateStruck(self, event)
   end
 end
 
----@param id integer
----@return string side image key for one combatant identity
-function BattleTimeline:_sideOf(id)
-  local shown = self:_shown(id)
-  if shown ~= nil and shown.side == 1 then
-    return "mon:player:back"
+---@param id integer combatant identity under image lookup
+---@return string|boolean exact battler image key, or false when the battler carries no image demand
+function BattleTimeline:_imageKeyFor(id)
+  -- The cue gates on the displayed combatant's exact canonical
+  -- portrait selector. A battler without one carries no image demand:
+  -- nothing plausible stands in for its picture.
+  local function selectorOf(record)
+    if type(record) == "table" and type(record.portraitSelector) == "string" and record.portraitSelector ~= "" then
+      return "mon:" .. record.portraitSelector
+    end
+    return nil
   end
-  return "mon:enemy:front"
+  if self._latest ~= nil then
+    for _, group in ipairs({ self._latest.own, self._latest.foes }) do
+      if type(group) == "table" then
+        for _, record in ipairs(group) do
+          if type(record) == "table" and record.combatant == id then
+            local key = selectorOf(record)
+            if key ~= nil then
+              return key
+            end
+          end
+        end
+      end
+    end
+  end
+  local shown = self:_shown(id)
+  local key = selectorOf(shown)
+  if key ~= nil then
+    return key
+  end
+  return false
 end
 
 ---@param self BattleTimeline
@@ -355,7 +383,7 @@ local function translateFaint(self, event)
     kind = "faint",
     combatant = target,
     duration = BattleTimeline.VANISH_TICKS,
-    requiresImage = self:_sideOf(target),
+    requiresImage = self:_imageKeyFor(target),
   })
 end
 
@@ -448,7 +476,7 @@ local function translateFainted(self, event)
     kind = "faint",
     combatant = target,
     duration = BattleTimeline.VANISH_TICKS,
-    requiresImage = self:_sideOf(target),
+    requiresImage = self:_imageKeyFor(target),
   })
 end
 
@@ -596,7 +624,7 @@ local function translateOther(self, event, packet)
         kind = "withdraw",
         combatant = departed,
         duration = BattleTimeline.VANISH_TICKS,
-        requiresImage = self:_sideOf(departed),
+        requiresImage = self:_imageKeyFor(departed),
       })
     end
     local incoming = payload.to
@@ -611,7 +639,7 @@ local function translateOther(self, event, packet)
         kind = "reveal",
         combatant = incoming --[[@as integer]],
         duration = BattleTimeline.VANISH_TICKS,
-        requiresImage = self:_sideOf(incoming --[[@as integer]]),
+        requiresImage = self:_imageKeyFor(incoming --[[@as integer]]),
       })
     end
   elseif kind == "status-gate" then
@@ -656,7 +684,7 @@ local function translateOther(self, event, packet)
         kind = "reveal",
         combatant = incoming --[[@as integer]],
         duration = BattleTimeline.VANISH_TICKS,
-        requiresImage = self:_sideOf(incoming --[[@as integer]]),
+        requiresImage = self:_imageKeyFor(incoming --[[@as integer]]),
       })
     end
   else
@@ -719,20 +747,38 @@ function BattleTimeline:intro(view, wild)
   local foeName = "The foe"
   local ownName = "Go"
   local ownSpecies = nil
+  local leadSelector = nil
   if type(view.foes) == "table" and type(view.foes[1]) == "table" then
     local foe = view.foes[1] --[[@as table<string, unknown>]]
     if type(foe.name) == "string" then
       foeName = foe.name --[[@as string]]
     end
   end
-  if type(view.own) == "table" and type(view.own[1]) == "table" then
-    local own = view.own[1] --[[@as table<string, unknown>]]
-    if type(own.name) == "string" then
-      ownName = own.name --[[@as string]]
+  -- The send-out names the actual active lead, never the first party
+  -- slot: a benched fainted slot stays silent while the live lead
+  -- walks out. Records that predate the active flag read as active,
+  -- matching the previous first-slot opening; an opening with no
+  -- active lead at all is impossible and fails loudly instead of
+  -- hailing a guessed battler.
+  local lead = nil
+  if type(view.own) == "table" then
+    for _, record in ipairs(view.own) do
+      if type(record) == "table" and record.active ~= false then
+        lead = record
+        break
+      end
     end
-    if type(own.species) == "string" then
-      ownSpecies = own.species --[[@as string]]
-    end
+  end
+  assert(lead ~= nil, "the opening needs its active lead")
+  local own = lead --[[@as table<string, unknown>]]
+  if type(own.name) == "string" then
+    ownName = own.name --[[@as string]]
+  end
+  if type(own.species) == "string" then
+    ownSpecies = own.species --[[@as string]]
+  end
+  if type(own.portraitSelector) == "string" and own.portraitSelector ~= "" then
+    leadSelector = "mon:" .. own.portraitSelector --[[@as string]]
   end
   -- The encounter narration shows the real active enemy; the one cry
   -- belongs to the player send-out beside its back image, so
@@ -756,7 +802,7 @@ function BattleTimeline:intro(view, wild)
     revealed = 0,
     hold = 0,
     ackable = false,
-    requiresImage = "mon:player:back",
+    requiresImage = leadSelector or false,
   }
   self._messageSeq = self._messageSeq + 1
   sendOut.pages = paginate(sendOut.text --[[@as string]])
@@ -1213,6 +1259,14 @@ function BattleTimeline:reconcileBattler(record, known)
     shown.exp = record.experience
     shown.condition = record.condition
     shown.moves = copyValue(record.moves)
+    -- The displayed image identity tracks the active combatant: a
+    -- switch or reveal rebinds the exact canonical selector while
+    -- visibility still changes only through explicit cues.
+    if type(record.portraitSelector) == "string" and record.portraitSelector ~= "" then
+      shown.portraitSelector = record.portraitSelector
+    else
+      shown.portraitSelector = nil
+    end
   elseif not known then
     self._battlers[id] = displayedOf(record)
     self._battlers[id].visible = false

@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local MonCache = require("libs.assets.src.MonCache")
 
 local T = {}
 local TICK = 1 / 60
@@ -65,6 +66,7 @@ local function openingView()
       name = own and "LEAD" or "FOE",
       level = 20,
       selector = own and "back" or "front",
+      portraitSelector = MonCache.portraitSelector("EEVEE", 0, "male", false, own and "back" or nil),
       moves = own and { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } } or nil,
       experience = 8000,
     }
@@ -239,7 +241,8 @@ function T.held_images_hold_their_cue()
   local after = openingView()
   after.foes[1].hp = 43
   timeline:present(packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after))
-  local held = { ["mon:enemy:front"] = false }
+  local foeKey = "mon:" .. MonCache.portraitSelector("EEVEE", 0, "male", false)
+  local held = { [foeKey] = false }
   for _ = 1, 120 do
     timeline:update(TICK, function(key)
       return held[key] ~= false
@@ -247,7 +250,7 @@ function T.held_images_hold_their_cue()
   end
   Assert.equal(battler(timeline:battlers(), 3).hp, 57, "the held cue never leaks its later health")
   Assert.isFalse(timeline:settled(), "the held cue reports unready instead of skipping")
-  held["mon:enemy:front"] = true
+  held[foeKey] = true
   for _ = 1, 600 do
     timeline:update(TICK, function(key)
       return held[key] ~= false
@@ -518,6 +521,102 @@ function T.first_packet_events_play_after_the_opening_once()
   end
   Assert.equal(foeHp, 43, "a repeated packet identity never replays its events")
   screen:dispose()
+end
+
+-- The opening names and cries the live lead, never slot zero: with a
+-- fainted first slot and the active lead in slot one, the send-out
+-- carries the live lead's exact name, cry species, and canonical
+-- back-portrait identity, and its cue waits on that exact incoming
+-- portrait instead of a generic side key.
+function T.active_lead_names_and_cries_the_live_slot_not_slot_zero()
+  local MonCache = require("libs.assets.src.MonCache")
+  local liveBack = MonCache.portraitSelector("TOTODILE", 0, "female", false, "back")
+  local benchBack = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
+  local sounds = sink()
+  local timeline = BattleTimeline.new({ sound = function(name)
+    sounds.sound(name)
+  end })
+  local view = openingView()
+  view.own = {
+    {
+      combatant = 1,
+      participant = 1,
+      side = 1,
+      controller = "player",
+      active = false,
+      hp = 0,
+      maxHp = 52,
+      species = "EEVEE",
+      form = 0,
+      name = "BENCH",
+      level = 20,
+      selector = "back",
+      portraitSelector = benchBack,
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+      experience = 8000,
+    },
+    {
+      combatant = 2,
+      participant = 1,
+      side = 1,
+      controller = "player",
+      active = true,
+      hp = 30,
+      maxHp = 30,
+      species = "TOTODILE",
+      form = 0,
+      name = "LIVE",
+      level = 5,
+      selector = "back",
+      portraitSelector = liveBack,
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+      experience = 100,
+    },
+  }
+  timeline:reset(view)
+  local lead = battler(timeline:battlers(), 2)
+  Assert.equal(
+    lead.portraitSelector,
+    liveBack,
+    "the displayed live lead keeps its exact canonical back portrait"
+  )
+  timeline:intro(view, true)
+  -- The send-out holds while its exact incoming portrait is missing:
+  -- with that canonical key held back the opening never drains, and
+  -- only the exact portrait releases it.
+  local exactKey = "mon:" .. liveBack
+  local held = { [exactKey] = false }
+  for _ = 1, 600 do
+    timeline:update(TICK, function(key)
+      return held[key] ~= false
+    end)
+  end
+  Assert.isFalse(timeline:settled(), "the send-out holds on its missing exact portrait")
+  held[exactKey] = true
+  for _ = 1, 600 do
+    timeline:update(TICK, function(key)
+      return held[key] ~= false
+    end)
+  end
+  Assert.isTrue(timeline:settled(), "the exact incoming portrait releases the send-out")
+  local seen = {}
+  for _ = 1, 600 do
+    advance(timeline, TICK)
+    seen[#seen + 1] = tostring(timeline:message())
+  end
+  local hailedLive = false
+  for _, message in ipairs(seen) do
+    if message:find("LIVE", 1, true) ~= nil then
+      hailedLive = true
+    end
+    Assert.isTrue(
+      message:find("BENCH", 1, true) == nil,
+      "no opening narration hails the fainted first slot"
+    )
+  end
+  Assert.isTrue(hailedLive, "the send-out hails the live lead by name")
+  Assert.equal(sounds.count("cry:TOTODILE"), 1, "the opening cries the live lead species once")
+  Assert.equal(sounds.count("cry:EEVEE"), 0, "the fainted first slot never lends its cry")
 end
 
 return { tests = T }

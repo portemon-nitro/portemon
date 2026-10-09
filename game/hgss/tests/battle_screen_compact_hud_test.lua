@@ -9,6 +9,7 @@ local Assert = require("tests.support.Assert")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local MonCache = require("libs.assets.src.MonCache")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
@@ -53,6 +54,7 @@ local function snapshot(overrides)
         level = 20,
         exp = 1234,
         condition = nil,
+        portraitSelector = MonCache.portraitSelector("LEAD", 0, "male", false, "back"),
         shakeDx = 0,
       },
       {
@@ -65,6 +67,7 @@ local function snapshot(overrides)
         level = 20,
         exp = nil,
         condition = nil,
+        portraitSelector = MonCache.portraitSelector("FOE", 0, "male", false),
         shakeDx = 0,
       },
     },
@@ -385,7 +388,13 @@ function T.arrow_and_ball_strips_stay_hidden()
   table.sort(handles)
   Assert.deepEqual(
     handles,
-    { "hud:enemy", "hud:player", "mon:enemy:front", "mon:player:back", "scene:test" },
+    {
+      "hud:enemy",
+      "hud:player",
+      "mon:" .. MonCache.portraitSelector("FOE", 0, "male", false),
+      "mon:" .. MonCache.portraitSelector("LEAD", 0, "male", false, "back"),
+      "scene:test",
+    },
     "the compact scene draws only its scene, battlers and composites"
   )
 end

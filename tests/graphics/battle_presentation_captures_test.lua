@@ -181,7 +181,20 @@ end
 ---@param pageKey string demand portrait key under validation
 local function requirePortraitKey(cacheFs, pageKey)
   local species, form, facing = tostring(pageKey):match("^([^/]+)/([0-9]+)/([a-z]+)$")
-  Assert.notNil(species, "portrait demands name their species: " .. pageKey)
+  local portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the staged cache carries its portrait manifest")
+  local entries = assert(portraits.entries, "the staged portrait manifest carries entries")
+  local index = assert(cacheFs:loadLua(MonCache.indexPath()), "the staged cache carries its mon index")
+  local markers = assert(index.portraitPages, "the staged mon index carries portrait page markers")
+  if species == nil then
+    -- Exact canonical selectors validate their single staged entry and
+    -- page: no expansion, no guessed variant.
+    local entry = assert(entries[pageKey], "the staged manifest plans " .. pageKey)
+    Assert.isTrue(
+      MonCache.isPageReady(cacheFs, "portraits", entry.pageId, markers[entry.pageId + 1]),
+      "portrait page " .. tostring(entry.pageId) .. " is staged for " .. pageKey
+    )
+    return
+  end
   Assert.notNil(form, "portrait demands name their form: " .. pageKey)
   Assert.isTrue(facing == "front" or facing == "back", "portrait demands name their facing: " .. pageKey)
   local portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the staged cache carries its portrait manifest")
@@ -219,13 +232,29 @@ local function captureServices(scope, cacheFs, versionId)
   images["gauges:player"] = stagedImage(scope, cacheFs, gauges.image, versionId .. " player gauges")
   images["gauges:enemy"] = stagedImage(scope, cacheFs, gauges.image, versionId .. " enemy gauges")
   local portraitCells = {}
-  local foeImage, foeCell = cropPortrait(scope, cacheFs, MonCache.portraitSelector(FOE_SPECIES, 0, "male", false), FOE_FRONT_PAGE)
-  images["mon:enemy:front"] = foeImage
-  portraitCells["mon:enemy:front"] = foeCell
-  local leadImage, leadCell =
-    cropPortrait(scope, cacheFs, MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"), LEAD_BACK_PAGE)
-  images["mon:player:back"] = leadImage
-  portraitCells["mon:player:back"] = leadCell
+  -- Battler portraits resolve as "mon:" plus the exact staged
+  -- selector: the capture stages those canonical identities only,
+  -- never a generic side key.
+  local foeSelector = MonCache.portraitSelector(FOE_SPECIES, 0, "male", false)
+  local leadSelector = MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back")
+  local foeImage, foeCell = cropPortrait(scope, cacheFs, foeSelector, FOE_FRONT_PAGE)
+  images["mon:" .. foeSelector] = foeImage
+  portraitCells["mon:" .. foeSelector] = foeCell
+  local leadImage, leadCell = cropPortrait(scope, cacheFs, leadSelector, LEAD_BACK_PAGE)
+  images["mon:" .. leadSelector] = leadImage
+  portraitCells["mon:" .. leadSelector] = leadCell
+  local femaleBackSelector = MonCache.portraitSelector(LEAD_SPECIES, 0, "female", false, "back")
+  local stagedPortraits = cacheFs:loadLua(MonCache.portraitManifestPath())
+  local femaleEntry = stagedPortraits ~= nil
+      and stagedPortraits.entries ~= nil
+      and stagedPortraits.entries[femaleBackSelector]
+    or nil
+  if type(femaleEntry) == "table" and type(femaleEntry.pageId) == "number" then
+    local croppedOk, croppedImage = pcall(cropPortrait, scope, cacheFs, femaleBackSelector, femaleEntry.pageId)
+    if croppedOk then
+      images["mon:" .. femaleBackSelector] = croppedImage
+    end
+  end
   local services = { prepared = {} }
   function services.prepare(demand)
     Assert.isTrue(type(demand) == "table", versionId .. " demands arrive as records")
@@ -316,6 +345,7 @@ end
 ---@return table live battle screen behind the capture
 ---@return table staged images behind the screen drawables
 ---@return table cropped portrait cells behind the mon drawables
+---@return table preparation services logging the screen demands
 local function captureScreen(scope, cacheFs, versionId, measurement)
   local manifest = BattlePresentationCache.load(cacheFs)
   local text, windows = captureDrawServices(scope, cacheFs, versionId)
@@ -338,7 +368,7 @@ local function captureScreen(scope, cacheFs, versionId, measurement)
     audio = recordingAudio(),
     overrides = { sceneKey = SCENE_KEY },
   })
-  return screen, images, portraitCells
+  return screen, images, portraitCells, services
 end
 
 local function moveChoice(id, name, pp, maxPp, moveType, slot)
@@ -352,6 +382,9 @@ local function moveChoice(id, name, pp, maxPp, moveType, slot)
 end
 
 local function openingPacket()
+  -- Fixtures carry their own canonical portrait selectors: a record
+  -- without one draws nothing, so the captures stage the exact
+  -- identities they expect on screen.
   local after = {
     own = {
       {
@@ -360,6 +393,7 @@ local function openingPacket()
         species = LEAD_SPECIES,
         form = 0,
         selector = "back",
+        portraitSelector = MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"),
         name = LEAD_SPECIES,
         level = 9,
         hp = 30,
@@ -372,6 +406,7 @@ local function openingPacket()
         species = LEAD_SPECIES,
         form = 0,
         selector = "back",
+        portraitSelector = MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"),
         name = LEAD_SPECIES,
         level = 9,
         hp = 28,
@@ -386,6 +421,7 @@ local function openingPacket()
         species = FOE_SPECIES,
         form = 0,
         selector = "front",
+        portraitSelector = MonCache.portraitSelector(FOE_SPECIES, 0, "male", false),
         name = FOE_SPECIES,
         level = 3,
         hp = 12,
@@ -776,9 +812,11 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
       -- picture shows through wherever the player composite stays
       -- transparent: those pixels must match the portrait sources too.
       local portraits = {}
-      for _, key in ipairs({ "mon:enemy:front", "mon:player:back" }) do
+      local foeKey = "mon:" .. MonCache.portraitSelector(FOE_SPECIES, 0, "male", false)
+      local leadKey = "mon:" .. MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back")
+      for _, key in ipairs({ foeKey, leadKey }) do
         local cell = assert(portraitCells[key], versionId .. " crops " .. key)
-        local origin = key == "mon:enemy:front" and content.enemyCenter or content.playerCenter
+        local origin = key == foeKey and content.enemyCenter or content.playerCenter
         portraits[#portraits + 1] = {
           data = cell,
           x = frame.x + origin.x,
@@ -1559,8 +1597,14 @@ function T.drawable_keys_resolve_to_their_staged_source_images(scope, context)
       Assert.equal(image:getHeight(), source:getHeight(), versionId .. " heights " .. entry.key .. " from source")
     end
     for _, entry in ipairs({
-      { key = "mon:enemy:front", selector = MonCache.portraitSelector(FOE_SPECIES, 0, "male", false) },
-      { key = "mon:player:back", selector = MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back") },
+      {
+        key = "mon:" .. MonCache.portraitSelector(FOE_SPECIES, 0, "male", false),
+        selector = MonCache.portraitSelector(FOE_SPECIES, 0, "male", false),
+      },
+      {
+        key = "mon:" .. MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"),
+        selector = MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"),
+      },
     }) do
       local portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), versionId .. " carries its portrait manifest")
       local cell = assert(portraits.entries[entry.selector], versionId .. " plans " .. entry.selector)
@@ -1573,6 +1617,156 @@ function T.drawable_keys_resolve_to_their_staged_source_images(scope, context)
   end
 end
 
+-- The compact opening draws the live lead's exact portrait: with a
+-- fainted first slot and the active lead in slot one carrying the
+-- female back selector, the demands name that exact canonical
+-- selector, the send-out hails the live lead, and the lead picture
+-- matches the staged female cell better than the staged male cell.
+-- The lead is Heracross because its staged male and female back cells
+-- actually differ (soulsilver portrait page 86); a species with
+-- identical gender cells cannot discriminate the drawn selector.
+function T.compact_active_lead_draws_its_exact_canonical_portrait(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the battle captures need a ready user-owned ROM with a derived cache")
+  end
+  local leadSpecies = "HERACROSS"
+  local maleBack = MonCache.portraitSelector(leadSpecies, 0, "male", false, "back")
+  local femaleBack = MonCache.portraitSelector(leadSpecies, 0, "female", false, "back")
+  local foeSelector = MonCache.portraitSelector(FOE_SPECIES, 0, "male", false)
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local portraits = assert(
+      cacheFs:loadLua(MonCache.portraitManifestPath()),
+      versionId .. " carries its portrait manifest"
+    )
+    local femaleEntry = assert(
+      portraits.entries[femaleBack],
+      versionId .. " plans the live lead selector " .. femaleBack
+    )
+    local femaleOk, stagedFemaleImage, femaleCell =
+      pcall(cropPortrait, scope, cacheFs, femaleBack, assert(femaleEntry.pageId, versionId .. " pages its live lead"))
+    if not femaleOk then
+      context:skip(versionId .. " stages no occupied female back cell for " .. femaleBack)
+    end
+    local screen, images, _, services = captureScreen(scope, cacheFs, versionId, compactMeasurement())
+    -- The shared harness stages the pinned lead/foe drawables; this
+    -- scenario's dimorphic lead stages its own exact keys beside them.
+    local maleEntry = assert(portraits.entries[maleBack], versionId .. " plans the benched selector " .. maleBack)
+    local maleImage, maleCell =
+      cropPortrait(scope, cacheFs, maleBack, assert(maleEntry.pageId, versionId .. " pages its benched lead"))
+    images["mon:" .. maleBack] = maleImage
+    images["mon:" .. femaleBack] = stagedFemaleImage
+    local packet = openingPacket()
+    packet.after.own = {
+      {
+        combatant = 0,
+        side = 1,
+        species = leadSpecies,
+        form = 0,
+        selector = "back",
+        portraitSelector = maleBack,
+        name = "BENCH",
+        level = 9,
+        hp = 0,
+        maxHp = 30,
+        experience = 120,
+        active = false,
+      },
+      {
+        combatant = 1,
+        side = 1,
+        species = leadSpecies,
+        form = 0,
+        selector = "back",
+        portraitSelector = femaleBack,
+        name = "LIVE",
+        level = 9,
+        hp = 28,
+        maxHp = 28,
+        experience = 100,
+        active = true,
+      },
+    }
+    packet.after.foes[1].portraitSelector = foeSelector
+    local port = screen:presentationPort()
+    for _ = 1, 5 do
+      screen:updateFixed(TICK)
+    end
+    Assert.isTrue(port.enter({ launchId = "battle-capture", kind = "wild" }), versionId .. " enters its staged scene")
+    port.present(packet)
+    local seen, ticks = {}, 0
+    while screen:status().request == nil and ticks < DRIVE_BUDGET do
+      screen:updateFixed(TICK)
+      seen[#seen + 1] = tostring(screen:view().message or "")
+      ticks = ticks + 1
+    end
+    Assert.notNil(screen:status().request, versionId .. " exposes its command request")
+    local demanded = {}
+    for _, demand in ipairs(services.prepared) do
+      for _, page in ipairs(demand.pages or {}) do
+        demanded[#demanded + 1] = page
+      end
+    end
+    local function demandedHas(want)
+      for _, page in ipairs(demanded) do
+        if page == want then
+          return true
+        end
+      end
+      return false
+    end
+    Assert.isTrue(demandedHas(femaleBack), versionId .. " demands the live lead exact selector")
+    Assert.isTrue(demandedHas(foeSelector), versionId .. " demands the revealed foe exact selector")
+    for _, page in ipairs(demanded) do
+      Assert.isTrue(
+        tostring(page):match("^[^/]+/%d+/[a-z]+$") == nil,
+        versionId .. " demands no shorthand key: " .. tostring(page)
+      )
+    end
+    local hailedLive = false
+    for _, message in ipairs(seen) do
+      if message:find("LIVE", 1, true) ~= nil then
+        hailedLive = true
+      end
+      Assert.isTrue(
+        message:find("BENCH", 1, true) == nil,
+        versionId .. " never hails the fainted first slot"
+      )
+    end
+    Assert.isTrue(hailedLive, versionId .. " hails the live lead by name")
+    local plan = livePlan(screen, versionId)
+    local width, height = canvasSize(plan, versionId)
+    local frame = assert(plan.panes[1].placement.frame, versionId .. " frames its compact pane")
+    local content = assert(plan.content, versionId .. " carries its compact content")
+    local first = renderCapture(scope, screen, width, height)
+    local second = renderCapture(scope, screen, width, height)
+    Assert.equal(
+      imageDataDigest(first),
+      imageDataDigest(second),
+      versionId .. " renders the live-lead opening deterministically"
+    )
+    saveCapture(first, versionId .. "-compact-active-lead")
+    -- Lead pictures draw top-left at the plan image center: the live
+    -- female cell must explain the lead rect better than the staged
+    -- male cell the legacy side key still resolves.
+    local origin = content.playerCenter
+    local rect = { x = frame.x + origin.x, y = frame.y + origin.y, width = 80, height = 40 }
+    local femaleMatches, femaleOccupied = countSourceMatches(first, femaleCell, rect, rect.x, rect.y)
+    local maleMatches, maleOccupied = countSourceMatches(first, maleCell, rect, rect.x, rect.y)
+    Assert.isTrue(femaleOccupied > 20, versionId .. " stages an occupied live-lead cell")
+    Assert.isTrue(maleOccupied > 20, versionId .. " stages an occupied benched cell")
+    Assert.isTrue(
+      femaleMatches / femaleOccupied > 0.5,
+      versionId .. " draws the live lead portrait over the scene"
+    )
+    Assert.isTrue(
+      femaleMatches > maleMatches,
+      versionId .. " draws the live lead selector instead of the first-slot male portrait"
+    )
+  end
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
@@ -1581,6 +1775,7 @@ suite.metadata.derivedAssets = {
   "field-font:global",
   "field-ui:global",
   "mon-portrait-page:34",
+  "mon-portrait-page:86",
   "mon-portrait-page:164",
 }
 return suite

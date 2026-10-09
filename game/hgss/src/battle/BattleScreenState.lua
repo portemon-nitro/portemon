@@ -490,34 +490,32 @@ function BattleScreenState:_portEnter(plan)
 end
 
 ---@param view table<string, unknown> detached after view carrying portrait facts
----@return string[] sorted portrait selectors for the demand
+---@return string[] sorted canonical portrait selectors for the demand
 local function selectorsOf(view)
+  -- Demands name exact canonical selectors only: every disclosed own
+  -- record (the displayed lead plus soon-to-appear reserves) and every
+  -- currently revealed foe. Unrevealed foe reserves never enter the
+  -- view, so they stay undemanded until they actually arrive.
   local selectors = {}
   local seen = {}
-  local function add(record, fallback)
-    local species = record.species
-    local form = record.form or 0
-    local selector = record.selector or fallback
-    if type(species) == "string" and type(selector) == "string" then
-      local key = species .. "/" .. tostring(form) .. "/" .. selector
-      if not seen[key] then
-        seen[key] = true
-        selectors[#selectors + 1] = key
-      end
+  local function add(record)
+    if type(record) ~= "table" then
+      return
+    end
+    local selector = record.portraitSelector
+    if type(selector) == "string" and selector ~= "" and not seen[selector] then
+      seen[selector] = true
+      selectors[#selectors + 1] = selector
     end
   end
   if type(view.own) == "table" then
     for _, record in ipairs(view.own) do
-      if type(record) == "table" then
-        add(record, "back")
-      end
+      add(record)
     end
   end
   if type(view.foes) == "table" then
     for _, record in ipairs(view.foes) do
-      if type(record) == "table" then
-        add(record, "front")
-      end
+      add(record)
     end
   end
   table.sort(selectors)

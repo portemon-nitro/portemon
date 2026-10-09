@@ -1169,6 +1169,69 @@ function T.host_updates_never_advance_presented_launches()
   end
 end
 
+-- Portrait demands speak exact canonical selectors, never shorthand
+-- species/form/facing keys: one staged exact selector prepares, a
+-- shorthand key fails instead of expanding to a guessed male/plain
+-- variant, and an unknown exact selector fails naming that selector
+-- instead of substituting a plausible visual.
+function T.portrait_demands_speak_exact_canonical_selectors()
+  local MonCache = require("libs.assets.src.MonCache")
+  local versionId = readyVersions()[1]
+  local cacheFs = CacheFs.forVersion(versionId)
+  local portraits = assert(
+    cacheFs:loadLua(MonCache.portraitManifestPath()),
+    versionId .. " carries its staged portrait manifest"
+  )
+  local markers =
+    assert(cacheFs:loadLua(MonCache.indexPath()), versionId .. " carries its staged mon index").portraitPages
+  local staged = nil
+  local keys = {}
+  for selector in pairs(assert(portraits.entries, versionId .. " plans its portrait entries")) do
+    keys[#keys + 1] = selector
+  end
+  table.sort(keys)
+  for _, selector in ipairs(keys) do
+    local entry = portraits.entries[selector]
+    if type(entry) == "table" and type(entry.pageId) == "number" then
+      local ready = MonCache.isPageReady(cacheFs, "portraits", entry.pageId, markers[entry.pageId + 1])
+      if ready and staged == nil then
+        staged = selector
+      end
+    end
+  end
+  Assert.notNil(staged, versionId .. " stages at least one ready portrait cell")
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("portrait-demand:dual")
+    end,
+  })
+  local function demand(pages)
+    return {
+      launchId = "demand-probe",
+      scenes = {},
+      pages = pages,
+      audio = { roles = {}, banks = {}, cries = {} },
+    }
+  end
+  local services = envelope:_preparationServices()
+  Assert.isTrue(services.prepare(demand({ staged })), "one staged exact selector prepares")
+  local shorthand, shorthandErr = services.prepare(demand({ "CHIKORITA/0/back" }))
+  Assert.isTrue(
+    shorthand == nil and type(shorthandErr) == "string" and shorthandErr ~= "",
+    "a shorthand key fails instead of expanding to a guessed variant"
+  )
+  local missing, missingErr = services.prepare(demand({ "NOPE/f9/female/plain" }))
+  Assert.isTrue(missing == nil, "an unknown exact selector never prepares")
+  Assert.isTrue(
+    type(missingErr) == "string" and missingErr:find("NOPE/f9/female/plain", 1, true) ~= nil,
+    "the unknown selector failure names its exact selector"
+  )
+  envelope:dispose()
+end
+
 return {
   tests = T,
   metadata = {
