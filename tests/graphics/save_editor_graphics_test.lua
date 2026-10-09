@@ -383,6 +383,48 @@ local function fixture(scope, width, height, topology, section, variant, version
   return view, presentation, plan
 end
 
+-- Caller graphics-state guard for the interactive pane paint passes. The pane
+-- paints inside the shared placement/host scopes, so a successful
+-- presentation draw must hand the caller's color, blend, line width, scissor,
+-- and shader back untouched. Captured around the presentation draw inside
+-- `draw`, so every synthetic render checks restoration, not just the
+-- dedicated restoration test below.
+---@param graphics love.graphics
+---@return table
+local function captureCallerGraphicsState(graphics)
+  local red, green, blue, alpha = graphics.getColor()
+  local blendMode, blendAlpha = graphics.getBlendMode()
+  local scissorX, scissorY, scissorWidth, scissorHeight = graphics.getScissor()
+  return {
+    color = { red, green, blue, alpha },
+    blend = { blendMode, blendAlpha },
+    lineWidth = graphics.getLineWidth(),
+    scissor = { scissorX, scissorY, scissorWidth, scissorHeight },
+    shader = graphics.getShader(),
+  }
+end
+
+---@param graphics love.graphics
+---@param before table
+---@param name string
+local function assertCallerGraphicsStateRestored(graphics, before, name)
+  local red, green, blue, alpha = graphics.getColor()
+  Assert.near(red, before.color[1], 1e-6, name .. " restores the caller red channel")
+  Assert.near(green, before.color[2], 1e-6, name .. " restores the caller green channel")
+  Assert.near(blue, before.color[3], 1e-6, name .. " restores the caller blue channel")
+  Assert.near(alpha, before.color[4], 1e-6, name .. " restores the caller alpha channel")
+  local blendMode, blendAlpha = graphics.getBlendMode()
+  Assert.equal(blendMode, before.blend[1], name .. " restores the caller blend mode")
+  Assert.equal(blendAlpha, before.blend[2], name .. " restores the caller blend alpha mode")
+  Assert.equal(graphics.getLineWidth(), before.lineWidth, name .. " restores the caller line width")
+  local scissorX, scissorY, scissorWidth, scissorHeight = graphics.getScissor()
+  Assert.equal(scissorX, before.scissor[1], name .. " restores the caller scissor x")
+  Assert.equal(scissorY, before.scissor[2], name .. " restores the caller scissor y")
+  Assert.equal(scissorWidth, before.scissor[3], name .. " restores the caller scissor width")
+  Assert.equal(scissorHeight, before.scissor[4], name .. " restores the caller scissor height")
+  Assert.equal(graphics.getShader(), before.shader, name .. " restores the caller shader")
+end
+
 local function draw(scope, width, height, topology, name, section, variant, versionId, beforeDraw)
   local graphics = love.graphics
   local view, presentation, plan = fixture(scope, width, height, topology, section, variant, versionId)
@@ -456,7 +498,9 @@ local function draw(scope, width, height, topology, name, section, variant, vers
     end
     return originalDraw(drawable, ...)
   end
+  local callerState = captureCallerGraphicsState(graphics)
   ApplicationPresentation.draw(graphics, { renderer = renderer }, view, plan)
+  assertCallerGraphicsStateRestored(graphics, callerState, name)
   graphics.draw = originalDraw
   graphics.setCanvas()
   local data = scope:own(canvas:newImageData())
@@ -2633,6 +2677,17 @@ function T.graphics_state_is_restored_after_rings_and_scaled_text(scope)
   Assert.equal(love.graphics.getLineWidth(), 1, "focus rings restore the line width")
   draw(scope, 800, 600, topology, "state-restore-party", "Party", "draft")
   Assert.equal(love.graphics.getLineWidth(), 1, "detail pages restore the line width")
+  -- A non-default caller state keeps the draw-helper comparison honest:
+  -- painters that reset graphics state to defaults instead of restoring the
+  -- caller would pass a default-state comparison but fail here. The scissor
+  -- covers the full canvas so no tested content is clipped away.
+  draw(scope, 640, 480, topology, "state-restore-bag-sentinel", "Bag", "bag-cards", nil, function()
+    love.graphics.setColor(0.2, 0.4, 0.6, 0.8)
+    love.graphics.setBlendMode("replace")
+    love.graphics.setLineWidth(3)
+    love.graphics.setScissor(0, 0, 640, 480)
+  end)
+  Assert.equal(love.graphics.getLineWidth(), 3, "bag cards restore the non-default caller line width")
 end
 
 return GraphicsSmoke.suite(T, { capabilities = { "graphics" } })

@@ -701,20 +701,6 @@ local drawLocation
 ---@field layout table<string, unknown>
 ---@field placement table<string, unknown>
 
--- Runs one section painter inside its own graphics scope so a section
--- failure propagates with the painter-owned state restored instead of
--- leaking a half-drawn scope.
----@param ctx SaveEditorPaintContext
----@param painter fun(ctx: SaveEditorPaintContext)
-local function runSection(ctx, painter)
-  ctx.graphics.push("all")
-  local ok, err = pcall(painter, ctx)
-  ctx.graphics.pop()
-  if not ok then
-    error(err, 0)
-  end
-end
-
 ---@param ctx SaveEditorPaintContext
 local function paintBackground(ctx)
   local renderer, graphics, layout = ctx.renderer, ctx.graphics, ctx.layout
@@ -1340,19 +1326,19 @@ local function paintPane(self, view, plan, pane)
     layout = assert(plan.content.layout),
     placement = pane.placement,
   }
-  runSection(ctx, paintBackground)
-  runSection(ctx, paintNavigation)
-  runSection(ctx, paintRows)
-  runSection(ctx, paintParty)
-  runSection(ctx, paintBag)
-  runSection(ctx, paintLocation)
-  runSection(ctx, paintFooter)
-  runSection(ctx, paintValueEditor)
-  runSection(ctx, paintNotices)
-  runSection(ctx, paintDecision)
-  runSection(ctx, paintListHints)
-  runSection(ctx, paintScrollbars)
-  runSection(ctx, paintFrames)
+  paintBackground(ctx)
+  paintNavigation(ctx)
+  paintRows(ctx)
+  paintParty(ctx)
+  paintBag(ctx)
+  paintLocation(ctx)
+  paintFooter(ctx)
+  paintValueEditor(ctx)
+  paintNotices(ctx)
+  paintDecision(ctx)
+  paintListHints(ctx)
+  paintScrollbars(ctx)
+  paintFrames(ctx)
 end
 
 drawLocation = function(self, view, layout)
