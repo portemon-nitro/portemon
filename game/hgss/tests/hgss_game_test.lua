@@ -564,47 +564,49 @@ function T.failed_field_construction_releases_the_unclaimed_transfer()
   end)
 end
 
--- A world manifest that is still unavailable after entry readiness is a
--- visible preparation failure, never an escaped composition error and
--- never a manual full-cache instruction.
-function T.missing_world_after_readiness_fails_preparation_visibly()
-  withCompositionSpies(function(modules, _)
+-- A world manifest that is still unavailable after entry planning is ready
+-- is an integrity failure at the entry boundary: the original diagnostic
+-- escapes through the game update instead of latching a preparation
+-- failure screen, with exactly one deferred world read, no planning
+-- loader, no field transfer, and no save publication.
+function T.missing_world_after_readiness_throws_the_original_cause()
+  withCompositionSpies(function(modules, context)
     withProductionLoaderObservation(nil, function(observation)
       local continueRecord = saveRecord("save-00000002")
-      local contextStores = { fakeStore({ continueRecord }) }
-      local storeModule = require("libs.hgss.src.save.GameSaveStore")
-      local originalStoreNew = storeModule.new
-      rawset(storeModule, "new", function()
-        return contextStores[1]
-      end)
-      local ok, err = pcall(function()
-        local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
-        local game = modules.hgssGame.new({
-          versionId = READY_VERSION,
-          entry = { kind = "continue", saveId = continueRecord.saveId },
-          onExit = function() end,
-          derivedAssets = readyHost(),
-        })
-            Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
-        settle(game)
-        Assert.equal(
-          getmetatable(game.state).__index,
-          FieldPreparationState,
-          "a missing world still enters preparation once core is ready"
-        )
-        Assert.equal(game.state.phase, "failed", "the missing world fails preparation visibly")
-        Assert.isTrue(game.state.error ~= nil, "the failure carries a diagnostic")
-        Assert.isTrue(
-          string.find(tostring(game.state.error), "buildcache", 1, true) == nil,
-          "the failure never instructs a manual full-cache build: " .. tostring(game.state.error)
-        )
-        Assert.equal(observation.worldReads, 1, "the failed attempt still read the world exactly once")
-        game:setState(nil)
-      end)
-      rawset(storeModule, "new", originalStoreNew)
-      if not ok then
-        error(err, 0)
-      end
+      context.stores[1] = fakeStore({ continueRecord })
+      local game = modules.hgssGame.new({
+        versionId = READY_VERSION,
+        entry = { kind = "continue", saveId = continueRecord.saveId },
+        onExit = function() end,
+        derivedAssets = readyHost(),
+      })
+      Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
+      local ok, err = pcall(settle, game)
+      game:dispose()
+      Assert.isFalse(ok, "a missing world manifest after planning readiness must throw through the game update")
+      Assert.isTrue(
+        string.find(
+          tostring(err),
+          "field world metadata is unavailable although entry planning is ready",
+          1,
+          true
+        ) ~= nil,
+        "the failure carries the original missing-world diagnostic: " .. tostring(err)
+      )
+      Assert.isTrue(
+        string.find(tostring(err), "buildcache", 1, true) == nil,
+        "the failure never instructs a manual full-cache build: " .. tostring(err)
+      )
+      Assert.equal(observation.worldReads, 1, "the failed attempt read the world manifest exactly once")
+      Assert.equal(observation.loaderBuilds, 0, "a missing world builds no planning loader")
+      Assert.equal(#context.fieldCalls, 0, "a missing world constructs no field")
+      Assert.deepEqual(
+        context.stores[1].loads,
+        { continueRecord.saveId },
+        "the failed attempt loads the Continue save once and publishes nothing else"
+      )
+      Assert.deepEqual(context.stores[1].deletes, {}, "the failed attempt deletes no save")
+      Assert.isTrue(game.terminal, "the game is disposed after the captured failure")
     end)
   end)
 end

@@ -142,13 +142,12 @@ local function installRoutes(options, game, saveStore, versionId)
     end
     local cacheFs = CacheFs.forVersion(versionId)
     -- This factory runs once entry planning is ready, so a missing
-    -- manifest is a visible preparation failure, not a manual prerequisite:
-    -- the preparation state latches the returned diagnostic instead of
-    -- entering the field.
-    local world, worldError = cacheFs:loadLua(MapAssetCache.worldPath())
-    if world == nil then
-      return nil, worldError or "field world metadata is unavailable although entry planning is ready"
-    end
+    -- manifest is a required-artifact integrity failure that raises
+    -- directly instead of entering the field.
+    local world = assert(
+      cacheFs:loadLua(MapAssetCache.worldPath()),
+      "field world metadata is unavailable although entry planning is ready"
+    )
     return FieldMapLoader.new(cacheFs, world, { derivedAssets = derivedAssets })
   end
   local function enterPreparation(preparationOptions)
