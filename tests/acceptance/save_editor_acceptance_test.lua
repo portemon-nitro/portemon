@@ -835,6 +835,10 @@ function T.tests.bag_item_actions_and_quantity_commit_are_staged_until_outer_sav
       expected = math.min(expected + 10, item.maxQuantity or 999)
       Assert.equal(state:view().valueEditor.value, expected, "Up adjusts the selected tens place")
       state:keypressed("escape")
+      Assert.notNil(state:view().valueEditor, "Escape from a digit first keeps Quantity open")
+      Assert.equal(state:view().focus, "cancel", "Escape focuses the visible Back action")
+      state:keyreleased("escape")
+      state:keypressed("escape")
       Assert.equal(
         state.session:bagSnapshot(view.bagPocket)[1].quantity,
         originalQuantity,
@@ -844,7 +848,7 @@ function T.tests.bag_item_actions_and_quantity_commit_are_staged_until_outer_sav
       activateTarget(state, "bag:quantity")
       state:keypressed("up")
       state:keyreleased("up")
-      state:keypressed("return")
+      activateTarget(state, "confirm")
       Assert.equal(
         state.session:bagSnapshot(state.controller.bagPocket)[1].quantity,
         originalQuantity + 1,
@@ -911,6 +915,10 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
       quantity = state:view().valueEditor
       Assert.equal(quantity.parsedValue or quantity.value, expected + 10, "Up adjusts the selected tens place")
       state:keypressed("escape")
+      Assert.notNil(state:view().valueEditor, "Escape from a digit first keeps Add quantity open")
+      Assert.equal(state:view().focus, "cancel", "Escape focuses the visible Back action")
+      state:keyreleased("escape")
+      state:keypressed("escape")
       Assert.deepEqual(state.session:captureCandidate(), initial, "canceling Add quantity leaves inventory unchanged")
       Assert.equal(state:view().focus, "bag:add", "cancel returns to the separate Add control")
 
@@ -925,7 +933,7 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
         choice = assert(state:view().valueEditor)
       end
       state:keypressed("return")
-      state:keypressed("return")
+      activateTarget(state, "confirm")
       Assert.equal(
         state.session:bagSnapshot(state.controller.bagPocket)[1].quantity,
         21,
@@ -1027,7 +1035,7 @@ function T.tests.party_stats_edit_uses_number_modal_and_keeps_draft_staged()
         state:keypressed(originalIv < 31 and "up" or "down")
         state:keyreleased(originalIv < 31 and "up" or "down")
       end
-      state:keypressed("return")
+      activateTarget(state, "confirm")
 
       local edited = originalIv < 31 and 31 or 0
       view = state:view()

@@ -73,7 +73,7 @@ function NumberLayout.resolve(spec)
   local pad = frame.inset
   local buttonsGap = frame.actionGap
   local confirmWidth = math.max(40, math.ceil(font.measure("Confirm") + 24))
-  local backWidth = math.max(40, math.ceil(font.measure("Cancel") + 24))
+  local backWidth = math.max(40, math.ceil(font.measure("Back") + 24))
   local actionsWidth = confirmWidth + buttonsGap + backWidth
   local fixedHeight = pad * 2 + font.lineHeight + gap * 2 + frame.actionGap + frame.actionHeight + 2 + frame.errorHeight
   local maxColumnWidth = math.floor((available.width - pad * 2 - (count - 1) * columnGap) / count)

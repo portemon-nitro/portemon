@@ -85,6 +85,35 @@ function T.directional_input_selects_places_and_applies_radix_power_arithmetic()
   Assert.equal(hexadecimal:snapshot().buffer, "0B2", "direct adjustments restore padded hexadecimal display")
 end
 
+function T.invalid_integer_buffers_recover_from_the_last_valid_value_on_arrow_input()
+  local cases = {
+    { value = 123, minimum = 0, maximum = 999, base = "decimal", invalid = "9999999", delta = 1, expected = 124 },
+    { value = 1, minimum = 1, maximum = 99, base = "decimal", invalid = "letters", delta = 1, expected = 2 },
+    { value = 99, minimum = 1, maximum = 99, base = "decimal", invalid = "x", delta = 1, expected = 99 },
+    { value = 0x1A2, minimum = 0, maximum = 0xFFF, base = "hex", invalid = "G", delta = 1, expected = 0x1A3 },
+  }
+  for _, case in ipairs(cases) do
+    local editor = SaveEditorValueEditor.new({
+      kind = "integer",
+      value = case.value,
+      min = case.minimum,
+      max = case.maximum,
+      base = case.base,
+    })
+    Assert.isTrue(editor:textinput(case.invalid), "invalid input remains visible until an arrow is requested")
+    if case.invalid == "x" then
+      Assert.isTrue(editor:press("backspace"), "backspace can produce an empty numeric buffer")
+      Assert.equal(editor:snapshot().buffer, "", "empty text remains an editable invalid buffer")
+    end
+    Assert.isFalse(editor:submit(), "invalid input still cannot be confirmed before correction")
+    Assert.isNil(editor:result(), "rejected input stays in the editor")
+    Assert.isTrue(editor:adjustPlace(case.delta), "an arrow recovers from the invalid buffer")
+    Assert.equal(editor:snapshot().parsedValue, case.expected, "the delta starts from the last valid value")
+    Assert.isTrue(editor:submit(), "the recovered value can be explicitly confirmed")
+    Assert.deepEqual(editor:result(), { kind = "confirm", value = case.expected })
+  end
+end
+
 function T.cancel_discards_partial_numeric_input()
   local editor = integerEditor(420, 0, 9999)
 

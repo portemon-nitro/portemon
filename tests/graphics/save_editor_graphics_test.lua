@@ -5035,6 +5035,27 @@ function T.numeric_focus_ring_surrounds_the_digit_and_not_its_arrows(scope)
   Assert.isTrue(bagDrawn["bag/inc-pressed"], "the focused column keeps its pressed arrow art")
 end
 
+function T.native_number_actions_draw_focus_rings_on_confirm_and_back(scope)
+  local topology = singleDisplay(256, 192)
+  for _, targetId in ipairs({ "confirm", "cancel" }) do
+    local calls, restore = recordOutlinedRectangles()
+    local layout
+    local ok, failure = xpcall(function()
+      _, _, layout = draw(scope, 256, 192, topology, "number-modal-" .. targetId .. "-focus", "Player", "number-modal", nil, function(_, view)
+        view.focus = targetId
+        view.focusVisible = true
+      end)
+    end, debug.traceback)
+    restore()
+    if not ok then
+      error(failure, 0)
+    end
+    local number = assert(layout.numberLayout)
+    local rect = targetId == "confirm" and number.confirmRect or number.backRect
+    Assert.equal(#ringsSurrounding(calls, rect, 3), 1, "one native-sized outline surrounds focused " .. targetId)
+  end
+end
+
 function T.bag_focused_cards_draw_exactly_one_keyboard_ring(scope)
   local topology = singleDisplay(640, 480)
   local function render(name, focusVisible)

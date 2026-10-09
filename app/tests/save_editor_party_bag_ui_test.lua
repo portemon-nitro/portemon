@@ -971,6 +971,39 @@ function T.stats_projection_exposes_header_and_iv_ev_table_without_derived_value
   end
 end
 
+function T.party_level_descriptor_uses_the_mon_draft_experience_and_hp_projection()
+  local catalog, context, record = structuredMon("CHIKORITA", 9)
+  local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
+  local Experience = require("libs.mons.src.gen4.Experience")
+  local draft = Draft.new({ mode = "edit", slot0 = 0, basePartyRevision = 0, record = record, context = context })
+  local view = PartyView.new({ monCatalog = catalog, itemCatalog = CatalogFixture.makeItemCatalog() })
+  local descriptor
+  for _, fact in ipairs(view:stats(draft:record(), draft:projection()).header) do
+    if fact.id == "level" then
+      descriptor = fact.editor
+    end
+  end
+  descriptor = assert(descriptor, "Party Stats publishes its Level editor descriptor")
+  Assert.equal(descriptor.setter, "level", "the editor delegates to the level-specific draft owner")
+  Assert.equal(descriptor.min, 1)
+  Assert.equal(descriptor.max, 100)
+
+  local editor = ValueEditor.new(descriptor)
+  Assert.isTrue(editor:press("up"), "the descriptor creates a working numeric editor")
+  Assert.isTrue(editor:submit(), "the new level can be confirmed")
+  local newLevel = assert(editor:result()).value
+  Assert.isTrue(draft:setLevel(newLevel), "the level setter accepts the confirmed value")
+  local curve = catalog:growthCurve(catalog:species(record.species).growthCurve)
+  Assert.equal(draft:record().experience, Experience.expFor(curve, newLevel), "EXP is the canonical level threshold")
+  Assert.equal(draft:projection().level, newLevel, "the Party projection reflects the new level")
+  Assert.notNil(draft:projection().stats.hp, "HP is recomputed from the updated level projection")
+
+  local beforeCancel = draft:record().experience
+  local canceled = ValueEditor.new(descriptor)
+  Assert.isTrue(canceled:cancel(), "the reopened level editor can be canceled")
+  Assert.equal(draft:record().experience, beforeCancel, "cancel leaves the existing draft record unchanged")
+end
+
 function T.moves_projection_publishes_four_slots_with_allowance_labels()
   local catalog, view = structuredView()
   local _, _, mon, _ = structuredMon("EEVEE", 5)

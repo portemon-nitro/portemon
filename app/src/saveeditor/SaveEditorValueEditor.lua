@@ -275,18 +275,17 @@ function SaveEditorValueEditor:adjustPlace(sign)
   assert(self._kind == "integer" and (sign == -1 or sign == 1), "place adjustment sign must be -1 or 1")
   local current = parseInteger(self._buffer, self._base)
   if current == nil or current < self._min or current > self._max then
-    return false
+    current = math.floor(assert(self._value, "integer editor retains its last valid value"))
   end
   local increment = assert(self._radix) ^ assert(self._selectedPlace)
   local nextValue = math.max(self._min, math.min(self._max, current + sign * increment))
-  if nextValue == current then
-    return false
-  end
+  local nextBuffer = self:_formatInteger(nextValue)
+  local changed = nextValue ~= self._value or nextBuffer ~= self._buffer
   self._value = nextValue
-  self._buffer = self:_formatInteger(nextValue)
+  self._buffer = nextBuffer
   self._cursor = #self._buffer
   self._hasInput = true
-  return true
+  return changed
 end
 
 function SaveEditorValueEditor:_formatInteger(value)

@@ -1992,11 +1992,18 @@ end
 local function buildFocusNavigation(ctx, targetRecords)
   local regions, controls, regionsById = {}, {}, {}
   local partyTab = ctx.view.partyTab or "Stats"
+  local numberEditor = ctx.view.valueEditor and ctx.view.valueEditor.kind == "number" and ctx.view.valueEditor or nil
   local decisionIds = {}
   for _, action in ipairs(ctx.decisionActions or {}) do
     decisionIds[action.id] = true
   end
   local function regionFor(targetId)
+    if
+      numberEditor ~= nil
+      and (targetId == "confirm" or targetId == "cancel" or targetId:match("^number:place:%d+:") ~= nil)
+    then
+      return "value:number"
+    end
     if decisionIds[targetId] then
       return "decision:actions"
     end
@@ -2060,6 +2067,42 @@ local function buildFocusNavigation(ctx, targetRecords)
     end
     return region
   end
+  local function numericOverrides(targetId)
+    if numberEditor == nil then
+      return nil
+    end
+    local selectedDigit = "number:place:" .. tostring(numberEditor.selectedPlace) .. ":up"
+    local targetPlace = targetId:match("^number:place:(%d+):")
+    local destinations = {}
+    if targetPlace ~= nil then
+      local place = assert(tonumber(targetPlace))
+      if place == 0 and targetRecords.confirm ~= nil then
+        destinations.right = "confirm"
+      end
+      if place == numberEditor.digitCount - 1 and targetRecords.cancel ~= nil then
+        destinations.left = "cancel"
+      end
+    elseif targetId == "confirm" then
+      if targetRecords.cancel ~= nil then
+        destinations.right = "cancel"
+      end
+      if targetRecords[selectedDigit] ~= nil then
+        destinations.left, destinations.up = selectedDigit, selectedDigit
+      end
+    elseif targetId == "cancel" then
+      if targetRecords.confirm ~= nil then
+        destinations.left = "confirm"
+      end
+      if targetRecords[selectedDigit] ~= nil then
+        destinations.up = selectedDigit
+      end
+    end
+    local overrides = {}
+    for direction, destination in pairs(destinations) do
+      overrides[direction] = { kind = "targets", ids = { destination }, fallback = "stop" }
+    end
+    return next(overrides) ~= nil and overrides or nil
+  end
   for _, targetId in ipairs(ctx.focusOrder) do
     local record = targetRecords[targetId]
     if record ~= nil and record.focusable then
@@ -2106,7 +2149,7 @@ local function buildFocusNavigation(ctx, targetRecords)
       else
         region.defaultId = region.defaultId or targetId
       end
-      controls[#controls + 1] = {
+      local control = {
         id = targetId,
         rect = record.rect,
         regionId = id,
@@ -2114,6 +2157,8 @@ local function buildFocusNavigation(ctx, targetRecords)
         eligible = record.activationEnabled,
         action = activationAction(ctx.view, targetId),
       }
+      control.overrides = numericOverrides(targetId)
+      controls[#controls + 1] = control
     end
   end
   local decisionMatrix

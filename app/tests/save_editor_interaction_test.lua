@@ -4521,6 +4521,80 @@ function T.tests.visible_numeric_fallback_back_activates_by_keyboard_gamepad_and
   Assert.isNil(pointer.valueEditor, "pointer activation uses the same visible Back target")
 end
 
+function T.tests.numeric_modal_keyboard_focus_reaches_confirm_and_hardware_back_focuses_cancel()
+  local keyboard, keyboardEditor = numberInputHarness(256, 192)
+  keyboard.valuePurpose = "money"
+  keyboard.session.setMoney = function(self, value)
+    self.money = value
+    return { ok = true }
+  end
+  local keyboardLayout = keyboard:_reconcileFocus()
+  Assert.notNil(keyboardLayout.targets.confirm, "the authored numeric modal exposes Confirm")
+  Assert.notNil(keyboardLayout.targets.cancel, "the authored numeric modal exposes Back")
+  keyboard.controller:setFocus("number:place:0:up")
+  keyboard:keypressed("up")
+  keyboard:keypressed("right")
+  Assert.equal(keyboard.controller.focus, "confirm", "Right from the units digit reaches Confirm")
+  keyboard:keypressed("return")
+  Assert.isNil(keyboard.valueEditor, "Enter activates the focused Confirm action")
+  Assert.equal(keyboard.session.money, 124, "Enter commits the explicitly adjusted numeric value")
+  Assert.isNil(keyboardEditor:result(), "a completed modal retires its editor result")
+end
+
+function T.tests.gamepad_back_from_numeric_digits_focuses_back_before_canceling()
+  local gamepad, gamepadEditor = numberInputHarness(256, 192)
+  gamepad:_reconcileFocus()
+  gamepad.controller:setFocus("number:place:0:up")
+  gamepad:gamepadpressed(nil, "b")
+  Assert.equal(gamepad.valueEditor, gamepadEditor, "hardware Back first leaves the number editor open")
+  Assert.equal(gamepad.controller.focus, "cancel", "hardware Back moves focus to the visible Back action")
+  gamepad:gamepadreleased(nil, "b")
+  gamepad:gamepadpressed(nil, "b")
+  Assert.isNil(gamepad.valueEditor, "Back on the focused Back action cancels the editor")
+  Assert.isNil(gamepadEditor:result(), "a canceled modal retires its editor result")
+end
+
+function T.tests.gamepad_confirms_and_pointer_back_cancels_native_numeric_actions()
+  local gamepad, confirmedEditor = numberInputHarness(256, 192)
+  gamepad.valuePurpose = "money"
+  gamepad.session.setMoney = function(self, value)
+    self.money = value
+    return { ok = true }
+  end
+  gamepad:_reconcileFocus()
+  gamepad.controller:setFocus("number:place:0:up")
+  gamepad:gamepadpressed(nil, "dpup")
+  gamepad:gamepadreleased(nil, "dpup")
+  gamepad:gamepadpressed(nil, "dpright")
+  Assert.equal(gamepad.controller.focus, "confirm", "the gamepad D-pad reaches Confirm from the units place")
+  gamepad:gamepadreleased(nil, "dpright")
+  gamepad:gamepadpressed(nil, "a")
+  Assert.equal(gamepad.session.money, 124, "gamepad A commits the explicitly adjusted numeric value")
+  Assert.isNil(confirmedEditor:result(), "a completed modal retires its editor result")
+end
+
+function T.tests.pointer_back_cancels_the_native_numeric_footer()
+  local pointer, canceledEditor = numberInputHarness(256, 192)
+  local layout = pointer:_resolve(pointer:_snapshot()).content.layout
+  local back = assert(layout.targets.cancel, "the native numeric footer publishes Back").rect
+  local x, y = back.x + math.floor(back.width / 2), back.y + math.floor(back.height / 2)
+  pointer:_pointer({
+    { type = "pointer_down", pointerId = "touch:native-back", targetId = "cancel", x = x, y = y },
+    { type = "pointer_up", pointerId = "touch:native-back", targetId = "cancel", x = x, y = y },
+  })
+  Assert.isNil(pointer.valueEditor, "pointer Back cancels from the native footer")
+  Assert.isNil(canceledEditor:result(), "a canceled modal retires its editor result")
+end
+
+function T.tests.numeric_arrow_recovers_invalid_typed_input_without_publishing_early()
+  local state, editor = numberInputHarness(256, 192)
+  state.controller:setFocus("number:place:0:up")
+  Assert.isTrue(editor:textinput("9999999"), "out-of-range text remains editable")
+  state:keypressed("up")
+  Assert.equal(editor:snapshot().parsedValue, 124, "the arrow starts from the last valid number")
+  Assert.isNil(editor:result(), "arrow recovery remains a draft until explicit Confirm")
+end
+
 function T.tests.back_closes_only_the_open_decision()
   local harness = backHarness({ section = "Player", dirty = true, modal = "remove" })
   harness.state:_requestBack()
@@ -4645,6 +4719,41 @@ function T.tests.entering_party_selects_the_first_member_with_an_edit_draft()
   empty.state:_ensurePartyDraft()
   Assert.isNil(empty.controller.partySlot0, "an empty party selects no member")
   Assert.isNil(empty.state.monDraft, "an empty party opens no draft")
+end
+
+function T.tests.confirming_party_level_editor_updates_exp_and_derived_hp_through_the_draft()
+  local Experience = require("libs.mons.src.gen4.Experience")
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  local draft = assert(harness.state.monDraft)
+  local before = draft:record()
+  local curve = harness.state.dependencies.context.monCatalog:growthCurve(
+    harness.state.dependencies.context.monCatalog:species(before.species).growthCurve
+  )
+
+  activate(harness.state, "party:field:level")
+  local editor = assert(harness.state.valueEditor)
+  Assert.equal(editor:snapshot().maximum, 100, "the real Party Level descriptor owns the numeric range")
+  Assert.isTrue(editor:press("up"), "the opened Level editor accepts a numeric adjustment")
+  local nextLevel = editor:snapshot().parsedValue
+  Assert.isTrue(editor:press("confirm"), "the adjusted level confirms")
+  harness.state:_finishValueEditor()
+
+  Assert.equal(draft:record().experience, Experience.expFor(curve, nextLevel), "State applies the canonical EXP threshold")
+  Assert.equal(draft:projection().level, nextLevel, "the projection publishes the newly derived level")
+  Assert.notNil(draft:projection().stats.hp, "the derived HP projection refreshes with the level")
+  Assert.equal(
+    harness.session:partySnapshot().members[1].mon.experience,
+    before.experience,
+    "the confirmed editor updates the draft without prematurely persisting it"
+  )
+
+  local previousExperience = draft:record().experience
+  activate(harness.state, "party:field:level")
+  local canceled = assert(harness.state.valueEditor)
+  Assert.isTrue(canceled:cancel(), "the reopened Level editor can be canceled")
+  harness.state:_finishValueEditor()
+  Assert.equal(draft:record().experience, previousExperience, "cancel leaves the draft record unchanged")
 end
 
 function T.tests.switching_members_applies_a_valid_dirty_draft()

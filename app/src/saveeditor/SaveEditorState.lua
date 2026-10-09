@@ -3730,18 +3730,19 @@ function State:_navigate(layout, direction)
   end
   local place, arrow = focus.targetId:match("^number:place:(%d+):([^:]+)$")
   if self.valueEditor ~= nil and place ~= nil then
-    local selected = assert(tonumber(place))
+    local selected = math.floor(assert(tonumber(place)))
     if direction == "up" or direction == "down" then
       self:_adjustNumberPlace(selected, direction == "up" and 1 or -1)
       self.controller:markKeyboardNavigation()
       return
     elseif direction == "left" or direction == "right" then
-      local nextPlace =
-        math.max(0, math.min(self.valueEditor:snapshot().digitCount - 1, selected + (direction == "left" and 1 or -1)))
-      self.valueEditor:selectPlace(nextPlace)
-      self.controller:setFocus("number:place:" .. tostring(nextPlace) .. ":" .. (arrow or "up"))
-      self.controller:markKeyboardNavigation()
-      return
+      local nextPlace = selected + (direction == "left" and 1 or -1)
+      if nextPlace >= 0 and nextPlace < self.valueEditor:snapshot().digitCount then
+        self.valueEditor:selectPlace(nextPlace)
+        self.controller:setFocus("number:place:" .. tostring(nextPlace) .. ":" .. (arrow or "up"))
+        self.controller:markKeyboardNavigation()
+        return
+      end
     end
   end
   local snapshot = navigationSnapshotForState(self, layout)
@@ -4042,6 +4043,12 @@ function State:_consumeUiInput(events)
           if self.controller.focus == "cancel" and cancelTarget and cancelTarget.focusable then
             self:_activateControl("cancel", currentLayout)
           end
+        elseif self.valueEditor:snapshot().kind == "number" then
+          local targetId = self.controller.focus
+          local target = currentLayout.targets[targetId]
+          if (targetId == "confirm" or targetId == "cancel") and target and target.focusable then
+            self:_activateControl(targetId, currentLayout)
+          end
         else
           local confirmTarget = currentLayout.targets.confirm
           if self.valueEditor:snapshot().kind == "choice" and confirmTarget and not confirmTarget.activationEnabled then
@@ -4062,8 +4069,14 @@ function State:_consumeUiInput(events)
       if self.controller.modal then
         self:_dispatchIntent(self.controller:press("cancel"))
       elseif self.valueEditor then
-        self.valueEditor:cancel()
-        self:_finishValueEditor()
+        if self.valueEditor:snapshot().kind == "number" and self.controller.focus ~= "cancel" then
+          self.controller:setFocus("cancel")
+          self.controller:markKeyboardNavigation()
+          self.controller:cancelInteraction()
+        else
+          self.valueEditor:cancel()
+          self:_finishValueEditor()
+        end
       else
         self:_dispatchIntent(self.controller:press("cancel"))
       end
@@ -4135,6 +4148,26 @@ function State:keypressed(key, _, isrepeat)
         self:_invalidatePublication()
         self:_settleScope()
         self:_refreshPublication()
+      end
+      return
+    end
+    if self.valueEditor:snapshot().kind == "number" then
+      local source = "key:" .. key
+      if key == "up" or key == "down" or key == "left" or key == "right" then
+        self.fieldInput:pressDirection(FIELD_DIRECTIONS[key], source)
+        self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+      elseif key == "return" or key == "kpenter" then
+        self.fieldInput:pressAction(source)
+        self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+      elseif key == "escape" then
+        self.fieldInput:pressCancel(source)
+        self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+      elseif key == "backspace" then
+        self.valueEditor:press("backspace")
+        self:_syncScope()
+      elseif key == "delete" then
+        self.valueEditor:press("clear_search")
+        self:_syncScope()
       end
       return
     end
