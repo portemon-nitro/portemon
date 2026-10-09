@@ -47,16 +47,15 @@ function T.source_catalog_compiles_with_retail_order_and_semantic_references(rom
       sectionTailRows[#sectionTailRows + 1] = rule
     end
   end
-  for sectionId = 0, 235 do
+  -- ov02_0224EF94 reads the section rows from member MAPSEC + 1.
+  for sectionId = 0, 234 do
     local expected = {}
     for _, rule in ipairs(sectionFirstRows) do
       expected[#expected + 1] = rule
     end
-    if sectionId > 0 then
-      local sectionBytes = assert(ruleArchive:readMember(sectionId))
-      for _, rule in ipairs(activeRows(Compiler, sectionBytes, Sources.SECTION_RULE_COUNT)) do
-        expected[#expected + 1] = rule
-      end
+    local sectionBytes = assert(ruleArchive:readMember(sectionId + 1))
+    for _, rule in ipairs(activeRows(Compiler, sectionBytes, Sources.SECTION_RULE_COUNT)) do
+      expected[#expected + 1] = rule
     end
     for _, rule in ipairs(sectionTailRows) do
       expected[#expected + 1] = rule
@@ -104,7 +103,7 @@ function T.source_catalog_compiles_with_retail_order_and_semantic_references(rom
       expectedSyntheticRows[#expectedSyntheticRows + 1] = rule
     end
   end
-  Assert.deepEqual(syntheticCatalog.rulesByMapSection[1], expectedSyntheticRows,
+  Assert.deepEqual(syntheticCatalog.rulesByMapSection[0], expectedSyntheticRows,
     "inactive common prefix rows do not move tail rows ahead of section rows")
 
   local sectionCount = 0

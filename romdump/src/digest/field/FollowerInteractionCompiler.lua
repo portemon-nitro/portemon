@@ -254,17 +254,17 @@ local function decodeRules(ruleNarc)
     end
   end
   local bySection = {}
-  for sectionId = 0, 235 do
+  -- ov02_0224EF94 reads a map section's rows from member MAPSEC + 1.
+  for sectionId = 0, Sources.MAP_SECTION_COUNT - 1 do
     local rows = {}
-    if sectionId > 0 then
-      local bytes = readMember(ruleNarc, sectionId, Sources.ARCHIVES.rules)
-      requireSize(bytes, Sources.SECTION_RULE_COUNT * Sources.RULE_SIZE, "section rules", sectionId)
-      for row = 0, Sources.SECTION_RULE_COUNT - 1 do
-        local offset = row * Sources.RULE_SIZE
-        local decoded = decodeRule(bytes:sub(offset + 1, offset + Sources.RULE_SIZE))
-        if decoded.interactionId ~= 0 then
-          rows[#rows + 1] = decoded
-        end
+    local memberId = sectionId + 1
+    local bytes = readMember(ruleNarc, memberId, Sources.ARCHIVES.rules)
+    requireSize(bytes, Sources.SECTION_RULE_COUNT * Sources.RULE_SIZE, "section rules", memberId)
+    for row = 0, Sources.SECTION_RULE_COUNT - 1 do
+      local offset = row * Sources.RULE_SIZE
+      local decoded = decodeRule(bytes:sub(offset + 1, offset + Sources.RULE_SIZE))
+      if decoded.interactionId ~= 0 then
+        rows[#rows + 1] = decoded
       end
     end
     local ordered = {}
@@ -403,7 +403,7 @@ end
 
 function Compiler.compile(romFs)
   assert(romFs and romFs.openNarc and romFs.version, "interaction compiler requires RomFs")
-  local rulesArchive = checkedArchive(romFs, Sources.ARCHIVES.rules, 236)
+  local rulesArchive = checkedArchive(romFs, Sources.ARCHIVES.rules, Sources.MAP_SECTION_COUNT + 1)
   local programArchive = checkedArchive(romFs, Sources.ARCHIVES.programs, 1023)
   local motionArchive = checkedArchive(romFs, Sources.ARCHIVES.motions, 108)
   local speciesClassArchive = checkedArchive(romFs, Sources.ARCHIVES.speciesClasses, 1)

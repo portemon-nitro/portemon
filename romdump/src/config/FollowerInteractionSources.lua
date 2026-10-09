@@ -14,6 +14,8 @@ FollowerInteractionSources.ARCHIVES = {
 FollowerInteractionSources.RULE_SIZE = 20
 FollowerInteractionSources.COMMON_RULE_COUNT = 70
 FollowerInteractionSources.SECTION_RULE_COUNT = 30
+-- MAPSEC_MYSTERY_ZONE (0) through MAPSEC_CLIFF_EDGE_GATE (234).
+FollowerInteractionSources.MAP_SECTION_COUNT = 235
 FollowerInteractionSources.PROGRAM_SIZE = 52
 FollowerInteractionSources.MOTION_SIZE = 80
 FollowerInteractionSources.SPECIES_CLASS_SOURCE_SIZE = 496

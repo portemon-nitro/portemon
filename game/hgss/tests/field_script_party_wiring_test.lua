@@ -68,7 +68,7 @@ local function stubOptions(partySelection, mart)
     fashionNames[accessoryId] = { name = "Accessory", nameWithArticle = "an Accessory" }
   end
   local rulesByMapSection = {}
-  for sectionId = 0, 235 do
+  for sectionId = 0, 234 do
     rulesByMapSection[sectionId] = {}
   end
   local followerInteractionCatalog = {

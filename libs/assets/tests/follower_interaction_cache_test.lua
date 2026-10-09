@@ -6,7 +6,7 @@ local T = {}
 
 local function catalog()
   local rulesByMapSection = {}
-  for sectionId = 0, 235 do
+  for sectionId = 0, 234 do
     rulesByMapSection[sectionId] = {}
   end
   rulesByMapSection[1] = {
@@ -102,7 +102,7 @@ end
 
 function T.rejects_missing_or_out_of_range_map_sections()
   local missing = catalog()
-  missing.rulesByMapSection[235] = nil
+  missing.rulesByMapSection[234] = nil
   Assert.isFalse(Cache.validateCatalog(missing))
 
   local outOfRange = catalog()

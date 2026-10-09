@@ -6,7 +6,7 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
-local EXPECTED_MARKER = "field-effect-cache-v9:rom:dep"
+local EXPECTED_MARKER = "field-effect-cache-v10:rom:dep"
 
 local function validModel()
   return {
@@ -482,7 +482,7 @@ T.tests["rejects trainer reveal with missing or malformed placement"] = function
   Assert.isFalse(malformed, "trainer reveal with non-finite placement must not be ready")
 end
 
-local SURF_MARKER = "field-effect-cache-v9:rom:dep"
+local SURF_MARKER = "field-effect-cache-v10:rom:dep"
 local SURF_INDEX_SCHEMA = "g4-field-effect-index-v3"
 T.tests["requires the complete generated Pokémon Center healing definition"] = function()
   local present = {

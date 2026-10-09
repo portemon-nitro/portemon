@@ -1238,7 +1238,7 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
   local InteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
   local interactionMarker = InteractionCache.marker("test-rom", "test-dep")
   local rulesByMapSection = {}
-  for sectionId = 0, 235 do
+  for sectionId = 0, 234 do
     rulesByMapSection[sectionId] = {}
   end
   local interactionCatalog = {

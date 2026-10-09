@@ -51,7 +51,7 @@ end
 
 local function catalog(ruleSpecs, speciesClassBySpeciesId)
   local rulesByMapSection = {}
-  for sectionId = 0, 235 do
+  for sectionId = 0, 234 do
     rulesByMapSection[sectionId] = {}
   end
   local programs = {}

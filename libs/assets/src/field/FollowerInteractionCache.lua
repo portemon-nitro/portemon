@@ -16,6 +16,7 @@ local MARKER = ROOT .. "/complete"
 -- The generated contract is fixed to the native retail species domain; this
 -- producer-independent bound mirrors the retail lookup assertion.
 local MAX_SPECIES_ID = 493
+local MAX_MAP_SECTION = 234
 
 local function exactKeys(value, fields)
   if type(value) ~= "table" then
@@ -254,7 +255,7 @@ function FollowerInteractionCache.validateCatalog(catalog)
     return invalid("has invalid section rules")
   end
   for sectionId, rules in pairs(catalog.rulesByMapSection) do
-    if not integer(sectionId, 0, 235) or not Validate.isArray(rules) then
+    if not integer(sectionId, 0, MAX_MAP_SECTION) or not Validate.isArray(rules) then
       return invalid("has invalid section rule ordering")
     end
     for _, rule in ipairs(rules) do
@@ -263,7 +264,7 @@ function FollowerInteractionCache.validateCatalog(catalog)
       end
     end
   end
-  for sectionId = 0, 235 do
+  for sectionId = 0, MAX_MAP_SECTION do
     if catalog.rulesByMapSection[sectionId] == nil then
       return invalid("is missing a map section rule list")
     end

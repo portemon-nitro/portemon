@@ -44,16 +44,22 @@ function T.compiles_base_binding_and_selector_pattern_resources(romFs)
     Assert.equal(definition.lifecycle.frameCount, clip.frameCount)
     local sourcePack = assert(Nsbtx.decode(assert(narc:readMember(source.textureMember))))
     local sourcePattern = assert(FieldEffectPatternAnimation.decode(assert(narc:readMember(source.descriptorMember))))
-    Assert.equal(clip.frameCount, sourcePattern.lastFrame + 1)
     Assert.equal(#clip.compiled.textureNames, #sourcePack.textures)
     Assert.equal(#clip.compiled.paletteNames, #sourcePack.palettes)
+    -- ov01_02203DF8 reads the source frame table as per-texture durations:
+    -- each update counts one frame, then advances once the count reaches the
+    -- current entry, so a zero duration still lasts one update.
     local compiledKeys = clip.compiled.targets[1].keys
     Assert.equal(#compiledKeys, #sourcePattern.keys)
+    local start = 0
     for keyIndex, sourceKey in ipairs(sourcePattern.keys) do
-      Assert.equal(compiledKeys[keyIndex].frame, sourceKey.frame)
+      Assert.equal(compiledKeys[keyIndex].frame, start)
       Assert.equal(compiledKeys[keyIndex].texIdx, sourceKey.texIdx)
       Assert.equal(compiledKeys[keyIndex].plttIdx, 0)
+      start = start + math.max(sourceKey.frame, 1)
     end
+    Assert.equal(clip.frameCount, start, "the clip ends when the final duration elapses")
+    Assert.equal(clip.frameCount, 25, "the retail durations 0, 4, 8, 12 span 25 updates")
 
     local material = assert(descriptor.materials[1])
     Assert.equal(material.name, "obj")

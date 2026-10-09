@@ -366,7 +366,11 @@ local function compileFollowerReaction(narc, source, basePack, basePattern)
   for _, palette in ipairs(selectorPack.palettes) do
     paletteNames[#paletteNames + 1] = palette.name
   end
+  -- ov01_02203DF8 steps the reaction's own schedule: the source frame table
+  -- holds per-texture durations, counted before comparison so that a zero
+  -- duration still lasts one update.
   local keys = {}
+  local keyStart = 0
   for keyIndex, key in ipairs(decodedPattern.keys) do
     if key.texIdx < 0 or key.texIdx >= #textureNames then
       Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-reaction texture selector is out of range", {
@@ -383,7 +387,8 @@ local function compileFollowerReaction(narc, source, basePack, basePattern)
         memberId = source.textureMember,
       })
     end
-    keys[#keys + 1] = { frame = key.frame, texIdx = key.texIdx, plttIdx = 0 }
+    keys[#keys + 1] = { frame = keyStart, texIdx = key.texIdx, plttIdx = 0 }
+    keyStart = keyStart + math.max(key.frame, 1)
   end
 
   local material = model.materials[1]
@@ -394,7 +399,7 @@ local function compileFollowerReaction(narc, source, basePack, basePattern)
       {
         name = "follower-reaction-pattern",
         resource = {
-          numFrame = decodedPattern.lastFrame + 1,
+          numFrame = keyStart,
           textureNames = textureNames,
           paletteNames = paletteNames,
           targets = {

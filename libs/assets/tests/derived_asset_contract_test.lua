@@ -90,12 +90,12 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-new-game-init-v3",
     },
     fieldEffects = {
-      cacheFormat = "field-effect-cache-v9",
+      cacheFormat = "field-effect-cache-v10",
       indexSchema = "g4-field-effect-index-v3",
     },
     followerInteractions = {
       cacheFormat = "follower-interaction-cache-v1",
-      schema = "g4-follower-interactions-v3",
+      schema = "g4-follower-interactions-v4",
     },
     fieldEmotes = {
       cacheFormat = "field-emotes-cache-v3",

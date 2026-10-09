@@ -291,8 +291,9 @@ DerivedAssetContract.fieldEffects = {
   -- index (indexSchema v3) and publishes their shared-model dynamic
   -- descriptors, plus the source-selected Pokémon Center healing
   -- choreography model. Caches predating either payload fail readiness
-  -- through the required-kind inventory.
-  cacheFormat = "field-effect-cache-v9",
+  -- through the required-kind inventory. v10 times the reaction clips by
+  -- their source per-texture durations.
+  cacheFormat = "field-effect-cache-v10",
   indexSchema = "g4-field-effect-index-v3",
 }
 
@@ -379,7 +380,9 @@ DerivedAssetContract.items = {
 
 DerivedAssetContract.followerInteractions = {
   cacheFormat = "follower-interaction-cache-v1",
-  schema = "g4-follower-interactions-v3",
+  -- v4 keys section rules by the map section itself (MAPSEC 0-234), which
+  -- retail reads from source member MAPSEC + 1.
+  schema = "g4-follower-interactions-v4",
 }
 
 DerivedAssetContract.mart = {
