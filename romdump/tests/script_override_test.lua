@@ -79,6 +79,13 @@ local function cacheWithScripts(files)
   return cache
 end
 
+local function requireOverride(name)
+  if name == "gen4.script" then
+    return require("gen4.script")
+  end
+  error("unexpected require in override chunk: " .. name)
+end
+
 local function overrideFs(files)
   local ids = {}
   for id in pairs(files) do
@@ -162,6 +169,21 @@ function T.tests.synthetic_override_keeps_explicit_precedence()
     })
   )
   Assert.equal(assert(withOverride:base(id)).steps[1].op, "yield_tick")
+end
+
+function T.tests.malformed_override_loads_without_authoring_validation_and_fails_at_the_compiler_boundary()
+  local content = scriptText("test.deferred_validation", "S.setVar({})")
+  local resource = ScriptLoader.loadOverride("test.deferred_validation", content, requireOverride)
+  Assert.equal(resource.id, "test.deferred_validation")
+  local valid, validateErr = S.validate(resource)
+  Assert.isNil(valid, "explicit authoring validation still diagnoses the malformed override")
+  Assert.notNil(validateErr)
+  Assert.equal(validateErr.code, "SCRIPT_SCHEMA_INVALID")
+  local Compiler = require("libs.script.src.Compiler")
+  local graph, compileErr = Compiler.compile(resource, { allowNext = false })
+  Assert.isNil(graph, "malformed content still fails at the compiler boundary")
+  Assert.notNil(compileErr)
+  Assert.equal(compileErr.code, "SCRIPT_SCHEMA_INVALID")
 end
 
 function T.tests.generated_unsupported_node_is_a_scheduler_fault()

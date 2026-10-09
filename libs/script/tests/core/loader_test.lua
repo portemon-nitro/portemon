@@ -168,16 +168,23 @@ T["override id mismatch is a hard error"] = function()
   end)
 end
 
--- 5. An override that fails validation fails loudly.
-T["invalid override fails loudly"] = function()
+-- 5. An override that fails authoring validation still installs: strict
+-- diagnosis is authoring-only, so the malformed resource fails at the
+-- compiler boundary instead of failing the load.
+T["invalid override installs and fails at the compiler boundary"] = function()
+  local Compiler = require("libs.script.src.Compiler")
   local Registry = require("libs.script.src.Registry")
   local registry = Registry.new()
   local fs = overrideFs({
     ["elms_lab.elm.lua"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "elms_lab.elm", steps = { S.setVar {  } } }\n',
   })
-  throwsCode("SCRIPT_SCHEMA_INVALID", function()
-    ScriptLoader.installOverrides(registry, fs, requireShim)
-  end)
+  local ids = ScriptLoader.installOverrides(registry, fs, requireShim)
+  Assert.deepEqual(ids, { "elms_lab.elm" })
+  local resource = assert(registry:base("elms_lab.elm"))
+  local graph, compileErr = Compiler.compile(resource, { allowNext = false })
+  Assert.isNil(graph, "a malformed override must fail where it is used")
+  Assert.notNil(compileErr)
+  Assert.equal(compileErr.code, "SCRIPT_SCHEMA_INVALID")
 end
 
 -- 6. buildRegistry composes the full pipeline and the effective composition
@@ -280,18 +287,23 @@ T["eager build trusts generated content by default"] = function()
   Assert.equal(assert(registry:base("invalid.script")).id, "invalid.script")
 end
 
--- 8e. The lazy path never skips the checked-in override layer: overrides are
--- fully validated eagerly on every boot.
-T["lazy build does not skip override validation"] = function()
+-- 8e. The lazy path never skips the checked-in override layer: overrides
+-- install eagerly on every boot and fail at the composition boundary, not
+-- at build time.
+T["lazy build installs overrides eagerly without build-time validation"] = function()
+  local Composition = require("libs.script.src.Composition")
+  local registry = ScriptLoader.buildRegistry(
+    scriptCache(),
+    overrideFs({
+      ["bad.override.lua"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "bad.override", steps = { S.setVar { } } }\n',
+    }),
+    requireShim,
+    { lazy = true }
+  )
+  Assert.notNil(registry:base("bad.override"))
+  local composition = Composition.new(registry)
   throwsCode("SCRIPT_SCHEMA_INVALID", function()
-    ScriptLoader.buildRegistry(
-      scriptCache(),
-      overrideFs({
-        ["bad.override.lua"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "bad.override", steps = { S.setVar { } } }\n',
-      }),
-      requireShim,
-      { lazy = true }
-    )
+    composition:effective("bad.override")
   end)
 end
 
@@ -596,6 +608,134 @@ T["empty resources array installs zero bases"] = function()
   local registry = Registry.new()
   ScriptLoader.installGenerated(registry, cache, requireShim)
   Assert.deepEqual(registry:ids(), {})
+end
+
+-- A trusted override executes with the standard Lua libraries and a
+-- host-provided module: math/string helpers plus a second trusted import
+-- produce an id-matching DSL resource that still compiles; the same module
+-- fails the restricted generated load, which sees neither host modules nor
+-- standard libraries.
+T["trusted override executes with standard libraries and a host-provided module"] = function()
+  local Compiler = require("libs.script.src.Compiler")
+  local helper = {
+    word = "hello",
+    pauseTicks = function()
+      return 3
+    end,
+  }
+  local trustedRequire = function(name)
+    if name == "gen4.script" then
+      return require("gen4.script")
+    end
+    if name == "trusted.helper" then
+      return helper
+    end
+    error("unexpected require in trusted override: " .. name)
+  end
+  local content = table.concat({
+    'local S = require("gen4.script")',
+    'local helper = require("trusted.helper")',
+    'local label = string.upper(helper.word) .. tostring(math.floor(2.7))',
+    'assert(label == "HELLO2")',
+    'return S.script { api = 1, id = "trusted.demo", steps = { S.say { message = "msg.hgss.0543.00097" }, S.stop() } }',
+    "",
+  }, "\n")
+  local resource = ScriptLoader.loadOverride("trusted.demo", content, trustedRequire)
+  Assert.equal(resource.id, "trusted.demo")
+  local graph = assert(Compiler.compile(resource, { allowNext = false }))
+  Assert.equal(graph.scriptId, "trusted.demo")
+  local cache = scriptCache()
+  cache:write(ScriptCache.scriptPath(GENERATION, 0, "trusted.demo"), content)
+  local generated, loadErr = ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, "trusted.demo")
+  Assert.isNil(generated, "the restricted generated load must reject host modules and standard libraries")
+  Assert.notNil(loadErr)
+end
+
+-- An override-driven typed async task survives a snapshot/restore boundary:
+-- the trusted override computes its wait from a host module, runs to the
+-- same completion tick across capture/restore, and closure or coroutine
+-- task state is still rejected by save validation.
+T["override-driven typed task survives snapshot restore while closures stay unsavable"] = function()
+  local Registry = require("libs.script.src.Registry")
+  local Composition = require("libs.script.src.Composition")
+  local TaskRegistry = require("libs.script.src.TaskRegistry")
+  local Scheduler = require("libs.script.src.Scheduler")
+  local ScriptSave = require("libs.script.src.ScriptSave")
+  local WaitTicksTask = require("libs.script.src.tasks.WaitTicksTask")
+  local FakeServices = require("tests.support.script.FakeServices")
+  local helper = {
+    pauseTicks = function()
+      return 2
+    end,
+  }
+  local trustedRequire = function(name)
+    if name == "gen4.script" then
+      return require("gen4.script")
+    end
+    if name == "trusted.helper" then
+      return helper
+    end
+    error("unexpected require in trusted override: " .. name)
+  end
+  local content = table.concat({
+    'local S = require("gen4.script")',
+    'local helper = require("trusted.helper")',
+    'local ticks = math.floor(helper.pauseTicks())',
+    'return S.script { api = 1, id = "trusted.save_demo", steps = { S.waitTicks { ticks = ticks }, S.stop() } }',
+    "",
+  }, "\n")
+  local resource = ScriptLoader.loadOverride("trusted.save_demo", content, trustedRequire)
+  local services = FakeServices.new()
+  local registry = Registry.new()
+  registry:installBase(resource.id, resource, "override")
+  local composition = Composition.new(registry)
+  local taskRegistry = TaskRegistry.new()
+  taskRegistry:register("wait_ticks", 1, WaitTicksTask)
+  local resolvers = {
+    resolveTask = function(taskType, version)
+      return taskRegistry:resolve(taskType, version)
+    end,
+    resolveComposition = function(id)
+      return composition:effective(id)
+    end,
+  }
+  local function buildScheduler()
+    return Scheduler.new({
+      semantics = require("libs.hgss.src.script.RuntimeValues"),
+      services = services,
+      taskRegistry = taskRegistry,
+      resolveComposition = function(id)
+        return composition:effective(id)
+      end,
+    })
+  end
+  local function runToCompletion(scheduler, fromTick)
+    local tick = fromTick
+    while scheduler:foregroundEnvironmentId() ~= nil do
+      scheduler:step(tick, nil)
+      tick = tick + 1
+      Assert.isTrue(tick - fromTick < 100, "the typed task must complete")
+    end
+    return tick - 1
+  end
+  local composed = assert(composition:effective("trusted.save_demo"))
+  local plain = buildScheduler()
+  plain:createForeground(composed, nil, 100)
+  local plainDone = runToCompletion(plain, 100)
+  local interrupted = buildScheduler()
+  interrupted:createForeground(composed, nil, 100)
+  interrupted:step(100, nil)
+  local bucket = ScriptSave.capture(interrupted, 100)
+  Assert.isNil(ScriptSave.validate(bucket, resolvers))
+  local resumed = buildScheduler()
+  ScriptSave.restore(bucket, resumed, 100)
+  Assert.equal(runToCompletion(resumed, 101), plainDone)
+  for _, bad in ipairs({ function() end, coroutine.create(function() end) }) do
+    bucket.tasks[1].state = bad
+    local stateErr = ScriptSave.validate(bucket, resolvers)
+    Assert.notNil(stateErr, "closure task state must not validate")
+    Assert.equal(stateErr.code, "SCRIPT_TASK_UNSERIALIZABLE")
+  end
 end
 
 return { tests = T }

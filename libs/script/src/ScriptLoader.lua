@@ -5,8 +5,9 @@
 -- when no base exists, as with the curated Elm replacement). The manifest is
 -- the single source of override filenames: no directory enumeration at
 -- runtime. Override files are ordinary `return S.script { ... }` modules
--- executed in a restricted environment; the returned resource must carry the
--- exact id of its file and must validate strictly. The filesystem is
+-- executed with normal Lua globals and the host require; the returned
+-- resource must carry the exact id of its file and must compile on use.
+-- Strict DSL validation is authoring-only (`gen4.script.validate`). The filesystem is
 -- injected (`read`), so the loader is testable headless; the game passes an
 -- io-backed repo filesystem for the override tree outside the LÖVE source
 -- mount. Pure domain module: no love dependency.
@@ -16,7 +17,6 @@ local ScriptErrors = require("libs.script.src.errors")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local Validate = require("libs.assets.src.Validate")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
-local Validator = require("libs.script.src.Validator")
 
 local ScriptLoader = {}
 
@@ -32,13 +32,14 @@ local function defaultRequire(name)
   return require(name)
 end
 
--- Load one Lua resource chunk (`return S.script { ... }`) in a restricted
--- environment that only provides `require`.
+-- Execute one Lua resource chunk (`return S.script { ... }`) in the given
+-- environment. Parse errors, runtime errors, and non-table results are hard
+-- load faults attributed to the chunk path.
 ---@param content string
 ---@param chunkName string
----@param requireFn function
+---@param env table<string, unknown>
 ---@return table<string, unknown> resource
-local function loadResourceChunk(content, chunkName, requireFn)
+local function executeChunk(content, chunkName, env)
   local chunk, loadErr = loadstring(content, chunkName)
   if not chunk then
     Errors.raise(
@@ -48,7 +49,6 @@ local function loadResourceChunk(content, chunkName, requireFn)
     )
   end
   chunk = chunk --[[@as function]]
-  local env = { require = requireFn } --[[@as table]]
   setfenv(chunk, env)
   local ok, resource = pcall(chunk)
   if not ok then
@@ -62,6 +62,33 @@ local function loadResourceChunk(content, chunkName, requireFn)
     Errors.raise(ScriptErrors.SCRIPT_LOAD_FAILED, "script module must return a resource table", { path = chunkName })
   end
   return resource
+end
+
+-- Load one generated resource chunk in the minimal deterministic
+-- environment: only `require` is visible, and the default require only
+-- serves gen4.script.
+---@param content string
+---@param chunkName string
+---@param requireFn function
+---@return table<string, unknown> resource
+local function loadResourceChunk(content, chunkName, requireFn)
+  local env = { require = requireFn } --[[@as table]]
+  return executeChunk(content, chunkName, env)
+end
+
+-- Load one checked-in override chunk under the trusted policy: normal Lua
+-- globals stay visible and `require` is the repository/host configured
+-- callback, so overrides may use standard libraries and additional trusted
+-- modules. The returned value must still be a resource table; semantic DSL
+-- validation is authoring-only (`gen4.script.validate`), never a runtime
+-- gate: malformed resources fail at compile on use.
+---@param content string
+---@param chunkName string
+---@param requireFn function
+---@return table<string, unknown> resource
+local function loadOverrideChunk(content, chunkName, requireFn)
+  local env = setmetatable({ require = requireFn }, { __index = _G }) --[[@as table]]
+  return executeChunk(content, chunkName, env)
 end
 
 -- Decode one generated script file from the compiled cache: read, parse, and
@@ -183,28 +210,22 @@ function ScriptLoader.installGenerated(registry, cacheFs, requireFn, opts)
 end
 
 -- Load one override file: `<id>.lua` returning an S.script resource whose id
--- must equal the file-derived id. Returns the resource.
+-- must equal the file-derived id. The chunk runs under the trusted policy
+-- (Lua globals plus the caller's require); only the file/resource id check
+-- runs here. Semantic validation is authoring-only: a malformed resource
+-- loads and fails at compile on use with the script id attached. Returns
+-- the resource.
 ---@param id string
 ---@param content string
 ---@param requireFn function
 ---@return table<string, unknown> resource
 function ScriptLoader.loadOverride(id, content, requireFn)
-  local resource = loadResourceChunk(content, ScriptOverrides.DIR .. "/" .. id .. ".lua", requireFn)
+  local resource = loadOverrideChunk(content, ScriptOverrides.DIR .. "/" .. id .. ".lua", requireFn)
   if resource.id ~= id then
     Errors.raise(
       ScriptErrors.SCRIPT_LOAD_FAILED,
       "override file " .. id .. ".lua defines script " .. tostring(resource.id),
       { scriptId = id, resourceId = resource.id }
-    )
-  end
-  local okValidate, validateErr = Validator.validate(resource)
-  if not okValidate then
-    local context = { scriptId = id, cause = validateErr and validateErr.context or nil }
-    ---@cast context Errors.Context
-    Errors.raise(
-      validateErr and validateErr.code or ScriptErrors.SCRIPT_SCHEMA_INVALID,
-      "override fails validation: " .. tostring(validateErr and validateErr.message or "?"),
-      context
     )
   end
   return resource
@@ -214,7 +235,8 @@ end
 -- `data/scripts/overrides/<id>.lua`; the manifest lists the exact ids (it is
 -- regenerated with the overrides, so no directory enumeration happens at
 -- runtime). The manifest is evaluated in the same restricted environment as
--- resource chunks. Returns the ids installed, sorted.
+-- generated resource chunks; each override file runs under the trusted
+-- policy instead. Returns the ids installed, sorted.
 ---@param registry table<string, unknown> Registry
 ---@param fs table<string, unknown> { read(path): string? }
 ---@param requireFn? fun(name: string): unknown
@@ -251,9 +273,10 @@ end
 -- io-backed repo filesystem (RepoFs) reading the checkout tree. With
 -- `opts.lazy` the generated layer installs as deferred placeholders that
 -- decode on first access through a loader closure over `cacheFs`.
--- The override layer is always loaded eagerly and validated strictly: it is
--- hand-authored checked-in content, so the file/resource id check plus the
--- semantic validator diagnose authoring mistakes at startup.
+-- The override layer is always loaded eagerly under the trusted policy: it is
+-- hand-authored checked-in content, so the file/resource id check diagnoses
+-- wiring mistakes at startup, while semantic mistakes fail at compile on
+-- use; strict authoring lint stays available through gen4.script.validate.
 -- The finished registry is sealed:
 -- installs after load finish are rejected.
 ---@param cacheFs table<string, unknown> CacheFs-shaped

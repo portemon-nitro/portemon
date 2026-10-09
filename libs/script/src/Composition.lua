@@ -32,13 +32,22 @@ function Composition.new(registry, opts)
 end
 
 -- Build the executable chain for one id. Returns nil when the id has no
--- base definition at all.
+-- base definition at all. A base that is not a DSL script resource is an
+-- explicit fault: executable custom behavior reuses the versioned typed
+-- tasks in the task registry, never a raw function result.
 ---@param id string
 ---@return table<string, unknown>|nil chain
 function Composition:_resolve(id)
   local baseResource = self._registry:base(id)
   if baseResource == nil then
     return nil
+  end
+  if type(baseResource) ~= "table" or type(baseResource.steps) ~= "table" then
+    Errors.raise(
+      ScriptErrors.SCRIPT_SCHEMA_INVALID,
+      "script resource is not a DSL script: executable custom behavior reuses versioned task-registry tasks",
+      { scriptId = id }
+    )
   end
   local graph, err = self._compile(baseResource, { allowNext = false })
   if not graph then

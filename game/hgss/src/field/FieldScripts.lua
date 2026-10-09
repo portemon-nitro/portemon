@@ -289,6 +289,13 @@ end
 local FieldScripts = {}
 FieldScripts.__index = FieldScripts
 
+-- Trusted override modules execute with the host module loader and normal
+-- Lua globals; generated cache content keeps the minimal deterministic
+-- environment inside the loader regardless of this callback.
+local function trustedRequire(name)
+  return require(name)
+end
+
 -- opts.overrideFs: love.filesystem-shaped read access for the repo
 -- `data/scripts/overrides` tree (the game mounts `data` before calling).
 ---@param opts FieldScriptsOptions
@@ -316,9 +323,12 @@ function FieldScripts.new(opts)
   -- The registry is always installed lazily: only the generated layer's
   -- presence comes from the index, and each script decodes on first use,
   -- so no gameplay pass decodes the corpus up front. The override layer
-  -- is always loaded and validated eagerly.
+  -- is always loaded eagerly under the trusted policy: override modules
+  -- execute with normal Lua globals and the host module loader, while
+  -- generated cache content keeps the minimal deterministic environment
+  -- inside the loader.
   local builtins = HgssScript.builtins()
-  local registry = ScriptLoader.buildRegistry(opts.cacheFs, opts.overrideFs, nil, {
+  local registry = ScriptLoader.buildRegistry(opts.cacheFs, opts.overrideFs, trustedRequire, {
     lazy = true,
     builtins = builtins,
   })

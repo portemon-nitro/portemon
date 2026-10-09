@@ -26,7 +26,9 @@ S.apiVersion = Schema.API_VERSION
 -- Development helper: validates a script resource without a game session.
 -- Returns true, or nil plus an Errors object with code SCRIPT_* and a
 -- `path`-attributed context. Validation is strict-only: unknown fields are
--- always rejected.
+-- always rejected. This is authoring-time lint for retail-shaped DSL: it
+-- diagnoses malformed hand-written content but never gates trusted override
+-- execution, which fails at compile on use instead.
 ---@param script unknown
 ---@return boolean|nil, Errors.Error|nil
 function S.validate(script)
