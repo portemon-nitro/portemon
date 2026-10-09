@@ -769,6 +769,11 @@ local function buildParty(ctx)
   assert(#selector.slots == 6, "the member strip always spans six positions")
   local tab = view.partyTab or "Stats"
   assert(tab == "Stats" or tab == "Moves" or tab == "Details", "unknown party page " .. tostring(tab))
+  if tab == "Stats" and view.partyStats ~= nil and ctx.width >= 800 then
+    local shellRight = ctx.shellX + ctx.shellWidth - ctx.margin
+    innerWidth = math.max(innerWidth, shellRight - contentX)
+    ctx.innerWidth = innerWidth
+  end
   local stripHeight = math.max(30, metrics.lineHeight + 14)
   local stripY = ctx.contentTop + 4
   local cellWidth = innerWidth / 6
@@ -819,7 +824,8 @@ local function buildParty(ctx)
   if view.partyEmpty then
     bodyItems[#bodyItems + 1] = { kind = "prompt", extent = rowHeight }
   elseif tab == "Stats" and view.partyStats ~= nil then
-    local factColumns = innerWidth >= 480 and 5 or innerWidth >= 300 and 3 or 2
+    local factColumns = ctx.width >= 800 and 5 or ctx.width >= 400 and 3 or 2
+    ctx.partyHeaderColumns = factColumns
     local factHeight = metrics.lineHeight + 8
     bodyItems[#bodyItems + 1] = {
       kind = "facts",
@@ -1885,6 +1891,7 @@ end
 
 local function buildFocusNavigation(ctx, targetRecords)
   local regions, controls, regionsById = {}, {}, {}
+  local partyTab = ctx.view.partyTab or "Stats"
   local decisionIds = {}
   for _, action in ipairs(ctx.decisionActions or {}) do
     decisionIds[action.id] = true
@@ -1913,14 +1920,14 @@ local function buildFocusNavigation(ctx, targetRecords)
       if field:match("Iv$") or field:match("Ev$") or field:match("^[iI][vV]:") or field:match("^[eE][vV]:") then
         return "party:stats"
       elseif
-        ctx.view.partyTab == "Stats"
+        partyTab == "Stats"
         and field ~= "level"
         and field ~= "experience"
         and field ~= "friendship"
         and field ~= "currentHp"
       then
         return "party:stats"
-      elseif ctx.view.partyTab == "Stats" then
+      elseif partyTab == "Stats" then
         return "party:header"
       end
       return "party:details"
@@ -2026,31 +2033,27 @@ local function buildFocusNavigation(ctx, targetRecords)
       region.defaultId = decisionMatrix[1] and decisionMatrix[1][1]
     end
   end
-  if ctx.partyStatsTable ~= nil then
-    local matrix = {}
-    local partyStats = ctx.view.partyStats
-    if partyStats ~= nil then
-      for _, stat in ipairs(partyStats.rows) do
-        matrix[#matrix + 1] = { stat.ivEditor.targetId, stat.evEditor.targetId }
-      end
-    else
-      for _, stat in ipairs(ctx.partyStatsTable.rows) do
-        local row = {}
-        for column = 2, 3 do
-          local targetId = stat.cells[column].targetId
-          if targetId ~= nil then
-            row[#row + 1] = targetId
-          end
-        end
-        if #row > 0 then
-          matrix[#matrix + 1] = row
-        end
-      end
+  local partyStats = not ctx.view.partyEmpty and partyTab == "Stats" and ctx.view.partyStats or nil
+  local statsMatrix, firstIvTarget, lastIvTarget = {}, nil, nil
+  if partyStats ~= nil then
+    for _, stat in ipairs(partyStats.rows) do
+      local ivTarget = assert(stat.ivEditor.targetId, "Stats rows have an IV target")
+      local evTarget = assert(stat.evEditor.targetId, "Stats rows have an EV target")
+      assert(stat.ivEditor.editor ~= nil and stat.evEditor.editor ~= nil, "Stats targets are editable")
+      statsMatrix[#statsMatrix + 1] = { ivTarget, evTarget }
+      firstIvTarget = firstIvTarget or ivTarget
+      lastIvTarget = ivTarget
     end
-    local region = regionsById["party:stats"]
-    if region ~= nil then
-      region.logical = { matrix = matrix }
-    end
+  end
+  if #statsMatrix > 0 then
+    local viewport = assert(ctx.viewports.party, "Stats regions use the Party viewport")
+    local region = regionsById["party:stats"] or addRegion("party:stats", "table", viewport.clip)
+    region.kind = "table"
+    region.rect = viewport.clip
+    region.viewportId = "party"
+    region.logical = { matrix = statsMatrix }
+    region.defaultId = firstIvTarget
+    region.entryUpId = lastIvTarget
   end
   if ctx.partyMoves ~= nil then
     local matrix = {}
@@ -2079,20 +2082,61 @@ local function buildFocusNavigation(ctx, targetRecords)
     end
   end
   if ctx.partyStrip ~= nil then
+    local partyStatsModel = not ctx.view.partyEmpty and partyTab == "Stats" and ctx.view.partyStats or nil
+    local headerMatrix, firstHeaderTarget, lastHeaderTarget = {}, nil, nil
+    if partyStatsModel ~= nil then
+      local columns = assert(ctx.partyHeaderColumns, "Stats layout publishes its physical header columns")
+      for factIndex, fact in ipairs(partyStatsModel.header) do
+        local rowIndex = math.floor((factIndex - 1) / columns) + 1
+        local columnIndex = (factIndex - 1) % columns + 1
+        local row = headerMatrix[rowIndex]
+        if row == nil then
+          row = {}
+          for column = 1, columns do
+            row[column] = false
+          end
+          headerMatrix[rowIndex] = row
+        end
+        if fact.targetId ~= nil and fact.editor ~= nil then
+          row[columnIndex] = fact.targetId
+          firstHeaderTarget = firstHeaderTarget or fact.targetId
+          lastHeaderTarget = fact.targetId
+        end
+      end
+    end
     for _, regionId in ipairs({ "party:members", "party:header", "party:details", "party:pager" }) do
       local region = regionsById[regionId]
-      if region == nil and regionId == "party:header" and ctx.view.partyStats ~= nil then
-        region = addRegion(regionId, "row", assert(ctx.viewports.party).clip)
+      if region == nil and regionId == "party:header" and firstHeaderTarget ~= nil then
+        region = addRegion(regionId, "table", assert(ctx.viewports.party).clip)
       end
       if region ~= nil then
         local ids = {}
-        if regionId == "party:header" and ctx.view.partyStats ~= nil then
-          for _, fact in ipairs(ctx.view.partyStats.header) do
+        if regionId == "party:header" and partyStatsModel ~= nil then
+          for _, fact in ipairs(partyStatsModel.header) do
             if fact.targetId ~= nil and fact.editor ~= nil then
               ids[#ids + 1] = fact.targetId
             end
           end
+          region.kind = "table"
           region.viewportId = "party"
+          region.rect = assert(ctx.viewports.party).clip
+          region.logical = {
+            matrix = headerMatrix,
+            count = #ids,
+            idAt = function(index)
+              return ids[index]
+            end,
+            indexOf = function(targetId)
+              for index, id in ipairs(ids) do
+                if id == targetId then
+                  return index
+                end
+              end
+              return nil
+            end,
+          }
+          region.defaultId = firstHeaderTarget
+          region.entryUpId = lastHeaderTarget
         elseif regionId == "party:details" and ctx.view.partyDetails ~= nil then
           for _, row in ipairs(ctx.view.partyDetails.rows) do
             if row.role == "action" or row.role == "integer value" or row.role == "named choice" then
@@ -2107,21 +2151,23 @@ local function buildFocusNavigation(ctx, targetRecords)
             end
           end
         end
-        region.logical = {
-          count = #ids,
-          idAt = function(index)
-            return ids[index]
-          end,
-          indexOf = function(targetId)
-            for index, id in ipairs(ids) do
-              if id == targetId then
-                return index
+        if regionId ~= "party:header" then
+          region.logical = {
+            count = #ids,
+            idAt = function(index)
+              return ids[index]
+            end,
+            indexOf = function(targetId)
+              for index, id in ipairs(ids) do
+                if id == targetId then
+                  return index
+                end
               end
-            end
-            return nil
-          end,
-        }
-        region.defaultId = region.defaultId or ids[1]
+              return nil
+            end,
+          }
+          region.defaultId = region.defaultId or ids[1]
+        end
       end
     end
   end
@@ -2165,7 +2211,7 @@ local function buildFocusNavigation(ctx, targetRecords)
     end
   end
   if ctx.partyStrip ~= nil then
-    exitTo("party:members", "down", ctx.view.partyTab == "Stats" and "party:header" or "party:moves")
+    exitTo("party:members", "down", partyTab == "Stats" and "party:header" or "party:moves")
     exitTo("party:header", "up", "party:members")
     exitTo("party:header", "down", "party:stats")
     exitTo("party:stats", "up", "party:header")
@@ -2174,7 +2220,7 @@ local function buildFocusNavigation(ctx, targetRecords)
     exitTo("party:moves", "down", "party:pager")
     exitTo("party:details", "up", "party:members")
     exitTo("party:details", "down", "party:pager")
-    exitTo("party:pager", "up", ctx.view.partyTab == "Stats" and "party:stats" or "party:moves")
+    exitTo("party:pager", "up", partyTab == "Stats" and "party:stats" or "party:moves")
     exitTo("party:pager", "down", "global-footer")
     exitTo("global-footer", "up", "party:pager")
   end
@@ -2182,6 +2228,45 @@ local function buildFocusNavigation(ctx, targetRecords)
     local region = regionsById["decision:actions"]
     if region ~= nil then
       region.kind = "table"
+    end
+  end
+  if ctx.partyStrip ~= nil and partyTab == "Stats" then
+    local partyOrder = {
+      ["party:members"] = 1,
+      ["party:header"] = 2,
+      ["party:stats"] = 3,
+      ["party:moves"] = 3,
+      ["party:details"] = 3,
+      ["party:pager"] = 4,
+    }
+    local insertionIndex
+    for index = #regions, 1, -1 do
+      if partyOrder[regions[index].id] ~= nil then
+        insertionIndex = index
+        table.remove(regions, index)
+      end
+    end
+    if insertionIndex ~= nil then
+      local orderedParty = {}
+      for _, regionId in ipairs({
+        "party:members",
+        "party:header",
+        "party:stats",
+        "party:moves",
+        "party:details",
+        "party:pager",
+      }) do
+        local region = regionsById[regionId]
+        if region ~= nil then
+          orderedParty[#orderedParty + 1] = region
+        end
+      end
+      for index, region in ipairs(orderedParty) do
+        table.insert(regions, insertionIndex + index - 1, region)
+      end
+    end
+    for index, region in ipairs(regions) do
+      region.order = index
     end
   end
   return { regions = regions, controls = controls }

@@ -1192,6 +1192,129 @@ function T.tests.party_navigation_uses_the_exact_unscrolled_body_anchor()
   )
 end
 
+function T.tests.party_keyboard_focus_reveals_stats_before_their_controls_are_materialized()
+  local metrics = {
+    lineHeight = 16,
+    measure = function(text)
+      return #text * 8
+    end,
+  }
+  local controller = Controller.new()
+  controller:setSection("Party")
+  controller:setFocus("party:field:currentHp")
+  local rows = {}
+  for _, key in ipairs({ "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+    rows[#rows + 1] = {
+      key = key,
+      label = key,
+      iv = 1,
+      ivEditor = { targetId = "party:field:iv:" .. key, editor = { kind = "integer" } },
+      ev = 2,
+      evEditor = { targetId = "party:field:ev:" .. key, editor = { kind = "integer" } },
+    }
+  end
+  local view = {
+    status = "ready",
+    ready = true,
+    dirty = false,
+    section = "Party",
+    scope = controller:snapshot().scope,
+    partyTab = "Stats",
+    partySlot0 = 0,
+    partySelector = {
+      slots = {
+        { kind = "member", slot0 = 0, iconKey = "test/member", label = "Member", active = true },
+        { kind = "add", slot0 = 1 },
+        { kind = "empty" },
+        { kind = "empty" },
+        { kind = "empty" },
+        { kind = "empty" },
+      },
+    },
+    partyStats = {
+      header = {
+        { id = "level", label = "Level", value = 5, targetId = "party:field:level", editor = { kind = "integer" } },
+        { id = "experience", label = "Experience", value = 100, targetId = "party:field:experience", editor = { kind = "integer" } },
+        { id = "friendship", label = "Friendship", value = 70, targetId = "party:field:friendship", editor = { kind = "integer" } },
+        { id = "currentHp", label = "HP", value = 12, targetId = "party:field:currentHp", editor = { kind = "integer" } },
+        { id = "status", label = "Status", value = "OK", targetId = "party:readonly:status" },
+      },
+      rows = rows,
+    },
+  }
+  local function snapshot()
+    view.focus = controller.focus
+    view.scope = { id = controller.scopeId, epoch = controller.scopeEpoch }
+    view.scrollOffsets = controller.scrollOffsets
+    return view
+  end
+  local function resolve(current)
+    return { content = { layout = Layout.compute(current, 256, 192, metrics) } }
+  end
+  local state = stateHarness({
+    status = "ready",
+    controller = controller,
+    _snapshot = snapshot,
+    _resolve = function(_, current)
+      return resolve(current)
+    end,
+  })
+
+  local initial = resolve(snapshot()).content.layout
+  local firstIv = "party:field:iv:hp"
+  local anchor = assert(initial.revealByTarget[firstIv], "offscreen Stats targets publish exact body coordinates")
+  local viewport = assert(initial.viewports.party)
+  local expected = ScrollViewport.reveal(viewport.offset, viewport.clip.height, anchor.start, anchor.extent)
+  Assert.isNil(initial.targets[firstIv], "the offscreen destination has no physical hit geometry")
+  state:_navigate(initial, "down")
+  Assert.equal(controller.focus, firstIv, "Down from the last editable fact enters the virtual Stats table")
+  Assert.equal(controller.scrollOffsets["party:Stats"], expected, "keyboard focus reveals the exact IV row interval")
+  local revealed = resolve(snapshot()).content.layout
+  Assert.notNil(revealed.targets[firstIv], "the focused IV receives hit geometry only after it is revealed")
+
+  local function tabIntoStats(direction)
+    controller.scrollOffsets["party:Stats"] = 0
+    local current = resolve(snapshot()).content.layout
+    local statsIndex
+    for index, region in ipairs(current.focusNavigation.regions) do
+      if region.id == "party:stats" then
+        statsIndex = index
+        break
+      end
+    end
+    statsIndex = assert(statsIndex, "the virtual table participates in Tab navigation")
+    local adjacent = assert(current.focusNavigation.regions[statsIndex + (direction == "next" and -1 or 1)])
+    controller:setFocus(assert(adjacent.defaultId, "an adjacent Tab region has an entry target"))
+    local expected = assert(current.revealByTarget[firstIv])
+    local expectedOffset = ScrollViewport.reveal(
+      current.viewports.party.offset,
+      current.viewports.party.clip.height,
+      expected.start,
+      expected.extent
+    )
+    state:_navigateTab(current, direction)
+    Assert.equal(controller.focus, firstIv, "Tab enters the first logical Stats cell")
+    Assert.equal(controller.scrollOffsets["party:Stats"], expectedOffset, "Tab entry applies the exact row reveal")
+  end
+  tabIntoStats("next")
+  tabIntoStats("previous")
+
+  controller:setFocus("party:page:previous")
+  local pagerLayout = resolve(snapshot()).content.layout
+  local lastIv = "party:field:iv:specialDefense"
+  local lastAnchor = assert(pagerLayout.revealByTarget[lastIv])
+  local pagerViewport = assert(pagerLayout.viewports.party)
+  local expectedLast = ScrollViewport.reveal(
+    pagerViewport.offset,
+    pagerViewport.clip.height,
+    lastAnchor.start,
+    lastAnchor.extent
+  )
+  state:_navigate(pagerLayout, "up")
+  Assert.equal(controller.focus, lastIv, "Up from the pager enters the final logical Stats row")
+  Assert.equal(controller.scrollOffsets["party:Stats"], expectedLast, "pager entry uses the final row's exact anchor")
+end
+
 function T.tests.partial_party_details_and_moves_targets_respect_the_body_clip()
   local metrics = interactionMetrics()
   local function partialView(tab)

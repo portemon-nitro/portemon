@@ -80,8 +80,18 @@ local function navigationFocus(layout, targetId)
     end
   end
   for _, region in ipairs(layout.focusNavigation.regions) do
-    if region.logical and region.logical.indexOf and region.logical.indexOf(targetId) ~= nil then
-      return { scopeId = layout.scopeId, regionId = region.id, targetId = targetId }
+    if region.logical ~= nil then
+      if region.logical.indexOf ~= nil and region.logical.indexOf(targetId) ~= nil then
+        return { scopeId = layout.scopeId, regionId = region.id, targetId = targetId }
+      elseif region.logical.matrix ~= nil then
+        for _, row in ipairs(region.logical.matrix) do
+          for _, id in ipairs(row) do
+            if id == targetId then
+              return { scopeId = layout.scopeId, regionId = region.id, targetId = targetId }
+            end
+          end
+        end
+      end
     end
   end
   return nil
@@ -897,7 +907,7 @@ function T.tests.party_stats_header_and_pager_are_explicit_focus_stops()
     regionId = "party:stats",
     targetId = "party:field:iv:hp",
   }, "up")
-  Assert.equal(reveal.targetId, "party:field:level")
+  Assert.equal(reveal.targetId, "party:field:currentHp", "Up enters the final editable header cell")
   Assert.equal(reveal.reveal.viewportId, "party", "offscreen header focus requests the body viewport reveal")
 
   controller:setFocus("back")
@@ -915,6 +925,108 @@ function T.tests.party_stats_header_and_pager_are_explicit_focus_stops()
   controller:setFocus("party:page:previous")
   local pagerDown = navigate(controller, layout, "down")
   Assert.equal(pagerDown.regionId, "global-footer", "Down from the pager enters footer actions")
+end
+
+function T.tests.party_stats_header_uses_its_visual_grid_and_skips_readonly_status()
+  local metrics = {
+    lineHeight = 16,
+    measure = function(text)
+      return #text * 8
+    end,
+  }
+  local expectedColumns = { [256] = 2, [400] = 3, [800] = 5 }
+  for width, columns in pairs(expectedColumns) do
+    local view = partyEditorView("Stats", "party:field:level")
+    local layout = Layout.compute(view, width, width == 800 and 600 or width == 400 and 300 or 192, metrics)
+    local header
+    for _, region in ipairs(layout.focusNavigation.regions) do
+      if region.id == "party:header" then
+        header = region
+      end
+    end
+    header = assert(header, "editable facts publish their logical region")
+    Assert.equal(header.kind, "table", "the facts use their physical rows and columns")
+    Assert.notNil(header.logical.matrix, "the header publishes its visual grid")
+    local matrix = header.logical.matrix
+    Assert.equal(matrix[1][1], "party:field:level")
+    Assert.equal(matrix[1][2], "party:field:experience")
+    if columns == 2 then
+      Assert.equal(matrix[2][1], "party:field:friendship")
+      Assert.equal(matrix[2][2], "party:field:currentHp")
+    elseif columns == 3 then
+      Assert.equal(matrix[1][3], "party:field:friendship")
+      Assert.equal(matrix[2][1], "party:field:currentHp")
+    else
+      Assert.equal(matrix[1][3], "party:field:friendship")
+      Assert.equal(matrix[1][4], "party:field:currentHp")
+    end
+    Assert.isNil(navigationFocus(layout, "party:readonly:status"), "the readonly status has no focus identity")
+
+    local controller = Controller.new()
+    controller:setSection("Party")
+    controller:setFocus("party:field:level")
+    navigate(controller, layout, "down")
+    Assert.equal(
+      controller.focus,
+      columns == 3 and "party:field:currentHp" or columns == 2 and "party:field:friendship"
+        or "party:field:iv:hp",
+      "Down follows the next physical header row when one exists"
+    )
+    if columns ~= 5 then
+      controller:setFocus("party:field:currentHp")
+      navigate(controller, layout, "down")
+      Assert.equal(controller.focus, "party:field:iv:hp", "Down exits the final editable header row into Stats")
+    end
+    navigate(controller, layout, "up")
+    Assert.equal(
+      controller.focus,
+      "party:field:currentHp",
+      "Up from the first Stats row returns to the final header row; got " .. controller.focus
+    )
+  end
+
+end
+
+function T.tests.party_offscreen_stats_keeps_a_virtual_matrix_without_hit_targets()
+  local metrics = {
+    lineHeight = 16,
+    measure = function(text)
+      return #text * 8
+    end,
+  }
+  local nativeView = partyEditorView("Stats", "party:field:currentHp")
+  local nativeLayout = Layout.compute(nativeView, 256, 192, metrics)
+  local statsRegion
+  for _, region in ipairs(nativeLayout.focusNavigation.regions) do
+    if region.id == "party:stats" then
+      statsRegion = region
+    end
+  end
+  Assert.isNil(nativeLayout.targets["party:field:iv:hp"], "offscreen IV cells never get hit rectangles")
+  Assert.isNil(nativeLayout.targets["party:field:ev:specialDefense"], "distant EV cells never get hit rectangles")
+  statsRegion = assert(statsRegion, "valid offscreen IV/EV rows keep a logical Stats region")
+  Assert.equal(statsRegion.kind, "table")
+  Assert.equal(statsRegion.rect, nativeLayout.viewports.party.clip, "the viewport anchors the virtual region")
+  Assert.equal(statsRegion.logical.matrix[1][1], "party:field:iv:hp")
+  Assert.equal(statsRegion.logical.matrix[6][2], "party:field:ev:specialDefense")
+  Assert.notNil(nativeLayout.revealByTarget["party:field:iv:hp"], "the first IV retains its exact reveal anchor")
+end
+
+function T.tests.empty_party_does_not_publish_a_stats_focus_region()
+  local metrics = {
+    lineHeight = 16,
+    measure = function(text)
+      return #text * 8
+    end,
+  }
+  local empty = partyEditorView("Stats")
+  empty.partyEmpty = true
+  empty.partyMemberCount = 0
+  empty.partyStats = nil
+  local emptyLayout = Layout.compute(empty, 256, 192, metrics)
+  for _, region in ipairs(emptyLayout.focusNavigation.regions) do
+    Assert.isFalse(region.id == "party:stats", "an empty Party has no synthetic Stats region")
+  end
 end
 
 local function filterMetrics()

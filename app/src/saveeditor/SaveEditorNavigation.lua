@@ -80,8 +80,14 @@ end
 
 local function entryTarget(snapshot, region, focus, direction)
   local remembered = snapshot.remembered and snapshot.remembered[region.id]
-  local target = remembered and validTarget(snapshot, remembered) and remembered or region.defaultId
-  if region.logical ~= nil and remembered ~= nil and logicalIndex(region, remembered) ~= nil then
+  local directionalEntry = direction == "up" and region.entryUpId or nil
+  local target = directionalEntry or remembered and validTarget(snapshot, remembered) and remembered or region.defaultId
+  if
+    region.logical ~= nil
+    and directionalEntry == nil
+    and remembered ~= nil
+    and logicalIndex(region, remembered) ~= nil
+  then
     return remembered
   end
   if region.logical ~= nil and region.logical.matrix == nil then
@@ -173,20 +179,37 @@ local function logicalDestination(region, targetId, direction)
     if rowIndex == nil then
       return nil
     end
-    local nextRow, nextColumn = rowIndex, columnIndex
-    if direction == "up" then
-      nextRow = rowIndex - 1
-    elseif direction == "down" then
-      nextRow = rowIndex + 1
-    elseif direction == "left" then
-      nextColumn = columnIndex - 1
-    else
-      nextColumn = columnIndex + 1
+    local matrix = region.logical.matrix
+    if direction == "left" or direction == "right" then
+      local step = direction == "left" and -1 or 1
+      local column = columnIndex + step
+      while column >= 1 and column <= #matrix[rowIndex] do
+        local candidate = matrix[rowIndex][column]
+        if type(candidate) == "string" then
+          return candidate, rowIndex
+        end
+        column = column + step
+      end
+      return nil
     end
-    local row = region.logical.matrix[nextRow]
-    local id = row and row[nextColumn]
-    if id ~= nil then
-      return id, nextRow
+    local nextRow = direction == "up" and rowIndex - 1 or rowIndex + 1
+    local row = matrix[nextRow]
+    if row == nil then
+      return nil
+    end
+    local candidate = row[columnIndex]
+    if type(candidate) == "string" then
+      return candidate, nextRow
+    end
+    for distance = 1, #row do
+      candidate = row[columnIndex - distance]
+      if type(candidate) == "string" then
+        return candidate, nextRow
+      end
+      candidate = row[columnIndex + distance]
+      if type(candidate) == "string" then
+        return candidate, nextRow
+      end
     end
     return nil
   end

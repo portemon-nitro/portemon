@@ -2306,6 +2306,73 @@ function T.party_stats_draws_the_visible_part_of_a_scrolled_fact_cell(scope)
   end
 end
 
+function T.party_revealed_stats_focus_artwork_stays_inside_the_body_viewport(scope)
+  local width, height = 256, 192
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local function assertFocusClipped(targetId, name, partial)
+    local function prepare(view, visible)
+      view.focus = targetId
+      view.focusVisible = visible
+      local initial = Layout.compute(view, width, height, view.textMetrics)
+      local anchor = assert(initial.revealByTarget[targetId], "offscreen Stats keeps its exact reveal coordinate")
+      view.scrollOffsets = { ["party:Stats"] = anchor.start + (partial and math.floor(anchor.extent / 2) or 0) }
+    end
+    local focusedData, _, focusedLayout, _, _, focusedView, _, _, _, focusedPlan = draw(
+      scope,
+      width,
+      height,
+      topology,
+      "party-virtual-stats-focus-" .. name,
+      "Party",
+      "party-stats-table",
+      nil,
+      nil,
+      function(view)
+        prepare(view, true)
+      end
+    )
+    local plainData, _, _, _, _, plainView, _, _, _, plainPlan = draw(
+      scope,
+      width,
+      height,
+      topology,
+      "party-virtual-stats-no-focus-" .. name,
+      "Party",
+      "party-stats-table",
+      nil,
+      nil,
+      function(view)
+        prepare(view, false)
+      end
+    )
+    local target = assert(focusedLayout.targets[targetId], "revealing the target materializes its focus geometry")
+    local clip = assert(focusedLayout.viewports.party).clip
+    Assert.equal(focusedView.textMetrics.lineHeight, 16, "the native font0 fixture uses authored glyph height")
+    Assert.equal(plainView.textMetrics.lineHeight, focusedView.textMetrics.lineHeight)
+    Assert.isTrue(target.rect.y < clip.y + clip.height and target.rect.y + target.rect.height > clip.y)
+    local focusPixelsInside = false
+    for y = 0, height - 1 do
+      for x = 0, width - 1 do
+        local red, green, blue = pixelAtLogical(focusedData, focusedPlan, x, y)
+        local plainRed, plainGreen, plainBlue = pixelAtLogical(plainData, plainPlan, x, y)
+        local differs = math.abs(red - plainRed) + math.abs(green - plainGreen) + math.abs(blue - plainBlue) > 0.05
+        if y < clip.y or y >= clip.y + clip.height then
+          Assert.isFalse(differs, "a focused Party body cue does not paint outside the viewport")
+        elseif x >= target.rect.x and x < target.rect.x + target.rect.width then
+          focusPixelsInside = focusPixelsInside or differs
+        end
+      end
+    end
+    Assert.isTrue(focusPixelsInside, "the focused target shows its cue inside the clipped body")
+  end
+  assertFocusClipped("party:field:friendship", "partial-header", true)
+  assertFocusClipped("party:field:iv:hp", "first-iv", false)
+end
 function T.party_partial_stats_headers_rows_moves_and_details_paint_inside_the_body_clip(scope)
   local width, height = 256, 192
   local topology = ScreenTopology.oneDisplay({
