@@ -962,6 +962,22 @@ function FieldState:keypressed(key, _, _)
   end
 end
 
+-- Only the naming screens consume typed text; other modals reject event
+-- kinds they do not own, so text is never queued for them.
+---@param text string
+function FieldState:textinput(text)
+  if not (self.runtime.pokemonNaming:isActive() or self.runtime.pcApplicationHost:acceptsText()) then
+    return
+  end
+  if self:_entryCoverActive() then
+    return
+  end
+  if self:_starterPresentationHolding() then
+    return
+  end
+  self.runtime.input:textInput(text)
+end
+
 ---@param key string
 function FieldState:keyreleased(key, _)
   -- Release mirrors press: one physical key may drive several held semantic

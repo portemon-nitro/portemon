@@ -53,6 +53,13 @@ function T.tests.keyboard_navigation_confirm_and_b_delete_use_the_reusable_contr
   state:dispose()
 end
 
+function T.tests.typed_text_inserts_glyphs_and_ignores_action_key_text()
+  local state = openState()
+  state:handleInput({ { type = "text", text = "C" }, { type = "text", text = " " } })
+  Assert.equal(state:status().text, "AC")
+  state:dispose()
+end
+
 function T.tests.pointer_ok_submits_and_pointer_cancel_has_no_naming_meaning()
   local state = openState()
   state:handleInput({ { type = "pointer_cancel", pointerId = "touch:1" } })

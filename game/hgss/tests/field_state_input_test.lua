@@ -43,6 +43,11 @@ local function stateWithInput(calls)
       cancelKeys = {},
       menuKeys = { tab = true },
       pokemonNaming = inactivePokemonNaming(),
+      pcApplicationHost = {
+        acceptsText = function()
+          return false
+        end,
+      },
     },
   }, FieldState)
 end
@@ -86,6 +91,33 @@ function T.keyboard_dpad_stick_and_pointer_events_reach_the_unified_input()
     { "pointerMove", "touch:9", 5, 6 },
     { "pointerUp", "touch:9", 5, 6 },
   })
+end
+
+function T.typed_text_reaches_input_only_while_a_naming_screen_is_active()
+  local calls = {}
+  local state = stateWithInput(calls)
+  state.runtime.input.textInput = function(_, text)
+    calls[#calls + 1] = { "textInput", text }
+  end
+
+  state:textinput("é")
+  Assert.deepEqual(calls, {})
+
+  state.runtime.pokemonNaming.isActive = function()
+    return true
+  end
+  state:textinput("é")
+  Assert.deepEqual(calls, { { "textInput", "é" } })
+
+  calls = {}
+  state.runtime.pokemonNaming.isActive = function()
+    return false
+  end
+  state.runtime.pcApplicationHost.acceptsText = function()
+    return true
+  end
+  state:textinput("B")
+  Assert.deepEqual(calls, { { "textInput", "B" } })
 end
 
 function T.only_the_primary_mouse_button_drives_menu_pointer_activation()

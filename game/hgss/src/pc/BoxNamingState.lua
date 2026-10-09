@@ -53,19 +53,7 @@ function BoxNamingState:updateFixed(events)
   local session = assert(self._session)
   session:resolve(self._measureDisplay(), controller:snapshot())
   for _, event in ipairs(session:mapInput(events, controller:snapshot())) do
-    if event.type == "navigate" then
-      controller:press(assert(event.direction))
-    elseif event.type == "confirm" then
-      controller:press("confirm")
-    elseif event.type == "cancel" then
-      controller:press("cancel")
-    elseif event.type == "name_cell" then
-      controller:activateAt(event.row, event.column)
-    elseif event.type == "name_control" then
-      controller:activateControl(event.id)
-    elseif event.type ~= "pointer_cancel" then
-      error("unknown box naming event " .. tostring(event.type), 0)
-    end
+    controller:applyEvent(event)
   end
   controller:updateFixed(2)
   session:resolve(self._measureDisplay(), controller:snapshot())

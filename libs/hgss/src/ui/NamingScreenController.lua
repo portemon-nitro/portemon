@@ -30,6 +30,7 @@ local NamingScreenController = {}
 ---@field deleteGlyph fun(self: NamingScreenController): boolean
 ---@field inputText fun(self: NamingScreenController, text: string): boolean
 ---@field press fun(self: NamingScreenController, action: string): boolean
+---@field applyEvent fun(self: NamingScreenController, event: table<string, unknown>)
 ---@field result fun(self: NamingScreenController): table<string, string>?
 ---@field snapshot fun(self: NamingScreenController): table<string, unknown>
 ---@field text fun(self: NamingScreenController): string
@@ -370,6 +371,29 @@ function NamingScreenController:press(action)
     return self:deleteGlyph()
   end
   return false
+end
+
+-- Applies one presentation-mapped host event. Space and Enter arrive as
+-- confirm through the key bindings, so their text events never insert glyphs.
+---@param event table<string, unknown>
+function NamingScreenController:applyEvent(event)
+  local kind = event.type
+  if kind == "navigate" then
+    self:press(assert(event.direction, "navigation requires a direction") --[[@as string]])
+  elseif kind == "confirm" or kind == "cancel" then
+    self:press(kind)
+  elseif kind == "name_cell" then
+    self:activateAt(event.row --[[@as integer]], event.column --[[@as integer]])
+  elseif kind == "name_control" then
+    self:activateControl(event.id --[[@as string]])
+  elseif kind == "text" then
+    local text = event.text --[[@as string]]
+    if text ~= " " and text ~= "\n" and text ~= "\r" then
+      self:inputText(text)
+    end
+  elseif kind ~= "pointer_cancel" then
+    error("unknown naming event " .. tostring(kind), 0)
+  end
 end
 
 function NamingScreenController:text()

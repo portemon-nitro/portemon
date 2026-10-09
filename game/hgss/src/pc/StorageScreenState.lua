@@ -520,6 +520,12 @@ function StorageScreenState:_resolve()
   self._publishedView = view
 end
 
+-- Only the box-name editor consumes typed text.
+---@return boolean
+function StorageScreenState:acceptsText()
+  return self._childKind == "boxName"
+end
+
 ---@param events table<string, unknown>[] an ordered batch of normalized events
 function StorageScreenState:updateFixed(events)
   assert(not self._disposed, "disposed Storage does not update")

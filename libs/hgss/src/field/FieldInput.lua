@@ -478,6 +478,15 @@ function FieldInput:pointerScroll(pointerId, dx, dy)
   end
 end
 
+-- Typed text reaches an active modal as an ordered event, like pointer input.
+---@param text string
+function FieldInput:textInput(text)
+  assert(type(text) == "string" and text ~= "", "typed text must be a non-empty string")
+  if self.uiActive then
+    self.uiPointerEvents[#self.uiPointerEvents + 1] = { type = "text", text = text }
+  end
+end
+
 -- Begins a modal UI lifetime without treating an already-held control as an
 -- activation edge. The held direction is eligible to repeat after its normal
 -- delay, so an opening menu neither jumps nor leaves a stuck control inert.

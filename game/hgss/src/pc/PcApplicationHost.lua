@@ -90,6 +90,13 @@ function PcApplicationHost:isActive()
   return self._active ~= nil
 end
 
+-- Whether the open PC application is in a text-entry editor.
+---@return boolean
+function PcApplicationHost:acceptsText()
+  local active = self._active
+  return active ~= nil and active.child.acceptsText ~= nil and active.child:acceptsText()
+end
+
 function PcApplicationHost:activeHandle()
   return self._active and self._active.handle or nil
 end

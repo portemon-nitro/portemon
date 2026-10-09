@@ -98,21 +98,7 @@ function PokemonNamingState:handleInput(events)
   local session = assert(self._session, "active Pokemon naming owns a presentation session")
   self:_resolve()
   for _, event in ipairs(session:mapInput(events, view(self))) do
-    if event.type == "navigate" then
-      controller:press(assert(event.direction, "navigation requires a direction"))
-    elseif event.type == "confirm" then
-      controller:press("confirm")
-    elseif event.type == "cancel" then
-      controller:press("cancel")
-    elseif event.type == "name_cell" then
-      controller:activateAt(event.row, event.column)
-    elseif event.type == "name_control" then
-      controller:activateControl(event.id)
-    elseif event.type == "pointer_cancel" then
-      -- Pointer cancellation drops capture without changing naming semantics.
-    else
-      assert(false, "unknown Pokemon naming event " .. tostring(event.type))
-    end
+    controller:applyEvent(event)
   end
   self:_resolve()
 end

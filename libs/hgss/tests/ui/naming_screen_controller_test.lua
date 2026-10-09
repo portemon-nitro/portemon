@@ -307,4 +307,25 @@ function T.tests.layout_keeps_controls_inside_canonical_surface_at_integer_scale
   end
 end
 
+function T.tests.apply_event_dispatches_every_host_event_kind()
+  local controller = player({ initialText = "A" })
+  controller:applyEvent({ type = "navigate", direction = "right" })
+  controller:applyEvent({ type = "confirm" })
+  Assert.equal(controller:text(), "AB")
+  controller:applyEvent({ type = "cancel" })
+  Assert.equal(controller:text(), "A")
+  controller:applyEvent({ type = "text", text = "z" })
+  Assert.equal(controller:text(), "Az")
+  controller:applyEvent({ type = "pointer_cancel", pointerId = "touch:1" })
+  Assert.equal(controller:text(), "Az")
+end
+
+function T.tests.typed_action_key_text_never_becomes_a_glyph()
+  local controller = player()
+  for _, text in ipairs({ " ", "\n", "\r" }) do
+    controller:applyEvent({ type = "text", text = text })
+  end
+  Assert.equal(controller:text(), "", "Space and Enter reach the screen as confirm, not as text")
+end
+
 return T

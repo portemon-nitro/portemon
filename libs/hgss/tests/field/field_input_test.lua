@@ -45,6 +45,21 @@ function T.additional_sources_for_a_held_direction_do_not_repeat_ui_navigation()
   Assert.deepEqual(input:uiSnapshot(1), {})
 end
 
+function T.typed_text_is_queued_in_order_only_during_an_active_ui_lifetime()
+  local input = FieldInput.new()
+  input:textInput("a")
+  Assert.deepEqual(input:uiSnapshot(0), {})
+
+  input:beginUi(1)
+  input:textInput("b")
+  input:textInput("é")
+  Assert.deepEqual(input:uiSnapshot(1), {
+    { type = "text", text = "b" },
+    { type = "text", text = "é" },
+  })
+  Assert.deepEqual(input:uiSnapshot(2), {})
+end
+
 function T.pointer_events_exist_only_during_an_active_ui_lifetime()
   local input = FieldInput.new()
   input:pointerMove("mouse:1", 1, 1)
