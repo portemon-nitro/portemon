@@ -1,12 +1,12 @@
 -- The concrete field-bag application: the per-open wrapper binding the
 -- existing browse controller and hero presenter to one presentation
--- session. Each tick resolves a complete plan against fresh display
--- facts, maps one ordered batch, advances the controller once, then
--- resolves again for the resulting snapshot without advancing semantic
--- clocks. Geometry lives in the session, never in the host. Construction
--- is failure-safe: a failed session or controller releases whatever the
--- open acquired. Missing production capabilities fail at construction,
--- never on first draw.
+-- session. Each tick maps one ordered batch through the current plan,
+-- advances the controller once, then resolves again only when measured
+-- host geometry or layout-relevant wrapper state moved, without
+-- advancing semantic clocks. Geometry lives in the session, never in
+-- the host. Construction is failure-safe: a failed session or
+-- controller releases whatever the open acquired. Missing production
+-- capabilities fail at construction, never on first draw.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BagActionPolicy = require("libs.hgss.src.ui.BagActionPolicy")
@@ -31,9 +31,42 @@ local BagModel = require("libs.hgss.src.ui.BagModel")
 ---@field _openingMainStep integer
 ---@field _openingInitialTick boolean
 ---@field _settleTicks integer
+---@field _resolvedKey string? the layout key behind the published plan
 ---@field _disposed boolean
 local BagScreenState = {}
 BagScreenState.__index = BagScreenState
+
+---@param measurement DisplayMeasurement
+---@return string the host geometry behind a plan resolution
+local function measurementKey(measurement)
+  return table.concat({
+    tostring(measurement.signature),
+    tostring(measurement.width),
+    tostring(measurement.height),
+    tostring(measurement.pixelRatio),
+    tostring(measurement.topology),
+  }, "|")
+end
+
+---@param self BagScreenState
+---@param view table<string, unknown>
+---@return string the wrapper and controller state behind a plan resolution
+local function semanticKey(self, view)
+  return table.concat({
+    tostring(self._openingPhase),
+    tostring(self._openingSubStep),
+    tostring(self._openingMainStep),
+    tostring(view.open),
+    tostring(view.state),
+    tostring(view.pocket),
+    tostring(view.tabFocusPocket),
+    tostring(view.focus),
+    tostring(view.selectedAbsoluteIndex),
+    tostring(view.visibleStart),
+    tostring(view.focusedAbsoluteIndex),
+    tostring(view.actionNode),
+  }, "|")
+end
 
 ---@class BagScreenState.Options
 ---@field effect (fun(sequence: string))? the production semantic sound boundary, silent when omitted
@@ -228,7 +261,10 @@ function BagScreenState.new(opts)
   self._controller = assert(controller, "the bag screen requires its browse controller")
   self._session = assert(session, "the bag screen requires its presentation session")
   local resolveOk, resolveErr = pcall(function()
-    self._session:resolve(self:_measured(), self:_view())
+    local measurement = self:_measured()
+    local view = self:_view()
+    self._session:resolve(measurement, view)
+    self._resolvedKey = measurementKey(measurement) .. "#" .. semanticKey(self, view)
   end)
   if not resolveOk then
     self._controller:dispose()
@@ -267,24 +303,43 @@ function BagScreenState:resolveLayout()
   return assert(plan.content, "the bag plan carries its canonical content")
 end
 
+-- Resolves the published plan only when the measured host geometry or
+-- the layout-relevant wrapper and controller state moved since the last
+-- resolution; unchanged ticks keep mapping through the current plan.
+---@param measurement DisplayMeasurement
+---@param view table<string, unknown>
+function BagScreenState:_resolveWhenChanged(measurement, view)
+  local key = measurementKey(measurement) .. "#" .. semanticKey(self, view)
+  if key ~= self._resolvedKey then
+    self._session:resolve(measurement, view)
+    self._resolvedKey = key
+  end
+end
+
 -- Re-resolves host placement without advancing the Bag or hero clocks.
 ---@param view table<string, unknown>?
 ---@return table<string, unknown> current presentation plan
 function BagScreenState:refreshPresentation(view)
   assert(not self._disposed, "a disposed bag wrapper refreshes nothing")
-  return self._session:resolve(self:_measured(), view or self:_view())
+  local measurement = self:_measured()
+  local resolvedView = view or self:_view()
+  local plan = self._session:resolve(measurement, resolvedView)
+  self._resolvedKey = measurementKey(measurement) .. "#" .. semanticKey(self, resolvedView)
+  return plan
 end
 
--- One fixed tick: resolve, map once, advance the controller once, sync
--- the hero presenter, then resolve again for the resulting snapshot.
--- pointer_cancel flows in batch order; the controller absorbs it without
--- changing selection.
+-- One fixed tick: map once through the current plan, advance the
+-- controller once, sync the hero presenter, then resolve again only when
+-- the opening, semantic, or measured state moved since the last
+-- resolution. pointer_cancel flows in batch order; the controller
+-- absorbs it without changing selection.
 ---@param uiInput table[]
 function BagScreenState:updateFixed(uiInput)
   assert(not self._disposed, "a disposed bag wrapper steps nothing")
   local session = self._session
   local measurement = self:_measured()
-  session:resolve(measurement, self:_view())
+  local preView = self:_view()
+  self:_resolveWhenChanged(measurement, preView)
   local gated = false
   if self._openingPhase == "opening" then
     if self._openingInitialTick then
@@ -317,10 +372,10 @@ function BagScreenState:updateFixed(uiInput)
       end
       self._hero:updateFixed()
     end
-    session:resolve(measurement, self:_view())
+    self:_resolveWhenChanged(measurement, self:_view())
     return
   end
-  local mapped = session:mapInput(input, self:_view())
+  local mapped = session:mapInput(input, preView)
   self._controller:updateFixed(mapped)
   local status = self._controller:status()
   if status.open then
@@ -330,7 +385,7 @@ function BagScreenState:updateFixed(uiInput)
     end
     self._hero:updateFixed()
   end
-  session:resolve(measurement, self:_view())
+  self:_resolveWhenChanged(measurement, self:_view())
 end
 
 -- The presentation snapshot: the controller status (semantic browse state)

@@ -8,6 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
+local BagInterface = require("game.hgss.src.field.BagInterface")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -1521,6 +1522,111 @@ function T.pick_held_context_selects_directly_and_reports_no_close()
   Assert.equal(intent.kind, "pick", "the picker forwards selections")
   Assert.equal(intent.item, "POTION", "the pick snapshots the item identity")
   Assert.isNil(state:takeResult(), "a pick is not a terminal close")
+  state:dispose()
+end
+
+local function countingOverrides(manifest)
+  local base = BagInterface.defaults(manifest)
+  local spy = { count = 0 }
+  local overrides = {}
+  for _, case in ipairs({ "dualDisplay", "nativeLike", "wide", "tall" }) do
+    local original = assert(base[case], "the bag interface carries its " .. case .. " resolver")
+    overrides[case] = function(context, view)
+      spy.count = spy.count + 1
+      return original(context, view)
+    end
+  end
+  return overrides, spy
+end
+
+function T.idle_ticks_reuse_the_published_plan()
+  local options = composition()
+  local overrides, spy = countingOverrides(options.manifest)
+  options.overrides = overrides
+  local state = interactiveBagState(options)
+  state:updateFixed({})
+  local settledResolves = spy.count
+  local first = state:status()
+  local firstPlan = assert(first.presentation, "the settled status publishes its plan")
+  local firstFrame = assert(first.hero, "the settled status carries hero facts").frame
+  for _ = 1, 8 do
+    state:updateFixed({})
+  end
+  Assert.equal(spy.count, settledResolves, "idle ticks with unchanged contents resolve no fresh plan")
+  local after = state:status()
+  Assert.isTrue(after.presentation == firstPlan, "idle ticks keep the published plan identity")
+  Assert.equal(after.state, "browsing", "idle ticks stay in browse mode")
+  Assert.equal(after.pocket, first.pocket, "idle ticks preserve the pocket")
+  Assert.equal(selectedKey(after), selectedKey(first), "idle ticks preserve the selection")
+  Assert.equal(after.revision, first.revision, "idle ticks issue no inventory mutation")
+  Assert.equal(after.hero.frame, firstFrame + 8, "every idle tick still advances the hero clock once")
+  Assert.throws(function()
+    state:updateFixed({ { type = 42 } })
+  end, "malformed input still fails instead of silently reusing the plan")
+  state:dispose()
+end
+
+function T.state_or_geometry_changes_reresolve_while_hit_targets_hold()
+  local options, box = composition()
+  options.cursor:setPocket("balls")
+  local overrides, spy = countingOverrides(options.manifest)
+  options.overrides = overrides
+  local state = BagScreenState.new(options)
+  local ticks = 0
+  local function step(input)
+    ticks = ticks + 1
+    state:updateFixed(input)
+  end
+  step({ { type = "confirm" } })
+  for _ = 1, 15 do
+    step({})
+  end
+  Assert.equal(state:status().phase, "interactive", "the opening handoff still settles on its timeline")
+  step({ { type = "navigate", direction = "right" } })
+  Assert.equal(selectedKey(state:status()), "GREAT_BALL", "directional input still moves the selection")
+  step({ { type = "confirm" } })
+  Assert.equal(state:status().state, "item_select", "confirming the selection still enters its entry clip")
+  for _ = 1, 3 do
+    step({})
+  end
+  local menu = state:status()
+  Assert.equal(menu.state, "action_menu", "the entry clip still completes into the action menu")
+  Assert.isTrue(
+    type(menu.actions) == "table" and #menu.actions > 0,
+    "the menu overlay still lists its actions"
+  )
+  Assert.equal(menu.hero.pocket, "balls", "the hero cue still follows the browsed pocket")
+  step({ { type = "cancel" } })
+  for _ = 1, 8 do
+    if state:status().state == "browsing" then
+      break
+    end
+    step({})
+  end
+  Assert.equal(state:status().state, "browsing", "cancelling the menu still returns to browsing")
+  local selectedBeforeResize = selectedKey(state:status())
+  box.width, box.height = 1280, 720
+  box.topologyObject = topology(1280, 720)
+  step({})
+  local resized = state:status()
+  Assert.isTrue(resized.open, "the resize tick stays open")
+  Assert.equal(resized.pocket, "balls", "the resize tick preserves the pocket")
+  Assert.equal(selectedKey(resized), selectedBeforeResize, "the resize tick preserves the selection")
+  Assert.equal(
+    #assert(resized.presentation, "the resized tick publishes its plan").panes,
+    2,
+    "the resized tick pairs both panes"
+  )
+  Assert.equal(resized.hero.frame, ticks, "every open tick still advances the hero clock once")
+  local x, y = cancelCenter(state)
+  step({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
+  step({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "the mapped Cancel target still closes exactly once")
+  Assert.isNil(state:takeResult(), "the close still reports exactly once")
+  Assert.isTrue(
+    spy.count < 2 * ticks,
+    "changed ticks resolve at most once instead of pre- and post-input"
+  )
   state:dispose()
 end
 
