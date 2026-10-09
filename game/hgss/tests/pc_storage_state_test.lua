@@ -1364,4 +1364,271 @@ function T.menu_and_mapped_release_agree_on_removal_cancel_and_stale()
   armed:dispose()
 end
 
+-- Settles an armed confirmation through the bounded fixed-tick scan and
+-- returns the terminal check with its tick count and tick budget.
+local function settleArmedRelease(state)
+  state:updateFixed({ { type = "confirm" } })
+  local check = state:status().releaseCheck
+  local maximumTicks = math.ceil(check.total / 15)
+  local ticks = 1
+  while check.outcome == "pending" do
+    Assert.isTrue(ticks < maximumTicks, "release scan completes within the candidate count")
+    state:updateFixed({})
+    ticks = ticks + 1
+    check = state:status().releaseCheck
+  end
+  Assert.equal(ticks, maximumTicks, "the scan visits fifteen addresses on each fixed tick")
+  return check, ticks, maximumTicks
+end
+
+function T.sequential_confirmed_removals_share_one_storage_lifetime()
+  local mons = releaseService()
+  local factory = CatalogFixture.makeFactory(0x5EED01, mons:catalog())
+  for _ = 1, 2 do
+    Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  end
+  Assert.equal(mons:partyCount(), 4, "both added members join the party before the first release")
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+
+  state:updateFixed({ { type = "release", address = { kind = "party", slot = 2 } } })
+  local firstArmed = state:status().releaseCheck
+  Assert.equal(firstArmed.outcome, "confirm")
+  Assert.equal(firstArmed.scanned, 0)
+  Assert.equal(firstArmed.total, 37 * 30 + 6)
+  Assert.deepEqual(firstArmed.address, { kind = "party", slot = 2 })
+  local beforeFirst = mons:partyRevision()
+  local firstSettled, firstTicks, firstMaximum = settleArmedRelease(state)
+  Assert.equal(firstSettled.outcome, "removed")
+  Assert.equal(firstSettled.scanned, firstSettled.total)
+  Assert.equal(mons:partyCount(), 3)
+  Assert.isTrue(mons:partyRevision() ~= beforeFirst, "the first removal publishes once")
+  local afterFirst = mons:partyRevision()
+
+  state:updateFixed({})
+  state:updateFixed({})
+  Assert.equal(state:status().releaseCheck.outcome, "removed", "idle ticks keep the settled result visible")
+  Assert.equal(mons:partyCount(), 3)
+  Assert.equal(mons:partyRevision(), afterFirst, "idle ticks never commit again")
+
+  local rearmed, failure = pcall(function()
+    state:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 2 } } })
+    state:updateFixed({ { type = "action", action = "release" } })
+  end)
+  if not rearmed then
+    state:dispose()
+  end
+  Assert.isTrue(rearmed, "a settled removal admits a later release: " .. tostring(failure))
+  local secondArmed = state:status().releaseCheck
+  Assert.equal(secondArmed.outcome, "confirm", "the later request waits for its own confirmation")
+  Assert.equal(secondArmed.scanned, 0, "the later request starts a fresh scan")
+  Assert.equal(secondArmed.total, 37 * 30 + 6)
+  Assert.deepEqual(secondArmed.address, { kind = "party", slot = 2 })
+  Assert.equal(mons:partyCount(), 3, "rearming never removes before confirmation")
+  Assert.equal(mons:partyRevision(), afterFirst)
+  local secondSettled, secondTicks, secondMaximum = settleArmedRelease(state)
+  Assert.equal(secondSettled.outcome, "removed")
+  Assert.equal(secondSettled.scanned, secondSettled.total)
+  Assert.equal(mons:partyCount(), 2)
+  Assert.isTrue(mons:partyRevision() ~= afterFirst, "the second removal publishes once")
+  Assert.equal(secondTicks, firstTicks, "both scans cover the same candidate set in the same ticks")
+  Assert.equal(secondMaximum, firstMaximum)
+  local afterSecond = mons:partyRevision()
+  state:updateFixed({})
+  Assert.equal(state:status().releaseCheck.outcome, "removed")
+  Assert.equal(mons:partyCount(), 2)
+  Assert.equal(mons:partyRevision(), afterSecond, "idle ticks after the second removal never commit again")
+  state:dispose()
+end
+
+function T.protected_return_leaves_later_releases_independent()
+  local mons = releaseService()
+  mons:setMove(0, 1, "TACKLE")
+  mons:setMove(0, 0, "FLY")
+  mons:setMove(0, 1, "SURF")
+  local factory = CatalogFixture.makeFactory(0x5EED02, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  Assert.equal(mons:partyCount(), 3)
+  local protectedBefore = mons:partyMon(0)
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+
+  state:updateFixed({ { type = "action", action = "release" } })
+  Assert.equal(state:status().releaseCheck.outcome, "confirm")
+  local returned = settleArmedRelease(state)
+  Assert.equal(returned.outcome, "returned", "the protected first move returns instead of removing")
+  Assert.equal(mons:partyCount(), 3, "return keeps party custody")
+  Assert.deepEqual(mons:partyMon(0), protectedBefore, "return leaves the protected record untouched")
+  Assert.notNil(mons:boxMon(36, 29), "return leaves the alternative holder untouched")
+  local afterReturn = mons:partyRevision()
+
+  local rearmed, failure = pcall(function()
+    state:updateFixed({ { type = "release", address = { kind = "party", slot = 2 } } })
+  end)
+  if not rearmed then
+    state:dispose()
+  end
+  Assert.isTrue(rearmed, "a returned request admits a later release: " .. tostring(failure))
+  local fresh = state:status().releaseCheck
+  Assert.equal(fresh.outcome, "confirm", "the later request waits for its own confirmation")
+  Assert.equal(fresh.scanned, 0, "the later request starts a fresh scan")
+  Assert.deepEqual(fresh.address, { kind = "party", slot = 2 })
+  Assert.equal(mons:partyCount(), 3, "rearming never removes before confirmation")
+  Assert.equal(mons:partyRevision(), afterReturn)
+  local removed = settleArmedRelease(state)
+  Assert.equal(removed.outcome, "removed", "the later ordinary release commits under current law")
+  Assert.equal(mons:partyCount(), 2)
+  Assert.deepEqual(mons:partyMon(0), protectedBefore, "the later release leaves the protected record intact")
+  state:updateFixed({})
+  Assert.equal(state:status().releaseCheck.outcome, "removed")
+  Assert.equal(mons:partyCount(), 2, "idle ticks never replay the later release")
+  state:dispose()
+end
+
+function T.concurrent_release_requests_stay_rejected_while_armed_or_scanning()
+  local mons = releaseService()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  Assert.equal(state:status().releaseCheck.outcome, "confirm")
+  local armedAddress = state:status().releaseCheck.address
+  local armedPartyRevision = mons:partyRevision()
+  local armedBoxRevision = mons:boxRevision()
+
+  local secondMenu, secondMenuError = pcall(function()
+    state:updateFixed({ { type = "action", action = "release" } })
+  end)
+  Assert.isFalse(secondMenu, "a second menu request never overwrites the armed decision")
+  Assert.notNil(
+    string.find(tostring(secondMenuError), "only one release decision may be armed", 1, true),
+    "the armed overlap reports the single-decision guard"
+  )
+  local secondEvent, secondEventError = pcall(function()
+    state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  end)
+  Assert.isFalse(secondEvent, "a second mapped request never overwrites the armed decision")
+  Assert.notNil(
+    string.find(tostring(secondEventError), "only one release decision may be armed", 1, true),
+    "both origins report the same guard while armed"
+  )
+  Assert.equal(state:status().releaseCheck.outcome, "confirm", "rejected overlaps keep the armed decision")
+  Assert.equal(state:status().releaseCheck.scanned, 0)
+  Assert.deepEqual(state:status().releaseCheck.address, armedAddress)
+  Assert.equal(mons:partyCount(), 2, "rejected overlaps never remove")
+  Assert.equal(mons:partyRevision(), armedPartyRevision)
+  Assert.equal(mons:boxRevision(), armedBoxRevision)
+
+  state:updateFixed({ { type = "confirm" } })
+  local pending = state:status().releaseCheck
+  Assert.equal(pending.outcome, "pending")
+  Assert.equal(pending.scanned, 15, "confirmation starts the scan before the overlap retry")
+  local scanningPartyRevision = mons:partyRevision()
+  local scanningBoxRevision = mons:boxRevision()
+  local scanningMenu, scanningMenuError = pcall(function()
+    state:updateFixed({ { type = "action", action = "release" } })
+  end)
+  Assert.isFalse(scanningMenu, "a menu request never interrupts the scanning decision")
+  Assert.notNil(
+    string.find(tostring(scanningMenuError), "only one release decision may be armed", 1, true),
+    "the scanning overlap reports the single-decision guard"
+  )
+  local scanningEvent, scanningEventError = pcall(function()
+    state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  end)
+  Assert.isFalse(scanningEvent, "a mapped request never interrupts the scanning decision")
+  Assert.notNil(
+    string.find(tostring(scanningEventError), "only one release decision may be armed", 1, true),
+    "both origins report the same guard while scanning"
+  )
+  Assert.equal(state:status().releaseCheck.outcome, "pending", "rejected overlaps keep the scan")
+  Assert.equal(state:status().releaseCheck.scanned, 15, "rejected overlaps never advance the scan")
+  Assert.deepEqual(state:status().releaseCheck.address, armedAddress)
+  Assert.equal(mons:partyCount(), 2)
+  Assert.equal(mons:partyRevision(), scanningPartyRevision)
+  Assert.equal(mons:boxRevision(), scanningBoxRevision)
+
+  local check = state:status().releaseCheck
+  local maximumTicks = math.ceil(check.total / 15)
+  local ticks = 1
+  while check.outcome == "pending" do
+    Assert.isTrue(ticks < maximumTicks, "the first scan still completes after rejected overlaps")
+    state:updateFixed({})
+    ticks = ticks + 1
+    check = state:status().releaseCheck
+  end
+  Assert.equal(check.outcome, "removed", "the first scan completes normally after rejection")
+  Assert.equal(mons:partyCount(), 1)
+  state:dispose()
+end
+
+function T.cancelled_and_stale_scans_admit_fresh_releases_without_replay()
+  do
+    local mons = releaseService()
+    local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+    state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+    Assert.equal(state:status().releaseCheck.outcome, "confirm")
+    state:updateFixed({ { type = "confirm" } })
+    Assert.equal(state:status().releaseCheck.outcome, "pending")
+    state:updateFixed({ { type = "cancel" } })
+    Assert.equal(state:status().releaseCheck.outcome, "cancelled", "cancel stops the scan")
+    Assert.equal(mons:partyCount(), 2, "cancel never removes")
+    local afterCancel = mons:partyRevision()
+    local rearmed, failure = pcall(function()
+      state:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 1 } } })
+      state:updateFixed({ { type = "action", action = "release" } })
+    end)
+    if not rearmed then
+      state:dispose()
+    end
+    Assert.isTrue(rearmed, "a cancelled scan admits a later release: " .. tostring(failure))
+    local fresh = state:status().releaseCheck
+    Assert.equal(fresh.outcome, "confirm", "the retry waits for its own confirmation")
+    Assert.equal(fresh.scanned, 0, "the retry starts a fresh scan")
+    Assert.deepEqual(fresh.address, { kind = "party", slot = 1 })
+    Assert.equal(mons:partyCount(), 2, "rearming never commits")
+    Assert.equal(mons:partyRevision(), afterCancel)
+    local settled = settleArmedRelease(state)
+    Assert.equal(settled.outcome, "removed", "the retry commits under current law")
+    Assert.equal(mons:partyCount(), 1)
+    state:updateFixed({})
+    Assert.equal(state:status().releaseCheck.outcome, "removed")
+    Assert.equal(mons:partyCount(), 1, "idle ticks never replay the retry")
+    state:dispose()
+  end
+  do
+    local mons = releaseService()
+    local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+    state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+    Assert.equal(state:status().releaseCheck.outcome, "confirm")
+    state:updateFixed({ { type = "confirm" } })
+    Assert.equal(state:status().releaseCheck.outcome, "pending")
+    local drifting = mons:partyMon(1)
+    drifting.heldItem = "SITRUS_BERRY"
+    local preparation =
+      assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 1, mon = drifting } }))
+    preparation.publish()
+    state:updateFixed({})
+    Assert.equal(state:status().releaseCheck.outcome, "stale", "revision drift cancels the scan")
+    Assert.equal(mons:partyCount(), 2, "stale scan retains the selected mon")
+    Assert.notNil(mons:boxMon(36, 29), "stale scan leaves the expanded-box mon untouched")
+    local rearmed, failure = pcall(function()
+      state:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 1 } } })
+      state:updateFixed({ { type = "action", action = "release" } })
+    end)
+    if not rearmed then
+      state:dispose()
+    end
+    Assert.isTrue(rearmed, "a stale scan admits a later release: " .. tostring(failure))
+    local fresh = state:status().releaseCheck
+    Assert.equal(fresh.outcome, "confirm", "the retry waits for its own confirmation")
+    Assert.equal(fresh.scanned, 0, "the retry starts a fresh scan")
+    Assert.deepEqual(fresh.address, { kind = "party", slot = 1 })
+    Assert.equal(mons:partyCount(), 2, "rearming never commits")
+    local settled = settleArmedRelease(state)
+    Assert.equal(settled.outcome, "removed", "the retry commits under the current revisions")
+    Assert.equal(mons:partyCount(), 1)
+    state:updateFixed({})
+    Assert.equal(state:status().releaseCheck.outcome, "removed")
+    Assert.equal(mons:partyCount(), 1, "idle ticks never replay the retry")
+    state:dispose()
+  end
+end
+
 return { tests = T }

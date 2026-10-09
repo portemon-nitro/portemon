@@ -250,9 +250,21 @@ end
 -- Arms one release decision from a detached address and a single live
 -- preview. Confirmation and protected-move return share the confirmation
 -- path; any other preview outcome records the same cancelled/stale mapping
--- from either input origin. A second request while one is armed is rejected.
+-- from either input origin. A second request while a live decision
+-- (confirm/pending) is underway is rejected; a terminal outcome admits a
+-- fresh request that retires the previous result.
 function StorageScreenState:_startRelease(address)
-  assert(self._releaseCheck == nil, "only one release decision may be armed")
+  local existing = self._releaseCheck
+  if existing ~= nil then
+    assert(
+      existing.outcome == "removed"
+        or existing.outcome == "returned"
+        or existing.outcome == "stale"
+        or existing.outcome == "cancelled",
+      "only one release decision may be armed"
+    )
+  end
+  self._releaseCheck, self._releaseIntent, self._releaseRevisions = nil, nil, nil
   local source = copy(address)
   local intent = self._actions:preview({ kind = "release", source = source })
   if intent.kind == "confirm" or intent.reason == "hm_return" then
