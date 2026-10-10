@@ -23,6 +23,7 @@ StartMenuState.__index = StartMenuState
 ---@field interactive StartMenuController.Interactive the generated manifest interactive record
 ---@field rememberedActionId string? selection remembered across a child-application round trip
 ---@field effect (fun(sequence: string))? source UI sound effect boundary
+---@field runningShoes StartMenuController.RunningShoes the Running Shoes toggle port
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 
@@ -36,6 +37,7 @@ function StartMenuState.new(opts)
     interactive = assert(opts.interactive, "the start menu wrapper requires the interactive record"),
     rememberedActionId = opts.rememberedActionId,
     effect = opts.effect,
+    runningShoes = assert(opts.runningShoes, "the start menu wrapper requires the Running Shoes port"),
   })
   local built, sessionOrError = pcall(function()
     return ApplicationPresentation.new(StartMenuInterface.defaults(), opts.overrides)

@@ -226,9 +226,13 @@ function T.v3_migrates_through_v4_v5_and_both_v6_layout_steps()
   Assert.equal(v6.schema, GameSave.LEGACY_V6_SCHEMA)
   local v7 = GameSave.migrateV6(v6)
   Assert.equal(v7.schema, GameSave.LEGACY_V7_SCHEMA, "v6 reconciliation remains an explicit intermediate step")
-  local current = GameSave.migrateV7(v7)
+  local v8 = GameSave.migrateV7(v7)
+  Assert.equal(v8.schema, GameSave.LEGACY_V8_SCHEMA, "v7 layout cleanup remains an explicit intermediate step")
+  local current = GameSave.migrateV8(v8)
   Assert.equal(current.schema, GameSave.SCHEMA)
   Assert.equal(current.playerData.profile.nationalDex, false)
+  Assert.equal(current.playerData.profile.runningShoes, false)
+  Assert.equal(current.playerData.profile.runningShoesLock, false)
   Assert.deepEqual(current.mart, MartSave.empty())
 end
 
@@ -249,11 +253,11 @@ end
 function T.future_schemas_reject_while_known_envelopes_stay_listable()
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     local value = currentRecord()
-    value.schema = "g4-game-save-v9"
+    value.schema = "g4-game-save-v10"
     return GameSave.normalize(value)
   end)
   local envelope, envelopeErr = GameSave.metadata({
-    schema = "g4-game-save-v9",
+    schema = "g4-game-save-v10",
     saveId = "save-00000001",
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -349,7 +353,7 @@ function T.unrelated_extension_metadata_survives_legacy_migration_steps()
   local predecessor = GameSave.migrateV6(GameSave.migrateV5(v5record()))
   predecessor.modState = { marker = "kept" }
   local migrated = GameSave.migrateV7(predecessor)
-  Assert.equal(migrated.schema, GameSave.SCHEMA)
+  Assert.equal(migrated.schema, GameSave.LEGACY_V8_SCHEMA)
   Assert.deepEqual(migrated.modState, { marker = "kept" })
   -- The same legacy payload normalizes end-to-end with its extension intact.
   local normalized = assert(GameSave.normalize(predecessor))
@@ -457,7 +461,7 @@ function T.migrate_v7_advances_nested_buckets_and_drops_fingerprints_without_a_q
   v7.scripts = predecessor
 
   local migrated = GameSave.migrateV7(v7)
-  Assert.equal(migrated.schema, GameSave.SCHEMA)
+  Assert.equal(migrated.schema, GameSave.LEGACY_V8_SCHEMA)
   Assert.equal(migrated.mons.schema, "g4-mons-save-v3")
   Assert.isNil(migrated.mons.catalogFingerprint)
   Assert.equal(migrated.scripts.schema, "g4-script-save-v2")
@@ -487,6 +491,25 @@ function T.migrate_v7_advances_nested_buckets_and_drops_fingerprints_without_a_q
     resumed:step(tick, nil)
   end
   Assert.equal(services.world:getVar("VAR_MIGRATED"), 1, "the migrated continuation runs to completion")
+end
+
+-- v8 profiles predate the running-shoes flag: the step initializes it to
+-- false (no key item is invented), copies without mutating its input, and
+-- normalization applies it automatically.
+function T.v8_migrates_to_v9_with_running_shoes_unset()
+  local v8 = GameSave.migrateV7(GameSave.migrateV6(GameSave.migrateV5(v5record())))
+  Assert.equal(v8.schema, GameSave.LEGACY_V8_SCHEMA)
+  Assert.isNil(v8.playerData.profile.runningShoes)
+  local migrated = GameSave.migrateV8(v8)
+  Assert.equal(migrated.schema, GameSave.SCHEMA)
+  Assert.equal(migrated.playerData.profile.runningShoes, false)
+  Assert.equal(migrated.playerData.profile.runningShoesLock, false)
+  Assert.deepEqual(migrated.world, v8.world, "unrelated top-level state is preserved")
+  Assert.isNil(v8.playerData.profile.runningShoes, "migration leaves its input untouched")
+  Assert.equal(v8.schema, GameSave.LEGACY_V8_SCHEMA)
+  local normalized = assert(GameSave.normalize(v8))
+  Assert.equal(normalized.schema, GameSave.SCHEMA)
+  Assert.equal(normalized.playerData.profile.runningShoes, false)
 end
 
 function T.version_advancement_keeps_each_historical_meaning()

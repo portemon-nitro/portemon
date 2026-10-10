@@ -434,7 +434,16 @@ end
 
 local function validPlayerData()
   return {
-    profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+    profile = {
+      name = "GOLD",
+      gender = 0,
+      trainerId = 1,
+      money = 3000,
+      badges = 0,
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+    },
     options = { textFrame = 0, textSpeed = "mid" },
   }
 end
@@ -540,7 +549,7 @@ function T.tests.missing_travel_saves_while_broken_envelopes_reject_with_file_pr
   Assert.isTrue(store:save(withoutTravel), "a record without travel facts still saves; field restore owns that state")
   local before = snapshotBytes(backend, saveId)
   local envelopeBroken = validRecord(saveId)
-  envelopeBroken.schema = "g4-game-save-v9"
+  envelopeBroken.schema = "g4-game-save-v10"
   local ok, failure = pcall(function()
     return store:save(envelopeBroken)
   end)

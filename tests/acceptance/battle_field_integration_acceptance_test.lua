@@ -84,7 +84,16 @@ local function harness()
         versionId = versionId,
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+          profile = {
+            name = "GOLD",
+            gender = 0,
+            trainerId = 1,
+            money = 3000,
+            badges = 0,
+            nationalDex = false,
+            runningShoes = false,
+            runningShoesLock = false,
+          },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -177,7 +186,16 @@ end
 ---@return table player record and its validation context
 local function playerFacts(money)
   local record = {
-    profile = { name = "GOLD", gender = 0, trainerId = 1, money = money, badges = 0, nationalDex = false },
+    profile = {
+      name = "GOLD",
+      gender = 0,
+      trainerId = 1,
+      money = money,
+      badges = 0,
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+    },
     options = { textFrame = 0, textSpeed = "fastest" },
   }
   local context = { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }

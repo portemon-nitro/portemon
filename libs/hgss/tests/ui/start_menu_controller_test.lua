@@ -52,11 +52,60 @@ local function newController(opts)
     interactive = opts.interactive or POSITIONS,
     rememberedActionId = opts.rememberedActionId,
     effect = opts.effect,
+    runningShoes = opts.runningShoes,
   })
 end
 
 local function rectCenter(rect)
   return rect.x + rect.width / 2, rect.y + rect.height / 2
+end
+
+-- The Running Shoes toggle: a fresh touch inside its generated hit rectangle
+-- toggles the lock once, only while the shoes are visible; the controller
+-- owns no lock state and reports the live one through its status.
+local SHOES_RECT = FieldUiFixture.startMenuRunningShoes().hitRect
+
+local function shoesPort(visible)
+  local port = { toggles = 0, visible = visible, locked = false }
+  port.hitRect = SHOES_RECT
+  port.state = function()
+    return { visible = port.visible, locked = port.locked }
+  end
+  port.toggle = function()
+    port.toggles = port.toggles + 1
+    port.locked = not port.locked
+  end
+  return port
+end
+
+function T.running_shoes_touch_toggles_once_per_press_and_reports_the_lock()
+  local port = shoesPort(true)
+  local controller = newController({ runningShoes = port })
+  Assert.deepEqual(controller:status().runningShoes, { locked = false })
+  local x, y = rectCenter(SHOES_RECT)
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  Assert.equal(port.toggles, 1, "the fresh touch toggles immediately")
+  Assert.deepEqual(controller:status().runningShoes, { locked = true })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y } })
+  Assert.equal(port.toggles, 1, "release never toggles again")
+  Assert.isNil(controller:takeResult(), "the toggle never closes or launches")
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = x, y = y } })
+  Assert.equal(port.toggles, 2)
+  Assert.deepEqual(controller:status().runningShoes, { locked = false })
+end
+
+function T.running_shoes_touch_is_inert_outside_the_rect_or_while_hidden()
+  local port = shoesPort(true)
+  local controller = newController({ runningShoes = port })
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = SHOES_RECT.x - 1, y = SHOES_RECT.y } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = SHOES_RECT.x - 1, y = SHOES_RECT.y } })
+  Assert.equal(port.toggles, 0)
+  local hidden = shoesPort(false)
+  local hiddenController = newController({ runningShoes = hidden })
+  Assert.isNil(hiddenController:status().runningShoes, "an unowned or hidden toggle is not presented")
+  local x, y = rectCenter(SHOES_RECT)
+  hiddenController:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  Assert.equal(hidden.toggles, 0, "a hidden toggle has no touch region")
 end
 
 function T.construction_succeeds_with_only_the_documented_options()

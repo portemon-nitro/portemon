@@ -409,7 +409,7 @@ end
 
 -- Shared step start for ordinary and scripted steps: capture the from state,
 -- adopt the resolved destination, and enter the walking motion. The semantic
--- speed is final here: manual steps walk normal, scripted steps carry their
+-- speed is final here: manual steps walk normal or run, scripted steps carry their
 -- action speed, and the published duration is that speed's calibration.
 function FieldPlayer:_beginStep(direction, destination, speed)
   assert(type(speed) == "string", "movement speed required")
@@ -587,7 +587,10 @@ function FieldPlayer:turn(direction)
   self.facing = direction
 end
 
-function FieldPlayer:tryStep(direction)
+---@param direction FieldDirection
+---@param run boolean? true to take the step at run speed instead of walking normal
+---@return boolean started
+function FieldPlayer:tryStep(direction, run)
   assert(DELTAS[direction], "unknown field direction " .. tostring(direction))
   assert(self.motion == "idle", "cannot begin a field step while walking")
   self.facing = direction
@@ -608,7 +611,7 @@ function FieldPlayer:tryStep(direction)
   if not destination then
     return false
   end
-  self:_beginStep(direction, destination, "normal")
+  self:_beginStep(direction, destination, run and "run" or "normal")
   return true
 end
 
@@ -822,7 +825,10 @@ function FieldPlayer:_advanceJump()
   return true
 end
 
-function FieldPlayer:updateFixed(input)
+---@param input table<string, unknown>?
+---@param run boolean? true when a fresh step should run: only the step that starts this tick takes the speed
+---@return boolean stepCompleted
+function FieldPlayer:updateFixed(input, run)
   input = input or {}
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
 
@@ -883,7 +889,7 @@ function FieldPlayer:updateFixed(input)
     self:_beginTurn(direction)
     return false
   end
-  if self:tryStep(direction) then
+  if self:tryStep(direction, run) then
     if self.motion == "jumping" then
       self:_advanceJump()
     else

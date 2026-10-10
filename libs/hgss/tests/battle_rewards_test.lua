@@ -217,7 +217,16 @@ end
 local function playerRecord(money)
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
   return {
-    profile = { name = "RED", gender = 0, trainerId = 1, money = money, badges = 3, nationalDex = false },
+    profile = {
+      name = "RED",
+      gender = 0,
+      trainerId = 1,
+      money = money,
+      badges = 3,
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+    },
     options = { textFrame = 0, textSpeed = "fastest" },
   }, { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }
 end

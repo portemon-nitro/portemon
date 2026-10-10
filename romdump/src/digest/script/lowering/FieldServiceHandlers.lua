@@ -23,6 +23,10 @@ function FieldServiceHandlers.timeOfDay(ins)
   return { op = "time_of_day", result = Operands.varRef(ins.operands[1]) }
 end
 
+function FieldServiceHandlers.weekday(ins)
+  return { op = "weekday", result = Operands.varRef(ins.operands[1]) }
+end
+
 function FieldServiceHandlers.discardValue(ins)
   return { op = "discard_value", value = Operands.varRef(ins.operands[1]) }
 end

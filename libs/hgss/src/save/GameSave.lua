@@ -14,7 +14,8 @@ local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v8"
+GameSave.SCHEMA = "g4-game-save-v9"
+GameSave.LEGACY_V8_SCHEMA = "g4-game-save-v8"
 GameSave.LEGACY_V7_SCHEMA = "g4-game-save-v7"
 GameSave.LEGACY_V5_SCHEMA = "g4-game-save-v5"
 GameSave.LEGACY_V6_SCHEMA = "g4-game-save-v6"
@@ -310,9 +311,28 @@ function GameSave.migrateV7(record)
     error("unreachable", 0)
   end
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V8_SCHEMA
   migrated.mons = migratedMons
   migrated.scripts = migratedScripts
+  return migrated
+end
+
+-- v8 profiles predate the Running Shoes flag and its auto-run lock: the step
+-- initializes both to false and leaves every other field and bucket as it
+-- was. The result still
+-- passes canonical validation afterwards; this step never repairs malformed
+-- current data.
+---@param record table<string, unknown> a v8 save record
+---@return table<string, unknown> the migrated v9 record
+function GameSave.migrateV8(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V8_SCHEMA, "GameSave.migrateV8 requires v8")
+  if type(record.playerData) ~= "table" or type(record.playerData.profile) ~= "table" then
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "v8 player profile is required for migration", {})
+  end
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
+  migrated.playerData.profile.runningShoes = false
+  migrated.playerData.profile.runningShoesLock = false
   return migrated
 end
 
@@ -346,6 +366,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V8_SCHEMA
       and record.schema ~= GameSave.LEGACY_V7_SCHEMA
       and record.schema ~= GameSave.LEGACY_V6_SCHEMA
       and record.schema ~= GameSave.LEGACY_V5_SCHEMA
@@ -428,6 +449,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V8_SCHEMA
       and schema ~= GameSave.LEGACY_V7_SCHEMA
       and schema ~= GameSave.LEGACY_V6_SCHEMA
       and schema ~= GameSave.LEGACY_V5_SCHEMA
@@ -451,6 +473,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V7_SCHEMA then
       current = GameSave.migrateV7(current)
+    end
+    if current.schema == GameSave.LEGACY_V8_SCHEMA then
+      current = GameSave.migrateV8(current)
     end
     return canonicalizeCurrent(current)
   end)

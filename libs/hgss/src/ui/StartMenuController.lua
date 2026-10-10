@@ -34,6 +34,7 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field _pointerId string?
 ---@field _pointerDown { kind: "cancel"|"action"|"none", position: integer? }?
 ---@field _effect fun(sequence: string)? source UI sound effect boundary
+---@field _runningShoes StartMenuController.RunningShoes? the Running Shoes toggle port; absent menus present no toggle
 local StartMenuController = {}
 StartMenuController.__index = StartMenuController
 
@@ -125,12 +126,21 @@ end
 ---@field cancelHitRect FieldDialogueTheme.Rect
 ---@field positions table<integer, StartMenuController.Position>
 
+-- The Running Shoes toggle: the generated touch rectangle, the live
+-- presentation state (visible only while the shoes are owned and usable,
+-- locked while the auto-run lock holds B), and the lock flip. The
+-- controller owns no lock state.
+---@class StartMenuController.RunningShoes
+---@field hitRect FieldDialogueTheme.Rect
+---@field state fun(): { visible: boolean, locked: boolean }
+---@field toggle fun()
+
 -- opts.entries: the runtime-composed final interactive action list
 -- (id / targetApplication / displayPosition), never empty.
 -- opts.interactive: the generated manifest startMenu.interactive record
 -- (cancelHitRect plus positions 0..6). opts.rememberedActionId: the
 -- selection remembered across a child-application round trip.
----@param opts { entries: StartMenuController.Entry[], interactive: StartMenuController.Interactive, rememberedActionId?: string?, effect?: fun(sequence: string) }
+---@param opts { entries: StartMenuController.Entry[], interactive: StartMenuController.Interactive, rememberedActionId?: string?, effect?: fun(sequence: string), runningShoes?: StartMenuController.RunningShoes }
 ---@return StartMenuController
 function StartMenuController.new(opts)
   assert(type(opts) == "table", "the start menu controller requires options")
@@ -149,6 +159,7 @@ function StartMenuController.new(opts)
     _pointerId = nil,
     _pointerDown = nil,
     _effect = opts.effect,
+    _runningShoes = opts.runningShoes,
   }, StartMenuController)
   return self
 end
@@ -297,7 +308,13 @@ function StartMenuController:updateFixed(uiInput)
         assert(type(event.pointerId) == "string", "pointer down needs a pointer id")
         self._pointerId = event.pointerId
         local position = positionAt(positions, self._visibleActions, event.x, event.y)
-        if contains(cancelHitRect, event.x, event.y) then
+        local shoes = self._runningShoes
+        if shoes ~= nil and contains(shoes.hitRect, event.x, event.y) and shoes.state().visible then
+          -- Retail toggles on the fresh touch itself (the new-touch hit
+          -- table), so release changes nothing.
+          shoes.toggle()
+          self._pointerDown = { kind = "none" }
+        elseif contains(cancelHitRect, event.x, event.y) then
           self._pointerDown = { kind = "cancel" }
         elseif position ~= nil then
           self:_selectPosition(position)
@@ -351,10 +368,13 @@ function StartMenuController:status()
       }
     end
   end
+  local shoes = self._runningShoes
+  local shoesState = shoes ~= nil and shoes.state() or nil
   return {
     open = true,
     actions = actions,
     selectedPosition = self._selectedPosition,
+    runningShoes = shoesState ~= nil and shoesState.visible and { locked = shoesState.locked } or nil,
   }
 end
 
@@ -393,5 +413,6 @@ end
 ---@field open true
 ---@field actions StartMenuController.Action[]
 ---@field selectedPosition integer
+---@field runningShoes { locked: boolean }? present only while the toggle is shown
 
 return StartMenuController

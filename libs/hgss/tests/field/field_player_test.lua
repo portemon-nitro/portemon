@@ -210,6 +210,26 @@ function T.accepted_step_commits_on_exactly_tick_eight()
   near(p.worldY, 0.5)
 end
 
+function T.run_step_commits_on_exactly_tick_four_at_run_speed()
+  local p = player(runtimeMap(), 0, 4, 0, "east")
+  for index = 1, 3 do
+    p:updateFixed({ heldDirection = "east", pressedDirection = index == 1 and "east" or nil }, true)
+    Assert.equal(p.fieldX, 0)
+    Assert.equal(p.motion, "walking")
+  end
+  Assert.equal(p:movementTransaction().speed, "run")
+  p:updateFixed({ heldDirection = "east" }, true)
+  Assert.equal(p.fieldX, 1)
+  Assert.equal(p.motion, "idle")
+end
+
+function T.run_is_ignored_while_turning_and_never_changes_a_blocked_step()
+  local p = player(runtimeMap(), 0, 4, 0, "south")
+  p:updateFixed({ heldDirection = "east", pressedDirection = "east" }, true)
+  Assert.equal(p.motion, "turning", "a facing change turns in place before any run step")
+  Assert.isNil(p:movementTransaction())
+end
+
 function T.held_perpendicular_direction_turns_then_walks_at_retail_cadence()
   local p = player(runtimeMap(), 0, 4, 0, "south")
   local start = {

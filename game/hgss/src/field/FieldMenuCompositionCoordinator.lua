@@ -25,6 +25,7 @@ local PcCache = require("libs.assets.src.PcCache")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
+local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local StartMenuState = require("game.hgss.src.field.StartMenuState")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
@@ -267,11 +268,29 @@ function FieldMenuCompositionCoordinator:composeStartMenu(rememberedActionId)
   local function measureDisplay()
     return runtime.presentationDisplay
   end
+  -- The Running Shoes toggle shows while the shoes are owned and the avatar
+  -- is not cycling (ov27_0225A4D0); the lock itself is player progression.
+  local progression = PlayerProgression.new(profile)
+  local function runningShoesState()
+    return {
+      visible = progression:hasRunningShoes() and runtime.playerAvatar:durableState() ~= "cycling",
+      locked = progression:runningShoesLock(),
+    }
+  end
+  local function toggleRunningShoesLock()
+    progression:toggleRunningShoesLock()
+  end
+  local runningShoes = {
+    hitRect = assert(startMenuSection.runningShoes, "the field UI manifest must carry the Running Shoes toggle").hitRect,
+    state = runningShoesState,
+    toggle = toggleRunningShoesLock,
+  }
   return StartMenuState.new({
     entries = entries,
     interactive = startMenuInteractive,
     rememberedActionId = rememberedActionId,
     effect = playMenuSequence,
+    runningShoes = runningShoes,
     measureDisplay = measureDisplay,
     overrides = startMenuOverrides,
   })

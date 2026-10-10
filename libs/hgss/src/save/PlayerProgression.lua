@@ -1,7 +1,7 @@
--- Durable badge operations over the canonical shared player profile.
--- The progression object borrows the validated profile; awards mutate that
--- shared record in place so saves, menus, and field checks observe one
--- badge truth. Pure domain module: no love dependency and no I/O. Source
+-- Durable badge and Running Shoes operations over the canonical shared
+-- player profile. The progression object borrows the validated profile;
+-- awards mutate that shared record in place so saves, menus, and field
+-- checks observe one progression truth. Pure domain module: no love dependency and no I/O. Source
 -- numeric badge indexes cross only the explicit adapters below, keeping
 -- runtime code on semantic badge keys.
 
@@ -94,6 +94,29 @@ function PlayerProgression:awardBadge(key)
   if not self:hasBadge(key) then
     self.profile.badges = self.profile.badges + (2 ^ index)
   end
+end
+
+---@return boolean
+function PlayerProgression:hasRunningShoes()
+  return self.profile.runningShoes == true
+end
+
+-- The Start Menu auto-run lock: while set (and the shoes are owned) the
+-- player runs without holding B.
+---@return boolean
+function PlayerProgression:runningShoesLock()
+  return self.profile.runningShoesLock == true
+end
+
+-- Flips the auto-run lock; only reachable once the shoes are owned.
+function PlayerProgression:toggleRunningShoesLock()
+  assert(self:hasRunningShoes(), "the Running Shoes lock needs the shoes")
+  self.profile.runningShoesLock = not self.profile.runningShoesLock
+end
+
+-- Idempotent Running Shoes gift on the shared profile.
+function PlayerProgression:awardRunningShoes()
+  self.profile.runningShoes = true
 end
 
 ---@return integer

@@ -147,7 +147,16 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         versionId = versionId,
         location = { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+          profile = {
+            name = "GOLD",
+            gender = 0,
+            trainerId = 1,
+            money = 3000,
+            badges = 0,
+            nationalDex = false,
+            runningShoes = false,
+            runningShoesLock = false,
+          },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },

@@ -1,5 +1,6 @@
 -- Builds the concrete field script hosts and scheduler-facing adapters.
 
+local CivilDate = require("libs.hgss.src.field.CivilDate")
 local FieldScripts = require("game.hgss.src.field.FieldScripts")
 local ScriptSave = require("libs.script.src.ScriptSave")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
@@ -44,7 +45,11 @@ local function timeOfDayService(runtime)
   local function currentCode()
     return currentTimeOfDayCode(runtime)
   end
-  return { currentCode = currentCode }
+  local function weekday()
+    local _, day = CivilDate.parts(runtime.localClock:nowLocal())
+    return day
+  end
+  return { currentCode = currentCode, weekday = weekday }
 end
 
 -- No Frontier gameplay owns a writer yet, so the current production

@@ -341,6 +341,37 @@ end
 -- of the SUB palette resource, never the generic field font palette. The
 -- generated background stays transparent so glyph background pixels reveal
 -- already-rendered chrome while ink stays opaque.
+-- The Running Shoes toggle compiles from the shared icon banks: its button
+-- and lock indicator each carry distinct, non-blank off and on visuals in the
+-- shared atlas, anchored and hit-tested inside the canonical surface.
+function T.running_shoes_toggle_carries_distinct_non_blank_off_and_on_visuals(romFs, version)
+  local bundle, startMenu = compiledStartMenu(romFs)
+  local shoes = assert(startMenu.runningShoes, version .. " start menu publishes the Running Shoes toggle")
+  local atlas, atlasBytes = assetBytes(bundle, FieldUiAssetCache.ASSET.START_MENU_ICONS)
+  local width, _, rgba = PngReader.rgba(atlasBytes)
+  local function hash(visual)
+    Assert.equal(visual.asset, FieldUiAssetCache.ASSET.START_MENU_ICONS)
+    Assert.isTrue(visual.rect.x + visual.rect.width <= atlas.width, "the visual stays inside its atlas")
+    local pixels, opaque = {}, 0
+    for y = visual.rect.y, visual.rect.y + visual.rect.height - 1 do
+      for x = visual.rect.x, visual.rect.x + visual.rect.width - 1 do
+        local r, g, b, a = PngReader.pixel(rgba, width, x, y)
+        pixels[#pixels + 1] = r .. "," .. g .. "," .. b .. "," .. a
+        if a > 0 then
+          opaque = opaque + 1
+        end
+      end
+    end
+    Assert.isTrue(opaque > 0, version .. " a Running Shoes visual is not blank")
+    return table.concat(pixels, ";")
+  end
+  for _, part in ipairs({ shoes.button, shoes.indicator }) do
+    Assert.isTrue(hash(part.off) ~= hash(part.on), version .. " the lock off and on visuals differ")
+  end
+  local hit = shoes.hitRect
+  Assert.isTrue(hit.x >= 0 and hit.y >= 0 and hit.x + hit.width <= 256 and hit.y + hit.height <= 192)
+end
+
 function T.labels_resolve_through_the_sub_palette_bank(romFs, version)
   local startMenu = selection()
   local palette, paletteErr = G2dDecoder.decodePalette(

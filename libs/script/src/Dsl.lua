@@ -859,6 +859,12 @@ end
 function M.countBadges(spec)
   return op("count_badges", spec)
 end
+function M.awardRunningShoes(spec)
+  return op("award_running_shoes", spec)
+end
+function M.checkRunningShoes(spec)
+  return op("check_running_shoes", spec)
+end
 function M.healParty(spec)
   return op("heal_party", spec)
 end

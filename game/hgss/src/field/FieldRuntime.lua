@@ -23,6 +23,7 @@ local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldPlayerAvatarState = require("libs.hgss.src.actors.FieldPlayerAvatarState")
+local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
 local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
 local FollowingMonController = require("libs.hgss.src.field.FollowingMonController")
@@ -1509,6 +1510,7 @@ function FieldRuntime:_startFieldSession(boot)
     autoAcknowledgePresentation = not self.presentation,
     terrainEffects = self.fieldTerrainEffectController,
     playerAvatar = self.playerAvatar,
+    progression = PlayerProgression.new(self.playerData.profile),
   })
 
   if boot.loadedGame and boot.loadedGame.weatherId ~= nil then
@@ -3309,8 +3311,8 @@ function FieldRuntime:_resumeBattleAudio(launch, restoreMusic)
   audio:resumeFieldPolicy(launch.launchId, restoreMusic == true)
 end
 
--- Adopts the committed receipt's validated player candidate into the live
--- profile exactly once: prize money and blackout debits reach the live
+-- Adopts the committed receipt's validated player candidate money into the
+-- live profile exactly once: prize money and blackout debits reach the live
 -- wallet through this boundary, since the committer stages but never
 -- publishes player money itself. Later saves capture the adopted money.
 ---@param launch table<string, unknown> launch record carrying its result
@@ -3328,9 +3330,10 @@ function FieldRuntime:_adoptBattlePlayerMoney(launch, receipt)
   if type(live) ~= "table" or type(live.profile) ~= "table" then
     return
   end
-  if candidate.profile.money ~= live.profile.money then
-    self.playerData = candidate
-  end
+  -- The live profile is borrowed by scripts, the mart, and the run gate:
+  -- adopt the wallet in place so every borrower keeps observing and
+  -- persisting one record.
+  live.profile.money = candidate.profile.money
 end
 
 -- Publishes one committed continuing receipt only after the restored field

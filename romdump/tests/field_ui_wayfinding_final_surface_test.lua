@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+local G2dBankFixture = require("tests.support.G2dBankFixture")
 local PngReader = require("tests.support.PngReader")
 
 local T = {}
@@ -274,6 +275,17 @@ local function fixture(opts)
   startMenuMembers[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
   startMenuMembers[8] = lz10Wrap(subPaletteData())
   startMenuMembers[9] = lz10Wrap(charData(192))
+  -- The Running Shoes toggle's own cell/anim/char triple (members 68..70).
+  do
+    local shoesCells, shoesAnims = {}, {}
+    for index = 0, 11 do
+      shoesCells[index + 1] = { { x = 0, y = 0, tile = index % 16, pal = index % 4 } }
+      shoesAnims[index + 1] = index
+    end
+    startMenuMembers[69] = G2dBankFixture.cellBank(shoesCells)
+    startMenuMembers[70] = G2dBankFixture.animBank(shoesAnims)
+    startMenuMembers[71] = charData(16, 5)
+  end
   do
     local entries = {}
     for i = 1, 1024 do
@@ -282,7 +294,7 @@ local function fixture(opts)
     startMenuMembers[10] = lz10Wrap(screenDataWH(256, 256, entries))
   end
   local startMenu = {}
-  for i = 1, 65 do
+  for i = 1, 71 do
     startMenu[i] = startMenuMembers[i] or string.rep("\0", 4)
   end
   local signpostMembers = {}

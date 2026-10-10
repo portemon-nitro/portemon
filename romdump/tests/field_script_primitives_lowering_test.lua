@@ -16,6 +16,9 @@ function T.lifecycle_map_query_and_prop_commands_have_source_dispositions()
   local expected = {
     [187] = { "continue_same_tick", "player_state" },
     [590] = { "continue_same_tick", "trainer_card_stars" },
+    [292] = { "continue_same_tick", "check_running_shoes" },
+    [293] = { "continue_same_tick", "award_running_shoes" },
+    [484] = { "continue_same_tick", "weekday" },
     [307] = { "continue_same_tick", "prop_animation_load" },
     [310] = { "continue_same_tick", "prop_animation_play" },
     [311] = { "continue_same_tick", "prop_animation_play" },
@@ -32,7 +35,7 @@ function T.lifecycle_map_query_and_prop_commands_have_source_dispositions()
       operands = { raw(2), raw(1), raw(5), raw(9), raw(7) }
     elseif opcode == 310 or opcode == 311 or opcode == 446 or opcode == 487 then
       operands = { raw(4) }
-    elseif opcode == 187 or opcode == 379 or opcode == 590 then
+    elseif opcode == 187 or opcode == 379 or opcode == 590 or opcode == 292 or opcode == 484 then
       operands = { raw("VAR_RESULT") }
     elseif opcode == 437 then
       operands = { raw("VAR_TEMP") }
@@ -50,7 +53,7 @@ function T.lifecycle_map_query_and_prop_commands_have_source_dispositions()
       Assert.equal(node.direction, "reverse")
     elseif opcode == 487 then
       Assert.equal(node.count, 4)
-    elseif opcode == 187 or opcode == 379 or opcode == 590 then
+    elseif opcode == 187 or opcode == 379 or opcode == 590 or opcode == 292 or opcode == 484 then
       Assert.deepEqual(node.result, { value = "var", id = "VAR_RESULT" })
     elseif opcode == 437 then
       Assert.deepEqual(node.value, { value = "var", id = "VAR_TEMP" })

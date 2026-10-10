@@ -174,6 +174,7 @@ local function validManifest()
       background = { x = 0, y = 0, width = 256, height = 192 },
       cursor = { frames = { { x = 0, y = 0, width = 32, height = 32, duration = 3 } } },
       interactive = FieldUiFixture.startMenuInteractive(),
+      runningShoes = FieldUiFixture.startMenuRunningShoes(),
       iconTable = (function()
         local rows = {}
         local spriteIcons = {
@@ -694,6 +695,37 @@ local function interactiveManifest()
   -- offset while its atlas rect stays inside the shared atlas.
   manifest.startMenu.iconTable[1].visual.normal.offset = { x = -2, y = -4 }
   return manifest
+end
+
+function T.running_shoes_toggle_record_is_required_and_strict()
+  Assert.isTrue(FieldUiAssetCache.validateManifest(validManifest()))
+  local function rejects(mutate)
+    local manifest = validManifest()
+    mutate(manifest.startMenu.runningShoes)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok)
+    Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  end
+  local missing = validManifest()
+  missing.startMenu.runningShoes = nil
+  local ok, err = FieldUiAssetCache.validateManifest(missing)
+  Assert.isFalse(ok)
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  rejects(function(shoes)
+    shoes.hitRect.width = 300
+  end)
+  rejects(function(shoes)
+    shoes.button.anchor.x = 1.5
+  end)
+  rejects(function(shoes)
+    shoes.button.on = nil
+  end)
+  rejects(function(shoes)
+    shoes.indicator.off.rect.x = 400
+  end)
+  rejects(function(shoes)
+    shoes.indicator.on.offset = nil
+  end)
 end
 
 function T.interactive_position_contract_validates()

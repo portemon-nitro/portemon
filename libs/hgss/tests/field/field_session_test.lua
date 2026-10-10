@@ -1244,6 +1244,55 @@ function T.completed_transition_holds_the_arrival_tile_for_autosave()
   Assert.notNil(transition.completed)
 end
 
+-- Running Shoes gating: the session asks the player to run only when B is
+-- held, the progression owns the shoes, and the avatar is in its walking
+-- state (cycling and surfing never run).
+local function runSession(overrides)
+  local runs = {}
+  local player = defaultPlayer()
+  player.updateFixed = function(_, _, run)
+    runs[#runs + 1] = run
+    return false
+  end
+  local options = baseOptions({ player = player })
+  options.progression = {
+    hasRunningShoes = function()
+      return overrides.shoes
+    end,
+    runningShoesLock = function()
+      return overrides.lock == true
+    end,
+  }
+  if overrides.avatar then
+    options.playerAvatar = {
+      updateFixed = function() end,
+      durableState = function()
+        return overrides.avatar
+      end,
+    }
+  end
+  local session = FieldSession.new(options)
+  session:updateFixed({ heldDirection = "south", cancelDown = overrides.held })
+  return runs[1]
+end
+
+function T.held_cancel_runs_only_with_the_shoes_on_a_walking_avatar()
+  Assert.equal(runSession({ shoes = true, held = true, avatar = "walking" }), true)
+  Assert.equal(runSession({ shoes = true, held = true }), true, "no avatar owner means ordinary walking physics")
+  Assert.equal(runSession({ shoes = false, held = true, avatar = "walking" }), false, "no shoes, no run")
+  Assert.equal(runSession({ shoes = true, held = false, avatar = "walking" }), false, "B must be held")
+  Assert.equal(runSession({ shoes = true, held = true, avatar = "cycling" }), false)
+  Assert.equal(runSession({ shoes = true, held = true, avatar = "surfing" }), false)
+end
+
+-- The Start Menu lock holds B for the player (retail ORs B into the held
+-- keys), but only with the shoes on a walking avatar.
+function T.running_shoes_lock_runs_without_holding_cancel()
+  Assert.equal(runSession({ shoes = true, lock = true, held = false, avatar = "walking" }), true)
+  Assert.equal(runSession({ shoes = false, lock = true, held = false, avatar = "walking" }), false)
+  Assert.equal(runSession({ shoes = true, lock = true, held = false, avatar = "cycling" }), false)
+end
+
 function T.script_completion_consumes_its_final_action_edge()
   local resolved = 0
   local locked = true

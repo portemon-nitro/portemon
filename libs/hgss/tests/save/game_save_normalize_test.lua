@@ -29,7 +29,16 @@ local function record(overrides)
     terrainDependencyHash = "terrain-heartgold",
     facing = "south",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0, nationalDex = false },
+      profile = {
+        name = "GOLD",
+        gender = 0,
+        trainerId = 0,
+        money = 3000,
+        badges = 0,
+        nationalDex = false,
+        runningShoes = false,
+        runningShoesLock = false,
+      },
       options = { textFrame = 0, textSpeed = "mid" },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -108,7 +117,7 @@ end
 function T.routing_identity_stays_strict_while_domain_state_passes_through()
   Assert.notNil(GameSave.normalize(record()))
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
-    return GameSave.normalize(record({ schema = "g4-game-save-v9" }))
+    return GameSave.normalize(record({ schema = "g4-game-save-v10" }))
   end)
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     return GameSave.normalize(record({ schema = "g4-field-save-v3" }))

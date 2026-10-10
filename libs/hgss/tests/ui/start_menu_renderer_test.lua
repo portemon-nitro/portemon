@@ -293,6 +293,30 @@ function T.draws_the_sub_background_then_icons_with_labels()
   Assert.equal(text.draws[2].text, "POKEMON")
 end
 
+-- The Running Shoes toggle draws its button body then its lock indicator at
+-- their generated anchors, in the off or on state of the live lock, and
+-- nothing when the presentation carries no toggle.
+function T.running_shoes_toggle_draws_button_and_indicator_in_the_lock_state()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  renderer:draw({ selectedPosition = 0, actions = {}, runningShoes = { locked = false } }, canonicalPlacement())
+  Assert.equal(#lg.draws, 3, "chrome plus the button body and the lock indicator")
+  Assert.deepEqual({ lg.draws[2].quad.x, lg.draws[2].x, lg.draws[2].y }, { 0, 184, 86 }, "the off button")
+  Assert.deepEqual({ lg.draws[3].quad.x, lg.draws[3].x, lg.draws[3].y }, { 144, 210, 94 }, "the off indicator")
+  renderer:draw({ selectedPosition = 0, actions = {}, runningShoes = { locked = true } }, canonicalPlacement())
+  Assert.equal(#lg.draws, 6)
+  Assert.equal(lg.draws[5].quad.x, 72, "the on button")
+  Assert.equal(lg.draws[6].quad.x, 176, "the on indicator")
+  renderer:draw({ selectedPosition = 0, actions = {} }, canonicalPlacement())
+  Assert.equal(#lg.draws, 7, "no toggle in the presentation draws only the chrome")
+  renderer:release()
+end
+
 -- The Bag icon is conditional on trainer gender: the female variant is a
 -- first-class visual pair, not an unmapped spare.
 function T.female_bag_variant_draws_the_conditional_icon_art()

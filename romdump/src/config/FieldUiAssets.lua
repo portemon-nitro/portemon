@@ -57,6 +57,7 @@ return {
     commit = "0985e8718df4f25e64d6507d89c0c97c0d288981",
     sources = {
       { path = "src/start_menu.c" },
+      { path = "asm/overlay_27.s" },
       { path = "asm/render_window.s" },
       { path = "src/overlay_trainer_card_main.s" },
       { path = "src/naming_screen.c" },
@@ -144,6 +145,27 @@ return {
       ["vanilla.trainer_card"] = 4,
       ["vanilla.save"] = 5,
       ["vanilla.options"] = 6,
+    },
+    -- The Running Shoes toggle (ov27_0225B010 sprite setup, ov27_0225A468
+    -- state animation, ov27_0225A4D0 visibility, ov27_0225CECC hit table):
+    -- two sprites built over the tenth icon sprite header with that
+    -- header's own resources: ov27_0225CF3C maps header 9 to cell/anim
+    -- resource 0x65 (members 68/69), and ov27_0225AEA8's slot-9 branch loads
+    -- char member 70 (0x46) and the first four banks of palette member 7,
+    -- instead of the shared 16/17 pair, 20-tile icon chars, and icon
+    -- palette. The button body uses animation 3 (lock off) or 4
+    -- (lock on) at (184,86); the lock indicator uses animation 11 (off) or 7
+    -- (on) at (210,94). The touch rectangle is the first row of the
+    -- ov27_0225CECC hit table (top 86, bottom 134, left 184, right 252),
+    -- expressed as an origin plus extent.
+    runningShoes = {
+      charMember = 70,
+      cellMember = 68,
+      animMember = 69,
+      paletteMember = 7,
+      button = { offAnim = 3, onAnim = 4, anchor = { x = 184, y = 86 } },
+      indicator = { offAnim = 11, onAnim = 7, anchor = { x = 210, y = 94 } },
+      touchRegion = { x = 184, y = 86, width = 68, height = 48 },
     },
     -- The 7 normal action anchors from the ov27_0225D038 table, keyed by
     -- display position 0..6 (display position p occupied touch slot p+2;
