@@ -498,4 +498,113 @@ function T.decision_options_reject_stale_requests()
   session:dispose()
 end
 
+---@param formatKey string format identity owning the encounter
+---@param alpha table[] owning-side combatant seeds
+---@param beta table[] opposing-side combatant seeds
+---@return table detached native battle setup record with two slots per side
+local function doubleScenario(formatKey, alpha, beta)
+  local Executor = executorOwner()
+  local seeds = {}
+  for _, seed in ipairs(alpha) do
+    seeds[#seeds + 1] = seed
+  end
+  for _, seed in ipairs(beta) do
+    seeds[#seeds + 1] = seed
+  end
+  return {
+    ruleset = Executor.RULESET,
+    format = formatKey,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", alpha),
+      SessionFixture.participant(2, 2, "beta", beta),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, alpha[1].id --[[@as integer]]),
+      SessionFixture.position(2, 1, { 1 }, alpha[2].id --[[@as integer]]),
+      SessionFixture.position(3, 2, { 2 }, beta[1].id --[[@as integer]]),
+      SessionFixture.position(4, 2, { 2 }, beta[2].id --[[@as integer]]),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+end
+
+-- With two live foes every usable move projects one validated fragment
+-- per admitted foe position in deterministic order: the default
+-- fragment stays the first foe, variants never mutate the session, and
+-- answering each entry through a different variant seals.
+function T.decision_options_project_admitted_foe_positions_per_actor()
+  local first = tackleCombatant(1, 11)
+  local second = tackleCombatant(3, 31)
+  second.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+  local Executor = executorOwner()
+  local session = Executor.new(
+    doubleScenario(NATIVE_FORMAT, { first, second }, { tackleCombatant(2, 23), tackleCombatant(4, 41) }),
+    nativeContent({
+      NATIVE_FORMAT,
+    })
+  )
+  local frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the doubled session opens on its decisions")
+  local wanted = requestFor(frame, "alpha")
+  Assert.equal(#wanted.actors, 2, "the doubled request addresses both entries")
+  local before = session:capture()
+  local options = session:decisionOptions(wanted.requestId)
+  Assert.equal(#options.actors, 2, "the projection addresses both entries")
+  local replies = {}
+  for index, entry in ipairs(options.actors) do
+    local actorOptions = assert(entry, "the projection addresses its entry")
+    local addressed = assert(wanted.actors[index], "the request addresses its entry")
+    local moveOption = nil
+    for _, option in ipairs(actorOptions.choices) do
+      if option.role == "move" and option.enabled == true then
+        moveOption = option
+        break
+      end
+    end
+    moveOption = assert(moveOption, "the entry projects its usable move")
+    local variants = assert(moveOption.targets, "the doubled move projects its foe positions")
+    Assert.equal(#variants, 2, "both live foes stay admitted")
+    Assert.equal(variants[1].id, "target:0", "variant identities follow foe order")
+    Assert.equal(variants[2].id, "target:1", "variant identities follow foe order")
+    Assert.isTrue(variants[1].position ~= variants[2].position, "variants name distinct positions")
+    Assert.isTrue(variants[1].enabled == true, "the first foe stays selectable")
+    Assert.isTrue(variants[2].enabled == true, "the second foe stays selectable")
+    for _, variant in ipairs(variants) do
+      local fragment = assert(variant.choice, "variants carry complete fragments")
+      local fragmentActor = fragment.actor --[[@as table<string, unknown>]]
+      Assert.equal(fragmentActor.combatant, addressed.combatant, "variants address their own entry")
+      Assert.equal(fragment.payload.target.kind, "position", "variants strike positions")
+      Assert.equal(fragment.payload.target.position, variant.position, "variants bind their own position")
+    end
+    Assert.deepEqual(
+      moveOption.choice,
+      variants[1].choice,
+      "the default fragment keeps the first foe for current consumers"
+    )
+    replies[#replies + 1] = variants[(index % 2) + 1].choice
+  end
+  Assert.deepEqual(session:capture(), before, "projecting variants leaves mechanics state unchanged")
+  local betaRequest = requestFor(frame, "beta")
+  local betaActor = assert(betaRequest.actors[1], "the beta request addresses its lead")
+  local betaSecond = assert(betaRequest.actors[2], "the beta request addresses its second")
+  Assert.isTrue(
+    session:submit(SessionFixture.replyFor(wanted, replies)),
+    "answering each entry through a different variant seals"
+  )
+  Assert.isTrue(
+    session:submit(SessionFixture.replyFor(betaRequest, {
+      SessionFixture.attackChoice(betaActor, 0, SessionFixture.positionTarget(1)),
+      SessionFixture.attackChoice(betaSecond, 0, SessionFixture.positionTarget(1)),
+    })),
+    "the beta pair seals"
+  )
+  session:dispose()
+end
+
 return { tests = T }

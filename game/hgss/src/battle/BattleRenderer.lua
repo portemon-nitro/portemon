@@ -344,6 +344,47 @@ local function drawDetail(resources, view)
   restoreColor(graphics, r, g, b, a)
 end
 
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@return string? acting battler display name, nil outside multi-actor decisions
+local function actingName(view)
+  local actor = view.actor --[[@as table<string, unknown>?]]
+  if type(actor) ~= "table" or type(actor.total) ~= "number" or actor.total <= 1 then
+    return nil
+  end
+  if type(view.battlers) == "table" then
+    for _, battler in ipairs(view.battlers) do
+      if
+        type(battler) == "table"
+        and battler.combatant == actor.combatant
+        and type(battler.name) == "string"
+        and battler.name ~= ""
+      then
+        return battler.name --[[@as string]]
+      end
+    end
+  end
+  return nil
+end
+
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param id string target control identity under drawing
+---@return string? projected target display name, nil without its candidate
+local function targetName(view, id)
+  local candidates = view.targetCandidates --[[@as table<integer, table<string, unknown>>?]]
+  if type(candidates) ~= "table" then
+    return nil
+  end
+  for _, candidate in ipairs(candidates) do
+    if type(candidate) == "table" and candidate.id == id then
+      if type(candidate.name) == "string" and candidate.name ~= "" then
+        return candidate.name --[[@as string]]
+      end
+      return id
+    end
+  end
+  return nil
+end
+
 ---@param text table<string, unknown> borrowed text services
 ---@param content string label wording under truncation
 ---@param maxWidth number region width under truncation
@@ -430,7 +471,17 @@ local function drawControls(resources, view, layout, regions)
       elseif id == "cancel" then
         text.drawText("CANCEL", CANCEL_ANCHOR.x + shift, CANCEL_ANCHOR.y + shift)
       elseif id:match("^target:") ~= nil then
-        text.drawText(">", box.x --[[@as number]] + shift, box.y --[[@as number]] + shift)
+        -- Target rows name their projected candidate with the focus
+        -- marker, so the chosen foe never depends on sprite order.
+        local name = targetName(view, id) or id
+        if view.selection == id then
+          name = "> " .. name
+        end
+        text.drawText(
+          fitLabel(text, name, box.w --[[@as number]]),
+          box.x --[[@as number]] + shift,
+          box.y --[[@as number]] + shift
+        )
       end
     end
   end
@@ -706,6 +757,7 @@ local function drawInteraction(resources, view, content)
   end
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
+  local text = assert(resources.text, "the battle render borrows its text services")
   local layout = content.layout --[[@as string]]
   if layout ~= "command" and layout ~= "moves" and layout ~= "target" then
     layout = "command"
@@ -713,6 +765,12 @@ local function drawInteraction(resources, view, content)
   local background = assets:drawable("menu:" .. layout)
   if background ~= nil then
     graphics.draw(background, 0, 0)
+  end
+  -- Multi-actor turns name the acting battler above the menu so staged
+  -- choices are never mistaken for the previous entry's selection.
+  local acting = actingName(view)
+  if acting ~= nil then
+    text.drawText(fitLabel(text, acting, 44), 128, 8)
   end
   local regions = {}
   if layout == "moves" then

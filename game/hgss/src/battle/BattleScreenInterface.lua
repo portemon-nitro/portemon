@@ -197,6 +197,28 @@ local function mapChildPointer(event, regions)
 end
 
 ---@param view table<string, unknown> internal semantic snapshot under mapping
+---@return table<string, unknown>[] hit regions for the projected targets with the cancel strip
+local function targetRegions(view)
+  local candidates = view.targetCandidates --[[@as table<integer, table<string, unknown>>?]]
+  if type(candidates) ~= "table" then
+    return TARGET_REGIONS
+  end
+  local enabled = {}
+  for _, candidate in ipairs(candidates) do
+    if type(candidate) == "table" and candidate.enabled == true and type(candidate.id) == "string" then
+      enabled[candidate.id] = true
+    end
+  end
+  local regions = {}
+  for _, region in ipairs(TARGET_REGIONS) do
+    if region.id == "cancel" or enabled[region.id] == true then
+      regions[#regions + 1] = region
+    end
+  end
+  return regions
+end
+
+---@param view table<string, unknown> internal semantic snapshot under mapping
 ---@return table<string, unknown>? active hit regions, nil while no layout owns input
 local function regionsFor(view)
   local mode = view.mode
@@ -205,7 +227,7 @@ local function regionsFor(view)
   elseif mode == "moves" then
     return MOVE_REGIONS
   elseif mode == "target" then
-    return TARGET_REGIONS
+    return targetRegions(view)
   elseif mode == "child" then
     return childRegions(view.childView --[[@as table<string, unknown>?]])
   end
