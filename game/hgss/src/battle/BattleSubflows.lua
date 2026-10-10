@@ -821,6 +821,13 @@ function BattleSubflows:open(intent)
   if intent.launchId ~= self._launchId then
     return false, "children answer their own launch"
   end
+  -- Children select for exactly one addressed entry: the parent narrows
+  -- the intent options to the acting entry, and the narrowed entry stays
+  -- authoritative here instead of unioning fragments across entries.
+  local actors = intent.options.actors --[[@as table<integer, table<string, unknown>>?]]
+  if type(actors) ~= "table" or #actors ~= 1 or type(actors[1]) ~= "table" then
+    return false, "children answer exactly one addressed entry"
+  end
   if intent.kind == "party" then
     return openParty(self, intent)
   elseif intent.kind == "bag" then

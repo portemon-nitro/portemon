@@ -35,6 +35,11 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 ---@field _child table<string, unknown>? open child intent
 ---@field _request table<string, unknown>? mirrored open request
 ---@field _options table<string, unknown>? latest decision options for the open request
+---@field _actorIndex integer one-based cursor into the mirrored request actors
+---@field _staged table<integer, table<string, unknown>> staged choice fragments by request position
+---@field _lastStaged integer? request position behind the latest staged fragment
+---@field _targetCandidates table<integer, table<string, unknown>>? projected target variants behind the pending move
+---@field _pendingMoveId string? move control identity behind the pending target choice
 ---@field _pendingFinal table<string, unknown>? retained final view behind playing cues
 ---@field _pendingRequest table<string, unknown>? retained request behind playing cues
 ---@field _pendingResult table<string, unknown>? retained terminal result behind playing cues
@@ -172,6 +177,11 @@ function BattleScreenState.new(opts)
     _child = nil,
     _request = nil,
     _options = nil,
+    _actorIndex = 1,
+    _staged = {},
+    _lastStaged = nil,
+    _targetCandidates = nil,
+    _pendingMoveId = nil,
     _pendingFinal = nil,
     _pendingRequest = nil,
     _pendingResult = nil,
@@ -244,6 +254,54 @@ function BattleScreenState:_snapshot()
   if type(latest) == "table" and type(latest.foes) == "table" then
     foes = math.max(1, #latest.foes)
   end
+  local names = {}
+  for _, battler in ipairs(battlers) do
+    if type(battler) == "table" and type(battler.combatant) == "number" then
+      names[battler.combatant] = battler
+    end
+  end
+  local acting = nil
+  if self._request ~= nil and type(self._request.actors) == "table" then
+    local actors = self._request.actors --[[@as table<integer, table<string, unknown>>]]
+    local addressed = actors[self._actorIndex]
+    if type(addressed) == "table" then
+      acting = {
+        index = self._actorIndex,
+        total = #actors,
+        combatant = addressed.combatant,
+        activation = addressed.activation,
+      }
+    end
+  end
+  local targets = nil
+  if self._targetCandidates ~= nil then
+    targets = {}
+    for _, candidate in ipairs(self._targetCandidates) do
+      local known = type(candidate.combatant) == "number" and names[candidate.combatant] or nil
+      targets[#targets + 1] = {
+        id = candidate.id,
+        position = candidate.position,
+        enabled = candidate.enabled == true,
+        reason = candidate.reason,
+        name = (type(known) == "table" and type(known.name) == "string") and known.name or "Foe",
+        level = type(known) == "table" and known.level or nil,
+      }
+    end
+  end
+  local staged = {}
+  if self._request ~= nil and type(self._request.actors) == "table" then
+    local actors = self._request.actors --[[@as table<integer, table<string, unknown>>]]
+    for index, addressed in ipairs(actors) do
+      local fragment = self._staged[index]
+      if type(fragment) == "table" and type(addressed) == "table" then
+        staged[#staged + 1] = {
+          index = index,
+          combatant = addressed.combatant,
+          kind = fragment.kind,
+        }
+      end
+    end
+  end
   return {
     mode = self._mode,
     selection = self._selection,
@@ -256,6 +314,9 @@ function BattleScreenState:_snapshot()
     partyRoster = roster,
     foeCount = foes,
     arrowFrame = self:_arrowFrame(),
+    actor = acting,
+    targetCandidates = targets,
+    stagedChoices = staged,
     childIntent = self._child ~= nil and copyValue(self._child) or nil,
     childView = copyValue(self._subflows:status().childView),
   }
@@ -281,20 +342,46 @@ function BattleScreenState:_arrowFrame()
   return 0
 end
 
+---@return table<string, unknown>? options entry for the acting request position, nil without an open request
+function BattleScreenState:_actorOptions()
+  if self._request == nil or self._options == nil then
+    return nil
+  end
+  local actors = self._request.actors --[[@as table<integer, table<string, unknown>>?]]
+  if type(actors) ~= "table" then
+    return nil
+  end
+  local addressed = actors[self._actorIndex]
+  if type(addressed) ~= "table" then
+    return nil
+  end
+  local entries = self._options.actors --[[@as table<integer, table<string, unknown>>?]]
+  if type(entries) ~= "table" then
+    return nil
+  end
+  for _, entry in ipairs(entries) do
+    if
+      type(entry) == "table"
+      and entry.combatant == addressed.combatant
+      and entry.activation == addressed.activation
+    then
+      return entry --[[@as table<string, unknown>]]
+    end
+  end
+  return nil
+end
+
 ---@return table<integer, table<string, unknown>> command facts with kernel refusal reasons
 function BattleScreenState:_commands()
   local runEnabled = true
   local runReason = nil
-  if self._options ~= nil and type(self._options.actors) == "table" then
-    for _, actor in ipairs(self._options.actors) do
-      if type(actor) == "table" and type(actor.choices) == "table" then
-        for _, choice in ipairs(actor.choices) do
-          if type(choice) == "table" and choice.role == "run" then
-            runEnabled = choice.enabled == true
-            if type(choice.reason) == "string" and choice.reason ~= "" then
-              runReason = choice.reason
-            end
-          end
+  local entry = self:_actorOptions()
+  if type(entry) == "table" and type(entry.choices) == "table" then
+    for _, choice in ipairs(entry.choices) do
+      if type(choice) == "table" and choice.role == "run" then
+        runEnabled = choice.enabled == true
+        if type(choice.reason) == "string" and choice.reason ~= "" then
+          runReason = choice.reason
         end
       end
     end
@@ -334,42 +421,39 @@ end
 function BattleScreenState:_moves()
   local slots = {}
   local struggle = nil
-  if self._options ~= nil and type(self._options.actors) == "table" then
-    for _, actor in ipairs(self._options.actors) do
-      if type(actor) == "table" then
-        local found = moveChoices(actor)
-        for slot = 0, 3 do
-          if found[slot] ~= nil and slots[slot + 1] == nil then
-            local choice = found[slot] --[[@as table<string, unknown>]]
-            local display = choice.display --[[@as table<string, unknown>]]
-            local entry = {
-              slot = slot,
-              name = display.name,
-              pp = display.pp,
-              maxPp = display.maxPp,
-              moveType = display.type,
-              enabled = choice.enabled == true,
-            } --[[@as table<string, unknown>]]
-            if type(choice.reason) == "string" and choice.reason ~= "" then
-              entry.reason = choice.reason
-            end
-            slots[slot + 1] = entry
-          end
+  local entry = self:_actorOptions()
+  if type(entry) == "table" then
+    local found = moveChoices(entry)
+    for slot = 0, 3 do
+      if found[slot] ~= nil and slots[slot + 1] == nil then
+        local choice = found[slot] --[[@as table<string, unknown>]]
+        local display = choice.display --[[@as table<string, unknown>]]
+        local record = {
+          slot = slot,
+          name = display.name,
+          pp = display.pp,
+          maxPp = display.maxPp,
+          moveType = display.type,
+          enabled = choice.enabled == true,
+        } --[[@as table<string, unknown>]]
+        if type(choice.reason) == "string" and choice.reason ~= "" then
+          record.reason = choice.reason
         end
-        if found.struggle ~= nil and struggle == nil then
-          local choice = found.struggle --[[@as table<string, unknown>]]
-          local display = choice.display --[[@as table<string, unknown>]]
-          struggle = {
-            slot = 4,
-            name = display.name,
-            pp = 0,
-            maxPp = 0,
-            enabled = choice.enabled == true,
-          } --[[@as table<string, unknown>]]
-          if type(choice.reason) == "string" and choice.reason ~= "" then
-            struggle.reason = choice.reason
-          end
-        end
+        slots[slot + 1] = record
+      end
+    end
+    if found.struggle ~= nil and struggle == nil then
+      local choice = found.struggle --[[@as table<string, unknown>]]
+      local display = choice.display --[[@as table<string, unknown>]]
+      struggle = {
+        slot = 4,
+        name = display.name,
+        pp = 0,
+        maxPp = 0,
+        enabled = choice.enabled == true,
+      } --[[@as table<string, unknown>]]
+      if type(choice.reason) == "string" and choice.reason ~= "" then
+        struggle.reason = choice.reason
       end
     end
   end
@@ -406,6 +490,9 @@ function BattleScreenState:view()
     commands = copyValue(snapshot.commands),
     moves = copyValue(snapshot.moves),
     battlers = battlers,
+    actor = copyValue(snapshot.actor),
+    targets = copyValue(snapshot.targetCandidates),
+    staged = copyValue(snapshot.stagedChoices),
     childIntent = snapshot.childIntent,
   }
 end
@@ -665,39 +752,31 @@ function BattleScreenState:_refuse(reason)
   end
 end
 
----@param options table<string, unknown> decision options carrying the prepared fragments
----@param role string fragment role under lookup
+---@param role string fragment role under lookup for the acting entry
 ---@return table<string, unknown>? prepared choice fragment, nil when absent or refused
-local function fragmentFor(options, role)
-  if type(options.actors) ~= "table" then
+function BattleScreenState:_fragmentFor(role)
+  local entry = self:_actorOptions()
+  if type(entry) ~= "table" or type(entry.choices) ~= "table" then
     return nil
   end
-  for _, actor in ipairs(options.actors) do
-    if type(actor) == "table" and type(actor.choices) == "table" then
-      for _, choice in ipairs(actor.choices) do
-        if type(choice) == "table" and choice.role == role and choice.enabled == true then
-          return choice.choice --[[@as table<string, unknown>]]
-        end
-      end
+  for _, choice in ipairs(entry.choices) do
+    if type(choice) == "table" and choice.role == role and choice.enabled == true then
+      return choice.choice --[[@as table<string, unknown>]]
     end
   end
   return nil
 end
 
----@param options table<string, unknown> decision options carrying the prepared fragments
----@param id string move fragment identity under lookup
----@return table<string, unknown>? prepared choice fragment with its enabled flag
-local function moveFragment(options, id)
-  if type(options.actors) ~= "table" then
+---@param id string move fragment identity under lookup for the acting entry
+---@return table<string, unknown>? prepared move option with its enabled flag
+function BattleScreenState:_moveEntry(id)
+  local entry = self:_actorOptions()
+  if type(entry) ~= "table" or type(entry.choices) ~= "table" then
     return nil
   end
-  for _, actor in ipairs(options.actors) do
-    if type(actor) == "table" and type(actor.choices) == "table" then
-      for _, choice in ipairs(actor.choices) do
-        if type(choice) == "table" and choice.id == id then
-          return choice
-        end
-      end
+  for _, choice in ipairs(entry.choices) do
+    if type(choice) == "table" and choice.id == id then
+      return choice
     end
   end
   return nil
@@ -726,14 +805,56 @@ function BattleScreenState:_playCue(role)
   return false
 end
 
----@param fragment table<string, unknown> prepared choice fragment under submission
+---@param fragment table<string, unknown> prepared choice fragment under staging
 function BattleScreenState:_seal(fragment)
   assert(self._request ~= nil and self._options ~= nil, "replies answer the open request")
+  local actors = assert(self._request.actors, "the open request addresses its actors")
+  local addressed = assert(actors[self._actorIndex], "staged fragments answer the acting entry")
+  local actor = assert(fragment.actor, "staged fragments address their entry")
+  assert(
+    actor.combatant == addressed.combatant and actor.activation == addressed.activation,
+    "staged fragments answer the acting entry"
+  )
+  -- Staging never reaches the kernel: the fragment waits with the staged
+  -- choices until every addressed entry holds its own choice.
+  self._staged[self._actorIndex] = copyValue(fragment)
+  self._lastStaged = self._actorIndex
+  self._notice = nil
+  local pending = nil
+  for index in ipairs(actors) do
+    if self._staged[index] == nil then
+      pending = index
+      break
+    end
+  end
+  if pending == nil then
+    self:_submitStaged()
+    return
+  end
+  self._actorIndex = pending
+  self:_enterActorPrompt()
+end
+
+-- Submits the completed staged choices once in kernel request order. A refusal
+-- keeps the request and every staged fragment on screen and returns
+-- the cursor to the latest staged entry for correction; only an
+-- accepted reply clears the staged choices and waits for resolution.
+function BattleScreenState:_submitStaged()
+  local request = assert(self._request, "completed staged choices answer the open request")
+  local actors = assert(request.actors, "the open request addresses its actors")
+  local choices = {}
+  for index, addressed in ipairs(actors) do
+    local fragment = assert(self._staged[index], "complete replies need every requested actor")
+    local actor = assert(fragment.actor, "staged fragments address their entry")
+    assert(actor.combatant == addressed.combatant)
+    assert(actor.activation == addressed.activation)
+    choices[index] = copyValue(fragment)
+  end
   local reply = {
-    requestId = self._request.requestId,
-    epoch = self._request.epoch,
-    controller = self._request.controller,
-    choices = { copyValue(fragment) },
+    requestId = request.requestId,
+    epoch = request.epoch,
+    controller = request.controller,
+    choices = choices,
   }
   local ok, accepted, failure = pcall(self._submit, reply)
   if not ok then
@@ -747,20 +868,84 @@ function BattleScreenState:_seal(fragment)
       reason = failure.message or failure.reason
     end
     self:_refuse(type(reason) == "string" and reason or nil)
+    if type(self._lastStaged) == "number" then
+      self._actorIndex = self._lastStaged
+    end
+    self:_enterActorPrompt()
     return
   end
   self._notice = nil
   -- The answered request is no longer open; its options stay cached
   -- for display until the next delivery replaces them.
   self._request = nil
+  self._staged = {}
+  self._lastStaged = nil
+  self._actorIndex = 1
+  self._targetCandidates = nil
+  self._pendingMoveId = nil
   self._mode = "awaiting_resolution"
   self:cancelPointerCapture()
   self:_playCue("select")
 end
 
--- Builds the child intent for the mirrored open request: battle-owned
--- snapshots and the projected options travel with the launch and request
--- identity so every child result binds back to this decision.
+-- Moves the prompt to the acting entry: command selection for ordinary
+-- turns, or the forced child for replacement and learning decisions.
+function BattleScreenState:_enterActorPrompt()
+  self._targetCandidates = nil
+  self._pendingMoveId = nil
+  self:cancelPointerCapture()
+  self._notice = nil
+  local mode = self:_modeForOptions(self._options)
+  if mode ~= "child" then
+    self._subflows:closeChild()
+    self._mode = "command"
+    self._selection = "fight"
+    self._child = nil
+    return
+  end
+  local kind = "learn"
+  local purpose = "learn"
+  if type(self._options) == "table" and type(self._options.actors) == "table" then
+    for _, actor in ipairs(self._options.actors) do
+      if type(actor) == "table" and actor.kind == "replacement" then
+        kind = "party"
+        purpose = "replacement"
+      end
+    end
+  end
+  local intent = self:_childIntent(kind, purpose, false)
+  if intent == nil then
+    self._mode = "failed"
+    self._error = "the battle screen mirrors its request"
+    self._child = nil
+    return
+  end
+  -- A later forced entry may step back to an earlier one, so only the
+  -- first entry opens without cancellation.
+  intent.cancellable = kind == "party" and purpose == "replacement" and self._actorIndex > 1
+  local ok, failure = self._subflows:open(intent)
+  if not ok then
+    self._mode = "failed"
+    self._error = type(failure) == "string" and failure
+      or "the requested child failed to open for launch " .. self._launchId
+    self._child = nil
+    return
+  end
+  local request = assert(self._request, "forced children answer the open request")
+  self._child =
+    { kind = kind, cancellable = intent.cancellable == true, purpose = purpose, requestId = request.requestId }
+  self._selection = nil
+  self._mode = "child"
+end
+
+-- Builds the child intent for the acting entry of the mirrored open
+-- request: battle-owned snapshots and exactly the acting entry's
+-- projected options travel with the launch and request identity so every
+-- child result binds back to this decision. Fragments already staged for
+-- sibling entries mask their exact resources locally: an already staged
+-- reserve or a spent single-stock serving stays unavailable to later
+-- entries without reimplementing kernel legality, which still judges the
+-- final batch.
 ---@param kind string child kind under opening
 ---@param purpose string selection purpose under opening
 ---@param cancellable boolean cancel permission under opening
@@ -769,6 +954,19 @@ function BattleScreenState:_childIntent(kind, purpose, cancellable)
   if self._request == nil or self._options == nil then
     return nil
   end
+  local entry = self:_actorOptions()
+  if entry == nil then
+    return nil
+  end
+  local narrowed = copyValue(entry) --[[@as table<string, unknown>]]
+  self:_maskStagedResources(narrowed)
+  local options = {
+    requestId = self._options.requestId,
+    epoch = self._options.epoch,
+    controller = self._options.controller,
+    kind = self._options.kind,
+    actors = { narrowed },
+  } --[[@as table<string, unknown>]]
   return {
     kind = kind,
     purpose = purpose,
@@ -778,10 +976,63 @@ function BattleScreenState:_childIntent(kind, purpose, cancellable)
     controller = self._request.controller,
     cancellable = cancellable,
     request = copyValue(self._request),
-    options = copyValue(self._options),
+    options = options,
     party = copyValue(self._partySnapshot or {}),
     inventory = copyValue(self._inventorySnapshot or {}),
   }
+end
+
+---@param entry table<string, unknown> acting entry options under masking
+function BattleScreenState:_maskStagedResources(entry)
+  local stagedReplacements = {}
+  local stagedItems = {}
+  for index, fragment in pairs(self._staged) do
+    if index ~= self._actorIndex and type(fragment) == "table" then
+      local payload = fragment.payload --[[@as table<string, unknown>?]]
+      if fragment.kind == "switch" and type(payload) == "table" and type(payload.replacement) == "number" then
+        stagedReplacements[payload.replacement] = true
+      elseif fragment.kind == "item" and type(payload) == "table" and type(payload.item) == "string" then
+        stagedItems[payload.item] = (stagedItems[payload.item] or 0) + 1
+      end
+    end
+  end
+  if next(stagedReplacements) == nil and next(stagedItems) == nil then
+    return
+  end
+  local stock = {}
+  if type(self._inventorySnapshot) == "table" then
+    for key, quantity in pairs(self._inventorySnapshot) do
+      if type(key) == "string" and type(quantity) == "number" then
+        stock[key] = quantity --[[@as integer]]
+      end
+    end
+  end
+  if type(entry.choices) ~= "table" then
+    return
+  end
+  for _, choice in ipairs(entry.choices) do
+    if type(choice) == "table" and choice.enabled == true and type(choice.choice) == "table" then
+      local fragment = choice.choice --[[@as table<string, unknown>]]
+      local payload = fragment.payload --[[@as table<string, unknown>?]]
+      if type(payload) == "table" then
+        if
+          fragment.kind == "switch"
+          and type(payload.replacement) == "number"
+          and stagedReplacements[payload.replacement] == true
+        then
+          choice.enabled = false
+          choice.reason = "reserved"
+        elseif
+          fragment.kind == "item"
+          and type(payload.item) == "string"
+          and (stock[payload.item] or 0) - (stagedItems[payload.item] or 0) < 1
+        then
+          choice.enabled = false
+          choice.reason = "reserved"
+        end
+      end
+    end
+  end
 end
 
 -- Opens a voluntary child over the open command decision. A child that
@@ -815,7 +1066,7 @@ function BattleScreenState:_activateCommand(id)
   elseif id == "pokemon" then
     self:_openVoluntaryChild("party", "switch")
   elseif id == "run" then
-    local fragment = self._options ~= nil and fragmentFor(self._options, "run") or nil
+    local fragment = self:_fragmentFor("run")
     if fragment == nil then
       self:_refuse(self:_runReason())
     else
@@ -826,14 +1077,11 @@ end
 
 ---@return string? kernel refusal reason for flight, nil when flight is legal
 function BattleScreenState:_runReason()
-  if self._options ~= nil and type(self._options.actors) == "table" then
-    for _, actor in ipairs(self._options.actors) do
-      if type(actor) == "table" and type(actor.choices) == "table" then
-        for _, choice in ipairs(actor.choices) do
-          if type(choice) == "table" and choice.role == "run" and type(choice.reason) == "string" then
-            return choice.reason --[[@as string]]
-          end
-        end
+  local entry = self:_actorOptions()
+  if type(entry) == "table" and type(entry.choices) == "table" then
+    for _, choice in ipairs(entry.choices) do
+      if type(choice) == "table" and choice.role == "run" and type(choice.reason) == "string" then
+        return choice.reason --[[@as string]]
       end
     end
   end
@@ -859,7 +1107,7 @@ function BattleScreenState:_activateMove(id, armed)
     self._notice = nil
     return
   end
-  local entry = moveFragment(self._options or {}, id)
+  local entry = self:_moveEntry(id)
   if entry == nil or entry.enabled ~= true then
     local reason = (entry ~= nil and type(entry.reason) == "string") and entry.reason or "empty"
     self:_refuse(reason --[[@as string]])
@@ -876,6 +1124,46 @@ function BattleScreenState:_activateMove(id, armed)
   self._notice = nil
 end
 
+---@param id string target control identity under activation
+---@return table<string, unknown>? projected target variant, nil when absent
+function BattleScreenState:_targetVariant(id)
+  if self._targetCandidates == nil then
+    return nil
+  end
+  for _, candidate in ipairs(self._targetCandidates) do
+    if type(candidate) == "table" and candidate.id == id then
+      return candidate
+    end
+  end
+  return nil
+end
+
+---@param id string target control identity under activation
+---@param armed table<string, unknown>? pressed control behind the release
+function BattleScreenState:_activateTarget(id, armed)
+  local _ = armed
+  if id == "cancel" then
+    self._targetCandidates = nil
+    self._mode = "moves"
+    if self._pendingMoveId ~= nil then
+      self._selection = self._pendingMoveId
+      self._pendingMoveId = nil
+    end
+    self._notice = nil
+    self:cancelPointerCapture()
+    return
+  end
+  local candidate = self:_targetVariant(id)
+  if candidate == nil or candidate.enabled ~= true then
+    local reason = (candidate ~= nil and type(candidate.reason) == "string") and candidate.reason or nil
+    self:_refuse(reason)
+    return
+  end
+  self._targetCandidates = nil
+  self._pendingMoveId = nil
+  self:_seal(copyValue(candidate.choice) --[[@as table<string, unknown>]])
+end
+
 ---@param control table<string, unknown> sealed control under dispatch
 ---@param armed table<string, unknown>? pressed control behind the release
 function BattleScreenState:_sealControl(control, armed)
@@ -883,6 +1171,8 @@ function BattleScreenState:_sealControl(control, armed)
     self:_activateCommand(control.id --[[@as string]])
   elseif self._mode == "moves" then
     self:_activateMove(control.id --[[@as string]], armed)
+  elseif self._mode == "target" then
+    self:_activateTarget(control.id --[[@as string]], armed)
   end
 end
 
@@ -920,15 +1210,7 @@ function BattleScreenState:_pollChild()
       self._armed = nil
       return
     end
-    self._subflows:closeChild()
-    self._child = nil
-    self._armed = nil
-    self._notice = nil
-    if self._request ~= nil then
-      self._mode = self:_modeForOptions(self._options)
-    else
-      self._mode = "command"
-    end
+    self:_cancelChild()
     return
   end
   if result.kind == "choice" then
@@ -939,19 +1221,55 @@ function BattleScreenState:_pollChild()
       self._armed = nil
       self._notice = "The selection expired."
       if self._request ~= nil then
-        self._mode = self:_modeForOptions(self._options)
+        self:_enterActorPrompt()
       else
         self._mode = "command"
       end
       return
     end
-    local fragment = reply.choices --[[@as table<integer, table<string, unknown>>]]
-    self:_seal(copyValue(fragment[1]))
-    if self._mode == "awaiting_resolution" then
+    local fragments = reply.choices --[[@as table<integer, table<string, unknown>>]]
+    local fragment = fragments[1]
+    if not self:_fragmentAddressesActor(fragment) then
+      self._subflows:closeChild()
+      self._child = nil
+      self._armed = nil
+      self._notice = "The selection expired."
+      if self._request ~= nil then
+        self:_enterActorPrompt()
+      else
+        self._mode = "command"
+      end
+      return
+    end
+    self:_seal(copyValue(fragment))
+    if self._mode == "awaiting_resolution" or self._mode == "command" then
       self._subflows:closeChild()
       self._child = nil
     end
   end
+end
+
+-- Checks one staged child fragment against the acting entry: only the
+-- current request position seals with the staged choices.
+---@param fragment unknown staged child fragment under validation
+---@return boolean acting true for the acting entry
+function BattleScreenState:_fragmentAddressesActor(fragment)
+  if type(fragment) ~= "table" then
+    return false
+  end
+  if self._request == nil or type(self._request.actors) ~= "table" then
+    return false
+  end
+  local actors = self._request.actors --[[@as table<integer, table<string, unknown>>]]
+  local addressed = actors[self._actorIndex]
+  if type(addressed) ~= "table" then
+    return false
+  end
+  local actor = (fragment --[[@as table<string, unknown>]]).actor --[[@as table<string, unknown>?]]
+  if type(actor) ~= "table" then
+    return false
+  end
+  return actor.combatant == addressed.combatant and actor.activation == addressed.activation
 end
 
 ---@param event table<string, unknown> mapped semantic input under consumption
@@ -995,20 +1313,25 @@ function BattleScreenState:_consume(event)
     return
   end
   if eventType == "battle_press" then
-    if self._mode == "command" or self._mode == "moves" then
+    if self._mode == "command" or self._mode == "moves" or self._mode == "target" then
       self._armed = { scope = event.control.scope, id = event.control.id, pointerId = event.pointerId }
       if event.control.scope == "command" then
         self._selection = event.control.id --[[@as string]]
       elseif event.control.scope == "moves" then
         local id = event.control.id --[[@as string]]
         if id ~= "cancel" then
-          local entry = moveFragment(self._options or {}, id)
+          local entry = self:_moveEntry(id)
           if entry ~= nil and entry.enabled == true then
             -- Remember whether the press began on the focused slot so
             -- the matched release can tell a focusing tap from a seal.
             self._armed.focused = (self._selection == id)
             self._selection = id
           end
+        end
+      elseif event.control.scope == "target" then
+        local id = event.control.id --[[@as string]]
+        if id == "cancel" or self:_targetVariant(id) ~= nil then
+          self._selection = id
         end
       end
     elseif self._mode == "narration" or self._mode == "outcome" then
@@ -1072,13 +1395,20 @@ function BattleScreenState:_confirm()
     if selection == "cancel" then
       self:_activateMove("cancel")
     else
-      local entry = moveFragment(self._options or {}, selection)
+      local entry = self:_moveEntry(selection)
       if entry == nil or entry.enabled ~= true then
         local reason = (entry ~= nil and type(entry.reason) == "string") and entry.reason or "empty"
         self:_refuse(reason --[[@as string]])
       else
         self:_submitMove(entry)
       end
+    end
+  elseif self._mode == "target" and type(self._selection) == "string" then
+    local selection = self._selection --[[@as string]]
+    if selection == "cancel" then
+      self:_activateTarget("cancel")
+    else
+      self:_activateTarget(selection)
     end
   elseif self._mode == "narration" or self._mode == "intro" then
     self._timeline:ack()
@@ -1093,33 +1423,89 @@ end
 ---@param entry table<string, unknown> accepted move option under sealing
 function BattleScreenState:_submitMove(entry)
   -- Every enabled move option already carries its complete legal
-  -- fragment: the choice seals detached and unchanged, whatever target
-  -- kind the kernel projected, with no target rewrite.
-  self:_seal(copyValue(entry.choice) --[[@as table<string, unknown>]])
+  -- fragment: a single admitted position seals its projected fragment
+  -- unchanged, while several admitted positions open the projected
+  -- target list for an explicit choice. Nothing here rewrites targets.
+  local candidates = nil
+  if type(entry.targets) == "table" then
+    candidates = {}
+    for _, variant in ipairs(entry.targets) do
+      if type(variant) == "table" and variant.enabled == true then
+        candidates[#candidates + 1] = variant
+      end
+    end
+  end
+  if candidates == nil or #candidates <= 1 then
+    if candidates ~= nil and #candidates == 1 then
+      self:_seal(copyValue(candidates[1].choice) --[[@as table<string, unknown>]])
+    else
+      self:_seal(copyValue(entry.choice) --[[@as table<string, unknown>]])
+    end
+    return
+  end
+  self._pendingMoveId = entry.id
+  self._targetCandidates = copyValue(entry.targets)
+  self._mode = "target"
+  self._selection = candidates[1].id
+  self._notice = nil
+  self:cancelPointerCapture()
 end
 
 function BattleScreenState:_cancel()
-  if self._mode == "moves" then
+  if self._mode == "target" then
+    self:_activateTarget("cancel")
+  elseif self._mode == "moves" then
     self._mode = "command"
     self._selection = "fight"
     self._notice = nil
-  elseif self._mode == "child" and self._child ~= nil then
-    if self._child.cancellable == true then
-      self._child = nil
+  elseif self._mode == "command" then
+    -- Back across staged choices returns to the previous entry with its
+    -- staged fragment intact and editable; the request itself is kept.
+    if self._request ~= nil and self._actorIndex > 1 then
+      self._actorIndex = self._actorIndex - 1
+      self._mode = "command"
+      self._selection = "fight"
       self._notice = nil
-      if self._request ~= nil then
-        self._mode = self:_modeForOptions(self._options)
-      else
-        self._mode = "command"
-      end
-    else
-      self:_refuse("That choice cannot be cancelled.")
+      self:cancelPointerCapture()
     end
+  elseif self._mode == "child" and self._child ~= nil then
+    self:_cancelChild()
   end
+end
+
+-- Cancels the open child: a voluntary child returns to the acting
+-- entry prompt, a later forced entry steps back to the earlier entry
+-- with its staged fragment intact, and the first forced entry refuses.
+function BattleScreenState:_cancelChild()
+  if self._child == nil then
+    return
+  end
+  if self._child.purpose == "replacement" and self._request ~= nil and self._actorIndex > 1 then
+    self._actorIndex = self._actorIndex - 1
+    self:_enterActorPrompt()
+    return
+  end
+  if self._child.cancellable == true then
+    self._subflows:closeChild()
+    self._child = nil
+    self._armed = nil
+    self._notice = nil
+    if self._request ~= nil then
+      self._mode = "command"
+    else
+      self._mode = "command"
+    end
+    return
+  end
+  self:_refuse("That choice cannot be cancelled.")
 end
 
 ---@param direction string? navigation direction under selection
 function BattleScreenState:_navigate(direction)
+  if self._mode == "target" then
+    self:_navigateTargets(direction)
+    return
+  end
   local table_ = nil
   if self._mode == "command" then
     table_ = COMMAND_NAV
@@ -1143,6 +1529,34 @@ function BattleScreenState:_navigate(direction)
       direction --[[@as string]]
     ]
   end
+end
+
+---@param direction string? navigation direction across the projected target list
+function BattleScreenState:_navigateTargets(direction)
+  if self._targetCandidates == nil or type(self._selection) ~= "string" then
+    return
+  end
+  local order = {}
+  for _, candidate in ipairs(self._targetCandidates) do
+    if type(candidate) == "table" and candidate.enabled == true then
+      order[#order + 1] = candidate.id
+    end
+  end
+  order[#order + 1] = "cancel"
+  local current = 1
+  for index, id in ipairs(order) do
+    if id == self._selection then
+      current = index
+    end
+  end
+  if direction == "down" or direction == "right" then
+    current = current % #order + 1
+  elseif direction == "up" or direction == "left" then
+    current = (current - 2) % #order + 1
+  else
+    return
+  end
+  self._selection = order[current]
 end
 
 ---@param options table<string, unknown>? decision options carrying the actor kinds
@@ -1205,6 +1619,11 @@ function BattleScreenState:_drain(settledTick)
     self._pendingRequest = nil
     self._request = nil
     self._options = nil
+    self._staged = {}
+    self._lastStaged = nil
+    self._actorIndex = 1
+    self._targetCandidates = nil
+    self._pendingMoveId = nil
     self._mode = "outcome"
     self._notice = nil
     self._child = nil
@@ -1218,39 +1637,12 @@ function BattleScreenState:_drain(settledTick)
     self._pendingRequest = nil
     self._request = request
     self._options = request.options --[[@as table<string, unknown>?]]
-    self._notice = nil
-    local mode = self:_modeForOptions(self._options)
-    self._mode = mode
-    if mode == "command" then
-      self._selection = "fight"
-    elseif mode == "child" then
-      local kind = "learn"
-      local purpose = "learn"
-      if type(self._options) == "table" and type(self._options.actors) == "table" then
-        for _, actor in ipairs(self._options.actors) do
-          if type(actor) == "table" and actor.kind == "replacement" then
-            kind = "party"
-            purpose = "replacement"
-          end
-        end
-      end
-      local intent = self:_childIntent(kind, purpose, false)
-      local ok = false
-      ---@type string?
-      local failure = "the battle screen mirrors its request"
-      if intent ~= nil then
-        ok, failure = self._subflows:open(intent)
-      end
-      if not ok then
-        self._mode = "failed"
-        self._error = type(failure) == "string" and failure
-          or "the requested child failed to open for launch " .. self._launchId
-        self._child = nil
-        return
-      end
-      self._child = { kind = kind, cancellable = false, purpose = purpose, requestId = request.requestId }
-      self._selection = nil
-    end
+    -- A fresh packet owns fresh staged choices: obsolete staged fragments never
+    -- answer a new request identity.
+    self._staged = {}
+    self._lastStaged = nil
+    self._actorIndex = 1
+    self:_enterActorPrompt()
   end
 end
 

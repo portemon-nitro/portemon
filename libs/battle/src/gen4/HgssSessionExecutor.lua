@@ -4991,6 +4991,46 @@ local function fragmentActor(actor)
   return addressed
 end
 
+-- Projects the validated per-position strike variants for one move slot:
+-- one copied native fragment per live foe position in deterministic
+-- battle order, each judged through the same probe submission reuses.
+-- Returns nil while a single position (or no position) needs no picker.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actor table<string, unknown> requested actor under projection
+---@param positions integer[] live foe positions in deterministic battle order
+---@param moveSlot integer zero-based move slot under projection
+---@param selectable boolean true while the named move holds power points
+---@param admitted string[] admitted action kinds resolved at construction
+---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@return table<integer, table<string, unknown>>? per-position variants, nil for a single position
+local function targetVariants(state, actor, positions, moveSlot, selectable, admitted, battleKind)
+  if #positions <= 1 then
+    return nil
+  end
+  local variants = {} ---@type table<integer, table<string, unknown>>
+  for index, positionId in ipairs(positions) do
+    local candidate = {
+      actor = fragmentActor(actor),
+      kind = "attack",
+      payload = { moveSlot = moveSlot, target = { kind = "position", position = positionId } },
+    } --[[@as table<string, unknown>]]
+    local rejected = nil
+    if selectable then
+      rejected = probeChoice(state, candidate, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+    end
+    local position = BattleState.position(state, positionId --[[@as integer]])
+    variants[#variants + 1] = {
+      id = "target:" .. tostring(index - 1),
+      position = positionId,
+      combatant = position.occupant,
+      enabled = selectable and rejected == nil,
+      reason = (selectable and rejected == nil) and nil or (selectable and refusalReason(rejected) or "no_pp"),
+      choice = candidate,
+    }
+  end
+  return variants
+end
+
 ---@param state table<string, unknown> live battle state under read-only inspection
 ---@param actor table<string, unknown> requested actor under projection
 ---@param admitted string[] admitted action kinds resolved at construction
@@ -5043,14 +5083,19 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
     if selectable then
       rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
     end
-    choices[#choices + 1] = {
+    local moveOption = {
       id = "move:" .. slot,
       role = "move",
       display = moveDisplay(moveFacts, type(key) == "string" and key --[[@as string]] or "STRUGGLE", moveEntry),
       enabled = selectable and rejected == nil,
       reason = (selectable and rejected == nil) and nil or (selectable and refusalReason(rejected) or "no_pp"),
       choice = choice,
-    }
+    } --[[@as table<string, unknown>]]
+    local variants = targetVariants(state, actor, targets, slot, selectable, admitted, battleKind)
+    if variants ~= nil then
+      moveOption.targets = variants
+    end
+    choices[#choices + 1] = moveOption
   end
   if usable == 0 then
     -- Genuine all-no-power struggle is an explicit kernel-owned
@@ -5062,7 +5107,7 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
       payload = { moveSlot = 0, target = copyValue(target) },
     } --[[@as table<string, unknown>]]
     local rejected = probeChoice(state, struggle, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
-    choices[#choices + 1] = {
+    local struggleOption = {
       id = "move:struggle",
       role = "move",
       display = {
@@ -5072,7 +5117,12 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
       enabled = rejected == nil,
       reason = rejected == nil and nil or refusalReason(rejected),
       choice = struggle,
-    }
+    } --[[@as table<string, unknown>]]
+    local struggleVariants = targetVariants(state, actor, targets, 0, true, admitted, battleKind)
+    if struggleVariants ~= nil then
+      struggleOption.targets = struggleVariants
+    end
+    choices[#choices + 1] = struggleOption
   end
   for _, reserve in
     ipairs(eligibleReserves(state, combatant.participant --[[@as integer]], {}))

@@ -158,21 +158,9 @@ local function moveInfo(view)
   }
 end
 
----@param view table<string, unknown> internal semantic snapshot under resolution
----@return table<integer, table<string, unknown>> admitted target rows with a Back row beneath
-local function targetRows(view)
-  local rows = {}
-  if type(view.battlers) == "table" then
-    for _, battler in ipairs(view.battlers) do
-      if type(battler) == "table" and battler.side ~= 1 and battler.visible ~= false and #rows < 2 then
-        rows[#rows + 1] = {
-          id = "target:" .. tostring(#rows),
-          name = battler.name,
-          level = battler.level,
-        }
-      end
-    end
-  end
+---@param rows table<integer, table<string, unknown>> target rows under layout
+---@return table<integer, table<string, unknown>> positioned target rows with a Back row beneath
+local function dockRows(rows)
   local out = {}
   for index, row in ipairs(rows) do
     out[#out + 1] = {
@@ -193,6 +181,40 @@ local function targetRows(view)
     height = TARGET_ROW_HEIGHT,
   }
   return out
+end
+
+---@param view table<string, unknown> internal semantic snapshot under resolution
+---@return table<integer, table<string, unknown>> admitted target rows with a Back row beneath
+local function targetRows(view)
+  local candidates = view.targetCandidates --[[@as table<integer, table<string, unknown>>?]]
+  if type(candidates) == "table" then
+    -- Projected candidate order owns the rows: the kernel's admitted foe
+    -- positions map to hit regions in exactly this order.
+    local rows = {}
+    for _, candidate in ipairs(candidates) do
+      if type(candidate) == "table" and candidate.enabled == true and type(candidate.id) == "string" and #rows < 2 then
+        rows[#rows + 1] = {
+          id = candidate.id,
+          name = candidate.name,
+          level = candidate.level,
+        }
+      end
+    end
+    return dockRows(rows)
+  end
+  local rows = {}
+  if type(view.battlers) == "table" then
+    for _, battler in ipairs(view.battlers) do
+      if type(battler) == "table" and battler.side ~= 1 and battler.visible ~= false and #rows < 2 then
+        rows[#rows + 1] = {
+          id = "target:" .. tostring(#rows),
+          name = battler.name,
+          level = battler.level,
+        }
+      end
+    end
+  end
+  return dockRows(rows)
 end
 
 ---@param mode string controller mode under resolution
@@ -974,6 +996,28 @@ local function fillBox(graphics, background, box)
   graphics.rectangle("fill", box.x, box.y, box.width, box.height)
 end
 
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@return string? acting battler display name, nil outside multi-actor decisions
+local function actingName(view)
+  local actor = view.actor --[[@as table<string, unknown>?]]
+  if type(actor) ~= "table" or type(actor.total) ~= "number" or actor.total <= 1 then
+    return nil
+  end
+  if type(view.battlers) == "table" then
+    for _, battler in ipairs(view.battlers) do
+      if
+        type(battler) == "table"
+        and battler.combatant == actor.combatant
+        and type(battler.name) == "string"
+        and battler.name ~= ""
+      then
+        return battler.name --[[@as string]]
+      end
+    end
+  end
+  return nil
+end
+
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param content table<string, unknown> canonical compact plan content under drawing
@@ -984,9 +1028,17 @@ local function drawCommandDock(resources, view, content)
   local frame = resources.frameKey
   fillBox(resources.graphics, background, content.prompt.outer)
   fillBox(resources.graphics, background, content.commands.outer)
-  local promptLines = wrapPrompt(text, view.message or "", PROMPT_MAX_WIDTH, 2)
+  -- Multi-actor turns name the acting battler first so staged choices
+  -- are never mistaken for the previous entry's selection.
+  local acting = actingName(view)
+  local promptLines = wrapPrompt(text, view.message or "", PROMPT_MAX_WIDTH, acting ~= nil and 1 or 2)
+  local promptY = PROMPT_ORIGIN.y
+  if acting ~= nil then
+    drawLabel(text, fitText(text, acting, PROMPT_MAX_WIDTH), PROMPT_ORIGIN.x, promptY)
+    promptY = promptY + 16
+  end
   for index, line in ipairs(promptLines) do
-    drawLabel(text, line, PROMPT_ORIGIN.x, PROMPT_ORIGIN.y + (index - 1) * 16)
+    drawLabel(text, line, PROMPT_ORIGIN.x, promptY + (index - 1) * 16)
   end
   for index, id in ipairs(COMMAND_IDS) do
     local column = (index - 1) % 2
@@ -1040,6 +1092,10 @@ local function drawMoveDock(resources, view, content)
   drawLabel(text, fitText(text, info.typeText, MOVE_INFO_MAX_WIDTH), MOVE_INFO_TEXT_X, info.typeRowY)
   drawLabel(text, fitText(text, info.ppText, MOVE_INFO_MAX_WIDTH), MOVE_INFO_TEXT_X, info.ppRowY)
   drawLabel(text, "BACK", MOVE_BACK_LABEL.x, MOVE_BACK_LABEL.y)
+  local acting = actingName(view)
+  if acting ~= nil then
+    drawLabel(text, fitText(text, acting, MOVE_LABEL_WIDTH), MOVE_GRID_X + 8, MOVE_GRID_TOP - 16)
+  end
   windows.drawApplicationFrame(content.movePanels.left, frame)
   windows.drawApplicationFrame(content.movePanels.right, frame)
 end
@@ -1052,6 +1108,10 @@ local function drawTargetDock(resources, view, content)
   local windows = assert(resources.windows, "the compact render borrows its window services")
   local background = backgroundOf(resources)
   fillBox(resources.graphics, background, TARGET_OUTER)
+  local acting = actingName(view)
+  if acting ~= nil then
+    drawLabel(text, fitText(text, acting, TARGET_ROW_WIDTH), TARGET_ROW_X + 8, TARGET_FIRST_Y - 18)
+  end
   for _, row in ipairs(content.targetRows) do
     local label = "BACK"
     if row.id ~= "cancel" then
