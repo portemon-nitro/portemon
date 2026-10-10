@@ -1971,6 +1971,452 @@ function T.scene_host_failure_fails_closed_naming_its_scene()
   end
 end
 
+-- An upload-capable graphics double behind worker-backed launches: real
+-- staged bytes still decode through the host image loader while the owned
+-- handle stays a lightweight test record, so entry can prove readiness
+-- without GPU objects. A namespace without an uploader stays unusable
+-- for entry; only a present uploader answers handles.
+---@return table upload-capable graphics namespace
+local function uploadCapableGraphics()
+  local graphics = {}
+  function graphics.newImage(_)
+    local handle = {}
+    function handle.setFilter(...)
+    end
+    return handle
+  end
+  return graphics
+end
+
+-- A scene worker failure aborts the pending launch without ever showing
+-- a screen: the admitted port carries all five operations yet stays
+-- unacknowledged while the build is pending, the worker cause fails the
+-- launch exactly once naming its scene, and the abort reveal releases
+-- the launch with no interactive battle and no second report. Disposal
+-- stays idempotent throughout.
+function T.scene_worker_failure_aborts_the_pending_launch_without_a_result()
+  local sceneKey = "general/plain/day"
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local worker = { ready = nil, failure = nil, asks = {} }
+    local derivedAssets = {}
+    function derivedAssets.requestBattleScene(key, urgency)
+      worker.asks[#worker.asks + 1] = { key = key, urgency = urgency }
+      return worker.ready, worker.failure
+    end
+    local host = { phase = "active", notifies = {} }
+    function host.status()
+      return { phase = host.phase }
+    end
+    function host.advance() end
+    function host.submit(_)
+      return true
+    end
+    function host.notify(event, reason)
+      host.notifies[#host.notifies + 1] = { event = event, reason = reason }
+    end
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      windows = recordingWindows(),
+      text = recordingText(),
+      audio = recordingAudio(),
+      measureDisplay = function()
+        return dualMeasurement("pending-failure:dual")
+      end,
+      graphics = {},
+      derivedAssets = derivedAssets,
+    })
+    local launchId = "pending-failure-probe"
+    local port = envelope:factory()({
+      launchId = launchId,
+      kind = "wild",
+      environment = { sceneKey = sceneKey },
+      host = host,
+    })
+    Assert.isTrue(type(port.enter) == "function", "the admitted port enters")
+    Assert.isTrue(type(port.present) == "function", "the admitted port presents")
+    Assert.isTrue(type(port.ready) == "function", "the admitted port reports readiness")
+    Assert.isTrue(type(port.leave) == "function", "the admitted port leaves")
+    Assert.isTrue(type(port.dispose) == "function", "the admitted port disposes")
+    Assert.isNil(envelope:liveScreen(), "the pending launch holds no screen while its scene builds")
+    for _ = 1, 30 do
+      envelope:updateFixed(TICK)
+    end
+    Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the pending launch stays unacknowledged")
+    Assert.isFalse(port.ready(), "the pending launch never reads interactive")
+    Assert.isNil(envelope:liveScreen(), "polling never builds a screen before the scene stages")
+    Assert.isTrue(#worker.asks >= 1, "the pending launch demands its scene through the borrowed host")
+    for _, ask in ipairs(worker.asks) do
+      Assert.equal(ask.key, sceneKey, "every demand names exactly the launch scene")
+      Assert.equal(ask.urgency, "required", "every demand arrives urgently")
+    end
+    Assert.equal(#host.notifies, 0, "pending reports no failure")
+    worker.failure = "probe-controller-boom"
+    for _ = 1, 60 do
+      envelope:updateFixed(TICK)
+    end
+    Assert.isFalse(port.ready(), "the failed launch never reads interactive")
+    Assert.isNil(envelope:liveScreen(), "the failed launch owns no screen")
+    local failures = {}
+    for _, note in ipairs(host.notifies) do
+      if note.event == "screen-failed" then
+        failures[#failures + 1] = note
+      end
+    end
+    Assert.equal(#failures, 1, "the worker failure reports exactly once")
+    Assert.isTrue(
+      type(failures[1].reason) == "string" and failures[1].reason:find(sceneKey, 1, true) ~= nil,
+      "the report names its scene: " .. tostring(failures[1].reason)
+    )
+    Assert.isTrue(
+      tostring(failures[1].reason):find("probe-controller-boom", 1, true) ~= nil,
+      "the report carries its worker cause: " .. tostring(failures[1].reason)
+    )
+    for _ = 1, 30 do
+      envelope:updateFixed(TICK)
+    end
+    local failuresAgain = 0
+    for _, note in ipairs(host.notifies) do
+      if note.event == "screen-failed" then
+        failuresAgain = failuresAgain + 1
+      end
+    end
+    Assert.equal(failuresAgain, 1, "later polls report no second failure")
+    host.phase = "aborting"
+    for _ = 1, 10 do
+      envelope:updateFixed(TICK)
+    end
+    host.phase = "abort-revealing"
+    for _ = 1, 10 do
+      envelope:updateFixed(TICK)
+    end
+    host.phase = "complete"
+    for _ = 1, 5 do
+      envelope:updateFixed(TICK)
+    end
+    Assert.isFalse(envelope:ownsInput(), "the abort reveal releases the launch")
+    Assert.isNil(envelope:liveScreen(), "the settled launch owns no screen")
+    port.dispose()
+    port.dispose()
+    envelope:dispose()
+    envelope:dispose()
+  end
+end
+
+-- Disposing a pending launch builds nothing late and leaves the next
+-- launch alone: the first port admits no screen while its scene builds,
+-- disposal plus a late worker answer still builds nothing, the next
+-- admission constructs at most one screen once its own scene is ready,
+-- and every stale callback on the old port stays inert.
+function T.disposed_pending_launch_builds_no_screen_for_the_next_launch()
+  local firstScene = "general/plain/day"
+  local secondScene = "general/grass/day"
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local worker = { ready = nil, failure = nil, asks = {} }
+    local derivedAssets = {}
+    function derivedAssets.requestBattleScene(key, urgency)
+      worker.asks[#worker.asks + 1] = { key = key, urgency = urgency }
+      return worker.ready, worker.failure
+    end
+    local function launchHost()
+      local host = { phase = "active", notifies = {} }
+      function host.status()
+        return { phase = host.phase }
+      end
+      function host.advance() end
+      function host.submit(_)
+        return true
+      end
+      function host.notify(event, reason)
+        host.notifies[#host.notifies + 1] = { event = event, reason = reason }
+      end
+      return host
+    end
+    local ScreenState = require("game.hgss.src.battle.BattleScreenState")
+    local realNew = ScreenState.new
+    local constructions = {}
+    ScreenState.new = function(opts)
+      constructions[#constructions + 1] = opts ~= nil and opts.launchId or nil
+      return realNew(opts)
+    end
+    local ok, failure = xpcall(function()
+      local envelope = FieldBattlePresentation.new({
+        cacheFs = cacheFs,
+        windows = recordingWindows(),
+        text = recordingText(),
+        audio = recordingAudio(),
+        measureDisplay = function()
+          return dualMeasurement("disposed-pending:dual")
+        end,
+        graphics = uploadCapableGraphics(),
+        derivedAssets = derivedAssets,
+      })
+      local host1 = launchHost()
+      local firstId = "disposed-first-probe"
+      local port1 = envelope:factory()({
+        launchId = firstId,
+        kind = "wild",
+        environment = { sceneKey = firstScene },
+        host = host1,
+      })
+      Assert.isNil(envelope:liveScreen(), "the pending first launch holds no screen")
+      Assert.equal(#constructions, 0, "the pending first launch constructs no screen")
+      for _ = 1, 10 do
+        envelope:updateFixed(TICK)
+      end
+      Assert.equal(#constructions, 0, "polling never constructs before the scene stages")
+      port1.dispose()
+      port1.dispose()
+      worker.ready = true
+      for _ = 1, 60 do
+        envelope:updateFixed(TICK)
+      end
+      Assert.equal(#constructions, 0, "a late answer builds no screen for the disposed launch")
+      Assert.isNil(envelope:liveScreen(), "the disposed launch stays screenless")
+      Assert.equal(#host1.notifies, 0, "the disposed launch reports nothing late")
+      Assert.isFalse(port1.enter({ launchId = firstId, kind = "wild" }), "the disposed port stays unacknowledged")
+      Assert.isFalse(port1.ready(), "the disposed port never reads interactive")
+      host1.phase = "complete"
+      for _ = 1, 5 do
+        envelope:updateFixed(TICK)
+      end
+      worker.ready = nil
+      local host2 = launchHost()
+      local secondId = "disposed-second-probe"
+      local port2 = envelope:factory()({
+        launchId = secondId,
+        kind = "wild",
+        environment = { sceneKey = secondScene },
+        host = host2,
+      })
+      for _ = 1, 10 do
+        envelope:updateFixed(TICK)
+      end
+      Assert.equal(#constructions, 0, "the pending second launch holds no screen either")
+      Assert.isNil(envelope:liveScreen(), "polling never builds the second screen early")
+      worker.ready = true
+      local entered = false
+      for _ = 1, 120 do
+        envelope:updateFixed(TICK)
+        if port2.enter({ launchId = secondId, kind = "wild" }) then
+          entered = true
+          break
+        end
+      end
+      Assert.isTrue(entered, "the staged second launch enters")
+      Assert.equal(#constructions, 1, "the next launch constructs exactly one screen")
+      Assert.equal(constructions[1], secondId, "the one screen belongs to the second launch")
+      local live = assert(envelope:liveScreen(), "the second launch owns its live screen")
+      Assert.isFalse(port1.enter({ launchId = firstId, kind = "wild" }), "the stale port never reacknowledges")
+      Assert.isFalse(port1.ready(), "the stale port never reads interactive")
+      local presentOk = pcall(port1.present, { launchId = firstId, packetId = 1 })
+      Assert.isTrue(presentOk, "a stale delivery never raises")
+      Assert.isTrue(envelope:liveScreen() == live, "a stale delivery never swaps the live screen")
+      Assert.equal(#constructions, 1, "stale callbacks construct nothing further")
+      port1.dispose()
+      port2.dispose()
+      port2.dispose()
+      envelope:dispose()
+    end, debug.traceback)
+    ScreenState.new = realNew
+    if not ok then
+      error(failure, 0)
+    end
+  end
+end
+
+-- Entry waits for the staged scene through the real runtime gate: the
+-- admitted port answers no entry and no readiness while the scene
+-- builds, so a live battle runtime stays in preparing; once the worker
+-- publishes, the same port enters and the runtime leaves preparing
+-- without a second admission.
+function T.preparing_waits_for_the_staged_scene_through_the_runtime_gate()
+  local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
+  local sceneKey = "general/grass/day"
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local worker = { ready = nil, failure = nil, asks = {} }
+    local derivedAssets = {}
+    function derivedAssets.requestBattleScene(key, urgency)
+      worker.asks[#worker.asks + 1] = { key = key, urgency = urgency }
+      return worker.ready, worker.failure
+    end
+    local host = { phase = "active", notifies = {} }
+    function host.status()
+      return { phase = host.phase }
+    end
+    function host.advance() end
+    function host.submit(_)
+      return true
+    end
+    function host.notify(event, reason)
+      host.notifies[#host.notifies + 1] = { event = event, reason = reason }
+    end
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      windows = recordingWindows(),
+      text = recordingText(),
+      audio = recordingAudio(),
+      measureDisplay = function()
+        return dualMeasurement("preparing-gate:dual")
+      end,
+      graphics = uploadCapableGraphics(),
+      derivedAssets = derivedAssets,
+    })
+    local launchId = "preparing-gate-probe"
+    local port = envelope:factory()({
+      launchId = launchId,
+      kind = "wild",
+      environment = { sceneKey = sceneKey },
+      host = host,
+    })
+    local battle = BattleRuntime.new({
+      request = { id = launchId, kind = "wild", payload = { species = "CATERPIE", level = 3 } },
+      presentation = port,
+    })
+    local ok, failure = xpcall(function()
+      for _ = 1, 10 do
+        envelope:updateFixed(TICK)
+        battle:update()
+      end
+      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "entry waits while the scene builds")
+      Assert.isFalse(port.ready(), "readiness waits while the scene builds")
+      Assert.equal(battle:status().phase, "preparing", "the runtime holds preparing behind the pending port")
+      Assert.isNil(envelope:liveScreen(), "no screen exists before the worker publishes")
+      worker.ready = true
+      local left = false
+      for _ = 1, 120 do
+        envelope:updateFixed(TICK)
+        battle:update()
+        if battle:status().phase ~= "preparing" then
+          left = true
+          break
+        end
+      end
+      Assert.isTrue(left, "the staged scene lets the runtime leave preparing")
+      Assert.isTrue(port.enter({ launchId = launchId, kind = "wild" }), "entry acknowledges after the build")
+      Assert.notNil(envelope:liveScreen(), "the staged scene owns its live screen")
+      Assert.equal(#host.notifies, 0, "the staged build reports no failure")
+    end, debug.traceback)
+    local closed = pcall(function()
+      battle:dispose()
+    end)
+    local released = pcall(function()
+      envelope:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    Assert.isTrue(closed, "teardown releases the live battle")
+    Assert.isTrue(released, "teardown releases the envelope")
+  end
+end
+
+-- A scene failure reports once without driving the host: under cover and
+-- while active the launch names its scene and cause exactly once, owns
+-- no screen and never reads interactive, and no port callback advances
+-- the host on its own.
+function T.scene_failure_reports_once_without_driving_the_host()
+  local sceneKey = "general/plain/day"
+  for _, point in ipairs({ "covering", "active" }) do
+    for _, versionId in ipairs(readyVersions()) do
+      local cacheFs = CacheFs.forVersion(versionId)
+      local worker = { ready = nil, failure = nil }
+      local derivedAssets = {}
+      function derivedAssets.requestBattleScene(_, _)
+        return worker.ready, worker.failure
+      end
+      local host = { phase = point, notifies = {}, advances = 0, advancing = false, violations = 0 }
+      function host.status()
+        return { phase = host.phase }
+      end
+      function host.advance()
+        host.advancing = true
+        host.advances = host.advances + 1
+        host.advancing = false
+      end
+      function host.submit(_)
+        return true
+      end
+      function host.notify(event, reason)
+        if host.advancing then
+          host.violations = host.violations + 1
+        end
+        host.notifies[#host.notifies + 1] = { event = event, reason = reason }
+      end
+      local envelope = FieldBattlePresentation.new({
+        cacheFs = cacheFs,
+        windows = recordingWindows(),
+        text = recordingText(),
+        audio = recordingAudio(),
+        measureDisplay = function()
+          return dualMeasurement("failure-without-advance:" .. point)
+        end,
+        graphics = uploadCapableGraphics(),
+        derivedAssets = derivedAssets,
+      })
+      local launchId = "failure-without-advance-" .. point
+      local port = envelope:factory()({
+        launchId = launchId,
+        kind = "wild",
+        environment = { sceneKey = sceneKey },
+        host = host,
+      })
+      for _ = 1, 5 do
+        envelope:updateFixed(TICK)
+      end
+      Assert.equal(host.advances, 5, "fixed updates advance the host once each at " .. point)
+      Assert.equal(#host.notifies, 0, "pending reports no failure at " .. point)
+      local driven = host.advances
+      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "entry waits at " .. point)
+      Assert.isFalse(port.ready(), "readiness waits at " .. point)
+      Assert.isFalse(port.leave({ launchId = launchId }), "leave waits at " .. point)
+      local presentOk = pcall(port.present, { launchId = launchId, packetId = 1 })
+      Assert.isTrue(presentOk, "a pending delivery never raises at " .. point)
+      Assert.equal(host.advances, driven, "port callbacks never advance the host at " .. point)
+      worker.failure = "probe-controller-boom"
+      for _ = 1, 10 do
+        envelope:updateFixed(TICK)
+      end
+      Assert.equal(host.advances, driven + 10, "failure ticks advance the host once each at " .. point)
+      Assert.equal(host.violations, 0, "the report never fires inside a host advance at " .. point)
+      Assert.isFalse(port.ready(), "the failed launch never reads interactive at " .. point)
+      Assert.isNil(envelope:liveScreen(), "the failed launch owns no screen at " .. point)
+      local failures = {}
+      for _, note in ipairs(host.notifies) do
+        if note.event == "screen-failed" then
+          failures[#failures + 1] = note
+        end
+      end
+      Assert.equal(#failures, 1, "the worker failure reports exactly once at " .. point)
+      Assert.isTrue(
+        type(failures[1].reason) == "string" and failures[1].reason:find(sceneKey, 1, true) ~= nil,
+        "the report names its scene at " .. point .. ": " .. tostring(failures[1].reason)
+      )
+      Assert.isTrue(
+        tostring(failures[1].reason):find("probe-controller-boom", 1, true) ~= nil,
+        "the report carries its worker cause at " .. point .. ": " .. tostring(failures[1].reason)
+      )
+      for _ = 1, 5 do
+        envelope:updateFixed(TICK)
+      end
+      local failuresAgain = 0
+      for _, note in ipairs(host.notifies) do
+        if note.event == "screen-failed" then
+          failuresAgain = failuresAgain + 1
+        end
+      end
+      Assert.equal(failuresAgain, 1, "later polls report no second failure at " .. point)
+      Assert.equal(host.violations, 0, "later polls never report inside a host advance at " .. point)
+      port.dispose()
+      port.dispose()
+      envelope:dispose()
+      envelope:dispose()
+    end
+  end
+end
+
 -- A caller-owned graphics double behind explicit draws: paint operations
 -- are counted together while image creation is tracked apart, since
 -- uploads may legitimately happen during updates but painting may not.

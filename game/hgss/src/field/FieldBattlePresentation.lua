@@ -30,9 +30,12 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _preparedDemands table<integer, table<string, unknown>> exact launch demands requested, in order
 ---@field _launchId string? active launch identity, nil outside launches
 ---@field _descriptor table<string, unknown>? active launch descriptor from the runtime
+---@field _pendingFailed boolean true once a pending launch reported its terminal build failure
+---@field _pendingBuild boolean true while a scheduled launch still awaits its deferred screen
 ---@field _recoveryPointerId string|number|nil pending recovery press identity awaiting its release
 ---@field _screen table<string, unknown>? live per-launch battle screen
 ---@field _port table<string, unknown>? live five-operation port behind the owned battle
+---@field _innerPort table<string, unknown>? owned screen port a pending facade forwards to once built
 ---@field _lastStatus table<string, unknown>? latest observed launch status snapshot
 ---@field _cover integer current opaque-black cover coefficient on the 0..16 scale
 ---@field _accumulator number source-frame time held toward the next cover step
@@ -136,9 +139,12 @@ function FieldBattlePresentation.new(opts)
     _preparedDemands = {},
     _launchId = nil,
     _descriptor = nil,
+    _pendingFailed = false,
+    _pendingBuild = false,
     _recoveryPointerId = nil,
     _screen = nil,
     _port = nil,
+    _innerPort = nil,
     _lastStatus = nil,
     _cover = 0,
     _accumulator = 0,
@@ -548,16 +554,221 @@ function FieldBattlePresentation:preparedDemands()
   return self._preparedDemands
 end
 
--- The bindable per-launch factory: each descriptor builds one fresh port
--- backed by one fresh battle screen. Construction failures release partial
--- resources and never return a half-valid port.
+-- The bindable per-launch factory: each descriptor admits one launch and
+-- returns one fresh five-operation port. Descriptor-only composition keeps
+-- its synchronous screen; a launch with a scene scheduler behind it gets
+-- a pending facade that stays unacknowledged until the scheduled scene
+-- and its staged companion manifest publish, then builds exactly one
+-- production screen behind the same port. Admission failures raise;
+-- operational build failures report through the host once.
 ---@return fun(descriptor: table<string, unknown>): table<string, unknown>
 function FieldBattlePresentation:factory()
   local envelope = self
   local function buildPort(descriptor)
-    return envelope:_buildPort(descriptor)
+    return envelope:_admitLaunch(descriptor)
   end
   return buildPort
+end
+
+-- Admits one launch behind its identity: validates the descriptor shape
+-- and its scene naming, opens cover and music bookkeeping, and either
+-- builds the descriptor screen at once or hands out the pending facade
+-- that the fixed update completes. Concurrent launches fail at
+-- admission; the launch owns one launch at a time.
+---@param descriptor table<string, unknown> detached launch descriptor from the runtime
+---@return table<string, unknown> fresh five-operation port behind the launch
+function FieldBattlePresentation:_admitLaunch(descriptor)
+  assert(type(descriptor) == "table", "presentation factories take a launch descriptor")
+  assert(
+    type(descriptor.launchId) == "string" and descriptor.launchId ~= "",
+    "presentation factories take the launch identity"
+  )
+  assert(type(descriptor.environment) == "table", "presentation factories take the launch environment")
+  assert(not self._disposed, "the presented battle envelope is disposed")
+  assert(self._launchId == nil, "the envelope owns one launch at a time")
+  local environment = descriptor.environment --[[@as table<string, unknown>]]
+  local sceneKey = environment.sceneKey
+  assert(type(sceneKey) == "string" and sceneKey ~= "", "launch environments resolve their scene identity")
+  assert(BattlePresentationCache.parseSceneKey(sceneKey) ~= nil, "unknown battle scene key: " .. tostring(sceneKey))
+  self._launchId = descriptor.launchId
+  self._descriptor = descriptor
+  self._pendingFailed = false
+  self._pendingBuild = false
+  self._screen = nil
+  self._innerPort = nil
+  self._lastStatus = nil
+  self._cover = 0
+  self._accumulator = 0
+  self._revealingBattle = false
+  self._musicStarted = false
+  self._musicNote = nil
+  local derived = self._derivedAssets
+  local scheduled = self._graphics ~= nil
+    and type(derived) == "table"
+    and type(derived.requestBattleScene) == "function"
+  if not scheduled then
+    local constructed = self:_buildPort(descriptor)
+    self._port = constructed
+    return constructed
+  end
+  self._pendingBuild = true
+  local launchId = descriptor.launchId --[[@as string]]
+  local facade = {}
+  local function owned()
+    if self._launchId ~= launchId or self._descriptor == nil then
+      return nil
+    end
+    return self._innerPort
+  end
+  function facade.enter(plan)
+    local inner = owned()
+    if inner == nil then
+      return false
+    end
+    local ok, acknowledged = pcall(inner.enter, plan)
+    return ok and acknowledged == true
+  end
+  function facade.present(packet)
+    local inner = owned()
+    if inner == nil then
+      return
+    end
+    local _, _ = pcall(inner.present, packet)
+  end
+  function facade.ready()
+    local inner = owned()
+    if inner == nil then
+      return false
+    end
+    local ok, interactive = pcall(inner.ready)
+    return ok and interactive == true
+  end
+  function facade.leave(plan)
+    local inner = owned()
+    if inner == nil then
+      return false
+    end
+    local ok, acknowledged = pcall(inner.leave, plan)
+    return ok and acknowledged == true
+  end
+  function facade.dispose()
+    if self._launchId ~= launchId then
+      return
+    end
+    local screen = self._screen
+    self:_dropLaunch()
+    if screen ~= nil then
+      local _, _ = pcall(function()
+        return screen:dispose()
+      end)
+    end
+  end
+  self._port = facade
+  return facade
+end
+
+-- Builds the single production screen for a pending launch once its
+-- scheduled scene published: reloads the current companion manifest,
+-- requires its staged mark and the exact demanded scene, then
+-- constructs through the one construction site. Pending answers build
+-- nothing; terminal answers report once and keep the launch covered
+-- until the field drains it. Runs before the host advance on the same
+-- fixed tick, never from inside a port callback.
+function FieldBattlePresentation:_pollPendingScreen()
+  if self._disposed then
+    return
+  end
+  if self._graphics == nil then
+    return
+  end
+  local descriptor = self._descriptor
+  if self._launchId == nil or type(descriptor) ~= "table" then
+    return
+  end
+  if self._screen ~= nil or self._innerPort ~= nil then
+    return
+  end
+  if self._pendingFailed or not self._pendingBuild then
+    return
+  end
+  local environment = descriptor.environment --[[@as table<string, unknown>]]
+  local sceneKey = type(environment) == "table" and environment.sceneKey or nil
+  if type(sceneKey) ~= "string" or sceneKey == "" then
+    self:_failPendingLaunch("launch environments resolve their scene identity")
+    return
+  end
+  local derived = self._derivedAssets
+  local requestScene = type(derived) == "table" and derived.requestBattleScene or nil
+  if type(requestScene) == "function" then
+    local ok, ready, failure = pcall(requestScene, sceneKey, "required")
+    if not ok then
+      self:_failPendingLaunch("battle scene " .. tostring(sceneKey) .. ": " .. tostring(ready))
+      return
+    end
+    if failure ~= nil then
+      self:_failPendingLaunch("battle scene " .. tostring(sceneKey) .. ": " .. tostring(failure))
+      return
+    end
+    if ready ~= true then
+      return
+    end
+  end
+  local manifest = loadManifest(self._cacheFs)
+  if type(manifest) ~= "table" or manifest.verified ~= true then
+    if type(requestScene) ~= "function" then
+      self:_failPendingLaunch("battle scene " .. tostring(sceneKey) .. ": no scene demand host to schedule it")
+    else
+      self:_failPendingLaunch(
+        "battle scene " .. tostring(sceneKey) .. ": the staged battle presentation is not verified"
+      )
+    end
+    return
+  end
+  local known = false
+  if type(manifest.scenes) == "table" then
+    for _, entry in ipairs(manifest.scenes) do
+      if type(entry) == "table" and entry.key == sceneKey then
+        known = true
+        break
+      end
+    end
+  end
+  if not known then
+    self:_failPendingLaunch("launch scene is outside the presentation inventory: " .. tostring(sceneKey))
+    return
+  end
+  self._manifest = manifest
+  local okBuild, innerOrErr = pcall(function()
+    return self:_buildPort(descriptor)
+  end)
+  self._pendingBuild = false
+  if not okBuild then
+    self._screen = nil
+    self._innerPort = nil
+    self:_failPendingLaunch("battle scene " .. tostring(sceneKey) .. ": " .. tostring(innerOrErr))
+    return
+  end
+  self._innerPort = innerOrErr
+end
+
+-- Latches the first terminal build failure for the pending launch and
+-- reports it through the host exactly once. The descriptor, cover, and
+-- launch identity stay with the host until the field drains the abort;
+-- a disposed launch reports nothing late.
+---@param reason string terminal failure context behind the report
+function FieldBattlePresentation:_failPendingLaunch(reason)
+  if self._pendingFailed then
+    return
+  end
+  local descriptor = self._descriptor
+  if self._launchId == nil or type(descriptor) ~= "table" then
+    return
+  end
+  self._pendingFailed = true
+  local host = descriptor.host --[[@as table<string, unknown>]]
+  if host ~= nil and type(host.notify) == "function" then
+    host.notify("screen-failed", reason)
+  end
 end
 
 -- Adapts one launch behind the screen-owned one-argument cue sink.
@@ -602,7 +813,7 @@ function FieldBattlePresentation:_screenAudioFor(launchId)
   return { play = play }
 end
 
----@param descriptor table<string, unknown> detached launch descriptor from the runtime
+---@param descriptor table<string, unknown> admitted launch descriptor from the runtime
 ---@return table<string, unknown> fresh five-operation port behind a fresh screen
 function FieldBattlePresentation:_buildPort(descriptor)
   assert(type(descriptor) == "table", "presentation factories take a launch descriptor")
@@ -612,7 +823,8 @@ function FieldBattlePresentation:_buildPort(descriptor)
   )
   assert(type(descriptor.environment) == "table", "presentation factories take the launch environment")
   assert(not self._disposed, "the presented battle envelope is disposed")
-  assert(self._launchId == nil, "the envelope owns one launch at a time")
+  assert(self._launchId == descriptor.launchId, "the envelope builds only its admitted launch")
+  assert(self._screen == nil, "the envelope builds one screen per launch")
   local environment = descriptor.environment --[[@as table<string, unknown>]]
   local sceneKey = environment.sceneKey
   assert(type(sceneKey) == "string" and sceneKey ~= "", "launch environments resolve their scene identity")
@@ -650,17 +862,8 @@ function FieldBattlePresentation:_buildPort(descriptor)
     monCatalog = self._monCatalog,
     overrides = { sceneKey = sceneKey },
   })
-  self._launchId = descriptor.launchId
-  self._descriptor = descriptor
   self._screen = screen
-  self._port = screen:presentationPort()
-  self._lastStatus = nil
-  self._cover = 0
-  self._accumulator = 0
-  self._revealingBattle = false
-  self._musicStarted = false
-  self._musicNote = nil
-  return self._port
+  return screen:presentationPort()
 end
 
 ---@return table<string, unknown>? live per-launch battle screen, nil after its port disposes
@@ -820,6 +1023,11 @@ function FieldBattlePresentation:updateFixed(dt)
       math.floor((self._accumulator + FieldBattlePresentation.SOURCE_EPSILON) / FieldBattlePresentation.SOURCE_FRAME)
     self._accumulator = self._accumulator - discarded * FieldBattlePresentation.SOURCE_FRAME
   end
+  -- The scheduled scene behind a pending launch resolves here: the
+  -- worker is observed before the host advances, so the battle runtime
+  -- cannot publish a packet before its screen exists and a terminal
+  -- build failure reaches the host before any further advance.
+  self:_pollPendingScreen()
   -- The presented launch advances only here: the runtime phase machine
   -- and the owned battle clock run once per envelope tick, never through
   -- the host-update pump as well.
@@ -1020,9 +1228,12 @@ end
 function FieldBattlePresentation:_dropLaunch()
   self._launchId = nil
   self._descriptor = nil
+  self._pendingFailed = false
+  self._pendingBuild = false
   self._recoveryPointerId = nil
   self._screen = nil
   self._port = nil
+  self._innerPort = nil
   self._lastStatus = nil
   self._revealingBattle = false
   self._musicStarted = false

@@ -564,6 +564,172 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
   end
 end
 
+-- A cold global and scene stay covered without a screen until the worker
+-- publishes: the admitted port stays unacknowledged with no live screen
+-- and no painted frame while pending, then exactly one staged-backed
+-- screen enters and renders staged scene ink deterministically.
+function T.cold_global_and_scene_build_one_verified_screen(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the cold battle coverage needs a ready user-owned ROM with a derived cache")
+  end
+  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = BattlePresentationCache.load(cacheFs)
+    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    local wildRole = assert(manifest.audioRoles.wild, versionId .. " stages its wild music role")
+    local manifestPath = BattlePresentationCache.manifestPath()
+    local recordPath = BattlePresentationCache.scenePath(SCENE_KEY)
+    local imagePath = BattlePresentationCache.sceneImagePath(SCENE_KEY)
+    local revealed = false
+    local view = { versionId = cacheFs.versionId }
+    function view.loadLua(_, path)
+      if not revealed and (path == manifestPath or path == recordPath) then
+        return nil
+      end
+      return cacheFs:loadLua(path)
+    end
+    function view.read(_, path)
+      if not revealed and path == imagePath then
+        return nil
+      end
+      return cacheFs:read(path)
+    end
+    local worker = { ready = nil, failure = nil, asks = {} }
+    local derivedAssets = {}
+    function derivedAssets.requestBattleScene(key, urgency)
+      worker.asks[#worker.asks + 1] = { key = key, urgency = urgency }
+      return worker.ready, worker.failure
+    end
+    local host = { phase = "leaving", notifies = {} }
+    function host.status()
+      return { phase = host.phase }
+    end
+    function host.advance() end
+    function host.submit(_)
+      return true
+    end
+    function host.notify(event, reason)
+      host.notifies[#host.notifies + 1] = { event = event, reason = reason }
+    end
+    local realNew = BattleScreenState.new
+    local constructions = {}
+    BattleScreenState.new = function(opts)
+      constructions[#constructions + 1] = opts ~= nil and opts.manifest or nil
+      return realNew(opts)
+    end
+    local ok, failure = xpcall(function()
+      local text, windows = productionDrawServices(scope, cacheFs, versionId)
+      local envelope = FieldBattlePresentation.new({
+        cacheFs = view,
+        graphics = love.graphics,
+        windows = windows,
+        text = text,
+        audio = recordingAudio(),
+        measureDisplay = compactMeasurement,
+        derivedAssets = derivedAssets,
+      })
+      local launchId = "battle-cold-global"
+      local port = buildPort(envelope, {
+        launchId = launchId,
+        kind = "wild",
+        environment = { sceneKey = SCENE_KEY },
+        host = host,
+      })
+      Assert.isNil(envelope:liveScreen(), versionId .. " holds no screen while its global builds")
+      Assert.equal(#constructions, 0, versionId .. " constructs no screen before the worker publishes")
+      for _ = 1, 30 do
+        envelope:updateFixed(TICK)
+      end
+      Assert.isFalse(
+        port.enter({ launchId = launchId, kind = "wild" }),
+        versionId .. " stays unacknowledged while pending"
+      )
+      Assert.isFalse(port.ready(), versionId .. " never reads interactive while pending")
+      Assert.isNil(envelope:liveScreen(), versionId .. " still holds no screen while pending")
+      Assert.isTrue(#worker.asks >= 1, versionId .. " demands its scene through the borrowed host")
+      for _, ask in ipairs(worker.asks) do
+        Assert.equal(ask.key, SCENE_KEY, versionId .. " demands exactly its launch scene")
+        Assert.equal(ask.urgency, "required", versionId .. " demands its scene urgently")
+      end
+      Assert.isFalse(
+        envelope:drawBattle({ graphics = love.graphics, text = text, windows = windows }),
+        versionId .. " paints no blank success while pending"
+      )
+      for _, note in ipairs(host.notifies) do
+        Assert.isTrue(note.event ~= "screen-failed", versionId .. " reports no failure while pending")
+      end
+      revealed = true
+      worker.ready = true
+      driveToEnter(envelope, port, launchId, versionId)
+      Assert.equal(#constructions, 1, versionId .. " constructs exactly one screen")
+      Assert.isTrue(
+        type(constructions[1]) == "table" and constructions[1].verified == true,
+        versionId .. " backs its screen with the staged global"
+      )
+      local demands = envelope:preparedDemands()
+      Assert.isTrue(#demands >= 1, versionId .. " prepares its exact launch demand")
+      Assert.deepEqual(demands[1].scenes, { SCENE_KEY }, versionId .. " demands exactly its staged scene")
+      local carriesWild = false
+      for _, role in ipairs(demands[1].audio.roles) do
+        if role == wildRole then
+          carriesWild = true
+        end
+      end
+      Assert.isTrue(carriesWild, versionId .. " demands its staged wild music role")
+      local portraits = {
+        leadBack = stagedPortraitSelector(cacheFs, LEAD_SPECIES, "back"),
+        foeFront = stagedPortraitSelector(cacheFs, FOE_SPECIES, "front"),
+      }
+      driveToCommand(envelope, port, launchId, versionId, portraits)
+      local screen = assert(envelope:liveScreen(), versionId .. " keeps its live screen")
+      local plan = livePlan(screen, versionId)
+      local width, height = canvasSize(plan, versionId)
+      Assert.equal(width, 256, versionId .. " keeps the compact canvas width")
+      Assert.equal(height, 192, versionId .. " keeps the compact canvas height")
+      local frame = assert(plan.panes[1].placement.frame, versionId .. " frames its compact pane")
+      local content = assert(plan.content, versionId .. " carries its compact content")
+      local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+      local function render()
+        love.graphics.setCanvas(canvas)
+        love.graphics.clear(0, 0, 0, 0)
+        Assert.isTrue(
+          envelope:drawBattle({ graphics = love.graphics, text = text, windows = windows }),
+          versionId .. " draws its live battle"
+        )
+        love.graphics.setCanvas()
+        return scope:own(canvas:newImageData())
+      end
+      local firstPixels = render()
+      local secondPixels = render()
+      Assert.equal(
+        imageDataDigest(firstPixels),
+        imageDataDigest(secondPixels),
+        versionId .. " renders its cold-built frames deterministically"
+      )
+      local sceneBox = hostRect(frame, content.scene)
+      Assert.isTrue(
+        countInk(firstPixels, sceneBox) > 20000,
+        versionId .. " fills the scene viewport with staged scene ink"
+      )
+      local promptBox = hostRect(frame, content.prompt.content)
+      Assert.isTrue(countInk(firstPixels, promptBox) > 100, versionId .. " prints prompt text ink")
+      local cells = assert(content.commands.cells, versionId .. " carries its command cells")
+      Assert.equal(#cells, 4, versionId .. " lays out four command cells")
+      for _, note in ipairs(host.notifies) do
+        Assert.isTrue(note.event ~= "screen-failed", versionId .. " never fails its staged launch")
+      end
+      love.graphics.setCanvas()
+      envelope:dispose()
+    end, debug.traceback)
+    BattleScreenState.new = realNew
+    if not ok then
+      error(failure, 0)
+    end
+  end
+end
+
 -- A launch whose staged scene image is missing fails closed with
 -- context: entry stays unacknowledged, the screen reports failed with
 -- the missing member named, drawing never raises on either graphics
