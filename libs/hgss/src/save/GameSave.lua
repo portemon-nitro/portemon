@@ -31,6 +31,7 @@ local TOP_LEVEL_FIELDS = {
   facing = true,
   fashionCase = true,
   fieldTravel = true,
+  pokegear = true,
   fieldX = true,
   fieldZ = true,
   mapId = true,
@@ -322,6 +323,45 @@ end
 -- was. The result still
 -- passes canonical validation afterwards; this step never repairs malformed
 -- current data.
+-- The radio-card acquisition flag behind the companion migration: a set
+-- flag proves the card, so only that bit is reconstructed. No source flag
+-- proves a received Map Card, and no defeat or story flag invents optional
+-- phone numbers, so those stay absent for explicit repair.
+local RADIO_CARD_FLAG = 138
+
+---@param world unknown
+---@return boolean
+local function hasRadioCardEvidence(world)
+  if type(world) ~= "table" then
+    return false
+  end
+  local flags = world.flags
+  if type(flags) ~= "table" then
+    return false
+  end
+  return flags[RADIO_CARD_FLAG] == true
+end
+
+-- Deterministic identity seed for the companion migration: a byte hash of
+-- the save id, never host time, so the same predecessor always migrates
+-- to the same daily identity.
+---@param saveId unknown
+---@return integer
+local function migrationSeed(saveId)
+  local text = type(saveId) == "string" and saveId or ""
+  local hash = 0
+  for index = 1, #text do
+    hash = (hash * 31 + text:byte(index)) % 4294967296
+  end
+  return hash
+end
+
+-- Pure v8 -> v9 conversion. Copies every bucket without mutating the
+-- input and creates the source-neutral companion bucket: empty contact
+-- history, the base companion card, and only the radio bit when its
+-- acquisition flag proves it. Nested buckets pass through to their owning
+-- domains untouched; malformed current companion data is never repaired
+-- here, only validated on restore.
 ---@param record table<string, unknown> a v8 save record
 ---@return table<string, unknown> the migrated v9 record
 function GameSave.migrateV8(record)
@@ -333,6 +373,12 @@ function GameSave.migrateV8(record)
   migrated.schema = GameSave.SCHEMA
   migrated.playerData.profile.runningShoes = false
   migrated.playerData.profile.runningShoesLock = false
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local gear = PokegearState.new({ seed = migrationSeed(record.saveId) }, nil)
+  if hasRadioCardEvidence(record.world) then
+    gear:registerCard("radio")
+  end
+  migrated.pokegear = gear:capture()
   return migrated
 end
 

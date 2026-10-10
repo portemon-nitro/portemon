@@ -151,6 +151,16 @@ function FieldSaveCoordinator:capture(allowMenu)
     encounters = EncounterSave.capture(assert(runtime.roamerState, "field runtime has no roamer state")),
     pokedex = assert(runtime.dexKnowledge, "field runtime has no dex knowledge"):bucket(),
   }
+  -- The runtime-owned companion bucket rides alongside the existing
+  -- domains. The owner is required: capture never manufactures a default
+  -- bucket, and the live draw streams merge into the detached capture so
+  -- saving advances neither stream nor revision.
+  local gearOwner = assert(runtime.pokegearState, "field runtime has no companion state")
+  local gearBucket = gearOwner:capture()
+  if runtime.pokegearRandom ~= nil then
+    gearBucket.random = runtime.pokegearRandom:capture()
+  end
+  snapshot.pokegear = gearBucket
   if runtime.playerAvatar then
     snapshot.avatar = runtime.playerAvatar:capture()
   end

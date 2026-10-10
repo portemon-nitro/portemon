@@ -198,6 +198,9 @@ end
 ---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
 ---@field dexKnowledge table<string, unknown>? the owned dex knowledge
+---@field pokegearState table<string, unknown> the owned companion state, calendar checkpoint, and persisted draw seeds
+---@field pokegearRandom table<string, unknown>? the live companion draw pair (nil after teardown)
+---@field pokegearCalendar table<string, unknown>? the companion-local civil calendar adapter (nil after teardown)
 ---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
 ---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
@@ -1033,6 +1036,7 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   self.mailbox = Mailbox.new(boot.loadedGame and boot.loadedGame.mailbox or nil)
   self.photoAlbum = PhotoAlbum.new(boot.loadedGame and boot.loadedGame.photoAlbum or nil)
+  self:_composePokegear(boot.loadedGame, boot.cacheFs)
   self:_composeBag(boot.activeGame, boot.loadedGame)
   self:_composeBattleState(
     boot.loadedGame,
@@ -2033,6 +2037,57 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
     return owner:lastBattleResult()
   end
   self._battleHost = { launchBattle = hostLaunch, battleStatus = hostStatus, lastBattleResult = hostResult }
+end
+
+-- Composes the one companion owner: durable state restored with generated
+-- catalog references (or started fresh with the session seed when the
+-- record predates the bucket), the live draw pair continuing the persisted
+-- seeds, and the civil calendar adapter over the state checkpoint. The
+-- runtime holds the state as a required owner; the draw pair and calendar
+-- are transient adapters released at field shutdown. Field samples reach
+-- the calendar through explicit observations, never through polling here.
+---@param loadedGame table<string, unknown>?
+---@param cacheFs table<string, unknown> CacheFs-shaped
+function FieldRuntime:_composePokegear(loadedGame, cacheFs)
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local PokegearCalendar = require("game.hgss.src.pokegear.PokegearCalendar")
+  local PokegearCache = require("libs.assets.src.PokegearCache")
+  local manifest = PokegearCache.loadManifest(cacheFs)
+  assert(
+    type(manifest) == "table" and type(manifest.catalog) == "table",
+    "companion composition needs its contact catalog"
+  )
+  local refs = { catalog = manifest.catalog }
+  local bucket = loadedGame ~= nil and loadedGame.pokegear or nil
+  if bucket ~= nil then
+    assert(type(bucket) == "table" and type(bucket.random) == "table", "saved companion state carries its draw seeds")
+    self.pokegearState = PokegearState.restore(bucket, refs)
+    self.pokegearRandom = PokegearRandom.restore(bucket.random)
+  else
+    local seed = self:_pokegearSeed()
+    self.pokegearState = PokegearState.new({ seed = seed }, refs)
+    self.pokegearRandom = PokegearRandom.new(seed)
+  end
+  self.pokegearCalendar = PokegearCalendar.new(self.pokegearState)
+end
+
+-- The companion seed boundary: the validated trainer identity when the
+-- profile carries one, otherwise a deterministic hash of the save id.
+-- Never host time, so the same game always resumes the same streams.
+---@return integer
+function FieldRuntime:_pokegearSeed()
+  local profile = self.playerData ~= nil and self.playerData.profile or nil
+  local trainerId = type(profile) == "table" and profile.trainerId or nil
+  if type(trainerId) == "number" and trainerId % 1 == 0 and trainerId >= 0 then
+    return math.floor(trainerId % 4294967296)
+  end
+  local saveId = type(self.saveId) == "string" and self.saveId or ""
+  local hash = 0
+  for index = 1, #saveId do
+    hash = (hash * 31 + saveId:byte(index)) % 4294967296
+  end
+  return hash
 end
 
 -- Attaches the presentation port used by field-owned battles.
@@ -3042,6 +3097,7 @@ function FieldRuntime:_releaseAll()
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
   self.mailbox, self.photoAlbum = nil, nil
+  self.pokegearState, self.pokegearRandom, self.pokegearCalendar = nil, nil, nil
   self.martStockResolver = nil
   self.itemCatalog = nil
   self.followerInteractionCatalog = nil
