@@ -1520,8 +1520,6 @@ function FieldRuntime:update(dt)
     self.residency:updatePrefetch()
   end
 
-  self:_refreshFieldTimeOfDay()
-
   self.session.accumulator = self.session.accumulator + acceptedDt
   -- Reconcile the battle input gate before any fixed tick can initiate
   -- player movement, interactions, or menu actions.
@@ -1587,6 +1585,10 @@ function FieldRuntime:update(dt)
     local discarded = math.floor((self.session.accumulator + EPSILON) / FIXED_DT)
     self.session.accumulator = self.session.accumulator - discarded * FIXED_DT
   end
+
+  -- After the fixed ticks: a tick may activate a new map, whose render
+  -- environment must carry the current time in the frame that draws it.
+  self:_refreshFieldTimeOfDay()
 
   -- The owned battle lifetime pumps once per runtime update, after the
   -- field settles: simulation and presentation acknowledgements advance

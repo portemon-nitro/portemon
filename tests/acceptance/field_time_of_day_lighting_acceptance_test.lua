@@ -5,6 +5,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
+local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local LocalClock = require("game.src.LocalClock")
 
 local T = {
@@ -66,6 +67,31 @@ function T.tests.outdoor_field_lighting_advances_continuously_from_the_host_cloc
       nightRecord ~= morningRecord,
       "night and morning must select different lighting records for New Bark Town"
     )
+  end)
+end
+
+-- A seamless zone change activates the neighbor's render environment inside
+-- a fixed tick; the frame that draws it must already carry the host time.
+function T.tests.zone_change_frame_carries_the_host_time()
+  local time = { hour = 22, minute = 0, second = 0 }
+  withGame(time, function(game)
+    game:waitForFieldEntry()
+    local townMapId = game.runtime.runtimeMap.mapId
+    -- Disarm the west-exit scene trigger so the walk is uninterrupted.
+    game:setWorldState({ variable = FieldScriptSymbols.variablesByName.VAR_SCENE_NEW_BARK_WEST_EXIT, value = 1 })
+    game:moveTo({ fieldX = 676, fieldZ = 399 })
+    local crossed = false
+    for _ = 1, 24 do
+      game:_moveOne("west")
+      local runtimeMap = game.runtime.runtimeMap
+      Assert.equal(
+        runtimeMap.renderEnvironment.fieldTimeSeconds,
+        22 * 3600,
+        "the active map's lighting time matches the host clock after every step"
+      )
+      crossed = crossed or runtimeMap.mapId ~= townMapId
+    end
+    Assert.isTrue(crossed, "the walk crosses into the neighboring zone")
   end)
 end
 
