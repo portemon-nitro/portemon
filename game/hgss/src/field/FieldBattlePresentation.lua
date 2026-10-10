@@ -692,8 +692,21 @@ function FieldBattlePresentation:ownsInput()
   if self._launchId == nil then
     return false
   end
-  local status = self._lastStatus
-  return status == nil or status.phase ~= "transfer"
+  if self:liveScreen() ~= nil then
+    local status = self._lastStatus
+    return status == nil or status.phase ~= "transfer"
+  end
+  -- The failed screen is gone while its launch still settles through
+  -- the host: input stays held only while opaque cover still hides the
+  -- field or the host still answers its recovery wait through the
+  -- envelope. A screenless launch with nothing left to show or answer
+  -- releases, so a failure before entry never pins field input behind
+  -- a dead presentation.
+  if self._cover > 0 then
+    return true
+  end
+  local observed = self._lastStatus
+  return observed ~= nil and observed.phase == "recovering"
 end
 
 -- Routes one semantic input batch to the live battle or child. While the
@@ -894,6 +907,19 @@ function FieldBattlePresentation:_stepCover()
     self:_stepCoverUp()
     return
   end
+  if phase == "aborting" then
+    -- The field is still gone or on its way back: hold full cover until
+    -- the host confirms the restored field and starts the abort reveal.
+    self:_stepCoverUp()
+    return
+  end
+  if phase == "abort-revealing" then
+    self:_stepCoverDown()
+    if self._cover <= 0 then
+      host.notify("revealed")
+    end
+    return
+  end
   -- Leaving and active hold full cover until the constructed battle
   -- proves exact-asset readiness; the reveal then runs beside the intro.
   if self._revealingBattle then
@@ -963,9 +989,11 @@ function FieldBattlePresentation:_startBattleMusic()
   end
 end
 
--- Observes a failed screen and fails the launch loudly through the
--- runtime instead of polling a dead presentation: before commitment no
--- result is published, and after commitment mechanics are never rerun.
+-- Observes a failed screen and reports the launch through the runtime
+-- instead of polling a dead presentation: the screen disposes once while
+-- the descriptor, black cover, and launch identity stay with the host
+-- until the safe field returns. Repeats collapse into the first report
+-- because the screen is gone after the first one.
 function FieldBattlePresentation:_observeScreenFailure()
   local screen = self._screen
   local descriptor = self._descriptor
@@ -980,11 +1008,11 @@ function FieldBattlePresentation:_observeScreenFailure()
     return screen:status()
   end)
   if ok and type(status) == "table" and status.mode == "failed" then
-    host.notify("screen-failed")
+    host.notify("screen-failed", status.error)
     local _, _ = pcall(function()
       return screen:dispose()
     end)
-    self:_dropLaunch()
+    self._screen = nil
   end
 end
 
