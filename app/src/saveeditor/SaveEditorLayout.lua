@@ -2086,112 +2086,129 @@ local PARTY_EXITS = {
   { "global-footer", "up", "party:pager" },
 }
 
-local function buildFocusNavigation(ctx, targetRecords)
-  local regions, controls, regionsById = {}, {}, {}
-  local partyTab = ctx.view.partyTab or "Stats"
-  local numberEditor = ctx.view.valueEditor and ctx.view.valueEditor.kind == "number" and ctx.view.valueEditor or nil
-  local decisionIds = {}
-  for _, action in ipairs(ctx.decisionActions or {}) do
-    decisionIds[action.id] = true
+local function regionFor(nav, targetId)
+  local ctx = nav.ctx
+  local partyTab = nav.partyTab
+  local numberEditor = nav.numberEditor
+  local decisionIds = nav.decisionIds
+  if
+    numberEditor ~= nil
+    and (targetId == "confirm" or targetId == "cancel" or targetId:match("^number:place:%d+:") ~= nil)
+  then
+    return "value:number"
   end
-  local function regionFor(targetId)
-    if
-      numberEditor ~= nil
-      and (targetId == "confirm" or targetId == "cancel" or targetId:match("^number:place:%d+:") ~= nil)
-    then
-      return "value:number"
-    end
-    if decisionIds[targetId] then
-      return "decision:actions"
-    end
-    if targetId:match("^section:") then
-      return "sections"
-    end
-    local viewportId = ctx.viewportByTarget[targetId]
-    for listId, list in pairs(ctx.lists) do
-      if targetId == list.targetId or viewportId == list.viewportId then
-        return listId
-      end
-    end
-    if targetId:match("^party:slot:") or targetId == "party:add" then
-      return "party:members"
-    elseif targetId:match("^party:page:") then
-      return "party:pager"
-    elseif targetId:match("^party:move:") then
-      return "party:moves"
-    elseif targetId:match("^party:field:") then
-      return partyFieldRegion(targetId:sub(#"party:field:" + 1), partyTab)
-    elseif targetId:match("^bag:pocket:") then
-      return "bag:pockets"
-    elseif targetId:match("^bag:page:") or targetId == "bag:add" then
-      return "bag:actions"
-    elseif targetId == "save" or targetId == "discard" or targetId == "back" then
-      return "global-footer"
-    end
-    if viewportId ~= nil then
-      return "viewport:" .. viewportId
-    end
-    return "body"
+  if decisionIds[targetId] then
+    return "decision:actions"
   end
-  local function addRegion(id, kind, bounds)
-    local region = regionsById[id]
-    if region == nil then
-      region = { id = id, kind = kind, order = #regions + 1, rect = bounds }
-      regionsById[id] = region
-      regions[#regions + 1] = region
-    elseif bounds ~= nil then
-      local left, top = math.min(region.rect.x, bounds.x), math.min(region.rect.y, bounds.y)
-      region.rect = {
-        x = left,
-        y = top,
-        width = math.max(region.rect.x + region.rect.width, bounds.x + bounds.width) - left,
-        height = math.max(region.rect.y + region.rect.height, bounds.y + bounds.height) - top,
-      }
-    end
-    return region
+  if targetId:match("^section:") then
+    return "sections"
   end
-  local function numericOverrides(targetId)
-    if numberEditor == nil then
-      return nil
+  local viewportId = ctx.viewportByTarget[targetId]
+  for listId, list in pairs(ctx.lists) do
+    if targetId == list.targetId or viewportId == list.viewportId then
+      return listId
     end
-    local selectedDigit = "number:place:" .. tostring(numberEditor.selectedPlace) .. ":up"
-    local targetPlace = targetId:match("^number:place:(%d+):")
-    local destinations = {}
-    if targetPlace ~= nil then
-      local place = assert(tonumber(targetPlace))
-      if place == 0 and targetRecords.confirm ~= nil then
-        destinations.right = "confirm"
-      end
-      if place == numberEditor.digitCount - 1 and targetRecords.cancel ~= nil then
-        destinations.left = "cancel"
-      end
-    elseif targetId == "confirm" then
-      if targetRecords.cancel ~= nil then
-        destinations.right = "cancel"
-      end
-      if targetRecords[selectedDigit] ~= nil then
-        destinations.left, destinations.up = selectedDigit, selectedDigit
-      end
-    elseif targetId == "cancel" then
-      if targetRecords.confirm ~= nil then
-        destinations.left = "confirm"
-      end
-      if targetRecords[selectedDigit] ~= nil then
-        destinations.up = selectedDigit
-      end
-    end
-    local overrides = {}
-    for direction, destination in pairs(destinations) do
-      overrides[direction] = { kind = "targets", ids = { destination }, fallback = "stop" }
-    end
-    return next(overrides) ~= nil and overrides or nil
   end
+  if targetId:match("^party:slot:") or targetId == "party:add" then
+    return "party:members"
+  elseif targetId:match("^party:page:") then
+    return "party:pager"
+  elseif targetId:match("^party:move:") then
+    return "party:moves"
+  elseif targetId:match("^party:field:") then
+    return partyFieldRegion(targetId:sub(#"party:field:" + 1), partyTab)
+  elseif targetId:match("^bag:pocket:") then
+    return "bag:pockets"
+  elseif targetId:match("^bag:page:") or targetId == "bag:add" then
+    return "bag:actions"
+  elseif targetId == "save" or targetId == "discard" or targetId == "back" then
+    return "global-footer"
+  end
+  if viewportId ~= nil then
+    return "viewport:" .. viewportId
+  end
+  return "body"
+end
+
+local function addRegion(nav, id, kind, bounds)
+  local regions = nav.regions
+  local regionsById = nav.regionsById
+  local region = regionsById[id]
+  if region == nil then
+    region = { id = id, kind = kind, order = #regions + 1, rect = bounds }
+    regionsById[id] = region
+    regions[#regions + 1] = region
+  elseif bounds ~= nil then
+    local left, top = math.min(region.rect.x, bounds.x), math.min(region.rect.y, bounds.y)
+    region.rect = {
+      x = left,
+      y = top,
+      width = math.max(region.rect.x + region.rect.width, bounds.x + bounds.width) - left,
+      height = math.max(region.rect.y + region.rect.height, bounds.y + bounds.height) - top,
+    }
+  end
+  return region
+end
+
+local function numericOverrides(nav, targetId)
+  local targetRecords = nav.targetRecords
+  local numberEditor = nav.numberEditor
+  if numberEditor == nil then
+    return nil
+  end
+  local selectedDigit = "number:place:" .. tostring(numberEditor.selectedPlace) .. ":up"
+  local targetPlace = targetId:match("^number:place:(%d+):")
+  local destinations = {}
+  if targetPlace ~= nil then
+    local place = assert(tonumber(targetPlace))
+    if place == 0 and targetRecords.confirm ~= nil then
+      destinations.right = "confirm"
+    end
+    if place == numberEditor.digitCount - 1 and targetRecords.cancel ~= nil then
+      destinations.left = "cancel"
+    end
+  elseif targetId == "confirm" then
+    if targetRecords.cancel ~= nil then
+      destinations.right = "cancel"
+    end
+    if targetRecords[selectedDigit] ~= nil then
+      destinations.left, destinations.up = selectedDigit, selectedDigit
+    end
+  elseif targetId == "cancel" then
+    if targetRecords.confirm ~= nil then
+      destinations.left = "confirm"
+    end
+    if targetRecords[selectedDigit] ~= nil then
+      destinations.up = selectedDigit
+    end
+  end
+  local overrides = {}
+  for direction, destination in pairs(destinations) do
+    overrides[direction] = { kind = "targets", ids = { destination }, fallback = "stop" }
+  end
+  return next(overrides) ~= nil and overrides or nil
+end
+
+local function exitTo(nav, regionId, direction, destinationId)
+  local regionsById = nav.regionsById
+  local region = regionsById[regionId]
+  if region ~= nil then
+    region.exits = region.exits or {}
+    region.exits[direction] = { kind = "region", id = destinationId, entry = "spatial", fallback = "auto" }
+  end
+end
+
+local function publishControls(nav)
+  local ctx = nav.ctx
+  local targetRecords = nav.targetRecords
+  local controls = nav.controls
+
   for _, targetId in ipairs(ctx.focusOrder) do
     local record = targetRecords[targetId]
     if record ~= nil and record.focusable then
-      local id = regionFor(targetId)
+      local id = regionFor(nav, targetId)
       local list = ctx.lists[id]
-      local region = addRegion(id, list and "list" or REGION_KINDS[id] or "spatial", record.rect)
+      local region = addRegion(nav, id, list and "list" or REGION_KINDS[id] or "spatial", record.rect)
       if list ~= nil then
         region.viewportId = list.viewportId
         region.containerId = list.targetId
@@ -2208,13 +2225,19 @@ local function buildFocusNavigation(ctx, targetRecords)
         eligible = record.activationEnabled,
         action = activationAction(ctx.view, targetId),
       }
-      control.overrides = numericOverrides(targetId)
+      control.overrides = numericOverrides(nav, targetId)
       controls[#controls + 1] = control
     end
   end
-  local decisionMatrix
+end
+
+local function publishDecisionRegion(nav)
+  local ctx = nav.ctx
+  local targetRecords = nav.targetRecords
+  local regionsById = nav.regionsById
+
   if ctx.decisionList ~= nil then
-    decisionMatrix = {}
+    local decisionMatrix = {}
     for _, row in ipairs(ctx.decisionList.rows) do
       local rowIndex = assert(row.rowIndex, "decision rows publish their visual row")
       decisionMatrix[rowIndex] = decisionMatrix[rowIndex] or {}
@@ -2226,8 +2249,16 @@ local function buildFocusNavigation(ctx, targetRecords)
     if region ~= nil then
       region.logical = { matrix = decisionMatrix }
       region.defaultId = decisionMatrix[1] and decisionMatrix[1][1]
+      region.kind = "table"
     end
   end
+end
+
+local function publishStatsRegion(nav)
+  local ctx = nav.ctx
+  local partyTab = nav.partyTab
+  local regionsById = nav.regionsById
+
   local partyStats = not ctx.view.partyEmpty and partyTab == "Stats" and ctx.view.partyStats or nil
   local statsMatrix, firstIvTarget, lastIvTarget = {}, nil, nil
   if partyStats ~= nil then
@@ -2242,7 +2273,7 @@ local function buildFocusNavigation(ctx, targetRecords)
   end
   if #statsMatrix > 0 then
     local viewport = assert(ctx.viewports.party, "Stats regions use the Party viewport")
-    local region = regionsById["party:stats"] or addRegion("party:stats", "table", viewport.clip)
+    local region = regionsById["party:stats"] or addRegion(nav, "party:stats", "table", viewport.clip)
     region.kind = "table"
     region.rect = viewport.clip
     region.viewportId = "party"
@@ -2250,6 +2281,12 @@ local function buildFocusNavigation(ctx, targetRecords)
     region.defaultId = firstIvTarget
     region.entryUpId = lastIvTarget
   end
+end
+
+local function publishMovesRegion(nav)
+  local ctx = nav.ctx
+  local regionsById = nav.regionsById
+
   if ctx.partyMoves ~= nil then
     local matrix = {}
     local slots
@@ -2276,6 +2313,14 @@ local function buildFocusNavigation(ctx, targetRecords)
       region.viewportId = "party"
     end
   end
+end
+
+local function publishPartyStripRegions(nav)
+  local ctx = nav.ctx
+  local targetRecords = nav.targetRecords
+  local partyTab = nav.partyTab
+  local regionsById = nav.regionsById
+
   if ctx.partyStrip ~= nil then
     local partyStatsModel = not ctx.view.partyEmpty and partyTab == "Stats" and ctx.view.partyStats or nil
     local headerMatrix, firstHeaderTarget, lastHeaderTarget = {}, nil, nil
@@ -2302,7 +2347,7 @@ local function buildFocusNavigation(ctx, targetRecords)
     for _, regionId in ipairs({ "party:members", "party:header", "party:details", "party:pager" }) do
       local region = regionsById[regionId]
       if region == nil and regionId == "party:header" and firstHeaderTarget ~= nil then
-        region = addRegion(regionId, "table", assert(ctx.viewports.party).clip)
+        region = addRegion(nav, regionId, "table", assert(ctx.viewports.party).clip)
       end
       if region ~= nil then
         local ids = {}
@@ -2328,7 +2373,7 @@ local function buildFocusNavigation(ctx, targetRecords)
           region.viewportId = "party"
         else
           for _, targetId in ipairs(ctx.focusOrder) do
-            if targetRecords[targetId] ~= nil and regionFor(targetId) == regionId then
+            if targetRecords[targetId] ~= nil and regionFor(nav, targetId) == regionId then
               ids[#ids + 1] = targetId
             end
           end
@@ -2340,6 +2385,13 @@ local function buildFocusNavigation(ctx, targetRecords)
       end
     end
   end
+end
+
+local function publishRailRegions(nav)
+  local ctx = nav.ctx
+  local controls = nav.controls
+  local regionsById = nav.regionsById
+
   for _, regionId in ipairs({ "sections", "bag:pockets" }) do
     local region = regionsById[regionId]
     if region ~= nil then
@@ -2359,30 +2411,48 @@ local function buildFocusNavigation(ctx, targetRecords)
       region.defaultId = region.defaultId or ids[1]
     end
   end
-  local function exitTo(regionId, direction, destinationId)
-    local region = regionsById[regionId]
-    if region ~= nil then
-      region.exits = region.exits or {}
-      region.exits[direction] = { kind = "region", id = destinationId, entry = "spatial", fallback = "auto" }
-    end
-  end
+end
+
+local function publishPartyExits(nav)
+  local ctx = nav.ctx
+  local partyTab = nav.partyTab
+
   if ctx.partyStrip ~= nil then
-    exitTo("party:members", "down", partyTab == "Stats" and "party:header" or "party:moves")
-    exitTo("party:pager", "up", partyTab == "Stats" and "party:stats" or "party:moves")
+    exitTo(nav, "party:members", "down", partyTab == "Stats" and "party:header" or "party:moves")
+    exitTo(nav, "party:pager", "up", partyTab == "Stats" and "party:stats" or "party:moves")
     for _, exit in ipairs(PARTY_EXITS) do
-      exitTo(exit[1], exit[2], exit[3])
+      exitTo(nav, exit[1], exit[2], exit[3])
     end
   end
-  if decisionMatrix ~= nil then
-    local region = regionsById["decision:actions"]
-    if region ~= nil then
-      region.kind = "table"
-    end
+end
+
+local function buildFocusNavigation(ctx, targetRecords)
+  local numberEditor = ctx.view.valueEditor and ctx.view.valueEditor.kind == "number" and ctx.view.valueEditor or nil
+  local decisionIds = {}
+  for _, action in ipairs(ctx.decisionActions or {}) do
+    decisionIds[action.id] = true
   end
-  if ctx.partyStrip ~= nil and partyTab == "Stats" then
-    orderPartyRegions(regions, regionsById)
+  local nav = {
+    ctx = ctx,
+    targetRecords = targetRecords,
+    partyTab = ctx.view.partyTab or "Stats",
+    numberEditor = numberEditor,
+    decisionIds = decisionIds,
+    regions = {},
+    controls = {},
+    regionsById = {},
+  }
+  publishControls(nav)
+  publishDecisionRegion(nav)
+  publishStatsRegion(nav)
+  publishMovesRegion(nav)
+  publishPartyStripRegions(nav)
+  publishRailRegions(nav)
+  publishPartyExits(nav)
+  if ctx.partyStrip ~= nil and nav.partyTab == "Stats" then
+    orderPartyRegions(nav.regions, nav.regionsById)
   end
-  return { regions = regions, controls = controls }
+  return { regions = nav.regions, controls = nav.controls }
 end
 
 local function publishPlan(ctx)
