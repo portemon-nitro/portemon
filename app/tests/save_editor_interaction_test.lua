@@ -3775,6 +3775,291 @@ function T.tests.resize_republishes_the_location_viewport_on_the_next_refresh()
   Assert.equal(harness.service.updateCalls, 1, "the refresh still advances loading after a resize")
 end
 
+local function idleLocationGridHarness()
+  local harness = mapActivationHarness()
+  local controller, state, service = harness.controller, harness.state, harness.service
+  local counts = { snapshots = 0, resolves = 0, iconPreps = 0, uiSnapshots = 0 }
+  local reportChanged = false
+  local queuedEvents = {}
+  function service:update()
+    self.updateCalls = self.updateCalls + 1
+    return reportChanged
+  end
+  local published = { section = "Location" }
+  local layout = {
+    scopeId = controller.scopeId,
+    scopeEpoch = controller.scopeEpoch,
+    locationGrid = { columns = 7, rows = 5 },
+    focusNavigation = {
+      regions = { { id = "body", order = 1, kind = "spatial", rect = { x = 0, y = 0, width = 1, height = 1 } } },
+      controls = {
+        {
+          id = controller.focus,
+          regionId = "body",
+          rect = { x = 0, y = 0, width = 1, height = 1 },
+          eligible = true,
+          order = 1,
+          action = { kind = "target", targetId = controller.focus },
+        },
+      },
+    },
+    defaultFocus = controller.focus,
+  }
+  state.locationGridWidthTiles, state.locationGridHeightTiles = 7, 5
+  state.locationViewport = { centerX = 32, centerZ = 48, widthTiles = 7, heightTiles = 5 }
+  state.locationAutoCenterToken = nil
+  state.tickRemainder = 0
+  state.inputTick = 0
+  state.numberHold = nil
+  state.width, state.height = 800, 600
+  state.derivedAssets = {
+    requestMilestone = function()
+      return true
+    end,
+  }
+  state.dependencies.cacheFs = {}
+  state.presentation = {
+    cancelPointers = function() end,
+    mapInput = function(_, events)
+      return events
+    end,
+  }
+  state.renderer = {
+    iconStatus = "ready",
+    iconFailure = nil,
+    graphics = {},
+    text = {},
+    prepareVisibleIcons = function()
+      counts.iconPreps = counts.iconPreps + 1
+    end,
+  }
+  state.fieldInput = {
+    uiSnapshot = function()
+      counts.uiSnapshots = counts.uiSnapshots + 1
+      local events = queuedEvents
+      queuedEvents = {}
+      return events
+    end,
+    beginUi = function() end,
+  }
+  state.session = {
+    stagedPlacements = 0,
+    revision = function()
+      return 4
+    end,
+    setLocation = function(self)
+      self.stagedPlacements = self.stagedPlacements + 1
+      return { ok = true }
+    end,
+  }
+  state._snapshot = function()
+    counts.snapshots = counts.snapshots + 1
+    return published
+  end
+  state._resolve = function()
+    counts.resolves = counts.resolves + 1
+    return { content = { layout = layout } }
+  end
+  return {
+    controller = controller,
+    state = state,
+    service = service,
+    counts = counts,
+    resetCounts = function()
+      counts.snapshots, counts.resolves, counts.iconPreps = 0, 0, 0
+    end,
+    setChanged = function(value)
+      reportChanged = value
+    end,
+    queueEvents = function(events)
+      queuedEvents = events
+    end,
+  }
+end
+
+function T.tests.idle_location_grid_reuses_the_settled_pair_across_empty_ticks()
+  local harness = idleLocationGridHarness()
+  local controller, state, service, counts = harness.controller, harness.state, harness.service, harness.counts
+
+  state:update(1 / 60)
+  Assert.isTrue(counts.snapshots > 0, "the first tick publishes the settled pair")
+  local settledView, settledPlan = state._publishedView, state._publishedPlan
+  Assert.notNil(settledView, "the first tick settles a view")
+  Assert.notNil(settledPlan, "the first tick settles a plan")
+  Assert.isTrue(settledView.presentation == settledPlan, "the settled view pairs with its plan")
+  local focusBefore = controller.focus
+
+  harness.resetCounts()
+  local serviceCallsBefore, uiBefore = service.updateCalls, counts.uiSnapshots
+  state:update(1 / 60)
+  state:update(1 / 60)
+  state:update(1 / 60)
+
+  Assert.equal(counts.snapshots, 0, "idle ticks never snapshot again")
+  Assert.equal(counts.resolves, 0, "idle ticks never resolve layout again")
+  Assert.isTrue(state._publishedView == settledView, "idle ticks reuse the settled view")
+  Assert.isTrue(state._publishedPlan == settledPlan, "idle ticks reuse the settled plan")
+  Assert.equal(controller.focus, focusBefore, "empty input leaves focus unchanged")
+  Assert.equal(service.updateCalls, serviceCallsBefore + 3, "idle ticks still advance map preparation")
+  Assert.equal(counts.uiSnapshots, uiBefore + 3, "idle ticks still poll semantic input")
+
+  local drawn = {}
+  local originalDraw = ApplicationPresentation.draw
+  ApplicationPresentation.draw = function(_, _, view, presentation)
+    drawn[#drawn + 1] = { view = view, presentation = presentation }
+  end
+  local firstOk, firstError = pcall(function()
+    state:draw()
+  end)
+  local secondOk, secondError = pcall(function()
+    state:draw()
+  end)
+  ApplicationPresentation.draw = originalDraw
+  Assert.isTrue(firstOk, "the first idle draw runs without platform rendering: " .. tostring(firstError))
+  Assert.isTrue(secondOk, "the second idle draw runs without platform rendering: " .. tostring(secondError))
+  Assert.equal(#drawn, 2, "both draws reach the presentation boundary")
+  Assert.isTrue(drawn[1].view == settledView and drawn[2].view == settledView, "draws render the settled view")
+  Assert.isTrue(
+    drawn[1].presentation == settledPlan and drawn[2].presentation == settledPlan,
+    "draws render the settled plan"
+  )
+  Assert.equal(counts.snapshots, 0, "settled draws never snapshot again")
+  Assert.equal(counts.resolves, 0, "settled draws never resolve again")
+  Assert.equal(state.session.stagedPlacements, 0, "browsing an idle grid never stages a destination")
+end
+
+function T.tests.location_grid_changes_resize_and_other_sections_still_republish_before_draw()
+  local harness = idleLocationGridHarness()
+  local controller, state, service, counts = harness.controller, harness.state, harness.service, harness.counts
+
+  state:update(1 / 60)
+  Assert.notNil(state._publishedPlan, "the grid settles before exercising changes")
+  local settledPlan = state._publishedPlan
+
+  harness.setChanged(true)
+  harness.resetCounts()
+  state:update(1 / 60)
+  harness.setChanged(false)
+  Assert.isTrue(counts.snapshots > 0, "a reported map change republishes")
+  Assert.isTrue(state._publishedPlan ~= settledPlan, "a reported map change replaces the settled plan")
+  Assert.isTrue(
+    state._publishedView.presentation == state._publishedPlan,
+    "the replaced view pairs with its plan"
+  )
+  Assert.isTrue(
+    state._publishedView.layout == state._publishedPlan.content.layout,
+    "the replaced view carries its layout"
+  )
+  settledPlan = state._publishedPlan
+
+  harness.resetCounts()
+  harness.queueEvents({
+    { type = "navigate", direction = "right" },
+    { type = "navigate", direction = "right" },
+    { type = "navigate", direction = "right" },
+    { type = "navigate", direction = "right" },
+  })
+  state:update(1 / 60)
+  Assert.isTrue(counts.resolves > 0, "manual cursor input refreshes layout")
+  Assert.isTrue(state._publishedPlan ~= settledPlan, "manual cursor input replaces the settled plan")
+  local navigation = controller:locationSnapshot()
+  Assert.equal(navigation.cursor.fieldX, 36, "the grid cursor pages right")
+  Assert.equal(navigation.cursor.fieldZ, 48, "the grid cursor keeps its row")
+  Assert.equal(navigation.center.fieldX, 39, "paging past the window recenters the preview")
+  local viewport = assert(service.viewportCalls[#service.viewportCalls], "cursor input republishes the viewport")
+  Assert.equal(viewport.centerX, 39, "the service viewport follows the recentered preview")
+  Assert.equal(viewport.centerZ, 48, "the service viewport keeps the cursor row")
+  Assert.equal(state.session.stagedPlacements, 0, "cursor movement never stages a destination")
+  settledPlan = state._publishedPlan
+
+  harness.resetCounts()
+  state:resize(1024, 768)
+  Assert.isTrue(counts.snapshots > 0, "resize republishes immediately")
+  local viewportCallsBefore = #service.viewportCalls
+  state:update(1 / 60)
+  Assert.equal(
+    #service.viewportCalls,
+    viewportCallsBefore + 1,
+    "the next refresh republishes the viewport after resize"
+  )
+  Assert.equal(state.width, 1024, "resize keeps the new width")
+  Assert.equal(state.height, 768, "resize keeps the new height")
+  Assert.isTrue(
+    state._publishedView.presentation == state._publishedPlan,
+    "the resized view pairs with its plan"
+  )
+
+  controller:setSection("Party")
+  harness.resetCounts()
+  state:update(1 / 60)
+  Assert.isTrue(counts.snapshots > 0, "leaving the grid republishes eagerly")
+  Assert.isTrue(counts.resolves > 0, "leaving the grid resolves eagerly")
+
+  controller:openModal("leave")
+  harness.resetCounts()
+  state:update(1 / 60)
+  Assert.isTrue(counts.snapshots > 0, "opening a decision republishes")
+  Assert.isTrue(counts.resolves > 0, "opening a decision resolves")
+  Assert.equal(state.session.stagedPlacements, 0, "no preview change stages a destination")
+end
+
+function T.tests.settled_location_refresh_publishes_only_on_reported_service_changes()
+  local harness = idleLocationGridHarness()
+  local state, service, counts = harness.state, harness.service, harness.counts
+  local serviceSnapshots = 0
+  local originalSnapshot = service.snapshot
+  service.snapshot = function(self)
+    serviceSnapshots = serviceSnapshots + 1
+    return originalSnapshot(self)
+  end
+
+  state:update(1 / 60)
+  Assert.notNil(state._publishedPlan, "the grid settles before exercising service refreshes")
+  local settledPlan = state._publishedPlan
+
+  harness.resetCounts()
+  serviceSnapshots = 0
+  state:_updateLocationService()
+  local quiet = state:view()
+  Assert.equal(serviceSnapshots, 0, "a refresh with no pending centering never reads service tiles")
+  Assert.equal(counts.snapshots, 0, "a work-only refresh never snapshots again")
+  Assert.equal(counts.resolves, 0, "a work-only refresh never resolves layout again")
+  Assert.isTrue(quiet.presentation == settledPlan, "a work-only refresh reuses the settled pair")
+
+  harness.setChanged(true)
+  harness.resetCounts()
+  state:_updateLocationService()
+  local republished = state:view()
+  harness.setChanged(false)
+  Assert.isTrue(counts.snapshots > 0, "a reported service change republishes through the settled pair")
+  Assert.isTrue(republished.presentation ~= settledPlan, "a reported service change replaces the settled plan")
+  Assert.isTrue(
+    republished.presentation == state._publishedPlan,
+    "the replacement view pairs with its plan"
+  )
+end
+
+function T.tests.direct_empty_input_consumption_still_refreshes_the_settled_pair()
+  local harness = idleLocationGridHarness()
+  local state, counts = harness.state, harness.counts
+  local controller = harness.controller
+
+  state:update(1 / 60)
+  Assert.notNil(state._publishedPlan, "the grid settles before exercising direct input")
+  local focusBefore = controller.focus
+
+  harness.resetCounts()
+  state:_consumeUiInput({})
+  Assert.isTrue(counts.snapshots > 0, "a direct empty batch keeps its original refresh")
+  Assert.isTrue(counts.resolves > 0, "a direct empty batch refreshes layout")
+  Assert.equal(controller.focus, focusBefore, "a direct empty batch leaves focus unchanged")
+
+  harness.resetCounts()
+  state:update(1 / 60)
+  Assert.equal(counts.snapshots, 0, "the update tick still reuses the settled pair on empty input")
+  Assert.equal(counts.resolves, 0, "the update tick still skips layout on empty input")
+end
+
 local function installPointerPassThrough(state)
   state.presentation = {
     mapInput = function(_, events)

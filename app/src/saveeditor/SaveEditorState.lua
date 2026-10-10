@@ -355,6 +355,23 @@ local function sameLocation(left, right)
     and left.terrainDependencyHash == right.terrainDependencyHash
 end
 
+-- A ready Location grid with no dialog, value editor, or held number
+-- repeat and an already settled view/plan pair has nothing new to show
+-- until the map, input, or surrounding state reports a change. Every
+-- other state keeps the eager refresh path.
+---@param state SaveEditorState
+---@return boolean
+local function isIdleLocationGrid(state)
+  return state.status == "ready"
+    and state.controller.section == "Location"
+    and state.controller.locationPage == "grid"
+    and state.controller.modal == nil
+    and state.valueEditor == nil
+    and state.numberHold == nil
+    and state._publishedView ~= nil
+    and state._publishedPlan ~= nil
+end
+
 local function message(value)
   if Errors.is(value) then
     return value.message
@@ -657,7 +674,13 @@ function State:update(dt)
   if self.tickRemainder >= 1 then
     self.inputTick = self.inputTick + math.floor(self.tickRemainder)
     self.tickRemainder = self.tickRemainder % 1
-    self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+    local events = self.fieldInput:uiSnapshot(self.inputTick)
+    -- An empty batch on a settled grid carries no input: skipping the
+    -- dispatch here keeps the settled pair. Direct callers of
+    -- _consumeUiInput keep their original behavior.
+    if #events > 0 or not isIdleLocationGrid(self) then
+      self:_consumeUiInput(events)
+    end
   end
   local rowVisits = 0
   if self.valueEditor ~= nil then
@@ -759,7 +782,11 @@ function State:update(dt)
     end
   end
   if self.status == "ready" and self.dependencies ~= nil and self.renderer ~= nil then
-    self:_invalidatePublication()
+    -- A settled grid republishes only on a reported change; every other
+    -- state keeps the unconditional refresh before adopting grid size.
+    if not isIdleLocationGrid(self) then
+      self:_invalidatePublication()
+    end
     local view = self:_ensurePublished()
     local plan = assert(self._publishedPlan, "the settled publication owns its plan")
     self:_adoptGridSize(plan)
@@ -2533,13 +2560,17 @@ function State:_updateLocationService()
     then
       service:setViewport(viewport.centerX, viewport.centerZ, viewport.widthTiles, viewport.heightTiles)
       self.locationViewport = viewport
+      self:_invalidatePublication()
       local token = self.locationAutoCenterToken
       if token ~= nil and token.mapId == mapId then
         token.generation = assert(service:snapshot().initialCursor).generation
       end
     end
   end
-  service:update()
+  local changed = service:update()
+  if changed then
+    self:_invalidatePublication()
+  end
   local token = self.locationAutoCenterToken
   if token ~= nil and token.mapId == mapId then
     local view = service:snapshot()
@@ -2552,15 +2583,18 @@ function State:_updateLocationService()
           self.controller:setLocationCursor(result.fieldX, result.fieldZ)
         end
         token.seedPublished = true
+        self:_invalidatePublication()
       elseif result.state == "ready" then
         if result.fieldX ~= nil and result.fieldZ ~= nil then
           self.controller:setLocationCursor(result.fieldX, result.fieldZ)
         end
         self.locationAutoCenterToken = nil
+        self:_invalidatePublication()
       elseif result.state == "unavailable" or result.state == "canceled" or result.state == "failed" then
         -- A finite local miss keeps the seeded preview for manual browsing;
         -- it only retires the automatic centering.
         self.locationAutoCenterToken = nil
+        self:_invalidatePublication()
       end
     end
   end
