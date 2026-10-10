@@ -619,4 +619,59 @@ function T.active_lead_names_and_cries_the_live_slot_not_slot_zero()
   Assert.equal(sounds.count("cry:EEVEE"), 0, "the fainted first slot never lends its cry")
 end
 
+-- Each named narration pace reveals a bounded number of glyphs per
+-- fixed tick: the unhurried paces pause blank ticks between glyphs
+-- while the hurried paces print more per tick, and no pace shows a
+-- whole page at once. An unknown pace fails; omitting the pace keeps
+-- the established middle cadence.
+function T.named_speeds_reveal_bounded_glyphs_at_their_cadence()
+  local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
+  local text = "ABCDEFGHIJKLMNOPQRST"
+  local function glyphCount(shown)
+    local total = 0
+    for _ in Utf8Glyphs.iter(shown) do
+      total = total + 1
+    end
+    return total
+  end
+  local function shownAfter(speed, ticks)
+    local played = BattleTimeline.new({ sound = function(_) end, textSpeed = speed })
+    played:announce(text, false)
+    for _ = 1, ticks do
+      advance(played, TICK)
+    end
+    return glyphCount(played:message())
+  end
+  local function shownAfterDefault(ticks)
+    local played = BattleTimeline.new({ sound = function(_) end })
+    played:announce(text, false)
+    for _ = 1, ticks do
+      advance(played, TICK)
+    end
+    return glyphCount(played:message())
+  end
+  Assert.equal(shownAfter("slow", 1), 1, "the slowest pace shows one glyph on its first tick")
+  Assert.equal(shownAfter("slow", 8), 1, "the slowest pace holds through its blank ticks")
+  Assert.equal(shownAfter("slow", 9), 2, "the slowest pace shows its next glyph after the pause")
+  Assert.equal(shownAfter("mid", 1), 1, "the middle pace shows one glyph on its first tick")
+  Assert.equal(shownAfter("mid", 4), 1, "the middle pace holds through its blank ticks")
+  Assert.equal(shownAfter("mid", 5), 2, "the middle pace shows its next glyph after the pause")
+  Assert.equal(shownAfter("mid", 9), 3, "the middle pace keeps its every-fourth-tick cadence")
+  Assert.equal(shownAfter("fast", 1), 1, "the quick pace shows one glyph on its first tick")
+  Assert.equal(shownAfter("fast", 2), 2, "the quick pace prints every tick")
+  Assert.equal(shownAfter("fast", 3), 3, "the quick pace never jumps to a full page")
+  Assert.equal(shownAfter("fastest", 1), 2, "the quickest pace shows two glyphs on its first tick")
+  Assert.equal(shownAfter("fastest", 2), 4, "the quickest pace prints two glyphs every tick")
+  Assert.equal(shownAfter("fastest", 3), 6, "the quickest pace never jumps to a full page")
+  Assert.isTrue(shownAfter("fastest", 1) < 20, "no pace reveals a twenty-glyph page on its first tick")
+  local accented = BattleTimeline.new({ sound = function(_) end, textSpeed = "fastest" })
+  accented:announce("\195\137CLAIR\195\137CLAIR\195\137CLAIR", false)
+  advance(accented, TICK)
+  Assert.equal(glyphCount(accented:message()), 2, "the quickest pace counts glyphs, not bytes")
+  Assert.equal(accented:message(), "\195\137C", "a multibyte name never tears mid-codepoint")
+  Assert.equal(shownAfterDefault(5), shownAfter("mid", 5), "omitting the pace keeps the middle cadence")
+  local ok, _ = pcall(BattleTimeline.new, { textSpeed = "warp" })
+  Assert.isFalse(ok, "an unknown pace fails instead of guessing")
+end
+
 return { tests = T }

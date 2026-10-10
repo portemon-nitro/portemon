@@ -1410,4 +1410,183 @@ function T.matched_dialogue_taps_acknowledge_the_terminal_page()
   rig.screen:dispose()
 end
 
+---@param launchId string owning launch identity under test driving
+---@param speed string? launch narration pace under test driving, nil for the established default
+---@return table screen-only rig paced by its launch option
+local function openPacedScreen(launchId, speed)
+  local BattleScreenState = require(STATE_MODULE)
+  local Model = require(MODEL_MODULE)
+  local rig = { submits = {}, measurement = dualMeasurement(), text = recordingText() }
+  rig.windows = { calls = {} }
+  function rig.windows.drawWindow(box, frameKey, background)
+    rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  rig.audio = { plays = {} }
+  function rig.audio.play(name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
+  function rig.assets.prepare(demand)
+    rig.assets.prepared[#rig.assets.prepared + 1] = demand
+    return true
+  end
+  function rig.assets.drawable(key)
+    if rig.assets.images[key] == nil then
+      rig.assets.images[key] = { handle = key }
+    end
+    return rig.assets.images[key]
+  end
+  function rig.assets.release(key)
+    rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
+  end
+  local options = {
+    launchId = launchId,
+    manifest = {
+      schema = "test",
+      version = { id = "t", language = "english" },
+      verified = false,
+      scenes = { { key = "general/plain/day" } },
+    },
+    model = Model,
+    submit = function(reply)
+      rig.submits[#rig.submits + 1] = reply
+      return true
+    end,
+    measureDisplay = function()
+      return rig.measurement
+    end,
+    assets = rig.assets,
+    text = rig.text,
+    windows = rig.windows,
+    audio = rig.audio,
+  }
+  if speed ~= nil then
+    options.textSpeed = speed
+  end
+  local screen = BattleScreenState.new(options)
+  rig.screen = screen
+  rig.port = screen:presentationPort()
+  function rig.pump(ticks, dt)
+    for _ = 1, ticks or 1 do
+      rig.screen:updateFixed(dt or TICK)
+    end
+  end
+  local function ownRecord()
+    return {
+      combatant = 1,
+      participant = 1,
+      side = 1,
+      controller = "player",
+      active = true,
+      hp = 52,
+      maxHp = 52,
+      species = "EEVEE",
+      form = 0,
+      name = "LEAD",
+      level = 20,
+      selector = "back",
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+    }
+  end
+  local function foeRecordEntry()
+    return {
+      combatant = 3,
+      participant = 3,
+      side = 2,
+      controller = "wild",
+      active = true,
+      hp = 57,
+      maxHp = 57,
+      species = "EEVEE",
+      form = 0,
+      name = "FOE",
+      level = 20,
+      selector = "front",
+    }
+  end
+  rig.port.present({
+    launchId = launchId,
+    packetId = 4242,
+    events = {},
+    before = { own = { ownRecord() }, foes = { foeRecordEntry() } },
+    after = { own = { ownRecord() }, foes = { foeRecordEntry() } },
+    request = nil,
+    result = nil,
+  })
+  return rig
+end
+
+-- Each launch keeps its own narration pace: an unhurried and a hurried
+-- screen reveal different prefixes after the same ticks, acceleration
+-- still takes two deliberate edges, batched ticks match single ticks,
+-- an unknown pace fails, and omitting the pace keeps the middle
+-- cadence.
+function T.launches_keep_their_own_narration_pace_and_edges()
+  local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
+  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local function glyphCount(shown)
+    local total = 0
+    for _ in Utf8Glyphs.iter(shown) do
+      total = total + 1
+    end
+    return total
+  end
+  local slow = openPacedScreen("launch-paced-slow-local", "slow")
+  local quickest = openPacedScreen("launch-paced-quickest-local", "fastest")
+  slow.pump(2)
+  quickest.pump(2)
+  Assert.equal(
+    glyphCount(slow.screen:view().message),
+    1,
+    "the unhurried launch shows one glyph after two ticks"
+  )
+  Assert.equal(
+    glyphCount(quickest.screen:view().message),
+    4,
+    "the hurried launch shows four glyphs after two ticks"
+  )
+  local badOk, _ = pcall(openPacedScreen, "launch-paced-bad-local", "warp")
+  Assert.isFalse(badOk, "an unknown launch pace fails instead of guessing")
+  local plain = openPacedScreen("launch-paced-plain-local", nil)
+  plain.pump(5)
+  Assert.equal(
+    glyphCount(plain.screen:view().message),
+    2,
+    "omitting the launch pace keeps the middle cadence"
+  )
+  local narration = BattleTimeline.new({ sound = function(_) end, textSpeed = "slow" })
+  narration:announce("ABCDEFGHIJKLMNOPQRST", true)
+  narration:update(TICK, function(_)
+    return true
+  end)
+  local consumed, finished = narration:ack()
+  Assert.isTrue(consumed, "an edge during the reveal is consumed by the page")
+  Assert.isFalse(finished, "finishing the reveal never acknowledges the final page on the same edge")
+  Assert.equal(glyphCount(narration:message()), 20, "the edge completes the running page")
+  narration:update(TICK, function(_)
+    return true
+  end)
+  Assert.equal(glyphCount(narration:message()), 20, "later ticks never collapse an accelerated page")
+  local consumedAgain, finishedFinally = narration:ack()
+  Assert.isTrue(consumedAgain, "the final page consumes its own edge")
+  Assert.isTrue(finishedFinally, "a second deliberate edge acknowledges the revealed final page")
+  local single = BattleTimeline.new({ sound = function(_) end, textSpeed = "slow" })
+  single:announce("ABCDEFGHIJKLMNOPQRST", false)
+  single:update(4 / 60, function(_)
+    return true
+  end)
+  local batched = BattleTimeline.new({ sound = function(_) end, textSpeed = "slow" })
+  batched:announce("ABCDEFGHIJKLMNOPQRST", false)
+  for _ = 1, 4 do
+    batched:update(TICK, function(_)
+      return true
+    end)
+  end
+  Assert.equal(single:message(), batched:message(), "batched ticks reveal the same glyphs as single ticks")
+  slow.screen:dispose()
+  quickest.screen:dispose()
+  plain.screen:dispose()
+end
+
 return { tests = T }

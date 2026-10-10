@@ -640,10 +640,12 @@ function FieldBattlePresentation:_buildPort(descriptor)
     end
     return host.submit(reply)
   end
+  local launchSpeed = descriptor.textSpeed or "mid"
   local screen = BattleScreenState.new({
     launchId = descriptor.launchId,
     manifest = manifest,
     model = BattlePresentationModel,
+    textSpeed = launchSpeed,
     submit = submit,
     measureDisplay = self._measureDisplay,
     assets = self._services,

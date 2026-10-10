@@ -3067,11 +3067,17 @@ function FieldRuntime:_launchPresentedBattle(launchId, request, method)
   local function presentedRecoveryInput(edge)
     return self:_presentedRecoveryInput(launchId, edge)
   end
+  local launchSpeed = self.playerData.options.textSpeed
+  assert(
+    type(launchSpeed) == "string" and launchSpeed ~= "",
+    "presented battle launches carry the player narration pace"
+  )
   local descriptor = {
     launchId = launchId,
     kind = request.kind,
     scripted = false,
     environment = environment,
+    textSpeed = launchSpeed,
     audio = self.audio,
     musicRole = self:_battleMusicRole(request),
     host = {

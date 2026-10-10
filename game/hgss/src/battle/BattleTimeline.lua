@@ -26,6 +26,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _names table<integer, string> visible names by combatant identity across packets
 ---@field _ownMoves table<string, string> own move display names by combatant and move identity
 ---@field _moveName (fun(move: string): string?)? borrowed move display-name resolver for foe narration
+---@field _revealPolicy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean } per-launch narration cadence copied from the shared pace table
 ---@field _accum number fractional accepted seconds awaiting their tick
 ---@field _diagnostics string[] recorded unknown-effect occurrences
 local BattleTimeline = {}
@@ -40,8 +41,6 @@ BattleTimeline.EXP_TICKS_PER_SEGMENT = 24
 BattleTimeline.HP_BAR_PIXELS = 48
 BattleTimeline.HP_MAX_TICKS = 30
 BattleTimeline.PAGE_GLYPHS = 54
-
-local REVEAL = TextSpeedPolicy.forSpeed("mid")
 
 ---@param text string
 ---@return string[] pages of at most PAGE_GLYPHS glyphs, never empty
@@ -86,15 +85,18 @@ end
 ---@class BattleTimeline.Options
 ---@field sound (fun(name: string))? legacy sound-intent sink, drained immediately when supplied
 ---@field moveName (fun(move: string): string?)? display-name resolver for move identities the views never name
+---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
 
 ---@param opts BattleTimeline.Options?
 ---@return BattleTimeline
 function BattleTimeline.new(opts)
   opts = opts or {}
   assert(type(opts) == "table", "the cue player requires options")
+  local revealPolicy = TextSpeedPolicy.forSpeed(opts.textSpeed or "mid")
   return setmetatable({
     _sound = opts.sound,
     _moveName = opts.moveName,
+    _revealPolicy = revealPolicy,
     _pendingSounds = {},
     _names = {},
     _ownMoves = {},
@@ -829,6 +831,8 @@ local function startCue(self, cue)
   if cue.kind == "sound" then
     emitSound(self, cue.name --[[@as string]])
   elseif cue.kind == "message" then
+    cue.revealedCount = 0
+    cue.delayCounter = 0
     self._message = cue.pages[1] or ""
     self._messageId = cue.id --[[@as integer]]
   elseif cue.kind == "hp" and cue.from == nil then
@@ -897,31 +901,42 @@ local function tickMessage(self, cue)
     glyphs[#glyphs + 1] = char
   end
   cue.glyphTotal = #glyphs
-  local speed = REVEAL.interGlyphDelay
   local full = #glyphs
-  local target = full
-  if speed > 0 then
-    target = math.min(full, math.floor(cue.elapsed --[[@as integer]] / speed) + 1)
-  end
-  -- A fast-forwarded reveal persists: an accelerated page never
-  -- collapses back into its typewriter run on the next tick, so the
-  -- following edge can turn the page instead of accelerating again.
-  local shown = cue.revealedCount
-  if type(shown) == "number" and shown > target then
-    target = math.min(full, shown)
-  end
-  if
-    cue.revealed ~= true
-    and cue.elapsed --[[@as integer]]
-      == 0
-  then
+  local policy = self._revealPolicy
+  if type(cue.revealedCount) ~= "number" then
     cue.revealedCount = 0
   end
-  cue.revealedCount = target
-  self._message = table.concat(glyphs, "", 1, target)
-  self._messageId = cue.id --[[@as integer]]
-  if target < full then
-    return false
+  if type(cue.delayCounter) ~= "number" then
+    cue.delayCounter = 0
+  end
+  local shown = cue.revealedCount --[[@as integer]]
+  if shown < full then
+    -- Each eligible tick prints at most the pace budget of glyphs, then
+    -- waits out the blank-tick pause. A zero pause still prints only its
+    -- budget, never the whole page. A fast-forwarded reveal persists: an
+    -- accelerated page never collapses back into its paced run on the
+    -- next tick, so the following edge can turn the page instead of
+    -- accelerating again.
+    if
+      cue.delayCounter --[[@as integer]]
+      > 0
+    then
+      cue.delayCounter = cue.delayCounter --[[@as integer]] - 1
+      self._message = table.concat(glyphs, "", 1, shown)
+      self._messageId = cue.id --[[@as integer]]
+      return false
+    end
+    local target = math.min(full, shown + policy.glyphBudget)
+    cue.revealedCount = target
+    cue.delayCounter = policy.interGlyphDelay
+    self._message = table.concat(glyphs, "", 1, target)
+    self._messageId = cue.id --[[@as integer]]
+    if target < full then
+      return false
+    end
+  else
+    self._message = page
+    self._messageId = cue.id --[[@as integer]]
   end
   if
     cue.page --[[@as integer]]
@@ -936,6 +951,8 @@ local function tickMessage(self, cue)
     if cue.hold >= BattleTimeline.MESSAGE_HOLD_TICKS then
       cue.page = cue.page --[[@as integer]] + 1
       cue.hold = 0
+      cue.revealedCount = 0
+      cue.delayCounter = 0
     end
     return false
   end
@@ -1126,6 +1143,7 @@ function BattleTimeline:ack()
   end
   if (current.revealedCount or 0) < total then
     current.revealedCount = total
+    current.delayCounter = 0
     self._message = page
     return true, false
   end
@@ -1136,6 +1154,7 @@ function BattleTimeline:ack()
     current.page = current.page --[[@as integer]] + 1
     current.hold = 0
     current.revealedCount = 0
+    current.delayCounter = 0
     return true, false
   end
   if current.ackable == true then

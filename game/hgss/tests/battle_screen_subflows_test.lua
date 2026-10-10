@@ -842,9 +842,9 @@ function T.bag_selection_consumes_only_through_native_execution()
     Assert.equal(#capture.submits, 1, "throwing the ball seals exactly one reply" .. tag)
     Assert.deepEqual(capture.submits[1].choices[1], ballFragment, "the throw matches its native fragment" .. tag)
     -- Pump through the terminal narration.
-    -- The capture narration needs about seven hundred fixed ticks; the
-    -- authored budget stops mid-drain.
-    for _ = 1, 800 do
+    -- The capture narration drains at the launch pace across about a
+    -- thousand fixed ticks; the authored budget stops mid-drain.
+    for _ = 1, 1200 do
       ackNarration(capture)
       capture.pump(1)
       if capture.battle:status().phase == "complete" or capture.battle:status().phase == "failed" then

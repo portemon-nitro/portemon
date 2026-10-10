@@ -120,6 +120,7 @@ end
 ---@field audio table<string, unknown> semantic sound boundary
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog for battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
+---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
 ---@field overrides table<string, unknown>? per-instance scene/frame/case inputs
 
 ---@param opts BattleScreenState.Options
@@ -213,6 +214,7 @@ function BattleScreenState.new(opts)
   end
   self._timeline = BattleTimeline.new({
     moveName = moveNameOf,
+    textSpeed = opts.textSpeed or "mid",
   })
   local cases = nil
   if type(overrides.cases) == "table" then
