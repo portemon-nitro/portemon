@@ -983,9 +983,10 @@ function T.committed_money_adopts_into_the_live_wallet_once()
 end
 
 -- A failed screen fails its launch before commitment without publishing:
--- the battle releases, holds clear, music restores, and the error is
--- retained for the launching task. Past commitment the failure is
--- ignored instead of rolling mechanics back.
+-- the launch is retained through the abort while the field restores and
+-- reveals, and only then does a failed receipt carrying the original
+-- error reach the launching task with no battle outcome. Past commitment
+-- the failure is ignored instead of rolling mechanics back.
 function T.screen_failures_before_commitment_publish_nothing()
   local released = {}
   local resumed = {}
@@ -993,6 +994,9 @@ function T.screen_failures_before_commitment_publish_nothing()
     battleRuntime = {
       dispose = function()
         released[#released + 1] = true
+      end,
+      status = function()
+        return { outcomeReceipt = { committed = false } }
       end,
     },
     session = {
@@ -1002,6 +1006,10 @@ function T.screen_failures_before_commitment_publish_nothing()
       setForegroundHold = function(_, active)
         released[#released + 1] = active
       end,
+      destinationWorldPresentable = function()
+        return true
+      end,
+      acknowledgeDestinationPresentation = function() end,
     },
     audio = {
       resumeFieldPolicy = function(_, token, restore)
@@ -1011,12 +1019,39 @@ function T.screen_failures_before_commitment_publish_nothing()
   })
   runtime.battleCoordinator._battleLaunch =
     { launchId = "screen-fail#1", phase = "active", presented = true, request = { id = "screen-fail#1" } }
-  runtime.battleCoordinator:_presentedNotify("screen-fail#1", "screen-failed")
-  Assert.equal(runtime.battleCoordinator._battleLaunch, nil, "no launch impersonates a battle after its screen fails")
+  runtime.battleCoordinator:_presentedNotify("screen-fail#1", "screen-failed", "probe screen failure")
+  Assert.notNil(runtime.battleCoordinator._battleLaunch, "the abort retains the launch until the field is safe")
+  Assert.equal(
+    runtime.battleCoordinator._battleLaunch.phase,
+    "aborting",
+    "the uncommitted failure parks in abort"
+  )
+  Assert.isNil(runtime.battleCoordinator.battleRuntime, "the uncommitted battle releases at the fault")
   Assert.notNil(runtime.errorText, "the failure is retained loudly")
-  Assert.notNil(runtime.battleCoordinator._battleReceipt, "the launching task observes the failure")
+  Assert.isNil(runtime.battleCoordinator._battleReceipt, "no receipt publishes before the restored reveal")
+  runtime:updateBattle()
+  Assert.equal(
+    runtime.battleCoordinator._battleLaunch.phase,
+    "abort-revealing",
+    "the present field starts the abort reveal"
+  )
+  runtime.battleCoordinator:_presentedNotify("screen-fail#1", "revealed")
+  runtime:updateBattle()
+  Assert.equal(
+    runtime.battleCoordinator._battleLaunch,
+    nil,
+    "no launch impersonates a battle after its screen fails"
+  )
+  Assert.notNil(runtime.errorText, "the failure stays retained loudly")
+  local receipt = assert(runtime.battleCoordinator._battleReceipt, "the launching task observes the failure")
+  Assert.equal(receipt.phase, "failed", "the abort publishes its failed phase")
+  Assert.equal(receipt.committed, false, "the abort publishes no commitment")
+  Assert.equal(receipt.error, "probe screen failure", "the abort carries the original screen error")
+  Assert.isNil(receipt.result, "the abort invents no battle outcome")
   Assert.equal(#released, 3, "the battle and both holds release exactly once")
   Assert.equal(resumed[1].restore, true, "failure restores the field policy")
+  Assert.isNil(runtime.battleCoordinator._lastBattleResult, "the abort publishes no battle result")
+  Assert.equal(runtime.overworld:phase(), "present", "the abort ends on the restored field")
   local committed = { launchId = "screen-fail#2", phase = "terminal", presented = true }
   runtime.battleCoordinator._battleLaunch = committed
   runtime.battleCoordinator:_presentedNotify("screen-fail#2", "screen-failed")

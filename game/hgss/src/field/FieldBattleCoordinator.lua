@@ -482,6 +482,72 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
     self:_publishPresentedReceipt(launch)
     return
   end
+  if phase == "aborting" then
+    local overworldPhase, failure = fieldRuntime(self).overworld:phase()
+    if failure ~= nil or overworldPhase == "failed" then
+      launch.phase = "failed"
+      launch.error = failure
+      fieldRuntime(self).errorText = tostring(failure or "overworld restore failed")
+      return
+    end
+    if overworldPhase == "leaving" then
+      -- Restoration is illegal until the departure completes.
+      return
+    end
+    if overworldPhase == "absent" then
+      if launch.restoreRequested ~= true then
+        launch.restoreRequested = true
+        fieldRuntime(self).overworld:requestRestore()
+      end
+      return
+    end
+    if overworldPhase == "restoring" then
+      return
+    end
+    if overworldPhase ~= "present" then
+      launch.phase = "failed"
+      launch.error = "the overworld left its known phases during an abort"
+      fieldRuntime(self).errorText = tostring(launch.error)
+      return
+    end
+    -- The field is back: confirm its destination actually presents
+    -- before exposing anything, then resume field music once and reveal.
+    if not fieldRuntime(self):destinationWorldPresentable() then
+      return
+    end
+    fieldRuntime(self):acknowledgeDestinationPresentation()
+    self:_resumeBattleAudio(launch, true)
+    launch.phase = "abort-revealing"
+    return
+  end
+  if phase == "abort-revealing" then
+    local overworldPhase, failure = fieldRuntime(self).overworld:phase()
+    if failure ~= nil or overworldPhase == "failed" then
+      launch.phase = "failed"
+      launch.error = failure
+      fieldRuntime(self).errorText = tostring(failure or "overworld restore failed")
+      return
+    end
+    if launch.revealed ~= true then
+      return
+    end
+    -- The restored field is revealed: publish the failure carrying the
+    -- original screen error, without inventing a battle outcome. The
+    -- prior committed result stands untouched.
+    launch.phase = "failed"
+    launch.committed = false
+    self._battleReceipt = launch
+    self._battleLaunch = nil
+    self.battleRuntime = nil
+    if fieldRuntime(self).session ~= nil then
+      fieldRuntime(self).session:setBattleActive(false)
+      fieldRuntime(self).session:setForegroundHold(false)
+    end
+    if fieldRuntime(self).input ~= nil then
+      fieldRuntime(self).input:clearAll()
+    end
+    return
+  end
   if phase == "recovering" then
     self:_pumpAutomaticRecovery(launch)
     return
@@ -792,8 +858,8 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
   local function presentedSubmit(reply)
     return self:_presentedSubmit(launchId, reply)
   end
-  local function presentedNotify(event)
-    self:_presentedNotify(launchId, event)
+  local function presentedNotify(event, detail)
+    self:_presentedNotify(launchId, event, detail)
   end
   local function presentedRecoveryInput(edge)
     return self:_presentedRecoveryInput(launchId, edge)
@@ -1087,10 +1153,13 @@ function FieldBattleCoordinator:_presentedSubmit(launchId, reply)
 end
 
 -- Presented cover handshake from the envelope: each event fires its phase
--- transition exactly once; stale or out-of-phase events are ignored.
+-- transition exactly once; stale or out-of-phase events are ignored. A lost
+-- renderer arrives as screen-failed carrying the original screen error
+-- text; repeats of one launch fault collapse into the first report.
 ---@param launchId string
----@param event string cover-complete, battle-covered, or revealed
-function FieldBattleCoordinator:_presentedNotify(launchId, event)
+---@param event string cover-complete, battle-covered, revealed, or screen-failed
+---@param detail string? original screen error text behind a screen-failed event
+function FieldBattleCoordinator:_presentedNotify(launchId, event, detail)
   local launch = self._battleLaunch
   if launch == nil or launch.launchId ~= launchId then
     return
@@ -1104,31 +1173,65 @@ function FieldBattleCoordinator:_presentedNotify(launchId, event)
       launch.battleCovered = true
     end
   elseif event == "revealed" then
-    if launch.phase == "revealing" then
+    if launch.phase == "revealing" or launch.phase == "abort-revealing" then
       launch.revealed = true
     end
   elseif event == "screen-failed" then
-    -- A failed screen fails the launch loudly before commitment, without
-    -- publishing any result. After commitment (terminal and later)
-    -- mechanics are never rolled back or rerun to repair visuals.
-    if launch.phase == "covering" or launch.phase == "leaving" or launch.phase == "active" then
-      if self.battleRuntime ~= nil then
-        local _, _ = pcall(function()
-          return self.battleRuntime:dispose()
-        end)
-        self.battleRuntime = nil
+    self:_noteScreenFailed(launch, detail)
+  end
+end
+
+-- Records one lost renderer for its launch and chooses the return path
+-- from the committed battle receipt, never from the phase name: a battle
+-- that already committed keeps its words and continues its covered return
+-- without the screen, while an uncommitted battle disposes and restores
+-- the field before publishing any failure. The first fault wins; repeats
+-- and faults on settled launches change nothing. Holds, audio, and the
+-- launch itself clear only at the safe field, never here.
+---@param launch table<string, unknown> live presented launch record
+---@param detail string? original screen error text
+function FieldBattleCoordinator:_noteScreenFailed(launch, detail)
+  if launch.screenFailed == true then
+    return
+  end
+  if launch.phase == "failed" or launch.phase == "complete" then
+    return
+  end
+  local reason = detail
+  if type(reason) ~= "string" or reason == "" then
+    reason = "the presented battle screen failed"
+  end
+  local battle = self.battleRuntime
+  if battle ~= nil then
+    local status = battle:status()
+    if status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
+      -- The committed receipt is authoritative even while the host still
+      -- says active and the battle port stalls behind the lost screen: keep
+      -- its words, adopt its staged wallet once, and continue the normal
+      -- covered return. A stalled port is disposed under terminal cover.
+      launch.screenFailed = true
+      launch.screenError = reason
+      launch.result = status.result
+      launch.sourceResult = status.sourceResult
+      self:adoptCommittedPlayerMoney(launch, status.outcomeReceipt)
+      if launch.phase == "covering" or launch.phase == "leaving" or launch.phase == "active" then
+        launch.phase = "terminal"
       end
-      self:_resumeBattleAudio(launch, true)
-      if fieldRuntime(self).session ~= nil then
-        fieldRuntime(self).session:setBattleActive(false)
-        fieldRuntime(self).session:setForegroundHold(false)
-      end
-      launch.phase = "failed"
-      launch.error = "the presented battle screen failed"
-      fieldRuntime(self).errorText = tostring(launch.error)
-      self._battleReceipt = launch
-      self._battleLaunch = nil
+      return
     end
+  end
+  launch.screenFailed = true
+  launch.screenError = reason
+  if launch.phase == "covering" or launch.phase == "leaving" or launch.phase == "active" then
+    if self.battleRuntime ~= nil then
+      local _, _ = pcall(function()
+        return self.battleRuntime:dispose()
+      end)
+      self.battleRuntime = nil
+    end
+    launch.phase = "aborting"
+    launch.error = reason
+    fieldRuntime(self).errorText = tostring(reason)
   end
 end
 
