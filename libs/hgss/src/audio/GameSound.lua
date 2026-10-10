@@ -14,7 +14,13 @@
 -- channels are released with the forced release override -- no channel or
 -- sample state is preserved; after the fanfare and its 15-tick post-play
 -- wait the still-current BGM's timeline resumes, and a BGM replaced or
--- stopped during the fanfare is never resumed), fixed-tick fades (the
+-- stopped during the fanfare is never resumed), radio playback (shows play
+-- through the dedicated radio player from a detached routing record that
+-- keeps the original bank, program, and initial volume; the selected
+-- sequence latch is distinct from handle liveness -- stop clears the latch
+-- at once while pause retains it -- and scripted BGM changes stop a radio
+-- latched to another sequence while fanfares, effects, and battle policy
+-- leave it alone), fixed-tick fades (the
 -- HGSS GF_SndStartFadeOutBGM/FadeInBGM model: the fade state carries
 -- starting level/target/total duration/elapsed, the level ramps linearly
 -- per tick into a dB-domain attenuation the player pushes to the mixer's
@@ -50,6 +56,9 @@ local PlayerFaderTimeline = require("libs.hgss.src.audio.PlayerFaderTimeline")
 ---@field private _queuedMusicReplacement GameSoundQueuedMusicReplacement|nil
 ---@field private _fanfare table<string, unknown>|nil
 ---@field private _faders table<integer, GameSoundPlayerFader>
+---@field private _radioSequenceId integer?
+---@field private _radioPaused boolean
+---@field private _radioHandle table<string, unknown>?
 ---@field private _handles table<integer, table<string, unknown>>
 ---@field private _faderTimeline PlayerFaderTimeline
 ---@field private _cryActive boolean
@@ -65,6 +74,12 @@ local PlayerFaderTimeline = require("libs.hgss.src.audio.PlayerFaderTimeline")
 ---@field isFanfarePlaying fun(self: GameSound): boolean
 ---@field playCry fun(self: GameSound, species: integer, pattern: integer, form: integer?)
 ---@field isCryFinished fun(self: GameSound): boolean
+---@field playRadio fun(self: GameSound, sequenceKey: integer|string): boolean
+---@field stopRadio fun(self: GameSound, fadeFrames: integer?)
+---@field pauseRadio fun(self: GameSound)
+---@field resumeRadio fun(self: GameSound)
+---@field currentRadioSequence fun(self: GameSound): integer?
+---@field radioIsPlaying fun(self: GameSound): boolean
 ---@field fadeMusicOut fun(self: GameSound, spec: { target: integer, durationTicks: integer })
 ---@field fadeMusicIn fun(self: GameSound, spec: { durationTicks: integer })
 ---@field queueMusicReplacement fun(self: GameSound, idOrSymbol: integer|string, durationTicks: integer)
@@ -118,6 +133,13 @@ local FANFARE_POST_WAIT_FRAMES = 15
 local PLAYER_FADER_FULL = 127
 local SOURCE_FULL_RESTORE = 128
 
+-- The dedicated radio player: shows play through logical player 9 at
+-- priority 65. The channel mask and sequence capacity for this player come
+-- from the runtime provider; ordinary catalog sequences never bind it, so
+-- timeline key 9 below is exclusively the radio stop tail.
+local RADIO_PLAYER_ID = 9
+local RADIO_PLAYER_PRIORITY = 65
+
 ---@param opts { provider: AudioAssetProvider, player: SequencePlayer, completionAvailable: boolean?, cry: table<string, unknown>?, mapMusic: fun(): integer|string|nil? }
 ---@return GameSound
 function GameSound.new(opts)
@@ -142,6 +164,9 @@ function GameSound.new(opts)
     _fanfare = nil,
     _faders = {},
     _faderTimeline = PlayerFaderTimeline.new(),
+    _radioSequenceId = nil,
+    _radioPaused = false,
+    _radioHandle = nil,
     _handles = {},
     _cryActive = false,
   } ---@type GameSound
@@ -337,7 +362,11 @@ end
 ---@param idOrSymbol integer|string
 function GameSound:playMusic(idOrSymbol)
   self._queuedMusicReplacement = nil
-  local sequence = self:_startSequence(idOrSymbol)
+  -- Resolve once: the radio guard reads the incoming identity from the
+  -- same record the start path plays, instead of resolving twice.
+  local sequence = self._provider:sequence(idOrSymbol)
+  self:_stopRadioForBgm(sequence.id)
+  self:_startResolvedSequence(sequence)
   self._currentMusic = sequence.id
 end
 
@@ -346,6 +375,7 @@ end
 -- erasure both at lowering and here -- the service takes no arguments).
 function GameSound:stopMusic()
   self._queuedMusicReplacement = nil
+  self:stopRadio()
   self:_stopBgmPlayer()
   self._currentMusic = nil
 end
@@ -536,7 +566,9 @@ end
 ---@param idOrSymbol integer|string
 function GameSound:temporaryMusic(idOrSymbol)
   self._queuedMusicReplacement = nil
-  local sequence = self:_startSequence(idOrSymbol)
+  local sequence = self._provider:sequence(idOrSymbol)
+  self:_stopRadioForBgm(sequence.id)
+  self:_startResolvedSequence(sequence)
   self._currentMusic = sequence.id
 end
 
@@ -570,6 +602,12 @@ end
 -- active, ramps tagged as music fades do not advance.
 function GameSound:_advanceFaderRamps()
   self._faderTimeline:update(function(playerId)
+    -- Timeline key 9 is exclusively the radio stop tail: ordinary ramps
+    -- never address the radio player, so it always advances as a generic
+    -- ramp and is never frozen by a fanfare.
+    if playerId == RADIO_PLAYER_ID then
+      return true
+    end
     local fader = self._faders[playerId]
     return fader ~= nil and not (self._fanfare ~= nil and fader.ramp ~= nil and fader.ramp.kind == "music")
   end)
@@ -633,6 +671,134 @@ function GameSound:playWithBankOverride(sequenceRef, bankRef)
   if accepted then
     self:_resetPlayerFader(sequence.player.id)
   end
+end
+
+-- Stops the radio when an incoming BGM identity replaces it. Starting the
+-- BGM already latched as radio keeps the radio handle: the ordinary path
+-- plays the same base sequence on its own player without stealing it.
+---@param sequenceId integer
+function GameSound:_stopRadioForBgm(sequenceId)
+  if self._radioSequenceId ~= nil and self._radioSequenceId ~= sequenceId then
+    self:stopRadio()
+  end
+end
+
+-- Starts `sequenceKey` as radio through the dedicated radio player. The
+-- engine routes from a detached shallow sequence record (radio player and
+-- radio priority, retaining the original bank identity, initial volume,
+-- channel priority, and immutable program), so the cached sequence keeps
+-- its ordinary player binding and is never mutated. Required assets resolve
+-- before any live change, so an unknown sequence or a missing bank leaves
+-- committed playback intact. The audible BGM stops first while its
+-- reference is retained for later policy comparisons; retuning the already
+-- playing station is a no-op and never restarts it. The radio handle is
+-- created once per audio-runtime lifetime and reused across retunes; only
+-- an accepted start latches the sequence.
+---@param sequenceKey integer|string
+---@return boolean
+function GameSound:playRadio(sequenceKey)
+  local sequence = self._provider:sequence(sequenceKey)
+  local bank = self._provider:bank(sequence.bankId)
+  if self._radioHandle == nil then
+    self._radioHandle = self._player:createHandle()
+  end
+  if self._radioSequenceId == sequence.id and self._player:isHandlePlaying(self._radioHandle) then
+    return true
+  end
+  self._faderTimeline:cancel(RADIO_PLAYER_ID)
+  self._faderTimeline:reset(RADIO_PLAYER_ID, PLAYER_FADER_FULL)
+  local detached = {
+    id = sequence.id,
+    symbol = sequence.symbol,
+    bankId = sequence.bankId,
+    player = {
+      id = RADIO_PLAYER_ID,
+      playerPriority = RADIO_PLAYER_PRIORITY,
+      initialVolume = sequence.player.initialVolume,
+      channelPriority = sequence.player.channelPriority,
+    },
+    program = sequence.program,
+  }
+  self:_stopBgmPlayer()
+  local accepted = self._player:play(self._radioHandle, detached, bank)
+  if accepted then
+    self._radioSequenceId = sequence.id
+    self._radioPaused = false
+  else
+    self._radioSequenceId = nil
+    self._radioPaused = false
+  end
+  return accepted
+end
+
+-- Stops the radio and clears its latch at once. With a fade duration the
+-- audible instance first ramps to silence over that many sound frames (the
+-- same source-frame interpolation as every other ramp) before its handle
+-- stops; without one the handle stops immediately. Either way the latch is
+-- already clear while the tail finishes, and a fresh start cancels it.
+---@param fadeFrames integer?
+function GameSound:stopRadio(fadeFrames)
+  if fadeFrames ~= nil then
+    assert(
+      type(fadeFrames) == "number" and fadeFrames % 1 == 0 and fadeFrames > 0,
+      "radio stop fade must be a positive frame count"
+    )
+  end
+  self._radioSequenceId = nil
+  self._radioPaused = false
+  self._faderTimeline:cancel(RADIO_PLAYER_ID)
+  if self._radioHandle ~= nil and self._player:isHandlePlaying(self._radioHandle) then
+    if fadeFrames ~= nil then
+      local handle = self._radioHandle
+      self._faderTimeline:replace(RADIO_PLAYER_ID, 0, fadeFrames, function(level)
+        if level > PLAYER_FADER_FULL then
+          level = PLAYER_FADER_FULL
+        end
+        self._player:setHandleFader(handle, level)
+        return level
+      end, function()
+        self._player:stopHandle(handle)
+      end)
+    else
+      self._player:stopHandle(self._radioHandle)
+    end
+  end
+end
+
+-- Freezes radio playback while retaining its latch; resuming never restarts
+-- at the beginning. Pausing a completed handle still retains the latch.
+function GameSound:pauseRadio()
+  if self._radioSequenceId == nil or self._radioHandle == nil then
+    return
+  end
+  self._radioPaused = true
+  self._player:pauseHandle(self._radioHandle)
+end
+
+function GameSound:resumeRadio()
+  if self._radioSequenceId == nil or self._radioHandle == nil then
+    return
+  end
+  self._radioPaused = false
+  self._player:resumeHandle(self._radioHandle)
+end
+
+-- The latched radio sequence id, or nil once stopped. The latch survives
+-- pauses and natural completion; only an explicit stop (or a rejected
+-- start) clears it.
+---@return integer?
+function GameSound:currentRadioSequence()
+  return self._radioSequenceId
+end
+
+-- True while the latched radio handle is actually producing playback:
+-- paused, stopped, or completed radio is silent even with a latch.
+---@return boolean
+function GameSound:radioIsPlaying()
+  return self._radioSequenceId ~= nil
+    and not self._radioPaused
+    and self._radioHandle ~= nil
+    and self._player:isHandlePlaying(self._radioHandle)
 end
 
 return GameSound

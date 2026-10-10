@@ -10,6 +10,12 @@ local WaveOutPlayer = require("libs.nds.src.nitro.sound.WaveOutPlayer")
 
 local AudioRuntime = {}
 
+-- The source radio player configuration (fixed HGSS runtime data, not
+-- catalog data): logical player 9 carries one simultaneous radio sequence
+-- with channels masked to 0xA7FE.
+local RADIO_PLAYER_ID = 9
+local RADIO_PLAYER_RECORD = { id = 9, maxSequences = 1, channelMask = 0xA7FE }
+
 ---@class HgssAudioRuntimeFieldOptions
 ---@field eventState unknown
 ---@field fieldPosition fun(): integer, integer
@@ -32,11 +38,25 @@ function AudioRuntime.compose(opts)
   assert(opts and opts.cacheFs and opts.outputRate, "AudioRuntime.compose requires cacheFs and outputRate")
 
   local provider = AudioAssetProvider.new(opts.cacheFs)
+  -- A small provider adapter for the sequence engine: player 9 resolves to
+  -- the radio configuration above while every other player record and
+  -- every sample delegates unchanged to the asset provider. GameSound keeps
+  -- the ordinary provider for its own asset resolution.
+  local soundProvider = {}
+  function soundProvider:player(id)
+    if id == RADIO_PLAYER_ID then
+      return RADIO_PLAYER_RECORD
+    end
+    return provider:player(id)
+  end
+  function soundProvider:loadSample(key)
+    return provider:loadSample(key)
+  end
   local mixer = VoiceMixer.new({ sampleRate = opts.outputRate })
   local player = SequencePlayer.new({
     sampleRate = opts.outputRate,
     mixer = mixer,
-    provider = provider,
+    provider = soundProvider,
   })
   local cry = CryPlayer.new({ player = player, provider = provider, waveOut = WaveOutPlayer.new({ mixer = mixer }) })
   local sound = GameSound.new({
