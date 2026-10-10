@@ -22,6 +22,7 @@ local function facts(overrides)
     collision = { blocked = false, behavior = 0 },
     surface = { surfaceId = 3, worldY = 0, terrainDependencyHash = "destination-window" },
     trigger = false,
+    occupied = false,
     events = {},
     savedActors = {},
     mapBounds = { minX = 0, maxX = 100, minZ = 0, maxZ = 100 },
@@ -118,307 +119,129 @@ function T.tests.only_normal_ground_and_tall_grass_are_allowed()
   Assert.equal(result.reason, "blocked")
 end
 
-function T.tests.source_actor_profiles_produce_conservative_tile_extents()
+function T.tests.exact_occupancy_decision_ignores_movement_speculation()
   local LocationPolicy = policy()
-
-  local fixed = event({ movementType = "look_around", x = 10, z = 10 })
-  Assert.equal(FieldObjectMovement.require(fixed.movementType).kind, "look")
-  local fixedActor = LocationPolicy.classify(facts({ fieldX = 10, fieldZ = 10, events = { fixed } }))
-  Assert.equal(fixedActor.reason, "possible_actor", "look profile reserves its fixed source tile")
-  Assert.isTrue(
-    LocationPolicy.classify(facts({ fieldX = 11, fieldZ = 10, events = { fixed } })).selectable,
-    "fixed look profile does not reserve its unused source range"
-  )
-
-  local rotating = event({ movementType = "rotate_clockwise", x = 20, z = 20 })
-  local spinning = event({ movementType = "vs_seeker_spin", objectEventId = 8, x = 30, z = 30 })
-  Assert.equal(FieldObjectMovement.require(rotating.movementType).kind, "rotate")
-  Assert.equal(FieldObjectMovement.require(spinning.movementType).kind, "spin")
-  for _, fixedProfile in ipairs({ rotating, spinning }) do
-    Assert.equal(
-      LocationPolicy.classify(facts({ fieldX = fixedProfile.x, fieldZ = fixedProfile.z, events = { fixedProfile } })).reason,
-      "possible_actor",
-      "rotate and spin profiles reserve their fixed source tile"
-    )
-    Assert.isTrue(
-      LocationPolicy.classify(
-        facts({ fieldX = fixedProfile.x + 1, fieldZ = fixedProfile.z, events = { fixedProfile } })
-      ).selectable,
-      "rotate and spin profiles do not reserve unused ranges"
-    )
-  end
-
-  local bounded = event({ movementType = "wander_around", x = 40, z = 40, xRange = 2, yRange = 1 })
-  Assert.equal(FieldObjectMovement.require(bounded.movementType).kind, "wander")
-  Assert.equal(
-    LocationPolicy.classify(facts({ fieldX = 42, fieldZ = 41, events = { bounded } })).reason,
-    "possible_actor",
-    "moving source ranges include their inclusive X and Z limits"
-  )
-  Assert.isTrue(
-    LocationPolicy.classify(facts({ fieldX = 40, fieldZ = 42, events = { bounded } })).selectable,
-    "the event yRange bounds field Z and does not create a zRange"
-  )
-
-  local unboundedX = event({ movementType = "walk_back_and_forth", x = 50, z = 50, xRange = -1, yRange = 0 })
-  Assert.equal(FieldObjectMovement.require(unboundedX.movementType).kind, "shuttle")
-  Assert.equal(
-    LocationPolicy.classify(facts({ fieldX = 99, fieldZ = 50, events = { unboundedX } })).reason,
-    "possible_actor",
-    "a moving -1 X range extends to the supplied map bound"
-  )
-  Assert.isTrue(
-    LocationPolicy.classify(facts({ fieldX = 50, fieldZ = 51, events = { unboundedX } })).selectable,
-    "a bounded Z range remains bounded when X is unbounded"
-  )
-
-  local unboundedZ = event({ movementType = "walk_north_east_west_south", x = 60, z = 60, xRange = 0, yRange = -1 })
-  Assert.equal(FieldObjectMovement.require(unboundedZ.movementType).kind, "pattern")
-  Assert.equal(
-    LocationPolicy.classify(facts({ fieldX = 60, fieldZ = 0, events = { unboundedZ } })).reason,
-    "possible_actor",
-    "a moving -1 yRange extends field Z to the supplied map bound"
-  )
-
-  local stationary = event({ movementType = "stationary", objectEventId = 9, x = 70, z = 70 })
-  Assert.isTrue(
-    LocationPolicy.classify(facts({ fieldX = 10, fieldZ = 70, events = { stationary } })).selectable,
-    "stationary source range -1 does not blanket-disable its map"
-  )
-end
-
-function T.tests.saved_actor_positions_and_changed_profiles_extend_source_mask()
-  local LocationPolicy = policy()
-  local sourceEvent = event({ movementType = "stationary", x = 10, z = 10 })
-  local saved = actorAt(80, 80, sourceEvent, { movementType = "wander_around" })
-  Assert.equal(FieldObjectMovement.require(saved.movementType).kind, "wander")
-
-  local sourceTile = LocationPolicy.classify(facts({ fieldX = 10, fieldZ = 10, events = { sourceEvent } }))
-  Assert.equal(sourceTile.reason, "possible_actor", "source position remains excluded after the actor moves")
-  local movedTile = LocationPolicy.classify(facts({
-    fieldX = 80,
-    fieldZ = 80,
-    events = { sourceEvent },
-    savedActors = { saved },
-  }))
-  Assert.equal(movedTile.reason, "possible_actor", "saved moved actor position is excluded")
-  Assert.equal(
-    LocationPolicy.classify(facts({
-      fieldX = 82,
-      fieldZ = 80,
-      events = { sourceEvent },
-      savedActors = { saved },
-    })).reason,
-    "possible_actor",
-    "changed saved movement profile contributes its current conservative range"
-  )
-  Assert.isTrue(
-    LocationPolicy.classify(facts({ fieldX = 82, fieldZ = 80, events = { sourceEvent } })).selectable,
-    "without a saved movement change the source profile remains stationary"
-  )
-
-  local active = actorAt(80, 80, sourceEvent, { action = { kind = "walk" } })
-  Assert.equal(
-    LocationPolicy.classify(facts({
-      fieldX = 10,
-      fieldZ = 10,
-      events = { sourceEvent },
-      savedActors = { active },
-    })).reason,
-    "actor_motion_active",
-    "an in-flight saved actor action refuses every destination on its map"
-  )
-end
-
-function T.tests.represented_neighbor_actor_is_masked_without_blocking_on_its_action()
-  local LocationPolicy = policy()
-  local selectedEvent = event({ mapId = 12, movementType = "stationary", x = 10, z = 10 })
-  local neighborEvent = event({ mapId = 13, objectEventId = 8, movementType = "stationary", x = 90, z = 90 })
-  local neighborActor = actorAt(80, 80, neighborEvent, { mapId = 13, action = { kind = "walk" } })
-  local sharedFacts = {
-    mapId = 12,
-    fieldX = 80,
-    fieldZ = 80,
-    coverage = true,
-    logicalMapMatch = true,
-    collision = { blocked = false, behavior = 0 },
-    surface = { surfaceId = 3, worldY = 0, terrainDependencyHash = "destination-window" },
-    trigger = false,
-    events = { selectedEvent, neighborEvent },
-    savedActors = { neighborActor },
-    mapBounds = { minX = 0, maxX = 100, minZ = 0, maxZ = 100 },
-  }
-  Assert.equal(
-    LocationPolicy.classify(sharedFacts).reason,
-    "possible_actor",
-    "a represented neighbor source position remains part of the physical occupancy mask"
-  )
-
-  sharedFacts.fieldX, sharedFacts.fieldZ = 20, 20
-  Assert.isTrue(
-    LocationPolicy.classify(sharedFacts).selectable,
-    "a neighbor actor action does not block destinations on the selected map"
-  )
-end
-
-function T.tests.unrepresented_saved_actor_only_blocks_its_saved_global_position()
-  local LocationPolicy = policy()
-  local selectedEvent = event({ mapId = 12, x = 10, z = 10 })
-  local unrepresentedEvent = event({ mapId = 14, objectEventId = 9, x = 90, z = 90 })
-  local unrepresentedActor = actorAt(80, 80, unrepresentedEvent, { mapId = 14 })
-  local sharedFacts = facts({ events = { selectedEvent }, savedActors = { unrepresentedActor } })
-
-  Assert.isTrue(
-    LocationPolicy.classify(sharedFacts).selectable,
-    "a saved actor without a represented source only reserves its known saved position"
-  )
-  sharedFacts.fieldX, sharedFacts.fieldZ = 80, 80
-  Assert.equal(
-    LocationPolicy.classify(sharedFacts).reason,
-    "possible_actor",
-    "an unrepresented actor's known global position remains excluded"
-  )
-end
-
-function T.tests.special_actor_fails_closed_and_flag_visibility_does_not_shrink_source_mask()
-  local LocationPolicy = policy()
+  local roamer = event({ movementType = "walk_back_and_forth", x = 50, z = 50, xRange = -1, yRange = 0 })
   local special = event({ movementType = "player", x = 90, z = 90 })
-  Assert.equal(FieldObjectMovement.require(special.movementType).kind, "special")
-  local result = LocationPolicy.classify(facts({ fieldX = 0, fieldZ = 0, events = { special } }))
-  Assert.equal(result.reason, "unsupported_actor", "unbounded special movement disables placement in its map")
-
-  for _, eventFlag in ipairs({ 0, 123 }) do
-    local sourceEvent = event({ movementType = "stationary", x = 15, z = 16, eventFlag = eventFlag })
-    Assert.equal(
-      LocationPolicy.classify(facts({ fieldX = 15, fieldZ = 16, events = { sourceEvent } })).reason,
-      "possible_actor",
-      "a source event remains in the obstacle mask independent of its progress flag"
-    )
-  end
-end
-
-function T.tests.duplicate_source_identity_does_not_preempt_a_clear_tile()
-  local LocationPolicy = policy()
-  local first = event({ movementType = "stationary", x = 10, z = 10 })
-  local conflicting = event({ movementType = "stationary", x = 11, z = 10 })
-  local saved = actorAt(10, 10, first)
-  local ok, result = pcall(function()
-    return LocationPolicy.classify(facts({
-      fieldX = 12,
-      fieldZ = 12,
-      events = { first, conflicting },
-      savedActors = { saved },
-    }))
-  end)
-
-  Assert.isTrue(ok, "conflicting external source identities must not escape as a raw assertion")
-  Assert.isTrue(result.selectable, "a matching source candidate and clear tile remain usable")
-  Assert.isNil(result.reason, "multiplicity alone does not refuse a clear destination")
-end
-
-function T.tests.duplicate_neighbor_identity_keeps_each_occupancy_footprint()
-  local LocationPolicy = policy()
-  local first = event({ mapId = 13, x = 10, z = 10 })
-  local second = event({ mapId = 13, x = 20, z = 10 })
-  local source = facts({
+  local sourceEvent = event({ movementType = "stationary", x = 10, z = 10 })
+  local active = actorAt(80, 80, sourceEvent, { action = { kind = "walk" } })
+  local crowded = facts({
     fieldX = 20,
-    fieldZ = 10,
-    events = { first, second },
-    representedMapIds = { [12] = true, [13] = true },
+    fieldZ = 20,
+    occupied = false,
+    events = { roamer, special, sourceEvent },
+    savedActors = { active },
   })
-
-  for _, events in ipairs({ { first, second }, { second, first } }) do
-    source.events = events
-    local blocked = LocationPolicy.classify(source)
-    Assert.equal(blocked.reason, "possible_actor", "the second same-ID neighbor footprint blocks occupancy")
-    source.fieldX = 30
-    source.fieldZ = 30
-    Assert.isTrue(LocationPolicy.classify(source).selectable, "duplicate identity alone does not reject a clear tile")
-    source.fieldX = 20
-    source.fieldZ = 10
-  end
-end
-
-function T.tests.ambiguous_saved_actor_unions_motion_for_every_source_candidate_incrementally()
-  local LocationPolicy = policy()
-  local first = event({ mapId = 13, movementType = "stationary", x = 10, z = 10, xRange = 2, yRange = 2 })
-  local second = event({ mapId = 13, movementType = "look_north", x = 40, z = 40, xRange = 2, yRange = 2 })
-  local saved = actorAt(80, 80, second, { mapId = 13, movementType = "wander_around" })
-  local source = facts({
-    fieldX = 11,
-    fieldZ = 10,
-    events = { first, second },
-    savedActors = { saved },
-    representedMapIds = { [12] = true, [13] = true },
-  })
-
-  for _, events in ipairs({ { first, second }, { second, first } }) do
-    source.events = events
-    Assert.equal(
-      LocationPolicy.classify(source).reason,
-      "possible_actor",
-      "changed movement at the first candidate footprint blocks despite source identity matching the second"
-    )
-  end
-
-  source.fieldX, source.fieldZ = 70, 70
-  local expected = LocationPolicy.classify(source)
-  local task = LocationPolicy.beginClassification(source)
-  local advances = 0
-  while not task.done do
-    for _, budget in ipairs({ 0, 1, 2, 5 }) do
-      local visits = LocationPolicy.advanceClassification(task, budget)
-      Assert.isTrue(visits <= budget, "candidate correlation stays within each visit budget")
-      advances = advances + visits
-      if task.done then
-        break
-      end
-    end
-  end
-  Assert.isTrue(advances >= 5, "both candidate records and actor correlation are charged")
-  Assert.deepEqual(task.result, expected, "staged classification matches synchronous ambiguity handling")
-
-  saved.sourceMovementType = "wander_around"
-  Assert.equal(
-    LocationPolicy.classify(source).reason,
-    "ambiguous_source_actor",
-    "ambiguous identity without a candidate matching saved source movement is rejected"
+  Assert.isTrue(
+    LocationPolicy.classify(crowded).selectable,
+    "movement ranges, special profiles and in-flight actions never refuse an unoccupied tile"
   )
 
-  local unique = event({ mapId = 12, movementType = "stationary", x = 90, z = 90 })
-  local uniqueActor = actorAt(80, 80, unique, { sourceMovementType = "wander_around" })
-  local ok = pcall(function()
-    LocationPolicy.classify(facts({ events = { unique }, savedActors = { uniqueActor } }))
-  end)
-  Assert.isFalse(ok, "a unique source movement mismatch remains a hard invariant")
-
-  local manyCandidates = {}
-  for index = 1, 32 do
-    manyCandidates[index] = event({
-      mapId = 13,
-      objectEventId = 8,
-      movementType = index == 32 and "wander_around" or "stationary",
-      x = 1000 + index,
-      z = 1000,
-      xRange = 1,
-      yRange = 1,
-    })
-  end
-  local manyActor = actorAt(80, 80, manyCandidates[32], { mapId = 13, movementType = "wander_around" })
-  source.fieldX, source.fieldZ = 70, 70
-  source.events, source.savedActors = manyCandidates, { manyActor }
-  local manyTask = LocationPolicy.beginClassification(source)
-  local visits = 0
-  while not manyTask.done do
-    local used = LocationPolicy.advanceClassification(manyTask, 1)
-    Assert.isTrue(used <= 1, "large ambiguous groups advance within a one-visit budget")
-    visits = visits + used
-  end
-  Assert.isTrue(visits >= 65, "classification charges every event and every candidate correlation")
-  Assert.isTrue(manyTask.result.selectable, "a matched large identity group preserves a clear tile")
+  local reserved = facts({
+    fieldX = 20,
+    fieldZ = 20,
+    occupied = true,
+    events = { roamer, special, sourceEvent },
+    savedActors = { active },
+  })
+  local refused = LocationPolicy.classify(reserved)
+  Assert.isFalse(refused.selectable, "a known occupied tile is never a selectable destination")
+  Assert.equal(refused.reason, "possible_actor", "exact occupancy refuses with the actor reason")
 end
 
-function T.tests.staged_classification_bounds_each_actor_and_event_advance()
+function T.tests.missing_occupancy_facts_fail_closed()
+  local LocationPolicy = policy()
+  local unprepared = facts()
+  unprepared.occupied = nil
+  local ok, diagnosis = pcall(LocationPolicy.classify, unprepared)
+  Assert.isFalse(ok, "a tile without exact occupancy facts is never admitted by default")
+  Assert.isTrue(
+    type(diagnosis) == "string" and diagnosis:find("occupancy", 1, true) ~= nil,
+    "a missing occupancy fact fails with its cause"
+  )
+end
+
+function T.tests.strict_placement_gates_keep_their_reasons_with_exact_occupancy()
+  local LocationPolicy = policy()
+  local function ground(overrides)
+    local base = facts({ occupied = false })
+    for key, value in pairs(overrides or {}) do
+      base[key] = value
+    end
+    return base
+  end
+
+  Assert.isTrue(LocationPolicy.classify(ground()).selectable, "ordinary ground with no occupant stays selectable")
+  Assert.isTrue(
+    LocationPolicy.classify(
+      ground({ collision = { blocked = false, behavior = MetatileBehavior.BEHAVIOR.TALL_GRASS } })
+    ).selectable,
+    "tall grass with no occupant stays selectable"
+  )
+
+  for _, case in ipairs({
+    { facts = ground({ coverage = false }), reason = "outside_map" },
+    { facts = ground({ logicalMapMatch = false }), reason = "wrong_logical_map" },
+    { facts = ground({ trigger = "warp" }), reason = "warp" },
+    { facts = ground({ trigger = "coordinate_trigger" }), reason = "coordinate_trigger" },
+    { facts = ground({ collision = { blocked = true, behavior = 0 } }), reason = "blocked" },
+    { facts = ground({ collision = { blocked = false, behavior = 7 } }), reason = "special_terrain" },
+    { facts = ground({ surface = { rejection = "ambiguous_surface" } }), reason = "ambiguous_surface" },
+  }) do
+    local result = LocationPolicy.classify(case.facts)
+    Assert.isFalse(result.selectable, case.reason .. " remains a hard placement refusal")
+    Assert.equal(result.reason, case.reason, "placement refusal still names its physical cause")
+  end
+  local missing = ground()
+  missing.surface = nil
+  Assert.equal(LocationPolicy.classify(missing).reason, "no_surface", "a missing surface remains unplaceable")
+
+  local occupied = LocationPolicy.classify(ground({ fieldX = 10, fieldZ = 10, occupied = true }))
+  Assert.isFalse(occupied.selectable, "a known occupied tile is never a selectable destination")
+  Assert.equal(occupied.reason, "possible_actor", "exact occupancy refuses with the actor reason")
+end
+
+function T.tests.only_exact_actor_positions_block_placement()
+  local LocationPolicy = policy()
+  local function ground(overrides)
+    local base = facts({ occupied = false })
+    for key, value in pairs(overrides or {}) do
+      base[key] = value
+    end
+    return base
+  end
+
+  local exact = LocationPolicy.classify(ground({ fieldX = 10, fieldZ = 10, occupied = true }))
+  Assert.equal(exact.reason, "possible_actor", "a known occupied tile refuses even on ordinary ground")
+
+  local roamer = event({ movementType = "walk_back_and_forth", x = 50, z = 50, xRange = -1, yRange = 0 })
+  Assert.isTrue(
+    LocationPolicy.classify(ground({ fieldX = 99, fieldZ = 50, events = { roamer } })).selectable,
+    "a free tile inside a wandering range is not reserved by speculation"
+  )
+
+  local special = event({ movementType = "player", x = 90, z = 90 })
+  Assert.isTrue(
+    LocationPolicy.classify(ground({ fieldX = 0, fieldZ = 0, events = { special } })).selectable,
+    "an unusual movement profile never rejects a distant tile"
+  )
+
+  local sourceEvent = event({ movementType = "stationary", x = 10, z = 10 })
+  local active = actorAt(80, 80, sourceEvent, { action = { kind = "walk" } })
+  Assert.isTrue(
+    LocationPolicy.classify(ground({ fieldX = 20, fieldZ = 20, events = { sourceEvent }, savedActors = { active } })).selectable,
+    "an in-flight actor action never refuses an unrelated destination"
+  )
+
+  local hidden = event({ movementType = "stationary", x = 15, z = 16, eventFlag = 123 })
+  Assert.equal(
+    LocationPolicy.classify(ground({ fieldX = 15, fieldZ = 16, events = { hidden }, occupied = true })).reason,
+    "possible_actor",
+    "a hidden source tile remains reserved at its exact position"
+  )
+end
+
+function T.tests.classification_is_a_single_synchronous_decision()
   local LocationPolicy = policy()
   local events = {}
   local actors = {}
@@ -435,16 +258,11 @@ function T.tests.staged_classification_bounds_each_actor_and_event_advance()
     }
   end
   local source = facts({ events = events, savedActors = actors })
-  local expected = LocationPolicy.classify(source)
-  local task = LocationPolicy.beginClassification(source)
-  local totalVisits = 0
-  while not task.done do
-    local visits = LocationPolicy.advanceClassification(task, 17)
-    Assert.isTrue(visits <= 17, "one staged policy advance never visits more than its supplied budget")
-    totalVisits = totalVisits + visits
-  end
-  Assert.isTrue(totalVisits >= #events + #actors * 2, "all retained policy passes charge their array visits")
-  Assert.deepEqual(task.result, expected, "staged classification preserves the synchronous policy result")
+  local first = LocationPolicy.classify(source)
+  Assert.isTrue(first.selectable, "a large unrelated event collection never refuses an unoccupied tile")
+  local second = LocationPolicy.classify(facts({ occupied = true, events = events, savedActors = actors }))
+  Assert.equal(second.reason, "possible_actor", "exact occupancy decides without scanning event collections")
+  Assert.deepEqual(source.events, events, "classification leaves borrowed event collections unchanged")
 end
 
 return T

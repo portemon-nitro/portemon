@@ -1565,7 +1565,7 @@ drawLocation = function(self, view, layout)
   for _, tile in ipairs(location.tiles or {}) do
     tiles[string.format("%d:%d", tile.fieldX, tile.fieldZ)] = tile
   end
-  if grid then
+  if layout.locationHeader then
     local header = assert(layout.locationHeader, "Location grid needs its measured header")
     local ink = textPalette(self.skin, { r = 0, g = 0, b = 0 })
     drawText(

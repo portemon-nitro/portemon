@@ -168,9 +168,9 @@ end
 ---@field newMapSummaryTask fun(self: SaveEditorLocationService): SaveEditorMapSummaryTask
 ---@field openMap fun(self: SaveEditorLocationService, mapId: integer, request: { purpose: "browse"|"verify" }?)
 ---@field releaseGrid fun(self: SaveEditorLocationService)
----@field cancelInitialSurvey fun(self: SaveEditorLocationService)
+---@field cancelInitialSuggestion fun(self: SaveEditorLocationService)
 ---@field setViewport fun(self: SaveEditorLocationService, centerX: integer, centerZ: integer, widthTiles: integer, heightTiles: integer)
----@field update fun(self: SaveEditorLocationService)
+---@field update fun(self: SaveEditorLocationService): boolean
 ---@field snapshot fun(self: SaveEditorLocationService): table<string, unknown>
 ---@field resolve fun(self: SaveEditorLocationService, mapId: integer, fieldX: integer, fieldZ: integer, expectedGeneration: integer): SaveEditorLocation?, table<string, unknown>
 ---@field dispose fun(self: SaveEditorLocationService)
@@ -268,7 +268,7 @@ end
 ---@field locationViewport table<string, number>?
 ---@field locationServiceMapId integer?
 ---@field locationPreviewMemory table<integer, { cursor: { fieldX: integer, fieldZ: integer }, center: { fieldX: integer, fieldZ: integer } }>
----@field locationAutoCenterToken { mapId: integer, generation: integer? }?
+---@field locationAutoCenterToken { mapId: integer, generation: integer?, seedPublished: boolean? }?
 ---@field locationGridWidthTiles integer?
 ---@field locationGridHeightTiles integer?
 ---@field errorMessage string?
@@ -2515,26 +2515,28 @@ function State:_updateLocationService()
     end
   end
 
-  local center = assert(navigation.center, "Location viewport needs a center")
-  local viewport = {
-    centerX = center.fieldX,
-    centerZ = center.fieldZ,
-    widthTiles = self.locationGridWidthTiles or 1,
-    heightTiles = self.locationGridHeightTiles or 1,
-  }
-  local previous = self.locationViewport
-  if
-    previous == nil
-    or previous.centerX ~= viewport.centerX
-    or previous.centerZ ~= viewport.centerZ
-    or previous.widthTiles ~= viewport.widthTiles
-    or previous.heightTiles ~= viewport.heightTiles
-  then
-    service:setViewport(viewport.centerX, viewport.centerZ, viewport.widthTiles, viewport.heightTiles)
-    self.locationViewport = viewport
-    local token = self.locationAutoCenterToken
-    if token ~= nil and token.mapId == mapId then
-      token.generation = assert(service:snapshot().initialCursor).generation
+  local center = navigation.center
+  if center ~= nil then
+    local viewport = {
+      centerX = center.fieldX,
+      centerZ = center.fieldZ,
+      widthTiles = self.locationGridWidthTiles or 1,
+      heightTiles = self.locationGridHeightTiles or 1,
+    }
+    local previous = self.locationViewport
+    if
+      previous == nil
+      or previous.centerX ~= viewport.centerX
+      or previous.centerZ ~= viewport.centerZ
+      or previous.widthTiles ~= viewport.widthTiles
+      or previous.heightTiles ~= viewport.heightTiles
+    then
+      service:setViewport(viewport.centerX, viewport.centerZ, viewport.widthTiles, viewport.heightTiles)
+      self.locationViewport = viewport
+      local token = self.locationAutoCenterToken
+      if token ~= nil and token.mapId == mapId then
+        token.generation = assert(service:snapshot().initialCursor).generation
+      end
     end
   end
   service:update()
@@ -2542,15 +2544,24 @@ function State:_updateLocationService()
   if token ~= nil and token.mapId == mapId then
     local view = service:snapshot()
     local result = view.initialCursor
-    if
-      view.status.state == "ready"
-      and result ~= nil
-      and result.state == "ready"
-      and result.mapId == token.mapId
-      and result.generation == token.generation
-    then
-      self.controller:setLocationCursor(result.fieldX, result.fieldZ)
-      self.locationAutoCenterToken = nil
+    if result ~= nil and result.mapId == token.mapId and result.generation == token.generation then
+      if result.state == "seeded" and token.seedPublished ~= true then
+        -- The map-owned seed is browsing state only: it centers the preview
+        -- once without staging anything into the saved destination.
+        if result.fieldX ~= nil and result.fieldZ ~= nil then
+          self.controller:setLocationCursor(result.fieldX, result.fieldZ)
+        end
+        token.seedPublished = true
+      elseif result.state == "ready" then
+        if result.fieldX ~= nil and result.fieldZ ~= nil then
+          self.controller:setLocationCursor(result.fieldX, result.fieldZ)
+        end
+        self.locationAutoCenterToken = nil
+      elseif result.state == "unavailable" or result.state == "canceled" or result.state == "failed" then
+        -- A finite local miss keeps the seeded preview for manual browsing;
+        -- it only retires the automatic centering.
+        self.locationAutoCenterToken = nil
+      end
     end
   end
 end
@@ -2834,7 +2845,7 @@ end
 function State:_takeLocationCursorOwnership()
   self.locationAutoCenterToken = nil
   if self.locationService ~= nil then
-    self.locationService:cancelInitialSurvey()
+    self.locationService:cancelInitialSuggestion()
   end
 end
 
@@ -3009,7 +3020,7 @@ function State:_performDeferred(action)
     return
   elseif action.kind == "location-map-select" then
     local world = assert(self.dependencies.world)
-    local record = world.maps[assert(world.byId[action.mapId], "selected map must be in structural world data")]
+    assert(world.byId[action.mapId] ~= nil, "selected map must be in structural world data")
     local remembered = self.locationPreviewMemory[action.mapId]
     local staged = self.session and self.session:snapshot().location or nil
     if remembered ~= nil then
@@ -3019,7 +3030,7 @@ function State:_performDeferred(action)
     elseif staged ~= nil and staged.mapId == action.mapId then
       self.controller:chooseLocationMap(action.mapId, staged.fieldX, staged.fieldZ)
     else
-      self.controller:chooseLocationMap(action.mapId, record.worldOriginX + 16, record.worldOriginZ + 16)
+      self.controller:chooseLocationMap(action.mapId, nil, nil)
     end
     self.locationServiceMapId = nil
     self.locationViewport = nil

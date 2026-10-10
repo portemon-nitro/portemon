@@ -631,11 +631,7 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
         state:view().locationNavigation.mapId,
         "the browser remembers the saved map while the section opens on the map list"
       )
-      Assert.equal(
-        browserMapId,
-        state.session:snapshot().location.mapId,
-        "the browser opens on the saved map"
-      )
+      Assert.equal(browserMapId, state.session:snapshot().location.mapId, "the browser opens on the saved map")
       Assert.isTrue(state.session:setLocation(placement).ok, "the existing Session stages a resolved outdoor tuple")
       local expected = state.session:captureCandidate()
       state.controller:setSection("Player")
@@ -1158,7 +1154,8 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
           local originalCenter = copy(navigation.center)
           local originalCursor = copy(navigation.cursor)
           local moves = 0
-          while state:view().locationNavigation.center.fieldX == originalCenter.fieldX
+          while
+            state:view().locationNavigation.center.fieldX == originalCenter.fieldX
             and state:view().locationNavigation.center.fieldZ == originalCenter.fieldZ
           do
             moves = moves + 1
@@ -1169,13 +1166,11 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
           end
           local remembered = assert(state:view().locationNavigation)
           Assert.isFalse(
-            remembered.cursor.fieldX == originalCursor.fieldX
-              and remembered.cursor.fieldZ == originalCursor.fieldZ,
+            remembered.cursor.fieldX == originalCursor.fieldX and remembered.cursor.fieldZ == originalCursor.fieldZ,
             "manual navigation changes the preview cursor"
           )
           Assert.isFalse(
-            remembered.center.fieldX == originalCenter.fieldX
-              and remembered.center.fieldZ == originalCenter.fieldZ,
+            remembered.center.fieldX == originalCenter.fieldX and remembered.center.fieldZ == originalCenter.fieldZ,
             "manual navigation changes the preview viewport"
           )
 
@@ -1351,10 +1346,7 @@ function T.tests.stable_editor_views_reuse_the_session_snapshot_until_owner_or_r
     local stored = replacement:snapshot()
     Assert.equal(directSecond.flags[flagId], not wasSet, "mutating one snapshot does not change another")
     Assert.equal(stored.flags[flagId], not wasSet, "mutating a public snapshot does not change session state")
-    Assert.isFalse(
-      stored.location.fieldX == directFirst.location.fieldX,
-      "nested snapshot records are detached"
-    )
+    Assert.isFalse(stored.location.fieldX == directFirst.location.fieldX, "nested snapshot records are detached")
   end, debug.traceback)
   SaveFs.global = originalGlobal
   if state then
@@ -1427,8 +1419,7 @@ function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_
       state:keypressed("return")
       state:keyreleased("return")
       local groupView = advanceEditorUntil(state, function(view)
-        local list = view.locationNavigation.page == "group"
-          and view.layout.lists[assert(view.location).mapListId]
+        local list = view.locationNavigation.page == "group" and view.layout.lists[assert(view.location).mapListId]
         return list ~= nil and #list.rowTargets > 0 and not list.pending
       end, "the selected production Map group")
       local groupListId = assert(groupView.location).mapListId
@@ -1464,11 +1455,7 @@ function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_
 
       state:keypressed("escape")
       state:keyreleased("escape")
-      Assert.equal(
-        state.controller.focus,
-        rootGroupCursor,
-        "Back from a nested Map row restores the root group cursor"
-      )
+      Assert.equal(state.controller.focus, rootGroupCursor, "Back from a nested Map row restores the root group cursor")
       Assert.equal(state.controller.locationPage, "root", "Back from a nested Map list ascends one level")
 
       state:keypressed("escape")
@@ -1561,10 +1548,7 @@ function T.tests.production_lists_fit_measured_content_and_keyboard_focus_stays_
         rectInside(assert(revealed.layout.rowLabelRects[focused]), viewport.clip),
         "the focused flag label remains wholly inside the actual viewport"
       )
-      Assert.isTrue(
-        mapUsesAvailableWidth,
-        "the Map root surface uses the full available editor body width"
-      )
+      Assert.isTrue(mapUsesAvailableWidth, "the Map root surface uses the full available editor body width")
       Assert.isTrue(flagsUseAvailableWidth, "the Flags surface uses the full available body width")
       Assert.isTrue(flagsStartAtContentEdge, "the full-width Flags surface aligns to its available body")
     end)
@@ -1613,23 +1597,14 @@ function T.tests.pallet_and_azalea_map_placement_stays_conservative_with_real_ro
     local palletView = browse(palletMapId, 1033, 364, 3, 3)
     local suggestion = assert(palletView.initialCursor, "the real map survey publishes its selected safe point")
     Assert.equal(suggestion.state, "ready", "Pallet Town's real map survey finds an actually selectable tile")
-    local palletPlacement, palletResult = service:resolve(
-      palletMapId,
-      assert(suggestion.fieldX),
-      assert(suggestion.fieldZ),
-      palletView.generation
-    )
+    local palletPlacement, palletResult =
+      service:resolve(palletMapId, assert(suggestion.fieldX), assert(suggestion.fieldZ), palletView.generation)
     Assert.notNil(palletPlacement, "the surveyed Pallet destination passes production classification")
     Assert.equal(palletResult.state, "ready", "the surveyed Pallet destination is ready to stage")
 
     local beforeInvalidAttempt = graph.session:captureCandidate()
     local azaleaView = browse(azaleaGymMapId, 32, 7, 1, 1)
-    local invalidPlacement, invalidReason = service:resolve(
-      azaleaGymMapId,
-      32,
-      7,
-      azaleaView.generation
-    )
+    local invalidPlacement, invalidReason = service:resolve(azaleaGymMapId, 32, 7, azaleaView.generation)
     Assert.isNil(invalidPlacement, "Azalea Gym's out-of-permission tile cannot be selected")
     Assert.equal(invalidReason.state, "unavailable", "Azalea Gym rejects the uncovered point normally")
     Assert.equal(invalidReason.reason, "outside_map", "the uncovered point retains its normal placement reason")
@@ -1639,7 +1614,10 @@ function T.tests.pallet_and_azalea_map_placement_stays_conservative_with_real_ro
       "rejecting the invalid point does not change the candidate save"
     )
 
-    Assert.isTrue(graph.session:setLocation(palletPlacement).ok, "a valid Pallet tuple stages through the production Session")
+    Assert.isTrue(
+      graph.session:setLocation(palletPlacement).ok,
+      "a valid Pallet tuple stages through the production Session"
+    )
     Assert.isTrue(graph.session:save().ok, "the valid tuple saves through the production composition")
     local published = assert(fixture.store:load(fixture.saveId))
     Assert.equal(published.mapId, palletPlacement.mapId, "the native save retains the selected map identity")
@@ -1713,8 +1691,12 @@ function T.tests.dropped_location_preset_resolves_stages_and_saves_through_the_e
       return {
         opened = 0,
         closed = 0,
-        getFilename = function() return filename or "acceptance.lua" end,
-        getSize = function() return #bytes end,
+        getFilename = function()
+          return filename or "acceptance.lua"
+        end,
+        getSize = function()
+          return #bytes
+        end,
         open = function(self, mode)
           Assert.equal(mode, "r", "the dropped file opens for reading")
           self.opened = self.opened + 1
@@ -1788,7 +1770,9 @@ function T.tests.dropped_location_preset_resolves_stages_and_saves_through_the_e
   end, debug.traceback)
 
   if state then
-    pcall(function() state:dispose() end)
+    pcall(function()
+      state:dispose()
+    end)
   end
   App.state = originalAppState
   love.window.showMessageBox = originalDialog
@@ -1835,10 +1819,7 @@ function T.tests.relocated_destination_saves_synchronously_and_resumes_without_r
       local expected = state.session:captureCandidate()
       activateTarget(state, "save")
       state:update(0)
-      Assert.isNil(
-        state:view().locationSave,
-        "the relocated save publishes without a pending destination check"
-      )
+      Assert.isNil(state:view().locationSave, "the relocated save publishes without a pending destination check")
       Assert.isFalse(state:view().dirty, "the published relocated save clears the dirty projection")
       Assert.deepEqual(results, {}, "the in-place save keeps the editor open")
       Assert.deepEqual(
@@ -1889,6 +1870,122 @@ function T.tests.relocated_destination_saves_synchronously_and_resumes_without_r
       service:dispose()
     end)
   end
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.unfamiliar_real_map_opens_near_its_owned_cells_without_staging_a_save()
+  local fixture = Fixture.new()
+  local State = require("app.src.saveeditor.SaveEditorState")
+  local originalGlobal = SaveFs.global
+  local state
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor must use the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+
+  local ok, err = xpcall(function()
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 640,
+      height = 480,
+      derivedAssets = readyHost(),
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+
+    withoutRendering(function()
+      local openingView = state:view()
+      Assert.equal(
+        openingView.status,
+        "ready",
+        "production Save Editor composition opens the selected save: " .. tostring(openingView.errorMessage)
+      )
+      local originalLocation = copy(state.session:snapshot().location)
+      local world = assert(state.dependencies.world)
+      local mapId = assert(world.bySymbol.MAP_ROUTE_29)
+      Assert.isFalse(originalLocation.mapId == mapId, "route selection starts from a map the save has never staged")
+
+      state:_performDeferred({ kind = "location-map-select", mapId = mapId })
+      state:update(0)
+
+      local seenSeeded, seed, updates = false, nil, 0
+      local view = assert(state:view().location)
+      while view.status.state == "pending" and updates < 1500 do
+        updates = updates + 1
+        state:update(0)
+        view = assert(state:view().location)
+        if view.initialCursor ~= nil and view.initialCursor.state == "seeded" then
+          seenSeeded = true
+          seed = view.initialCursor
+        end
+        Assert.deepEqual(
+          state.session:snapshot().location,
+          originalLocation,
+          "browsing never stages or mutates the saved destination"
+        )
+      end
+      Assert.isTrue(seenSeeded, "production browse publishes a map-owned seed before its safe suggestion completes")
+      seed = assert(seed, "the published seed belongs to the selected map")
+      Assert.equal(seed.mapId, mapId, "the seed remains bound to the selected map")
+      -- Route 29's structural origin is genuinely on-map (measured), so the
+      -- owned-cell proof is membership, not origin inequality; the synthetic
+      -- misleading-origin case stays covered by the component seed tests.
+      local domain = state.locationService.loader:mapCellDomain(mapId)
+      local owned, domainDone, domainGuard = {}, false, 0
+      while not domainDone and domainGuard < 10000 do
+        domainGuard = domainGuard + 1
+        local _, selected, complete = domain:advance(1024)
+        for _, descriptor in ipairs(selected) do
+          if descriptor.mapHeaderId == mapId then
+            owned[#owned + 1] = descriptor
+          end
+        end
+        domainDone = complete
+      end
+      Assert.isTrue(domainDone, "the owned-cell walk completes")
+      Assert.isTrue(#owned > 0, "the selected map owns physical cells")
+      local seedCellX, seedCellZ = math.floor(seed.fieldX / 32), math.floor(seed.fieldZ / 32)
+      local seedOwned = false
+      for _, cell in ipairs(owned) do
+        if cell.x == seedCellX and cell.z == seedCellZ then
+          seedOwned = true
+        end
+      end
+      Assert.isTrue(seedOwned, "the seed lies inside a physical cell owned by the selected map")
+      while view.status.state == "pending" and updates < 5000 do
+        updates = updates + 1
+        state:update(0)
+        view = assert(state:view().location)
+      end
+      Assert.equal(view.status.state, "ready", "the selected source map is prepared")
+      local suggestion = view.initialCursor
+      Assert.notNil(suggestion, "real map browsing publishes its initial cursor")
+      if suggestion.state == "ready" then
+        local resolved, resolution =
+          state.locationService:resolve(mapId, assert(suggestion.fieldX), assert(suggestion.fieldZ), view.generation)
+        Assert.notNil(resolved, "the suggested coordinate passes the production placement classifier")
+        Assert.equal(resolution.state, "ready", "the suggestion is fully prepared for explicit selection")
+      end
+      Assert.deepEqual(
+        state.session:snapshot().location,
+        originalLocation,
+        "browsing and hinting never stage or mutate the saved destination"
+      )
+    end)
+  end, debug.traceback)
+
   if state then
     pcall(function()
       state:dispose()

@@ -600,29 +600,43 @@ local function buildLocationGrid(ctx)
   local headerRect = rect(contentX, contentTop, innerWidth, headerHeight)
   local mapLabel = location.map and location.map.symbol:gsub("^MAP_", "", 1)
     or ("Map " .. tostring(location.mapId or locationNav.mapId or "—"))
-  local cursor = assert(locationNav.cursor, "Location grid header needs its cursor")
-  local coordinatesText = string.format("  X %d  Z %d", cursor.fieldX, cursor.fieldZ)
-  local leftText = mapLabel .. coordinatesText
-  local rightText
+  local cursor = locationNav.cursor
+  local center = locationNav.center
+  local coordinatesText, leftText, rightText
   local serviceStatus = location.status or {}
-  if serviceStatus.state == "failed" then
-    rightText = locationReason(assert(serviceStatus.reason, "failed preparation carries its cause"))
-  else
-    local matched = false
-    for _, tile in ipairs(location.tiles or {}) do
-      if tile.fieldX == cursor.fieldX and tile.fieldZ == cursor.fieldZ then
-        matched = true
-        if tile.state == "pending" then
-          rightText = "Preparing…"
-        end
-        if tile.selectable == false then
-          rightText = locationReason(assert(tile.reason, "blocked grid tiles carry their policy reason"))
-        end
-        break
-      end
+  if cursor == nil or center == nil then
+    assert(cursor == nil and center == nil, "Location navigation cursor and center initialize together")
+    -- The selected map has no map-owned coordinate yet: measure an honest
+    -- pending header instead of showing unrelated coordinates or tiles.
+    coordinatesText = ""
+    leftText = mapLabel
+    if serviceStatus.state == "failed" then
+      rightText = locationReason(assert(serviceStatus.reason, "failed preparation carries its cause"))
+    else
+      rightText = "Locating map…"
     end
-    if not matched then
-      rightText = "Preparing…"
+  else
+    coordinatesText = string.format("  X %d  Z %d", cursor.fieldX, cursor.fieldZ)
+    leftText = mapLabel .. coordinatesText
+    if serviceStatus.state == "failed" then
+      rightText = locationReason(assert(serviceStatus.reason, "failed preparation carries its cause"))
+    else
+      local matched = false
+      for _, tile in ipairs(location.tiles or {}) do
+        if tile.fieldX == cursor.fieldX and tile.fieldZ == cursor.fieldZ then
+          matched = true
+          if tile.state == "pending" then
+            rightText = "Preparing…"
+          end
+          if tile.selectable == false then
+            rightText = locationReason(assert(tile.reason, "blocked grid tiles carry their policy reason"))
+          end
+          break
+        end
+      end
+      if not matched then
+        rightText = "Preparing…"
+      end
     end
   end
   local rightWidth = rightText ~= nil
@@ -648,13 +662,21 @@ local function buildLocationGrid(ctx)
 
   local gridY = contentTop + headerHeight + 2
   local gridClip = rect(contentX, gridY, innerWidth, contentBottom - gridY)
+  if cursor == nil or center == nil then
+    -- No map-owned viewport exists yet: keep Back and map changes reachable
+    -- through the grid focus without publishing tile geometry or targets.
+    addFocusable(ctx, "location:grid")
+    ctx.targets["location:grid"] = gridClip
+    ctx.focusPositions["location:grid"] = gridClip
+    return
+  end
   assert(gridClip.height > 0, "Location grid needs room below its header line")
   local tileSize = 16
   local columns = math.max(1, math.floor(gridClip.width / tileSize))
   local gridRows = math.max(1, math.floor(gridClip.height / tileSize))
-  local center = assert(locationNav.center, "Location needs a grid center")
-  local firstFieldX = center.fieldX - math.floor(columns / 2)
-  local firstFieldZ = center.fieldZ - math.floor(gridRows / 2)
+  local gridCenter = assert(center, "Location needs a grid center")
+  local firstFieldX = gridCenter.fieldX - math.floor(columns / 2)
+  local firstFieldZ = gridCenter.fieldZ - math.floor(gridRows / 2)
   local renderedWidth, renderedHeight = columns * tileSize, gridRows * tileSize
   ctx.locationGrid = {
     clip = gridClip,
