@@ -129,66 +129,142 @@ local function locationReason(reason)
   return LOCATION_REASONS[reason] or reason:gsub("_", " ")
 end
 
+-- Capture-pattern activation specs: each capture fills one named field of the
+-- action, numeric ones converted with tonumber.
+local SECTION_SPEC = { "^section:(.+)$", "section.select", { "section" } }
+
+local VALUE_EDITOR_EXACT = {
+  confirm = { kind = "value.confirm" },
+  cancel = { kind = "value.cancel" },
+  ["page-next"] = { kind = "value.change-page", direction = "next" },
+  ["page-previous"] = { kind = "value.change-page", direction = "previous" },
+}
+
+local VALUE_EDITOR_SPECS = {
+  { "^number:place:(%d+):(up)$", "value.adjust-number-place", { "place", "direction" }, { place = true } },
+  { "^number:place:(%d+):(down)$", "value.adjust-number-place", { "place", "direction" }, { place = true } },
+  { "^choice:(.+)$", "value.choose-option", { "key" } },
+  { "^name%-control:(.+)$", "value.activate-name-control", { "control" } },
+  { "^(%d+):(%d+)$", "value.activate-name-key", { "row", "column" }, { row = true, column = true } },
+  { "^digit%-(.+)$", "value.press", { "key" } },
+}
+
+local STATIC_EXACT = {
+  money = { kind = "player.edit-money" },
+  ["dialogue-frame"] = { kind = "player.edit-dialogue-frame" },
+  save = { kind = "editor.save" },
+  discard = { kind = "editor.discard" },
+  back = { kind = "editor.back" },
+  ["location:grid"] = { kind = "location.select-current-tile" },
+  ["party:add"] = { kind = "party.add-member" },
+  ["party:page:previous"] = { kind = "party.change-page", direction = "previous" },
+  ["party:page:next"] = { kind = "party.change-page", direction = "next" },
+  ["party:use-species-name"] = { kind = "party.use-species-name" },
+  ["party:move:add"] = { kind = "party.add-move" },
+  ["bag:page:previous"] = { kind = "bag.change-page", direction = "previous" },
+  ["bag:page:next"] = { kind = "bag.change-page", direction = "next" },
+  ["bag:add"] = { kind = "bag.add-item" },
+  ["bag:quantity"] = { kind = "bag.edit-quantity" },
+  ["bag:remove"] = { kind = "bag.remove-item" },
+}
+
+local STATIC_SPECS = {
+  { "^flag:(.+)$", "progress.toggle-flag", { "name" } },
+  {
+    "^location:tile:(%-?%d+):(%-?%d+)$",
+    "location.select-tile",
+    { "fieldX", "fieldZ" },
+    { fieldX = true, fieldZ = true },
+  },
+  { "^(location:group:.+)$", "location.select-group", { "groupId" } },
+  { "^location:map:(%d+)$", "location.select-map", { "mapId" }, { mapId = true } },
+  { "^party:slot:(%d+)$", "party.select-slot", { "slot0" }, { slot0 = true } },
+  { "^party:move:(%d+)$", "party.edit-move", { "moveIndex" }, { moveIndex = true } },
+  { "^bag:pocket:(.+)$", "bag.select-pocket", { "pocket" } },
+  { "^bag:item:(.+)$", "bag.select-item", { "itemKey" } },
+  { "^party:field:(.+)$", "party.edit-field", { "fieldId" } },
+  { "^list:", "list.inert", {} },
+}
+
+-- Decision command to the suffix of its focus action kind.
+local DECISION_ACTION_KINDS = {
+  cancel = "cancel",
+  bag_quantity = "edit-bag-quantity",
+  bag_remove = "remove-bag-item",
+  ["party-move:move"] = "edit-move",
+  ["party-move:pp"] = "edit-move-pp",
+  ["party-move:pp-ups"] = "edit-move-pp-ups",
+  confirm_remove = "confirm-remove",
+  save = "save-and-exit",
+  cancel_pending_save = "save-and-exit",
+  discard = "discard-and-exit",
+}
+
+local function copyAction(action)
+  local copy = {}
+  for key, value in pairs(action) do
+    copy[key] = value
+  end
+  return copy
+end
+
+---@param targetId string
+---@param specs table[] capture-pattern specs tried in order
+---@return table<string, unknown>? action
+local function matchSpecs(targetId, specs)
+  for _, spec in ipairs(specs) do
+    local captures = { targetId:match(spec[1]) }
+    if captures[1] ~= nil then
+      local action = { kind = spec[2] }
+      for index, field in ipairs(spec[3]) do
+        local value = captures[index]
+        action[field] = spec[4] and spec[4][field] and tonumber(value) or value
+      end
+      return action
+    end
+  end
+  return nil
+end
+
+local function exactAction(targetId, exact)
+  local action = exact[targetId]
+  return action and copyAction(action)
+end
+
+local function valueEditorAction(view, targetId)
+  return exactAction(targetId, VALUE_EDITOR_EXACT)
+    or matchSpecs(targetId, VALUE_EDITOR_SPECS)
+    or (view.valueEditor.kind == "choice" and targetId == "list:value:choice" and { kind = "value.focus-choice-list" })
+    or nil
+end
+
+local function decisionAction(view, targetId)
+  for _, action in
+    ipairs(view.decisionActions or Decisions.describe(view.modal, { pendingSave = view.locationSave ~= nil }))
+  do
+    if action.id == targetId then
+      local actionKind = DECISION_ACTION_KINDS[action.command]
+      assert(type(actionKind) == "string", "decision command has a focus action")
+      return { kind = "decision." .. actionKind, decision = view.modal, command = action.command, id = action.id }
+    end
+  end
+  return nil
+end
+
+local function staticAction(targetId)
+  local action = exactAction(targetId, STATIC_EXACT) or matchSpecs(targetId, STATIC_SPECS)
+  return action or error("unmapped Save Editor activation control: " .. targetId, 3)
+end
+
 local function activationAction(view, targetId)
-  local section = targetId:match("^section:(.+)$")
+  local section = matchSpecs(targetId, { SECTION_SPEC })
   if section ~= nil then
-    return { kind = "section.select", section = section }
+    return section
   end
   if view.valueEditor ~= nil and view.modal == nil then
-    local editor = view.valueEditor
-    if targetId == "confirm" then
-      return { kind = "value.confirm" }
-    elseif targetId == "cancel" then
-      return { kind = "value.cancel" }
-    end
-    local place, direction = targetId:match("^number:place:(%d+):([^:]+)$")
-    if place ~= nil then
-      assert(direction == "up" or direction == "down")
-      return { kind = "value.adjust-number-place", place = tonumber(place), direction = direction }
-    end
-    local choiceKey = targetId:match("^choice:(.+)$")
-    if choiceKey ~= nil then
-      return { kind = "value.choose-option", key = choiceKey }
-    end
-    local nameControl = targetId:match("^name%-control:(.+)$")
-    if nameControl ~= nil then
-      return { kind = "value.activate-name-control", control = nameControl }
-    end
-    local row, column = targetId:match("^(%d+):(%d+)$")
-    if row ~= nil then
-      return { kind = "value.activate-name-key", row = tonumber(row), column = tonumber(column) }
-    end
-    if targetId == "page-next" or targetId == "page-previous" then
-      return { kind = "value.change-page", direction = targetId == "page-next" and "next" or "previous" }
-    end
-    local digit = targetId:match("^digit%-(.+)$")
-    if digit ~= nil then
-      return { kind = "value.press", key = digit }
-    end
-    if editor.kind == "choice" and targetId == "list:value:choice" then
-      return { kind = "value.focus-choice-list" }
-    end
-    return activationAction({ section = view.section }, targetId)
+    return valueEditorAction(view, targetId) or staticAction(targetId)
   elseif view.modal ~= nil then
-    for _, action in
-      ipairs(view.decisionActions or Decisions.describe(view.modal, { pendingSave = view.locationSave ~= nil }))
-    do
-      if action.id == targetId then
-        local actionKind = action.command == "cancel" and "cancel"
-          or action.command == "bag_quantity" and "edit-bag-quantity"
-          or action.command == "bag_remove" and "remove-bag-item"
-          or action.command == "party-move:move" and "edit-move"
-          or action.command == "party-move:pp" and "edit-move-pp"
-          or action.command == "party-move:pp-ups" and "edit-move-pp-ups"
-          or action.command == "confirm_remove" and "confirm-remove"
-          or action.command == "save" and "save-and-exit"
-          or action.command == "cancel_pending_save" and "save-and-exit"
-          or action.command == "discard" and "discard-and-exit"
-        assert(type(actionKind) == "string", "decision command has a focus action")
-        return { kind = "decision." .. actionKind, decision = view.modal, command = action.command, id = action.id }
-      end
-    end
-    return activationAction({ section = view.section }, targetId)
+    return decisionAction(view, targetId) or staticAction(targetId)
   end
   if view.status == "error" then
     if targetId == "retry" then
@@ -197,76 +273,7 @@ local function activationAction(view, targetId)
       return { kind = "editor.close-open-error" }
     end
   end
-  if targetId == "money" then
-    return { kind = "player.edit-money" }
-  elseif targetId == "dialogue-frame" then
-    return { kind = "player.edit-dialogue-frame" }
-  elseif targetId:match("^flag:") then
-    return { kind = "progress.toggle-flag", name = targetId:sub(6) }
-  elseif targetId == "save" then
-    return { kind = "editor.save" }
-  elseif targetId == "discard" then
-    return { kind = "editor.discard" }
-  elseif targetId == "back" then
-    return { kind = "editor.back" }
-  end
-
-  if targetId == "location:grid" then
-    return { kind = "location.select-current-tile" }
-  end
-  local fieldX, fieldZ = targetId:match("^location:tile:(%-?%d+):(%-?%d+)$")
-  if fieldX ~= nil then
-    return { kind = "location.select-tile", fieldX = tonumber(fieldX), fieldZ = tonumber(fieldZ) }
-  end
-  local groupId = targetId:match("^location:group:(.+)$")
-  if groupId ~= nil then
-    return { kind = "location.select-group", groupId = targetId }
-  end
-  local mapId = targetId:match("^location:map:(%d+)$")
-  if mapId ~= nil then
-    return { kind = "location.select-map", mapId = tonumber(mapId) }
-  end
-  local slot0 = targetId:match("^party:slot:(%d+)$")
-  if slot0 ~= nil then
-    return { kind = "party.select-slot", slot0 = tonumber(slot0) }
-  end
-  local moveIndex = targetId:match("^party:move:(%d+)$")
-  if moveIndex ~= nil then
-    return { kind = "party.edit-move", moveIndex = tonumber(moveIndex) }
-  end
-  local pocket = targetId:match("^bag:pocket:(.+)$")
-  if pocket ~= nil then
-    return { kind = "bag.select-pocket", pocket = pocket }
-  end
-  local itemKey = targetId:match("^bag:item:(.+)$")
-  if itemKey ~= nil then
-    return { kind = "bag.select-item", itemKey = itemKey }
-  end
-  if targetId == "party:add" then
-    return { kind = "party.add-member" }
-  elseif targetId == "party:page:previous" or targetId == "party:page:next" then
-    return { kind = "party.change-page", direction = targetId:match("previous$") and "previous" or "next" }
-  elseif targetId == "party:use-species-name" then
-    return { kind = "party.use-species-name" }
-  elseif targetId == "party:move:add" then
-    return { kind = "party.add-move" }
-  elseif targetId == "bag:page:previous" or targetId == "bag:page:next" then
-    return { kind = "bag.change-page", direction = targetId:match("previous$") and "previous" or "next" }
-  elseif targetId == "bag:add" then
-    return { kind = "bag.add-item" }
-  elseif targetId == "bag:quantity" then
-    return { kind = "bag.edit-quantity" }
-  elseif targetId == "bag:remove" then
-    return { kind = "bag.remove-item" }
-  end
-  local fieldId = targetId:match("^party:field:(.+)$")
-  if fieldId ~= nil then
-    return { kind = "party.edit-field", fieldId = fieldId }
-  end
-  if targetId:match("^list:") then
-    return { kind = "list.inert" }
-  end
-  error("unmapped Save Editor activation control: " .. targetId, 2)
+  return staticAction(targetId)
 end
 
 -- One compute invocation owns a single context holding shell metrics, geometry
