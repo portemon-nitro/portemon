@@ -57,6 +57,14 @@ function FieldServiceHandlers.propAnimationPlayReverse(ins)
   return FieldServiceHandlers.propAnimationPlay(ins, "reverse")
 end
 
+function FieldServiceHandlers.propAnimationWait(ins)
+  return { op = "prop_animation_wait", slot = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.propAnimationUnload(ins)
+  return { op = "prop_animation_unload", slot = Operands.varRef(ins.operands[1]) }
+end
+
 function FieldServiceHandlers.pokemonCenterHeal(ins)
   return { op = "pokemon_center_heal", count = Operands.varRef(ins.operands[1]) }
 end

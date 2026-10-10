@@ -86,6 +86,71 @@ function T.prop_animation_slots_retain_playback_and_die_on_map_rebind()
   Assert.isFalse(ok, "map rebinding invalidates loaded slots")
 end
 
+function T.prop_animation_slot_replays_only_after_the_previous_playback_finishes()
+  local owner = FieldScriptPropAnimations.new()
+  local complete = false
+  local roles = {}
+  local prop = {
+    instance = {},
+    play = function(_, role)
+      roles[#roles + 1] = role
+      return { player = {
+        isComplete = function()
+          return complete
+        end,
+      } }
+    end,
+  }
+  owner:bindMap({
+    mapProps = {
+      doorAt = function()
+        return nil
+      end,
+      scriptPropAt = function()
+        return prop
+      end,
+    },
+  })
+  owner:load(1, 0, 0)
+  owner:play(1, "forward")
+  Assert.isFalse(pcall(owner.play, owner, 1, "reverse"), "a running playback cannot be replayed")
+  complete = true
+  owner:play(1, "reverse")
+  Assert.deepEqual(roles, { "door.open", "door.close" })
+end
+
+function T.prop_animation_slots_resolve_outdoor_props_through_coverage()
+  local owner = FieldScriptPropAnimations.new()
+  local prop = {
+    instance = {},
+    play = function()
+      return { player = {
+        isComplete = function()
+          return true
+        end,
+      } }
+    end,
+  }
+  local runtimeMap
+  runtimeMap = {
+    coverage = {
+      doorAt = function()
+        return nil
+      end,
+      scriptPropAt = function(_, map, x, z)
+        Assert.equal(x, 5)
+        Assert.equal(z, 7)
+        Assert.isTrue(map == runtimeMap)
+        return prop
+      end,
+    },
+  }
+  owner:bindMap(runtimeMap)
+  owner:load(1, 5, 7)
+  owner:play(1, "forward")
+  Assert.isTrue(owner:isFinished(1))
+end
+
 function T.prop_animation_slots_reject_bad_or_duplicate_references()
   local owner = FieldScriptPropAnimations.new()
   local prop = {

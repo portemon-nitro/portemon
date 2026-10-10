@@ -1266,11 +1266,22 @@ local function pcCapsules()
   return { op = "pc_capsules" }
 end
 
-local function pcTerminalWait(_)
+-- Source map-prop animation slot ScrCmd_500 binds to the PC terminal model.
+-- Wait and release on that slot are the terminal effect; every other slot is
+-- a script-loaded map prop.
+local PC_TERMINAL_SLOT = 90
+
+local function pcTerminalWait(ins)
+  if Operands.operandValue(ins.operands[1]) ~= PC_TERMINAL_SLOT then
+    return FieldServiceHandlers.propAnimationWait(ins)
+  end
   return { op = "pc_terminal_effect", action = "wait", prop = "pc_terminal" }
 end
 
-local function pcTerminalRelease(_)
+local function pcTerminalRelease(ins)
+  if Operands.operandValue(ins.operands[1]) ~= PC_TERMINAL_SLOT then
+    return FieldServiceHandlers.propAnimationUnload(ins)
+  end
   return { op = "pc_terminal_effect", action = "release", prop = "pc_terminal" }
 end
 

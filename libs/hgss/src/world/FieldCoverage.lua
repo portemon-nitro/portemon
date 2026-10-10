@@ -1200,6 +1200,22 @@ function FieldCoverage:propAt(runtimeMap, fieldX, fieldZ)
   return cell.mapProps:propAt(cellSemanticView(runtimeMap, cell), fieldX, fieldZ)
 end
 
+-- Resolve the script-animatable prop at a global outdoor coordinate through
+-- the committed physical cell that owns it, bounded like MapProps:scriptPropAt.
+---@param runtimeMap table<string, unknown>
+---@param fieldX integer
+---@param fieldZ integer
+---@return table<string, unknown>?
+function FieldCoverage:scriptPropAt(runtimeMap, fieldX, fieldZ)
+  assert(type(fieldX) == "number" and fieldX % 1 == 0, "prop fieldX must be an integer")
+  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "prop fieldZ must be an integer")
+  local cell = committedCellAt(self, fieldX, fieldZ)
+  if not cell or not cell.mapProps then
+    return nil
+  end
+  return cell.mapProps:scriptPropAt(cellSemanticView(runtimeMap, cell), fieldX, fieldZ)
+end
+
 function FieldCoverage:sourceSurface(cellKey, sourceSurfaceId)
   return self.region:sourceSurface(cellKey, sourceSurfaceId)
 end

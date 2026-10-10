@@ -72,6 +72,7 @@ local BLOCKING_OPS = {
   follower_interact = true,
   pc_open = true,
   pc_hof_open = true,
+  prop_animation_wait = true,
   follower_appearance = true,
   follower_recall = true,
 }
@@ -203,6 +204,13 @@ local function checkPcCount(ins, step)
 end
 
 local function checkPcTerminalEffect(ins, step)
+  if (ins.opcode == 308 or ins.opcode == 309) and Operands.operandValue(ins.operands[1]) ~= 90 then
+    local op = ins.opcode == 308 and "prop_animation_wait" or "prop_animation_unload"
+    if step.op ~= op or not operandMatches(ins.operands[1].raw, step.slot) then
+      return "prop animation slot changed by translation"
+    end
+    return nil
+  end
   local actionByOpcode = { [500] = "start", [501] = "on", [502] = "off", [308] = "wait", [309] = "release" }
   local action = actionByOpcode[ins.opcode]
   if step.op ~= "pc_terminal_effect" or step.action ~= action then

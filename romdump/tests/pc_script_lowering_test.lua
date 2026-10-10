@@ -93,6 +93,24 @@ function T.pc_opcodes_lower_to_closed_semantics_and_verify_source_operands()
   Assert.isTrue(report.ok, "the verifier accepts every translated operand and timing boundary")
 end
 
+function T.wait_and_release_on_a_non_terminal_slot_are_prop_animation_operations()
+  local script, member, lowered = lower({
+    command(307, { 0, 0, 4, 11, 77 }),
+    command(310, { 77 }),
+    command(308, { 77 }),
+    command(311, { 77 }),
+    command(309, { 77 }),
+    { opcode = 2, operands = {}, offset = 0x4000 },
+  })
+  local items = lowered.items
+  Assert.equal(items[3].op, "prop_animation_wait")
+  Assert.equal(items[3].slot, 77)
+  Assert.equal(items[5].op, "prop_animation_unload")
+  Assert.equal(items[5].slot, 77)
+  local report = Verifier.verifyScript(items, script, member, lowered.omissions)
+  Assert.isTrue(report.ok, "the verifier accepts map-prop wait and release on a script-loaded slot")
+end
+
 function T.restore_overworld_is_an_explicit_source_return_boundary()
   local script, member, lowered = lower({ command(150, {}), { opcode = 2, operands = {}, offset = 0x4000 } })
   Assert.equal(lowered.items[1].op, "restore_overworld")

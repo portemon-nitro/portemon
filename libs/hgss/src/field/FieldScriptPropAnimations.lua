@@ -31,12 +31,13 @@ end
 
 function FieldScriptPropAnimations:load(slot, fieldX, fieldZ)
   validSlot(slot)
-  assert(self.runtimeMap and self.runtimeMap.mapProps, "active map has no map-prop owner")
+  local runtimeMap = assert(self.runtimeMap, "prop animations are not bound to a map")
+  -- Outdoor maps resolve props through the committed physical cells.
+  local mapProps = runtimeMap.coverage or runtimeMap.mapProps
+  assert(mapProps, "active map has no map-prop owner")
   assert(self.slots[slot] == nil, "prop animation slot is already loaded: " .. tostring(slot))
-  local mapProps = self.runtimeMap.mapProps
   local door = mapProps:doorAt(self.runtimeMap, fieldX, fieldZ)
   if door ~= nil then
-    assert(door.instance ~= nil, "door prop has no animatable model instance")
     self.slots[slot] = { runtimeMap = self.runtimeMap, door = door, playback = nil, direction = nil }
     return
   end
@@ -45,10 +46,19 @@ function FieldScriptPropAnimations:load(slot, fieldX, fieldZ)
   self.slots[slot] = { runtimeMap = self.runtimeMap, prop = prop, playback = nil, direction = nil }
 end
 
+local function playbackFinished(record)
+  if record.door ~= nil then
+    -- nil: a static door has nothing to wait for.
+    return record.door:isFinished() ~= false
+  end
+  return record.playback.player:isComplete()
+end
+
+-- A finished slot may be replayed in either direction without reloading.
 function FieldScriptPropAnimations:play(slot, direction)
   local record = requireSlot(self, slot)
   assert(direction == "forward" or direction == "reverse", "prop animation direction is invalid")
-  assert(record.playback == nil, "prop animation slot is already playing")
+  assert(record.playback == nil or playbackFinished(record), "prop animation slot is already playing")
   if record.door ~= nil then
     local sound = direction == "forward" and record.door:open() or record.door:close()
     record.playback = record.door
@@ -65,10 +75,7 @@ end
 function FieldScriptPropAnimations:isFinished(slot)
   local record = requireSlot(self, slot)
   assert(record.playback ~= nil, "prop animation slot has no active playback")
-  if record.door ~= nil then
-    return record.door:isFinished()
-  end
-  return record.playback.player:isComplete()
+  return playbackFinished(record)
 end
 
 function FieldScriptPropAnimations:takeSound(slot)
