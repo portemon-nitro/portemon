@@ -508,4 +508,71 @@ function T.idle_session_without_a_timed_wait_blocks_for_the_next_command()
   Assert.equal(session.pumps, 1, "the post-command step pumps the session exactly once")
 end
 
+-- One semantic scene demand dispatches the registered scene job with its
+-- exact key: a pending job emits nothing yet, readiness completes through
+-- the existing terminal event, and a malformed key fails its own request
+-- without killing the controller.
+function T.scene_selector_dispatches_the_registered_scene_job()
+  local calls = {}
+  local answer = { ready = false, failure = nil }
+  local session = { pumps = 0 }
+  function session.update()
+    session.pumps = session.pumps + 1
+  end
+  function session.requestJob(_, kind, key, urgency)
+    calls[#calls + 1] = { kind = kind, key = key, urgency = urgency }
+    return answer.ready, answer.failure
+  end
+  function session.hasRunnablePlanning()
+    return false
+  end
+  function session.nextPlanningWakeDelay()
+    return nil
+  end
+  local worker, replies, queued = pushWorker(session, 7)
+  queued[#queued + 1] = {
+    op = "request",
+    epoch = 7,
+    requestId = 31,
+    requestKind = "battle-scene",
+    sceneKey = "general/grass/day",
+    urgency = "required",
+  }
+  worker:step()
+  Assert.isTrue(#calls >= 1, "the scene demand dispatches its registered job")
+  Assert.equal(calls[1].kind, "battle-scene", "the dispatched job keeps its kind")
+  Assert.equal(calls[1].key, "general/grass/day", "the dispatched job keeps its exact scene key")
+  Assert.equal(calls[1].urgency, "required", "the dispatched job keeps its urgency")
+  Assert.equal(#packetsOf(replies, "request-result"), 0, "a pending scene job emits no terminal event yet")
+  answer.ready = true
+  worker:step()
+  local results = packetsOf(replies, "request-result")
+  Assert.equal(#results, 1, "scene readiness completes through one terminal event")
+  Assert.equal(results[1].requestId, 31, "the terminal event carries the request identity")
+  Assert.equal(results[1].state, "ready", "the terminal event carries the ready state")
+  Assert.equal(results[1].epoch, 7, "the terminal event carries the epoch identity")
+  local badKeys = { "bogus", "general/grass/nonsense", "" }
+  for offset, badKey in ipairs(badKeys) do
+    queued[#queued + 1] = {
+      op = "request",
+      epoch = 7,
+      requestId = 40 + offset,
+      requestKind = "battle-scene",
+      sceneKey = badKey,
+      urgency = "required",
+    }
+  end
+  worker:step()
+  local settled = packetsOf(replies, "request-result")
+  Assert.equal(#settled, 4, "each malformed scene key fails its own request")
+  for index = 2, 4 do
+    Assert.equal(settled[index].state, "failed", "a malformed key reports failure")
+    Assert.isTrue(
+      tostring(settled[index].errorMessage) ~= "",
+      "a malformed key carries its cause"
+    )
+  end
+  Assert.isTrue(worker.lifecycle ~= "failed", "a malformed selector never kills the controller")
+end
+
 return { metadata = { capabilities = {} }, tests = T }

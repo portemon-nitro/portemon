@@ -205,6 +205,7 @@ function FieldState.new(game, options)
       windows = self._battleWindows,
       text = self._battleText,
       audio = runtime.audio,
+      derivedAssets = runtime.derivedAssets,
       itemCatalog = assert(runtime.itemCatalog, "the presented battle envelope borrows its item catalog"),
       monCatalog = assert(runtime.monCatalog, "the presented battle envelope borrows its mon catalog"),
       measureDisplay = battleDisplay,

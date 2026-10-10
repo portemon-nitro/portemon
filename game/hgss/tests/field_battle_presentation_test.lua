@@ -1816,6 +1816,149 @@ function T.staged_scene_upload_failure_reports_its_key_once()
   end
 end
 
+-- A scene the worker has not staged yet waits instead of failing: the
+-- launch demand reaches the borrowed host once, preparation answers
+-- pending while the entrance cover holds, and the same demand prepares
+-- once the host reports ready and the staged bytes validate. Nothing
+-- paints a blank success and nothing fails before the build settles.
+function T.cold_scene_demand_waits_then_enters_once_staged()
+  local PngWriter = require("libs.assets.src.PngWriter")
+  local sceneKey = "general/plain/day"
+  local recordPath = BattlePresentationCache.scenePath(sceneKey)
+  local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local stagedRecord = {
+      schema = BattlePresentationCache.SCENE_SCHEMA,
+      key = sceneKey,
+      background = "general",
+      terrain = "plain",
+      time = "day",
+      canvasWidth = 256,
+      canvasHeight = 192,
+      viewport = { x = 0, y = 0, width = 256, height = 192 },
+      imagePath = imagePath,
+    }
+    local stagedBytes = string.rep("s", PngWriter.encodedSize(256, 192))
+    local revealed = false
+    local view = { versionId = cacheFs.versionId }
+    function view.loadLua(_, path)
+      if path == recordPath then
+        return revealed and stagedRecord or nil
+      end
+      return cacheFs:loadLua(path)
+    end
+    function view.read(_, path)
+      if path == imagePath then
+        return revealed and stagedBytes or nil
+      end
+      return cacheFs:read(path)
+    end
+    local asked = {}
+    local answer = { ready = nil, failure = nil }
+    local derivedAssets = {}
+    function derivedAssets.requestBattleScene(key, urgency)
+      asked[#asked + 1] = { key = key, urgency = urgency }
+      return answer.ready, answer.failure
+    end
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = view,
+      windows = recordingWindows(),
+      text = recordingText(),
+      measureDisplay = function()
+        return dualMeasurement("cold-scene:dual")
+      end,
+      graphics = {},
+      derivedAssets = derivedAssets,
+    })
+    local function demand()
+      return {
+        launchId = "cold-scene-probe",
+        scenes = { sceneKey },
+        pages = {},
+        audio = { roles = {}, banks = {}, cries = {} },
+      }
+    end
+    local services = envelope:_preparationServices()
+    local waiting, waitErr = services.prepare(demand())
+    Assert.isTrue(waiting == false, versionId .. " holds its cold scene pending instead of failing")
+    Assert.isNil(waitErr, versionId .. " carries no failure while the scene builds")
+    Assert.equal(#asked, 1, versionId .. " demands its scene through the borrowed host")
+    Assert.equal(asked[1].key, sceneKey, versionId .. " demands exactly its launch scene")
+    Assert.equal(asked[1].urgency, "required", versionId .. " demands its scene urgently")
+    answer.ready = true
+    revealed = true
+    Assert.isTrue(services.prepare(demand()), versionId .. " enters once the staged scene validates")
+    envelope:dispose()
+  end
+end
+
+-- A genuine scene build failure is terminal with its scene named: the
+-- preparation answers failed carrying both the scene key and the worker
+-- cause, deterministically on every poll, instead of waiting forever or
+-- painting a blank success.
+function T.scene_host_failure_fails_closed_naming_its_scene()
+  local sceneKey = "city/sand/night"
+  local recordPath = BattlePresentationCache.scenePath(sceneKey)
+  local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local view = { versionId = cacheFs.versionId }
+    function view.loadLua(_, path)
+      if path == recordPath then
+        return nil
+      end
+      return cacheFs:loadLua(path)
+    end
+    function view.read(_, path)
+      if path == imagePath then
+        return nil
+      end
+      return cacheFs:read(path)
+    end
+    local asked = 0
+    local derivedAssets = {}
+    function derivedAssets.requestBattleScene(_, _)
+      asked = asked + 1
+      return nil, "probe-controller-boom"
+    end
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = view,
+      windows = recordingWindows(),
+      text = recordingText(),
+      measureDisplay = function()
+        return dualMeasurement("failed-scene:dual")
+      end,
+      graphics = {},
+      derivedAssets = derivedAssets,
+    })
+    local function demand()
+      return {
+        launchId = "failed-scene-probe",
+        scenes = { sceneKey },
+        pages = {},
+        audio = { roles = {}, banks = {}, cries = {} },
+      }
+    end
+    local services = envelope:_preparationServices()
+    local failed, failure = services.prepare(demand())
+    Assert.isNil(failed, versionId .. " never reads ready for its failed scene")
+    Assert.isTrue(
+      type(failure) == "string" and failure:find(sceneKey, 1, true) ~= nil,
+      versionId .. " names its failed scene: " .. tostring(failure)
+    )
+    Assert.isTrue(
+      tostring(failure):find("probe-controller-boom", 1, true) ~= nil,
+      versionId .. " carries its worker cause: " .. tostring(failure)
+    )
+    local failedAgain, failureAgain = services.prepare(demand())
+    Assert.isNil(failedAgain, versionId .. " stays failed across polls")
+    Assert.equal(failureAgain, failure, versionId .. " keeps its failure context across polls")
+    Assert.isTrue(asked >= 1, versionId .. " routes its scene demand through the borrowed host")
+    envelope:dispose()
+  end
+end
+
 return {
   tests = T,
   metadata = {
