@@ -2638,9 +2638,9 @@ function State:importPresetFile(file)
     or size == -math.huge
     or size ~= math.floor(size)
     or size < 0
-    or size > 131072
+    or size > SaveEditorPreset.MAX_SOURCE_BYTES
   then
-    self:_showPresetResult("rejected", "The preset file size is invalid or exceeds 128 KiB.", basename)
+    self:_showPresetResult("rejected", "The preset file size is invalid or exceeds the supported limit.", basename)
     return
   end
   local openedOk, opened = pcall(file.open, file, "r")

@@ -3,7 +3,7 @@
 local Errors = require("libs.errors.src.Errors")
 
 local SaveEditorPreset = {}
-local MAX_SOURCE_BYTES = 128 * 1024
+SaveEditorPreset.MAX_SOURCE_BYTES = 128 * 1024
 local MAX_ENTRIES = 1024
 local MAX_DEPTH = 12
 local MAX_SAFE_INTEGER = 9007199254740991
@@ -455,8 +455,8 @@ function SaveEditorPreset.parse(source)
   if type(source) ~= "string" then
     return nil, Errors.new("SAVE_EDITOR_PRESET_INVALID", "Preset content must be text.", {})
   end
-  if #source > MAX_SOURCE_BYTES then
-    return nil, Errors.new("SAVE_EDITOR_PRESET_INVALID", "Preset exceeds the 128 KiB size limit.", {})
+  if #source > SaveEditorPreset.MAX_SOURCE_BYTES then
+    return nil, Errors.new("SAVE_EDITOR_PRESET_INVALID", "Preset exceeds the supported size limit.", {})
   end
   if not validUtf8(source) then
     return nil, Errors.new("SAVE_EDITOR_PRESET_INVALID", "Preset content must be valid UTF-8.", {})

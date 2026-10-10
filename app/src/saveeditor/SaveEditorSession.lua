@@ -771,6 +771,233 @@ function SaveEditorSession:setFlag(name, value)
   return success(true)
 end
 
+---@class SaveEditorPresetStagingSession
+---@field _events FieldEventState
+---@field _symbols table<string, unknown>
+---@field _bagService HgssBagService
+---@field _monService HgssMonService
+---@field _monServiceOptions table<string, unknown>
+---@field _monValidationContext table<string, unknown>
+
+---@param self SaveEditorPresetStagingSession
+---@param preset SaveEditorPresetData
+---@return FieldEventState
+local function stagePresetEvents(self, preset)
+  local eventCandidate = FieldEventState.new(self._events:serialize())
+  local flagsByName = self._symbols.flagsByName
+  local variablesByName = self._symbols.variablesByName
+  assert(type(flagsByName) == "table", "flag symbol catalog is required")
+  assert(type(variablesByName) == "table", "variable symbol catalog is required")
+
+  local flagNames = {}
+  for name in pairs(preset.flags or {}) do
+    flagNames[#flagNames + 1] = name
+  end
+  table.sort(flagNames)
+  for _, name in ipairs(flagNames) do
+    local value = preset.flags[name]
+    local flagId = flagsByName[name]
+    if type(name) ~= "string" or not finiteInteger(flagId) or flagId < 0 or flagId > 0xFFFF then
+      error(Errors.new(PRESET_INVALID, "The preset flag is not in the symbol catalog.", { name = name }))
+    end
+    if type(value) ~= "boolean" then
+      error(Errors.new(PRESET_INVALID, "The preset flag value must be boolean.", { name = name }))
+    end
+    if value then
+      eventCandidate:setFlag(flagId)
+    else
+      eventCandidate:clearFlag(flagId)
+    end
+  end
+  local variableNames = {}
+  for name in pairs(preset.variables or {}) do
+    variableNames[#variableNames + 1] = name
+  end
+  table.sort(variableNames)
+  for _, name in ipairs(variableNames) do
+    local value = preset.variables[name]
+    local varId = variablesByName[name]
+    if type(name) ~= "string" or not finiteInteger(varId) or varId < 0 or varId > 0xFFFF then
+      error(Errors.new(PRESET_INVALID, "The preset variable is not in the symbol catalog.", { name = name }))
+    end
+    if not finiteInteger(value) or value < 0 or value > 0xFFFF then
+      error(Errors.new(PRESET_INVALID, "The preset variable value must be uint16.", { name = name }))
+    end
+    eventCandidate:setVar(varId, value)
+  end
+  local serializedEvents, eventError = FieldEventState.validate(eventCandidate:serialize())
+  if serializedEvents == nil then
+    error(assert(eventError))
+  end
+  eventCandidate = FieldEventState.new(serializedEvents)
+
+  return eventCandidate
+end
+
+---@param self SaveEditorPresetStagingSession
+---@param preset SaveEditorPresetData
+---@return HgssBagService
+local function stagePresetBag(self, preset)
+  local bagCandidate = HgssBagService.new({
+    catalog = self._bagService:catalog(),
+    bag = self._bagService:capture(),
+  })
+  local itemKeys = {}
+  for itemKey in pairs(preset.items or {}) do
+    itemKeys[#itemKeys + 1] = itemKey
+  end
+  table.sort(itemKeys)
+  for _, itemKey in ipairs(itemKeys) do
+    local minimum = preset.items[itemKey]
+    if itemKey == "NONE" then
+      error(Errors.new(PRESET_INVALID, "NONE is not a Bag item.", { item = itemKey }))
+    end
+    local itemOk, itemError = pcall(function()
+      bagCandidate:catalog():item(itemKey)
+    end)
+    if not itemOk then
+      if Errors.is(itemError) then
+        error(Errors.new(PRESET_INVALID, "The item is not available in the Bag catalog.", {
+          item = itemKey,
+          reason = Errors.format(itemError),
+        }))
+      end
+      error(itemError, 0)
+    end
+    if not finiteInteger(minimum) or minimum <= 0 then
+      error(Errors.new(PRESET_INVALID, "The item minimum must be a positive integer.", { item = itemKey }))
+    end
+    local current = bagCandidate:quantity(itemKey)
+    if current < minimum and not bagCandidate:add(itemKey, minimum - current) then
+      error(Errors.new(PRESET_INVALID, "The requested item minimum exceeds Bag capacity.", {
+        item = itemKey,
+        quantity = minimum,
+      }))
+    end
+  end
+  local validatedBag, bagError = BagSave.validate(bagCandidate:capture(), bagCandidate:catalog())
+  if validatedBag == nil then
+    error(assert(bagError))
+  end
+  bagCandidate = HgssBagService.new({ catalog = bagCandidate:catalog(), bag = validatedBag })
+
+  return bagCandidate
+end
+
+---@param self SaveEditorPresetStagingSession
+---@param preset SaveEditorPresetData
+---@param options { metLocation: integer, date: table<string, unknown> }
+---@return HgssMonService
+local function stagePresetParty(self, preset, options)
+  local monCandidate = newMonService(self._monServiceOptions, self._monService:capture())
+  local reserved = {}
+  local chosenLead
+  local function applyMonSpec(spec, path)
+    if type(spec) ~= "table" or type(spec.species) ~= "string" or spec.species == "" then
+      error(Errors.new(PRESET_INVALID, "A party request requires a species.", { path = path }))
+    end
+    local slot0
+    for candidateSlot = 0, monCandidate:partyCount() - 1 do
+      if not reserved[candidateSlot] and monCandidate:partyMon(candidateSlot).species == spec.species then
+        slot0 = candidateSlot
+        break
+      end
+    end
+    if slot0 == nil then
+      if monCandidate:partyCount() >= 6 then
+        error(Errors.new(PRESET_INVALID, "The party is full and has no unreserved matching species.", {
+          path = path,
+          species = spec.species,
+        }))
+      end
+      local added = monCandidate:giveMon({
+        species = spec.species,
+        level = spec.level or 1,
+        location = options.metLocation,
+        date = copy(options.date),
+      })
+      if not added then
+        error(Errors.new(PRESET_INVALID, "The party could not accept the requested Pokemon.", {
+          path = path,
+          species = spec.species,
+        }))
+      end
+      slot0 = monCandidate:partyCount() - 1
+    end
+    reserved[slot0] = true
+    if chosenLead == nil and path == "party.lead" then
+      chosenLead = slot0
+    end
+
+    local draft = SaveEditorMonDraft.new({
+      mode = "edit",
+      slot0 = slot0,
+      basePartyRevision = monCandidate:partyRevision(),
+      record = monCandidate:partyMon(slot0),
+      context = self._monValidationContext,
+    })
+    if spec.level ~= nil and not draft:setLevel(spec.level) then
+      error(Errors.new(PRESET_INVALID, "The requested Pokemon level is invalid.", { path = path .. ".level" }))
+    end
+    if spec.form ~= nil and not draft:setForm(spec.form) then
+      error(Errors.new(PRESET_INVALID, "The requested Pokemon form is invalid.", { path = path .. ".form" }))
+    end
+    if spec.heldItem ~= nil and not draft:setScalar("heldItem", spec.heldItem) then
+      error(Errors.new(PRESET_INVALID, "The requested held item is invalid.", { path = path .. ".heldItem" }))
+    end
+    local updated = draft:record()
+    if spec.fatefulEncounter ~= nil then
+      updated.fatefulEncounter = spec.fatefulEncounter
+    end
+    if spec.eggLocation ~= nil then
+      local egg = updated.egg --[[@as table<string, unknown>]]
+      egg.location = spec.eggLocation
+    end
+    local valid, canonical = pcall(Mon.validate, updated, self._monValidationContext)
+    if not valid then
+      if Errors.is(canonical) then
+        error(Errors.new(PRESET_INVALID, "The requested Pokemon fields are invalid.", {
+          path = path,
+          reason = Errors.format(canonical),
+        }))
+      end
+      error(canonical, 0)
+    end
+    local legal, legality = pcall(NativeLegality.project, canonical, self._monValidationContext)
+    if not legal then
+      if Errors.is(legality) then
+        error(Errors.new(PRESET_INVALID, "The requested Pokemon is not representable.", {
+          path = path,
+          reason = Errors.format(legality),
+        }))
+      end
+      error(legality, 0)
+    end
+    local preparation, preparationError =
+      monCandidate:preparePartyChanges(monCandidate:partyRevision(), { { slot = slot0, mon = canonical } })
+    if preparation == nil or not preparation.isCurrent() then
+      error(Errors.new(PRESET_STALE, "The private Party candidate changed during preset staging.", {
+        path = path,
+        reason = preparationError,
+      }))
+    end
+    preparation.publish()
+  end
+  if preset.party ~= nil then
+    if preset.party.lead ~= nil then
+      applyMonSpec(preset.party.lead, "party.lead")
+    end
+    for index, spec in ipairs(preset.party.contains or {}) do
+      applyMonSpec(spec, "party.contains[" .. index .. "]")
+    end
+    if chosenLead ~= nil and chosenLead ~= 0 then
+      monCandidate:swapPartyMons(0, chosenLead)
+    end
+  end
+
+  return monCandidate
+end
+
 ---@param preset SaveEditorPresetData
 ---@param options { expectedRevision: integer, placement?: SaveEditorLocation, metLocation: integer, date: table<string, unknown> }
 ---@return table<string, unknown>
@@ -822,202 +1049,9 @@ function SaveEditorSession:applyPreset(preset, options)
   end
 
   local ok, result = pcall(function()
-    local eventCandidate = FieldEventState.new(self._events:serialize())
-    local flagsByName = self._symbols.flagsByName
-    local variablesByName = self._symbols.variablesByName
-    assert(type(flagsByName) == "table", "flag symbol catalog is required")
-    assert(type(variablesByName) == "table", "variable symbol catalog is required")
-
-    local flagNames = {}
-    for name in pairs(preset.flags or {}) do
-      flagNames[#flagNames + 1] = name
-    end
-    table.sort(flagNames)
-    for _, name in ipairs(flagNames) do
-      local value = preset.flags[name]
-      local flagId = flagsByName[name]
-      if type(name) ~= "string" or not finiteInteger(flagId) or flagId < 0 or flagId > 0xFFFF then
-        error(Errors.new(PRESET_INVALID, "The preset flag is not in the symbol catalog.", { name = name }))
-      end
-      if type(value) ~= "boolean" then
-        error(Errors.new(PRESET_INVALID, "The preset flag value must be boolean.", { name = name }))
-      end
-      if value then
-        eventCandidate:setFlag(flagId)
-      else
-        eventCandidate:clearFlag(flagId)
-      end
-    end
-    local variableNames = {}
-    for name in pairs(preset.variables or {}) do
-      variableNames[#variableNames + 1] = name
-    end
-    table.sort(variableNames)
-    for _, name in ipairs(variableNames) do
-      local value = preset.variables[name]
-      local varId = variablesByName[name]
-      if type(name) ~= "string" or not finiteInteger(varId) or varId < 0 or varId > 0xFFFF then
-        error(Errors.new(PRESET_INVALID, "The preset variable is not in the symbol catalog.", { name = name }))
-      end
-      if not finiteInteger(value) or value < 0 or value > 0xFFFF then
-        error(Errors.new(PRESET_INVALID, "The preset variable value must be uint16.", { name = name }))
-      end
-      eventCandidate:setVar(varId, value)
-    end
-    local serializedEvents, eventError = FieldEventState.validate(eventCandidate:serialize())
-    if serializedEvents == nil then
-      error(assert(eventError))
-    end
-    eventCandidate = FieldEventState.new(serializedEvents)
-
-    local bagCandidate = HgssBagService.new({
-      catalog = self._bagService:catalog(),
-      bag = self._bagService:capture(),
-    })
-    local itemKeys = {}
-    for itemKey in pairs(preset.items or {}) do
-      itemKeys[#itemKeys + 1] = itemKey
-    end
-    table.sort(itemKeys)
-    for _, itemKey in ipairs(itemKeys) do
-      local minimum = preset.items[itemKey]
-      if itemKey == "NONE" then
-        error(Errors.new(PRESET_INVALID, "NONE is not a Bag item.", { item = itemKey }))
-      end
-      local itemOk, itemError = pcall(function()
-        bagCandidate:catalog():item(itemKey)
-      end)
-      if not itemOk then
-        if Errors.is(itemError) then
-          error(Errors.new(PRESET_INVALID, "The item is not available in the Bag catalog.", {
-            item = itemKey,
-            reason = Errors.format(itemError),
-          }))
-        end
-        error(itemError, 0)
-      end
-      if not finiteInteger(minimum) or minimum <= 0 then
-        error(Errors.new(PRESET_INVALID, "The item minimum must be a positive integer.", { item = itemKey }))
-      end
-      local current = bagCandidate:quantity(itemKey)
-      if current < minimum and not bagCandidate:add(itemKey, minimum - current) then
-        error(Errors.new(PRESET_INVALID, "The requested item minimum exceeds Bag capacity.", {
-          item = itemKey,
-          quantity = minimum,
-        }))
-      end
-    end
-    local validatedBag, bagError = BagSave.validate(bagCandidate:capture(), bagCandidate:catalog())
-    if validatedBag == nil then
-      error(assert(bagError))
-    end
-    bagCandidate = HgssBagService.new({ catalog = bagCandidate:catalog(), bag = validatedBag })
-
-    local monCandidate = newMonService(self._monServiceOptions, self._monService:capture())
-    local reserved = {}
-    local chosenLead
-    local function applyMonSpec(spec, path)
-      if type(spec) ~= "table" or type(spec.species) ~= "string" or spec.species == "" then
-        error(Errors.new(PRESET_INVALID, "A party request requires a species.", { path = path }))
-      end
-      local slot0
-      for candidateSlot = 0, monCandidate:partyCount() - 1 do
-        if not reserved[candidateSlot] and monCandidate:partyMon(candidateSlot).species == spec.species then
-          slot0 = candidateSlot
-          break
-        end
-      end
-      if slot0 == nil then
-        if monCandidate:partyCount() >= 6 then
-          error(Errors.new(PRESET_INVALID, "The party is full and has no unreserved matching species.", {
-            path = path,
-            species = spec.species,
-          }))
-        end
-        local added = monCandidate:giveMon({
-          species = spec.species,
-          level = spec.level or 1,
-          location = options.metLocation,
-          date = copy(options.date),
-        })
-        if not added then
-          error(Errors.new(PRESET_INVALID, "The party could not accept the requested Pokemon.", {
-            path = path,
-            species = spec.species,
-          }))
-        end
-        slot0 = monCandidate:partyCount() - 1
-      end
-      reserved[slot0] = true
-      if chosenLead == nil and path == "party.lead" then
-        chosenLead = slot0
-      end
-
-      local draft = SaveEditorMonDraft.new({
-        mode = "edit",
-        slot0 = slot0,
-        basePartyRevision = monCandidate:partyRevision(),
-        record = monCandidate:partyMon(slot0),
-        context = self._monValidationContext,
-      })
-      if spec.level ~= nil and not draft:setLevel(spec.level) then
-        error(Errors.new(PRESET_INVALID, "The requested Pokemon level is invalid.", { path = path .. ".level" }))
-      end
-      if spec.form ~= nil and not draft:setForm(spec.form) then
-        error(Errors.new(PRESET_INVALID, "The requested Pokemon form is invalid.", { path = path .. ".form" }))
-      end
-      if spec.heldItem ~= nil and not draft:setScalar("heldItem", spec.heldItem) then
-        error(Errors.new(PRESET_INVALID, "The requested held item is invalid.", { path = path .. ".heldItem" }))
-      end
-      local updated = draft:record()
-      if spec.fatefulEncounter ~= nil then
-        updated.fatefulEncounter = spec.fatefulEncounter
-      end
-      if spec.eggLocation ~= nil then
-        local egg = updated.egg --[[@as table<string, unknown>]]
-        egg.location = spec.eggLocation
-      end
-      local valid, canonical = pcall(Mon.validate, updated, self._monValidationContext)
-      if not valid then
-        if Errors.is(canonical) then
-          error(Errors.new(PRESET_INVALID, "The requested Pokemon fields are invalid.", {
-            path = path,
-            reason = Errors.format(canonical),
-          }))
-        end
-        error(canonical, 0)
-      end
-      local legal, legality = pcall(NativeLegality.project, canonical, self._monValidationContext)
-      if not legal then
-        if Errors.is(legality) then
-          error(Errors.new(PRESET_INVALID, "The requested Pokemon is not representable.", {
-            path = path,
-            reason = Errors.format(legality),
-          }))
-        end
-        error(legality, 0)
-      end
-      local preparation, preparationError =
-        monCandidate:preparePartyChanges(monCandidate:partyRevision(), { { slot = slot0, mon = canonical } })
-      if preparation == nil or not preparation.isCurrent() then
-        error(Errors.new(PRESET_STALE, "The private Party candidate changed during preset staging.", {
-          path = path,
-          reason = preparationError,
-        }))
-      end
-      preparation.publish()
-    end
-    if preset.party ~= nil then
-      if preset.party.lead ~= nil then
-        applyMonSpec(preset.party.lead, "party.lead")
-      end
-      for index, spec in ipairs(preset.party.contains or {}) do
-        applyMonSpec(spec, "party.contains[" .. index .. "]")
-      end
-      if chosenLead ~= nil and chosenLead ~= 0 then
-        monCandidate:swapPartyMons(0, chosenLead)
-      end
-    end
+    local eventCandidate = stagePresetEvents(self, preset)
+    local bagCandidate = stagePresetBag(self, preset)
+    local monCandidate = stagePresetParty(self, preset, options)
 
     local nextLocation = self._location
     if requestLocation ~= nil and not sameLocation(self._location, options.placement) then
