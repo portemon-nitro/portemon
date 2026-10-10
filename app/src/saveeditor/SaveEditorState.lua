@@ -2782,6 +2782,18 @@ function State:_finishPreset()
   return pending
 end
 
+function State:_cancelPendingPreset(actionLabel)
+  local pending = self:_finishPreset()
+  if pending == nil then
+    return
+  end
+  self:_showPresetResult(
+    "rejected",
+    "Import cancelled by " .. actionLabel .. "; no preset changes were staged. Drop it again to retry.",
+    pending.preset.name
+  )
+end
+
 function State:_reportPresetApplication(result, presetName, partyChanged, locationChanged)
   if result.ok ~= true then
     self:_showPresetResult("rejected", Errors.format(assert(result.error)), presetName)
@@ -2790,6 +2802,9 @@ function State:_reportPresetApplication(result, presetName, partyChanged, locati
   if result.changed == true then
     if partyChanged then
       self.monDraft = nil
+      if self.controller.section == "Party" then
+        self:_ensurePartyDraft()
+      end
     end
     self._uiSessionSnapshot = nil
     if locationChanged then
@@ -2910,6 +2925,7 @@ function State:_sendResult()
   if self.resultSent then
     return
   end
+  self:_cancelPendingPreset("Close")
   self.resultSent = true
   self.onResult({ kind = "main_menu" })
 end
@@ -3122,6 +3138,7 @@ function State:_save(leave)
   if self.session == nil then
     return false
   end
+  self:_cancelPendingPreset("Save")
   if not self:_applyCurrentPartyDraftIfNeeded() then
     if leave and self.closeRequest ~= nil then
       self.closeRequest.phase = "confirm"
@@ -3155,6 +3172,7 @@ function State:_save(leave)
 end
 
 function State:_discard(leave)
+  self:_cancelPendingPreset("Discard")
   local request = self.closeRequest
   if self.valueEditor then
     self.valueEditor:cancel()
@@ -3197,6 +3215,7 @@ function State:_discard(leave)
 end
 
 function State:_discardSection()
+  self:_cancelPendingPreset("Discard")
   local section = self.controller.section
   local editorSections = {
     money = "Player",
@@ -3442,6 +3461,7 @@ function State:requestClose(reason)
   if self.disposed then
     return false
   end
+  self:_cancelPendingPreset("Close")
   if self.closeRequest ~= nil then
     if self.closeRequest.phase == "saving" then
       self.closeRequest.phase = "confirm"

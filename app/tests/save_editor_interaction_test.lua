@@ -20,6 +20,7 @@ local Session = require("app.src.saveeditor.SaveEditorSession")
 local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
 
 local T = { tests = {} }
+local livePartyHarness
 
 local function stateHarness(fields)
   fields.fieldInput = fields.fieldInput or FieldInput.new()
@@ -135,10 +136,53 @@ local function presetSession()
   return session
 end
 
+local function realSession()
+  local fixture = Fixture.new()
+  local session = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  return fixture, session
+end
+
 local function presetSource(body)
   return 'return { schema = "portemon-save-preset-v1", name = "Component", description = "Component test", '
     .. body
     .. " }"
+end
+
+local function withPendingVerifier(fn)
+  local disposals, resolutions = 0, 0
+  local service = {
+    openMap = function() end,
+    setViewport = function() end,
+    update = function() end,
+    snapshot = function()
+      return { status = { state = "pending" }, generation = 1 }
+    end,
+    resolve = function()
+      resolutions = resolutions + 1
+      return nil, { state = "pending" }
+    end,
+    dispose = function()
+      disposals = disposals + 1
+    end,
+  }
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    return service
+  end
+  local ok, err = pcall(fn, function()
+    return disposals, resolutions
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
 end
 
 local function activate(state, targetId)
@@ -368,32 +412,158 @@ function T.tests.no_location_preset_applies_synchronously_without_a_location_ver
   end
 end
 
-function T.tests.successful_party_patch_retires_a_clean_party_draft()
-  local session = presetSession()
-  session.applyPreset = function(self, preset)
-    self.applyCalls = self.applyCalls + 1
-    self.appliedPreset = preset
-    self.partyRevisionValue = self.partyRevisionValue + 1
-    return { ok = true, changed = true }
-  end
-  local state = presetState(session, {
-    monDraft = {
-      mode = function()
-        return "edit"
-      end,
-      isDirty = function()
-        return false
+function T.tests.party_preset_refreshes_the_selected_member_projection()
+  local harness = livePartyHarness(1)
+  local state, session = harness.state, harness.session
+  state.controller.partyTab = "Details"
+  state:_ensurePartyDraft()
+  local oldDraft = assert(state.monDraft)
+  local slot0 = harness.controller.partySlot0
+  local file = fakePresetFile(presetSource('party = { lead = { species = "CHIKORITA", level = 5 } }'))
+  withDialogs(function(dialogs)
+    state:importPresetFile(file)
+    local draft = state.monDraft
+    Assert.notNil(draft, "the active Party page keeps a selected-member draft")
+    Assert.isFalse(rawequal(oldDraft, draft), "the imported member uses a fresh draft")
+    Assert.equal(draft:basePartyRevision(), session:partyRevision(), "the draft follows the published Party revision")
+    Assert.equal(draft:slot0(), slot0, "the selected member remains selected")
+    Assert.equal(draft:projection().level, 5, "the imported level is projected immediately")
+    Assert.notNil(state:_partyView().partyDetails, "the active Details page has a body immediately")
+    Assert.equal(#dialogs, 1, "the successful import has one result dialog")
+    Assert.equal(dialogs[1].title, "Preset imported")
+  end)
+end
+
+function T.tests.first_party_member_created_by_preset_opens_immediately()
+  local harness = livePartyHarness(0)
+  local state, session = harness.state, harness.session
+  state.controller.partyTab = "Stats"
+  local file = fakePresetFile(presetSource('party = { contains = { { species = "CHIKORITA" } } }'))
+  withDialogs(function(dialogs)
+    state:importPresetFile(file)
+    local draft = state.monDraft
+    Assert.equal(#session:partySnapshot().members, 1, "the preset creates the first member")
+    Assert.equal(harness.controller.partySlot0, 0, "the first member becomes selected")
+    Assert.notNil(draft, "the new selected member opens as an edit draft")
+    Assert.equal(draft:slot0(), 0)
+    Assert.equal(draft:basePartyRevision(), session:partyRevision())
+    Assert.notNil(state:_partyView().partyStats, "the Stats page is populated immediately")
+    Assert.equal(#dialogs, 1)
+    Assert.equal(dialogs[1].title, "Preset imported")
+  end)
+end
+
+function T.tests.save_cancels_pending_location_preset_before_persisting()
+  local fixture, session = realSession()
+  Assert.isTrue(session:setMoney(session:snapshot().money + 1).ok, "prior work is staged before Save")
+  local state = presetState(session)
+  local file =
+    fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }, location = { map = "MAP_TEST", x = 4, z = 5 }'))
+  withPendingVerifier(function(counts)
+    withDialogs(function(dialogs)
+      state:importPresetFile(file)
+      Assert.notNil(state.pendingPreset, "the location verifier owns the import")
+      Assert.isTrue(state:_save(false), "the requested Save still persists prior work")
+      Assert.isNil(state.pendingPreset, "Save retires the pending import synchronously")
+      local pendingDisposals = counts()
+      Assert.equal(pendingDisposals, 1, "Save disposes the verifier once")
+      state:update(0)
+      local _, resolutions = counts()
+      Assert.equal(resolutions, 0, "a later update cannot resolve a cancelled verifier")
+      Assert.isFalse(session:isDirty(), "the successful Save leaves the Session clean")
+      local flagId = fixture.symbols.flagsByName.FLAG_GOT_POKEDEX
+      Assert.isFalse(session:snapshot().flags[flagId], "the preset flag was not staged")
+      Assert.equal(session:snapshot().location.fieldX, fixture.initial.fieldX, "the preset destination was not staged")
+      local saved = assert(fixture.store:load(fixture.saveId))
+      Assert.equal(
+        saved.world.flags[flagId],
+        fixture.initial.world.flags[flagId],
+        "the explicit Save did not persist the preset flag"
+      )
+      Assert.equal(saved.fieldX, fixture.initial.fieldX, "the explicit Save did not persist the preset destination")
+      Assert.equal(
+        saved.playerData.profile.money,
+        session:snapshot().money,
+        "the explicit Save persisted the prior staged value"
+      )
+      Assert.equal(#dialogs, 1, "cancellation has one terminal result")
+      Assert.equal(dialogs[1].title, "Preset rejected")
+      Assert.notNil(dialogs[1].message:find("Save", 1, true), "the result names the overtaking action")
+      Assert.notNil(
+        dialogs[1].message:find("no preset changes were staged", 1, true),
+        "the result says the import was not staged"
+      )
+    end)
+  end)
+end
+
+function T.tests.discard_and_exit_cancel_pending_location_presets_once()
+  local actions = {
+    {
+      "section Discard",
+      function(state)
+        state.controller.section = "Player"
+        state:_discardSection()
       end,
     },
-  })
-  local file = fakePresetFile(presetSource('party = { contains = { { species = "PIKACHU" } } }'))
-  withDialogs(function(dialogs)
-    Assert.equal(type(state.importPresetFile), "function", "the editor owns Party preset updates")
-    state:importPresetFile(file)
-    Assert.equal(session.applyCalls, 1, "the Party patch uses one atomic session operation")
-    Assert.isNil(state.monDraft, "a clean draft is retired so the next Party view is fresh")
-    Assert.equal(#dialogs, 1, "successful Party patch has one confirmation")
-  end)
+    {
+      "global Discard",
+      function(state)
+        state:_discard(false)
+      end,
+    },
+    {
+      "clean Back",
+      function(state)
+        state:_performDeferred({ kind = "back" })
+      end,
+    },
+    {
+      "quit",
+      function(state)
+        state:requestClose("quit")
+      end,
+    },
+  }
+  local failures = {}
+  for _, scenario in ipairs(actions) do
+    local label, action = scenario[1], scenario[2]
+    local _, session = realSession()
+    local originalRevision = session:revision()
+    local resultCount = 0
+    local state = presetState(session, {
+      onResult = function()
+        resultCount = resultCount + 1
+      end,
+    })
+    local file = fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 4, z = 5 }'))
+    local ok, err = pcall(function()
+      withPendingVerifier(function(counts)
+        withDialogs(function(dialogs)
+          state:importPresetFile(file)
+          action(state)
+          Assert.isNil(state.pendingPreset, "the " .. label .. " action retires pending ownership")
+          local disposals = counts()
+          Assert.equal(disposals, 1, "the " .. label .. " action disposes the verifier exactly once")
+          state:update(0)
+          local _, resolutions = counts()
+          Assert.equal(resolutions, 0, "the retired import cannot resolve after " .. label)
+          Assert.equal(session:revision(), originalRevision, "the cancelled preset never reaches the Session")
+          Assert.equal(#dialogs, 1, "the abandoned import has one terminal rejection")
+          Assert.equal(dialogs[1].title, "Preset rejected")
+          Assert.equal(
+            resultCount,
+            label == "clean Back" and 1 or 0,
+            "the requested exit callback keeps its existing behavior"
+          )
+        end)
+      end)
+    end)
+    if not ok then
+      failures[#failures + 1] = label .. ": " .. tostring(err)
+    end
+  end
+  Assert.equal(#failures, 0, table.concat(failures, "\n"))
 end
 
 function T.tests.unknown_preset_map_rejects_before_verifier_construction()
@@ -3942,10 +4112,7 @@ function T.tests.location_grid_changes_resize_and_other_sections_still_republish
   harness.setChanged(false)
   Assert.isTrue(counts.snapshots > 0, "a reported map change republishes")
   Assert.isTrue(state._publishedPlan ~= settledPlan, "a reported map change replaces the settled plan")
-  Assert.isTrue(
-    state._publishedView.presentation == state._publishedPlan,
-    "the replaced view pairs with its plan"
-  )
+  Assert.isTrue(state._publishedView.presentation == state._publishedPlan, "the replaced view pairs with its plan")
   Assert.isTrue(
     state._publishedView.layout == state._publishedPlan.content.layout,
     "the replaced view carries its layout"
@@ -3984,10 +4151,7 @@ function T.tests.location_grid_changes_resize_and_other_sections_still_republish
   )
   Assert.equal(state.width, 1024, "resize keeps the new width")
   Assert.equal(state.height, 768, "resize keeps the new height")
-  Assert.isTrue(
-    state._publishedView.presentation == state._publishedPlan,
-    "the resized view pairs with its plan"
-  )
+  Assert.isTrue(state._publishedView.presentation == state._publishedPlan, "the resized view pairs with its plan")
 
   controller:setSection("Party")
   harness.resetCounts()
@@ -4033,10 +4197,7 @@ function T.tests.settled_location_refresh_publishes_only_on_reported_service_cha
   harness.setChanged(false)
   Assert.isTrue(counts.snapshots > 0, "a reported service change republishes through the settled pair")
   Assert.isTrue(republished.presentation ~= settledPlan, "a reported service change replaces the settled plan")
-  Assert.isTrue(
-    republished.presentation == state._publishedPlan,
-    "the replacement view pairs with its plan"
-  )
+  Assert.isTrue(republished.presentation == state._publishedPlan, "the replacement view pairs with its plan")
 end
 
 function T.tests.direct_empty_input_consumption_still_refreshes_the_settled_pair()
@@ -5573,7 +5734,7 @@ function T.tests.leave_save_keeps_invalid_value_editable_and_discard_remains_exp
   Assert.isNil(discarded.state.valueEditor, "explicit Discard retires the unfinished editor")
 end
 
-local function livePartyHarness(memberCount)
+livePartyHarness = function(memberCount)
   local Fixture = require("app.tests.support.SaveEditorFixture")
   local fixture = Fixture.new()
   local Session = require("app.src.saveeditor.SaveEditorSession")
@@ -5605,6 +5766,11 @@ local function livePartyHarness(memberCount)
     session = session,
     dependencies = {
       context = fixture.context,
+      world = {
+        maps = { { id = 60, mapSectionNativeId = 5 } },
+        byId = { [60] = 1 },
+        bySymbol = { MAP_TEST = 60 },
+      },
       bagManifest = {
         interactive = {
           overlays = {
