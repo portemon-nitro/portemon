@@ -58,6 +58,7 @@ ArtifactState.KINDS = {
   ["apricorn-box"] = true,
   party = true,
   pc = true,
+  pokegear = true,
   summary = true,
   -- One staged battle input artifact per job: move battle facts, trainer
   -- records, and encounter tables each own their payload and marker.
@@ -142,6 +143,10 @@ local function checkKey(kind, key)
   assert(type(key) == "string" and key ~= "", "artifact key must be a non-empty string")
   if kind == "pc" then
     assert(key == "global", "pc artifacts require the global key")
+    return
+  end
+  if kind == "pokegear" then
+    assert(key == "global", "pokegear artifacts require the global key")
     return
   end
   if kind == "battle-presentation" then

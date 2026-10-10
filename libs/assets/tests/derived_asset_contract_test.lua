@@ -29,6 +29,7 @@ local ItemCache = require("libs.assets.src.ItemCache")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BagCache = require("libs.assets.src.BagCache")
 local PartyCache = require("libs.assets.src.PartyCache")
+local PokegearCache = require("libs.assets.src.PokegearCache")
 local SummaryCache = require("libs.assets.src.SummaryCache")
 local SummaryAssetSchema = require("libs.assets.src.SummaryAssetSchema")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
@@ -168,6 +169,10 @@ function T.contract_pins_the_current_asset_identities()
       cacheFormat = "pc-cache-v1",
       schema = "g4-pc-v2",
     },
+    pokegear = {
+      cacheFormat = "pokegear-cache-v1",
+      schema = "g4-pokegear-assets-v1",
+    },
     summary = {
       cacheFormat = "g4-summary-cache-v2",
       schema = "g4-summary-manifest-v4",
@@ -241,6 +246,8 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(BagCache.SCHEMA, DerivedAssetContract.bag.schema)
   Assert.equal(PartyCache.FORMAT, DerivedAssetContract.party.cacheFormat)
   Assert.equal(PartyCache.SCHEMA, DerivedAssetContract.party.schema)
+  Assert.equal(PokegearCache.FORMAT, DerivedAssetContract.pokegear.cacheFormat)
+  Assert.equal(PokegearCache.SCHEMA, DerivedAssetContract.pokegear.schema)
   Assert.equal(SummaryCache.FORMAT, DerivedAssetContract.summary.cacheFormat)
   Assert.equal(SummaryCache.SCHEMA, DerivedAssetContract.summary.schema)
   Assert.equal(StarterChoiceAssetCache.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)

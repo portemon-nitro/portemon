@@ -243,6 +243,7 @@ local FIELD_RUNTIME_JOBS = {
   "apricorn-box:global",
   "party:global",
   "pc:global",
+  "pokegear:global",
   "mart:global",
   "summary:global",
   "spawns:global",
@@ -608,6 +609,17 @@ local function executePc(artifact, context)
     return PcAssetCompiler.compile(romFs)
   end, "PC")
   return PcCacheWriter.stage(artifact, bundle)
+end
+
+local function executePokegear(artifact, context)
+  local PokegearAssetCompiler = require("romdump.src.digest.ui.PokegearAssetCompiler")
+  local PokegearCacheWriter = require("romdump.src.digest.ui.PokegearCacheWriter")
+  local romFs = assert(context.romFs, "pokegear jobs require a source reader")
+  local versionId = assert(context.versionId, "pokegear jobs require a version")
+  local bundle = compileOrRaise(function()
+    return PokegearAssetCompiler.compile(romFs, versionId)
+  end, "pokegear")
+  return PokegearCacheWriter.stage(artifact, bundle)
 end
 
 local function dependenciesPc(key)
@@ -1114,6 +1126,13 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
+local function validatePokegear(check)
+  local PokegearCache = require("libs.assets.src.PokegearCache")
+  return PokegearCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
 local function validateSummary(check)
   local SummaryCache = require("libs.assets.src.SummaryCache")
   return SummaryCache.isReady(check.cacheFs, check.marker)
@@ -1587,6 +1606,11 @@ DESCRIPTORS = {
     execute = executePc,
     validate = validatePc,
   },
+  pokegear = {
+    size = "normal",
+    execute = executePokegear,
+    validate = validatePokegear,
+  },
   -- Summary presentation: builds over the current mon catalog and
   -- layout families, never over paged portrait pixels.
   summary = {
@@ -1810,6 +1834,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "apricorn-box",
   "party",
   "pc",
+  "pokegear",
   "mart",
   "summary",
   "spawns",

@@ -41,6 +41,7 @@ local CANONICAL_KEYS = {
   ["follower-interactions"] = "global",
   mart = "global",
   ["bag"] = "global",
+  ["pokegear"] = "global",
   ["mon-catalog"] = "global",
   ["mon-layout"] = "global",
   ["mon-icon-page"] = "3",
