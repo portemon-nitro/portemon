@@ -3446,26 +3446,73 @@ function State:_numberEditorTooSmall(layout)
   return currentLayout.numberTooSmall == true
 end
 
-function State:_dispatchActivationAction(action, layout)
-  if action.kind:match("^decision%.") and action.command ~= nil then
-    self:_performDecisionCommand(assert(action.decision), action.command, assert(action.id))
-    return
+local function removeBagItem(self)
+  self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
+  self:_openDecision("remove")
+end
+
+local function editBagQuantity(self)
+  self:_openBagQuantity("set")
+end
+
+local function saveAndExit(self)
+  if self.closeRequest ~= nil then
+    self:_performClose("save")
+  elseif self:_locationSavePending() then
+    self:_cancelPendingLocationSave()
+    self.errorMessage = "Destination verification canceled."
+  else
+    self:_save(true)
   end
-  if action.kind == "value.confirm" or action.kind == "value.adjust-number-place" or action.kind == "value.press" then
-    if self:_numberEditorTooSmall(layout) then
-      return
-    end
+end
+
+local function discardAndExit(self)
+  if self.closeRequest ~= nil then
+    self:_performClose("discard")
+  else
+    self:_discard(false)
   end
-  if action.kind == "section.select" then
+end
+
+local function valueEditorAction(finish)
+  return function(self, action)
+    finish(assert(self.valueEditor), action)
+    self:_finishValueEditor()
+  end
+end
+
+local function openMoveChild(command)
+  return function(self)
+    self:_openMoveChild(command)
+  end
+end
+
+local function deferred(build)
+  return function(self, action)
+    self:_performDeferred(build(action))
+  end
+end
+
+local function noop() end
+
+local function installChoiceEditor(self, purpose, options)
+  self:_installValueEditor(ValueEditor.new({ kind = "choice", options = options }), purpose)
+end
+
+-- Activation handlers by action kind; each runs as `handler(state, action)`.
+local ACTIVATION_HANDLERS = {
+  ["section.select"] = function(self, action)
     self:_requestDraftResolution({ kind = "section", section = action.section })
-  elseif action.kind == "player.edit-money" then
+  end,
+  ["player.edit-money"] = function(self)
     self:_cancelPendingLocationSave()
     local money = assert(self.session:snapshot().money)
     self:_installValueEditor(
       ValueEditor.new({ kind = "integer", value = money, min = 0, max = PlayerData.MAX_MONEY, base = "decimal" }),
       "money"
     )
-  elseif action.kind == "player.edit-dialogue-frame" then
+  end,
+  ["player.edit-dialogue-frame"] = function(self)
     self:_cancelPendingLocationSave()
     local frameIndexes = assert(self.dependencies.context.frameIndexes)
     local choices = {}
@@ -3481,7 +3528,8 @@ function State:_dispatchActivationAction(action, layout)
       ValueEditor.new({ kind = "choice", options = options, value = tostring(self.session:snapshot().frameIndex) }),
       "dialogue_frame"
     )
-  elseif action.kind == "progress.toggle-flag" then
+  end,
+  ["progress.toggle-flag"] = function(self, action)
     if self._listFilterTask ~= nil then
       return
     end
@@ -3490,108 +3538,95 @@ function State:_dispatchActivationAction(action, layout)
     if not result.ok then
       self.errorMessage = message(result.error)
     end
-  elseif action.kind == "value.confirm" then
-    assert(self.valueEditor):press("confirm")
-    self:_finishValueEditor()
-  elseif action.kind == "value.cancel" then
-    assert(self.valueEditor):cancel()
-    self:_finishValueEditor()
-  elseif action.kind == "value.adjust-number-place" then
+  end,
+  ["value.confirm"] = valueEditorAction(function(editor)
+    editor:press("confirm")
+  end),
+  ["value.cancel"] = valueEditorAction(function(editor)
+    editor:cancel()
+  end),
+  ["value.adjust-number-place"] = function(self, action)
     assert(action.direction == "up" or action.direction == "down")
     self:_adjustNumberPlace(action.place, action.direction == "up" and 1 or -1)
     self:_finishValueEditor()
-  elseif action.kind == "value.choose-option" then
-    assert(self.valueEditor):activateTarget(action.key)
-    self:_finishValueEditor()
-  elseif action.kind == "value.activate-name-control" then
-    assert(self.valueEditor):activateTarget(action.control)
-    self:_finishValueEditor()
-  elseif action.kind == "value.activate-name-key" then
-    assert(self.valueEditor):activateTarget(tostring(action.row) .. ":" .. tostring(action.column))
-    self:_finishValueEditor()
-  elseif action.kind == "value.change-page" then
+  end,
+  ["value.choose-option"] = valueEditorAction(function(editor, action)
+    editor:activateTarget(action.key)
+  end),
+  ["value.activate-name-control"] = valueEditorAction(function(editor, action)
+    editor:activateTarget(action.control)
+  end),
+  ["value.activate-name-key"] = valueEditorAction(function(editor, action)
+    editor:activateTarget(tostring(action.row) .. ":" .. tostring(action.column))
+  end),
+  ["value.change-page"] = valueEditorAction(function(editor, action)
     assert(action.direction == "next" or action.direction == "previous")
-    assert(self.valueEditor):press(action.direction == "next" and "page_next" or "page_previous")
-    self:_finishValueEditor()
-  elseif action.kind == "value.press" then
-    assert(self.valueEditor):press(action.key)
-    self:_finishValueEditor()
-  elseif action.kind == "value.focus-choice-list" then
-    return
-  elseif action.kind == "decision.cancel" then
+    editor:press(action.direction == "next" and "page_next" or "page_previous")
+  end),
+  ["value.press"] = valueEditorAction(function(editor, action)
+    editor:press(action.key)
+  end),
+  ["value.focus-choice-list"] = noop,
+  ["list.inert"] = noop,
+  ["decision.cancel"] = function(self, action)
     self:_popDecision(action.decision)
-  elseif action.kind == "decision.edit-bag-quantity" then
-    self:_openBagQuantity("set")
-  elseif action.kind == "decision.remove-bag-item" then
-    self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
-    self:_openDecision("remove")
-  elseif action.kind == "decision.edit-move" then
-    self:_openMoveChild("party-move:move")
-  elseif action.kind == "decision.edit-move-pp" then
-    self:_openMoveChild("party-move:pp")
-  elseif action.kind == "decision.edit-move-pp-ups" then
-    self:_openMoveChild("party-move:pp-ups")
-  elseif action.kind == "decision.confirm-remove" then
+  end,
+  ["decision.edit-bag-quantity"] = editBagQuantity,
+  ["decision.remove-bag-item"] = removeBagItem,
+  ["decision.edit-move"] = openMoveChild("party-move:move"),
+  ["decision.edit-move-pp"] = openMoveChild("party-move:pp"),
+  ["decision.edit-move-pp-ups"] = openMoveChild("party-move:pp-ups"),
+  ["decision.confirm-remove"] = function(self)
     self:_confirmRemoval()
-  elseif action.kind == "decision.save-and-exit" then
-    if self.closeRequest ~= nil then
-      self:_performClose("save")
-    elseif self:_locationSavePending() then
-      self:_cancelPendingLocationSave()
-      self.errorMessage = "Destination verification canceled."
-    else
-      self:_save(true)
-    end
-  elseif action.kind == "decision.discard-and-exit" then
-    if self.closeRequest ~= nil then
-      self:_performClose("discard")
-    else
-      self:_discard(false)
-    end
-  elseif action.kind == "editor.save" then
+  end,
+  ["decision.save-and-exit"] = saveAndExit,
+  ["decision.discard-and-exit"] = discardAndExit,
+  ["editor.save"] = function(self)
     if self:_locationSavePending() then
       self:_cancelPendingLocationSave()
       self.errorMessage = "Destination verification canceled."
     else
       self:_requestDraftResolution({ kind = "save" })
     end
-  elseif action.kind == "editor.discard" then
+  end,
+  ["editor.discard"] = function(self)
     self:_discardSection()
-  elseif action.kind == "editor.back" then
+  end,
+  ["editor.back"] = function(self)
     self:_requestBack()
-  elseif action.kind == "editor.retry-open" then
+  end,
+  ["editor.retry-open"] = function(self)
     self.generation = self.generation + 1
     self.status, self.errorMessage = "opening", nil
-  elseif action.kind == "editor.close-open-error" then
+  end,
+  ["editor.close-open-error"] = function(self)
     self:_sendResult()
-  elseif action.kind == "list.inert" then
-    return
-  elseif action.kind == "location.select-group" then
-    self:_performDeferred({ kind = "location-group-select", groupId = action.groupId })
-  elseif action.kind == "location.select-map" then
+  end,
+  ["location.select-group"] = deferred(function(action)
+    return { kind = "location-group-select", groupId = action.groupId }
+  end),
+  ["location.select-map"] = function(self, action)
     if self._listFilterTask ~= nil then
       return
     end
     self:_performDeferred({ kind = "location-map-select", mapId = action.mapId })
-  elseif action.kind == "location.select-tile" then
-    self:_performDeferred({ kind = "select_tile", fieldX = action.fieldX, fieldZ = action.fieldZ })
-  elseif action.kind == "location.select-current-tile" then
+  end,
+  ["location.select-tile"] = deferred(function(action)
+    return { kind = "select_tile", fieldX = action.fieldX, fieldZ = action.fieldZ }
+  end),
+  ["location.select-current-tile"] = function(self)
     local cursor = self.controller:locationSnapshot().cursor
     if cursor ~= nil then
       self:_performDeferred({ kind = "select_tile", fieldX = cursor.fieldX, fieldZ = cursor.fieldZ })
     end
-  elseif action.kind == "party.select-slot" then
+  end,
+  ["party.select-slot"] = function(self, action)
     self:_requestDraftResolution({ kind = "party-slot", slot0 = action.slot0 })
-  elseif action.kind == "party.change-page" then
+  end,
+  ["party.change-page"] = function(self, action)
     self.controller:stepPartyTab(action.direction)
-  elseif action.kind == "bag.select-pocket" then
-    self.controller:selectBagPocket(action.pocket)
-  elseif action.kind == "bag.change-page" then
-    self.controller:setBagPage(math.max(0, self.controller.bagPage0 + (action.direction == "next" and 1 or -1)))
-  elseif action.kind == "bag.select-item" then
-    self.controller:selectBagItem(action.itemKey)
-    self:_openDecision("bag-item")
-  elseif action.kind == "party.add-member" then
+  end,
+  ["party.add-member"] = function(self)
     if not self:_applyCurrentPartyDraftIfNeeded() then
       return
     end
@@ -3602,8 +3637,9 @@ function State:_dispatchActivationAction(action, layout)
     end, function(key)
       return catalog:species(key).name or key
     end)
-    self:_installValueEditor(ValueEditor.new({ kind = "choice", options = options }), "party_add_species")
-  elseif action.kind == "party.edit-field" then
+    installChoiceEditor(self, "party_add_species", options)
+  end,
+  ["party.edit-field"] = function(self, action)
     if not self:_ensurePartyDraft() then
       return
     end
@@ -3612,7 +3648,8 @@ function State:_dispatchActivationAction(action, layout)
       self:_openEditor(descriptor)
       self.valuePurpose = "party_field"
     end
-  elseif action.kind == "party.use-species-name" then
+  end,
+  ["party.use-species-name"] = function(self)
     if not self:_ensurePartyDraft() then
       return
     end
@@ -3621,36 +3658,60 @@ function State:_dispatchActivationAction(action, layout)
     else
       self.errorMessage = nil
     end
-  elseif action.kind == "party.add-move" then
+  end,
+  ["party.add-move"] = function(self)
     self:_cancelPendingLocationSave()
     local catalog = assert(self.dependencies.context.monCatalog)
-    self:_installValueEditor(
-      ValueEditor.new({
-        kind = "choice",
-        options = PartyView.options(assert(self.partyView), "moves", function()
-          return catalog:moveKeys()
-        end, function(key)
-          return catalog:move(key).name or key
-        end),
-      }),
-      "party_add_move"
-    )
-  elseif action.kind == "bag.add-item" then
-    self:_cancelPendingLocationSave()
-    self:_beginBagAdd()
-  elseif action.kind == "bag.edit-quantity" then
-    self:_openBagQuantity("set")
-  elseif action.kind == "bag.remove-item" then
-    self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
-    self:_openDecision("remove")
-  elseif action.kind == "party.edit-move" then
+    local options = PartyView.options(assert(self.partyView), "moves", function()
+      return catalog:moveKeys()
+    end, function(key)
+      return catalog:move(key).name or key
+    end)
+    installChoiceEditor(self, "party_add_move", options)
+  end,
+  ["party.edit-move"] = function(self, action)
     if not self:_ensurePartyDraft() then
       return
     end
     self:_showMoveOverlay(action.moveIndex)
-  else
+  end,
+  ["bag.select-pocket"] = function(self, action)
+    self.controller:selectBagPocket(action.pocket)
+  end,
+  ["bag.change-page"] = function(self, action)
+    self.controller:setBagPage(math.max(0, self.controller.bagPage0 + (action.direction == "next" and 1 or -1)))
+  end,
+  ["bag.select-item"] = function(self, action)
+    self.controller:selectBagItem(action.itemKey)
+    self:_openDecision("bag-item")
+  end,
+  ["bag.add-item"] = function(self)
+    self:_cancelPendingLocationSave()
+    self:_beginBagAdd()
+  end,
+  ["bag.edit-quantity"] = editBagQuantity,
+  ["bag.remove-item"] = removeBagItem,
+}
+
+local NUMBER_GUARDED_ACTIONS = {
+  ["value.confirm"] = true,
+  ["value.adjust-number-place"] = true,
+  ["value.press"] = true,
+}
+
+function State:_dispatchActivationAction(action, layout)
+  if action.kind:match("^decision%.") and action.command ~= nil then
+    self:_performDecisionCommand(assert(action.decision), action.command, assert(action.id))
+    return
+  end
+  if NUMBER_GUARDED_ACTIONS[action.kind] and self:_numberEditorTooSmall(layout) then
+    return
+  end
+  local handler = ACTIVATION_HANDLERS[action.kind]
+  if handler == nil then
     error("unknown Save Editor activation action: " .. tostring(action.kind), 2)
   end
+  handler(self, action)
 end
 
 function State:_activate(targetId)
