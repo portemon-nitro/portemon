@@ -533,6 +533,28 @@ function FieldMapDataCache.marker(romSha1, mapId, dependencyHash)
   return string.format("%s:%s:%d:%s", FieldMapDataCache.FORMAT, romSha1, mapId, dependencyHash)
 end
 
+-- The semantic battle background the current field-map schema always
+-- carries: the lowered runtime scene key backing presented-battle scene
+-- selection. Key membership is enforced at compile time; readiness only
+-- requires the fact to be present. A record without it is malformed
+-- generated data, never an empty feature.
+---@param battleBackground unknown
+---@return boolean
+function FieldMapDataCache.hasBattleBackground(battleBackground)
+  return type(battleBackground) == "string" and battleBackground ~= ""
+end
+
+-- The wild encounter table member the current field-map schema always
+-- carries: the source member identity backing committed-step encounter
+-- selection. Range is enforced at compile time; readiness only requires
+-- the fact to be present. A record without it is malformed generated
+-- data, never an empty feature.
+---@param wildEncounterMemberId unknown
+---@return boolean
+function FieldMapDataCache.hasEncounterMember(wildEncounterMemberId)
+  return type(wildEncounterMemberId) == "number" and wildEncounterMemberId % 1 == 0
+end
+
 -- True only if the marker is exact, the record carries the current identity
 -- (schema and mapId), dependencies load, and every required event collection,
 -- the audio policy (music record, soundplates array), and the normalized
@@ -559,6 +581,8 @@ function FieldMapDataCache.isReady(cacheFs, mapId, expectedMarker)
     or not FieldMapDataCache.hasFieldUsePolicy(field.fieldUse)
     or not FieldMapDataCache.isTransitionEnvironment(field.transitionEnvironment)
     or not FieldMapDataCache.hasRenderEnvironment(field.renderEnvironment)
+    or not FieldMapDataCache.hasBattleBackground(field.battleBackground)
+    or not FieldMapDataCache.hasEncounterMember(field.wildEncounterMemberId)
   then
     return false
   end

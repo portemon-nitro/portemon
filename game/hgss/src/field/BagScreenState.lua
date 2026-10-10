@@ -18,7 +18,7 @@ local BagModel = require("libs.hgss.src.ui.BagModel")
 ---@class BagScreenState
 ---@field _service HgssBagService
 ---@field _cursor BagCursor
----@field _context "inventory"|"field"|"pick_held"|"sell" the selection context for intent emission
+---@field _context "inventory"|"field"|"pick_held"|"sell"|"battle" the selection context for intent emission
 ---@field _manifest table<string, unknown>
 ---@field _heroGender "male"|"female"
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
@@ -77,7 +77,8 @@ end
 ---@field uiManifest table<string, unknown> the validated field-UI manifest carrying the prompt section
 ---@field monCatalog table<string, unknown> the borrowed compiled mon catalog
 ---@field heroGender "male"|"female" the profile-selected hero backdrop
----@field context "inventory"|"field"|"pick_held"|"sell"? the selection context (defaults to inventory)
+---@field context "inventory"|"field"|"pick_held"|"sell"|"battle"? the selection context (defaults to inventory)
+---@field battlePolicy BattleSelectionPolicy? the native selection policy, required for battle
 ---@field saleSession table<string, unknown>? required for sell context
 ---@field partyEmpty boolean? true when no party member exists to target (field contexts hide Use/Give)
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
@@ -110,9 +111,17 @@ function BagScreenState.new(opts)
   local tossPrompt = assert(bagOverlays.tossPrompt, "the bag manifest carries its toss prompt placement")
   local context = opts.context or "inventory"
   assert(
-    context == "inventory" or context == "field" or context == "pick_held" or context == "sell",
-    "the bag screen needs a named inventory, field, pick_held, or sell context"
+    context == "inventory" or context == "field" or context == "pick_held" or context == "sell" or context == "battle",
+    "the bag screen needs a named inventory, field, pick_held, sell, or battle context"
   )
+  local battlePolicy = opts.battlePolicy
+  if context == "battle" then
+    assert(battlePolicy ~= nil, "the battle bag needs its native options")
+    assert(type(battlePolicy.isEnabled) == "function", "the battle policy answers selection legality")
+    assert(type(battlePolicy.reason) == "function", "the battle policy explains its refusals")
+  else
+    assert(battlePolicy == nil, "only the battle bag takes battle options")
+  end
   -- Post-selection timing and text ride the validated manifest: a bundle
   -- missing them fails the open instead of animating with silent fallbacks.
   local text = assert(overlays.text, "the bag manifest carries its semantic text")
@@ -197,6 +206,9 @@ function BagScreenState.new(opts)
   -- semantic commands straight into the one live service, and the action
   -- menu rides the pure policy projection bound to that same service.
   -- Persistence stays with the normal save capture; nothing writes here.
+  -- The battle context selects only: its commands are tripwires that fail
+  -- closed instead of reaching the live service, and its action policy is
+  -- empty because battle selections bypass the field action menu.
   local function tossItem(itemKey, quantity)
     return service:take(itemKey, quantity)
   end
@@ -209,8 +221,39 @@ function BagScreenState.new(opts)
   local function unregisterItem(itemKey)
     return service:unregister(itemKey)
   end
+  local function deniedTake(_, _)
+    error("the battle bag never calls take", 2)
+  end
+  local function deniedMove(_, _, _)
+    error("the battle bag never calls move", 2)
+  end
+  local function deniedRegister(_)
+    error("the battle bag never calls register", 2)
+  end
+  local function deniedUnregister(_)
+    error("the battle bag never calls unregister", 2)
+  end
+  local function noBattleActions(_)
+    return {}
+  end
+  local battleCommands = {
+    toss = deniedTake,
+    move = deniedMove,
+    register = deniedRegister,
+    unregister = deniedUnregister,
+  }
+  local fieldCommands = {
+    toss = tossItem,
+    move = moveItem,
+    register = registerItem,
+    unregister = unregisterItem,
+  }
+  local commands = fieldCommands
   local resolveActions = BagActionPolicy.forService(service)
-  if context ~= "inventory" then
+  if context == "battle" then
+    commands = battleCommands
+    resolveActions = noBattleActions
+  elseif context ~= "inventory" then
     resolveActions = BagActionPolicy.forField(service, opts.partyEmpty)
   end
   local function pickable(itemKey)
@@ -240,12 +283,8 @@ function BagScreenState.new(opts)
       feedbackTicks = feedbackTicks,
       moveTransition = moveTransition,
       isPickable = isPickable,
-      commands = {
-        toss = tossItem,
-        move = moveItem,
-        register = registerItem,
-        unregister = unregisterItem,
-      },
+      battlePolicy = battlePolicy,
+      commands = commands,
       resolveActions = resolveActions,
     })
   end)

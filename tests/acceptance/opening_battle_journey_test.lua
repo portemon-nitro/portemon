@@ -65,8 +65,16 @@ local function headlessPort(record)
       record.enters = record.enters + 1
       return true
     end,
-    present = function(frame)
-      record.frames[#record.frames + 1] = frame
+    -- The five-operation port delivers detached packets; the fake
+    -- unwraps their ordered events so kernel-event probes keep reading
+    -- the same payloads.
+    present = function(packet)
+      for _, event in ipairs(packet.events) do
+        record.frames[#record.frames + 1] = event
+      end
+    end,
+    ready = function()
+      return true
     end,
     leave = function(_plan)
       record.leaves = record.leaves + 1

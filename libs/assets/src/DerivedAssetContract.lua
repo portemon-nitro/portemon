@@ -222,7 +222,12 @@ DerivedAssetContract.fieldMapData = {
   -- records, the area edge-color table, the catalog weather id, and its
   -- fog preset) so logical maps stay drawable without a visual scene.
   -- v12 names each field-light record's threshold endHalfSeconds.
-  fieldSchema = "g4-field-map-v12",
+  -- v13 carries the semantic battle background backing presented-battle
+  -- scene selection, lowered from the frozen catalog fact to the runtime
+  -- scene key the presentation cache inventories, plus the wild encounter
+  -- table member backing committed-step encounter selection so the runtime
+  -- resolves the map's own table.
+  fieldSchema = "g4-field-map-v13",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.
@@ -356,6 +361,17 @@ DerivedAssetContract.battleData = {
 DerivedAssetContract.trainerCatalog = {
   cacheFormat = "trainer-catalog-cache-v2",
   schema = "g4-trainer-catalog-v2",
+}
+
+-- The battle presentation class carries the source-backed ordinary battle
+-- UI: the shared menu/HUD definitions with their staged slices, lazily
+-- compiled persistent scene variants, and the exact per-launch demand
+-- (portrait pages resolve through the mon class). The global manifest
+-- stages apart from scenes; one scene stages per demanded key.
+DerivedAssetContract.battlePresentation = {
+  cacheFormat = "battle-presentation-cache-v1",
+  schema = "g4-battle-presentation-v1",
+  sceneSchema = "g4-battle-scene-v1",
 }
 
 DerivedAssetContract.encounterCatalog = {

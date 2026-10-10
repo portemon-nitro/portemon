@@ -38,6 +38,10 @@ local KNOWN = {
   POKE_BALL = { nativeId = 4, pocket = "balls", isBall = true },
   GREAT_BALL = { nativeId = 3, pocket = "balls", isBall = true },
   LUXURY_BALL = { nativeId = 11, pocket = "balls", isBall = true },
+  -- The wild-capture scenario stocks this ball. The synthetic identity
+  -- avoids displacing the ITEM_1 placeholder other suites stock; battle capture keys balls by semantic key, so no
+  -- behavior depends on it. Production catalogs carry the retail identity.
+  MASTER_BALL = { nativeId = 7, pocket = "balls", isBall = true },
   POTION = {
     nativeId = 17,
     pocket = "medicine",
@@ -57,6 +61,7 @@ local KNOWN = {
     },
   },
   SOOTHE_BELL = { nativeId = 218, pocket = "items", friendshipBoost = true },
+  EXP__SHARE = { nativeId = 61, pocket = "items" },
   AMULET_COIN = {
     nativeId = 223,
     pocket = "items",

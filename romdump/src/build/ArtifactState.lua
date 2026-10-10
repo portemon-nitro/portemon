@@ -63,6 +63,11 @@ ArtifactState.KINDS = {
   ["battle-data"] = true,
   trainers = true,
   encounters = true,
+  -- One staged battle presentation artifact per job: the shared ordinary
+  -- menu/HUD definitions own the global payload and marker, and each
+  -- demanded persistent scene owns its own composed image and marker.
+  ["battle-presentation"] = true,
+  ["battle-scene"] = true,
   -- One staged message bank (or the family summary) per job: each bank owns
   -- its payload and marker, the summary owns only the index and completion.
   ["message-bank"] = true,
@@ -130,11 +135,21 @@ end
 -- Families addressed only as a whole carry the global key; paged and
 -- per-member families carry their canonical integer selector, and field
 -- cells carry their canonical matrix/index pair and nothing else: a bare
--- integer never addresses a cell.
+-- integer never addresses a cell. Battle scenes carry their validated
+-- semantic background/terrain/time key, never an arbitrary path.
 local function checkKey(kind, key)
   assert(type(key) == "string" and key ~= "", "artifact key must be a non-empty string")
   if kind == "pc" then
     assert(key == "global", "pc artifacts require the global key")
+    return
+  end
+  if kind == "battle-presentation" then
+    assert(key == "global", "battle presentation only has the global job")
+    return
+  end
+  if kind == "battle-scene" then
+    local Sources = require("romdump.src.config.BattlePresentationSources")
+    assert(Sources.validateSceneKey(key), "invalid battle scene key: " .. key)
     return
   end
   if key == "global" or isCanonicalInteger(key) then

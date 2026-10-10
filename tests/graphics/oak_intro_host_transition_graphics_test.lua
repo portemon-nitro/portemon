@@ -185,6 +185,8 @@ local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local ItemFixture = require("libs.items.tests.item_fixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
@@ -261,6 +263,8 @@ local function bootCoveredField(scope)
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       uiManifest = FieldUiFixture.fieldStateManifest(),
       pokemonNaming = InactivePokemonNaming.new(),
+      itemCatalog = ItemFixture.makeCatalog(),
+      monCatalog = CatalogFixture.makeCatalog(),
       bindPartyIconPreparation = function(_, _, _)
         return 1
       end,

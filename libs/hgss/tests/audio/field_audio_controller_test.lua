@@ -1224,4 +1224,70 @@ function T.audio_owned_traversal_mutation_is_not_a_supported_operation()
   )
 end
 
+-- One presented battle envelope claims the automatic field-music policy
+-- for its launch lifetime: suspension deactivates a playing soundplate
+-- once and blocks automatic step/map selection while explicit battle and
+-- recovery playback stays live. The matching-token resume restores the
+-- current field policy once; stale tokens do nothing.
+function T.suspend_holds_automatic_policy_while_explicit_playback_stays_live()
+  local controller, _, spy, fdA, fdB = musicScenario()
+  controller:enterMap({ fieldData = fdA }, { play = true })
+  local playsBefore = #spy.plays
+  Assert.isTrue(playsBefore > 0, "map entry starts its field music")
+  controller:suspendFieldPolicy("launch-1")
+  controller:updateField()
+  Assert.equal(#spy.plays, playsBefore, "suspended step policy starts no music")
+  controller:enterMap({ fieldData = fdB }, { play = true })
+  Assert.equal(#spy.plays, playsBefore, "suspended map entry starts no automatic music")
+  controller:playMusic("SEQ_GS_UTSUGI_RABO")
+  Assert.equal(#spy.plays, playsBefore + 1, "explicit battle playback stays live while held")
+  controller:updateSoundFrame()
+end
+
+function T.suspend_deactivates_a_playing_soundplate_once_and_keeps_the_override()
+  local controller, _, _, starts, spy, _, fdB = seamlessSoundplateScenario()
+  controller:enterMap({ fieldData = fdB }, { play = true })
+  Assert.equal(starts[20], 1, "the destination soundplate starts on entry")
+  controller:setMusicOverride("SEQ_GS_T_WAKABA")
+  local stopsBefore = #spy.stops
+  controller:suspendFieldPolicy("launch-1")
+  Assert.equal(#spy.stops, stopsBefore + 1, "suspension deactivates the playing soundplate once")
+  controller:suspendFieldPolicy("launch-1")
+  Assert.equal(#spy.stops, stopsBefore + 1, "re-suspension by the same owner is a no-op")
+  Assert.equal(controller:musicOverride(), 10, "suspension never alters the persisted override")
+  controller:updateSoundFrame()
+  local raised = pcall(controller.suspendFieldPolicy, controller, "launch-2")
+  Assert.isFalse(raised, "a second owner cannot claim a held policy")
+end
+
+function T.resume_restores_current_policy_once_and_ignores_stale_tokens()
+  local controller, sound, spy, fdA = musicScenario()
+  controller:enterMap({ fieldData = fdA }, { play = true })
+  controller:suspendFieldPolicy("launch-1")
+  controller:playMusic("SEQ_GS_UTSUGI_RABO")
+  local playsBefore = #spy.plays
+  controller:resumeFieldPolicy("stale-launch", true)
+  Assert.equal(#spy.plays, playsBefore, "a stale token restores nothing")
+  Assert.equal(sound:currentMusic(), 11, "a stale token keeps the battle music")
+  controller:resumeFieldPolicy("launch-1", true)
+  Assert.equal(#spy.plays, playsBefore + 1, "the matching resume restores the current field policy once")
+  Assert.equal(sound:currentMusic(), 10, "the field music is current again")
+  controller:updateField()
+  controller:resumeFieldPolicy("launch-1", true)
+  Assert.equal(#spy.plays, playsBefore + 1, "a released token restores nothing further")
+end
+
+function T.resume_without_restore_releases_the_hold_silently()
+  local controller, sound, spy, fdA = musicScenario()
+  controller:enterMap({ fieldData = fdA }, { play = true })
+  controller:suspendFieldPolicy("launch-1")
+  controller:playMusic("SEQ_GS_UTSUGI_RABO")
+  local playsBefore = #spy.plays
+  controller:resumeFieldPolicy("launch-1", false)
+  Assert.equal(#spy.plays, playsBefore, "a non-restoring release replays no track")
+  Assert.equal(sound:currentMusic(), 11, "a non-restoring release keeps the recovery decision")
+  controller:updateField()
+  Assert.equal(#spy.plays, playsBefore, "step policy stays ordinary after release")
+end
+
 return { tests = T }

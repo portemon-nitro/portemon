@@ -218,8 +218,9 @@ end
 local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 
 ---@param failures table<string, boolean>?
+---@param versionId string ready game version supplying real portrait metadata
 ---@return table<string, unknown> owner collaborators over the synthetic family
-local function syntheticComposition(failures)
+local function syntheticComposition(failures, versionId)
   local CacheFs = require("libs.storage.src.CacheFs")
   local manifest = SummaryPresentationFixture.manifest()
   local helper = SummaryAcceptanceFixture.preparationDoubles(failures)
@@ -228,7 +229,7 @@ local function syntheticComposition(failures)
     helper = helper,
     newOptions = function()
       return {
-        cacheFs = CacheFs.forVersion("heartgold"),
+        cacheFs = CacheFs.forVersion(versionId),
         graphics = helper.graphics,
         text = helper.text,
         icons = helper.icons,
@@ -256,100 +257,111 @@ end
 
 function T.synthetic_demand_coalesces_pages_and_shares_across_leases()
   local Resources = requireResources()
-  local setup = syntheticComposition({})
-  local owner = Resources.new(setup.newOptions())
-  local first = owner:acquire()
-  local second = owner:acquire()
-  local ready = nil
-  for _ = 1, 12 do
-    ready = assert(first:prepare(syntheticDemand("syn-pair", 1)))
-    if ready.kind ~= "pending" then
-      break
+  local versions = SummaryAcceptanceFixture.readySummaryVersions()
+  Assert.isTrue(#versions >= 1, "the prepared cache publishes the Summary family")
+  for _, versionId in ipairs(versions) do
+    local setup = syntheticComposition({}, versionId)
+    local owner = Resources.new(setup.newOptions())
+    local first = owner:acquire()
+    local second = owner:acquire()
+    local ready = nil
+    for _ = 1, 12 do
+      ready = assert(first:prepare(syntheticDemand("syn-pair", 1)))
+      if ready.kind ~= "pending" then
+        break
+      end
     end
-  end
-  Assert.equal(ready.kind, "ready", "the synthetic pair prepares")
-  Assert.equal(ready.key, "syn-pair", "readiness qualifies its demand key")
-  local assets = assert(ready.assets, "ready preparation carries its bundle")
-  Assert.equal(assets.manifest, setup.manifest, "the bundle carries the family")
-  Assert.notNil(assets.portraits, "the bundle carries portrait accessors")
-  local shared = nil
-  for _ = 1, 12 do
-    shared = assert(second:prepare(syntheticDemand("syn-pair", 1)))
-    if shared.kind ~= "pending" then
-      break
+    Assert.equal(ready.kind, "ready", versionId .. " prepares the synthetic pair")
+    Assert.equal(ready.key, "syn-pair", versionId .. " qualifies readiness by its demand key")
+    local assets = assert(ready.assets, versionId .. " carries its bundle on readiness")
+    Assert.equal(assets.manifest, setup.manifest, versionId .. " carries the family")
+    Assert.notNil(assets.portraits, versionId .. " carries portrait accessors")
+    local shared = nil
+    for _ = 1, 12 do
+      shared = assert(second:prepare(syntheticDemand("syn-pair", 1)))
+      if shared.kind ~= "pending" then
+        break
+      end
     end
+    Assert.equal(shared.kind, "ready", versionId .. " shares the coalesced demand")
+    local seen = {}
+    for _, record in ipairs(setup.helper.calls.portraitPages) do
+      seen[record.pageId] = (seen[record.pageId] or 0) + 1
+    end
+    local unique = 0
+    for _, count in pairs(seen) do
+      unique = unique + 1
+      Assert.equal(count, 1, versionId .. " compiles shared portrait pages once")
+    end
+    Assert.isTrue(unique >= 1 and unique <= 2, versionId .. " demands at most two pages for two members")
+    first:release()
+    local again = assert(second:prepare(syntheticDemand("syn-pair", 1)))
+    Assert.equal(again.kind, "ready", versionId .. " keeps the surviving lease usable after the old release")
+    second:release()
+    owner:release()
   end
-  Assert.equal(shared.kind, "ready", "the replacement lease shares the coalesced demand")
-  local seen = {}
-  for _, record in ipairs(setup.helper.calls.portraitPages) do
-    seen[record.pageId] = (seen[record.pageId] or 0) + 1
-  end
-  local unique = 0
-  for _, count in pairs(seen) do
-    unique = unique + 1
-    Assert.equal(count, 1, "shared portrait pages compile once")
-  end
-  Assert.isTrue(unique >= 1 and unique <= 2, "two roster members demand at most two pages")
-  first:release()
-  local again = assert(second:prepare(syntheticDemand("syn-pair", 1)))
-  Assert.equal(again.kind, "ready", "the surviving lease stays usable after the old release")
-  second:release()
-  owner:release()
 end
 
 function T.constructor_and_demand_shapes_fail_loudly()
   local Resources = requireResources()
-  local setup = syntheticComposition({})
-  local options = setup.newOptions()
-  local bad = {}
-  for key, value in pairs(options) do
-    bad[key] = value
+  local versions = SummaryAcceptanceFixture.readySummaryVersions()
+  Assert.isTrue(#versions >= 1, "the prepared cache publishes the Summary family")
+  for _, versionId in ipairs(versions) do
+    local setup = syntheticComposition({}, versionId)
+    local options = setup.newOptions()
+    local bad = {}
+    for key, value in pairs(options) do
+      bad[key] = value
+    end
+    bad.manifest = nil
+    Assert.isFalse(pcall(Resources.new, bad), versionId .. " requires the summary family")
+    bad = {}
+    for key, value in pairs(options) do
+      bad[key] = value
+    end
+    bad.preparationQueue = nil
+    Assert.isFalse(pcall(Resources.new, bad), versionId .. " requires its image queue")
+    local owner = Resources.new(setup.newOptions())
+    local lease = owner:acquire()
+    Assert.isFalse(
+      pcall(lease.prepare, lease, { key = "", revision = 1, pictureEpoch = 0, portraitSelectors = {}, iconKeys = {} }),
+      versionId .. " demands carry a non-empty key"
+    )
+    local many = { "A", "B", "C", "D", "E", "F", "G" }
+    Assert.isFalse(
+      pcall(lease.prepare, lease, {
+        key = "too-many",
+        revision = 1,
+        pictureEpoch = 0,
+        portraitSelectors = many,
+        iconKeys = {},
+      }),
+      versionId .. " keeps portrait demand within the current party"
+    )
+    Assert.isFalse(
+      pcall(lease.prepare, lease, {
+        key = "unknown-species",
+        revision = 1,
+        pictureEpoch = 0,
+        portraitSelectors = { "MISSINGNO" },
+        iconKeys = {},
+      }),
+      versionId .. " fails unknown selectors instead of demanding blindly"
+    )
+    lease:release()
+    owner:release()
   end
-  bad.manifest = nil
-  Assert.isFalse(pcall(Resources.new, bad), "the owner requires the summary family")
-  bad = {}
-  for key, value in pairs(options) do
-    bad[key] = value
-  end
-  bad.preparationQueue = nil
-  Assert.isFalse(pcall(Resources.new, bad), "the owner requires its image queue")
-  local owner = Resources.new(setup.newOptions())
-  local lease = owner:acquire()
-  Assert.isFalse(
-    pcall(lease.prepare, lease, { key = "", revision = 1, pictureEpoch = 0, portraitSelectors = {}, iconKeys = {} }),
-    "demands carry a non-empty key"
-  )
-  local many = { "A", "B", "C", "D", "E", "F", "G" }
-  Assert.isFalse(
-    pcall(lease.prepare, lease, {
-      key = "too-many",
-      revision = 1,
-      pictureEpoch = 0,
-      portraitSelectors = many,
-      iconKeys = {},
-    }),
-    "portrait demand stays within the current party"
-  )
-  Assert.isFalse(
-    pcall(lease.prepare, lease, {
-      key = "unknown-species",
-      revision = 1,
-      pictureEpoch = 0,
-      portraitSelectors = { "MISSINGNO" },
-      iconKeys = {},
-    }),
-    "unknown selectors fail instead of demanding blindly"
-  )
-  lease:release()
-  owner:release()
 end
 
 function T.late_completions_land_quietly_after_lease_release()
   local Resources = requireResources()
-  local setup = syntheticComposition({})
-  local gate = { ready = false }
-  local tokens = {}
-  local queue = {
+  local versions = SummaryAcceptanceFixture.readySummaryVersions()
+  Assert.isTrue(#versions >= 1, "the prepared cache publishes the Summary family")
+  for _, versionId in ipairs(versions) do
+    local setup = syntheticComposition({}, versionId)
+    local gate = { ready = false }
+    local tokens = {}
+    local queue = {
     request = function(_, kind, path, priority)
       local token = { id = #tokens + 1, kind = kind, path = path, priority = priority }
       tokens[#tokens + 1] = token
@@ -370,27 +382,28 @@ function T.late_completions_land_quietly_after_lease_release()
     release = function(_)
     end,
   }
-  local options = setup.newOptions()
-  options.preparationQueue = queue
-  local owner = Resources.new(options)
-  local first = owner:acquire()
-  local outcome = assert(first:prepare(syntheticDemand("late", 1)))
-  Assert.equal(outcome.kind, "pending", "gated decodes wait")
-  first:release()
-  first:release()
-  gate.ready = true
-  local second = owner:acquire()
-  local ready = nil
-  for _ = 1, 12 do
-    ready = assert(second:prepare(syntheticDemand("late", 1)))
-    if ready.kind ~= "pending" then
-      break
+    local options = setup.newOptions()
+    options.preparationQueue = queue
+    local owner = Resources.new(options)
+    local first = owner:acquire()
+    local outcome = assert(first:prepare(syntheticDemand("late", 1)))
+    Assert.equal(outcome.kind, "pending", versionId .. " waits on gated decodes")
+    first:release()
+    first:release()
+    gate.ready = true
+    local second = owner:acquire()
+    local ready = nil
+    for _ = 1, 12 do
+      ready = assert(second:prepare(syntheticDemand("late", 1)))
+      if ready.kind ~= "pending" then
+        break
+      end
     end
+    Assert.equal(ready.kind, "ready", versionId .. " lands late worker results for a live lease")
+    Assert.equal(ready.key, "late", versionId .. " qualifies late results by the live demand key")
+    second:release()
+    owner:release()
   end
-  Assert.equal(ready.kind, "ready", "late worker results enter the owner cache for a live lease")
-  Assert.equal(ready.key, "late", "late results qualify the live demand key")
-  second:release()
-  owner:release()
 end
 
 -- Counts image-queue requests per cache-relative path from installation
@@ -416,9 +429,16 @@ end
 -- introducing party art and without changing owner lifetime semantics.
 function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
   local Resources = requireResources()
-  local setup = syntheticComposition({})
-  local manifest = setup.manifest
-  Assert.equal(manifest.schema, "g4-summary-manifest-v4", "the synthetic family tracks the generated schema")
+  local versions = SummaryAcceptanceFixture.readySummaryVersions()
+  Assert.isTrue(#versions >= 1, "the prepared cache publishes the Summary family")
+  for _, versionId in ipairs(versions) do
+    local setup = syntheticComposition({}, versionId)
+    local manifest = setup.manifest
+    Assert.equal(
+      manifest.schema,
+      "g4-summary-manifest-v4",
+      versionId .. " tracks the generated schema in its synthetic family"
+    )
   local sprites = assert(manifest.sprites, "the synthetic family carries dynamic chrome")
   for _, role in ipairs({ "animations", "primaryCursor", "secondaryMoveCursor", "performance", "leaves", "ribbons" }) do
     Assert.notNil(sprites[role], "the synthetic family carries " .. role)
@@ -446,26 +466,27 @@ function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
       end
     end
   end
-  Assert.isTrue(#frameImages > 0, "the synthetic chrome references frame images")
-  local counts = countQueueRequests(setup.helper)
-  local owner = Resources.new(setup.newOptions())
-  local lease = owner:acquire()
-  local outcome = nil
-  for _ = 1, 12 do
-    outcome = assert(lease:prepare(syntheticDemand("dynamic-chrome", 1)))
-    if outcome.kind ~= "pending" then
-      break
+    Assert.isTrue(#frameImages > 0, versionId .. " references frame images in its synthetic chrome")
+    local counts = countQueueRequests(setup.helper)
+    local owner = Resources.new(setup.newOptions())
+    local lease = owner:acquire()
+    local outcome = nil
+    for _ = 1, 12 do
+      outcome = assert(lease:prepare(syntheticDemand("dynamic-chrome", 1)))
+      if outcome.kind ~= "pending" then
+        break
+      end
     end
+    Assert.equal(outcome.kind, "ready", versionId .. " prepares the dynamic chrome demand")
+    local assets = assert(outcome.assets, versionId .. " carries its bundle on readiness")
+    for _, image in ipairs(frameImages) do
+      Assert.notNil(assets.imageForPath(image), versionId .. " resolves frame " .. image)
+      Assert.equal(counts[image], 1, versionId .. " decodes frame " .. image .. " once through its canonical path")
+    end
+    lease:release()
+    lease:release()
+    owner:release()
   end
-  Assert.equal(outcome.kind, "ready", "the dynamic chrome demand prepares")
-  local assets = assert(outcome.assets, "ready preparation carries its bundle")
-  for _, image in ipairs(frameImages) do
-    Assert.notNil(assets.imageForPath(image), "the ready bundle resolves frame " .. image)
-    Assert.equal(counts[image], 1, "frame " .. image .. " decodes once through its canonical path")
-  end
-  lease:release()
-  lease:release()
-  owner:release()
 end
 
 -- Exact-identity preparation below: the owner resolves full roster portrait

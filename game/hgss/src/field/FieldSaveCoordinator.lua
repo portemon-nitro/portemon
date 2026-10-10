@@ -66,6 +66,12 @@ local function battleBusyReason(runtime)
   if runtime.pendingEncounterId ~= nil then
     return "Save deferred: a prepared encounter owns the field"
   end
+  -- An admitted battle launch owns the field from cover through battle,
+  -- settlement, restoration, and reveal: no shutdown or manual save may
+  -- publish a half-battle field record before the safe field returns.
+  if runtime._battleLaunch ~= nil then
+    return "Save deferred: a battle launch owns the field"
+  end
   return nil
 end
 

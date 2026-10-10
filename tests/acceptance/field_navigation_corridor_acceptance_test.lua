@@ -231,6 +231,11 @@ function T.tests.corridor_traverses_water_zone_streaming_grass_ledge_and_returns
     Assert.equal(farSavePosition.player.fieldX, facts.far.fieldX)
     Assert.equal(farSavePosition.player.fieldZ, facts.far.fieldZ)
     assertResident(farSavePosition)
+    -- The corridor walks through grass without starting battles, so the
+    -- route may hold a prepared wild encounter when it reaches its
+    -- stability save. The route declines wild encounters before saving;
+    -- the save requires a stable field with no pending encounter.
+    game.runtime:cancelPendingEncounter()
     local saved = game:save()
     local resumed = game:restart({ save = "resume" }):snapshot()
     Assert.equal(resumed.player.fieldX, saved.player.fieldX)

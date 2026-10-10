@@ -1506,6 +1506,77 @@ local function validateEncounters(check)
   return BattleDataCache.isEncountersReady(check.cacheFs, check.marker)
 end
 
+-- Battle presentation families stage validated semantic pixels through the
+-- existing worker: the global job compiles the shared menu/HUD definitions
+-- once, and each scene job compiles exactly its validated scene key on top
+-- of the staged global. Scene keys are validated semantic keys, never
+-- filesystem paths.
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string compiler marker for the receipt
+local function executeBattlePresentationJob(artifact, context, job)
+  local BattlePresentationCompiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local romFs = assert(context.romFs, "battle presentation jobs require a source reader")
+  local versionId = assert(context.versionId, "battle presentation jobs require a version")
+  local bundle, compileErr = BattlePresentationCompiler.compileGlobal(romFs, { versionId = versionId })
+  if bundle == nil then
+    error("battle presentation emission failed for generation " .. job.generationId .. ": " .. tostring(compileErr), 0)
+  end
+  assert(bundle ~= nil, "battle presentation emission produced no bundle")
+  local metadata = romFs:metadata()
+  return BattlePresentationCompiler.stageGlobal(
+    artifact,
+    bundle,
+    BattlePresentationCompiler.globalMarker(metadata.sha1, bundle)
+  )
+end
+
+---@param key string semantic scene key
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesBattleScene(key, plans)
+  assert(type(plans) == "table", "dependency edges require the session plans")
+  local Sources = require("romdump.src.config.BattlePresentationSources")
+  assert(Sources.validateSceneKey(key), "invalid battle scene key: " .. tostring(key))
+  return { { kind = "battle-presentation", key = "global" } }, true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string compiler marker for the receipt
+local function executeBattleSceneJob(artifact, context, job)
+  local BattlePresentationCompiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local romFs = assert(context.romFs, "battle scene jobs require a source reader")
+  local versionId = assert(context.versionId, "battle scene jobs require a version")
+  local scene, compileErr = BattlePresentationCompiler.compileScene(romFs, { versionId = versionId }, job.key)
+  if scene == nil then
+    error("battle scene emission failed for generation " .. job.generationId .. ": " .. tostring(compileErr), 0)
+  end
+  assert(scene ~= nil, "battle scene emission produced no scene")
+  local metadata = romFs:metadata()
+  return BattlePresentationCompiler.stageScene(
+    artifact,
+    scene,
+    BattlePresentationCompiler.sceneMarker(metadata.sha1, scene)
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateBattlePresentation(check)
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  return BattlePresentationCache.isGlobalReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateBattleScene(check)
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  return BattlePresentationCache.isSceneReady(check.cacheFs, check.key, check.marker)
+end
+
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
 local function validatePc(check)
@@ -1946,6 +2017,19 @@ DESCRIPTORS = {
     dependencies = dependenciesEncounters,
     execute = executeEncountersJob,
     validate = validateEncounters,
+  },
+  -- Battle presentation: the shared ordinary menu/HUD definitions once,
+  -- then one lazily compiled persistent scene per demanded semantic key.
+  ["battle-presentation"] = {
+    size = "normal",
+    execute = executeBattlePresentationJob,
+    validate = validateBattlePresentation,
+  },
+  ["battle-scene"] = {
+    size = "normal",
+    dependencies = dependenciesBattleScene,
+    execute = executeBattleSceneJob,
+    validate = validateBattleScene,
   },
   bag = {
     size = "normal",

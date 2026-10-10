@@ -7,30 +7,41 @@
 --
 -- The runtime freezes nothing itself; the field owner pauses field input
 -- while this lifetime is active. Simulation and presentation stay
--- independent: the session advances on update regardless of presentation
--- acknowledgements, while phase transitions wait for entry/return
--- readiness. Delayed readiness never consumes combat randomness and never
--- regenerates the prepared encounter: the scenario is copied once at
--- construction and the session is built once in preparing.
+-- independent: readiness only releases update boundaries and never
+-- changes mechanics inputs, draws, or results, while entry polls and
+-- advances wait for the port. Delayed readiness never consumes combat
+-- randomness and never regenerates the prepared encounter: the scenario
+-- is copied once at construction and the session is built once in
+-- preparing.
 --
--- Decisions: requests owned by the "player" controller (and any
--- non-opponent controller) are exposed through status().request and
--- answered through submit; wild and trainer opponents answer through
--- their bound opponent controllers inside update. Invalid replies return
--- the session's typed input error without consuming randomness or
--- resources. A battle with no scenario runs the lifecycle only
--- (presentation and phase ownership without simulation or publication); it
--- never commits and never reports a receipt.
+-- Presentation receives one detached packet per mechanics result with
+-- event-time checkpoints, ordered events, and before/after views; each
+-- packet ships once, an unchanged waiting request is never republished,
+-- and the terminal outcome ships exactly once. Decisions: requests owned
+-- by the "player" controller (and any non-opponent controller) are
+-- exposed through status().request, projected purely through
+-- decisionOptions, and answered through submit; wild and trainer
+-- opponents answer through their bound opponent controllers inside
+-- update. A sealed reply latches and clears the pending request before
+-- another input edge can reach it. Invalid replies return the session's
+-- typed input error without consuming randomness or resources. A battle
+-- with no scenario runs the lifecycle only (presentation and phase
+-- ownership without simulation or publication); it never commits and
+-- never reports a receipt.
 --
 -- Combat executes through the native HGSS lifecycle: ordered actions
 -- run the shared move continuation with the combatants' carried facts and
--- knockouts settle through faint ownership until a terminal outcome. A
--- capture or escape that leaves both sides standing settles as a draw. No victory is ever
--- invented: only a fainted enemy side reports a win. Committed party
--- writeback carries the executed damage and the earned knockout
--- progression into the live party through the committer's staged batch.
+-- knockouts settle through faint ownership until a terminal outcome.
+-- Explicit capture and escape settle as capture and flee even with both
+-- sides standing. No victory is ever invented: only a fainted enemy side
+-- reports a win. Committed party writeback carries the executed damage,
+-- the earned knockout progression, and the normalized condition and
+-- held-item changes into the live party through the committer's staged
+-- batch. An explicit construction seed drives the battle stream, so
+-- equal seeds with equal scenarios and replies replay equal mechanics.
 
 local Battle = require("gen4.battle")
+local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
 local HgssBattleContent = require("game.hgss.src.battle.HgssBattleContent")
 local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
@@ -42,7 +53,8 @@ local HgssOpponentControllers = require("libs.hgss.src.battle.HgssOpponentContro
 
 ---@class BattlePresentationPort
 ---@field enter fun(plan: table<string, unknown>): boolean
----@field present fun(frame: table<string, unknown>)
+---@field present fun(packet: table<string, unknown>)
+---@field ready fun(): boolean
 ---@field leave fun(plan: table<string, unknown>): boolean
 ---@field dispose fun()
 
@@ -75,12 +87,18 @@ local HgssOpponentControllers = require("libs.hgss.src.battle.HgssOpponentContro
 ---@field _player table<string, unknown>?
 ---@field _captures table<integer, table<string, unknown>>?
 ---@field _seed integer
+---@field _seedExplicit boolean
 ---@field _phase string
 ---@field _task table<string, unknown>?
 ---@field _content table<string, unknown>?
 ---@field _session table<string, unknown>?
 ---@field _answered table<string, boolean>?
+---@field _accepted table<string, boolean>?
 ---@field _openRequest table<string, unknown>?
+---@field _publishedRequest string?
+---@field _packetId integer
+---@field _lastView table<string, unknown>?
+---@field _terminalSent boolean
 ---@field _outcome table<string, unknown>?
 ---@field _prepared table<string, unknown>?
 ---@field _receipt table<string, unknown>?
@@ -178,7 +196,11 @@ local function ackEntry(_)
   return true
 end
 
-local function ignoreFrame(_) end
+local function ignorePacket(_) end
+
+local function readyNow()
+  return true
+end
 
 local function ackLeave(_)
   return true
@@ -188,7 +210,7 @@ local function releasePort() end
 
 ---@return BattlePresentationPort
 local function defaultPresentation()
-  return { enter = ackEntry, present = ignoreFrame, leave = ackLeave, dispose = releasePort }
+  return { enter = ackEntry, present = ignorePacket, ready = readyNow, leave = ackLeave, dispose = releasePort }
 end
 
 ---@param request unknown
@@ -257,6 +279,7 @@ local function checkPresentation(presentation)
   local port = presentation --[[@as BattlePresentationPort]]
   assert(type(port.enter) == "function", "battle presentation implements enter")
   assert(type(port.present) == "function", "battle presentation implements present")
+  assert(type(port.ready) == "function", "battle presentation implements ready")
   assert(type(port.leave) == "function", "battle presentation implements leave")
   assert(type(port.dispose) == "function", "battle presentation implements dispose")
   return port
@@ -306,11 +329,17 @@ function BattleRuntime.new(args)
     _player = args.player,
     _captures = args.captures ~= nil and copyValue(args.captures) or nil,
     _seed = args.seed or hashIdentity(request.id --[[@as string]]),
+    _seedExplicit = args.seed ~= nil,
     _phase = "preparing",
     _task = nil,
     _content = nil,
     _session = nil,
+    _accepted = {},
     _openRequest = nil,
+    _publishedRequest = nil,
+    _packetId = 0,
+    _lastView = nil,
+    _terminalSent = false,
     _outcome = nil,
     _prepared = nil,
     _receipt = nil,
@@ -374,15 +403,88 @@ function BattleRuntime:_answerOwned(request)
   return session:answerTrainer(request)
 end
 
----@param frame table<string, unknown> kernel frame at an atomic boundary
-function BattleRuntime:_presentFrame(frame)
-  if type(frame.events) == "table" then
-    for _, event in
-      ipairs(frame.events --[[@as table<integer, unknown>]])
-    do
-      self._presentation.present(event --[[@as table<string, unknown>]])
+---@param snapshot table<string, unknown> detached battle snapshot under inventory projection
+---@return table<string, unknown>? detached player inventory quantities for the next decision
+local function playerInventoryOf(snapshot)
+  local participants = snapshot.participants --[[@as table<integer, table<string, unknown>>?]]
+  local inventories = snapshot.inventories --[[@as table<string, table<string, unknown>>?]]
+  if type(participants) ~= "table" or type(inventories) ~= "table" then
+    return nil
+  end
+  for _, participant in pairs(participants) do
+    if type(participant) == "table" and participant.controller == BattleRuntime.PLAYER_CONTROLLER then
+      local inventoryId = participant.inventoryId --[[@as string?]]
+      if type(inventoryId) == "string" then
+        local inventory = inventories[inventoryId] --[[@as table<string, unknown>?]]
+        if type(inventory) == "table" then
+          return copyValue(inventory.quantities or {})
+        end
+      end
     end
   end
+  return nil
+end
+
+---@param exposed table<string, unknown>? newly exposed external request
+---@return string? stable identity of the exposed request, nil when absent
+local function exposedKey(exposed)
+  if exposed == nil then
+    return nil
+  end
+  return tostring(exposed.requestId) .. ":" .. tostring(exposed.epoch)
+end
+
+-- Publishes one detached delivery packet for a mechanics result: the
+-- ordered events with their event-time checkpoints, the detached
+-- before/after views, and the newly exposed player request with its
+-- typed options plus the own-party/inventory facts for the next
+-- decision. Empty advances publish nothing, an unchanged waiting
+-- request is never republished, and the terminal outcome ships once.
+---@param frame table<string, unknown> kernel frame at an atomic boundary
+---@param exposed table<string, unknown>? newly exposed external request
+function BattleRuntime:_publishFrame(frame, exposed)
+  local events = {}
+  if type(frame.events) == "table" then
+    events = frame.events
+  end
+  local key = exposedKey(exposed)
+  local freshRequest = key ~= nil and key ~= self._publishedRequest
+  local terminal = frame.status == "ended" and not self._terminalSent
+  if #events == 0 and not freshRequest and not terminal then
+    return
+  end
+  self._packetId = self._packetId + 1
+  local snapshot = assert(self._session, "delivery packets read a live session"):capture()
+  local afterView = BattlePresentationModel.view(snapshot, self._scenario, { catalog = self:_factCatalog() })
+  local beforeView = self._lastView or afterView
+  local context = {
+    launchId = self._request.id,
+    packetId = self._packetId,
+  } --[[@as table<string, unknown>]]
+  if freshRequest then
+    local detached = copyValue(exposed)
+    local session = assert(self._session, "request options read a live session")
+    if type(session.decisionOptions) == "function" then
+      local options = session:decisionOptions((exposed --[[@as table<string, unknown>]]).requestId)
+      if options ~= nil then
+        detached.options = copyValue(options)
+      end
+    end
+    context.request = detached
+    context.party = copyValue(afterView.own)
+    local inventory = playerInventoryOf(snapshot)
+    if inventory ~= nil then
+      context.inventory = inventory
+    end
+    self._publishedRequest = key
+  end
+  if terminal then
+    context.result = { word = self:_mapOutcome() }
+    self._terminalSent = true
+  end
+  local packet = BattlePresentationModel.packet(beforeView, { events = events }, afterView, context)
+  self._lastView = afterView
+  self._presentation.present(packet)
 end
 
 ---@param message string
@@ -782,6 +884,13 @@ end
 function BattleRuntime:_buildSession()
   local record = copyValue(self._scenario)
   assert(type(record) == "table", "session builds need their scenario")
+  -- An explicit construction seed drives the battle stream, so equal
+  -- seeds with equal scenarios and replies replay equal mechanics and
+  -- randomness regardless of presentation pacing. Without one the
+  -- scenario keeps its own identity-derived stream.
+  if self._seedExplicit then
+    record.random = { seed = self._seed }
+  end
   record.ruleset = Executor.RULESET
   record.moveFacts = self:_sessionMoveFacts(record --[[@as table<string, unknown>]])
   record.speciesFacts = self:_sessionSpeciesFacts(record --[[@as table<string, unknown>]])
@@ -791,7 +900,13 @@ function BattleRuntime:_buildSession()
 end
 
 function BattleRuntime:_updatePreparing()
+  -- Entry keeps polling while held, but presentation back-pressure
+  -- gates the build itself: while the port is not ready the lifetime
+  -- waits in preparing instead of running ahead.
   if not self:_enterPresentation() then
+    return
+  end
+  if self._presentation.ready() ~= true then
     return
   end
   if self._scenario == nil then
@@ -812,10 +927,16 @@ function BattleRuntime:_updateEntering()
     self._phase = "running"
     return
   end
+  if self._presentation.ready() ~= true then
+    return
+  end
   local frame = session:advance(BattleRuntime.ADVANCE_BUDGET)
-  self:_presentFrame(frame)
   if frame.status == "ended" then
     self._outcome = frame.outcome
+  end
+  self:_publishFrame(frame, nil)
+  if frame.status == "ended" then
+    self._openRequest = nil
     self._phase = "resolving"
   else
     self._phase = "running"
@@ -875,22 +996,39 @@ function BattleRuntime:_updateRunning()
     end
     return
   end
+  -- Presentation back-pressure gates the advance: while the port is not
+  -- ready the lifetime waits instead of running ahead. An already open
+  -- player request also waits: the advance runs again only once a new
+  -- accepted reply arrives, so an unchanged request is never
+  -- republished by polling.
+  if self._presentation.ready() ~= true then
+    return
+  end
+  if self._openRequest ~= nil then
+    return
+  end
   for _ = 1, 4 do
     local frame = session:advance(BattleRuntime.ADVANCE_BUDGET)
-    self:_presentFrame(frame)
+    local exposed = nil
+    if frame.status == "waiting" then
+      local batch = frame.request --[[@as table<string, unknown>]]
+      local ok, result = pcall(BattleRuntime._drainOwned, self, batch.requests --[[@as table<integer, unknown>]])
+      if not ok then
+        self:_fail(tostring(result))
+        return
+      end
+      exposed = result
+    end
     if frame.status == "ended" then
       self._outcome = frame.outcome
+    end
+    self:_publishFrame(frame, exposed --[[@as table<string, unknown>?]])
+    if frame.status == "ended" then
       self._openRequest = nil
       self._phase = "resolving"
       return
     end
     if frame.status ~= "waiting" then
-      return
-    end
-    local batch = frame.request --[[@as table<string, unknown>]]
-    local ok, exposed = pcall(BattleRuntime._drainOwned, self, batch.requests --[[@as table<integer, unknown>]])
-    if not ok then
-      self:_fail(tostring(exposed))
       return
     end
     if exposed ~= nil then
@@ -927,7 +1065,16 @@ end
 function BattleRuntime:_mapOutcome()
   local outcome = self._outcome or {}
   assert(type(outcome) == "table", "resolution maps the session outcome")
-  if outcome.kind == "no_actors" or outcome.kind == "escaped" or outcome.kind == "captured" then
+  -- Explicit terminal causes decide first: a caught or fled battle with
+  -- both sides standing settles as capture or flee, never through the
+  -- health-based draw inference below.
+  if outcome.kind == "captured" then
+    return "capture"
+  end
+  if outcome.kind == "escaped" then
+    return "flee"
+  end
+  if outcome.kind == "no_actors" then
     -- Terminal standings decide the word: a fainted enemy side reports a
     -- win and a fainted player side reports a loss, while two standing
     -- sides settle as a draw. No victory is ever invented beyond the
@@ -968,6 +1115,57 @@ local function valuesEqual(left, right)
     end
   end
   return true
+end
+
+-- Normalizes one persistent condition effect for durable comparison:
+-- battle-scoped toxic counters restart on entry (see the replacement
+-- reset beside the condition owner), so the saved counter never
+-- decides the writeback; the major key and every other state field
+-- still do.
+---@param effect unknown persistent condition effect under normalization
+---@return unknown normalized effect for durable comparison
+local function normalizeEffect(effect)
+  if type(effect) ~= "table" then
+    return effect
+  end
+  local record = effect --[[@as table<string, unknown>]]
+  if record.key ~= "toxic" or type(record.state) ~= "table" then
+    return effect
+  end
+  local normalized = copyValue(record) --[[@as table<string, unknown>]]
+  local state = normalized.state --[[@as table<string, unknown>]]
+  state.counter = nil
+  return normalized
+end
+
+-- Reports whether the staged combatant copy carries a durable condition
+-- change the live party slot record lacks: a different major condition
+-- or different condition state. Battle-local volatility (stages,
+-- confusion, binding counters, transient effect ownership) travels
+-- outside the canonical condition and never reaches this comparison.
+---@param live table<string, unknown> current live party slot record
+---@param staged table<string, unknown> battle-owned combatant copy under staging
+---@return boolean changed true when the durable condition differs
+local function conditionChanged(live, staged)
+  local liveCondition = live.condition --[[@as table<string, unknown>?]]
+  local stagedCondition = staged.condition --[[@as table<string, unknown>?]]
+  if type(liveCondition) ~= "table" or type(stagedCondition) ~= "table" then
+    return liveCondition ~= stagedCondition
+  end
+  local liveEffects = liveCondition.effects --[[@as table<integer, unknown>?]]
+  local stagedEffects = stagedCondition.effects --[[@as table<integer, unknown>?]]
+  if type(liveEffects) ~= "table" or type(stagedEffects) ~= "table" then
+    return liveEffects ~= stagedEffects
+  end
+  if #liveEffects ~= #stagedEffects then
+    return true
+  end
+  for index = 1, #liveEffects do
+    if not valuesEqual(normalizeEffect(liveEffects[index]), normalizeEffect(stagedEffects[index])) then
+      return true
+    end
+  end
+  return false
 end
 
 -- Reports whether the staged combatant copy carries knockout progression
@@ -1018,16 +1216,25 @@ function BattleRuntime:_partyUpdates()
         assert(type(condition) == "table", "writeback carries the combatant condition")
         local slot0 = source.slot --[[@as integer]] - 1
         condition.currentHp = combatant.hp
-        local healthChanged = combatant.hp ~= combatant.entryHp
-        local progressed = false
-        if not healthChanged then
+        -- Every durable battle change stages its writeback: executed
+        -- health first, then the normalized comparison against the live
+        -- slot for progression, major condition, and held items.
+        -- Battle-local volatility (entry positions, stat stages,
+        -- confusion and binding counters, temporary forms, transient
+        -- effect ownership) travels outside the compared records and
+        -- never stages a write.
+        local changed = combatant.hp ~= combatant.entryHp
+        if not changed then
           local party = self._party --[[@as BattlePartyOwner]]
           local reader = party.partyMon
           if type(reader) == "function" then
-            progressed = progressionChanged(reader(party, slot0), record)
+            local live = reader(party, slot0)
+            changed = progressionChanged(live, record)
+              or conditionChanged(live, record)
+              or live.heldItem ~= record.heldItem
           end
         end
-        if healthChanged or progressed then
+        if changed then
           updates[#updates + 1] = {
             slot = slot0,
             mon = record,
@@ -1351,7 +1558,9 @@ end
 function BattleRuntime:_prepareCommit()
   local result = self:_mapOutcome()
   self._result = result
-  self._sourceResult = (result == "win") and BattleTask.SOURCE_WON or BattleTask.SOURCE_NOT_WON
+  -- Capture and victory both report the script-visible won code; every
+  -- other settled word reports not-won.
+  self._sourceResult = (result == "win" or result == "capture") and BattleTask.SOURCE_WON or BattleTask.SOURCE_NOT_WON
   local updates = self:_partyUpdates()
   local captures = self:_commitCaptures()
   local rewards = self:_commitRewards(result)
@@ -1473,10 +1682,9 @@ function BattleRuntime:_updateResolving()
 end
 
 function BattleRuntime:_updatePostbattle()
+  -- The terminal outcome already shipped exactly once inside its
+  -- delivery packet; postbattle only paces the wait before returning.
   self._postTicks = self._postTicks + 1
-  if self._receipt ~= nil then
-    self._presentation.present({ kind = "outcome", receipt = copyValue(self._receipt) })
-  end
   if self._postTicks >= 2 then
     self._phase = "returning"
   end
@@ -1484,14 +1692,19 @@ end
 
 function BattleRuntime:_updateReturning()
   local plan = { launchId = self._request.id, kind = self._request.kind, result = self._result }
-  if self._presentation.leave(plan) == true then
-    self._phase = "complete"
+  if self._presentation.leave(plan) ~= true then
+    return
   end
+  if self._presentation.ready() ~= true then
+    return
+  end
+  self._phase = "complete"
 end
 
---- Advances the battle lifetime once. Simulation pumps regardless of
---- presentation acknowledgements, but phase transitions wait for entry and
---- return readiness, and running waits for externally owned decisions.
+--- Advances the battle lifetime once. Advances and entry/return polling
+--- wait for presentation readiness, and running additionally waits for
+--- externally owned decisions; readiness postpones but never alters
+--- mechanics.
 function BattleRuntime:update()
   if self._disposed or self._phase == "complete" or self._phase == "failed" then
     return
@@ -1522,7 +1735,12 @@ function BattleRuntime:update()
 end
 
 -- Answers the exposed external request. Replies for internally owned
--- controllers are rejected: their controllers answer inside update.
+-- controllers are rejected: their controllers answer inside update. A
+-- sealed reply latches: the pending request clears before another input
+-- edge can reach it, so a held button or duplicated packet cannot seal
+-- twice. Ordinary input rejections keep the same request open for a
+-- corrected selection; a genuine protocol failure fails the lifetime
+-- instead of continuing half-applied.
 ---@param reply table<string, unknown> sealed controller reply
 ---@return boolean stored
 ---@return table<string, unknown>? input error when the reply is rejected
@@ -1538,17 +1756,68 @@ function BattleRuntime:submit(reply)
   if reply.requestId ~= open.requestId then
     return false, BattleErrors.input("replies must answer the open request", {})
   end
-  return session:submit(reply)
+  local controller = open.controller --[[@as string]]
+  if
+    controller == BattleRuntime.WILD_CONTROLLER
+    or controller:sub(1, #BattleRuntime.TRAINER_PREFIX) == BattleRuntime.TRAINER_PREFIX
+  then
+    return false, BattleErrors.input("owned controllers answer inside the update", {})
+  end
+  local ok, stored, storeErr = pcall(session.submit, session, reply)
+  if not ok then
+    self:_fail(tostring(stored))
+    return false, BattleErrors.input("the decision failed its protocol", {})
+  end
+  if stored ~= true then
+    return false, storeErr
+  end
+  -- The seal latches before another input edge can reach it.
+  local accepted = self._accepted
+  if accepted == nil then
+    accepted = {}
+    self._accepted = accepted
+  end
+  accepted[
+    tostring(open.requestId --[[@as integer]]) .. ":" .. tostring(open.epoch --[[@as integer]])
+  ] = true
+  self._openRequest = nil
+  return true, nil
 end
 
----@return table<string, unknown> lifecycle status
+-- Projects the current selectable options for the open request without
+-- touching the battle: a pure native read with detached records. A
+-- stale request identity fails instead of projecting against a new
+-- batch.
+---@param requestId integer open request identity under projection
+---@return table<string, unknown>? options projection, nil when no such request is open
+---@return table<string, unknown>? input error when no such request is open
+function BattleRuntime:decisionOptions(requestId)
+  local session = self._session
+  if session == nil or self._phase ~= "running" or self._openRequest == nil then
+    return nil, BattleErrors.input("decisions require an open request", {})
+  end
+  local open = self._openRequest --[[@as table<string, unknown>]]
+  if requestId ~= open.requestId then
+    return nil, BattleErrors.input("replies must answer the open request", { request = requestId })
+  end
+  if type(session.decisionOptions) ~= "function" then
+    return nil, BattleErrors.input("decisions require their options projection", {})
+  end
+  local options, optionsErr = session:decisionOptions(requestId)
+  if options == nil then
+    return nil, optionsErr
+  end
+  return copyValue(options), nil
+end
+
+---@return table<string, unknown> lifecycle status with detached records
 function BattleRuntime:status()
   local status = {
     phase = self._phase,
     launchId = self._request.id,
     source = self._request.kind,
-    request = self._openRequest,
-    outcomeReceipt = self._receipt,
+    request = copyValue(self._openRequest),
+    outcomeReceipt = copyValue(self._receipt),
     result = self._result,
     sourceResult = self._sourceResult,
     error = self._error,

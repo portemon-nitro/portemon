@@ -71,6 +71,7 @@ local DOMAINS = {
   },
   battle = {
     "BattleDataCompiler",
+    "BattlePresentationCompiler",
     "TrainerCatalogCompiler",
   },
   encounters = {

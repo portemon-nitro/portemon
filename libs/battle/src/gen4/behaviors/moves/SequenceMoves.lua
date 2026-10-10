@@ -354,7 +354,7 @@ local function stepSubstitute(ctx, frame)
     { kind = "move", combatant = user },
     { version = 1, hp = cost }
   )
-  ctx:emit("move-used", causeFor(record), { targets = 1 })
+  ctx:emit("move-used", causeFor(record), { user = userOf(record), targets = 1 })
   return { kind = "complete", result = "hit" }
 end
 
@@ -520,7 +520,7 @@ local function makeProtection(guarded)
     if guarded then
       ctx:emit("protected", causeFor(record), { target = userOf(record) })
     else
-      ctx:emit("move-used", causeFor(record), { targets = 1 })
+      ctx:emit("move-used", causeFor(record), { user = userOf(record), targets = 1 })
     end
     return { kind = "complete", result = "hit" }
   end
@@ -679,6 +679,7 @@ local function makeReactive(marker)
     local record = frame --[[@as table<string, unknown>]]
     markVolatile(ctx, userOf(record), marker)
     ctx:emit("move-used", causeFor(record), {
+      user = userOf(record),
       targets = #record.targets,
     })
     return { kind = "complete", result = "hit" }
@@ -695,6 +696,7 @@ local function stepStockpile(ctx, frame)
   local record = frame --[[@as table<string, unknown>]]
   markVolatile(ctx, userOf(record), "STOCKPILE")
   ctx:emit("move-used", causeFor(record), {
+    user = userOf(record),
     targets = #record.targets,
   })
   return { kind = "complete", result = "hit" }
@@ -717,6 +719,7 @@ local function makeCooperation(marker)
     local record = frame --[[@as table<string, unknown>]]
     markVolatile(ctx, userOf(record), marker)
     ctx:emit("move-used", causeFor(record), {
+      user = userOf(record),
       targets = #record.targets,
     })
     return { kind = "complete", result = "hit" }

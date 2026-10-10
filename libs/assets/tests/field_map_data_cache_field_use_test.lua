@@ -29,9 +29,19 @@ end
 
 function T.current_policy_passes_readiness()
   local bundle = compile(60)
-  Assert.equal(bundle.field.schema, "g4-field-map-v12")
+  Assert.equal(bundle.field.schema, "g4-field-map-v13")
   Assert.isTrue(FieldMapDataCache.hasFieldUsePolicy(bundle.field.fieldUse))
+  Assert.isTrue(FieldMapDataCache.hasEncounterMember(bundle.field.wildEncounterMemberId))
   Assert.isTrue(FieldMapDataCache.isReady(publishedCache(bundle), 60, bundle.marker))
+end
+
+function T.absent_encounter_member_fails_readiness()
+  local bundle = compile(60)
+  bundle.field.wildEncounterMemberId = nil
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  FieldMapDataCacheWriter.write(cache, bundle)
+  Assert.isFalse(FieldMapDataCache.hasEncounterMember(nil))
+  Assert.isFalse(FieldMapDataCache.isReady(cache, 60, bundle.marker))
 end
 
 function T.absent_policy_fails_readiness()

@@ -61,11 +61,28 @@ local PORTRAIT_REPRESENTATIVES = {
   MonCache.portraitSelector("ROTOM", 1, "female", false),
 }
 
+-- The bounded page layout proves the same front selectors plus one true
+-- back portrait per starter: back pixels address visible, separately
+-- planned visuals, never aliased front slots.
+local PLAN_PORTRAIT_REPRESENTATIVES = {
+  MonCache.portraitSelector("CHIKORITA", 0, "male", false),
+  MonCache.portraitSelector("CYNDAQUIL", 0, "male", false),
+  MonCache.portraitSelector("TOTODILE", 0, "male", false),
+  MonCache.portraitSelector("CHIKORITA", 0, "female", false),
+  MonCache.portraitSelector("TOTODILE", 0, "male", true),
+  MonCache.portraitSelector("UNOWN", 5, "male", false),
+  MonCache.portraitSelector("ROTOM", 1, "female", false),
+  MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back"),
+  MonCache.portraitSelector("CYNDAQUIL", 0, "male", false, "back"),
+  MonCache.portraitSelector("TOTODILE", 0, "male", false, "back"),
+}
+
 local ICON_CELL = 32
 local PORTRAIT_CELL = 80
 local ICON_FRAMES = 2
 local PORTRAIT_FRAMES = 2
 local FRONT_FACING = 2
+local BACK_FACING = 0
 
 -- Bounded presentation pages: at most sixteen distinct two-frame visuals
 -- share one page, laid out in eight columns by four rows of frame cells.
@@ -159,9 +176,11 @@ local function collectIconSelections(catalog)
 end
 
 -- Reachable portrait selections: every gender/shiny variant the source
--- ships members for, sorted by canonical selector. Variant existence is a
--- source-member fact, never a label guess; reading members here selects
--- variants without decoding any pixels.
+-- ships members for, in both facings, sorted by canonical selector.
+-- Variant existence is a source-member fact, never a label guess; reading
+-- members here selects variants without decoding any pixels. Front
+-- selectors keep their established spelling; back selectors carry the
+-- explicit facing mark through the same constructor.
 ---@param romFs RomFs
 ---@param catalog table<string, unknown>
 ---@return table<integer, table<string, unknown>>|nil, Errors.Error|nil
@@ -170,17 +189,20 @@ local function collectPortraitSelections(romFs, catalog)
   for speciesKey, species in pairs(catalog.species) do
     local speciesId = must(MonSources.speciesId(speciesKey))
     for formId in pairs(species.forms) do
-      local variants, variantsErr = MonPresentationCompiler.portraitVariants(romFs, speciesId, formId)
-      if not variants then
-        return nil, variantsErr
-      end
-      for _, variant in ipairs(variants) do
-        selections[#selections + 1] = {
-          selector = MonCache.portraitSelector(speciesKey, formId, variant.gender, variant.shiny),
-          narc = variant.narc,
-          charMemberId = variant.charMemberId,
-          palMemberId = variant.palMemberId,
-        }
+      for _, facing in ipairs({ FRONT_FACING, BACK_FACING }) do
+        local variants, variantsErr = MonPresentationCompiler.portraitVariants(romFs, speciesId, formId, facing)
+        if not variants then
+          return nil, variantsErr
+        end
+        local mark = facing == BACK_FACING and "back" or nil
+        for _, variant in ipairs(variants) do
+          selections[#selections + 1] = {
+            selector = MonCache.portraitSelector(speciesKey, formId, variant.gender, variant.shiny, mark),
+            narc = variant.narc,
+            charMemberId = variant.charMemberId,
+            palMemberId = variant.palMemberId,
+          }
+        end
       end
     end
   end
@@ -683,13 +705,20 @@ function MonPresentationCompiler.compileIcons(romFs, catalog)
   return result
 end
 
--- Front-portrait variants with source data for one species/form. A gender
+-- Portrait variants with source data for one species/form/facing. A gender
 -- variant exists exactly when its character member is non-empty: male-only,
 -- female-only, and genderless species ship only the reachable members, and
 -- the source provides no portrait variant beyond them. Shiny variants always
 -- exist (palettes are per-species and never empty). Male variants sort
--- first so the catalog default is deterministic.
-function MonPresentationCompiler.portraitVariants(romFs, speciesId, form)
+-- first so the catalog default is deterministic. Facing defaults to front
+-- so existing catalog callers keep their selection.
+---@param romFs RomFs
+---@param speciesId integer
+---@param form integer
+---@param facing? integer 2 for front, 0 for back
+---@return { gender: string, shiny: boolean, narc: string, charMemberId: integer, palMemberId: integer }[]|nil variants
+---@return unknown|nil reason
+function MonPresentationCompiler.portraitVariants(romFs, speciesId, form, facing)
   local baseArchive, err = openArchive(romFs, "pokemon_graphics")
   if not baseArchive then
     return nil, err
@@ -700,15 +729,19 @@ function MonPresentationCompiler.portraitVariants(romFs, speciesId, form)
     return nil, err
   end
   local archives = { pokemon_graphics = baseArchive, pokemon_graphics_other = otherArchive }
+  if facing == nil then
+    facing = FRONT_FACING
+  end
+  assert(facing == FRONT_FACING or facing == BACK_FACING, "portrait facing must be 0 (back) or 2 (front)")
   local ok, result = pcall(function()
     local variants = {}
     for _, gender in ipairs({ "male", "female" }) do
-      local ids = MonSources.portraitIds(speciesId, gender, FRONT_FACING, false, form)
+      local ids = MonSources.portraitIds(speciesId, gender, facing, false, form)
       local archive = must(archives[ids.narc])
       local charMember = must(readMember(archive, ids.charMemberId, ids.narc))
       if #charMember > 0 then
         for _, shiny in ipairs({ false, true }) do
-          local shinyIds = MonSources.portraitIds(speciesId, gender, FRONT_FACING, shiny, form)
+          local shinyIds = MonSources.portraitIds(speciesId, gender, facing, shiny, form)
           variants[#variants + 1] = {
             gender = gender,
             shiny = shiny,
@@ -739,6 +772,38 @@ function MonPresentationCompiler.portraitVariants(romFs, speciesId, form)
   return result
 end
 
+-- One picture visual through the existing selector and raster path, shared
+-- by the front and back entry points so facing never duplicates decoding.
+local function compileFacingFrames(romFs, speciesId, form, gender, shiny, facing)
+  local baseArchive, err = openArchive(romFs, "pokemon_graphics")
+  if not baseArchive then
+    return nil, err
+  end
+  local otherArchive
+  otherArchive, err = openArchive(romFs, "pokemon_graphics_other")
+  if not otherArchive then
+    return nil, err
+  end
+  local archives = { pokemon_graphics = baseArchive, pokemon_graphics_other = otherArchive }
+  local ok, result = pcall(function()
+    local ids = MonSources.portraitIds(speciesId, gender, facing, shiny, form)
+    local frames = must(rasterPortraitCombo(archives, {
+      narc = ids.narc,
+      charMemberId = ids.charMemberId,
+      palMemberId = ids.palMemberId,
+    }))
+    assert(#frames == PORTRAIT_FRAMES, "facing compilation keeps both frames")
+    return { frames = frames, width = PORTRAIT_CELL, height = PORTRAIT_CELL }
+  end)
+  if not ok then
+    if Errors.is(result) then
+      return nil, result
+    end
+    error(result, 0)
+  end
+  return result
+end
+
 -- Compile one front-picture visual through the existing selector and
 -- raster path: the two owned 80x80 RGBA frames for the requested
 -- species/form/gender/shiny tuple, byte-identical to the frames the page
@@ -753,39 +818,29 @@ end
 ---@return table<string, unknown>|nil frames
 ---@return Errors.Error|nil
 function MonPresentationCompiler.compileFrontFrames(romFs, speciesId, form, gender, shiny)
-  local baseArchive, err = openArchive(romFs, "pokemon_graphics")
-  if not baseArchive then
-    return nil, err
-  end
-  local otherArchive
-  otherArchive, err = openArchive(romFs, "pokemon_graphics_other")
-  if not otherArchive then
-    return nil, err
-  end
-  local archives = { pokemon_graphics = baseArchive, pokemon_graphics_other = otherArchive }
-  local ok, result = pcall(function()
-    local ids = MonSources.portraitIds(speciesId, gender, FRONT_FACING, shiny, form)
-    local frames = must(rasterPortraitCombo(archives, {
-      narc = ids.narc,
-      charMemberId = ids.charMemberId,
-      palMemberId = ids.palMemberId,
-    }))
-    assert(#frames == PORTRAIT_FRAMES, "front compilation keeps both frames")
-    return { frames = frames, width = PORTRAIT_CELL, height = PORTRAIT_CELL }
-  end)
-  if not ok then
-    if Errors.is(result) then
-      return nil, result
-    end
-    error(result, 0)
-  end
-  return result
+  return compileFacingFrames(romFs, speciesId, form, gender, shiny, FRONT_FACING)
 end
 
--- Compile every reachable front portrait: one atlas entry per unique
--- (archive, character, palette) triple, one manifest entry per semantic
--- selector, with gender/shiny aliases sharing entries exactly where the
--- source lookup yields identical members. Portraits carry no per-mon frame
+-- Compile one back-picture visual through the same native picture-selection
+-- owner and the existing scan/unscan path: the two authored 80x80 RGBA
+-- back frames for the requested species/form/gender/shiny tuple. Never a
+-- mirror or silhouette of the front image; the source carries distinct
+-- back-picture members.
+---@param romFs RomFs
+---@param speciesId integer
+---@param form integer
+---@param gender string
+---@param shiny boolean
+---@return table<string, unknown>|nil frames
+---@return Errors.Error|nil
+function MonPresentationCompiler.compileBackFrames(romFs, speciesId, form, gender, shiny)
+  return compileFacingFrames(romFs, speciesId, form, gender, shiny, BACK_FACING)
+end
+
+-- Compile every reachable front and back portrait: one atlas entry per
+-- unique (archive, character, palette) triple, one manifest entry per
+-- semantic selector, with gender/shiny aliases sharing entries exactly
+-- where the source lookup yields identical members. Portraits carry no per-mon frame
 -- timing (the starter screen animates through its own UI resources), so
 -- frames address atlas rectangles without durations.
 function MonPresentationCompiler.compilePortraits(romFs, catalog)
@@ -1032,7 +1087,7 @@ function MonPresentationCompiler.plan(romFs, catalog)
       function(x, y, _)
         return { x = x, y = y, width = PORTRAIT_CELL, height = PORTRAIT_CELL }
       end,
-      PORTRAIT_REPRESENTATIVES
+      PLAN_PORTRAIT_REPRESENTATIVES
     )
     return { icons = icons, portraits = portraits, iconPages = iconPages, portraitPages = portraitPages }
   end)

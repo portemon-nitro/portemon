@@ -1630,4 +1630,93 @@ function T.state_or_geometry_changes_reresolve_while_hit_targets_hold()
   state:dispose()
 end
 
+-- The battle context selects through native decision options instead of
+-- field inventory policy: tab focus carries its pocket so keyboard walks
+-- reach stocked cells, confirming an enabled cell forwards one selection
+-- intent without consuming stock, refused cells explain themselves, and no
+-- persistent write entry is ever wired.
+---@param bag table<string, unknown> live bag service under guarding
+local function guardLiveWrites(bag)
+  for _, key in ipairs({ "take", "move", "tryRegister", "unregister" }) do
+    bag[key] = function()
+      error("the battle child never calls bag " .. key, 2)
+    end
+  end
+end
+
+---@param enabled boolean selection legality under test preparation
+---@return table<string, unknown> battle options under test preparation
+local function battleOptions(enabled)
+  return {
+    isEnabled = function(_)
+      return enabled
+    end,
+    reason = function(_)
+      return "the warden refuses"
+    end,
+  }
+end
+
+function T.battle_context_walks_tabs_and_selects_without_mutating()
+  local options = composition()
+  options.context = "battle"
+  options.battlePolicy = battleOptions(true)
+  local bag = options.service
+  local revision = bag:revision()
+  guardLiveWrites(bag)
+  local state = interactiveBagState(options)
+  state:updateFixed({})
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(state:status().pocket, "medicine", "tab focus carries its pocket in battle")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(selectedKey(state:status()), "POTION", "the medicine walk reaches its first cell")
+  state:updateFixed({ { type = "confirm" } })
+  local intent = assert(state:takeIntent(), "confirming an enabled cell forwards its selection")
+  Assert.equal(intent.kind, "battle_select", "battle selections ride their own intent")
+  Assert.equal(intent.item, "POTION", "the intent snapshots the item identity")
+  Assert.isNil(state:takeIntent(), "the intent drains exactly once")
+  Assert.isNil(state:takeResult(), "a selection is not a terminal close")
+  Assert.equal(bag:revision(), revision, "selecting moves no stock")
+  state:updateFixed({ { type = "cancel" } })
+  local result = assert(state:takeResult(), "bag cancel closes")
+  Assert.equal(result.kind, "close", "the battle bag only ever closes back")
+  state:dispose()
+end
+
+function T.battle_context_refuses_disabled_cells_with_reasons()
+  local options = composition()
+  options.context = "battle"
+  options.battlePolicy = battleOptions(false)
+  local bag = options.service
+  guardLiveWrites(bag)
+  local state = interactiveBagState(options)
+  state:updateFixed({})
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  state:updateFixed({ { type = "confirm" } })
+  Assert.isNil(state:takeIntent(), "a refused cell forwards no selection")
+  local lower = assert(state:status().lowerMessage, "the refusal stays visible")
+  Assert.isTrue(lower.fullText:find("the warden refuses") ~= nil, "the refusal names its reason")
+  Assert.isTrue(state:status().open, "the refusal keeps the browser")
+  state:dispose()
+end
+
+function T.battle_context_requires_its_policy_and_nothing_else()
+  local options = composition()
+  options.context = "battle"
+  local ok = pcall(function()
+    BagScreenState.new(options)
+  end)
+  Assert.isFalse(ok, "the battle context needs its native options")
+  local fielded = composition()
+  fielded.battlePolicy = battleOptions(true)
+  local fieldOk = pcall(function()
+    local state = BagScreenState.new(fielded)
+    state:dispose()
+  end)
+  Assert.isFalse(fieldOk, "field contexts never take battle options")
+end
+
 return { tests = T }

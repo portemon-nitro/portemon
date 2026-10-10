@@ -4742,6 +4742,493 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged)
   return nil
 end
 
+-- Maps a binding rejection to the stable reason key the interface
+-- copies beside its corrected selection. Predicates that already name
+-- their reason (exchanges, refused servings) keep it; bare input
+-- rejections share one refusal word.
+---@param err unknown binding rejection under mapping
+---@return string stable reason key
+local function refusalReason(err)
+  if type(err) == "table" then
+    local context = (err --[[@as table<string, unknown>]]).context
+    if type(context) == "table" and type(context.reason) == "string" then
+      return context.reason --[[@as string]]
+    end
+  end
+  return "refused"
+end
+
+-- Runs one candidate choice through the shared submission predicates
+-- without storing, reserving, drawing, or executing anything: the
+-- protocol shape check plus the binding check submission reuses.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param choice table<string, unknown> candidate choice under projection
+---@param decisionKind string decision vocabulary owning the choice
+---@param admitted string[] admitted action kinds resolved at construction
+---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@return table<string, unknown>? input error, or nil when the choice is selectable
+local function probeChoice(state, choice, decisionKind, admitted, battleKind)
+  local ok, valid = pcall(BattleProtocol.validateChoice, choice, decisionKind)
+  if not ok then
+    return valid --[[@as table<string, unknown>]]
+  end
+  -- Read-only probes evaluate binding exactly as submission would with
+  -- nothing reserved: submission stages its reservation maps privately,
+  -- so the prober supplies empty ones. Submission-time reservation
+  -- ownership and enforcement are unchanged.
+  return checkChoiceBinding(state, choice, admitted, battleKind, { replacements = {}, items = {} })
+end
+
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param combatantId integer actor combatant under target enumeration
+---@return integer[] foe-held positions in ascending slot order
+local function foePositions(state, combatantId)
+  local combatant = BattleState.combatant(state, combatantId)
+  local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+  local side = participant.side
+  local out = {} ---@type integer[]
+  for _, positionId in
+    ipairs(state.positionOrder --[[@as integer[] ]])
+  do
+    local position = BattleState.position(state, positionId --[[@as integer]])
+    local occupant = position.occupant --[[@as integer?]]
+    if occupant ~= nil then
+      local holder = BattleState.combatant(state, occupant)
+      local owner = BattleState.participant(state, holder.participant --[[@as integer]])
+      if owner.side ~= side and holder.active ~= nil then
+        out[#out + 1] = positionId --[[@as integer]]
+      end
+    end
+  end
+  return out
+end
+
+---@param state table<string, unknown> live battle state under read-only inspection
+---@return integer[] active combatant identities in battle order
+local function activeCombatants(state)
+  local out = {} ---@type integer[]
+  for _, id in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, id --[[@as integer]])
+    if combatant.active ~= nil then
+      out[#out + 1] = id --[[@as integer]]
+    end
+  end
+  return out
+end
+
+---@param moveFacts table<string, table<string, unknown>> immutable move facts by move identity
+---@param move string move identity under display
+---@param entry table<string, unknown> battle-local move entry carrying power points
+---@return table<string, unknown> display facts for the move option
+local function moveDisplay(moveFacts, move, entry)
+  local facts = moveFacts[move] --[[@as table<string, unknown>?]]
+  local display = {
+    move = move,
+    name = move,
+    pp = entry.pp,
+    maxPp = entry.pp,
+  } --[[@as table<string, unknown>]]
+  if type(facts) == "table" then
+    if type(facts.name) == "string" then
+      display.name = facts.name
+    end
+    if type(facts.moveType) == "string" then
+      display.type = facts.moveType
+    end
+    if type(facts.category) == "string" then
+      display.category = facts.category
+    end
+    if type(facts.basePp) == "number" then
+      local ups = entry.ppUps
+      if type(ups) ~= "number" then
+        ups = 0
+      end
+      display.maxPp = facts.basePp --[[@as integer]]
+        + math.floor(facts.basePp --[[@as integer]] * ups --[[@as integer]] / 5)
+    end
+  end
+  return display
+end
+
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param reserve integer benched roster member under display
+---@return table<string, unknown> display facts for the reserve option
+local function reserveDisplay(state, reserve)
+  local combatant = BattleState.combatant(state, reserve)
+  local display = {
+    combatant = reserve,
+    hp = combatant.hp,
+  } --[[@as table<string, unknown>]]
+  local ceiling = combatant.maxHp
+  if type(ceiling) ~= "number" then
+    ceiling = combatant.entryHp
+  end
+  display.maxHp = ceiling
+  local mon = combatant.mon --[[@as table<string, unknown>?]]
+  if type(mon) == "table" then
+    if type(mon.species) == "string" then
+      display.species = mon.species
+    end
+    if type(mon.form) == "number" then
+      display.form = mon.form
+    end
+    display.condition = persistentCondition(mon)
+  end
+  return display
+end
+
+---@param actor table<string, unknown> requested actor under addressing
+---@return table<string, unknown> detached actor address for a choice fragment
+local function fragmentActor(actor)
+  local addressed = { combatant = actor.combatant } --[[@as table<string, unknown>]]
+  if actor.activation ~= nil then
+    addressed.activation = actor.activation
+  end
+  return addressed
+end
+
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actor table<string, unknown> requested actor under projection
+---@param admitted string[] admitted action kinds resolved at construction
+---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@param moveFacts table<string, table<string, unknown>> immutable move facts by move identity
+---@return table<string, unknown> ordinary action options for the actor
+local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
+  local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+  local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+  local entry = {
+    combatant = actor.combatant,
+    activation = actor.activation,
+    kind = "action",
+    choices = {},
+  } --[[@as table<string, unknown>]]
+  local choices = entry.choices --[[@as table<integer, table<string, unknown>>]]
+  local mon = combatant.mon --[[@as table<string, unknown>?]]
+  local moves = {} ---@type table<integer, table<string, unknown>>
+  if type(mon) == "table" and type(mon.moves) == "table" then
+    moves = mon.moves --[[@as table<integer, table<string, unknown>>]]
+  end
+  local slots = #moves
+  if slots > 4 then
+    slots = 4
+  end
+  local targets = foePositions(state, actor.combatant --[[@as integer]])
+  local target = { kind = "none" } --[[@as table<string, unknown>]]
+  if #targets > 0 then
+    target = { kind = "position", position = targets[1] }
+  end
+  -- Usability mirrors the execution fallback exactly: the named move
+  -- runs only with power points left, and anything else executes
+  -- struggle. Random execution outcomes (paralysis, accuracy, escape
+  -- odds) never disable selection here.
+  local usable = 0
+  for slot = 0, slots - 1 do
+    local moveEntry = moves[slot + 1] --[[@as table<string, unknown>]]
+    local key = type(moveEntry) == "table" and moveEntry.move or nil
+    local named = resolveMove(mon, slot)
+    local selectable = type(key) == "string" and named == key
+    if selectable then
+      usable = usable + 1
+    end
+    local choice = {
+      actor = fragmentActor(actor),
+      kind = "attack",
+      payload = { moveSlot = slot, target = copyValue(target) },
+    } --[[@as table<string, unknown>]]
+    local rejected = nil
+    if selectable then
+      rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+    end
+    choices[#choices + 1] = {
+      id = "move:" .. slot,
+      role = "move",
+      display = moveDisplay(moveFacts, type(key) == "string" and key --[[@as string]] or "STRUGGLE", moveEntry),
+      enabled = selectable and rejected == nil,
+      reason = (selectable and rejected == nil) and nil or (selectable and refusalReason(rejected) or "no_pp"),
+      choice = choice,
+    }
+  end
+  if usable == 0 then
+    -- Genuine all-no-power struggle is an explicit kernel-owned
+    -- option: the interface never fabricates it from a spent slot.
+    local facts = moveFacts["STRUGGLE"] --[[@as table<string, unknown>?]]
+    local struggle = {
+      actor = fragmentActor(actor),
+      kind = "attack",
+      payload = { moveSlot = 0, target = copyValue(target) },
+    } --[[@as table<string, unknown>]]
+    local rejected = probeChoice(state, struggle, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+    choices[#choices + 1] = {
+      id = "move:struggle",
+      role = "move",
+      display = {
+        move = "STRUGGLE",
+        name = (type(facts) == "table" and type(facts.name) == "string") and facts.name or "Struggle",
+      },
+      enabled = rejected == nil,
+      reason = rejected == nil and nil or refusalReason(rejected),
+      choice = struggle,
+    }
+  end
+  for _, reserve in
+    ipairs(eligibleReserves(state, combatant.participant --[[@as integer]], {}))
+  do
+    local choice = {
+      actor = fragmentActor(actor),
+      kind = "switch",
+      payload = { replacement = reserve },
+    } --[[@as table<string, unknown>]]
+    local rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+    choices[#choices + 1] = {
+      id = "switch:" .. reserve,
+      role = "switch",
+      display = reserveDisplay(state, reserve),
+      enabled = rejected == nil,
+      reason = rejected == nil and nil or refusalReason(rejected),
+      choice = choice,
+    }
+  end
+  local inventoryId = participant.inventoryId --[[@as string?]]
+  if type(inventoryId) == "string" then
+    local inventory = (state.inventories --[[@as table<string, table<string, unknown>>]])[inventoryId]
+    if type(inventory) == "table" then
+      local quantities = inventory.quantities --[[@as table<string, integer>]]
+      local pending = state.pending --[[@as table<string, unknown>]]
+      local reserved = pending.reserved --[[@as table<string, unknown>]]
+      local held = (reserved.items --[[@as table<string, table<string, integer>>]])[inventoryId]
+      local keys = {} ---@type string[]
+      if type(quantities) == "table" then
+        for key, stock in pairs(quantities) do
+          local claimed = 0
+          if type(held) == "table" and type(held[key]) == "number" then
+            claimed = held[key] --[[@as integer]]
+          end
+          if
+            type(stock) == "number" and stock --[[@as integer]]
+              - claimed >= 1
+          then
+            keys[#keys + 1] = key --[[@as string]]
+          end
+        end
+      end
+      table.sort(keys)
+      -- Targets enumerate every active holder with the owner's limits:
+      -- selection stays legal while execution may still refuse an
+      -- effect-less serving without consuming anything.
+      for _, key in ipairs(keys) do
+        for _, holder in ipairs(activeCombatants(state)) do
+          local choice = {
+            actor = fragmentActor(actor),
+            kind = "item",
+            payload = { item = key, target = { kind = "combatant", combatant = holder } },
+          } --[[@as table<string, unknown>]]
+          local rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+          choices[#choices + 1] = {
+            id = "item:" .. key .. ":" .. holder,
+            role = "item",
+            display = { item = key },
+            enabled = rejected == nil,
+            reason = rejected == nil and nil or refusalReason(rejected),
+            choice = choice,
+          }
+        end
+      end
+    end
+  end
+  do
+    local choice = {
+      actor = fragmentActor(actor),
+      kind = "run",
+      payload = {},
+    } --[[@as table<string, unknown>]]
+    local rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+    choices[#choices + 1] = {
+      id = "run",
+      role = "run",
+      display = {},
+      enabled = rejected == nil,
+      reason = rejected == nil and nil or refusalReason(rejected),
+      choice = choice,
+    }
+  end
+  return entry
+end
+
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actor table<string, unknown> requested fainted entry under projection
+---@param admitted string[] admitted action kinds resolved at construction
+---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@return table<string, unknown> forced replacement options for the actor
+local function replacementActorOptions(state, actor, admitted, battleKind)
+  local entry = {
+    combatant = actor.combatant,
+    activation = actor.activation,
+    kind = "replacement",
+    choices = {},
+  } --[[@as table<string, unknown>]]
+  local choices = entry.choices --[[@as table<integer, table<string, unknown>>]]
+  local replacement = (state.pending --[[@as table<string, unknown>]]).replacement
+  local wanted = nil
+  if type(replacement) == "table" then
+    for _, obligation in
+      ipairs(
+        (replacement --[[@as table<string, unknown>]]).obligations --[[@as table<integer, table<string, unknown>>]]
+      )
+    do
+      if
+        not obligation.internal
+        and obligation.combatant == actor.combatant
+        and obligation.activation == actor.activation
+      then
+        wanted = obligation
+      end
+    end
+  end
+  if wanted == nil then
+    return entry
+  end
+  for _, reserve in
+    ipairs(eligibleReserves(state, wanted.participant --[[@as integer]], {}))
+  do
+    local choice = {
+      actor = fragmentActor(actor),
+      kind = "switch",
+      payload = { replacement = reserve },
+    } --[[@as table<string, unknown>]]
+    local rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+    choices[#choices + 1] = {
+      id = "switch:" .. reserve,
+      role = "switch",
+      display = reserveDisplay(state, reserve),
+      enabled = rejected == nil,
+      reason = rejected == nil and nil or refusalReason(rejected),
+      choice = choice,
+    }
+  end
+  return entry
+end
+
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param request table<string, unknown> open learning prompt under projection
+---@param actor table<string, unknown> addressed recipient under projection
+---@param admitted string[] admitted action kinds resolved at construction
+---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@param moveFacts table<string, table<string, unknown>> immutable move facts by move identity
+---@return table<string, unknown> learning options addressing the held recipient
+local function learningActorOptions(state, request, actor, admitted, battleKind, moveFacts)
+  local held = {}
+  if type(request.currentMoves) == "table" then
+    held = request.currentMoves --[[@as table<integer, table<string, unknown>>]]
+  end
+  local entry = {
+    combatant = actor.combatant,
+    kind = "learn_move",
+    incomingMove = request.incomingMove,
+    currentMoves = copyValue(held),
+    choices = {},
+  } --[[@as table<string, unknown>]]
+  local choices = entry.choices --[[@as table<integer, table<string, unknown>>]]
+  for slot = 0, #held - 1 do
+    local heldEntry = held[slot + 1] --[[@as table<string, unknown>]]
+    local move = type(heldEntry) == "table" and heldEntry.move or nil
+    local facts = type(move) == "string" and moveFacts[move] or nil
+    local choice = {
+      actor = { combatant = actor.combatant },
+      kind = "confirm",
+      payload = { decision = "replace", slot = slot },
+    } --[[@as table<string, unknown>]]
+    local rejected = probeChoice(state, choice, HgssSessionExecutor.LEARN_DECISION_KIND, admitted, battleKind)
+    choices[#choices + 1] = {
+      id = "learn:replace:" .. slot,
+      role = "learn",
+      display = {
+        move = move,
+        name = (type(facts) == "table" and type(facts.name) == "string") and facts.name or move,
+      },
+      enabled = rejected == nil,
+      reason = rejected == nil and nil or refusalReason(rejected),
+      choice = choice,
+    }
+  end
+  do
+    local choice = {
+      actor = { combatant = actor.combatant },
+      kind = "confirm",
+      payload = { decision = "decline" },
+    } --[[@as table<string, unknown>]]
+    local rejected = probeChoice(state, choice, HgssSessionExecutor.LEARN_DECISION_KIND, admitted, battleKind)
+    choices[#choices + 1] = {
+      id = "learn:decline",
+      role = "learn",
+      display = { decision = "decline" },
+      enabled = rejected == nil,
+      reason = rejected == nil and nil or refusalReason(rejected),
+      choice = choice,
+    }
+  end
+  return entry
+end
+
+--- Projects the current selectable options for one open request without
+--- touching the battle: no submission, no speculative advance, no stream
+--- draw, no reservation, and no effect execution. Every projected
+--- fragment runs the shared submission predicates, so an enabled option
+--- seals when copied into a correctly addressed reply; submission stays
+--- authoritative because an earlier projection can be stale.
+---@param requestId integer open request identity under projection
+---@return table<string, unknown>? options projection, nil when no such request is open
+---@return table<string, unknown>? input error when no such request is open
+function HgssSessionExecutor:decisionOptions(requestId)
+  local state = self:_live()
+  if state.status ~= "waiting" or state.pending == nil then
+    return nil, BattleErrors.input("decisions require an open batch", {})
+  end
+  local pending = state.pending --[[@as table<string, unknown>]]
+  local batch = pending.batch --[[@as table<string, unknown>]]
+  local wanted = nil
+  for _, request in
+    ipairs(batch.requests --[[@as table<integer, table<string, unknown>>]])
+  do
+    if request.requestId == requestId then
+      wanted = request
+    end
+  end
+  if wanted == nil then
+    return nil, BattleErrors.input("replies must answer an open request", { request = requestId })
+  end
+  local options = {
+    requestId = wanted.requestId,
+    epoch = wanted.epoch,
+    controller = wanted.controller,
+    kind = wanted.kind,
+    actors = {},
+  } --[[@as table<string, unknown>]]
+  local actors = options.actors --[[@as table<integer, table<string, unknown>>]]
+  if pending.learning ~= nil then
+    for _, actor in
+      ipairs(wanted.actors --[[@as table<integer, table<string, unknown>>]])
+    do
+      actors[#actors + 1] =
+        learningActorOptions(state, wanted, actor, self._admitted, self._battleKind, self._moveFacts)
+    end
+  elseif pending.replacement ~= nil then
+    for _, actor in
+      ipairs(wanted.actors --[[@as table<integer, table<string, unknown>>]])
+    do
+      actors[#actors + 1] = replacementActorOptions(state, actor, self._admitted, self._battleKind)
+    end
+  else
+    for _, actor in
+      ipairs(wanted.actors --[[@as table<integer, table<string, unknown>>]])
+    do
+      actors[#actors + 1] = actionActorOptions(state, actor, self._admitted, self._battleKind, self._moveFacts)
+    end
+  end
+  return options
+end
+
 ---@param operationBudget integer? operations this call may spend before yielding
 ---@return table<string, unknown> battle frame at an atomic boundary
 function HgssSessionExecutor:advance(operationBudget)

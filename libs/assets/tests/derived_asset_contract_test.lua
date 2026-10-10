@@ -66,7 +66,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     fieldMapData = {
       cacheFormat = "g4-field-map-cache-v1",
-      fieldSchema = "g4-field-map-v12",
+      fieldSchema = "g4-field-map-v13",
       spawnIndexSchema = "g4-field-spawn-index-v3",
     },
     messages = {
@@ -131,6 +131,11 @@ function T.contract_pins_the_current_asset_identities()
     trainerCatalog = {
       cacheFormat = "trainer-catalog-cache-v2",
       schema = "g4-trainer-catalog-v2",
+    },
+    battlePresentation = {
+      cacheFormat = "battle-presentation-cache-v1",
+      schema = "g4-battle-presentation-v1",
+      sceneSchema = "g4-battle-scene-v1",
     },
     encounterCatalog = {
       cacheFormat = "encounter-catalog-cache-v1",

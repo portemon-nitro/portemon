@@ -6,6 +6,8 @@
 -- entries (and post-reveal input) untouched.
 
 local Assert = require("tests.support.Assert")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local ItemFixture = require("libs.items.tests.item_fixture")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
@@ -59,10 +61,27 @@ local function boot(withCover)
       cacheFs = cache,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       uiManifest = FieldUiFixture.fieldStateManifest(),
+      itemCatalog = ItemFixture.makeCatalog(),
+      monCatalog = CatalogFixture.makeCatalog(),
       bindPartyIconPreparation = function(_, _, _)
         return 1
       end,
       unbindPartyIconPreparation = function(_, _) end,
+      -- The recording battle-presentation seam mirrors the production
+      -- runtime binding: one live factory with an identity, removed only
+      -- by its own identity so a stale unbind can never drop a replacement.
+      bindBattlePresentation = function(self, factory)
+        assert(type(factory) == "function", "battle presentation binding requires its factory function")
+        assert(self.battlePresentation == nil, "one battle presentation binding owns the presented lifetime")
+        self.battlePresentation = { id = 1, make = factory }
+        return self.battlePresentation.id
+      end,
+      unbindBattlePresentation = function(self, binding)
+        local current = self.battlePresentation
+        if current ~= nil and current.id == binding then
+          self.battlePresentation = nil
+        end
+      end,
       -- The recording summary seam mirrors the production runtime binding:
       -- one live acquire callback with an identity, removed only by its own
       -- identity so a stale unbind can never drop a replacement owner.

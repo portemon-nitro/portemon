@@ -23,6 +23,7 @@ local ScriptHeader = require("romdump.src.digest.script.ScriptHeader")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 
 local FieldMapDataCompiler = {}
 
@@ -405,6 +406,40 @@ local function compileRenderEnvironment(romFs, map, sha1hex)
   }
 end
 
+local BATTLE_BACKGROUNDS = {}
+for _, background in ipairs(BattlePresentationCache.BACKGROUNDS) do
+  BATTLE_BACKGROUNDS[background] = true
+end
+
+-- The semantic battle background backing presented-battle scene selection:
+-- the frozen catalog fact lowered to the runtime scene key the
+-- presentation cache inventories. An unmapped fact fails the compile
+-- instead of guessing a scene.
+---@param map table<string, unknown>
+---@return string semantic battle background key
+local function battleBackgroundFor(map)
+  local source = map.battleBackground
+  assert(type(source) == "string" and source ~= "", "map catalog names its battle background")
+  local key = source:lower()
+  assert(BATTLE_BACKGROUNDS[key], "map battle background has no runtime scene key: " .. tostring(source))
+  return key
+end
+
+-- The wild encounter table member backing committed-step encounter
+-- selection: the frozen catalog fact carried verbatim so the runtime
+-- resolves the map's own table instead of mistaking its map identity for
+-- one. Maps without encounters carry the source no-table member id.
+---@param map table<string, unknown>
+---@return integer wild encounter table member identity
+local function encounterMemberFor(map)
+  local source = map.wildEncounterMemberId
+  assert(
+    type(source) == "number" and source % 1 == 0 and source >= 0 and source <= 255,
+    "map catalog names its wild encounter table member"
+  )
+  return source
+end
+
 local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
   local memberBytes = must(source.archive:readMember(map.eventMemberId))
   local decoded = must(ZoneEvents.decode(memberBytes, {
@@ -497,6 +532,15 @@ local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
       warps = decoded.warps,
       coordinates = decoded.coordinateEvents,
     },
+    -- The semantic battle background backing presented-battle scene
+    -- selection, lowered from the frozen catalog fact to the runtime scene
+    -- key. Runtime code never branches on map IDs to choose a scene; it
+    -- reads this field.
+    battleBackground = battleBackgroundFor(map),
+    -- The wild encounter table member backing committed-step encounter
+    -- selection. Runtime code never mistakes its map identity for the
+    -- table member; it reads this field.
+    wildEncounterMemberId = encounterMemberFor(map),
     soundplates = soundplates,
     -- The normalized renderer environment (lighting, edge colors, base
     -- weather, base fog) so logical maps stay drawable without a visual

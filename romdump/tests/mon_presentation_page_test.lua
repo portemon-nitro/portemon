@@ -173,12 +173,14 @@ local function portraitMemberRoles()
     for _, form in ipairs(MonSources.runtimeForms(speciesId)) do
       for _, gender in ipairs({ "male", "female" }) do
         for _, shiny in ipairs({ false, true }) do
-          local ids = MonSources.portraitIds(speciesId, gender, 2, shiny, form)
-          if ids.narc == "pokemon_graphics" or ids.narc == "pokemon_graphics_other" then
-            charIds[ids.narc] = charIds[ids.narc] or {}
-            palIds[ids.narc] = palIds[ids.narc] or {}
-            charIds[ids.narc][ids.charMemberId] = true
-            palIds[ids.narc][ids.palMemberId] = true
+          for _, facing in ipairs({ 2, 0 }) do
+            local ids = MonSources.portraitIds(speciesId, gender, facing, shiny, form)
+            if ids.narc == "pokemon_graphics" or ids.narc == "pokemon_graphics_other" then
+              charIds[ids.narc] = charIds[ids.narc] or {}
+              palIds[ids.narc] = palIds[ids.narc] or {}
+              charIds[ids.narc][ids.charMemberId] = true
+              palIds[ids.narc][ids.palMemberId] = true
+            end
           end
         end
       end

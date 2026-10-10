@@ -194,6 +194,7 @@ end
 local function emitUsed(ctx, frame)
   local record = frame --[[@as table<string, unknown>]]
   ctx:emit("move-used", causeFor(record), {
+    user = userOf(record),
     targets = #record.targets,
   })
 end

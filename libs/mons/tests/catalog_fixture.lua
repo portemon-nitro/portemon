@@ -88,7 +88,11 @@ local function statSet(hp, attack, defense, speed, specialAttack, specialDefense
   }
 end
 
-local function moveEntry(nativeId, name, description, category, power, moveType, accuracy, basePp)
+-- Compiled move priority rides beside the strike facts so ordering
+-- reads it without reaching back into source data. Only moves with a
+-- real priority bracket name one; everything else stays at zero.
+---@param priority integer? compiled priority bracket, zero when absent
+local function moveEntry(nativeId, name, description, category, power, moveType, accuracy, basePp, priority)
   return {
     nativeId = nativeId,
     name = name,
@@ -101,7 +105,7 @@ local function moveEntry(nativeId, name, description, category, power, moveType,
     basePp = basePp,
     effectChance = 0,
     range = 0,
-    priority = 0,
+    priority = priority or 0,
     flags = 0,
     unknownC = 0,
     contestType = 0,
@@ -332,7 +336,7 @@ function CatalogFixture.buildAssetRoot()
       WATER_GUN = moveEntry(55, "Water Gun", "Shoots water.", "special", 40, "water", 100, 25),
       TAIL_WHIP = moveEntry(39, "Tail Whip", "Lowers defense.", "status", 0, "normal", 100, 30),
       SAND_ATTACK = moveEntry(28, "Sand Attack", "Lowers accuracy.", "status", 0, "ground", 100, 15),
-      QUICK_ATTACK = moveEntry(98, "Quick Attack", "Strikes first.", "physical", 40, "normal", 100, 30),
+      QUICK_ATTACK = moveEntry(98, "Quick Attack", "Strikes first.", "physical", 40, "normal", 100, 30, 1),
       HARDEN = moveEntry(106, "Harden", "Raises defense.", "status", 0, "normal", 100, 30),
       BULLET_SEED = moveEntry(331, "Bullet Seed", "Shoots seeds.", "physical", 10, "grass", 100, 30),
       CUT = moveEntry(15, "Cut", "Cuts the foe.", "physical", 50, "normal", 95, 30),

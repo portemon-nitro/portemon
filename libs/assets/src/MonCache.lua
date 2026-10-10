@@ -139,14 +139,26 @@ function MonCache.iconSelector(speciesKey, form, isEgg)
   return speciesKey .. "/f" .. form
 end
 
-function MonCache.portraitSelector(speciesKey, form, gender, shiny)
+-- Canonical portrait selectors. The optional facing keeps the established
+-- front spelling as its default: "front" spells the same selector as no
+-- facing, while "back" appends the explicit facing mark so a back-facing
+-- portrait never collapses onto its front-facing selector.
+---@param speciesKey string
+---@param form integer zero-based form identity
+---@param gender "male"|"female"
+---@param shiny boolean
+---@param facing? "front"|"back" facing mark, defaulting to front
+---@return string canonical portrait selector
+function MonCache.portraitSelector(speciesKey, form, gender, shiny, facing)
   assert(type(speciesKey) == "string" and speciesKey ~= "", "portrait selector requires a species key")
   assert(type(form) == "number" and form % 1 == 0 and form >= 0, "portrait selector requires a form")
   assert(gender == "male" or gender == "female", "portrait selector requires a gender")
-  if shiny then
-    return speciesKey .. "/f" .. form .. "/" .. gender .. "/shiny"
+  assert(facing == nil or facing == "front" or facing == "back", "portrait facing must be front or back")
+  local base = speciesKey .. "/f" .. form .. "/" .. gender .. "/" .. (shiny and "shiny" or "plain")
+  if facing == "back" then
+    return base .. "/back"
   end
-  return speciesKey .. "/f" .. form .. "/" .. gender .. "/plain"
+  return base
 end
 
 -- True only when the catalog stage marker is exact and the catalog payload

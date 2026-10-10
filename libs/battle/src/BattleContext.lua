@@ -6,6 +6,7 @@
 local BattleErrors = require("libs.battle.src.errors")
 local BattleProtocol = require("libs.battle.src.BattleProtocol")
 local BattleState = require("libs.battle.src.BattleState")
+local BattleView = require("libs.battle.src.BattleView")
 local StatStages = require("libs.battle.src.gen4.StatStages")
 local Status = require("libs.battle.src.gen4.Status")
 
@@ -52,6 +53,11 @@ function BattleContext:emit(kind, cause, payload, audience)
     cause = copyValue(cause),
     audience = audience or "public",
     payload = copyValue(payload),
+    -- The checkpoint is captured at emission, beside the mutation it
+    -- narrates: sampling later would attach end-of-turn state to every
+    -- earlier event. Damage and recovery helpers mutate first, so their
+    -- following emission already observes the new health.
+    observation = BattleView.checkpoint(self._state),
   }
   BattleProtocol.validateEvent(event)
   local outbox = self._state.outbox --[[@as table<integer, table<string, unknown>>]]

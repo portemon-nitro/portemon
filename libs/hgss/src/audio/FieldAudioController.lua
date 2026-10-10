@@ -77,7 +77,54 @@ function FieldAudioController.new(opts)
     _musicOverride = nil,
     _environment = nil,
     _pendingFieldMusicPolicy = nil,
+    _policySuspendedBy = nil,
   }, FieldAudioController)
+end
+
+-- Claims the automatic field-music policy for one presented battle
+-- lifetime. Suspending deactivates an already playing field soundplate
+-- once and prevents subsequent automatic soundplate selection and map
+-- music replacement; it never alters the persisted override and never
+-- stops the sound-frame pump. Map installation still updates the current
+-- map and field-music metadata. Explicit battle and recovery playback
+-- (play, stop, playMusic, fades) stays live throughout the hold.
+---@param ownerToken unknown non-nil claim identity for the launch lifetime
+function FieldAudioController:suspendFieldPolicy(ownerToken)
+  assert(ownerToken ~= nil, "field policy suspension requires its owner token")
+  local holder = self._policySuspendedBy
+  if holder ~= nil then
+    assert(holder == ownerToken, "field policy is already suspended by another owner")
+    return
+  end
+  self:_deactivateSoundplate()
+  self._policySuspendedBy = ownerToken
+end
+
+-- Releases a policy hold to its matching owner. A stale token does
+-- nothing. With restoreMusic set, the current field policy is restored
+-- once through the existing play/stop facade (only when the effective
+-- track differs) followed by the normal soundplate update; without it
+-- the hold clears silently so a recovery-owned music decision stands.
+---@param ownerToken unknown claim identity from suspendFieldPolicy
+---@param restoreMusic boolean true to restore the current field policy once
+function FieldAudioController:resumeFieldPolicy(ownerToken, restoreMusic)
+  if ownerToken == nil or self._policySuspendedBy ~= ownerToken then
+    return
+  end
+  self._policySuspendedBy = nil
+  if restoreMusic ~= true then
+    return
+  end
+  local effective = self:effectiveMusic()
+  local current = self._sound:currentMusic()
+  if effective == nil then
+    if current ~= nil then
+      self._sound:stopMusic()
+    end
+  elseif effective ~= current then
+    self._sound:playMusic(effective)
+  end
+  self:updateField()
 end
 
 -- Returns the map-header music reference: day/night selection + flag-based override.
@@ -209,7 +256,12 @@ function FieldAudioController:enterMap(runtimeMap, options)
   -- 4. Compute/store new base _fieldMusic from new map-header policy
   self._fieldMusic = self:mapHeaderMusic()
 
-  -- 5. When play=true, play new effective BGM before ordinary soundplate selection
+  -- 5. When play=true, play new effective BGM before ordinary soundplate selection.
+  -- A presented battle hold suppresses this automatic playback while map
+  -- installation above still lands; explicit battle/recovery playback stays live.
+  if options.play and self._policySuspendedBy ~= nil then
+    return
+  end
   if options.play then
     local effective = self:effectiveMusic()
     if effective == nil then
@@ -230,6 +282,14 @@ end
 
 ---@param runtimeMap FieldAudioController.RuntimeMap
 function FieldAudioController:enterZone(runtimeMap)
+  -- A presented battle hold still installs the destination metadata below
+  -- while its automatic replacement stays suppressed; the persisted
+  -- override is left for the hold owner to manage.
+  if self._policySuspendedBy ~= nil then
+    self._currentMap = runtimeMap
+    self._fieldMusic = self:mapHeaderMusic(runtimeMap.fieldData)
+    return
+  end
   local currentMusic = self._sound:currentMusic()
   local destinationMusic = self:mapHeaderMusic(runtimeMap.fieldData)
   local changedMusic = currentMusic ~= nil and destinationMusic ~= nil and currentMusic ~= destinationMusic
@@ -379,8 +439,13 @@ function FieldAudioController:_processSelection(fieldX, fieldZ)
   end
 end
 
--- Step-completion soundplate selection (the ordinary path).
+-- Step-completion soundplate selection (the ordinary path). A presented
+-- battle hold suppresses this automatic selection; the sound-frame pump
+-- and explicit playback continue through their own owners.
 function FieldAudioController:updateField()
+  if self._policySuspendedBy ~= nil then
+    return
+  end
   if self._currentMap == nil or self._currentMap.fieldData == nil then
     return
   end
