@@ -92,6 +92,9 @@ local function fakeRuntime(overrides)
         return { year = 2026, month = 10, day = 9, hour = 12 }
       end,
     },
+    -- Presented launches read the player narration pace; production
+    -- boot always composes it, so the composition fake carries it too.
+    playerData = { options = { textSpeed = "mid", textFrame = 0 } },
   }, FieldRuntime)
   for key, value in pairs(overrides or {}) do
     runtime[key] = value
@@ -771,6 +774,7 @@ end
 function T.presented_admission_fails_closed_without_a_port()
   local holds = {}
   local runtime = fakeRuntime({
+    playerData = { options = { textSpeed = "mid", textFrame = 0 } },
     session = {
       setBattleActive = function(_, active)
         holds[#holds + 1] = active
