@@ -125,6 +125,13 @@ function DerivedAssetProvisioner.new(options)
       assert(type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0, "icon request requires its page")
       return ask("icon-page", urgency, { pageId = pageId })
     end,
+    requestBattleScene = function(sceneKey, urgency)
+      assert(
+        type(sceneKey) == "string" and sceneKey:match("^[^/]+/[^/]+/[^/]+$") ~= nil,
+        "battle scene demand carries its background/terrain/time key"
+      )
+      return ask("battle-scene", urgency, { sceneKey = sceneKey })
+    end,
     milestoneStatus = function(name)
       assert(type(name) == "string" and name ~= "", "milestone progress requires its name")
       local active = guard()

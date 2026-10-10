@@ -15,6 +15,7 @@ local PngWriter = require("libs.assets.src.PngWriter")
 
 ---@class FieldBattlePresentation
 ---@field _cacheFs table<string, unknown> versioned derived cache behind demand validation
+---@field _derivedAssets table<string, function>? borrowed scene-demand host, never disposed here
 ---@field _text table<string, unknown> borrowed text services behind plan rendering
 ---@field _windows table<string, unknown> borrowed window services behind plan rendering
 ---@field _screenAudio table<string, unknown> semantic cue-audio boundary behind the screen
@@ -57,6 +58,7 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field text table<string, unknown> borrowed text services behind plan rendering
 ---@field audio table<string, unknown>? semantic cue-audio boundary behind the screen
 ---@field measureDisplay fun(): table<string, unknown> live display facts
+---@field derivedAssets table<string, function>? borrowed scene-demand host behind lazy scene waits
 ---@field graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
@@ -151,12 +153,16 @@ function FieldBattlePresentation.new(opts)
   if opts.graphics ~= nil then
     assert(type(opts.graphics) == "table", "the graphics namespace arrives as a record")
   end
+  if opts.derivedAssets ~= nil then
+    assert(type(opts.derivedAssets) == "table", "the scene demand host arrives as a record")
+  end
   local envelope = setmetatable({
     _cacheFs = opts.cacheFs,
     _text = opts.text,
     _windows = opts.windows,
     _screenAudio = opts.audio or nullAudio(),
     _measureDisplay = opts.measureDisplay,
+    _derivedAssets = opts.derivedAssets,
     _graphics = opts.graphics,
     _itemCatalog = opts.itemCatalog,
     _monCatalog = opts.monCatalog,
@@ -442,12 +448,37 @@ function FieldBattlePresentation:_preparationServices()
         return nil, "unknown battle scene key: " .. tostring(sceneKey)
       end
       if graphics ~= nil then
+        -- A launch scene the worker has not staged yet waits under cover:
+        -- the borrowed host only queues and observes, so pending answers
+        -- poll again while genuine build failures fail closed naming the
+        -- scene. Staged bytes still validate after a ready answer, and a
+        -- demand without a host to schedule keeps its explicit failure.
+        local host = envelope._derivedAssets
+        local requestScene = host ~= nil and host.requestBattleScene or nil
+        local scheduled = type(requestScene) == "function"
+        if type(requestScene) == "function" then
+          local ready, failure = requestScene(sceneKey, "required")
+          if failure ~= nil then
+            return nil, "battle scene " .. tostring(sceneKey) .. ": " .. tostring(failure)
+          end
+          if ready ~= true then
+            return false, nil
+          end
+        end
         local record, recordErr = BattlePresentationCache.loadScene(cacheFs, sceneKey)
         if record == nil then
-          return nil, tostring(recordErr or ("no staged battle scene for " .. sceneKey))
+          local cause = tostring(recordErr or ("no staged battle scene for " .. sceneKey))
+          if not scheduled then
+            return nil, cause .. ": no scene demand host to schedule battle scene " .. tostring(sceneKey)
+          end
+          return nil, "battle scene " .. tostring(sceneKey) .. ": " .. cause
         end
         local bytes = cacheFs:read(BattlePresentationCache.sceneImagePath(sceneKey))
         if type(bytes) ~= "string" or #bytes ~= PngWriter.encodedSize(record.canvasWidth, record.canvasHeight) then
+          if not scheduled then
+            return nil,
+              "battle scene image is not staged: " .. tostring(sceneKey) .. ": no scene demand host to schedule it"
+          end
           return nil, "battle scene image is not staged: " .. tostring(sceneKey)
         end
       end

@@ -10,8 +10,15 @@
 local ORDINARY_PER_UPDATE = 8
 local ABSORB_PER_UPDATE = 32
 
-local VALID_KINDS =
-  { milestone = true, field = true, ["logical-field"] = true, cell = true, portrait = true, ["icon-page"] = true }
+local VALID_KINDS = {
+  milestone = true,
+  field = true,
+  ["logical-field"] = true,
+  cell = true,
+  portrait = true,
+  ["icon-page"] = true,
+  ["battle-scene"] = true,
+}
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
 
@@ -112,6 +119,12 @@ local function selectorKey(selector)
       "cell request requires a non-negative integer index"
     )
     return "cell:" .. tostring(selector.matrixMemberId) .. ":" .. tostring(selector.index)
+  elseif kind == "battle-scene" then
+    assert(
+      type(selector.sceneKey) == "string" and selector.sceneKey:match("^[^/]+/[^/]+/[^/]+$") ~= nil,
+      "battle-scene request requires its background/terrain/time sceneKey"
+    )
+    return "battle-scene:" .. selector.sceneKey
   else
     assert(
       type(selector.pageId) == "number" and selector.pageId % 1 == 0 and selector.pageId >= 0,
@@ -213,6 +226,8 @@ function CacheService:request(epoch, selector)
   elseif selector.requestKind == "cell" then
     command.matrixMemberId = selector.matrixMemberId
     command.index = selector.index
+  elseif selector.requestKind == "battle-scene" then
+    command.sceneKey = selector.sceneKey
   else
     command.pageId = selector.pageId
   end

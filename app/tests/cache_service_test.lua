@@ -598,4 +598,137 @@ function T.real_controller_thread_boots_and_answers_a_selection_round()
   Assert.isFalse(worker:isRunning(), "the controller exits on shutdown")
 end
 
+-- One battle scene demand travels the selected-game host into a single
+-- epoch-qualified worker request: repeated visits share its identity, a
+-- stronger urgency promotes it instead of duplicating it, a different
+-- time/terrain key stays a distinct job, and malformed keys never leave
+-- the game thread. Portrait pages keep their own identities throughout.
+function T.scene_demands_dedupe_by_key_and_epoch_with_urgency_promotion()
+  local Service = requireService()
+  local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  local epoch = assert(provisioner.epoch, "selection borrows an epoch")
+  local gameHost = provisioner:gameHost()
+  Assert.isTrue(
+    type(gameHost.requestBattleScene) == "function",
+    "the selected-game host demands its battle scene"
+  )
+  local day = "general/grass/day"
+  local night = "general/grass/night"
+  local pending, pendingErr = gameHost.requestBattleScene(day, "near")
+  Assert.isNil(pending, "an unbuilt scene observes no readiness")
+  Assert.isNil(pendingErr, "an unbuilt scene observes no failure")
+  local promoted, promotedErr = gameHost.requestBattleScene(day, "required")
+  Assert.isNil(promoted, "a promoted scene still observes no readiness")
+  Assert.isNil(promotedErr, "a promoted scene still observes no failure")
+  local otherPending, otherErr = gameHost.requestBattleScene(night, "required")
+  Assert.isNil(otherPending, "a different time stays its own pending demand")
+  Assert.isNil(otherErr, "a different time stays its own pending demand")
+  service:request(epoch, { requestKind = "portrait", pageId = 3, urgency = "required" })
+  service:update()
+  local sceneCommands, portraitCommands = 0, 0
+  local dayUrgency = nil
+  local command = service._command:pop()
+  while command ~= nil do
+    if command.op == "request" then
+      if command.requestKind == "battle-scene" then
+        sceneCommands = sceneCommands + 1
+        if command.sceneKey == day then
+          dayUrgency = command.urgency
+        end
+        Assert.isTrue(
+          command.pageId == nil,
+          "a scene command carries no portrait page: " .. tostring(command.sceneKey)
+        )
+      elseif command.requestKind == "portrait" then
+        portraitCommands = portraitCommands + 1
+      end
+    end
+    command = service._command:pop()
+  end
+  Assert.equal(sceneCommands, 2, "day and night leave exactly one worker request each")
+  Assert.equal(dayUrgency, "required", "the stronger urgency promotes the shared day request")
+  Assert.equal(portraitCommands, 1, "the portrait page keeps its own request identity")
+  local dayId = assert(
+    service._byKey[tostring(epoch) .. ":battle-scene:" .. day],
+    "the day demand registers its selector identity"
+  )
+  local nightId = assert(
+    service._byKey[tostring(epoch) .. ":battle-scene:" .. night],
+    "the night demand registers its selector identity"
+  )
+  Assert.isTrue(dayId ~= nightId, "different scene keys never share a request identity")
+  service:injectReply({ op = "request-result", epoch = epoch, requestId = dayId, state = "ready" })
+  service:update()
+  local ready, failure = gameHost.requestBattleScene(day, "required")
+  Assert.isTrue(ready, "the pushed ready event lands in the matching scene observation")
+  Assert.isNil(failure, "a ready scene carries no failure")
+  local stillPending, _ = gameHost.requestBattleScene(night, "required")
+  Assert.isNil(stillPending, "the night demand stays pending after the day completes")
+  for _, badKey in ipairs({ "", "general", "general/grass", "general/grass/day/extra", "//", 7 }) do
+    local ok, _ = pcall(function()
+      gameHost.requestBattleScene(badKey, "required")
+    end)
+    Assert.isFalse(ok, "a malformed scene key never leaves the game thread: " .. tostring(badKey))
+  end
+  provisioner:dispose()
+  service:shutdown()
+end
+
+-- A genuine scene build failure reports its producer cause through the
+-- same observation, and a retired epoch can never satisfy a new
+-- selection: a late ready for the old request leaves the reselected scene
+-- pending instead of painting stale pixels.
+function T.scene_failure_and_stale_epoch_never_read_ready()
+  local Service = requireService()
+  local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  local firstEpoch = assert(provisioner.epoch, "selection borrows an epoch")
+  local gameHost = provisioner:gameHost()
+  Assert.isTrue(
+    type(gameHost.requestBattleScene) == "function",
+    "the selected-game host demands its battle scene"
+  )
+  local key = "city/sand/night"
+  local pending, pendingErr = gameHost.requestBattleScene(key, "required")
+  Assert.isNil(pending, "an unbuilt scene observes no readiness")
+  Assert.isNil(pendingErr, "an unbuilt scene observes no failure")
+  local id =
+    assert(service._byKey[tostring(firstEpoch) .. ":battle-scene:" .. key], "the scene demand registers")
+  service:update()
+  service:injectReply({
+    op = "request-result",
+    epoch = firstEpoch,
+    requestId = id,
+    state = "failed",
+    errorMessage = "probe source read failed",
+  })
+  service:update()
+  local failedReady, failure = gameHost.requestBattleScene(key, "required")
+  Assert.isFalse(failedReady, "a failed scene reports no readiness")
+  Assert.isTrue(
+    tostring(failure):find("probe source read failed", 1, true) ~= nil,
+    "the failed scene carries its producer cause: " .. tostring(failure)
+  )
+  provisioner:dispose()
+  local reselected = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  local secondEpoch = assert(reselected.epoch, "reselection borrows a fresh epoch")
+  Assert.isTrue(secondEpoch ~= firstEpoch, "reselection mints a fresh epoch")
+  local freshHost = reselected:gameHost()
+  local freshPending, freshErr = freshHost.requestBattleScene(key, "required")
+  Assert.isNil(freshPending, "the reselected scene starts pending")
+  Assert.isNil(freshErr, "the reselected scene starts without failure")
+  service:injectReply({ op = "request-result", epoch = firstEpoch, requestId = id, state = "ready" })
+  service:update()
+  local staleReady, staleErr = freshHost.requestBattleScene(key, "required")
+  Assert.isNil(staleReady, "a retired-epoch ready never satisfies the new selection")
+  Assert.isNil(staleErr, "a retired-epoch ready reports no new-epoch failure")
+  reselected:dispose()
+  service:shutdown()
+end
+
 return { tests = T }

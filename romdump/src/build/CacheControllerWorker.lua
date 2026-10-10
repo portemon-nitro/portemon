@@ -68,8 +68,15 @@ function CacheControllerWorker.bootstrap()
   return bootstrapSource()
 end
 
-local VALID_KINDS =
-  { milestone = true, field = true, ["logical-field"] = true, cell = true, portrait = true, ["icon-page"] = true }
+local VALID_KINDS = {
+  milestone = true,
+  field = true,
+  ["logical-field"] = true,
+  cell = true,
+  portrait = true,
+  ["icon-page"] = true,
+  ["battle-scene"] = true,
+}
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
 ---@class CacheControllerSelection
@@ -303,6 +310,11 @@ local function validateSelectors(params)
     if type(params.pageId) ~= "number" or params.pageId % 1 ~= 0 or params.pageId < 0 then
       return "icon request needs a non-negative integer pageId"
     end
+  elseif kind == "battle-scene" then
+    local Sources = require("romdump.src.config.BattlePresentationSources")
+    if not Sources.validateSceneKey(params.sceneKey) then
+      return "battle-scene request needs its background/terrain/time sceneKey"
+    end
   end
   return nil
 end
@@ -325,6 +337,8 @@ function Worker:_invoke(params)
     return session:requestMonPortraitPage(params.pageId, urgency)
   elseif kind == "icon-page" then
     return session:requestIconPage(params.pageId, urgency)
+  elseif kind == "battle-scene" then
+    return session:requestJob("battle-scene", params.sceneKey, urgency)
   end
   error("unknown cache request kind: " .. tostring(kind), 0)
 end
@@ -518,6 +532,7 @@ function Worker:_applyRequest(command)
     matrixMemberId = command.matrixMemberId,
     index = command.index,
     pageId = command.pageId,
+    sceneKey = command.sceneKey,
   }
   local selectorError = validateSelectors(params)
   if selectorError ~= nil then
