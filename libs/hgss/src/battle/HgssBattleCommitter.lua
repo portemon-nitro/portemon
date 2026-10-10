@@ -100,7 +100,7 @@ end
 -- Stages every affected owner and validates the detached records without
 -- publishing anything. The returned preparation is committed once through
 -- commit; repeating commit reuses the recorded receipt.
----@param args { outcome: { id: string, result: string }, party: table<string, unknown>?, bag: table<string, unknown>?, dex: table<string, unknown>?, partyOwner: table<string, unknown>?, partyUpdates: { slot: integer, mon: table<string, unknown> }[]?, captures: table<string, unknown>[]?, rewards: table<string, unknown>?, scriptFlags: table<string, unknown>?, player: { record: table<string, unknown>, context: table<string, unknown>, moneyDelta: integer? }?, roamer: { owner: table<string, unknown>, key: string, outcome: string, expectedRevision: integer, details: table<string, unknown> }?, stale: boolean? }
+---@param args { outcome: { id: string, result: string }, party: table<string, unknown>?, bag: table<string, unknown>?, dex: table<string, unknown>?, partyOwner: table<string, unknown>?, partyUpdates: { slot: integer, mon: table<string, unknown> }[]?, captures: table<string, unknown>[]?, rewards: table<string, unknown>?, scriptFlags: table<string, unknown>?, player: { record: table<string, unknown>, context: table<string, unknown>, moneyDelta: integer? }?, pokegear: { isCurrent: fun(): boolean, publish: fun(): table<string, unknown> }?, roamer: { owner: table<string, unknown>, key: string, outcome: string, expectedRevision: integer, details: table<string, unknown> }?, stale: boolean? }
 ---@return table<string, unknown>
 function HgssBattleCommitter.prepare(args)
   if type(args) ~= "table" then
@@ -201,6 +201,11 @@ function HgssBattleCommitter.prepare(args)
       error("battle commit roamer outcomes name their owning state", 0)
     end
   end
+  local pokegearCandidate = nil
+  if args.pokegear ~= nil then
+    checkPreparation(args.pokegear, "pokegear candidate")
+    pokegearCandidate = args.pokegear
+  end
   if
     args.party == nil
     and args.bag == nil
@@ -209,6 +214,7 @@ function HgssBattleCommitter.prepare(args)
     and attempts == 0
     and args.rewards == nil
     and args.player == nil
+    and pokegearCandidate == nil
     and roamer == nil
   then
     error("battle commit preparation stages at least one result", 0)
@@ -219,6 +225,7 @@ function HgssBattleCommitter.prepare(args)
     party = args.party,
     bag = args.bag,
     dex = args.dex,
+    pokegear = pokegearCandidate,
     owner = owner,
     ownerBatch = ownerBatch,
     captures = captures,
@@ -237,6 +244,7 @@ end
 ---@field party { isCurrent: fun(): boolean, publish: fun() }?
 ---@field bag { isCurrent: fun(): boolean, publish: fun() }?
 ---@field dex { isCurrent: fun(): boolean, publish: fun() }?
+---@field pokegear { isCurrent: fun(): boolean, publish: fun(): table<string, unknown> }?
 ---@field owner HgssMonService?
 ---@field ownerBatch { isCurrent: fun(): boolean, publish: fun() }?
 ---@field captures table<string, unknown>[]
@@ -276,6 +284,7 @@ function HgssBattleCommitter.commit(prepared)
   local publishBag = checkedPublish(staged.bag, "bag candidate")
   local publishDex = checkedPublish(staged.dex, "dex candidate")
   local publishBatch = checkedPublish(staged.ownerBatch, "party batch")
+  local publishPokegear = checkedPublish(staged.pokegear, "pokegear candidate")
   -- The fallible roamer writeback runs before any owner swap, so its
   -- rejection leaves every live owner on the last known-good state.
   local roamerResult = nil
@@ -290,6 +299,12 @@ function HgssBattleCommitter.commit(prepared)
       staged.roamer.expectedRevision,
       staged.roamer.details
     )
+  end
+  -- The companion savings publication runs first among the swaps, so
+  -- its rejection still leaves party, bag, and dex on last known-good.
+  local pokegearResult = nil
+  if publishPokegear ~= nil then
+    pokegearResult = publishPokegear()
   end
   if publishParty ~= nil then
     publishParty()
@@ -328,6 +343,7 @@ function HgssBattleCommitter.commit(prepared)
     rewards = copyValue(staged.rewards),
     scriptFlags = copyValue(staged.scriptFlags),
     player = copyValue(staged.playerCandidate),
+    pokegear = copyValue(pokegearResult),
     roamer = copyValue(roamerResult),
   }
   staged.receipt = receipt

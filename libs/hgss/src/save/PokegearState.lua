@@ -454,6 +454,55 @@ local function checkCivil(moment)
   }
 end
 
+---@param mom unknown
+---@return table<string, unknown> the canonical savings record
+local function checkMom(mom)
+  if type(mom) ~= "table" then
+    fail("pokegear savings state must be a record", {})
+  end
+  assert(type(mom) == "table", "savings validation reads the savings state")
+  for key in pairs(mom) do
+    if key ~= "balance" and key ~= "purchases" and key ~= "gifts" then
+      fail("pokegear savings state contains an unknown field", { field = key })
+    end
+  end
+  if type(mom.balance) ~= "number" or mom.balance % 1 ~= 0 or mom.balance < 0 then
+    fail("pokegear savings balance must be a non-negative integer", {})
+  end
+  local purchases = mom.purchases
+  if type(purchases) ~= "table" then
+    fail("pokegear savings purchases and gifts must be records", {})
+  end
+  assert(type(purchases) == "table", "savings validation reads claimed purchase flags")
+  local cleanFlags = {}
+  for flag, claimed in pairs(purchases) do
+    if type(flag) ~= "string" or flag == "" or claimed ~= true then
+      fail("pokegear savings purchases carry claimed item flags", { flag = flag })
+    end
+    cleanFlags[flag] = true
+  end
+  local gifts = mom.gifts
+  if type(gifts) ~= "table" then
+    fail("pokegear savings purchases and gifts must be records", {})
+  end
+  assert(type(gifts) == "table", "savings validation reads the gift queue")
+  local count = 0
+  for _ in pairs(gifts) do
+    count = count + 1
+  end
+  if count > MAX_MOM_GIFTS then
+    fail("pokegear savings gifts hold at most five entries", { count = count })
+  end
+  local cleanGifts = {}
+  for index = 1, count do
+    cleanGifts[index] = checkReward(gifts[index])
+    if cleanGifts[index] == nil then
+      fail("pokegear savings gifts carry item records", { index = index })
+    end
+  end
+  return { balance = mom.balance, purchases = cleanFlags, gifts = cleanGifts }
+end
+
 ---@param data table<string, unknown>
 ---@param contacts table<string, boolean>
 ---@param locations table<string, boolean>
@@ -614,39 +663,7 @@ local function checkRestorable(data, contacts, locations)
       fail("pokegear rematch entry carries non-negative counters", { key = key })
     end
   end
-  if type(phone.mom) ~= "table" then
-    fail("pokegear savings state must be a record", {})
-  end
-  assert(type(phone.mom) == "table", "restoration reads the savings state")
-  local mom = phone.mom
-  assert(type(mom) == "table", "restoration reads savings fields")
-  for key in pairs(mom) do
-    if key ~= "balance" and key ~= "purchases" and key ~= "gifts" then
-      fail("pokegear savings state contains an unknown field", { field = key })
-    end
-  end
-  if type(mom.balance) ~= "number" or mom.balance % 1 ~= 0 or mom.balance < 0 then
-    fail("pokegear savings balance must be a non-negative integer", {})
-  end
-  if type(mom.purchases) ~= "table" or type(mom.gifts) ~= "table" then
-    fail("pokegear savings purchases and gifts must be records", {})
-  end
-  assert(type(mom.gifts) == "table", "restoration reads the savings gift queue")
-  do
-    local count = 0
-    for _ in pairs(mom.gifts) do
-      count = count + 1
-    end
-    if count > MAX_MOM_GIFTS then
-      fail("pokegear savings gifts hold at most five entries", { count = count })
-    end
-    for index = 1, count do
-      mom.gifts[index] = checkReward(mom.gifts[index])
-      if mom.gifts[index] == nil then
-        fail("pokegear savings gifts carry item records", { index = index })
-      end
-    end
-  end
+  phone.mom = checkMom(phone.mom)
   if type(phone.kenji) ~= "table" then
     fail("pokegear caller counters must be a record", {})
   end
@@ -1037,6 +1054,57 @@ local function applySetPreference(data, name, value)
 end
 
 ---@param data table<string, unknown>
+---@param savings unknown
+---@return boolean changed
+local function applySetMom(data, savings)
+  local clean = checkMom(savings)
+  assert(type(data) == "table" and type(data.phone) == "table", "savings writes read phone state")
+  local phone = data.phone
+  assert(type(phone) == "table" and type(phone.mom) == "table", "savings writes edit the savings record")
+  local current = phone.mom
+  assert(type(current) == "table", "savings writes compare the savings record")
+  local sameBalance = current.balance == clean.balance
+  local sameFlags = true
+  local currentPurchases = current.purchases
+  assert(type(currentPurchases) == "table", "savings writes compare claimed purchase flags")
+  for flag in pairs(clean.purchases) do
+    if currentPurchases[flag] ~= true then
+      sameFlags = false
+      break
+    end
+  end
+  if sameFlags then
+    for flag in pairs(currentPurchases) do
+      if clean.purchases[flag] ~= true then
+        sameFlags = false
+        break
+      end
+    end
+  end
+  local sameGifts = true
+  local currentGifts = current.gifts
+  assert(type(currentGifts) == "table", "savings writes compare the gift queue")
+  if #currentGifts ~= #clean.gifts then
+    sameGifts = false
+  else
+    for index = 1, #clean.gifts do
+      local have = currentGifts[index]
+      local want = clean.gifts[index]
+      assert(type(have) == "table" and type(want) == "table", "savings writes compare gift entries")
+      if have.item ~= want.item or have.quantity ~= want.quantity then
+        sameGifts = false
+        break
+      end
+    end
+  end
+  if sameBalance and sameFlags and sameGifts then
+    return false
+  end
+  phone.mom = clean
+  return true
+end
+
+---@param data table<string, unknown>
 ---@param key unknown
 ---@param active unknown
 ---@return boolean changed
@@ -1178,6 +1246,16 @@ function PokegearState:setPreference(name, value)
   return self:_commit(applySetPreference(self._data, name, value))
 end
 
+-- Replaces the savings record with a validated one: balance, claimed
+-- purchase flags, and gift queue. Writing the current record never moves
+-- the revision. Reward candidates publish through this operation so the
+-- durable owner validates every staged savings write.
+---@param savings table<string, unknown>
+---@return table<string, unknown>
+function PokegearState:setMom(savings)
+  return self:_commit(applySetMom(self._data, savings))
+end
+
 -- Switches one call trigger. Repeating the current switch never moves the
 -- revision.
 ---@param key string
@@ -1235,6 +1313,9 @@ function PokegearState:prepare(expectedRevision, mutate)
   local function editSetPreference(_, name, value)
     applySetPreference(draft, name, value)
   end
+  local function editSetMom(_, savings)
+    applySetMom(draft, savings)
+  end
   local function editSetTrigger(_, key, active)
     applySetTrigger(draft, key, active)
   end
@@ -1248,6 +1329,7 @@ function PokegearState:prepare(expectedRevision, mutate)
     registerCard = editRegisterCard,
     registerContact = editRegisterContact,
     setPreference = editSetPreference,
+    setMom = editSetMom,
     setTrigger = editSetTrigger,
     setContactReward = editSetContactReward,
     setMarking = editSetMarking,

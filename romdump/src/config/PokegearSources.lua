@@ -318,4 +318,125 @@ function PokegearSources.broadcastShowRecords(versionId)
   return records
 end
 
+-- Per-contact conversation families in phonebook-id order: the closed
+-- caller-family disposition behind the foreground phone dispatch, in the
+-- same contact order as the message-bank table below. Special callers
+-- name their decomp PHONE_CONTACT_* family (trailing names); every other
+-- native contact follows the ordinary trainer conversation. Position
+-- i + 1 carries contact i's family. The runtime resolves programs from
+-- this generated type, never from key substrings.
+PokegearSources.phoneContactFamilies = {
+  "mother", -- mother
+  "elm", -- elm
+  "oak", -- oak
+  "friend", -- ethan
+  "friend", -- lyra
+  "kurt", -- kurt
+  "daycare", -- day-care man
+  "daycare", -- day-care lady
+  "buena", -- buena
+  "bill", -- bill
+  "trainer", -- joey
+  "trainer", -- ralph
+  "trainer", -- liz
+  "trainer", -- wade
+  "trainer", -- anthony
+  "bike", -- bike shop
+  "kenji", -- kenji
+  "gym", -- whitney
+  "gym", -- falkner
+  "trainer", -- jack
+  "trainer", -- chad
+  "trainer", -- brent
+  "trainer", -- todd
+  "trainer", -- arnie
+  "baoba", -- baoba
+  "irwin", -- irwin
+  "gym", -- janine
+  "gym", -- clair
+  "gym", -- erika
+  "gym", -- misty
+  "gym", -- blaine
+  "gym", -- blue
+  "gym", -- chuck
+  "gym", -- brock
+  "gym", -- bugsy
+  "gym", -- sabrina
+  "gym", -- lt. surge
+  "gym", -- morty
+  "gym", -- jasmine
+  "gym", -- pryce
+  "trainer", -- huey
+  "trainer", -- gaven
+  "trainer", -- jamie
+  "trainer", -- reena
+  "trainer", -- vance
+  "trainer", -- parry
+  "trainer", -- erin
+  "trainer", -- beverly
+  "trainer", -- jose
+  "trainer", -- gina
+  "trainer", -- alan
+  "trainer", -- dana
+  "trainer", -- derek
+  "trainer", -- tully
+  "trainer", -- tiffany
+  "trainer", -- wilton
+  "trainer", -- krise
+  "trainer", -- ian
+  "trainer", -- walt
+  "trainer", -- alfred
+  "trainer", -- doug
+  "trainer", -- rob
+  "trainer", -- kyle
+  "trainer", -- kyler
+  "trainer", -- tim and sue
+  "trainer", -- kenny
+  "trainer", -- tanner
+  "trainer", -- josh
+  "trainer", -- torin
+  "trainer", -- hillary
+  "trainer", -- billy
+  "trainer", -- kay and tia
+  "trainer", -- reese
+  "trainer", -- aiden
+  "trainer", -- ernest
+}
+
+-- Corpus-observed phone-trigger slots: the full script census carries
+-- exactly one trigger-mutation site (the Pokecenter heal script clears
+-- slot 1 beside its heal operation) and no script ever sets a trigger.
+-- The slot reads as the phonebook contact identity the sibling clear
+-- sites corroborate (slot 12 clears inside the Mom-gift script, slot 5
+-- inside the Day-Care egg-call script); slot 1 is Elm's contact,
+-- registered through the town-exit script. Only observed slots are
+-- listed: an unobserved slot would invent a caller the source never
+-- switches.
+PokegearSources.phoneTriggers = {
+  { slot = 1, key = "gear.trigger.1", contact = "hg.trainer.201.map.0.contact.1", kind = 0 },
+}
+
+-- Version-qualified catalog phone-trigger records for one game version.
+-- Unknown versions fail loudly; a version carrying no trigger is a
+-- producer error, never an empty trigger set. Kind 0 is the ordinary
+-- callback the incoming-call contract records in history at acceptance.
+-- Returns detached copies; mutating them never touches the producer table.
+---@param versionId string
+---@return table<integer, table<string, unknown>>
+function PokegearSources.phoneTriggerRecords(versionId)
+  assert(type(versionId) == "string" and versionId ~= "", "phone trigger records need a game version")
+  assert(
+    PokegearSources.mapVersions[versionId] == true,
+    "phone trigger records name a supported game version, got " .. versionId
+  )
+  local records = {}
+  for _, entry in ipairs(PokegearSources.phoneTriggers) do
+    assert(type(entry.key) == "string" and entry.key ~= "", "phone triggers carry semantic keys")
+    assert(type(entry.contact) == "string" and entry.contact ~= "", "phone triggers carry their owning contact")
+    records[#records + 1] = { key = entry.key, contact = entry.contact, kind = entry.kind }
+  end
+  assert(#records > 0, "phone trigger records cover the observed trigger set for " .. versionId)
+  return records
+end
+
 return PokegearSources

@@ -77,6 +77,15 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
     -- triple; array position is retained only as the producer
     -- translation. A repeated triple is a genuine duplicate identity.
     local key = string.format("hg.trainer.%d.map.%d.contact.%d", trainer, map, id)
+    local family = PokegearSources.phoneContactFamilies[id + 1]
+    if type(family) ~= "string" or family == "" then
+      return nil,
+        Errors.new(
+          PokegearCatalogCompiler.ERROR.PHONEBOOK_INVALID,
+          "phonebook contact id names no conversation family",
+          { id = id, sourceIndex = index }
+        )
+    end
     if seen[key] then
       return nil,
         Errors.new(
