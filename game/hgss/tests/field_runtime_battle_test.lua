@@ -647,15 +647,18 @@ function T.standing_tile_behavior_selects_terrain_before_background_default()
   )
 end
 
--- Committed money adopts into the live wallet exactly once: the receipt
--- candidate replaces the live record, and a second observation changes
+-- Committed money adopts into the live wallet exactly once: the live profile
+-- keeps its identity (scripts, mart, and the run gate borrow it, so a later
+-- award must land in the saved record), and a second observation changes
 -- nothing.
 function T.committed_money_adopts_into_the_live_wallet_once()
   local runtime = fakeRuntime({
     playerData = { profile = { money = 3000 } },
   })
   local launch = {}
+  local liveProfile = runtime.playerData.profile
   runtime:_adoptBattlePlayerMoney(launch, { player = { profile = { money = 2928 } } })
+  Assert.equal(runtime.playerData.profile, liveProfile, "adoption mutates the borrowed live profile in place")
   Assert.equal(runtime.playerData.profile.money, 2928, "the debit reaches the live wallet")
   runtime.playerData.profile.money = 2928
   runtime:_adoptBattlePlayerMoney(launch, { player = { profile = { money = 2000 } } })
@@ -727,7 +730,16 @@ local function validEntry(versionId)
       facing = "south",
     },
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+      profile = {
+        name = "GOLD",
+        gender = 0,
+        trainerId = 1,
+        money = 3000,
+        badges = 0,
+        nationalDex = false,
+        runningShoes = false,
+        runningShoesLock = false,
+      },
       options = { textSpeed = "mid", textFrame = 0 },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },

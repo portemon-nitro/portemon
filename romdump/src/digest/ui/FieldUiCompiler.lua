@@ -503,10 +503,44 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
     composed[memberId] = { normal = normal, selected = selected }
   end
 
+  -- The Running Shoes toggle: the button body and lock indicator each
+  -- compose the stable opening frame of their off and on animations over the
+  -- shared decoration char.
+  local shoesCfg = cfg.runningShoes
+  local shoesChar = g2d("decodeChar", shoesCfg.charMember, "start menu Running Shoes char") --[[@as FieldUiCompiler.CharData]]
+  local shoesCell = g2d("decodeCell", shoesCfg.cellMember, "start menu Running Shoes cell") --[[@as FieldUiCompiler.CellData]]
+  local shoesAnim = g2d("decodeAnimation", shoesCfg.animMember, "start menu Running Shoes animation") --[[@as FieldUiCompiler.AnimationData]]
+  local shoesPal = g2d("decodePalette", shoesCfg.paletteMember, "start menu Running Shoes palette") --[[@as FieldUiCompiler.PaletteData]]
+  local function shoesFrame(anim)
+    local sequence = shoesAnim.anims[anim + 1]
+    if sequence == nil or sequence.frames[1] == nil then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu Running Shoes animation carries no stable frame", {
+        anim = anim,
+        available = #shoesAnim.anims,
+      })
+    end
+    assert(sequence ~= nil, "a missing Running Shoes animation fails above")
+    return {
+      frame = G2dRasterizer.renderAnimationFrame(
+        shoesChar,
+        { colors = shoesPal.colors },
+        shoesCell,
+        sequence,
+        1,
+        { asset = "start menu running shoes", member = shoesCfg.charMember }
+      ),
+    }
+  end
+  local shoesVisuals = {
+    button = { off = shoesFrame(shoesCfg.button.offAnim), on = shoesFrame(shoesCfg.button.onAnim) },
+    indicator = { off = shoesFrame(shoesCfg.indicator.offAnim), on = shoesFrame(shoesCfg.indicator.onAnim) },
+  }
+
   -- Deterministic packing in icon-row order: each sprite row's normal then
   -- selected frame, followed by the female variant pair when the row carries
-  -- one. Every frame keeps its compositor size and offset; the atlas is the
-  -- tight row of those frames.
+  -- one, then the Running Shoes button and indicator frames. Every frame
+  -- keeps its compositor size and offset; the atlas is the tight row of
+  -- those frames.
   local ordered = {}
   local visuals = {}
   for _, row in ipairs(cfg.iconRows) do
@@ -524,6 +558,10 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
         visuals[row.femaleChar] = variant
       end
     end
+  end
+  for _, part in ipairs({ shoesVisuals.button, shoesVisuals.indicator }) do
+    ordered[#ordered + 1] = part.off
+    ordered[#ordered + 1] = part.on
   end
   local atlasWidth, atlasHeight = 0, 0
   for _, entry in ipairs(ordered) do
@@ -546,7 +584,7 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
       if y < frame.height then
         rows[#rows + 1] = frame.pixels:sub(y * frame.width * 4 + 1, (y + 1) * frame.width * 4)
       else
-        rows[#rows + 1] = string.rep(string.char(0, 0, 0, 0), frame.width * 4)
+        rows[#rows + 1] = string.rep(string.char(0, 0, 0, 0), frame.width)
       end
     end
   end
@@ -590,11 +628,19 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
     deps[#deps + 1] =
       { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
   end
-  for _, memberId in ipairs({ cfg.iconCellMember, cfg.iconAnimMember, cfg.iconPaletteMember }) do
+  for _, memberId in ipairs({
+    cfg.iconCellMember,
+    cfg.iconAnimMember,
+    cfg.iconPaletteMember,
+    shoesCfg.charMember,
+    shoesCfg.cellMember,
+    shoesCfg.animMember,
+    shoesCfg.paletteMember,
+  }) do
     deps[#deps + 1] =
       { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
   end
-  return visuals
+  return visuals, shoesVisuals
 end
 
 local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
@@ -609,7 +655,7 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   end
   local background = compileStartMenuMain(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   local subPalette = compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
-  local iconVisuals = compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  local iconVisuals, shoesVisuals = compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
 
   -- The label roles are source palette slots, not font colors: the label
   -- windows live on the SUB background's palette bank 4, so foreground 14,
@@ -771,6 +817,24 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
       positions = positions,
     },
     iconTable = iconTable,
+    runningShoes = {
+      hitRect = {
+        x = cfg.runningShoes.touchRegion.x,
+        y = cfg.runningShoes.touchRegion.y,
+        width = cfg.runningShoes.touchRegion.width,
+        height = cfg.runningShoes.touchRegion.height,
+      },
+      button = {
+        anchor = { x = cfg.runningShoes.button.anchor.x, y = cfg.runningShoes.button.anchor.y },
+        off = shoesVisuals.button.off,
+        on = shoesVisuals.button.on,
+      },
+      indicator = {
+        anchor = { x = cfg.runningShoes.indicator.anchor.x, y = cfg.runningShoes.indicator.anchor.y },
+        off = shoesVisuals.indicator.off,
+        on = shoesVisuals.indicator.on,
+      },
+    },
     contexts = contexts,
     actionIcons = actionIcons,
     iconPalette = {

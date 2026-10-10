@@ -167,7 +167,7 @@ local checkManifest
 local checkDialogueFrames, checkSignposts, checkStartMenu, checkTrainerCard, checkNamingScreen, checkYesNoPrompt
 local checkStartMenuCursor, checkStartMenuIconRow, checkStartMenuIconTable, checkStartMenuIconPalette
 local checkStartMenuContexts, checkStartMenuActionIcons, checkStartMenuInteractivePosition, checkStartMenuInteractive
-local checkStartMenuChrome, checkStartMenuLabelPalette
+local checkStartMenuChrome, checkStartMenuLabelPalette, checkStartMenuRunningShoes
 local checkNamingScreenBaseAndPlacement, checkNamingScreenText, checkNamingScreenControls, checkNamingScreenCursor
 local checkNamingScreenEntrySlots, checkNamingScreenPlayerSubjects
 local checkNamingScreenPokemonSubjectPart, checkNamingScreenPokemonSubjectFrame, checkNamingScreenPokemonSubject
@@ -459,6 +459,7 @@ function checkStartMenu(s, atlases)
   checkStartMenuContexts(s.contexts, s.iconTable)
   checkStartMenuActionIcons(s.actionIcons, s.iconTable)
   checkStartMenuInteractive(s.interactive)
+  checkStartMenuRunningShoes(s.runningShoes, atlases)
   checkStartMenuChrome(s.chrome, atlases)
   checkStartMenuLabelPalette(s.labelPalette)
 end
@@ -713,6 +714,42 @@ function checkStartMenuInteractive(interactive)
   demandCount(interactive.positions, 7, "startMenu.interactive must carry exactly the seven normal positions", {})
   for position = 0, 6 do
     checkStartMenuInteractivePosition(interactive.positions[position], position)
+  end
+end
+
+-- The Running Shoes toggle: its touch rectangle inside the canonical
+-- surface plus the button body and lock indicator, each an integral canonical
+-- anchor with an off and an on sprite visual in the shared icon atlas.
+function checkStartMenuRunningShoes(shoes, atlases)
+  if type(shoes) ~= "table" then
+    reject("startMenu.runningShoes must be a table", {})
+  end
+  checkRect(
+    shoes.hitRect,
+    "start menu Running Shoes hit rectangle",
+    256,
+    192,
+    "start menu Running Shoes hit rectangle must stay inside the 256x192 surface",
+    { what = "start menu Running Shoes hit rectangle" }
+  )
+  for _, part in ipairs({ "button", "indicator" }) do
+    local record = shoes[part]
+    if type(record) ~= "table" then
+      reject("startMenu.runningShoes." .. part .. " must be a table", {})
+    end
+    local anchor = record.anchor
+    if
+      type(anchor) ~= "table"
+      or type(anchor.x) ~= "number"
+      or anchor.x % 1 ~= 0
+      or type(anchor.y) ~= "number"
+      or anchor.y % 1 ~= 0
+    then
+      reject("startMenu.runningShoes." .. part .. " anchor must be an integral point", {})
+    end
+    for _, state in ipairs({ "off", "on" }) do
+      checkSpriteVisual(record[state], atlases, "start menu Running Shoes " .. part .. " " .. state .. " visual")
+    end
   end
 end
 

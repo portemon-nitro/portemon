@@ -55,6 +55,8 @@ local function context(overrides)
   local value = {
     badges = 0,
     nationalDex = false,
+    runningShoes = false,
+    runningShoesLock = false,
     weekday = 0,
     dayOrdinal = 1,
     cardPrefix = 0,
@@ -85,11 +87,15 @@ function T.standard_stock_uses_all_six_badge_tiers_and_filters_only_pokeball()
     local hidden = resolve({ kind = "standard" }, context({
       badges = mask,
       nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
       readFlag = function() return false end,
     }))
     local shown = resolve({ kind = "standard" }, context({
       badges = mask,
       nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
       readFlag = function() return true end,
     }))
     Assert.equal(#hidden.entries, expectedCounts[tier] - 1, "false flag excludes Poké Ball")

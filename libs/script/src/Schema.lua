@@ -739,6 +739,7 @@ Schema.OPERATIONS = {
   current_map_id = { fields = { result = { type = "id_or_var", required = true } } },
   player_state = { fields = { result = { type = "id_or_var", required = true } } },
   time_of_day = { fields = { result = { type = "id_or_var", required = true } } },
+  weekday = { fields = { result = { type = "id_or_var", required = true } } },
   discard_value = { fields = { value = { type = "scalar_or_value", required = true } } },
   trainer_card_stars = { fields = { result = { type = "id_or_var", required = true } } },
   prop_animation_load = {
@@ -1109,6 +1110,12 @@ Schema.OPERATIONS = {
     },
   },
   count_badges = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  award_running_shoes = { fields = {} },
+  check_running_shoes = {
     fields = {
       result = { type = "value", required = true },
     },
@@ -1957,6 +1964,16 @@ Schema.CONSTRUCTORS = {
         signature = "S.countBadges(spec)",
         canonical = "op=count_badges",
         notes = "spec={result}.",
+      },
+      {
+        signature = "S.awardRunningShoes(spec)",
+        canonical = "op=award_running_shoes",
+        notes = "spec={}; idempotent, no result.",
+      },
+      {
+        signature = "S.checkRunningShoes(spec)",
+        canonical = "op=check_running_shoes",
+        notes = "spec={result}; result writes 1 or 0.",
       },
       { signature = "S.healParty(spec)", canonical = "op=heal_party", notes = "Restores the party to full health." },
       {

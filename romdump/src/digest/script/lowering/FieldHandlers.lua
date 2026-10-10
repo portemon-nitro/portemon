@@ -490,6 +490,16 @@ local function countBadges(ins)
   return { op = "count_badges", result = Operands.varRef(ins.operands[1]) }
 end
 
+local function awardRunningShoes()
+  -- ScrCmd_GiveRunningShoes: idempotent durable gift, no operands or result.
+  return { op = "award_running_shoes" }
+end
+
+local function checkRunningShoes(ins)
+  -- ScrCmd_CheckRunningShoes result: 1 or 0 from the player's shoes flag.
+  return { op = "check_running_shoes", result = Operands.varRef(ins.operands[1]) }
+end
+
 local function setFriendSprite(ins)
   return { op = "set_var", variable = Operands.varRef(ins.operands[1]), value = { value = "friend_sprite_value" } }
 end
@@ -751,6 +761,16 @@ local function setStarterChoice(ins)
     op = "set_var",
     variable = "VAR_PLAYER_STARTER",
     value = Operands.varRef(ins.operands[1]),
+  }
+end
+
+-- ScrCmd_GetStarterChoice is the read side: it copies the player-starter
+-- script variable into the result operand and continues in the same tick.
+local function getStarterChoice(ins)
+  return {
+    op = "copy_var",
+    destination = Operands.varRef(ins.operands[1]),
+    source = "VAR_PLAYER_STARTER",
   }
 end
 
@@ -1499,6 +1519,7 @@ local FieldHandlers = {
   [167] = chooseStarter,
   [173] = nicknameInput,
   [131] = setStarterChoice,
+  [206] = getStarterChoice,
   [139] = setMonMove,
   [140] = monHasMove,
   [141] = partySlotWithMove,
@@ -1593,6 +1614,8 @@ local FieldHandlers = {
   [294] = checkBadge,
   [295] = awardBadge,
   [296] = countBadges,
+  [292] = checkRunningShoes,
+  [293] = awardRunningShoes,
   [213] = BattleHandlers.trainerBattle,
   [220] = BattleHandlers.checkBattleWon,
   [589] = BattleHandlers.wildBattle,
@@ -1619,6 +1642,7 @@ local FieldHandlers = {
   [310] = FieldServiceHandlers.propAnimationPlayForward,
   [311] = FieldServiceHandlers.propAnimationPlayReverse,
   [379] = FieldServiceHandlers.timeOfDay,
+  [484] = FieldServiceHandlers.weekday,
   [436] = FieldServiceHandlers.overworldLeave,
   [437] = FieldServiceHandlers.discardValue,
   [446] = FieldServiceHandlers.currentMapId,

@@ -67,6 +67,9 @@ function T.source_synchronous_player_time_and_discard_commands_keep_their_values
       currentCode = function()
         return 4
       end,
+      weekday = function()
+        return 3
+      end,
     },
   }, written)
   run.semantics.evaluateValue = function(value)
@@ -81,6 +84,8 @@ function T.source_synchronous_player_time_and_discard_commands_keep_their_values
   Assert.equal(written.PLAYER_STATE, 2)
   Assert.equal(Runtime.executeNode({ op = "time_of_day", result = { id = "TIME" } }, run), Runtime.OUTCOME_CONTINUE)
   Assert.equal(written.TIME, 4)
+  Assert.equal(Runtime.executeNode({ op = "weekday", result = { id = "DAY" } }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(written.DAY, 3)
   Assert.equal(Runtime.executeNode({ op = "discard_value", value = { id = "WATCHED" } }, run), Runtime.OUTCOME_CONTINUE)
   Assert.deepEqual(evaluated, { { id = "WATCHED" } })
 end

@@ -891,6 +891,17 @@ local function handleCountBadges(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+local function handleAwardRunningShoes(_, run)
+  progressionFor(run):awardRunningShoes()
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleCheckRunningShoes(node, run)
+  local has = progressionFor(run):hasRunningShoes()
+  semanticsFor(run).writeRef(node.result, has and 1 or 0, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+
 local function handleHealParty(_, run)
   monsFor(run):healParty()
   return Runtime.OUTCOME_CONTINUE
@@ -1942,6 +1953,8 @@ HANDLERS.check_kyogre_groudon = handleCheckKyogreGroudon
 HANDLERS.check_badge = handleCheckBadge
 HANDLERS.award_badge = handleAwardBadge
 HANDLERS.count_badges = handleCountBadges
+HANDLERS.award_running_shoes = handleAwardRunningShoes
+HANDLERS.check_running_shoes = handleCheckRunningShoes
 HANDLERS.heal_party = handleHealParty
 function HANDLERS.pokemon_center_heal(node, run)
   return blockOnTask(run, "pokemon_center_heal", { count = evalField(node, run, "count") })
@@ -2015,6 +2028,10 @@ function HANDLERS.player_state(node, run)
 end
 function HANDLERS.time_of_day(node, run)
   semanticsFor(run).writeRef(node.result, requireService(run, "timeOfDay"):currentCode(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.weekday(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "timeOfDay"):weekday(), run)
   return Runtime.OUTCOME_CONTINUE
 end
 function HANDLERS.discard_value(node, run)

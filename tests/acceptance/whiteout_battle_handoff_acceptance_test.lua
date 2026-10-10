@@ -56,7 +56,16 @@ local function harness(spawnKey, map, textSpeed)
         versionId = versionId,
         location = { mapSymbol = map, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+          profile = {
+            name = "GOLD",
+            gender = 0,
+            trainerId = 1,
+            money = 3000,
+            badges = 0,
+            nationalDex = false,
+            runningShoes = false,
+            runningShoesLock = false,
+          },
           options = { textSpeed = textSpeed or "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = spawnKey },

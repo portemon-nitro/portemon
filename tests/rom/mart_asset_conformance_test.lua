@@ -299,6 +299,8 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
   local vanilla = resolve({ kind = "standard" }, {
     badges = 0,
     nationalDex = false,
+    runningShoes = false,
+    runningShoesLock = false,
     weekday = 0,
     dayOrdinal = 1,
     cardPrefix = 0,
@@ -330,6 +332,8 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
       local special = resolve({ kind = "special", selector = selector }, {
         badges = 0,
         nationalDex = false,
+        runningShoes = false,
+        runningShoesLock = false,
         weekday = 0,
         dayOrdinal = 1,
         cardPrefix = 0,
@@ -353,6 +357,8 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
     local seals = resolve({ kind = "seal", selector = selector - 1 }, {
       badges = 0,
       nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
       weekday = 0,
       dayOrdinal = 1,
       cardPrefix = 0,
@@ -395,6 +401,8 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
     local cards = resolve({ kind = "data_cards" }, {
       badges = 0,
       nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
       weekday = 0,
       dayOrdinal = 1,
       cardPrefix = prefix,

@@ -81,7 +81,7 @@ local function hostOptions(overrides)
   local options = {
     service = service,
     catalog = catalog,
-    profile = { badges = 19, nationalDex = true },
+    profile = { badges = 19, nationalDex = true, runningShoes = false, runningShoesLock = false },
     localDate = function()
       return { year = 2026, month = 10, day = 3 }
     end,

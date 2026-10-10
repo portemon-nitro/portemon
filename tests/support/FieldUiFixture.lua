@@ -868,6 +868,7 @@ function FieldUiFixture.addStartMenuIconContract(manifest)
     ["vanilla.options"] = 6,
   }
   startMenu.interactive = FieldUiFixture.startMenuInteractive()
+  startMenu.runningShoes = FieldUiFixture.startMenuRunningShoes()
   startMenu.labelPalette = FieldUiFixture.startMenuLabelPalette()
   startMenu.chrome = {
     main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
@@ -894,6 +895,33 @@ function FieldUiFixture.writeStartMenuSelectorPngs(cache)
     "assets/generated/field/ui/start-menu-icon-palette.png",
     PngWriter.encode(16, 2, string.rep(string.char(10, 10, 10, 255), 16 * 2))
   )
+end
+
+-- The Running Shoes toggle record: the touch rectangle plus the button body
+-- and lock indicator anchors, each with an off and an on visual in the shared
+-- icon atlas (352x80). Fresh table per call.
+---@return table
+function FieldUiFixture.startMenuRunningShoes()
+  local function visual(x, width, height)
+    return {
+      asset = "hgss.start_menu.icons",
+      rect = { x = x, y = 0, width = width, height = height },
+      offset = { x = 0, y = 0 },
+    }
+  end
+  return {
+    hitRect = { x = 184, y = 86, width = 68, height = 48 },
+    button = {
+      anchor = { x = 184, y = 86 },
+      off = visual(0, 72, 48),
+      on = visual(72, 72, 48),
+    },
+    indicator = {
+      anchor = { x = 210, y = 94 },
+      off = visual(144, 32, 32),
+      on = visual(176, 32, 32),
+    },
+  }
 end
 
 -- The retail seven-position interactive selector geometry for the field start

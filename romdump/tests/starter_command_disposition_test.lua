@@ -93,4 +93,48 @@ function T.starter_choice_store_lowers_to_the_starter_variable()
   Assert.isNil(items[1].command, "variable semantics dispatch no source opcode number")
 end
 
+-- ScrCmd_GetStarterChoice reads VAR_PLAYER_STARTER into its result variable
+-- and continues in the same tick (pinned scrcmd_c.c ScrCmd_GetStarterChoice,
+-- Save_VarsFlags_GetStarter). It is the read side of the choice store above.
+function T.starter_choice_read_is_supported_with_same_tick_timing()
+  local tagged = entry(206)
+  Assert.equal(tagged.disposition, "supported", "the starter-choice read is supported here")
+  Assert.isNil(tagged.deferredReason, "a supported starter command carries no deferral category")
+  Assert.equal(tagged.classification, "continue_same_tick", "the starter-choice read continues like the source scene")
+end
+
+function T.starter_choice_read_copies_the_starter_variable_into_the_result()
+  local items = lowerWith(206, { 0x4001 })
+  Assert.equal(#items, 1, "the starter-choice read lowers to one step")
+  Assert.equal(items[1].op, "copy_var", "the starter-choice read reuses the variable copy")
+  Assert.deepEqual(items[1].destination, { value = "var", id = 0x4001 }, "the source result operand rides through")
+  Assert.equal(items[1].source, "VAR_PLAYER_STARTER", "the read names the source starter variable")
+end
+
+-- The lowered store and read round-trip through the production runtime
+-- semantics: the value the store wrote is what the read reports.
+function T.starter_choice_store_then_read_round_trips_through_the_runtime()
+  local Runtime = require("libs.script.src.Runtime")
+  local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
+  local world = {
+    vars = {},
+    getVar = function(self, id)
+      return self.vars[id] or 0
+    end,
+    setVar = function(self, id, value)
+      self.vars[id] = value
+    end,
+  }
+  local run = {
+    instance = { scriptId = "test.starter", locals = {}, textArgs = {} },
+    services = { world = world },
+    semantics = RuntimeValues,
+  }
+  local store = lowerWith(131, { 2 })[1]
+  local read = lowerWith(206, { 0x4001 })[1]
+  Assert.equal(Runtime.executeNode(store, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(Runtime.executeNode(read, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(world.vars[0x4001], 2, "the read reports the stored starter")
+end
+
 return { tests = T }

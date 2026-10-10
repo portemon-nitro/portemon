@@ -1495,9 +1495,8 @@ return {
     [206] = {
       name = "ScrCmd_GetStarterChoice",
       feature = "starter",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "reading the starter choice needs the starter application",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -2117,12 +2116,14 @@ return {
       widths = {},
     },
     [292] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_CheckRunningShoes",
       widths = {
         [1] = 2,
       },
     },
     [293] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GiveRunningShoes",
       widths = {},
     },
@@ -3608,6 +3609,7 @@ return {
       },
     },
     [484] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetWeekday",
       widths = {
         [1] = 2,

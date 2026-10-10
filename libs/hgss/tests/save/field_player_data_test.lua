@@ -45,6 +45,8 @@ local function record(overrides)
       money = 3000,
       badges = 0,
       nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
     },
     options = {
       textFrame = 0,
@@ -93,6 +95,8 @@ function T.unknown_keys_are_discarded_by_canonicalization()
       money = 3000,
       badges = 3,
       nationalDex = false,
+      runningShoes = true,
+      runningShoesLock = true,
       transientThing = 123,
     },
     options = {
@@ -112,10 +116,25 @@ function T.unknown_keys_are_discarded_by_canonicalization()
   Assert.keySet(validated, "options,profile", "canonicalization must drop the extra top-level key")
   Assert.keySet(
     validated.profile,
-    "badges,gender,money,name,nationalDex,trainerId",
+    "badges,gender,money,name,nationalDex,runningShoes,runningShoesLock,trainerId",
     "canonicalization must drop profile.transientThing"
   )
   Assert.keySet(validated.options, "battleStyle,textFrame,textSpeed", "canonicalization must drop options.futureThing")
+end
+
+function T.running_shoes_flags_must_be_booleans()
+  for _, field in ipairs({ "runningShoes", "runningShoesLock" }) do
+    for _, bad in ipairs({ "yes", 1 }) do
+      local validated, err = PlayerData.validate(record({ profile = { [field] = bad } }), context())
+      Assert.isNil(validated)
+      Assert.equal(err.code, "PLAYER_DATA_INVALID")
+    end
+    local missing = record()
+    missing.profile[field] = nil
+    local validated, err = PlayerData.validate(missing, context())
+    Assert.isNil(validated)
+    Assert.equal(err.code, "PLAYER_DATA_INVALID")
+  end
 end
 
 -- The native battle style defaults to shift for records predating the

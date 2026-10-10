@@ -50,7 +50,16 @@ local function record(saveId)
     facing = "south",
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1234, money = 3000, badges = 5, nationalDex = false },
+      profile = {
+        name = "GOLD",
+        gender = 0,
+        trainerId = 1234,
+        money = 3000,
+        badges = 5,
+        nationalDex = false,
+        runningShoes = false,
+        runningShoesLock = false,
+      },
       options = { textFrame = 1, textSpeed = "fast" },
     },
     world = {

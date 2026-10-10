@@ -1,6 +1,7 @@
 -- Coordinates HGSS shop sessions over the canonical profile, Bag service,
 -- and a copied MartSave bucket. No UI, disk, or event ownership lives here.
 
+local CivilDate = require("libs.hgss.src.field.CivilDate")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 
 ---@class MartService
@@ -65,24 +66,6 @@ local function popcount(mask)
     mask = math.floor(mask / 2)
   end
   return count
-end
-
-local function dayParts(date)
-  assert(
-    type(date) == "table" and integer(date.year, 1, 9999) and integer(date.month, 1, 12) and integer(date.day, 1, 31),
-    "LocalClock date must be Gregorian"
-  )
-  local year, month, day = date.year, date.month, date.day
-  local leap = year % 4 == 0 and (year % 100 ~= 0 or year % 400 == 0)
-  local monthDays = { 31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
-  assert(day <= monthDays[month], "LocalClock date has an invalid day of month")
-  local prior = year - 1
-  local ordinal = prior * 365 + math.floor(prior / 4) - math.floor(prior / 100) + math.floor(prior / 400) + day
-  for index = 1, month - 1 do
-    ordinal = ordinal + monthDays[index]
-  end
-  -- 0001-01-01 is Monday in the proleptic Gregorian calendar.
-  return ordinal, ordinal % 7
 end
 
 local function validateStock(stock, itemCatalog, catalog)
@@ -288,7 +271,7 @@ function MartService:processDate(date)
     end
     return { weekday = 0, dayOrdinal = self._bucket.lastProcessedDay }
   end
-  local ordinal, weekday = dayParts(date)
+  local ordinal, weekday = CivilDate.parts(date)
   local candidate = copy(self._bucket)
   if candidate.lastProcessedDay == 0 then
     candidate.lastProcessedDay = ordinal

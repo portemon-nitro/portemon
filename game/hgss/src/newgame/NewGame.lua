@@ -158,6 +158,8 @@ function NewGame.finalize(candidate, confirmation, options)
       money = candidate.profileDraft.money,
       badges = 0,
       nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
     },
     options = candidate.options,
   }, options.playerDataContext)
@@ -181,6 +183,8 @@ function NewGame.finalize(candidate, confirmation, options)
       money = draft.profile.money,
       badges = 0,
       nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
     },
     options = draft.options,
   }, options.playerDataContext)

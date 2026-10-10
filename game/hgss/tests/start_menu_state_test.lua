@@ -58,6 +58,13 @@ local function options(overrides)
     entries = entries(),
     interactive = interactive(),
     rememberedActionId = nil,
+    runningShoes = {
+      hitRect = FieldUiFixture.startMenuRunningShoes().hitRect,
+      state = function()
+        return { visible = false, locked = false }
+      end,
+      toggle = function() end,
+    },
     measureDisplay = overrides.measureDisplay or function()
       return measurement(640, 480)
     end,

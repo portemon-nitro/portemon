@@ -66,7 +66,7 @@ function T.v4_migration_adds_pc_state_without_changing_existing_values()
   Assert.isTrue(type(GameSave.migrateV5) == "function", "save migration must add the new persisted PC owners")
   local v6 = GameSave.migrateV6(GameSave.migrateV5(v5))
   Assert.equal(v6.schema, GameSave.LEGACY_V7_SCHEMA)
-  local migrated = GameSave.migrateV7(v6)
+  local migrated = GameSave.migrateV8(GameSave.migrateV7(v6))
 
   Assert.equal(v4.schema, "g4-game-save-v4", "migration does not mutate the input")
   Assert.equal(v4.mons.schema, originalMons.schema)

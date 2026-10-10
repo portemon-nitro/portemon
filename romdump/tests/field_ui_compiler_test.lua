@@ -19,6 +19,9 @@ local Lz10 = require("romdump.src.digest.Lz10")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local G2dBankFixture = require("tests.support.G2dBankFixture")
+
+local cellBank, animBank = G2dBankFixture.cellBank, G2dBankFixture.animBank
 
 local T = {}
 
@@ -317,78 +320,6 @@ end
 -- source tampering: cursor OBJ geometry, the background screen entry, the
 -- background palette colors, and a whole-member tamper hook.
 --
--- A multi-cell OBJ bank for the naming-screen fixture: each entry is one
--- cell carrying its own object list, with per-cell object offsets laid out
--- exactly like the single-cell helper above.
-local function cellBank(cellObjs)
-  local meta, attr = {}, {}
-  local offset = 0
-  for _, objs in ipairs(cellObjs) do
-    meta[#meta + 1] = u16(#objs) .. u16(0) .. u32(offset)
-    offset = offset + #objs * 6
-  end
-  for _, objs in ipairs(cellObjs) do
-    for _, o in ipairs(objs) do
-      attr[#attr + 1] = u16((o.y % 256) + (o.shape or 0) * 16384)
-        .. u16((o.x % 512) + (o.flipH and 4096 or 0) + (o.flipV and 8192 or 0) + (o.size or 0) * 16384)
-        .. u16(o.tile + o.pal * 4096)
-    end
-  end
-  return container("RECN", {
-    block(
-      "CEBK",
-      u16(#cellObjs)
-        .. u16(0)
-        .. u32(0x18)
-        .. u32(0)
-        .. string.rep("\0", 12)
-        .. table.concat(meta)
-        .. table.concat(attr)
-    ),
-  })
-end
-
--- A multi-animation bank: each entry is either a cell index or a list of
--- frames. Mirrors the source animation table while keeping simple fixtures
--- compact.
-local function animBank(animCells)
-  local count = #animCells
-  local totalFrames = 0
-  for _, frames in ipairs(animCells) do
-    totalFrames = totalFrames + (type(frames) == "table" and #frames or 1)
-  end
-  local anims, frames, data = {}, {}, {}
-  local frameCursor = 0
-  local dataCursor = 0
-  for _, sourceFrames in ipairs(animCells) do
-    local animationFrames = type(sourceFrames) == "table" and sourceFrames or { { cell = sourceFrames, duration = 3 } }
-    anims[#anims + 1] = u32(#animationFrames) .. u16(0) .. u16(1) .. u32(1) .. u32(frameCursor * 8)
-    for _, frame in ipairs(animationFrames) do
-      frames[#frames + 1] = u32(dataCursor * 2) .. u16(frame.duration) .. u16(0)
-      data[#data + 1] = u16(frame.cell)
-      frameCursor = frameCursor + 1
-      dataCursor = dataCursor + 1
-    end
-  end
-  local animsOffset = 0x18
-  local framesOffset = animsOffset + 16 * count
-  local dataOffset = framesOffset + 8 * totalFrames
-  return container("RNAN", {
-    block(
-      "ABNK",
-      u16(count)
-        .. u16(totalFrames)
-        .. u32(animsOffset)
-        .. u32(framesOffset)
-        .. u32(dataOffset)
-        .. string.rep("\0", 8)
-        .. table.concat(anims)
-        .. table.concat(frames)
-        .. table.concat(data)
-    ),
-  })
-end
-
 -- Nine distinct 16-color OBJ palette banks: bank b slot s decodes word
 -- b + s*32, so no two (bank, slot) pairs share a color and a bank mix-up is
 -- always visible. Nine banks also prove the palette-count argument is a
@@ -455,6 +386,19 @@ local function fixture(opts)
   startMenuMembers[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
   startMenuMembers[8] = lz10Wrap(subPaletteData())
   startMenuMembers[9] = lz10Wrap(charData(192))
+  -- The Running Shoes toggle's own cell/anim/char triple (members 68..70):
+  -- twelve single-object animations, each over a distinct tile and palette
+  -- bank of the SUB palette, so the four composed states render distinct art.
+  do
+    local shoesCells, shoesAnims = {}, {}
+    for index = 0, 11 do
+      shoesCells[index + 1] = { { x = 0, y = 0, tile = index % 16, pal = index % 4 } }
+      shoesAnims[index + 1] = index
+    end
+    startMenuMembers[69] = cellBank(shoesCells)
+    startMenuMembers[70] = animBank(shoesAnims)
+    startMenuMembers[71] = charData(16, 5)
+  end
   do
     local entries = {}
     for i = 1, 1024 do
@@ -463,7 +407,7 @@ local function fixture(opts)
     startMenuMembers[10] = lz10Wrap(screenDataWH(256, 256, entries))
   end
   local startMenu = {}
-  for i = 1, 65 do
+  for i = 1, 71 do
     startMenu[i] = startMenuMembers[i] or string.rep("\0", 4)
   end
 
@@ -2068,6 +2012,26 @@ function T.start_menu_icon_visuals_match_the_shared_animation_composition()
   Assert.equal(regionPixels(rgba, width, normal.rect), expected.pixels, "the normal visual packs the compositor pixels")
   local selectedPixels = regionPixels(rgba, width, selected.rect)
   Assert.isTrue(selectedPixels ~= expected.pixels, "the selected state renders through the selection palette")
+end
+
+-- The Running Shoes states compose through their own cell/anim/char triple
+-- and SUB palette: the four visuals (button off/on, indicator off/on) pack
+-- distinct source pixels into the shared atlas.
+function T.running_shoes_states_compose_four_distinct_visuals()
+  local romFs, sha1, hashLua = iconComposedFixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local shoes = assert(bundle.manifest.startMenu.runningShoes, "the start menu publishes the Running Shoes toggle")
+  local width, _, rgba = atlasRgba(bundle, FieldUiAssetCache.ASSET.START_MENU_ICONS)
+  local seen = {}
+  for _, part in ipairs({ shoes.button, shoes.indicator }) do
+    for _, state in ipairs({ part.off, part.on }) do
+      Assert.equal(state.asset, FieldUiAssetCache.ASSET.START_MENU_ICONS)
+      local pixels = regionPixels(rgba, width, state.rect)
+      Assert.isNil(seen[pixels], "each Running Shoes state packs its own pixels")
+      seen[pixels] = true
+    end
+  end
+  Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
 end
 
 function T.bag_female_variant_carries_its_own_composed_frame()
