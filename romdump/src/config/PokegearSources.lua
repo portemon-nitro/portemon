@@ -155,4 +155,167 @@ PokegearSources.flyPairs = {
 }
 PokegearSources.flyPalette = 62
 
+-- Native radio broadcast programs in source program order with the
+-- executable station schedule and the version-qualified daily and text
+-- constants the producer validates. Message bank/entry references are
+-- compiled token identities; no broadcast prose lives here. The runtime
+-- show modules own the matching retail policy constants; the pinned
+-- password token and reply references are proven to agree by the
+-- broadcast conformance vectors.
+PokegearSources.broadcastVersions = { heartgold = true, soulsilver = true }
+
+PokegearSources.broadcastShows = {
+  { key = "radio.music", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.talk", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.search-party", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.serial-drama", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.buena", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.trainer-profiles", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.town-people", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.poke-flute", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.unown", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.rocket", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.mahogany", versions = { heartgold = true, soulsilver = true } },
+  { key = "radio.commercial", versions = { heartgold = true, soulsilver = true } },
+}
+
+-- Executable station schedule: fixed stations keep one show, one station
+-- alternates two shows by even/odd hour, and one cycles three shows by
+-- hour modulo three.
+PokegearSources.broadcastSchedule = {
+  fixed = {
+    [0] = "radio.music",
+    [1] = "radio.talk",
+    [4] = "radio.poke-flute",
+    [5] = "radio.unown",
+    [6] = "radio.rocket",
+    [7] = "radio.mahogany",
+  },
+  alternating = { station = 2, period = 2, shows = { "radio.trainer-profiles", "radio.town-people" } },
+  cycling = { station = 3, period = 3, shows = { "radio.search-party", "radio.serial-drama", "radio.buena" } },
+}
+
+-- Per-show message token references by semantic show key. Banks and
+-- entries are field message identities, one-based entry numbers.
+PokegearSources.broadcastMessages = {
+  ["radio.music"] = {
+    title = { bank = 500, entry = 1 },
+    intro = { bank = 500, entry = 2 },
+    march = { bank = 500, entry = 10 },
+    lullaby = { bank = 500, entry = 11 },
+    hoenn = { bank = 500, entry = 12 },
+    sinnoh = { bank = 500, entry = 13 },
+    cardSelection = { bank = 500, entry = 14 },
+    marchAlternate = { bank = 500, entry = 15 },
+  },
+  ["radio.talk"] = {
+    title = { bank = 501, entry = 1 },
+    intro = { bank = 501, entry = 2 },
+    outbreak = { bank = 501, entry = 3 },
+    detail = { bank = 501, entry = 5 },
+    pairBase = { bank = 502, entryBase = 1, pairCount = 5 },
+  },
+  ["radio.search-party"] = {
+    title = { bank = 503, entry = 1 },
+    lines = { bank = 503, firstEntry = 2, lineCount = 4 },
+  },
+  ["radio.serial-drama"] = {
+    title = { bank = 504, entry = 1 },
+    lines = { bank = 504, firstEntry = 2, lineCount = 4 },
+  },
+  ["radio.buena"] = {
+    intro = { bank = 411, entry = 1 },
+    introContinue = { bank = 411, entry = 2 },
+    message4 = { bank = 411, entry = 3 },
+    tokenBank = 66,
+    tokenBase = 40,
+    replyBank = 411,
+    replyWithCard = 4,
+    replyWithoutCard = 5,
+  },
+  ["radio.trainer-profiles"] = {
+    title = { bank = 505, entry = 1 },
+    lines = { bank = 505, firstEntry = 2, lineCount = 4 },
+  },
+  ["radio.town-people"] = {
+    title = { bank = 506, entry = 1 },
+    lines = { bank = 506, firstEntry = 2, lineCount = 4 },
+  },
+  ["radio.poke-flute"] = {
+    title = { bank = 507, entry = 1 },
+    lines = { bank = 507, firstEntry = 2, lineCount = 2 },
+  },
+  ["radio.unown"] = {
+    title = { bank = 508, entry = 1 },
+    lines = { bank = 508, firstEntry = 2, lineCount = 2 },
+  },
+  ["radio.rocket"] = {
+    title = { bank = 509, entry = 1 },
+    lines = { bank = 509, firstEntry = 2, lineCount = 2 },
+    takeoverLines = { bank = 509, firstEntry = 4, lineCount = 2 },
+  },
+  ["radio.mahogany"] = {
+    title = { bank = 510, entry = 1 },
+    lines = { bank = 510, firstEntry = 2, lineCount = 2 },
+  },
+  ["radio.commercial"] = {
+    title = { bank = 511, entry = 1 },
+    lines = { bank = 511, firstEntry = 2, lineCount = 2 },
+  },
+}
+
+-- Daily broadcast constants: the shared password identity modulus, the
+-- card-selection table shape, and the talk flavor moduli.
+PokegearSources.broadcastDaily = {
+  passwordModulo = 30,
+  cardSelectionDivisor = 25000,
+  cardSelectionSlice = 1000,
+  cardSelectionEntries = 25,
+  talkPairs = 5,
+  talkStepDivisor = 3,
+  talkPhraseModulo = 13,
+}
+
+-- Talk broadcast landmark selection: the eligible landmark token set with
+-- its explicit filter list and the flypoint-gated tokens, which stay shut
+-- without the real flypoint facts.
+PokegearSources.broadcastTalkMaps = {
+  eligible = { 3, 5, 6, 9, 11, 14, 15, 19, 21, 22, 26, 29, 47, 48 },
+  filtered = { [9] = true, [22] = true },
+  gated = { [47] = true, [48] = true },
+}
+
+-- Line progression and reception constants: the initial print delay, the
+-- in-episode scroll cadence, the post-episode tail, and the reception
+-- static parameter applied to the display copy only.
+PokegearSources.broadcastText = {
+  initialDelayFrames = 45,
+  scrollFrames = 8,
+  postEpisodeScrollFrames = 16,
+  postEpisodeDelayFrames = 15,
+  staticParameter = 70,
+}
+
+-- Version-qualified catalog show records for one game version, in source
+-- program order. Unknown versions fail loudly; a version carrying no
+-- show is a producer error, never an empty broadcast band.
+---@param versionId string
+---@return table<integer, table<string, string>>
+function PokegearSources.broadcastShowRecords(versionId)
+  assert(type(versionId) == "string" and versionId ~= "", "broadcast show records need a game version")
+  assert(
+    PokegearSources.broadcastVersions[versionId] == true,
+    "broadcast show records name a supported game version, got " .. versionId
+  )
+  local records = {}
+  for _, show in ipairs(PokegearSources.broadcastShows) do
+    assert(type(show.key) == "string" and show.key ~= "", "broadcast shows carry semantic keys")
+    if show.versions[versionId] == true then
+      records[#records + 1] = { key = show.key }
+    end
+  end
+  assert(#records > 0, "broadcast show records cover the native program set for " .. versionId)
+  return records
+end
+
 return PokegearSources

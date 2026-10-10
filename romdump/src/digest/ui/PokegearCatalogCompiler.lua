@@ -337,7 +337,7 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
     locations = {},
     flypoints = {},
     reception = {},
-    shows = {},
+    shows = PokegearSources.broadcastShowRecords(versionId),
     radioEffects = {},
   }
   return {
