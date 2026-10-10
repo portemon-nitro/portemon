@@ -9,6 +9,8 @@ local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local Party = require("libs.mons.src.Party")
+local Mon = require("libs.mons.src.Mon")
+local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local SaveEditorMonDraft = require("app.src.saveeditor.SaveEditorMonDraft")
 
 local SaveEditorSession = {}
@@ -20,6 +22,9 @@ local VALUE_INVALID = "SAVE_EDITOR_VALUE_INVALID"
 local BUSY = "SAVE_EDITOR_BUSY"
 local DRAFT_PENDING = "SAVE_EDITOR_DRAFT_PENDING"
 local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
+local PRESET_INVALID = "SAVE_EDITOR_PRESET_INVALID"
+local PRESET_STALE = "SAVE_EDITOR_PRESET_STALE"
+local PRESET_UNAVAILABLE = "SAVE_EDITOR_PRESET_UNAVAILABLE"
 
 ---@class SaveEditorSessionOptions
 ---@field record table<string, unknown>
@@ -52,6 +57,7 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field frameIndex integer
 ---@field flags table<integer, boolean>
 ---@field location SaveEditorLocation
+---@field facing string
 ---@field originalLocation SaveEditorLocation
 ---@field dirtySections SaveEditorDirtySections
 ---@field locationChanged boolean
@@ -73,6 +79,7 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field setFrameIndex fun(self: SaveEditorSession, value: unknown): table<string, unknown>
 ---@field setFlag fun(self: SaveEditorSession, name: unknown, value: unknown): table<string, unknown>
 ---@field setLocation fun(self: SaveEditorSession, placement: SaveEditorLocation): table<string, unknown>
+---@field applyPreset fun(self: SaveEditorSession, preset: SaveEditorPresetData, options: table<string, unknown>): table<string, unknown>
 ---@field save fun(self: SaveEditorSession, hasUnappliedDraft: boolean?): table<string, unknown>
 ---@field discard fun(self: SaveEditorSession): boolean
 ---@field discardSection fun(self: SaveEditorSession, section: string): boolean
@@ -82,6 +89,7 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field private _frameIndex integer
 ---@field private _frameIndexes table<integer, boolean>
 ---@field private _location SaveEditorLocation
+---@field private _facing string
 ---@field private _events FieldEventState
 ---@field private _symbols table<string, unknown>
 ---@field private _saveStore table<string, unknown>
@@ -271,6 +279,40 @@ local function flagsFrom(events)
   return copy(events:serialize().flags)
 end
 
+---@param left table<integer, boolean>
+---@param right table<integer, boolean>
+---@return boolean
+local function sameFlags(left, right)
+  for flagId, value in pairs(left) do
+    if (value == true) ~= (right[flagId] == true) then
+      return false
+    end
+  end
+  for flagId, value in pairs(right) do
+    if (value == true) ~= (left[flagId] == true) then
+      return false
+    end
+  end
+  return true
+end
+
+---@param left table<integer, integer>
+---@param right table<integer, integer>
+---@return boolean
+local function sameVariables(left, right)
+  for varId, value in pairs(left) do
+    if value ~= (right[varId] or 0) then
+      return false
+    end
+  end
+  for varId, value in pairs(right) do
+    if value ~= (left[varId] or 0) then
+      return false
+    end
+  end
+  return true
+end
+
 ---@param record table<string, unknown>
 ---@param money integer
 ---@param events FieldEventState
@@ -279,7 +321,9 @@ local function dirtyAgainst(record, money, events)
   local playerData = record.playerData --[[@as table<string, unknown>]]
   local profile = playerData.profile --[[@as table<string, unknown>]]
   local world = record.world --[[@as table<string, unknown>]]
-  return money ~= profile.money, not equal(events:serialize().flags, world.flags)
+  local serialized = events:serialize()
+  return money ~= profile.money,
+    not sameFlags(serialized.flags, world.flags) or not sameVariables(serialized.vars, world.variables)
 end
 
 ---@param options SaveEditorSessionOptions
@@ -363,6 +407,7 @@ function SaveEditorSession.new(options)
     _frameIndex = frameIndex,
     _frameIndexes = frameIndexes,
     _location = locationSnapshot(baseline),
+    _facing = baseline.facing --[[@as string]],
     _events = events,
     _symbols = options.symbols or FieldScriptSymbols,
     _saveStore = options.saveStore,
@@ -402,6 +447,7 @@ function SaveEditorSession:snapshot()
     frameIndex = self._frameIndex,
     flags = flagsFrom(self._events),
     location = stagedLocation,
+    facing = self._facing,
     originalLocation = copy(baselineLocation),
     locationChanged = locationChanged,
     dirtySections = {
@@ -410,7 +456,7 @@ function SaveEditorSession:snapshot()
       flags = dirtyFlags,
       party = partyDirty,
       bag = bagDirty,
-      location = locationChanged,
+      location = locationChanged or self._facing ~= self._baseline.facing,
     },
     revision = self._revision,
   }
@@ -725,6 +771,317 @@ function SaveEditorSession:setFlag(name, value)
   return success(true)
 end
 
+---@param preset SaveEditorPresetData
+---@param options { expectedRevision: integer, placement?: SaveEditorLocation, metLocation: integer, date: table<string, unknown> }
+---@return table<string, unknown>
+function SaveEditorSession:applyPreset(preset, options)
+  if self._busy then
+    return failure(PRESET_UNAVAILABLE, "A save operation is already in progress.", {})
+  end
+  if type(options) ~= "table" then
+    return failure(PRESET_INVALID, "Preset application options are required.", {})
+  end
+  if not finiteInteger(options.expectedRevision) or options.expectedRevision ~= self._revision then
+    return failure(PRESET_STALE, "The staged save changed before the preset could be applied.", {
+      expectedRevision = options.expectedRevision,
+      actualRevision = self._revision,
+    })
+  end
+  if type(preset) ~= "table" or preset.schema ~= "portemon-save-preset-v1" then
+    return failure(PRESET_INVALID, "The preset data is invalid or unsupported.", {})
+  end
+  if
+    type(options.metLocation) ~= "number"
+    or not finiteInteger(options.metLocation)
+    or type(options.date) ~= "table"
+  then
+    return failure(PRESET_INVALID, "Preset Pokemon creation requires a valid location and date.", {})
+  end
+  local requestLocation = preset.location
+  if (requestLocation == nil) ~= (options.placement == nil) then
+    return failure(PRESET_INVALID, "A resolved placement is required exactly when a preset location is present.", {})
+  end
+  if requestLocation ~= nil then
+    if
+      type(requestLocation) ~= "table"
+      or type(requestLocation.map) ~= "string"
+      or not finiteInteger(requestLocation.x)
+      or not finiteInteger(requestLocation.z)
+      or not validLocation(options.placement)
+      or options.placement.fieldX ~= requestLocation.x
+      or options.placement.fieldZ ~= requestLocation.z
+    then
+      return failure(PRESET_INVALID, "The resolved placement does not match the preset map coordinates.", {
+        map = type(requestLocation) == "table" and requestLocation.map or nil,
+      })
+    end
+    local facing = requestLocation.facing
+    if facing ~= nil and facing ~= "north" and facing ~= "south" and facing ~= "east" and facing ~= "west" then
+      return failure(PRESET_INVALID, "The preset facing is invalid.", { facing = facing })
+    end
+  end
+
+  local ok, result = pcall(function()
+    local eventCandidate = FieldEventState.new(self._events:serialize())
+    local flagsByName = self._symbols.flagsByName
+    local variablesByName = self._symbols.variablesByName
+    assert(type(flagsByName) == "table", "flag symbol catalog is required")
+    assert(type(variablesByName) == "table", "variable symbol catalog is required")
+
+    local flagNames = {}
+    for name in pairs(preset.flags or {}) do
+      flagNames[#flagNames + 1] = name
+    end
+    table.sort(flagNames)
+    for _, name in ipairs(flagNames) do
+      local value = preset.flags[name]
+      local flagId = flagsByName[name]
+      if type(name) ~= "string" or not finiteInteger(flagId) or flagId < 0 or flagId > 0xFFFF then
+        error(Errors.new(PRESET_INVALID, "The preset flag is not in the symbol catalog.", { name = name }))
+      end
+      if type(value) ~= "boolean" then
+        error(Errors.new(PRESET_INVALID, "The preset flag value must be boolean.", { name = name }))
+      end
+      if value then
+        eventCandidate:setFlag(flagId)
+      else
+        eventCandidate:clearFlag(flagId)
+      end
+    end
+    local variableNames = {}
+    for name in pairs(preset.variables or {}) do
+      variableNames[#variableNames + 1] = name
+    end
+    table.sort(variableNames)
+    for _, name in ipairs(variableNames) do
+      local value = preset.variables[name]
+      local varId = variablesByName[name]
+      if type(name) ~= "string" or not finiteInteger(varId) or varId < 0 or varId > 0xFFFF then
+        error(Errors.new(PRESET_INVALID, "The preset variable is not in the symbol catalog.", { name = name }))
+      end
+      if not finiteInteger(value) or value < 0 or value > 0xFFFF then
+        error(Errors.new(PRESET_INVALID, "The preset variable value must be uint16.", { name = name }))
+      end
+      eventCandidate:setVar(varId, value)
+    end
+    local serializedEvents, eventError = FieldEventState.validate(eventCandidate:serialize())
+    if serializedEvents == nil then
+      error(assert(eventError))
+    end
+    eventCandidate = FieldEventState.new(serializedEvents)
+
+    local bagCandidate = HgssBagService.new({
+      catalog = self._bagService:catalog(),
+      bag = self._bagService:capture(),
+    })
+    local itemKeys = {}
+    for itemKey in pairs(preset.items or {}) do
+      itemKeys[#itemKeys + 1] = itemKey
+    end
+    table.sort(itemKeys)
+    for _, itemKey in ipairs(itemKeys) do
+      local minimum = preset.items[itemKey]
+      if itemKey == "NONE" then
+        error(Errors.new(PRESET_INVALID, "NONE is not a Bag item.", { item = itemKey }))
+      end
+      local itemOk, itemError = pcall(function()
+        bagCandidate:catalog():item(itemKey)
+      end)
+      if not itemOk then
+        if Errors.is(itemError) then
+          error(Errors.new(PRESET_INVALID, "The item is not available in the Bag catalog.", {
+            item = itemKey,
+            reason = Errors.format(itemError),
+          }))
+        end
+        error(itemError, 0)
+      end
+      if not finiteInteger(minimum) or minimum <= 0 then
+        error(Errors.new(PRESET_INVALID, "The item minimum must be a positive integer.", { item = itemKey }))
+      end
+      local current = bagCandidate:quantity(itemKey)
+      if current < minimum and not bagCandidate:add(itemKey, minimum - current) then
+        error(Errors.new(PRESET_INVALID, "The requested item minimum exceeds Bag capacity.", {
+          item = itemKey,
+          quantity = minimum,
+        }))
+      end
+    end
+    local validatedBag, bagError = BagSave.validate(bagCandidate:capture(), bagCandidate:catalog())
+    if validatedBag == nil then
+      error(assert(bagError))
+    end
+    bagCandidate = HgssBagService.new({ catalog = bagCandidate:catalog(), bag = validatedBag })
+
+    local monCandidate = newMonService(self._monServiceOptions, self._monService:capture())
+    local reserved = {}
+    local chosenLead
+    local function applyMonSpec(spec, path)
+      if type(spec) ~= "table" or type(spec.species) ~= "string" or spec.species == "" then
+        error(Errors.new(PRESET_INVALID, "A party request requires a species.", { path = path }))
+      end
+      local slot0
+      for candidateSlot = 0, monCandidate:partyCount() - 1 do
+        if not reserved[candidateSlot] and monCandidate:partyMon(candidateSlot).species == spec.species then
+          slot0 = candidateSlot
+          break
+        end
+      end
+      if slot0 == nil then
+        if monCandidate:partyCount() >= 6 then
+          error(Errors.new(PRESET_INVALID, "The party is full and has no unreserved matching species.", {
+            path = path,
+            species = spec.species,
+          }))
+        end
+        local added = monCandidate:giveMon({
+          species = spec.species,
+          level = spec.level or 1,
+          location = options.metLocation,
+          date = copy(options.date),
+        })
+        if not added then
+          error(Errors.new(PRESET_INVALID, "The party could not accept the requested Pokemon.", {
+            path = path,
+            species = spec.species,
+          }))
+        end
+        slot0 = monCandidate:partyCount() - 1
+      end
+      reserved[slot0] = true
+      if chosenLead == nil and path == "party.lead" then
+        chosenLead = slot0
+      end
+
+      local draft = SaveEditorMonDraft.new({
+        mode = "edit",
+        slot0 = slot0,
+        basePartyRevision = monCandidate:partyRevision(),
+        record = monCandidate:partyMon(slot0),
+        context = self._monValidationContext,
+      })
+      if spec.level ~= nil and not draft:setLevel(spec.level) then
+        error(Errors.new(PRESET_INVALID, "The requested Pokemon level is invalid.", { path = path .. ".level" }))
+      end
+      if spec.form ~= nil and not draft:setForm(spec.form) then
+        error(Errors.new(PRESET_INVALID, "The requested Pokemon form is invalid.", { path = path .. ".form" }))
+      end
+      if spec.heldItem ~= nil and not draft:setScalar("heldItem", spec.heldItem) then
+        error(Errors.new(PRESET_INVALID, "The requested held item is invalid.", { path = path .. ".heldItem" }))
+      end
+      local updated = draft:record()
+      if spec.fatefulEncounter ~= nil then
+        updated.fatefulEncounter = spec.fatefulEncounter
+      end
+      if spec.eggLocation ~= nil then
+        local egg = updated.egg --[[@as table<string, unknown>]]
+        egg.location = spec.eggLocation
+      end
+      local valid, canonical = pcall(Mon.validate, updated, self._monValidationContext)
+      if not valid then
+        if Errors.is(canonical) then
+          error(Errors.new(PRESET_INVALID, "The requested Pokemon fields are invalid.", {
+            path = path,
+            reason = Errors.format(canonical),
+          }))
+        end
+        error(canonical, 0)
+      end
+      local legal, legality = pcall(NativeLegality.project, canonical, self._monValidationContext)
+      if not legal then
+        if Errors.is(legality) then
+          error(Errors.new(PRESET_INVALID, "The requested Pokemon is not representable.", {
+            path = path,
+            reason = Errors.format(legality),
+          }))
+        end
+        error(legality, 0)
+      end
+      local preparation, preparationError =
+        monCandidate:preparePartyChanges(monCandidate:partyRevision(), { { slot = slot0, mon = canonical } })
+      if preparation == nil or not preparation.isCurrent() then
+        error(Errors.new(PRESET_STALE, "The private Party candidate changed during preset staging.", {
+          path = path,
+          reason = preparationError,
+        }))
+      end
+      preparation.publish()
+    end
+    if preset.party ~= nil then
+      if preset.party.lead ~= nil then
+        applyMonSpec(preset.party.lead, "party.lead")
+      end
+      for index, spec in ipairs(preset.party.contains or {}) do
+        applyMonSpec(spec, "party.contains[" .. index .. "]")
+      end
+      if chosenLead ~= nil and chosenLead ~= 0 then
+        monCandidate:swapPartyMons(0, chosenLead)
+      end
+    end
+
+    local nextLocation = self._location
+    if requestLocation ~= nil and not sameLocation(self._location, options.placement) then
+      nextLocation = locationSnapshot(options.placement)
+    end
+    local nextFacing = requestLocation ~= nil and requestLocation.facing or nil
+    if nextFacing == nil then
+      nextFacing = self._facing
+    end
+
+    local eventsChanged = not equal(eventCandidate:serialize(), self._events:serialize())
+    local bagChanged = not equal(bagCandidate:capture(), self._bagService:capture())
+    local partyChanged = not equal(monCandidate:capture(), self._monService:capture())
+    local locationChanged = not sameLocation(nextLocation, self._location)
+    local facingChanged = nextFacing ~= self._facing
+    if self._busy then
+      error(Errors.new(PRESET_UNAVAILABLE, "A save operation started during preset staging.", {}))
+    end
+    if self._revision ~= options.expectedRevision then
+      error(Errors.new(PRESET_STALE, "The staged save changed during preset staging.", {
+        expectedRevision = options.expectedRevision,
+        actualRevision = self._revision,
+      }))
+    end
+    local changed = eventsChanged or bagChanged or partyChanged or locationChanged or facingChanged
+    if not changed then
+      return success(false)
+    end
+    return {
+      changed = true,
+      events = eventCandidate,
+      bag = bagCandidate,
+      party = monCandidate,
+      location = nextLocation,
+      facing = nextFacing,
+      partyChanged = partyChanged,
+    }
+  end)
+  if not ok then
+    if Errors.is(result) then
+      if result.code == PRESET_INVALID or result.code == PRESET_STALE or result.code == PRESET_UNAVAILABLE then
+        return { ok = false, error = result }
+      end
+      return failure(PRESET_INVALID, "The preset could not be staged.", { reason = Errors.format(result) })
+    end
+    error(result, 0)
+  end
+  if result.ok == true then
+    return result
+  end
+
+  self._events = result.events
+  self._bagService = result.bag
+  self._monService = result.party
+  self._location = result.location
+  self._facing = result.facing
+  if result.partyChanged then
+    self._partyRevision = self._partyRevision + 1
+  end
+  self._revision = self._revision + 1
+  self._readCache = nil
+  return success(true)
+end
+
 ---@param placement SaveEditorLocation
 ---@return table<string, unknown>
 function SaveEditorSession:setLocation(placement)
@@ -765,6 +1122,8 @@ function SaveEditorSession:captureCandidate()
   playerOptions.textFrame = self._frameIndex
   local world = candidate.world --[[@as table<string, unknown>]]
   world.flags = flagsFrom(self._events)
+  world.variables = self._events:serialize().vars
+  candidate.facing = self._facing
   candidate.mons = self._monService:capture()
   candidate.bag = self._bagService:capture()
   applyLocation(candidate, self._location, self._baseline)
@@ -857,8 +1216,9 @@ local function resetSection(self, section)
     end
     return false
   elseif section == "Location" then
-    if not sameLocation(self._location, locationSnapshot(self._baseline)) then
+    if not sameLocation(self._location, locationSnapshot(self._baseline)) or self._facing ~= self._baseline.facing then
       self._location = locationSnapshot(self._baseline)
+      self._facing = self._baseline.facing --[[@as string]]
       return true
     end
     return false

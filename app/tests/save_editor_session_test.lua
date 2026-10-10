@@ -40,6 +40,25 @@ local function dirtyEverything(session)
   location.fieldX = location.fieldX + 1
   local moved = session:setLocation(location)
   Assert.isTrue(moved.ok, "a neighboring field position stages cleanly")
+  local current = session:snapshot()
+  local preset = session:applyPreset({
+    schema = "portemon-save-preset-v1",
+    name = "Progress and facing",
+    description = "Stage a variable and a facing for reset coverage.",
+    variables = { VAR_UNK_40FE = 1 },
+    location = {
+      map = "MAP_TEST",
+      x = current.location.fieldX,
+      z = current.location.fieldZ,
+      facing = "north",
+    },
+  }, {
+    expectedRevision = current.revision,
+    placement = current.location,
+    metLocation = 7,
+    date = { year = 2000, month = 1, day = 1 },
+  })
+  Assert.isTrue(preset.ok, "a variable and facing stage through the atomic preset operation")
   local dirty = session:snapshot().dirtySections
   Assert.isTrue(dirty.money, "money is staged")
   Assert.isTrue(dirty.frame, "dialogue frame is staged")
@@ -47,6 +66,7 @@ local function dirtyEverything(session)
   Assert.isTrue(dirty.party, "party is staged")
   Assert.isTrue(dirty.bag, "bag is staged")
   Assert.isTrue(dirty.location, "location is staged")
+  Assert.equal(session:snapshot().facing, "north", "the preset facing is staged")
 end
 
 local function assertRevisionBumpedOnce(session, before)
@@ -90,6 +110,7 @@ end
 
 function T.tests.progress_reset_restores_flags_but_keeps_other_sections()
   local session = openSession()
+  local savedVariables = session:captureCandidate().world.variables
   dirtyEverything(session)
   local before = session:snapshot().revision
 
@@ -97,16 +118,23 @@ function T.tests.progress_reset_restores_flags_but_keeps_other_sections()
 
   local snapshot = session:snapshot()
   Assert.isFalse(snapshot.dirtySections.flags, "field flags are clean")
+  Assert.deepEqual(
+    session:captureCandidate().world.variables,
+    savedVariables,
+    "Progress reset restores field variables with the flags"
+  )
   Assert.isTrue(snapshot.dirtySections.money, "money stays staged")
   Assert.isTrue(snapshot.dirtySections.frame, "dialogue frame stays staged")
   Assert.isTrue(snapshot.dirtySections.party, "party stays staged")
   Assert.isTrue(snapshot.dirtySections.bag, "bag stays staged")
   Assert.isTrue(snapshot.dirtySections.location, "location stays staged")
+  Assert.equal(snapshot.facing, "north", "Progress reset preserves staged location facing")
   assertRevisionBumpedOnce(session, before)
 end
 
 function T.tests.location_reset_restores_the_saved_destination_but_keeps_other_sections()
   local session = openSession()
+  local savedFacing = session:snapshot().facing
   dirtyEverything(session)
   local savedLocation = session:snapshot().originalLocation
   local before = session:snapshot().revision
@@ -115,6 +143,7 @@ function T.tests.location_reset_restores_the_saved_destination_but_keeps_other_s
 
   local snapshot = session:snapshot()
   Assert.deepEqual(snapshot.location, savedLocation, "the staged destination returns to its saved position")
+  Assert.equal(snapshot.facing, savedFacing, "Location reset restores the saved facing")
   Assert.isFalse(snapshot.dirtySections.location, "location is clean")
   Assert.isTrue(snapshot.dirtySections.money, "money stays staged")
   Assert.isTrue(snapshot.dirtySections.flags, "field flags stay staged")
