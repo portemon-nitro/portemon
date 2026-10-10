@@ -494,205 +494,310 @@ local function translateMoveUsed(self, event)
   enqueueMessage(self, userName .. " used " .. moveName(self, user or -1, moveKey) .. "!", false)
 end
 
+---@param self BattleTimeline
+---@param target unknown combatant identity from an event payload
+---@return string
+local function nameOrBattler(self, target)
+  return type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
+end
+
+---@param event table<string, unknown> sanitized kernel event
+---@return string
+local function causeMoveKey(event)
+  local cause = event.cause --[[@as table<string, unknown>]]
+  return type(cause.key) == "string" and cause.key or "strike"
+end
+
+---@param self BattleTimeline
+---@param combatant integer combatant to reveal
+local function enqueueReveal(self, combatant)
+  enqueue(self, {
+    kind = "reveal",
+    combatant = combatant,
+    duration = BattleTimeline.VANISH_TICKS,
+    requiresImage = self:_imageKeyFor(combatant),
+  })
+end
+
+-- Narrates one target-addressed event and follows it with the checkpoint
+-- health motion; an event without a numeric target stays silent.
+---@param field string payload field naming the target combatant
+---@param suffix string narration appended to the target's name
+---@return fun(self: BattleTimeline, event: table<string, unknown>)
+local function hurtOrHealed(field, suffix)
+  local function translate(self, event)
+    local target = (event.payload --[[@as table<string, unknown>]])[field]
+    if type(target) == "number" then
+      enqueueMessage(self, combatName(self, target --[[@as integer]]) .. suffix, false)
+      enqueueCheckpointHealth(self, target --[[@as integer]], event)
+    end
+  end
+  return translate
+end
+
+-- Narrates a target-addressed event whose sentence is the target's name
+-- followed by a fixed suffix.
+---@param field string payload field naming the target combatant
+---@param suffix string
+---@return fun(self: BattleTimeline, event: table<string, unknown>)
+local function targetMessage(field, suffix)
+  local function translate(self, event)
+    local target = (event.payload --[[@as table<string, unknown>]])[field]
+    enqueueMessage(self, nameOrBattler(self, target) .. suffix, false)
+  end
+  return translate
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateFlee(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  if payload.escaped == true then
+    -- The terminal result owns the successful-escape narration; the
+    -- event itself only yields its moment in order.
+    enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
+  else
+    enqueueMessage(self, nameOrBattler(self, payload.combatant) .. " could not escape!", false)
+  end
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateStage(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local who = nameOrBattler(self, payload.target)
+  local before = payload.before
+  local after = payload.after
+  if type(before) == "number" and type(after) == "number" and after ~= before then
+    local direction = after > before and "rose" or "fell"
+    enqueueMessage(self, who .. "'s " .. tostring(payload.stat) .. " " .. direction .. ".", false)
+  else
+    enqueueMessage(self, who .. " felt the effect.", false)
+  end
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateItem(self, event)
+  local item = (event.payload --[[@as table<string, unknown>]]).item
+  enqueueMessage(self, "Used " .. tostring(type(item) == "string" and item or "an item") .. ".", false)
+end
+
+-- Narrates a move learn-or-decline outcome named by the payload field
+-- holding the move key.
+---@param moveField string payload field naming the move
+---@param verb string past-tense outcome phrase
+---@param ender string closing punctuation
+---@param targetField string payload field naming the combatant
+---@return fun(self: BattleTimeline, event: table<string, unknown>)
+local function moveOutcome(targetField, moveField, verb, ender)
+  local function translate(self, event)
+    local payload = event.payload --[[@as table<string, unknown>]]
+    local target = payload[targetField]
+    local move = type(payload[moveField]) == "string" and payload[moveField] or "a move"
+    enqueueMessage(
+      self,
+      nameOrBattler(self, target) .. " " .. verb .. " " .. moveName(self, target or -1, move --[[@as string]]) .. ender,
+      false
+    )
+  end
+  return translate
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateTransformed(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local who = nameOrBattler(self, payload.target)
+  local copied = payload.copiedFrom
+  if type(copied) == "number" then
+    enqueueMessage(self, who .. " transformed into " .. combatName(self, copied --[[@as integer]]) .. "!", false)
+  else
+    enqueueMessage(self, who .. " transformed.", false)
+  end
+end
+
+-- Replacements name their departure and arrival combatants; older shapes
+-- named a withdrawing battler plus its incoming record.
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateSwitch(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local departed = payload.from
+  if type(departed) ~= "number" then
+    departed = payload.combatant
+  end
+  if type(departed) == "number" then
+    enqueueMessage(self, combatName(self, departed --[[@as integer]]) .. " was withdrawn.", false)
+    enqueue(self, {
+      kind = "withdraw",
+      combatant = departed,
+      duration = BattleTimeline.VANISH_TICKS,
+      requiresImage = self:_imageKeyFor(departed),
+    })
+  end
+  local incoming = payload.to
+  if type(incoming) ~= "number" then
+    incoming = payload.replacement
+  end
+  if type(incoming) ~= "number" then
+    incoming = payload.incoming
+  end
+  if type(incoming) == "number" then
+    enqueueReveal(self, incoming --[[@as integer]])
+  end
+end
+
+local STATUS_GATE_MESSAGES = {
+  sleep = " is fast asleep.",
+  paralysis = " is paralyzed and cannot move.",
+  freeze = " is frozen solid.",
+}
+
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateStatusGate(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local who = nameOrBattler(self, payload.combatant)
+  local outcome = payload.outcome
+  local text
+  if outcome == "woke" then
+    text = " woke up."
+  elseif outcome == "thawed" then
+    text = " thawed out."
+  else
+    text = STATUS_GATE_MESSAGES[tostring(payload.key)] or " cannot move."
+  end
+  enqueueMessage(self, who .. text, false)
+end
+
+-- Forcing and item moves narrate through their target: any following
+-- switch event owns the withdrawal/reveal presentation.
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateIntent(self, event)
+  local target = (event.payload --[[@as table<string, unknown>]]).target
+  local who = nameOrBattler(self, target)
+  enqueueMessage(self, who .. " was hit by " .. moveName(self, target or -1, causeMoveKey(event)) .. ".", false)
+end
+
+-- Reserve arrivals outside the replacement switch path still reveal their
+-- battler; any withdrawal narration belongs to the switch.
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateJoin(self, event)
+  local incoming = (event.payload --[[@as table<string, unknown>]]).combatant
+  if type(incoming) == "number" then
+    enqueueReveal(self, incoming --[[@as integer]])
+  end
+end
+
+-- Pure action bookkeeping with no observable change: the matching strike,
+-- switch, item, or flee event already carries the moment.
+local function translateSilent() end
+
+local function translateMissed(self)
+  enqueueMessage(self, "The attack missed!", false)
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateStatus(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  enqueueMessage(
+    self,
+    nameOrBattler(self, payload.target) .. " was afflicted with " .. tostring(payload.key) .. ".",
+    false
+  )
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateCured(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  enqueueMessage(self, nameOrBattler(self, payload.target) .. " recovered from " .. tostring(payload.key) .. ".", false)
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateTick(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local target = payload.combatant
+  if type(target) == "number" then
+    enqueueMessage(
+      self,
+      combatName(self, target --[[@as integer]]) .. " is hurt by " .. tostring(payload.key) .. ".",
+      false
+    )
+    enqueueCheckpointHealth(self, target --[[@as integer]], event)
+  end
+end
+
+local translateRegained = hurtOrHealed("target", " regained health.")
+local translateRecoil = hurtOrHealed("target", " was hurt by recoil.")
+local translateDrained = hurtOrHealed("target", " absorbed health.")
+local translateLeveled = hurtOrHealed("target", "'s health was evened out.")
+local translateLearn = moveOutcome("combatant", "move", "learned", "!")
+local translateDeclined = moveOutcome("combatant", "move", "did not learn", ".")
+local translateSketched = moveOutcome("target", "copied", "sketched", ".")
+local translateCharged = targetMessage("target", " began to charge.")
+local translateProtected = targetMessage("target", " protected itself.")
+local translateSubstituteBroke = targetMessage("target", "'s substitute broke.")
+
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateDelayed(self, event)
+  local target = (event.payload --[[@as table<string, unknown>]]).target
+  enqueueMessage(self, "An attack was foretold for " .. nameOrBattler(self, target) .. ".", false)
+end
+
 -- Every remaining kernel event kind the native session actually emits
 -- receives its intentional treatment here. Accounting-only events stay
--- silent; everything else narrates, moves health, or changes
--- visibility. Kinds outside this table are genuinely unknown and keep
--- the explicit diagnostic instead of vanishing.
+-- silent; everything else narrates, moves health, or changes visibility.
+-- Kinds outside this table are genuinely unknown and keep the explicit
+-- diagnostic instead of vanishing.
+---@type table<string, fun(self: BattleTimeline, event: table<string, unknown>)>
+local OTHER_TRANSLATORS = {
+  flee = translateFlee,
+  missed = translateMissed,
+  ["move-used"] = translateMoveUsed,
+  status = translateStatus,
+  cured = translateCured,
+  stage = translateStage,
+  healed = translateRegained,
+  tick = translateTick,
+  recoil = translateRecoil,
+  drained = translateDrained,
+  fainted = translateFainted,
+  leveled = translateLeveled,
+  item = translateItem,
+  learn = translateLearn,
+  declined = translateDeclined,
+  charged = translateCharged,
+  delayed = translateDelayed,
+  protected = translateProtected,
+  transformed = translateTransformed,
+  sketched = translateSketched,
+  switch = translateSwitch,
+  ["status-gate"] = translateStatusGate,
+  ["item-intent"] = translateIntent,
+  ["switch-intent"] = translateIntent,
+  ["substitute-broke"] = translateSubstituteBroke,
+  acknowledge = translateSilent,
+  join = translateJoin,
+}
+
 ---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event under translation
----@param packet table<string, unknown> delivery carrying the before and after views
-local function translateOther(self, event, packet)
+local function translateOther(self, event)
   local kind = event.kind --[[@as string]]
-  local payload = event.payload --[[@as table<string, unknown>]]
-  if kind == "flee" then
-    local target = payload.combatant
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    if payload.escaped == true then
-      -- The terminal result owns the successful-escape narration; the
-      -- event itself only yields its moment in order.
-      enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
-    else
-      enqueueMessage(self, who .. " could not escape!", false)
-    end
-  elseif kind == "missed" then
-    enqueueMessage(self, "The attack missed!", false)
-  elseif kind == "move-used" then
-    translateMoveUsed(self, event)
-  elseif kind == "status" then
-    local target = payload.target
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    enqueueMessage(self, who .. " was afflicted with " .. tostring(payload.key) .. ".", false)
-  elseif kind == "cured" then
-    local target = payload.target
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    enqueueMessage(self, who .. " recovered from " .. tostring(payload.key) .. ".", false)
-  elseif kind == "stage" then
-    local target = payload.target
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    local before = payload.before
-    local after = payload.after
-    local stat = tostring(payload.stat)
-    if type(before) == "number" and type(after) == "number" and after ~= before then
-      local direction = after > before and "rose" or "fell"
-      enqueueMessage(self, who .. "'s " .. stat .. " " .. direction .. ".", false)
-    else
-      enqueueMessage(self, who .. " felt the effect.", false)
-    end
-  elseif kind == "healed" then
-    local target = payload.target
-    if type(target) == "number" then
-      enqueueMessage(self, combatName(self, target --[[@as integer]]) .. " regained health.", false)
-      enqueueCheckpointHealth(self, target --[[@as integer]], event)
-    end
-  elseif kind == "tick" then
-    local target = payload.combatant
-    if type(target) == "number" then
-      local who = combatName(self, target --[[@as integer]])
-      enqueueMessage(self, who .. " is hurt by " .. tostring(payload.key) .. ".", false)
-      enqueueCheckpointHealth(self, target --[[@as integer]], event)
-    end
-  elseif kind == "recoil" then
-    local target = payload.target
-    if type(target) == "number" then
-      enqueueMessage(self, combatName(self, target --[[@as integer]]) .. " was hurt by recoil.", false)
-      enqueueCheckpointHealth(self, target --[[@as integer]], event)
-    end
-  elseif kind == "drained" then
-    local target = payload.target
-    if type(target) == "number" then
-      enqueueMessage(self, combatName(self, target --[[@as integer]]) .. " absorbed health.", false)
-      enqueueCheckpointHealth(self, target --[[@as integer]], event)
-    end
-  elseif kind == "fainted" then
-    translateFainted(self, event)
-  elseif kind == "leveled" then
-    local target = payload.target
-    if type(target) == "number" then
-      enqueueMessage(self, combatName(self, target --[[@as integer]]) .. "'s health was evened out.", false)
-      enqueueCheckpointHealth(self, target --[[@as integer]], event)
-    end
-  elseif kind == "item" then
-    local item = payload.item
-    enqueueMessage(self, "Used " .. tostring(type(item) == "string" and item or "an item") .. ".", false)
-  elseif kind == "learn" then
-    local target = payload.combatant
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    local move = type(payload.move) == "string" and payload.move or "a move"
-    enqueueMessage(self, who .. " learned " .. moveName(self, target or -1, move --[[@as string]]) .. "!", false)
-  elseif kind == "declined" then
-    local target = payload.combatant
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    local move = type(payload.move) == "string" and payload.move or "a move"
-    enqueueMessage(self, who .. " did not learn " .. moveName(self, target or -1, move --[[@as string]]) .. ".", false)
-  elseif kind == "charged" then
-    local target = payload.target
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    enqueueMessage(self, who .. " began to charge.", false)
-  elseif kind == "delayed" then
-    local target = payload.target
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    enqueueMessage(self, "An attack was foretold for " .. who .. ".", false)
-  elseif kind == "protected" then
-    local target = payload.target
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    enqueueMessage(self, who .. " protected itself.", false)
-  elseif kind == "transformed" then
-    local target = payload.target
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    local copied = payload.copiedFrom
-    if type(copied) == "number" then
-      enqueueMessage(self, who .. " transformed into " .. combatName(self, copied --[[@as integer]]) .. "!", false)
-    else
-      enqueueMessage(self, who .. " transformed.", false)
-    end
-  elseif kind == "sketched" then
-    local target = payload.target
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    local move = type(payload.copied) == "string" and payload.copied or "a move"
-    enqueueMessage(self, who .. " sketched " .. moveName(self, target or -1, move --[[@as string]]) .. ".", false)
-  elseif kind == "switch" then
-    -- Replacements name their departure and arrival combatants; older
-    -- shapes named a withdrawing battler plus its incoming record.
-    local departed = payload.from
-    if type(departed) ~= "number" then
-      departed = payload.combatant
-    end
-    if type(departed) == "number" then
-      enqueueMessage(self, combatName(self, departed --[[@as integer]]) .. " was withdrawn.", false)
-      enqueue(self, {
-        kind = "withdraw",
-        combatant = departed,
-        duration = BattleTimeline.VANISH_TICKS,
-        requiresImage = self:_imageKeyFor(departed),
-      })
-    end
-    local incoming = payload.to
-    if type(incoming) ~= "number" then
-      incoming = payload.replacement
-    end
-    if type(incoming) ~= "number" then
-      incoming = payload.incoming
-    end
-    if type(incoming) == "number" then
-      enqueue(self, {
-        kind = "reveal",
-        combatant = incoming --[[@as integer]],
-        duration = BattleTimeline.VANISH_TICKS,
-        requiresImage = self:_imageKeyFor(incoming --[[@as integer]]),
-      })
-    end
-  elseif kind == "status-gate" then
-    local target = payload.combatant
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    local key = tostring(payload.key)
-    local outcome = payload.outcome
-    if outcome == "woke" then
-      enqueueMessage(self, who .. " woke up.", false)
-    elseif outcome == "thawed" then
-      enqueueMessage(self, who .. " thawed out.", false)
-    elseif key == "sleep" then
-      enqueueMessage(self, who .. " is fast asleep.", false)
-    elseif key == "paralysis" then
-      enqueueMessage(self, who .. " is paralyzed and cannot move.", false)
-    elseif key == "freeze" then
-      enqueueMessage(self, who .. " is frozen solid.", false)
-    else
-      enqueueMessage(self, who .. " cannot move.", false)
-    end
-  elseif kind == "item-intent" or kind == "switch-intent" then
-    -- Forcing and item moves narrate through their target: any
-    -- following switch event owns the withdrawal/reveal presentation.
-    local target = payload.target
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    local cause = event.cause --[[@as table<string, unknown>]]
-    local moveKey = type(cause.key) == "string" and cause.key or "strike"
-    enqueueMessage(self, who .. " was hit by " .. moveName(self, target or -1, moveKey) .. ".", false)
-  elseif kind == "substitute-broke" then
-    local target = payload.target
-    local who = type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
-    enqueueMessage(self, who .. "'s substitute broke.", false)
-  elseif kind == "acknowledge" then
-    -- Pure action bookkeeping with no observable change: the matching
-    -- strike, switch, item, or flee event already carries the moment.
-  elseif kind == "join" then
-    -- Reserve arrivals outside the replacement switch path still reveal
-    -- their battler; any withdrawal narration belongs to the switch.
-    local incoming = payload.combatant
-    if type(incoming) == "number" then
-      enqueue(self, {
-        kind = "reveal",
-        combatant = incoming --[[@as integer]],
-        duration = BattleTimeline.VANISH_TICKS,
-        requiresImage = self:_imageKeyFor(incoming --[[@as integer]]),
-      })
-    end
-  else
-    local note = "unrepresentable effect: " .. kind
-    self._diagnostics[#self._diagnostics + 1] = note
+  local translate = OTHER_TRANSLATORS[kind]
+  if translate == nil then
+    self._diagnostics[#self._diagnostics + 1] = "unrepresentable effect: " .. kind
     enqueueMessage(self, "Something unrepresentable happened (" .. kind .. ").", false)
+    return
   end
-  local _ = packet
+  translate(self, event)
 end
 
 -- Accepts one delivery packet in order: unseen identities translate
@@ -726,7 +831,7 @@ function BattleTimeline:present(packet)
         elseif kind == "stats" then
           translateStats(self, event --[[@as table<string, unknown>]], packet)
         else
-          translateOther(self, event --[[@as table<string, unknown>]], packet)
+          translateOther(self, event --[[@as table<string, unknown>]])
         end
       end
     end
