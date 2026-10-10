@@ -7,9 +7,9 @@
 -- abilities applied at their source stages), and the prepared encounter is
 -- retained until consumed once or restored without reroll. Rejected input
 -- consumes no draws and no attempt identities. Wild capture metadata beyond
--- the map identity is neutral: the typed context carries no clock, ball, or
--- native terrain source, so generation records fixed neutral values. Pure
--- domain module: no love dependency.
+-- the map identity stays neutral unless the caller supplies a validated
+-- origin record: without one generation records the lookup identity with
+-- fixed neutral values. Pure domain module: no love dependency.
 
 local EncounterSelection = require("libs.hgss.src.encounters.EncounterSelection")
 local Errors = require("libs.errors.src.Errors")
@@ -95,6 +95,36 @@ function HgssEncounterService.new(args)
   }, HgssEncounterService)
 end
 
+---@param met unknown
+local function checkMetRecord(met)
+  if type(met) ~= "table" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter met context must be a record", {})
+  end
+  assert(type(met) == "table", "met checks read the met record")
+  local location = met.location
+  if type(location) ~= "number" or location % 1 ~= 0 or location < 0 or location > 0xFFFF then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter met location must be an integer in 0..65535", {})
+  end
+  local date = met.date
+  if type(date) ~= "table" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter met context requires a date record", {})
+  end
+  assert(type(date) == "table", "met checks read the date record")
+  if type(date.year) ~= "number" or date.year % 1 ~= 0 or date.year < 2000 or date.year > 2255 then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter met date year must be an integer in 2000..2255", {})
+  end
+  if type(date.month) ~= "number" or date.month % 1 ~= 0 or date.month < 1 or date.month > 12 then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter met date month must be an integer in 1..12", {})
+  end
+  if type(date.day) ~= "number" or date.day % 1 ~= 0 or date.day < 1 or date.day > 31 then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter met date day must be an integer in 1..31", {})
+  end
+  local terrain = met.terrain
+  if terrain ~= nil and (type(terrain) ~= "number" or terrain % 1 ~= 0 or terrain < 0 or terrain > 0xFF) then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter met terrain must be an integer in 0..255", {})
+  end
+end
+
 ---@param context unknown
 ---@return table<string, unknown>
 local function checkContext(context)
@@ -119,6 +149,9 @@ local function checkContext(context)
   end
   if type(context.environment) ~= "table" then
     Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter attempts require an environment record", {})
+  end
+  if context.met ~= nil then
+    checkMetRecord(context.met)
   end
   return context
 end
@@ -223,6 +256,22 @@ end
 ---@return table<string, unknown>
 function HgssEncounterService:_wildOptions(context, attemptId)
   assert(attemptId ~= nil, "wild options carry the attempt identity")
+  local met = context.met
+  if type(met) == "table" then
+    local terrain = WILD_TERRAIN
+    if met.terrain ~= nil then
+      terrain = met.terrain
+    end
+    local date = assert(met.date, "validated met context carries its date")
+    assert(type(date) == "table", "validated met context carries its date record")
+    return {
+      profile = context.playerProfile,
+      ball = WILD_BALL,
+      location = met.location,
+      terrain = terrain,
+      date = { year = date.year, month = date.month, day = date.day },
+    }
+  end
   return {
     profile = context.playerProfile,
     ball = WILD_BALL,
