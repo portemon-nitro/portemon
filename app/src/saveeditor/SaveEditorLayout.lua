@@ -1995,6 +1995,97 @@ local function scrollOwnerFor(ctx)
   return nil
 end
 
+-- Logical ordering over an ordered id list; indexByTarget may be supplied when the owner already has one.
+local function idListLogical(ids, indexByTarget)
+  if indexByTarget == nil then
+    indexByTarget = {}
+    for index, id in ipairs(ids) do
+      indexByTarget[id] = indexByTarget[id] or index
+    end
+  end
+  return {
+    count = #ids,
+    idAt = function(index)
+      return ids[index]
+    end,
+    indexOf = function(targetId)
+      return indexByTarget[targetId]
+    end,
+  }
+end
+
+local function partyFieldRegion(field, partyTab)
+  if field:match("Iv$") or field:match("Ev$") or field:match("^[iI][vV]:") or field:match("^[eE][vV]:") then
+    return "party:stats"
+  elseif partyTab ~= "Stats" then
+    return "party:details"
+  elseif field == "level" or field == "experience" or field == "friendship" or field == "currentHp" then
+    return "party:header"
+  end
+  return "party:stats"
+end
+
+local REGION_KINDS = {
+  ["decision:actions"] = "table",
+  ["party:stats"] = "table",
+  ["party:members"] = "row",
+  ["party:pager"] = "row",
+  ["party:header"] = "row",
+  ["sections"] = "row",
+  ["bag:pockets"] = "row",
+  ["party:moves"] = "column",
+  ["party:details"] = "column",
+}
+
+local PARTY_REGION_ORDER = {
+  "party:members",
+  "party:header",
+  "party:stats",
+  "party:moves",
+  "party:details",
+  "party:pager",
+}
+
+-- Party regions form one contiguous block, in reading order, where the first of them was discovered.
+local function orderPartyRegions(regions, regionsById)
+  local isParty = {}
+  for _, id in ipairs(PARTY_REGION_ORDER) do
+    isParty[id] = true
+  end
+  local insertionIndex
+  for index = #regions, 1, -1 do
+    if isParty[regions[index].id] then
+      insertionIndex = index
+      table.remove(regions, index)
+    end
+  end
+  if insertionIndex ~= nil then
+    for _, id in ipairs(PARTY_REGION_ORDER) do
+      local region = regionsById[id]
+      if region ~= nil then
+        table.insert(regions, insertionIndex, region)
+        insertionIndex = insertionIndex + 1
+      end
+    end
+  end
+  for index, region in ipairs(regions) do
+    region.order = index
+  end
+end
+
+local PARTY_EXITS = {
+  { "party:header", "up", "party:members" },
+  { "party:header", "down", "party:stats" },
+  { "party:stats", "up", "party:header" },
+  { "party:stats", "down", "party:pager" },
+  { "party:moves", "up", "party:members" },
+  { "party:moves", "down", "party:pager" },
+  { "party:details", "up", "party:members" },
+  { "party:details", "down", "party:pager" },
+  { "party:pager", "down", "global-footer" },
+  { "global-footer", "up", "party:pager" },
+}
+
 local function buildFocusNavigation(ctx, targetRecords)
   local regions, controls, regionsById = {}, {}, {}
   local partyTab = ctx.view.partyTab or "Stats"
@@ -2029,21 +2120,7 @@ local function buildFocusNavigation(ctx, targetRecords)
     elseif targetId:match("^party:move:") then
       return "party:moves"
     elseif targetId:match("^party:field:") then
-      local field = targetId:sub(#"party:field:" + 1)
-      if field:match("Iv$") or field:match("Ev$") or field:match("^[iI][vV]:") or field:match("^[eE][vV]:") then
-        return "party:stats"
-      elseif
-        partyTab == "Stats"
-        and field ~= "level"
-        and field ~= "experience"
-        and field ~= "friendship"
-        and field ~= "currentHp"
-      then
-        return "party:stats"
-      elseif partyTab == "Stats" then
-        return "party:header"
-      end
-      return "party:details"
+      return partyFieldRegion(targetId:sub(#"party:field:" + 1), partyTab)
     elseif targetId:match("^bag:pocket:") then
       return "bag:pockets"
     elseif targetId:match("^bag:page:") or targetId == "bag:add" then
@@ -2114,43 +2191,11 @@ local function buildFocusNavigation(ctx, targetRecords)
     if record ~= nil and record.focusable then
       local id = regionFor(targetId)
       local list = ctx.lists[id]
-      local kind = "spatial"
-      if list ~= nil then
-        kind = "list"
-      elseif id == "decision:actions" or id == "party:stats" then
-        kind = "table"
-      elseif
-        id == "party:members"
-        or id == "party:pager"
-        or id == "party:header"
-        or id == "sections"
-        or id == "bag:pockets"
-      then
-        kind = "row"
-      elseif id == "party:moves" or id == "party:details" then
-        kind = "column"
-      end
-      local region = addRegion(id, kind, record.rect)
+      local region = addRegion(id, list and "list" or REGION_KINDS[id] or "spatial", record.rect)
       if list ~= nil then
         region.viewportId = list.viewportId
         region.containerId = list.targetId
-        region.logical = {
-          count = #list.rowTargets,
-          idAt = function(index)
-            return list.rowTargets[index]
-          end,
-          indexOf = function(rowTarget)
-            if list.indexByTarget ~= nil then
-              return list.indexByTarget[rowTarget]
-            end
-            for index, idAt in ipairs(list.rowTargets) do
-              if rowTarget == idAt then
-                return index
-              end
-            end
-            return nil
-          end,
-        }
+        region.logical = idListLogical(list.rowTargets, list.indexByTarget)
         region.defaultId = region.defaultId or list.rowTargets[1] or targetId
       else
         region.defaultId = region.defaultId or targetId
@@ -2270,21 +2315,8 @@ local function buildFocusNavigation(ctx, targetRecords)
           region.kind = "table"
           region.viewportId = "party"
           region.rect = assert(ctx.viewports.party).clip
-          region.logical = {
-            matrix = headerMatrix,
-            count = #ids,
-            idAt = function(index)
-              return ids[index]
-            end,
-            indexOf = function(targetId)
-              for index, id in ipairs(ids) do
-                if id == targetId then
-                  return index
-                end
-              end
-              return nil
-            end,
-          }
+          region.logical = idListLogical(ids)
+          region.logical.matrix = headerMatrix
           region.defaultId = firstHeaderTarget
           region.entryUpId = lastHeaderTarget
         elseif regionId == "party:details" and ctx.view.partyDetails ~= nil then
@@ -2302,20 +2334,7 @@ local function buildFocusNavigation(ctx, targetRecords)
           end
         end
         if regionId ~= "party:header" then
-          region.logical = {
-            count = #ids,
-            idAt = function(index)
-              return ids[index]
-            end,
-            indexOf = function(targetId)
-              for index, id in ipairs(ids) do
-                if id == targetId then
-                  return index
-                end
-              end
-              return nil
-            end,
-          }
+          region.logical = idListLogical(ids)
           region.defaultId = region.defaultId or ids[1]
         end
       end
@@ -2330,21 +2349,8 @@ local function buildFocusNavigation(ctx, targetRecords)
           ids[#ids + 1] = control.id
         end
       end
-      region.logical = {
-        count = #ids,
-        wrap = regionId == "bag:pockets",
-        idAt = function(index)
-          return ids[index]
-        end,
-        indexOf = function(targetId)
-          for index, id in ipairs(ids) do
-            if id == targetId then
-              return index
-            end
-          end
-          return nil
-        end,
-      }
+      region.logical = idListLogical(ids)
+      region.logical.wrap = regionId == "bag:pockets"
       if regionId == "sections" then
         region.kind = ctx.railWidth > 0 and "column" or "row"
       else
@@ -2362,17 +2368,10 @@ local function buildFocusNavigation(ctx, targetRecords)
   end
   if ctx.partyStrip ~= nil then
     exitTo("party:members", "down", partyTab == "Stats" and "party:header" or "party:moves")
-    exitTo("party:header", "up", "party:members")
-    exitTo("party:header", "down", "party:stats")
-    exitTo("party:stats", "up", "party:header")
-    exitTo("party:stats", "down", "party:pager")
-    exitTo("party:moves", "up", "party:members")
-    exitTo("party:moves", "down", "party:pager")
-    exitTo("party:details", "up", "party:members")
-    exitTo("party:details", "down", "party:pager")
     exitTo("party:pager", "up", partyTab == "Stats" and "party:stats" or "party:moves")
-    exitTo("party:pager", "down", "global-footer")
-    exitTo("global-footer", "up", "party:pager")
+    for _, exit in ipairs(PARTY_EXITS) do
+      exitTo(exit[1], exit[2], exit[3])
+    end
   end
   if decisionMatrix ~= nil then
     local region = regionsById["decision:actions"]
@@ -2381,43 +2380,7 @@ local function buildFocusNavigation(ctx, targetRecords)
     end
   end
   if ctx.partyStrip ~= nil and partyTab == "Stats" then
-    local partyOrder = {
-      ["party:members"] = 1,
-      ["party:header"] = 2,
-      ["party:stats"] = 3,
-      ["party:moves"] = 3,
-      ["party:details"] = 3,
-      ["party:pager"] = 4,
-    }
-    local insertionIndex
-    for index = #regions, 1, -1 do
-      if partyOrder[regions[index].id] ~= nil then
-        insertionIndex = index
-        table.remove(regions, index)
-      end
-    end
-    if insertionIndex ~= nil then
-      local orderedParty = {}
-      for _, regionId in ipairs({
-        "party:members",
-        "party:header",
-        "party:stats",
-        "party:moves",
-        "party:details",
-        "party:pager",
-      }) do
-        local region = regionsById[regionId]
-        if region ~= nil then
-          orderedParty[#orderedParty + 1] = region
-        end
-      end
-      for index, region in ipairs(orderedParty) do
-        table.insert(regions, insertionIndex + index - 1, region)
-      end
-    end
-    for index, region in ipairs(regions) do
-      region.order = index
-    end
+    orderPartyRegions(regions, regionsById)
   end
   return { regions = regions, controls = controls }
 end
