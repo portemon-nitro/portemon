@@ -15,6 +15,9 @@ local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local Fixture = require("app.tests.support.SaveEditorFixture")
+local Session = require("app.src.saveeditor.SaveEditorSession")
+local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
 
 local T = { tests = {} }
 
@@ -22,10 +25,113 @@ local function stateHarness(fields)
   fields.fieldInput = fields.fieldInput or FieldInput.new()
   fields.scopeEpoch = fields.scopeEpoch or 0
   fields.inputTick = fields.inputTick or 0
+  fields.tickRemainder = fields.tickRemainder or 0
   fields.locationPreviewMemory = fields.locationPreviewMemory or {}
   local state = setmetatable(fields, State)
   state:_syncScope()
   return state
+end
+
+local function presetState(session, fields)
+  fields = fields or {}
+  fields.status = fields.status or "ready"
+  fields.disposed = fields.disposed or false
+  fields.generation = fields.generation or 1
+  fields.session = session
+  fields.dependencies = fields.dependencies or {
+    world = {
+      maps = { { id = 60, mapSectionNativeId = 5 } },
+      byId = { [60] = 1 },
+      bySymbol = { MAP_TEST = 60 },
+    },
+    cacheFs = {},
+    derivedAssets = {},
+    savedObjects = {},
+  }
+  fields.controller = fields.controller or Controller.new()
+  fields.controller.section = fields.controller.section or "Location"
+  fields.modalStack = fields.modalStack or ModalStack.new()
+  fields.dateProvider = fields.dateProvider or function() return { year = 2026, month = 10, day = 9 } end
+  fields._advanceLocationPreparation = function() end
+  fields._settleScope = function() end
+  fields._updateLocationService = function() end
+  fields._syncLocationToSession = fields._syncLocationToSession or function() end
+  return stateHarness(fields)
+end
+
+local function fakePresetFile(source, options)
+  options = options or {}
+  local file = { opens = 0, reads = 0, closes = 0 }
+  function file:getFilename()
+    return options.filename or "preset.lua"
+  end
+  function file:getSize()
+    return options.size or #source
+  end
+  function file:open(mode)
+    Assert.equal(mode, "r", "preset files are opened read-only")
+    self.opens = self.opens + 1
+    if options.openError then
+      error("simulated open failure")
+    end
+    return true
+  end
+  function file:read(_, size)
+    self.reads = self.reads + 1
+    if options.readError then
+      error("simulated read failure")
+    end
+    Assert.equal(size, #source, "preset read is bounded by the reported file size")
+    return source
+  end
+  function file:close()
+    self.closes = self.closes + 1
+    if options.closeError then
+      error("simulated close failure")
+    end
+    return true
+  end
+  return file
+end
+
+local function withDialogs(fn, response)
+  local calls = {}
+  local original = love.window.showMessageBox
+  love.window.showMessageBox = function(title, message, kind)
+    calls[#calls + 1] = { title = title, message = message, kind = kind }
+    return response ~= false
+  end
+  local ok, err = pcall(fn, calls)
+  love.window.showMessageBox = original
+  if not ok then
+    error(err, 0)
+  end
+end
+
+local function presetSession()
+  local session = { revisionValue = 4, partyRevisionValue = 2, applyCalls = 0 }
+  function session:revision()
+    return self.revisionValue
+  end
+  function session:partyRevision()
+    return self.partyRevisionValue
+  end
+  function session:snapshot()
+    return { location = { mapId = 60, fieldX = 9, fieldZ = 12, worldY = 0, surfaceId = 1, terrainDependencyHash = "current" } }
+  end
+  function session:applyPreset(preset, options)
+    self.applyCalls = self.applyCalls + 1
+    self.appliedPreset, self.applyOptions = preset, options
+    if preset.party ~= nil then
+      self.partyRevisionValue = self.partyRevisionValue + 1
+    end
+    return { ok = true, changed = false }
+  end
+  return session
+end
+
+local function presetSource(body)
+  return 'return { schema = "portemon-save-preset-v1", name = "Component", description = "Component test", ' .. body .. " }"
 end
 
 local function activate(state, targetId)
@@ -104,6 +210,383 @@ function T.tests.static_party_focus_moves_do_not_reveal_or_activate_controls()
   partyController:setFocus("party:page:previous")
   partyState:_navigateTab(partyLayout, "next")
   Assert.equal(partyController.focus, "party:move:0", "Tab enters the static Party moves sequence")
+end
+
+function T.tests.failed_preset_file_read_closes_once_and_keeps_the_session_unchanged()
+  local fixture = Fixture.new()
+  local session = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  local before = session:captureCandidate()
+  local dialogs = {}
+  local originalDialog = love.window.showMessageBox
+  love.window.showMessageBox = function(title, message, kind)
+    dialogs[#dialogs + 1] = { title = title, message = message, kind = kind }
+    return true
+  end
+  local state = setmetatable({
+    status = "ready",
+    disposed = false,
+    generation = 1,
+    session = session,
+    dependencies = { world = { bySymbol = {}, byId = {}, maps = {} } },
+    controller = Controller.new(),
+    modalStack = ModalStack.new(),
+    closeRequest = nil,
+    valueEditor = nil,
+    monDraft = nil,
+    pendingMoveSlot = nil,
+    locationSave = nil,
+    pendingPreset = nil,
+    dateProvider = function() return { year = 2026, month = 10, day = 9 } end,
+  }, State)
+  local file = {
+    opened = 0,
+    closed = 0,
+    getFilename = function() return "/private/broken.lua" end,
+    getSize = function() return 32 end,
+    open = function(self, mode)
+      Assert.equal(mode, "r", "the dropped file opens read-only")
+      self.opened = self.opened + 1
+      return true
+    end,
+    read = function()
+      error("permission denied: /private/save-data/preset.lua")
+    end,
+    close = function(self)
+      self.closed = self.closed + 1
+      return true
+    end,
+  }
+
+  local ok, err = pcall(function()
+    Assert.equal(type(state.importPresetFile), "function", "the editor owns preset file reading")
+    state:importPresetFile(file)
+    Assert.equal(file.opened, 1, "the dropped file opens once")
+    Assert.equal(file.closed, 1, "a successfully opened file closes after read failure")
+    Assert.equal(#dialogs, 1, "read failure produces one terminal confirmation")
+    Assert.equal(dialogs[1].title, "Preset rejected", "read failure is reported as a rejected preset")
+    Assert.isNil(dialogs[1].message:find("/private/", 1, true), "host paths stay out of rejection details")
+    Assert.deepEqual(session:captureCandidate(), before, "a failed read leaves the staged session unchanged")
+
+    local closeFailure = fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }'), { closeError = true })
+    state:importPresetFile(closeFailure)
+    Assert.equal(closeFailure.opens, 1, "close failure follows one successful open")
+    Assert.equal(closeFailure.closes, 1, "a close failure is attempted exactly once")
+    Assert.equal(#dialogs, 2, "close failure produces one additional terminal confirmation")
+    Assert.equal(dialogs[2].title, "Preset rejected", "close failure is reported as a rejected preset")
+    Assert.deepEqual(session:captureCandidate(), before, "close failure cannot publish parsed changes")
+
+    local openFailure = fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }'), { openError = true })
+    state:importPresetFile(openFailure)
+    Assert.equal(openFailure.opens, 1, "open failure is attempted once")
+    Assert.equal(openFailure.closes, 0, "an unsuccessful open does not close the File")
+    Assert.equal(#dialogs, 3, "open failure produces one terminal confirmation")
+    Assert.deepEqual(session:captureCandidate(), before, "open failure leaves staged state unchanged")
+  end)
+  love.window.showMessageBox = originalDialog
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.preset_rejections_cover_oversize_and_dirty_party_drafts_before_reading()
+  local session = presetSession()
+  withDialogs(function(dialogs)
+    local oversized = fakePresetFile("", { size = 131073 })
+    local state = presetState(session)
+    Assert.equal(type(state.importPresetFile), "function", "the editor owns bounded preset imports")
+    state:importPresetFile(oversized)
+    Assert.equal(oversized.opens, 0, "oversized presets are rejected before opening")
+    Assert.equal(oversized.closes, 0, "an unopened oversized preset has no close")
+    Assert.equal(dialogs[#dialogs].title, "Preset rejected", "oversized input is reported")
+
+    local dirtyDraft = {
+      mode = function() return "edit" end,
+      isDirty = function() return true end,
+    }
+    state.monDraft = dirtyDraft
+    local dirtyFile = fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }'))
+    state:importPresetFile(dirtyFile)
+    Assert.equal(dirtyFile.opens, 0, "a dirty Party draft blocks import before file IO")
+    Assert.equal(dialogs[#dialogs].title, "Preset rejected", "dirty draft refusal is explicit")
+
+    state.monDraft = nil
+    state.controller.modal = "number"
+    local modalFile = fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }'))
+    state:importPresetFile(modalFile)
+    Assert.equal(modalFile.opens, 0, "an active editing modal blocks import before file IO")
+
+    state.controller.modal = nil
+    state.locationSave = { status = function() return "pending" end }
+    local saveFile = fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }'))
+    state:importPresetFile(saveFile)
+    Assert.equal(saveFile.opens, 0, "a pending Save verification blocks import before file IO")
+    Assert.equal(session.applyCalls, 0, "all refusals leave the session untouched")
+  end)
+end
+
+function T.tests.no_location_preset_applies_synchronously_without_a_location_verifier()
+  local session = presetSession()
+  local serviceCreations = 0
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    serviceCreations = serviceCreations + 1
+    error("a no-location preset must not acquire a verifier")
+  end
+  local state = presetState(session)
+  local file = fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }'))
+  local ok, err = pcall(function()
+    withDialogs(function(dialogs)
+      Assert.equal(type(state.importPresetFile), "function", "the editor owns preset imports")
+      state:importPresetFile(file)
+      Assert.equal(session.applyCalls, 1, "a patch without location applies synchronously")
+      Assert.isNil(session.applyOptions.placement, "no-location application has no placement")
+      Assert.equal(session.applyOptions.metLocation, 5, "met location comes from the current staged map")
+      Assert.equal(serviceCreations, 0, "no-location import never acquires a verifier")
+      Assert.equal(#dialogs, 1, "synchronous success has one terminal dialog")
+    end)
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.successful_party_patch_retires_a_clean_party_draft()
+  local session = presetSession()
+  session.applyPreset = function(self, preset)
+    self.applyCalls = self.applyCalls + 1
+    self.appliedPreset = preset
+    self.partyRevisionValue = self.partyRevisionValue + 1
+    return { ok = true, changed = true }
+  end
+  local state = presetState(session, {
+    monDraft = {
+      mode = function() return "edit" end,
+      isDirty = function() return false end,
+    },
+  })
+  local file = fakePresetFile(presetSource('party = { contains = { { species = "PIKACHU" } } }'))
+  withDialogs(function(dialogs)
+    Assert.equal(type(state.importPresetFile), "function", "the editor owns Party preset updates")
+    state:importPresetFile(file)
+    Assert.equal(session.applyCalls, 1, "the Party patch uses one atomic session operation")
+    Assert.isNil(state.monDraft, "a clean draft is retired so the next Party view is fresh")
+    Assert.equal(#dialogs, 1, "successful Party patch has one confirmation")
+  end)
+end
+
+function T.tests.unknown_preset_map_rejects_before_verifier_construction()
+  local session = presetSession()
+  local serviceCreations = 0
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    serviceCreations = serviceCreations + 1
+    error("unknown maps must be rejected before verifier construction")
+  end
+  local state = presetState(session)
+  local file = fakePresetFile(presetSource('location = { map = "MAP_MISSING", x = 4, z = 5 }'))
+  local ok, err = pcall(function()
+    withDialogs(function(dialogs)
+      Assert.equal(type(state.importPresetFile), "function", "the editor owns preset imports")
+      state:importPresetFile(file)
+      Assert.equal(file.closes, 1, "the rejected document releases its File")
+      Assert.equal(serviceCreations, 0, "unknown map symbols are rejected before a verifier exists")
+      Assert.equal(session.applyCalls, 0, "unknown maps never reach session application")
+      Assert.equal(dialogs[#dialogs].title, "Preset rejected", "unknown map rejection is explicit")
+    end)
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.native_dialog_failure_leaves_one_visible_fallback_notice()
+  local session = presetSession()
+  local state = presetState(session)
+  local file = fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }'))
+  withDialogs(function(dialogs)
+    Assert.equal(type(state.importPresetFile), "function", "the editor owns preset imports")
+    state:importPresetFile(file)
+    Assert.equal(#dialogs, 1, "the native result dialog is attempted once")
+    local fallback = state.notice or state.errorMessage
+    Assert.isTrue(type(fallback) == "string" and fallback ~= "", "dialog failure leaves visible editor feedback")
+    state:update(0)
+    Assert.equal(#dialogs, 1, "the fallback does not repeat the native dialog each frame")
+  end, false)
+end
+
+function T.tests.pending_resolution_then_unavailable_never_reaches_session_application()
+  local session = presetSession()
+  local serviceCreations, resolutionCalls, disposals = 0, 0, 0
+  local service = { requested = {} }
+  function service:openMap(mapId, options)
+    Assert.equal(mapId, 60, "symbolic map resolves to the current version map ID")
+    Assert.equal(options.purpose, "verify", "preset resolution uses verifier mode")
+  end
+  function service:setViewport(x, z, width, height)
+    self.requested = { x = x, z = z }
+    Assert.equal(width, 1)
+    Assert.equal(height, 1)
+  end
+  function service:update() end
+  function service:snapshot()
+    return { status = { state = "ready" }, generation = 8 }
+  end
+  function service:resolve(mapId, x, z, generation)
+    Assert.equal(mapId, 60)
+    Assert.equal(x, self.requested.x)
+    Assert.equal(z, self.requested.z)
+    Assert.equal(generation, 8)
+    resolutionCalls = resolutionCalls + 1
+    if resolutionCalls == 1 then
+      return nil, { state = "pending" }
+    end
+    if resolutionCalls == 2 then
+      return nil, { state = "unavailable", reason = "blocked" }
+    end
+    return nil, { state = "stale_generation" }
+  end
+  function service:dispose()
+    disposals = disposals + 1
+  end
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    serviceCreations = serviceCreations + 1
+    return service
+  end
+  local state = presetState(session)
+  local file = fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 4, z = 5 }'))
+  local ok, err = pcall(function()
+    withDialogs(function(dialogs)
+      Assert.equal(type(state.importPresetFile), "function", "the editor owns async preset resolution")
+      state:importPresetFile(file)
+      Assert.notNil(state.pendingPreset, "verification remains owned while pending")
+      state:update(0)
+      Assert.equal(resolutionCalls, 1, "pending resolution remains pending after one update")
+      Assert.equal(session.applyCalls, 0, "pending geometry cannot be applied")
+      state:update(0)
+      Assert.equal(resolutionCalls, 2, "the verifier is advanced and resolved again")
+      Assert.equal(session.applyCalls, 0, "unavailable geometry never reaches the session")
+      Assert.isNil(state.pendingPreset, "terminal failure clears pending ownership")
+      Assert.equal(disposals, 1, "terminal failure disposes the verifier once")
+      Assert.equal(#dialogs, 1, "terminal geometry rejection shows one dialog")
+      Assert.equal(dialogs[1].title, "Preset rejected")
+
+      state:importPresetFile(fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 6, z = 7 }')))
+      state:update(0)
+      Assert.equal(session.applyCalls, 0, "a stale-generation resolution never reaches application")
+      Assert.equal(disposals, 2, "stale-generation failure disposes its verifier once")
+      Assert.equal(#dialogs, 2, "stale-generation failure is terminally reported")
+    end)
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
+  Assert.equal(serviceCreations, 2, "each attempt owns one private verifier")
+end
+
+function T.tests.second_drop_is_refused_without_replacing_pending_work_then_disposal_cancels_once()
+  local session = presetSession()
+  local serviceCreations, disposals = 0, 0
+  local service = {
+    openMap = function() end,
+    setViewport = function() end,
+    update = function() end,
+    snapshot = function() return { status = { state = "pending" }, generation = 9 } end,
+    resolve = function() return nil, { state = "pending" } end,
+    dispose = function() disposals = disposals + 1 end,
+  }
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    serviceCreations = serviceCreations + 1
+    return service
+  end
+  local state = presetState(session, { presentation = { dispose = function() end } })
+  local first = fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 4, z = 5 }'))
+  local second = fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }'))
+  local ok, err = pcall(function()
+    withDialogs(function(dialogs)
+      Assert.equal(type(state.importPresetFile), "function", "the editor owns pending preset state")
+      state:importPresetFile(first)
+      local pending = state.pendingPreset
+      Assert.notNil(pending, "the first import owns asynchronous work")
+      state:importPresetFile(second)
+      Assert.equal(state.pendingPreset, pending, "a second drop cannot replace the first operation")
+      Assert.equal(serviceCreations, 1, "a refused second drop does not acquire another verifier")
+      Assert.equal(session.applyCalls, 0, "neither pending drop publishes prematurely")
+      Assert.equal(#dialogs, 1, "the second drop is refused promptly with one dialog")
+      Assert.equal(dialogs[1].title, "Preset rejected")
+      state:dispose()
+      Assert.isNil(state.pendingPreset, "dispose clears pending preset ownership")
+      Assert.equal(disposals, 1, "dispose releases the private verifier once")
+      Assert.equal(#dialogs, 1, "disposal suppresses a late result dialog")
+    end)
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.revision_change_during_location_verification_rejects_without_apply()
+  local session = presetSession()
+  local disposed = 0
+  local service = {
+    openMap = function() end,
+    setViewport = function() end,
+    update = function() end,
+    snapshot = function() return { status = { state = "ready" }, generation = 3 } end,
+    resolve = function(_, mapId, x, z)
+      return {
+        mapId = mapId,
+        fieldX = x,
+        fieldZ = z,
+        worldY = 0,
+        surfaceId = 1,
+        terrainDependencyHash = "verified",
+      }, { state = "ready" }
+    end,
+    dispose = function() disposed = disposed + 1 end,
+  }
+  local originalNew = LocationService.new
+  LocationService.new = function() return service end
+  local state = presetState(session)
+  local file = fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 4, z = 5 }'))
+  local ok, err = pcall(function()
+    withDialogs(function(dialogs)
+      Assert.equal(type(state.importPresetFile), "function", "the editor owns stale-result rejection")
+      state:importPresetFile(file)
+      session.revisionValue = session.revisionValue + 1
+      state:update(0)
+      Assert.equal(session.applyCalls, 0, "a late verified placement cannot overwrite a newer edit")
+      Assert.isNil(state.pendingPreset, "stale settlement releases pending ownership")
+      Assert.equal(disposed, 1, "stale settlement disposes the verifier once")
+      Assert.equal(#dialogs, 1, "stale settlement is reported once")
+      Assert.equal(dialogs[1].title, "Preset rejected")
+
+      state:importPresetFile(fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 6, z = 7 }')))
+      state.locationSave = { status = function() return "pending" end }
+      state._pumpLocationSave = function() end
+      state:update(0)
+      Assert.equal(session.applyCalls, 0, "a Save verification starting during import blocks publication")
+      Assert.isNil(state.pendingPreset, "busy settlement clears the pending import")
+      Assert.equal(disposed, 2, "busy settlement releases its verifier once")
+      Assert.equal(#dialogs, 2, "busy settlement is reported once")
+    end)
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.tests.static_bag_focus_moves_do_not_reveal_or_activate_controls()

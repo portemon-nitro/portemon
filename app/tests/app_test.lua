@@ -494,6 +494,58 @@ function T.drop_while_busy_is_ignored()
   Assert.equal(App.state, state)
 end
 
+function T.save_editor_routes_only_lua_drops_to_its_preset_entrypoint()
+  fresh()
+  local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
+  local imported, notices = 0, 0
+  local editor = setmetatable({
+    importPresetFile = function(self, file)
+      imported = imported + 1
+      self.receivedFile = file
+    end,
+    onImportAttempt = function()
+      notices = notices + 1
+    end,
+  }, SaveEditorState)
+  App.setState(editor)
+  local luaFile = { getFilename = function() return "/tmp/fixture.LUA" end }
+  App.filedropped(luaFile)
+  Assert.equal(imported, 1, "the active Save Editor receives one case-insensitive preset drop")
+  Assert.equal(editor.receivedFile, luaFile, "the shell passes the original unopened File object")
+  Assert.equal(notices, 0, "a preset drop does not show the ROM-import notice")
+
+  App.filedropped({ getFilename = function() return "fixture.nds" end })
+  Assert.equal(imported, 1, "other editor file types do not enter preset handling")
+  Assert.equal(notices, 1, "other editor file types retain the ROM-import notice")
+end
+
+function T.non_editor_lua_drop_keeps_the_existing_rom_import_route()
+  withAppHarness({}, function() return true end, function()
+    App.service = nil
+    local originalImporterNew = RomImporter.new
+    local originalImportStateNew = ImportState.new
+    local importer = importerStub("idle")
+    local importState = countingState()
+    RomImporter.new = function()
+      return importer
+    end
+    ImportState.new = function(received)
+      Assert.equal(received, importer, "the existing importer is passed to ImportState")
+      return importState
+    end
+    local ok, err = pcall(function()
+      App.filedropped({ getFilename = function() return "ordinary.lua" end })
+      Assert.equal(importer.filedroppedCalls, 1, "a non-editor Lua drop follows ROM import routing")
+      Assert.equal(App.state, importState, "the normal import state owns the non-editor drop")
+    end)
+    RomImporter.new = originalImporterNew
+    ImportState.new = originalImportStateNew
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
 -- A failed import leaves no importer behind: the next update clears it, so a
 -- stale reference can never survive the session. The import screen holds its
 -- own reference and is unaffected.

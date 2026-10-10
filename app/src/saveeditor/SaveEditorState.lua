@@ -26,6 +26,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
 local MapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog")
+local SaveEditorPreset = require("app.src.saveeditor.SaveEditorPreset")
 
 ---@class SaveEditorBagItemMetadata
 ---@field item string
@@ -175,6 +176,17 @@ end
 ---@field resolve fun(self: SaveEditorLocationService, mapId: integer, fieldX: integer, fieldZ: integer, expectedGeneration: integer): SaveEditorLocation?, table<string, unknown>
 ---@field dispose fun(self: SaveEditorLocationService)
 
+---@class SaveEditorPendingPreset
+---@field session SaveEditorSession
+---@field sessionRevision integer
+---@field preset SaveEditorPresetData
+---@field mapId integer
+---@field fieldX integer
+---@field fieldZ integer
+---@field metLocation integer
+---@field date table<string, integer>
+---@field service SaveEditorLocationService
+
 ---@class SaveEditorLocationListBuildTask
 ---@field listId string
 ---@field source SaveEditorMapCatalogRow[]
@@ -277,6 +289,7 @@ end
 ---@field iconStatus string?
 ---@field iconFailure string?
 ---@field locationSave SaveEditorLocationSave?
+---@field pendingPreset SaveEditorPendingPreset?
 ---@field pendingRemove table<string, unknown>?
 ---@field pendingQuantity table<string, unknown>?
 ---@field numberHold { pointerId: string, targetId: string, delta: integer, scopeEpoch: integer, nextTick: integer }?
@@ -534,6 +547,7 @@ function State.new(options)
     locationGridWidthTiles = nil,
     locationGridHeightTiles = nil,
     locationSave = nil,
+    pendingPreset = nil,
     valueEditor = nil,
     preserveChoiceScroll = false,
     valueReturnFocus = nil,
@@ -750,6 +764,13 @@ function State:update(dt)
     local updated, updateError = pcall(self._pumpLocationSave, self)
     if not updated then
       self:_cancelPendingLocationSave()
+      error(updateError, 0)
+    end
+  end
+  if self.pendingPreset ~= nil then
+    local updated, updateError = pcall(self._stepPreset, self)
+    if not updated then
+      self:_finishPreset()
       error(updateError, 0)
     end
   end
@@ -2568,6 +2589,270 @@ function State:_syncLocationToSession()
   self.locationViewport = nil
 end
 
+function State:importPresetFile(file)
+  local filename = file:getFilename()
+  local basename = filename:match("([^/\\]+)$") or filename
+  local reason
+  if self.disposed or self.status ~= "ready" or self.session == nil or self.dependencies == nil then
+    reason = "The Save Editor is not ready to import a preset."
+  elseif self.pendingPreset ~= nil then
+    reason = "Another preset is already being checked. Wait for it to finish."
+  elseif self.closeRequest ~= nil or self:_locationSavePending() then
+    reason = "Finish or cancel the current Save operation before importing a preset."
+  elseif self.valueEditor ~= nil or self.controller.modal ~= nil or self.modalStack:top() ~= nil then
+    reason = "Finish or cancel the open editor dialog before importing a preset."
+  elseif self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty()) then
+    reason = "Finish or cancel the Party edit before importing a preset."
+  end
+  if reason ~= nil then
+    self:_showPresetResult("rejected", reason, basename)
+    return
+  end
+
+  local sizeOk, size = pcall(file.getSize, file)
+  if
+    not sizeOk
+    or type(size) ~= "number"
+    or size ~= size
+    or size == math.huge
+    or size == -math.huge
+    or size ~= math.floor(size)
+    or size < 0
+    or size > 131072
+  then
+    self:_showPresetResult("rejected", "The preset file size is invalid or exceeds 128 KiB.", basename)
+    return
+  end
+  local openedOk, opened = pcall(file.open, file, "r")
+  if not openedOk or opened ~= true then
+    self:_showPresetResult("rejected", "The preset file could not be opened.", basename)
+    return
+  end
+  local readOk, source = pcall(file.read, file, "string", size)
+  local closeOk, closed = pcall(file.close, file)
+  if not readOk or type(source) ~= "string" or #source ~= size then
+    self:_showPresetResult("rejected", "The preset file could not be read.", basename)
+    return
+  end
+  if not closeOk or closed == false then
+    self:_showPresetResult("rejected", "The preset file could not be closed.", basename)
+    return
+  end
+  local preset, parseError = SaveEditorPreset.parse(source)
+  if preset == nil then
+    self:_showPresetResult("rejected", Errors.format(assert(parseError)), basename)
+    return
+  end
+
+  local session = assert(self.session)
+  local expectedRevision = session:revision()
+  local world = assert(self.dependencies.world)
+  local mapId, metLocation
+  if preset.location == nil then
+    local current = assert(session:snapshot().location)
+    local currentMap = assert(world.maps[world.byId[current.mapId]], "current map is in the structural world")
+    metLocation = assert(currentMap.mapSectionNativeId, "current map has a met location")
+  else
+    mapId = world.bySymbol[preset.location.map]
+    if type(mapId) ~= "number" or mapId ~= math.floor(mapId) or world.byId[mapId] == nil then
+      self:_showPresetResult(
+        "rejected",
+        "The preset map is not available in this game: " .. preset.location.map,
+        preset.name
+      )
+      return
+    end
+    local map = world.maps[world.byId[mapId]]
+    if type(map) ~= "table" or type(map.mapSectionNativeId) ~= "number" then
+      self:_showPresetResult(
+        "rejected",
+        "The preset map has no valid met location: " .. preset.location.map,
+        preset.name
+      )
+      return
+    end
+    metLocation = map.mapSectionNativeId
+  end
+  local resolvedMapId = mapId --[[@as integer?]]
+  local date = self.dateProvider()
+  local originalLocation = session:snapshot().location
+  if preset.location == nil then
+    local partyRevision = session:partyRevision()
+    local result = session:applyPreset(preset, {
+      expectedRevision = expectedRevision,
+      metLocation = metLocation,
+      date = date,
+    })
+    self:_reportPresetApplication(
+      result,
+      preset.name,
+      session:partyRevision() ~= partyRevision,
+      not sameLocation(originalLocation, session:snapshot().location)
+    )
+    return
+  end
+
+  local graph = assert(self.dependencies)
+  local service = LocationService.new({
+    cacheFs = assert(graph.cacheFs),
+    world = world,
+    derivedAssets = assert(graph.derivedAssets),
+    savedObjects = assert(graph.savedObjects),
+  })
+  local setupOk, setupError = pcall(function()
+    service:openMap(assert(resolvedMapId), { purpose = "verify" })
+    service:setViewport(preset.location.x, preset.location.z, 1, 1)
+  end)
+  if not setupOk then
+    service:dispose()
+    if Errors.is(setupError) then
+      self:_showPresetResult("rejected", Errors.format(setupError), preset.name)
+      return
+    end
+    error(setupError, 0)
+  end
+  self.pendingPreset = {
+    session = session,
+    sessionRevision = expectedRevision,
+    preset = preset,
+    mapId = assert(resolvedMapId),
+    fieldX = preset.location.x,
+    fieldZ = preset.location.z,
+    metLocation = metLocation,
+    date = date,
+    service = service,
+  }
+  self.notice = "Checking preset destination…"
+end
+
+function State:_showPresetResult(kind, detail, presetName)
+  local title = kind == "imported" and "Preset imported"
+    or kind == "satisfied" and "Preset already satisfied"
+    or "Preset rejected"
+  local name = presetName ~= nil and presetName ~= "" and presetName or "the dropped file"
+  local messageText
+  if kind == "imported" then
+    messageText = name .. " was staged. Changes are staged. Use Save to write them to disk."
+  elseif kind == "satisfied" then
+    messageText = name .. " made no changes; no changes were needed."
+  else
+    messageText = name .. ": " .. detail
+  end
+  local dialog = love.window and love.window.showMessageBox
+  local called = false
+  local result
+  if type(dialog) == "function" then
+    local ok, value = pcall(dialog, title, messageText, kind == "rejected" and "error" or "info")
+    called, result = ok, value
+  end
+  if not called or result ~= true then
+    self.notice = messageText
+  else
+    self.notice = nil
+  end
+end
+
+function State:_finishPreset()
+  local pending = self.pendingPreset
+  self.pendingPreset = nil
+  if pending ~= nil then
+    pending.service:dispose()
+  end
+  self.notice = nil
+  return pending
+end
+
+function State:_reportPresetApplication(result, presetName, partyChanged, locationChanged)
+  if result.ok ~= true then
+    self:_showPresetResult("rejected", Errors.format(assert(result.error)), presetName)
+    return
+  end
+  if result.changed == true then
+    if partyChanged then
+      self.monDraft = nil
+    end
+    self._uiSessionSnapshot = nil
+    if locationChanged then
+      self:_syncLocationToSession()
+    end
+    self:_showPresetResult("imported", "", presetName)
+  else
+    self:_showPresetResult("satisfied", "", presetName)
+  end
+end
+
+function State:_stepPreset()
+  local pending = assert(self.pendingPreset)
+  pending.service:update()
+  local view = pending.service:snapshot()
+  if view.status.state == "failed" then
+    local finished = assert(self:_finishPreset())
+    self:_showPresetResult(
+      "rejected",
+      view.status.reason or "The preset destination could not be loaded.",
+      finished.preset.name
+    )
+    return
+  end
+  if view.status.state ~= "ready" then
+    return
+  end
+  local placement, status = pending.service:resolve(pending.mapId, pending.fieldX, pending.fieldZ, view.generation)
+  if placement == nil then
+    if status.state == "pending" then
+      return
+    end
+    local finished = assert(self:_finishPreset())
+    self:_showPresetResult("rejected", status.reason or "The preset destination is unavailable.", finished.preset.name)
+    return
+  end
+  if placement.mapId ~= pending.mapId or placement.fieldX ~= pending.fieldX or placement.fieldZ ~= pending.fieldZ then
+    local finished = assert(self:_finishPreset())
+    self:_showPresetResult(
+      "rejected",
+      "The verified destination did not match the preset coordinates.",
+      finished.preset.name
+    )
+    return
+  end
+  local session = assert(self.session)
+  if
+    self.disposed
+    or self.status ~= "ready"
+    or session ~= pending.session
+    or session:revision() ~= pending.sessionRevision
+    or self.closeRequest ~= nil
+    or self:_locationSavePending()
+    or self.valueEditor ~= nil
+    or self.controller.modal ~= nil
+    or self.modalStack:top() ~= nil
+    or (self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty()))
+  then
+    local finished = assert(self:_finishPreset())
+    self:_showPresetResult(
+      "rejected",
+      "The save changed or an edit became active during verification. Drop the preset again to retry.",
+      finished.preset.name
+    )
+    return
+  end
+  local finished = assert(self:_finishPreset())
+  local partyRevision = session:partyRevision()
+  local originalLocation = session:snapshot().location
+  local result = session:applyPreset(finished.preset, {
+    expectedRevision = finished.sessionRevision,
+    placement = placement,
+    metLocation = finished.metLocation,
+    date = finished.date,
+  })
+  self:_reportPresetApplication(
+    result,
+    finished.preset.name,
+    session:partyRevision() ~= partyRevision,
+    not sameLocation(originalLocation, session:snapshot().location)
+  )
+end
+
 function State:_locationGridSize()
   return self.locationGridWidthTiles or 1, self.locationGridHeightTiles or 1
 end
@@ -2696,6 +2981,7 @@ function State:_pumpLocationSave()
     end
     return
   end
+  self._uiSessionSnapshot = nil
   self.errorMessage = nil
   if result.leave then
     local request = self.closeRequest
@@ -4500,6 +4786,7 @@ function State:dispose()
   self.numberHold = nil
   self.numberPressTarget = nil
   self.generation = self.generation + 1
+  self:_finishPreset()
   self:_cancelPendingLocationSave()
   if self.locationService then
     self.locationService:dispose()

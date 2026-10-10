@@ -10,6 +10,7 @@ local DisplayContext = require("libs.ui.src.DisplayContext")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local SaveFs = require("libs.storage.src.SaveFs")
 local Experience = require("libs.mons.src.gen4.Experience")
+local App = require("app.src.App")
 
 local T = {
   metadata = {
@@ -1708,6 +1709,137 @@ function T.tests.pallet_and_azalea_map_placement_stays_conservative_with_real_ro
       graph:close()
     end)
   end
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.dropped_location_preset_resolves_stages_and_saves_through_the_editor()
+  local fixture = Fixture.new()
+  local originalGlobal = SaveFs.global
+  local originalDialog = love.window.showMessageBox
+  local originalAppState = App.state
+  local dialogs = {}
+  love.window.showMessageBox = function(title, message, kind)
+    dialogs[#dialogs + 1] = { title = title, message = message, kind = kind }
+    return true
+  end
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+
+  local state
+  local ok, err = xpcall(function()
+    local State = require("app.src.saveeditor.SaveEditorState")
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 640,
+      height = 480,
+      derivedAssets = readyHost(),
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "production Save Editor composition opens the isolated save")
+    App.state = state
+
+    local source = [=[return {
+      schema = "portemon-save-preset-v1",
+      name = "Acceptance location",
+      description = "Resolve a real destination before staging.",
+      flags = { FLAG_BEAT_RADIO_TOWER_ROCKETS = true },
+      variables = { VAR_UNK_40FE = 0 },
+      items = { POTION = 3 },
+      location = { map = "MAP_NEW_BARK_PLAYER_HOUSE_1F", x = 4, z = 5, facing = "north" },
+    }]=]
+    local function droppedFile(bytes, filename)
+      return {
+        opened = 0,
+        closed = 0,
+        getFilename = function() return filename or "acceptance.lua" end,
+        getSize = function() return #bytes end,
+        open = function(self, mode)
+          Assert.equal(mode, "r", "the dropped file opens for reading")
+          self.opened = self.opened + 1
+          return true
+        end,
+        read = function(_, format, size)
+          Assert.equal(format, "string", "the dropped file is read as bytes")
+          Assert.equal(size, #bytes, "the bounded read uses the reported file size")
+          return bytes
+        end,
+        close = function(self)
+          self.closed = self.closed + 1
+          return true
+        end,
+      }
+    end
+    local file = droppedFile(source)
+
+    withoutRendering(function()
+      local before = state.session:captureCandidate()
+      App.filedropped(file)
+      for _ = 1, 5000 do
+        if #dialogs > 0 then
+          break
+        end
+        state:update(0)
+      end
+      Assert.equal(file.opened, 1, "the accepted drop opens once")
+      Assert.equal(file.closed, 1, "the accepted drop closes once")
+      Assert.equal(#dialogs, 1, "the terminal import shows one confirmation")
+      Assert.equal(dialogs[1].title, "Preset imported", "the verified preset is accepted")
+      Assert.equal(dialogs[1].kind, "info", "success uses an informational OK dialog")
+      Assert.isTrue(dialogs[1].message:find("staged", 1, true) ~= nil, "confirmation explains changes are staged")
+      Assert.isTrue(dialogs[1].message:find("Save", 1, true) ~= nil, "confirmation directs the user to Save")
+
+      local staged = state.session:captureCandidate()
+      Assert.isFalse(staged.mapId == before.mapId, "the resolved preset changes the staged destination")
+      Assert.equal(staged.mapId, assert(state.dependencies.world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_1F))
+      Assert.equal(staged.fieldX, 4)
+      Assert.equal(staged.fieldZ, 5)
+      Assert.equal(staged.facing, "north")
+      Assert.equal(staged.world.variables[0x40FE] or 0, 0)
+      Assert.isTrue(state:view().dirty, "the import remains an unsaved editor change")
+      Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), fixture.initial, "the drop does not write the save")
+
+      local beforeMalformed = state.session:captureCandidate()
+      local malformedFile = droppedFile("return { schema = 'unsupported' }", "malformed.lua")
+      App.filedropped(malformedFile)
+      Assert.equal(malformedFile.opened, 1, "the rejected drop opens once")
+      Assert.equal(malformedFile.closed, 1, "the rejected drop closes once")
+      Assert.equal(#dialogs, 2, "the invalid attempt has one terminal dialog")
+      Assert.equal(dialogs[2].title, "Preset rejected", "the malformed document is rejected explicitly")
+      Assert.deepEqual(state.session:captureCandidate(), beforeMalformed, "rejection preserves prior staged changes")
+      Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), fixture.initial, "rejection leaves disk untouched")
+
+      activateTarget(state, "save")
+      for _ = 1, 5000 do
+        if not state:view().dirty and state:view().locationSave == nil then
+          break
+        end
+        state:update(0)
+      end
+      local published = assert(fixture.store:load(fixture.saveId))
+      Assert.equal(published.mapId, staged.mapId, "manual Save publishes the verified map")
+      Assert.equal(published.fieldX, 4, "manual Save publishes the verified field X")
+      Assert.equal(published.fieldZ, 5, "manual Save publishes the verified field Z")
+      Assert.equal(published.facing, "north", "manual Save publishes staged facing")
+      Assert.equal(published.world.variables[0x40FE] or 0, 0, "manual Save publishes logical variable zero")
+      Assert.equal(state:view().dirty, false, "ordinary Save clears staged dirty state")
+    end)
+  end, debug.traceback)
+
+  if state then
+    pcall(function() state:dispose() end)
+  end
+  App.state = originalAppState
+  love.window.showMessageBox = originalDialog
+  SaveFs.global = originalGlobal
   fixture.cleanup()
   if not ok then
     error(err, 0)

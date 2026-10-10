@@ -495,6 +495,13 @@ end
 
 function App.filedropped(file)
   local currentState = App.state
+  if currentState ~= nil and getmetatable(currentState) == SaveEditorState then
+    local filename = file:getFilename()
+    if filename:lower():match("%.lua$") then
+      currentState:importPresetFile(file)
+      return
+    end
+  end
   if currentState ~= nil and type(currentState.onImportAttempt) == "function" then
     currentState:onImportAttempt()
     return
