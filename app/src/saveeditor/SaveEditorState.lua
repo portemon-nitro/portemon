@@ -4155,154 +4155,152 @@ function State:_consumeUiInput(events)
   end
 end
 
-function State:keypressed(key, _, isrepeat)
-  if self.disposed or self.resultSent or isrepeat or self.status == "opening" then
-    return
+local function isConfirmKey(key)
+  return key == "return" or key == "kpenter"
+end
+
+-- Pushes one navigation, cancel or confirm key into the shared field input
+-- and reports whether the key was one of them.
+function State:_pressNavigationKey(key)
+  local source = "key:" .. key
+  if FIELD_DIRECTIONS[key] ~= nil then
+    self.fieldInput:pressDirection(FIELD_DIRECTIONS[key], source)
+  elseif HgssInputBindings.isCancelKey(key) then
+    self.fieldInput:pressCancel(source)
+  elseif HgssInputBindings.isActionKey(key) or isConfirmKey(key) then
+    self.fieldInput:pressAction(source)
+  else
+    return false
   end
-  if self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number" then
-    local editorLayout = assert(self:_resolve(self:_snapshot()).content.layout)
-    if self:_numberEditorTooSmall(editorLayout) then
-      local source = "key:" .. key
-      if key == "escape" then
-        self.valueEditor:cancel()
-        self:_finishValueEditor()
-        self:_invalidatePublication()
-        self:_settleScope()
-        self:_refreshPublication()
-      elseif editorLayout.targets.cancel ~= nil and (key == "return" or key == "kpenter") then
-        self.fieldInput:pressAction(source)
-        self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
-      end
-      return
-    end
-  end
-  if key == "tab" then
-    local layout = self:_resolve(self:_snapshot()).content.layout
-    local direction = love.keyboard.isDown("lshift", "rshift") and "previous" or "next"
-    self:_navigateTab(layout, direction)
-    self.controller:cancelInteraction()
-    self:_invalidatePublication()
-    self:_settleScope()
-    self:_refreshPublication()
-    return
-  end
-  if self.controller.modal then
-    local source = "key:" .. key
-    if key == "up" or key == "down" or key == "left" or key == "right" then
-      self.fieldInput:pressDirection(FIELD_DIRECTIONS[key], source)
-    elseif HgssInputBindings.isCancelKey(key) then
-      self.fieldInput:pressCancel(source)
-    elseif HgssInputBindings.isActionKey(key) or key == "return" or key == "kpenter" then
-      self.fieldInput:pressAction(source)
-    else
-      return
-    end
+  return true
+end
+
+-- Publishes the state a value-editor keystroke left behind.
+function State:_republishEdited()
+  self:_invalidatePublication()
+  self:_syncScope()
+  self:_reconcileFocus()
+  self:_settleScope()
+  self:_refreshPublication()
+end
+
+function State:_cancelValueEditor()
+  self.valueEditor:cancel()
+  self:_finishValueEditor()
+  self:_invalidatePublication()
+  self:_settleScope()
+  self:_refreshPublication()
+end
+
+-- A number editor whose layout does not fit exposes only escape and confirm.
+function State:_keypressedNumberTooSmall(key, editorLayout)
+  if key == "escape" then
+    self:_cancelValueEditor()
+  elseif editorLayout.targets.cancel ~= nil and isConfirmKey(key) then
+    self.fieldInput:pressAction("key:" .. key)
     self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
-    return
   end
-  if self.valueEditor then
-    self.preserveChoiceScroll = false
-    local editorLayout = self:_resolve(self:_snapshot()).content.layout
-    if self:_numberEditorTooSmall(editorLayout) then
-      if key == "escape" then
-        self.valueEditor:cancel()
-        self:_finishValueEditor()
-        self:_invalidatePublication()
-        self:_settleScope()
-        self:_refreshPublication()
-      end
-      return
-    end
-    if self.valueEditor:snapshot().kind == "number" then
-      local source = "key:" .. key
-      if key == "up" or key == "down" or key == "left" or key == "right" then
-        self.fieldInput:pressDirection(FIELD_DIRECTIONS[key], source)
-        self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
-      elseif key == "return" or key == "kpenter" then
-        self.fieldInput:pressAction(source)
-        self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
-      elseif key == "escape" then
-        self.fieldInput:pressCancel(source)
-        self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
-      elseif key == "backspace" then
-        self.valueEditor:press("backspace")
-        self:_syncScope()
-      elseif key == "delete" then
-        self.valueEditor:press("clear_search")
-        self:_syncScope()
-      end
-      return
-    end
-    local editorList, editorRow = self:_activeList(editorLayout)
-    local choiceList = editorList ~= nil and editorList.id == "value:choice" and editorList or nil
-    if self.valueEditor:snapshot().kind == "choice" then
-      -- An active choice list shares the gamepad and normalized input
-      -- machinery: physical keys classify once into navigation, confirm and
-      -- cancel events for the shared consumer below. A discrete press builds
-      -- one event instead of latching a held physical source, so repeated
-      -- confirms never depend on release ordering. Filter editing
-      -- (backspace/delete) and text entry stay on their direct
-      -- keyboard-only paths, and space keeps its text behavior instead of
-      -- confirming.
-      if key == "up" or key == "down" or key == "left" or key == "right" then
-        self:_consumeUiInput({ { type = "navigate", direction = key } })
-      elseif key == "backspace" then
-        if choiceList ~= nil then
-          self:_filterFocusedList(choiceList, editorRow, "backspace")
-        else
-          self.valueEditor:press("backspace")
-        end
-        self:_invalidatePublication()
-        self:_syncScope()
-        self:_reconcileFocus()
-        self:_settleScope()
-        self:_refreshPublication()
-      elseif key == "delete" then
-        if choiceList ~= nil then
-          self:_filterFocusedList(choiceList, editorRow, "clear")
-        else
-          self.valueEditor:press("clear_search")
-        end
-        self:_invalidatePublication()
-        self:_syncScope()
-        self:_reconcileFocus()
-        self:_settleScope()
-        self:_refreshPublication()
-      elseif HgssInputBindings.isCancelKey(key) then
-        self:_consumeUiInput({ { type = "cancel" } })
-      elseif key == "return" or key == "kpenter" then
-        self:_consumeUiInput({ { type = "confirm" } })
-      else
-        self:_invalidatePublication()
-        self:_syncScope()
-        self:_reconcileFocus()
-        self:_settleScope()
-        self:_refreshPublication()
-      end
-      return
-    end
-    if key == "return" or key == "kpenter" then
-      local submitted, reason = self.valueEditor:submit()
-      self.editorFeedback = submitted and nil or reason
-      self:_finishValueEditor()
-    elseif key == "escape" then
-      self.valueEditor:cancel()
-      self:_finishValueEditor()
-    elseif key == "backspace" then
-      self.valueEditor:press("backspace")
-    elseif key == "delete" then
-      self.valueEditor:press("clear_search")
-    elseif key == "left" or key == "right" or key == "up" or key == "down" then
-      self.controller:markKeyboardNavigation()
-      self:_navigate(editorLayout, key)
-    end
-    self:_invalidatePublication()
+end
+
+function State:_keypressedTab()
+  local layout = self:_resolve(self:_snapshot()).content.layout
+  local direction = love.keyboard.isDown("lshift", "rshift") and "previous" or "next"
+  self:_navigateTab(layout, direction)
+  self.controller:cancelInteraction()
+  self:_invalidatePublication()
+  self:_settleScope()
+  self:_refreshPublication()
+end
+
+function State:_keypressedModal(key)
+  if self:_pressNavigationKey(key) then
+    self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+  end
+end
+
+function State:_keypressedNumberEditor(key)
+  if FIELD_DIRECTIONS[key] ~= nil then
+    self.fieldInput:pressDirection(FIELD_DIRECTIONS[key], "key:" .. key)
+  elseif isConfirmKey(key) then
+    self.fieldInput:pressAction("key:" .. key)
+  elseif key == "escape" then
+    self.fieldInput:pressCancel("key:" .. key)
+  elseif key == "backspace" then
+    self.valueEditor:press("backspace")
     self:_syncScope()
-    self:_reconcileFocus()
-    self:_settleScope()
-    self:_refreshPublication()
+    return
+  elseif key == "delete" then
+    self.valueEditor:press("clear_search")
+    self:_syncScope()
+    return
+  else
     return
   end
+  self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+end
+
+-- An active choice list shares the gamepad and normalized input machinery:
+-- physical keys classify once into navigation, confirm and cancel events for
+-- the shared consumer. A discrete press builds one event instead of latching
+-- a held physical source, so repeated confirms never depend on release
+-- ordering. Filter editing (backspace/delete) and text entry stay on their
+-- direct keyboard-only paths, and space keeps its text behavior instead of
+-- confirming.
+function State:_keypressedChoiceEditor(key, editorLayout)
+  local editorList, editorRow = self:_activeList(editorLayout)
+  local choiceList = editorList ~= nil and editorList.id == "value:choice" and editorList or nil
+  if FIELD_DIRECTIONS[key] ~= nil then
+    self:_consumeUiInput({ { type = "navigate", direction = key } })
+  elseif key == "backspace" or key == "delete" then
+    local clears = key == "delete"
+    if choiceList ~= nil then
+      self:_filterFocusedList(choiceList, editorRow, clears and "clear" or "backspace")
+    else
+      self.valueEditor:press(clears and "clear_search" or "backspace")
+    end
+    self:_republishEdited()
+  elseif HgssInputBindings.isCancelKey(key) then
+    self:_consumeUiInput({ { type = "cancel" } })
+  elseif isConfirmKey(key) then
+    self:_consumeUiInput({ { type = "confirm" } })
+  else
+    self:_republishEdited()
+  end
+end
+
+function State:_keypressedTextEditor(key, editorLayout)
+  if isConfirmKey(key) then
+    local submitted, reason = self.valueEditor:submit()
+    self.editorFeedback = submitted and nil or reason
+    self:_finishValueEditor()
+  elseif key == "escape" then
+    self.valueEditor:cancel()
+    self:_finishValueEditor()
+  elseif key == "backspace" then
+    self.valueEditor:press("backspace")
+  elseif key == "delete" then
+    self.valueEditor:press("clear_search")
+  elseif FIELD_DIRECTIONS[key] ~= nil then
+    self.controller:markKeyboardNavigation()
+    self:_navigate(editorLayout, key)
+  end
+  self:_republishEdited()
+end
+
+function State:_keypressedValueEditor(key)
+  self.preserveChoiceScroll = false
+  local editorLayout = self:_resolve(self:_snapshot()).content.layout
+  local kind = self.valueEditor:snapshot().kind
+  if kind == "number" then
+    self:_keypressedNumberEditor(key)
+  elseif kind == "choice" then
+    self:_keypressedChoiceEditor(key, editorLayout)
+  else
+    self:_keypressedTextEditor(key, editorLayout)
+  end
+end
+
+function State:_keypressedList(key)
   if key == "backspace" or key == "delete" then
     local layout = self:_resolve(self:_snapshot()).content.layout
     local list, rowIndex = self:_activeList(layout)
@@ -4325,17 +4323,32 @@ function State:keypressed(key, _, isrepeat)
   if self.controller.section == "Progress" and isPrintableKeyName(key) then
     return
   end
-  local source = "key:" .. key
-  if key == "up" or key == "down" or key == "left" or key == "right" then
-    self.fieldInput:pressDirection(FIELD_DIRECTIONS[key], source)
-  elseif HgssInputBindings.isCancelKey(key) then
-    self.fieldInput:pressCancel(source)
-  elseif HgssInputBindings.isActionKey(key) or key == "return" or key == "kpenter" then
-    self.fieldInput:pressAction(source)
-  elseif self.controller.section == "Progress" then
+  if not self:_pressNavigationKey(key) and self.controller.section == "Progress" then
     return
   end
   self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+end
+
+function State:keypressed(key, _, isrepeat)
+  if self.disposed or self.resultSent or isrepeat or self.status == "opening" then
+    return
+  end
+  if self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number" then
+    local editorLayout = assert(self:_resolve(self:_snapshot()).content.layout)
+    if self:_numberEditorTooSmall(editorLayout) then
+      self:_keypressedNumberTooSmall(key, editorLayout)
+      return
+    end
+  end
+  if key == "tab" then
+    self:_keypressedTab()
+  elseif self.controller.modal then
+    self:_keypressedModal(key)
+  elseif self.valueEditor then
+    self:_keypressedValueEditor(key)
+  else
+    self:_keypressedList(key)
+  end
 end
 
 function State:textinput(text)
