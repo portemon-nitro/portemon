@@ -387,14 +387,19 @@ function T.opening_decisions_project_pure_selectable_options()
     "mutating a returned copy never reaches the kernel or a later read"
   )
   local twinPort = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local twinParty = makeParty(
+    { species = "EEVEE", level = 20, seed = 0x33333333 },
+    { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" }
+  )
+  local twinBag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local twin = startBattle(
     wildLaunch("launch-presentation-twin"),
     ScenarioFactory.fromEncounter(
       { attemptId = "twin-attempt", mon = foeRecord("EEVEE", 20, 0x5EED0002) },
-      { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+      { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
     ),
-    party,
-    bag,
+    twinParty,
+    twinBag,
     headlessPort(twinPort),
     0x12345678
   )
