@@ -1115,8 +1115,8 @@ local function paintFooter(ctx)
   for _, action in ipairs(layout.actions) do
     local rect = targetRect(layout, action.id)
     if rect then
-      local label = action.id == "save" and view.locationSave and "Cancel check" or action.label
-      local role = action.id == "save" and (view.locationSave and "back" or "primary")
+      local label = action.label
+      local role = action.id == "save" and "primary"
         or action.id == "discard" and "destructive"
         or action.id == "back" and "back"
         or "secondary"

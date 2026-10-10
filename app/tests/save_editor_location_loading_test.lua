@@ -1286,110 +1286,31 @@ function T.tests.represented_bounds_derive_from_descriptor_headers_in_a_single_p
   service:dispose()
 end
 
-local function destinationOwner()
-  local loaded, LocationSave = pcall(require, "app.src.saveeditor.SaveEditorLocationSave")
-  Assert.isTrue(loaded, "destination verification has its own bounded owner")
-  return LocationSave.new({
-    cacheFs = {
-      loadLua = function()
-        return nil
-      end,
-    },
-    world = structuralWorld(),
-    derivedAssets = {},
-    savedObjects = { actors = {} },
-  })
-end
-
-local function destinationSnapshot(revision, fieldX)
-  return {
-    revision = revision,
-    location = {
-      mapId = 11,
-      fieldX = fieldX or 10,
-      fieldZ = 12,
-      surfaceId = 3,
-      worldY = 0,
-      terrainDependencyHash = "loading-fixture",
-    },
-  }
-end
-
-local function readyVerifier(owner)
-  owner.pending.verifier.loader = fakeLoader({ taskImmediate = true })
-end
-
-function T.tests.destination_verification_rejects_stale_results_and_disposes_once()
-  local owner = destinationOwner()
-  Assert.isNil(owner:status(), "nothing is pending before the first check")
-  Assert.isTrue(owner:start(destinationSnapshot(1), false), "the first check starts its verifier")
-  local first = assert(owner:status(), "the started check publishes its operation")
-  Assert.equal(first.state, "pending", "the started check waits for staged work")
-  Assert.isFalse(owner:start(destinationSnapshot(1), false), "a second check never starts beside a pending one")
-  Assert.equal(owner:status().operationId, first.operationId, "the pending check keeps its identity")
-
-  readyVerifier(owner)
-  local verifier = owner.pending.verifier
-  local ticket = owner:step(destinationSnapshot(1))
-  Assert.equal(ticket.kind, "verified", "a matching check yields one verified ticket")
-  Assert.equal(ticket.operationId, first.operationId, "the ticket carries its operation")
-  Assert.equal(ticket.sessionRevision, 1, "the ticket carries its session revision")
-  Assert.deepEqual(ticket.location, destinationSnapshot(1).location, "the ticket carries all six placement fields")
-  Assert.equal(ticket.leave, false, "the ticket carries its leave intent")
-  Assert.isTrue(verifier.disposed, "the ticket settles its verifier exactly once")
-  Assert.isNil(owner:status(), "a verified ticket settles its operation")
-
-  Assert.isTrue(owner:start(destinationSnapshot(1), true), "a settled owner accepts its next check")
-  local drifted = owner:step(destinationSnapshot(2))
-  Assert.equal(drifted.kind, "cancelled", "a session revision change retires the check")
-  Assert.isNil(owner:status(), "a cancelled check settles its operation")
-
-  Assert.isTrue(owner:start(destinationSnapshot(2), true), "the owner restarts after a cancellation")
-  local moved = owner:step(destinationSnapshot(2, 11))
-  Assert.equal(moved.kind, "cancelled", "a placement change retires the check")
-  Assert.isNil(owner:status(), "a moved check settles its operation")
-
-  Assert.isTrue(owner:start(destinationSnapshot(2), true), "the owner restarts after a move")
-  local retired = owner.pending.verifier
-  owner:cancel()
-  Assert.isTrue(retired.disposed, "cancel releases the retired verifier")
-  Assert.isNil(owner:status(), "cancel retires the operation")
-  Assert.isTrue(owner:start(destinationSnapshot(2), false), "the owner restarts after a cancel")
-  Assert.isTrue(owner:status().operationId ~= first.operationId, "a restarted check owns a fresh identity")
-  owner:cancel()
-
-  local setupOk = pcall(owner.start, owner, destinationSnapshot(9, 10), false)
-  Assert.isTrue(setupOk, "a known destination map starts its check")
-  owner:cancel()
-  local unknownSnapshot = destinationSnapshot(9, 10)
-  unknownSnapshot.location.mapId = 999
-  local unknownOk = pcall(owner.start, owner, unknownSnapshot, false)
-  Assert.isFalse(unknownOk, "an unknown destination map fails its setup")
-  Assert.isNil(owner:status(), "a failed setup leaves nothing pending")
-
-  Assert.isTrue(owner:start(destinationSnapshot(2), false), "the owner restarts after a setup failure")
-  owner.pending.verifier.loader = fakeLoader({ requestError = "destination assets unavailable" })
-  local failed = owner:step(destinationSnapshot(2))
-  Assert.equal(failed.kind, "failed", "loader failure surfaces without a ticket")
-  Assert.notNil(failed.reason, "loader failure keeps its diagnostic")
-  Assert.isNil(owner:status(), "a failed check settles its operation")
-  owner:dispose()
-end
-
-function T.tests.relocated_save_reaches_the_session_exactly_once_with_a_fresh_ticket()
+function T.tests.relocated_save_publishes_through_the_session_without_a_second_map_check()
   local Controller = require("app.src.saveeditor.SaveEditorController")
   local State = require("app.src.saveeditor.SaveEditorState")
-  local owner = destinationOwner()
+  local LocationServiceModule = require("app.src.saveeditor.SaveEditorLocationService")
   local controller = Controller.new()
-  local saves, results = {}, {}
-  local committed = destinationSnapshot(7)
-  committed.locationChanged = true
+  local saves = {}
+  local placement = {
+    mapId = 11,
+    fieldX = 10,
+    fieldZ = 12,
+    surfaceId = 3,
+    worldY = 0,
+    terrainDependencyHash = "loading-fixture",
+  }
+  local staged = {
+    revision = 7,
+    location = placement,
+    locationChanged = true,
+  }
   local session = {
     snapshot = function()
-      return committed
+      return staged
     end,
-    save = function(_, leave)
-      saves[#saves + 1] = leave
+    save = function(_, hasUnappliedDraft)
+      saves[#saves + 1] = hasUnappliedDraft
       return { ok = true }
     end,
   }
@@ -1407,87 +1328,34 @@ function T.tests.relocated_save_reaches_the_session_exactly_once_with_a_fresh_ti
       savedObjects = { actors = {} },
     },
     derivedAssets = {},
-    locationSave = owner,
     valueEditor = nil,
     monDraft = nil,
     errorMessage = nil,
-    closeRequest = {
-      reason = "back",
-      phase = "confirm",
-      previousModal = nil,
-      previousModalReturnFocus = nil,
-      previousFocus = "money",
-    },
-    onResult = function(result)
-      results[#results + 1] = result
-    end,
+    closeRequest = nil,
+    onResult = function() end,
   }, State)
-  Assert.isFalse(state:_save(true), "a relocated save defers while its destination is checked")
-  Assert.notNil(owner:status(), "the deferred save owns one pending verification")
-  readyVerifier(owner)
-  state:_pumpLocationSave()
-  Assert.deepEqual(saves, { false }, "the fresh ticket reaches the session transaction once")
-  Assert.isNil(owner:status(), "the completed save settles its operation")
-  Assert.deepEqual(results, { { kind = "main_menu" } }, "the leave request emits its result once")
-  state:_pumpLocationSave()
-  Assert.deepEqual(saves, { false }, "a settled verification never saves twice")
-  Assert.deepEqual(results, { { kind = "main_menu" } }, "a settled verification never reports twice")
-end
 
-function T.tests.relocated_save_failure_keeps_the_leave_decision_without_a_result()
-  local Controller = require("app.src.saveeditor.SaveEditorController")
-  local State = require("app.src.saveeditor.SaveEditorState")
-  local ErrorsModule = require("libs.errors.src.Errors")
-  local owner = destinationOwner()
-  local controller = Controller.new()
-  local saves, results = {}, {}
-  local committed = destinationSnapshot(7)
-  committed.locationChanged = true
-  local session = {
-    snapshot = function()
-      return committed
-    end,
-    save = function()
-      saves[#saves + 1] = true
-      return { ok = false, error = ErrorsModule.new("SAVE_EDITOR_SAVE_FAILED", "disk unavailable") }
-    end,
-  }
-  local state = setmetatable({
-    status = "ready",
-    controller = controller,
-    session = session,
-    dependencies = {
-      cacheFs = {
-        loadLua = function()
-          return nil
-        end,
-      },
-      world = structuralWorld(),
-      savedObjects = { actors = {} },
-    },
-    derivedAssets = {},
-    locationSave = owner,
-    valueEditor = nil,
-    monDraft = nil,
-    errorMessage = nil,
-    closeRequest = {
-      reason = "back",
-      phase = "saving",
-      previousModal = nil,
-      previousModalReturnFocus = nil,
-      previousFocus = "money",
-    },
-    onResult = function(result)
-      results[#results + 1] = result
-    end,
-  }, State)
-  Assert.isFalse(state:_save(true), "a relocated save defers while its destination is checked")
-  readyVerifier(owner)
-  state:_pumpLocationSave()
-  Assert.equal(#saves, 1, "the failed save still attempted its transaction once")
-  Assert.deepEqual(results, {}, "a failed save emits no result")
-  Assert.notNil(state.errorMessage, "a failed save keeps its diagnostic")
-  Assert.equal(state.closeRequest.phase, "confirm", "a failed save returns its leave decision")
+  local constructions = 0
+  local originalNew = LocationServiceModule.new
+  LocationServiceModule.new = function(...)
+    constructions = constructions + 1
+    return originalNew(...)
+  end
+  local savedOk
+  local ok, saveError = pcall(function()
+    savedOk = state:_save(false)
+  end)
+  LocationServiceModule.new = originalNew
+
+  Assert.isTrue(ok, "the relocated save runs without raising through a verifier")
+  if not ok then
+    error(saveError, 0)
+  end
+  Assert.isTrue(savedOk, "a relocated save publishes synchronously through the session transaction")
+  Assert.equal(#saves, 1, "the relocated save invokes the session transaction exactly once")
+  Assert.equal(constructions, 0, "saving never opens a second destination service")
+  Assert.isNil(state.errorMessage, "the direct save reports no destination drift")
+  Assert.deepEqual(staged.location, placement, "the saved placement keeps all six accepted fields")
 end
 
 function T.tests.represented_matrix_lookup_advances_under_the_metadata_budget()

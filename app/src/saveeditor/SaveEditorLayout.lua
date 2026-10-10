@@ -118,7 +118,7 @@ function Layout.minimumListCanvasWidth(view, metrics, height)
     stripWidth = stripWidth + metrics.measure(label) + 8
   end
   local actionWidth = 8
-  for _, label in ipairs({ "Save", "Discard", view.locationSave and "Cancel check" or "Back" }) do
+  for _, label in ipairs({ "Save", "Discard", "Back" }) do
     actionWidth = actionWidth + math.max(40, metrics.measure(label) + 24)
   end
   return math.min(256, math.max(listWidth, stripWidth, actionWidth) + 16)
@@ -170,9 +170,7 @@ local function activationAction(view, targetId)
     end
     return activationAction({ section = view.section }, targetId)
   elseif view.modal ~= nil then
-    for _, action in
-      ipairs(view.decisionActions or Decisions.describe(view.modal, { pendingSave = view.locationSave ~= nil }))
-    do
+    for _, action in ipairs(view.decisionActions or Decisions.describe(view.modal)) do
       if action.id == targetId then
         local actionKind = action.command == "cancel" and "cancel"
           or action.command == "bag_quantity" and "edit-bag-quantity"
@@ -182,7 +180,6 @@ local function activationAction(view, targetId)
           or action.command == "party-move:pp-ups" and "edit-move-pp-ups"
           or action.command == "confirm_remove" and "confirm-remove"
           or action.command == "save" and "save-and-exit"
-          or action.command == "cancel_pending_save" and "save-and-exit"
           or action.command == "discard" and "discard-and-exit"
         assert(type(actionKind) == "string", "decision command has a focus action")
         return { kind = "decision." .. actionKind, decision = view.modal, command = action.command, id = action.id }
@@ -1202,7 +1199,7 @@ local function buildFooterActions(ctx)
   local actionWidths = {
     math.min(128, math.max(40, metrics.measure("Save") + 24)),
     math.min(128, math.max(40, metrics.measure("Discard") + 24)),
-    math.min(128, math.max(40, metrics.measure(view.locationSave and "Cancel check" or "Back") + 24)),
+    math.min(128, math.max(40, metrics.measure("Back") + 24)),
   }
   local widthTotal = actionWidths[1] + actionWidths[2] + actionWidths[3]
   if widthTotal > innerWidth - 8 then
@@ -1449,8 +1446,7 @@ local function buildDecisionScope(ctx)
   local contentX, contentTop, contentBottom, innerWidth =
     ctx.contentX, ctx.contentTop, ctx.contentBottom, ctx.innerWidth
   local metrics = ctx.metrics
-  local decisionActions = view.decisionActions
-    or Decisions.describe(view.modal, { pendingSave = view.locationSave ~= nil })
+  local decisionActions = view.decisionActions or Decisions.describe(view.modal)
   ctx.decisionActions = decisionActions
   assert(#decisionActions >= 2, "a decision modal has a primary action and a final Back action")
   local back = decisionActions[#decisionActions]

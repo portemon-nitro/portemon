@@ -241,7 +241,6 @@ function T.tests.failed_preset_file_read_closes_once_and_keeps_the_session_uncha
     valueEditor = nil,
     monDraft = nil,
     pendingMoveSlot = nil,
-    locationSave = nil,
     pendingPreset = nil,
     dateProvider = function() return { year = 2026, month = 10, day = 9 } end,
   }, State)
@@ -321,12 +320,6 @@ function T.tests.preset_rejections_cover_oversize_and_dirty_party_drafts_before_
     local modalFile = fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }'))
     state:importPresetFile(modalFile)
     Assert.equal(modalFile.opens, 0, "an active editing modal blocks import before file IO")
-
-    state.controller.modal = nil
-    state.locationSave = { status = function() return "pending" end }
-    local saveFile = fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }'))
-    state:importPresetFile(saveFile)
-    Assert.equal(saveFile.opens, 0, "a pending Save verification blocks import before file IO")
     Assert.equal(session.applyCalls, 0, "all refusals leave the session untouched")
   end)
 end
@@ -572,15 +565,6 @@ function T.tests.revision_change_during_location_verification_rejects_without_ap
       Assert.equal(disposed, 1, "stale settlement disposes the verifier once")
       Assert.equal(#dialogs, 1, "stale settlement is reported once")
       Assert.equal(dialogs[1].title, "Preset rejected")
-
-      state:importPresetFile(fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 6, z = 7 }')))
-      state.locationSave = { status = function() return "pending" end }
-      state._pumpLocationSave = function() end
-      state:update(0)
-      Assert.equal(session.applyCalls, 0, "a Save verification starting during import blocks publication")
-      Assert.isNil(state.pendingPreset, "busy settlement clears the pending import")
-      Assert.equal(disposed, 2, "busy settlement releases its verifier once")
-      Assert.equal(#dialogs, 2, "busy settlement is reported once")
     end)
   end)
   LocationService.new = originalNew
@@ -3547,7 +3531,6 @@ function T.tests.steady_update_never_prepares_icons()
   harness.state.tickRemainder = 0
   harness.state.inputTick = 0
   harness.state.numberHold = nil
-  harness.state.locationSave = nil
   harness.state.derivedAssets = {
     requestMilestone = function()
       return true
@@ -6052,8 +6035,7 @@ function T.tests.every_modal_action_renders_hits_and_executes_from_one_descripti
     },
   }
   for kind, expected in pairs(expectations) do
-    local facts = kind == "leave" and { pendingSave = false } or {}
-    local actions = Decisions.describe(kind, facts)
+    local actions = Decisions.describe(kind)
     Assert.equal(#actions, #expected, kind .. " publishes its closed action set")
     for index, want in ipairs(expected) do
       local action = assert(actions[index], kind .. " action " .. index .. " is ordered")
@@ -6119,21 +6101,15 @@ function T.tests.every_modal_action_renders_hits_and_executes_from_one_descripti
     local published = publisher:_snapshot()
     Assert.deepEqual(
       published.decisionActions,
-      Decisions.describe(kind, kind == "leave" and { pendingSave = false } or {}),
+      Decisions.describe(kind),
       kind .. " publishes its canonical actions without mutating interaction state"
     )
     Assert.notNil(publisher.numberHold, kind .. " publication never cancels a held repeat")
   end
   publisher.controller.modal = nil
   Assert.equal(publisherIconPrep(), 0, "publication never requests derived icon work")
-  local pendingSave = Decisions.describe("leave", { pendingSave = true })
-  Assert.equal(
-    pendingSave[1].command,
-    "cancel_pending_save",
-    "a save target during verification cancels the check instead of saving"
-  )
-  local idleSave = Decisions.describe("leave", { pendingSave = false })
-  Assert.equal(idleSave[1].command, "save", "an idle save target saves")
+  local idleSave = Decisions.describe("leave")
+  Assert.equal(idleSave[1].command, "save", "the leave save target saves")
   local unknownOk = pcall(Decisions.describe, "leave-everything", {})
   Assert.isFalse(unknownOk, "an unknown decision kind is a programming error, not an implicit leave")
 end
@@ -6911,7 +6887,6 @@ function T.tests.snapshot_does_not_publish_or_mutate_the_active_scope()
     session = nil,
     valueEditor = nil,
     locationService = nil,
-    pendingLocationSave = nil,
   }, State)
 
   local first = state:_snapshot()
@@ -7230,6 +7205,277 @@ function T.tests.retained_flag_and_bag_records_stay_detached_across_quantity_upd
     bagState:_bagView()
   end)
   Assert.isFalse(unknownOk, "entries outside the item catalog fail instead of guessing")
+end
+
+local function relocatedSaveHarness()
+  local MapAssetCache = require("libs.assets.src.MapAssetCache")
+  local fixture = Fixture.new()
+  local session = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  local placement = session:snapshot().location
+  placement.fieldX = placement.fieldX + 1
+  Assert.isTrue(session:setLocation(placement).ok, "the relocated destination stages")
+  local money = session:snapshot().money + 1
+  Assert.isTrue(session:setMoney(money).ok, "the companion money edit stages")
+  local mapId = session:snapshot().location.mapId
+  local world = {
+    schema = MapAssetCache.WORLD_SCHEMA,
+    maps = {
+      {
+        id = mapId,
+        symbol = "MAP_TEST",
+        mapSection = "TEST_SECTION",
+        mapSectionNativeId = 1,
+        followMode = "ALLOW",
+        worldOriginX = 0,
+        worldOriginZ = 0,
+        matrix = { memberId = 0 },
+      },
+    },
+    byId = { [mapId] = 1 },
+    bySymbol = { MAP_TEST = mapId },
+    analysis = { mapHeaderCount = 1, excluded = {} },
+  }
+  local results = {}
+  local controller = Controller.new()
+  controller:setSection("Player")
+  local state = stateHarness({
+    status = "ready",
+    disposed = false,
+    controller = controller,
+    modalStack = ModalStack.new(),
+    session = session,
+    dependencies = { world = world },
+    valueEditor = nil,
+    monDraft = nil,
+    errorMessage = nil,
+    closeRequest = {
+      reason = "back",
+      phase = "confirm",
+      previousModal = nil,
+      previousModalReturnFocus = nil,
+      previousFocus = "money",
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  })
+  return { state = state, session = session, fixture = fixture, results = results }
+end
+
+function T.tests.relocated_save_conflict_keeps_the_external_record_and_the_open_editor()
+  local harness = relocatedSaveHarness()
+  local state, session, fixture, results = harness.state, harness.session, harness.fixture, harness.results
+  local staged = session:captureCandidate()
+  local external = assert(fixture.store:load(fixture.saveId))
+  external.playerData.profile.money = external.playerData.profile.money + 2
+  fixture.store:save(external)
+
+  Assert.isFalse(state:_save(true), "a conflicting Save & exit does not publish")
+  Assert.equal(
+    state.errorMessage,
+    "This save changed after the editor opened. Reopen it before saving.",
+    "the conflicting relocated save reports the structured session conflict"
+  )
+  Assert.deepEqual(
+    assert(fixture.store:load(fixture.saveId)),
+    external,
+    "the conflicting save never overwrites the external record"
+  )
+  Assert.deepEqual(session:captureCandidate(), staged, "the rejected transaction retains its staged edits")
+  Assert.isTrue(session:isDirty(), "the rejected editor remains dirty")
+  Assert.deepEqual(results, {}, "a conflicting close emits no result")
+  Assert.equal(state.closeRequest.phase, "confirm", "the failed close returns to its confirm decision")
+  Assert.equal(state.controller.modal, nil, "no modal is forced by the conflict")
+end
+
+function T.tests.relocated_save_write_failure_keeps_staged_edits_for_retry()
+  local Errors = require("libs.errors.src.Errors")
+  local harness = relocatedSaveHarness()
+  local state, session, fixture = harness.state, harness.session, harness.fixture
+  local staged = session:captureCandidate()
+  local publishedBefore = assert(fixture.store:load(fixture.saveId))
+  local attempts = 0
+  local save = session._saveStore.save
+  session._saveStore.save = function(...)
+    attempts = attempts + 1
+    error(Errors.new("SAVE_EDITOR_SAVE_FAILED", "disk unavailable"))
+  end
+  local ok, saveError = pcall(function()
+    Assert.isFalse(state:_save(false), "a failed relocated save does not publish")
+  end)
+  session._saveStore.save = save
+  Assert.isTrue(ok, "the failed save surfaces as a result, not a raised error")
+  if not ok then
+    error(saveError, 0)
+  end
+  Assert.equal(attempts, 1, "the relocated save attempts its store publication exactly once")
+  Assert.notNil(state.errorMessage, "the write failure remains visible")
+  Assert.deepEqual(
+    assert(fixture.store:load(fixture.saveId)),
+    publishedBefore,
+    "the failed save preserves the last published record"
+  )
+  Assert.deepEqual(session:captureCandidate(), staged, "the failed save retains its staged edits")
+  Assert.isTrue(state:_save(false), "the same staged edit retries after the failure clears")
+  Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), staged, "the retry publishes the staged edit")
+end
+
+function T.tests.relocated_save_applies_a_live_party_draft_exactly_once_before_publishing()
+  local placement = {
+    mapId = 11,
+    fieldX = 10,
+    fieldZ = 12,
+    surfaceId = 3,
+    worldY = 0,
+    terrainDependencyHash = "draft-fixture",
+  }
+  local applied, saves = 0, {}
+  local session = {
+    snapshot = function()
+      return { location = placement }
+    end,
+    applyMonDraft = function(_, draft)
+      applied = applied + 1
+      Assert.notNil(draft, "the applied draft reaches the session")
+      return { ok = true }
+    end,
+    save = function(_, hasUnappliedDraft)
+      saves[#saves + 1] = hasUnappliedDraft
+      return { ok = true }
+    end,
+  }
+  local monDraft = {
+    mode = function()
+      return "edit"
+    end,
+    isDirty = function()
+      return true
+    end,
+    validate = function()
+      return { canonical = true }
+    end,
+  }
+  local controller = Controller.new()
+  local state = stateHarness({
+    status = "ready",
+    controller = controller,
+    modalStack = ModalStack.new(),
+    session = session,
+    monDraft = monDraft,
+    valueEditor = nil,
+    errorMessage = nil,
+    closeRequest = nil,
+    onResult = function() end,
+  })
+  Assert.isTrue(state:_save(false), "a relocated save with a live draft publishes")
+  Assert.equal(applied, 1, "the live party draft is applied exactly once before the transaction")
+  Assert.deepEqual(saves, { false }, "the draft-carrying save reaches the session transaction once")
+  Assert.isNil(state.monDraft, "the applied draft is retired")
+  Assert.isNil(state.errorMessage, "the draft-carrying save reports no error")
+end
+
+function T.tests.relocated_save_with_a_failing_party_draft_never_reaches_the_session()
+  local ErrorsModule = require("libs.errors.src.Errors")
+  local placement = {
+    mapId = 11,
+    fieldX = 10,
+    fieldZ = 12,
+    surfaceId = 3,
+    worldY = 0,
+    terrainDependencyHash = "draft-fixture",
+  }
+  local saves = {}
+  local session = {
+    snapshot = function()
+      return { location = placement }
+    end,
+    save = function(_, hasUnappliedDraft)
+      saves[#saves + 1] = hasUnappliedDraft
+      return { ok = true }
+    end,
+  }
+  local monDraft = {
+    mode = function()
+      return "edit"
+    end,
+    isDirty = function()
+      return true
+    end,
+    validate = function()
+      return nil, ErrorsModule.new("SAVE_EDITOR_MON_INVALID", "the draft is invalid")
+    end,
+  }
+  local controller = Controller.new()
+  local state = stateHarness({
+    status = "ready",
+    controller = controller,
+    modalStack = ModalStack.new(),
+    session = session,
+    monDraft = monDraft,
+    valueEditor = nil,
+    errorMessage = nil,
+    closeRequest = {
+      reason = "back",
+      phase = "saving",
+      previousModal = nil,
+      previousModalReturnFocus = nil,
+      previousFocus = "money",
+    },
+    onResult = function() end,
+  })
+  Assert.isFalse(state:_save(true), "a failing draft blocks the relocated save")
+  Assert.deepEqual(saves, {}, "a failing draft never reaches the session transaction")
+  Assert.notNil(state.errorMessage, "a failing draft keeps its diagnostic")
+  Assert.notNil(state.monDraft, "a failing draft stays active for correction")
+  Assert.equal(state.closeRequest.phase, "confirm", "a draft-blocked close returns to its confirm decision")
+end
+
+function T.tests.relocated_save_with_an_unapplied_value_editor_is_rejected_without_a_write()
+  local harness = relocatedSaveHarness()
+  local state, fixture = harness.state, harness.fixture
+  local publishedBefore = assert(fixture.store:load(fixture.saveId))
+  state.valueEditor = {}
+  Assert.isFalse(state:_save(false), "an unapplied value edit blocks the relocated save")
+  Assert.notNil(state.errorMessage, "the unapplied edit keeps its diagnostic")
+  Assert.deepEqual(
+    assert(fixture.store:load(fixture.saveId)),
+    publishedBefore,
+    "the rejected save leaves the published record untouched"
+  )
+  Assert.isTrue(state.session:isDirty(), "the rejected editor remains dirty for retry")
+end
+
+function T.tests.relocated_save_reenters_the_session_busy_guard_without_a_second_publication()
+  local harness = relocatedSaveHarness()
+  local state, session = harness.state, harness.session
+  local inner = nil
+  local originalSave = session._saveStore.save
+  session._saveStore.save = function(store, candidate)
+    inner = session:save(false)
+    return originalSave(store, candidate)
+  end
+  local ok, saveError = pcall(function()
+    Assert.isTrue(state:_save(false), "the outer relocated save publishes")
+  end)
+  session._saveStore.save = originalSave
+  Assert.isTrue(ok, "the reentrant save surfaces as a result, not a raised error")
+  if not ok then
+    error(saveError, 0)
+  end
+  local guard = assert(inner, "the store publication observed one reentrant save attempt")
+  Assert.isFalse(guard.ok, "a reentrant save is rejected while the transaction owns the store")
+  Assert.equal(
+    guard.error.message,
+    "A save operation is already in progress.",
+    "the busy guard keeps its diagnostic"
+  )
 end
 
 return T

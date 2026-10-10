@@ -3,9 +3,6 @@
 -- modal action list exists. Descriptors are data only: rendering, hit
 -- testing and activation share them instead of re-enumerating kinds.
 
----@class SaveEditorDecisionFactHint
----@field pendingSave boolean?
-
 ---@class SaveEditorDecisionAction
 ---@field id string
 ---@field label string
@@ -20,10 +17,8 @@ local function action(id, label, semantic, command)
 end
 
 ---@param kind string
----@param facts SaveEditorDecisionFactHint?
 ---@return SaveEditorDecisionAction[]
-function Decisions.describe(kind, facts)
-  local pendingSave = type(facts) == "table" and facts.pendingSave == true
+function Decisions.describe(kind)
   if kind == "bag-item" then
     return {
       action("bag:quantity", "Quantity", "secondary", "bag_quantity"),
@@ -44,7 +39,7 @@ function Decisions.describe(kind, facts)
     }
   elseif kind == "leave" then
     return {
-      action("save", "Save & exit", "primary", pendingSave and "cancel_pending_save" or "save"),
+      action("save", "Save & exit", "primary", "save"),
       action("discard", "Discard all", "destructive", "discard"),
       action("cancel", "Cancel", "secondary", "cancel"),
     }

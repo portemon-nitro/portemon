@@ -14,7 +14,6 @@ local Moves = require("libs.mons.src.gen4.Moves")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local Decisions = require("app.src.saveeditor.SaveEditorDecisions")
-local LocationSave = require("app.src.saveeditor.SaveEditorLocationSave")
 local SaveEditorNavigation = require("app.src.saveeditor.SaveEditorNavigation")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
@@ -288,7 +287,6 @@ end
 ---@field navigationDebug boolean
 ---@field iconStatus string?
 ---@field iconFailure string?
----@field locationSave SaveEditorLocationSave?
 ---@field pendingPreset SaveEditorPendingPreset?
 ---@field pendingRemove table<string, unknown>?
 ---@field pendingQuantity table<string, unknown>?
@@ -546,7 +544,6 @@ function State.new(options)
     _locationListCaches = {},
     locationGridWidthTiles = nil,
     locationGridHeightTiles = nil,
-    locationSave = nil,
     pendingPreset = nil,
     valueEditor = nil,
     preserveChoiceScroll = false,
@@ -741,12 +738,6 @@ function State:update(dt)
       derivedAssets = assert(graphOrError.derivedAssets),
       savedObjects = assert(graphOrError.savedObjects),
     })
-    self.locationSave = LocationSave.new({
-      cacheFs = assert(graphOrError.cacheFs),
-      world = assert(graphOrError.world),
-      derivedAssets = self.derivedAssets,
-      savedObjects = assert(graphOrError.savedObjects),
-    })
     self._locationMapSummaryTask = self.locationService:newMapSummaryTask()
     local originalLocation = assert(self.session:snapshot().location)
     self.controller:enterLocation(originalLocation)
@@ -759,13 +750,6 @@ function State:update(dt)
   end
   if self.status == "ready" and self.locationService then
     self:_updateLocationService()
-  end
-  if self.status == "ready" and self.locationSave ~= nil and self.locationSave:status() ~= nil then
-    local updated, updateError = pcall(self._pumpLocationSave, self)
-    if not updated then
-      self:_cancelPendingLocationSave()
-      error(updateError, 0)
-    end
   end
   if self.pendingPreset ~= nil then
     local updated, updateError = pcall(self._stepPreset, self)
@@ -958,16 +942,8 @@ function State:_snapshot()
     view.savedLocation = session.originalLocation
     view.pendingLocation = session.locationChanged and session.location or nil
   end
-  local saveStatus = self.locationSave ~= nil and self.locationSave:status() or nil
-  view.locationSave = saveStatus
-      and {
-        operationId = saveStatus.operationId,
-        state = "pending",
-        cancelTarget = "save",
-      }
-    or nil
   if self.controller.modal ~= nil then
-    view.decisionActions = Decisions.describe(self.controller.modal, self:_decisionFacts(saveStatus))
+    view.decisionActions = Decisions.describe(self.controller.modal)
   end
   for key, value in pairs(party) do
     view[key] = value
@@ -1699,7 +1675,6 @@ function State:_bagView()
 end
 
 function State:_openEditor(descriptor)
-  self:_cancelPendingLocationSave()
   assert(type(descriptor) == "table" and type(descriptor.kind) == "string")
   local options = { kind = descriptor.kind }
   if descriptor.kind == "integer" then
@@ -2597,7 +2572,7 @@ function State:importPresetFile(file)
     reason = "The Save Editor is not ready to import a preset."
   elseif self.pendingPreset ~= nil then
     reason = "Another preset is already being checked. Wait for it to finish."
-  elseif self.closeRequest ~= nil or self:_locationSavePending() then
+  elseif self.closeRequest ~= nil then
     reason = "Finish or cancel the current Save operation before importing a preset."
   elseif self.valueEditor ~= nil or self.controller.modal ~= nil or self.modalStack:top() ~= nil then
     reason = "Finish or cancel the open editor dialog before importing a preset."
@@ -2822,7 +2797,6 @@ function State:_stepPreset()
     or session ~= pending.session
     or session:revision() ~= pending.sessionRevision
     or self.closeRequest ~= nil
-    or self:_locationSavePending()
     or self.valueEditor ~= nil
     or self.controller.modal ~= nil
     or self.modalStack:top() ~= nil
@@ -2885,115 +2859,6 @@ function State:_selectLocationTile(fieldX, fieldZ)
   self.locationAutoCenterToken = nil
   self.errorMessage = nil
   self.locationActionStatus = { state = "ready" }
-end
-
-function State:_prepareLocationForSave(leave)
-  local session = assert(self.session)
-  local snapshot = session:snapshot()
-  if not snapshot.locationChanged then
-    return true
-  end
-  local location = snapshot.location
-  local maps = assert(self.dependencies.world.maps)
-  assert(maps[self.dependencies.world.byId[location.mapId]], "staged map must be in structural world data")
-  self:_startPendingLocationSave(snapshot, leave)
-  return false
-end
-
-function State:_cancelPendingLocationSave()
-  if self.locationSave ~= nil then
-    self.locationSave:cancel()
-  end
-end
-
-function State:_startPendingLocationSave(snapshot, leave)
-  local owner = assert(self.locationSave, "a relocated save needs its destination verifier")
-  if owner:start(snapshot, leave) then
-    self.errorMessage = nil
-  end
-end
-
--- Advances the pending destination verification and runs the session
--- transaction once its ticket is fresh. A verified ticket is not save
--- authorization: revision, placement and open drafts are rechecked here
--- immediately before the transaction runs. Only this owner invokes
--- Session.save and emits the final application result.
-function State:_pumpLocationSave()
-  local owner = self.locationSave
-  if owner == nil or self.session == nil or owner:status() == nil then
-    return
-  end
-  local result = owner:step(self.session:snapshot())
-  if result.kind == "pending" then
-    return
-  end
-  if result.kind == "cancelled" then
-    self.errorMessage = "The destination check was canceled after the save changed."
-    if self.closeRequest then
-      self.closeRequest.phase = "confirm"
-    end
-    return
-  end
-  if result.kind == "failed" then
-    self.errorMessage = result.reason or "The destination could not be verified."
-    if self.closeRequest then
-      self.closeRequest.phase = "confirm"
-    end
-    return
-  end
-  if result.kind == "unresolvable" then
-    self.locationActionStatus = result.tileStatus
-    self.errorMessage = result.reason or "The destination is unavailable."
-    if self.closeRequest then
-      self.closeRequest.phase = "confirm"
-    end
-    return
-  end
-  if result.kind == "drifted" then
-    self.locationActionStatus = { state = "unavailable", reason = "destination_changed_during_resolution" }
-    self.errorMessage = "The destination changed while it was being checked. Review it and save again."
-    if self.closeRequest then
-      self.closeRequest.phase = "confirm"
-    end
-    return
-  end
-  assert(result.kind == "verified", "destination verification settles with a known result")
-  local fresh = self.session:snapshot()
-  if fresh.revision ~= result.sessionRevision or not sameLocation(fresh.location, result.location) then
-    self.errorMessage = "The destination check was canceled after the save changed."
-    if self.closeRequest then
-      self.closeRequest.phase = "confirm"
-    end
-    return
-  end
-  if self.valueEditor ~= nil or self.monDraft ~= nil then
-    self.errorMessage = "Finish or cancel the open edit before saving."
-    if self.closeRequest then
-      self.closeRequest.phase = "confirm"
-    end
-    return
-  end
-  local saved = self.session:save(false)
-  if not saved.ok then
-    self.errorMessage = message(assert(saved.error, "failed save result must include its structured error"))
-    if self.closeRequest then
-      self.closeRequest.phase = "confirm"
-    end
-    return
-  end
-  self._uiSessionSnapshot = nil
-  self.errorMessage = nil
-  if result.leave then
-    local request = self.closeRequest
-    self.closeRequest = nil
-    self.controller.modal = nil
-    if request and request.reason == "quit" then
-      self.approvedExit = true
-      love.event.quit(0)
-    else
-      self:_sendResult()
-    end
-  end
 end
 
 function State:_sendResult()
@@ -3208,35 +3073,8 @@ function State:_confirmRemoval()
   self.controller:setFocus(focusRow and "bag:item:" .. focusRow.item or "bag:add")
 end
 
--- Reports whether a destination verification is currently pending.
-function State:_locationSavePending()
-  return self.locationSave ~= nil and self.locationSave:status() ~= nil
-end
-
--- Builds the bounded enablement facts for the canonical decision set.
--- A save target cancels a running verification only outside a close
--- decision; inside one it keeps attempting the close save instead.
----@param saveStatus { state: string, operationId: integer }?
----@return { pendingSave: boolean }
-function State:_decisionFacts(saveStatus)
-  local pending = saveStatus ~= nil or self:_locationSavePending()
-  return { pendingSave = pending and self.closeRequest == nil }
-end
-
 function State:_save(leave)
-  if not self.session then
-    return false
-  end
-  if self:_locationSavePending() then
-    return false
-  end
-  if not self:_prepareLocationForSave(leave) then
-    if self:_locationSavePending() then
-      return false
-    end
-    if leave and self.closeRequest ~= nil then
-      self.closeRequest.phase = "confirm"
-    end
+  if self.session == nil then
     return false
   end
   if not self:_applyCurrentPartyDraftIfNeeded() then
@@ -3245,9 +3083,9 @@ function State:_save(leave)
     end
     return false
   end
-  local result = self.session:save(self.valueEditor ~= nil)
-  if not result.ok then
-    self.errorMessage = message(result.error)
+  local saved = self.session:save(self.valueEditor ~= nil)
+  if not saved.ok then
+    self.errorMessage = message(saved.error)
     if leave and self.closeRequest ~= nil then
       self.closeRequest.phase = "confirm"
     end
@@ -3272,7 +3110,6 @@ function State:_save(leave)
 end
 
 function State:_discard(leave)
-  self:_cancelPendingLocationSave()
   local request = self.closeRequest
   if self.valueEditor then
     self.valueEditor:cancel()
@@ -3315,7 +3152,6 @@ function State:_discard(leave)
 end
 
 function State:_discardSection()
-  self:_cancelPendingLocationSave()
   local section = self.controller.section
   local editorSections = {
     money = "Player",
@@ -3467,7 +3303,6 @@ function State:_popDecision(decision)
   local modal = decision or assert(self.controller.modal, "decision pop needs its open decision")
   assert(modal == self.controller.modal, "decision action must belong to the active decision")
   if modal == "leave" and self.closeRequest ~= nil then
-    self:_cancelPendingLocationSave()
     self:_popModalLayer("leave")
     local request = assert(self.closeRequest)
     self.closeRequest = nil
@@ -3562,7 +3397,6 @@ function State:requestClose(reason)
   if self.disposed then
     return false
   end
-  self:_cancelPendingLocationSave()
   if self.closeRequest ~= nil then
     if self.closeRequest.phase == "saving" then
       self.closeRequest.phase = "confirm"
@@ -3641,7 +3475,6 @@ end
 function State:_performDecisionCommand(kind, command, id)
   if command == "cancel" then
     if kind == "leave" and self.closeRequest ~= nil then
-      self:_cancelPendingLocationSave()
       self:_popModalLayer("leave")
       local request = assert(self.closeRequest)
       self.closeRequest = nil
@@ -3698,9 +3531,6 @@ function State:_performDecisionCommand(kind, command, id)
       else
         self:_save(true)
       end
-    elseif command == "cancel_pending_save" then
-      self:_cancelPendingLocationSave()
-      self.errorMessage = "Destination verification canceled."
     else
       error("unknown leave decision command " .. tostring(command), 0)
     end
@@ -3744,9 +3574,6 @@ end
 local function saveAndExit(self)
   if self.closeRequest ~= nil then
     self:_performClose("save")
-  elseif self:_locationSavePending() then
-    self:_cancelPendingLocationSave()
-    self.errorMessage = "Destination verification canceled."
   else
     self:_save(true)
   end
@@ -3791,7 +3618,6 @@ local ACTIVATION_HANDLERS = {
     self:_requestDraftResolution({ kind = "section", section = action.section })
   end,
   ["player.edit-money"] = function(self)
-    self:_cancelPendingLocationSave()
     local money = assert(self.session:snapshot().money)
     self:_installValueEditor(
       ValueEditor.new({ kind = "integer", value = money, min = 0, max = PlayerData.MAX_MONEY, base = "decimal" }),
@@ -3799,7 +3625,6 @@ local ACTIVATION_HANDLERS = {
     )
   end,
   ["player.edit-dialogue-frame"] = function(self)
-    self:_cancelPendingLocationSave()
     local frameIndexes = assert(self.dependencies.context.frameIndexes)
     local choices = {}
     for frameIndex in pairs(frameIndexes) do
@@ -3868,12 +3693,7 @@ local ACTIVATION_HANDLERS = {
   ["decision.save-and-exit"] = saveAndExit,
   ["decision.discard-and-exit"] = discardAndExit,
   ["editor.save"] = function(self)
-    if self:_locationSavePending() then
-      self:_cancelPendingLocationSave()
-      self.errorMessage = "Destination verification canceled."
-    else
-      self:_requestDraftResolution({ kind = "save" })
-    end
+    self:_requestDraftResolution({ kind = "save" })
   end,
   ["editor.discard"] = function(self)
     self:_discardSection()
@@ -3916,7 +3736,6 @@ local ACTIVATION_HANDLERS = {
     if not self:_applyCurrentPartyDraftIfNeeded() then
       return
     end
-    self:_cancelPendingLocationSave()
     local catalog = assert(self.dependencies.context.monCatalog)
     local options = PartyView.options(assert(self.partyView), "species", function()
       return catalog:speciesKeys()
@@ -3946,7 +3765,6 @@ local ACTIVATION_HANDLERS = {
     end
   end,
   ["party.add-move"] = function(self)
-    self:_cancelPendingLocationSave()
     local catalog = assert(self.dependencies.context.monCatalog)
     local options = PartyView.options(assert(self.partyView), "moves", function()
       return catalog:moveKeys()
@@ -3972,7 +3790,6 @@ local ACTIVATION_HANDLERS = {
     self:_openDecision("bag-item")
   end,
   ["bag.add-item"] = function(self)
-    self:_cancelPendingLocationSave()
     self:_beginBagAdd()
   end,
   ["bag.edit-quantity"] = editBagQuantity,
@@ -4023,7 +3840,6 @@ function State:_dispatchIntent(intent)
     self:_performDeferred(intent)
   elseif intent.kind == "cancel" then
     if intent.modal == "leave" and self.closeRequest ~= nil then
-      self:_cancelPendingLocationSave()
       self:_popModalLayer("leave")
       local request = assert(self.closeRequest)
       self.closeRequest = nil
@@ -4787,7 +4603,6 @@ function State:dispose()
   self.numberPressTarget = nil
   self.generation = self.generation + 1
   self:_finishPreset()
-  self:_cancelPendingLocationSave()
   if self.locationService then
     self.locationService:dispose()
     self.locationService = nil
