@@ -520,135 +520,105 @@ local function finiteField(value)
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
 
+local function hasOnlyKeys(value, allowed)
+  for key in pairs(value) do
+    if not allowed[key] then
+      return false
+    end
+  end
+  return true
+end
+
+local DIALOGUE_KEYS = { message = true, bindings = true, mode = true, phase = true, phaseReadyInTicks = true }
+local DIALOGUE_MESSAGE_KEYS = { message = true, bank = true, id = true }
+local CHOICE_KEYS = { active = true, phase = true, selected = true }
+local CHOICE_TARGET_KEYS = { true, true }
+
+local function validScalars(state)
+  return integerField(state.leadSlot, 0, 5)
+    and integerField(state.programId, 1, 1023)
+    and integerField(state.stepIndex, 1, 6)
+    and integerField(state.motionId, 0, 108)
+    and integerField(state.motionIndex, 1, 11)
+    and integerField(state.motionTick, 0, 254)
+    and FACING_VALUES[state.savedFacing] == true
+    and type(state.motionStarted) == "boolean"
+    and type(state.rewardStarted) == "boolean"
+    and type(state.rewardWaitForEffect) == "boolean"
+end
+
+local function validCumulative(value)
+  return finiteField(value) and value >= -80 and value <= 79.375 and value * 16 % 1 == 0
+end
+
+local function validOptionalCounters(state)
+  return (state.delayRemaining == nil or integerField(state.delayRemaining, 0, 0xFF))
+    and (state.reactionTick == nil or integerField(state.reactionTick, 0, 0xFF))
+    and (state.holdTicks == nil or integerField(state.holdTicks, 1, 1))
+end
+
+local function validChoiceTargets(targets)
+  return type(targets) == "table"
+    and integerField(targets[1], 0, 1023)
+    and integerField(targets[2], 0, 1023)
+    and hasOnlyKeys(targets, CHOICE_TARGET_KEYS)
+end
+
+local function validDialogueBindings(bindings)
+  local count, minimum, maximum = 0, math.huge, -math.huge
+  for key, value in pairs(bindings) do
+    if type(key) ~= "number" or key < 0 or key > 4 or key % 1 ~= 0 or type(value) ~= "string" then
+      return false
+    end
+    count = count + 1
+    minimum = math.min(minimum, key)
+    maximum = math.max(maximum, key)
+  end
+  return minimum == 0 and ((count == 5 and maximum == 4) or (count == 2 and maximum == 1))
+end
+
+local function validDialogue(dialogue)
+  return type(dialogue) == "table"
+    and (dialogue.mode == "say" or dialogue.mode == "print")
+    and type(dialogue.phase) == "string"
+    and type(dialogue.message) == "table"
+    and dialogue.message.message == "external"
+    and integerField(dialogue.message.bank, 0, 0xFFFF)
+    and integerField(dialogue.message.id, 0, 0xFFFF)
+    and type(dialogue.bindings) == "table"
+    and integerField(dialogue.phaseReadyInTicks, 0, 1)
+    and hasOnlyKeys(dialogue.message, DIALOGUE_MESSAGE_KEYS)
+    and validDialogueBindings(dialogue.bindings)
+    and hasOnlyKeys(dialogue, DIALOGUE_KEYS)
+    and not DialogueTask.validate(dialogue)
+end
+
+local function validChoice(choice)
+  return type(choice) == "table" and hasOnlyKeys(choice, CHOICE_KEYS) and not ContextChoiceTask.validate(choice)
+end
+
+local function phaseFlagsConsistent(state)
+  return (state.phase == "motion") == (state.motionId ~= 0)
+    and (state.rewardStarted or not state.rewardWaitForEffect)
+    and (state.delayRemaining == nil or state.phase == "delay")
+    and (state.reactionTick == nil or state.phase == "reaction")
+    and (not state.rewardStarted or state.phase == "reward" or state.phase == "done")
+    and (not state.motionStarted or state.phase == "motion")
+end
+
 -- Shared scalar, key, and child-shape checks that apply in every phase.
 local function checkShared(state)
-  for key in pairs(state) do
-    if not STATE_KEYS[key] then
-      return taskStateError(state)
-    end
-  end
-  if
-    not integerField(state.leadSlot, 0, 5)
-    or not integerField(state.programId, 1, 1023)
-    or not integerField(state.stepIndex, 1, 6)
-    or not integerField(state.motionId, 0, 108)
-    or not integerField(state.motionIndex, 1, 11)
-    or not integerField(state.motionTick, 0, 254)
-    or not finiteField(state.cumulativeX)
-    or not finiteField(state.cumulativeY)
-    or not finiteField(state.cumulativeZ)
-    or state.cumulativeX < -80
-    or state.cumulativeY < -80
-    or state.cumulativeZ < -80
-    or state.cumulativeX > 79.375
-    or state.cumulativeY > 79.375
-    or state.cumulativeZ > 79.375
-    or state.cumulativeX * 16 % 1 ~= 0
-    or state.cumulativeY * 16 % 1 ~= 0
-    or state.cumulativeZ * 16 % 1 ~= 0
-    or not FACING_VALUES[state.savedFacing]
-    or type(state.motionStarted) ~= "boolean"
-    or type(state.rewardStarted) ~= "boolean"
-    or type(state.rewardWaitForEffect) ~= "boolean"
-  then
-    return taskStateError(state)
-  end
-  if state.delayRemaining ~= nil and not integerField(state.delayRemaining, 0, 0xFF) then
-    return taskStateError(state)
-  end
-  if state.reactionTick ~= nil and not integerField(state.reactionTick, 0, 0xFF) then
-    return taskStateError(state)
-  end
-  if state.holdTicks ~= nil and not integerField(state.holdTicks, 1, 1) then
-    return taskStateError(state)
-  end
-  if state.choiceTargets ~= nil then
-    local count = 0
-    if
-      type(state.choiceTargets) ~= "table"
-      or not integerField(state.choiceTargets[1], 0, 1023)
-      or not integerField(state.choiceTargets[2], 0, 1023)
-    then
-      return taskStateError(state)
-    end
-    for key in pairs(state.choiceTargets) do
-      if key ~= 1 and key ~= 2 then
-        return taskStateError(state)
-      end
-      count = count + 1
-    end
-    if count ~= 2 then
-      return taskStateError(state)
-    end
-  end
-  if state.dialogueState ~= nil then
-    local dialogue = state.dialogueState
-    if
-      type(dialogue) ~= "table"
-      or (dialogue.mode ~= "say" and dialogue.mode ~= "print")
-      or type(dialogue.phase) ~= "string"
-      or type(dialogue.message) ~= "table"
-      or dialogue.message.message ~= "external"
-      or not integerField(dialogue.message.bank, 0, 0xFFFF)
-      or not integerField(dialogue.message.id, 0, 0xFFFF)
-      or type(dialogue.bindings) ~= "table"
-      or not integerField(dialogue.phaseReadyInTicks, 0, 1)
-    then
-      return taskStateError(state)
-    end
-    for key in pairs(dialogue.message) do
-      if key ~= "message" and key ~= "bank" and key ~= "id" then
-        return taskStateError(state)
-      end
-    end
-    local bindingCount = 0
-    local bindingMinimum = math.huge
-    local bindingMaximum = -math.huge
-    for key, value in pairs(dialogue.bindings) do
-      if type(key) ~= "number" or key < 0 or key > 4 or key % 1 ~= 0 or type(value) ~= "string" then
-        return taskStateError(state)
-      end
-      bindingCount = bindingCount + 1
-      bindingMinimum = math.min(bindingMinimum, key)
-      bindingMaximum = math.max(bindingMaximum, key)
-    end
-    if
-      not (bindingCount == 5 and bindingMinimum == 0 and bindingMaximum == 4)
-      and not (bindingCount == 2 and bindingMinimum == 0 and bindingMaximum == 1)
-    then
-      return taskStateError(state)
-    end
-    for key in pairs(dialogue) do
-      if key ~= "message" and key ~= "bindings" and key ~= "mode" and key ~= "phase" and key ~= "phaseReadyInTicks" then
-        return taskStateError(state)
-      end
-    end
-    if DialogueTask.validate(dialogue) then
-      return taskStateError(state)
-    end
-  end
-  if state.choiceState ~= nil then
-    local choice = state.choiceState
-    if type(choice) ~= "table" then
-      return taskStateError(state)
-    end
-    for key in pairs(choice) do
-      if key ~= "active" and key ~= "phase" and key ~= "selected" then
-        return taskStateError(state)
-      end
-    end
-    if ContextChoiceTask.validate(choice) then
-      return taskStateError(state)
-    end
-  end
-  if
-    (state.phase == "motion") ~= (state.motionId ~= 0)
-    or (not state.rewardStarted and state.rewardWaitForEffect)
-    or (state.delayRemaining ~= nil and state.phase ~= "delay")
-    or (state.reactionTick ~= nil and state.phase ~= "reaction")
-    or (state.rewardStarted and state.phase ~= "reward" and state.phase ~= "done")
-    or (state.motionStarted and state.phase ~= "motion")
-  then
+  local valid = hasOnlyKeys(state, STATE_KEYS)
+    and validScalars(state)
+    and validCumulative(state.cumulativeX)
+    and validCumulative(state.cumulativeY)
+    and validCumulative(state.cumulativeZ)
+    and validOptionalCounters(state)
+    and (state.choiceTargets == nil or validChoiceTargets(state.choiceTargets))
+    and (state.dialogueState == nil or validDialogue(state.dialogueState))
+    and (state.choiceState == nil or validChoice(state.choiceState))
+    and phaseFlagsConsistent(state)
+  if not valid then
     return taskStateError(state)
   end
   return nil
