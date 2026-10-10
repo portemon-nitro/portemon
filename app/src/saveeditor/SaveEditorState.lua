@@ -4087,6 +4087,7 @@ function State:_consumeUiInput(events)
     self:_syncScope()
   end
   if not self.disposed and not self.resultSent then
+    self:_invalidatePublication()
     self:_reconcileFocus()
     self:_settleScope()
     self:_refreshPublication()
