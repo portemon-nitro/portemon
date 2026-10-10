@@ -81,31 +81,109 @@ local function loadManifest(cacheFs)
   return BattlePresentationCache.load(cacheFs)
 end
 
----@param cacheFs table<string, unknown>
----@param selector string exact canonical portrait selector under validation
----@return boolean valid
----@return string? reason
-local function checkPortraitKey(cacheFs, selector)
-  -- Demands name exact canonical selectors only: the single staged
-  -- entry must be planned with a ready page. Shorthand keys and
-  -- unknown selectors fail instead of expanding to a guessed variant.
+---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
+---@param pageId integer zero-based portrait page identity under validation
+---@return string? reason, nil when the staged marker and PNG envelope validate
+local function checkStagedPortraitPage(cacheFs, pageId)
+  local marker = cacheFs:read(MonCache.pageMarkerPath("portraits", pageId))
+  if type(marker) ~= "string" or marker == "" then
+    return "missing page marker"
+  end
+  -- The staged marker only reuses the envelope validator here: the
+  -- worker-ready answer (or the accepted already-staged page without a
+  -- host) is the generation authority, never equality with itself.
+  if not MonCache.isPageReady(cacheFs, "portraits", pageId, marker) then
+    return "invalid page image"
+  end
+  return nil
+end
+
+-- Maps demanded canonical portrait selectors to their staged atlas pages
+-- and drives each page through the borrowed selected-game host: unknown
+-- selectors fail terminally naming the selector, worker failures
+-- propagate with page and cause, post-ready corrupt pages fail naming
+-- selector and page, and still-building pages wait. Every needed page is
+-- enqueued before waiting so independent pages build concurrently. The
+-- whole-family index is never read: only the exact pages behind the
+-- disclosed selectors are demanded, without the full mon summary.
+---@param envelope FieldBattlePresentation
+---@param selectors string[] exact canonical portrait selectors under demand
+---@return boolean? ready true when every demanded page validates, false while building
+---@return string? terminal failure naming selector, page, and cause
+local function checkPortraitPages(envelope, selectors)
+  if #selectors == 0 then
+    return true
+  end
+  local cacheFs = envelope._cacheFs
   local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
   if type(portraits) ~= "table" or type(portraits.entries) ~= "table" then
-    return false, "battle demand needs its staged portrait manifest: " .. tostring(selector)
+    return nil, "battle demand needs its staged portrait manifest: " .. tostring(selectors[1])
   end
   local entries = portraits.entries --[[@as table<string, table<string, unknown>>]]
-  local index = cacheFs:loadLua(MonCache.indexPath())
-  if type(index) ~= "table" or type(index.portraitPages) ~= "table" then
-    return false, "battle demand needs its staged mon page markers: " .. tostring(selector)
+  local groups = {} ---@type table<integer, { pageId: integer, selectors: string[] }>
+  local byPage = {} ---@type table<integer, integer>
+  for _, selector in ipairs(selectors) do
+    if type(selector) ~= "string" or selector == "" then
+      return nil, "portrait selectors must be non-empty strings"
+    end
+    local entry = entries[selector]
+    local pageId = type(entry) == "table" and entry.pageId or nil
+    if type(pageId) ~= "number" or pageId % 1 ~= 0 or pageId < 0 then
+      return nil, "battle demand names an unstaged portrait: " .. tostring(selector)
+    end
+    local numericPage = pageId --[[@as integer]]
+    local at = byPage[numericPage]
+    if at == nil then
+      groups[#groups + 1] = { pageId = numericPage, selectors = { selector } }
+      byPage[numericPage] = #groups
+    else
+      groups[at].selectors[#groups[at].selectors + 1] = selector
+    end
   end
-  local markers = index.portraitPages --[[@as table<integer, string>]]
-  local entry = entries[selector]
-  if type(entry) ~= "table" or type(entry.pageId) ~= "number" then
-    return false, "battle demand names an unstaged portrait: " .. tostring(selector)
+  table.sort(groups, function(a, b)
+    return a.pageId < b.pageId
+  end)
+  local host = envelope._derivedAssets
+  local requestPage = type(host) == "table" and host.requestMonPortraitPage or nil
+  local graphics = envelope._graphics
+  local waiting = false
+  for _, group in ipairs(groups) do
+    local names = table.concat(group.selectors, ", ")
+    if type(requestPage) == "function" then
+      local ready, failure = requestPage(group.pageId, "required")
+      if failure ~= nil then
+        return nil, "battle portrait page " .. tostring(group.pageId) .. " for " .. names .. ": " .. tostring(failure)
+      end
+      if ready ~= true then
+        waiting = true
+      else
+        local stagedErr = checkStagedPortraitPage(cacheFs, group.pageId)
+        if stagedErr ~= nil then
+          return nil,
+            "battle portrait page " .. tostring(group.pageId) .. " for " .. names .. " is not staged: " .. stagedErr
+        end
+      end
+    else
+      -- Without a host nothing can build the page: a graphical launch
+      -- accepts only an already-staged and structurally valid page,
+      -- while headless descriptors validate the same staged identity.
+      local stagedErr = checkStagedPortraitPage(cacheFs, group.pageId)
+      if stagedErr ~= nil then
+        local reason = "battle portrait page "
+          .. tostring(group.pageId)
+          .. " for "
+          .. names
+          .. " is not staged: "
+          .. stagedErr
+        if graphics ~= nil then
+          reason = reason .. ": portrait:" .. tostring(group.pageId)
+        end
+        return nil, reason
+      end
+    end
   end
-  local pageId = entry.pageId --[[@as integer]]
-  if not MonCache.isPageReady(cacheFs, "portraits", pageId, markers[pageId + 1]) then
-    return false, "battle portrait page is not staged: " .. tostring(selector)
+  if waiting then
+    return false
   end
   return true
 end
@@ -188,16 +266,37 @@ end
 -- Uploads one staged portrait cell for a canonical portrait selector:
 -- decode the owning atlas page, crop exactly the staged cell, then
 -- build and configure the owned image. Success answers the owned
--- handle; staged bytes that fail decoding or GPU upload answer a
--- terminal failure naming the canonical selector and its page path.
+-- handle; a page the worker has not attested yet answers a legitimate
+-- pending wait without touching the image driver; staged bytes that
+-- fail decoding or GPU upload answer a terminal failure naming the
+-- canonical selector and its page path.
 ---@param graphics table<string, unknown> host graphics namespace enabling GPU upload
 ---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
 ---@param selector string canonical staged portrait selector
----@return table<string, unknown>? owned image handle, nil on terminal failure
----@return string? terminal failure naming the selector and page path, nil on success
+---@return table<string, unknown>? owned image handle, nil while pending or on terminal failure
+---@return string? terminal failure naming the selector and page path, nil while pending or on success
 local function uploadPortraitCell(graphics, cacheFs, selector)
   ---@type string?
   local pagePath = nil
+  do
+    -- Only a worker-attested page decodes: an unstaged page waits for
+    -- preparation instead of decoding missing bytes or standing in
+    -- another image. Structural manifest problems still fail below.
+    local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
+    local entry = nil
+    if type(portraits) == "table" and type(portraits.entries) == "table" then
+      local entries = portraits.entries --[[@as table<string, table<string, unknown>>]]
+      entry = entries[selector]
+    end
+    local pageId = type(entry) == "table" and entry.pageId or nil
+    if type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0 then
+      if
+        checkStagedPortraitPage(cacheFs, pageId --[[@as integer]]) ~= nil
+      then
+        return nil, nil
+      end
+    end
+  end
   local ok, imageOrErr = pcall(function()
     local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
     assert(
@@ -452,14 +551,12 @@ function FieldBattlePresentation:_preparationServices()
         end
       end
     end
-    for _, page in ipairs(demand.pages or {}) do
-      if type(page) ~= "string" or page == "" then
-        return nil, "portrait selectors must be non-empty strings"
-      end
-      local okPage, pageErr = checkPortraitKey(cacheFs, page)
-      if not okPage then
-        return nil, pageErr
-      end
+    local portraitsOk, portraitsErr = checkPortraitPages(envelope, demand.pages or {})
+    if portraitsOk == nil then
+      return nil, portraitsErr
+    end
+    if portraitsOk == false then
+      return false, nil
     end
     -- Menu, HUD, font, and audio members are required only where
     -- pixels are actually required: headless composition keeps its
@@ -534,7 +631,9 @@ function FieldBattlePresentation:_preparationServices()
     if selector ~= nil then
       local portrait, failure = uploadPortraitCell(graphics, cacheFs, selector)
       if portrait == nil then
-        assert(type(failure) == "string", "portrait upload failures carry their reason")
+        if failure == nil then
+          return nil
+        end
         failures[key] = failure --[[@as string]]
         return nil, failure
       end

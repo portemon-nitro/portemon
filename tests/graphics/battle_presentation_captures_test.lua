@@ -384,12 +384,15 @@ end
 local function openingPacket()
   -- Fixtures carry their own canonical portrait selectors: a record
   -- without one draws nothing, so the captures stage the exact
-  -- identities they expect on screen.
+  -- identities they expect on screen. The second own record is the
+  -- benched reserve, flagged exactly like production packets so the
+  -- opening stages one live lead instead of a live pair.
   local after = {
     own = {
       {
         combatant = 0,
         side = 1,
+        active = true,
         species = LEAD_SPECIES,
         form = 0,
         selector = "back",
@@ -403,6 +406,7 @@ local function openingPacket()
       {
         combatant = 1,
         side = 1,
+        active = false,
         species = LEAD_SPECIES,
         form = 0,
         selector = "back",

@@ -180,8 +180,10 @@ function BattlePresentationAssets:update()
   self._state = "ready"
 end
 
--- Names portrait selectors for later demand growth. Re-preparation runs
--- on the next update so incoming images prefetch without showing early.
+-- Names portrait selectors for later demand growth. A genuinely grown
+-- set reopens pending until the enlarged exact demand settles on the
+-- next update: already leased handles stay owned, terminal failures stay
+-- latched, and preparation reruns against the complete new set.
 ---@param selectors string[]
 function BattlePresentationAssets:addSelectors(selectors)
   assert(type(selectors) == "table", "portrait selectors arrive as an array")
@@ -197,16 +199,9 @@ function BattlePresentationAssets:addSelectors(selectors)
       grown = true
     end
   end
-  -- Later images prefetch through a fresh demand without reopening
-  -- readiness: preparation already succeeded for this launch.
-  if grown and self._state == "ready" then
-    local ok, failure = self._assets.prepare(self:_demand())
-    -- A bare not-yet answer keeps readiness: the grown selectors stay
-    -- named for a later demand, while nil or a failure string fails.
-    if ok == nil or failure ~= nil then
-      self._state = "failed"
-      self._error = tostring(failure or "battle preparation failed")
-    end
+  if grown and self._state ~= "failed" then
+    self._state = "pending"
+    self._prepared = false
   end
 end
 

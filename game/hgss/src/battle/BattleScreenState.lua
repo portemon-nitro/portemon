@@ -579,14 +579,19 @@ end
 ---@param view table<string, unknown> detached after view carrying portrait facts
 ---@return string[] sorted canonical portrait selectors for the demand
 local function selectorsOf(view)
-  -- Demands name exact canonical selectors only: every disclosed own
-  -- record (the displayed lead plus soon-to-appear reserves) and every
-  -- currently revealed foe. Unrevealed foe reserves never enter the
-  -- view, so they stay undemanded until they actually arrive.
+  -- Demands name exact canonical selectors only: the active own lead
+  -- (and ally in doubles) plus every currently revealed foe. Only an
+  -- explicitly benched reserve stays undemanded until a later packet
+  -- makes it active; records predating the active flag read as active,
+  -- matching the displayed lead. Unrevealed foe reserves never enter
+  -- the view, so they stay undemanded until they actually arrive.
   local selectors = {}
   local seen = {}
-  local function add(record)
+  local function add(record, activeOnly)
     if type(record) ~= "table" then
+      return
+    end
+    if activeOnly and record.active == false then
       return
     end
     local selector = record.portraitSelector
@@ -597,12 +602,12 @@ local function selectorsOf(view)
   end
   if type(view.own) == "table" then
     for _, record in ipairs(view.own) do
-      add(record)
+      add(record, true)
     end
   end
   if type(view.foes) == "table" then
     for _, record in ipairs(view.foes) do
-      add(record)
+      add(record, false)
     end
   end
   table.sort(selectors)
@@ -644,10 +649,35 @@ function BattleScreenState:_portPresent(packet)
   end
   if type(packet.after) == "table" then
     self._latestView = packet.after
-    self._assets:addSelectors(selectorsOf(packet.after))
   end
-  for _, view in ipairs({ packet.before, packet.after }) do
-    if type(view) == "table" and type(view.foes) == "table" then
+  -- Both provenances disclose before their requiresImage cues proceed:
+  -- the incoming battler arrives in after, the departing one stays
+  -- named in before, and benched reserves appear in neither until a
+  -- packet makes them active. Either provenance may be absent on the
+  -- opening delivery, so absent views are skipped without ending the
+  -- scan: a literal with a nil first element would stop the traversal
+  -- before the present view.
+  local provenances = {} ---@type table<integer, table<string, unknown>>
+  if type(packet.before) == "table" then
+    provenances[#provenances + 1] = packet.before --[[@as table<string, unknown>]]
+  end
+  if type(packet.after) == "table" then
+    provenances[#provenances + 1] = packet.after --[[@as table<string, unknown>]]
+  end
+  do
+    local demanded, seen = {}, {} ---@type string[], table<string, boolean>
+    for _, view in ipairs(provenances) do
+      for _, selector in ipairs(selectorsOf(view)) do
+        if not seen[selector] then
+          seen[selector] = true
+          demanded[#demanded + 1] = selector
+        end
+      end
+    end
+    self._assets:addSelectors(demanded)
+  end
+  for _, view in ipairs(provenances) do
+    if type(view.foes) == "table" then
       for _, foe in ipairs(view.foes) do
         if type(foe) == "table" and type(foe.name) == "string" and self._lastFoeName == nil then
           self._lastFoeName = foe.name --[[@as string]]

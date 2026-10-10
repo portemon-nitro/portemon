@@ -212,8 +212,10 @@ function T.disposal_releases_owned_handles_once()
   Assert.isNil(assets.released[enemyFront], "never-drawn keys never release")
 end
 
--- A regrown demand keeps readiness on a bare not-yet answer, while nil
--- or a failure string fails closed with context.
+-- A regrown demand reopens pending until the enlarged exact demand
+-- settles on a later update: a bare not-yet answer waits without
+-- failing, while nil or a failure string fails closed with context.
+-- Leased handles stay owned through the wait instead of releasing.
 function T.regrown_demand_prefetch_failures()
   local MonCache = require("libs.assets.src.MonCache")
   local foeSelector = MonCache.portraitSelector("RATTATA", 0, "male", false)
@@ -225,8 +227,15 @@ function T.regrown_demand_prefetch_failures()
     return false
   end
   waiting:addSelectors({ foeSelector })
-  Assert.equal(waiting:state(), "ready", "a bare not-yet regrow keeps readiness")
-  Assert.isNil(waiting:error(), "the kept readiness carries no failure context")
+  Assert.equal(waiting:state(), "pending", "a bare not-yet regrow waits instead of keeping readiness")
+  Assert.isNil(waiting:error(), "the wait carries no failure context")
+  waiting:update()
+  Assert.equal(waiting:state(), "pending", "the unready regrow keeps waiting across polls")
+  function assets.prepare(_)
+    return true
+  end
+  waiting:update()
+  Assert.equal(waiting:state(), "ready", "the settled regrow prepares with its grown demand")
   waiting:dispose()
 
   local nilAssets = stubAssets({})
@@ -236,6 +245,8 @@ function T.regrown_demand_prefetch_failures()
     return nil, "test-regrow-nil"
   end
   nilled:addSelectors({ foeSelector })
+  Assert.equal(nilled:state(), "pending", "the doomed regrow waits for its next update")
+  nilled:update()
   Assert.equal(nilled:state(), "failed", "a nil regrow answer fails closed")
   Assert.isTrue(
     (nilled:error() or ""):find("test%-regrow%-nil", 1) ~= nil,
@@ -250,6 +261,8 @@ function T.regrown_demand_prefetch_failures()
     return false, "test-regrow-typed"
   end
   refused:addSelectors({ foeSelector })
+  Assert.equal(refused:state(), "pending", "the refused regrow waits for its next update")
+  refused:update()
   Assert.equal(refused:state(), "failed", "a regrow answer carrying a failure string fails closed")
   Assert.isTrue(
     (refused:error() or ""):find("test%-regrow%-typed", 1) ~= nil,
@@ -259,11 +272,11 @@ function T.regrown_demand_prefetch_failures()
 end
 
 -- A switch and a foe replacement rebind the exact image identity: the
--- screen demands canonical selectors for the visible own roster and
+-- screen demands canonical selectors for the active own battler and
 -- only the revealed foe, the cue clock asks for "mon:" plus the exact
 -- incoming selector at its reveal, generic side keys are never
--- requested, and the unrevealed replacement stays undemanded until it
--- actually arrives.
+-- requested, and the benched reserve stays undemanded until its switch
+-- packet makes it active.
 function T.switch_and_foe_reveal_rebind_the_exact_image_key()
   local MonCache = require("libs.assets.src.MonCache")
   local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
@@ -406,7 +419,10 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
   port.present({ launchId = launchId, packetId = 1, events = {}, before = openingAfter(), after = openingAfter() })
   pump(400)
   Assert.isTrue(hasPage(leadBack), "the opening demands the exact active lead back selector")
-  Assert.isTrue(hasPage(reserveBack), "the opening prefetches the disclosed reserve back selector")
+  Assert.isFalse(
+    hasPage(reserveBack),
+    "the benched reserve stays undemanded before its switch packet makes it active"
+  )
   Assert.isTrue(hasPage(foeFront), "the opening demands the exact revealed foe selector")
   Assert.isFalse(hasShorthand(), "no demand falls back to a shorthand species/form/facing key")
   Assert.isTrue(drewKey("mon:" .. leadBack), "the first draw asks for the exact lead image key")
@@ -429,6 +445,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
     after = switchedAfter,
   })
   pump(600)
+  Assert.isTrue(hasPage(reserveBack), "the switch demands the exact incoming reserve selector")
   Assert.isTrue(
     drewKey("mon:" .. reserveBack),
     "the switch reveal asks for the exact incoming reserve image key"
@@ -673,6 +690,807 @@ function T.genuinely_pending_images_become_ready_without_failing()
   slow:dispose()
   slow:dispose()
   Assert.equal(released["scene:probe"], 1, "the arrived handle releases once")
+end
+
+-- Exact battler portrait pages on demand through the real field
+-- presentation services. A layout-only cache stages the portrait
+-- selector manifest and the battle artwork but no whole-family index
+-- and no portrait pixels yet: the opening demand waits while the
+-- borrowed page host builds only the pages its visible selectors name,
+-- then enters once those pages validate. Nothing reads the family
+-- index, nothing asks for the full mon summary, and no blank sprite
+-- paints while a page is still building.
+
+local PORTRAIT_SCENE_KEY = "general/grass/day"
+local PORTRAIT_MENU_IMAGE = "assets/generated/battle/menu-command-1.png"
+local PORTRAIT_FONT_PATH = "font-0"
+local PORTRAIT_SELECT_SYMBOL = "SEQ_SE_DP_SELECT"
+local PROBE_TICK = 1 / 60
+
+---@param width integer
+---@param height integer
+---@return string real decodable pixels the host image loader accepts
+local function solidPortraitPng(width, height)
+  local PngWriter = require("libs.assets.src.PngWriter")
+  local pixels = {}
+  for _ = 1, width * height do
+    pixels[#pixels + 1] = string.char(255, 255, 255, 255)
+  end
+  return PngWriter.encode(width, height, table.concat(pixels))
+end
+
+-- The staged battle manifest the demand envelope loads: one scene, the
+-- shared menu artwork, and the published wild/trainer/rival/select
+-- audio roles. Shape mirrors the proven production-audio fixture so the
+-- staged menu, HUD, font, and audio checks pass without a ROM dump.
+---@return table schema-valid staged battle manifest
+local function stagedPortraitBattleManifest()
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local images = {
+    [PORTRAIT_MENU_IMAGE] = { width = 8, height = 8 },
+    [BattlePresentationCache.sceneImagePath(PORTRAIT_SCENE_KEY)] = { width = 64, height = 64 },
+  }
+  local function sprite(image)
+    return {
+      image = image,
+      cells = {
+        {
+          objs = {
+            {
+              x = 0,
+              y = 0,
+              tile = 0,
+              flipH = false,
+              flipV = false,
+              palette = 0,
+              shape = 0,
+              size = 0,
+              width = 8,
+              height = 8,
+              affine = false,
+              disabled = false,
+              objMode = "normal",
+              mosaic = false,
+              colorMode = "16-color",
+              priority = 0,
+            },
+          },
+        },
+      },
+      animation = { playMode = "forward", loopStartFrameIdx = 0, frames = { { cell = 0, duration = 4 } } },
+      palette = { colors = { { r = 1, g = 2, b = 3 } } },
+    }
+  end
+  local function menu(image)
+    return {
+      image = image,
+      screens = { { image = image, width = 8, height = 8 } },
+    }
+  end
+  local command = menu(PORTRAIT_MENU_IMAGE)
+  return {
+    schema = "g4-battle-presentation-v1",
+    version = { id = "heartgold", language = "en" },
+    verified = true,
+    scenes = { { key = PORTRAIT_SCENE_KEY, background = "general", terrain = "grass", time = "day" } },
+    images = images,
+    command = command,
+    moves = command,
+    target = command,
+    twoOption = command,
+    lower = {
+      image = PORTRAIT_MENU_IMAGE,
+      palette = { colors = { { r = 1, g = 2, b = 3 } } },
+      variants = {
+        general = {
+          base = { colors = { { r = 1, g = 2, b = 3 } } },
+          touch = { colors = { { r = 1, g = 2, b = 3 } } },
+        },
+      },
+    },
+    playerHud = sprite(PORTRAIT_MENU_IMAGE),
+    enemyHud = sprite(PORTRAIT_MENU_IMAGE),
+    arrow = sprite(PORTRAIT_MENU_IMAGE),
+    partyGauges = {
+      sprite(PORTRAIT_MENU_IMAGE),
+      sprite(PORTRAIT_MENU_IMAGE),
+    },
+    terrain = {
+      type0 = { cells = sprite(PORTRAIT_MENU_IMAGE).cells, animation = sprite(PORTRAIT_MENU_IMAGE).animation },
+      type1 = { cells = sprite(PORTRAIT_MENU_IMAGE).cells, animation = sprite(PORTRAIT_MENU_IMAGE).animation },
+    },
+    textRoles = {
+      narration = { font = PORTRAIT_FONT_PATH, sourceFontId = 1 },
+      menu = { font = PORTRAIT_FONT_PATH },
+      hud = { font = PORTRAIT_FONT_PATH },
+    },
+    audioRoles = {
+      wild = "SEQ_GS_VS_NORAPOKE",
+      trainer = "SEQ_GS_VS_TRAINER",
+      rival = "SEQ_GS_VS_RIVAL",
+      select = PORTRAIT_SELECT_SYMBOL,
+      narrationBank = 197,
+      cries = "species",
+    },
+  }
+end
+
+-- An isolated layout-only versioned cache: the portrait selector manifest
+-- and the staged battle artwork exist, but the whole-family index and
+-- every portrait page start missing. Portrait pages arrive only through
+-- stagePortraitPage once the page host reports them built.
+---@param portraitEntries table<string, table<string, unknown>> canonical selector to manifest cell
+---@return table isolated cache filesystem double recording every manifest read
+local function layoutOnlyCache(portraitEntries)
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local MonCache = require("libs.assets.src.MonCache")
+  local sceneImage = BattlePresentationCache.sceneImagePath(PORTRAIT_SCENE_KEY)
+  local cache = { versionId = "portrait-demand-probe", files = {}, lua = {}, loadedPaths = {} }
+  cache.files[PORTRAIT_MENU_IMAGE] = solidPortraitPng(8, 8)
+  cache.files[PORTRAIT_FONT_PATH] = "staged-font"
+  cache.files[sceneImage] = solidPortraitPng(64, 64)
+  cache.lua[BattlePresentationCache.manifestPath()] = stagedPortraitBattleManifest()
+  cache.lua[BattlePresentationCache.scenePath(PORTRAIT_SCENE_KEY)] = {
+    schema = "g4-battle-scene-v1",
+    key = PORTRAIT_SCENE_KEY,
+    background = "general",
+    terrain = "grass",
+    time = "day",
+    canvasWidth = 64,
+    canvasHeight = 64,
+    viewport = { x = 0, y = 0, width = 64, height = 64 },
+    imagePath = sceneImage,
+  }
+  cache.lua[MonCache.portraitManifestPath()] = { entries = portraitEntries }
+  function cache:loadLua(path)
+    self.loadedPaths[#self.loadedPaths + 1] = path
+    return self.lua[path]
+  end
+  function cache:read(path)
+    return self.files[path]
+  end
+  function cache:exists(path, _)
+    return self.files[path] ~= nil
+  end
+  return cache
+end
+
+---@param pageId integer zero-based portrait page identity under staging
+---@return table manifest cell covering an 8x8 portrait at the page origin
+local function portraitEntry(pageId)
+  return { x = 0, y = 0, width = 8, height = 8, pageId = pageId }
+end
+
+-- Stages one portrait page exactly like the page worker would publish
+-- it: the page marker plus complete decodable pixels.
+---@param cache table isolated cache filesystem double under staging
+---@param pageId integer zero-based portrait page identity under staging
+local function stagePortraitPage(cache, pageId)
+  local MonCache = require("libs.assets.src.MonCache")
+  cache.files[MonCache.pageMarkerPath("portraits", pageId)] = "portrait-marker-" .. tostring(pageId)
+  cache.files[MonCache.pageImagePath("portraits", pageId)] = solidPortraitPng(64, 64)
+end
+
+-- The borrowed selected-game page host: per-page programmable
+-- pending/ready/terminal answers with every page request recorded.
+-- Anything besides the exact page and scene requests is recorded as an
+-- unexpected host call instead of silently succeeding.
+---@return table page host carrying its derived assets and recordings
+local function portraitPageHost()
+  local host = { asks = {}, answers = {}, sceneAsks = {}, sceneReady = true, unexpected = {} }
+  local derived = {}
+  function derived.requestMonPortraitPage(pageId, urgency)
+    host.asks[#host.asks + 1] = { pageId = pageId, urgency = urgency }
+    local answer = host.answers[pageId]
+    if answer == nil then
+      return false, nil
+    end
+    return answer.ready, answer.failure
+  end
+  function derived.requestBattleScene(key, urgency)
+    host.sceneAsks[#host.sceneAsks + 1] = { key = key, urgency = urgency }
+    return host.sceneReady, host.sceneFailure
+  end
+  setmetatable(derived, {
+    __index = function(_, key)
+      host.unexpected[#host.unexpected + 1] = tostring(key)
+      return nil
+    end,
+  })
+  host.derivedAssets = derived
+  return host
+end
+
+---@param cache table isolated cache filesystem double under demand
+---@param host table page host under borrowing
+---@param graphics table host graphics namespace under borrowing
+---@return table live presented-battle envelope under test driving
+local function demandEnvelope(cache, host, graphics)
+  local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local text = {}
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(_) end
+  local windows = {}
+  function windows.drawWindow(_, _, _) end
+  return FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = windows,
+    text = text,
+    measureDisplay = function()
+      return {
+        width = 256,
+        height = 384,
+        topology = ScreenTopology.dualDisplay(
+          { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+          { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+        ),
+        pixelRatio = 1,
+        signature = "portrait-demand:dual",
+      }
+    end,
+    graphics = graphics,
+    derivedAssets = host.derivedAssets,
+  })
+end
+
+---@param pages string[] canonical portrait selectors under demand
+---@return table exact launch demand carrying the staged scene and portrait pages
+local function portraitDemand(pages)
+  return {
+    launchId = "portrait-demand-probe",
+    scenes = { PORTRAIT_SCENE_KEY },
+    pages = pages,
+    audio = { roles = {}, banks = {}, cries = {} },
+  }
+end
+
+---@param cache table isolated cache filesystem double under inspection
+---@param path string cache-relative path under inspection
+---@return boolean true once the demand read that manifest path
+local function loadSaw(cache, path)
+  for _, seen in ipairs(cache.loadedPaths) do
+    if seen == path then
+      return true
+    end
+  end
+  return false
+end
+
+---@param host table page host under inspection
+---@return table<boolean> requested portrait page identities
+local function askedPageSet(host)
+  local set = {}
+  for _, ask in ipairs(host.asks) do
+    set[ask.pageId] = true
+  end
+  return set
+end
+
+---@param combatant integer
+---@param side integer
+---@param active boolean
+---@param species string
+---@param name string
+---@param portrait string canonical portrait selector
+---@return table detached battler record
+local function demandBattler(combatant, side, active, species, name, portrait)
+  return {
+    combatant = combatant,
+    participant = combatant,
+    side = side,
+    controller = side == 1 and "player" or "wild",
+    active = active,
+    hp = 20,
+    maxHp = 20,
+    species = species,
+    form = 0,
+    name = name,
+    level = 9,
+    selector = side == 1 and "back" or "front",
+    portraitSelector = portrait,
+    moves = {},
+    experience = 100,
+  }
+end
+
+---@param launchId string owning launch identity
+---@param services table preparation services under test driving
+---@return table live battle screen over the real resource holder
+local function demandScreen(launchId, services)
+  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local text = {}
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(_) end
+  local windows = {}
+  function windows.drawWindow(_, _, _) end
+  local audio = {}
+  function audio.play(_)
+    return true
+  end
+  return BattleScreenState.new({
+    launchId = launchId,
+    manifest = stagedPortraitBattleManifest(),
+    model = {},
+    submit = function(_)
+      return true
+    end,
+    measureDisplay = function()
+      return {
+        width = 256,
+        height = 384,
+        topology = ScreenTopology.dualDisplay(
+          { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+          { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+        ),
+        pixelRatio = 1,
+        signature = "portrait-screen:dual",
+      }
+    end,
+    assets = services,
+    text = text,
+    windows = windows,
+    audio = audio,
+  })
+end
+
+---@param screen table live battle screen under test driving
+---@param ticks integer fixed updates under test driving
+---@return table latest observed launch status snapshot
+local function pumpScreen(screen, ticks)
+  local status = screen:status()
+  for _ = 1, ticks do
+    screen:updateFixed(PROBE_TICK)
+    status = screen:status()
+  end
+  return status
+end
+
+---@param prepared table<integer, table<string, unknown>> recorded launch demands
+---@return string[] every demanded portrait page in order
+local function flattenDemandPages(prepared)
+  local pages = {}
+  for _, demand in ipairs(prepared) do
+    for _, page in ipairs(demand.pages or {}) do
+      pages[#pages + 1] = page
+    end
+  end
+  return pages
+end
+
+---@param prepared table<integer, table<string, unknown>> recorded launch demands
+---@param want string canonical portrait selector under inspection
+---@return boolean true once any demand named that selector
+local function demandHasPage(prepared, want)
+  for _, page in ipairs(flattenDemandPages(prepared)) do
+    if page == want then
+      return true
+    end
+  end
+  return false
+end
+
+---@param prepared table<integer, table<string, unknown>> recorded launch demands
+---@return boolean true once any demand fell back to a shorthand key
+local function demandHasShorthand(prepared)
+  for _, page in ipairs(flattenDemandPages(prepared)) do
+    if tostring(page):match("^[^/]+/%d+/[a-z]+$") ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+-- A cold layout-only cache opens the battle once exactly the visible
+-- portrait pages build: two distinct selectors on two pages hold pending
+-- while the host works, demand exactly those pages urgently, never read
+-- the whole-family index, hand out no sprite and touch no image driver
+-- early, then resolve both sprites once the pages validate.
+function T.cold_layout_cache_demands_only_its_visible_portrait_pages()
+  local MonCache = require("libs.assets.src.MonCache")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local leadBack = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
+  local foeFront = MonCache.portraitSelector("RATTATA", 0, "male", false)
+  local cache = layoutOnlyCache({
+    [leadBack] = portraitEntry(3),
+    [foeFront] = portraitEntry(7),
+  })
+  local host = portraitPageHost()
+  local graphics = FakeGraphics.new()
+  local envelope = demandEnvelope(cache, host, graphics)
+  local services = envelope:_preparationServices()
+  local waiting, waitErr = services.prepare(portraitDemand({ leadBack, foeFront }))
+  Assert.isTrue(waiting == false, "the unstaged pages hold the opening pending instead of failing")
+  Assert.isNil(waitErr, "a legitimate page build carries no failure context")
+  local askedUrgency = {}
+  for _, ask in ipairs(host.asks) do
+    askedUrgency[ask.pageId] = ask.urgency
+  end
+  Assert.equal(askedUrgency[3], "required", "the lead page is demanded urgently")
+  Assert.equal(askedUrgency[7], "required", "the foe page is demanded urgently")
+  local askedCount = 0
+  for _ in pairs(askedUrgency) do
+    askedCount = askedCount + 1
+  end
+  Assert.equal(askedCount, 2, "only the two visible pages are demanded, never the whole family")
+  Assert.equal(#host.unexpected, 0, "no summary or foreign host call backs the demand")
+  Assert.isFalse(loadSaw(cache, MonCache.indexPath()), "the demand never reads the whole-family index")
+  local pendingHandle, pendingErr = services.drawable("mon:" .. leadBack)
+  Assert.isNil(pendingHandle, "the unbuilt page hands out no sprite yet")
+  Assert.isNil(pendingErr, "the unbuilt page waits without a terminal error")
+  Assert.equal(#graphics.images, 0, "the unbuilt page never reaches the image driver")
+  host.answers[3] = { ready = true }
+  host.answers[7] = { ready = true }
+  stagePortraitPage(cache, 3)
+  stagePortraitPage(cache, 7)
+  Assert.isTrue(
+    services.prepare(portraitDemand({ leadBack, foeFront })),
+    "the built pages enter once staged and validated"
+  )
+  Assert.notNil(services.drawable("mon:" .. leadBack), "the lead sprite resolves once its page is staged")
+  Assert.notNil(services.drawable("mon:" .. foeFront), "the foe sprite resolves once its page is staged")
+  envelope:dispose()
+end
+
+-- A later selector reopens pending without dropping what the launch
+-- already holds: the grown set waits for the next update instead of
+-- preparing inline, the leased scene and menu handles stay identical
+-- through the wait, and readiness returns with the exact grown demand
+-- once the added page builds.
+function T.grown_selector_set_reopens_pending_without_losing_leased_handles()
+  local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+  local MonCache = require("libs.assets.src.MonCache")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local leadBack = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
+  local foeFront = MonCache.portraitSelector("RATTATA", 0, "male", false)
+  local reserveBack = MonCache.portraitSelector("TOTODILE", 0, "female", false, "back")
+  local cache = layoutOnlyCache({
+    [leadBack] = portraitEntry(3),
+    [foeFront] = portraitEntry(7),
+    [reserveBack] = portraitEntry(11),
+  })
+  stagePortraitPage(cache, 3)
+  stagePortraitPage(cache, 7)
+  local host = portraitPageHost()
+  host.answers[3] = { ready = true }
+  host.answers[7] = { ready = true }
+  local graphics = FakeGraphics.new()
+  local envelope = demandEnvelope(cache, host, graphics)
+  local services = envelope:_preparationServices()
+  local prepareCalls, lastPages = 0, {}
+  local basePrepare = services.prepare
+  function services.prepare(demand)
+    prepareCalls = prepareCalls + 1
+    lastPages = demand.pages or {}
+    return basePrepare(demand)
+  end
+  local owned = BattlePresentationAssets.new({
+    assets = services,
+    launchId = "portrait-growth-probe",
+    sceneKey = PORTRAIT_SCENE_KEY,
+  })
+  owned:addSelectors({ leadBack, foeFront })
+  owned:update()
+  Assert.equal(owned:state(), "ready", "the opening prepares once its pages are staged")
+  local sceneImage = "scene:" .. PORTRAIT_SCENE_KEY
+  local sceneHandle = owned:drawable(sceneImage)
+  local menuHandle = owned:drawable("menu:command")
+  Assert.notNil(sceneHandle, "the opening leases its scene handle")
+  Assert.notNil(menuHandle, "the opening leases its menu handle")
+  local callsBeforeGrowth = prepareCalls
+  owned:addSelectors({ reserveBack })
+  Assert.equal(owned:state(), "pending", "the grown selector set reopens pending until its page builds")
+  Assert.equal(
+    prepareCalls,
+    callsBeforeGrowth,
+    "the grown demand waits for the next update instead of preparing inline"
+  )
+  Assert.isTrue(
+    owned:drawable(sceneImage) == sceneHandle,
+    "the wait keeps its leased scene handle"
+  )
+  Assert.isTrue(owned:drawable("menu:command") == menuHandle, "the wait keeps its leased menu handle")
+  owned:update()
+  Assert.equal(owned:state(), "pending", "the unbuilt reserve page keeps the launch pending")
+  host.answers[11] = { ready = true }
+  stagePortraitPage(cache, 11)
+  owned:update()
+  Assert.equal(owned:state(), "ready", "the built reserve page completes the grown demand")
+  Assert.notNil(
+    owned:drawable("mon:" .. reserveBack),
+    "the reserve sprite resolves under its canonical key"
+  )
+  Assert.isTrue(
+    owned:drawable(sceneImage) == sceneHandle,
+    "readiness keeps the original scene handle"
+  )
+  local demanded = {}
+  for _, page in ipairs(lastPages) do
+    demanded[page] = true
+  end
+  Assert.isTrue(
+    demanded[leadBack] and demanded[foeFront] and demanded[reserveBack],
+    "the settled demand carries every disclosed selector"
+  )
+  owned:dispose()
+  owned:dispose()
+  envelope:dispose()
+end
+
+-- The opening discloses only its visible battlers and the switch grows
+-- the demand then: the benched reserve stays undemanded and its page
+-- unrequested until the switch packet makes it active, when only that
+-- added page is enqueued while the screen keeps running.
+function T.opening_demand_names_only_visible_battlers_then_grows_on_switch()
+  local MonCache = require("libs.assets.src.MonCache")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local leadBack = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
+  local reserveBack = MonCache.portraitSelector("TOTODILE", 0, "female", false, "back")
+  local foeFront = MonCache.portraitSelector("RATTATA", 0, "male", false)
+  local cache = layoutOnlyCache({
+    [leadBack] = portraitEntry(3),
+    [reserveBack] = portraitEntry(11),
+    [foeFront] = portraitEntry(7),
+  })
+  stagePortraitPage(cache, 3)
+  stagePortraitPage(cache, 7)
+  local host = portraitPageHost()
+  host.answers[3] = { ready = true }
+  host.answers[7] = { ready = true }
+  local graphics = FakeGraphics.new()
+  local envelope = demandEnvelope(cache, host, graphics)
+  local services = envelope:_preparationServices()
+  local launchId = "launch-visible-demand"
+  local screen = demandScreen(launchId, services)
+  local port = screen:presentationPort()
+  port.enter({ launchId = launchId, kind = "wild" })
+  local function openingAfter()
+    return {
+      own = {
+        demandBattler(1, 1, true, "EEVEE", "LEADA", leadBack),
+        demandBattler(2, 1, false, "TOTODILE", "RESERVE", reserveBack),
+      },
+      foes = { demandBattler(3, 2, true, "RATTATA", "FOEX", foeFront) },
+    }
+  end
+  port.present({ launchId = launchId, packetId = 1, events = {}, before = openingAfter(), after = openingAfter() })
+  local opening = pumpScreen(screen, 400)
+  Assert.isTrue(opening.mode ~= "failed", "the opening runs: " .. tostring(opening.error))
+  local prepared = envelope:preparedDemands()
+  Assert.isTrue(
+    demandHasPage(prepared, leadBack),
+    "the opening demands the exact active lead back selector"
+  )
+  Assert.isTrue(demandHasPage(prepared, foeFront), "the opening demands the exact revealed foe selector")
+  Assert.isFalse(
+    demandHasPage(prepared, reserveBack),
+    "the benched reserve stays undemanded before its switch"
+  )
+  Assert.isFalse(demandHasShorthand(prepared), "no demand falls back to a shorthand key")
+  Assert.isFalse(askedPageSet(host)[11], "the opening never requests the benched reserve page")
+  local switchedAfter = {
+    own = {
+      demandBattler(1, 1, false, "EEVEE", "LEADA", leadBack),
+      demandBattler(2, 1, true, "TOTODILE", "RESERVE", reserveBack),
+    },
+    foes = { demandBattler(3, 2, true, "RATTATA", "FOEX", foeFront) },
+  }
+  port.present({
+    launchId = launchId,
+    packetId = 2,
+    events = {
+      { sequence = 1, kind = "switch", cause = { key = "TACKLE" }, audience = "public", payload = { from = 1, to = 2 } },
+    },
+    before = openingAfter(),
+    after = switchedAfter,
+  })
+  host.answers[11] = { ready = true }
+  stagePortraitPage(cache, 11)
+  local switched = pumpScreen(screen, 400)
+  Assert.isTrue(switched.mode ~= "failed", "the switch runs: " .. tostring(switched.error))
+  Assert.isTrue(
+    demandHasPage(envelope:preparedDemands(), reserveBack),
+    "the switch demands the exact incoming reserve selector"
+  )
+  Assert.isTrue(askedPageSet(host)[11], "the switch enqueues the added reserve page")
+  screen:dispose()
+  envelope:dispose()
+end
+
+-- A terminal page build fails the launch once with its exact cause and
+-- hands that cause to the field host: the reason names the selector, the
+-- page, and the worker message, polls replay it identically, no sprite
+-- stands in, the image driver stays untouched, and the field observes
+-- exactly one screen failure before the screen releases.
+function T.portrait_page_worker_failure_names_its_selector_and_page_once()
+  local MonCache = require("libs.assets.src.MonCache")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local leadBack = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
+  local foeFront = MonCache.portraitSelector("RATTATA", 0, "male", false)
+  local cache = layoutOnlyCache({
+    [leadBack] = portraitEntry(13),
+    [foeFront] = portraitEntry(7),
+  })
+  stagePortraitPage(cache, 7)
+  local host = portraitPageHost()
+  host.answers[13] = { ready = nil, failure = "probe-page-boom" }
+  host.answers[7] = { ready = true }
+  local graphics = FakeGraphics.new()
+  local envelope = demandEnvelope(cache, host, graphics)
+  local services = envelope:_preparationServices()
+  local failed, failure = services.prepare(portraitDemand({ leadBack, foeFront }))
+  Assert.isNil(failed, "the doomed page never reads ready")
+  Assert.isTrue(type(failure) == "string" and failure ~= "", "the doomed page carries its reason")
+  local reason = failure --[[@as string]]
+  Assert.isTrue(
+    reason:find(leadBack, 1, true) ~= nil,
+    "the failure names the exact doomed selector: " .. reason
+  )
+  Assert.isTrue(reason:find("13", 1, true) ~= nil, "the failure names the exact doomed page: " .. reason)
+  Assert.isTrue(
+    reason:find("probe-page-boom", 1, true) ~= nil,
+    "the failure carries the worker cause: " .. reason
+  )
+  Assert.isTrue(askedPageSet(host)[13], "the doomed page went through the borrowed page host")
+  local failedAgain, failureAgain = services.prepare(portraitDemand({ leadBack, foeFront }))
+  Assert.isNil(failedAgain, "the doomed page stays failed across polls")
+  Assert.equal(failureAgain, reason, "the terminal cause replays identically")
+  local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+  local owned = BattlePresentationAssets.new({
+    assets = services,
+    launchId = "portrait-doomed-probe",
+    sceneKey = PORTRAIT_SCENE_KEY,
+  })
+  owned:addSelectors({ leadBack, foeFront })
+  owned:update()
+  Assert.equal(owned:state(), "failed", "the doomed demand stops its holder")
+  Assert.isTrue(
+    (owned:error() or ""):find(leadBack, 1, true) ~= nil,
+    "the latched error keeps the exact selector: " .. tostring(owned:error())
+  )
+  local standin, standinErr = owned:drawable("mon:" .. leadBack)
+  Assert.isNil(standin, "the doomed portrait hands out no stand-in sprite")
+  Assert.isTrue(
+    type(standinErr) == "string" and standinErr ~= "",
+    "the doomed portrait keeps its terminal reason"
+  )
+  Assert.equal(#graphics.images, 0, "the doomed page never reaches the image driver")
+  owned:dispose()
+  local launchId = "launch-doomed-demand"
+  local screen = demandScreen(launchId, services)
+  local port = screen:presentationPort()
+  port.enter({ launchId = launchId, kind = "wild" })
+  local function doomedAfter()
+    return {
+      own = { demandBattler(1, 1, true, "EEVEE", "LEADA", leadBack) },
+      foes = { demandBattler(3, 2, true, "RATTATA", "FOEX", foeFront) },
+    }
+  end
+  port.present({ launchId = launchId, packetId = 1, events = {}, before = doomedAfter(), after = doomedAfter() })
+  local doomedStatus = nil
+  for _ = 1, 400 do
+    screen:updateFixed(PROBE_TICK)
+    local status = screen:status()
+    if status.mode == "failed" then
+      doomedStatus = status
+      break
+    end
+  end
+  Assert.notNil(doomedStatus, "the doomed page fails the screen instead of holding forever")
+  local screenErr = (doomedStatus --[[@as table]]).error or ""
+  Assert.isTrue(
+    tostring(screenErr):find(leadBack, 1, true) ~= nil,
+    "the screen error names the exact selector: " .. tostring(screenErr)
+  )
+  Assert.isTrue(
+    tostring(screenErr):find("13", 1, true) ~= nil,
+    "the screen error names the exact page: " .. tostring(screenErr)
+  )
+  local notified = {}
+  local fieldHost = {}
+  function fieldHost.notify(event, reason)
+    notified[#notified + 1] = { event = event, reason = reason }
+  end
+  envelope._screen = screen
+  envelope._descriptor = { host = fieldHost }
+  envelope:_observeScreenFailure()
+  Assert.equal(#notified, 1, "the failed screen reaches the field host exactly once")
+  Assert.equal(notified[1].event, "screen-failed", "the handoff reports the screen failure")
+  Assert.isTrue(
+    tostring(notified[1].reason):find(leadBack, 1, true) ~= nil,
+    "the handoff cause names the exact selector"
+  )
+  Assert.isTrue(tostring(notified[1].reason):find("13", 1, true) ~= nil, "the handoff cause names the exact page")
+  Assert.isNil(envelope:liveScreen(), "the failed screen releases after its handoff")
+  envelope:_observeScreenFailure()
+  Assert.equal(#notified, 1, "the handoff never repeats")
+  envelope:dispose()
+end
+
+-- Missing pixels and undecodable pixels both fail closed without
+-- stand-ins: a worker-ready page with no staged bytes names its
+-- selector and page and stays failed across polls, and staged bytes
+-- that blow up the image driver report once naming the selector and
+-- its page path, replay identically, and never retry the driver.
+function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
+  local MonCache = require("libs.assets.src.MonCache")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local leadBack = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
+  local missingImage = MonCache.pageImagePath("portraits", 17)
+  local cache = layoutOnlyCache({ [leadBack] = portraitEntry(17) })
+  local host = portraitPageHost()
+  host.answers[17] = { ready = true }
+  local graphics = FakeGraphics.new()
+  local envelope = demandEnvelope(cache, host, graphics)
+  local services = envelope:_preparationServices()
+  local missing, missingErr = services.prepare(portraitDemand({ leadBack }))
+  Assert.isNil(missing, "the pixel-less page never reads ready")
+  Assert.isTrue(type(missingErr) == "string" and missingErr ~= "", "the pixel-less page carries its reason")
+  local missingReason = missingErr --[[@as string]]
+  Assert.isTrue(
+    missingReason:find(leadBack, 1, true) ~= nil,
+    "the missing-pixel failure names the exact selector: " .. missingReason
+  )
+  Assert.isTrue(
+    missingReason:find("17", 1, true) ~= nil,
+    "the missing-pixel failure names the exact page: " .. missingReason
+  )
+  local missingAgain, missingErrAgain = services.prepare(portraitDemand({ leadBack }))
+  Assert.isNil(missingAgain, "the pixel-less page stays failed across polls")
+  Assert.equal(missingErrAgain, missingReason, "the missing-pixel cause replays identically")
+  local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+  local owned = BattlePresentationAssets.new({
+    assets = services,
+    launchId = "portrait-missing-probe",
+    sceneKey = PORTRAIT_SCENE_KEY,
+  })
+  owned:addSelectors({ leadBack })
+  owned:update()
+  Assert.equal(owned:state(), "failed", "the pixel-less demand stops its holder")
+  Assert.isNil(owned:drawable("mon:" .. leadBack), "the pixel-less portrait hands out no sprite")
+  Assert.equal(#graphics.images, 0, "the pixel-less page never reaches the image driver")
+  owned:dispose()
+  envelope:dispose()
+  local staged = layoutOnlyCache({ [leadBack] = portraitEntry(17) })
+  stagePortraitPage(staged, 17)
+  local stagedHost = portraitPageHost()
+  stagedHost.answers[17] = { ready = true }
+  local attempts = 0
+  local throwing = FakeGraphics.new({ failOnImageCall = 1 })
+  local rawImage = throwing.newImage
+  function throwing.newImage(...)
+    attempts = attempts + 1
+    return rawImage(...)
+  end
+  local stagedEnvelope = demandEnvelope(staged, stagedHost, throwing)
+  local stagedServices = stagedEnvelope:_preparationServices()
+  Assert.isTrue(
+    stagedServices.prepare(portraitDemand({ leadBack })),
+    "the staged page validates before its pixels decode"
+  )
+  local broken, brokenErr = stagedServices.drawable("mon:" .. leadBack)
+  Assert.isNil(broken, "the undecodable portrait hands out no sprite")
+  Assert.isTrue(type(brokenErr) == "string" and brokenErr ~= "", "the undecodable portrait carries its reason")
+  local brokenReason = brokenErr --[[@as string]]
+  Assert.isTrue(
+    brokenReason:find(leadBack, 1, true) ~= nil,
+    "the undecodable failure names the exact selector: " .. brokenReason
+  )
+  Assert.isTrue(
+    brokenReason:find(missingImage, 1, true) ~= nil,
+    "the undecodable failure names the exact page path: " .. brokenReason
+  )
+  local brokenAgain, brokenErrAgain = stagedServices.drawable("mon:" .. leadBack)
+  Assert.isNil(brokenAgain, "the undecodable portrait stays failed without a substitute")
+  Assert.equal(brokenErrAgain, brokenReason, "the undecodable failure replays identically")
+  Assert.equal(attempts, 1, "the undecodable upload is attempted once, never retried per tick")
+  Assert.equal(#throwing.images, 0, "the undecodable page leaves no staged handle behind")
+  stagedEnvelope:dispose()
 end
 
 return { tests = T }
