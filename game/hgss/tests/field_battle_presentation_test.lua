@@ -1959,6 +1959,210 @@ function T.scene_host_failure_fails_closed_naming_its_scene()
   end
 end
 
+-- A caller-owned graphics double behind explicit draws: paint operations
+-- are counted together while image creation is tracked apart, since
+-- uploads may legitimately happen during updates but painting may not.
+local function paintCountingGraphics()
+  local graphics = { paint = 0, uploads = 0, draws = {} }
+  local function paint()
+    graphics.paint = graphics.paint + 1
+  end
+  function graphics.push(_)
+    paint()
+  end
+  function graphics.pop()
+    paint()
+  end
+  function graphics.origin()
+    paint()
+  end
+  function graphics.intersectScissor(_, _, _, _)
+    paint()
+  end
+  function graphics.translate(_, _)
+    paint()
+  end
+  function graphics.scale(_, _)
+    paint()
+  end
+  function graphics.transformPoint(x, y)
+    return x, y
+  end
+  function graphics.getColor()
+    return 1, 1, 1, 1
+  end
+  function graphics.setColor(_, _, _, _)
+    paint()
+  end
+  function graphics.rectangle(_, _, _, _, _)
+    paint()
+  end
+  function graphics.newQuad(x, y, w, h, imgW, imgH)
+    return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
+  end
+  function graphics.draw(drawable, quad, x, y)
+    paint()
+    if type(quad) == "number" then
+      quad, x, y = nil, quad, x
+    end
+    local key = drawable
+    if type(drawable) == "table" then
+      key = drawable.key or drawable.handle or tostring(drawable)
+    end
+    graphics.draws[#graphics.draws + 1] = { key = key, quad = quad, x = x, y = y }
+  end
+  function graphics.newImage(_)
+    graphics.uploads = graphics.uploads + 1
+    return { key = "test-image" }
+  end
+  return graphics
+end
+
+-- Drives one launched battle until its screen exposes the command view,
+-- failing loudly when the launch never arrives there.
+---@param runtime FieldRuntime live production runtime under test driving
+---@param envelope table live presented-battle envelope under test driving
+---@return table live battle screen on its command view
+local function driveToCommandMode(runtime, envelope)
+  local ticks = 0
+  while ticks < 900 do
+    runtime:update(1 / 30)
+    envelope:updateFixed(TICK)
+    ticks = ticks + 1
+    local screen = envelope:liveScreen()
+    if screen ~= nil and screen:status().mode == "command" then
+      return screen
+    end
+  end
+  error("the presented battle never reached its command", 0)
+end
+
+-- Fixed updates paint nothing without an explicit draw: text, windows,
+-- and host graphics stay untouched across update-only ticks while the
+-- command view holds, and one explicit draw prints and frames the view.
+function T.fixed_updates_paint_nothing_without_an_explicit_draw()
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local envelope, binding, doubles =
+      bindEnvelope(runtime, versionId, dualMeasurement("paint-free-updates:dual"))
+    local ok, failure = xpcall(function()
+      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      local screen = driveToCommandMode(runtime, envelope)
+      doubles.text.draws = {}
+      doubles.windows.calls = {}
+      local audioBefore = #doubles.audio.plays
+      for _ = 1, 5 do
+        envelope:updateFixed(1 / 30)
+      end
+      Assert.equal(#doubles.text.draws, 0, "fixed updates paint no text without a draw")
+      Assert.equal(#doubles.windows.calls, 0, "fixed updates paint no windows without a draw")
+      Assert.equal(screen:status().mode, "command", "semantics hold still without paint")
+      local spy = paintCountingGraphics()
+      Assert.isTrue(envelope:drawBattle({ graphics = spy }), "the explicit draw reaches the live screen")
+      Assert.isTrue(#doubles.text.draws > 0, "the explicit draw prints its wording")
+      Assert.isTrue(#doubles.windows.calls > 0, "the explicit draw frames its windows")
+      Assert.isTrue(spy.paint > 0, "the explicit draw reaches host graphics")
+      local texts, frames = #doubles.text.draws, #doubles.windows.calls
+      for _ = 1, 2 do
+        envelope:updateFixed(1 / 30)
+      end
+      Assert.equal(#doubles.text.draws, texts, "later updates paint no further text")
+      Assert.equal(#doubles.windows.calls, frames, "later updates paint no further windows")
+      Assert.equal(#doubles.audio.plays, audioBefore, "updates and draws play no extra cues")
+    end, debug.traceback)
+    local unbound = pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    local closed = pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    Assert.isTrue(unbound, "the lifetime releases its factory binding")
+    Assert.isTrue(closed, "teardown releases the presented lifetime")
+  end
+end
+
+-- Explicit draws stay stable and genuine render failures reach the host:
+-- repeated draws paint the same frame with no cues or semantic advance,
+-- updates between draws add no paint, and a throwing window renderer
+-- marks the screen so the next tick releases it while later updates
+-- stay mute.
+function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host()
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local envelope, binding, doubles = bindEnvelope(runtime, versionId, dualMeasurement("stable-draws:dual"))
+    local ok, failure = xpcall(function()
+      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      driveToCommandMode(runtime, envelope)
+      local function drawnCounts()
+        doubles.text.draws = {}
+        doubles.windows.calls = {}
+        local spy = paintCountingGraphics()
+        local audioBefore = #doubles.audio.plays
+        Assert.isTrue(envelope:drawBattle({ graphics = spy }), "each explicit draw reaches the live screen")
+        return {
+          texts = #doubles.text.draws,
+          frames = #doubles.windows.calls,
+          paint = spy.paint,
+          audio = #doubles.audio.plays - audioBefore,
+          mode = envelope:liveScreen():status().mode,
+        }
+      end
+      local first = drawnCounts()
+      Assert.isTrue(first.texts > 0, "the command view prints its wording")
+      Assert.isTrue(first.frames > 0, "the command view frames its windows")
+      for _ = 1, 3 do
+        envelope:updateFixed(1 / 30)
+      end
+      Assert.equal(#doubles.text.draws, first.texts, "updates between draws paint no extra text")
+      Assert.equal(#doubles.windows.calls, first.frames, "updates between draws frame no extra windows")
+      local second = drawnCounts()
+      Assert.equal(second.texts, first.texts, "repeated draws print the same wording")
+      Assert.equal(second.frames, first.frames, "repeated draws frame the same windows")
+      Assert.equal(second.paint, first.paint, "repeated draws reach host graphics identically")
+      Assert.equal(second.audio, 0, "drawing plays no cues")
+      Assert.equal(second.mode, first.mode, "drawing advances no semantics")
+      doubles.windows.drawWindow = function()
+        error("probe window failure", 0)
+      end
+      doubles.windows.drawApplicationFrame = function()
+        error("probe window failure", 0)
+      end
+      doubles.text.draws = {}
+      doubles.windows.calls = {}
+      local spy = paintCountingGraphics()
+      Assert.isTrue(
+        envelope:drawBattle({ graphics = spy }),
+        "the failing draw still reaches the live screen"
+      )
+      local failed = assert(envelope:liveScreen(), "the failed screen stays observable for its handoff")
+      Assert.equal(failed:status().mode, "failed", "a genuine render failure marks the screen")
+      envelope:updateFixed(1 / 30)
+      Assert.isNil(envelope:liveScreen(), "the next tick releases the failed screen to its host")
+      Assert.notNil(runtime._battleLaunch, "the launch survives for the safe return")
+      local texts, frames = #doubles.text.draws, #doubles.windows.calls
+      for _ = 1, 3 do
+        envelope:updateFixed(1 / 30)
+      end
+      Assert.equal(#doubles.text.draws, texts, "updates after the failure paint nothing further")
+      Assert.equal(#doubles.windows.calls, frames, "updates after the failure frame nothing further")
+    end, debug.traceback)
+    local unbound = pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    local closed = pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    Assert.isTrue(unbound, "the lifetime releases its factory binding")
+    Assert.isTrue(closed, "teardown releases the presented lifetime")
+  end
+end
+
 return {
   tests = T,
   metadata = {

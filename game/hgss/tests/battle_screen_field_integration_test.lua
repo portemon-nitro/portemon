@@ -143,6 +143,46 @@ local function recordingText()
   return text
 end
 
+---@return table caller-owned recording graphics behind explicit test draws
+local function recordingGraphics()
+  local graphics = { draws = {} }
+  function graphics.push(_) end
+  function graphics.pop() end
+  function graphics.origin() end
+  function graphics.intersectScissor(_, _, _, _) end
+  function graphics.translate(_, _) end
+  function graphics.scale(_, _) end
+  function graphics.transformPoint(x, y)
+    return x, y
+  end
+  function graphics.getColor()
+    return 1, 1, 1, 1
+  end
+  function graphics.setColor(_, _, _, _) end
+  function graphics.rectangle(_, _, _, _, _) end
+  function graphics.newQuad(x, y, w, h, imgW, imgH)
+    return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
+  end
+  function graphics.draw(drawable, quad, x, y)
+    if type(quad) == "number" then
+      quad, x, y = nil, quad, x
+    end
+    graphics.draws[#graphics.draws + 1] = { drawable = drawable, quad = quad, x = x, y = y }
+  end
+  return graphics
+end
+
+-- Renders the current semantic frame into the recording boundaries for
+-- inspection: fixed updates never paint, so drawn content is only
+-- observable after this explicit call.
+---@param envelope table live presented-battle envelope under test driving
+---@param doubles table recording host boundaries under test driving
+local function drawForInspection(envelope, doubles)
+  doubles.text.draws = {}
+  doubles.windows.calls = {}
+  Assert.isTrue(envelope:drawBattle({ graphics = recordingGraphics() }), "the explicit draw reaches its live screen")
+end
+
 ---@param signature string stable measurement identity under test driving
 ---@return table caller-owned dual-surface display facts with two 256x192 panes
 local function dualMeasurement(signature)
@@ -1188,9 +1228,14 @@ function T.tests.opening_walk_reaches_playable_battles()
     end
     local screen = assert(envelope:liveScreen(), "the opening battle reaches its command root")
     Assert.equal(screen:status().mode, "command", "the native root shows its commands")
-    Assert.isTrue(doubles.windows.frames() ~= nil, "native views draw through the selected frame")
+    drawForInspection(envelope, doubles)
+    Assert.isTrue(next(doubles.windows.frames()) ~= nil, "native views draw through the selected frame")
+    Assert.isTrue(#doubles.text.draws > 0, "the command root draws legible text")
     screen:input({ { type = "confirm" } })
     pump(game, envelope, 5)
+    drawForInspection(envelope, doubles)
+    Assert.isTrue(#doubles.text.draws > 0, "the move list draws legible text")
+    local drawnTexts = #doubles.text.draws
     -- The compact dock recomposes the same battle: question, command grid,
     -- and move views stay legible through the recording text boundary.
     local compact = compactMeasurement("presented-opening:compact")
@@ -1221,7 +1266,7 @@ function T.tests.opening_walk_reaches_playable_battles()
     Assert.equal(runtime:lastBattleResult().result, "win", "the route encounter reports its win")
     local grown = assert(runtime.monService:partyMon(0), "the live lead is readable after the win")
     Assert.isTrue(grown.experience > experienceBefore, "the route win publishes experience")
-    Assert.isTrue(#doubles.text.draws > 0, "command, move, and dock views draw legible text")
+    Assert.isTrue(drawnTexts > 0, "command, move, and dock views draw legible text")
     -- The opening rival trainer battle runs through its script/result
     -- path into the next field continuation.
     local key = weakestRivalKey(versionId)

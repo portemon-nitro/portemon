@@ -28,7 +28,6 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _manifest table<string, unknown> staged or planning presentation manifest
 ---@field _services table<string, unknown> cache-backed preparation services carrying prepare/drawable/release
 ---@field _preparedDemands table<integer, table<string, unknown>> exact launch demands requested, in order
----@field _recording table<string, unknown> host-safe recording graphics behind the per-tick refresh
 ---@field _launchId string? active launch identity, nil outside launches
 ---@field _descriptor table<string, unknown>? active launch descriptor from the runtime
 ---@field _recoveryPointerId string|number|nil pending recovery press identity awaiting its release
@@ -40,7 +39,6 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _revealingBattle boolean true once the constructed battle starts its reveal
 ---@field _musicStarted boolean true once battle music was attempted for the launch
 ---@field _musicNote string? battle-music start outcome for launch diagnostics
----@field _drewExternally boolean true once an outer owner drew this frame
 ---@field _disposed boolean
 local FieldBattlePresentation = {}
 FieldBattlePresentation.__index = FieldBattlePresentation
@@ -109,39 +107,6 @@ local function checkPortraitKey(cacheFs, selector)
   return true
 end
 
----@return table<string, unknown> host-safe recording graphics logging image draws
-local function recordingGraphics()
-  local recording = { draws = {} }
-  function recording.push(_) end
-  function recording.pop() end
-  function recording.origin() end
-  function recording.intersectScissor(_, _, _, _) end
-  function recording.translate(_, _) end
-  function recording.scale(_, _) end
-  function recording.transformPoint(x, y)
-    return x, y
-  end
-  function recording.getColor()
-    return 1, 1, 1, 1
-  end
-  function recording.setColor(_, _, _, _) end
-  function recording.rectangle(_, _, _, _, _) end
-  function recording.newQuad(x, y, w, h, imgW, imgH)
-    return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
-  end
-  function recording.draw(drawable, quad, x, y)
-    if type(quad) == "number" then
-      quad, x, y = nil, quad, x
-    end
-    local key = drawable
-    if type(drawable) == "table" then
-      key = drawable.key or drawable.handle or tostring(drawable)
-    end
-    recording.draws[#recording.draws + 1] = { key = key, quad = quad, x = x, y = y }
-  end
-  return recording
-end
-
 ---@param opts FieldBattlePresentation.Options
 ---@return FieldBattlePresentation
 function FieldBattlePresentation.new(opts)
@@ -180,12 +145,10 @@ function FieldBattlePresentation.new(opts)
     _revealingBattle = false,
     _musicStarted = false,
     _musicNote = nil,
-    _drewExternally = false,
     _disposed = false,
     _images = {},
     _imageFailures = {},
   }, FieldBattlePresentation)
-  envelope._recording = recordingGraphics()
   envelope._services = envelope:_preparationServices()
   return envelope
 end
@@ -813,17 +776,19 @@ function FieldBattlePresentation:cancelPointerCapture()
 end
 
 -- Draws the live battle through its screen owner with outer draw
--- resources. Never draws after the port disposes; the caller owns cover
--- and field composition around it.
----@param resources table<string, unknown>? outer draw resources carrying host graphics
+-- resources. The sole painting bridge: fixed updates never draw, so
+-- callers pass their own host graphics on every visible frame. Never
+-- draws after the port disposes; the caller owns cover and field
+-- composition around it.
+---@param resources table<string, unknown> outer draw resources carrying host graphics
 ---@return boolean drawn true while a live screen drew
 function FieldBattlePresentation:drawBattle(resources)
   local screen = self:liveScreen()
   if screen == nil then
     return false
   end
-  self._drewExternally = true
-  screen:draw(resources or { graphics = self._recording, text = self._text, windows = self._windows })
+  assert(type(resources) == "table" and resources.graphics ~= nil, "battle drawing needs its host graphics")
+  screen:draw(resources)
   return true
 end
 
@@ -863,12 +828,13 @@ function FieldBattlePresentation:updateFixed(dt)
   if self._launchId ~= nil and host ~= nil then
     host.advance()
   end
+  -- After fixed cover and host advance, update semantic battle state only.
   local screen = self._screen
   if screen ~= nil then
     screen:updateFixed(steps * FieldBattlePresentation.SOURCE_FRAME)
     self:_observeScreenFailure()
   end
-  self:_refreshRecording()
+  -- No screen:draw call here; the field's draw callback owns painting.
 end
 
 -- One source-clock cover step behind the observed launch phase. Cover
@@ -1047,31 +1013,6 @@ function FieldBattlePresentation:_observeScreenFailure()
     end)
     self._screen = nil
   end
-end
-
--- Refreshes the presented battle through the recording boundary: window
--- frames, text content, cue-adjacent graphics draws, and staged asset
--- identities log without ever reaching host graphics. Read-only and
--- clock-free; an externally drawn frame skips the refresh so production
--- pays no double render.
-function FieldBattlePresentation:_refreshRecording()
-  if self._drewExternally then
-    self._drewExternally = false
-    return
-  end
-  local screen = self._screen
-  if screen == nil then
-    return
-  end
-  local ok, status = pcall(function()
-    return screen:status()
-  end)
-  if not ok or type(status) ~= "table" or status.mode == "failed" or status.mode == "disposed" then
-    return
-  end
-  local _, _ = pcall(function()
-    return screen:draw({ graphics = self._recording, text = self._text, windows = self._windows })
-  end)
 end
 
 -- Forgets a cleared launch: the runtime disposed the battle port (and its
