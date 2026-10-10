@@ -287,6 +287,7 @@ function MoveExecution.start(inputs)
     "status",
     "copiedMove",
     "combat",
+    "targetFacts",
     "burned",
     "guts",
     "weather",

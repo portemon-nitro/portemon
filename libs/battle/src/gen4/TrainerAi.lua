@@ -3308,8 +3308,9 @@ local function evaluateDoubles(authorities, facts, state, bits, stream)
     -- Single-target user-side winners aimed across the field retarget to
     -- the holder, as do non-ghost Curse winners.
     if range == 512 then
+      local holderSide = BattleState.participant(state, facts.combatant.participant --[[@as integer]]).side --[[@as integer]]
       for id, position in pairs(positionOf) do
-        if position == target and sideOf[id] == 1 then
+        if position == target and sideOf[id] ~= holderSide then
           target = ownPosition --[[@as integer]]
         end
       end

@@ -2037,6 +2037,7 @@ end
 -- path in tests and in production.
 local WILD_FORMAT = "wild-single"
 local TRAINER_FORMAT = "single"
+local DOUBLE_FORMAT = "double"
 
 ---@return table frozen battle content binding the native ruleset over the production wild/trainer formats
 local function actionContent()
@@ -2055,6 +2056,7 @@ local function actionContent()
   )
   behaviors:registerFormat(WILD_FORMAT, { key = WILD_FORMAT }, "native-action-tests")
   behaviors:registerFormat(TRAINER_FORMAT, { key = TRAINER_FORMAT }, "native-action-tests")
+  behaviors:registerFormat(DOUBLE_FORMAT, { key = DOUBLE_FORMAT }, "native-action-tests")
   return BattleContent.new(builder:freeze(), behaviors:freeze())
 end
 
@@ -3946,6 +3948,184 @@ function T.mirror_move_copies_the_recorded_incoming_strike()
   Assert.isNil(secondErr, "accepted strikes carry no input error")
   session:advance(64)
   Assert.isTrue(session:capture().combatants[2].hp < before, "mirror move strikes with the recorded move")
+  session:dispose()
+end
+
+---@param alpha table[] owning-side combatant seeds in battle order
+---@param beta table[] opposing-side combatant seeds in battle order
+---@return table detached native doubles setup record for the scope probes
+local function doubleActionScenario(alpha, beta)
+  -- The catalog pull for learned moves stays out: every vector move
+  -- arrives explicitly through the extras below, and synthetic custom
+  -- identities have no catalog entry to resolve.
+  local Executor = executorOwner()
+  local seeds = {}
+  for _, seed in ipairs(alpha) do
+    seeds[#seeds + 1] = seed
+  end
+  for _, seed in ipairs(beta) do
+    seeds[#seeds + 1] = seed
+  end
+  return {
+    ruleset = Executor.RULESET,
+    format = DOUBLE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", alpha),
+      SessionFixture.participant(2, 2, "beta", beta),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, alpha[1].id),
+      SessionFixture.position(2, 2, { 2 }, beta[1].id),
+      SessionFixture.position(3, 1, { 1 }, alpha[2].id),
+      SessionFixture.position(4, 2, { 2 }, beta[2].id),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts({}),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+end
+
+---@param request table pending decision request under addressing
+---@param combatant integer combatant identity owning the wanted actor
+---@return table the actor address answering for the combatant
+local function actorFor(request, combatant)
+  for _, actor in ipairs(request.actors) do
+    if actor.combatant == combatant then
+      return actor
+    end
+  end
+  error("the request addresses no actor for combatant " .. tostring(combatant))
+end
+
+-- A called move executes under its drawn scope, not the requested one:
+-- mirror move copies a spread strike and wounds both foes from one
+-- requested slot and one power-point spend.
+function T.mirror_move_copies_a_spread_strike_onto_both_foes()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local copier = leveledCombatant(1, 11, "CHIKORITA", 15)
+  copier.mon.moves = { { move = "MIRROR_MOVE", pp = 10, ppUps = 0 } }
+  local mate = leveledCombatant(3, 31, "TOTODILE", 15)
+  mate.mon.moves = { { move = "SPLASH", pp = 30, ppUps = 0 } }
+  local spreader = leveledCombatant(2, 23, "EEVEE", 12)
+  local bystander = leveledCombatant(4, 41, "EEVEE", 12)
+  bystander.mon.moves = { { move = "SPLASH", pp = 30, ppUps = 0 } }
+  local mirrorFacts = handFacts(0, 0, "other", "flying", 0)
+  mirrorFacts.range = 0
+  local scenario = withMoveFacts(doubleActionScenario({ copier, mate }, { spreader, bystander }), {
+    MIRROR_MOVE = mirrorFacts,
+    TACKLE = { power = 35, accuracy = 100, category = "physical", moveType = "normal", effectChance = 0, priority = 0, range = 4 },
+    SPLASH = handFacts(0, 100, "other", "normal", 0),
+  })
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local first, firstErr = session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(actorFor(alpha, 1), 0, SessionFixture.positionTarget(2)),
+    SessionFixture.attackChoice(actorFor(alpha, 3), 0, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(first, "the opening copy attempt is accepted: " .. tostring(firstErr))
+  local second, secondErr = session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(actorFor(beta, 2), 0, { kind = "none" }),
+    SessionFixture.attackChoice(actorFor(beta, 4), 0, SessionFixture.positionTarget(1)),
+  }))
+  Assert.isTrue(second, "the opening spread is accepted: " .. tostring(secondErr))
+  session:advance(64)
+  local copied = SessionFixture.driveUntilSettled(session)
+  Assert.equal(copied.status, "waiting", "the copying turn asks for decisions")
+  Assert.equal(
+    session:capture().combatants[1].mon.moves[1].pp,
+    10,
+    "the failed copy spends no power points"
+  )
+  local beforeFirst = session:capture().combatants[2].hp
+  local beforeSecond = session:capture().combatants[4].hp
+  local secondAlpha = requestFor(copied, "alpha")
+  local secondBeta = requestFor(copied, "beta")
+  local third, thirdErr = session:submit(SessionFixture.replyFor(secondAlpha, {
+    SessionFixture.attackChoice(actorFor(secondAlpha, 1), 0, SessionFixture.positionTarget(2)),
+    SessionFixture.attackChoice(actorFor(secondAlpha, 3), 0, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(third, "mirror move is accepted: " .. tostring(thirdErr))
+  local fourth, fourthErr = session:submit(SessionFixture.replyFor(secondBeta, {
+    SessionFixture.attackChoice(actorFor(secondBeta, 2), 0, { kind = "none" }),
+    SessionFixture.attackChoice(actorFor(secondBeta, 4), 0, SessionFixture.positionTarget(1)),
+  }))
+  Assert.isTrue(fourth, "the copying turn answers: " .. tostring(fourthErr))
+  session:advance(64)
+  local settled = session:capture()
+  Assert.isTrue(settled.combatants[2].hp < beforeFirst, "the copied spread wounds the aimed foe")
+  Assert.isTrue(settled.combatants[4].hp < beforeSecond, "the copied spread wounds the second foe")
+  Assert.equal(settled.combatants[1].mon.moves[1].pp, 9, "the copied spread spends one power point")
+  session:dispose()
+end
+
+-- Locked strike targets refuse stale and departed entries without
+-- spending anything: a forged entry token and a benched combatant are
+-- each rejected with power points and randomness untouched, while the
+-- honestly addressed strikes still answer afterwards.
+function T.locked_strike_targets_refuse_stale_and_departed_entries()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local Executor = executorOwner()
+  local alphaLead = leveledCombatant(1, 11, "CHIKORITA", 20)
+  local betaLead = leveledCombatant(2, 23, "EEVEE", 10)
+  local betaReserve = leveledCombatant(3, 31, "TOTODILE", 10)
+  local seeds = { alphaLead, betaLead, betaReserve }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = TRAINER_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { alphaLead }),
+      SessionFixture.participant(2, 2, "beta", { betaLead, betaReserve }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local striker = assert(alpha.actors[1], "the opening request addresses its lead")
+  local rngBefore = session:capture().rng.calls
+  local ppBefore = session:capture().combatants[1].mon.moves[1].pp
+  local stale, staleErr = session:submit(
+    SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(striker, 0, SessionFixture.combatantTarget(2, 9999)) })
+  )
+  Assert.isTrue(not stale, "a strike locked to a stale entry token is refused: " .. tostring(staleErr))
+  Assert.equal(session:capture().rng.calls, rngBefore, "refused locks draw no randomness")
+  Assert.equal(session:capture().combatants[1].mon.moves[1].pp, ppBefore, "refused locks spend no power points")
+  local departed, departedErr = session:submit(
+    SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(striker, 0, SessionFixture.combatantTarget(3)) })
+  )
+  Assert.isTrue(not departed, "a strike locked to a benched combatant is refused: " .. tostring(departedErr))
+  Assert.equal(session:capture().rng.calls, rngBefore, "departed locks draw no randomness")
+  Assert.equal(session:capture().combatants[1].mon.moves[1].pp, ppBefore, "departed locks spend no power points")
+  local beta = requestFor(opening, "beta")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(
+    SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(striker, 0, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(ok, "the honestly addressed strike is accepted: " .. tostring(replyErr))
+  local answered, answerErr = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(answered, "the opposing strike is accepted: " .. tostring(answerErr))
   session:dispose()
 end
 

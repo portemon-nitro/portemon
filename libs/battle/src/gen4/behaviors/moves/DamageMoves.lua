@@ -619,13 +619,42 @@ DamageMoves.MEMBERS = {
   "ZEN_HEADBUTT",
 }
 
+-- Reads one defender's per-target facts when the frame carries the
+-- action-local snapshot, falling back to the legacy single-target
+-- scalars for frames built without it. Every per-target reader below
+-- shares this preference so spread recipients never borrow the first
+-- defender's facts.
 ---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant selecting per-target facts
+---@return table<string, unknown>? per-target fact record, nil for legacy frames
+local function targetFactsFor(frame, defender)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local facts = locals.targetFacts
+  if type(facts) ~= "table" then
+    return nil
+  end
+  local entry = (facts --[[@as table<integer, unknown>]])[defender]
+  if type(entry) ~= "table" then
+    return nil
+  end
+  return entry --[[@as table<string, unknown>]]
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer? defender combatant selecting per-target facts
 ---@return table<string, integer> staged combat inputs for the arithmetic owner
-local function combatOf(frame)
+local function combatOf(frame, defender)
   local record = frame --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local facts = locals.combat
+  if defender ~= nil then
+    local perTarget = targetFactsFor(frame, defender)
+    if perTarget ~= nil and type(perTarget.combat) == "table" then
+      facts = perTarget.combat
+    end
+  end
   if type(facts) ~= "table" then
     error(BattleErrors.missingBehavior("damage reads its real combat facts", { key = key, fact = "combat" }))
   end
@@ -903,12 +932,19 @@ end
 -- values, distinct-move history, defender weight, and the beat-up party.
 -- Every reader fails loudly on absent facts instead of defaulting.
 ---@param frame table<string, unknown> move frame under execution
+---@param defender integer? defender combatant selecting per-target facts
 ---@return table<string, unknown> validated turn-interaction facts for the strike
-local function duelOf(frame)
+local function duelOf(frame, defender)
   local record = frame --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local duel = locals.duel
+  if defender ~= nil then
+    local perTarget = targetFactsFor(frame, defender)
+    if perTarget ~= nil and type(perTarget.duel) == "table" then
+      duel = perTarget.duel
+    end
+  end
   if type(duel) ~= "table" then
     error(BattleErrors.missingBehavior("revenge law reads its turn-interaction facts", { key = key }))
   end
@@ -939,13 +975,20 @@ local function duelOf(frame)
 end
 
 ---@param frame table<string, unknown> move frame under execution
+---@param defender integer? defender combatant selecting per-target facts
 ---@return integer user stage-effective speed under the strike
 ---@return integer defender stage-effective speed under the strike
-local function speedsOf(frame)
+local function speedsOf(frame, defender)
   local record = frame --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local speeds = locals.speeds
+  if defender ~= nil then
+    local perTarget = targetFactsFor(frame, defender)
+    if perTarget ~= nil and type(perTarget.speeds) == "table" then
+      speeds = perTarget.speeds
+    end
+  end
   if type(speeds) ~= "table" then
     error(BattleErrors.missingBehavior("weightless power reads its effective speeds", { key = key }))
   end
@@ -961,12 +1004,19 @@ local function speedsOf(frame)
 end
 
 ---@param frame table<string, unknown> move frame under execution
+---@param defender integer? defender combatant selecting per-target facts
 ---@return integer defender battle level under the strike
-local function foeLevelOf(frame)
+local function foeLevelOf(frame, defender)
   local record = frame --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local level = locals.foeLevel
+  if defender ~= nil then
+    local perTarget = targetFactsFor(frame, defender)
+    if perTarget ~= nil and type(perTarget.foeLevel) == "number" then
+      level = perTarget.foeLevel
+    end
+  end
   if type(level) ~= "number" or level % 1 ~= 0 or level < 1 then
     error(BattleErrors.missingBehavior("knockout law reads its defender level", { key = key }))
   end
@@ -974,12 +1024,19 @@ local function foeLevelOf(frame)
 end
 
 ---@param frame table<string, unknown> move frame under execution
+---@param defender integer? defender combatant selecting per-target facts
 ---@return table<string, unknown> user and defender ability identities under the strike
-local function abilitiesOf(frame)
+local function abilitiesOf(frame, defender)
   local record = frame --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local abilities = locals.abilities
+  if defender ~= nil then
+    local perTarget = targetFactsFor(frame, defender)
+    if perTarget ~= nil and type(perTarget.abilities) == "table" then
+      abilities = perTarget.abilities
+    end
+  end
   if type(abilities) ~= "table" then
     error(BattleErrors.missingBehavior("ability gates read their battle abilities", { key = key }))
   end
@@ -1118,12 +1175,19 @@ local function usedMovesOf(frame)
 end
 
 ---@param frame table<string, unknown> move frame under execution
+---@param defender integer? defender combatant selecting per-target facts
 ---@return number defender weight in hectograms under the strike
-local function foeWeightHgOf(frame)
+local function foeWeightHgOf(frame, defender)
   local record = frame --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local weight = locals.foeWeightHg
+  if defender ~= nil then
+    local perTarget = targetFactsFor(frame, defender)
+    if perTarget ~= nil and type(perTarget.foeWeightHg) == "number" then
+      weight = perTarget.foeWeightHg
+    end
+  end
   if type(weight) ~= "number" or weight < 0 then
     error(BattleErrors.missingBehavior("weight law reads its defender weight", { key = key }))
   end
@@ -1226,7 +1290,7 @@ local function applySecondaryStatus(ctx, frame, defender, status)
   -- Prevention answers before application through the defender
   -- ability, while reflection answers only an inflicted status
   -- through the same holder afterwards.
-  local foeAbility = liveAbility(abilitiesOf(frame).foe)
+  local foeAbility = liveAbility(abilitiesOf(frame, defender).foe)
   if foeAbility ~= nil then
     local ward = NativePassiveBridge.invokeFacts({
       combatant = defender,
@@ -1454,7 +1518,7 @@ local function strikeCritical(ctx, frame, user, defender, params, stream)
   if ctx:hasBattleEffect(user, "focusenergy") then
     stage = stage --[[@as integer]] + 2
   end
-  local abilities = abilitiesOf(frame)
+  local abilities = abilitiesOf(frame, defender)
   local outcome = NativePassiveBridge.invokeFacts({
     combatant = user,
     activation = activationOf(ctx, user),
@@ -1535,7 +1599,7 @@ end
 ---@param effectiveness table<string, unknown> exact effectiveness rational for the strike
 ---@return boolean true when the strike is warded off
 local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness)
-  local foeAbility = liveAbility(abilitiesOf(frame).foe)
+  local foeAbility = liveAbility(abilitiesOf(frame, defender).foe)
   if foeAbility == nil then
     return false
   end
@@ -1563,7 +1627,7 @@ local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness
       moveType = moveType,
       movePower = power,
       superEffective = superEffective,
-      hit = { attackerAbility = liveAbility(abilitiesOf(frame).user) },
+      hit = { attackerAbility = liveAbility(abilitiesOf(frame, defender).user) },
     }
   )
   for _, event in ipairs(outcome.events) do
@@ -1688,7 +1752,7 @@ end
 ---@return integer damage dealt by this hit
 local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, params)
   local controls = params or {}
-  local combat = combatOf(frame)
+  local combat = combatOf(frame, defender)
   local stream = checkStream(frame.stream)
   -- Strike-law facts validate before any draw: a missing fact fails
   -- without spending the critical or damage rolls.
@@ -1953,16 +2017,15 @@ local function runStriker(ctx, frame, params)
         end
       end
       connected = true
-      if owned.drain == true then
-        applyDrain(ctx, frame, dealtTotal)
-      end
     elseif owned.crash == true then
       ctx:damage(userOf(frame), 1, causeFor(frame))
     end
-    local health = ctx:damage(defender, 0, causeFor(frame))
-    if health.after == 0 then
-      break
-    end
+  end
+  -- Recovery answers the whole move once from the total inflicted
+  -- across every recipient, not once per target: fainting the first
+  -- defender still leaves the remaining recipients their strikes.
+  if owned.drain == true and dealtTotal > 0 then
+    applyDrain(ctx, frame, dealtTotal)
   end
   if owned.recoil ~= nil and dealtTotal > 0 then
     applyRecoil(ctx, frame, dealtTotal, owned.recoil --[[@as string]])

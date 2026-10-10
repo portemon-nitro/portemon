@@ -61,6 +61,7 @@ local RewardExperience = require("libs.battle.src.gen4.Experience")
 local Stats = require("libs.mons.src.gen4.Stats")
 local Status = require("libs.battle.src.gen4.Status")
 local Switching = require("libs.battle.src.gen4.Switching")
+local Targeting = require("libs.battle.src.gen4.Targeting")
 local TrainerAi = require("libs.battle.src.gen4.TrainerAi")
 local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 
@@ -417,6 +418,378 @@ local function resolveMove(mon, moveSlot)
   return "STRUGGLE", nil
 end
 
+-- Native move-range law: the compiled numeric range selects the target
+-- scope, never the move name or a guessed foe. Source reference:
+-- include/constants/moves.h RANGE_* and the target-selection cases in
+-- src/battle/overlay_12_0224E4FC.c (pret/pokeheartgold). The front range
+-- keeps the ordinary user-selected opposing target; the special called
+-- front/random distinction has no caller-mode input at this seam, so
+-- ordinary selection binds it like a single opposing target. Unknown
+-- numeric ranges refuse loudly at submission and execution instead of
+-- falling back to a first foe.
+local NATIVE_RANGE_POLICY = {
+  [0] = "selected_foe", -- RANGE_SINGLE_TARGET
+  [1] = "user", -- RANGE_SINGLE_TARGET_SPECIAL, automatic user targeting
+  [2] = "random_foe", -- RANGE_RANDOM_OPPONENT
+  [4] = "both_foes", -- RANGE_ADJACENT_OPPONENTS
+  [8] = "all_others", -- RANGE_ALL_ADJACENT
+  [16] = "user", -- RANGE_USER
+  [32] = "own_side", -- RANGE_USER_SIDE
+  [64] = "entire_field", -- RANGE_FIELD
+  [128] = "foe_side", -- RANGE_OPPONENT_SIDE
+  [256] = "ally", -- RANGE_ALLY
+  [512] = "selected_own_side", -- RANGE_SINGLE_TARGET_USER_SIDE
+  [1024] = "selected_foe", -- RANGE_FRONT, ordinary opposing selection
+}
+
+-- Resolves the submission/execution target policy for a move identity.
+-- Ghost-typed curse keeps the opposing selection while any other holder
+-- answers its own slot (src/battle/battle_controller_player.c). Facts
+-- without a numeric range keep the historical "legacy" single-foe
+-- selection so range-less custom moves stay executable; unknown numeric
+-- ranges yield nil so callers refuse with the move and range named.
+---@param moveName string move identity under policy resolution
+---@param facts table<string, unknown>? immutable compiled move facts, when present
+---@param attackerTypes string[]? semantic attacker types, read only for curse
+---@return string? native target policy, "legacy" for range-less facts, nil for unknown ranges
+local function rangePolicy(moveName, facts, attackerTypes)
+  if moveName == "CURSE" then
+    if type(attackerTypes) == "table" then
+      for _, key in ipairs(attackerTypes) do
+        if key == "ghost" then
+          return "selected_foe"
+        end
+      end
+    end
+    return "user"
+  end
+  local range = type(facts) == "table" and facts.range or nil
+  if range == nil then
+    return "legacy"
+  end
+  return NATIVE_RANGE_POLICY[
+    range --[[@as integer]]
+  ]
+end
+
+-- Names the unknown numeric range the way submission and execution
+-- refusals report it: the move identity travels beside its range.
+
+---@param moveName string move identity under refusal
+---@param facts table<string, unknown>? immutable compiled move facts, when present
+---@return table<string, unknown> missing-behavior refusal naming the move and range
+local function unknownRangeError(moveName, facts)
+  local range = type(facts) == "table" and facts.range or nil
+  return BattleErrors.missingBehavior("native strikes name their source range", {
+    move = moveName,
+    range = range,
+  })
+end
+
+---@param mon unknown battle-local mon record under the usability query
+---@return boolean true while at least one move slot holds power points
+local function hasUsableSlot(mon)
+  if type(mon) ~= "table" then
+    return false
+  end
+  local moves = (mon --[[@as table<string, unknown>]]).moves
+  if type(moves) ~= "table" then
+    return false
+  end
+  local entries = moves --[[@as table<integer, unknown>]]
+  local slots = #entries
+  if slots > 4 then
+    slots = 4
+  end
+  for slot = 0, slots - 1 do
+    local _, ownerSlot = resolveMove(mon, slot)
+    if ownerSlot ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param combatantId integer actor combatant under the side query
+---@return integer? owning side identity, nil while the roster link is broken
+local function actorSide(state, combatantId)
+  local combatant = (state.combatants --[[@as table<integer, table<string, unknown>>]])[combatantId]
+  if type(combatant) ~= "table" then
+    return nil
+  end
+  local participant = (state.participants --[[@as table<integer, table<string, unknown>>]])[
+    combatant.participant --[[@as integer]]
+  ]
+  if type(participant) ~= "table" then
+    return nil
+  end
+  if type(participant.side) ~= "number" then
+    return nil
+  end
+  return participant.side --[[@as integer]]
+end
+
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param side integer side identity under the query
+---@return integer? the other declared side, nil while the battle holds a single side
+local function opposingSide(state, side)
+  local sides = state.sides --[[@as table<integer, unknown>]]
+  if type(sides) ~= "table" then
+    return nil
+  end
+  for id in pairs(sides) do
+    if id ~= side then
+      return id --[[@as integer]]
+    end
+  end
+  return nil
+end
+
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param combatantId integer actor combatant under the position query
+---@return integer? live user position, nil while the actor stands outside the field
+local function userPosition(state, combatantId)
+  local combatant = (state.combatants --[[@as table<integer, table<string, unknown>>]])[combatantId]
+  if type(combatant) ~= "table" then
+    return nil
+  end
+  local active = combatant.active --[[@as table<string, unknown>?]]
+  if type(active) ~= "table" or type(active.position) ~= "number" then
+    return nil
+  end
+  return active.position --[[@as integer]]
+end
+
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param side integer side identity under enumeration
+---@return integer[] live positions on the side in battle order
+local function livePositionsOnSide(state, side)
+  local out = {} ---@type integer[]
+  for _, positionId in
+    ipairs(state.positionOrder --[[@as integer[] ]])
+  do
+    local position = BattleState.position(state, positionId --[[@as integer]])
+    if position.side == side then
+      local occupant = position.occupant --[[@as integer?]]
+      if occupant ~= nil then
+        local holder = (state.combatants --[[@as table<integer, table<string, unknown>>]])[occupant]
+        if type(holder) == "table" and holder.active ~= nil and holder.hp ~= 0 then
+          out[#out + 1] = positionId --[[@as integer]]
+        end
+      end
+    end
+  end
+  return out
+end
+
+-- Builds the pure targeting snapshot over current occupancy plus the
+-- index maps between battle position identities and the pure slot
+-- identities the shared resolver orders. Slots follow battle position
+-- order, so resolved sets stay deterministic without table iteration.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@return TargetField pure target field over live occupancy
+---@return table<integer, integer> pure slot identity by battle position identity
+---@return table<integer, integer> battle position identity by pure slot identity
+local function targetField(state)
+  local slots = {} ---@type table<integer, table<string, unknown>>
+  local toSlot = {} ---@type table<integer, integer>
+  local toPosition = {} ---@type table<integer, integer>
+  for index, positionId in
+    ipairs(state.positionOrder --[[@as integer[] ]])
+  do
+    local slotId = index - 1
+    local position = BattleState.position(state, positionId --[[@as integer]])
+    local occupant = position.occupant --[[@as integer?]]
+    local entry = nil
+    if occupant ~= nil then
+      local holder = (state.combatants --[[@as table<integer, table<string, unknown>>]])[occupant]
+      if type(holder) == "table" and holder.active ~= nil then
+        local active = holder.active --[[@as table<string, unknown>]]
+        entry = { combatant = occupant, activation = active.activation, active = holder.hp ~= 0 }
+      end
+    end
+    slots[#slots + 1] = { id = slotId, side = position.side, occupant = entry }
+    toSlot[
+      positionId --[[@as integer]]
+    ] = slotId
+    toPosition[slotId] = positionId --[[@as integer]]
+  end
+  return { positions = slots }, toSlot, toPosition
+end
+
+-- Normalizes a submitted selected reference onto a pure slot of the
+-- expected side: live selections bind where they stand, departed
+-- selections anchor the first slot of their side so the shared
+-- resolver retargets through its native policy, and foreign
+-- references bind nothing.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param target table<string, unknown> submitted selected reference under normalization
+---@param side integer expected side identity under the selection
+---@param field TargetField pure target field carrying the slot sides
+---@param toSlot table<integer, integer> pure slot identity by battle position identity
+---@return integer? pure slot identity on the expected side, nil when foreign
+local function selectedSlot(state, target, side, field, toSlot)
+  local slots = field.positions --[[@as table<integer, table<string, unknown>>]]
+  if target.kind == "position" then
+    local slotId = toSlot[
+      target.position --[[@as integer]]
+    ]
+    if slotId == nil then
+      return nil
+    end
+    for _, slot in ipairs(slots) do
+      if slot.id == slotId then
+        if slot.side == side then
+          return slotId
+        end
+        return nil
+      end
+    end
+    return nil
+  end
+  if target.kind == "combatant" then
+    -- Locked combatant references die with their entry: a departed or
+    -- re-entered holder binds nothing, so the strike fizzles instead of
+    -- retargeting onto the arrival. Only position slots retarget.
+    local combatant = (state.combatants --[[@as table<integer, table<string, unknown>>]])[
+      target.combatant --[[@as integer]]
+    ]
+    if type(combatant) ~= "table" or combatant.active == nil then
+      return nil
+    end
+    local active = combatant.active --[[@as table<string, unknown>]]
+    if target.activation ~= nil and active.activation ~= target.activation then
+      return nil
+    end
+    local slotId = toSlot[
+      active.position --[[@as integer]]
+    ]
+    if slotId == nil then
+      return nil
+    end
+    for _, slot in ipairs(slots) do
+      if slot.id == slotId and slot.side == side then
+        return slotId
+      end
+    end
+    return nil
+  end
+  return nil
+end
+
+-- Samples the ordered battle positions a policy strikes from current
+-- topology: selected policies resolve through the shared resolver
+-- (departed selections retarget instead of fizzling), the ally policy
+-- defaults to the user with no partner standing, and every other
+-- scope resolves from the live field. Random draws come only from the
+-- given stream, so read-only projection passes none.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actorId integer striking combatant under sampling
+---@param policy string native target policy under sampling
+---@param selected table<string, unknown>? submitted selected reference for selection policies
+---@param stream table<string, unknown>? battle stream drawing random targets, absent during projection
+---@return integer[] ordered battle position identities under the policy
+local function sampleNativePositions(state, actorId, policy, selected, stream)
+  local ownSide = actorSide(state, actorId)
+  if ownSide == nil then
+    return {}
+  end
+  local field, toSlot, toPosition = targetField(state)
+  local userPos = userPosition(state, actorId)
+  if userPos == nil or toSlot[userPos] == nil then
+    return {}
+  end
+  local user = { kind = "position", position = toSlot[userPos] }
+  if policy == "user" then
+    return { userPos }
+  end
+  -- Scope policies share one resolution: the targeting policy names
+  -- the shared resolver scope (the foe side strikes through the live
+  -- foe set), and resolved pure slots map back onto battle positions
+  -- in resolver order.
+  local function scopeIds(targetingPolicy)
+    local resolution = Targeting.resolve({ policy = targetingPolicy, user = user }, field)
+    local ids = {} ---@type integer[]
+    for _, ref in ipairs(resolution.targets) do
+      ids[#ids + 1] = toPosition[
+        ref.position --[[@as integer]]
+      ] --[[@as integer]]
+    end
+    return ids
+  end
+  if policy == "ally" then
+    local ids = scopeIds("ally")
+    if #ids == 0 then
+      return { userPos }
+    end
+    return { ids[1] }
+  end
+  if policy == "own_side" or policy == "entire_field" or policy == "both_foes" or policy == "all_others" then
+    return scopeIds(policy)
+  end
+  if policy == "foe_side" then
+    return scopeIds("both_foes")
+  end
+  if policy == "random_foe" then
+    local ok, resolution = pcall(Targeting.resolve, { policy = "random_foe", user = user }, field, stream)
+    if not ok then
+      return {}
+    end
+    local ids = {} ---@type integer[]
+    for _, ref in
+      ipairs((resolution --[[@as table<string, unknown>]]).targets --[[@as table<integer, table<string, unknown>>]])
+    do
+      local positionId = toPosition[
+        (ref --[[@as table<string, unknown>]]).position --[[@as integer]]
+      ]
+      if positionId ~= nil then
+        ids[#ids + 1] = positionId --[[@as integer]]
+      end
+    end
+    return ids
+  end
+  if policy == "selected_foe" or policy == "selected_own_side" then
+    if type(selected) ~= "table" then
+      return {}
+    end
+    local side = opposingSide(state, ownSide)
+    local targetingPolicy = "selected_foe"
+    if policy == "selected_own_side" then
+      side = ownSide
+      targetingPolicy = "selected_ally"
+    end
+    if side == nil then
+      return {}
+    end
+    local slotId = selectedSlot(state, selected --[[@as table<string, unknown>]], side, field, toSlot)
+    if slotId == nil then
+      return {}
+    end
+    local ok, resolution = pcall(
+      Targeting.resolve,
+      { policy = targetingPolicy, user = user, selected = { kind = "position", position = slotId } },
+      field
+    )
+    if not ok then
+      return {}
+    end
+    local ids = {} ---@type integer[]
+    for _, ref in
+      ipairs((resolution --[[@as table<string, unknown>]]).targets --[[@as table<integer, table<string, unknown>>]])
+    do
+      local positionId = toPosition[
+        (ref --[[@as table<string, unknown>]]).position --[[@as integer]]
+      ]
+      if positionId ~= nil then
+        ids[#ids + 1] = positionId --[[@as integer]]
+      end
+    end
+    return ids
+  end
+  return {}
+end
+
 -- Battle stats carrying a stage law: attack, defense, speed, and the
 -- special pair sample through their battle-local stage, while accuracy
 -- and evasion stages gate their own checkpoint later.
@@ -658,6 +1031,167 @@ local function combatantTypes(combatant, speciesFacts)
     types[#types + 1] = key
   end
   return types
+end
+
+-- Collapses ally-selection onto the user while no partner stands:
+-- the source targets the user alone in singles (and in doubles with
+-- no live partner), so every seam judges the collapsed scope instead
+-- of demanding a selection that cannot exist.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actorId integer striking combatant under the collapse
+---@param policy string resolved native policy under the collapse
+---@return string effective policy for the seam
+local function effectivePolicy(state, actorId, policy)
+  if policy ~= "selected_own_side" then
+    return policy
+  end
+  local ownSide = actorSide(state, actorId)
+  local userPos = userPosition(state, actorId)
+  if ownSide == nil or userPos == nil then
+    return policy
+  end
+  for _, positionId in ipairs(livePositionsOnSide(state, ownSide)) do
+    if positionId ~= userPos then
+      return policy
+    end
+  end
+  return "user"
+end
+
+-- Validates one submitted strike target against the move's native scope.
+-- Entry locks bind on every scope: departed combatants and stale entry
+-- tokens refuse everywhere, since locks name entries rather than
+-- scopes. Selected policies additionally bind positions to their own
+-- side of the field. Automatic scopes sample recipients from policy
+-- and topology at action time, so their submitted reference is inert
+-- and any declared reference binds. The same law judges projected
+-- candidates and submitted replies, before reservations, draws, or
+-- power-point spend. Raw table reads only: forged identities refuse
+-- with input errors instead of raising lookup failures.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actorId integer striking combatant under validation
+---@param target table<string, unknown> submitted strike target under validation
+---@param policy string native target policy owning the strike
+---@return table<string, unknown>? input error, or nil when the target binds
+local function checkScopeTarget(state, actorId, target, policy)
+  local ownSide = actorSide(state, actorId)
+  if ownSide == nil then
+    return BattleErrors.input("strikes name a rostered actor", {})
+  end
+  local foeSide = opposingSide(state, ownSide)
+  local kind = target.kind
+  if kind == "combatant" then
+    local combatant = (state.combatants --[[@as table<integer, table<string, unknown>>]])[
+      target.combatant --[[@as integer]]
+    ]
+    if combatant == nil then
+      return BattleErrors.input("strikes must name a declared combatant", {})
+    end
+    local active = combatant.active --[[@as table<string, unknown>?]]
+    if active == nil then
+      return BattleErrors.input("strikes never bind a departed combatant", {})
+    end
+    if target.activation ~= nil and active.activation ~= target.activation then
+      return BattleErrors.input("locked references die with their entry", { combatant = target.combatant })
+    end
+    if policy == "selected_foe" or policy == "selected_own_side" then
+      local participant = (state.participants --[[@as table<integer, table<string, unknown>>]])[
+        combatant.participant --[[@as integer]]
+      ]
+      if type(participant) ~= "table" or type(participant.side) ~= "number" then
+        return BattleErrors.input("strikes name a rostered combatant", {})
+      end
+      local side = participant.side --[[@as integer]]
+      if policy == "selected_foe" and side ~= foeSide then
+        return BattleErrors.input("foe-scoped strikes never retarget their own side", {})
+      end
+      if policy == "selected_own_side" and side ~= ownSide then
+        return BattleErrors.input("ally-scoped strikes never cross to the foe side", {})
+      end
+    end
+    return nil
+  end
+  if policy ~= "selected_foe" and policy ~= "selected_own_side" then
+    return nil
+  end
+  if kind == "position" then
+    local position = (state.positions --[[@as table<integer, table<string, unknown>>]])[
+      target.position --[[@as integer]]
+    ]
+    if position == nil then
+      return BattleErrors.input("strikes must name a declared position", {})
+    end
+    local side = position.side --[[@as integer]]
+    if policy == "selected_foe" then
+      if side ~= foeSide then
+        return BattleErrors.input("foe-scoped strikes never retarget their own side", {})
+      end
+      return nil
+    end
+    if policy == "selected_own_side" then
+      if side ~= ownSide then
+        return BattleErrors.input("ally-scoped strikes never cross to the foe side", {})
+      end
+      return nil
+    end
+    return BattleErrors.input("selected strikes name a position of their scoped side", {})
+  end
+  return BattleErrors.input("selected strikes name a position of their scoped side", {})
+end
+
+-- Validates one submitted strike through slot, power-point, range, and
+-- scope law: spent slots strike only as the genuine all-exhausted
+-- struggle on slot zero, usable slots bind their native scope, and
+-- unknown numeric ranges refuse naming the move and range. Shares its
+-- owner with projection so both judge the same policy.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param choice table<string, unknown> submitted strike choice under validation
+---@param moveFacts table<string, table<string, unknown>>? immutable move facts by move identity
+---@param speciesFacts table<string, SpeciesFormFacts>? static species facts for the curse typing read
+---@return table<string, unknown>? input error, or nil when the strike binds
+local function checkAttackBinding(state, choice, moveFacts, speciesFacts)
+  local actor = choice.actor --[[@as table<string, unknown>]]
+  local payload = choice.payload --[[@as table<string, unknown>]]
+  local combatant = (state.combatants --[[@as table<integer, table<string, unknown>>]])[
+    actor.combatant --[[@as integer]]
+  ]
+  if type(combatant) ~= "table" then
+    return BattleErrors.input("strikes name a declared combatant", {})
+  end
+  local entry = combatant --[[@as table<string, unknown>]]
+  local moveName, ownerSlot = resolveMove(entry.mon, payload.moveSlot)
+  local target = payload.target --[[@as table<string, unknown>]]
+  if ownerSlot == nil then
+    if payload.moveSlot ~= 0 or hasUsableSlot(entry.mon) then
+      return BattleErrors.input("spent slots strike only through the exhausted struggle", {})
+    end
+    local struggleFacts = moveFacts ~= nil and moveFacts["STRUGGLE"] or nil
+    local policy = rangePolicy("STRUGGLE", struggleFacts, nil)
+    if policy == nil then
+      return unknownRangeError("STRUGGLE", struggleFacts)
+    end
+    if policy == "legacy" then
+      return nil
+    end
+    return checkScopeTarget(state, actor.combatant --[[@as integer]], target, policy)
+  end
+  local facts = moveFacts ~= nil and moveFacts[moveName] or nil
+  local attackerTypes = nil
+  if moveName == "CURSE" and type(entry.mon) == "table" and speciesFacts ~= nil then
+    local ok, types = pcall(combatantTypes, entry, speciesFacts)
+    if ok and type(types) == "table" then
+      attackerTypes = types --[[@as string[] ]]
+    end
+  end
+  local policy = rangePolicy(moveName, facts, attackerTypes)
+  if policy == nil then
+    return unknownRangeError(moveName, facts)
+  end
+  if policy == "legacy" then
+    return nil
+  end
+  policy = effectivePolicy(state, actor.combatant --[[@as integer]], policy)
+  return checkScopeTarget(state, actor.combatant --[[@as integer]], target, policy)
 end
 
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
@@ -1447,6 +1981,119 @@ local function strikeCombatFacts(state, combatant, defender, speciesFacts, categ
     attackerCondition = attackerCondition,
     weather = activeWeather(state),
     weatherSuppressed = weatherSuppressed(state),
+  }
+end
+
+-- Resolves one action's ordered recipient combatants from its policy:
+-- the historical single-defender read for range-less moves, otherwise
+-- the sampled native positions mapped onto their live occupants.
+---@param state table<string, unknown> live battle state under execution
+---@param actorId integer striking combatant under resolution
+---@param policy string native target policy owning the action
+---@param selected table<string, unknown> submitted strike target under resolution
+---@param stream table<string, unknown> battle stream drawing random targets
+---@return integer[] ordered recipient combatants under the action
+local function resolveStrikeRecipients(state, actorId, policy, selected, stream)
+  if policy == "legacy" then
+    local defenderId = resolveTarget(state, actorId, selected)
+    if defenderId == nil then
+      return {}
+    end
+    return { defenderId }
+  end
+  local ids = {} ---@type integer[]
+  for _, positionId in ipairs(sampleNativePositions(state, actorId, policy, selected, stream)) do
+    local occupant = BattleState.position(state, positionId).occupant --[[@as integer?]]
+    if occupant ~= nil then
+      ids[#ids + 1] = occupant
+    end
+  end
+  return ids
+end
+
+-- Projects the per-recipient strike facts for one action's ordered
+-- targets through the shared single-defender projection: every
+-- recipient's staged pair, types, speeds, duel context, level,
+-- abilities, weight, and beat-up party sample from its own record.
+-- The first recipient's scalars travel beside the map so legacy
+-- single-target readers keep working unchanged.
+---@param state table<string, unknown> live battle state under execution
+---@param combatant table<string, unknown> striking combatant under fact sampling
+---@param targetIds integer[] ordered recipient combatants under the action
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param category unknown executing move category selecting the stat pair
+---@param moveName string executing move identity under the error context
+---@return table<string, unknown> ordered targets plus per-recipient and first-recipient facts
+local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, category, moveName)
+  local userMon = combatant.mon --[[@as table<string, unknown>]]
+  local recentMoves = state.lastMoves
+  if type(recentMoves) ~= "table" then
+    recentMoves = {}
+  end
+  local targets = {} ---@type table<integer, table<string, unknown>>
+  local targetFacts = {} ---@type table<integer, table<string, unknown>>
+  local defenderTypes = {} ---@type table<integer, string[]>
+  local genders = {} ---@type table<integer, string>
+  local userGender = genderOf(userMon, speciesFacts)
+  if userGender ~= nil then
+    genders[
+      combatant.id --[[@as integer]]
+    ] = userGender
+  end
+  local head = nil
+  local sharedAbility, sharedCondition, sharedWeather, sharedWeatherSuppressed = nil, nil, nil, nil
+  for _, defenderId in ipairs(targetIds) do
+    local defender = BattleState.combatant(state, defenderId)
+    local strike = strikeCombatFacts(state, combatant, defender, speciesFacts, category, moveName)
+    sharedAbility = strike.attackerAbility
+    sharedCondition = strike.attackerCondition
+    sharedWeather = strike.weather
+    sharedWeatherSuppressed = strike.weatherSuppressed
+    local defenderStats = strike.defenderStats --[[@as table<string, integer>]]
+    local attackerStats = strike.attackerStats --[[@as table<string, integer>]]
+    local foeMon = defender.mon --[[@as table<string, unknown>]]
+    local foeGender = genderOf(foeMon, speciesFacts)
+    if foeGender ~= nil then
+      genders[defenderId] = foeGender
+    end
+    targetFacts[defenderId] = {
+      combat = strike.facts,
+      speeds = { user = attackerStats.speed, foe = defenderStats.speed },
+      duel = StrikeFacts.duel(state, combatant.id --[[@as integer]], defenderId),
+      foeLevel = defenderStats.level,
+      abilities = { user = userMon.ability, foe = foeMon.ability },
+      foeWeightHg = defenderStats.weightHg,
+      beatup = StrikeFacts.beatup(state, combatant, defender, speciesFacts),
+    }
+    defenderTypes[defenderId] = combatantTypes(defender, speciesFacts)
+    targets[#targets + 1] = { combatant = defenderId }
+    if head == nil then
+      head = defenderId
+    end
+  end
+  assert(head ~= nil, "recipient facts sample a non-empty target set")
+  local first = targetFacts[
+    head --[[@as integer]]
+  ] --[[@as table<string, unknown>]]
+  return {
+    targets = targets,
+    targetFacts = targetFacts,
+    defenderTypes = defenderTypes,
+    genders = genders,
+    facts = first.combat,
+    speeds = first.speeds,
+    duel = first.duel,
+    foeLevel = first.foeLevel,
+    abilities = first.abilities,
+    foeWeightHg = first.foeWeightHg,
+    beatup = first.beatup,
+    copiedMove = (recentMoves --[[@as table<integer, string>]])[
+      head --[[@as integer]]
+    ],
+    attackerAbility = sharedAbility,
+    attackerCondition = sharedCondition,
+    weather = sharedWeather,
+    weatherSuppressed = sharedWeatherSuppressed,
   }
 end
 
@@ -2867,25 +3514,40 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- Routed through the executor so the turn closure keeps its
     -- upvalue budget.
     executor:_observeTrainerMove(state, actor.combatant --[[@as integer]], moveName)
-    local defenderId =
-      resolveTarget(state, actor.combatant --[[@as integer]], payload.target --[[@as table<string, unknown>]])
-    if defenderId == nil then
+    local moveRecord = moveFacts[moveName]
+    local attackerTypes = nil
+    if moveName == "CURSE" then
+      attackerTypes = combatantTypes(combatant, speciesFacts)
+    end
+    local policy = rangePolicy(moveName, moveRecord, attackerTypes)
+    if policy == nil then
+      error(unknownRangeError(moveName, moveRecord))
+    end
+    policy = effectivePolicy(state, actor.combatant --[[@as integer]], policy)
+    -- Recipients sample once at action time from current topology:
+    -- one move execution carries the whole ordered set, and random
+    -- draws happen here, never during read-only projection.
+    local targetIds = resolveStrikeRecipients(
+      state,
+      actor.combatant --[[@as integer]],
+      policy,
+      payload.target --[[@as table<string, unknown>]],
+      stream
+    )
+    if #targetIds == 0 then
       return
     end
-    local defender = BattleState.combatant(state, defenderId)
-    local moveRecord = moveFacts[moveName]
     local category = type(moveRecord) == "table" and (moveRecord --[[@as table<string, unknown>]]).category or nil
     -- One strike-facts projection keeps the turn closure inside its
-    -- upvalue budget: raw and staged stats, ability reshaping, burn,
-    -- resilience, and field weather arrive together.
-    local strike = strikeCombatFacts(state, combatant, defender, speciesFacts, category, moveName)
+    -- upvalue budget: every recipient's staged pair, types, speeds,
+    -- duel context, level, abilities, and weight sample from its own
+    -- record, with the first recipient's scalars behind the legacy
+    -- single-target readers.
+    local strike = recipientStrikeFacts(state, combatant, targetIds, speciesFacts, category, moveName)
     local facts = strike.facts
-    local attackerStats = strike.attackerStats
-    local defenderStats = strike.defenderStats
     local attackerAbility = strike.attackerAbility
     local attackerCondition = strike.attackerCondition
-    local defenderTypes = {} ---@type table<integer, string[]>
-    defenderTypes[defenderId] = combatantTypes(defender, speciesFacts)
+    local defenderTypes = strike.defenderTypes
     local moves = combatant
       .mon --[[@as table<string, unknown>]]
       .moves
@@ -2893,7 +3555,6 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       moves = {}
     end
     local userMon = combatant.mon --[[@as table<string, unknown>]]
-    local foeMon = defender.mon --[[@as table<string, unknown>]]
     local recentMoves = state.lastMoves
     if type(recentMoves) ~= "table" then
       recentMoves = {}
@@ -2928,17 +3589,6 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         usedMoves = copyValue(recorded)
       end
     end
-    local genders = {}
-    local userGender = genderOf(userMon, speciesFacts)
-    if userGender ~= nil then
-      genders[
-        actor.combatant --[[@as integer]]
-      ] = userGender
-    end
-    local foeGender = genderOf(foeMon, speciesFacts)
-    if foeGender ~= nil then
-      genders[defenderId] = foeGender
-    end
     local inputs = {
       actionId = action.id,
       actor = { combatant = actor.combatant, activation = actor.activation },
@@ -2947,7 +3597,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       ppOwnerSlot = ownerSlot,
       calledBy = nil,
       selectedTarget = copyValue(payload.target),
-      targets = { { combatant = defenderId } },
+      targets = strike.targets,
+      targetFacts = strike.targetFacts,
       moves = moves,
       moveFacts = moveFacts,
       combat = facts,
@@ -2963,23 +3614,76 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       usable = usableKeysOf(userMon),
       party = benchKeysOf(state, combatant),
       userMoves = moveKeysOf(userMon),
-      copiedMove = recentMoves[defenderId],
+      copiedMove = strike.copiedMove,
       recentMoves = copyValue(recentMoves),
-      genders = genders,
+      genders = strike.genders,
       userAsleep = asleepOf(userMon),
-      duel = StrikeFacts.duel(state, actor.combatant --[[@as integer]], defenderId),
-      speeds = { user = attackerStats.speed, foe = defenderStats.speed },
-      foeLevel = defenderStats.level,
-      abilities = { user = userMon.ability, foe = foeMon.ability },
+      duel = strike.duel,
+      speeds = strike.speeds,
+      foeLevel = strike.foeLevel,
+      abilities = strike.abilities,
       heldItem = heldItem,
       userSpecies = userSpecies,
       userIvs = userIvs,
       itemFacts = itemFacts,
       usedMoves = usedMoves,
-      foeWeightHg = defenderStats.weightHg,
-      beatup = StrikeFacts.beatup(state, combatant, defender, speciesFacts),
+      foeWeightHg = strike.foeWeightHg,
+      beatup = strike.beatup,
     }
     local node = MoveExecution.start(inputs)
+    local settledTargets = strike.targets
+    local startedFrame = type(node) == "table" and node.locals or nil
+    if
+      type(startedFrame) == "table"
+      and (startedFrame --[[@as table<string, unknown>]]).failed == nil
+      and type(node.executingMove) == "string"
+      and node.executingMove ~= moveName
+    then
+      -- A called move drew a different execution: the execution-time
+      -- target class follows the drawn move, while selection and
+      -- power-point ownership stay on the requested slot.
+      local drawn = node.executingMove --[[@as string]]
+      local drawnFacts = moveFacts[drawn]
+      local drawnTypes = nil
+      if drawn == "CURSE" then
+        drawnTypes = combatantTypes(combatant, speciesFacts)
+      end
+      local drawnPolicy = rangePolicy(drawn, drawnFacts, drawnTypes)
+      if drawnPolicy == nil then
+        error(unknownRangeError(drawn, drawnFacts))
+      end
+      drawnPolicy = effectivePolicy(state, actor.combatant --[[@as integer]], drawnPolicy)
+      if drawnPolicy ~= policy then
+        local drawnCategory = type(drawnFacts) == "table" and (drawnFacts --[[@as table<string, unknown>]]).category
+          or nil
+        local redrawn = resolveStrikeRecipients(
+          state,
+          actor.combatant --[[@as integer]],
+          drawnPolicy,
+          payload.target --[[@as table<string, unknown>]],
+          stream
+        )
+        if #redrawn == 0 then
+          (startedFrame --[[@as table<string, unknown>]]).failed = "no-targets"
+        else
+          local rebuilt = recipientStrikeFacts(state, combatant, redrawn, speciesFacts, drawnCategory, drawn)
+          node.targets = rebuilt.targets
+          local locals = startedFrame --[[@as table<string, unknown>]]
+          locals.combat = rebuilt.facts
+          locals.targetFacts = rebuilt.targetFacts
+          locals.defenderTypes = rebuilt.defenderTypes
+          locals.speeds = rebuilt.speeds
+          locals.duel = rebuilt.duel
+          locals.foeLevel = rebuilt.foeLevel
+          locals.abilities = rebuilt.abilities
+          locals.foeWeightHg = rebuilt.foeWeightHg
+          locals.beatup = rebuilt.beatup
+          locals.copiedMove = rebuilt.copiedMove
+          locals.genders = rebuilt.genders
+          settledTargets = rebuilt.targets
+        end
+      end
+    end
     if type(node) == "table" and node.locals ~= nil then
       local started = node.locals --[[@as table<string, unknown>]]
       if started.failed == nil and type(node.requestedMove) == "string" then
@@ -2997,13 +3701,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         if type(state.lastHits) ~= "table" then
           state.lastHits = {}
         end
-        (state.lastHits --[[@as table<integer, table<string, unknown>>]])[
-          defenderId --[[@as integer]]
-        ] =
-          {
+        for _, settled in ipairs(settledTargets) do
+          local targetId = (settled --[[@as table<string, unknown>]]).combatant; --[[@as integer]]
+          (state.lastHits --[[@as table<integer, table<string, unknown>>]])[targetId] = {
             move = node.requestedMove --[[@as string]],
             user = actor.combatant --[[@as integer]],
           }
+        end
         -- Distinct-move history behind Last Resort and the trainer
         -- history reads keys on the entry token in first-use order, so
         -- withdrawing resets the count like the native lastResortMoves.
@@ -4633,8 +5337,10 @@ end
 ---@param admitted string[] admitted action kinds resolved at construction
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@param staged table<string, unknown> reservation maps staged for the reply under admission
+---@param moveFacts table<string, table<string, unknown>>? immutable move facts by move identity
+---@param speciesFacts table<string, SpeciesFormFacts>? static species facts for the curse typing read
 ---@return table<string, unknown>? input error, or nil when the choice binds
-local function checkChoiceBinding(state, choice, admitted, battleKind, staged)
+local function checkChoiceBinding(state, choice, admitted, battleKind, staged, moveFacts, speciesFacts)
   local actor = choice.actor --[[@as table<string, unknown>]]
   local payload = choice.payload --[[@as table<string, unknown>]]
   local openBatch = state.pending --[[@as table<string, unknown>]]
@@ -4653,8 +5359,11 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged)
   if commonError ~= nil then
     return commonError
   end
-  if choice.kind == "attack" or choice.kind == "confirm" then
+  if choice.kind == "confirm" then
     return nil
+  end
+  if choice.kind == "attack" then
+    return checkAttackBinding(state, choice, moveFacts, speciesFacts)
   end
   local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
   local active = combatant.active --[[@as table<string, unknown>]]
@@ -4766,8 +5475,10 @@ end
 ---@param decisionKind string decision vocabulary owning the choice
 ---@param admitted string[] admitted action kinds resolved at construction
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@param moveFacts table<string, table<string, unknown>>? immutable move facts by move identity
+---@param speciesFacts table<string, SpeciesFormFacts>? static species facts for the curse typing read
 ---@return table<string, unknown>? input error, or nil when the choice is selectable
-local function probeChoice(state, choice, decisionKind, admitted, battleKind)
+local function probeChoice(state, choice, decisionKind, admitted, battleKind, moveFacts, speciesFacts)
   local ok, valid = pcall(BattleProtocol.validateChoice, choice, decisionKind)
   if not ok then
     return valid --[[@as table<string, unknown>]]
@@ -4776,7 +5487,15 @@ local function probeChoice(state, choice, decisionKind, admitted, battleKind)
   -- nothing reserved: submission stages its reservation maps privately,
   -- so the prober supplies empty ones. Submission-time reservation
   -- ownership and enforcement are unchanged.
-  return checkChoiceBinding(state, choice, admitted, battleKind, { replacements = {}, items = {} })
+  return checkChoiceBinding(
+    state,
+    choice,
+    admitted,
+    battleKind,
+    { replacements = {}, items = {} },
+    moveFacts,
+    speciesFacts
+  )
 end
 
 ---@param state table<string, unknown> live battle state under read-only inspection
@@ -4890,18 +5609,31 @@ local function fragmentActor(actor)
 end
 
 -- Projects the validated per-position strike variants for one move slot:
--- one copied native fragment per live foe position in deterministic
--- battle order, each judged through the same probe submission reuses.
--- Returns nil while a single position (or no position) needs no picker.
+-- one copied native fragment per legal selection position in
+-- deterministic battle order, each judged through the same probe
+-- submission reuses. Returns nil while a single position (or no
+-- position) needs no picker.
 ---@param state table<string, unknown> live battle state under read-only inspection
 ---@param actor table<string, unknown> requested actor under projection
----@param positions integer[] live foe positions in deterministic battle order
+---@param positions integer[] legal selection positions in deterministic battle order
 ---@param moveSlot integer zero-based move slot under projection
 ---@param selectable boolean true while the named move holds power points
 ---@param admitted string[] admitted action kinds resolved at construction
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@param moveFacts table<string, table<string, unknown>>? immutable move facts by move identity
+---@param speciesFacts table<string, SpeciesFormFacts>? static species facts for the curse typing read
 ---@return table<integer, table<string, unknown>>? per-position variants, nil for a single position
-local function targetVariants(state, actor, positions, moveSlot, selectable, admitted, battleKind)
+local function targetVariants(
+  state,
+  actor,
+  positions,
+  moveSlot,
+  selectable,
+  admitted,
+  battleKind,
+  moveFacts,
+  speciesFacts
+)
   if #positions <= 1 then
     return nil
   end
@@ -4914,7 +5646,8 @@ local function targetVariants(state, actor, positions, moveSlot, selectable, adm
     } --[[@as table<string, unknown>]]
     local rejected = nil
     if selectable then
-      rejected = probeChoice(state, candidate, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+      rejected =
+        probeChoice(state, candidate, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
     end
     local position = BattleState.position(state, positionId --[[@as integer]])
     variants[#variants + 1] = {
@@ -4929,13 +5662,94 @@ local function targetVariants(state, actor, positions, moveSlot, selectable, adm
   return variants
 end
 
+-- Projects the canonical strike target and selection candidates for one
+-- move slot from its native scope: selected scopes name the live
+-- positions of their side (with a picker only for several), automatic
+-- scopes name their direct fragment, and range-less moves keep the
+-- historical first-foe selection. Unknown numeric ranges project the
+-- pass fragment so the shared probe disables the option explicitly.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actorId integer striking combatant under projection
+---@param moveName string move identity under projection
+---@param facts table<string, unknown>? immutable compiled move facts, when present
+---@param attackerTypes string[]? semantic attacker types, read only for curse
+---@return table<string, unknown> canonical target fragment for the choice
+---@return integer[] selection candidates in battle order, empty for automatic scopes
+local function strikeProjection(state, actorId, moveName, facts, attackerTypes)
+  local policy = rangePolicy(moveName, facts, attackerTypes)
+  if policy == "selected_foe" then
+    local foes = foePositions(state, actorId)
+    if #foes > 0 then
+      return { kind = "position", position = foes[1] }, foes
+    end
+    return { kind = "none" }, {}
+  end
+  if policy == "selected_own_side" then
+    local ownSide = actorSide(state, actorId)
+    local mates = ownSide ~= nil and livePositionsOnSide(state, ownSide) or {}
+    if #mates > 0 then
+      return { kind = "position", position = mates[1] }, mates
+    end
+    return { kind = "none" }, {}
+  end
+  if policy == "user" then
+    local userPos = userPosition(state, actorId)
+    if userPos ~= nil then
+      return { kind = "position", position = userPos }, {}
+    end
+    return { kind = "none" }, {}
+  end
+  if policy == "ally" then
+    local ownSide = actorSide(state, actorId)
+    local userPos = userPosition(state, actorId)
+    if ownSide ~= nil then
+      for _, positionId in ipairs(livePositionsOnSide(state, ownSide)) do
+        if positionId ~= userPos then
+          return { kind = "position", position = positionId }, {}
+        end
+      end
+    end
+    if userPos ~= nil then
+      return { kind = "position", position = userPos }, {}
+    end
+    return { kind = "none" }, {}
+  end
+  if policy == "own_side" then
+    local ownSide = actorSide(state, actorId)
+    if ownSide ~= nil then
+      return { kind = "side", side = ownSide }, {}
+    end
+    return { kind = "none" }, {}
+  end
+  if policy == "foe_side" then
+    local ownSide = actorSide(state, actorId)
+    local foeSide = ownSide ~= nil and opposingSide(state, ownSide) or nil
+    if foeSide ~= nil then
+      return { kind = "side", side = foeSide }, {}
+    end
+    return { kind = "none" }, {}
+  end
+  if policy == "entire_field" then
+    return { kind = "field" }, {}
+  end
+  if policy == "legacy" then
+    local foes = foePositions(state, actorId)
+    if #foes > 0 then
+      return { kind = "position", position = foes[1] }, foes
+    end
+    return { kind = "none" }, {}
+  end
+  return { kind = "none" }, {}
+end
+
 ---@param state table<string, unknown> live battle state under read-only inspection
 ---@param actor table<string, unknown> requested actor under projection
 ---@param admitted string[] admitted action kinds resolved at construction
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts by move identity
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts for the curse typing read
 ---@return table<string, unknown> ordinary action options for the actor
-local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
+local function actionActorOptions(state, actor, admitted, battleKind, moveFacts, speciesFacts)
   local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
   local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
   local entry = {
@@ -4954,11 +5768,6 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
   if slots > 4 then
     slots = 4
   end
-  local targets = foePositions(state, actor.combatant --[[@as integer]])
-  local target = { kind = "none" } --[[@as table<string, unknown>]]
-  if #targets > 0 then
-    target = { kind = "position", position = targets[1] }
-  end
   -- Usability mirrors the execution fallback exactly: the named move
   -- runs only with power points left, and anything else executes
   -- struggle. Random execution outcomes (paralysis, accuracy, escape
@@ -4972,14 +5781,25 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
     if selectable then
       usable = usable + 1
     end
+    local policyMove = type(key) == "string" and key --[[@as string]] or named
+    local attackerTypes = nil
+    if policyMove == "CURSE" then
+      local ok, types = pcall(combatantTypes, combatant, speciesFacts)
+      if ok and type(types) == "table" then
+        attackerTypes = types --[[@as string[] ]]
+      end
+    end
+    local projected, candidates =
+      strikeProjection(state, actor.combatant --[[@as integer]], policyMove, moveFacts[policyMove], attackerTypes)
     local choice = {
       actor = fragmentActor(actor),
       kind = "attack",
-      payload = { moveSlot = slot, target = copyValue(target) },
+      payload = { moveSlot = slot, target = projected },
     } --[[@as table<string, unknown>]]
     local rejected = nil
     if selectable then
-      rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+      rejected =
+        probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
     end
     local moveOption = {
       id = "move:" .. slot,
@@ -4989,7 +5809,8 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
       reason = (selectable and rejected == nil) and nil or (selectable and refusalReason(rejected) or "no_pp"),
       choice = choice,
     } --[[@as table<string, unknown>]]
-    local variants = targetVariants(state, actor, targets, slot, selectable, admitted, battleKind)
+    local variants =
+      targetVariants(state, actor, candidates, slot, selectable, admitted, battleKind, moveFacts, speciesFacts)
     if variants ~= nil then
       moveOption.targets = variants
     end
@@ -4999,12 +5820,14 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
     -- Genuine all-no-power struggle is an explicit kernel-owned
     -- option: the interface never fabricates it from a spent slot.
     local facts = moveFacts["STRUGGLE"] --[[@as table<string, unknown>?]]
+    local projected, candidates = strikeProjection(state, actor.combatant --[[@as integer]], "STRUGGLE", facts, nil)
     local struggle = {
       actor = fragmentActor(actor),
       kind = "attack",
-      payload = { moveSlot = 0, target = copyValue(target) },
+      payload = { moveSlot = 0, target = projected },
     } --[[@as table<string, unknown>]]
-    local rejected = probeChoice(state, struggle, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+    local rejected =
+      probeChoice(state, struggle, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
     local struggleOption = {
       id = "move:struggle",
       role = "move",
@@ -5016,7 +5839,8 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
       reason = rejected == nil and nil or refusalReason(rejected),
       choice = struggle,
     } --[[@as table<string, unknown>]]
-    local struggleVariants = targetVariants(state, actor, targets, 0, true, admitted, battleKind)
+    local struggleVariants =
+      targetVariants(state, actor, candidates, 0, true, admitted, battleKind, moveFacts, speciesFacts)
     if struggleVariants ~= nil then
       struggleOption.targets = struggleVariants
     end
@@ -5030,7 +5854,8 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
       kind = "switch",
       payload = { replacement = reserve },
     } --[[@as table<string, unknown>]]
-    local rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+    local rejected =
+      probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
     choices[#choices + 1] = {
       id = "switch:" .. reserve,
       role = "switch",
@@ -5074,7 +5899,8 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
             kind = "item",
             payload = { item = key, target = { kind = "combatant", combatant = holder } },
           } --[[@as table<string, unknown>]]
-          local rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+          local rejected =
+            probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
           choices[#choices + 1] = {
             id = "item:" .. key .. ":" .. holder,
             role = "item",
@@ -5093,7 +5919,8 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts)
       kind = "run",
       payload = {},
     } --[[@as table<string, unknown>]]
-    local rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+    local rejected =
+      probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
     choices[#choices + 1] = {
       id = "run",
       role = "run",
@@ -5147,7 +5974,7 @@ local function replacementActorOptions(state, actor, admitted, battleKind)
       kind = "switch",
       payload = { replacement = reserve },
     } --[[@as table<string, unknown>]]
-    local rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind)
+    local rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, nil, nil)
     choices[#choices + 1] = {
       id = "switch:" .. reserve,
       role = "switch",
@@ -5189,7 +6016,7 @@ local function learningActorOptions(state, request, actor, admitted, battleKind,
       kind = "confirm",
       payload = { decision = "replace", slot = slot },
     } --[[@as table<string, unknown>]]
-    local rejected = probeChoice(state, choice, HgssSessionExecutor.LEARN_DECISION_KIND, admitted, battleKind)
+    local rejected = probeChoice(state, choice, HgssSessionExecutor.LEARN_DECISION_KIND, admitted, battleKind, nil, nil)
     choices[#choices + 1] = {
       id = "learn:replace:" .. slot,
       role = "learn",
@@ -5208,7 +6035,7 @@ local function learningActorOptions(state, request, actor, admitted, battleKind,
       kind = "confirm",
       payload = { decision = "decline" },
     } --[[@as table<string, unknown>]]
-    local rejected = probeChoice(state, choice, HgssSessionExecutor.LEARN_DECISION_KIND, admitted, battleKind)
+    local rejected = probeChoice(state, choice, HgssSessionExecutor.LEARN_DECISION_KIND, admitted, battleKind, nil, nil)
     choices[#choices + 1] = {
       id = "learn:decline",
       role = "learn",
@@ -5273,7 +6100,8 @@ function HgssSessionExecutor:decisionOptions(requestId)
     for _, actor in
       ipairs(wanted.actors --[[@as table<integer, table<string, unknown>>]])
     do
-      actors[#actors + 1] = actionActorOptions(state, actor, self._admitted, self._battleKind, self._moveFacts)
+      actors[#actors + 1] =
+        actionActorOptions(state, actor, self._admitted, self._battleKind, self._moveFacts, self._speciesFacts)
     end
   end
   return options
@@ -5349,8 +6177,10 @@ function HgssSessionExecutor:submit(reply)
   local state = self:_live()
   local admitted = self._admitted
   local battleKind = self._battleKind
+  local moveFacts = self._moveFacts
+  local speciesFacts = self._speciesFacts
   local stored, err, requestId = DecisionBatch.submit(state, reply, function(choice, staged)
-    return checkChoiceBinding(state, choice, admitted, battleKind, staged)
+    return checkChoiceBinding(state, choice, admitted, battleKind, staged, moveFacts, speciesFacts)
   end)
   if stored then
     -- Committed replies retire their pending trainer servings: later
