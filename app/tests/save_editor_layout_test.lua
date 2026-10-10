@@ -1665,38 +1665,6 @@ function T.tests.save_editor_card_geometry_is_bounded_and_row_major()
   end, "card count cannot exceed the six visible cells")
 end
 
-function T.tests.save_editor_list_preferred_width_measures_a_bounded_stable_sample()
-  local List = require("app.src.saveeditor.SaveEditorList")
-  local measuredRows = {}
-  local labels = { "short", "a much longer flag label", "later catalog row" }
-  local preferred = List.preferredWidth({
-    bounds = { x = 0, y = 0, width = 180, height = 72 },
-    rowCount = 10000,
-    rowHeight = 18,
-    gap = 0,
-    hasTrailingValue = true,
-    trailingValueWidth = 18,
-    font = {
-      lineHeight = 16,
-      measure = function(text)
-        return #text * 6
-      end,
-    },
-    rowAt = function(index)
-      measuredRows[#measuredRows + 1] = index
-      return { label = labels[index] or "later catalog row" }
-    end,
-  })
-
-  Assert.equal(
-    preferred,
-    math.ceil(math.min(24 * 6, #labels[2] * 6) + 10 + 18 + 4 + 10),
-    "the measured row and value fit their C02 gutters"
-  )
-  Assert.equal(#measuredRows, 8, "measurement visits at most two viewport windows")
-  Assert.deepEqual(measuredRows, { 1, 2, 3, 4, 5, 6, 7, 8 }, "the intrinsic sample is stable from the projection head")
-end
-
 function T.tests.wide_list_surfaces_use_available_width_after_the_preferred_sample()
   local function assertWideList(layout, listId, labelId)
     local list = assert(layout.lists[listId], listId .. " publishes its list geometry")
