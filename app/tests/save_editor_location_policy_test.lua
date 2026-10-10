@@ -2,7 +2,9 @@
 
 local Assert = require("tests.support.Assert")
 local FieldObjectMovement = require("libs.assets.src.field.FieldObjectMovement")
+local FieldTraversal = require("libs.hgss.src.world.FieldTraversal")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
+local TransitionTrigger = require("libs.hgss.src.transition.TransitionTrigger")
 
 local T = { tests = {} }
 
@@ -86,7 +88,6 @@ function T.tests.classification_fails_closed_and_does_not_change_source_facts()
     { facts = facts({ coverage = false }), reason = "outside_map" },
     { facts = facts({ logicalMapMatch = false }), reason = "wrong_logical_map" },
     { facts = facts({ collision = { blocked = true, behavior = 0 } }), reason = "blocked" },
-    { facts = facts({ collision = { blocked = false, behavior = 7 } }), reason = "special_terrain" },
     { facts = facts({ collision = { blocked = false, behavior = 255 } }), reason = "special_terrain" },
     { facts = facts({ surface = { rejection = "ambiguous_surface" } }), reason = "ambiguous_surface" },
     { facts = facts({ trigger = "warp" }), reason = "warp" },
@@ -102,14 +103,34 @@ function T.tests.classification_fails_closed_and_does_not_change_source_facts()
   Assert.equal(LocationPolicy.classify(noSurface).reason, "no_surface")
 end
 
-function T.tests.only_normal_ground_and_tall_grass_are_allowed()
+function T.tests.ordinary_walking_behaviors_are_admitted()
   local LocationPolicy = policy()
 
-  for _, behavior in ipairs({ 0, MetatileBehavior.BEHAVIOR.TALL_GRASS }) do
+  -- FieldTraversal is the independent runtime analogue for ordinary steps;
+  -- the two additional bytes come from HGSS TILE_BEHAVIOR_* source values.
+  for _, behavior in ipairs({
+    MetatileBehavior.BEHAVIOR.VERY_TALL_GRASS,
+    8, -- TILE_BEHAVIOR_CAVE_FLOOR in pret/pokeheartgold/include/constants/metatile_behavior.h
+    7, -- an unclassified behavior is not a terrain refusal by itself
+    0,
+    MetatileBehavior.BEHAVIOR.TALL_GRASS,
+  }) do
+    Assert.equal(
+      FieldTraversal.classify({ blocked = false, behavior = behavior }, "north").kind,
+      "step",
+      "the runtime classifies this on-foot behavior as an ordinary step"
+    )
     local result = LocationPolicy.classify(facts({
       collision = { blocked = false, behavior = behavior },
     }))
-    Assert.isTrue(result.selectable, "the ordinary-placement allowlist includes supported ground behavior")
+    Assert.isTrue(
+      result.selectable,
+      "ordinary walking behavior " .. behavior .. " with a real surface is selectable: " .. tostring(result.reason)
+    )
+    Assert.isNil(
+      LocationPolicy.terrainRejection({ blocked = false, behavior = behavior }),
+      "ordinary on-foot terrain passes the shared permission gate"
+    )
   end
 
   local result = LocationPolicy.classify(facts({
@@ -117,6 +138,89 @@ function T.tests.only_normal_ground_and_tall_grass_are_allowed()
   }))
   Assert.isFalse(result.selectable, "blocked collision overrides an otherwise allowed behavior")
   Assert.equal(result.reason, "blocked")
+end
+
+function T.tests.unsafe_known_nonstanding_terrain_and_existing_failure_priority_are_preserved()
+  local LocationPolicy = policy()
+  local behavior = MetatileBehavior.BEHAVIOR
+  local unsafe = {
+    behavior.RIVER_WATER,
+    behavior.SEA_WATER,
+    behavior.WATERFALL,
+    behavior.WHIRLPOOL,
+    behavior.ROCK_CLIMB_NORTH_SOUTH,
+    behavior.JUMP_NORTH,
+    behavior.WARP_PANEL,
+    behavior.DOOR,
+    32, -- TILE_BEHAVIOR_ICE in pret/pokeheartgold/include/constants/metatile_behavior.h
+    66, -- TILE_BEHAVIOR_SLIDE_NORTH in the same source enum
+    77, -- TILE_BEHAVIOR_STOP_SLIDING in the same source enum
+    255, -- TILE_BEHAVIOR_NONE sentinel in the same source enum
+  }
+  for _, code in ipairs(unsafe) do
+    local result = LocationPolicy.classify(facts({
+      collision = { blocked = false, behavior = code },
+    }))
+    Assert.isFalse(result.selectable, "known nonstanding behavior is never a save destination")
+    Assert.equal(result.reason, "special_terrain", "known nonstanding behavior keeps its refusal reason")
+  end
+
+  for _, code in ipairs({ behavior.RIVER_WATER, behavior.WATERFALL, behavior.ROCK_CLIMB_NORTH_SOUTH }) do
+    Assert.equal(
+      FieldTraversal.classify({ blocked = false, behavior = code }, "north").kind,
+      "field_action",
+      "the reusable movement classifier identifies action-only terrain"
+    )
+  end
+  Assert.equal(
+    FieldTraversal.classify({ blocked = false, behavior = behavior.JUMP_NORTH }, "north").kind,
+    "ledge_jump",
+    "the reusable movement classifier identifies a ledge jump"
+  )
+  Assert.notNil(TransitionTrigger.classify(behavior.WARP_PANEL), "the reusable transition classifier identifies panels")
+  Assert.notNil(TransitionTrigger.classify(behavior.DOOR), "the reusable transition classifier identifies doors")
+
+  Assert.equal(
+    LocationPolicy.classify(facts({
+      collision = { blocked = true, behavior = behavior.WATERFALL },
+    })).reason,
+    "blocked",
+    "hard collision takes precedence over an action-only behavior"
+  )
+  for _, trigger in ipairs({ "warp", "coordinate_trigger" }) do
+    Assert.equal(
+      LocationPolicy.classify(facts({
+        trigger = trigger,
+        collision = { blocked = true, behavior = behavior.WATERFALL },
+        occupied = true,
+      })).reason,
+      trigger,
+      "source triggers keep priority over collision and occupancy"
+    )
+  end
+  Assert.equal(
+    LocationPolicy.classify(facts({
+      collision = { blocked = false, behavior = 0 },
+      occupied = true,
+    })).reason,
+    "possible_actor",
+    "known occupancy remains independent of admitted terrain"
+  )
+  local noSurface = facts({ collision = { blocked = false, behavior = 0 } })
+  noSurface.surface = nil
+  Assert.equal(
+    LocationPolicy.classify(noSurface).reason,
+    "no_surface",
+    "terrain admission never fabricates a missing physical surface"
+  )
+  Assert.equal(
+    LocationPolicy.classify(facts({
+      collision = { blocked = false, behavior = 0 },
+      surface = { rejection = "ambiguous_surface" },
+    })).reason,
+    "ambiguous_surface",
+    "terrain admission preserves ambiguous surface refusal"
+  )
 end
 
 function T.tests.exact_occupancy_decision_ignores_movement_speculation()
@@ -185,7 +289,7 @@ function T.tests.strict_placement_gates_keep_their_reasons_with_exact_occupancy(
     { facts = ground({ trigger = "warp" }), reason = "warp" },
     { facts = ground({ trigger = "coordinate_trigger" }), reason = "coordinate_trigger" },
     { facts = ground({ collision = { blocked = true, behavior = 0 } }), reason = "blocked" },
-    { facts = ground({ collision = { blocked = false, behavior = 7 } }), reason = "special_terrain" },
+    { facts = ground({ collision = { blocked = false, behavior = MetatileBehavior.BEHAVIOR.WATERFALL } }), reason = "special_terrain" },
     { facts = ground({ surface = { rejection = "ambiguous_surface" } }), reason = "ambiguous_surface" },
   }) do
     local result = LocationPolicy.classify(case.facts)

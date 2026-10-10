@@ -12,7 +12,6 @@ local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
-local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 local SaveEditorLocationPolicy = require("app.src.saveeditor.SaveEditorLocationPolicy")
 
@@ -1330,14 +1329,8 @@ function SaveEditorLocationService:_tileFacts(fieldX, fieldZ)
   facts.occupied = self:_lookupOccupied(fieldX, fieldZ)
   -- Cheap gates first: the terrain surface is sampled only for tiles that
   -- survived every earlier refusal, matching the placement policy order.
-  -- The behavior allowlist here must stay identical to the policy's own.
   local collision = assert(facts.collision, "collision facts precede surface sampling")
-  if
-    facts.trigger == false
-    and not collision.blocked
-    and (collision.behavior == 0 or collision.behavior == MetatileBehavior.BEHAVIOR.TALL_GRASS)
-    and not facts.occupied
-  then
+  if facts.trigger == false and SaveEditorLocationPolicy.terrainRejection(collision) == nil and not facts.occupied then
     if self.resolver == nil or self.resolverTerrain ~= terrain then
       self.resolver = SurfaceResolver.new(assert(terrain, "terrain is required for surface sampling"))
       self.resolverTerrain = terrain

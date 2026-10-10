@@ -38,11 +38,13 @@ local T = {
       "map-data:25",
       "map-data:93",
       "map-data:180",
+      "map-data:117",
       "map:7",
       "map:33",
       "map:63",
       "map:49",
       "map:180",
+      "map:117",
       "audio-bank:730",
       "field-cell:0-534",
       "field-cell:0-538",
@@ -581,7 +583,7 @@ function T.tests.in_place_save_clears_the_cached_dirty_projection()
   end
 end
 
-function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destination_readiness()
+function T.tests.relocated_save_publishes_synchronously_and_preserves_store_conflicts()
   local fixture = Fixture.new()
   local baseHost = readyHost()
   local graph, service, state
@@ -638,7 +640,6 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       activateTarget(state, "save")
       state:update(0)
       Assert.equal(recordWrites, 1, "one Save intent publishes exactly one save")
-      Assert.isNil(state:view().locationSave, "the relocated save publishes without a pending check")
       Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), expected, "the authorized tuple and edits publish")
       Assert.equal(
         state:view().locationNavigation.mapId,
@@ -656,7 +657,6 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       activateTarget(state, "save")
       state:update(0)
       local failureView = state:view()
-      Assert.isNil(failureView.locationSave, "the conflicting save owns no pending check")
       Assert.equal(
         failureView.errorMessage,
         "This save changed after the editor opened. Reopen it before saving.",
@@ -1033,7 +1033,7 @@ function T.tests.party_stats_edit_uses_number_modal_and_keeps_draft_staged()
   end
 end
 
-function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changing_the_save()
+function T.tests.real_map_browsing_suggests_a_valid_initial_cursor_without_changing_the_save()
   local fixture = Fixture.new()
   local State = require("app.src.saveeditor.SaveEditorState")
   local originalGlobal = SaveFs.global
@@ -1119,11 +1119,11 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
         )
 
         local suggestion = view.initialCursor
-        Assert.notNil(suggestion, "real map browsing publishes its surveyed initial cursor")
+        Assert.notNil(suggestion, "real map browsing publishes its suggested initial cursor")
         Assert.equal(
           suggestion.state,
           "ready",
-          "the survey finds a selectable tile in " .. tostring(view.symbol) .. ": " .. tostring(suggestion.state)
+          "the suggestion is selectable in " .. tostring(view.symbol) .. ": " .. tostring(suggestion.state)
         )
         Assert.equal(suggestion.mapId, mapId, "the suggestion remains bound to the selected map")
         Assert.equal(
@@ -1133,7 +1133,7 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
         )
         local resolved, resolution =
           state.locationService:resolve(mapId, assert(suggestion.fieldX), assert(suggestion.fieldZ), view.generation)
-        Assert.notNil(resolved, "the surveyed coordinate passes the production placement classifier")
+        Assert.notNil(resolved, "the suggested coordinate passes the production placement classifier")
         Assert.equal(resolution.state, "ready", "the suggestion is fully prepared for explicit selection")
         if mapIndex == 1 then
           Assert.deepEqual(
@@ -1220,7 +1220,7 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
         Assert.deepEqual(
           state.session:snapshot().location,
           originalLocation,
-          "browsing and surveying never stage or mutate the saved destination"
+          "browsing and cursor suggestion never stage or mutate the saved destination"
         )
         finalSuggestion = suggestion
       end
@@ -1238,9 +1238,9 @@ function T.tests.real_map_browsing_surveys_a_valid_initial_cursor_without_changi
       Assert.equal(activationView.status.state, "ready", "the activation point is prepared before selection")
       state:_performDeferred({ kind = "select_tile", fieldX = accepted.fieldX, fieldZ = accepted.fieldZ })
       local stagedLocation = assert(state.session:snapshot().location)
-      Assert.equal(stagedLocation.mapId, accepted.mapId, "explicit activation accepts the surveyed map")
-      Assert.equal(stagedLocation.fieldX, accepted.fieldX, "explicit activation accepts the surveyed x coordinate")
-      Assert.equal(stagedLocation.fieldZ, accepted.fieldZ, "explicit activation accepts the surveyed z coordinate")
+      Assert.equal(stagedLocation.mapId, accepted.mapId, "explicit activation accepts the suggested map")
+      Assert.equal(stagedLocation.fieldX, accepted.fieldX, "explicit activation accepts the suggested x coordinate")
+      Assert.equal(stagedLocation.fieldZ, accepted.fieldZ, "explicit activation accepts the suggested z coordinate")
       Assert.isTrue(state.session:snapshot().locationChanged, "acceptance stages the destination only after activation")
     end)
   end, debug.traceback)
@@ -1595,11 +1595,11 @@ function T.tests.pallet_and_azalea_map_placement_stays_conservative_with_real_ro
     end
 
     local palletView = browse(palletMapId, 1033, 364, 3, 3)
-    local suggestion = assert(palletView.initialCursor, "the real map survey publishes its selected safe point")
-    Assert.equal(suggestion.state, "ready", "Pallet Town's real map survey finds an actually selectable tile")
+    local suggestion = assert(palletView.initialCursor, "the real map suggestion publishes its selected safe point")
+    Assert.equal(suggestion.state, "ready", "Pallet Town's map suggestion finds an actually selectable tile")
     local palletPlacement, palletResult =
       service:resolve(palletMapId, assert(suggestion.fieldX), assert(suggestion.fieldZ), palletView.generation)
-    Assert.notNil(palletPlacement, "the surveyed Pallet destination passes production classification")
+    Assert.notNil(palletPlacement, "the suggested Pallet destination passes production classification")
     Assert.equal(palletResult.state, "ready", "the surveyed Pallet destination is ready to stage")
 
     local beforeInvalidAttempt = graph.session:captureCandidate()
@@ -1738,33 +1738,107 @@ function T.tests.dropped_location_preset_resolves_stages_and_saves_through_the_e
       Assert.equal(staged.fieldX, 4)
       Assert.equal(staged.fieldZ, 5)
       Assert.equal(staged.facing, "north")
-      Assert.equal(staged.world.variables[0x40FE] or 0, 0)
+      Assert.equal(staged.world.variables[assert(FieldScriptSymbols.variablesByName.VAR_UNK_40FE)] or 0, 0)
       Assert.isTrue(state:view().dirty, "the import remains an unsaved editor change")
       Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), fixture.initial, "the drop does not write the save")
+
+      local celebiSource = [=[return {
+        schema = "portemon-save-preset-v1",
+        name = "Ilex Forest Celebi",
+        description = "Stage the shrine approach through production location verification.",
+        flags = {
+          FLAG_BEAT_RADIO_TOWER_ROCKETS = true,
+          FLAG_HIDE_ILEX_FOREST_FRIEND = true,
+        },
+        variables = { VAR_UNK_40FE = 0 },
+        party = { lead = { species = "CELEBI", fatefulEncounter = true, eggLocation = 0 } },
+        location = { map = "MAP_ILEX_FOREST", x = 16, z = 56, facing = "north" },
+      }]=]
+      local celebiFile = droppedFile(celebiSource, "celebi.lua")
+      App.filedropped(celebiFile)
+      for _ = 1, 5000 do
+        if #dialogs > 1 then
+          break
+        end
+        state:update(0)
+      end
+      Assert.equal(celebiFile.opened, 1, "the Celebi preset opens once")
+      Assert.equal(celebiFile.closed, 1, "the Celebi preset closes once")
+      Assert.equal(#dialogs, 2, "the verified Celebi preset has one terminal result")
+      Assert.equal(
+        dialogs[2].title,
+        "Preset imported",
+        "the verified shrine approach is accepted: " .. dialogs[2].title .. " / " .. dialogs[2].message
+      )
+      Assert.equal(dialogs[2].kind, "info", "the verified preset uses an informational dialog")
+      Assert.isNil(state.pendingPreset, "the completed preset verification releases its service")
+      local celebiStaged = state.session:captureCandidate()
+      Assert.equal(celebiStaged.mapId, assert(state.dependencies.world.bySymbol.MAP_ILEX_FOREST))
+      Assert.equal(celebiStaged.fieldX, 16)
+      Assert.equal(celebiStaged.fieldZ, 56)
+      Assert.equal(celebiStaged.facing, "north")
+      Assert.isTrue(celebiStaged.surfaceId >= 0, "the staged destination retains its resolved surface")
+      Assert.isTrue(type(celebiStaged.worldY) == "number", "the staged destination retains its resolved height")
+      Assert.isTrue(
+        type(celebiStaged.terrainDependencyHash) == "string" and celebiStaged.terrainDependencyHash ~= "",
+        "the staged destination retains its verified terrain dependency"
+      )
+      Assert.equal(
+        celebiStaged.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_BEAT_RADIO_TOWER_ROCKETS)],
+        true
+      )
+      Assert.equal(
+        celebiStaged.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_HIDE_ILEX_FOREST_FRIEND)],
+        true
+      )
+      Assert.equal(
+        celebiStaged.world.variables[assert(FieldScriptSymbols.variablesByName.VAR_UNK_40FE)] or 0,
+        0
+      )
+      Assert.equal(celebiStaged.mons.party.mons[1].species, "CELEBI")
+      Assert.isTrue(celebiStaged.mons.party.mons[1].fatefulEncounter)
+      Assert.equal(celebiStaged.mons.party.mons[1].egg.location, 0)
+      Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), fixture.initial, "the verified drop still waits for Save")
 
       local beforeMalformed = state.session:captureCandidate()
       local malformedFile = droppedFile("return { schema = 'unsupported' }", "malformed.lua")
       App.filedropped(malformedFile)
       Assert.equal(malformedFile.opened, 1, "the rejected drop opens once")
       Assert.equal(malformedFile.closed, 1, "the rejected drop closes once")
-      Assert.equal(#dialogs, 2, "the invalid attempt has one terminal dialog")
-      Assert.equal(dialogs[2].title, "Preset rejected", "the malformed document is rejected explicitly")
+      Assert.equal(#dialogs, 3, "the invalid attempt has one terminal dialog")
+      Assert.equal(dialogs[3].title, "Preset rejected", "the malformed document is rejected explicitly")
       Assert.deepEqual(state.session:captureCandidate(), beforeMalformed, "rejection preserves prior staged changes")
       Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), fixture.initial, "rejection leaves disk untouched")
 
       activateTarget(state, "save")
-      for _ = 1, 5000 do
-        if not state:view().dirty and state:view().locationSave == nil then
-          break
-        end
-        state:update(0)
-      end
+      state:update(0)
       local published = assert(fixture.store:load(fixture.saveId))
-      Assert.equal(published.mapId, staged.mapId, "manual Save publishes the verified map")
-      Assert.equal(published.fieldX, 4, "manual Save publishes the verified field X")
-      Assert.equal(published.fieldZ, 5, "manual Save publishes the verified field Z")
+      Assert.equal(published.mapId, celebiStaged.mapId, "manual Save publishes the verified map")
+      Assert.equal(published.fieldX, 16, "manual Save publishes the verified field X")
+      Assert.equal(published.fieldZ, 56, "manual Save publishes the verified field Z")
       Assert.equal(published.facing, "north", "manual Save publishes staged facing")
-      Assert.equal(published.world.variables[0x40FE] or 0, 0, "manual Save publishes logical variable zero")
+      Assert.equal(published.surfaceId, celebiStaged.surfaceId, "manual Save publishes the verified surface")
+      Assert.equal(published.worldY, celebiStaged.worldY, "manual Save publishes the verified surface height")
+      Assert.equal(
+        published.terrainDependencyHash,
+        celebiStaged.terrainDependencyHash,
+        "manual Save publishes the verified terrain dependency"
+      )
+      Assert.equal(
+        published.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_BEAT_RADIO_TOWER_ROCKETS)],
+        true
+      )
+      Assert.equal(
+        published.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_HIDE_ILEX_FOREST_FRIEND)],
+        true
+      )
+      Assert.equal(
+        published.world.variables[assert(FieldScriptSymbols.variablesByName.VAR_UNK_40FE)] or 0,
+        0
+      )
+      Assert.equal(published.mons.party.mons[1].species, "CELEBI")
+      Assert.isTrue(published.mons.party.mons[1].fatefulEncounter)
+      Assert.equal(published.mons.party.mons[1].egg.location, 0)
       Assert.equal(state:view().dirty, false, "ordinary Save clears staged dirty state")
     end)
   end, debug.traceback)
@@ -1819,7 +1893,6 @@ function T.tests.relocated_destination_saves_synchronously_and_resumes_without_r
       local expected = state.session:captureCandidate()
       activateTarget(state, "save")
       state:update(0)
-      Assert.isNil(state:view().locationSave, "the relocated save publishes without a pending destination check")
       Assert.isFalse(state:view().dirty, "the published relocated save clears the dirty projection")
       Assert.deepEqual(results, {}, "the in-place save keeps the editor open")
       Assert.deepEqual(

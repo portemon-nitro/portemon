@@ -6,16 +6,46 @@
 -- this policy never interprets movement profiles or wandering ranges.
 
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
+local TransitionTrigger = require("libs.hgss.src.transition.TransitionTrigger")
 
 local SaveEditorLocationPolicy = {}
 
-local ALLOWED_BEHAVIORS = {
-  [0] = true,
-  [MetatileBehavior.BEHAVIOR.TALL_GRASS] = true,
+-- Ice and sliding behavior values come from
+-- pret/pokeheartgold/include/constants/metatile_behavior.h.
+local FORCED_MOVEMENT_BEHAVIORS = {
+  [32] = true, -- TILE_BEHAVIOR_ICE
+  [64] = true, -- TILE_BEHAVIOR_SLIDE_EAST
+  [65] = true, -- TILE_BEHAVIOR_SLIDE_WEST
+  [66] = true, -- TILE_BEHAVIOR_SLIDE_NORTH
+  [67] = true, -- TILE_BEHAVIOR_SLIDE_SOUTH
+  [77] = true, -- TILE_BEHAVIOR_STOP_SLIDING
+  [255] = true, -- TILE_BEHAVIOR_NONE
 }
 
 local function assertInteger(name, value)
   assert(type(value) == "number" and value % 1 == 0, name .. " must be an integer")
+end
+
+---@param collision {blocked: boolean, behavior: integer}
+---@return "blocked"|"special_terrain"|nil
+function SaveEditorLocationPolicy.terrainRejection(collision)
+  assert(type(collision) == "table", "collision facts are required")
+  assert(type(collision.blocked) == "boolean", "collision blocked state is required")
+  assertInteger("collision behavior", collision.behavior)
+  if collision.blocked then
+    return "blocked"
+  end
+
+  local behavior = collision.behavior
+  if
+    MetatileBehavior.fieldAction(behavior)
+    or MetatileBehavior.ledgeDirection(behavior)
+    or TransitionTrigger.classify(behavior)
+    or FORCED_MOVEMENT_BEHAVIORS[behavior]
+  then
+    return "special_terrain"
+  end
+  return nil
 end
 
 ---@param facts table<string, unknown>
@@ -39,14 +69,9 @@ function SaveEditorLocationPolicy.classify(facts)
   end
 
   local collision = facts.collision
-  assert(type(collision) == "table", "collision facts are required")
-  assert(type(collision.blocked) == "boolean", "collision blocked state is required")
-  assertInteger("collision behavior", collision.behavior)
-  if collision.blocked then
-    return { selectable = false, reason = "blocked" }
-  end
-  if not ALLOWED_BEHAVIORS[collision.behavior] then
-    return { selectable = false, reason = "special_terrain" }
+  local terrainRejection = SaveEditorLocationPolicy.terrainRejection(collision)
+  if terrainRejection then
+    return { selectable = false, reason = terrainRejection }
   end
 
   assert(type(facts.occupied) == "boolean", "exact actor occupancy facts are required")

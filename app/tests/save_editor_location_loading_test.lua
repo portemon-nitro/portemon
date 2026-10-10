@@ -59,13 +59,13 @@ local function flatTerrain()
   }
 end
 
-local function indoorRuntime(blocked)
+local function indoorRuntime(blocked, behavior)
   local collision = {}
   function collision:containsLocal()
     return true
   end
   function collision:getLocal()
-    return { blocked = blocked == true, behavior = 0 }
+    return { blocked = blocked == true, behavior = behavior or 0 }
   end
   return {
     scene = { type = "indoor" },
@@ -107,7 +107,7 @@ local function fakeCoverage(loader, mapId, anchorX, anchorZ)
     return true
   end
   function regionCollision:getLocal()
-    return { blocked = false, behavior = 0 }
+    return { blocked = false, behavior = loader.behavior or 0 }
   end
   coverage.region = { collision = regionCollision, terrain = flatTerrain() }
   function coverage:containsGlobal()
@@ -240,7 +240,8 @@ local function fakeLoader(script)
     coverageTasks = {},
     blockingCoverages = {},
     released = false,
-    runtime = indoorRuntime(script.allBlocked),
+    runtime = indoorRuntime(script.allBlocked, script.behavior),
+    behavior = script.behavior or 0,
   }
   if script.outdoor then
     local outdoor = indoorRuntime()
@@ -250,9 +251,6 @@ local function fakeLoader(script)
   function loader:requestLocation(mapId, fieldX, fieldZ, urgency)
     self.requestCount = self.requestCount + 1
     self.locationRequestCount = self.locationRequestCount + 1
-    if script.surveyClosureError ~= nil and fieldX == 0 and fieldZ == 0 then
-      return false, script.surveyClosureError
-    end
     if self.requestError ~= nil then
       return false, self.requestError
     end
@@ -1446,7 +1444,7 @@ function T.tests.replaced_map_and_manual_pan_cannot_receive_a_late_initial_curso
     service:setViewport(16, 16, 1, 1)
     service:update()
     firstResult = service:snapshot().initialCursor
-    Assert.notNil(firstResult, "the active browse generation publishes or tracks its survey")
+    Assert.notNil(firstResult, "the active browse generation publishes or tracks its initial cursor")
 
     service:openMap(22, { purpose = "browse" })
     service:setViewport(1040, 2064, 1, 1)
@@ -1586,6 +1584,72 @@ function T.tests.exact_verification_prepares_only_its_requested_point()
   end
 end
 
+function T.tests.browse_and_verification_share_terrain_admission_before_surface_sampling()
+  local function check(purpose, behavior, blocked, expectedReason)
+    local service = loadingService({ taskImmediate = true, behavior = behavior, allBlocked = blocked })
+    local ok, err = xpcall(function()
+      service:openMap(11, { purpose = purpose })
+      service:setViewport(16, 16, 1, 1)
+
+      local view, tile
+      for _ = 1, 200 do
+        service:update()
+        view = service:snapshot()
+        tile = service:tileStatus(16, 16)
+        if view.status.state == "ready" and (purpose == "verify" or tile.state ~= "pending") then
+          break
+        end
+      end
+      Assert.equal(view.status.state, "ready", "the selected indoor map reaches prepared status")
+
+      if purpose == "browse" then
+        Assert.equal(tile.state, expectedReason and "unavailable" or "selectable")
+        if expectedReason then
+          Assert.equal(tile.reason, expectedReason, "the browse grid retains the terrain refusal")
+        end
+      end
+
+      local placement, result = service:resolve(11, 16, 16, view.generation)
+      if expectedReason then
+        Assert.isNil(placement, "a nonstanding or blocked permission cell cannot resolve")
+        Assert.equal(result.state, "unavailable", "unsafe verification resolves as unavailable")
+        Assert.equal(result.reason, expectedReason, "verification retains the terrain refusal")
+      else
+        Assert.notNil(
+          placement,
+          "ordinary behavior " .. behavior .. " reaches real physical-surface sampling: " .. tostring(result.reason)
+        )
+        Assert.equal(result.state, "ready", "the ordinary step is selectable after verification")
+        Assert.deepEqual(
+          placement,
+          {
+            mapId = 11,
+            fieldX = 16,
+            fieldZ = 16,
+            surfaceId = 3,
+            worldY = 0,
+            terrainDependencyHash = "loading-fixture",
+          },
+          "placement carries the fixture's sampled surface and selected destination"
+        )
+        if purpose == "browse" then
+          Assert.equal(tile.selectable, true, "the browsing grid agrees with direct resolution")
+        end
+      end
+    end, debug.traceback)
+    service:dispose()
+    if not ok then
+      error(err, 0)
+    end
+  end
+
+  check("verify", 3, false)
+  check("browse", 3, false)
+  check("verify", 19, false, "special_terrain")
+  check("browse", 19, false, "special_terrain")
+  check("verify", 19, true, "blocked")
+end
+
 function T.tests.resolving_an_off_cursor_tile_runs_its_own_placement_classification()
   local service = loadingService({ taskImmediate = true })
   local ok, err = xpcall(function()
@@ -1625,7 +1689,7 @@ function T.tests.resolving_an_off_cursor_tile_runs_its_own_placement_classificat
   end
 end
 
-function T.tests.remembered_cursor_is_revalidated_without_starting_a_browse_survey()
+function T.tests.remembered_cursor_is_revalidated()
   local service = loadingService({ taskImmediate = true })
   local ok, err = xpcall(function()
     service:openMap(11, {
@@ -1637,8 +1701,6 @@ function T.tests.remembered_cursor_is_revalidated_without_starting_a_browse_surv
     service:update()
 
     local view = service:snapshot()
-    Assert.isNil(service.survey, "remembered-point preparation does not start a whole-map survey")
-    Assert.isNil(service.surveyDomain, "remembered-point preparation does not enumerate the map domain")
     Assert.equal(view.status.state, "ready", "remembered-point preparation reaches normal ready state")
     Assert.deepEqual(view.initialCursor, {
       state = "ready",
@@ -1655,7 +1717,7 @@ function T.tests.remembered_cursor_is_revalidated_without_starting_a_browse_surv
   end
 end
 
-function T.tests.unavailable_remembered_cursor_is_classified_without_survey()
+function T.tests.unavailable_remembered_cursor_is_classified()
   local service = loadingService({ taskImmediate = true })
   local ok, err = xpcall(function()
     service:openMap(11, {
@@ -1669,8 +1731,6 @@ function T.tests.unavailable_remembered_cursor_is_classified_without_survey()
     Assert.equal(view.status.state, "ready", "an unavailable preview does not prevent map preparation")
     Assert.equal(view.initialCursor.state, "unavailable", "the remembered point is classified unavailable")
     Assert.equal(view.initialCursor.reason, "wrong_logical_map", "the point keeps its placement reason")
-    Assert.isNil(service.survey, "an unavailable remembered point still skips whole-map survey")
-    Assert.isNil(service.surveyDomain, "an unavailable remembered point does not enumerate the map domain")
   end, debug.traceback)
   service:dispose()
   if not ok then
@@ -1703,7 +1763,6 @@ function T.tests.remembered_point_coverage_does_not_replace_the_requested_viewpo
     Assert.equal(view.initialCursor.fieldX, 16, "the initial cursor retains its remembered coordinate")
     Assert.equal(service.coverage.anchorX, 1, "published coverage follows the requested viewport")
     Assert.equal(#loader.coverageBegins, 2, "point and viewport anchors receive separate staged preparation")
-    Assert.isNil(service.survey, "remembered navigation does not start a whole-map survey")
     Assert.equal(view.tiles[1].fieldX, 48, "the returned tile window remains centered on the requested viewport")
     Assert.equal(view.tiles[1].state, "selectable", "the requested viewport tile has prepared placement facts")
   end, debug.traceback)
