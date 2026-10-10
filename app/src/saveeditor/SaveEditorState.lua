@@ -806,21 +806,84 @@ function State:_normalizeBagPage()
   self.controller.bagPage0 = math.max(0, math.min(pageCount - 1, self.controller.bagPage0))
 end
 
-function State:_snapshot()
+-- Returns the session snapshot, rebuilt only when the owner or its revision changed.
+function State:_sessionSnapshot()
   local owner = self.session
-  local session
   if owner == nil then
     self._uiSessionSnapshot = nil
-  else
-    local revision = owner:revision()
-    local cached = self._uiSessionSnapshot
-    if cached == nil or cached.owner ~= owner or cached.revision ~= revision then
-      local value = owner:snapshot()
-      cached = { owner = owner, revision = revision, value = value }
-      self._uiSessionSnapshot = cached
-    end
-    session = cached.value
+    return nil
   end
+  local revision = owner:revision()
+  local cached = self._uiSessionSnapshot
+  if cached == nil or cached.owner ~= owner or cached.revision ~= revision then
+    cached = { owner = owner, revision = revision, value = owner:snapshot() }
+    self._uiSessionSnapshot = cached
+  end
+  return cached.value
+end
+
+function State:_modalTitle()
+  if self.controller.modal ~= "party-move" then
+    return nil
+  end
+  local slot0 = assert(self.pendingMoveSlot, "move dialog owns its selected move slot")
+  local record = assert(self.monDraft, "move dialog owns the active member draft"):record()
+  local move = assert(record.moves[slot0 + 1], "move dialog owns an occupied move")
+  local catalog = assert(self.dependencies).context.monCatalog
+  return "Edit move: " .. (catalog:move(move.move).name or move.move)
+end
+
+---@param session table<string, unknown>? settled session snapshot
+---@return boolean
+function State:_hasUnsavedChanges(session)
+  if session == nil then
+    return false
+  end
+  local dirtySections = session.dirtySections
+  local sessionDirty = dirtySections.money
+    or dirtySections.frame
+    or dirtySections.flags
+    or dirtySections.party
+    or dirtySections.bag
+    or dirtySections.location
+  return sessionDirty or (self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty()))
+end
+
+-- Publishes the live value-editor snapshot into its modal layer.
+local function attachEditorSnapshot(modalLayers, valueEditorSnapshot)
+  for index = #modalLayers, 1, -1 do
+    local layer = modalLayers[index]
+    if layer.kind == valueEditorSnapshot.kind then
+      layer.payload.snapshot = valueEditorSnapshot
+      return
+    end
+  end
+end
+
+function State:_locationView()
+  local location = self.locationService:snapshot()
+  ---@type SaveEditorIndexedListProjection
+  local mapModel = self:_mapProjection()
+  location.mapModel = mapModel
+  location.mapListId = locationListId(self.controller:locationSnapshot())
+  location.breadcrumb = self.controller.locationPage == "group"
+      and assert(self.controller.locationGroupId, "map breadcrumb needs its section identity")
+    or nil
+  location.maps = mapModel.rowTargets
+  location.mapRowTargets = mapModel.rowTargets
+  location.mapIndexByTarget = mapModel.indexByTarget
+  location.symbol = location.map and location.map.symbol or nil
+  location.actionStatus = self.locationActionStatus
+      and {
+        state = self.locationActionStatus.state,
+        reason = self.locationActionStatus.reason,
+      }
+    or nil
+  return location
+end
+
+function State:_snapshot()
+  local session = self:_sessionSnapshot()
   local section = self.controller.section
   local flagModel, flagRows, flagRowTargets, flagIndexByTarget
   if session ~= nil and section == "Progress" then
@@ -829,36 +892,10 @@ function State:_snapshot()
   end
   local party = session and section == "Party" and self:_partyView() or {}
   local bag = session and section == "Bag" and self:_bagView() or {}
-  local sessionDirty = false
-  if session ~= nil then
-    local dirtySections = session.dirtySections
-    sessionDirty = dirtySections.money
-      or dirtySections.frame
-      or dirtySections.flags
-      or dirtySections.party
-      or dirtySections.bag
-      or dirtySections.location
-  end
-  local modalTitle
-  if self.controller.modal == "party-move" then
-    local slot0 = assert(self.pendingMoveSlot, "move dialog owns its selected move slot")
-    local record = assert(self.monDraft, "move dialog owns the active member draft"):record()
-    local move = assert(record.moves[slot0 + 1], "move dialog owns an occupied move")
-    local catalog = assert(self.dependencies).context.monCatalog
-    local moveName = catalog:move(move.move).name or move.move
-    modalTitle = "Edit move: " .. moveName
-  end
   local modalLayers = self.modalStack:layers()
   local valueEditorSnapshot = self.valueEditor and self.valueEditor:snapshot() or nil
   if valueEditorSnapshot ~= nil then
-    local layerKind = valueEditorSnapshot.kind == "number" and "number" or valueEditorSnapshot.kind
-    for index = #modalLayers, 1, -1 do
-      local layer = modalLayers[index]
-      if layer.kind == layerKind then
-        layer.payload.snapshot = valueEditorSnapshot
-        break
-      end
-    end
+    attachEditorSnapshot(modalLayers, valueEditorSnapshot)
   end
   local numberControlVisuals, numberPressTicks
   if valueEditorSnapshot ~= nil and valueEditorSnapshot.kind == "number" then
@@ -880,8 +917,7 @@ function State:_snapshot()
       valueEditorSnapshot.selectedKey
     ) or nil,
     ready = session ~= nil,
-    dirty = session ~= nil
-      and (sessionDirty or (self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty()))),
+    dirty = session ~= nil and self:_hasUnsavedChanges(session),
     dirtySections = session and session.dirtySections or { money = false, flags = false },
     sectionDirty = self:_sectionDirty(session),
     section = self.controller.section,
@@ -891,7 +927,7 @@ function State:_snapshot()
       { role = "action", id = "section:Progress", targetId = "section:Progress", label = "Progress" },
     },
     modal = self.controller.modal,
-    modalTitle = modalTitle,
+    modalTitle = self:_modalTitle(),
     modalLayers = modalLayers,
     focus = self.controller.focus,
     focusVisible = self.controller.focusVisible,
@@ -913,25 +949,7 @@ function State:_snapshot()
     locationNavigation = self.controller:locationSnapshot(),
   }
   if self.locationService then
-    local location = self.locationService:snapshot()
-    ---@type SaveEditorIndexedListProjection
-    local mapModel = self:_mapProjection()
-    location.mapModel = mapModel
-    location.mapListId = locationListId(self.controller:locationSnapshot())
-    location.breadcrumb = self.controller.locationPage == "group"
-        and assert(self.controller.locationGroupId, "map breadcrumb needs its section identity")
-      or nil
-    location.maps = mapModel.rowTargets
-    location.mapRowTargets = mapModel.rowTargets
-    location.mapIndexByTarget = mapModel.indexByTarget
-    location.symbol = location.map and location.map.symbol or nil
-    location.actionStatus = self.locationActionStatus
-        and {
-          state = self.locationActionStatus.state,
-          reason = self.locationActionStatus.reason,
-        }
-      or nil
-    view.location = location
+    view.location = self:_locationView()
   end
   if session then
     view.savedLocation = session.originalLocation
