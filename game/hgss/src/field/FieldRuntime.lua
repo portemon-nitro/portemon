@@ -2203,6 +2203,44 @@ function FieldRuntime:_scenarioForRequest(request)
   return HgssBattleScenarioFactory.fromScript(request.payload --[[@as table<string, unknown>]], live)
 end
 
+-- The field-owned origin facts behind a wild creation: the active map's
+-- native section identity and the host clock's civil date, copied once at
+-- admission. Terrain stays neutral until a sourced numeric mapping exists.
+-- Missing section or clock facts fail loudly instead of guessing.
+---@return { location: integer, date: { year: integer, month: integer, day: integer }, terrain: integer }
+function FieldRuntime:_wildMetContext()
+  local session = self.session
+  local currentMap = session ~= nil and session.currentMap or self.runtimeMap
+  local nativeId = currentMap ~= nil and currentMap.mapSectionNativeId or nil
+  assert(
+    type(nativeId) == "number" and nativeId % 1 == 0 and nativeId >= 0 and nativeId <= 0xFFFF,
+    "wild encounters require the active native map section"
+  )
+  local clock = assert(self.localClock, "wild encounters require their host clock")
+  local now = clock:nowLocal()
+  assert(type(now) == "table", "wild encounters read their host clock date")
+  assert(
+    type(now.year) == "number"
+      and now.year % 1 == 0
+      and now.year >= 2000
+      and now.year <= 2255
+      and type(now.month) == "number"
+      and now.month % 1 == 0
+      and now.month >= 1
+      and now.month <= 12
+      and type(now.day) == "number"
+      and now.day % 1 == 0
+      and now.day >= 1
+      and now.day <= 31,
+    "wild encounters require a valid host clock date"
+  )
+  return {
+    location = nativeId,
+    date = { year = now.year, month = now.month, day = now.day },
+    terrain = 0,
+  }
+end
+
 -- Materializes one bare species/level foe into a full mon record through
 -- the existing wild factory, drawing identity on the world stream exactly
 -- like a scripted static encounter. Nil unless every composed catalog and
@@ -2244,16 +2282,16 @@ function FieldRuntime:_materializeDescriptorFoe(payload)
   local session = self.session
   local sessionMap = session ~= nil and session.currentMap or nil
   local profile = self.playerData ~= nil and self.playerData.profile or nil
-  if sessionMap == nil or type(sessionMap.mapId) ~= "number" or type(profile) ~= "table" then
+  if sessionMap == nil or type(profile) ~= "table" then
     return nil
   end
-  local mapId = sessionMap.mapId --[[@as integer]]
+  local met = self:_wildMetContext()
   return factory:createStatic(payload.species --[[@as string]], payload.level --[[@as integer]], stream, {
     profile = profile,
     ball = "POKE_BALL",
-    location = mapId,
-    terrain = 0,
-    date = { year = 2000, month = 1, day = 1 },
+    location = met.location,
+    terrain = met.terrain,
+    date = met.date,
   })
 end
 
@@ -3451,8 +3489,22 @@ function FieldRuntime:attemptEncounter(context)
     return worldRng:nextRaw() % 65536
   end
   local stream = { nextU16 = drawU16 }
+  -- The lookup identity stays the encounter table member; the origin
+  -- record rides beside it so selection never moves. The caller's record
+  -- is staged, never mutated, and an explicitly supplied record wins.
+  local admitted = context
+  if type(context) == "table" then
+    admitted = {}
+    for key, value in pairs(context) do
+      admitted[key] = value
+    end
+    if admitted.met == nil then
+      admitted.met = self:_wildMetContext()
+    end
+    assert(admitted.mapId == context.mapId)
+  end
   local Errors = require("libs.errors.src.Errors")
-  local ok, result = pcall(service.attempt, service, context, stream)
+  local ok, result = pcall(service.attempt, service, admitted, stream)
   if not ok then
     if Errors.is(result) and result.code == "ENCOUNTER_MISSING_TABLE" then
       return { kind = "miss", reason = "no_table" }

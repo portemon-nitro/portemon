@@ -85,6 +85,11 @@ local function fakeRuntime(overrides)
         },
       },
     },
+    localClock = {
+      nowLocal = function()
+        return { year = 2026, month = 10, day = 9, hour = 12 }
+      end,
+    },
   }, FieldRuntime)
   for key, value in pairs(overrides or {}) do
     runtime[key] = value
@@ -336,7 +341,7 @@ function T.prepared_encounters_are_consumed_exactly_once()
       return prepared
     end,
   }
-  local runtime = fakeRuntime({ _encounters = service })
+  local runtime = fakeRuntime({ _encounters = service, runtimeMap = { mapId = 11, mapSectionNativeId = 7 } })
   local result = runtime:attemptEncounter({ method = "grass" })
   Assert.equal(result.kind, "prepared")
   Assert.equal(runtime.pendingEncounterId, 11)
@@ -362,7 +367,7 @@ function T.attempts_wait_while_a_battle_or_preparation_owns_the_field()
       return { kind = "miss", reason = "no_opportunity" }
     end,
   }
-  local runtime = fakeRuntime({ _encounters = service })
+  local runtime = fakeRuntime({ _encounters = service, runtimeMap = { mapId = 11, mapSectionNativeId = 7 } })
   runtime:attemptEncounter({})
   Assert.equal(attempts, 1)
   runtime.pendingEncounterId = 9
@@ -414,6 +419,7 @@ function T.committed_steps_resolve_their_map_table_member()
       },
       currentMap = {
         mapId = 16,
+        mapSectionNativeId = 77,
         coordinateOrigin = { x = 0, z = 0 },
         collision = {
           containsLocal = function()
@@ -430,6 +436,202 @@ function T.committed_steps_resolve_their_map_table_member()
   runtime:_consumeCommittedStep()
   Assert.equal(#seen, 1, "the committed step attempts once")
   Assert.equal(seen[1].mapId, 1, "the attempt resolves the map's table member, not its map identity")
+end
+
+-- A bare species/level foe records the live native section and the host
+-- clock date instead of the numeric map identity and a fixed placeholder.
+function T.descriptor_foes_record_the_live_section_and_clock_date()
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local ScriptRng = require("libs.hgss.src.script.ScriptRng")
+  local runtime = fakeRuntime({
+    versionId = "heartgold",
+    monLanguage = "english",
+    monCatalog = CatalogFixture.makeCatalog(),
+    itemCatalog = ItemFixture.makeCatalog(),
+    cacheFs = {
+      loadLua = function(_)
+        return { schema = FieldFontCache.SCHEMA, charmap = CatalogFixture.CHARMAP }
+      end,
+    },
+    playerData = { profile = CatalogFixture.profile() },
+    session = {
+      setBattleActive = function() end,
+      currentMap = { mapId = 16, mapSectionNativeId = 77 },
+    },
+    scripts = { worldState = { rng = ScriptRng.new(1234) } },
+    localClock = {
+      nowLocal = function()
+        return { year = 2026, month = 10, day = 9, hour = 12 }
+      end,
+    },
+  })
+  local foe = runtime:_materializeDescriptorFoe({ species = "TOTODILE", level = 4 })
+  Assert.notNil(foe, "the descriptor materializes through its composed catalogs")
+  local met = assert(foe.met, "materialized foes carry their origin record")
+  Assert.equal(met.location, 77, "the foe records the native section, not the numeric map identity")
+  Assert.deepEqual(
+    { year = met.date.year, month = met.date.month, day = met.date.day },
+    { year = 2026, month = 10, day = 9 },
+    "the foe records the host clock date, not a placeholder"
+  )
+  Assert.equal(met.terrain, 0, "neutral terrain stays until a sourced mapping exists")
+  Assert.equal(foe.species, "TOTODILE")
+  Assert.equal(met.level, 4)
+end
+
+-- Ordinary step attempts keep their encounter-table lookup while the
+-- prepared mon records the live section and host clock date. Direct
+-- service use without that context keeps its neutral record.
+function T.field_attempts_keep_their_lookup_while_recording_live_provenance()
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local EncounterFixture = require("libs.hgss.tests.encounter_fixture")
+  local Errors = require("libs.errors.src.Errors")
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local ScriptRng = require("libs.hgss.src.script.ScriptRng")
+
+  local function liveService()
+    local Catalog = EncounterFixture.requirePresent(
+      "libs.hgss.src.encounters.HgssEncounterCatalog",
+      "validated encounter-table lookup owns ordered slots"
+    )
+    local Service = EncounterFixture.requirePresent(
+      "libs.hgss.src.encounters.HgssEncounterService",
+      "encounter opportunity and retained preparation"
+    )
+    local WildMonFactory = EncounterFixture.requirePresent(
+      "libs.hgss.src.encounters.WildMonFactory",
+      "source wild identity and held-item generation"
+    )
+    return Service.new({
+      catalog = Catalog.new(EncounterFixture.vectorCatalog()),
+      wildFactory = WildMonFactory.new({
+        catalog = CatalogFixture.makeCatalog(),
+        items = ItemFixture.makeCatalog(),
+        charmap = CatalogFixture.CHARMAP,
+        games = CatalogFixture.GAMES,
+        languages = CatalogFixture.LANGUAGES,
+        game = "soulsilver",
+        language = "english",
+      }),
+    })
+  end
+
+  local function attemptContext()
+    return {
+      eventId = 1,
+      mapId = 11,
+      method = "grass",
+      movement = "step",
+      modifiers = EncounterFixture.modifiers(),
+      environment = { weather = "none" },
+      timeOfDay = "day",
+      playerProfile = CatalogFixture.profile(),
+    }
+  end
+
+  local function liveField(seed)
+    local service = liveService()
+    local worldRng = ScriptRng.new(seed)
+    local runtime = fakeRuntime({
+      _encounters = service,
+      playerData = { profile = CatalogFixture.profile() },
+      session = {
+        setBattleActive = function() end,
+        currentMap = { mapId = 16, mapSectionNativeId = 77 },
+      },
+      scripts = { worldState = { rng = worldRng } },
+      localClock = {
+        nowLocal = function()
+          return { year = 2026, month = 10, day = 9, hour = 12 }
+        end,
+      },
+    })
+    return runtime, service, worldRng
+  end
+
+  local runtime, _, _ = liveField(99)
+  local context = attemptContext()
+  local result = runtime:attemptEncounter(context)
+  Assert.notNil(result, "the field attempt answers through its composed service")
+  Assert.equal(result.kind, "prepared", "the eligible step prepares its encounter")
+  local prepared = assert(result.encounter, "prepared attempts carry their encounter")
+  local fieldMon = assert(prepared.mons[1].mon, "the encounter carries its wild mon")
+  Assert.equal(prepared.provenance.mapId, 11, "selection still reads table 11")
+  Assert.equal(
+    fieldMon.met.location,
+    77,
+    "the prepared mon records the native section, not the table member"
+  )
+  Assert.deepEqual(
+    { year = fieldMon.met.date.year, month = fieldMon.met.date.month, day = fieldMon.met.date.day },
+    { year = 2026, month = 10, day = 9 },
+    "the prepared mon records the host clock date, not a placeholder"
+  )
+  Assert.equal(fieldMon.met.terrain, 0, "neutral terrain stays until a sourced mapping exists")
+  Assert.equal(context.mapId, 11, "the lookup identity rides through unchanged")
+  Assert.isNil(context.met, "the field stages its own copy instead of mutating the caller")
+
+  local authoredRuntime, _, _ = liveField(99)
+  local authored = attemptContext()
+  authored.met = { location = 5, date = { year = 2024, month = 2, day = 29 } }
+  local authoredResult = authoredRuntime:attemptEncounter(authored)
+  Assert.equal(authoredResult.kind, "prepared", "an authored record still prepares")
+  local authoredMon = assert(authoredResult.encounter.mons[1].mon, "the encounter carries its wild mon")
+  Assert.equal(authoredMon.met.location, 5, "an explicitly supplied record is never overwritten")
+  Assert.deepEqual(
+    {
+      year = authoredMon.met.date.year,
+      month = authoredMon.met.date.month,
+      day = authoredMon.met.date.day,
+    },
+    { year = 2024, month = 2, day = 29 },
+    "an explicitly supplied date is never overwritten"
+  )
+
+  local rejectedRuntime, _, rejectedRng = liveField(99)
+  local rejected = attemptContext()
+  rejected.met = { location = -1, date = { year = 2026, month = 10, day = 9 } }
+  local drawsBefore = rejectedRng:serialize().calls
+  local failure = Assert.throws(function()
+    rejectedRuntime:attemptEncounter(rejected)
+  end, "an invalid supplied record fails")
+  Assert.isTrue(Errors.is(failure), "rejection uses the structured error path")
+  Assert.equal(assert(failure).code, "ENCOUNTER_INVALID_INPUT", "rejection names its contract")
+  Assert.equal(
+    rejectedRng:serialize().calls,
+    drawsBefore,
+    "rejected input consumes no draws"
+  )
+  Assert.isNil(rejectedRuntime.pendingEncounterId, "rejected input holds no preparation")
+
+  local headless = liveService()
+  local headlessRng = ScriptRng.new(99)
+  local headlessStream = {
+    nextU16 = function(_, _, _)
+      return headlessRng:nextRaw() % 65536
+    end,
+  }
+  local headlessResult = headless:attempt(attemptContext(), headlessStream)
+  Assert.equal(headlessResult.kind, "prepared", "the same draws prepare without field context")
+  local headlessMon = assert(headlessResult.encounter.mons[1].mon, "the encounter carries its wild mon")
+  Assert.equal(headlessMon.species, fieldMon.species, "the lookup selects the same species")
+  Assert.equal(
+    headlessMon.personality,
+    fieldMon.personality,
+    "identical draws generate the identical mon"
+  )
+  Assert.equal(headlessMon.met.location, 11, "callers without context keep the neutral record")
+  Assert.deepEqual(
+    {
+      year = headlessMon.met.date.year,
+      month = headlessMon.met.date.month,
+      day = headlessMon.met.date.day,
+    },
+    { year = 2000, month = 1, day = 1 },
+    "callers without context keep the neutral date"
+  )
 end
 
 -- The token-guarded per-launch factory binding: one owner, monotonic
