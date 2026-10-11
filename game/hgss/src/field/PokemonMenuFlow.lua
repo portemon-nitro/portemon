@@ -26,6 +26,7 @@ local PAGE = {
   PARTY_BROWSE = "party_browse",
   PARTY_ITEM_TARGET = "party_item_target",
   PARTY_GIVE_TARGET = "party_give_target",
+  APRICORN_BOX = "apricorn_box",
   SUMMARY = "summary",
   MOVE_PICK = "move_pick",
   MAIL_READ = "mail_read",
@@ -54,6 +55,7 @@ local PAGE = {
 ---@field private _summaryContext fun(): table<string, unknown>? the explicit summary display context per refresh
 ---@field private _readSummaryNavigation fun(): table<string, unknown>? the read-only summary navigation sample
 ---@field private _acquireSummaryPreparation fun(): table<string, unknown>? the per-open summary lease factory
+---@field private _makeApricornBox (fun(mode: string): table<string, unknown>)? the shared Box child factory
 ---@field private _overrides table<string, unknown>?
 ---@field private _page string
 ---@field private _child table<string, unknown>?
@@ -286,6 +288,9 @@ function PokemonMenuFlow.new(opts)
   if opts.acquireSummaryPreparation ~= nil then
     assert(type(opts.acquireSummaryPreparation) == "function", "the menu flow carries its summary lease factory")
   end
+  if opts.makeApricornBox ~= nil then
+    assert(type(opts.makeApricornBox) == "function", "the menu flow carries its Apricorn Box factory")
+  end
   local self = setmetatable({
     _root = opts.root,
     _mons = mons,
@@ -303,6 +308,7 @@ function PokemonMenuFlow.new(opts)
     _summaryContext = opts.summaryContext,
     _readSummaryNavigation = opts.readSummaryNavigation,
     _acquireSummaryPreparation = opts.acquireSummaryPreparation,
+    _makeApricornBox = opts.makeApricornBox,
     _effect = opts.effect,
     _playCry = opts.playCry,
     _textPolicy = opts.textPolicy,
@@ -346,6 +352,10 @@ function PokemonMenuFlow:_openPage(page, continuation)
       effect = self._effect,
       textPolicy = self._textPolicy,
     })
+  end
+  if page == PAGE.APRICORN_BOX then
+    local makeApricornBox = assert(self._makeApricornBox, "Apricorn Box Use requires its composed screen factory")
+    return makeApricornBox("browse")
   end
   if page == PAGE.BAG_PICK_HELD then
     local cont = assert(continuation, "the held picker opens for a captured mon")
@@ -619,6 +629,10 @@ end
 function PokemonMenuFlow:_routeBagIntent(intent)
   assert(intent.kind == "use" or intent.kind == "give", "bag intents use or give")
   local itemKey = assert(intent.item, "bag intents snapshot their item")
+  if intent.kind == "use" and itemKey == "APRICORN_BOX" then
+    self:_replace(PAGE.APRICORN_BOX, nil)
+    return
+  end
   local operation = intent.kind == "use" and "use" or "give"
   local page = intent.kind == "use" and PAGE.PARTY_ITEM_TARGET or PAGE.PARTY_GIVE_TARGET
   self:_replace(page, {
@@ -1150,6 +1164,11 @@ end
 ---@param result table<string, unknown>
 function PokemonMenuFlow:_routeResult(result)
   assert(type(result) == "table" and type(result.kind) == "string", "results carry their kind")
+  if self._page == PAGE.APRICORN_BOX then
+    assert(result.kind == "closed", "the browse Box closes back to the Bag")
+    self:_replace(PAGE.BAG_BROWSE, nil)
+    return
+  end
   if self._page == PAGE.MAIL_READ then
     assert(result.kind == "closed", "the read-only letter view closes without mutation")
     local continuation = assert(self._continuation, "the Mail read view retains its party context")

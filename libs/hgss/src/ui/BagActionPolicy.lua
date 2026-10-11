@@ -193,7 +193,7 @@ function BagActionPolicy.actionsForField(facts)
   if facts.itemKey ~= nil then
     assert(type(facts.itemKey) == "string" and facts.itemKey ~= "", "a selected action needs its item key")
     assert(type(facts.useKind) == "string", "the field policy needs the party-use kind")
-    if targetsExist and facts.useKind ~= "none" then
+    if facts.itemKey == "APRICORN_BOX" or (targetsExist and facts.useKind ~= "none") then
       actions[#actions + 1] = { id = "use", enabled = true, slot = 0 }
     end
     if targetsExist and facts.canHold == true and facts.isHm ~= true and facts.pocket ~= "mail" then

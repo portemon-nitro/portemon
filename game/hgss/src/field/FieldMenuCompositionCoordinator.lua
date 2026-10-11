@@ -29,6 +29,8 @@ local StartMenuState = require("game.hgss.src.field.StartMenuState")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
 local TrainerCardScreenState = require("game.hgss.src.field.TrainerCardScreenState")
+local ApricornBoxScreenState = require("game.hgss.src.apricorn.ApricornBoxScreenState")
+local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 
 -- The audio-output sample rate of the production composition (the mixer and
 -- the LÖVE sink render at this rate, the DS SPU rate; source waves are
@@ -493,6 +495,18 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
   local function readSummaryNavigation()
     return assert(runtime.input, "summary navigation needs the field input"):lastUiNavigation()
   end
+  local apricornBoxManifest = ApricornBoxAssetCache.loadManifest(cacheFs)
+  local function makeApricornBox(mode)
+    return ApricornBoxScreenState.new({
+      mode = mode,
+      service = assert(runtime.martService, "the Box borrows the live Apricorn stock service"),
+      manifest = apricornBoxManifest,
+      messageProvider = assert(runtime.messageProvider, "the Box borrows the field message provider"),
+      measureDisplay = measureDisplay,
+      effect = playBagSequence,
+      overrides = runtime.presentationOverrides ~= nil and runtime.presentationOverrides.apricorn_box or nil,
+    })
+  end
   runtime.pokemonMenu = PokemonMenuComposition.create({
     effect = playBagSequence,
     playCry = playSummaryCry,
@@ -501,6 +515,7 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
     summaryContext = summaryContextProvider(runtime, summaryManifest),
     readSummaryNavigation = readSummaryNavigation,
     acquireSummaryPreparation = acquireSummaryPreparation,
+    makeApricornBox = makeApricornBox,
     mons = assert(runtime.monService, "the menu composition requires the live mon service"),
     bag = assert(runtime.bagService, "the menu composition requires the live bag service"),
     mailbox = assert(runtime.mailbox, "the menu composition requires the live Mailbox"),

@@ -216,6 +216,34 @@ function T.field_empty_party_hides_target_requiring_entries_only()
   Assert.isTrue(has(defaulted, "give"), "an absent party flag keeps the historical entries")
 end
 
+function T.field_apricorn_box_use_is_the_only_empty_party_exception()
+  local actions = BagActionPolicy.actionsForField(fieldFacts({
+    itemKey = "APRICORN_BOX",
+    useKind = "none",
+    canHold = false,
+    pocket = "key_items",
+    registerable = true,
+    partyEmpty = true,
+  }))
+  local slotsById = {}
+  for _, action in ipairs(actions) do
+    slotsById[action.id] = action.slot
+  end
+  Assert.equal(slotsById.use, 0, "the Box opens without a party target")
+  Assert.isFalse(slotsById.give ~= nil, "the Box cannot be given to a party member")
+  Assert.equal(slotsById.register, 1, "Box registration remains available")
+  Assert.isFalse(
+    has(
+      BagActionPolicy.actionsForField(fieldFacts({
+        itemKey = "POTION",
+        partyEmpty = true,
+      })),
+      "use"
+    ),
+    "ordinary party uses remain blocked without a target"
+  )
+end
+
 function T.field_give_needs_holdable_non_hm_non_mail()
   Assert.isFalse(
     has(BagActionPolicy.actionsForField(fieldFacts({ canHold = false })), "give"),

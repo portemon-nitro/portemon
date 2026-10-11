@@ -237,6 +237,7 @@ local FIELD_RUNTIME_JOBS = {
   "trainers:global",
   "encounters:global",
   "bag:global",
+  "apricorn-box:global",
   "party:global",
   "pc:global",
   "mart:global",
@@ -557,6 +558,21 @@ local function executeBag(artifact, context)
     return BagAssetCompiler.compile(romFs)
   end, "bag")
   return BagCacheWriter.stage(artifact, bundle)
+end
+
+local function executeApricornBox(artifact, context)
+  local ApricornBoxAssetCompiler = require("romdump.src.digest.ui.ApricornBoxAssetCompiler")
+  local ApricornBoxCacheWriter = require("romdump.src.digest.ui.ApricornBoxCacheWriter")
+  local romFs = assert(context.romFs, "Apricorn Box jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return ApricornBoxAssetCompiler.compile(romFs), nil
+  end, "Apricorn Box")
+  return ApricornBoxCacheWriter.stage(artifact, bundle)
+end
+
+local function dependenciesApricornBox(key)
+  assert(key == "global", "Apricorn Box family only has the global job")
+  return { { kind = "message-bank", key = "27" } }, true
 end
 
 local function dependenciesMart(key, plans)
@@ -1360,6 +1376,13 @@ local function validateBag(check)
   return BagCache.isReady(check.cacheFs, check.marker)
 end
 
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateApricornBox(check)
+  local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
+  return ApricornBoxAssetCache.isReady(check.cacheFs, check.marker)
+end
+
 local function validateMart(check)
   local MartCache = require("libs.assets.src.MartCache")
   return MartCache.isReady(check.cacheFs, check.marker)
@@ -2036,6 +2059,12 @@ DESCRIPTORS = {
     execute = executeBag,
     validate = validateBag,
   },
+  ["apricorn-box"] = {
+    size = "normal",
+    dependencies = dependenciesApricornBox,
+    execute = executeApricornBox,
+    validate = validateApricornBox,
+  },
   mart = {
     size = "normal",
     dependencies = dependenciesMart,
@@ -2273,6 +2302,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "items",
   "follower-interactions",
   "bag",
+  "apricorn-box",
   "party",
   "pc",
   "mart",

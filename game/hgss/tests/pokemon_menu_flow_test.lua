@@ -764,6 +764,58 @@ function T.tests.bag_use_heals_once_and_returns_to_bag(context)
   end
 end
 
+function T.tests.apricorn_box_use_opens_its_child_and_returns_to_the_borrowed_bag_cursor(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "bag")
+    local box = { result = nil, disposed = false }
+    function box:updateFixed(_) end
+    function box:status()
+      return { open = true, mode = "browse" }
+    end
+    function box:takeResult()
+      local result = self.result
+      self.result = nil
+      return result
+    end
+    function box:takeIntent()
+      return nil
+    end
+    function box:cancelPointerCapture() end
+    function box:dispose()
+      self.disposed = true
+    end
+    local openedMode
+    rig.flow._makeApricornBox = function(mode)
+      openedMode = mode
+      return box
+    end
+    rig.cursor:setPocket("key_items")
+    rig.cursor:setPosition("key_items", 0)
+    local cursorIndex = rig.cursor:position("key_items")
+    rig.flow:_routeBagIntent({ kind = "use", item = "APRICORN_BOX", bagRevision = rig.bag:revision() })
+    Assert.equal(openedMode, "browse", "Bag Use launches the shared browse mode")
+    driveUntil(rig, "the Apricorn Box page", 20, function(status)
+      return status.page == "apricorn_box"
+    end)
+    box.result = { kind = "closed" }
+    drive(rig, {})
+    local returned = driveUntil(rig, "the originating Bag page", 20, function(status)
+      return status.page == "bag_browse"
+    end)
+    Assert.equal(returned.child.pocket, "key_items", "the Box returns to the same Bag pocket")
+    Assert.equal(rig.cursor:position("key_items"), cursorIndex, "the Bag cursor remains borrowed")
+    Assert.isTrue(box.disposed, "the parent disposes the Box child on return")
+    rig.flow:dispose()
+  end
+end
+
 function T.tests.stale_revision_discards_the_operation_safely(context)
   local versions = readyVersions()
   if #versions == 0 then

@@ -431,6 +431,11 @@ DerivedAssetContract.bag = {
   schema = "g4-bag-assets-v17",
 }
 
+DerivedAssetContract.apricornBox = {
+  cacheFormat = "apricorn-box-cache-v2",
+  schema = "g4-apricorn-box-assets-v2",
+}
+
 -- The party class carries the source-independent native party
 -- presentation: the canonical panes, six slotted panels pairing chrome
 -- variants with text/HP subrectangles, semantic message windows, exact icon

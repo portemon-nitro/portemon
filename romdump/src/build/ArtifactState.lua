@@ -55,6 +55,7 @@ ArtifactState.KINDS = {
   ["follower-interactions"] = true,
   mart = true,
   bag = true,
+  ["apricorn-box"] = true,
   party = true,
   pc = true,
   summary = true,

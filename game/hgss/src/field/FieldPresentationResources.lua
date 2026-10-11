@@ -2,10 +2,12 @@
 
 local Errors = require("libs.errors.src.Errors")
 local BagCache = require("libs.assets.src.BagCache")
+local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local PcCache = require("libs.assets.src.PcCache")
 local MartCache = require("libs.assets.src.MartCache")
 local BagHeroRenderer = require("libs.hgss.src.presentation.BagHeroRenderer")
 local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
+local ApricornBoxRenderer = require("libs.hgss.src.ui.ApricornBoxRenderer")
 local MartRenderer = require("libs.hgss.src.ui.MartRenderer")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
@@ -86,6 +88,8 @@ local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 ---@field summaryResources SummaryPresentationResources? the one field-owned summary preparation leaf
 ---@field summaryRenderer SummaryRenderer? the one real summary pane renderer
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
+---@field apricornBoxManifest table<string, unknown> validated source-derived Box UI manifest
+---@field apricornBoxRenderer ApricornBoxRenderer owned source graphics and row renderer
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
 ---@field pcManifest table<string, unknown> validated PC manifest borrowed by its application renderers
@@ -268,6 +272,8 @@ local function buildPresenters(owner)
     elseif inputKey == "summary" then
       mainId, subId = "main", "sub"
       summaryExit = true
+    elseif inputKey == "apricorn-box" then
+      mainId, subId = "lower", "upper"
     else
       error("menu transitions cannot present plan " .. tostring(inputKey), 0)
     end
@@ -362,6 +368,11 @@ local function buildPresenters(owner)
       drawPartyPlan(hostGraphics, status, plan)
     elseif inputKey == "summary" or inputKey == "summary-inactive" then
       drawSummaryPlan(hostGraphics, status, plan)
+    elseif inputKey == "apricorn-box" or inputKey == "apricorn-box-inactive" then
+      ApplicationPresentation.draw(hostGraphics, {
+        graphics = hostGraphics,
+        apricornBoxRenderer = assert(owner.apricornBoxRenderer, "Apricorn Box renderer is unavailable"),
+      }, status, plan)
     else
       error("the " .. applicationId .. " application cannot present plan " .. tostring(inputKey), 0)
     end
@@ -409,6 +420,12 @@ function FieldPresentationResources.new(runtime)
     self.windowRenderer = FieldWindowRenderer.new({ cacheFs = runtime.cacheFs, manifest = runtime.uiManifest })
     local textRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs })
     self.textRenderer = textRenderer
+    self.apricornBoxManifest = ApricornBoxAssetCache.loadManifest(runtime.cacheFs)
+    self.apricornBoxRenderer = ApricornBoxRenderer.new({
+      cacheFs = runtime.cacheFs,
+      manifest = self.apricornBoxManifest,
+      text = textRenderer,
+    })
     local playerData = assert(runtime.playerData, "field presentation requires the validated player data")
     local playerOptions = assert(playerData.options, "field presentation requires the player options")
     local textFrame = assert(playerOptions.textFrame, "field presentation requires the player-owned frame index")
@@ -824,6 +841,10 @@ function FieldPresentationResources:dispose()
   if self.bagRenderer then
     self.bagRenderer:release()
     self.bagRenderer = nil
+  end
+  if self.apricornBoxRenderer then
+    self.apricornBoxRenderer:release()
+    self.apricornBoxRenderer = nil
   end
   if self.martRenderer then
     self.martRenderer:release()

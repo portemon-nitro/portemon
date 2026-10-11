@@ -70,6 +70,7 @@ local PokemonMenuComposition = {}
 ---@field summaryContext fun(): table<string, unknown>? the explicit summary display context per refresh
 ---@field readSummaryNavigation fun(): table<string, unknown>? the read-only summary navigation sample
 ---@field acquireSummaryPreparation fun(): table<string, unknown>? the per-open summary lease factory
+---@field makeApricornBox (fun(mode: string): table<string, unknown>)? the shared Box child factory
 
 -- The menu flow's field-check port: capture the current world facts on
 -- every call, then answer the source eligibility decision. Fresh reads
@@ -141,6 +142,9 @@ function PokemonMenuComposition.create(deps)
   if deps.acquireSummaryPreparation ~= nil then
     assert(type(deps.acquireSummaryPreparation) == "function", "the menu composition carries its summary lease factory")
   end
+  if deps.makeApricornBox ~= nil then
+    assert(type(deps.makeApricornBox) == "function", "the menu composition carries its Apricorn Box factory")
+  end
 
   local partyActions = PartyActions.new({ mons = mons, bag = bag })
   local mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest })
@@ -178,6 +182,7 @@ function PokemonMenuComposition.create(deps)
       summaryContext = deps.summaryContext,
       readSummaryNavigation = deps.readSummaryNavigation,
       acquireSummaryPreparation = deps.acquireSummaryPreparation,
+      makeApricornBox = deps.makeApricornBox,
       mons = mons,
       bag = bag,
       bagCursor = bagCursor,

@@ -167,6 +167,27 @@ function G2dRasterizer.renderScreen(charData, paletteData, screenData, source, o
   return { width = width, height = height, pixels = concatChars(rgba) }
 end
 
+-- Render selected background tiles in their source order. The HGSS shared
+-- touchscreen list menu selects these standalone border tiles by character
+-- offset instead of storing a screen map for the control.
+---@param charData G2dRasterizer.CharData
+---@param paletteData G2dRasterizer.PaletteData
+---@param tileIndices integer[] zero-based Nitro tile indices
+---@param source G2dRasterizer.SourceContext
+---@return { width: integer, height: integer, pixels: string }
+function G2dRasterizer.renderTiles(charData, paletteData, tileIndices, source)
+  assert(type(tileIndices) == "table" and #tileIndices > 0, "tile rasterization needs an ordered source selection")
+  local width, height = #tileIndices * 8, 8
+  local rgba = newRgba(width, height)
+  for index, tileIndex in ipairs(tileIndices) do
+    if type(tileIndex) ~= "number" or tileIndex % 1 ~= 0 or tileIndex < 0 then
+      Errors.raise(G2dRasterizer.ERROR.SOURCE_INVALID, "selected tile index is invalid", { source = source })
+    end
+    blitTile(rgba, width, (index - 1) * 8, 0, charData, tileIndex, 0, paletteData.colors, false, false, source, true)
+  end
+  return { width = width, height = height, pixels = concatChars(rgba) }
+end
+
 -- Render a contiguous NCGR tile run through the shared pixel/palette path.
 ---@param charData G2dRasterizer.CharData
 ---@param paletteData G2dRasterizer.PaletteData
