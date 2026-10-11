@@ -44,6 +44,7 @@ local function stubRuntime()
     windowStyles = {},
     transition = {},
     mapLoader = {},
+    kurtBoxHost = {},
     fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
   }
 end

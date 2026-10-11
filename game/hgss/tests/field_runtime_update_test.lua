@@ -2,6 +2,7 @@
 -- coordinator boundary, without constructing a cache-backed field session.
 
 local Assert = require("tests.support.Assert")
+local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
@@ -43,7 +44,7 @@ local function runtimeWithAudio(calls, options)
       calls[#calls + 1] = "audio"
     end,
   }
-  local runtime = setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     audio = audio,
     audioSink = options.audioSink,
     session = {
@@ -62,7 +63,7 @@ local function runtimeWithAudio(calls, options)
         return nil
       end,
     },
-  }, FieldRuntime)
+  }, FieldRuntime))
   return runtime
 end
 
@@ -75,7 +76,7 @@ local function runtimeWithoutAudio(calls)
     end,
     consumeCompleted = function() end,
   }
-  local runtime = setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     session = {
       accumulator = FieldSession.FIXED_DT - 1 / 60,
       setBattleActive = function() end,
@@ -92,14 +93,14 @@ local function runtimeWithoutAudio(calls)
         return nil
       end,
     },
-  }, FieldRuntime)
+  }, FieldRuntime))
   return runtime
 end
 
 local function runtimeForSemanticCatchUp(counters)
   local playTime = PlayTime.new(0.9)
   playTime:start()
-  return setmetatable({
+  return FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     audio = {
       updateSoundFrame = function()
         counters.audio = counters.audio + 1
@@ -135,7 +136,7 @@ local function runtimeForSemanticCatchUp(counters)
         return nil
       end,
     },
-  }, FieldRuntime)
+  }, FieldRuntime))
 end
 
 function T.tests.large_host_delta_is_bounded_to_fixed_source_frames()
@@ -321,7 +322,7 @@ end
 -- so the coordinator passes no idle-presentation option at all, regardless
 -- of dialogue state. A missing dialogue controller changes nothing.
 local function runtimeWithFollowerPresentation(updateOptions, modal)
-  local runtime = setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     session = {
       accumulator = 0,
       currentMap = { mapId = 61 },
@@ -364,12 +365,12 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
         return modal
       end,
     },
-  }, FieldRuntime)
+  }, FieldRuntime))
   return runtime
 end
 
 local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive, calls)
-  return setmetatable({
+  return FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     session = {
       accumulator = 0,
       currentMap = { mapId = logicalMapId },
@@ -405,7 +406,7 @@ local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive
         return nil
       end,
     },
-  }, FieldRuntime)
+  }, FieldRuntime))
 end
 
 function T.tests.follower_update_carries_no_presentation_policy()

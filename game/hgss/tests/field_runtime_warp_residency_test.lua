@@ -3,6 +3,7 @@
 -- through the real residency coordinator and the runtime commit boundary.
 
 local Assert = require("tests.support.Assert")
+local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldResidencyCoordinator = require("libs.hgss.src.world.FieldResidencyCoordinator")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
@@ -152,7 +153,7 @@ local function fixture(options)
   })
   coordinator:initialize()
 
-  local runtime = setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     physicalCoverage = sourceCoverage,
     runtimeMap = maps[10],
     residency = coordinator,
@@ -191,7 +192,7 @@ local function fixture(options)
         return nil
       end,
     },
-  }, FieldRuntime)
+  }, FieldRuntime))
   runtime.worldSwapCoordinator = FieldWorldSwapCoordinator.new(runtime)
   return {
     actors = actors,

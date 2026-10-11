@@ -100,7 +100,7 @@ local function semanticObjectEvent(event, map, index)
       })
     end
     local expectedSpriteId = ApricornSources.treeSpriteIdByKey[apricornKey]
-    if event.spriteId ~= expectedSpriteId then
+    if event.spriteId ~= ApricornSources.depletedTreeSpriteId and event.spriteId ~= expectedSpriteId then
       Errors.raise("FIELD_MAP_APRICORN_SOURCE_INVALID", "Apricorn tree sprite does not match its source color", {
         mapId = map.id,
         mapSymbol = map.symbol,
@@ -111,6 +111,7 @@ local function semanticObjectEvent(event, map, index)
         expectedSpriteId = expectedSpriteId,
       })
     end
+    object.spriteId = expectedSpriteId
     object.apricorn = { treeIndex = treeIndex, apricornKey = apricornKey }
   end
   -- The facing-actor obstacle kind, decorated only where a verified source

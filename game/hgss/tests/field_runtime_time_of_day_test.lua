@@ -3,6 +3,7 @@
 -- event-driven weather clock (see field_runtime_weather_application_test).
 
 local Assert = require("tests.support.Assert")
+local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 
 local T = { tests = {} }
@@ -16,7 +17,7 @@ local function clockAt(hour, minute, second)
 end
 
 local function runtimeWithEnvironment(clock, environment, sceneRuntime)
-  return setmetatable({
+  return FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     localClock = clock,
     runtimeMap = { renderEnvironment = environment, sceneRuntime = sceneRuntime },
     session = { accumulator = 0, setBattleActive = function() end, updateFixed = function() end },
@@ -33,7 +34,7 @@ local function runtimeWithEnvironment(clock, environment, sceneRuntime)
         return nil
       end,
     },
-  }, FieldRuntime)
+  }, FieldRuntime))
 end
 
 function T.tests.update_advances_field_time_seconds_from_the_injected_clock()

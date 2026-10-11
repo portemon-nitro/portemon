@@ -2451,7 +2451,16 @@ function T.thrown_balls_record_the_caught_mon_and_close_the_wild_battle()
   local record = ledger[1]
   Assert.isTrue(record.success, "the guaranteed throw lands")
   Assert.equal(record.ball, "MASTER_BALL", "the record names its ball")
-  Assert.deepEqual(record.mon, foeRecord, "the record keeps the exact caught mon")
+  local expectedCaughtMon = {}
+  for key, value in pairs(foeRecord) do
+    expectedCaughtMon[key] = value
+  end
+  expectedCaughtMon.origin = {}
+  for key, value in pairs(foeRecord.origin) do
+    expectedCaughtMon.origin[key] = value
+  end
+  expectedCaughtMon.origin.ball = "MASTER_BALL"
+  Assert.deepEqual(record.mon, expectedCaughtMon, "the caught mon records the Ball used for its capture")
   SessionFixture.assertPlainData(ledger, "captures")
   Assert.isTrue(settled.combatants[1].hp > 0, "the thrower is still standing")
   Assert.isTrue(settled.combatants[2].hp > 0, "the catch ends the battle without a knockout")

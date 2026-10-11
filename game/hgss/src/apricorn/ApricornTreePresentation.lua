@@ -44,7 +44,12 @@ function ApricornTreePresentation:spriteIdForTree(actor)
   if source == nil then
     return actor.spriteId
   end
-  if self.runtime.martService:treeAvailable(source.treeIndex) then
+  local gesture = actor:presentationState().gesturePose
+  if
+    self.runtime.martService:treeAvailable(source.treeIndex)
+    and gesture ~= "apricorn_tree_wiggle"
+    and gesture ~= "apricorn_tree_expel"
+  then
     return actor.sourceEvent.spriteId
   end
   return 262
@@ -55,8 +60,15 @@ function ApricornTreePresentation:collectSpriteIds(spriteIds)
   local runtime = self.runtime
   for _, actor in ipairs(runtime.actors:actorsOf(runtime.runtimeMap.mapId)) do
     local source = actor.sourceEvent.apricorn
-    if source ~= nil and not runtime.martService:treeAvailable(source.treeIndex) then
-      spriteIds[262] = true
+    if source ~= nil then
+      local gesture = actor:presentationState().gesturePose
+      if
+        not runtime.martService:treeAvailable(source.treeIndex)
+        or gesture == "apricorn_tree_wiggle"
+        or gesture == "apricorn_tree_expel"
+      then
+        spriteIds[262] = true
+      end
     end
   end
   if self.fruit ~= nil then

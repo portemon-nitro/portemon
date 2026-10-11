@@ -83,7 +83,6 @@ local function validManifest(manifest)
     type(manifest) ~= "table"
     or manifest.schema ~= ApricornBoxAssetCache.SCHEMA
     or manifest.messageBankId ~= 27
-    or manifest.messageMemberId ~= 21
     or type(manifest.actionMessageIds) ~= "table"
     or #manifest.actionMessageIds ~= 5
     or type(manifest.flowMessageIds) ~= "table"
@@ -132,7 +131,6 @@ local function validManifest(manifest)
       and key ~= "lower"
       and key ~= "actionMenu"
       and key ~= "messageBankId"
-      and key ~= "messageMemberId"
       and key ~= "actionMessageIds"
       and key ~= "flowMessageIds"
       and key ~= "modeMessages"

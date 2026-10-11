@@ -6,6 +6,7 @@
 -- background corpus pass.
 
 local Assert = require("tests.support.Assert")
+local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local S = require("gen4.script")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
@@ -20,7 +21,7 @@ local T = {}
 
 local function runtimeWithTransitionError(transitionError)
   local calls = { session = 0 }
-  local runtime = setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     scripts = {},
     session = {
       accumulator = 0,
@@ -54,7 +55,7 @@ local function runtimeWithTransitionError(transitionError)
         return nil
       end,
     },
-  }, FieldRuntime)
+  }, FieldRuntime))
   return runtime, calls
 end
 
@@ -135,7 +136,7 @@ function T.pc_presentation_failure_cancels_its_script_task_before_freezing_runti
   Assert.isTrue(host.active, "the production PC task opened its child")
   Assert.notNil(scheduler:foregroundEnvironmentId(), "the script owns foreground input")
 
-  local runtime = setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     session = { scriptScheduler = scheduler },
     pcApplicationHost = host,
     update = function() end,
@@ -147,7 +148,7 @@ function T.pc_presentation_failure_cancels_its_script_task_before_freezing_runti
         return { stable = true }
       end,
     },
-  }, FieldRuntime)
+  }, FieldRuntime))
   Assert.isNil(runtime:captureGameSave(), "an active script refuses save capture")
   local ok, failure = pcall(function()
     presentationState(runtime):update(0)

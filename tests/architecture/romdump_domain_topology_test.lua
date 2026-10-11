@@ -109,6 +109,8 @@ local DOMAINS = {
     "HgssSoundplate",
   },
   ui = {
+    "ApricornBoxAssetCompiler",
+    "ApricornBoxCacheWriter",
     "BagAssetCompiler",
     "BagCacheWriter",
     "BagPresentationCompiler",

@@ -3,6 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
@@ -14,7 +15,18 @@ local LocalClock = require("game.src.LocalClock")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map-data:34", "map:34", "map-data:73", "map:73", "message-bank:150" },
+    derivedAssets = {
+      "field-runtime",
+      "map-data:34",
+      "map:34",
+      "map-data:35",
+      "map:35",
+      "map-data:67",
+      "map:67",
+      "map-data:73",
+      "map:73",
+      "message-bank:150",
+    },
     tags = { "field", "apricorn", "acceptance" },
   },
   tests = {},
@@ -30,6 +42,14 @@ local ADJACENT = {
   { facing = "east", dx = -1, dz = 0 },
   { facing = "west", dx = 1, dz = 0 },
 }
+
+local function bagFor(ownsBox)
+  local bag = BagSave.empty()
+  if ownsBox then
+    bag.pockets.key_items[1] = { item = "APRICORN_BOX", quantity = 1 }
+  end
+  return bag
+end
 
 local function withGame(options, fn)
   local date = options.date or { year = 2000, month = 1, day = 1, hour = 12, minute = 0, second = 0 }
@@ -59,7 +79,7 @@ local function withGame(options, fn)
         playTime = PlayTime.new(),
         worldState = worldState,
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-        bag = BagSave.empty(),
+        bag = bagFor(options.ownsBox),
         mart = mart,
       }
     end,
@@ -67,11 +87,16 @@ local function withGame(options, fn)
     versionId = AcceptanceHarness.defaultVersion(),
     map = "MAP_ROUTE_30",
     save = "fresh",
-    fieldOptions = { recordingScriptHosts = true, localClock = clock },
+    fieldOptions = {
+      audioHost = "production",
+      audioOutput = FakeAudioOutput.new(),
+      recordingScriptHosts = true,
+      localClock = clock,
+    },
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
-    fn(game)
+    fn(game, date)
     Assert.equal(game:renderAttempts(), 0, "tree acceptance stops before GPU rendering")
   end, debug.traceback)
   game:close()
@@ -90,6 +115,43 @@ local function route30Tree(game)
   error("generated Route 30 data has no tree at global index 6", 0)
 end
 
+local function treeSpriteId(game, actorId)
+  local actor = assert(game.runtime.actors:getActor(actorId), "source tree actor remains present")
+  local presentation = assert(game.runtime.apricornTreePresentation, "field runtime owns tree presentation")
+  return presentation:spriteIdForTree(actor)
+end
+
+local function waitForTreeGesture(game, actorId, gesture)
+  local expected = "apricorn_tree_" .. gesture
+  for _ = 1, 240 do
+    local actor = assert(game.runtime.actors:getActor(actorId), "source tree actor remains present")
+    if actor:presentationState().gesturePose == expected then
+      return
+    end
+    if game:snapshot().dialogue.waiting then
+      game.runtime:pressAction()
+      game:step()
+      game.runtime:releaseAction()
+    else
+      game:step()
+    end
+  end
+  local snapshot = game:snapshot()
+  error(
+    "tree did not enter its source "
+      .. gesture
+      .. " gesture within 240 ticks: script="
+      .. tostring(snapshot.foregroundScript)
+      .. " locked="
+      .. tostring(snapshot.fieldLocked)
+      .. " dialogue="
+      .. tostring(snapshot.dialogue.modal)
+      .. " available="
+      .. tostring(game.runtime.martService:treeAvailable(6)),
+    0
+  )
+end
+
 local function standAtTree(game, event)
   local actorId = "map:" .. ROUTE_30_ID .. ":object:" .. event.objectEventId
   local actor = assert(game:actor(actorId), "the source tree actor remains present")
@@ -106,7 +168,7 @@ local function standAtTree(game, event)
   error("Route 30 tree has no reachable adjacent interaction tile", 0)
 end
 
-local function interact(game)
+local function interact(game, actorId)
   local snapshot = game:pressAction()
   local interaction = game:interaction()
   Assert.equal(
@@ -121,13 +183,61 @@ local function interact(game)
       .. " facing "
       .. tostring(snapshot.player.facing)
   )
+  Assert.equal(interaction.actorId, actorId, "interaction targets the expected source tree actor")
   return snapshot
 end
 
 local function waitForDialogue(game, label)
-  return game:advanceUntil(label, function(snapshot)
+  game:advanceUntil(label, function(snapshot)
     return snapshot.dialogue.modal
   end, 180)
+end
+
+local function advanceSourceMessage(game)
+  game:advanceUntil("source dialogue reaches its input continuation", function(snapshot)
+    return snapshot.dialogue.waiting
+  end, 180)
+  local requestId = game:snapshot().dialogue.requestId
+  for _ = 1, 240 do
+    local dialogue = game:snapshot().dialogue
+    if not dialogue.modal or dialogue.requestId ~= requestId then
+      return
+    end
+    if dialogue.waiting then
+      game.runtime:pressAction()
+      game:step()
+      game.runtime:releaseAction()
+    else
+      game:step()
+    end
+  end
+  error("source dialogue message did not finish after its input edges", 0)
+end
+
+local function finishTreeScript(game, label, previousEventCount)
+  local function ended()
+    local records = game:hostEvents().records
+    for index = previousEventCount + 1, #records do
+      local event = records[index]
+      if event.name == "script.ended" and event.payload.scriptId == "common.apricorn_tree" then
+        return true
+      end
+    end
+    return false
+  end
+  for _ = 1, 240 do
+    if ended() then
+      return
+    end
+    if game:snapshot().dialogue.waiting then
+      game.runtime:pressAction()
+      game:step()
+      game.runtime:releaseAction()
+    else
+      game:step()
+    end
+  end
+  error("timed out waiting for " .. label .. " to finish", 0)
 end
 
 local function waitForTreeOutcome(game, expectedCount)
@@ -138,32 +248,50 @@ local function waitForTreeOutcome(game, expectedCount)
 end
 
 function T.tests.tree_requires_the_box_then_grants_once_and_stays_interactive()
-  withGame({ ownsBox = false, greenCount = 0 }, function(game)
+  withGame({ ownsBox = false, greenCount = 0 }, function(game, date)
     local actorId = standAtTree(game, route30Tree(game))
     local mart = assert(game.runtime.martService, "field runtime owns the Apricorn ledger")
+    Assert.equal(treeSpriteId(game, actorId), 266, "a ripe green tree uses its source color visual")
 
-    interact(game)
+    local eventCount = #game:hostEvents().records
+    interact(game, actorId)
     waitForDialogue(game, "the tree explains that the Box is required")
     Assert.equal(mart:apricornQuantity(GREEN_APRICORN), 0, "a missing Box grants nothing")
     Assert.isTrue(mart:treeAvailable(6), "a missing Box does not deplete the tree")
-    game:advanceDialogue()
+    advanceSourceMessage(game)
+    finishTreeScript(game, "no-Box source script finishes", eventCount)
 
     game:setWorldState({ flag = APRICORN_BOX })
-    interact(game)
-    game:advanceDialogue()
+    Assert.isTrue(game.runtime.bagService:add("APRICORN_BOX", 1), "Box pickup adds the native key item")
+    eventCount = #game:hostEvents().records
+    interact(game, actorId)
+    waitForTreeGesture(game, actorId, "wiggle")
+    Assert.equal(treeSpriteId(game, actorId), 262, "tree gestures use the full source animation resource")
+    waitForDialogue(game, "the shaken tree message opens")
+    advanceSourceMessage(game)
+    waitForDialogue(game, "the Apricorn result message opens")
+    advanceSourceMessage(game)
     waitForTreeOutcome(game, 1)
+    Assert.equal(treeSpriteId(game, actorId), 262, "a depleted tree keeps the source base visual")
     Assert.equal(mart:apricornQuantity(GREEN_APRICORN), 1, "a fresh tree grants one matching Apricorn")
     Assert.isFalse(mart:treeAvailable(6), "the successful tree is depleted for this date")
     Assert.notNil(game:actor(actorId), "depletion keeps the source tree actor present")
-    game:advanceDialogue()
+    waitForDialogue(game, "the source result message opens")
+    advanceSourceMessage(game)
+    finishTreeScript(game, "successful harvest source script finishes", eventCount)
 
-    interact(game)
+    eventCount = #game:hostEvents().records
+    interact(game, actorId)
     waitForDialogue(game, "the depleted tree reports no fruit")
     Assert.equal(mart:apricornQuantity(GREEN_APRICORN), 1, "same-day repeat does not duplicate the reward")
     Assert.isFalse(mart:treeAvailable(6), "same-day repeat leaves the tree depleted")
     Assert.notNil(game:actor(actorId), "the depleted tree remains available for interaction")
-    game:advanceDialogue()
+    advanceSourceMessage(game)
+    finishTreeScript(game, "depleted-tree source script finishes", eventCount)
 
+    game.runtime:cancelPendingEncounter()
+    local saved, saveError = game.runtime:captureGameSave()
+    Assert.notNil(saved, "finished tree scripts restore through a stable save: " .. tostring(saveError))
     game:restart()
     game:waitForFieldEntry()
     local restoredMart = assert(game.runtime.martService)
@@ -183,15 +311,21 @@ function T.tests.full_box_attempt_still_depletes_the_tree_without_adding_stock()
   withGame({ ownsBox = true, greenCount = 99 }, function(game)
     local actorId = standAtTree(game, route30Tree(game))
     local mart = assert(game.runtime.martService, "field runtime owns the Apricorn ledger")
-
-    interact(game)
-    game:advanceDialogue()
+    local eventCount = #game:hostEvents().records
+    interact(game, actorId)
+    waitForDialogue(game, "full Box tree explanation opens")
+    advanceSourceMessage(game)
     waitForTreeOutcome(game, 99)
     Assert.equal(mart:apricornQuantity(GREEN_APRICORN), 99, "full stock refuses the additional Apricorn")
     Assert.isFalse(mart:treeAvailable(6), "the source animation depletes fruit before the capacity check")
     Assert.notNil(game:actor(actorId), "full stock does not remove the tree actor")
+    waitForDialogue(game, "the shaken tree message opens")
+    advanceSourceMessage(game)
+    waitForDialogue(game, "the Apricorn result message opens")
+    advanceSourceMessage(game)
     waitForDialogue(game, "full Box message opens")
-    game:advanceDialogue()
+    advanceSourceMessage(game)
+    finishTreeScript(game, "full-Box source script finishes", eventCount)
   end)
 end
 

@@ -511,7 +511,6 @@ function ApricornBoxAssetCompiler.compile(romFs)
       charOffset = ApricornBoxSources.geometry.touchMenu.actionCharOffset,
     },
     messageBankId = ApricornBoxSources.messages.bankId,
-    messageMemberId = ApricornBoxSources.messages.memberId,
     rows = rows,
     selectionCursor = selectionCursor,
     rowHitboxes = ApricornBoxSources.geometry.rowHitboxes,

@@ -91,7 +91,7 @@ end
 local function apricornService(runtime)
   local treePresentation = ApricornTreePresentation.new(runtime)
   runtime.apricornTreePresentation = treePresentation
-  local function treeForActor(actorId)
+  local function treeForActor(_, actorId)
     local actor = runtime.actors:getActor(actorId)
     local sourceEvent = actor and actor.sourceEvent
     local source = type(sourceEvent) == "table" and sourceEvent.apricorn or nil
@@ -117,22 +117,22 @@ local function apricornService(runtime)
     )
     return APRICORN_BY_COLOR[colorCode]
   end
-  local function colorForActor(actorId)
-    return COLOR_BY_APRICORN[treeForActor(actorId).apricornKey]
+  local function colorForActor(_, actorId)
+    return COLOR_BY_APRICORN[treeForActor(nil, actorId).apricornKey]
   end
-  local function give(colorCode, quantity)
+  local function give(_, colorCode, quantity)
     return assert(runtime.martService, "Apricorn inventory owner is unavailable"):tryGiveApricorn(
       keyForColor(colorCode),
       quantity
     )
   end
-  local function displayName(colorCode)
+  local function displayName(_, colorCode)
     return assert(runtime.itemCatalog, "item catalog is unavailable"):item(keyForColor(colorCode)).name
   end
-  local function treeAvailable(treeIndex)
+  local function treeAvailable(_, treeIndex)
     return assert(runtime.martService, "Apricorn tree state owner is unavailable"):treeAvailable(treeIndex)
   end
-  local function depleteTree(treeIndex)
+  local function depleteTree(_, treeIndex)
     return assert(runtime.martService, "Apricorn tree state owner is unavailable"):depleteTree(treeIndex)
   end
   local function beginTreeAnimation(_, _, _)
@@ -152,7 +152,7 @@ local function apricornService(runtime)
     elseif phase == "expel" then
       runtime.actors:setGesturePresentation(actorId, "apricorn_tree_expel", frame)
       if frame == 0 then
-        treePresentation:spawnFruit(actorId, treeForActor(actorId).apricornKey)
+        treePresentation:spawnFruit(actorId, treeForActor(nil, actorId).apricornKey)
       end
     elseif phase == "jump" then
       treePresentation:advanceFruit(frame)

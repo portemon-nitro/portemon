@@ -8,6 +8,7 @@
 -- any field step or launch can ask for battle work.
 
 local Assert = require("tests.support.Assert")
+local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -55,7 +56,7 @@ end
 
 local function fakeRuntime(overrides)
   local battleFlags = {}
-  local runtime = setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     battleRuntime = nil,
     _battleLaunch = nil,
     _battleReceipts = {},
@@ -85,7 +86,7 @@ local function fakeRuntime(overrides)
         },
       },
     },
-  }, FieldRuntime)
+  }, FieldRuntime))
   for key, value in pairs(overrides or {}) do
     runtime[key] = value
   end

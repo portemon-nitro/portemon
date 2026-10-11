@@ -676,6 +676,24 @@ local function kurtApricornBoxSelect(_)
   return { op = "apricorn_box_select" }
 end
 
+-- The Apricorn tree script passes SCORE_EVENT_APRICORN_HARVESTED (1) to
+-- ScrCmd_AddSpecialGameStat. Score persistence has no runtime owner yet, so
+-- preserve this one command position without claiming other stat events.
+local function addApricornHarvestScore(ins)
+  local event = Operands.operandValue(ins.operands[1])
+  if event == 1 then
+    return { op = "noop" }
+  end
+  return {
+    op = "unsupported",
+    command = ins.opcode,
+    originalName = "ScrCmd_AddSpecialGameStat",
+    arguments = { event },
+    sourceOffset = ins.offset,
+    reason = "special game-stat event has no runtime owner",
+  }
+end
+
 local function giveApricornFromTree(ins)
   return {
     op = "apricorn_give",
@@ -1543,6 +1561,7 @@ local FieldHandlers = {
   [669] = getItemQuantity,
   [623] = apricornTreeAnim,
   [624] = apricornTreeColor,
+  [515] = addApricornHarvestScore,
   [735] = kurtApricornQuantity,
   [736] = kurtApricornClear,
   [737] = kurtApricornBall,

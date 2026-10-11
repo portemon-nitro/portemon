@@ -13,6 +13,9 @@ local function treeActor()
     getWorldPosition = function()
       return { x = 2, y = 1, z = 3 }
     end,
+    presentationState = function()
+      return { gesturePose = nil }
+    end,
   }
 end
 

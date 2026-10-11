@@ -2,6 +2,7 @@
 -- through FieldRuntime methods without constructing a cache-backed session.
 
 local Assert = require("tests.support.Assert")
+local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
@@ -140,7 +141,7 @@ local function runtimeWithClock(catalog, calls, currentMap)
       return false
     end,
   }
-  local runtime = setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     weatherCatalog = catalog,
     weatherClock = clock,
     eventState = FieldEventState.new(),
@@ -198,7 +199,7 @@ local function runtimeWithClock(catalog, calls, currentMap)
       updateSourceFrame = function() end,
     },
     fieldEntranceIndicator = { updateFixed = function() end },
-  }, FieldRuntime)
+  }, FieldRuntime))
   runtime.worldSwapCoordinator = FieldWorldSwapCoordinator.new(runtime)
   return runtime
 end

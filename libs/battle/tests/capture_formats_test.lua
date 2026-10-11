@@ -164,7 +164,7 @@ function T.safari_throws_spend_the_safari_counter_once()
     formatState = Formats.initialState("safari"),
     inventories = { party = { quantities = { SAFARI_BALL = 0 } } },
     ledger = {},
-    combatants = { [2] = { mon = { species = "PIKACHU" }, hp = 1, maxHp = 100 } },
+    combatants = { [2] = { mon = { species = "PIKACHU", origin = { ball = "POKE_BALL" } }, hp = 1, maxHp = 100 } },
   }
   local stream = scriptedStream({ 0, 0, 0 })
   local outcome = Capture.execute(attempt, battle, stream)
@@ -187,7 +187,7 @@ function T.exhausted_safari_counters_fail_before_any_draw()
     formatState = Formats.initialState("safari"),
     inventories = { party = { quantities = {} } },
     ledger = {},
-    combatants = { [2] = { mon = { species = "PIKACHU" }, hp = 100, maxHp = 100 } },
+    combatants = { [2] = { mon = { species = "PIKACHU", origin = { ball = "POKE_BALL" } }, hp = 100, maxHp = 100 } },
   }
   local stream = scriptedStream({ 0, 0, 0 })
   local context = Context.forBall("SAFARI_BALL", targetFacts(), modeEnv("safari", { safariBalls = 0, safariCatchRateStage = 6 }))
@@ -237,7 +237,7 @@ function T.contest_throws_record_the_candidate_for_judging()
     sportBalls = 1,
     inventories = { party = { quantities = {} } },
     ledger = {},
-    combatants = { [2] = { mon = { species = "SCYTHER" }, hp = 1, maxHp = 100 } },
+    combatants = { [2] = { mon = { species = "SCYTHER", origin = { ball = "POKE_BALL" } }, hp = 1, maxHp = 100 } },
   }
   local stream = scriptedStream({ 0, 0, 0 })
   local outcome = Capture.execute(attempt, battle, stream)
@@ -249,7 +249,7 @@ function T.contest_throws_record_the_candidate_for_judging()
     sportBalls = 0,
     inventories = { party = { quantities = {} } },
     ledger = {},
-    combatants = { [2] = { mon = { species = "SCYTHER" }, hp = 1, maxHp = 100 } },
+    combatants = { [2] = { mon = { species = "SCYTHER", origin = { ball = "POKE_BALL" } }, hp = 1, maxHp = 100 } },
   }
   local quiet = scriptedStream({ 0, 0, 0 })
   local ok, err = pcall(Capture.execute, attempt, empty, quiet)
@@ -294,7 +294,7 @@ function T.pal_park_admits_only_park_balls_and_always_lands()
     parkBalls = 1,
     inventories = { party = { quantities = {} } },
     ledger = {},
-    combatants = { [2] = { mon = { species = "PIKACHU" }, hp = 100, maxHp = 100 } },
+    combatants = { [2] = { mon = { species = "PIKACHU", origin = { ball = "POKE_BALL" } }, hp = 100, maxHp = 100 } },
   }
   local stream = scriptedStream({ 65535 })
   local outcome = Capture.execute(attempt, battle, stream)

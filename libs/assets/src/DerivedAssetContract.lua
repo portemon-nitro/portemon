@@ -189,8 +189,8 @@ DerivedAssetContract.fieldCells = {
 
 DerivedAssetContract.fieldActors = {
   cacheFormat = "field-actor-cache-v2",
-  -- v4 adds the animated Pokemon idle's per-facing draw offsets.
-  schema = "g4-field-actor-v4",
+  -- v5 adds Apricorn tree gesture clips and guarantees their colored source sprites.
+  schema = "g4-field-actor-v5",
   indexSchema = "g4-field-actor-index-v3",
 }
 
@@ -227,7 +227,8 @@ DerivedAssetContract.fieldMapData = {
   -- scene key the presentation cache inventories, plus the wild encounter
   -- table member backing committed-step encounter selection so the runtime
   -- resolves the map's own table.
-  fieldSchema = "g4-field-map-v13",
+  -- v14 carries semantic Apricorn tree identity and normalized ripe sprites.
+  fieldSchema = "g4-field-map-v14",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.
@@ -433,7 +434,7 @@ DerivedAssetContract.bag = {
 
 DerivedAssetContract.apricornBox = {
   cacheFormat = "apricorn-box-cache-v2",
-  schema = "g4-apricorn-box-assets-v2",
+  schema = "g4-apricorn-box-assets-v3",
 }
 
 -- The party class carries the source-independent native party

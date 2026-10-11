@@ -495,8 +495,11 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
   local function readSummaryNavigation()
     return assert(runtime.input, "summary navigation needs the field input"):lastUiNavigation()
   end
-  local apricornBoxManifest = ApricornBoxAssetCache.loadManifest(cacheFs)
+  local apricornBoxManifest
   local function makeApricornBox(mode)
+    if apricornBoxManifest == nil then
+      apricornBoxManifest = ApricornBoxAssetCache.loadManifest(cacheFs)
+    end
     return ApricornBoxScreenState.new({
       mode = mode,
       service = assert(runtime.martService, "the Box borrows the live Apricorn stock service"),

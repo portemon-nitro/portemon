@@ -78,7 +78,7 @@ function T.compiles_catalog_identity_source_and_events()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
   Assert.equal(bundle.mapId, 60)
-  Assert.equal(bundle.field.schema, "g4-field-map-v13")
+  Assert.equal(bundle.field.schema, "g4-field-map-v14")
   Assert.equal(bundle.field.mapSymbol, "MAP_NEW_BARK")
   Assert.equal(bundle.field.cameraType, 0)
   -- Source identity lives only in the dependency record; the runtime asset
@@ -111,7 +111,7 @@ end
 function T.emits_strict_init_script_array_for_every_map()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  Assert.equal(bundle.field.schema, "g4-field-map-v13")
+  Assert.equal(bundle.field.schema, "g4-field-map-v14")
   Assert.deepEqual(bundle.field.initScripts, {})
 end
 
@@ -122,7 +122,7 @@ end
 function T.emits_normalized_render_environment_without_a_visual_scene()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  Assert.equal(bundle.field.schema, "g4-field-map-v13")
+  Assert.equal(bundle.field.schema, "g4-field-map-v14")
   local environment = bundle.field.renderEnvironment
   Assert.notNil(environment, "the field record carries its render environment")
   environment = assert(environment)
@@ -272,7 +272,7 @@ function T.annotates_only_verified_source_apricorn_tree_objects()
     objectEvents = {
       {
         objectEventId = 8,
-        spriteId = 266,
+        spriteId = 262,
         movement = 0,
         type = 0,
         eventFlag = 1081,
@@ -298,6 +298,7 @@ function T.annotates_only_verified_source_apricorn_tree_objects()
   local object = bundle.field.events.objects[1]
   Assert.equal(object.scriptId, "common.apricorn_tree")
   Assert.deepEqual(object.apricorn, { treeIndex = 6, apricornKey = "GRN_APRICORN" })
+  Assert.equal(object.spriteId, 266, "the normalized field actor uses the tree's source Apricorn color")
 end
 
 function T.rejects_a_source_apricorn_tree_with_an_unexpected_sprite()

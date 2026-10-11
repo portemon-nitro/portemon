@@ -300,6 +300,7 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
       windowStyles = {},
       transition = {},
       mapLoader = {},
+      kurtBoxHost = {},
       dexKnowledge = {
         isNationalDexComplete = function()
           return true

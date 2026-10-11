@@ -1,5 +1,5 @@
 -- Compiles every field-actor sprite referenced by the map catalog into normalized
--- `g4-field-actor-v4`
+-- `g4-field-actor-v5`
 -- visual definitions plus one private RGBA atlas each.
 --
 -- Ordinary actors use a shared camera-facing billboard and timeline. Static
@@ -31,6 +31,7 @@ local FieldActorTimeline = require("romdump.src.digest.actor.FieldActorTimeline"
 local PlayerAvatar = require("romdump.src.reference.hgss.player_avatar")
 local PoseContract = require("libs.assets.src.model.PoseContract")
 local manifest = require("romdump.src.config.FieldActors")
+local ApricornSources = require("romdump.src.config.ApricornSources")
 
 local FieldActorCompiler = {}
 
@@ -39,6 +40,10 @@ local TEXTURE_MAGIC = "BTX0"
 local FX32_ONE = 4096
 local SOURCE_MODEL_UNITS_PER_TILE = 16
 local FOLLOWER_DISPLAY_OFFSET = -(2 * FX32_ONE) / (SOURCE_MODEL_UNITS_PER_TILE * FX32_ONE)
+local RIPE_APRICORN_TREE_SPRITES = {}
+for _, spriteId in pairs(ApricornSources.treeSpriteIdByKey) do
+  RIPE_APRICORN_TREE_SPRITES[spriteId] = true
+end
 
 -- Source HEAL/BANZAI callback: ov01_021F8AB0 applies facing-vector Z of 2<<10
 -- (pret/pokeheartgold@b23531f6 asm/overlay_01_sprite_data.s, asm/overlay_01_021F72DC.s).
@@ -127,7 +132,9 @@ local function selectedSpriteIds(romFs)
       add(states[state])
     end
   end
-
+  for spriteId in pairs(RIPE_APRICORN_TREE_SPRITES) do
+    add(spriteId)
+  end
   local archive = must(romFs:openNarc("zone_events"), "zone_event archive is unavailable")
   local variableSprites = {}
   for map in MapCatalog.all() do
@@ -558,11 +565,17 @@ local function compileSprite(romFs, spriteId, graphics, archive, staticArchive)
       { drawMode = drawMode, context = context }
     )
   end
-  local frameSet = FieldActorFrames.collect(timeline, descriptor.ranges, #pack.textures, #pack.palettes, context)
+  local ranges = descriptor.ranges
+  if RIPE_APRICORN_TREE_SPRITES[spriteId] then
+    -- Color tree resources contain only their ripe idle frame. Their shared
+    -- descriptor's later ranges belong to the seven-frame base tree graphic.
+    ranges = { assert(ranges[1]) }
+  end
+  local frameSet = FieldActorFrames.collect(timeline, ranges, #pack.textures, #pack.palettes, context)
   local frames, perRange = frameSet.frames, frameSet.perRange
   local atlas = decodeAtlas(pack, frames, context)
-  local directions, idleProfile = buildPoses(perRange, descriptor.ranges, idleMode, descriptor.modelKey)
-  local gestures = buildGestures(record, perRange, descriptor.ranges, context)
+  local directions, idleProfile = buildPoses(perRange, ranges, idleMode, descriptor.modelKey)
+  local gestures = RIPE_APRICORN_TREE_SPRITES[spriteId] and {} or buildGestures(record, perRange, ranges, context)
 
   local placement = {
     sourceSize = { width = atlas.frameWidth, height = atlas.frameHeight },

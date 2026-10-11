@@ -1342,9 +1342,21 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
     end
     return copy
   end
-  local before = snapshot()
   local identity = { versionId = "heartgold", generationId = GENERATION, producerId = "readiness-producer" }
-  local available, reason = DerivedCacheAudit.isAvailable(cache, identity, plans)
+  writeReceipt(cache, "apricorn-box", "global", "separately-validated-apricorn-family")
+  local before = snapshot()
+  local realValidate = ArtifactJobs.validate
+  ArtifactJobs.validate = function(candidate, generation, kind, key, candidatePlans)
+    if kind == "apricorn-box" and key == "global" then
+      -- Apricorn Box readiness has its own source-backed cache contract
+      -- tests; this audit isolates completeness of the field-map inventory.
+      return true
+    end
+    return realValidate(candidate, generation, kind, key, candidatePlans)
+  end
+  local ok, available, reason = pcall(DerivedCacheAudit.isAvailable, cache, identity, plans)
+  ArtifactJobs.validate = realValidate
+  assert(ok, "the field-map audit must return a readiness verdict")
   Assert.deepEqual(snapshot(), before, "a read-only audit performs no writes")
   Assert.isFalse(available, "the audit must fail on the missing inventory record")
   Assert.isTrue(
