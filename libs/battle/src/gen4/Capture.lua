@@ -493,10 +493,42 @@ local function spendThrow(spent, policy, attempt)
   }
 end
 
+---@param value unknown persistent mon data being copied
+---@return unknown detached copy of a persistent mon value
+local function copyMonValue(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local copy = {}
+  for key, item in pairs(value) do
+    copy[key] = copyMonValue(item)
+  end
+  return copy
+end
+
+---@param mon table<string, unknown> source wild mon being caught
+---@param ball string Ball used for the successful throw
+---@return table<string, unknown> owned caught mon with its actual Ball provenance
+local function copyCaughtMon(mon, ball)
+  local origin = mon.origin
+  if type(origin) ~= "table" or type(origin.ball) ~= "string" then
+    error(
+      failure("invalid_captured_mon", "a caught mon requires a valid origin record", { code = "invalid_captured_mon" })
+    )
+  end
+  local caught = copyMonValue(mon) --[[@as table<string, unknown>]]
+  local caughtOrigin = caught.origin --[[@as table<string, unknown>]]
+  caughtOrigin.ball = ball
+  if ball == "FRIEND_BALL" then
+    caught.friendship = 200
+  end
+  return caught
+end
+
 --- Executes a throw through the single owned path: validate, spend the
 --- ball at the throw, stage the shake checks, and return the caught mon
---- with ordered throw, shake, and outcome events. Success carries the
---- existing target record bit-for-bit and never claims placement.
+--- with ordered throw, shake, and outcome events. Success carries an owned
+--- caught record and never claims placement.
 ---@param attempt CaptureAttempt throw under execution
 ---@param battle table<string, unknown> battle-owned execution state being thrown in
 ---@param stream table<string, unknown> labeled native draw stream under execution
@@ -518,7 +550,7 @@ function Capture.execute(attempt, battle, stream)
     target = targetId,
     source = mon.origin,
     ball = ball,
-    mon = mon,
+    mon = calculation.success and copyCaughtMon(mon, ball) or mon,
     shakes = calculation.shakes,
     context = context,
     success = calculation.success,

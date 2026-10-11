@@ -1,9 +1,8 @@
--- Captures keep the caught mon bit-for-bit and never claim storage: a
--- successful throw returns the existing target record with its identity,
--- moves, experience, and current condition intact, spends exactly one ball,
--- and leaves placement to the later committer. Illegal throws fail at their
--- proper stage with no draws spent, no stock moved, and no state changed,
--- while an explicitly permitted custom policy takes the same path.
+-- Captures preserve the target's identity while recording the thrown Ball
+-- on an owned caught record, spend exactly one Ball, and leave placement to
+-- the later committer. Illegal throws fail at their proper stage with no
+-- draws spent, no stock moved, and no state changed, while an explicitly
+-- permitted custom policy takes the same path.
 
 local Assert = require("tests.support.Assert")
 local SessionFixture = require("libs.battle.tests.session_fixture")
@@ -159,9 +158,8 @@ function T.capture_exposes_validation_calculation_and_execution()
   Assert.isTrue(type(Formats.register) == "function", "special capture mechanics bind through registration")
 end
 
--- The caught mon survives bit-for-bit: species, level, personality, IVs,
--- experience, and origin in the result match the target record exactly, so
--- nothing is rerolled and no capture metadata is invented by the throw.
+-- The caught record keeps the target's generated identity and facts, but
+-- owns the actual Ball provenance. The source record remains unchanged.
 function T.caught_identity_survives_bit_for_bit()
   local Capture = captureOwner("throwing, calculating, and settling own captures")
   local Context = contextOwner("typed capture environments own the facts each ball reads")
@@ -179,8 +177,97 @@ function T.caught_identity_survives_bit_for_bit()
   Assert.equal(outcome.result.mon.personality, mon.personality, "the personality survives")
   Assert.deepEqual(outcome.result.mon.ivs, mon.ivs, "the IVs survive")
   Assert.equal(outcome.result.mon.experience, mon.experience, "the experience survives")
-  Assert.deepEqual(outcome.result.source, mon.origin, "the origin travels unchanged")
+  Assert.equal(outcome.result.mon.origin.ball, "MASTER_BALL", "the caught record records the thrown Ball")
+  Assert.equal(mon.origin.ball, "POKE_BALL", "the target keeps its neutral source Ball")
+  Assert.deepEqual(outcome.result.source, mon.origin, "the source origin remains unchanged")
+  Assert.isFalse(outcome.result.mon == mon, "the caught record is owned separately")
+  Assert.isFalse(outcome.result.mon.origin == mon.origin, "the caught origin is owned separately")
+  Assert.isFalse(outcome.result.mon.ivs == mon.ivs, "nested mutable identity data is copied")
   Assert.deepEqual(stream:capture(), { used = 0 }, "a guaranteed throw draws nothing extra")
+end
+
+-- Every native Ball identity survives success, and Friend Ball applies its
+-- fixed friendship consequence only to the owned caught record.
+function T.success_records_each_thrown_ball_and_friendship()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local balls = {
+    "FAST_BALL",
+    "LEVEL_BALL",
+    "LURE_BALL",
+    "HEAVY_BALL",
+    "LOVE_BALL",
+    "FRIEND_BALL",
+    "MOON_BALL",
+    "GREAT_BALL",
+  }
+  for _, ball in ipairs(balls) do
+    local mon = wildMon(101)
+    mon.friendship = 70
+    local battle = wildBattle(mon, ball, 1)
+    local target = battle.combatants[2]
+    for key, value in pairs(targetFacts({ hp = 1 })) do
+      target[key] = value
+    end
+    battle.combatants[1].mon = { level = 20, species = "PIDGEY", gender = "female" }
+    local outcome = Capture.execute(wildAttempt(ball), battle, scriptedStream({ 0, 0, 0 }))
+    Assert.isTrue(outcome.result.success, ball .. " succeeds on the guaranteed target")
+    Assert.equal(outcome.result.ball, ball, ball .. " is named by the result")
+    Assert.equal(outcome.result.mon.origin.ball, ball, ball .. " is recorded on the caught mon")
+    Assert.equal(mon.origin.ball, "POKE_BALL", ball .. " leaves target provenance unchanged")
+    Assert.equal(battle.inventories.party.quantities[ball], 0, ball .. " spends exactly one unit")
+    Assert.equal(#battle.ledger, 1, ball .. " writes one consumption record")
+    Assert.equal(battle.ledger[1].delta, -1, ball .. " records one consumed unit")
+    Assert.equal(
+      outcome.result.mon.friendship,
+      ball == "FRIEND_BALL" and 200 or 70,
+      ball .. " applies only its native friendship consequence"
+    )
+    Assert.equal(mon.friendship, 70, ball .. " leaves target friendship unchanged")
+  end
+end
+
+-- Friend Ball sets success friendship to 200 for both ends of the source
+-- range, while a successful ordinary Ball preserves its target's value.
+function T.friend_ball_success_sets_friendship_without_changing_target()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  for _, friendship in ipairs({ 0, 255, 70 }) do
+    local ball = friendship == 70 and "GREAT_BALL" or "FRIEND_BALL"
+    local mon = wildMon(102)
+    mon.friendship = friendship
+    local battle = wildBattle(mon, ball, 1)
+    for key, value in pairs(targetFacts({ hp = 1 })) do
+      battle.combatants[2][key] = value
+    end
+    battle.combatants[1].level = 20
+    battle.combatants[1].species = "PIDGEY"
+    battle.combatants[1].gender = "female"
+    local outcome = Capture.execute(wildAttempt(ball), battle, scriptedStream({ 0, 0, 0 }))
+    Assert.isTrue(outcome.result.success, ball .. " succeeds deterministically")
+    Assert.equal(
+      outcome.result.mon.friendship,
+      ball == "FRIEND_BALL" and 200 or 70,
+      ball .. " sets or preserves caught friendship"
+    )
+    Assert.equal(mon.friendship, friendship, ball .. " leaves target friendship unchanged")
+  end
+end
+
+-- A failed Friend Ball throw consumes its Ball but never edits the target or
+-- returns a changed caught record, and the failed shake uses the same draw.
+function T.failed_friend_ball_throw_preserves_target_and_capture_law()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local mon = wildMon(103)
+  mon.friendship = 27
+  local battle = wildBattle(mon, "FRIEND_BALL", 1)
+  local stream = scriptedStream({ 65535 })
+  local outcome = Capture.execute(wildAttempt("FRIEND_BALL"), battle, stream)
+  Assert.isFalse(outcome.result.success, "the hostile shake tape breaks free")
+  Assert.equal(outcome.result.mon, mon, "a failed throw returns the unchanged target")
+  Assert.equal(mon.origin.ball, "POKE_BALL", "failure leaves target provenance unchanged")
+  Assert.equal(mon.friendship, 27, "failure leaves target friendship unchanged")
+  Assert.equal(battle.inventories.party.quantities.FRIEND_BALL, 0, "the failed throw still consumes one Ball")
+  Assert.equal(#battle.ledger, 1, "the failed throw still records one consumption")
+  Assert.deepEqual(stream:capture(), { used = 1 }, "failure uses the existing first-shake draw only")
 end
 
 -- A landed throw claims no placement: the result carries no stored or
