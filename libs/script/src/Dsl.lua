@@ -334,6 +334,26 @@ function M.martQuery(spec)
   return op("mart_query", spec)
 end
 
+function M.apricornKurtQuantity(spec)
+  return op("apricorn_kurt_quantity", spec)
+end
+
+function M.apricornKurtBall(spec)
+  return op("apricorn_kurt_ball", spec)
+end
+
+function M.apricornKurtClear(spec)
+  return op("apricorn_kurt_clear", spec)
+end
+
+function M.apricornTotal(spec)
+  return op("apricorn_total", spec)
+end
+
+function M.apricornBoxSelect(spec)
+  return op("apricorn_box_select", spec)
+end
+
 function M.pcOpen(spec)
   assert(type(spec) == "table", "PC application spec must be a table")
   return op("pc_open", spec)

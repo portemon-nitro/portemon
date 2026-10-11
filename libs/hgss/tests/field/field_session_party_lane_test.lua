@@ -317,4 +317,35 @@ function T.pc_application_owns_the_same_modal_ui_lane_and_balances_capture()
   Assert.equal(input.clears, 1, "closing the PC child clears captured UI edges")
 end
 
+function T.kurt_selector_uses_the_script_modal_lane_and_balances_capture()
+  local active = false
+  local input = recordingInput()
+  local scheduler = recordingScheduler()
+  scheduler.step = function(_, _, schedulerInput)
+    if #scheduler.seen == 0 then
+      active = true
+    elseif #scheduler.seen == 1 then
+      active = false
+    end
+    scheduler.seen[#scheduler.seen + 1] = schedulerInput
+  end
+  local host = {
+    isActive = function()
+      return active
+    end,
+  }
+  local options = optionsWith({ kurtBoxHost = host, input = input, scriptScheduler = scheduler })
+  local session = FieldSession.new(options)
+  session:updateFixed({ pressedDirection = "south", actionPressed = true, cancelPressed = true })
+  Assert.equal(input.begins, 1, "opening Kurt's selector begins UI capture")
+  session:updateFixed({ pressedDirection = "north", actionPressed = true, cancelPressed = true })
+  local routed = scheduler.seen[2]
+  Assert.equal(routed.uiEvents, input.batch, "the Kurt task receives the normalized UI batch")
+  Assert.isNil(routed.pressedDirection, "field direction is suppressed while the selector is open")
+  Assert.isNil(routed.pressedAction, "field action is suppressed while the selector is open")
+  Assert.isNil(routed.pressedCancel, "field cancel is suppressed while the selector is open")
+  session:updateFixed({})
+  Assert.equal(input.clears, 1, "closing Kurt's selector clears captured UI edges")
+end
+
 return { tests = T }

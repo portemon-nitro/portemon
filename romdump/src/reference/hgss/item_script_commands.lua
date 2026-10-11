@@ -21,9 +21,10 @@
 --   battle row to claim (representative battle opcodes 213, 220, and 589
 --   stay outside this inventory);
 -- - phone/gift feature commands (phone_gift rows below);
--- - seal, apricorn, prize, and field rock-smash flows (rows below), whose
---   behavior is primarily another gameplay subsystem even when it reaches
---   inventory;
+-- - seal, prize, and field rock-smash flows (rows below), whose behavior is
+--   primarily another gameplay subsystem even when it reaches inventory;
+-- - apricorn tree and Kurt collection commands, owned by the field Apricorn
+--   flow even though they access inventory;
 -- - opcode 757: its name mentions the Bag but it drives a cutscene prop,
 --   never inventory, so a name match alone never confers membership.
 
@@ -63,8 +64,11 @@ local commands = {
   { opcode = 624, category = "apricorn" },
   { opcode = 625, category = "apricorn" },
   { opcode = 626, category = "apricorn" },
+  { opcode = 735, category = "apricorn" },
   { opcode = 736, category = "apricorn" },
+  { opcode = 737, category = "apricorn" },
   { opcode = 738, category = "apricorn" },
+  { opcode = 739, category = "apricorn" },
   { opcode = 567, category = "prize" },
   { opcode = 651, category = "prize" },
   { opcode = 753, category = "field_item_check" },

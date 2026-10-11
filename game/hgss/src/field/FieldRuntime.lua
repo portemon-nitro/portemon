@@ -183,6 +183,7 @@ end
 ---@field bagService HgssBagService the live bag/inventory service
 ---@field martService MartService the live mart inventory/session service
 ---@field martHost table<string, unknown> the one script-owned mart child host
+---@field kurtBoxHost table<string, unknown> the one script-owned Kurt selector host
 ---@field martStockResolver function the selected mart stock provider
 ---@field battleRuntime table<string, unknown>? the owned application battle lifetime (nil outside battles)
 ---@field battlePresentation table<string, unknown>? presentation port for owned battles
@@ -1177,6 +1178,14 @@ function FieldRuntime:_composeFieldServices(boot)
   self.starterBalls = composeStarterBalls(self)
   self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
   self:_composePokemonMenu(boot.cacheFs)
+  local ApricornBoxHost = require("game.hgss.src.apricorn.ApricornBoxHost")
+  self.kurtBoxHost = ApricornBoxHost.new({
+    makeApricornBox = assert(
+      self.pokemonMenu.makeApricornBox,
+      "Kurt selector uses the composed source Apricorn Box factory"
+    ),
+    service = self.martService,
+  })
   local PcApplicationHost = require("game.hgss.src.pc.PcApplicationHost")
   local function createStorage(request)
     return self.pokemonMenu.makeStorageChild(assert(request.mode, "Storage mode required"))
@@ -1227,6 +1236,7 @@ function FieldRuntime:_composeFieldServices(boot)
     starterBalls = self.starterBalls,
     battle = self._battleHost,
     pcApplications = self.pcApplicationHost,
+    kurtBoxHost = self.kurtBoxHost,
     pcTerminal = self.pcTerminal,
   })
   self.scripts = scriptComposition.scripts
@@ -1493,6 +1503,7 @@ function FieldRuntime:_startFieldSession(boot)
     starterChoice = self.starterChoice,
     partySelection = self.partySelection,
     martHost = self.martHost,
+    kurtBoxHost = self.kurtBoxHost,
     fieldMoves = self.pokemonMenu.fieldMoves,
     overworld = self.overworld,
     pokemonNaming = self.pokemonNaming,
@@ -3982,11 +3993,15 @@ function FieldRuntime:_releaseAll()
   if self.pcApplicationHost then
     self.pcApplicationHost:dispose()
   end
+  if self.kurtBoxHost then
+    self.kurtBoxHost:dispose()
+  end
   if self.pcTerminal then
     self.pcTerminal:releaseEffect()
   end
   self.pcApplicationHost, self.pcTerminal = nil, nil
   self.martHost = nil
+  self.kurtBoxHost = nil
   self.applications = nil
   self.displayContext, self.presentationDisplay, self.presentationOverrides = nil, nil, nil
   self._displayTopology = nil

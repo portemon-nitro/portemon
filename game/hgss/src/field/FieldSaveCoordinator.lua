@@ -107,6 +107,10 @@ function FieldSaveCoordinator:capture(allowMenu)
   if hostIsActive(runtime) then
     return nil, "Save deferred: a mart transaction is active"
   end
+  local kurtBoxHost = runtime.kurtBoxHost
+  if kurtBoxHost ~= nil and kurtBoxHost:isActive() then
+    return nil, "Save deferred: Kurt's Apricorn selector is active"
+  end
   if runtime.playerAvatar and not runtime.playerAvatar:isStableForSave() then
     return nil, "Save deferred: avatar transition state is not stable"
   end

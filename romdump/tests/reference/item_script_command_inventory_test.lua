@@ -41,6 +41,9 @@ local SUPPORTED = {
   [844] = true,
 }
 
+local SUPPORTED_KURT = { 735, 736, 737, 738, 739 }
+local KURT_OPCODES = { [735] = true, [736] = true, [737] = true, [738] = true, [739] = true }
+
 -- Deferred adjacent systems the audit documents without owning.
 local DEFERRED = {
   [429] = "fossil",
@@ -65,8 +68,6 @@ local DEFERRED = {
   [624] = "apricorn",
   [625] = "apricorn",
   [626] = "apricorn",
-  [736] = "apricorn",
-  [738] = "apricorn",
   [567] = "prize",
   [651] = "prize",
   [753] = "field_item_check",
@@ -111,11 +112,14 @@ function T.inventory_shape_is_valid()
     Assert.isTrue(seen[opcode] == true, "inventory must document opcode " .. opcode)
     Assert.equal(ItemScriptCommands.byOpcode[opcode].category, category)
   end
+  for _, opcode in ipairs(SUPPORTED_KURT) do
+    Assert.isTrue(seen[opcode] == true, "inventory must include supported Apricorn opcode " .. opcode)
+  end
   local count = 0
   for _ in pairs(seen) do
     count = count + 1
   end
-  Assert.equal(count, 13 + 27, "the inventory holds exactly the owned protocol plus documented neighbors")
+  Assert.equal(count, #ItemScriptCommands.commands, "the opcode index covers every unique inventory row")
   table.sort(problems)
   Assert.equal(#problems, 0, "inventory rows are unique and classified: " .. table.concat(problems, ", "))
 end
@@ -147,12 +151,24 @@ function T.every_inventory_member_has_explicit_disposition()
         problems[#problems + 1] = tostring(inventory.opcode) .. ":owned command lacks same-tick timing"
       end
     elseif inventory.category == "shop" then
-      if
-        entry.disposition ~= "supported"
-        or entry.feature ~= "mart"
-        or entry.classification ~= "native_wait"
-      then
+      if entry.disposition ~= "supported" or entry.feature ~= "mart" or entry.classification ~= "native_wait" then
         problems[#problems + 1] = tostring(inventory.opcode) .. ":mart command is not marked as a blocking mart launch"
+      end
+    elseif inventory.category == "apricorn" then
+      if entry.disposition == "supported" then
+        if entry.feature ~= "apricorn" or type(entry.classification) ~= "string" then
+          problems[#problems + 1] = tostring(inventory.opcode)
+            .. ":supported Apricorn command lacks feature or timing metadata"
+        elseif
+          KURT_OPCODES[inventory.opcode]
+          and entry.classification ~= (inventory.opcode == 739 and "native_wait" or "continue_same_tick")
+        then
+          problems[#problems + 1] = tostring(inventory.opcode) .. ":Kurt command has incorrect Apricorn timing metadata"
+        end
+      elseif entry.disposition ~= "deferred" then
+        problems[#problems + 1] = tostring(inventory.opcode) .. ":Apricorn neighbor has no disposition"
+      elseif ALLOWED_DEFERRALS[entry.deferredReason] ~= true then
+        problems[#problems + 1] = tostring(inventory.opcode) .. ":unexpected Apricorn deferral category"
       end
     elseif entry.disposition ~= "deferred" then
       problems[#problems + 1] = tostring(inventory.opcode) .. ":neighbor is not deferred"

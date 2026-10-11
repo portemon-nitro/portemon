@@ -5494,35 +5494,44 @@ return {
       },
     },
     [735] = {
-      name = "ScrCmd_735",
+      name = "ScrCmd_GetKurtApricornQuantity",
+      disposition = "supported",
+      feature = "apricorn",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
     },
     [736] = {
       name = "ScrCmd_ClearKurtApricorn",
-      disposition = "deferred",
-      deferredReason = "apricorn",
-      deferredNote = "apricorn counting needs the Kurt/apricorn flow",
+      disposition = "supported",
+      feature = "apricorn",
+      classification = "continue_same_tick",
       widths = {},
     },
     [737] = {
-      name = "ScrCmd_737",
+      name = "ScrCmd_GetKurtBall",
+      disposition = "supported",
+      feature = "apricorn",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
     },
     [738] = {
       name = "ScrCmd_GetTotalApricornCount",
-      disposition = "deferred",
-      deferredReason = "apricorn",
-      deferredNote = "apricorn counting needs the Kurt/apricorn flow",
+      disposition = "supported",
+      feature = "apricorn",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
     },
     [739] = {
-      name = "ScrCmd_739",
+      name = "ScrCmd_KurtApricornBoxSelect",
+      disposition = "supported",
+      feature = "apricorn",
+      classification = "native_wait",
       widths = {},
     },
     [740] = {

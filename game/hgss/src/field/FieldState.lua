@@ -234,6 +234,12 @@ function FieldState:update(dt)
       self.runtime:failPcApplicationPresentation("PC application presentation failed: " .. tostring(failure))
     end
   end
+  local kurtBoxHost = self.runtime.kurtBoxHost
+  if kurtBoxHost ~= nil and kurtBoxHost:isActive() then
+    local handle = assert(kurtBoxHost:activeHandle(), "active Kurt Box host publishes its handle")
+    assert(self.presentationResources, "Kurt Box presentation resources are unavailable")
+    kurtBoxHost:setPresentationReady(handle, true)
+  end
   local pokemonNaming = self.runtime.pokemonNaming
   if pokemonNaming:isActive() then
     local namingStatus = assert(pokemonNaming:status(), "an active Pokemon naming task publishes its status")
@@ -790,6 +796,10 @@ function FieldState:draw()
   if self.runtime.pcApplicationHost:isActive() then
     resources:drawPcApplication(self.runtime.pcApplicationHost, self.runtime)
   end
+  local kurtBoxHost = self.runtime.kurtBoxHost
+  if kurtBoxHost ~= nil and kurtBoxHost:isActive() then
+    resources:drawApricornBox(assert(kurtBoxHost:status(), "active Kurt selector publishes presentation status"))
+  end
   self:_drawEntryCoverIfNeeded(width, height)
   self:_drawScriptScreenFadeIfNeeded()
   -- The script-owned starter modal draws over the restored field while the
@@ -1216,6 +1226,10 @@ function FieldState:focus(focused)
     local martHost = self.runtime.martHost
     if martHost ~= nil and martHost:isActive() then
       martHost:cancelPointerCapture()
+    end
+    local kurtBoxHost = self.runtime.kurtBoxHost
+    if kurtBoxHost ~= nil and kurtBoxHost:isActive() then
+      kurtBoxHost:cancelPointerCapture()
     end
     local starter = self.runtime.starterChoice
     if

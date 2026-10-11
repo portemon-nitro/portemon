@@ -290,6 +290,11 @@ Schema.OPERATIONS = {
       result = { type = "writable_value", required = true },
     },
   },
+  apricorn_kurt_quantity = { fields = { result = { type = "writable_value", required = true } } },
+  apricorn_kurt_ball = { fields = { result = { type = "writable_value", required = true } } },
+  apricorn_kurt_clear = { fields = {} },
+  apricorn_total = { fields = { result = { type = "writable_value", required = true } } },
+  apricorn_box_select = { fields = {} },
   pc_open = {
     fields = {
       app = { type = "enum:pc_application", required = true },

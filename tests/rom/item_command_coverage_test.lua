@@ -28,6 +28,18 @@ local ALLOWED_DEFERRALS = {
   field_item_check = true,
 }
 
+local SUPPORTED_APRICORN = {
+  [623] = true,
+  [624] = true,
+  [625] = true,
+  [626] = true,
+  [735] = true,
+  [736] = true,
+  [737] = true,
+  [738] = true,
+  [739] = true,
+}
+
 -- The Lake of Rage shore item-ball routine behind the item acceptance
 -- scenario: scr_seq member 938, script index 16. Its unsupported nodes must
 -- be exactly none of the Bag/item family.
@@ -88,6 +100,7 @@ function T.supported_entries_carry_widths_timing_and_lowering(romFs)
   local problems = {}
   local supportedItems = 0
   local supportedShops = 0
+  local supportedApricorn = 0
   for _, item in ipairs(familyEntries()) do
     if item.entry ~= nil and item.entry.disposition == "supported" then
       if item.inventory.category == "items" then
@@ -96,6 +109,17 @@ function T.supported_entries_carry_widths_timing_and_lowering(romFs)
         supportedShops = supportedShops + 1
         if item.entry.feature ~= "mart" then
           problems[#problems + 1] = item.opcode .. ":supported shop command is not owned by mart"
+        end
+      elseif item.inventory.category == "apricorn" and SUPPORTED_APRICORN[item.opcode] then
+        supportedApricorn = supportedApricorn + 1
+        if item.entry.feature ~= "apricorn" then
+          problems[#problems + 1] = item.opcode .. ":supported Kurt command is not owned by apricorn"
+        end
+        if
+          item.entry.classification
+          ~= ((item.opcode == 623 or item.opcode == 739) and "native_wait" or "continue_same_tick")
+        then
+          problems[#problems + 1] = item.opcode .. ":supported Kurt command has incorrect timing"
         end
       else
         problems[#problems + 1] = item.opcode .. ":supported outside the owned category"
@@ -122,6 +146,7 @@ function T.supported_entries_carry_widths_timing_and_lowering(romFs)
   end
   Assert.equal(supportedItems, 13, "the supported item set is exactly the generic protocol")
   Assert.equal(supportedShops, 5, "the mart owns the five audited shop commands")
+  Assert.equal(supportedApricorn, 9, "the Apricorn feature owns its tree and Kurt commands")
   table.sort(problems)
   Assert.equal(#problems, 0, "every supported entry is decodable, timed, and lowered: " .. table.concat(problems, ", "))
 end

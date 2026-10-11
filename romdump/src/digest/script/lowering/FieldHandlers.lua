@@ -656,6 +656,26 @@ local function apricornTreeColor(ins)
   return { op = "apricorn_tree_color", result = Operands.varRef(ins.operands[1]) }
 end
 
+local function kurtApricornQuantity(ins)
+  return { op = "apricorn_kurt_quantity", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function kurtApricornClear(_)
+  return { op = "apricorn_kurt_clear" }
+end
+
+local function kurtApricornBall(ins)
+  return { op = "apricorn_kurt_ball", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function totalApricornCount(ins)
+  return { op = "apricorn_total", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function kurtApricornBoxSelect(_)
+  return { op = "apricorn_box_select" }
+end
+
 local function giveApricornFromTree(ins)
   return {
     op = "apricorn_give",
@@ -1523,6 +1543,11 @@ local FieldHandlers = {
   [669] = getItemQuantity,
   [623] = apricornTreeAnim,
   [624] = apricornTreeColor,
+  [735] = kurtApricornQuantity,
+  [736] = kurtApricornClear,
+  [737] = kurtApricornBall,
+  [738] = totalApricornCount,
+  [739] = kurtApricornBoxSelect,
   [625] = giveApricornFromTree,
   [626] = bufferApricornName,
   [167] = chooseStarter,

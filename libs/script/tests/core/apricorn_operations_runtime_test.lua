@@ -4,6 +4,8 @@
 local Assert = require("tests.support.Assert")
 local Runtime = require("libs.script.src.Runtime")
 local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
+local Compiler = require("libs.script.src.Compiler")
+local Dsl = require("libs.script.src.Dsl")
 
 local T = {}
 
@@ -35,6 +37,24 @@ local function harness()
           return "Green Apricorn"
         end,
       },
+      apricornKurt = {
+        pendingQuantity = function()
+          calls[#calls + 1] = { "pendingQuantity" }
+          return 4
+        end,
+        pendingBallNativeId = function()
+          calls[#calls + 1] = { "pendingBallNativeId" }
+          return 12
+        end,
+        total = function()
+          calls[#calls + 1] = { "total" }
+          return 9
+        end,
+        clear = function()
+          calls[#calls + 1] = { "clear" }
+        end,
+      },
+      kurtBoxHost = {},
     },
     semantics = RuntimeValues,
     scheduler = {
@@ -76,6 +96,60 @@ function T.animation_blocks_on_the_interacted_actor()
   Assert.equal(calls[1][1], "createTask")
   Assert.equal(calls[1][2], "apricorn_tree")
   Assert.equal(calls[1][3], "map:34:object:2")
+end
+
+function T.kurt_commands_write_queries_clear_and_block_on_the_source_values()
+  local run, values, calls = harness()
+  Assert.equal(
+    Runtime.executeNode({ op = "apricorn_kurt_quantity", result = var(0x8005) }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(Runtime.executeNode({ op = "apricorn_kurt_ball", result = var(0x8006) }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(Runtime.executeNode({ op = "apricorn_total", result = var(0x8007) }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(values[0x8005], 4)
+  Assert.equal(values[0x8006], 12)
+  Assert.equal(values[0x8007], 9)
+  Assert.equal(Runtime.executeNode({ op = "apricorn_kurt_clear" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(Runtime.executeNode({ op = "apricorn_box_select" }, run), Runtime.OUTCOME_BLOCK)
+  Assert.equal(run.blockTaskId, "task:apricorn")
+  Assert.deepEqual(calls, {
+    { "pendingQuantity" },
+    { "pendingBallNativeId" },
+    { "total" },
+    { "clear" },
+    { "createTask", "kurt_apricorn_box", nil },
+  })
+end
+
+function T.kurt_operations_validate_and_compile_with_exact_result_shapes()
+  local result = Dsl.var("VAR_RESULT")
+  local script = Dsl.script({
+    api = 1,
+    id = "test.kurt_commands",
+    steps = {
+      Dsl.apricornKurtQuantity({ result = result }),
+      Dsl.apricornKurtBall({ result = result }),
+      Dsl.apricornTotal({ result = result }),
+      Dsl.apricornKurtClear({}),
+      Dsl.apricornBoxSelect({}),
+    },
+  })
+  local graph, err = Compiler.compile(script)
+  Assert.notNil(graph, "all five Kurt source nodes compile: " .. tostring(err))
+  local selectNode
+  for _, node in pairs(graph.nodes) do
+    if node.op == "apricorn_box_select" then
+      selectNode = node
+    end
+  end
+  Assert.notNil(selectNode)
+  Assert.isNil(selectNode.result, "blocking select has no invented source destination")
+  local malformed, _ = Compiler.compile(Dsl.script({
+    api = 1,
+    id = "test.kurt_bad_query",
+    steps = { { op = "apricorn_kurt_clear", result = result } },
+  }))
+  Assert.isNil(malformed, "unconditional clear accepts no guard or result parameter")
 end
 
 return { tests = T }

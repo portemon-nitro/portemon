@@ -776,6 +776,18 @@ function FieldPresentationResources:drawPcApplication(host, runtime)
   host:draw(self:pcApplicationResources(runtime))
 end
 
+---@param status table<string, unknown> Kurt selector status carrying its resolved plan
+function FieldPresentationResources:drawApricornBox(status)
+  local hostGraphics = love and love.graphics
+  assert(type(hostGraphics) == "table", "Kurt selector drawing requires its host graphics namespace")
+  local plan = assert(status.presentation, "Kurt selector carries its resolved application plan")
+  ApplicationPresentation.draw(hostGraphics, {
+    graphics = hostGraphics,
+    apricornBoxRenderer = assert(self.apricornBoxRenderer, "Apricorn Box renderer is unavailable"),
+  }, status, plan)
+  drawApplicationFrames(hostGraphics, self, plan)
+end
+
 -- Draws the Start Menu through its resolved plan: one borrowed resource
 -- record (the owned renderer plus the host graphics namespace) executes
 -- the interface's chosen render callback. Ownership stays here; the

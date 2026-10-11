@@ -57,6 +57,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field martHost table<string, unknown>? the modal script-mart surface; while active the tick's UI events route to the script scheduler
+---@field kurtBoxHost table<string, unknown>? the modal Kurt selector; while active UI events route to its blocking task
 ---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
 ---@field signpost FieldSignpostController
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
@@ -102,6 +103,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field martHost table<string, unknown>? the modal script-mart surface; while active the tick's UI events route to the script scheduler
+---@field kurtBoxHost table<string, unknown>? the modal Kurt selector; while active UI events route to its blocking task
 ---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
 ---@field signpost FieldSignpostController the fixed-tick signpost controller (save-gate interrogation only; the scheduler steps it)
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
@@ -380,6 +382,7 @@ function FieldSession.new(options)
     starterChoice = options.starterChoice,
     partySelection = options.partySelection,
     martHost = options.martHost,
+    kurtBoxHost = options.kurtBoxHost,
     pokemonNaming = options.pokemonNaming,
     signpost = options.signpost,
     applicationHost = options.applicationHost,
@@ -791,6 +794,8 @@ local function runScriptPhase(self, inputSnapshot)
   local partySelectionModal = partySelection ~= nil and partySelection:isActive()
   local martHost = self.martHost
   local martModal = martHost ~= nil and martHost:isActive()
+  local kurtBoxHost = self.kurtBoxHost
+  local kurtBoxModal = kurtBoxHost ~= nil and kurtBoxHost:isActive()
   local pcApplications = self.pcApplications
   local pcApplicationModal = pcApplications:isActive()
   local pokemonNaming = self.pokemonNaming
@@ -798,6 +803,13 @@ local function runScriptPhase(self, inputSnapshot)
   assert(not (starterChoiceModal and pokemonNamingModal), "script-owned field modals are mutually exclusive")
   assert(
     not (martModal and (starterChoiceModal or pokemonNamingModal or partySelectionModal or pcApplicationModal)),
+    "script-owned field modals are mutually exclusive"
+  )
+  assert(
+    not (
+        kurtBoxModal
+        and (starterChoiceModal or pokemonNamingModal or partySelectionModal or pcApplicationModal or martModal)
+      ),
     "script-owned field modals are mutually exclusive"
   )
   assert(
@@ -818,6 +830,7 @@ local function runScriptPhase(self, inputSnapshot)
     or scriptModal
     or partySelectionModal
     or martModal
+    or kurtBoxModal
     or pcApplicationModal
     or yesNoModal
   then
@@ -884,16 +897,41 @@ local function runScriptPhase(self, inputSnapshot)
     self.input:clearUi()
   end
   local pcApplicationNowModal = pcApplications:isActive()
+  local kurtBoxNowModal = kurtBoxHost ~= nil and kurtBoxHost:isActive()
   assert(
     not (
         pcApplicationNowModal
-        and (starterChoiceNowModal or pokemonNamingNowModal or partySelectionNowModal or martNowModal)
+        and (
+          starterChoiceNowModal
+          or pokemonNamingNowModal
+          or partySelectionNowModal
+          or martNowModal
+          or kurtBoxNowModal
+        )
       ),
     "script-owned field modals are mutually exclusive"
   )
   if not pcApplicationModal and pcApplicationNowModal then
     self.input:beginUi(self.tick + 1)
   elseif pcApplicationModal and not pcApplicationNowModal then
+    self.input:clearUi()
+  end
+  assert(
+    not (
+        kurtBoxNowModal
+        and (
+          starterChoiceNowModal
+          or pokemonNamingNowModal
+          or partySelectionNowModal
+          or martNowModal
+          or pcApplicationNowModal
+        )
+      ),
+    "script-owned field modals are mutually exclusive"
+  )
+  if not kurtBoxModal and kurtBoxNowModal then
+    self.input:beginUi(self.tick + 1)
+  elseif kurtBoxModal and not kurtBoxNowModal then
     self.input:clearUi()
   end
   return playerInputOwnedAtTickStart

@@ -33,6 +33,7 @@ local BoxNamingState = require("game.hgss.src.pc.BoxNamingState")
 ---@field makeMailboxChild fun(): table<string, unknown>
 ---@field makeStorageChild fun(mode: integer): table<string, unknown>
 ---@field makePhotoAlbumChild fun(): table<string, unknown>
+---@field makeApricornBox (fun(mode: string): table<string, unknown>)? shared browse/Kurt Box factory
 ---@field pcManifest table<string, unknown> validated PC manifest borrowed by leaf owners
 ---@field mailboxCount fun(): integer
 ---@field dispose fun()
@@ -382,6 +383,7 @@ function PokemonMenuComposition.create(deps)
     makeMailboxChild = makeMailboxChild,
     makeStorageChild = makeStorageChild,
     makePhotoAlbumChild = makePhotoAlbumChild,
+    makeApricornBox = deps.makeApricornBox,
     pcManifest = pcManifest,
     mailboxCount = mailboxCount,
     dispose = dispose,

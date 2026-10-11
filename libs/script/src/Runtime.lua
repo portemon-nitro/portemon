@@ -1815,6 +1815,35 @@ function HANDLERS.mart_query(node, run)
   semantics.writeRef(node.result, semantics.martQuery(node.kind, run), run)
   return Runtime.OUTCOME_CONTINUE
 end
+---@class RuntimeApricornKurt
+---@field pendingQuantity fun(self: RuntimeApricornKurt): integer
+---@field pendingBallNativeId fun(self: RuntimeApricornKurt, scriptId: string): integer
+---@field total fun(self: RuntimeApricornKurt): integer
+---@field clear fun(self: RuntimeApricornKurt)
+function HANDLERS.apricorn_kurt_quantity(node, run)
+  local service = requireService(run, "apricornKurt") --[[@as RuntimeApricornKurt]]
+  semanticsFor(run).writeRef(node.result, service:pendingQuantity(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.apricorn_kurt_ball(node, run)
+  local service = requireService(run, "apricornKurt") --[[@as RuntimeApricornKurt]]
+  semanticsFor(run).writeRef(node.result, service:pendingBallNativeId(run.instance.scriptId), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.apricorn_kurt_clear(_, run)
+  requireService(run, "apricornKurt"):clear()
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.apricorn_total(node, run)
+  local service = requireService(run, "apricornKurt") --[[@as RuntimeApricornKurt]]
+  semanticsFor(run).writeRef(node.result, service:total(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.apricorn_box_select(_, run)
+  requireForeground(run, "apricorn_box_select")
+  requireService(run, "kurtBoxHost")
+  return blockOnTask(run, "kurt_apricorn_box", {})
+end
 function HANDLERS.pc_open(node, run)
   requireForeground(run, "pc_open")
   requireService(run, "pcApplications")

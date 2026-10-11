@@ -7,6 +7,7 @@ local TrainerCardStars = require("libs.hgss.src.save.TrainerCardStars")
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 local ApricornTreePresentation = require("game.hgss.src.apricorn.ApricornTreePresentation")
+local KurtConversions = require("game.hgss.src.apricorn.KurtConversions")
 
 ---@class FieldScriptCompositionResult
 ---@field scripts FieldScripts
@@ -181,6 +182,41 @@ local function apricornService(runtime)
   }
 end
 
+local function apricornKurtService(runtime)
+  local function martService()
+    return assert(runtime.martService, "Kurt's order state requires the MartService owner")
+  end
+  local function pendingOrder()
+    return martService():pendingKurt()
+  end
+  local function pendingQuantity()
+    local order = pendingOrder()
+    return order and order.quantity or 0
+  end
+  local function pendingBallNativeId(scriptId)
+    local order = pendingOrder()
+    if order == nil then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "Kurt Ball query requires a pending order", {
+        scriptId = scriptId,
+      })
+    end
+    local ballKey = KurtConversions.ballItemKey(order.apricornKey)
+    return assert(runtime.itemCatalog, "Kurt Ball query requires the item catalog"):item(ballKey).nativeId
+  end
+  local function total()
+    return martService():apricornTotal()
+  end
+  local function clear()
+    return martService():clearKurt()
+  end
+  return {
+    pendingQuantity = pendingQuantity,
+    pendingBallNativeId = pendingBallNativeId,
+    total = total,
+    clear = clear,
+  }
+end
+
 ---@param runtime FieldRuntime
 ---@param options FieldScriptCompositionOptions
 ---@return FieldScriptCompositionResult
@@ -266,6 +302,8 @@ function FieldScriptComposition.compose(runtime, options)
     timeOfDay = timeOfDayService(runtime),
     trainerCardStars = trainerCardStarsService(runtime),
     apricorn = apricornService(runtime),
+    apricornKurt = apricornKurtService(runtime),
+    kurtBoxHost = assert(runtime.kurtBoxHost, "Kurt Box host is composed before field scripts"),
   })
   runtime.blackoutFlow = assert(scripts.blackoutFlow)
   local function restore()

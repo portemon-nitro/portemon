@@ -262,6 +262,8 @@ end
 ---@field timeOfDay table<string, unknown> RTC-derived time-of-day service
 ---@field trainerCardStars table<string, unknown> source-derived Trainer Card star query
 ---@field apricorn table<string, unknown> source tree and Apricorn inventory adapter
+---@field apricornKurt table<string, unknown>? Kurt order and native Ball adapter
+---@field kurtBoxHost table<string, unknown>? script-owned Kurt Box child host
 ---@field overworld table<string, unknown>|nil the shared field lifecycle owner
 ---@field propAnimations table<string, unknown>|nil the map-scoped one-shot prop slot owner
 ---@field blackout { loader: table<string, unknown>, sourceMap: fun(): table<string, unknown> }? blackout flow construction inputs
@@ -522,6 +524,8 @@ function FieldScripts.new(opts)
       timeOfDay = opts.timeOfDay,
       trainerCardStars = opts.trainerCardStars,
       apricorn = opts.apricorn,
+      apricornKurt = opts.apricornKurt,
+      kurtBoxHost = opts.kurtBoxHost,
       starterBalls = opts.starterBalls,
       pcApplications = opts.pcApplications,
       pcTerminal = opts.pcTerminal,
