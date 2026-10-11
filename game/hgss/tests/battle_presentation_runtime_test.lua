@@ -920,7 +920,6 @@ end
 function T.capture_and_escape_settle_as_continuing_outcomes()
   local ScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   local SessionFixture = require("libs.battle.tests.session_fixture")
-  local Committer = require("libs.hgss.src.battle.HgssBattleCommitter")
   local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
 
   -- Capture leaves the opponent standing with full health.
@@ -964,12 +963,12 @@ function T.capture_and_escape_settle_as_continuing_outcomes()
     Assert.equal(final.sourceResult, BattleTask.SOURCE_WON, "capture maps to the script-visible won code")
     Assert.isTrue(party:partyMon(0).condition.currentHp > 0, "the thrower is still standing")
     Assert.equal(bag:quantity("MASTER_BALL"), 0, "the thrown ball publishes exactly once")
-    local receipt = assert(Committer.receipt(launch.id), "completion carries its committer receipt")
+    local receipt = assert(battle:status().outcomeReceipt, "completion carries its owned receipt")
     Assert.isTrue(receipt.committed, "the capture commits through the existing committer")
     battle:update()
     battle:update()
     Assert.equal(bag:quantity("MASTER_BALL"), 0, "repeated terminal polls never consume again")
-    Assert.deepEqual(Committer.receipt(launch.id), receipt, "repeated terminal polls never republish")
+    Assert.deepEqual(battle:status().outcomeReceipt, receipt, "repeated terminal polls never republish")
     battle:dispose()
   end
 

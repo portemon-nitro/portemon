@@ -62,7 +62,6 @@ function T.loss_resolves_blackout_without_resuming_a_failed_commit()
   local outcome = { id = "outcome-failed-loss", result = "loss" }
   local ok, err = pcall(Committer.prepare, { outcome = outcome, rewards = loss, stale = true })
   Assert.isFalse(ok, "an invalid loss batch never reaches publication: " .. tostring(err))
-  Assert.isNil(Committer.receipt("outcome-failed-loss"), "a failed commit records no receipt")
 end
 
 function T.prize_uses_the_final_party_level_class_rate_and_multiplier()

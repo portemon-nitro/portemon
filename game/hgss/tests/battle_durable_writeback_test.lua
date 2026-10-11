@@ -201,7 +201,6 @@ function T.condition_only_change_publishes_without_touching_health()
   local Status = require("libs.battle.src.gen4.Status")
   local ScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   local SessionFixture = require("libs.battle.tests.session_fixture")
-  local Committer = require("libs.hgss.src.battle.HgssBattleCommitter")
   local party = makeParty(
     { species = "EEVEE", level = 20, seed = 0x33333333, ability = "RUN_AWAY" },
     { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" }
@@ -269,7 +268,7 @@ function T.condition_only_change_publishes_without_touching_health()
   -- The missing durable leg: health never moved and no progression was
   -- earned, so only the normalized condition comparison can stage this
   -- writeback.
-  local receipt = assert(Committer.receipt(launch.id), "completion carries its committer receipt")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its owned receipt")
   Assert.isTrue(receipt.committed, "the cure commits through the existing committer")
   local stored = party:partyMon(0)
   local storedCondition = stored.condition --[[@as table<string, unknown>]]
@@ -456,7 +455,7 @@ function T.pp_only_change_publishes_without_leaking_volatile_stages()
   local final = driveToSettled(battle, 800)
   Assert.equal(final.phase, "complete", "the power-point battle settles")
 
-  local receipt = assert(Committer.receipt(launch.id), "completion carries its committer receipt")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its owned receipt")
   Assert.isTrue(receipt.committed, "the power-point change commits")
   local stored = party:partyMon(0)
   local storedMoves = stored.moves --[[@as table<integer, table<string, unknown>>]]
@@ -469,7 +468,7 @@ function T.pp_only_change_publishes_without_leaking_volatile_stages()
   Assert.equal(party:partyRevision(), entryRevision + 1, "the power-point change publishes exactly one revision")
   battle:update()
   battle:update()
-  Assert.deepEqual(Committer.receipt(launch.id), receipt, "repeated terminal polls never republish")
+  Assert.deepEqual(battle:status().outcomeReceipt, receipt, "repeated terminal polls never republish")
   Assert.equal(party:partyRevision(), entryRevision + 1, "repeated terminal polls never duplicate a write")
   battle:dispose()
   battle:dispose()
@@ -500,7 +499,7 @@ function T.untouched_battle_publishes_no_writeback()
   local final = driveToSettled(battle, 800)
   Assert.equal(final.phase, "complete", "the untouched battle settles")
 
-  local receipt = assert(Committer.receipt(launch.id), "completion carries its committer receipt")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its owned receipt")
   Assert.isTrue(receipt.committed, "the untouched battle still settles through the committer")
   Assert.deepEqual(party:partyMon(0), entryLead, "an unchanged lead is not rewritten")
   Assert.deepEqual(party:partyMon(1), entryReserve, "an unchanged reserve is not rewritten")
@@ -687,7 +686,7 @@ function T.effect_less_serving_refuses_at_execution_without_consuming()
   local storedMoves = stored.moves --[[@as table<integer, table<string, unknown>>]]
   local entryMoves = entryLead.moves --[[@as table<integer, table<string, unknown>>]]
   Assert.deepEqual(storedMoves, entryMoves, "the refused turn spends no power points")
-  local receipt = assert(Committer.receipt(launch.id), "completion carries its committer receipt")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its owned receipt")
   Assert.isTrue(receipt.committed, "the refused-serving battle still settles through the committer")
   battle:dispose()
 end
@@ -887,7 +886,7 @@ function T.progression_change_publishes_beside_untouched_health()
   local final = battle:status()
   Assert.equal(final.phase, "complete", "the progression battle settles")
 
-  local receipt = assert(Committer.receipt(launch.id), "completion carries its committer receipt")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its owned receipt")
   Assert.isTrue(receipt.committed, "the progression commits")
   local stored = party:partyMon(0)
   Assert.isTrue(

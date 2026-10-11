@@ -248,7 +248,7 @@ function T.tests.field_battle_returns_to_the_live_field_after_commit()
       game.runtime.monService:partyCount() >= 1,
       "the live party survives the round trip"
     )
-    local taskResult = BattleTask.result({ launchId = launch.id })
+    local taskResult = BattleTask.result({ launchId = launch.id }, { services = { battle = battle } })
     Assert.isTrue(taskResult.committed, "the script continuation resumes on the committed result")
     Assert.equal(game:renderAttempts(), 0, "the journey must stop before GPU rendering")
   end, debug.traceback)

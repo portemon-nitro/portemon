@@ -173,7 +173,6 @@ function T.successful_capture_without_party_owner_fails_before_publication()
   Assert.equal(partyB:partyRevision(), partyBRevision, "the second party revision stays unchanged")
   Assert.deepEqual(partyA:partyMon(0), partyABefore, "the first party stays unchanged")
   Assert.deepEqual(partyB:partyMon(0), partyBBefore, "the second party stays unchanged")
-  Assert.isNil(Committer.receipt("outcome-capture-without-owner"), "a rejected capture records no receipt")
 end
 
 function T.failed_capture_without_party_owner_does_not_require_a_recipient()
@@ -248,7 +247,6 @@ function T.full_party_capture_fails_before_any_publication()
   Assert.equal(bag:quantity("POKE_BALL"), 5, "the refused batch consumes no ball")
   Assert.equal(bag:revision(), bagRevision, "the refused batch moves no bag revision")
   Assert.isFalse(dex:isCaught("EEVEE"), "the refused batch registers no caught knowledge")
-  Assert.isNil(Committer.receipt("outcome-full-party-refused"), "a refused batch records no receipt")
 end
 
 -- Scarce capacity rejects the whole capture batch: with five mons and two
@@ -267,7 +265,6 @@ function T.scarce_party_rejects_the_batch_while_fitting_capture_commits()
   })
   Assert.isFalse(ok, "a batch without room for every capture never stages: " .. tostring(err))
   Assert.equal(crowded:partyCount(), 5, "a refused batch appends no fitting prefix")
-  Assert.isNil(Committer.receipt("outcome-scarce-refused"), "a refused batch records no receipt")
 
   local roomy = newPartyOwner(5)
   local solo = caughtMon()
@@ -321,7 +318,6 @@ function T.unknown_species_never_reaches_publication()
   })
   Assert.isFalse(ok, "an unknown species never stages: " .. tostring(err))
   Assert.equal(party:partyCount(), 5, "a rejected capture appends nothing")
-  Assert.isNil(Committer.receipt("outcome-unknown-species"), "a rejected capture records no receipt")
 end
 
 function T.successful_capture_without_a_caught_record_is_rejected_before_publication()
@@ -334,7 +330,6 @@ function T.successful_capture_without_a_caught_record_is_rejected_before_publica
   })
   Assert.isFalse(ok, "a species-only success never stages: " .. tostring(err))
   Assert.equal(party:partyCount(), 5, "a rejected capture appends nothing")
-  Assert.isNil(Committer.receipt("outcome-bare-species-rejected"), "a rejected capture records no receipt")
 end
 
 function T.retained_capture_keeps_the_exact_caught_record()
