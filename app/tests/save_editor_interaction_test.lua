@@ -15,17 +15,174 @@ local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local Fixture = require("app.tests.support.SaveEditorFixture")
+local Session = require("app.src.saveeditor.SaveEditorSession")
+local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
 
 local T = { tests = {} }
+local livePartyHarness
 
 local function stateHarness(fields)
   fields.fieldInput = fields.fieldInput or FieldInput.new()
   fields.scopeEpoch = fields.scopeEpoch or 0
   fields.inputTick = fields.inputTick or 0
+  fields.tickRemainder = fields.tickRemainder or 0
   fields.locationPreviewMemory = fields.locationPreviewMemory or {}
   local state = setmetatable(fields, State)
   state:_syncScope()
   return state
+end
+
+local function presetState(session, fields)
+  fields = fields or {}
+  fields.status = fields.status or "ready"
+  fields.disposed = fields.disposed or false
+  fields.generation = fields.generation or 1
+  fields.session = session
+  fields.dependencies = fields.dependencies
+    or {
+      world = {
+        maps = { { id = 60, mapSectionNativeId = 5 } },
+        byId = { [60] = 1 },
+        bySymbol = { MAP_TEST = 60 },
+      },
+      cacheFs = {},
+      derivedAssets = {},
+      savedObjects = {},
+    }
+  fields.controller = fields.controller or Controller.new()
+  fields.controller.section = fields.controller.section or "Location"
+  fields.modalStack = fields.modalStack or ModalStack.new()
+  fields.dateProvider = fields.dateProvider or function()
+    return { year = 2026, month = 10, day = 9 }
+  end
+  fields._advanceLocationPreparation = function() end
+  fields._settleScope = function() end
+  fields._updateLocationService = function() end
+  fields._syncLocationToSession = fields._syncLocationToSession or function() end
+  return stateHarness(fields)
+end
+
+local function fakePresetFile(source, options)
+  options = options or {}
+  local file = { opens = 0, reads = 0, closes = 0 }
+  function file:getFilename()
+    return options.filename or "preset.lua"
+  end
+  function file:getSize()
+    return options.size or #source
+  end
+  function file:open(mode)
+    Assert.equal(mode, "r", "preset files are opened read-only")
+    self.opens = self.opens + 1
+    if options.openError then
+      error("simulated open failure")
+    end
+    return true
+  end
+  function file:read(_, size)
+    self.reads = self.reads + 1
+    if options.readError then
+      error("simulated read failure")
+    end
+    Assert.equal(size, #source, "preset read is bounded by the reported file size")
+    return source
+  end
+  function file:close()
+    self.closes = self.closes + 1
+    if options.closeError then
+      error("simulated close failure")
+    end
+    return true
+  end
+  return file
+end
+
+local function withDialogs(fn, response)
+  local calls = {}
+  local original = love.window.showMessageBox
+  love.window.showMessageBox = function(title, message, kind)
+    calls[#calls + 1] = { title = title, message = message, kind = kind }
+    return response ~= false
+  end
+  local ok, err = pcall(fn, calls)
+  love.window.showMessageBox = original
+  if not ok then
+    error(err, 0)
+  end
+end
+
+local function presetSession()
+  local session = { revisionValue = 4, partyRevisionValue = 2, applyCalls = 0 }
+  function session:revision()
+    return self.revisionValue
+  end
+  function session:partyRevision()
+    return self.partyRevisionValue
+  end
+  function session:snapshot()
+    return {
+      location = { mapId = 60, fieldX = 9, fieldZ = 12, worldY = 0, surfaceId = 1, terrainDependencyHash = "current" },
+    }
+  end
+  function session:applyPreset(preset, options)
+    self.applyCalls = self.applyCalls + 1
+    self.appliedPreset, self.applyOptions = preset, options
+    if preset.party ~= nil then
+      self.partyRevisionValue = self.partyRevisionValue + 1
+    end
+    return { ok = true, changed = false }
+  end
+  return session
+end
+
+local function realSession()
+  local fixture = Fixture.new()
+  local session = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  return fixture, session
+end
+
+local function presetSource(body)
+  return 'return { schema = "portemon-save-preset-v1", name = "Component", description = "Component test", '
+    .. body
+    .. " }"
+end
+
+local function withPendingVerifier(fn)
+  local disposals, resolutions = 0, 0
+  local service = {
+    openMap = function() end,
+    setViewport = function() end,
+    update = function() end,
+    snapshot = function()
+      return { status = { state = "pending" }, generation = 1 }
+    end,
+    resolve = function()
+      resolutions = resolutions + 1
+      return nil, { state = "pending" }
+    end,
+    dispose = function()
+      disposals = disposals + 1
+    end,
+  }
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    return service
+  end
+  local ok, err = pcall(fn, function()
+    return disposals, resolutions
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
 end
 
 local function activate(state, targetId)
@@ -104,6 +261,519 @@ function T.tests.static_party_focus_moves_do_not_reveal_or_activate_controls()
   partyController:setFocus("party:page:previous")
   partyState:_navigateTab(partyLayout, "next")
   Assert.equal(partyController.focus, "party:move:0", "Tab enters the static Party moves sequence")
+end
+
+function T.tests.failed_preset_file_read_closes_once_and_keeps_the_session_unchanged()
+  local fixture = Fixture.new()
+  local session = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  local before = session:captureCandidate()
+  local dialogs = {}
+  local originalDialog = love.window.showMessageBox
+  love.window.showMessageBox = function(title, message, kind)
+    dialogs[#dialogs + 1] = { title = title, message = message, kind = kind }
+    return true
+  end
+  local state = setmetatable({
+    status = "ready",
+    disposed = false,
+    generation = 1,
+    session = session,
+    dependencies = { world = { bySymbol = {}, byId = {}, maps = {} } },
+    controller = Controller.new(),
+    modalStack = ModalStack.new(),
+    closeRequest = nil,
+    valueEditor = nil,
+    monDraft = nil,
+    pendingMoveSlot = nil,
+    pendingPreset = nil,
+    dateProvider = function()
+      return { year = 2026, month = 10, day = 9 }
+    end,
+  }, State)
+  local file = {
+    opened = 0,
+    closed = 0,
+    getFilename = function()
+      return "/private/broken.lua"
+    end,
+    getSize = function()
+      return 32
+    end,
+    open = function(self, mode)
+      Assert.equal(mode, "r", "the dropped file opens read-only")
+      self.opened = self.opened + 1
+      return true
+    end,
+    read = function()
+      error("permission denied: /private/save-data/preset.lua")
+    end,
+    close = function(self)
+      self.closed = self.closed + 1
+      return true
+    end,
+  }
+
+  local ok, err = pcall(function()
+    Assert.equal(type(state.importPresetFile), "function", "the editor owns preset file reading")
+    state:importPresetFile(file)
+    Assert.equal(file.opened, 1, "the dropped file opens once")
+    Assert.equal(file.closed, 1, "a successfully opened file closes after read failure")
+    Assert.equal(#dialogs, 1, "read failure produces one terminal confirmation")
+    Assert.equal(dialogs[1].title, "Preset rejected", "read failure is reported as a rejected preset")
+    Assert.isNil(dialogs[1].message:find("/private/", 1, true), "host paths stay out of rejection details")
+    Assert.deepEqual(session:captureCandidate(), before, "a failed read leaves the staged session unchanged")
+
+    local closeFailure = fakePresetFile(presetSource("flags = { FLAG_GOT_POKEDEX = true }"), { closeError = true })
+    state:importPresetFile(closeFailure)
+    Assert.equal(closeFailure.opens, 1, "close failure follows one successful open")
+    Assert.equal(closeFailure.closes, 1, "a close failure is attempted exactly once")
+    Assert.equal(#dialogs, 2, "close failure produces one additional terminal confirmation")
+    Assert.equal(dialogs[2].title, "Preset rejected", "close failure is reported as a rejected preset")
+    Assert.deepEqual(session:captureCandidate(), before, "close failure cannot publish parsed changes")
+
+    local openFailure = fakePresetFile(presetSource("flags = { FLAG_GOT_POKEDEX = true }"), { openError = true })
+    state:importPresetFile(openFailure)
+    Assert.equal(openFailure.opens, 1, "open failure is attempted once")
+    Assert.equal(openFailure.closes, 0, "an unsuccessful open does not close the File")
+    Assert.equal(#dialogs, 3, "open failure produces one terminal confirmation")
+    Assert.deepEqual(session:captureCandidate(), before, "open failure leaves staged state unchanged")
+  end)
+  love.window.showMessageBox = originalDialog
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.preset_rejections_cover_oversize_and_dirty_party_drafts_before_reading()
+  local session = presetSession()
+  withDialogs(function(dialogs)
+    local oversized = fakePresetFile("", { size = 131073 })
+    local state = presetState(session)
+    Assert.equal(type(state.importPresetFile), "function", "the editor owns bounded preset imports")
+    state:importPresetFile(oversized)
+    Assert.equal(oversized.opens, 0, "oversized presets are rejected before opening")
+    Assert.equal(oversized.closes, 0, "an unopened oversized preset has no close")
+    Assert.equal(dialogs[#dialogs].title, "Preset rejected", "oversized input is reported")
+
+    local dirtyDraft = {
+      mode = function()
+        return "edit"
+      end,
+      isDirty = function()
+        return true
+      end,
+    }
+    state.monDraft = dirtyDraft
+    local dirtyFile = fakePresetFile(presetSource("flags = { FLAG_GOT_POKEDEX = true }"))
+    state:importPresetFile(dirtyFile)
+    Assert.equal(dirtyFile.opens, 0, "a dirty Party draft blocks import before file IO")
+    Assert.equal(dialogs[#dialogs].title, "Preset rejected", "dirty draft refusal is explicit")
+
+    state.monDraft = nil
+    state.controller.modal = "number"
+    local modalFile = fakePresetFile(presetSource("flags = { FLAG_GOT_POKEDEX = true }"))
+    state:importPresetFile(modalFile)
+    Assert.equal(modalFile.opens, 0, "an active editing modal blocks import before file IO")
+    Assert.equal(session.applyCalls, 0, "all refusals leave the session untouched")
+  end)
+end
+
+function T.tests.no_location_preset_applies_synchronously_without_a_location_verifier()
+  local session = presetSession()
+  local serviceCreations = 0
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    serviceCreations = serviceCreations + 1
+    error("a no-location preset must not acquire a verifier")
+  end
+  local state = presetState(session)
+  local file = fakePresetFile(presetSource("flags = { FLAG_GOT_POKEDEX = true }"))
+  local ok, err = pcall(function()
+    withDialogs(function(dialogs)
+      Assert.equal(type(state.importPresetFile), "function", "the editor owns preset imports")
+      state:importPresetFile(file)
+      Assert.equal(session.applyCalls, 1, "a patch without location applies synchronously")
+      Assert.isNil(session.applyOptions.placement, "no-location application has no placement")
+      Assert.equal(session.applyOptions.metLocation, 5, "met location comes from the current staged map")
+      Assert.equal(serviceCreations, 0, "no-location import never acquires a verifier")
+      Assert.equal(#dialogs, 1, "synchronous success has one terminal dialog")
+    end)
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.party_preset_refreshes_the_selected_member_projection()
+  local harness = livePartyHarness(1)
+  local state, session = harness.state, harness.session
+  state.controller.partyTab = "Details"
+  state:_ensurePartyDraft()
+  local oldDraft = assert(state.monDraft)
+  local slot0 = harness.controller.partySlot0
+  local file = fakePresetFile(presetSource('party = { lead = { species = "CHIKORITA", level = 5 } }'))
+  withDialogs(function(dialogs)
+    state:importPresetFile(file)
+    local draft = state.monDraft
+    Assert.notNil(draft, "the active Party page keeps a selected-member draft")
+    Assert.isFalse(rawequal(oldDraft, draft), "the imported member uses a fresh draft")
+    Assert.equal(draft:basePartyRevision(), session:partyRevision(), "the draft follows the published Party revision")
+    Assert.equal(draft:slot0(), slot0, "the selected member remains selected")
+    Assert.equal(draft:projection().level, 5, "the imported level is projected immediately")
+    Assert.notNil(state:_partyView().partyDetails, "the active Details page has a body immediately")
+    Assert.equal(#dialogs, 1, "the successful import has one result dialog")
+    Assert.equal(dialogs[1].title, "Preset imported")
+  end)
+end
+
+function T.tests.first_party_member_created_by_preset_opens_immediately()
+  local harness = livePartyHarness(0)
+  local state, session = harness.state, harness.session
+  state.controller.partyTab = "Stats"
+  local file = fakePresetFile(presetSource('party = { contains = { { species = "CHIKORITA" } } }'))
+  withDialogs(function(dialogs)
+    state:importPresetFile(file)
+    local draft = state.monDraft
+    Assert.equal(#session:partySnapshot().members, 1, "the preset creates the first member")
+    Assert.equal(harness.controller.partySlot0, 0, "the first member becomes selected")
+    Assert.notNil(draft, "the new selected member opens as an edit draft")
+    Assert.equal(draft:slot0(), 0)
+    Assert.equal(draft:basePartyRevision(), session:partyRevision())
+    Assert.notNil(state:_partyView().partyStats, "the Stats page is populated immediately")
+    Assert.equal(#dialogs, 1)
+    Assert.equal(dialogs[1].title, "Preset imported")
+  end)
+end
+
+function T.tests.save_cancels_pending_location_preset_before_persisting()
+  local fixture, session = realSession()
+  Assert.isTrue(session:setMoney(session:snapshot().money + 1).ok, "prior work is staged before Save")
+  local state = presetState(session)
+  local file =
+    fakePresetFile(presetSource('flags = { FLAG_GOT_POKEDEX = true }, location = { map = "MAP_TEST", x = 4, z = 5 }'))
+  withPendingVerifier(function(counts)
+    withDialogs(function(dialogs)
+      state:importPresetFile(file)
+      Assert.notNil(state.pendingPreset, "the location verifier owns the import")
+      Assert.isTrue(state:_save(false), "the requested Save still persists prior work")
+      Assert.isNil(state.pendingPreset, "Save retires the pending import synchronously")
+      local pendingDisposals = counts()
+      Assert.equal(pendingDisposals, 1, "Save disposes the verifier once")
+      state:update(0)
+      local _, resolutions = counts()
+      Assert.equal(resolutions, 0, "a later update cannot resolve a cancelled verifier")
+      Assert.isFalse(session:isDirty(), "the successful Save leaves the Session clean")
+      local flagId = fixture.symbols.flagsByName.FLAG_GOT_POKEDEX
+      Assert.isFalse(session:snapshot().flags[flagId], "the preset flag was not staged")
+      Assert.equal(session:snapshot().location.fieldX, fixture.initial.fieldX, "the preset destination was not staged")
+      local saved = assert(fixture.store:load(fixture.saveId))
+      Assert.equal(
+        saved.world.flags[flagId],
+        fixture.initial.world.flags[flagId],
+        "the explicit Save did not persist the preset flag"
+      )
+      Assert.equal(saved.fieldX, fixture.initial.fieldX, "the explicit Save did not persist the preset destination")
+      Assert.equal(
+        saved.playerData.profile.money,
+        session:snapshot().money,
+        "the explicit Save persisted the prior staged value"
+      )
+      Assert.equal(#dialogs, 1, "cancellation has one terminal result")
+      Assert.equal(dialogs[1].title, "Preset rejected")
+      Assert.notNil(dialogs[1].message:find("Save", 1, true), "the result names the overtaking action")
+      Assert.notNil(
+        dialogs[1].message:find("no preset changes were staged", 1, true),
+        "the result says the import was not staged"
+      )
+    end)
+  end)
+end
+
+function T.tests.discard_and_exit_cancel_pending_location_presets_once()
+  local actions = {
+    {
+      "section Discard",
+      function(state)
+        state.controller.section = "Player"
+        state:_discardSection()
+      end,
+    },
+    {
+      "global Discard",
+      function(state)
+        state:_discard(false)
+      end,
+    },
+    {
+      "clean Back",
+      function(state)
+        state:_performDeferred({ kind = "back" })
+      end,
+    },
+    {
+      "quit",
+      function(state)
+        state:requestClose("quit")
+      end,
+    },
+  }
+  local failures = {}
+  for _, scenario in ipairs(actions) do
+    local label, action = scenario[1], scenario[2]
+    local _, session = realSession()
+    local originalRevision = session:revision()
+    local resultCount = 0
+    local state = presetState(session, {
+      onResult = function()
+        resultCount = resultCount + 1
+      end,
+    })
+    local file = fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 4, z = 5 }'))
+    local ok, err = pcall(function()
+      withPendingVerifier(function(counts)
+        withDialogs(function(dialogs)
+          state:importPresetFile(file)
+          action(state)
+          Assert.isNil(state.pendingPreset, "the " .. label .. " action retires pending ownership")
+          local disposals = counts()
+          Assert.equal(disposals, 1, "the " .. label .. " action disposes the verifier exactly once")
+          state:update(0)
+          local _, resolutions = counts()
+          Assert.equal(resolutions, 0, "the retired import cannot resolve after " .. label)
+          Assert.equal(session:revision(), originalRevision, "the cancelled preset never reaches the Session")
+          Assert.equal(#dialogs, 1, "the abandoned import has one terminal rejection")
+          Assert.equal(dialogs[1].title, "Preset rejected")
+          Assert.equal(
+            resultCount,
+            label == "clean Back" and 1 or 0,
+            "the requested exit callback keeps its existing behavior"
+          )
+        end)
+      end)
+    end)
+    if not ok then
+      failures[#failures + 1] = label .. ": " .. tostring(err)
+    end
+  end
+  Assert.equal(#failures, 0, table.concat(failures, "\n"))
+end
+
+function T.tests.unknown_preset_map_rejects_before_verifier_construction()
+  local session = presetSession()
+  local serviceCreations = 0
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    serviceCreations = serviceCreations + 1
+    error("unknown maps must be rejected before verifier construction")
+  end
+  local state = presetState(session)
+  local file = fakePresetFile(presetSource('location = { map = "MAP_MISSING", x = 4, z = 5 }'))
+  local ok, err = pcall(function()
+    withDialogs(function(dialogs)
+      Assert.equal(type(state.importPresetFile), "function", "the editor owns preset imports")
+      state:importPresetFile(file)
+      Assert.equal(file.closes, 1, "the rejected document releases its File")
+      Assert.equal(serviceCreations, 0, "unknown map symbols are rejected before a verifier exists")
+      Assert.equal(session.applyCalls, 0, "unknown maps never reach session application")
+      Assert.equal(dialogs[#dialogs].title, "Preset rejected", "unknown map rejection is explicit")
+    end)
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.native_dialog_failure_leaves_one_visible_fallback_notice()
+  local session = presetSession()
+  local state = presetState(session)
+  local file = fakePresetFile(presetSource("flags = { FLAG_GOT_POKEDEX = true }"))
+  withDialogs(function(dialogs)
+    Assert.equal(type(state.importPresetFile), "function", "the editor owns preset imports")
+    state:importPresetFile(file)
+    Assert.equal(#dialogs, 1, "the native result dialog is attempted once")
+    local fallback = state.notice or state.errorMessage
+    Assert.isTrue(type(fallback) == "string" and fallback ~= "", "dialog failure leaves visible editor feedback")
+    state:update(0)
+    Assert.equal(#dialogs, 1, "the fallback does not repeat the native dialog each frame")
+  end, false)
+end
+
+function T.tests.pending_resolution_then_unavailable_never_reaches_session_application()
+  local session = presetSession()
+  local serviceCreations, resolutionCalls, disposals = 0, 0, 0
+  local service = { requested = {} }
+  function service:openMap(mapId, options)
+    Assert.equal(mapId, 60, "symbolic map resolves to the current version map ID")
+    Assert.equal(options.purpose, "verify", "preset resolution uses verifier mode")
+  end
+  function service:setViewport(x, z, width, height)
+    self.requested = { x = x, z = z }
+    Assert.equal(width, 1)
+    Assert.equal(height, 1)
+  end
+  function service:update() end
+  function service:snapshot()
+    return { status = { state = "ready" }, generation = 8 }
+  end
+  function service:resolve(mapId, x, z, generation)
+    Assert.equal(mapId, 60)
+    Assert.equal(x, self.requested.x)
+    Assert.equal(z, self.requested.z)
+    Assert.equal(generation, 8)
+    resolutionCalls = resolutionCalls + 1
+    if resolutionCalls == 1 then
+      return nil, { state = "pending" }
+    end
+    if resolutionCalls == 2 then
+      return nil, { state = "unavailable", reason = "blocked" }
+    end
+    return nil, { state = "stale_generation" }
+  end
+  function service:dispose()
+    disposals = disposals + 1
+  end
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    serviceCreations = serviceCreations + 1
+    return service
+  end
+  local state = presetState(session)
+  local file = fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 4, z = 5 }'))
+  local ok, err = pcall(function()
+    withDialogs(function(dialogs)
+      Assert.equal(type(state.importPresetFile), "function", "the editor owns async preset resolution")
+      state:importPresetFile(file)
+      Assert.notNil(state.pendingPreset, "verification remains owned while pending")
+      state:update(0)
+      Assert.equal(resolutionCalls, 1, "pending resolution remains pending after one update")
+      Assert.equal(session.applyCalls, 0, "pending geometry cannot be applied")
+      state:update(0)
+      Assert.equal(resolutionCalls, 2, "the verifier is advanced and resolved again")
+      Assert.equal(session.applyCalls, 0, "unavailable geometry never reaches the session")
+      Assert.isNil(state.pendingPreset, "terminal failure clears pending ownership")
+      Assert.equal(disposals, 1, "terminal failure disposes the verifier once")
+      Assert.equal(#dialogs, 1, "terminal geometry rejection shows one dialog")
+      Assert.equal(dialogs[1].title, "Preset rejected")
+
+      state:importPresetFile(fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 6, z = 7 }')))
+      state:update(0)
+      Assert.equal(session.applyCalls, 0, "a stale-generation resolution never reaches application")
+      Assert.equal(disposals, 2, "stale-generation failure disposes its verifier once")
+      Assert.equal(#dialogs, 2, "stale-generation failure is terminally reported")
+    end)
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
+  Assert.equal(serviceCreations, 2, "each attempt owns one private verifier")
+end
+
+function T.tests.second_drop_is_refused_without_replacing_pending_work_then_disposal_cancels_once()
+  local session = presetSession()
+  local serviceCreations, disposals = 0, 0
+  local service = {
+    openMap = function() end,
+    setViewport = function() end,
+    update = function() end,
+    snapshot = function()
+      return { status = { state = "pending" }, generation = 9 }
+    end,
+    resolve = function()
+      return nil, { state = "pending" }
+    end,
+    dispose = function()
+      disposals = disposals + 1
+    end,
+  }
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    serviceCreations = serviceCreations + 1
+    return service
+  end
+  local state = presetState(session, { presentation = { dispose = function() end } })
+  local first = fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 4, z = 5 }'))
+  local second = fakePresetFile(presetSource("flags = { FLAG_GOT_POKEDEX = true }"))
+  local ok, err = pcall(function()
+    withDialogs(function(dialogs)
+      Assert.equal(type(state.importPresetFile), "function", "the editor owns pending preset state")
+      state:importPresetFile(first)
+      local pending = state.pendingPreset
+      Assert.notNil(pending, "the first import owns asynchronous work")
+      state:importPresetFile(second)
+      Assert.equal(state.pendingPreset, pending, "a second drop cannot replace the first operation")
+      Assert.equal(serviceCreations, 1, "a refused second drop does not acquire another verifier")
+      Assert.equal(session.applyCalls, 0, "neither pending drop publishes prematurely")
+      Assert.equal(#dialogs, 1, "the second drop is refused promptly with one dialog")
+      Assert.equal(dialogs[1].title, "Preset rejected")
+      state:dispose()
+      Assert.isNil(state.pendingPreset, "dispose clears pending preset ownership")
+      Assert.equal(disposals, 1, "dispose releases the private verifier once")
+      Assert.equal(#dialogs, 1, "disposal suppresses a late result dialog")
+    end)
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.revision_change_during_location_verification_rejects_without_apply()
+  local session = presetSession()
+  local disposed = 0
+  local service = {
+    openMap = function() end,
+    setViewport = function() end,
+    update = function() end,
+    snapshot = function()
+      return { status = { state = "ready" }, generation = 3 }
+    end,
+    resolve = function(_, mapId, x, z)
+      return {
+        mapId = mapId,
+        fieldX = x,
+        fieldZ = z,
+        worldY = 0,
+        surfaceId = 1,
+        terrainDependencyHash = "verified",
+      }, { state = "ready" }
+    end,
+    dispose = function()
+      disposed = disposed + 1
+    end,
+  }
+  local originalNew = LocationService.new
+  LocationService.new = function()
+    return service
+  end
+  local state = presetState(session)
+  local file = fakePresetFile(presetSource('location = { map = "MAP_TEST", x = 4, z = 5 }'))
+  local ok, err = pcall(function()
+    withDialogs(function(dialogs)
+      Assert.equal(type(state.importPresetFile), "function", "the editor owns stale-result rejection")
+      state:importPresetFile(file)
+      session.revisionValue = session.revisionValue + 1
+      state:update(0)
+      Assert.equal(session.applyCalls, 0, "a late verified placement cannot overwrite a newer edit")
+      Assert.isNil(state.pendingPreset, "stale settlement releases pending ownership")
+      Assert.equal(disposed, 1, "stale settlement disposes the verifier once")
+      Assert.equal(#dialogs, 1, "stale settlement is reported once")
+      Assert.equal(dialogs[1].title, "Preset rejected")
+    end)
+  end)
+  LocationService.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.tests.static_bag_focus_moves_do_not_reveal_or_activate_controls()
@@ -1234,9 +1904,27 @@ function T.tests.party_keyboard_focus_reveals_stats_before_their_controls_are_ma
     partyStats = {
       header = {
         { id = "level", label = "Level", value = 5, targetId = "party:field:level", editor = { kind = "integer" } },
-        { id = "experience", label = "Experience", value = 100, targetId = "party:field:experience", editor = { kind = "integer" } },
-        { id = "friendship", label = "Friendship", value = 70, targetId = "party:field:friendship", editor = { kind = "integer" } },
-        { id = "currentHp", label = "HP", value = 12, targetId = "party:field:currentHp", editor = { kind = "integer" } },
+        {
+          id = "experience",
+          label = "Experience",
+          value = 100,
+          targetId = "party:field:experience",
+          editor = { kind = "integer" },
+        },
+        {
+          id = "friendship",
+          label = "Friendship",
+          value = 70,
+          targetId = "party:field:friendship",
+          editor = { kind = "integer" },
+        },
+        {
+          id = "currentHp",
+          label = "HP",
+          value = 12,
+          targetId = "party:field:currentHp",
+          editor = { kind = "integer" },
+        },
         { id = "status", label = "Status", value = "OK", targetId = "party:readonly:status" },
       },
       rows = rows,
@@ -1308,12 +1996,8 @@ function T.tests.party_keyboard_focus_reveals_stats_before_their_controls_are_ma
   local lastIv = "party:field:iv:specialDefense"
   local lastAnchor = assert(pagerLayout.revealByTarget[lastIv])
   local pagerViewport = assert(pagerLayout.viewports.party)
-  local expectedLast = ScrollViewport.reveal(
-    pagerViewport.offset,
-    pagerViewport.clip.height,
-    lastAnchor.start,
-    lastAnchor.extent
-  )
+  local expectedLast =
+    ScrollViewport.reveal(pagerViewport.offset, pagerViewport.clip.height, lastAnchor.start, lastAnchor.extent)
   state:_navigate(pagerLayout, "up")
   Assert.equal(controller.focus, lastIv, "Up from the pager enters the final logical Stats row")
   Assert.equal(controller.scrollOffsets["party:Stats"], expectedLast, "pager entry uses the final row's exact anchor")
@@ -1410,34 +2094,42 @@ function T.tests.partial_party_details_and_moves_targets_respect_the_body_clip()
         actions[#actions + 1] = action
       end,
     })
-    state:_pointer({ {
-      type = "pointer_down",
-      pointerId = "touch:partial-" .. tab,
-      x = target.rect.x + 1,
-      y = clip.y + 1,
-    } })
-    state:_pointer({ {
-      type = "pointer_up",
-      pointerId = "touch:partial-" .. tab,
-      x = target.rect.x + 1,
-      y = clip.y + 1,
-    } })
+    state:_pointer({
+      {
+        type = "pointer_down",
+        pointerId = "touch:partial-" .. tab,
+        x = target.rect.x + 1,
+        y = clip.y + 1,
+      },
+    })
+    state:_pointer({
+      {
+        type = "pointer_up",
+        pointerId = "touch:partial-" .. tab,
+        x = target.rect.x + 1,
+        y = clip.y + 1,
+      },
+    })
     Assert.equal(#actions, 1, tab .. " dispatches an in-clip partial-control tap on release")
 
     if tab == "Details" then
       actions = {}
-      state:_pointer({ {
-        type = "pointer_down",
-        pointerId = "touch:partial-detail-drag",
-        x = target.rect.x + 1,
-        y = clip.y + 1,
-      } })
-      state:_pointer({ {
-        type = "pointer_up",
-        pointerId = "touch:partial-detail-drag",
-        x = target.rect.x + 1,
-        y = clip.y - 1,
-      } })
+      state:_pointer({
+        {
+          type = "pointer_down",
+          pointerId = "touch:partial-detail-drag",
+          x = target.rect.x + 1,
+          y = clip.y + 1,
+        },
+      })
+      state:_pointer({
+        {
+          type = "pointer_up",
+          pointerId = "touch:partial-detail-drag",
+          x = target.rect.x + 1,
+          y = clip.y - 1,
+        },
+      })
       Assert.equal(#actions, 0, "releasing an edit outside the body clip never activates or commits it")
     end
   end
@@ -1498,7 +2190,8 @@ function T.tests.expanded_party_moves_keep_dpad_navigation_and_reveal_the_last_c
   local current = layout()
   local lastAnchor = assert(current.revealByTarget["party:move:3"])
   local viewport = assert(current.viewports.party)
-  local expectedOffset = ScrollViewport.reveal(viewport.offset, viewport.clip.height, lastAnchor.start, lastAnchor.extent)
+  local expectedOffset =
+    ScrollViewport.reveal(viewport.offset, viewport.clip.height, lastAnchor.start, lastAnchor.extent)
   state:_navigate(current, "right")
   Assert.equal(controller.focus, "party:move:1", "Right moves between the top row cards")
   state:_navigate(layout(), "down")
@@ -1533,7 +2226,9 @@ function T.tests.party_reveal_keeps_exact_offsets_across_tabs_inputs_and_sizes()
     local controller = Controller.new()
     controller:setSection("Party")
     controller:selectPartyTab(tab)
-    controller:setFocus(tab == "Stats" and "party:field:iv:hp" or tab == "Moves" and "party:move:0" or "party:field:detail0")
+    controller:setFocus(
+      tab == "Stats" and "party:field:iv:hp" or tab == "Moves" and "party:move:0" or "party:field:detail0"
+    )
     local view = {
       section = "Party",
       status = "ready",
@@ -2317,8 +3012,8 @@ local function recordingLocationService()
   function stub:releaseGrid()
     self.releaseGridCalls = self.releaseGridCalls + 1
   end
-  function stub:cancelInitialSurvey()
-    self.cancelInitialSurveyCalls = (self.cancelInitialSurveyCalls or 0) + 1
+  function stub:cancelInitialSuggestion()
+    self.cancelInitialSuggestionCalls = (self.cancelInitialSuggestionCalls or 0) + 1
   end
   function stub:snapshot()
     return {
@@ -2372,7 +3067,7 @@ local function mapActivationHarness()
   }
 end
 
-function T.tests.manual_tile_selection_disarms_pending_survey_centering()
+function T.tests.manual_tile_selection_disarms_pending_suggestion_centering()
   local harness = mapActivationHarness()
   harness.service.resolve = function(_, mapId, fieldX, fieldZ)
     Assert.equal(mapId, 12, "manual selection resolves the active map")
@@ -2389,10 +3084,10 @@ function T.tests.manual_tile_selection_disarms_pending_survey_centering()
 
   harness.state:_performDeferred({ kind = "select_tile", fieldX = 32, fieldZ = 48 })
 
-  Assert.isNil(harness.state.locationAutoCenterToken, "manual tile selection takes ownership from the survey")
+  Assert.isNil(harness.state.locationAutoCenterToken, "manual tile selection takes ownership from the suggestion")
 end
 
-function T.tests.pending_manual_tile_selection_cancels_survey_ownership()
+function T.tests.pending_manual_tile_selection_cancels_suggestion_ownership()
   local harness = mapActivationHarness()
   harness.service.resolve = function()
     return nil, { state = "pending", reason = "preparing" }
@@ -2401,8 +3096,12 @@ function T.tests.pending_manual_tile_selection_cancels_survey_ownership()
 
   harness.state:_selectLocationTile(32, 48)
 
-  Assert.isNil(harness.state.locationAutoCenterToken, "a manual tile attempt takes ownership from the survey")
-  Assert.equal(harness.service.cancelInitialSurveyCalls or 0, 1, "a pending survey is canceled before tile resolution")
+  Assert.isNil(harness.state.locationAutoCenterToken, "a manual tile attempt takes ownership from the suggestion")
+  Assert.equal(
+    harness.service.cancelInitialSuggestionCalls or 0,
+    1,
+    "a pending suggestion is canceled before tile resolution"
+  )
 end
 
 local function tappedLocationHarness(width, height)
@@ -2443,7 +3142,7 @@ local function tappedLocationHarness(width, height)
     end,
     setViewport = function() end,
     update = function() end,
-    cancelInitialSurvey = function() end,
+    cancelInitialSuggestion = function() end,
   }
   local session = {
     snapshot = function()
@@ -2624,7 +3323,8 @@ function T.tests.confirming_a_map_row_publishes_the_map_without_loading_in_the_i
 
   local navigation = harness.controller:locationSnapshot()
   Assert.equal(navigation.mapId, 34, "activation publishes the new browser map immediately")
-  Assert.deepEqual(navigation.center, { fieldX = 116, fieldZ = 216 }, "activation recenters on the new map")
+  Assert.isNil(navigation.center, "activation waits for the map-owned seed before centering")
+  Assert.isNil(navigation.cursor, "activation waits for the map-owned seed before placing a cursor")
   Assert.equal(harness.service.updateCalls, 0, "the input path performs no service update before the next update")
 end
 
@@ -2661,7 +3361,11 @@ function T.tests.location_grid_direction_moves_the_cursor_without_a_list_viewpor
   Assert.equal(after.fieldX, before.fieldX + 1, "directional grid input moves the location cursor one tile")
   Assert.equal(after.fieldZ, before.fieldZ, "horizontal grid input preserves the row")
   Assert.isNil(harness.state.locationAutoCenterToken, "manual grid movement takes ownership from the suggestion")
-  Assert.equal(harness.service.cancelInitialSurveyCalls or 0, 1, "manual grid movement cancels the pending survey")
+  Assert.equal(
+    harness.service.cancelInitialSuggestionCalls or 0,
+    1,
+    "manual grid movement cancels the pending suggestion"
+  )
 end
 
 function T.tests.pointer_pan_takes_location_cursor_ownership_before_the_next_update()
@@ -2673,7 +3377,7 @@ function T.tests.pointer_pan_takes_location_cursor_ownership_before_the_next_upd
     controller = controller,
     locationAutoCenterToken = { mapId = 12, generation = 3 },
     locationService = {
-      cancelInitialSurvey = function()
+      cancelInitialSuggestion = function()
         canceled = canceled + 1
       end,
     },
@@ -2718,7 +3422,7 @@ function T.tests.pointer_pan_takes_location_cursor_ownership_before_the_next_upd
   })
 
   Assert.isNil(state.locationAutoCenterToken, "manual map panning owns the preview before an update can recenter it")
-  Assert.equal(canceled, 1, "starting a pointer pan cancels the automatic survey")
+  Assert.equal(canceled, 1, "starting a pointer pan cancels the automatic suggestion")
 end
 
 function T.tests.location_grid_page_only_moves_its_cursor_when_grid_has_focus()
@@ -2884,13 +3588,23 @@ function T.tests.first_viewport_generation_keeps_the_initial_map_suggestion_curr
   end
   function harness.service:update()
     self.updateCalls = self.updateCalls + 1
-    initialCursor = {
-      state = "ready",
-      mapId = 34,
-      generation = requestGeneration,
-      fieldX = 121,
-      fieldZ = 223,
-    }
+    if self.updateCalls == 1 then
+      initialCursor = {
+        state = "seeded",
+        mapId = 34,
+        generation = requestGeneration,
+        fieldX = 100,
+        fieldZ = 200,
+      }
+    else
+      initialCursor = {
+        state = "ready",
+        mapId = 34,
+        generation = requestGeneration,
+        fieldX = 121,
+        fieldZ = 223,
+      }
+    end
   end
   function harness.service:snapshot()
     return {
@@ -2901,6 +3615,16 @@ function T.tests.first_viewport_generation_keeps_the_initial_map_suggestion_curr
   end
 
   harness.state:_performDeferred({ kind = "location-map-select", mapId = 34 })
+  local pending = harness.controller:locationSnapshot()
+  Assert.isNil(pending.center, "map selection waits for the map-owned seed before publishing a viewport")
+  Assert.isNil(pending.cursor, "map selection waits for the map-owned seed before placing a cursor")
+  harness.state:_updateLocationService()
+
+  local unlocated = harness.controller:locationSnapshot()
+  Assert.deepEqual(unlocated.cursor, { fieldX = 100, fieldZ = 200 }, "the state adopts the seeded preview once")
+  Assert.deepEqual(unlocated.center, { fieldX = 100, fieldZ = 200 }, "the seed carries the preview viewport")
+  Assert.notNil(harness.state.locationAutoCenterToken, "the seed keeps the suggestion armed")
+
   harness.state:_updateLocationService()
 
   Assert.equal(generation, 2, "the first viewport publication advances the browse generation")
@@ -2912,25 +3636,47 @@ function T.tests.first_viewport_generation_keeps_the_initial_map_suggestion_curr
   Assert.isNil(harness.state.locationAutoCenterToken, "consuming the current suggestion clears its token")
 end
 
-function T.tests.map_suggestion_waits_for_the_service_to_be_ready_before_centering()
+function T.tests.map_suggestion_waits_for_the_current_generation_before_centering()
   local harness = mapActivationHarness()
-  local generation, status, initialCursor = 0, "pending", nil
+  local generation = 0
+  local requestGeneration = 0
+  local status, initialCursor = "pending", nil
   function harness.service:openMap(mapId)
     self.openMaps[#self.openMaps + 1] = mapId
     generation = generation + 1
-    initialCursor = { state = "pending", mapId = mapId, generation = generation }
+    requestGeneration = requestGeneration + 1
+    initialCursor = { state = "pending", mapId = mapId, generation = requestGeneration }
   end
   function harness.service:setViewport()
     generation = generation + 1
-    initialCursor.generation = generation
   end
   function harness.service:update()
     self.updateCalls = self.updateCalls + 1
     if self.updateCalls == 1 then
-      initialCursor = { state = "ready", mapId = 34, generation = generation, fieldX = 16, fieldZ = 24 }
-    else
+      initialCursor = {
+        state = "seeded",
+        mapId = 34,
+        generation = requestGeneration,
+        fieldX = 100,
+        fieldZ = 200,
+      }
+    elseif self.updateCalls == 2 then
       status = "ready"
-      initialCursor = { state = "ready", mapId = 34, generation = generation, fieldX = 121, fieldZ = 223 }
+      initialCursor = {
+        state = "ready",
+        mapId = 34,
+        generation = requestGeneration + 1,
+        fieldX = 16,
+        fieldZ = 24,
+      }
+    else
+      initialCursor = {
+        state = "ready",
+        mapId = 34,
+        generation = requestGeneration,
+        fieldX = 121,
+        fieldZ = 223,
+      }
     end
   end
   function harness.service:snapshot()
@@ -2940,12 +3686,21 @@ function T.tests.map_suggestion_waits_for_the_service_to_be_ready_before_centeri
   harness.state:_performDeferred({ kind = "location-map-select", mapId = 34 })
   harness.state:_updateLocationService()
 
-  Assert.notNil(harness.state.locationAutoCenterToken, "an early suggestion cannot consume the pending center request")
   Assert.deepEqual(
     harness.controller:locationSnapshot().cursor,
-    { fieldX = 116, fieldZ = 216 },
-    "a ready survey result does not move the preview while map preparation is pending"
+    { fieldX = 100, fieldZ = 200 },
+    "the seeded preview centers while its suggestion is still pending"
   )
+  Assert.notNil(harness.state.locationAutoCenterToken, "the seed keeps its center request armed")
+
+  harness.state:_updateLocationService()
+
+  Assert.deepEqual(
+    harness.controller:locationSnapshot().cursor,
+    { fieldX = 100, fieldZ = 200 },
+    "a stale suggestion generation never moves the preview"
+  )
+  Assert.notNil(harness.state.locationAutoCenterToken, "a stale suggestion keeps its center request armed")
 
   harness.state:_updateLocationService()
 
@@ -3064,7 +3819,6 @@ function T.tests.steady_update_never_prepares_icons()
   harness.state.tickRemainder = 0
   harness.state.inputTick = 0
   harness.state.numberHold = nil
-  harness.state.locationSave = nil
   harness.state.derivedAssets = {
     requestMilestone = function()
       return true
@@ -3189,6 +3943,282 @@ function T.tests.resize_republishes_the_location_viewport_on_the_next_refresh()
 
   Assert.equal(#harness.service.viewportCalls, 1, "the next refresh republishes the viewport after a resize")
   Assert.equal(harness.service.updateCalls, 1, "the refresh still advances loading after a resize")
+end
+
+local function idleLocationGridHarness()
+  local harness = mapActivationHarness()
+  local controller, state, service = harness.controller, harness.state, harness.service
+  local counts = { snapshots = 0, resolves = 0, iconPreps = 0, uiSnapshots = 0 }
+  local reportChanged = false
+  local queuedEvents = {}
+  function service:update()
+    self.updateCalls = self.updateCalls + 1
+    return reportChanged
+  end
+  local published = { section = "Location" }
+  local layout = {
+    scopeId = controller.scopeId,
+    scopeEpoch = controller.scopeEpoch,
+    locationGrid = { columns = 7, rows = 5 },
+    focusNavigation = {
+      regions = { { id = "body", order = 1, kind = "spatial", rect = { x = 0, y = 0, width = 1, height = 1 } } },
+      controls = {
+        {
+          id = controller.focus,
+          regionId = "body",
+          rect = { x = 0, y = 0, width = 1, height = 1 },
+          eligible = true,
+          order = 1,
+          action = { kind = "target", targetId = controller.focus },
+        },
+      },
+    },
+    defaultFocus = controller.focus,
+  }
+  state.locationGridWidthTiles, state.locationGridHeightTiles = 7, 5
+  state.locationViewport = { centerX = 32, centerZ = 48, widthTiles = 7, heightTiles = 5 }
+  state.locationAutoCenterToken = nil
+  state.tickRemainder = 0
+  state.inputTick = 0
+  state.numberHold = nil
+  state.width, state.height = 800, 600
+  state.derivedAssets = {
+    requestMilestone = function()
+      return true
+    end,
+  }
+  state.dependencies.cacheFs = {}
+  state.presentation = {
+    cancelPointers = function() end,
+    mapInput = function(_, events)
+      return events
+    end,
+  }
+  state.renderer = {
+    iconStatus = "ready",
+    iconFailure = nil,
+    graphics = {},
+    text = {},
+    prepareVisibleIcons = function()
+      counts.iconPreps = counts.iconPreps + 1
+    end,
+  }
+  state.fieldInput = {
+    uiSnapshot = function()
+      counts.uiSnapshots = counts.uiSnapshots + 1
+      local events = queuedEvents
+      queuedEvents = {}
+      return events
+    end,
+    beginUi = function() end,
+  }
+  state.session = {
+    stagedPlacements = 0,
+    revision = function()
+      return 4
+    end,
+    setLocation = function(self)
+      self.stagedPlacements = self.stagedPlacements + 1
+      return { ok = true }
+    end,
+  }
+  state._snapshot = function()
+    counts.snapshots = counts.snapshots + 1
+    return published
+  end
+  state._resolve = function()
+    counts.resolves = counts.resolves + 1
+    return { content = { layout = layout } }
+  end
+  return {
+    controller = controller,
+    state = state,
+    service = service,
+    counts = counts,
+    resetCounts = function()
+      counts.snapshots, counts.resolves, counts.iconPreps = 0, 0, 0
+    end,
+    setChanged = function(value)
+      reportChanged = value
+    end,
+    queueEvents = function(events)
+      queuedEvents = events
+    end,
+  }
+end
+
+function T.tests.idle_location_grid_reuses_the_settled_pair_across_empty_ticks()
+  local harness = idleLocationGridHarness()
+  local controller, state, service, counts = harness.controller, harness.state, harness.service, harness.counts
+
+  state:update(1 / 60)
+  Assert.isTrue(counts.snapshots > 0, "the first tick publishes the settled pair")
+  local settledView, settledPlan = state._publishedView, state._publishedPlan
+  Assert.notNil(settledView, "the first tick settles a view")
+  Assert.notNil(settledPlan, "the first tick settles a plan")
+  Assert.isTrue(settledView.presentation == settledPlan, "the settled view pairs with its plan")
+  local focusBefore = controller.focus
+
+  harness.resetCounts()
+  local serviceCallsBefore, uiBefore = service.updateCalls, counts.uiSnapshots
+  state:update(1 / 60)
+  state:update(1 / 60)
+  state:update(1 / 60)
+
+  Assert.equal(counts.snapshots, 0, "idle ticks never snapshot again")
+  Assert.equal(counts.resolves, 0, "idle ticks never resolve layout again")
+  Assert.isTrue(state._publishedView == settledView, "idle ticks reuse the settled view")
+  Assert.isTrue(state._publishedPlan == settledPlan, "idle ticks reuse the settled plan")
+  Assert.equal(controller.focus, focusBefore, "empty input leaves focus unchanged")
+  Assert.equal(service.updateCalls, serviceCallsBefore + 3, "idle ticks still advance map preparation")
+  Assert.equal(counts.uiSnapshots, uiBefore + 3, "idle ticks still poll semantic input")
+
+  local drawn = {}
+  local originalDraw = ApplicationPresentation.draw
+  ApplicationPresentation.draw = function(_, _, view, presentation)
+    drawn[#drawn + 1] = { view = view, presentation = presentation }
+  end
+  local firstOk, firstError = pcall(function()
+    state:draw()
+  end)
+  local secondOk, secondError = pcall(function()
+    state:draw()
+  end)
+  ApplicationPresentation.draw = originalDraw
+  Assert.isTrue(firstOk, "the first idle draw runs without platform rendering: " .. tostring(firstError))
+  Assert.isTrue(secondOk, "the second idle draw runs without platform rendering: " .. tostring(secondError))
+  Assert.equal(#drawn, 2, "both draws reach the presentation boundary")
+  Assert.isTrue(drawn[1].view == settledView and drawn[2].view == settledView, "draws render the settled view")
+  Assert.isTrue(
+    drawn[1].presentation == settledPlan and drawn[2].presentation == settledPlan,
+    "draws render the settled plan"
+  )
+  Assert.equal(counts.snapshots, 0, "settled draws never snapshot again")
+  Assert.equal(counts.resolves, 0, "settled draws never resolve again")
+  Assert.equal(state.session.stagedPlacements, 0, "browsing an idle grid never stages a destination")
+end
+
+function T.tests.location_grid_changes_resize_and_other_sections_still_republish_before_draw()
+  local harness = idleLocationGridHarness()
+  local controller, state, service, counts = harness.controller, harness.state, harness.service, harness.counts
+
+  state:update(1 / 60)
+  Assert.notNil(state._publishedPlan, "the grid settles before exercising changes")
+  local settledPlan = state._publishedPlan
+
+  harness.setChanged(true)
+  harness.resetCounts()
+  state:update(1 / 60)
+  harness.setChanged(false)
+  Assert.isTrue(counts.snapshots > 0, "a reported map change republishes")
+  Assert.isTrue(state._publishedPlan ~= settledPlan, "a reported map change replaces the settled plan")
+  Assert.isTrue(state._publishedView.presentation == state._publishedPlan, "the replaced view pairs with its plan")
+  Assert.isTrue(
+    state._publishedView.layout == state._publishedPlan.content.layout,
+    "the replaced view carries its layout"
+  )
+  settledPlan = state._publishedPlan
+
+  harness.resetCounts()
+  harness.queueEvents({
+    { type = "navigate", direction = "right" },
+    { type = "navigate", direction = "right" },
+    { type = "navigate", direction = "right" },
+    { type = "navigate", direction = "right" },
+  })
+  state:update(1 / 60)
+  Assert.isTrue(counts.resolves > 0, "manual cursor input refreshes layout")
+  Assert.isTrue(state._publishedPlan ~= settledPlan, "manual cursor input replaces the settled plan")
+  local navigation = controller:locationSnapshot()
+  Assert.equal(navigation.cursor.fieldX, 36, "the grid cursor pages right")
+  Assert.equal(navigation.cursor.fieldZ, 48, "the grid cursor keeps its row")
+  Assert.equal(navigation.center.fieldX, 39, "paging past the window recenters the preview")
+  local viewport = assert(service.viewportCalls[#service.viewportCalls], "cursor input republishes the viewport")
+  Assert.equal(viewport.centerX, 39, "the service viewport follows the recentered preview")
+  Assert.equal(viewport.centerZ, 48, "the service viewport keeps the cursor row")
+  Assert.equal(state.session.stagedPlacements, 0, "cursor movement never stages a destination")
+  settledPlan = state._publishedPlan
+
+  harness.resetCounts()
+  state:resize(1024, 768)
+  Assert.isTrue(counts.snapshots > 0, "resize republishes immediately")
+  local viewportCallsBefore = #service.viewportCalls
+  state:update(1 / 60)
+  Assert.equal(
+    #service.viewportCalls,
+    viewportCallsBefore + 1,
+    "the next refresh republishes the viewport after resize"
+  )
+  Assert.equal(state.width, 1024, "resize keeps the new width")
+  Assert.equal(state.height, 768, "resize keeps the new height")
+  Assert.isTrue(state._publishedView.presentation == state._publishedPlan, "the resized view pairs with its plan")
+
+  controller:setSection("Party")
+  harness.resetCounts()
+  state:update(1 / 60)
+  Assert.isTrue(counts.snapshots > 0, "leaving the grid republishes eagerly")
+  Assert.isTrue(counts.resolves > 0, "leaving the grid resolves eagerly")
+
+  controller:openModal("leave")
+  harness.resetCounts()
+  state:update(1 / 60)
+  Assert.isTrue(counts.snapshots > 0, "opening a decision republishes")
+  Assert.isTrue(counts.resolves > 0, "opening a decision resolves")
+  Assert.equal(state.session.stagedPlacements, 0, "no preview change stages a destination")
+end
+
+function T.tests.settled_location_refresh_publishes_only_on_reported_service_changes()
+  local harness = idleLocationGridHarness()
+  local state, service, counts = harness.state, harness.service, harness.counts
+  local serviceSnapshots = 0
+  local originalSnapshot = service.snapshot
+  service.snapshot = function(self)
+    serviceSnapshots = serviceSnapshots + 1
+    return originalSnapshot(self)
+  end
+
+  state:update(1 / 60)
+  Assert.notNil(state._publishedPlan, "the grid settles before exercising service refreshes")
+  local settledPlan = state._publishedPlan
+
+  harness.resetCounts()
+  serviceSnapshots = 0
+  state:_updateLocationService()
+  local quiet = state:view()
+  Assert.equal(serviceSnapshots, 0, "a refresh with no pending centering never reads service tiles")
+  Assert.equal(counts.snapshots, 0, "a work-only refresh never snapshots again")
+  Assert.equal(counts.resolves, 0, "a work-only refresh never resolves layout again")
+  Assert.isTrue(quiet.presentation == settledPlan, "a work-only refresh reuses the settled pair")
+
+  harness.setChanged(true)
+  harness.resetCounts()
+  state:_updateLocationService()
+  local republished = state:view()
+  harness.setChanged(false)
+  Assert.isTrue(counts.snapshots > 0, "a reported service change republishes through the settled pair")
+  Assert.isTrue(republished.presentation ~= settledPlan, "a reported service change replaces the settled plan")
+  Assert.isTrue(republished.presentation == state._publishedPlan, "the replacement view pairs with its plan")
+end
+
+function T.tests.direct_empty_input_consumption_still_refreshes_the_settled_pair()
+  local harness = idleLocationGridHarness()
+  local state, counts = harness.state, harness.counts
+  local controller = harness.controller
+
+  state:update(1 / 60)
+  Assert.notNil(state._publishedPlan, "the grid settles before exercising direct input")
+  local focusBefore = controller.focus
+
+  harness.resetCounts()
+  state:_consumeUiInput({})
+  Assert.isTrue(counts.snapshots > 0, "a direct empty batch keeps its original refresh")
+  Assert.isTrue(counts.resolves > 0, "a direct empty batch refreshes layout")
+  Assert.equal(controller.focus, focusBefore, "a direct empty batch leaves focus unchanged")
+
+  harness.resetCounts()
+  state:update(1 / 60)
+  Assert.equal(counts.snapshots, 0, "the update tick still reuses the settled pair on empty input")
+  Assert.equal(counts.resolves, 0, "the update tick still skips layout on empty input")
 end
 
 local function installPointerPassThrough(state)
@@ -4704,7 +5734,7 @@ function T.tests.leave_save_keeps_invalid_value_editable_and_discard_remains_exp
   Assert.isNil(discarded.state.valueEditor, "explicit Discard retires the unfinished editor")
 end
 
-local function livePartyHarness(memberCount)
+livePartyHarness = function(memberCount)
   local Fixture = require("app.tests.support.SaveEditorFixture")
   local fixture = Fixture.new()
   local Session = require("app.src.saveeditor.SaveEditorSession")
@@ -4736,6 +5766,11 @@ local function livePartyHarness(memberCount)
     session = session,
     dependencies = {
       context = fixture.context,
+      world = {
+        maps = { { id = 60, mapSectionNativeId = 5 } },
+        byId = { [60] = 1 },
+        bySymbol = { MAP_TEST = 60 },
+      },
       bagManifest = {
         interactive = {
           overlays = {
@@ -4815,7 +5850,11 @@ function T.tests.confirming_party_level_editor_updates_exp_and_derived_hp_throug
   Assert.isTrue(editor:press("confirm"), "the adjusted level confirms")
   harness.state:_finishValueEditor()
 
-  Assert.equal(draft:record().experience, Experience.expFor(curve, nextLevel), "State applies the canonical EXP threshold")
+  Assert.equal(
+    draft:record().experience,
+    Experience.expFor(curve, nextLevel),
+    "State applies the canonical EXP threshold"
+  )
   Assert.equal(draft:projection().level, nextLevel, "the projection publishes the newly derived level")
   Assert.notNil(draft:projection().stats.hp, "the derived HP projection refreshes with the level")
   Assert.equal(
@@ -5294,7 +6333,8 @@ function T.tests.activating_the_staged_map_keeps_its_coordinates_while_other_map
   Assert.deepEqual(staged.center, { fieldX = 40, fieldZ = 50 }, "the staged map keeps its staged coordinates")
   state:_performDeferred({ kind = "location-map-select", mapId = 34 })
   local other = controller:locationSnapshot()
-  Assert.deepEqual(other.center, { fieldX = 116, fieldZ = 216 }, "another map starts from its record default")
+  Assert.isNil(other.center, "another map waits for its map-owned seed instead of a record default")
+  Assert.isNil(other.cursor, "another map waits for its map-owned seed instead of a record default")
 end
 
 function T.tests.empty_map_filter_keeps_confirm_inert_on_the_container()
@@ -5384,9 +6424,11 @@ local function observationHarness()
     session = session,
     dependencies = {
       cacheFs = {},
-      context = { monCatalog = { move = function()
-        return { name = "Move" }
-      end } },
+      context = { monCatalog = {
+        move = function()
+          return { name = "Move" }
+        end,
+      } },
     },
     derivedAssets = {},
     displayContext = {
@@ -5569,8 +6611,7 @@ function T.tests.every_modal_action_renders_hits_and_executes_from_one_descripti
     },
   }
   for kind, expected in pairs(expectations) do
-    local facts = kind == "leave" and { pendingSave = false } or {}
-    local actions = Decisions.describe(kind, facts)
+    local actions = Decisions.describe(kind)
     Assert.equal(#actions, #expected, kind .. " publishes its closed action set")
     for index, want in ipairs(expected) do
       local action = assert(actions[index], kind .. " action " .. index .. " is ordered")
@@ -5636,21 +6677,15 @@ function T.tests.every_modal_action_renders_hits_and_executes_from_one_descripti
     local published = publisher:_snapshot()
     Assert.deepEqual(
       published.decisionActions,
-      Decisions.describe(kind, kind == "leave" and { pendingSave = false } or {}),
+      Decisions.describe(kind),
       kind .. " publishes its canonical actions without mutating interaction state"
     )
     Assert.notNil(publisher.numberHold, kind .. " publication never cancels a held repeat")
   end
   publisher.controller.modal = nil
   Assert.equal(publisherIconPrep(), 0, "publication never requests derived icon work")
-  local pendingSave = Decisions.describe("leave", { pendingSave = true })
-  Assert.equal(
-    pendingSave[1].command,
-    "cancel_pending_save",
-    "a save target during verification cancels the check instead of saving"
-  )
-  local idleSave = Decisions.describe("leave", { pendingSave = false })
-  Assert.equal(idleSave[1].command, "save", "an idle save target saves")
+  local idleSave = Decisions.describe("leave")
+  Assert.equal(idleSave[1].command, "save", "the leave save target saves")
   local unknownOk = pcall(Decisions.describe, "leave-everything", {})
   Assert.isFalse(unknownOk, "an unknown decision kind is a programming error, not an implicit leave")
 end
@@ -6371,7 +7406,11 @@ function T.tests.repeated_and_failing_draws_keep_observation_and_graphics_state_
   for _, direction in ipairs({ "decrement", "increment" }) do
     for _, state in ipairs({ "normal", "pressed" }) do
       local imagePath = view.bagQuantityVisuals[direction][state].image
-      failingRenderer._bagImages[imagePath] = { getDimensions = function() return 16, 16 end }
+      failingRenderer._bagImages[imagePath] = {
+        getDimensions = function()
+          return 16, 16
+        end,
+      }
     end
   end
   local failingPlan = paintPlanFor(view, 640, 480)
@@ -6428,7 +7467,6 @@ function T.tests.snapshot_does_not_publish_or_mutate_the_active_scope()
     session = nil,
     valueEditor = nil,
     locationService = nil,
-    pendingLocationSave = nil,
   }, State)
 
   local first = state:_snapshot()
@@ -6747,6 +7785,299 @@ function T.tests.retained_flag_and_bag_records_stay_detached_across_quantity_upd
     bagState:_bagView()
   end)
   Assert.isFalse(unknownOk, "entries outside the item catalog fail instead of guessing")
+end
+
+local function relocatedSaveHarness()
+  local MapAssetCache = require("libs.assets.src.MapAssetCache")
+  local fixture = Fixture.new()
+  local session = assert(Session.new({
+    record = fixture.initial,
+    context = fixture.context,
+    saveStore = fixture.store,
+    saveFs = fixture.saveFs,
+    validateRecord = fixture.validateRecord,
+    symbols = fixture.symbols,
+  }))
+  local placement = session:snapshot().location
+  placement.fieldX = placement.fieldX + 1
+  Assert.isTrue(session:setLocation(placement).ok, "the relocated destination stages")
+  local money = session:snapshot().money + 1
+  Assert.isTrue(session:setMoney(money).ok, "the companion money edit stages")
+  local mapId = session:snapshot().location.mapId
+  local world = {
+    schema = MapAssetCache.WORLD_SCHEMA,
+    maps = {
+      {
+        id = mapId,
+        symbol = "MAP_TEST",
+        mapSection = "TEST_SECTION",
+        mapSectionNativeId = 1,
+        followMode = "ALLOW",
+        worldOriginX = 0,
+        worldOriginZ = 0,
+        matrix = { memberId = 0 },
+      },
+    },
+    byId = { [mapId] = 1 },
+    bySymbol = { MAP_TEST = mapId },
+    analysis = { mapHeaderCount = 1, excluded = {} },
+  }
+  local results = {}
+  local controller = Controller.new()
+  controller:setSection("Player")
+  local state = stateHarness({
+    status = "ready",
+    disposed = false,
+    controller = controller,
+    modalStack = ModalStack.new(),
+    session = session,
+    dependencies = { world = world },
+    valueEditor = nil,
+    monDraft = nil,
+    errorMessage = nil,
+    closeRequest = {
+      reason = "back",
+      phase = "confirm",
+      previousModal = nil,
+      previousModalReturnFocus = nil,
+      previousFocus = "money",
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  })
+  return { state = state, session = session, fixture = fixture, results = results }
+end
+
+function T.tests.relocated_save_conflict_keeps_the_external_record_and_the_open_editor()
+  local harness = relocatedSaveHarness()
+  local state, session, fixture, results = harness.state, harness.session, harness.fixture, harness.results
+  local staged = session:captureCandidate()
+  local external = assert(fixture.store:load(fixture.saveId))
+  external.playerData.profile.money = external.playerData.profile.money + 2
+  fixture.store:save(external)
+
+  Assert.isFalse(state:_save(true), "a conflicting Save & exit does not publish")
+  Assert.equal(
+    state.errorMessage,
+    "This save changed after the editor opened. Reopen it before saving.",
+    "the conflicting relocated save reports the structured session conflict"
+  )
+  Assert.deepEqual(
+    assert(fixture.store:load(fixture.saveId)),
+    external,
+    "the conflicting save never overwrites the external record"
+  )
+  Assert.deepEqual(session:captureCandidate(), staged, "the rejected transaction retains its staged edits")
+  Assert.isTrue(session:isDirty(), "the rejected editor remains dirty")
+  Assert.deepEqual(results, {}, "a conflicting close emits no result")
+  Assert.equal(state.closeRequest.phase, "confirm", "the failed close returns to its confirm decision")
+  Assert.equal(state.controller.modal, nil, "no modal is forced by the conflict")
+end
+
+function T.tests.relocated_save_write_failure_keeps_staged_edits_for_retry()
+  local Errors = require("libs.errors.src.Errors")
+  local harness = relocatedSaveHarness()
+  local state, session, fixture = harness.state, harness.session, harness.fixture
+  local staged = session:captureCandidate()
+  local publishedBefore = assert(fixture.store:load(fixture.saveId))
+  local attempts = 0
+  local save = session._saveStore.save
+  session._saveStore.save = function(...)
+    attempts = attempts + 1
+    error(Errors.new("SAVE_EDITOR_SAVE_FAILED", "disk unavailable"))
+  end
+  local ok, saveError = pcall(function()
+    Assert.isFalse(state:_save(false), "a failed relocated save does not publish")
+  end)
+  session._saveStore.save = save
+  Assert.isTrue(ok, "the failed save surfaces as a result, not a raised error")
+  if not ok then
+    error(saveError, 0)
+  end
+  Assert.equal(attempts, 1, "the relocated save attempts its store publication exactly once")
+  Assert.notNil(state.errorMessage, "the write failure remains visible")
+  Assert.deepEqual(
+    assert(fixture.store:load(fixture.saveId)),
+    publishedBefore,
+    "the failed save preserves the last published record"
+  )
+  Assert.deepEqual(session:captureCandidate(), staged, "the failed save retains its staged edits")
+  Assert.isTrue(state:_save(false), "the same staged edit retries after the failure clears")
+  Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), staged, "the retry publishes the staged edit")
+end
+
+function T.tests.relocated_save_applies_a_live_party_draft_exactly_once_before_publishing()
+  local placement = {
+    mapId = 11,
+    fieldX = 10,
+    fieldZ = 12,
+    surfaceId = 3,
+    worldY = 0,
+    terrainDependencyHash = "draft-fixture",
+  }
+  local applied, saves = 0, {}
+  local session = {
+    snapshot = function()
+      return { location = placement }
+    end,
+    applyMonDraft = function(_, draft)
+      applied = applied + 1
+      Assert.notNil(draft, "the applied draft reaches the session")
+      return { ok = true }
+    end,
+    save = function(_, hasUnappliedDraft)
+      saves[#saves + 1] = hasUnappliedDraft
+      return { ok = true }
+    end,
+  }
+  local monDraft = {
+    mode = function()
+      return "edit"
+    end,
+    isDirty = function()
+      return true
+    end,
+    validate = function()
+      return { canonical = true }
+    end,
+  }
+  local controller = Controller.new()
+  local state = stateHarness({
+    status = "ready",
+    controller = controller,
+    modalStack = ModalStack.new(),
+    session = session,
+    monDraft = monDraft,
+    valueEditor = nil,
+    errorMessage = nil,
+    closeRequest = nil,
+    onResult = function() end,
+  })
+  Assert.isTrue(state:_save(false), "a relocated save with a live draft publishes")
+  Assert.equal(applied, 1, "the live party draft is applied exactly once before the transaction")
+  Assert.deepEqual(saves, { false }, "the draft-carrying save reaches the session transaction once")
+  Assert.isNil(state.monDraft, "the applied draft is retired")
+  Assert.isNil(state.errorMessage, "the draft-carrying save reports no error")
+end
+
+function T.tests.relocated_save_with_a_failing_party_draft_never_reaches_the_session()
+  local ErrorsModule = require("libs.errors.src.Errors")
+  local placement = {
+    mapId = 11,
+    fieldX = 10,
+    fieldZ = 12,
+    surfaceId = 3,
+    worldY = 0,
+    terrainDependencyHash = "draft-fixture",
+  }
+  local saves = {}
+  local session = {
+    snapshot = function()
+      return { location = placement }
+    end,
+    save = function(_, hasUnappliedDraft)
+      saves[#saves + 1] = hasUnappliedDraft
+      return { ok = true }
+    end,
+  }
+  local monDraft = {
+    mode = function()
+      return "edit"
+    end,
+    isDirty = function()
+      return true
+    end,
+    validate = function()
+      return nil, ErrorsModule.new("SAVE_EDITOR_MON_INVALID", "the draft is invalid")
+    end,
+  }
+  local controller = Controller.new()
+  local state = stateHarness({
+    status = "ready",
+    controller = controller,
+    modalStack = ModalStack.new(),
+    session = session,
+    monDraft = monDraft,
+    valueEditor = nil,
+    errorMessage = nil,
+    closeRequest = {
+      reason = "back",
+      phase = "saving",
+      previousModal = nil,
+      previousModalReturnFocus = nil,
+      previousFocus = "money",
+    },
+    onResult = function() end,
+  })
+  Assert.isFalse(state:_save(true), "a failing draft blocks the relocated save")
+  Assert.deepEqual(saves, {}, "a failing draft never reaches the session transaction")
+  Assert.notNil(state.errorMessage, "a failing draft keeps its diagnostic")
+  Assert.notNil(state.monDraft, "a failing draft stays active for correction")
+  Assert.equal(state.closeRequest.phase, "confirm", "a draft-blocked close returns to its confirm decision")
+end
+
+function T.tests.relocated_save_with_an_unapplied_value_editor_is_rejected_without_a_write()
+  local harness = relocatedSaveHarness()
+  local state, fixture = harness.state, harness.fixture
+  local publishedBefore = assert(fixture.store:load(fixture.saveId))
+  state.valueEditor = {}
+  Assert.isFalse(state:_save(false), "an unapplied value edit blocks the relocated save")
+  Assert.notNil(state.errorMessage, "the unapplied edit keeps its diagnostic")
+  Assert.deepEqual(
+    assert(fixture.store:load(fixture.saveId)),
+    publishedBefore,
+    "the rejected save leaves the published record untouched"
+  )
+  Assert.isTrue(state.session:isDirty(), "the rejected editor remains dirty for retry")
+end
+
+function T.tests.relocated_save_reenters_the_session_busy_guard_without_a_second_publication()
+  local harness = relocatedSaveHarness()
+  local state, session = harness.state, harness.session
+  local inner = nil
+  local originalSave = session._saveStore.save
+  session._saveStore.save = function(store, candidate)
+    inner = session:save(false)
+    return originalSave(store, candidate)
+  end
+  local ok, saveError = pcall(function()
+    Assert.isTrue(state:_save(false), "the outer relocated save publishes")
+  end)
+  session._saveStore.save = originalSave
+  Assert.isTrue(ok, "the reentrant save surfaces as a result, not a raised error")
+  if not ok then
+    error(saveError, 0)
+  end
+  local guard = assert(inner, "the store publication observed one reentrant save attempt")
+  Assert.isFalse(guard.ok, "a reentrant save is rejected while the transaction owns the store")
+  Assert.equal(guard.error.message, "A save operation is already in progress.", "the busy guard keeps its diagnostic")
+end
+
+function T.tests.unlocated_map_browse_represents_a_missing_preview_coordinate()
+  local controller = Controller.new()
+  local ok, err = pcall(function()
+    controller:chooseLocationMap(11, nil, nil)
+  end)
+  Assert.isTrue(
+    ok,
+    "choosing a map before its map-owned seed is known keeps both preview coordinates unset: " .. tostring(err)
+  )
+  local snapshot = controller:locationSnapshot()
+  Assert.equal(snapshot.mapId, 11, "the unlocated browse still selects its map")
+  Assert.equal(snapshot.page, "grid", "the unlocated browse still enters coordinate selection")
+  Assert.isNil(snapshot.cursor, "the preview cursor stays unset until the map-owned seed arrives")
+  Assert.isNil(snapshot.center, "the preview viewport stays unset until the map-owned seed arrives")
+  Assert.equal(snapshot.contentFocus, "grid", "Back and map changes stay reachable while unlocated")
+  controller:moveLocationCursor("right", 8, 8)
+  Assert.isNil(
+    controller:locationSnapshot().cursor,
+    "cursor movement before the first seed never invents a provisional origin"
+  )
+  local mixedOk = pcall(function()
+    controller:chooseLocationMap(11, 5, nil)
+  end)
+  Assert.isFalse(mixedOk, "a half-initialized single-axis cursor is rejected")
 end
 
 return T

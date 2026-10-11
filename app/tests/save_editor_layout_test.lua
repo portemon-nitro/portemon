@@ -747,7 +747,10 @@ function T.tests.party_strip_centers_native_icons_and_moves_keep_full_height_acr
       Assert.isTrue(icon.width >= 32 and icon.height >= 32, "native icon fits without minification")
       Assert.isTrue(math.abs((icon.x + icon.width / 2) - (slot.rect.x + slot.rect.width / 2)) <= 1)
       Assert.isTrue(math.abs((icon.y + icon.height / 2) - (slot.rect.y + slot.rect.height / 2)) <= 1)
-      Assert.equal(Layout.hitTest(layout, view, slot.rect.x + slot.rect.width / 2, slot.rect.y + slot.rect.height / 2), slot.targetId)
+      Assert.equal(
+        Layout.hitTest(layout, view, slot.rect.x + slot.rect.width / 2, slot.rect.y + slot.rect.height / 2),
+        slot.targetId
+      )
     end
     Assert.equal(Layout.hitTest(layout, view, strip.slots[3].rect.x + 1, strip.slots[3].rect.y + 1), "party:add")
 
@@ -766,12 +769,7 @@ function T.tests.party_strip_centers_native_icons_and_moves_keep_full_height_acr
       local slot = assert(materialized.targets["party:move:" .. index])
       Assert.isTrue(slot.rect.height >= 36, "Move card " .. index .. " retains its minimum usable height")
       Assert.equal(
-        Layout.hitTest(
-          materialized,
-          view,
-          slot.rect.x + slot.rect.width / 2,
-          slot.rect.y + slot.rect.height / 2
-        ),
+        Layout.hitTest(materialized, view, slot.rect.x + slot.rect.width / 2, slot.rect.y + slot.rect.height / 2),
         "party:move:" .. index,
         "each expanded Move remains pointer reachable after reveal"
       )
@@ -1671,7 +1669,8 @@ function T.tests.wide_list_surfaces_use_available_width_after_the_preferred_samp
     Assert.equal(
       list.surfaceRect.width,
       layout.content.width,
-      listId .. " uses all available content width even when the preferred sample is short (surface "
+      listId
+        .. " uses all available content width even when the preferred sample is short (surface "
         .. list.surfaceRect.width
         .. ", content "
         .. layout.content.width
@@ -3298,9 +3297,15 @@ function T.tests.choice_footer_actions_use_measured_centered_rectangles()
       1,
       "the action pair is centered within the content column"
     )
-    Assert.isTrue(back.x + back.width - choose.x < layout.content.width, "choice actions do not fill the content column")
+    Assert.isTrue(
+      back.x + back.width - choose.x < layout.content.width,
+      "choice actions do not fill the content column"
+    )
     Assert.isTrue(choose.x >= layout.content.x + 8, "the action pair keeps outer left padding")
-    Assert.isTrue(back.x + back.width <= layout.content.x + layout.content.width - 8, "the action pair keeps outer right padding")
+    Assert.isTrue(
+      back.x + back.width <= layout.content.x + layout.content.width - 8,
+      "the action pair keeps outer right padding"
+    )
     Assert.isTrue(choose.y >= viewport.clip.y + viewport.clip.height, "the footer does not overlap the choice viewport")
     for targetId, rect in pairs({ confirm = choose, cancel = back }) do
       Assert.equal(layout.targets[targetId].rect, rect, targetId .. " paints and hits the same rectangle")
@@ -3311,6 +3316,29 @@ function T.tests.choice_footer_actions_use_measured_centered_rectangles()
       )
     end
   end
+end
+
+function T.tests.unlocated_map_browse_publishes_a_pending_header_without_tile_targets()
+  local view = locationView()
+  view.locationNavigation.cursor = nil
+  view.locationNavigation.center = nil
+  view.location.status = { state = "pending" }
+  view.location.tiles = {}
+  view.location.initialCursor = { state = "pending", mapId = 12, generation = 1 }
+  local ok, layout = pcall(computeLayout, view, 640, 480)
+  Assert.isTrue(
+    ok,
+    "the grid layout explains a map with no map-owned coordinate yet instead of requiring one: " .. tostring(layout)
+  )
+  Assert.notNil(layout.locationHeader, "the pending browse still publishes its measured header")
+  Assert.isNil(layout.locationGrid, "no tile geometry is published before the first map-owned seed")
+  for targetId in pairs(layout.targets) do
+    Assert.isNil(targetId:match("^location:tile:"), "no tile target is tappable before the seed: " .. targetId)
+  end
+  Assert.notNil(
+    navigationFocus(layout, "location:grid"),
+    "Back and map changes stay reachable through the pending grid focus"
+  )
 end
 
 return T

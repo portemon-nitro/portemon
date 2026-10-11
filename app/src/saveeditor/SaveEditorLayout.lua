@@ -118,7 +118,7 @@ function Layout.minimumListCanvasWidth(view, metrics, height)
     stripWidth = stripWidth + metrics.measure(label) + 8
   end
   local actionWidth = 8
-  for _, label in ipairs({ "Save", "Discard", view.locationSave and "Cancel check" or "Back" }) do
+  for _, label in ipairs({ "Save", "Discard", "Back" }) do
     actionWidth = actionWidth + math.max(40, metrics.measure(label) + 24)
   end
   return math.min(256, math.max(listWidth, stripWidth, actionWidth) + 16)
@@ -196,7 +196,6 @@ local DECISION_ACTION_KINDS = {
   ["party-move:pp-ups"] = "edit-move-pp-ups",
   confirm_remove = "confirm-remove",
   save = "save-and-exit",
-  cancel_pending_save = "save-and-exit",
   discard = "discard-and-exit",
 }
 
@@ -239,9 +238,7 @@ local function valueEditorAction(view, targetId)
 end
 
 local function decisionAction(view, targetId)
-  for _, action in
-    ipairs(view.decisionActions or Decisions.describe(view.modal, { pendingSave = view.locationSave ~= nil }))
-  do
+  for _, action in ipairs(view.decisionActions or Decisions.describe(view.modal)) do
     if action.id == targetId then
       local actionKind = DECISION_ACTION_KINDS[action.command]
       assert(type(actionKind) == "string", "decision command has a focus action")
@@ -610,29 +607,43 @@ local function buildLocationGrid(ctx)
   local headerRect = rect(contentX, contentTop, innerWidth, headerHeight)
   local mapLabel = location.map and location.map.symbol:gsub("^MAP_", "", 1)
     or ("Map " .. tostring(location.mapId or locationNav.mapId or "—"))
-  local cursor = assert(locationNav.cursor, "Location grid header needs its cursor")
-  local coordinatesText = string.format("  X %d  Z %d", cursor.fieldX, cursor.fieldZ)
-  local leftText = mapLabel .. coordinatesText
-  local rightText
+  local cursor = locationNav.cursor
+  local center = locationNav.center
+  local coordinatesText, leftText, rightText
   local serviceStatus = location.status or {}
-  if serviceStatus.state == "failed" then
-    rightText = locationReason(assert(serviceStatus.reason, "failed preparation carries its cause"))
-  else
-    local matched = false
-    for _, tile in ipairs(location.tiles or {}) do
-      if tile.fieldX == cursor.fieldX and tile.fieldZ == cursor.fieldZ then
-        matched = true
-        if tile.state == "pending" then
-          rightText = "Preparing…"
-        end
-        if tile.selectable == false then
-          rightText = locationReason(assert(tile.reason, "blocked grid tiles carry their policy reason"))
-        end
-        break
-      end
+  if cursor == nil or center == nil then
+    assert(cursor == nil and center == nil, "Location navigation cursor and center initialize together")
+    -- The selected map has no map-owned coordinate yet: measure an honest
+    -- pending header instead of showing unrelated coordinates or tiles.
+    coordinatesText = ""
+    leftText = mapLabel
+    if serviceStatus.state == "failed" then
+      rightText = locationReason(assert(serviceStatus.reason, "failed preparation carries its cause"))
+    else
+      rightText = "Locating map…"
     end
-    if not matched then
-      rightText = "Preparing…"
+  else
+    coordinatesText = string.format("  X %d  Z %d", cursor.fieldX, cursor.fieldZ)
+    leftText = mapLabel .. coordinatesText
+    if serviceStatus.state == "failed" then
+      rightText = locationReason(assert(serviceStatus.reason, "failed preparation carries its cause"))
+    else
+      local matched = false
+      for _, tile in ipairs(location.tiles or {}) do
+        if tile.fieldX == cursor.fieldX and tile.fieldZ == cursor.fieldZ then
+          matched = true
+          if tile.state == "pending" then
+            rightText = "Preparing…"
+          end
+          if tile.selectable == false then
+            rightText = locationReason(assert(tile.reason, "blocked grid tiles carry their policy reason"))
+          end
+          break
+        end
+      end
+      if not matched then
+        rightText = "Preparing…"
+      end
     end
   end
   local rightWidth = rightText ~= nil
@@ -658,13 +669,21 @@ local function buildLocationGrid(ctx)
 
   local gridY = contentTop + headerHeight + 2
   local gridClip = rect(contentX, gridY, innerWidth, contentBottom - gridY)
+  if cursor == nil or center == nil then
+    -- No map-owned viewport exists yet: keep Back and map changes reachable
+    -- through the grid focus without publishing tile geometry or targets.
+    addFocusable(ctx, "location:grid")
+    ctx.targets["location:grid"] = gridClip
+    ctx.focusPositions["location:grid"] = gridClip
+    return
+  end
   assert(gridClip.height > 0, "Location grid needs room below its header line")
   local tileSize = 16
   local columns = math.max(1, math.floor(gridClip.width / tileSize))
   local gridRows = math.max(1, math.floor(gridClip.height / tileSize))
-  local center = assert(locationNav.center, "Location needs a grid center")
-  local firstFieldX = center.fieldX - math.floor(columns / 2)
-  local firstFieldZ = center.fieldZ - math.floor(gridRows / 2)
+  local gridCenter = assert(center, "Location needs a grid center")
+  local firstFieldX = gridCenter.fieldX - math.floor(columns / 2)
+  local firstFieldZ = gridCenter.fieldZ - math.floor(gridRows / 2)
   local renderedWidth, renderedHeight = columns * tileSize, gridRows * tileSize
   ctx.locationGrid = {
     clip = gridClip,
@@ -1209,7 +1228,7 @@ local function buildFooterActions(ctx)
   local actionWidths = {
     math.min(128, math.max(40, metrics.measure("Save") + 24)),
     math.min(128, math.max(40, metrics.measure("Discard") + 24)),
-    math.min(128, math.max(40, metrics.measure(view.locationSave and "Cancel check" or "Back") + 24)),
+    math.min(128, math.max(40, metrics.measure("Back") + 24)),
   }
   local widthTotal = actionWidths[1] + actionWidths[2] + actionWidths[3]
   if widthTotal > innerWidth - 8 then
@@ -1456,8 +1475,7 @@ local function buildDecisionScope(ctx)
   local contentX, contentTop, contentBottom, innerWidth =
     ctx.contentX, ctx.contentTop, ctx.contentBottom, ctx.innerWidth
   local metrics = ctx.metrics
-  local decisionActions = view.decisionActions
-    or Decisions.describe(view.modal, { pendingSave = view.locationSave ~= nil })
+  local decisionActions = view.decisionActions or Decisions.describe(view.modal)
   ctx.decisionActions = decisionActions
   assert(#decisionActions >= 2, "a decision modal has a primary action and a final Back action")
   local back = decisionActions[#decisionActions]

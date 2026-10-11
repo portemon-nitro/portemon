@@ -7,7 +7,6 @@ local CollisionFixture = require("tests.support.CollisionFixture")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
-local MapSurvey = require("app.src.saveeditor.SaveEditorMapSurvey")
 local Service = require("app.src.saveeditor.SaveEditorLocationService")
 
 local T = { tests = {} }
@@ -60,13 +59,13 @@ local function flatTerrain()
   }
 end
 
-local function indoorRuntime(blocked)
+local function indoorRuntime(blocked, behavior)
   local collision = {}
   function collision:containsLocal()
     return true
   end
   function collision:getLocal()
-    return { blocked = blocked == true, behavior = 0 }
+    return { blocked = blocked == true, behavior = behavior or 0 }
   end
   return {
     scene = { type = "indoor" },
@@ -108,7 +107,7 @@ local function fakeCoverage(loader, mapId, anchorX, anchorZ)
     return true
   end
   function regionCollision:getLocal()
-    return { blocked = false, behavior = 0 }
+    return { blocked = false, behavior = loader.behavior or 0 }
   end
   coverage.region = { collision = regionCollision, terrain = flatTerrain() }
   function coverage:containsGlobal()
@@ -241,7 +240,8 @@ local function fakeLoader(script)
     coverageTasks = {},
     blockingCoverages = {},
     released = false,
-    runtime = indoorRuntime(script.allBlocked),
+    runtime = indoorRuntime(script.allBlocked, script.behavior),
+    behavior = script.behavior or 0,
   }
   if script.outdoor then
     local outdoor = indoorRuntime()
@@ -251,9 +251,6 @@ local function fakeLoader(script)
   function loader:requestLocation(mapId, fieldX, fieldZ, urgency)
     self.requestCount = self.requestCount + 1
     self.locationRequestCount = self.locationRequestCount + 1
-    if script.surveyClosureError ~= nil and fieldX == 0 and fieldZ == 0 then
-      return false, script.surveyClosureError
-    end
     if self.requestError ~= nil then
       return false, self.requestError
     end
@@ -789,6 +786,7 @@ function T.tests.same_map_retry_rearms_only_after_explicit_open()
 
   local failedGeneration = service.requestGeneration
   service:openMap(11, { purpose = "browse", rememberedCursor = { fieldX = 18, fieldZ = 16 } })
+  service:setViewport(18, 16, 1, 1)
   local retry = service:snapshot()
   Assert.equal(retry.status.state, "pending", "reopening the same map starts a new request")
   Assert.isTrue(retry.initialCursor.generation > failedGeneration, "explicit retry receives a fresh generation")
@@ -986,114 +984,83 @@ function T.tests.stale_coverage_anchor_releases_once_and_never_publishes()
   service:dispose()
 end
 
-function T.tests.replacement_coverage_and_metadata_publish_atomically_and_fail_safely()
-  local function createPreparedService(metadataFailure)
-    local service, loader = loadingService({
-      taskImmediate = true,
-      outdoor = true,
-      coverageImmediate = true,
-      coverageConsumePerAdvance = 1,
-    })
-    openOutside(service, 11)
-    local guard = 0
-    while service:snapshot().status.state ~= "ready" and guard < 20 do
-      service:update()
-      guard = guard + 1
-    end
-    Assert.equal(service:snapshot().status.state, "ready", "the original coverage and facts are published")
-    local oldCoverage = assert(service.coverage)
-    local oldBounds = assert(service.mapBounds)
-    local oldEvents = assert(service.objectEvents)
-
-    local beginCoverage = loader.beginPhysicalCoverage
-    function loader:beginPhysicalCoverage(runtimeMap, position)
-      local task = beginCoverage(self, runtimeMap, position)
-      local takeResult = task.takeResult
-      function task:takeResult()
-        local candidate = takeResult(self)
-        candidate.cells = {
-          ["0:0"] = { descriptor = { x = 0, z = 0, mapHeaderId = 11 } },
-          ["1:0"] = { descriptor = { x = 1, z = 0, mapHeaderId = 22 } },
-        }
-        return candidate
-      end
-      return task
-    end
-
-    local beginMetadata = loader.beginLogicalMetadata
-    local metadataTask
-    function loader:beginLogicalMetadata(mapId)
-      if mapId ~= 22 then
-        return beginMetadata(self, mapId)
-      end
-      local neighbor = indoorRuntime()
-      function neighbor:release() end
-      metadataTask = { advances = 0, releases = 0, readyAfter = 12 }
-      function metadataTask:advance(workUnits)
-        self.advances = self.advances + 1
-        if metadataFailure then
-          error(Errors.new("CANDIDATE_METADATA_FAILED", "replacement facts failed"), 0)
-        end
-        return math.min(workUnits, 1)
-      end
-      function metadataTask:isReady()
-        return metadataFailure ~= true and self.advances >= self.readyAfter
-      end
-      function metadataTask:takeResult()
-        return neighbor
-      end
-      function metadataTask:release()
-        self.releases = self.releases + 1
-      end
-      return metadataTask
-    end
-
-    return service, loader, oldCoverage, oldBounds, oldEvents, function()
-      return metadataTask
-    end
+function T.tests.replacement_coverage_publishes_without_waiting_for_tile_work()
+  local service, loader = loadingService({
+    taskImmediate = true,
+    outdoor = true,
+    coverageReadyAtAdvances = 3,
+    coverageConsumePerAdvance = 1,
+  })
+  openOutside(service, 11)
+  local guard = 0
+  while service:snapshot().status.state ~= "ready" and guard < 20 do
+    service:update()
+    guard = guard + 1
   end
+  Assert.equal(service:snapshot().status.state, "ready", "the original coverage and facts are published")
+  local oldCoverage = assert(service.coverage)
+  local oldEvents = assert(service.objectEvents)
 
-  local service, loader, oldCoverage, oldBounds, oldEvents = createPreparedService(false)
   service:setViewport(48, 16, 1, 1)
   service:update()
-  local candidate = assert(loader.coverages[2], "the replacement coverage is acquired as a candidate")
-  Assert.isTrue(service.coverage == oldCoverage, "pending metadata keeps the prior coverage published")
-  Assert.equal(oldCoverage.releases, 0, "pending metadata does not release prior coverage")
-  Assert.isTrue(service.mapBounds == oldBounds, "pending metadata keeps the prior bounds published")
-  Assert.isTrue(service.objectEvents == oldEvents, "pending metadata keeps prior events published")
-  Assert.isTrue(service.candidateCoverage == candidate, "replacement coverage stays private until its facts complete")
+  Assert.isTrue(service.coverage == oldCoverage, "a pending replacement keeps the prior coverage published")
+  Assert.equal(oldCoverage.releases, 0, "a pending replacement does not release prior coverage")
+  Assert.isTrue(service.objectEvents == oldEvents, "a pending replacement keeps prior selected-map facts")
+  Assert.isNil(service.candidateCoverage, "an unready replacement stays out of the candidate slot")
 
-  local guard = 0
+  guard = 0
   while service.coverage == oldCoverage and guard < 20 do
     service:update()
     guard = guard + 1
   end
-  Assert.isTrue(service.coverage == candidate, "coverage and represented metadata publish together")
-  Assert.equal(oldCoverage.releases, 1, "the prior coverage releases after atomic replacement")
-  Assert.isTrue(service.representedMapIds[22], "the published facts correspond to replacement coverage")
+  local candidate = assert(loader.coverages[2], "the replacement coverage is acquired through a staged task")
+  Assert.isTrue(service.coverage == candidate, "the replacement coverage publishes once ready")
+  Assert.equal(oldCoverage.releases, 1, "the prior coverage releases after replacement")
+  Assert.isTrue(service.objectEvents == oldEvents, "selected-map facts survive the coverage replacement")
+  Assert.equal(service.coverage.anchorX, 1, "only the current anchor publishes")
+  Assert.equal(service.coverage.anchorZ, 0, "only the current anchor publishes")
+  Assert.equal(service:snapshot().status.state, "ready", "the current anchor reaches ready")
   service:dispose()
+end
 
-  local failed, failedLoader, retainedCoverage, retainedBounds, retainedEvents, getMetadataTask =
-    createPreparedService(true)
-  failed:setViewport(48, 16, 1, 1)
-  failed:update()
-  local failedCandidate = assert(failedLoader.coverages[2], "failed replacement acquired a candidate")
-  Assert.equal(failed:snapshot().status.state, "failed", "candidate metadata failure is observable")
-  Assert.isTrue(failed.coverage == retainedCoverage, "metadata failure preserves prior coverage")
-  Assert.equal(retainedCoverage.releases, 0, "metadata failure retains prior coverage ownership")
-  Assert.isTrue(failed.mapBounds == retainedBounds, "metadata failure preserves prior bounds")
-  Assert.isTrue(failed.objectEvents == retainedEvents, "metadata failure preserves prior event facts")
-  Assert.isNil(failed.candidateCoverage, "failed candidate coverage is discarded")
-  Assert.equal(failedCandidate.releases, 1, "failed candidate coverage releases exactly once")
-  Assert.equal(assert(getMetadataTask()).releases, 1, "failed metadata task releases exactly once")
-  local coverageBeginsAtFailure = #failedLoader.coverageBegins
-  failed:update()
-  Assert.equal(failed:snapshot().status.state, "failed", "candidate failure remains terminal")
-  Assert.equal(#failedLoader.coverageBegins, coverageBeginsAtFailure, "failed candidate work is not staged again")
-  Assert.isTrue(failed.coverage == retainedCoverage, "repeated failure observation retains committed coverage")
-  Assert.equal(retainedCoverage.releases, 0, "repeated failure observation keeps committed coverage owned")
-  failed:dispose()
-  failed:dispose()
+function T.tests.failed_replacement_coverage_retains_the_prior_window()
+  local service, loader = loadingService({
+    taskImmediate = true,
+    outdoor = true,
+    coverageImmediate = true,
+    coverageConsumePerAdvance = 1,
+  })
+  openOutside(service, 11)
+  local guard = 0
+  while service:snapshot().status.state ~= "ready" and guard < 20 do
+    service:update()
+    guard = guard + 1
+  end
+  local retainedCoverage = assert(service.coverage)
+  local retainedEvents = assert(service.objectEvents)
+
+  local failure = Errors.new("CANDIDATE_COVERAGE_FAILED", "replacement coverage failed")
+  local beginCoverage = loader.beginPhysicalCoverage
+  function loader:beginPhysicalCoverage(runtimeMap, position)
+    local task = beginCoverage(self, runtimeMap, position)
+    function task:takeResult()
+      error(failure, 0)
+    end
+    return task
+  end
+
+  service:setViewport(48, 16, 1, 1)
+  service:update()
+  Assert.equal(service:snapshot().status.state, "failed", "candidate coverage failure is observable")
+  Assert.isTrue(service.coverage == retainedCoverage, "coverage failure preserves prior coverage")
+  Assert.equal(retainedCoverage.releases, 0, "coverage failure retains prior coverage ownership")
+  Assert.isTrue(service.objectEvents == retainedEvents, "coverage failure preserves prior event facts")
+  Assert.isNil(service.candidateCoverage, "failed candidate coverage is discarded")
+  local beginsAtFailure = #loader.coverageBegins
+  service:update()
+  Assert.equal(service:snapshot().status.state, "failed", "candidate failure remains terminal")
+  Assert.equal(#loader.coverageBegins, beginsAtFailure, "failed candidate work is not staged again")
+  service:dispose()
   Assert.equal(retainedCoverage.releases, 1, "disposal releases retained coverage exactly once")
 end
 
@@ -1203,193 +1170,117 @@ function T.tests.first_outdoor_preparation_acquires_the_cell_index_inside_staged
   service:dispose()
 end
 
-function T.tests.represented_bounds_derive_from_descriptor_headers_in_a_single_pass()
-  local service, loader = loadingService({ outdoor = true, taskImmediate = true, coverageImmediate = true })
-  openOutside(service, 11)
-  service:update()
-  Assert.equal(service:snapshot().status.state, "ready", "staged preparation reaches ready before recollection")
-  local coverage = assert(service.coverage, "ready outdoor preparation publishes its coverage")
-  coverage.index.matrices[1].cells = {
-    { x = 0, z = 0, mapHeaderId = 11 },
-    { x = 1, z = 0, mapHeaderId = 0 },
-    { x = 2, z = 0, mapHeaderId = 22 },
-    { x = 3, z = 0, mapHeaderId = 99 },
-    { x = 0, z = 1, mapHeaderId = 11 },
-    { x = 1, z = 1, mapHeaderId = 22 },
-  }
-  coverage.cells = {
-    ["0:0"] = { descriptor = { x = 0, z = 0, mapHeaderId = 11 } },
-    ["1:0"] = { descriptor = { x = 1, z = 0, mapHeaderId = 0 } },
-    ["2:0"] = { descriptor = { x = 2, z = 0, mapHeaderId = 22 } },
-    ["3:0"] = { descriptor = { x = 3, z = 0, mapHeaderId = 99 } },
-  }
-  local lookups = 0
-  function coverage:mapHeaderAt()
-    lookups = lookups + 1
-    error("bounds collection must not resolve coordinates per cell", 2)
-  end
-  function coverage:committedDescriptors()
-    return {
-      { x = 0, z = 0, mapHeaderId = 11 },
-      { x = 1, z = 0, mapHeaderId = 0 },
-      { x = 2, z = 0, mapHeaderId = 22 },
-      { x = 3, z = 0, mapHeaderId = 99 },
+function T.tests.owned_seed_ignores_foreign_cells_and_names_a_descriptorless_map()
+  local service, loader = loadingService({ taskImmediate = true, coverageImmediate = true, outdoor = true })
+  local ok, err = xpcall(function()
+    local ownedCells = {
+      { x = 5, z = 7, mapHeaderId = 11 },
+      { x = 6, z = 7, mapHeaderId = 11 },
     }
-  end
-  service.runtimeMap.fieldData.events.objects = {
-    { objectEventId = 7, movementType = "stationary", x = 10, z = 10, xRange = -1, yRange = -1 },
-  }
-  function loader:beginLogicalMetadata(mapId)
-    assert(mapId == 22, "only the represented neighbor loads beside the selected map")
-    local neighbor = indoorRuntime()
-    neighbor.fieldData.events.objects = {
-      { objectEventId = 7, movementType = "stationary", x = 20, z = 10, xRange = -1, yRange = -1 },
-      { objectEventId = 7, movementType = "stationary", x = 20, z = 10, xRange = -1, yRange = -1, eventFlag = 1 },
-      { objectEventId = 7, movementType = "stationary", x = 30, z = 10, xRange = -1, yRange = -1 },
-    }
-    function neighbor:release() end
-    local task = { ready = false, taken = false }
-    function task:advance(workUnits)
-      if workUnits > 0 then
-        self.ready = true
-        return 1
+    function loader:mapCellDomain(mapId)
+      local cells = {
+        ownedCells[1],
+        { x = 90, z = 90, mapHeaderId = 22 },
+        ownedCells[2],
+        { x = 7, z = 7, mapHeaderId = 0 },
+      }
+      local index = 0
+      local domain = {}
+      function domain:advance(maxVisits)
+        local visited, selected = 0, {}
+        while visited < maxVisits and index < #cells do
+          index = index + 1
+          selected[#selected + 1] = cells[index]
+          visited = visited + 1
+        end
+        return visited, selected, index >= #cells
       end
-      return 0
+      return domain
     end
-    function task:isReady()
-      return self.ready
+    service:openMap(11, { purpose = "browse" })
+    local seed, updates = nil, 0
+    while updates < 30 do
+      service:update()
+      updates = updates + 1
+      local cursor = service:snapshot().initialCursor
+      if cursor ~= nil and cursor.state == "seeded" then
+        seed = cursor
+        break
+      end
     end
-    function task:takeResult()
-      assert(self.ready and not self.taken)
-      self.taken = true
-      return neighbor
+    Assert.notNil(seed, "a map with owned cells publishes a map-owned seed")
+    local seedCellX, seedCellZ = math.floor(seed.fieldX / 32), math.floor(seed.fieldZ / 32)
+    local owned = false
+    for _, cell in ipairs(ownedCells) do
+      if cell.x == seedCellX and cell.z == seedCellZ then
+        owned = true
+      end
     end
-    function task:release() end
-    return task
-  end
-  service.mapBounds = nil
-  service.metadataReady = false
-  service:_collectRepresented()
-  while service.metadata ~= nil do
-    service:_advanceRepresented(8)
-  end
-  Assert.deepEqual(
-    service.mapBounds,
-    { minX = 0, maxX = 95, minZ = 0, maxZ = 63 },
-    "filler cells inherit the selected map and foreign cells stay outside the union"
-  )
-  Assert.equal(#assert(service.objectEvents), 3, "selected and represented maps retain distinct source footprints")
-  Assert.equal(service.objectEvents[1].mapId, 11, "the selected event retains its logical source map")
-  Assert.equal(service.objectEvents[2].mapId, 22, "the first neighbor footprint retains its logical source map")
-  Assert.equal(service.objectEvents[3].x, 30, "an equivalent neighbor record is deduplicated without losing another footprint")
-  Assert.equal(lookups, 0, "the whole-matrix pass performs no coordinate lookup")
+    Assert.isTrue(owned, "foreign and filler headers never supply the browsing seed")
+  end, debug.traceback)
   service:dispose()
+  if not ok then
+    error(err, 0)
+  end
+
+  local empty, emptyLoader = loadingService({ taskImmediate = true, coverageImmediate = true, outdoor = true })
+  local emptyOk, emptyErr = xpcall(function()
+    function emptyLoader:mapCellDomain(mapId)
+      local done = false
+      local domain = {}
+      function domain:advance(maxVisits)
+        done = true
+        return 0, {}, true
+      end
+      return domain
+    end
+    empty:openMap(11, { purpose = "browse" })
+    local cursor, updates = nil, 0
+    while updates < 30 do
+      empty:update()
+      updates = updates + 1
+      cursor = empty:snapshot().initialCursor
+      if cursor ~= nil and cursor.state ~= "pending" then
+        break
+      end
+    end
+    Assert.notNil(cursor, "a descriptorless map finishes seed discovery")
+    Assert.equal(cursor.state, "unavailable", "no owned cell is an ordinary preview state")
+    Assert.equal(cursor.reason, "no_owned_cells", "the miss names its cause instead of guessing coordinates")
+    Assert.isNil(cursor.fieldX, "a descriptorless miss publishes no fabricated coordinate")
+    Assert.isNil(cursor.fieldZ, "a descriptorless miss publishes no fabricated coordinate")
+  end, debug.traceback)
+  empty:dispose()
+  if not emptyOk then
+    error(emptyErr, 0)
+  end
 end
 
-local function destinationOwner()
-  local loaded, LocationSave = pcall(require, "app.src.saveeditor.SaveEditorLocationSave")
-  Assert.isTrue(loaded, "destination verification has its own bounded owner")
-  return LocationSave.new({
-    cacheFs = {
-      loadLua = function()
-        return nil
-      end,
-    },
-    world = structuralWorld(),
-    derivedAssets = {},
-    savedObjects = { actors = {} },
-  })
-end
-
-local function destinationSnapshot(revision, fieldX)
-  return {
-    revision = revision,
-    location = {
-      mapId = 11,
-      fieldX = fieldX or 10,
-      fieldZ = 12,
-      surfaceId = 3,
-      worldY = 0,
-      terrainDependencyHash = "loading-fixture",
-    },
-  }
-end
-
-local function readyVerifier(owner)
-  owner.pending.verifier.loader = fakeLoader({ taskImmediate = true })
-end
-
-function T.tests.destination_verification_rejects_stale_results_and_disposes_once()
-  local owner = destinationOwner()
-  Assert.isNil(owner:status(), "nothing is pending before the first check")
-  Assert.isTrue(owner:start(destinationSnapshot(1), false), "the first check starts its verifier")
-  local first = assert(owner:status(), "the started check publishes its operation")
-  Assert.equal(first.state, "pending", "the started check waits for staged work")
-  Assert.isFalse(owner:start(destinationSnapshot(1), false), "a second check never starts beside a pending one")
-  Assert.equal(owner:status().operationId, first.operationId, "the pending check keeps its identity")
-
-  readyVerifier(owner)
-  local verifier = owner.pending.verifier
-  local ticket = owner:step(destinationSnapshot(1))
-  Assert.equal(ticket.kind, "verified", "a matching check yields one verified ticket")
-  Assert.equal(ticket.operationId, first.operationId, "the ticket carries its operation")
-  Assert.equal(ticket.sessionRevision, 1, "the ticket carries its session revision")
-  Assert.deepEqual(ticket.location, destinationSnapshot(1).location, "the ticket carries all six placement fields")
-  Assert.equal(ticket.leave, false, "the ticket carries its leave intent")
-  Assert.isTrue(verifier.disposed, "the ticket settles its verifier exactly once")
-  Assert.isNil(owner:status(), "a verified ticket settles its operation")
-
-  Assert.isTrue(owner:start(destinationSnapshot(1), true), "a settled owner accepts its next check")
-  local drifted = owner:step(destinationSnapshot(2))
-  Assert.equal(drifted.kind, "cancelled", "a session revision change retires the check")
-  Assert.isNil(owner:status(), "a cancelled check settles its operation")
-
-  Assert.isTrue(owner:start(destinationSnapshot(2), true), "the owner restarts after a cancellation")
-  local moved = owner:step(destinationSnapshot(2, 11))
-  Assert.equal(moved.kind, "cancelled", "a placement change retires the check")
-  Assert.isNil(owner:status(), "a moved check settles its operation")
-
-  Assert.isTrue(owner:start(destinationSnapshot(2), true), "the owner restarts after a move")
-  local retired = owner.pending.verifier
-  owner:cancel()
-  Assert.isTrue(retired.disposed, "cancel releases the retired verifier")
-  Assert.isNil(owner:status(), "cancel retires the operation")
-  Assert.isTrue(owner:start(destinationSnapshot(2), false), "the owner restarts after a cancel")
-  Assert.isTrue(owner:status().operationId ~= first.operationId, "a restarted check owns a fresh identity")
-  owner:cancel()
-
-  local setupOk = pcall(owner.start, owner, destinationSnapshot(9, 10), false)
-  Assert.isTrue(setupOk, "a known destination map starts its check")
-  owner:cancel()
-  local unknownSnapshot = destinationSnapshot(9, 10)
-  unknownSnapshot.location.mapId = 999
-  local unknownOk = pcall(owner.start, owner, unknownSnapshot, false)
-  Assert.isFalse(unknownOk, "an unknown destination map fails its setup")
-  Assert.isNil(owner:status(), "a failed setup leaves nothing pending")
-
-  Assert.isTrue(owner:start(destinationSnapshot(2), false), "the owner restarts after a setup failure")
-  owner.pending.verifier.loader = fakeLoader({ requestError = "destination assets unavailable" })
-  local failed = owner:step(destinationSnapshot(2))
-  Assert.equal(failed.kind, "failed", "loader failure surfaces without a ticket")
-  Assert.notNil(failed.reason, "loader failure keeps its diagnostic")
-  Assert.isNil(owner:status(), "a failed check settles its operation")
-  owner:dispose()
-end
-
-function T.tests.relocated_save_reaches_the_session_exactly_once_with_a_fresh_ticket()
+function T.tests.relocated_save_publishes_through_the_session_without_a_second_map_check()
   local Controller = require("app.src.saveeditor.SaveEditorController")
   local State = require("app.src.saveeditor.SaveEditorState")
-  local owner = destinationOwner()
+  local LocationServiceModule = require("app.src.saveeditor.SaveEditorLocationService")
   local controller = Controller.new()
-  local saves, results = {}, {}
-  local committed = destinationSnapshot(7)
-  committed.locationChanged = true
+  local saves = {}
+  local placement = {
+    mapId = 11,
+    fieldX = 10,
+    fieldZ = 12,
+    surfaceId = 3,
+    worldY = 0,
+    terrainDependencyHash = "loading-fixture",
+  }
+  local staged = {
+    revision = 7,
+    location = placement,
+    locationChanged = true,
+  }
   local session = {
     snapshot = function()
-      return committed
+      return staged
     end,
-    save = function(_, leave)
-      saves[#saves + 1] = leave
+    save = function(_, hasUnappliedDraft)
+      saves[#saves + 1] = hasUnappliedDraft
       return { ok = true }
     end,
   }
@@ -1407,393 +1298,120 @@ function T.tests.relocated_save_reaches_the_session_exactly_once_with_a_fresh_ti
       savedObjects = { actors = {} },
     },
     derivedAssets = {},
-    locationSave = owner,
     valueEditor = nil,
     monDraft = nil,
     errorMessage = nil,
-    closeRequest = {
-      reason = "back",
-      phase = "confirm",
-      previousModal = nil,
-      previousModalReturnFocus = nil,
-      previousFocus = "money",
-    },
-    onResult = function(result)
-      results[#results + 1] = result
-    end,
+    closeRequest = nil,
+    onResult = function() end,
   }, State)
-  Assert.isFalse(state:_save(true), "a relocated save defers while its destination is checked")
-  Assert.notNil(owner:status(), "the deferred save owns one pending verification")
-  readyVerifier(owner)
-  state:_pumpLocationSave()
-  Assert.deepEqual(saves, { false }, "the fresh ticket reaches the session transaction once")
-  Assert.isNil(owner:status(), "the completed save settles its operation")
-  Assert.deepEqual(results, { { kind = "main_menu" } }, "the leave request emits its result once")
-  state:_pumpLocationSave()
-  Assert.deepEqual(saves, { false }, "a settled verification never saves twice")
-  Assert.deepEqual(results, { { kind = "main_menu" } }, "a settled verification never reports twice")
-end
 
-function T.tests.relocated_save_failure_keeps_the_leave_decision_without_a_result()
-  local Controller = require("app.src.saveeditor.SaveEditorController")
-  local State = require("app.src.saveeditor.SaveEditorState")
-  local ErrorsModule = require("libs.errors.src.Errors")
-  local owner = destinationOwner()
-  local controller = Controller.new()
-  local saves, results = {}, {}
-  local committed = destinationSnapshot(7)
-  committed.locationChanged = true
-  local session = {
-    snapshot = function()
-      return committed
-    end,
-    save = function()
-      saves[#saves + 1] = true
-      return { ok = false, error = ErrorsModule.new("SAVE_EDITOR_SAVE_FAILED", "disk unavailable") }
-    end,
-  }
-  local state = setmetatable({
-    status = "ready",
-    controller = controller,
-    session = session,
-    dependencies = {
-      cacheFs = {
-        loadLua = function()
-          return nil
-        end,
-      },
-      world = structuralWorld(),
-      savedObjects = { actors = {} },
-    },
-    derivedAssets = {},
-    locationSave = owner,
-    valueEditor = nil,
-    monDraft = nil,
-    errorMessage = nil,
-    closeRequest = {
-      reason = "back",
-      phase = "saving",
-      previousModal = nil,
-      previousModalReturnFocus = nil,
-      previousFocus = "money",
-    },
-    onResult = function(result)
-      results[#results + 1] = result
-    end,
-  }, State)
-  Assert.isFalse(state:_save(true), "a relocated save defers while its destination is checked")
-  readyVerifier(owner)
-  state:_pumpLocationSave()
-  Assert.equal(#saves, 1, "the failed save still attempted its transaction once")
-  Assert.deepEqual(results, {}, "a failed save emits no result")
-  Assert.notNil(state.errorMessage, "a failed save keeps its diagnostic")
-  Assert.equal(state.closeRequest.phase, "confirm", "a failed save returns its leave decision")
-end
-
-function T.tests.represented_matrix_lookup_advances_under_the_metadata_budget()
-  local service, loader = loadingService({})
-  service:openMap(11)
-  service.coverage = fakeCoverage(loader, 11, 0, 0)
-  local matrices = {}
-  for index = 1, 512 do
-    matrices[index] = { matrixMemberId = 1000 + index, cells = {} }
+  local constructions = 0
+  local originalNew = LocationServiceModule.new
+  LocationServiceModule.new = function(...)
+    constructions = constructions + 1
+    return originalNew(...)
   end
-  matrices[#matrices + 1] = { matrixMemberId = 0, cells = {} }
-  service.coverage.index.matrices = matrices
+  local savedOk
+  local ok, saveError = pcall(function()
+    savedOk = state:_save(false)
+  end)
+  LocationServiceModule.new = originalNew
 
-  service:_collectRepresented()
-  Assert.equal(service.metadata.matrixIndex, 1, "metadata setup does not search the matrix catalog")
-  Assert.equal(service.metadata.phase, "representedDescriptors", "represented descriptor enumeration is staged")
-  local descriptorConsumed = service:_advanceRepresented(1)
-  Assert.equal(descriptorConsumed, 1, "represented descriptor enumeration consumes one metadata unit")
-  Assert.equal(service.metadata.phase, "matrixSearch", "structural ordering shares work with descriptor enumeration")
-  local consumed, complete = service:_advanceRepresented(1)
-  Assert.equal(consumed, 1, "one metadata unit charges one matrix-search batch")
-  Assert.equal(service.metadata.matrixIndex, 129, "one work unit visits no more than 128 matrices")
-  Assert.isFalse(complete, "the selected matrix remains pending after the first batch")
-  service:dispose()
+  Assert.isTrue(ok, "the relocated save runs without raising through a verifier")
+  if not ok then
+    error(saveError, 0)
+  end
+  Assert.isTrue(savedOk, "a relocated save publishes synchronously through the session transaction")
+  Assert.equal(#saves, 1, "the relocated save invokes the session transaction exactly once")
+  Assert.equal(constructions, 0, "saving never opens a second destination service")
+  Assert.isNil(state.errorMessage, "the direct save reports no destination drift")
+  Assert.deepEqual(staged.location, placement, "the saved placement keeps all six accepted fields")
 end
 
-function T.tests.represented_descriptors_are_enumerated_under_the_metadata_budget()
-  local service, loader = loadingService({})
-  service:openMap(11)
-  service.coverage = fakeCoverage(loader, 11, 0, 0)
-  local cells = {}
-  for index = 1, 513 do
-    cells[tostring(index)] = {
-      descriptor = { x = index, z = 0, mapHeaderId = index % 2 == 0 and 22 or 11 },
-    }
-  end
-  service.coverage.cells = cells
-  local committedDescriptorCalls = 0
-  function service.coverage:committedDescriptors()
-    committedDescriptorCalls = committedDescriptorCalls + 1
-    local descriptors = {}
-    for _, cell in pairs(self.cells) do
-      descriptors[#descriptors + 1] = cell.descriptor
+function T.tests.owned_cell_walk_shares_the_update_budget()
+  local service, loader = loadingService({ taskImmediate = true, coverageImmediate = true, outdoor = true })
+  local ok, err = xpcall(function()
+    local budgets = {}
+    function loader:mapCellDomain(mapId)
+      local cells = {}
+      for index = 1, 300 do
+        cells[index] = { x = index, z = 0, mapHeaderId = mapId }
+      end
+      local cursor = 0
+      local domain = {}
+      function domain:advance(maxVisits)
+        budgets[#budgets + 1] = maxVisits
+        local visited, selected = 0, {}
+        while visited < maxVisits and visited < 4 and cursor < #cells do
+          cursor = cursor + 1
+          selected[#selected + 1] = cells[cursor]
+          visited = visited + 1
+        end
+        return visited, selected, cursor >= #cells
+      end
+      return domain
     end
-    return descriptors
-  end
-  local mapDefinitionChecks = 0
-  function loader:definesMap(mapId)
-    mapDefinitionChecks = mapDefinitionChecks + 1
-    return mapId == 11 or mapId == 22
-  end
-
-  service:_collectRepresented()
-  Assert.equal(committedDescriptorCalls, 0, "metadata setup does not synchronously materialize committed descriptors")
-  Assert.equal(mapDefinitionChecks, 0, "metadata setup does not classify represented descriptors")
-  local consumed = service:_advanceRepresented(1)
-  Assert.equal(consumed, 1, "one descriptor batch consumes one metadata unit")
-  Assert.isTrue(mapDefinitionChecks <= 128, "one metadata unit visits no more than 128 descriptors")
-  Assert.isFalse(service.metadata.complete, "represented descriptor enumeration remains staged")
+    service:openMap(11, { purpose = "browse" })
+    local seed, updates = nil, 0
+    while updates < 200 do
+      service:update()
+      updates = updates + 1
+      local current = service:snapshot().initialCursor
+      if current ~= nil and current.state == "seeded" then
+        seed = current
+        break
+      end
+    end
+    Assert.notNil(seed, "a large owned domain still publishes a map-owned seed")
+    Assert.isTrue(#budgets > 1, "a large domain walks across several bounded updates")
+    for _, budget in ipairs(budgets) do
+      Assert.isTrue(budget <= 1024, "one domain advance never exceeds the shared per-update visit budget")
+    end
+    local seedCellX = math.floor(seed.fieldX / 32)
+    Assert.isTrue(seedCellX >= 1 and seedCellX <= 300, "the seed stays inside the owned descriptor range")
+  end, debug.traceback)
   service:dispose()
+  if not ok then
+    error(err, 0)
+  end
 end
 
-function T.tests.represented_map_ids_are_ordered_under_the_metadata_budget()
-  local service, loader = loadingService({})
-  service:openMap(11)
-  local maps, byId = {}, {}
-  for index = 1, 513 do
-    local id = index == 1 and 11 or index == 2 and 22 or 1000 + index
-    maps[index] = {
-      id = id,
-      symbol = "MAP_" .. tostring(id),
-      mapSection = "TEST",
-      mapSectionNativeId = index,
-      worldOriginX = 0,
-      worldOriginZ = 0,
-      matrix = { memberId = 0 },
-    }
-    byId[id] = index
-  end
-  service.world.maps, service.world.byId = maps, byId
-  service.coverage = fakeCoverage(loader, 11, 0, 0)
-  service.coverage.cells["extra"] = { descriptor = { x = 1, z = 0, mapHeaderId = 22 } }
-
-  service:_collectRepresented()
-  while service.metadata.phase == "representedDescriptors" do
-    service:_advanceRepresented(1)
-  end
-  Assert.equal(service.metadata.phase, "representedCatalog", "catalog ordering is staged after descriptor enumeration")
-  Assert.equal(
-    service.metadata.catalogIndex,
-    127,
-    "descriptor work shares its remaining item budget with catalog traversal"
-  )
-  local consumed = service:_advanceRepresented(1)
-  Assert.equal(consumed, 1, "catalog ordering consumes one metadata unit")
-  Assert.equal(service.metadata.catalogIndex, 255, "one unit visits no more than 128 source maps")
-  Assert.deepEqual(service.metadata.ids, { 11, 22 }, "represented maps keep structural catalog order")
-  service:dispose()
-end
-
-function T.tests.survey_waits_for_replacement_coverage_metadata_before_classifying()
+function T.tests.viewport_tiles_classify_once_their_window_publishes()
   local service, loader = loadingService({
     outdoor = true,
     taskImmediate = true,
     coverageImmediate = true,
   })
   openOutside(service, 11)
-  service:update()
-  Assert.equal(service:snapshot().status.state, "ready", "the original physical window is published")
-  local oldCoverage = assert(service.coverage)
-
-  local beginCoverage = loader.beginPhysicalCoverage
-  function loader:beginPhysicalCoverage(runtimeMap, position)
-    local task = beginCoverage(self, runtimeMap, position)
-    local takeResult = task.takeResult
-    function task:takeResult()
-      local candidate = takeResult(self)
-      candidate.cells = {
-        ["0:0"] = { descriptor = { x = 0, z = 0, mapHeaderId = 22 } },
-      }
-      return candidate
-    end
-    return task
-  end
-
-  local pendingMetadata = { advances = 0, releases = 0 }
-  function loader:beginLogicalMetadata(mapId)
-    assert(mapId == 22, "replacement coverage requires candidate map metadata")
-    function pendingMetadata:advance()
-      self.advances = self.advances + 1
-      return 1
-    end
-    function pendingMetadata:isReady()
-      return false
-    end
-    function pendingMetadata:takeResult()
-      error("pending metadata cannot publish a result")
-    end
-    function pendingMetadata:release()
-      self.releases = self.releases + 1
-    end
-    return pendingMetadata
-  end
-
-  service.requestPurpose = "browse"
-  service.initialCursor = {
-    state = "pending",
-    mapId = 11,
-    generation = service.generation,
-    factsRevision = service.factsRevision,
-  }
-  service:_beginInitialSurvey()
-  service.surveyCells = { { x = 0, z = 0 } }
-  service.surveyDomainComplete = true
-  local oldWindowClassifications = 0
-  local originalClassify = service._classify
-  function service:_classify(fieldX, fieldZ)
-    if self.coverage == oldCoverage then
-      oldWindowClassifications = oldWindowClassifications + 1
-    end
-    return originalClassify(self, fieldX, fieldZ)
-  end
-
-  service:_advanceInitialSurvey(8)
-  Assert.notNil(service.candidateCoverage, "the replacement coverage task completes")
-  Assert.isTrue(service.coverage == oldCoverage, "candidate coverage remains unpublished while its metadata waits")
-  Assert.notNil(service.metadata, "candidate metadata staging starts before survey classification")
-  Assert.isFalse(service.metadata.complete, "candidate metadata is still pending")
-  Assert.equal(service.surveyIndex, 0, "survey classification waits for coherent coverage and metadata")
-  Assert.equal(oldWindowClassifications, 0, "tiles are not classified against the old published coverage")
-  Assert.isTrue(pendingMetadata.advances > 0, "the shared metadata stage advances before survey classification")
-  service:dispose()
-end
-
-function T.tests.selected_survey_tile_waits_for_its_published_coverage_and_metadata()
-  local service, loader = loadingService({
-    outdoor = true,
-    taskImmediate = true,
-    coverageReadyAtAdvances = 3,
-    coverageConsumePerAdvance = 1,
-  })
-  openOutside(service, 11)
-  local guard = 0
-  while service:snapshot().status.state ~= "ready" and guard < 20 do
+  local ok, err = xpcall(function()
     service:update()
-    guard = guard + 1
-  end
-  Assert.equal(service:snapshot().status.state, "ready", "the original outdoor window is committed")
-  local previousCoverage = assert(service.coverage)
-  local previousBounds = assert(service.mapBounds)
-  local previousEvents = assert(service.objectEvents)
-
-  local beginCoverage = loader.beginPhysicalCoverage
-  function loader:beginPhysicalCoverage(runtimeMap, position)
-    local task = beginCoverage(self, runtimeMap, position)
-    local takeResult = task.takeResult
-    function task:takeResult()
-      local coverage = takeResult(self)
-      coverage.index.matrices[1].width = 3
-      coverage.index.matrices[1].cells = {
-        { x = 0, z = 0, mapHeaderId = 11 },
-        { x = 1, z = 0, mapHeaderId = 0 },
-        { x = 2, z = 0, mapHeaderId = 22 },
-      }
-      coverage.cells = {
-        ["0:0"] = { descriptor = { x = 0, z = 0, mapHeaderId = 11 } },
-        ["1:0"] = { descriptor = { x = 1, z = 0, mapHeaderId = 0 } },
-        ["2:0"] = { descriptor = { x = 2, z = 0, mapHeaderId = 22 } },
-      }
-      return coverage
+    Assert.equal(
+      service:snapshot().status.state,
+      "ready",
+      "an exact destination request reaches ready without neighboring event reads"
+    )
+    local window = assert(service.coverage)
+    function window:containsGlobal(fieldX, fieldZ)
+      return fieldX >= 70000 and fieldX < 70032 and fieldZ >= 70000 and fieldZ < 70032
     end
-    return task
-  end
-
-  local delayedMetadata = { advances = 0, releases = 0, readyAfter = 4 }
-  local representedRuntime = indoorRuntime()
-  representedRuntime.releases = 0
-  function representedRuntime:release()
-    self.releases = self.releases + 1
-  end
-  function loader:beginLogicalMetadata(mapId)
-    Assert.equal(mapId, 22, "the selected candidate prepares its represented neighbor facts")
-    function delayedMetadata:advance(workUnits)
-      self.advances = self.advances + 1
-      return math.min(workUnits, 1)
+    local classifications = 0
+    local beginClassification = service._beginTileClassification
+    function service:_beginTileClassification(fieldX, fieldZ)
+      classifications = classifications + 1
+      return beginClassification(self, fieldX, fieldZ)
     end
-    function delayedMetadata:isReady()
-      return self.advances >= self.readyAfter
-    end
-    function delayedMetadata:takeResult()
-      return representedRuntime
-    end
-    function delayedMetadata:release()
-      self.releases = self.releases + 1
-    end
-    return delayedMetadata
-  end
-
-  local survey = MapSurvey.new()
-  survey:record(4, 5, true)
-  survey:finishClassification()
-  local _, selectionComplete = survey:advanceSelection({
-    { x = 0, z = 0 },
-    { x = 1, z = 0 },
-    { x = 2, z = 0 },
-  }, 3 * 32 * 32)
-  Assert.isTrue(selectionComplete, "the sparse valid mask selects its first physical cell")
-  service.survey = survey
-  service.surveyCells = { { x = 0, z = 0 }, { x = 1, z = 0 }, { x = 2, z = 0 } }
-  service.surveyIndex = 3 * 32 * 32
-  service.surveyDomainComplete = true
-  service.surveyResult = assert(survey:takeResult())
-  service.initialCursor = {
-    state = "pending",
-    mapId = 11,
-    generation = service.requestGeneration,
-    factsRevision = service.factsRevision,
-  }
-  local classifications = 0
-  local beginClassification = service._beginTileClassification
-  function service:_beginTileClassification(fieldX, fieldZ)
-    classifications = classifications + 1
-    return beginClassification(self, fieldX, fieldZ)
-  end
-
-  local consumed, complete = service:_advanceInitialSurvey(8)
-  local advances = 1
-  while service.metadata == nil and advances < 6 do
-    consumed, complete = service:_advanceInitialSurvey(8)
-    advances = advances + 1
-  end
-  Assert.equal(complete, false, "the selected cursor stays pending while its represented facts are staged")
-  Assert.isTrue(consumed <= 8, "selected-cursor finalization stays within the shared update budget")
-  Assert.equal(service.initialCursor.state, "pending", "unpublished coverage cannot make the selected tile unavailable")
-  Assert.equal(classifications, 0, "the final tile is not classified against stale published coverage")
-  Assert.isTrue(service.coverage == previousCoverage, "the previous physical window stays committed")
-  Assert.isTrue(service.mapBounds == previousBounds, "the previous map bounds stay committed")
-  Assert.isTrue(service.objectEvents == previousEvents, "the previous event facts stay committed")
-  Assert.notNil(service.candidateCoverage, "selected physical coverage remains a private candidate")
-  Assert.isFalse(assert(service.metadata).complete, "candidate metadata is incomplete")
-  Assert.isTrue(delayedMetadata.advances > 0, "candidate metadata advances incrementally")
-  Assert.isTrue(assert(loader.coverageTasks[2]).advances >= 3, "candidate coverage advances across frames")
-  Assert.equal(previousCoverage.releases, 0, "the previous window remains owned during staging")
-
-  local updates = 0
-  while not complete and updates < 20 do
-    consumed, complete = service:_advanceInitialSurvey(8)
-    Assert.isTrue(consumed <= 8, "each selected-cursor update stays within the shared work budget")
-    updates = updates + 1
-  end
-  Assert.isTrue(complete, "the selected cursor completes after candidate metadata becomes ready")
-  Assert.equal(service.initialCursor.state, "ready", "the selected tile is revalidated after publication")
-  Assert.equal(service.initialCursor.fieldX, 4, "the selected coordinate remains from the survey")
-  Assert.equal(service.initialCursor.fieldZ, 5, "the selected coordinate remains from the survey")
-  Assert.equal(service.initialCursor.validTileCount, 1, "the survey count survives final validation")
-  Assert.isTrue(service.coverage.anchorX == 0 and service.coverage.anchorZ == 0, "selected coverage is published")
-  Assert.equal(previousCoverage.releases, 1, "publication releases the previous window once")
-  Assert.equal(classifications, 1, "final validation runs once against the selected coverage")
-  Assert.equal(survey.released, true, "completion releases the survey")
+    local placement, resolution = service:resolve(11, 16, 16, service:snapshot().generation)
+    Assert.isNil(placement, "a point outside the published window is not a destination")
+    Assert.equal(resolution.reason, "outside_map", "uncovered points keep the coverage reason")
+    Assert.equal(classifications, 0, "an uncovered point classifies no tiles against a stale window")
+  end, debug.traceback)
   service:dispose()
-  Assert.equal(previousCoverage.releases, 1, "disposal does not release the replaced window again")
-  Assert.equal(assert(loader.coverages[2]).releases, 1, "disposal releases the unpublished candidate once")
-  Assert.equal(representedRuntime.releases, 1, "represented metadata is released once")
+  if not ok then
+    error(err, 0)
+  end
 end
 
-function T.tests.represented_event_preparation_stops_at_the_shared_update_budget()
+function T.tests.large_selected_map_event_index_publishes_with_its_map()
   local service, loader = loadingService({ outdoor = true, taskImmediate = true, coverageImmediate = true })
   local eventCount = 4096
   for eventIndex = 1, eventCount do
@@ -1809,17 +1427,8 @@ function T.tests.represented_event_preparation_stops_at_the_shared_update_budget
   openOutside(service, 11)
   local ok, err = xpcall(function()
     service:update()
-
-    local publishedEventCount = service.objectEvents and #service.objectEvents or 0
-    Assert.isTrue(
-      publishedEventCount < eventCount,
-      "one update cannot copy every represented event outside its shared work budget"
-    )
-    Assert.equal(
-      service:snapshot().status.state,
-      "pending",
-      "partial event preparation stays unpublished until its remaining bounded work completes"
-    )
+    Assert.equal(#assert(service.objectEvents), eventCount, "the selected-map index publishes with its map")
+    Assert.equal(service:snapshot().status.state, "ready", "selected-map facts need no incremental cross-map staging")
   end, debug.traceback)
   service:dispose()
   if not ok then
@@ -1835,7 +1444,7 @@ function T.tests.replaced_map_and_manual_pan_cannot_receive_a_late_initial_curso
     service:setViewport(16, 16, 1, 1)
     service:update()
     firstResult = service:snapshot().initialCursor
-    Assert.notNil(firstResult, "the active browse generation publishes or tracks its survey")
+    Assert.notNil(firstResult, "the active browse generation publishes or tracks its initial cursor")
 
     service:openMap(22, { purpose = "browse" })
     service:setViewport(1040, 2064, 1, 1)
@@ -1863,45 +1472,96 @@ function T.tests.replaced_map_and_manual_pan_cannot_receive_a_late_initial_curso
   end
 end
 
-function T.tests.survey_closure_failure_remains_failed_and_releases_survey_state()
+function T.tests.closure_failure_releases_hint_state_and_stays_terminal()
   local service, loader = loadingService({
     outdoor = true,
     taskImmediate = true,
     coverageImmediate = true,
-    surveyClosureError = Errors.new("CELL_CLOSURE_FAILED", "survey closure fixture failure"),
   })
   service:openMap(11, { purpose = "browse" })
-  service:setViewport(32, 32, 1, 1)
+  local ok, err = xpcall(function()
+    local seed, guard = nil, 0
+    while guard < 30 do
+      service:update()
+      guard = guard + 1
+      local cursor = service:snapshot().initialCursor
+      if cursor ~= nil and cursor.state == "seeded" then
+        seed = cursor
+        break
+      end
+    end
+    seed = assert(seed, "seed discovery finishes before viewport closure work")
+    Assert.isNil(service.seedDomain, "the completed domain walk releases its iterator")
+    Assert.notNil(service.ownedCells, "owned cells are retained for the local hint")
 
-  local guard = 0
-  while service:snapshot().status.state ~= "failed" and guard < 8 do
+    local failure = Errors.new("CELL_CLOSURE_FAILED", "hint closure fixture failure")
+    local requestLocation = loader.requestLocation
+    function loader:requestLocation(mapId, fieldX, fieldZ, urgency)
+      if fieldX == seed.fieldX and fieldZ == seed.fieldZ then
+        return false, failure
+      end
+      return requestLocation(self, mapId, fieldX, fieldZ, urgency)
+    end
+    service:setViewport(seed.fieldX, seed.fieldZ, 1, 1)
     service:update()
-    guard = guard + 1
-  end
 
-  local view = service:snapshot()
-  Assert.isTrue(loader.locationRequestCount >= 2, "failure occurs after initial location preparation")
-  Assert.equal(view.status.state, "failed", "survey closure failure is not overwritten with pending")
-  Assert.isTrue(view.status.reason:find("survey closure fixture failure", 1, true) ~= nil, "failure reason is retained")
-  Assert.equal(view.initialCursor.state, "failed", "failed survey publishes a terminal cursor")
-  Assert.isNil(service.survey, "failed survey releases its accumulator")
-  Assert.isNil(service.surveyDomain, "failed survey releases its remaining domain")
-  Assert.isNil(service.surveyCells, "failed survey releases discovered cells")
+    local view = service:snapshot()
+    Assert.equal(view.status.state, "failed", "viewport closure failure is not overwritten with pending")
+    Assert.isTrue(
+      (view.status.reason or ""):find("hint closure fixture failure", 1, true) ~= nil,
+      "failure reason is retained"
+    )
+    Assert.equal(view.initialCursor.state, "failed", "failed preparation publishes a terminal cursor")
+    Assert.isNil(service.seedDomain, "failure releases the domain walk")
+    Assert.isNil(service.ownedCells, "failure releases discovered cells")
+    Assert.isNil(service.hint, "failure releases the pending hint")
+
+    service:openMap(11, { purpose = "browse" })
+    local reseeded, retries = nil, 0
+    while retries < 30 do
+      service:update()
+      retries = retries + 1
+      local cursor = service:snapshot().initialCursor
+      if cursor ~= nil and cursor.state == "seeded" then
+        reseeded = cursor
+        break
+      end
+    end
+    Assert.notNil(reseeded, "reopening after a failure rearms seed discovery")
+    Assert.notNil(service.ownedCells, "reopening rebuilds the owned cells")
+  end, debug.traceback)
   service:dispose()
+  if not ok then
+    error(err, 0)
+  end
 end
 
-function T.tests.large_indoor_survey_domain_enumerates_cells_under_the_shared_budget()
-  local service = loadingService({ taskImmediate = true })
-  service:openMap(11, { purpose = "browse" })
-  service.mapBounds = { minX = 0, maxX = 1023, minZ = 0, maxZ = 1023 }
-  service:_beginInitialSurvey()
-  Assert.equal(#assert(service.surveyCells), 0, "starting a survey does not enumerate its full cell domain")
-
-  local consumed, complete = service:_advanceInitialSurvey(1)
-  Assert.equal(consumed, 1, "one update unit accounts for a bounded batch of cell enumeration")
-  Assert.isFalse(complete, "the large finite cell domain remains pending after one batch")
-  Assert.equal(#assert(service.surveyCells), 128, "only one domain batch is retained per work unit")
+function T.tests.indoor_seed_publishes_without_a_cell_domain()
+  local service, loader = loadingService({ taskImmediate = true })
+  loader.mapCellDomain = nil
+  local ok, err = xpcall(function()
+    service:openMap(11, { purpose = "browse" })
+    local seed, updates = nil, 0
+    while updates < 10 do
+      service:update()
+      updates = updates + 1
+      local cursor = service:snapshot().initialCursor
+      if cursor ~= nil and cursor.state == "seeded" then
+        seed = cursor
+        break
+      end
+    end
+    Assert.notNil(seed, "a small indoor map seeds from its collision bounds alone")
+    Assert.isTrue(
+      seed.fieldX >= 0 and seed.fieldX < 64 and seed.fieldZ >= 0 and seed.fieldZ < 64,
+      "the indoor seed stays inside the exact collision rectangle"
+    )
+    Assert.equal(service:snapshot().status.state, "pending", "seeding alone never claims preparation is ready")
+  end, debug.traceback)
   service:dispose()
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.tests.exact_verification_prepares_only_its_requested_point()
@@ -1922,6 +1582,72 @@ function T.tests.exact_verification_prepares_only_its_requested_point()
   if not ok then
     error(err, 0)
   end
+end
+
+function T.tests.browse_and_verification_share_terrain_admission_before_surface_sampling()
+  local function check(purpose, behavior, blocked, expectedReason)
+    local service = loadingService({ taskImmediate = true, behavior = behavior, allBlocked = blocked })
+    local ok, err = xpcall(function()
+      service:openMap(11, { purpose = purpose })
+      service:setViewport(16, 16, 1, 1)
+
+      local view, tile
+      for _ = 1, 200 do
+        service:update()
+        view = service:snapshot()
+        tile = service:tileStatus(16, 16)
+        if view.status.state == "ready" and (purpose == "verify" or tile.state ~= "pending") then
+          break
+        end
+      end
+      Assert.equal(view.status.state, "ready", "the selected indoor map reaches prepared status")
+
+      if purpose == "browse" then
+        Assert.equal(tile.state, expectedReason and "unavailable" or "selectable")
+        if expectedReason then
+          Assert.equal(tile.reason, expectedReason, "the browse grid retains the terrain refusal")
+        end
+      end
+
+      local placement, result = service:resolve(11, 16, 16, view.generation)
+      if expectedReason then
+        Assert.isNil(placement, "a nonstanding or blocked permission cell cannot resolve")
+        Assert.equal(result.state, "unavailable", "unsafe verification resolves as unavailable")
+        Assert.equal(result.reason, expectedReason, "verification retains the terrain refusal")
+      else
+        Assert.notNil(
+          placement,
+          "ordinary behavior " .. behavior .. " reaches real physical-surface sampling: " .. tostring(result.reason)
+        )
+        Assert.equal(result.state, "ready", "the ordinary step is selectable after verification")
+        Assert.deepEqual(
+          placement,
+          {
+            mapId = 11,
+            fieldX = 16,
+            fieldZ = 16,
+            surfaceId = 3,
+            worldY = 0,
+            terrainDependencyHash = "loading-fixture",
+          },
+          "placement carries the fixture's sampled surface and selected destination"
+        )
+        if purpose == "browse" then
+          Assert.equal(tile.selectable, true, "the browsing grid agrees with direct resolution")
+        end
+      end
+    end, debug.traceback)
+    service:dispose()
+    if not ok then
+      error(err, 0)
+    end
+  end
+
+  check("verify", 3, false)
+  check("browse", 3, false)
+  check("verify", 19, false, "special_terrain")
+  check("browse", 19, false, "special_terrain")
+  check("verify", 19, true, "blocked")
 end
 
 function T.tests.resolving_an_off_cursor_tile_runs_its_own_placement_classification()
@@ -1963,7 +1689,7 @@ function T.tests.resolving_an_off_cursor_tile_runs_its_own_placement_classificat
   end
 end
 
-function T.tests.remembered_cursor_is_revalidated_without_starting_a_browse_survey()
+function T.tests.remembered_cursor_is_revalidated()
   local service = loadingService({ taskImmediate = true })
   local ok, err = xpcall(function()
     service:openMap(11, {
@@ -1975,8 +1701,6 @@ function T.tests.remembered_cursor_is_revalidated_without_starting_a_browse_surv
     service:update()
 
     local view = service:snapshot()
-    Assert.isNil(service.survey, "remembered-point preparation does not start a whole-map survey")
-    Assert.isNil(service.surveyDomain, "remembered-point preparation does not enumerate the map domain")
     Assert.equal(view.status.state, "ready", "remembered-point preparation reaches normal ready state")
     Assert.deepEqual(view.initialCursor, {
       state = "ready",
@@ -1993,7 +1717,7 @@ function T.tests.remembered_cursor_is_revalidated_without_starting_a_browse_surv
   end
 end
 
-function T.tests.unavailable_remembered_cursor_is_classified_without_survey()
+function T.tests.unavailable_remembered_cursor_is_classified()
   local service = loadingService({ taskImmediate = true })
   local ok, err = xpcall(function()
     service:openMap(11, {
@@ -2007,8 +1731,6 @@ function T.tests.unavailable_remembered_cursor_is_classified_without_survey()
     Assert.equal(view.status.state, "ready", "an unavailable preview does not prevent map preparation")
     Assert.equal(view.initialCursor.state, "unavailable", "the remembered point is classified unavailable")
     Assert.equal(view.initialCursor.reason, "wrong_logical_map", "the point keeps its placement reason")
-    Assert.isNil(service.survey, "an unavailable remembered point still skips whole-map survey")
-    Assert.isNil(service.surveyDomain, "an unavailable remembered point does not enumerate the map domain")
   end, debug.traceback)
   service:dispose()
   if not ok then
@@ -2041,7 +1763,6 @@ function T.tests.remembered_point_coverage_does_not_replace_the_requested_viewpo
     Assert.equal(view.initialCursor.fieldX, 16, "the initial cursor retains its remembered coordinate")
     Assert.equal(service.coverage.anchorX, 1, "published coverage follows the requested viewport")
     Assert.equal(#loader.coverageBegins, 2, "point and viewport anchors receive separate staged preparation")
-    Assert.isNil(service.survey, "remembered navigation does not start a whole-map survey")
     Assert.equal(view.tiles[1].fieldX, 48, "the returned tile window remains centered on the requested viewport")
     Assert.equal(view.tiles[1].state, "selectable", "the requested viewport tile has prepared placement facts")
   end, debug.traceback)
@@ -2059,13 +1780,16 @@ function T.tests.browse_suggestion_generation_stays_bound_to_its_request()
     service:setViewport(16, 16, 1, 1)
 
     local updates = 0
-    while service:snapshot().initialCursor.state == "pending" and updates < 100 do
+    while
+      (service:snapshot().initialCursor.state == "pending" or service:snapshot().initialCursor.state == "seeded")
+      and updates < 100
+    do
       service:update()
       updates = updates + 1
     end
 
     local result = assert(service:snapshot().initialCursor)
-    Assert.isTrue(updates < 100, "the bounded indoor survey completes in the fixture")
+    Assert.isTrue(updates < 100, "the bounded indoor seed and hint complete in the fixture")
     Assert.equal(result.state, "ready", "the fixture has selectable tiles")
     Assert.equal(
       result.generation,
@@ -2079,71 +1803,51 @@ function T.tests.browse_suggestion_generation_stays_bound_to_its_request()
   end
 end
 
-function T.tests.tile_classification_bounds_trigger_and_actor_collection_visits()
-  local LocationPolicy = require("app.src.saveeditor.SaveEditorLocationPolicy")
-  local objectEvents, savedActors, warps, coordinates = {}, {}, {}, {}
-  for index = 1, 140 do
-    objectEvents[index] = {
-      mapId = 11,
-      objectEventId = index,
-      movementType = "stationary",
-      x = 1000 + index,
-      z = 1000,
-      xRange = -1,
-      yRange = -1,
-    }
-    savedActors[index] = {
-      actorId = "unrepresented:" .. index,
-      mapId = 1000 + index,
-      objectEventId = 1,
-      sourceMovementType = "stationary",
-      movementType = "stationary",
-      fieldX = 2000 + index,
-      fieldZ = 2000,
-    }
-    warps[index] = { x = 3000 + index, z = 3000 }
-    coordinates[index] = { x = 4000 + index, z = 4000, width = 1, height = 1 }
+function T.tests.selected_map_trigger_index_answers_without_per_tile_scans()
+  local service, loader = loadingService({
+    outdoor = true,
+    taskImmediate = true,
+    coverageImmediate = true,
+  })
+  local ok, err = xpcall(function()
+    local warps, coordinates = {}, {}
+    for index = 1, 140 do
+      warps[index] = { x = 3000 + index, z = 3000 }
+      coordinates[index] = { x = 4000 + index, z = 4000, width = 1, height = 1 }
+    end
+    warps[#warps + 1] = { x = 20, z = 20 }
+    coordinates[#coordinates + 1] = { x = 24, z = 20, width = 2, height = 2 }
+    loader.runtime.fieldData.events.warps = warps
+    loader.runtime.fieldData.events.coordinates = coordinates
+    local metadataBegins = 0
+    function loader:beginLogicalMetadata(mapId)
+      metadataBegins = metadataBegins + 1
+      error("selected-map checks never load neighboring logical metadata", 2)
+    end
+    service:openMap(11, { purpose = "browse" })
+    service:setViewport(16, 16, 8, 8)
+    service:update()
+
+    local generation = service:snapshot().generation
+    local _, warpStatus = service:resolve(11, 20, 20, generation)
+    Assert.equal(warpStatus.reason, "warp", "a covered selected-map warp refuses placement")
+    local _, farWarp = service:resolve(11, 3001, 3000, service:snapshot().generation)
+    Assert.equal(farWarp.reason, "warp", "an uncovered warp refuses without demanding its window")
+    local _, triggerStatus = service:resolve(11, 25, 21, service:snapshot().generation)
+    Assert.equal(triggerStatus.reason, "coordinate_trigger", "a trigger interior refuses placement")
+    local _, edge = service:resolve(11, 26, 20, service:snapshot().generation)
+    Assert.equal(edge.state, "ready", "coordinate triggers keep half-open rectangle edges")
+    local _, free = service:resolve(11, 22, 22, service:snapshot().generation)
+    Assert.equal(free.state, "ready", "an ordinary covered tile stays selectable beside many triggers")
+    Assert.equal(metadataBegins, 0, "trigger checks never census neighboring maps")
+  end, debug.traceback)
+  service:dispose()
+  if not ok then
+    error(err, 0)
   end
-  local sourceFacts = {
-    mapId = 11,
-    fieldX = 32,
-    fieldZ = 64,
-    coverage = true,
-    logicalMapMatch = true,
-    collision = { blocked = false, behavior = 0 },
-    surface = { surfaceId = 3, worldY = 0, terrainDependencyHash = "budget-test" },
-    trigger = false,
-    events = objectEvents,
-    savedActors = savedActors,
-    mapBounds = { minX = 0, maxX = 5000, minZ = 0, maxZ = 5000 },
-  }
-  local service = setmetatable({
-    objectEvents = objectEvents,
-    savedActors = savedActors,
-    warpEvents = warps,
-    coordinateEvents = coordinates,
-    _tileFacts = function()
-      return sourceFacts
-    end,
-  }, Service)
-  local expected = LocationPolicy.classify(sourceFacts)
-  local task = service:_beginTileClassification(sourceFacts.fieldX, sourceFacts.fieldZ)
-  local firstVisits, firstResult = service:_advanceTileClassification(task, 128)
-  Assert.equal(firstVisits, 128, "trigger and policy scans share the per-unit source-record budget")
-  Assert.isNil(firstResult, "a tile with many source records remains pending after one bounded advance")
-  local totalVisits = firstVisits
-  local result
-  while result == nil do
-    local visits
-    visits, result = service:_advanceTileClassification(task, 128)
-    Assert.isTrue(visits <= 128, "one tile advance never visits more than 128 source records")
-    totalVisits = totalVisits + visits
-  end
-  Assert.isTrue(totalVisits > 4 * 128, "trigger, object-event, and actor passes all advance incrementally")
-  Assert.deepEqual(result, expected, "staged tile classification preserves the established policy result")
 end
 
-function T.tests.source_footprint_dedup_preserves_distinct_actor_obstacles()
+function T.tests.duplicate_source_rows_block_only_their_exact_tiles()
   local service, loader = loadingService({ taskImmediate = true })
   local sourceEvent = {
     objectEventId = 7,
@@ -2183,14 +1887,120 @@ function T.tests.source_footprint_dedup_preserves_distinct_actor_obstacles()
         break
       end
     end
-    Assert.equal(service:snapshot().status.state, "ready", "the represented map reaches ready state")
-    Assert.equal(#assert(service.objectEvents), 2, "metadata deduplicates equal footprints but retains distinct ones")
-    Assert.equal(service:_classify(10, 10).reason, "possible_actor", "the canonical actor still blocks its source tile")
-    Assert.equal(service:_classify(11, 10).reason, "possible_actor", "the second same-ID source footprint also blocks")
+    Assert.equal(service:snapshot().status.state, "ready", "the selected map reaches ready state")
+    Assert.equal(#assert(service.objectEvents), 3, "selected-map events are borrowed without deduplication")
+    Assert.equal(service:_classify(10, 10).reason, "possible_actor", "the repeated source tile stays reserved")
+    Assert.equal(service:_classify(11, 10).reason, "possible_actor", "the second footprint stays reserved")
     Assert.isTrue(service:_classify(12, 10).selectable, "an unrelated safe tile remains selectable")
   end)
   service:dispose()
-  Assert.isTrue(ok, "duplicate source event rows must not throw during Map browse: " .. tostring(err))
+  Assert.isTrue(ok, "duplicate source event rows must not throw during map browse: " .. tostring(err))
+end
+
+function T.tests.saved_actor_current_and_action_endpoints_block_exact_tiles()
+  local actors = {
+    {
+      actorId = "object:7",
+      mapId = 11,
+      objectEventId = 7,
+      sourceMovementType = "stationary",
+      movementType = "stationary",
+      fieldX = 30,
+      fieldZ = 30,
+    },
+    {
+      actorId = "object:9",
+      mapId = 11,
+      objectEventId = 9,
+      sourceMovementType = "stationary",
+      movementType = "wander_around",
+      fieldX = 40,
+      fieldZ = 40,
+      action = {
+        owner = "autonomous",
+        kind = "walk",
+        direction = "north",
+        start = { fieldX = 41, fieldZ = 40 },
+        destination = { fieldX = 42, fieldZ = 40 },
+        progressTicks = 0,
+      },
+    },
+    {
+      actorId = "object:3",
+      mapId = 22,
+      objectEventId = 3,
+      sourceMovementType = "stationary",
+      movementType = "stationary",
+      fieldX = 50,
+      fieldZ = 50,
+    },
+  }
+  local service = Service.new({
+    cacheFs = {
+      loadLua = function()
+        return nil
+      end,
+    },
+    world = structuralWorld(),
+    derivedAssets = {},
+    savedObjects = { actors = actors },
+  })
+  local loader = fakeLoader({ taskImmediate = true })
+  service.loader = loader
+  loader.runtime.fieldData.events.objects = {
+    { objectEventId = 7, movementType = "stationary", x = 10, z = 10, xRange = 0, yRange = 0 },
+  }
+  local ok, err = xpcall(function()
+    service:openMap(11, { purpose = "browse" })
+    service:setViewport(30, 30, 1, 1)
+    local guard = 0
+    while service:snapshot().status.state ~= "ready" and guard < 40 do
+      service:update()
+      guard = guard + 1
+    end
+    Assert.equal(service:snapshot().status.state, "ready", "the selected map prepares with saved actors")
+    local function reasonAt(fieldX, fieldZ)
+      local _, status = service:resolve(11, fieldX, fieldZ, service:snapshot().generation)
+      return status
+    end
+    Assert.equal(reasonAt(10, 10).reason, "possible_actor", "the exact source tile stays reserved")
+    Assert.equal(reasonAt(30, 30).reason, "possible_actor", "a saved current tile stays reserved")
+    Assert.equal(reasonAt(41, 40).reason, "possible_actor", "an action start tile stays reserved")
+    Assert.equal(reasonAt(42, 40).reason, "possible_actor", "an action destination tile stays reserved")
+    local _, free = service:resolve(11, 50, 50, service:snapshot().generation)
+    Assert.equal(free.state, "ready", "another map's actor never reserves this map's tiles")
+    local _, between = service:resolve(11, 31, 30, service:snapshot().generation)
+    Assert.equal(between.state, "ready", "tiles between known points stay selectable")
+  end, debug.traceback)
+  service:dispose()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.location_snapshot_returns_detached_records()
+  local service, loader = loadingService({ taskImmediate = true })
+  local ok, err = xpcall(function()
+    service:openMap(11, { purpose = "verify" })
+    service:setViewport(16, 16, 1, 1)
+    service:update()
+    Assert.equal(service:snapshot().status.state, "ready", "the fixture preparation completes")
+    local first = service:snapshot()
+    Assert.isTrue(#first.tiles > 0, "the ready viewport publishes its tiles")
+    first.tiles[1].state = "corrupted"
+    first.tiles[1].fieldX = -1
+    first.status.state = "corrupted"
+    local second = service:snapshot()
+    Assert.isTrue(second.tiles ~= first.tiles, "snapshots never share their tile storage")
+    Assert.equal(second.tiles[1].state, "selectable", "mutating a snapshot never leaks into service state")
+    Assert.equal(second.tiles[1].fieldX, 16, "mutating a snapshot never moves service coordinates")
+    Assert.equal(second.status.state, "ready", "mutating a snapshot never changes service status")
+    Assert.equal(service:tileStatus(16, 16).selectable, true, "direct tile reads stay intact")
+  end, debug.traceback)
+  service:dispose()
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.tests.indoor_outside_permission_is_rejected_before_field_coordinate_conversion()
@@ -2225,6 +2035,299 @@ function T.tests.indoor_outside_permission_is_rejected_before_field_coordinate_c
   end)
   service:dispose()
   Assert.isTrue(ok, "out-of-coverage tiles must not escape through FieldCoordinates: " .. tostring(err))
+end
+
+function T.tests.unfamiliar_outdoor_browse_starts_from_an_owned_map_cell()
+  local service, loader = loadingService({ taskImmediate = true, coverageImmediate = true, outdoor = true })
+  local ok, err = xpcall(function()
+    service.world.maps[1].worldOriginX = 10000
+    service.world.maps[1].worldOriginZ = 10000
+    local ownedCells = {
+      { x = 5, z = 7, mapHeaderId = 11 },
+      { x = 6, z = 7, mapHeaderId = 11 },
+      { x = 5, z = 8, mapHeaderId = 11 },
+    }
+    function loader:mapCellDomain(mapId)
+      local cells = {}
+      for _, cell in ipairs(ownedCells) do
+        cells[#cells + 1] = cell
+      end
+      cells[#cells + 1] = { x = 90, z = 90, mapHeaderId = 22 }
+      local index = 0
+      local domain = {}
+      function domain:advance(maxVisits)
+        local visited, selected = 0, {}
+        while visited < maxVisits and index < #cells do
+          index = index + 1
+          selected[#selected + 1] = cells[index]
+          visited = visited + 1
+        end
+        return visited, selected, index >= #cells
+      end
+      return domain
+    end
+    local dummyRequests = 0
+    local requestLocation = loader.requestLocation
+    function loader:requestLocation(mapId, fieldX, fieldZ, urgency)
+      if fieldX == 10016 and fieldZ == 10016 then
+        dummyRequests = dummyRequests + 1
+      end
+      return requestLocation(self, mapId, fieldX, fieldZ, urgency)
+    end
+
+    service:openMap(11, { purpose = "browse" })
+    local seed, updates = nil, 0
+    while updates < 60 do
+      service:update()
+      updates = updates + 1
+      local cursor = service:snapshot().initialCursor
+      if cursor ~= nil and cursor.state == "seeded" then
+        seed = cursor
+        break
+      end
+    end
+    Assert.notNil(seed, "an unfamiliar outdoor map publishes a map-owned seed without a full-tile census")
+    Assert.isTrue(updates <= 10, "the owned-cell seed arrives promptly without classifying the map")
+    local seedCellX, seedCellZ = math.floor(seed.fieldX / 32), math.floor(seed.fieldZ / 32)
+    local owned = false
+    for _, cell in ipairs(ownedCells) do
+      if cell.x == seedCellX and cell.z == seedCellZ then
+        owned = true
+      end
+    end
+    Assert.isTrue(owned, "the seed lies inside a physical cell owned by the selected map")
+    Assert.isFalse(
+      seed.fieldX == 10016 and seed.fieldZ == 10016,
+      "the seed is never the misleading structural origin offset"
+    )
+    Assert.equal(dummyRequests, 0, "no destination coverage is demanded for the dummy origin coordinate")
+  end, debug.traceback)
+  service:dispose()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.small_indoor_and_hollow_outdoor_previews_start_inside_real_map_bounds()
+  local indoor, indoorLoader = loadingService({ taskImmediate = true })
+  local indoorOk, indoorErr = xpcall(function()
+    indoorLoader.runtime.fieldRegion.cells[1].collision.width = 7
+    indoorLoader.runtime.fieldRegion.cells[1].collision.height = 9
+    indoorLoader.runtime.coordinateOrigin = { x = 100, z = 200 }
+    indoor:openMap(11, { purpose = "browse" })
+    local seed, updates = nil, 0
+    while updates < 30 do
+      indoor:update()
+      updates = updates + 1
+      local cursor = indoor:snapshot().initialCursor
+      if cursor ~= nil and cursor.state == "seeded" then
+        seed = cursor
+        break
+      end
+    end
+    Assert.notNil(seed, "a small indoor map publishes a map-owned seed without a full-tile census")
+    Assert.isTrue(
+      seed.fieldX >= 100 and seed.fieldX <= 106 and seed.fieldZ >= 200 and seed.fieldZ <= 208,
+      "the indoor seed stays inside the exact collision rectangle"
+    )
+  end, debug.traceback)
+  indoor:dispose()
+  Assert.isTrue(indoorOk, "small indoor preview must not escape through map bounds: " .. tostring(indoorErr))
+
+  local outdoor, outdoorLoader = loadingService({ taskImmediate = true, coverageImmediate = true, outdoor = true })
+  local outdoorOk, outdoorErr = xpcall(function()
+    outdoor.world.maps[1].worldOriginX = 352
+    outdoor.world.maps[1].worldOriginZ = 352
+    local ring = {
+      { x = 10, z = 10, mapHeaderId = 11 },
+      { x = 11, z = 10, mapHeaderId = 11 },
+      { x = 12, z = 10, mapHeaderId = 11 },
+      { x = 10, z = 11, mapHeaderId = 11 },
+      { x = 12, z = 11, mapHeaderId = 11 },
+      { x = 10, z = 12, mapHeaderId = 11 },
+      { x = 11, z = 12, mapHeaderId = 11 },
+      { x = 12, z = 12, mapHeaderId = 11 },
+    }
+    function outdoorLoader:mapCellDomain(mapId)
+      local cells = {}
+      for _, cell in ipairs(ring) do
+        cells[#cells + 1] = cell
+      end
+      cells[#cells + 1] = { x = 60, z = 60, mapHeaderId = 22 }
+      local index = 0
+      local domain = {}
+      function domain:advance(maxVisits)
+        local visited, selected = 0, {}
+        while visited < maxVisits and index < #cells do
+          index = index + 1
+          selected[#selected + 1] = cells[index]
+          visited = visited + 1
+        end
+        return visited, selected, index >= #cells
+      end
+      return domain
+    end
+    outdoor:openMap(11, { purpose = "browse" })
+    local seed, updates = nil, 0
+    while updates < 30 do
+      outdoor:update()
+      updates = updates + 1
+      local cursor = outdoor:snapshot().initialCursor
+      if cursor ~= nil and cursor.state == "seeded" then
+        seed = cursor
+        break
+      end
+    end
+    Assert.notNil(seed, "a hollow outdoor map publishes a map-owned seed without a full-tile census")
+    local seedCellX, seedCellZ = math.floor(seed.fieldX / 32), math.floor(seed.fieldZ / 32)
+    local onRing = false
+    for _, cell in ipairs(ring) do
+      if cell.x == seedCellX and cell.z == seedCellZ then
+        onRing = true
+      end
+    end
+    Assert.isTrue(onRing, "the outdoor seed uses an owned descriptor instead of the empty centroid hole")
+    Assert.isFalse(seedCellX == 11 and seedCellZ == 11, "the outdoor seed never opens in the unowned gap")
+  end, debug.traceback)
+  outdoor:dispose()
+  Assert.isTrue(outdoorOk, "hollow outdoor preview must not escape through map bounds: " .. tostring(outdoorErr))
+end
+
+function T.tests.selected_map_checks_use_only_selected_map_events()
+  local service, loader = loadingService({ taskImmediate = true, coverageImmediate = true, outdoor = true })
+  local ok, err = xpcall(function()
+    function loader.runtime:release() end
+    local metadataBegins = {}
+    local beginLogicalMetadata = loader.beginLogicalMetadata
+    function loader:beginLogicalMetadata(mapId)
+      metadataBegins[#metadataBegins + 1] = mapId
+      return beginLogicalMetadata(self, mapId)
+    end
+    local beginPhysicalCoverage = loader.beginPhysicalCoverage
+    function loader:beginPhysicalCoverage(runtimeMap, position)
+      local task = beginPhysicalCoverage(self, runtimeMap, position)
+      local takeResult = task.takeResult
+      function task:takeResult()
+        local coverage = takeResult(self)
+        coverage.cells["neighbor"] = { descriptor = { x = 2, z = 0, mapHeaderId = 22 } }
+        return coverage
+      end
+      return task
+    end
+    loader.runtime.fieldData.events.objects = {
+      {
+        mapId = 11,
+        objectEventId = 7,
+        movementType = "wander_around",
+        x = 50,
+        z = 50,
+        xRange = 2,
+        yRange = 2,
+        eventFlag = 0,
+      },
+    }
+    loader.runtime.fieldData.events.warps = { { x = 32, z = 32 } }
+    loader.runtime.fieldData.events.coordinates = { { x = 40, z = 40, width = 2, height = 2 } }
+    local terrainSamples = 0
+    local function countTerrainSamples(terrain)
+      for _, method in ipairs({ "candidatesAt", "sampleHeight", "sample" }) do
+        local original = terrain[method]
+        terrain[method] = function(terrainSelf, ...)
+          terrainSamples = terrainSamples + 1
+          return original(terrainSelf, ...)
+        end
+      end
+    end
+
+    service:openMap(11, { purpose = "browse" })
+    service:setViewport(32, 32, 8, 8)
+    local guard = 0
+    while (service.objectEvents == nil or service.coverage == nil) and guard < 40 do
+      service:update()
+      guard = guard + 1
+    end
+    Assert.notNil(service.objectEvents, "the selected map publishes its event index without a full-tile census")
+    Assert.notNil(service.coverage, "the selected map publishes its viewport coverage")
+    countTerrainSamples(service.coverage.region.terrain)
+    local view = service:snapshot()
+    Assert.equal(#metadataBegins, 0, "opening a map never loads neighboring logical source events for actor preflight")
+
+    local generation = view.generation
+    local _, warpStatus = service:resolve(11, 32, 32, generation)
+    Assert.equal(warpStatus.reason, "warp", "a selected-map warp still refuses placement")
+    local _, triggerStatus = service:resolve(11, 41, 41, generation)
+    Assert.equal(triggerStatus.reason, "coordinate_trigger", "a selected-map trigger interior still refuses placement")
+    local _, boundaryStatus = service:resolve(11, 42, 40, generation)
+    Assert.equal(boundaryStatus.state, "ready", "coordinate triggers keep half-open rectangle edges")
+    local _, sourceStatus = service:resolve(11, 50, 50, generation)
+    Assert.equal(sourceStatus.reason, "possible_actor", "the exact source tile remains reserved")
+    local _, rangedStatus = service:resolve(11, 52, 50, generation)
+    Assert.equal(rangedStatus.state, "ready", "a free tile inside a wander range is not reserved by speculation")
+
+    local freeBefore = terrainSamples
+    local placed, freeStatus = service:resolve(11, 33, 33, service:snapshot().generation)
+    Assert.equal(freeStatus.state, "ready", "an ordinary tile resolves")
+    Assert.notNil(placed, "an ordinary tile returns its placement")
+    Assert.equal(terrainSamples - freeBefore, 2, "explicit activation samples the destination surface exactly once")
+    -- One SurfaceResolver:resolve performs candidatesAt + sample on fixture terrain.
+    local warpBefore = terrainSamples
+    local _, _ = service:resolve(11, 32, 32, service:snapshot().generation)
+    Assert.equal(terrainSamples - warpBefore, 0, "a trigger refusal never samples the terrain surface")
+
+    service:setViewport(70, 20, 8, 8)
+    for _ = 1, 15 do
+      service:update()
+    end
+    Assert.equal(#metadataBegins, 0, "panning the viewport never starts a neighboring event census")
+    local _, repanned = service:resolve(11, 50, 50, service:snapshot().generation)
+    Assert.equal(repanned.reason, "possible_actor", "the exact occupancy index survives viewport movement")
+  end, debug.traceback)
+  service:dispose()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.location_updates_report_only_observable_changes_and_isolate_requests()
+  local service, loader = loadingService({ taskImmediate = true })
+  local ok, err = xpcall(function()
+    service:openMap(11, { purpose = "browse" })
+    service:setViewport(16, 16, 1, 1)
+    local first = service:update()
+    Assert.isTrue(type(first) == "boolean", "location preparation reports whether its visible snapshot changed")
+    Assert.isTrue(first, "opening a map is an observable change")
+    local guard = 0
+    while service:snapshot().status.state == "pending" and guard < 100 do
+      service:update()
+      guard = guard + 1
+    end
+    Assert.equal(service:snapshot().status.state, "ready", "the fixture preparation completes")
+    Assert.isFalse(service:update(), "a settled browser reports no observable change on idle updates")
+    Assert.isFalse(service:update(), "repeated idle updates stay quiet")
+
+    service:openMap(22, { purpose = "browse" })
+    service:setViewport(1040, 2064, 1, 1)
+    Assert.isTrue(service:update(), "replacing the map is an observable change")
+    Assert.equal(service:snapshot().mapId, 22, "the replacement owns the browser")
+    local _, stale = service:resolve(11, 16, 16, -1)
+    Assert.equal(stale.state, "unavailable", "a stale request generation never resolves")
+    Assert.equal(stale.reason, "stale_generation", "stale requests name their cause")
+  end, debug.traceback)
+  service:dispose()
+  if not ok then
+    error(err, 0)
+  end
+
+  local failing = loadingService({ requestError = Errors.new("MAP_PREPARATION_FAILED", "staged scene build failed") })
+  local failingOk, failingErr = xpcall(function()
+    failing:openMap(11, { purpose = "browse" })
+    failing:setViewport(16, 16, 1, 1)
+    Assert.isTrue(failing:update(), "a failed preparation publishes its terminal state exactly once")
+    Assert.equal(failing:snapshot().status.state, "failed", "the failure state is terminal")
+    Assert.isFalse(failing:update(), "a terminal failure settles instead of churning")
+  end, debug.traceback)
+  failing:dispose()
+  Assert.isTrue(failingOk, "terminal failure reporting must not escape the update loop: " .. tostring(failingErr))
 end
 
 return T

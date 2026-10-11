@@ -55,7 +55,7 @@ Controller.__index = Controller
 ---@field enterLocationGroup fun(self: SaveEditorController, groupId: string, carriedQuery: string?)
 ---@field backLocation fun(self: SaveEditorController): boolean
 ---@field rememberLocationDestination fun(self: SaveEditorController, groupId: string, mapTargetId: string)
----@field chooseLocationMap fun(self: SaveEditorController, mapId: integer, centerX: integer, centerZ: integer)
+---@field chooseLocationMap fun(self: SaveEditorController, mapId: integer, centerX: integer?, centerZ: integer?)
 ---@field moveLocationCursor fun(self: SaveEditorController, direction: string, visibleWidth: integer, visibleHeight: integer)
 ---@field panLocation fun(self: SaveEditorController, direction: string, visibleWidth: integer, visibleHeight: integer)
 ---@field setLocationCursor fun(self: SaveEditorController, fieldX: integer, fieldZ: integer)
@@ -371,8 +371,9 @@ end
 
 function Controller:chooseLocationMap(mapId, centerX, centerZ)
   assert(type(mapId) == "number" and mapId % 1 == 0 and mapId >= 0)
-  assert(type(centerX) == "number" and centerX % 1 == 0)
-  assert(type(centerZ) == "number" and centerZ % 1 == 0)
+  local unlocated = centerX == nil and centerZ == nil
+  local located = type(centerX) == "number" and centerX % 1 == 0 and type(centerZ) == "number" and centerZ % 1 == 0
+  assert(unlocated or located, "location preview coordinates initialize together")
   if self.locationPage == "group" then
     self:_rememberLocationLevel()
   end
@@ -381,6 +382,7 @@ function Controller:chooseLocationMap(mapId, centerX, centerZ)
   self.locationCursorX, self.locationCursorZ = centerX, centerZ
   self.locationCenterX, self.locationCenterZ = centerX, centerZ
   self.locationMapOffset = 0
+  self.locationFocus = "grid"
   self:setFocus("location:grid")
   self:cancelInteraction()
 end

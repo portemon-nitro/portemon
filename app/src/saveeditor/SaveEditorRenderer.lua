@@ -1115,8 +1115,8 @@ local function paintFooter(ctx)
   for _, action in ipairs(layout.actions) do
     local rect = targetRect(layout, action.id)
     if rect then
-      local label = action.id == "save" and view.locationSave and "Cancel check" or action.label
-      local role = action.id == "save" and (view.locationSave and "back" or "primary")
+      local label = action.label
+      local role = action.id == "save" and "primary"
         or action.id == "discard" and "destructive"
         or action.id == "back" and "back"
         or "secondary"
@@ -1565,7 +1565,7 @@ drawLocation = function(self, view, layout)
   for _, tile in ipairs(location.tiles or {}) do
     tiles[string.format("%d:%d", tile.fieldX, tile.fieldZ)] = tile
   end
-  if grid then
+  if layout.locationHeader then
     local header = assert(layout.locationHeader, "Location grid needs its measured header")
     local ink = textPalette(self.skin, { r = 0, g = 0, b = 0 })
     drawText(

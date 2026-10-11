@@ -28,11 +28,13 @@ local function world()
 end
 
 local function makeService(options)
+  local size = options.size or 64
+  local probes = options.probeCounter
   local runtime = {
     scene = { type = "indoor" },
     coordinateOrigin = { x = 0, z = 0 },
     terrainDependencyHash = "survey-test-terrain",
-    fieldRegion = { cells = { { collision = { width = 64, height = 64 } } } },
+    fieldRegion = { cells = { { collision = { width = size, height = size } } } },
     fieldData = { events = options.events or { objects = {}, warps = {}, coordinates = {} } },
     collision = {},
     terrain = {
@@ -48,14 +50,20 @@ local function makeService(options)
     },
   }
   function runtime.collision:containsLocal(localX, localZ)
-    return localX >= 0 and localX < 64 and localZ >= 0 and localZ < 64
+    return localX >= 0 and localX < size and localZ >= 0 and localZ < size
   end
-  function runtime.collision:getLocal(localX, localZ)
+  local baseGetLocal = function(localX, localZ)
     local blocked = options.allBlocked == true
     if options.validTiles ~= nil then
       blocked = options.validTiles[localX .. ":" .. localZ] ~= true
     end
     return { blocked = blocked, behavior = 0 }
+  end
+  function runtime.collision:getLocal(localX, localZ)
+    if probes ~= nil then
+      probes.n = probes.n + 1
+    end
+    return baseGetLocal(localX, localZ)
   end
 
   local loader = {}
@@ -90,7 +98,11 @@ local function makeService(options)
   function loader:release() end
 
   local service = Service.new({
-    cacheFs = { loadLua = function() return nil end },
+    cacheFs = {
+      loadLua = function()
+        return nil
+      end,
+    },
     world = world(),
     derivedAssets = {},
     savedObjects = { actors = {} },
@@ -115,7 +127,7 @@ local function browse(service)
   return view, requestGeneration
 end
 
-function T.tests.valid_tile_survey_uses_the_exact_map_centroid_and_coordinate_tie_break()
+function T.tests.map_owned_seed_arrives_before_the_first_safe_tile()
   local validTiles = {
     ["31:31"] = true,
     ["32:31"] = true,
@@ -124,16 +136,36 @@ function T.tests.valid_tile_survey_uses_the_exact_map_centroid_and_coordinate_ti
   }
   local service = makeService({ validTiles = validTiles })
   local ok, err = xpcall(function()
-    local view, requestGeneration = browse(service)
-    local suggestion = view.initialCursor
-    Assert.notNil(suggestion, "a fresh map browse publishes its completed valid-tile survey")
-    Assert.equal(suggestion.state, "ready", "the sparse selected-map domain has a valid initial cursor")
-    Assert.equal(suggestion.validTileCount, 4, "every selectable tile contributes once")
-    Assert.equal(suggestion.fieldX, 31, "centroid ties choose the lower fieldX after fieldZ")
-    Assert.equal(suggestion.fieldZ, 31, "the nearest valid tile is selected without rounding the centroid")
-    Assert.equal(suggestion.mapId, 11, "the survey is bound to its selected logical map")
-    Assert.equal(suggestion.generation, requestGeneration, "the survey is bound to its browse request")
-    Assert.equal(service:tileStatus(31, 31).selectable, true, "the selected suggestion uses ordinary placement facts")
+    service:openMap(11, { purpose = "browse" })
+    local requestGeneration = assert(service:snapshot().initialCursor).generation
+    service:setViewport(32, 32, 1, 1)
+    local seed, ready, updates = nil, nil, 0
+    local view = service:snapshot()
+    while view.status.state == "pending" and updates < 100 do
+      service:update()
+      updates = updates + 1
+      view = service:snapshot()
+      if seed == nil and view.initialCursor ~= nil and view.initialCursor.state == "seeded" then
+        seed = view.initialCursor
+      end
+      if view.initialCursor ~= nil and view.initialCursor.state == "ready" then
+        ready = view.initialCursor
+      end
+    end
+    Assert.equal(view.status.state, "ready", "the selected map's ordinary preparation completes")
+    Assert.notNil(seed, "browsing publishes its map-owned seed before the safe-tile search completes")
+    Assert.isTrue(
+      seed.fieldX >= 0 and seed.fieldX < 64 and seed.fieldZ >= 0 and seed.fieldZ < 64,
+      "the seed lies inside the real indoor collision rectangle"
+    )
+    Assert.notNil(ready, "the bounded search publishes its first safe tile")
+    Assert.isTrue(
+      validTiles[ready.fieldX .. ":" .. ready.fieldZ] == true,
+      "the suggestion is a tile that passes placement policy"
+    )
+    Assert.equal(ready.mapId, 11, "the suggestion is bound to its selected logical map")
+    Assert.equal(ready.generation, requestGeneration, "the suggestion is bound to its browse request")
+    Assert.equal(service:tileStatus(ready.fieldX, ready.fieldZ).selectable, true, "the suggested tile is selectable")
   end, debug.traceback)
   service:dispose()
   if not ok then
@@ -141,19 +173,25 @@ function T.tests.valid_tile_survey_uses_the_exact_map_centroid_and_coordinate_ti
   end
 end
 
-function T.tests.blocked_pending_and_failed_maps_never_receive_a_guessed_cursor()
+function T.tests.blocked_pending_and_failed_maps_keep_honest_cursors()
   local blockedService = makeService({ allBlocked = true })
   local pendingService = makeService({ assetsPending = true })
   local failureService = makeService({ assetError = Errors.new("MAP_ASSET_FAILED", "survey fixture failure") })
   local ok, err = xpcall(function()
     local blocked = browse(blockedService)
-    local unavailable = blocked.initialCursor
-    Assert.notNil(unavailable, "an all-blocked survey publishes an explicit unavailable result")
-    Assert.equal(unavailable.state, "unavailable", "zero valid tiles is a normal survey outcome")
-    Assert.equal(unavailable.validTileCount, 0, "blocked tiles do not count as valid destinations")
-    Assert.isNil(unavailable.fieldX, "an unavailable result has no guessed coordinate")
-    Assert.isNil(unavailable.fieldZ, "an unavailable result has no guessed coordinate")
-    Assert.isTrue(type(unavailable.reason) == "string" and unavailable.reason ~= "", "unavailable names its reason")
+    local miss = blocked.initialCursor
+    Assert.notNil(miss, "an all-blocked map publishes an explicit finite miss")
+    Assert.equal(miss.state, "unavailable", "an exhausted local search is a normal preview outcome")
+    Assert.equal(miss.reason, "no_nearby_safe_tile", "the miss names its bound instead of the whole map")
+    Assert.isTrue(
+      miss.fieldX ~= nil
+        and miss.fieldX >= 0
+        and miss.fieldX < 64
+        and miss.fieldZ ~= nil
+        and miss.fieldZ >= 0
+        and miss.fieldZ < 64,
+      "an unavailable hint retains its map-owned seed for manual browsing"
+    )
 
     pendingService:openMap(11, { purpose = "browse" })
     pendingService:setViewport(32, 32, 1, 1)
@@ -172,13 +210,94 @@ function T.tests.blocked_pending_and_failed_maps_never_receive_a_guessed_cursor(
     Assert.notNil(failed.initialCursor, "failed browse preparation publishes a terminal cursor")
     Assert.equal(failed.initialCursor.state, "failed", "failed preparation remains terminal")
     Assert.equal(failed.initialCursor.mapId, failed.mapId, "the failed cursor belongs to the selected map")
-    Assert.equal(failed.initialCursor.generation, failureService.requestGeneration, "the failed cursor belongs to the request generation")
+    Assert.equal(
+      failed.initialCursor.generation,
+      failureService.requestGeneration,
+      "the failed cursor belongs to the request generation"
+    )
   end, debug.traceback)
   blockedService:dispose()
   pendingService:dispose()
   failureService:dispose()
   if not ok then
     error(err, 0)
+  end
+end
+
+function T.tests.local_safe_hint_is_bounded_cancelable_and_reports_a_finite_miss()
+  local service = makeService({})
+  Assert.equal(
+    type(service.cancelInitialSuggestion),
+    "function",
+    "the optional safe-tile hint is canceled through its own owner without disturbing the viewport"
+  )
+  local probes = { n = 0 }
+  local hinted = makeService({ probeCounter = probes })
+  local ok, err = xpcall(function()
+    hinted:openMap(11, { purpose = "browse" })
+    local seed, updates = nil, 0
+    while updates < 30 do
+      hinted:update()
+      updates = updates + 1
+      local cursor = hinted:snapshot().initialCursor
+      if cursor ~= nil and cursor.state == "seeded" then
+        seed = cursor
+        break
+      end
+    end
+    Assert.notNil(seed, "the browser publishes its map-owned seed before the safe-tile search completes")
+    Assert.isTrue(
+      seed.fieldX >= 0 and seed.fieldX < 64 and seed.fieldZ >= 0 and seed.fieldZ < 64,
+      "the seed lies inside the real indoor collision rectangle"
+    )
+    hinted:cancelInitialSuggestion()
+    Assert.equal(hinted:snapshot().initialCursor.state, "canceled", "canceling retires the pending hint")
+    for _ = 1, 10 do
+      hinted:update()
+    end
+    Assert.equal(
+      hinted:snapshot().initialCursor.state,
+      "canceled",
+      "a canceled hint never snaps back to a late suggestion"
+    )
+  end, debug.traceback)
+  hinted:dispose()
+  service:dispose()
+  if not ok then
+    error(err, 0)
+  end
+
+  local missProbes = { n = 0 }
+  local blocked = makeService({ allBlocked = true, size = 96, probeCounter = missProbes })
+  local missOk, missErr = xpcall(function()
+    blocked:openMap(11, { purpose = "browse" })
+    local miss, updates = nil, 0
+    while updates < 2000 do
+      blocked:update()
+      updates = updates + 1
+      local cursor = blocked:snapshot().initialCursor
+      if cursor ~= nil and (cursor.state == "unavailable" or cursor.state == "ready") then
+        miss = cursor
+        break
+      end
+    end
+    Assert.notNil(miss, "a fully blocked map finishes its finite local search")
+    Assert.equal(miss.state, "unavailable", "an exhausted local search reports its miss")
+    Assert.equal(
+      miss.reason,
+      "no_nearby_safe_tile",
+      "a finite local miss names its bound instead of claiming the whole map"
+    )
+    Assert.notNil(miss.fieldX, "an unavailable hint retains its map-owned seed for manual browsing")
+    Assert.notNil(miss.fieldZ, "an unavailable hint retains its map-owned seed for manual browsing")
+    Assert.isTrue(
+      missProbes.n <= 4096,
+      "the bounded search inspects at most 4096 tile positions before reporting its miss"
+    )
+  end, debug.traceback)
+  blocked:dispose()
+  if not missOk then
+    error(missErr, 0)
   end
 end
 

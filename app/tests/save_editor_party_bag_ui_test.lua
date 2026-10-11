@@ -621,7 +621,6 @@ function T.clean_edit_draft_does_not_veto_quit()
   local state = setmetatable({
     approvedExit = false,
     disposed = false,
-    pendingLocationSave = nil,
     closeRequest = nil,
     valueEditor = nil,
     monDraft = draft,
