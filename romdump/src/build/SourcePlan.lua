@@ -9,11 +9,18 @@
 -- module only assembles, checks and stages their data-only answers.
 
 local Errors = require("libs.errors.src.Errors")
+local StorageErrors = require("libs.storage.src.errors")
 
 local SourcePlan = {}
 
 SourcePlan.PATH = "data/generated/producer/source-plan.lua"
 SourcePlan.SCHEMA = "g4-source-plan-v3"
+
+local UNUSABLE_SOURCE_PLAN_CODES = {
+  [StorageErrors.CACHE_FILE_MISSING] = true,
+  [StorageErrors.CACHE_LUA_PARSE_FAILED] = true,
+  [StorageErrors.CACHE_LUA_EVAL_FAILED] = true,
+}
 
 ---@param generationId string
 ---@return string
@@ -592,8 +599,21 @@ end
 function SourcePlan.read(cacheFs, identity)
   assert(cacheFs and cacheFs.loadLua, "source inventory reads require a cache filesystem")
   assert(type(identity) == "table", "source inventory reads require the generation identity")
-  local ok, record = pcall(cacheFs.loadLua, cacheFs, SourcePlan.PATH)
-  if not ok or type(record) ~= "table" then
+  local record, loadError = cacheFs:loadLua(SourcePlan.PATH)
+  if record == nil then
+    if loadError ~= nil then
+      if Errors.is(loadError) then
+        ---@cast loadError Errors.Error
+        if UNUSABLE_SOURCE_PLAN_CODES[loadError.code] ~= true then
+          error(loadError, 0)
+        end
+      else
+        error(loadError, 0)
+      end
+    end
+    return nil, "no published source inventory"
+  end
+  if type(record) ~= "table" then
     return nil, "no published source inventory"
   end
   local valid, reason = SourcePlan.validate(record, identity)

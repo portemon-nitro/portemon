@@ -8,11 +8,13 @@
 local Assert = require("tests.support.Assert")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
+local Errors = require("libs.errors.src.Errors")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local SourcePlan = require("romdump.src.build.SourcePlan")
+local StorageErrors = require("libs.storage.src.errors")
 
 local T = {}
 
@@ -1221,6 +1223,51 @@ function T.page_demand_still_opens_its_source_dependency()
   end)
   SourcePlan.read = realRead
   Assert.isTrue(ok, tostring(err))
+end
+
+function T.source_inventory_read_fault_stops_page_adoption()
+  local env = newEnv("source-read-fault-adoption-generation", 2)
+  stageSynthetic(env)
+  local session = openSession(env)
+  local ready, failure = session:requestJob("mon-portrait-page", "0", "required")
+  Assert.isFalse(ready, "the portrait starts pending")
+  Assert.isNil(failure, "the portrait reports no failure")
+
+  withFixtureFacts(env, function()
+    writeReceipt(env, "mon-catalog", "global")
+    writeReceipt(env, "mon-layout", "global")
+    pump(session, 5)
+    env.pool:complete("source-plan:global")
+    env.pool:complete("mon-catalog:global")
+    pump(session, 5)
+    env.pool:complete("mon-layout:global")
+
+    local readFault = Errors.new(
+      StorageErrors.CACHE_READ_FAILED,
+      "synthetic source inventory read failure during page adoption",
+      { path = SourcePlan.PATH }
+    )
+    local ok, err = pcall(function()
+      withPatched({
+        {
+          target = SourcePlan,
+          name = "read",
+          replacement = function()
+            error(readFault, 0)
+          end,
+        },
+      }, function()
+        pump(session, 10)
+      end)
+    end)
+    Assert.isFalse(ok, "a source inventory read fault escapes page adoption")
+    Assert.equal(err, readFault, "the adoption caller receives the original structured fault")
+    Assert.isFalse(session.pagesKnown, "a read fault never certifies page membership")
+    Assert.isFalse(
+      session:requestJob("mon-portrait-page", "0", "required"),
+      "a failed read never proves the waiting page ready"
+    )
+  end)
 end
 
 function T.both_milestone_rosters_enroll_their_scopes()

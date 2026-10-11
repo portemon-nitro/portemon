@@ -13,6 +13,7 @@ local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
 local CacheFs = require("libs.storage.src.CacheFs")
+local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
@@ -25,6 +26,7 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local RomFs = require("romdump.src.source.RomFs")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local SourcePlan = require("romdump.src.build.SourcePlan")
+local StorageErrors = require("libs.storage.src.errors")
 local WorldManifest = require("romdump.src.digest.map.WorldManifest")
 
 local T = {}
@@ -537,6 +539,86 @@ function T.staged_inventory_reads_back_and_rejects_tampering()
   local missing, missingReason = SourcePlan.read(CacheFs.forVersion("heartgold", FakeCache.new()), identity(generation))
   Assert.isNil(missing, "an empty cache publishes no inventory")
   Assert.notNil(missingReason, "an empty cache names its pending state")
+end
+
+function T.source_inventory_read_treats_only_unusable_loads_as_absent()
+  local absentCodes = {
+    StorageErrors.CACHE_FILE_MISSING,
+    StorageErrors.CACHE_LUA_PARSE_FAILED,
+    StorageErrors.CACHE_LUA_EVAL_FAILED,
+  }
+  for _, code in ipairs(absentCodes) do
+    local loadError = Errors.new(code, "synthetic unusable source inventory", { path = SourcePlan.PATH })
+    local cacheFs = {
+      loadLua = function(_, path)
+        Assert.equal(path, SourcePlan.PATH, "source inventory reads its owned path")
+        return nil, loadError
+      end,
+    }
+    local record, reason = SourcePlan.read(cacheFs, identity("load-classification-generation"))
+    Assert.isNil(record, code .. " remains an absent source inventory")
+    Assert.notNil(reason, code .. " retains an explanatory absence")
+  end
+
+  local noErrorCache = { loadLua = function() return nil end }
+  local noErrorRecord, noErrorReason = SourcePlan.read(noErrorCache, identity("nil-load-generation"))
+  Assert.isNil(noErrorRecord, "a nil load without an error remains absent")
+  Assert.notNil(noErrorReason, "a nil load without an error remains explanatory")
+
+  local nonTableCache = { loadLua = function() return "not a record" end }
+  local nonTableRecord, nonTableReason = SourcePlan.read(nonTableCache, identity("non-table-load-generation"))
+  Assert.isNil(nonTableRecord, "a non-table load is rejected as absent")
+  Assert.notNil(nonTableReason, "a non-table load has an explanatory result")
+end
+
+function T.source_inventory_read_propagates_backend_faults_intact()
+  local returnedFault = Errors.new(
+    StorageErrors.CACHE_READ_FAILED,
+    "synthetic source inventory read failure",
+    { path = SourcePlan.PATH, backend = "fixture" }
+  )
+  local returnedFaultCache = {
+    loadLua = function()
+      return nil, returnedFault
+    end,
+  }
+  local returnedFailure = Assert.throws(function()
+    SourcePlan.read(returnedFaultCache, identity("returned-fault-generation"))
+  end, "a returned backend read error must not become an absent plan")
+  Assert.equal(returnedFailure, returnedFault, "the returned structured error keeps object identity")
+  Assert.isTrue(Errors.is(returnedFailure), "the returned backend failure remains structured")
+  Assert.equal(returnedFailure.code, StorageErrors.CACHE_READ_FAILED, "the returned fault keeps its code")
+  Assert.equal(returnedFailure.context.path, SourcePlan.PATH, "the returned fault keeps its path context")
+
+  local unexpectedFault = Errors.new(
+    StorageErrors.CACHE_WRITE_FAILED,
+    "unexpected source inventory load error",
+    { path = SourcePlan.PATH }
+  )
+  local unexpectedFaultCache = {
+    loadLua = function()
+      return nil, unexpectedFault
+    end,
+  }
+  local unexpectedFailure = Assert.throws(function()
+    SourcePlan.read(unexpectedFaultCache, identity("unexpected-fault-generation"))
+  end, "an unclassified structured load error must propagate")
+  Assert.equal(unexpectedFailure, unexpectedFault, "an unclassified error keeps object identity")
+
+  local raisedFault = Errors.new(
+    StorageErrors.CACHE_READ_FAILED,
+    "raised source inventory read failure",
+    { path = SourcePlan.PATH, backend = "fixture" }
+  )
+  local raisedFaultCache = {
+    loadLua = function()
+      error(raisedFault, 0)
+    end,
+  }
+  local raisedFailure = Assert.throws(function()
+    SourcePlan.read(raisedFaultCache, identity("raised-fault-generation"))
+  end, "a thrown backend read error must propagate")
+  Assert.equal(raisedFailure, raisedFault, "the thrown structured error keeps object identity")
 end
 
 -- The persisted inventory no longer carries producer-known membership:
