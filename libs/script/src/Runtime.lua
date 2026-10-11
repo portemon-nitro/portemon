@@ -2063,6 +2063,41 @@ function HANDLERS.field_move(node, run)
   end
   return blockOnTask(run, "field_move", { source = "explicit", node = node })
 end
+function HANDLERS.apricorn_tree_anim(node, run)
+  requireForeground(run, "apricorn_tree_anim")
+  local trigger = run.instance.trigger
+  local actorId = type(trigger) == "table" and trigger.selfActor or nil
+  if type(actorId) ~= "string" or actorId == "" then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "Apricorn animation requires its interacted actor", {
+      scriptId = run.instance.scriptId,
+    })
+  end
+  return blockOnTask(run, "apricorn_tree", { actorId = actorId }, node.result)
+end
+function HANDLERS.apricorn_tree_color(node, run)
+  local trigger = run.instance.trigger
+  local actorId = type(trigger) == "table" and trigger.selfActor or nil
+  if type(actorId) ~= "string" or actorId == "" then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "Apricorn color requires its interacted actor", {
+      scriptId = run.instance.scriptId,
+    })
+  end
+  local colorCode = requireService(run, "apricorn"):colorForActor(actorId)
+  semanticsFor(run).writeRef(node.result, colorCode, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.apricorn_give(node, run)
+  local colorCode = semanticsFor(run).evaluateValue(node.color, run)
+  local quantity = semanticsFor(run).evaluateValue(node.quantity, run)
+  local given = requireService(run, "apricorn"):give(colorCode, quantity)
+  semanticsFor(run).writeRef(node.result, given and 1 or 0, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.apricorn_name(node, run)
+  local colorCode = semanticsFor(run).evaluateValue(node.color, run)
+  run.instance.textArgs[node.slot] = requireService(run, "apricorn"):displayName(colorCode)
+  return Runtime.OUTCOME_CONTINUE
+end
 HANDLERS.unsupported = handleUnsupported
 HANDLERS.play_sound = handlePlaySound
 HANDLERS.stop_sound = handleStopSound

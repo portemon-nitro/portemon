@@ -54,6 +54,8 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field currentAction fun(self: FieldObjectActor): string?
 ---@field presentationState fun(self: FieldObjectActor): FieldObjectActor.PresentationState
 ---@field presentationStateInto fun(self: FieldObjectActor, out: FieldObjectActor.PresentationState): FieldObjectActor.PresentationState
+---@field setGesturePresentation fun(self: FieldObjectActor, pose: string, tick: integer)
+---@field clearGesturePresentation fun(self: FieldObjectActor)
 ---@field scriptedMotionState fun(self: FieldObjectActor): table<string, unknown>?
 ---@field setFacing fun(self: FieldObjectActor, direction: FieldDirection)
 ---@field setVisible fun(self: FieldObjectActor, visible: boolean)
@@ -888,6 +890,24 @@ function FieldObjectActor:presentationStateInto(out)
   out.gestureTick = state.hasGestureTick == 1 and state.gestureTick or nil
   out.gestureOffsetY = state.gestureOffsetY
   return out
+end
+
+---@param pose string
+---@param tick integer
+function FieldObjectActor:setGesturePresentation(pose, tick)
+  assert(type(pose) == "string" and pose ~= "", "gesture presentation requires a pose")
+  assert(type(tick) == "number" and tick % 1 == 0 and tick >= 0, "gesture presentation tick must be non-negative")
+  self._gesturePose = pose
+  local state = self:_numeric()
+  setGestureTick(state, tick)
+  state.gestureOffsetY = 0
+end
+
+function FieldObjectActor:clearGesturePresentation()
+  self._gesturePose = nil
+  local state = self:_numeric()
+  setGestureTick(state, nil)
+  state.gestureOffsetY = 0
 end
 
 -- --- Scripted mutation  ------------------------------------

@@ -53,6 +53,13 @@ local BANZAI_DISPLAY_OFFSET_Z = BANZAI_FACING_Z_FX32 / (SOURCE_MODEL_UNITS_PER_T
 -- (SPRITE_BANZAIHERO/HEROINE, 200/201 via src/player_avatar.c PLAYER_STATE_HEAL)
 -- ranges 1 and 2 are give/receive (states 0/1 select animations 0/1, single-level).
 local GESTURE_BINDINGS = {
+  -- The 32-frame shake interval matches the looping 16-frame descriptor range;
+  -- the 8-frame expel samples the following one-shot range. The source's
+  -- numeric action parameters are opaque and are not used as clip identities.
+  ["18:21"] = {
+    { rangeIndex = 2, name = "apricorn_tree_wiggle", displayOffset = { x = 0, y = 0, z = 0 } },
+    { rangeIndex = 3, name = "apricorn_tree_expel", displayOffset = { x = 0, y = 0, z = 0 } },
+  },
   ["12:5"] = {
     { rangeIndex = 5, name = "nurse_bow", displayOffset = { x = 0, y = 0, z = 0 } },
   },

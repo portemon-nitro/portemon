@@ -1075,6 +1075,21 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  apricorn_tree_anim = { fields = { result = { type = "value", required = true } } },
+  apricorn_tree_color = { fields = { result = { type = "value", required = true } } },
+  apricorn_give = {
+    fields = {
+      color = { type = "scalar_or_value", required = true },
+      quantity = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  apricorn_name = {
+    fields = {
+      slot = { type = "integer", required = true },
+      color = { type = "scalar_or_value", required = true },
+    },
+  },
   party_lead = {
     fields = {
       result = { type = "value", required = true },

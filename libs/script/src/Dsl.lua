@@ -924,6 +924,18 @@ end
 function M.bagGetQuantity(spec)
   return op("bag_get_quantity", spec)
 end
+function M.apricornTreeAnim(spec)
+  return op("apricorn_tree_anim", spec)
+end
+function M.apricornTreeColor(spec)
+  return op("apricorn_tree_color", spec)
+end
+function M.apricornGive(spec)
+  return op("apricorn_give", spec)
+end
+function M.apricornName(spec)
+  return op("apricorn_name", spec)
+end
 function M.unsupported(spec)
   return op("unsupported", spec)
 end

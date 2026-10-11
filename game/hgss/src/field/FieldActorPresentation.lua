@@ -13,6 +13,7 @@ local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
 ---@field cacheFs CacheFs?
 ---@field actors FieldActorManager
 ---@field playerVisual FieldPlayerVisual
+---@field apricornTreePresentation table<string, function>?
 
 ---@class FieldActorPresentation
 ---@field runtime FieldActorPresentationRuntime
@@ -52,10 +53,12 @@ function FieldActorPresentation:sync()
   local playerVisual = assert(runtime.playerVisual, "field player visual is unavailable")
   local actorRevision = actors:visualRevision()
   local playerSpriteId = assert(playerVisual.spriteId, "field player visual has no spriteId")
+  local apricornTrees = runtime.apricornTreePresentation
   if
     self._lastActorManager == actors
     and self._lastActorVisualRevision == actorRevision
     and self._lastPlayerSpriteId == playerSpriteId
+    and apricornTrees == nil
   then
     return
   end
@@ -63,6 +66,9 @@ function FieldActorPresentation:sync()
   local needed = {}
   needed[playerSpriteId] = true
   actors:collectSpriteIds(needed)
+  if apricornTrees then
+    apricornTrees:collectSpriteIds(needed)
+  end
 
   local acquired = {}
   local ok, err = pcall(function()
@@ -109,10 +115,22 @@ function FieldActorPresentation:drawItems(alpha)
   local records = assert(self._actorRecords, "field actor presentation is disposed")
   records[1] = self.runtime.playerVisual:drawRecord(alpha)
   local actorRecords = self.runtime.actors:drawRecords(alpha)
+  local apricornTrees = self.runtime.apricornTreePresentation
+  if apricornTrees then
+    apricornTrees:updateTreeSprites(actorRecords)
+  end
   for index, record in ipairs(actorRecords) do
     records[index + 1] = record
   end
-  for index = #records, #actorRecords + 2, -1 do
+  local recordCount = #actorRecords + 1
+  if apricornTrees then
+    local fruit = apricornTrees:drawRecord()
+    if fruit then
+      recordCount = recordCount + 1
+      records[recordCount] = fruit
+    end
+  end
+  for index = #records, recordCount + 1, -1 do
     records[index] = nil
   end
   local storage = assert(self._actorDrawStorage, "field actor draw storage is unavailable")

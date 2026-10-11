@@ -23,6 +23,15 @@ FieldMapDataCache.TRANSITION_ENVIRONMENTS = { cave = true, outdoors = true, buil
 
 -- The event collections the current field-map schema always carries.
 local EVENT_COLLECTIONS = { "background", "objects", "warps", "coordinates" }
+local APRICORN_KEYS = {
+  RED_APRICORN = true,
+  YLW_APRICORN = true,
+  BLU_APRICORN = true,
+  GRN_APRICORN = true,
+  PNK_APRICORN = true,
+  WHT_APRICORN = true,
+  BLK_APRICORN = true,
+}
 
 ---@param value unknown
 ---@return boolean
@@ -213,6 +222,18 @@ function FieldMapDataCache.beginRequiredEventsValidation(events)
             and FieldObjectMovement.isType(value.movementType)
             and isMovementRange(value.xRange)
             and isMovementRange(value.yRange)
+          if self._valid and value.apricorn ~= nil then
+            local apricorn = value.apricorn
+            self._valid = value.scriptId == "common.apricorn_tree"
+              and type(apricorn) == "table"
+              and hasOnlyKeys(apricorn, { treeIndex = true, apricornKey = true })
+              and Validate.isNonNegativeInteger(apricorn.treeIndex)
+              and apricorn.treeIndex <= 30
+              and type(apricorn.apricornKey) == "string"
+              and APRICORN_KEYS[apricorn.apricornKey] == true
+          elseif self._valid and value.scriptId == "common.apricorn_tree" then
+            self._valid = false
+          end
         end
       end
     end

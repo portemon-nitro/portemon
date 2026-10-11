@@ -2,6 +2,7 @@
 -- output using a synthetic zone-event member.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local Builder = require("tests.support.ZoneEventsBuilder")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local FieldMapDataCacheWriter = require("romdump.src.digest.field.FieldMapDataCacheWriter")
@@ -264,6 +265,72 @@ function T.canonicalizes_std_script_sentinels_to_their_global_identity_regardles
   -- sentinel addresses a different, global scr_seq member than the map's own.
   Assert.equal(bundle.field.events.background[1].scriptId, "common.apricorn_tree")
   Assert.equal(bundle.field.events.objects[1].scriptId, "common.itemball_r29_potion")
+end
+
+function T.annotates_only_verified_source_apricorn_tree_objects()
+  local member = Builder.build({
+    objectEvents = {
+      {
+        objectEventId = 8,
+        spriteId = 266,
+        movement = 0,
+        type = 0,
+        eventFlag = 1081,
+        scriptId = 2800,
+        facingDirection = 0,
+        param0 = 6,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 0,
+        z = 0,
+        y = 0,
+      },
+    },
+  })
+  local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, function()
+    return "hash"
+  end, function()
+    return "dependency"
+  end))
+  local object = bundle.field.events.objects[1]
+  Assert.equal(object.scriptId, "common.apricorn_tree")
+  Assert.deepEqual(object.apricorn, { treeIndex = 6, apricornKey = "GRN_APRICORN" })
+end
+
+function T.rejects_a_source_apricorn_tree_with_an_unexpected_sprite()
+  local member = Builder.build({
+    objectEvents = {
+      {
+        objectEventId = 8,
+        spriteId = 263,
+        movement = 0,
+        type = 0,
+        eventFlag = 1081,
+        scriptId = 2800,
+        facingDirection = 0,
+        param0 = 6,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 0,
+        z = 0,
+        y = 0,
+      },
+    },
+  })
+  local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
+  local bundle, err = FieldMapDataCompiler.compile(romFs, 60, function()
+    return "hash"
+  end, function()
+    return "dependency"
+  end)
+  Assert.isNil(bundle)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "FIELD_MAP_APRICORN_SOURCE_INVALID")
 end
 
 function T.publishes_semantic_object_movement_without_raw_source_movement()

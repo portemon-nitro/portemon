@@ -4623,28 +4623,28 @@ return {
       },
     },
     [623] = {
+      feature = "apricorn",
+      disposition = "supported",
+      classification = "native_wait",
       name = "ScrCmd_AnimApricornTree",
-      disposition = "deferred",
-      deferredReason = "apricorn",
-      deferredNote = "apricorn trees need the Kurt/apricorn flow",
       widths = {
         [1] = 2,
       },
     },
     [624] = {
+      feature = "apricorn",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_ApricornTreeGetApricorn",
-      disposition = "deferred",
-      deferredReason = "apricorn",
-      deferredNote = "apricorn trees need the Kurt/apricorn flow",
       widths = {
         [1] = 2,
       },
     },
     [625] = {
+      feature = "apricorn",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_GiveApricornFromTree",
-      disposition = "deferred",
-      deferredReason = "apricorn",
-      deferredNote = "apricorn trees need the Kurt/apricorn flow",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4652,10 +4652,10 @@ return {
       },
     },
     [626] = {
+      feature = "apricorn",
+      disposition = "supported",
+      classification = "continue_same_tick",
       name = "ScrCmd_BufferApricornName",
-      disposition = "deferred",
-      deferredReason = "apricorn",
-      deferredNote = "apricorn text needs the Kurt/apricorn flow",
       widths = {
         [1] = 1,
         [2] = 2,

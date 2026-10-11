@@ -648,6 +648,31 @@ local function getItemQuantity(ins)
   }
 end
 
+local function apricornTreeAnim(ins)
+  return { op = "apricorn_tree_anim", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function apricornTreeColor(ins)
+  return { op = "apricorn_tree_color", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function giveApricornFromTree(ins)
+  return {
+    op = "apricorn_give",
+    color = Operands.varRef(ins.operands[1]),
+    quantity = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function bufferApricornName(ins)
+  return {
+    op = "apricorn_name",
+    slot = Operands.operandValue(ins.operands[1]),
+    color = Operands.varRef(ins.operands[2]),
+  }
+end
+
 local function bufferMoveName(ins)
   return {
     op = "buffer_text",
@@ -1496,6 +1521,10 @@ local FieldHandlers = {
   [129] = itemIsTmhm,
   [130] = getItemPocket,
   [669] = getItemQuantity,
+  [623] = apricornTreeAnim,
+  [624] = apricornTreeColor,
+  [625] = giveApricornFromTree,
+  [626] = bufferApricornName,
   [167] = chooseStarter,
   [173] = nicknameInput,
   [131] = setStarterChoice,

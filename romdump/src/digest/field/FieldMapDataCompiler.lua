@@ -23,6 +23,7 @@ local ScriptHeader = require("romdump.src.digest.script.ScriptHeader")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
+local ApricornSources = require("romdump.src.config.ApricornSources")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 
 local FieldMapDataCompiler = {}
@@ -76,6 +77,42 @@ local function semanticObjectEvent(event, map, index)
     end
   end
   object.movementType = movementType
+  if event.scriptId == "common.apricorn_tree" then
+    local treeIndex = event.param0
+    local apricornKey = type(treeIndex) == "number" and ApricornSources.treeByIndex[treeIndex] or nil
+    if
+      type(treeIndex) ~= "number"
+      or treeIndex % 1 ~= 0
+      or treeIndex < 0
+      or treeIndex > 30
+      or apricornKey == nil
+      or type(event.spriteId) ~= "number"
+      or event.spriteId % 1 ~= 0
+      or event.spriteId < 0
+    then
+      Errors.raise("FIELD_MAP_APRICORN_SOURCE_INVALID", "Apricorn tree source identity is invalid", {
+        mapId = map.id,
+        mapSymbol = map.symbol,
+        objectEventIndex = index - 1,
+        objectEventId = event.objectEventId,
+        treeIndex = treeIndex,
+        spriteId = event.spriteId,
+      })
+    end
+    local expectedSpriteId = ApricornSources.treeSpriteIdByKey[apricornKey]
+    if event.spriteId ~= expectedSpriteId then
+      Errors.raise("FIELD_MAP_APRICORN_SOURCE_INVALID", "Apricorn tree sprite does not match its source color", {
+        mapId = map.id,
+        mapSymbol = map.symbol,
+        objectEventIndex = index - 1,
+        objectEventId = event.objectEventId,
+        treeIndex = treeIndex,
+        spriteId = event.spriteId,
+        expectedSpriteId = expectedSpriteId,
+      })
+    end
+    object.apricorn = { treeIndex = treeIndex, apricornKey = apricornKey }
+  end
   -- The facing-actor obstacle kind, decorated only where a verified source
   -- identity proves it; unproven actors carry no kind and fail obstacle
   -- checks loudly instead of guessing.

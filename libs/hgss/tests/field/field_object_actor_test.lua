@@ -122,6 +122,21 @@ function T.unknown_source_facing_is_rejected()
   end)
 end
 
+function T.gesture_presentation_is_explicit_and_clears_its_tick()
+  local a = actor()
+  a:setGesturePresentation("apricorn_tree_wiggle", 7)
+  local active = a:presentationState()
+  Assert.equal(active.gesturePose, "apricorn_tree_wiggle")
+  Assert.equal(active.gestureTick, 7)
+  Assert.equal(active.gestureOffsetY, 0)
+
+  a:clearGesturePresentation()
+  local cleared = a:presentationState()
+  Assert.isNil(cleared.gesturePose)
+  Assert.isNil(cleared.gestureTick)
+  Assert.equal(cleared.gestureOffsetY, 0)
+end
+
 function T.idle_mode_decides_whether_repeated_idle_ticks_advance_presentation()
   local function actorWith(visual)
     local numericStore = FieldActorStore.new()

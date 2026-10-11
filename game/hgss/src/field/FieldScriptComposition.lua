@@ -4,6 +4,9 @@ local FieldScripts = require("game.hgss.src.field.FieldScripts")
 local ScriptSave = require("libs.script.src.ScriptSave")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
 local TrainerCardStars = require("libs.hgss.src.save.TrainerCardStars")
+local Errors = require("libs.errors.src.Errors")
+local ScriptErrors = require("libs.script.src.errors")
+local ApricornTreePresentation = require("game.hgss.src.apricorn.ApricornTreePresentation")
 
 ---@class FieldScriptCompositionResult
 ---@field scripts FieldScripts
@@ -36,6 +39,21 @@ local TrainerCardStars = require("libs.hgss.src.save.TrainerCardStars")
 ---@field pokemonCenterHeal table<string, unknown>? the runtime-owned blocking Pokémon Center choreography
 local FieldScriptComposition = {}
 
+local APRICORN_BY_COLOR = {
+  [0] = "RED_APRICORN",
+  "YLW_APRICORN",
+  "BLU_APRICORN",
+  "GRN_APRICORN",
+  "PNK_APRICORN",
+  "WHT_APRICORN",
+  "BLK_APRICORN",
+}
+
+local COLOR_BY_APRICORN = {}
+for colorCode = 0, 6 do
+  COLOR_BY_APRICORN[APRICORN_BY_COLOR[colorCode]] = colorCode
+end
+
 local function currentTimeOfDayCode(runtime)
   return TimeOfDayProps.rtcCodeForHour(runtime.localClock:nowLocal().hour)
 end
@@ -67,6 +85,100 @@ local function trainerCardStarsService(runtime)
     )
   end
   return { count = count }
+end
+
+local function apricornService(runtime)
+  local treePresentation = ApricornTreePresentation.new(runtime)
+  runtime.apricornTreePresentation = treePresentation
+  local function treeForActor(actorId)
+    local actor = runtime.actors:getActor(actorId)
+    local sourceEvent = actor and actor.sourceEvent
+    local source = type(sourceEvent) == "table" and sourceEvent.apricorn or nil
+    if
+      type(source) ~= "table"
+      or type(source.treeIndex) ~= "number"
+      or source.treeIndex % 1 ~= 0
+      or COLOR_BY_APRICORN[source.apricornKey] == nil
+    then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "Apricorn command targeted a non-tree actor", {
+        actorId = actorId,
+        mapId = actor and actor.mapId or nil,
+        objectEventId = sourceEvent and sourceEvent.objectEventId or nil,
+      })
+    end
+    local tree = assert(source)
+    return { treeIndex = assert(tree.treeIndex), apricornKey = assert(tree.apricornKey) }
+  end
+  local function keyForColor(colorCode)
+    assert(
+      type(colorCode) == "number" and colorCode % 1 == 0 and APRICORN_BY_COLOR[colorCode] ~= nil,
+      "source Apricorn color code must be from 0 to 6"
+    )
+    return APRICORN_BY_COLOR[colorCode]
+  end
+  local function colorForActor(actorId)
+    return COLOR_BY_APRICORN[treeForActor(actorId).apricornKey]
+  end
+  local function give(colorCode, quantity)
+    return assert(runtime.martService, "Apricorn inventory owner is unavailable"):tryGiveApricorn(
+      keyForColor(colorCode),
+      quantity
+    )
+  end
+  local function displayName(colorCode)
+    return assert(runtime.itemCatalog, "item catalog is unavailable"):item(keyForColor(colorCode)).name
+  end
+  local function treeAvailable(treeIndex)
+    return assert(runtime.martService, "Apricorn tree state owner is unavailable"):treeAvailable(treeIndex)
+  end
+  local function depleteTree(treeIndex)
+    return assert(runtime.martService, "Apricorn tree state owner is unavailable"):depleteTree(treeIndex)
+  end
+  local function beginTreeAnimation(_, _, _)
+    local avatar = assert(runtime.playerAvatar, "field runtime has no player avatar owner")
+    avatar:queueTransition("apricorn_shake")
+    runtime:applyAvatarTransitions()
+  end
+  local function advanceTreeAnimation(_, actorId, phase, frame)
+    if phase == "wiggle" and frame == 0 then
+      local avatar = assert(runtime.playerAvatar, "field runtime has no player avatar owner")
+      avatar:queueTransition(avatar:durableState())
+      runtime:applyAvatarTransitions()
+      assert(runtime.audio, "field audio is unavailable"):play("SEQ_SE_GS_KI_YURERU")
+      runtime.actors:setGesturePresentation(actorId, "apricorn_tree_wiggle", frame)
+    elseif phase == "wiggle" then
+      runtime.actors:setGesturePresentation(actorId, "apricorn_tree_wiggle", frame)
+    elseif phase == "expel" then
+      runtime.actors:setGesturePresentation(actorId, "apricorn_tree_expel", frame)
+      if frame == 0 then
+        treePresentation:spawnFruit(actorId, treeForActor(actorId).apricornKey)
+      end
+    elseif phase == "jump" then
+      treePresentation:advanceFruit(frame)
+      if frame == 0 then
+        assert(runtime.audio, "field audio is unavailable"):play("SEQ_SE_GS_FW255E")
+        runtime.actors:clearGesturePresentation(actorId)
+      end
+    end
+  end
+  local function finishTreeAnimation(_, actorId)
+    treePresentation:clearFruit()
+    runtime.actors:clearGesturePresentation(actorId)
+    local avatar = assert(runtime.playerAvatar, "field runtime has no player avatar owner")
+    avatar:queueTransition(avatar:durableState())
+    runtime:applyAvatarTransitions()
+  end
+  return {
+    treeForActor = treeForActor,
+    colorForActor = colorForActor,
+    give = give,
+    displayName = displayName,
+    treeAvailable = treeAvailable,
+    depleteTree = depleteTree,
+    beginTreeAnimation = beginTreeAnimation,
+    advanceTreeAnimation = advanceTreeAnimation,
+    finishTreeAnimation = finishTreeAnimation,
+  }
 end
 
 ---@param runtime FieldRuntime
@@ -153,6 +265,7 @@ function FieldScriptComposition.compose(runtime, options)
     },
     timeOfDay = timeOfDayService(runtime),
     trainerCardStars = trainerCardStarsService(runtime),
+    apricorn = apricornService(runtime),
   })
   runtime.blackoutFlow = assert(scripts.blackoutFlow)
   local function restore()

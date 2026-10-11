@@ -151,6 +151,8 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field setAnimationPaused fun(self: FieldActorManager, actorId: string, paused: boolean)
 ---@field setPresentationOffset fun(self: FieldActorManager, actorId: string, offset: { x: number, y: number, z: number })
 ---@field clearPresentationOffset fun(self: FieldActorManager, actorId: string)
+---@field setGesturePresentation fun(self: FieldActorManager, actorId: string, pose: string, tick: integer)
+---@field clearGesturePresentation fun(self: FieldActorManager, actorId: string)
 ---@field setBillboardPresentationScale fun(self: FieldActorManager, actorId: string, scale: number)
 ---@field clearBillboardPresentationScale fun(self: FieldActorManager, actorId: string)
 ---@field isVisible fun(self: FieldActorManager, actorId: string): boolean
@@ -2479,6 +2481,20 @@ end
 ---@param self FieldActorManager
 function FieldActorManager:clearPresentationOffset(actorId)
   self:setPresentationOffset(actorId, { x = 0, y = 0, z = 0 })
+end
+
+---@param actorId string
+---@param pose string
+---@param tick integer
+---@param self FieldActorManager
+function FieldActorManager:setGesturePresentation(actorId, pose, tick)
+  requireActor(self, actorId):setGesturePresentation(pose, tick)
+end
+
+---@param actorId string
+---@param self FieldActorManager
+function FieldActorManager:clearGesturePresentation(actorId)
+  requireActor(self, actorId):clearGesturePresentation()
 end
 
 -- Transient billboard-only scale for presentation effects. The value must
