@@ -146,6 +146,36 @@ function T.current_envelope_normalizes_while_old_schemas_migrate_first()
   Assert.equal(migratedV5.schema, GameSave.SCHEMA)
 end
 
+function T.current_envelope_keeps_legacy_mart_until_its_owner_upgrades_it()
+  local input = currentRecord()
+  local legacyMart = MartSave.empty()
+  legacyMart.schema = "g4-mart-save-v1"
+  legacyMart.apricornDayOrdinal = nil
+  legacyMart.apricornHarvestedMask = nil
+  legacyMart.apricorns.RED_APRICORN = 3
+  legacyMart.dailyPurchasedMask = 0x20
+  legacyMart.sealCase.loose.SEAL_A = 1
+  input.mart = legacyMart
+
+  local normalized = assert(GameSave.normalize(input))
+  Assert.equal(normalized.schema, GameSave.SCHEMA, "the top-level save remains at its current version")
+  Assert.deepEqual(normalized.mart, legacyMart, "the envelope leaves nested mart ownership to MartSave")
+
+  local upgraded = assert(MartSave.migrateV1(normalized.mart, {
+    cards = {},
+    apricorns = { RED_APRICORN = true },
+    seals = { SEAL_A = true },
+  }))
+  Assert.equal(upgraded.schema, "g4-mart-save-v2")
+  Assert.equal(upgraded.apricorns.RED_APRICORN, 3)
+  Assert.equal(upgraded.dailyPurchasedMask, 0x20)
+  Assert.equal(upgraded.sealCase.loose.SEAL_A, 1)
+  Assert.equal(upgraded.apricornHarvestedMask, 0)
+  Assert.isNil(upgraded.kurtOrder)
+  Assert.equal(normalized.schema, GameSave.SCHEMA)
+  Assert.equal(normalized.mart.schema, "g4-mart-save-v1", "the loaded envelope is never mutated")
+end
+
 function T.v4_migration_adds_only_national_dex_and_mart_state()
   local source = v4record()
   source.schema = "g4-game-save-v4"

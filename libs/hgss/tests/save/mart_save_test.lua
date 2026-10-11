@@ -22,15 +22,26 @@ end
 
 local function empty()
   return {
-    schema = "g4-mart-save-v1",
+    schema = "g4-mart-save-v2",
     athletePoints = 0,
     dailyPurchasedMask = 0,
     lastProcessedDay = 0,
     ownedDataCardsMask = 0,
     apricorns = {},
+    apricornDayOrdinal = 0,
+    apricornHarvestedMask = 0,
+    kurtOrder = nil,
     sealCase = { loose = {}, capsules = { {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} } },
     statistics = { currencySpent = 0, premierBallsEarned = 0 },
   }
+end
+
+local function legacyV1()
+  local record = empty()
+  record.schema = "g4-mart-save-v1"
+  record.apricornDayOrdinal = nil
+  record.apricornHarvestedMask = nil
+  return record
 end
 
 local function rejects(value)
@@ -41,12 +52,50 @@ end
 
 function T.empty_record_is_valid_and_canonical()
   local canonical = assert(MartSave.validate(empty(), catalog()))
-  Assert.equal(canonical.schema, "g4-mart-save-v1")
+  Assert.equal(canonical.schema, "g4-mart-save-v2")
   Assert.equal(canonical.athletePoints, 0)
   Assert.equal(canonical.dailyPurchasedMask, 0)
   Assert.equal(canonical.ownedDataCardsMask, 0)
   Assert.equal(#canonical.sealCase.capsules, 12)
   Assert.deepEqual(canonical.statistics, { currencySpent = 0, premierBallsEarned = 0 })
+  Assert.equal(canonical.apricornDayOrdinal, 0)
+  Assert.equal(canonical.apricornHarvestedMask, 0)
+  Assert.isNil(canonical.kurtOrder)
+end
+
+function T.legacy_v1_migration_preserves_every_old_field_without_mutating_input()
+  local input = legacyV1()
+  input.athletePoints = 321
+  input.dailyPurchasedMask = 0x801
+  input.lastProcessedDay = 730484
+  input.ownedDataCardsMask = 7
+  input.apricorns.RED_APRICORN = 41
+  input.sealCase.loose.SEAL_A = 2
+  input.sealCase.capsules[12][1] = { key = "SEAL_B", x = 255, y = 0 }
+  input.statistics = { currencySpent = 500, premierBallsEarned = 3 }
+  local originalSealCase = {
+    loose = { SEAL_A = 2 },
+    capsules = { {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, { { key = "SEAL_B", x = 255, y = 0 } } },
+  }
+
+  local migrated = assert(MartSave.migrateV1(input, catalog()))
+
+  Assert.equal(migrated.schema, "g4-mart-save-v2")
+  Assert.equal(migrated.athletePoints, 321)
+  Assert.equal(migrated.dailyPurchasedMask, 0x801)
+  Assert.equal(migrated.lastProcessedDay, 730484)
+  Assert.equal(migrated.ownedDataCardsMask, 7)
+  Assert.deepEqual(migrated.apricorns, { RED_APRICORN = 41 })
+  Assert.deepEqual(migrated.sealCase, input.sealCase)
+  Assert.deepEqual(migrated.statistics, input.statistics)
+  Assert.equal(migrated.apricornDayOrdinal, 0)
+  Assert.equal(migrated.apricornHarvestedMask, 0)
+  Assert.isNil(migrated.kurtOrder)
+  Assert.equal(input.schema, "g4-mart-save-v1", "migration never mutates the loaded save bucket")
+  Assert.equal(input.apricorns.RED_APRICORN, 41)
+  Assert.deepEqual(input.sealCase, originalSealCase)
+  Assert.isNil(input.apricornDayOrdinal)
+  Assert.isNil(input.apricornHarvestedMask)
 end
 
 function T.valid_sparse_inventories_and_capsules_copy_without_aliasing()

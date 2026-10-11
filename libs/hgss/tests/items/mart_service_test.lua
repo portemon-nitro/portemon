@@ -20,7 +20,15 @@ local function resources(options)
   local bag = HgssBagService.new({ catalog = itemCatalog, bag = options.bag or BagSave.empty() })
   local martCatalog = {
     cards = {},
-    apricorns = { RED_APRICORN = "red" },
+    apricorns = {
+      RED_APRICORN = "red",
+      BLUE_APRICORN = "blue",
+      YELLOW_APRICORN = "yellow",
+      GREEN_APRICORN = "green",
+      PINK_APRICORN = "pink",
+      WHITE_APRICORN = "white",
+      BLACK_APRICORN = "black",
+    },
     seals = { SEAL_A = { displayItemKey = "ITEM_0", description = "A" } },
   }
   for index = 0, 26 do
@@ -444,6 +452,114 @@ function T.gregorian_century_rules_reject_invalid_dates_and_process_forward_days
   Assert.throws(function()
     leapCentury.service:processDate(today(1900, 2, 29))
   end)
+end
+
+function T.legacy_save_bucket_upgrades_in_the_live_owner_without_losing_mart_state()
+  local legacy = MartSave.empty()
+  legacy.schema = "g4-mart-save-v1"
+  legacy.apricornDayOrdinal = nil
+  legacy.apricornHarvestedMask = nil
+  legacy.apricorns.RED_APRICORN = 41
+  legacy.dailyPurchasedMask = 0x801
+  legacy.sealCase.loose.SEAL_A = 2
+  legacy.statistics.currencySpent = 500
+
+  local state = resources({ bucket = legacy })
+  local captured = state.service:capture()
+
+  Assert.equal(captured.schema, "g4-mart-save-v2")
+  Assert.equal(captured.apricorns.RED_APRICORN, 41)
+  Assert.equal(captured.dailyPurchasedMask, 0x801)
+  Assert.equal(captured.sealCase.loose.SEAL_A, 2)
+  Assert.equal(captured.statistics.currencySpent, 500)
+  Assert.equal(captured.apricornHarvestedMask, 0)
+  Assert.equal(legacy.schema, "g4-mart-save-v1", "loading leaves the caller-owned save untouched")
+  Assert.isNil(legacy.apricornHarvestedMask)
+
+  local reloaded = resources({ bucket = captured })
+  Assert.equal(reloaded.service:apricornQuantity("RED_APRICORN"), 41)
+  Assert.equal(reloaded.service:capture().dailyPurchasedMask, 0x801)
+  Assert.equal(reloaded.service:capture().sealCase.loose.SEAL_A, 2)
+end
+
+function T.apricorn_grants_share_shop_state_and_stale_quotes_cannot_clobber_them()
+  local bucket = MartSave.empty()
+  bucket.athletePoints = 5
+  bucket.apricorns.RED_APRICORN = 97
+  local state = resources({ bucket = bucket })
+  local athlete = stock({
+    {
+      key = "red-apricorn",
+      displayItemKey = "POTION",
+      description = { kind = "item" },
+      unitPrice = 1,
+      destination = { kind = "apricorn", key = "RED_APRICORN" },
+      restriction = { kind = "none" },
+    },
+  }, {
+    currency = "athlete_points",
+    presentationKind = "athlete_items",
+    quantityMode = "single",
+  })
+
+  local staleSession = state.service:openBuy(athlete)
+  local staleToken = assert(staleSession:quoteBuy("red-apricorn", 1))
+  Assert.isTrue(state.service:tryGiveApricorn("RED_APRICORN", 1))
+  local staleReceipt, staleReason = staleSession:commit(staleToken)
+  Assert.isNil(staleReceipt)
+  Assert.equal(staleReason, "stale", "a tree grant invalidates the quote's old bucket revision")
+  Assert.equal(state.service:apricornQuantity("RED_APRICORN"), 98)
+  staleSession:close()
+
+  local freshSession = state.service:openBuy(athlete)
+  local freshToken = assert(freshSession:quoteBuy("red-apricorn", 1))
+  Assert.notNil(freshSession:commit(freshToken))
+  Assert.equal(state.service:apricornQuantity("RED_APRICORN"), 99)
+  local beforeFullGrant = state.service:capture()
+  Assert.isFalse(state.service:tryGiveApricorn("RED_APRICORN", 1), "a full color stack rejects grants")
+  Assert.deepEqual(state.service:capture(), beforeFullGrant, "a rejected grant publishes no partial change")
+  freshSession:close()
+end
+
+function T.apricorn_civil_days_reset_tree_bits_on_forward_rolls_and_preserve_kurt_orders()
+  local state = resources()
+  local first = state.service:processApricornDate(today(2028, 2, 28))
+  Assert.equal(first.dayOrdinal, 740405)
+  Assert.isTrue(state.service:depleteTree(6))
+  Assert.isTrue(state.service:depleteTree(7))
+  Assert.isFalse(state.service:treeAvailable(6))
+  Assert.isFalse(state.service:treeAvailable(7))
+  local sameDay = state.service:processApricornDate(today(2028, 2, 28))
+  Assert.isFalse(sameDay.advanced)
+  Assert.isFalse(state.service:depleteTree(6), "harvesting one tree twice is an idempotent no-op")
+  Assert.equal(state.service:capture().apricornHarvestedMask, 192)
+
+  Assert.isTrue(state.service:tryGiveApricorn("RED_APRICORN", 2))
+  Assert.isTrue(state.service:submitKurt("RED_APRICORN", 2))
+  local order = state.service:pendingKurt()
+  Assert.deepEqual(order, { apricornKey = "RED_APRICORN", quantity = 2 })
+  local leapDay = state.service:processApricornDate(today(2028, 2, 29))
+  Assert.isTrue(leapDay.advanced)
+  Assert.equal(leapDay.dayOrdinal, first.dayOrdinal + 1)
+  Assert.equal(state.service:capture().apricornHarvestedMask, 0)
+  Assert.deepEqual(state.service:pendingKurt(), order, "a day rollover retains the pending Kurt order")
+
+  state = resources({ bucket = state.service:capture() })
+  local restoredSameDay = state.service:processApricornDate(today(2028, 2, 29))
+  Assert.isFalse(restoredSameDay.advanced, "restoring today's mart state does not repeat the reset")
+  Assert.deepEqual(state.service:pendingKurt(), order, "the pending order survives save and restore")
+
+  Assert.isTrue(state.service:depleteTree(30), "the last source tree uses a positive signed 31-bit mask")
+  Assert.equal(state.service:capture().apricornHarvestedMask, 1073741824)
+  local rollback = state.service:processApricornDate(today(2028, 2, 28))
+  Assert.isFalse(rollback.advanced, "a backward clock move rebases without resetting trees")
+  Assert.equal(state.service:capture().apricornHarvestedMask, 1073741824)
+  local forwardAgain = state.service:processApricornDate(today(2028, 2, 29))
+  Assert.isTrue(forwardAgain.advanced, "a later advance from the rebased date resets once")
+  Assert.equal(state.service:capture().apricornHarvestedMask, 0)
+  local revisionNoop = state.service:processApricornDate(today(2028, 2, 29))
+  Assert.isFalse(revisionNoop.advanced)
+  Assert.equal(state.service:capture().apricornHarvestedMask, 0)
 end
 
 return { tests = T }

@@ -1144,6 +1144,7 @@ function FieldRuntime:_composeFieldServices(boot)
     bucket = martBucket,
   })
   self:_composeMart(boot)
+  self:_processApricornDate()
   -- The one following-mon controller: derived follower presentation over
   -- the live party, driven once per fixed tick after the session update.
   -- The player accessor tracks warp rebinds, so the controller never holds
@@ -1230,6 +1231,14 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   self.scripts = scriptComposition.scripts
   scriptComposition.restore()
+end
+
+function FieldRuntime:_processApricornDate()
+  local now = self.localClock:nowLocal()
+  local result = self.martService:processApricornDate({ year = now.year, month = now.month, day = now.day })
+  if result.advanced then
+    self.eventState:clearFlag(FieldScriptSymbols.flagsByName.FLAG_DAILY_KURT_MAKING_BALLS)
+  end
 end
 
 -- Resolve the retail tag's placed model through its generated semantic role.
@@ -1624,6 +1633,7 @@ function FieldRuntime:update(dt)
     if self.pokemonCenterHeal then
       self.pokemonCenterHeal:updateFixed()
     end
+    self:_processApricornDate()
     self.session:updateFixed()
     fieldExecuted = fieldExecuted + 1
     -- One committed step is considered per fixed tick, before another

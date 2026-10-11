@@ -2,6 +2,7 @@
 -- and a copied MartSave bucket. No UI, disk, or event ownership lives here.
 
 local PlayerData = require("libs.hgss.src.save.PlayerData")
+local MartSave = require("libs.hgss.src.save.MartSave")
 
 ---@class MartService
 ---@field private _profile table<string, unknown>
@@ -56,6 +57,11 @@ end
 
 local function setBit(mask, index)
   return bit(mask, index) and mask or mask + 2 ^ index
+end
+
+local function publishApricornCandidate(service, candidate)
+  service._bucket = candidate
+  service._revision = service._revision + 1
 end
 
 local function popcount(mask)
@@ -264,7 +270,20 @@ function MartService.new(options)
     "MartService requires both catalogs"
   )
   assert(type(options.bucket) == "table", "MartService requires the persisted mart bucket")
-  local bucket = copy(options.bucket)
+  local bucket = options.bucket
+  if bucket.schema == MartSave.LEGACY_V1_SCHEMA then
+    local migrated, migrationError = MartSave.migrateV1(bucket, options.catalog)
+    if not migrated then
+      error(migrationError, 0)
+    end
+    bucket = migrated
+  else
+    local validated, validationError = MartSave.validate(bucket, options.catalog)
+    if not validated then
+      error(validationError, 0)
+    end
+    bucket = validated
+  end
   return setmetatable({
     _profile = options.profile,
     _bag = options.bag,
@@ -279,6 +298,119 @@ end
 
 function MartService:capture()
   return copy(self._bucket)
+end
+
+local function requireApricorn(self, key)
+  assert(type(key) == "string" and self._catalog.apricorns[key] ~= nil, "unknown Apricorn key")
+end
+
+function MartService:apricornQuantity(key)
+  requireApricorn(self, key)
+  return self._bucket.apricorns[key] or 0
+end
+
+function MartService:apricornTotal()
+  local total = 0
+  for _, quantity in pairs(self._bucket.apricorns) do
+    total = total + quantity
+  end
+  return total
+end
+
+function MartService:tryGiveApricorn(key, quantity)
+  requireApricorn(self, key)
+  assert(integer(quantity, 1, 99), "Apricorn quantity must be an integer from 1 to 99")
+  local current = self._bucket.apricorns[key] or 0
+  if current + quantity > 99 then
+    return false
+  end
+  local candidate = copy(self._bucket)
+  candidate.apricorns[key] = current + quantity
+  publishApricornCandidate(self, candidate)
+  return true
+end
+
+function MartService:tryTakeApricorn(key, quantity)
+  requireApricorn(self, key)
+  assert(integer(quantity, 1, 99), "Apricorn quantity must be an integer from 1 to 99")
+  local current = self._bucket.apricorns[key] or 0
+  if current < quantity then
+    return false
+  end
+  local candidate = copy(self._bucket)
+  local remaining = current - quantity
+  candidate.apricorns[key] = remaining > 0 and remaining or nil
+  publishApricornCandidate(self, candidate)
+  return true
+end
+
+local function requireTreeIndex(index)
+  assert(integer(index, 0, 30), "tree index must be an integer from 0 to 30")
+end
+
+function MartService:treeAvailable(index)
+  requireTreeIndex(index)
+  return not bit(self._bucket.apricornHarvestedMask, index)
+end
+
+function MartService:depleteTree(index)
+  requireTreeIndex(index)
+  local mask = self._bucket.apricornHarvestedMask
+  if bit(mask, index) then
+    return false
+  end
+  local candidate = copy(self._bucket)
+  candidate.apricornHarvestedMask = setBit(mask, index)
+  publishApricornCandidate(self, candidate)
+  return true
+end
+
+function MartService:pendingKurt()
+  return copy(self._bucket.kurtOrder)
+end
+
+function MartService:submitKurt(key, quantity)
+  requireApricorn(self, key)
+  assert(integer(quantity, 1, 99), "Kurt quantity must be an integer from 1 to 99")
+  if self._bucket.kurtOrder or (self._bucket.apricorns[key] or 0) < quantity then
+    return false
+  end
+  local candidate = copy(self._bucket)
+  local remaining = candidate.apricorns[key] - quantity
+  candidate.apricorns[key] = remaining > 0 and remaining or nil
+  candidate.kurtOrder = { apricornKey = key, quantity = quantity }
+  publishApricornCandidate(self, candidate)
+  return true
+end
+
+function MartService:clearKurt()
+  if self._bucket.kurtOrder == nil then
+    return false
+  end
+  local candidate = copy(self._bucket)
+  candidate.kurtOrder = nil
+  publishApricornCandidate(self, candidate)
+  return true
+end
+
+function MartService:processApricornDate(date)
+  local ordinal = dayParts(date)
+  local candidate = self._bucket
+  local advanced = false
+  if ordinal ~= self._bucket.apricornDayOrdinal then
+    candidate = copy(self._bucket)
+    if self._bucket.apricornDayOrdinal == 0 then
+      candidate.apricornDayOrdinal = ordinal
+    elseif ordinal > self._bucket.apricornDayOrdinal then
+      candidate.apricornDayOrdinal = ordinal
+      candidate.apricornHarvestedMask = 0
+      advanced = true
+    else
+      candidate.apricornDayOrdinal = ordinal
+    end
+    publishApricornCandidate(self, candidate)
+  end
+  return { dayOrdinal = ordinal, advanced = advanced }
 end
 
 function MartService:processDate(date)

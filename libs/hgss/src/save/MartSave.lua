@@ -5,7 +5,8 @@ local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 
 local MartSave = {}
-MartSave.SCHEMA = "g4-mart-save-v1"
+MartSave.SCHEMA = "g4-mart-save-v2"
+MartSave.LEGACY_V1_SCHEMA = "g4-mart-save-v1"
 
 local function invalid(message, context)
   Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, message, context or { bucket = "mart" })
@@ -52,12 +53,15 @@ function MartSave.empty()
     lastProcessedDay = 0,
     ownedDataCardsMask = 0,
     apricorns = {},
+    apricornDayOrdinal = 0,
+    apricornHarvestedMask = 0,
+    kurtOrder = nil,
     sealCase = { loose = {}, capsules = capsules },
     statistics = { currencySpent = 0, premierBallsEarned = 0 },
   }
 end
 
-local function validateRecord(value, catalog)
+local function validateRecord(value, catalog, schema)
   assert(
     type(catalog) == "table"
       and type(catalog.cards) == "table"
@@ -65,7 +69,7 @@ local function validateRecord(value, catalog)
       and type(catalog.seals) == "table",
     "MartSave requires the generated semantic catalog"
   )
-  if type(value) ~= "table" or value.schema ~= MartSave.SCHEMA then
+  if type(value) ~= "table" or value.schema ~= schema then
     invalid("mart schema is invalid")
   end
   local allowed = {
@@ -78,6 +82,11 @@ local function validateRecord(value, catalog)
     sealCase = true,
     statistics = true,
   }
+  if schema == MartSave.SCHEMA then
+    allowed.apricornDayOrdinal = true
+    allowed.apricornHarvestedMask = true
+    allowed.kurtOrder = true
+  end
   for key in pairs(value) do
     if not allowed[key] then
       invalid("mart bucket contains an unknown field", { bucket = "mart", field = key })
@@ -96,6 +105,34 @@ local function validateRecord(value, catalog)
     invalid("Data Card mask is out of range")
   end
   local apricorns = validateCountMap(value.apricorns, catalog.apricorns, 99, "apricorns")
+  local apricornDayOrdinal, apricornHarvestedMask, kurtOrder
+  if schema == MartSave.SCHEMA then
+    if not integer(value.apricornDayOrdinal, 0, 3652059) then
+      invalid("Apricorn day ordinal is out of range")
+    end
+    if not integer(value.apricornHarvestedMask, 0, 2147483647) then
+      invalid("Apricorn harvested mask is out of range")
+    end
+    apricornDayOrdinal = value.apricornDayOrdinal
+    apricornHarvestedMask = value.apricornHarvestedMask
+    if value.kurtOrder ~= nil then
+      local order = value.kurtOrder
+      if
+        type(order) ~= "table"
+        or type(order.apricornKey) ~= "string"
+        or catalog.apricorns[order.apricornKey] == nil
+        or not integer(order.quantity, 1, 99)
+      then
+        invalid("Kurt order is invalid")
+      end
+      for key in pairs(order) do
+        if key ~= "apricornKey" and key ~= "quantity" then
+          invalid("Kurt order contains an unknown field")
+        end
+      end
+      kurtOrder = { apricornKey = order.apricornKey, quantity = order.quantity }
+    end
+  end
   local sealCase = value.sealCase
   if type(sealCase) ~= "table" then
     invalid("seal case is required")
@@ -169,19 +206,22 @@ local function validateRecord(value, catalog)
     invalid("mart statistics are out of range")
   end
   return {
-    schema = MartSave.SCHEMA,
+    schema = schema,
     athletePoints = value.athletePoints,
     dailyPurchasedMask = value.dailyPurchasedMask,
     lastProcessedDay = value.lastProcessedDay,
     ownedDataCardsMask = value.ownedDataCardsMask,
     apricorns = apricorns,
+    apricornDayOrdinal = apricornDayOrdinal,
+    apricornHarvestedMask = apricornHarvestedMask,
+    kurtOrder = kurtOrder,
     sealCase = { loose = loose, capsules = canonicalCapsules },
     statistics = { currencySpent = statistics.currencySpent, premierBallsEarned = statistics.premierBallsEarned },
   }
 end
 
 function MartSave.validate(value, catalog)
-  local ok, result = pcall(validateRecord, value, catalog)
+  local ok, result = pcall(validateRecord, value, catalog, MartSave.SCHEMA)
   if ok then
     return result
   end
@@ -189,6 +229,21 @@ function MartSave.validate(value, catalog)
     return nil, result
   end
   error(result)
+end
+
+function MartSave.migrateV1(value, catalog)
+  local ok, result = pcall(validateRecord, value, catalog, MartSave.LEGACY_V1_SCHEMA)
+  if not ok then
+    if Errors.is(result) then
+      return nil, result
+    end
+    error(result)
+  end
+  result.schema = MartSave.SCHEMA
+  result.apricornDayOrdinal = 0
+  result.apricornHarvestedMask = 0
+  result.kurtOrder = nil
+  return MartSave.validate(result, catalog)
 end
 
 return MartSave
