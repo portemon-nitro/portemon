@@ -319,6 +319,57 @@ function T.host_application_failure_never_publishes_a_battle_result()
   Assert.equal(tostring(failure), "battle application failed")
 end
 
+function T.complete_battle_without_committed_receipt_fails_in_both_field_modes()
+  local function runtimeFor(presented)
+    local disposed = 0
+    local runtime = fakeRuntime({
+      battleRuntime = {
+        update = function() end,
+        dispose = function()
+          disposed = disposed + 1
+        end,
+        status = function()
+          return { phase = "complete", result = "win", sourceResult = 1 }
+        end,
+      },
+      session = {
+        setBattleActive = function() end,
+        setForegroundHold = function() end,
+      },
+    })
+    runtime._battleLaunch = {
+      launchId = "uncommitted-" .. tostring(presented),
+      phase = "active",
+      presented = presented,
+      request = { id = "uncommitted-" .. tostring(presented) },
+    }
+    return runtime, function()
+      return disposed
+    end
+  end
+
+  local headless, headlessDisposals = runtimeFor(false)
+  local headlessOk = pcall(headless.updateBattle, headless)
+  Assert.isFalse(headlessOk, "headless completion without a receipt raises")
+  Assert.equal(headlessDisposals(), 1, "headless failure disposes the battle once")
+  Assert.isNil(headless.battleRuntime, "headless failure releases the battle owner")
+  Assert.notNil(headless._battleReceipt, "headless failure remains visible to its caller")
+  Assert.isNil(headless._battleLaunch, "headless failure releases the launch")
+
+  local direct, directDisposals = runtimeFor(false)
+  direct._battleLaunch = nil
+  Assert.isFalse(pcall(direct.updateBattle, direct), "a direct headless battle also requires commitment")
+  Assert.equal(directDisposals(), 1, "direct failure disposes the battle once")
+
+  local presented, presentedDisposals = runtimeFor(true)
+  presented:updateBattle()
+  Assert.equal(presentedDisposals(), 1, "presented failure disposes the battle once")
+  Assert.isNil(presented.battleRuntime, "presented failure releases the battle owner")
+  Assert.notNil(presented._battleReceipt, "presented failure remains visible to its caller")
+  Assert.isNil(presented._battleLaunch, "presented failure releases the launch")
+  Assert.notNil(presented.errorText, "presented failure reaches the error surface")
+end
+
 function T.prepared_encounters_are_consumed_exactly_once()
   local prepared = {
     id = 11,

@@ -2417,6 +2417,33 @@ function FieldRuntime:_reconcileBattleGate()
   self.session:setBattleActive(owned or direct)
 end
 
+-- Accepts one complete battle only after its native consequences are
+-- committed. The returned decision is consumed by the path-specific field
+-- envelope; this boundary owns only launch result and wallet adoption.
+---@param launch table<string, unknown>? the active field launch, when present
+---@param battle table<string, unknown> the matching live battle
+---@param status table<string, unknown> terminal battle status
+---@return { result: string, sourceResult: integer, receipt: table<string, unknown>, successful: boolean }
+function FieldRuntime:_acceptCommittedBattleStatus(launch, battle, status)
+  assert(self.battleRuntime == battle, "only the owned battle can settle its field launch")
+  assert(status.phase == "complete", "only a complete battle can be accepted")
+  local receipt = status.outcomeReceipt
+  assert(type(receipt) == "table" and receipt.committed == true, "battle completed without a committed outcome receipt")
+  local result = assert(status.result, "committed battle status requires its result")
+  local sourceResult = assert(status.sourceResult, "committed battle status requires its source result")
+  if launch ~= nil then
+    launch.result = result
+    launch.sourceResult = sourceResult
+    self:_adoptBattlePlayerMoney(launch, receipt)
+  end
+  return {
+    result = result,
+    sourceResult = sourceResult,
+    receipt = receipt,
+    successful = result ~= "loss" and result ~= "draw",
+  }
+end
+
 -- Drives the owned battle once per runtime update and returns through the
 -- stable field when it settles. A committed battle records its outcome
 -- words for script result reads; a failed battle faults the runtime
@@ -2476,11 +2503,16 @@ function FieldRuntime:updateBattle()
     self:_reconcileBattleGate()
     return
   end
+  local accepted = true
+  local decision = nil
+  if status.phase == "complete" then
+    accepted, decision = pcall(self._acceptCommittedBattleStatus, self, launch, battle, status)
+  end
   battle:dispose()
   self.battleRuntime = nil
   self:_reconcileBattleGate()
-  if status.phase == "failed" then
-    local failure = status.error or "the battle reported a failure"
+  if status.phase == "failed" or not accepted then
+    local failure = status.error or (not accepted and tostring(decision)) or "the battle reported a failure"
     if launch ~= nil then
       launch.phase = "failed"
       launch.error = failure
@@ -2489,22 +2521,19 @@ function FieldRuntime:updateBattle()
     end
     error(failure, 0)
   end
-  if launch ~= nil and status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
-    launch.result = status.result
-    launch.sourceResult = status.sourceResult
-    self:_adoptBattlePlayerMoney(launch, status.outcomeReceipt)
-    if status.result == "loss" or status.result == "draw" then
+  if decision ~= nil then
+    if launch == nil then
+      self._lastBattleResult = { result = decision.result, sourceResult = decision.sourceResult }
+    elseif not decision.successful then
       launch.phase = "complete"
       launch.committed = true
-      self._lastBattleResult = { result = status.result, sourceResult = status.sourceResult }
+      self._lastBattleResult = { result = decision.result, sourceResult = decision.sourceResult }
       self._battleReceipt = launch
       self._battleLaunch = nil
     else
       launch.phase = "restoring"
       self.overworld:requestRestore()
     end
-  elseif status.phase == "complete" and status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
-    self._lastBattleResult = { result = status.result, sourceResult = status.sourceResult }
   end
   self:_reconcileBattleGate()
 end
@@ -2575,15 +2604,23 @@ function FieldRuntime:_updatePresentedBattle(launch)
       self._battleLaunch = nil
       return
     end
-    if status.outcomeReceipt == nil or status.outcomeReceipt.committed ~= true then
+    local accepted, decision = pcall(self._acceptCommittedBattleStatus, self, launch, battle, status)
+    if not accepted then
+      battle:dispose()
+      self.battleRuntime = nil
+      self:_resumeBattleAudio(launch, true)
+      if self.session ~= nil then
+        self.session:setBattleActive(false)
+        self.session:setForegroundHold(false)
+      end
       launch.phase = "failed"
-      launch.error = "presented battle completed without a committed receipt"
-      self.errorText = tostring(launch.error)
+      launch.error = tostring(decision)
+      self.errorText = launch.error
+      self._battleReceipt = launch
+      self._battleLaunch = nil
       return
     end
-    launch.result = status.result
-    launch.sourceResult = status.sourceResult
-    self:_adoptBattlePlayerMoney(launch, status.outcomeReceipt)
+    assert(decision ~= nil, "a complete presented battle returns its acceptance decision")
     launch.phase = "terminal"
     return
   end
