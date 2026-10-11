@@ -821,8 +821,14 @@ end
 -- on the caller's reused table (the stale-field regression the reuse
 -- contract must not introduce).
 function T.presentation_state_into_matches_the_snapshot_and_clears_stale_optional_fields()
-  local p = player(runtimeMap(), 0, 4, 0)
-  local out = { locomotionActive = true, gesturePose = "stale", gestureTick = 7, gestureOffsetY = 99 }
+  local p = player(runtimeMap(), 0, 4, 0, "east")
+  local out = {
+    locomotionActive = true,
+    gesturePose = "stale",
+    gestureTick = 7,
+    gestureOffsetY = 99,
+    ordinaryStepSpeed = "run",
+  }
   local snapshot = p:presentationState()
   local returned = p:presentationStateInto(out)
   Assert.equal(returned, out, "presentationStateInto must return the caller-owned table")
@@ -830,11 +836,13 @@ function T.presentation_state_into_matches_the_snapshot_and_clears_stale_optiona
   Assert.isNil(out.gesturePose, "a stale gesture pose from a prior tick must not survive reuse")
   Assert.isNil(out.gestureTick, "a stale gesture tick from a prior tick must not survive reuse")
   Assert.equal(out.gestureOffsetY, snapshot.gestureOffsetY)
+  Assert.isNil(out.ordinaryStepSpeed, "a stale ordinary speed from a prior step must not survive reuse")
 
   tick(p, "east", "east")
   local walkingSnapshot = p:presentationState()
   p:presentationStateInto(out)
   Assert.equal(out.locomotionActive, walkingSnapshot.locomotionActive)
+  Assert.equal(out.ordinaryStepSpeed, "normal", "active ordinary walking exposes its committed speed")
 end
 
 -- collisionCandidatesInto must overwrite the caller-owned array/records in

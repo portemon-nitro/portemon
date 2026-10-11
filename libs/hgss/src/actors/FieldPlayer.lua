@@ -1226,8 +1226,8 @@ function FieldPlayer:cancelScriptedMovement()
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
 end
 
----@param out { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
----@return { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
+---@param out { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }
+---@return { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }
 function FieldPlayer:presentationStateInto(out)
   assert(type(out) == "table", "presentation state output required")
   local scripted = self._scriptedMotion
@@ -1238,10 +1238,17 @@ function FieldPlayer:presentationStateInto(out)
   else
     locomotionActive = self.motion == "walking" or self.motion == "jumping"
   end
+  local ordinaryStepSpeed
+  if self.motion == "walking" and scripted == nil then
+    local transaction = assert(self._movementTransaction, "ordinary step requires a movement transaction")
+    assert(transaction.speed == "normal" or transaction.speed == "run", "ordinary step has unsupported speed")
+    ordinaryStepSpeed = transaction.speed
+  end
   out.locomotionActive = locomotionActive
   out.gesturePose = self._gesturePose
   out.gestureTick = self._gestureTick
   out.gestureOffsetY = self._gestureOffsetY
+  out.ordinaryStepSpeed = ordinaryStepSpeed
   return out
 end
 

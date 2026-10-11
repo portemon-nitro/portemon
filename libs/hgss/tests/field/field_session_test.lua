@@ -3725,6 +3725,54 @@ local function movementSession(options)
   return session, player, map
 end
 
+function T.session_passes_committed_step_speed_to_the_player_visual()
+  local map = movementMap()
+  local player = FieldPlayer.new({
+    currentMap = map,
+    fieldX = 0,
+    fieldZ = 4,
+    surfaceId = 0,
+    facing = "east",
+  })
+  local visual = FieldPlayerVisual.new({ player = player, spriteId = 0 })
+  local locked = false
+  local session = FieldSession.new(baseOptions({
+    currentMap = map,
+    player = player,
+    playerVisual = visual,
+    progression = {
+      hasRunningShoes = function()
+        return true
+      end,
+      runningShoesLock = function()
+        return locked
+      end,
+    },
+  }))
+
+  session:updateFixed({ heldDirection = "east", pressedDirection = "east", cancelDown = true })
+  Assert.equal(player:movementTransaction().speed, "run")
+  Assert.equal(visual.poseTick, 2, "the initial held-button run advances by two")
+  for _ = 1, 3 do
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, 1, "releasing B does not change the active four-tick step")
+  Assert.equal(visual.poseTick, 8, "the run's commit tick retains its speed")
+
+  for _ = 1, 8 do
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, 2, "without B or lock, the next step is an eight-tick walk")
+  Assert.equal(visual.poseTick, 16, "walking resumes at one pose tick per update")
+
+  locked = true
+  for _ = 1, 4 do
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, 3, "the auto-run lock applies to the following step")
+  Assert.equal(visual.poseTick, 24, "the locked run keeps the source gait cadence")
+end
+
 local function ledgeSession(options)
   options = options or {}
   local tiles = options.tiles or { ["1:4"] = { behavior = MetatileBehavior.BEHAVIOR.JUMP_EAST } }

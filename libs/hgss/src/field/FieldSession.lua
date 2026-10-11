@@ -192,7 +192,7 @@ end
 ---@field entranceInput { map: RuntimeFieldMap, player: FieldPlayer, transition: { ownsField: boolean } }
 ---@field coordinateProbe { fieldX: integer, fieldZ: integer, facing: string }
 ---@field terrainResponseInput table<string, unknown>
----@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
+---@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: ("normal"|"run")? }
 ---@field carriedMovementInput table<string, unknown>
 ---@field interactionSnapshot table<string, unknown>
 ---@field actorContext table<string, unknown>
@@ -229,7 +229,13 @@ local function newTickScratch(actorLocked)
       },
       direction = "south",
     },
-    playerPresentation = { locomotionActive = false, gestureOffsetY = 0 },
+    playerPresentation = {
+      locomotionActive = false,
+      gesturePose = nil,
+      gestureTick = nil,
+      gestureOffsetY = 0,
+      ordinaryStepSpeed = nil,
+    },
     carriedMovementInput = {},
     interactionSnapshot = {},
     actorContext = {
@@ -1103,9 +1109,8 @@ function FieldSession:updateFixed(inputSnapshot)
     end
     collapseCameraInterpolation(self.camera)
     if self.playerVisual then
-      local suppressedLocomotionAtTickStart =
-        self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
-      self.playerVisual:updateFixed(suppressedLocomotionAtTickStart)
+      local suppressedPresentation = self.player:presentationStateInto(self._tickScratch.playerPresentation)
+      self.playerVisual:updateFixed(suppressedPresentation.locomotionActive, suppressedPresentation.ordinaryStepSpeed)
     end
     self.camera:updateFixed(cameraTargetInto(self))
     self:_advanceTick()
@@ -1226,8 +1231,9 @@ function FieldSession:updateFixed(inputSnapshot)
   -- The pose clock treats a tick as locomoting if the player was locomoting at either
   -- end of it, so the gait phase carries across the tile commit instead of
   -- restarting on every arrival (the ROM's walk range spans two tiles).
-  local ordinaryLocomotionAtTickStart =
-    self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
+  local ordinaryPresentation = self.player:presentationStateInto(self._tickScratch.playerPresentation)
+  local ordinaryLocomotionAtTickStart = ordinaryPresentation.locomotionActive
+  local ordinaryStepSpeedAtTickStart = ordinaryPresentation.ordinaryStepSpeed
 
   local movementInput = inputSnapshot
   if carriedBoundaryDirection then
@@ -1373,7 +1379,7 @@ function FieldSession:updateFixed(inputSnapshot)
   -- Pose clocks advance only on a tick that could change the world, so a fade or
   -- a locked transition freezes animation instead of walking it in place.
   if self.playerVisual then
-    self.playerVisual:updateFixed(ordinaryLocomotionAtTickStart)
+    self.playerVisual:updateFixed(ordinaryLocomotionAtTickStart, ordinaryStepSpeedAtTickStart)
   end
   self.camera:updateFixed(cameraTargetInto(self))
   self:_advanceTick()
