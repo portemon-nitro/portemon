@@ -27,6 +27,29 @@ local function stubRuntime()
     playerData = { profile = {}, options = { textFrame = 0 } },
     versionId = "heartgold",
     runtimeMap = { mapId = 61 },
+    actorConfig = {
+      apricorn = {
+        depletedTreeSpriteId = 262,
+        treeSpriteIdByKey = {
+          RED_APRICORN = 263,
+          YLW_APRICORN = 264,
+          BLU_APRICORN = 265,
+          GRN_APRICORN = 266,
+          PNK_APRICORN = 267,
+          WHT_APRICORN = 268,
+          BLK_APRICORN = 269,
+        },
+        fruitSpriteIdByKey = {
+          RED_APRICORN = 270,
+          YLW_APRICORN = 271,
+          BLU_APRICORN = 272,
+          GRN_APRICORN = 273,
+          PNK_APRICORN = 274,
+          WHT_APRICORN = 275,
+          BLK_APRICORN = 276,
+        },
+      },
+    },
     overworld = {
       phase = function()
         return "present"

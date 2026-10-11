@@ -135,6 +135,10 @@ local function selectedSpriteIds(romFs)
   for spriteId in pairs(RIPE_APRICORN_TREE_SPRITES) do
     add(spriteId)
   end
+  add(ApricornSources.depletedTreeSpriteId)
+  for _, spriteId in pairs(ApricornSources.fruitSpriteIdByKey) do
+    add(spriteId)
+  end
   local archive = must(romFs:openNarc("zone_events"), "zone_event archive is unavailable")
   local variableSprites = {}
   for map in MapCatalog.all() do
@@ -759,6 +763,11 @@ local function _compile(romFs)
         first = manifest.variableSpriteRange.first,
         last = manifest.variableSpriteRange.last,
         variableBase = manifest.variableVarBase,
+      },
+      apricorn = {
+        depletedTreeSpriteId = ApricornSources.depletedTreeSpriteId,
+        treeSpriteIdByKey = ApricornSources.treeSpriteIdByKey,
+        fruitSpriteIdByKey = ApricornSources.fruitSpriteIdByKey,
       },
     },
   }

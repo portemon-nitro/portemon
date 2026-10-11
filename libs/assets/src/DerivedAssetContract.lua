@@ -27,6 +27,10 @@
 -- without source interpretation or fallback. A stale index without the state
 -- maps must fail readiness; only the index identity changes.
 --
+-- fieldActors index 4: generated Apricorn sprite identities join the runtime
+-- actor policy; every semantic tree and fruit color resolves through indexed
+-- source visuals, and the depleted tree retains its source gestures.
+--
 -- fieldActors schema 3/cache v2: generated visuals carry the required
 -- source-independent idle presentation profile and the required semantic
 -- gesture clip map. Each idle pose segment carries a finite
@@ -191,7 +195,7 @@ DerivedAssetContract.fieldActors = {
   cacheFormat = "field-actor-cache-v2",
   -- v5 adds Apricorn tree gesture clips and guarantees their colored source sprites.
   schema = "g4-field-actor-v5",
-  indexSchema = "g4-field-actor-index-v3",
+  indexSchema = "g4-field-actor-index-v4",
 }
 
 DerivedAssetContract.fieldCamera = {

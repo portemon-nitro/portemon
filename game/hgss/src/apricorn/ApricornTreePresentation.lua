@@ -5,24 +5,21 @@ ApricornTreePresentation.__index = ApricornTreePresentation
 
 ---@class ApricornTreePresentation
 ---@field runtime table<string, unknown>
+---@field sprites ApricornTreePresentation.Sprites
 ---@field fruit table<string, unknown>?
 ---@field fruitRecord table<string, unknown>
 ---@field spawnFruit fun(self: ApricornTreePresentation, actorId: string, apricornKey: string)
 ---@field advanceFruit fun(self: ApricornTreePresentation, frame: integer)
 ---@field clearFruit fun(self: ApricornTreePresentation)
 
+---@class ApricornTreePresentation.Sprites
+---@field depletedTreeSpriteId integer
+---@field treeSpriteIdByKey table<string, integer>
+---@field fruitSpriteIdByKey table<string, integer>
+
 -- FieldActorPlacement normalizes source object/map-model coordinates at 16
 -- source model units per tile; native Apricorn motion advances by FX32_ONE.
 local SOURCE_MODEL_UNITS_PER_TILE = 16
-local FRUIT_SPRITE_BY_KEY = {
-  RED_APRICORN = 270,
-  YLW_APRICORN = 271,
-  BLU_APRICORN = 272,
-  GRN_APRICORN = 273,
-  PNK_APRICORN = 274,
-  WHT_APRICORN = 275,
-  BLK_APRICORN = 276,
-}
 local JUMP_DY = { 4, 3, 3, 2, 2, 1, 1, 0, 0, -1, -2, -3, -4, -5, -6, -7 }
 local AWAY_FROM_TREE = {
   north = { x = 0, z = 1 },
@@ -34,7 +31,10 @@ local AWAY_FROM_TREE = {
 ---@param runtime table<string, unknown>
 ---@return ApricornTreePresentation
 function ApricornTreePresentation.new(runtime)
-  return setmetatable({ runtime = runtime, fruit = nil, fruitRecord = {} }, ApricornTreePresentation)
+  local actorConfig = assert(runtime.actorConfig, "field actor runtime configuration is unavailable")
+  ---@type ApricornTreePresentation.Sprites
+  local sprites = assert(actorConfig.apricorn, "compiled Apricorn sprite identities are unavailable")
+  return setmetatable({ runtime = runtime, sprites = sprites, fruit = nil, fruitRecord = {} }, ApricornTreePresentation)
 end
 
 ---@param actor table<string, unknown>
@@ -44,15 +44,17 @@ function ApricornTreePresentation:spriteIdForTree(actor)
   if source == nil then
     return actor.spriteId
   end
+  local ripeTreeSpriteId =
+    assert(self.sprites.treeSpriteIdByKey[source.apricornKey], "compiled ripe-tree sprite identity is unavailable")
   local gesture = actor:presentationState().gesturePose
   if
     self.runtime.martService:treeAvailable(source.treeIndex)
     and gesture ~= "apricorn_tree_wiggle"
     and gesture ~= "apricorn_tree_expel"
   then
-    return actor.sourceEvent.spriteId
+    return ripeTreeSpriteId
   end
-  return 262
+  return self.sprites.depletedTreeSpriteId
 end
 
 ---@param spriteIds table<integer, boolean>
@@ -67,7 +69,7 @@ function ApricornTreePresentation:collectSpriteIds(spriteIds)
         or gesture == "apricorn_tree_wiggle"
         or gesture == "apricorn_tree_expel"
       then
-        spriteIds[262] = true
+        spriteIds[self.sprites.depletedTreeSpriteId] = true
       end
     end
   end
@@ -95,7 +97,7 @@ function ApricornTreePresentation:spawnFruit(actorId, apricornKey)
   local facing = assert(self.runtime.player.facing, "player facing is unavailable")
   self.fruit = {
     actorId = actorId,
-    spriteId = assert(FRUIT_SPRITE_BY_KEY[apricornKey], "unknown Apricorn fruit color"),
+    spriteId = assert(self.sprites.fruitSpriteIdByKey[apricornKey], "compiled Apricorn fruit identity is unavailable"),
     x = assert(position.x),
     y = assert(position.y) + 12 / SOURCE_MODEL_UNITS_PER_TILE,
     z = assert(position.z),

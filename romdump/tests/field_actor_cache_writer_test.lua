@@ -8,6 +8,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldActorCacheWriter = require("romdump.src.digest.actor.FieldActorCacheWriter")
+local ApricornSources = require("romdump.src.config.ApricornSources")
 
 local T = {}
 
@@ -44,21 +45,43 @@ end
 
 local function bundle(spriteIds)
   local visuals, atlases = {}, {}
+  local indexedSpriteIds = {}
   for _, spriteId in ipairs(spriteIds) do
+    indexedSpriteIds[#indexedSpriteIds + 1] = spriteId
+  end
+  for spriteId = 262, 276 do
+    indexedSpriteIds[#indexedSpriteIds + 1] = spriteId
+  end
+  for _, spriteId in ipairs(indexedSpriteIds) do
     visuals[spriteId] = visual(spriteId)
     atlases[spriteId] = { width = 4, height = 1, pixels = string.rep("\0", 16) }
   end
+  visuals[ApricornSources.depletedTreeSpriteId].gestures = {
+    apricorn_tree_wiggle = {
+      pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = true, durationTicks = 1 },
+      displayOffset = { x = 0, y = 0, z = 0 },
+    },
+    apricorn_tree_expel = {
+      pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = false, durationTicks = 1 },
+      displayOffset = { x = 0, y = 0, z = 0 },
+    },
+  }
   return {
     marker = FieldActorCache.marker("abc", "dep"),
     index = {
       schema = FieldActorCache.INDEX_SCHEMA,
       romVersion = "heartgold",
-      spriteIds = spriteIds,
+      spriteIds = indexedSpriteIds,
       variableSprites = {},
       recordCount = 3,
       runtime = {
         avatars = { avatarCapability("hero", 0, spriteIds), avatarCapability("heroine", 1, spriteIds) },
         variableSprites = { first = 101, last = 117, variableBase = 0x4020 },
+        apricorn = {
+          depletedTreeSpriteId = ApricornSources.depletedTreeSpriteId,
+          treeSpriteIdByKey = ApricornSources.treeSpriteIdByKey,
+          fruitSpriteIdByKey = ApricornSources.fruitSpriteIdByKey,
+        },
       },
     },
     visuals = visuals,

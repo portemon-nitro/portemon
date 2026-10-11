@@ -14,7 +14,12 @@ local FieldActorCache = {}
 ---@class FieldActorCache.Index
 ---@field schema string
 ---@field spriteIds integer[]
----@field runtime table<string, unknown>
+---@field runtime { avatars: table[], variableSprites: table<string, integer>, apricorn: FieldActorCache.ApricornIdentity }
+
+---@class FieldActorCache.ApricornIdentity
+---@field depletedTreeSpriteId integer
+---@field treeSpriteIdByKey table<string, integer>
+---@field fruitSpriteIdByKey table<string, integer>
 
 ---@class FieldActorCache.Polygon
 ---@field cullMode string
@@ -165,6 +170,20 @@ local AVATAR_STATE_KEYS = {
 local AVATAR_STATE_SET = {}
 for _, name in ipairs(AVATAR_STATE_KEYS) do
   AVATAR_STATE_SET[name] = true
+end
+
+local APRICORN_KEYS = {
+  "RED_APRICORN",
+  "YLW_APRICORN",
+  "BLU_APRICORN",
+  "GRN_APRICORN",
+  "PNK_APRICORN",
+  "WHT_APRICORN",
+  "BLK_APRICORN",
+}
+local APRICORN_KEY_SET = {}
+for _, apricornKey in ipairs(APRICORN_KEYS) do
+  APRICORN_KEY_SET[apricornKey] = true
 end
 
 local VALID_GESTURES = {
@@ -562,9 +581,50 @@ local function isValidAvatarCapability(avatar, indexedSprites)
   return stateCount == #AVATAR_STATE_KEYS
 end
 
+local function isValidApricornSpriteMap(spritesByKey, indexedSprites)
+  if type(spritesByKey) ~= "table" then
+    return false
+  end
+  local keyCount = 0
+  for apricornKey, spriteId in pairs(spritesByKey) do
+    if
+      APRICORN_KEY_SET[apricornKey] ~= true
+      or not Validate.isNonNegativeInteger(spriteId)
+      or indexedSprites[spriteId] ~= true
+    then
+      return false
+    end
+    keyCount = keyCount + 1
+  end
+  return keyCount == #APRICORN_KEYS
+end
+
+local function isValidApricornRuntime(apricorn, indexedSprites)
+  if type(apricorn) ~= "table" then
+    return false
+  end
+  local keyCount = 0
+  for _ in pairs(apricorn) do
+    keyCount = keyCount + 1
+  end
+  return keyCount == 3
+    and Validate.isNonNegativeInteger(apricorn.depletedTreeSpriteId)
+    and indexedSprites[apricorn.depletedTreeSpriteId] == true
+    and isValidApricornSpriteMap(apricorn.treeSpriteIdByKey, indexedSprites)
+    and isValidApricornSpriteMap(apricorn.fruitSpriteIdByKey, indexedSprites)
+end
+
+local function hasApricornTreeGestures(visual)
+  if type(visual) ~= "table" or type(visual.gestures) ~= "table" then
+    return false
+  end
+  return type(visual.gestures.apricorn_tree_wiggle) == "table" and type(visual.gestures.apricorn_tree_expel) == "table"
+end
+
 -- True only if the marker is exact, the index loads with the expected schema,
 -- spriteIds is the required array of sprite ids, the runtime configuration
--- block (avatars + variable-sprite policy) is present, and every indexed
+-- block (avatars, variable-sprite policy, and source Apricorn identities) is
+-- present, and every indexed
 -- sprite's visual definition (with the expected schema, matching identity, and
 -- required normalized idle profile) and atlas is present.
 function FieldActorCache.isReady(cacheFs, expectedMarker)
@@ -589,6 +649,10 @@ function FieldActorCache.isReady(cacheFs, expectedMarker)
   for _, spriteId in ipairs(index.spriteIds) do
     indexedSprites[spriteId] = true
   end
+  local apricorn = index.runtime.apricorn
+  if not isValidApricornRuntime(apricorn, indexedSprites) then
+    return false
+  end
   if #index.runtime.avatars ~= 2 then
     return false
   end
@@ -605,6 +669,7 @@ function FieldActorCache.isReady(cacheFs, expectedMarker)
   if genders[0] ~= true or genders[1] ~= true then
     return false
   end
+  local depletedTreeVisual
   for _, spriteId in ipairs(index.spriteIds) do
     if not Validate.isNonNegativeInteger(spriteId) then
       return false
@@ -616,8 +681,11 @@ function FieldActorCache.isReady(cacheFs, expectedMarker)
     if not cacheFs:exists(FieldActorCache.atlasPath(spriteId), "file") then
       return false
     end
+    if spriteId == apricorn.depletedTreeSpriteId then
+      depletedTreeVisual = visual
+    end
   end
-  return true
+  return hasApricornTreeGestures(depletedTreeVisual)
 end
 
 function FieldActorCache.loadIndex(cacheFs)

@@ -16,6 +16,30 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local T = {}
 local SCRIPT_GENERATION = string.rep("a", 40)
+local APRICORN_KEYS = {
+  "RED_APRICORN",
+  "YLW_APRICORN",
+  "BLU_APRICORN",
+  "GRN_APRICORN",
+  "PNK_APRICORN",
+  "WHT_APRICORN",
+  "BLK_APRICORN",
+}
+
+local function apricornMetadata()
+  local treeSpriteIdByKey = {}
+  local fruitSpriteIdByKey = {}
+  for index, apricornKey in ipairs(APRICORN_KEYS) do
+    treeSpriteIdByKey[apricornKey] = 262 + index
+    fruitSpriteIdByKey[apricornKey] = 269 + index
+  end
+  return {
+    depletedTreeSpriteId = 262,
+    treeSpriteIdByKey = treeSpriteIdByKey,
+    fruitSpriteIdByKey = fruitSpriteIdByKey,
+  }
+end
+
 local function cache()
   return CacheFs.forVersion("heartgold", FakeCache.new())
 end
@@ -37,7 +61,7 @@ local AVATAR_STATE_KEYS = {
   "rocket_saving",
 }
 
-local function writeActorIndex(c, spriteIds)
+local function writeActorIndex(c, spriteIds, apricorn)
   local states = {}
   local available = 0
   if type(spriteIds) == "table" then
@@ -59,6 +83,7 @@ local function writeActorIndex(c, spriteIds)
     runtime = {
       avatars = { capability("hero", 0), capability("heroine", 1) },
       variableSprites = { first = 101, last = 117, variableBase = 0x4020 },
+      apricorn = apricorn,
     },
   })
   c:write(FieldActorCache.markerPath(), "m")
@@ -234,13 +259,14 @@ local function completeAvatarSetup()
   return spriteIds, avatars
 end
 
-local function writeAvatarStateIndex(c, spriteIds, avatars)
+local function writeAvatarStateIndex(c, spriteIds, avatars, apricorn)
   c:writeLua(FieldActorCache.indexPath(), {
     schema = FieldActorCache.INDEX_SCHEMA,
     spriteIds = spriteIds,
     runtime = {
       avatars = avatars,
       variableSprites = { first = 101, last = 117, variableBase = 0x4020 },
+      apricorn = apricorn,
     },
   })
   c:write(FieldActorCache.markerPath(), "m")
@@ -249,6 +275,30 @@ end
 local function writeVisualsFor(c, spriteIds)
   for _, spriteId in ipairs(spriteIds) do
     writeActorVisual(c, spriteId)
+  end
+end
+
+local function writeApricornActorBundle(c, metadata, withTreeGestures, additionalSpriteIds)
+  local spriteIds = {}
+  for _, spriteId in ipairs(additionalSpriteIds or {}) do
+    spriteIds[#spriteIds + 1] = spriteId
+  end
+  for spriteId = 262, 276 do
+    spriteIds[#spriteIds + 1] = spriteId
+  end
+  writeActorIndex(c, spriteIds, metadata)
+  writeVisualsFor(c, spriteIds)
+  if withTreeGestures then
+    writeActorVisualWithGestures(c, 262, {
+      apricorn_tree_wiggle = {
+        pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = true, durationTicks = 1 },
+        displayOffset = { x = 0, y = 0, z = 0 },
+      },
+      apricorn_tree_expel = {
+        pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = false, durationTicks = 1 },
+        displayOffset = { x = 0, y = 0, z = 0 },
+      },
+    }, 1)
   end
 end
 
@@ -400,14 +450,28 @@ end
 function T.actor_index_with_complete_avatar_state_maps_is_ready()
   local c = cache()
   local spriteIds, avatars = completeAvatarSetup()
-  writeAvatarStateIndex(c, spriteIds, avatars)
+  for spriteId = 262, 276 do
+    spriteIds[#spriteIds + 1] = spriteId
+  end
+  table.sort(spriteIds)
+  writeAvatarStateIndex(c, spriteIds, avatars, apricornMetadata())
   writeVisualsFor(c, spriteIds)
+  writeActorVisualWithGestures(c, 262, {
+    apricorn_tree_wiggle = {
+      pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = true, durationTicks = 1 },
+      displayOffset = { x = 0, y = 0, z = 0 },
+    },
+    apricorn_tree_expel = {
+      pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = false, durationTicks = 1 },
+      displayOffset = { x = 0, y = 0, z = 0 },
+    },
+  }, 1)
   Assert.isTrue(FieldActorCache.isReady(c, "m"), "complete gendered state maps must be ready")
 end
 
 function T.actor_visual_with_wrong_identity_is_not_ready()
   local c = cache()
-  writeActorIndex(c, { 0 })
+  writeApricornActorBundle(c, apricornMetadata(), true, { 0 })
   c:writeLua(FieldActorCache.visualPath(0), { schema = FieldActorCache.SCHEMA, spriteId = 7 })
   c:write(FieldActorCache.atlasPath(0), "atlas-bytes")
   Assert.isFalse(FieldActorCache.isReady(c, "m"), "visual file identity must match its index entry")
@@ -422,7 +486,7 @@ function T.actor_visual_with_malformed_idle_presentation_is_not_ready()
   }
   for _, idlePresentation in ipairs(cases) do
     local c = cache()
-    writeActorIndex(c, { 0 })
+    writeApricornActorBundle(c, apricornMetadata(), true, { 0 })
     c:writeLua(FieldActorCache.visualPath(0), {
       schema = FieldActorCache.SCHEMA,
       spriteId = 0,
@@ -437,14 +501,14 @@ end
 
 function T.actor_visual_with_malformed_gesture_pose_is_not_ready()
   local c = cache()
-  writeActorIndex(c, { 0 })
+  writeApricornActorBundle(c, apricornMetadata(), true, { 0 })
   writeActorVisualWithGestures(c, 0, {
     give = { pose = { frames = {}, loop = false, durationTicks = 1 }, displayOffset = { x = 0, y = 0, z = 1 / 32 } },
   }, 1)
   Assert.isFalse(FieldActorCache.isReady(c, "m"), "empty gesture pose must fail")
 
   c = cache()
-  writeActorIndex(c, { 0 })
+  writeApricornActorBundle(c, apricornMetadata(), true, { 0 })
   writeActorVisualWithGestures(c, 0, {
     give = {
       pose = { frames = { { frameIndex = 2, ticks = 1 } }, loop = false, durationTicks = 1 },
@@ -454,7 +518,7 @@ function T.actor_visual_with_malformed_gesture_pose_is_not_ready()
   Assert.isFalse(FieldActorCache.isReady(c, "m"), "out-of-range gesture frameIndex must fail")
 
   c = cache()
-  writeActorIndex(c, { 0 })
+  writeApricornActorBundle(c, apricornMetadata(), true, { 0 })
   writeActorVisualWithGestures(c, 0, {
     give = {
       pose = { frames = { { frameIndex = 1, ticks = 0 } }, loop = false, durationTicks = 1 },
@@ -464,7 +528,7 @@ function T.actor_visual_with_malformed_gesture_pose_is_not_ready()
   Assert.isFalse(FieldActorCache.isReady(c, "m"), "zero-tick gesture pose must fail")
 
   c = cache()
-  writeActorIndex(c, { 0 })
+  writeApricornActorBundle(c, apricornMetadata(), true, { 0 })
   writeActorVisualWithGestures(c, 0, {
     give = {
       pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = false, durationTicks = 2 },
@@ -474,7 +538,7 @@ function T.actor_visual_with_malformed_gesture_pose_is_not_ready()
   Assert.isFalse(FieldActorCache.isReady(c, "m"), "duration-mismatch gesture pose must fail")
 
   c = cache()
-  writeActorIndex(c, { 0 })
+  writeApricornActorBundle(c, apricornMetadata(), true, { 0 })
   writeActorVisualWithGestures(c, 0, {
     give = { displayOffset = { x = 0, y = 0, z = 0 } },
   }, 1)
@@ -483,18 +547,52 @@ end
 
 function T.apricorn_tree_visual_with_source_gestures_is_ready()
   local c = cache()
-  writeActorIndex(c, { 262 })
-  writeActorVisualWithGestures(c, 262, {
-    apricorn_tree_wiggle = {
-      pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = true, durationTicks = 1 },
-      displayOffset = { x = 0, y = 0, z = 0 },
-    },
-    apricorn_tree_expel = {
-      pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = false, durationTicks = 1 },
-      displayOffset = { x = 0, y = 0, z = 0 },
-    },
-  }, 1)
+  writeApricornActorBundle(c, apricornMetadata(), true)
   Assert.isTrue(FieldActorCache.isReady(c, "m"), "source Apricorn tree gestures are valid actor capabilities")
+end
+
+function T.apricorn_actor_index_requires_complete_semantic_sprite_metadata()
+  local c = cache()
+  writeApricornActorBundle(c, nil, true)
+  Assert.isFalse(FieldActorCache.isReady(c, "m"), "field actor readiness requires Apricorn source metadata")
+
+  local malformed = {
+    apricornMetadata(),
+    apricornMetadata(),
+    apricornMetadata(),
+    apricornMetadata(),
+    apricornMetadata(),
+  }
+  malformed[1].treeSpriteIdByKey.RED_APRICORN = nil
+  malformed[2].fruitSpriteIdByKey.PURPLE_APRICORN = 270
+  malformed[3].fruitSpriteIdByKey.RED_APRICORN = 277
+  malformed[4].depletedTreeSpriteId = 277
+  malformed[5].treeSpriteIdByKey.RED_APRICORN = 277
+  for _, metadata in ipairs(malformed) do
+    c = cache()
+    writeApricornActorBundle(c, metadata, true)
+    Assert.isFalse(FieldActorCache.isReady(c, "m"), "incomplete or invalid source sprite metadata fails readiness")
+  end
+end
+
+function T.apricorn_actor_index_requires_source_sprite_files_and_tree_gestures()
+  local valid = cache()
+  writeApricornActorBundle(valid, apricornMetadata(), true)
+  Assert.isTrue(FieldActorCache.isReady(valid, "m"), "complete source Apricorn visuals are ready")
+
+  local missingVisual = cache()
+  writeApricornActorBundle(missingVisual, apricornMetadata(), true)
+  missingVisual:remove(FieldActorCache.visualPath(276))
+  Assert.isFalse(FieldActorCache.isReady(missingVisual, "m"), "every indexed Apricorn fruit visual is required")
+
+  for _, gesture in ipairs({ "apricorn_tree_wiggle", "apricorn_tree_expel" }) do
+    local missingGesture = cache()
+    writeApricornActorBundle(missingGesture, apricornMetadata(), true)
+    local treeVisual = assert(missingGesture:loadLua(FieldActorCache.visualPath(262)))
+    treeVisual.gestures[gesture] = nil
+    missingGesture:writeLua(FieldActorCache.visualPath(262), treeVisual)
+    Assert.isFalse(FieldActorCache.isReady(missingGesture, "m"), "the depleted tree requires its " .. gesture .. " clip")
+  end
 end
 
 function T.message_index_with_missing_bank_is_not_ready()
@@ -669,14 +767,14 @@ end
 
 function T.actor_valid_atlas_and_static_renders_are_ready()
   local c = cache()
-  writeActorIndex(c, { 0 })
+  writeApricornActorBundle(c, apricornMetadata(), true, { 0 })
   writeActorVisual(c, 0)
   local visual = c:loadLua(FieldActorCache.visualPath(0))
   Assert.isTrue(FieldActorCache.isValidVisual(visual, 0))
   Assert.isTrue(FieldActorCache.isReady(c, "m"), "valid atlas with geometry/polygon/dimensions must be ready")
 
   c = cache()
-  writeActorIndex(c, { 1 })
+  writeApricornActorBundle(c, apricornMetadata(), true, { 1 })
   writeStaticModelVisual(c, 1, {})
   visual = c:loadLua(FieldActorCache.visualPath(1))
   Assert.isTrue(FieldActorCache.isValidVisual(visual, 1))
@@ -704,7 +802,7 @@ end
 function T.actor_visual_with_malformed_static_render_is_not_ready()
   local function mutateStatic(mutator, label)
     local c = cache()
-    writeActorIndex(c, { 0 })
+    writeApricornActorBundle(c, apricornMetadata(), true, { 0 })
     local visual = {
       schema = FieldActorCache.SCHEMA,
       spriteId = 0,
