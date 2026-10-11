@@ -585,6 +585,29 @@ local function publishActorFamily(cache)
     end
     return { id = id, gender = gender, states = named }
   end
+  local apricornTreeSprites = {}
+  local apricornFruitSprites = {}
+  for _, key in ipairs({
+    "RED_APRICORN",
+    "YLW_APRICORN",
+    "BLU_APRICORN",
+    "GRN_APRICORN",
+    "PNK_APRICORN",
+    "WHT_APRICORN",
+    "BLK_APRICORN",
+  }) do
+    apricornTreeSprites[key] = 0
+    apricornFruitSprites[key] = 0
+  end
+  local treeVisual = Fixture.visual(0, { frameCount = 8 })
+  local function treeGesture(loop)
+    return {
+      pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = loop, durationTicks = 1 },
+      displayOffset = { x = 0, y = 0, z = 0 },
+    }
+  end
+  treeVisual.gestures.apricorn_tree_wiggle = treeGesture(true)
+  treeVisual.gestures.apricorn_tree_expel = treeGesture(false)
   local bundle = {
     marker = FieldActorCache.marker("test-rom", "test-dep"),
     index = {
@@ -596,9 +619,14 @@ local function publishActorFamily(cache)
       runtime = {
         avatars = { capability("hero", 0, { 0 }), capability("heroine", 1, { 0 }) },
         variableSprites = { first = 101, last = 117, variableBase = 0x4020 },
+        apricorn = {
+          depletedTreeSpriteId = 0,
+          treeSpriteIdByKey = apricornTreeSprites,
+          fruitSpriteIdByKey = apricornFruitSprites,
+        },
       },
     },
-    visuals = { [0] = Fixture.visual(0, { frameCount = 8 }) },
+    visuals = { [0] = treeVisual },
     atlases = { [0] = { width = 4, height = 1, pixels = string.rep("\0", 16) } },
     provenance = { schema = "g4-field-actor-provenance-v1" },
     dependencies = {},
