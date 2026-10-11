@@ -481,6 +481,22 @@ function T.actor_visual_with_malformed_gesture_pose_is_not_ready()
   Assert.isFalse(FieldActorCache.isReady(c, "m"), "missing gesture pose must fail")
 end
 
+function T.apricorn_tree_visual_with_source_gestures_is_ready()
+  local c = cache()
+  writeActorIndex(c, { 262 })
+  writeActorVisualWithGestures(c, 262, {
+    apricorn_tree_wiggle = {
+      pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = true, durationTicks = 1 },
+      displayOffset = { x = 0, y = 0, z = 0 },
+    },
+    apricorn_tree_expel = {
+      pose = { frames = { { frameIndex = 1, ticks = 1 } }, loop = false, durationTicks = 1 },
+      displayOffset = { x = 0, y = 0, z = 0 },
+    },
+  }, 1)
+  Assert.isTrue(FieldActorCache.isReady(c, "m"), "source Apricorn tree gestures are valid actor capabilities")
+end
+
 function T.message_index_with_missing_bank_is_not_ready()
   local c = cache()
   writeMessageIndex(c, { 542 })

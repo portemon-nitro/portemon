@@ -167,7 +167,13 @@ for _, name in ipairs(AVATAR_STATE_KEYS) do
   AVATAR_STATE_SET[name] = true
 end
 
-local VALID_GESTURES = { nurse_bow = true, give = true, receive = true }
+local VALID_GESTURES = {
+  apricorn_tree_expel = true,
+  apricorn_tree_wiggle = true,
+  nurse_bow = true,
+  give = true,
+  receive = true,
+}
 
 local function isValidPolygon(record)
   local ok, _ = pcall(PolygonState.validate, record, "field actor")

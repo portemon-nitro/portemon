@@ -7,6 +7,9 @@ ApricornTreePresentation.__index = ApricornTreePresentation
 ---@field runtime table<string, unknown>
 ---@field fruit table<string, unknown>?
 ---@field fruitRecord table<string, unknown>
+---@field spawnFruit fun(self: ApricornTreePresentation, actorId: string, apricornKey: string)
+---@field advanceFruit fun(self: ApricornTreePresentation, frame: integer)
+---@field clearFruit fun(self: ApricornTreePresentation)
 
 -- FieldActorPlacement normalizes source object/map-model coordinates at 16
 -- source model units per tile; native Apricorn motion advances by FX32_ONE.
