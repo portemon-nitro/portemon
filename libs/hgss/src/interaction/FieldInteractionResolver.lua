@@ -245,6 +245,12 @@ local function baseIntent(kind, targetMap, snapshot, targetX, targetZ, scriptId)
   }
 end
 
+local function facingBehavior(targetMap, targetX, targetZ)
+  local localX, localZ = FieldCoordinates.fieldToLocal(targetMap, targetX, targetZ)
+  local collision = assert(targetMap.collision, "reachable interaction target has collision data")
+  return assert(collision:getLocal(localX, localZ).behavior, "facing collision behavior required")
+end
+
 -- Resolves one Action press into an immutable InteractionIntent or nil.
 ---@param snapshot InteractionResolverSnapshot
 ---@return InteractionIntent?
@@ -268,22 +274,44 @@ function FieldInteractionResolver:resolve(snapshot)
   end
 
   local targetMap = assert(self.targetMapAt(targetX, targetZ, map), "reachable interaction target has no logical map")
-  local targetPlate = map.terrain:plate(targetSample.surfaceId)
+
+  -- A counter facing tile hands the object lookup to the tile beyond it
+  -- (nurse behind the Pokemon Center counter); background events and metatile
+  -- scripts keep using the facing tile itself. Beyond the reachable terrain,
+  -- there is no object to find.
+  local objectX, objectZ, objectMap, objectSample = targetX, targetZ, targetMap, targetSample
+  if facingBehavior(targetMap, targetX, targetZ) == MetatileBehavior.BEHAVIOR.COUNTER then
+    objectX, objectZ = targetX + delta.x, targetZ + delta.z
+    objectSample = self:_resolveFacingCell({
+      runtimeMap = map,
+      fieldX = targetX,
+      fieldZ = targetZ,
+      surfaceId = targetSample.surfaceId,
+      worldY = targetSample.worldY,
+    }, objectX, objectZ)
+    if objectSample then
+      objectMap = assert(self.targetMapAt(objectX, objectZ, map), "counter target has no logical map")
+    end
+  end
 
   -- Object actors first: the lookup is keyed by the exact surface, and the
-  -- key is the facing cell's RESOLVED surface, so a cross-surface boundary
+  -- key is the lookup cell's RESOLVED surface, so a cross-surface boundary
   -- finds the object where it actually stands, and a same-x/z object on
   -- another surface stays ineligible. Raw script zero remains an
   -- intent and is canonicalized by the script binding authority.
-  local actor = self.actorAt(targetMap.mapId, {
-    fieldX = targetX,
-    fieldZ = targetZ,
-    surfaceId = targetSample.surfaceId,
-    cellKey = targetSample.cellKey or (targetPlate and targetPlate.cellKey) or nil,
-    sourceSurfaceId = targetSample.sourceSurfaceId or (targetPlate and targetPlate.sourceSurfaceId) or nil,
-  })
+  local actor
+  if objectSample then
+    local objectPlate = map.terrain:plate(objectSample.surfaceId)
+    actor = self.actorAt(objectMap.mapId, {
+      fieldX = objectX,
+      fieldZ = objectZ,
+      surfaceId = objectSample.surfaceId,
+      cellKey = objectSample.cellKey or (objectPlate and objectPlate.cellKey) or nil,
+      sourceSurfaceId = objectSample.sourceSurfaceId or (objectPlate and objectPlate.sourceSurfaceId) or nil,
+    })
+  end
   if actor then
-    local intent = baseIntent("object", targetMap, snapshot, targetX, targetZ, actor.sourceEvent.scriptId)
+    local intent = baseIntent("object", objectMap, snapshot, objectX, objectZ, actor.sourceEvent.scriptId)
     intent.object = {
       actorId = actor.actorId,
       objectEventId = actor.objectEventId,
@@ -305,10 +333,7 @@ function FieldInteractionResolver:resolve(snapshot)
   end
 
   if snapshot.facing == "north" then
-    local localX, localZ = FieldCoordinates.fieldToLocal(targetMap, targetX, targetZ)
-    local collision = assert(targetMap.collision, "reachable interaction target has collision data")
-    local behavior = assert(collision:getLocal(localX, localZ).behavior, "facing collision behavior required")
-    if behavior == MetatileBehavior.BEHAVIOR.PC then
+    if facingBehavior(targetMap, targetX, targetZ) == MetatileBehavior.BEHAVIOR.PC then
       return baseIntent("standard", targetMap, snapshot, targetX, targetZ, "common.pokecenter_pc")
     end
   end

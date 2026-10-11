@@ -1,4 +1,5 @@
--- Waits for the distinct HGSS GetMenuChoice provider. It owns opening and
+-- Waits for the distinct HGSS GetMenuChoice provider. It opens the provider
+-- only after the message printer reaches its end-of-text wait, owns opening and
 -- closing the provider exactly once and returns its vanilla two-choice value.
 -- Selection changes and answers play the dialogue-advance blip through the
 -- composed script audio service; boundary no-ops stay silent and a missing
@@ -35,6 +36,10 @@ end
 function ContextChoiceTask.poll(state, ctx)
   local choice = provider(ctx)
   if state.phase == "opening" then
+    local dialogue = assert(ctx.services.dialogue, "context_choice requires the dialogue host")
+    if not dialogue:printProgress().done then
+      return { complete = false, state = state }
+    end
     choice:open(state.selected)
     state.active = true
     state.phase = "waiting"

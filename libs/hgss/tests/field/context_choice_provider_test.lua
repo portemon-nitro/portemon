@@ -6,6 +6,12 @@ local ContextChoiceTask = require("libs.hgss.src.script.tasks.ContextChoiceTask"
 
 local T = {}
 
+local finishedDialogue = {
+  printProgress = function()
+    return { done = true }
+  end,
+}
+
 T["context choice keeps its active selection until the task closes it"] = function()
   local provider = ContextChoiceProvider.new()
   Assert.equal(provider:status(), nil)
@@ -20,7 +26,7 @@ end
 
 T["context choice task releases an opened provider when cancelled"] = function()
   local provider = ContextChoiceProvider.new()
-  local ctx = { services = { contextChoice = provider } }
+  local ctx = { services = { contextChoice = provider, dialogue = finishedDialogue } }
   local state = ContextChoiceTask.create({}, ctx)
   ContextChoiceTask.poll(state, ctx)
   Assert.notNil(provider:status())
@@ -31,7 +37,7 @@ end
 
 T["context choice task consumes normalized UI navigation and confirmation"] = function()
   local provider = ContextChoiceProvider.new()
-  local ctx = { services = { contextChoice = provider }, input = {} }
+  local ctx = { services = { contextChoice = provider, dialogue = finishedDialogue }, input = {} }
   local state = ContextChoiceTask.create({}, ctx)
   ContextChoiceTask.poll(state, ctx)
 
@@ -49,7 +55,7 @@ end
 
 T["context choice task ignores pointer UI events"] = function()
   local provider = ContextChoiceProvider.new()
-  local ctx = { services = { contextChoice = provider }, input = {} }
+  local ctx = { services = { contextChoice = provider, dialogue = finishedDialogue }, input = {} }
   local state = ContextChoiceTask.create({}, ctx)
   ContextChoiceTask.poll(state, ctx)
 
@@ -69,7 +75,7 @@ end
 
 T["context choice task restores its selected value into a fresh provider"] = function()
   local provider = ContextChoiceProvider.new()
-  local ctx = { services = { contextChoice = provider }, input = {} }
+  local ctx = { services = { contextChoice = provider, dialogue = finishedDialogue }, input = {} }
   local state = ContextChoiceTask.create({}, ctx)
   ContextChoiceTask.poll(state, ctx)
   ctx.input = { uiEvents = { { type = "navigate", direction = "right" } } }
@@ -78,7 +84,7 @@ T["context choice task restores its selected value into a fresh provider"] = fun
   Assert.equal(state.selected, 1)
 
   local restoredProvider = ContextChoiceProvider.new()
-  local restored = ContextChoiceTask.poll(state, { services = { contextChoice = restoredProvider }, input = {} })
+  local restored = ContextChoiceTask.poll(state, { services = { contextChoice = restoredProvider, dialogue = finishedDialogue }, input = {} })
   Assert.isFalse(restored.complete)
   Assert.deepEqual(restoredProvider:status(), { state = "active", selected = 1 })
 end
@@ -87,7 +93,7 @@ T["context choice task cancellation tolerates an unmaterialized restored provide
   local state = { active = true, phase = "waiting", selected = 1 }
   local provider = ContextChoiceProvider.new()
 
-  ContextChoiceTask.cancel(state, "script cancelled", { services = { contextChoice = provider } })
+  ContextChoiceTask.cancel(state, "script cancelled", { services = { contextChoice = provider, dialogue = finishedDialogue } })
 
   Assert.isFalse(state.active)
   Assert.equal(provider:status(), nil)
@@ -98,7 +104,7 @@ local function audioCtx(provider, plays)
   function audio:play(sequence)
     plays[#plays + 1] = sequence
   end
-  return { services = { contextChoice = provider, audio = audio }, input = {} }
+  return { services = { contextChoice = provider, dialogue = finishedDialogue, audio = audio }, input = {} }
 end
 
 T["context choice task plays the advance sound on selection changes and answers"] = function()
@@ -161,7 +167,7 @@ end
 
 T["context choice task without audio stays silent"] = function()
   local provider = ContextChoiceProvider.new()
-  local ctx = { services = { contextChoice = provider }, input = {} }
+  local ctx = { services = { contextChoice = provider, dialogue = finishedDialogue }, input = {} }
   local state = ContextChoiceTask.create({}, ctx)
   ContextChoiceTask.poll(state, ctx)
 

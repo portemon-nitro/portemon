@@ -6,7 +6,7 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
-local EXPECTED_MARKER = "field-effect-cache-v10:rom:dep"
+local EXPECTED_MARKER = "field-effect-cache-v11:rom:dep"
 
 local function validModel()
   return {
@@ -276,12 +276,12 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
             machineAnimation = "moniter_mb",
             machineAnimationFrameCount = 73,
             ballPositions = {
-              { role = "northwest", offset = { x = -4.5, y = 12, z = -4.5 } },
-              { role = "northeast", offset = { x = 4.5, y = 12, z = -4.5 } },
-              { role = "west", offset = { x = -4.5, y = 12, z = 0 } },
-              { role = "east", offset = { x = 4.5, y = 12, z = 0 } },
-              { role = "southwest", offset = { x = -4.5, y = 12, z = 4.5 } },
-              { role = "southeast", offset = { x = 4.5, y = 12, z = 4.5 } },
+              { role = "northwest", offset = { x = -0.28125, y = 0.75, z = -0.28125 } },
+              { role = "northeast", offset = { x = 0.28125, y = 0.75, z = -0.28125 } },
+              { role = "west", offset = { x = -0.28125, y = 0.75, z = 0 } },
+              { role = "east", offset = { x = 0.28125, y = 0.75, z = 0 } },
+              { role = "southwest", offset = { x = -0.28125, y = 0.75, z = 0.28125 } },
+              { role = "southeast", offset = { x = 0.28125, y = 0.75, z = 0.28125 } },
             },
             spawnIntervalSourceFrames = 12,
             placementSound = "SEQ_SE_DP_BOWA",
@@ -499,7 +499,7 @@ T.tests["rejects trainer reveal with missing or malformed placement"] = function
   Assert.isFalse(malformed, "trainer reveal with non-finite placement must not be ready")
 end
 
-local SURF_MARKER = "field-effect-cache-v10:rom:dep"
+local SURF_MARKER = "field-effect-cache-v11:rom:dep"
 local SURF_INDEX_SCHEMA = "g4-field-effect-index-v3"
 T.tests["requires the complete generated Pokémon Center healing definition"] = function()
   local present = {
@@ -662,12 +662,12 @@ local function surfCache(surfDefinition, mutateIndex)
           machineAnimation = "moniter_mb",
           machineAnimationFrameCount = 73,
           ballPositions = {
-            { role = "northwest", offset = { x = -4.5, y = 12, z = -4.5 } },
-            { role = "northeast", offset = { x = 4.5, y = 12, z = -4.5 } },
-            { role = "west", offset = { x = -4.5, y = 12, z = 0 } },
-            { role = "east", offset = { x = 4.5, y = 12, z = 0 } },
-            { role = "southwest", offset = { x = -4.5, y = 12, z = 4.5 } },
-            { role = "southeast", offset = { x = 4.5, y = 12, z = 4.5 } },
+            { role = "northwest", offset = { x = -0.28125, y = 0.75, z = -0.28125 } },
+            { role = "northeast", offset = { x = 0.28125, y = 0.75, z = -0.28125 } },
+            { role = "west", offset = { x = -0.28125, y = 0.75, z = 0 } },
+            { role = "east", offset = { x = 0.28125, y = 0.75, z = 0 } },
+            { role = "southwest", offset = { x = -0.28125, y = 0.75, z = 0.28125 } },
+            { role = "southeast", offset = { x = 0.28125, y = 0.75, z = 0.28125 } },
           },
           spawnIntervalSourceFrames = 12,
           placementSound = "SEQ_SE_DP_BOWA",

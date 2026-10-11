@@ -716,15 +716,13 @@ local function compilePokemonCenterHeal(romFs, meshes, textures)
 
   local ballPositions = {}
   for index, point in ipairs(source.ballPositionsFx32) do
-    local fx32UnitsPerTile = 0x1000
-    ballPositions[index] = {
-      role = point.role,
-      offset = {
-        x = point.x / fx32UnitsPerTile,
-        y = point.y / fx32UnitsPerTile,
-        z = point.z / fx32UnitsPerTile,
-      },
-    }
+    local fx32UnitsPerModelUnit = 0x1000
+    local x, y, z = MapUnits.toTiles(
+      point.x / fx32UnitsPerModelUnit,
+      point.y / fx32UnitsPerModelUnit,
+      point.z / fx32UnitsPerModelUnit
+    )
+    ballPositions[index] = { role = point.role, offset = { x = x, y = y, z = z } }
   end
   if #ballPositions ~= 6 then
     Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "center-healing source must define six ball positions", {

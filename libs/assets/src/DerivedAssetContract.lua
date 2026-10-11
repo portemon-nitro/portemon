@@ -303,8 +303,9 @@ DerivedAssetContract.fieldEffects = {
   -- descriptors, plus the source-selected Pokémon Center healing
   -- choreography model. Caches predating either payload fail readiness
   -- through the required-kind inventory. v10 times the reaction clips by
-  -- their source per-texture durations.
-  cacheFormat = "field-effect-cache-v10",
+  -- their source per-texture durations. v11 publishes the healing-ball
+  -- offsets in runtime tiles instead of source model units.
+  cacheFormat = "field-effect-cache-v11",
   indexSchema = "g4-field-effect-index-v3",
 }
 
