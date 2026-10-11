@@ -1168,9 +1168,12 @@ function T.staged_source_inventory_with_current_marker_is_usable()
     audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
     mapCellKeys = {},
   })
-  Assert.isTrue(
-    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, identity),
-    "the staged source inventory under its current marker reads ready"
+  local ready, validatedPlan = ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, identity)
+  Assert.isTrue(ready, "the staged source inventory under its current marker reads ready")
+  Assert.equal(
+    assert(validatedPlan, "a ready source plan carries its validated record").generationId,
+    GENERATION,
+    "readiness returns the plan for immediate adoption"
   )
 end
 

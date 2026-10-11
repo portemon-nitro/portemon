@@ -1063,8 +1063,8 @@ end
 ---@param receiptKey string
 ---@return string|nil marker
 local function receiptMarker(cacheFs, generationId, receiptKind, receiptKey)
-  local ok, receipt = pcall(ArtifactState.read, cacheFs, generationId, receiptKind, receiptKey)
-  if not ok or type(receipt) ~= "table" then
+  local receipt = ArtifactState.read(cacheFs, generationId, receiptKind, receiptKey)
+  if receipt == nil then
     return nil
   end
   local marker = receipt.marker
@@ -2170,25 +2170,21 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans, identity
       "source-plan validation requires the expected producer"
     )
   end
-  local ok, ready, validatedPlan = pcall(function()
-    ArtifactState.path(kind, key)
-    assert(type(plans) == "table", "readiness validation requires the session plans")
-    local marker = receiptMarker(cacheFs, generationId, kind, key)
-    if marker == nil then
-      return false
-    end
-    return descriptorFor(kind).validate({
-      cacheFs = cacheFs,
-      generationId = generationId,
-      key = key,
-      plans = plans,
-      marker = marker,
-      identity = identity,
-    })
-  end)
-  if not ok then
+  ArtifactState.path(kind, key)
+  assert(type(plans) == "table", "readiness validation requires the session plans")
+  local descriptor = descriptorFor(kind)
+  local marker = receiptMarker(cacheFs, generationId, kind, key)
+  if marker == nil then
     return false
   end
+  local ready, validatedPlan = descriptor.validate({
+    cacheFs = cacheFs,
+    generationId = generationId,
+    key = key,
+    plans = plans,
+    marker = marker,
+    identity = identity,
+  })
   if ready ~= true then
     return false
   end

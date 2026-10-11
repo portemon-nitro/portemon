@@ -11,6 +11,8 @@ local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
 local Hashing = require("romdump.src.digest.Hashing")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local Errors = require("libs.errors.src.Errors")
+local StorageErrors = require("libs.storage.src.errors")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local SdatFixture = require("tests.support.SdatFixture")
 local SseqFixture = require("tests.support.SseqFixture")
@@ -697,6 +699,177 @@ function T.complete_inventory_covers_supported_records_absent_from_the_world()
     iterated["map-data:" .. tostring(outside)] == true,
     "the incremental enumerator covers the non-world record"
   )
+end
+
+-- Missing and malformed receipts remain ordinary cache misses during an
+-- explicit readiness audit; neither result publishes or repairs cache data.
+function T.unusable_receipts_remain_cache_misses()
+  local generationId = "artifact-readiness-generation"
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  local receiptPath = ArtifactState.path("field-camera", "global")
+  local fullReceiptPath = cache:resolve(receiptPath)
+
+  local missingOk, missingReady = pcall(
+    ArtifactJobs.validate,
+    cache,
+    generationId,
+    "field-camera",
+    "global",
+    {}
+  )
+  Assert.isTrue(missingOk, "an absent receipt is a normal readiness result")
+  Assert.isFalse(missingReady, "an absent receipt is not ready")
+  Assert.isNil(backend.files[fullReceiptPath], "auditing an absent receipt does not publish it")
+
+  cache:write(receiptPath, "not a lua receipt{{{")
+  local corruptOk, corruptReady = pcall(
+    ArtifactJobs.validate,
+    cache,
+    generationId,
+    "field-camera",
+    "global",
+    {}
+  )
+  Assert.isTrue(corruptOk, "an invalid receipt is a normal readiness result")
+  Assert.isFalse(corruptReady, "an invalid receipt is not ready")
+  Assert.equal(backend.files[fullReceiptPath], "not a lua receipt{{{", "auditing does not rewrite the receipt")
+
+  local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
+  local marker = "field-camera-marker"
+  cache:writeLua(receiptPath, {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generationId,
+    kind = "field-camera",
+    key = "global",
+    marker = marker,
+  })
+  cache:write(FieldCameraCache.markerPath(), marker)
+  cache:write(FieldCameraCache.profilesPath(), "profiles")
+  cache:write(FieldCameraCache.provenancePath(), "provenance")
+  local ready, plan = ArtifactJobs.validate(cache, generationId, "field-camera", "global", {})
+  Assert.isTrue(ready, "a valid normal-family receipt is ready")
+  Assert.isNil(plan, "normal-family readiness does not return a source plan")
+end
+
+-- The receipt reader's structured storage failure must escape both the
+-- direct artifact check and a summary's child receipt check.
+function T.cache_read_faults_escape_artifact_and_child_readiness()
+  local generationId = "artifact-readiness-generation"
+  local fault = Errors.new(StorageErrors.CACHE_READ_FAILED, "backend read fault", { path = "receipt.lua" })
+  local directCache = {
+    versionId = "heartgold",
+    loadLua = function()
+      return nil, fault
+    end,
+  }
+  local directOk, directFailure = pcall(
+    ArtifactJobs.validate,
+    directCache,
+    generationId,
+    "field-camera",
+    "global",
+    {}
+  )
+  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+  local summaryMarker = "message-summary-marker"
+  local summaryReceiptPath = ArtifactState.path("message-summary", "global")
+  local childReceiptPath = ArtifactState.path("message-bank", "219")
+  local childCache = {
+    versionId = "heartgold",
+    read = function(_, path)
+      if path == FieldMessageCache.markerPath() then
+        return summaryMarker
+      end
+      return nil
+    end,
+    loadLua = function(_, path)
+      if path == summaryReceiptPath then
+        return {
+          schema = ArtifactState.RECEIPT_SCHEMA,
+          generationId = generationId,
+          kind = "message-summary",
+          key = "global",
+          marker = summaryMarker,
+        }
+      end
+      if path == FieldMessageCache.indexPath() then
+        return { schema = FieldMessageCache.INDEX_SCHEMA, bankIds = { 219 } }
+      end
+      if path == FieldMessageCache.bankPath(219) then
+        return { schema = FieldMessageCache.SCHEMA, bankId = 219 }
+      end
+      if path == childReceiptPath then
+        return nil, fault
+      end
+      error("unexpected message-summary read: " .. path)
+    end,
+  }
+  local childOk, childFailure = pcall(
+    ArtifactJobs.validate,
+    childCache,
+    generationId,
+    "message-summary",
+    "global",
+    { messageBankIds = { 219 } }
+  )
+  Assert.isTrue(
+    not directOk
+      and Errors.is(directFailure)
+      and directFailure.code == StorageErrors.CACHE_READ_FAILED
+      and not childOk
+      and Errors.is(childFailure)
+      and childFailure.code == StorageErrors.CACHE_READ_FAILED,
+    "direct and child readiness propagate CACHE_READ_FAILED; direct="
+      .. tostring(directFailure)
+      .. ", child="
+      .. tostring(childFailure)
+  )
+end
+
+-- A family validator's unrelated exception is terminal and cannot be
+-- converted to not-ready or mutate the published store.
+function T.unexpected_family_validator_fault_escapes_without_mutation()
+  local generationId = "artifact-readiness-generation"
+  local marker = "field-camera-marker"
+  local receiptPath = ArtifactState.path("field-camera", "global")
+  local fault = "unexpected camera cache access"
+  local store = {
+    [receiptPath] = {
+      schema = ArtifactState.RECEIPT_SCHEMA,
+      generationId = generationId,
+      kind = "field-camera",
+      key = "global",
+      marker = marker,
+    },
+    ["published"] = "last-known-good",
+  }
+  local before = { published = store.published, receipt = store[receiptPath] }
+  local readCount = 0
+  local cache = {
+    versionId = "heartgold",
+    loadLua = function(_, path)
+      return store[path]
+    end,
+    read = function()
+      readCount = readCount + 1
+      error(fault, 0)
+    end,
+  }
+
+  local ok, failure = pcall(
+    ArtifactJobs.validate,
+    cache,
+    generationId,
+    "field-camera",
+    "global",
+    {}
+  )
+  Assert.isFalse(ok, "a family validator fault is terminal")
+  Assert.equal(failure, fault, "the original family validator fault escapes")
+  Assert.equal(readCount, 1, "the family validator is called once")
+  Assert.equal(store.published, before.published, "the published artifact remains unchanged")
+  Assert.equal(store[receiptPath], before.receipt, "the receipt remains unchanged")
 end
 
 return { metadata = { capabilities = {} }, tests = T }
