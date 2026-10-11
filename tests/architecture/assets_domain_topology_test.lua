@@ -45,6 +45,9 @@ local DOMAINS = {
     "FieldObjectMovement",
     "FieldScriptSymbols",
     "FieldUiAssetCache",
+    "FieldUiManifestChecks",
+    "FieldUiNamingValidation",
+    "FieldUiStartMenuValidation",
     "FieldWeatherCache",
   },
   newgame = {

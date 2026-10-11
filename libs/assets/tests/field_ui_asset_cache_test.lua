@@ -1095,6 +1095,34 @@ function T.generic_manifest_accepts_safe_timing_and_placement_variants()
   Assert.isTrue(FieldUiAssetCache.validateManifest(palette), "in-range text slots stay consumable")
 end
 
+function T.valid_section_variants_remain_ready_as_one_published_manifest()
+  local manifest = interactiveManifest()
+  manifest.dialogueFrames.continueCursor.framePrinterTicks = 12
+  manifest.signposts.textColors = { foreground = 3, shadow = 11, background = 14 }
+  manifest.namingScreen.pokemonSubject.anchor = { x = -37, y = 104 }
+  manifest.namingScreen.pokemonSubject.frames[1].parts[1].offset = { x = -12, y = 4 }
+
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest))
+  Assert.isTrue(FieldUiAssetCache.isReady(publishedCache(manifest), FieldUiAssetCache.marker("rom-sha", "dep-hash")))
+end
+
+function T.start_menu_failure_precedes_naming_failure_and_repair_exposes_naming_error()
+  local manifest = validManifest()
+  manifest.startMenu.runningShoes.hitRect.width = 300
+  manifest.namingScreen.playerSubjects.female.anchor = nil
+
+  local ok, err = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isFalse(ok)
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  Assert.isTrue(assert(err).message:find("Running Shoes hit rectangle", 1, true) ~= nil)
+
+  manifest.startMenu.runningShoes.hitRect.width = 32
+  local repairedOk, namingErr = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isFalse(repairedOk)
+  Assert.equal(assert(namingErr).code, "FIELD_UI_MANIFEST_INVALID")
+  Assert.isTrue(assert(namingErr).message:find("namingScreen.playerSubjects.female", 1, true) ~= nil)
+end
+
 function T.readiness_reports_ready_without_repeating_the_deep_contract_audit()
   local manifest = validManifest()
   manifest.dialogueFrames.continueCursor.framePrinterTicks = 12

@@ -1427,7 +1427,7 @@ function T.stage_validation_failure_is_typed_and_preserves_the_previous_class()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   FieldUiCacheWriter.write(cache, first)
   local second = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  second.manifest.startMenu.background.width = 999
+  second.manifest.namingScreen.playerSubjects.female.anchor = nil
   second.marker = FieldUiAssetCache.marker(sha1, "new-dep-hash")
   Assert.throws(function()
     FieldUiCacheWriter.write(cache, second)
