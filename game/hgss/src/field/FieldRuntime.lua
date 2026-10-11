@@ -184,6 +184,7 @@ end
 ---@field martService MartService the live mart inventory/session service
 ---@field martHost table<string, unknown> the one script-owned mart child host
 ---@field kurtBoxHost table<string, unknown> the one script-owned Kurt selector host
+---@field apricornTreePresentation table<string, function>? presentation assets invalidation owner
 ---@field martStockResolver function the selected mart stock provider
 ---@field battleRuntime table<string, unknown>? the owned application battle lifetime (nil outside battles)
 ---@field battlePresentation table<string, unknown>? presentation port for owned battles
@@ -1249,6 +1250,10 @@ function FieldRuntime:_processApricornDate()
   local result = self.martService:processApricornDate({ year = now.year, month = now.month, day = now.day })
   if result.advanced then
     self.eventState:clearFlag(FieldScriptSymbols.flagsByName.FLAG_DAILY_KURT_MAKING_BALLS)
+    local treePresentation = self.apricornTreePresentation
+    if treePresentation ~= nil then
+      treePresentation:invalidateAssets()
+    end
   end
 end
 

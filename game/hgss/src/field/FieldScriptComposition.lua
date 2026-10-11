@@ -133,7 +133,11 @@ local function apricornService(runtime)
     return assert(runtime.martService, "Apricorn tree state owner is unavailable"):treeAvailable(treeIndex)
   end
   local function depleteTree(_, treeIndex)
-    return assert(runtime.martService, "Apricorn tree state owner is unavailable"):depleteTree(treeIndex)
+    local depleted = assert(runtime.martService, "Apricorn tree state owner is unavailable"):depleteTree(treeIndex)
+    if depleted then
+      treePresentation:invalidateAssets()
+    end
+    return depleted
   end
   local function beginTreeAnimation(_, _, _)
     local avatar = assert(runtime.playerAvatar, "field runtime has no player avatar owner")

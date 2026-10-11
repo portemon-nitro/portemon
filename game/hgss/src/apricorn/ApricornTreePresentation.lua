@@ -8,6 +8,9 @@ ApricornTreePresentation.__index = ApricornTreePresentation
 ---@field sprites ApricornTreePresentation.Sprites
 ---@field fruit table<string, unknown>?
 ---@field fruitRecord table<string, unknown>
+---@field _assetRevision integer
+---@field assetRevision fun(self: ApricornTreePresentation): integer
+---@field invalidateAssets fun(self: ApricornTreePresentation)
 ---@field spawnFruit fun(self: ApricornTreePresentation, actorId: string, apricornKey: string)
 ---@field advanceFruit fun(self: ApricornTreePresentation, frame: integer)
 ---@field clearFruit fun(self: ApricornTreePresentation)
@@ -34,7 +37,21 @@ function ApricornTreePresentation.new(runtime)
   local actorConfig = assert(runtime.actorConfig, "field actor runtime configuration is unavailable")
   ---@type ApricornTreePresentation.Sprites
   local sprites = assert(actorConfig.apricorn, "compiled Apricorn sprite identities are unavailable")
-  return setmetatable({ runtime = runtime, sprites = sprites, fruit = nil, fruitRecord = {} }, ApricornTreePresentation)
+  return setmetatable({
+    runtime = runtime,
+    sprites = sprites,
+    fruit = nil,
+    fruitRecord = {},
+    _assetRevision = 0,
+  }, ApricornTreePresentation)
+end
+
+function ApricornTreePresentation:assetRevision()
+  return self._assetRevision
+end
+
+function ApricornTreePresentation:invalidateAssets()
+  self._assetRevision = self._assetRevision + 1
 end
 
 ---@param actor table<string, unknown>
@@ -104,6 +121,7 @@ function ApricornTreePresentation:spawnFruit(actorId, apricornKey)
     facing = facing,
     jumpFrame = nil,
   }
+  self:invalidateAssets()
 end
 
 ---@param frame integer
@@ -114,6 +132,9 @@ function ApricornTreePresentation:advanceFruit(frame)
 end
 
 function ApricornTreePresentation:clearFruit()
+  if self.fruit ~= nil then
+    self:invalidateAssets()
+  end
   self.fruit = nil
 end
 

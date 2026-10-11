@@ -124,7 +124,11 @@ local function presentationResourcesStub(renderer)
 end
 
 local function idlePcApplicationHost()
-  return { isActive = function() return false end }
+  return {
+    isActive = function()
+      return false
+    end,
+  }
 end
 
 local function presentationState(assets, actorIds)
@@ -472,7 +476,12 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   local state = setmetatable({
     runtime = {
       pcApplicationHost = idlePcApplicationHost(),
-      runtimeMap = { mapId = 61, mapSymbol = "MAP_NEW_BARK", sceneRuntime = sceneRuntime, renderEnvironment = renderEnvironment },
+      runtimeMap = {
+        mapId = 61,
+        mapSymbol = "MAP_NEW_BARK",
+        sceneRuntime = sceneRuntime,
+        renderEnvironment = renderEnvironment,
+      },
       player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
       playerVisual = {
         drawRecord = function()
@@ -571,11 +580,7 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
     actorPresentation = actorPresentationStub(),
   }, FieldState)
   state:draw()
-  Assert.equal(
-    received.environment,
-    renderEnvironment,
-    "the renderer receives the runtime map's render environment"
-  )
+  Assert.equal(received.environment, renderEnvironment, "the renderer receives the runtime map's render environment")
   Assert.equal(received.camera, state.runtime.camera, "the draw path forwards the runtime camera")
   Assert.isTrue(received.worldParts == state.worldParts)
   Assert.isTrue(received.worldParts[1] == sceneRuntime.mapDraws)
@@ -815,7 +820,12 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
           return { phase = "closed", fadeAlpha = 0 }
         end,
       },
-      pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
+      pcApplications = {
+        isActive = function()
+          return false
+        end,
+        cancelPointerCapture = function() end,
+      },
       menuHost = {
         presentation = function()
           return nil
@@ -951,7 +961,12 @@ function T.draw_sends_billboard_emote_items_to_presentation_not_world_queue()
           return { phase = "closed", fadeAlpha = 0 }
         end,
       },
-      pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
+      pcApplications = {
+        isActive = function()
+          return false
+        end,
+        cancelPointerCapture = function() end,
+      },
       menuHost = {
         presentation = function()
           return nil
@@ -992,11 +1007,7 @@ function T.draw_sends_billboard_emote_items_to_presentation_not_world_queue()
   state:draw()
 
   Assert.equal(received.spriteItems[1], emoteItem, "a billboard emote composites in the presentation sprite layer")
-  Assert.equal(
-    #received.worldParts[7],
-    0,
-    "the billboard emote must not be left in the bounded-resolution world queue"
-  )
+  Assert.equal(#received.worldParts[7], 0, "the billboard emote must not be left in the bounded-resolution world queue")
 end
 
 function T.draw_hud_reads_the_player_state()
@@ -1204,6 +1215,43 @@ function T.presentation_sync_restarts_for_a_replaced_actor_manager()
   state:update(0.016)
   Assert.equal(assets.releases[34], 1, "the replacement manager remains synchronized without churn")
   Assert.equal(actors.revision, 0)
+end
+
+function T.presentation_sync_reconciles_apricorn_assets_only_after_their_revision_changes()
+  local assets = presentationAssets({
+    [99] = presentationEntry(99),
+    [262] = presentationEntry(262),
+    [270] = presentationEntry(270),
+  })
+  local state = presentationState(assets, {})
+  local revision, depleted, fruit, collects = 0, false, false, 0
+  state.runtime.apricornTreePresentation = {
+    assetRevision = function()
+      return revision
+    end,
+    collectSpriteIds = function(_, spriteIds)
+      collects = collects + 1
+      if depleted then
+        spriteIds[262] = true
+      end
+      if fruit then
+        spriteIds[270] = true
+      end
+    end,
+  }
+
+  state.actorPresentation:sync()
+  state.actorPresentation:sync()
+  Assert.equal(collects, 1, "an unchanged Apricorn state keeps the field asset cache fast path")
+  Assert.isNil(assets.acquisitions[262])
+
+  revision = revision + 1
+  depleted, fruit = true, true
+  state.actorPresentation:sync()
+  Assert.equal(collects, 2, "a tree or fruit asset change invalidates presentation residency")
+  Assert.equal(assets.acquisitions[262], 1)
+  Assert.equal(assets.acquisitions[270], 1)
+  state.actorPresentation:dispose()
 end
 
 function T.draw_rejects_a_sprite_without_presentation_residency()
@@ -1542,7 +1590,12 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
           return false
         end,
       },
-      pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
+      pcApplications = {
+        isActive = function()
+          return false
+        end,
+        cancelPointerCapture = function() end,
+      },
       interactions = {
         resolve = function()
           return nil

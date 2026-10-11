@@ -22,6 +22,7 @@ local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
 ---@field _lastActorManager FieldActorManager?
 ---@field _lastActorVisualRevision integer?
 ---@field _lastPlayerSpriteId integer?
+---@field _lastApricornAssetRevision integer?
 ---@field _actorRecords table[]?
 ---@field _actorDrawStorage FieldActorDrawStorage?
 local FieldActorPresentation = {}
@@ -41,6 +42,7 @@ function FieldActorPresentation.new(runtime, options)
     _lastActorManager = nil,
     _lastActorVisualRevision = nil,
     _lastPlayerSpriteId = nil,
+    _lastApricornAssetRevision = nil,
     _actorRecords = {},
     _actorDrawStorage = { items = {}, actorSlots = {}, generation = 0 },
   }, FieldActorPresentation)
@@ -54,11 +56,12 @@ function FieldActorPresentation:sync()
   local actorRevision = actors:visualRevision()
   local playerSpriteId = assert(playerVisual.spriteId, "field player visual has no spriteId")
   local apricornTrees = runtime.apricornTreePresentation
+  local apricornAssetRevision = apricornTrees ~= nil and apricornTrees:assetRevision() or nil
   if
     self._lastActorManager == actors
     and self._lastActorVisualRevision == actorRevision
     and self._lastPlayerSpriteId == playerSpriteId
-    and apricornTrees == nil
+    and self._lastApricornAssetRevision == apricornAssetRevision
   then
     return
   end
@@ -102,6 +105,7 @@ function FieldActorPresentation:sync()
   self._lastActorVisualRevision = actorRevision
   self._lastActorManager = actors
   self._lastPlayerSpriteId = playerSpriteId
+  self._lastApricornAssetRevision = apricornAssetRevision
 end
 
 function FieldActorPresentation:_assetLookup(spriteId)
