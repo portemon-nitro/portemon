@@ -15,7 +15,6 @@
 -- pipeline, which receives the validated player candidate through the
 -- receipt.
 
-local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Party = require("libs.mons.src.Party")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 
@@ -63,22 +62,6 @@ local function checkOutcome(outcome)
     error("battle commit requires an outcome result", 0)
   end
   return outcome.id
-end
-
----@param explicit unknown
----@return HgssMonService?
-local function resolveOwner(explicit)
-  if explicit ~= nil then
-    if not isPartyOwner(explicit) then
-      error("battle commit party owner must stage party batches", 0)
-    end
-    return explicit --[[@as HgssMonService]]
-  end
-  local owners = HgssMonService.liveOwners()
-  if #owners == 0 then
-    return nil
-  end
-  return owners[1]
 end
 
 ---@generic T
@@ -159,10 +142,13 @@ function HgssBattleCommitter.prepare(args)
   end
   local owner = nil
   if #updates > 0 or #captures > 0 then
-    owner = resolveOwner(args.partyOwner)
-    if owner == nil then
+    if args.partyOwner == nil then
       error("battle commit captures and party updates need a party owner", 0)
     end
+    if not isPartyOwner(args.partyOwner) then
+      error("battle commit party owner must stage party batches", 0)
+    end
+    owner = args.partyOwner
   end
   if args.party ~= nil and owner ~= nil then
     error("battle commit stages party updates and captures through one batch", 0)

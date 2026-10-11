@@ -33,26 +33,6 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local HgssMonService = {}
 HgssMonService.__index = HgssMonService
 
--- Live field parties, newest last with weak values so finished runtimes
--- never pin memory. The single-player field owns one party at a time;
--- battle result publication resolves that party when the caller hands it
--- bare capture results without staging a party batch first. Explicitly
--- staged batches always take precedence over this record.
-local LIVE_OWNERS = setmetatable({}, { __mode = "v" })
-
--- Returns live field parties newest first, skipping collected runtimes.
----@return HgssMonService[]
-function HgssMonService.liveOwners()
-  local owners = {}
-  for index = #LIVE_OWNERS, 1, -1 do
-    local owner = LIVE_OWNERS[index]
-    if owner ~= nil then
-      owners[#owners + 1] = owner
-    end
-  end
-  return owners
-end
-
 -- Native game identities (pret/pokeheartgold version layout; the domain
 -- tests pin heartgold to 7 and soulsilver to 8).
 HgssMonService.GAMES = {
@@ -222,7 +202,6 @@ function HgssMonService.new(opts)
     _mapSection = opts.mapSection,
     _date = opts.date ~= nil and opts.date or opts.dateProvider,
   }, HgssMonService)
-  LIVE_OWNERS[#LIVE_OWNERS + 1] = service
   return service
 end
 
