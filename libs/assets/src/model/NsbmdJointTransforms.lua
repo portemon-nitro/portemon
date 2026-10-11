@@ -23,12 +23,12 @@
 -- later joints. Pure domain module.
 
 local Errors = require("libs.errors.src.Errors")
-local Matrix4 = require("libs.math.src.Matrix4")
 
 local NsbmdJointTransforms = {}
 
 ---@class NsbmdJointTransforms
 ---@field localMatrix fun(scalingRule: integer, node: table<string, unknown>, cmd: table<string, unknown>, cache: table<integer, number[]|false>): number[]
+---@field localMatrixInto fun(out: number[], scalingRule: integer, node: table<string, unknown>, cmd: table<string, unknown>, cache: table<integer, number[]|false>, operation: number[], product: number[]): number[]
 
 NsbmdJointTransforms.STANDARD = 0
 NsbmdJointTransforms.MAYA = 1
@@ -38,100 +38,91 @@ NsbmdJointTransforms.SI3D = 2
 local MAYASSC_APPLY = 0x01
 local MAYASSC_PARENT = 0x02
 
+---@param out number[]
+---@param a number[]
+---@param b number[]
+---@param product number[]
+local function multiplyInto(out, a, b, product)
+  assert(product ~= a and product ~= b and product ~= out)
+  for col = 0, 3 do
+    local offset = col * 4
+    local b0, b1, b2, b3 = b[offset + 1], b[offset + 2], b[offset + 3], b[offset + 4]
+    product[offset + 1] = a[1] * b0 + a[5] * b1 + a[9] * b2 + a[13] * b3
+    product[offset + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3
+    product[offset + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3
+    product[offset + 4] = a[4] * b0 + a[8] * b1 + a[12] * b2 + a[16] * b3
+  end
+  for i = 1, 16 do
+    out[i] = product[i]
+  end
+end
+
+---@param out number[]
+---@param sx number
+---@param sy number
+---@param sz number
+local function setScale(out, sx, sy, sz)
+  out[1], out[2], out[3], out[4] = sx, 0, 0, 0
+  out[5], out[6], out[7], out[8] = 0, sy, 0, 0
+  out[9], out[10], out[11], out[12] = 0, 0, sz, 0
+  out[13], out[14], out[15], out[16] = 0, 0, 0, 1
+end
+
+---@param out number[]
+---@param node table<string, unknown>
+local function setRotation(out, node)
+  local rotation = node.rotation ---@type number[]
+  out[1], out[2], out[3], out[4] = rotation[1], rotation[2], rotation[3], 0
+  out[5], out[6], out[7], out[8] = rotation[4], rotation[5], rotation[6], 0
+  out[9], out[10], out[11], out[12] = rotation[7], rotation[8], rotation[9], 0
+  out[13], out[14], out[15], out[16] = 0, 0, 0, 1
+end
+
+---@param out number[]
+---@param node table<string, unknown>
+local function setTranslation(out, node)
+  local translation = node.translation ---@type { x: number, y: number, z: number }
+  out[1], out[2], out[3], out[4] = 1, 0, 0, 0
+  out[5], out[6], out[7], out[8] = 0, 1, 0, 0
+  out[9], out[10], out[11], out[12] = 0, 0, 1, 0
+  out[13], out[14], out[15], out[16] = translation.x, translation.y, translation.z, 1
+end
+
+---@param out number[]
+---@param operation number[]
+---@param product number[]
+---@param node table<string, unknown>
+---@param includeTranslation boolean
+---@param scaleEx0 { x: number, y: number, z: number }?
+local function composeInto(out, operation, product, node, includeTranslation, scaleEx0)
+  out[1], out[2], out[3], out[4] = 1, 0, 0, 0
+  out[5], out[6], out[7], out[8] = 0, 1, 0, 0
+  out[9], out[10], out[11], out[12] = 0, 0, 1, 0
+  out[13], out[14], out[15], out[16] = 0, 0, 0, 1
+  if includeTranslation and not node.transZero then
+    setTranslation(operation, node)
+    multiplyInto(out, out, operation, product)
+  end
+  if scaleEx0 then
+    setScale(operation, scaleEx0.x, scaleEx0.y, scaleEx0.z)
+    multiplyInto(out, out, operation, product)
+  end
+  if not node.rotZero then
+    setRotation(operation, node)
+    multiplyInto(out, out, operation, product)
+  end
+  if not node.scaleOne then
+    local scale = node.scale ---@type { x: number, y: number, z: number }
+    setScale(operation, scale.x, scale.y, scale.z)
+    multiplyInto(out, out, operation, product)
+  end
+end
+
 ---@param v integer
 ---@param mask integer
 ---@return boolean
 local function bitSet(v, mask)
   return math.floor(v / mask) % 2 == 1
-end
-
----@param rot table<string, unknown>
----@return number[]
-local function rotationMatrix(rot)
-  return {
-    rot[1],
-    rot[2],
-    rot[3],
-    0,
-    rot[4],
-    rot[5],
-    rot[6],
-    0,
-    rot[7],
-    rot[8],
-    rot[9],
-    0,
-    0,
-    0,
-    0,
-    1,
-  }
-end
-
--- Compose an emitted command sequence. Each geometry-engine matrix command
--- post-multiplies the current matrix, so the joint's local matrix is the ops in
--- emission order, left to right.
----@param ops number[][]
----@return number[]
-local function compose(ops)
-  local m = Matrix4.identity()
-  for _, op in ipairs(ops) do
-    m = Matrix4.multiply(m, op)
-  end
-  return m
-end
-
----@param node table<string, unknown>
----@return number[]
-local function translation(node)
-  return Matrix4.translate(node.translation.x, node.translation.y, node.translation.z)
-end
-
----@param vec table<string, unknown>
----@return number[]
-local function scaleOf(vec)
-  return Matrix4.scale(vec.x, vec.y, vec.z)
-end
-
--- NNSi_G3dSendJointSRTBasic: [MULT_4x3(rot|trans) | TRANS | MULT_3x3] then SCALE.
--- MULT_4x3 sends the rotation and translation as one 4x3, which is T * R.
----@param node table<string, unknown>
----@return number[][]
-local function standardOps(node)
-  local ops = {} ---@type number[][]
-  if not node.transZero then
-    ops[#ops + 1] = translation(node)
-  end
-  if not node.rotZero then
-    ops[#ops + 1] = rotationMatrix(node.rotation)
-  end
-  if not node.scaleOne then
-    ops[#ops + 1] = scaleOf(node.scale)
-  end
-  return ops
-end
-
--- NNSi_G3dSendJointSRTMaya. When the joint compensates its parent's scale, the
--- parent's inverse scale is applied after the translation and before the
--- rotation; otherwise the sequence is the standard one.
----@param node table<string, unknown>
----@param scaleEx0 number[]?
----@return number[][]
-local function mayaOps(node, scaleEx0)
-  local ops = {} ---@type number[][]
-  if not node.transZero then
-    ops[#ops + 1] = translation(node)
-  end
-  if scaleEx0 then
-    ops[#ops + 1] = scaleOf(scaleEx0)
-  end
-  if not node.rotZero then
-    ops[#ops + 1] = rotationMatrix(node.rotation)
-  end
-  if not node.scaleOne then
-    ops[#ops + 1] = scaleOf(node.scale)
-  end
-  return ops
 end
 
 -- NNSi_G3dGetJointScaleMaya: publish this joint's inverse scale for children
@@ -168,6 +159,19 @@ end
 ---@param cache table<integer, number[]|false>
 ---@return number[]
 function NsbmdJointTransforms.localMatrix(scalingRule, node, cmd, cache)
+  local out = {}
+  return NsbmdJointTransforms.localMatrixInto(out, scalingRule, node, cmd, cache, {}, {})
+end
+
+---@param out number[]
+---@param scalingRule integer
+---@param node table<string, unknown>
+---@param cmd table<string, unknown>
+---@param cache table<integer, number[]|false>
+---@param operation number[]
+---@param product number[]
+---@return number[]
+function NsbmdJointTransforms.localMatrixInto(out, scalingRule, node, cmd, cache, operation, product)
   if scalingRule == NsbmdJointTransforms.STANDARD then
     if cmd.flags ~= 0 then
       Errors.raise(
@@ -176,7 +180,8 @@ function NsbmdJointTransforms.localMatrix(scalingRule, node, cmd, cache)
         { flags = cmd.flags, nodeIndex = cmd.nodeIndex, scalingRule = scalingRule }
       )
     end
-    return compose(standardOps(node))
+    composeInto(out, operation, product, node, true, nil)
+    return out
   end
 
   if scalingRule == NsbmdJointTransforms.MAYA then
@@ -187,7 +192,8 @@ function NsbmdJointTransforms.localMatrix(scalingRule, node, cmd, cache)
         { nodeIndex = cmd.nodeIndex, scalingRule = scalingRule }
       )
     end
-    return compose(mayaOps(node, mayaScaleEx0(node, cmd, cache)))
+    composeInto(out, operation, product, node, true, mayaScaleEx0(node, cmd, cache))
+    return out
   end
 
   Errors.raise(
