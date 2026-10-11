@@ -333,6 +333,9 @@ function T.kurt_selector_uses_the_script_modal_lane_and_balances_capture()
     isActive = function()
       return active
     end,
+    isBrowseActive = function()
+      return false
+    end,
   }
   local options = optionsWith({ kurtBoxHost = host, input = input, scriptScheduler = scheduler })
   local session = FieldSession.new(options)
