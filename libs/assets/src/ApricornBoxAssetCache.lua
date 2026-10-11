@@ -471,24 +471,6 @@ function ApricornBoxAssetCache.isReady(cacheFs, expectedMarker)
   then
     return false
   end
-  local source = provenance.source
-  if type(source) ~= "table" then
-    return false
-  end
-  local backgrounds = source.backgrounds
-  local resources = source.resources
-  if
-    type(backgrounds) ~= "table"
-    or backgrounds.alias ~= "apricorn_box_ui"
-    or backgrounds.narcId ~= 220
-    or backgrounds.path ~= "a/2/1/8"
-    or type(resources) ~= "table"
-    or resources.alias ~= "apricorn_box_resdat"
-    or resources.narcId ~= 175
-    or resources.path ~= "a/1/7/5"
-  then
-    return false
-  end
   ---@cast manifest table<string, unknown>
   ---@cast provenance table<string, unknown>
   for key in pairs(provenance) do

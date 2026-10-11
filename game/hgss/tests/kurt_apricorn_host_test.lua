@@ -42,6 +42,11 @@ local function setup(resultForUpdate, submitResult)
       return value
     end,
     service = service,
+    bag = {
+      registeredItems = function()
+        return {}
+      end,
+    },
   })
   return host, made, submits
 end
@@ -85,6 +90,42 @@ function T.cancel_does_not_submit_and_stale_order_disposes_before_faulting()
   Assert.deepEqual(staleSubmits, { { "WHT_APRICORN", 3 } })
   Assert.equal(staleMade[1].disposed, 1)
   Assert.isFalse(staleHost:isActive())
+end
+
+function T.registered_browse_reuses_the_box_child_and_releases_it_once()
+  local registered = { "BICYCLE" }
+  local made = {}
+  local host = ApricornBoxHost.new({
+    makeApricornBox = function(mode)
+      Assert.equal(mode, "browse")
+      local value = child(nil)
+      made[#made + 1] = value
+      return value
+    end,
+    service = {
+      submitKurt = function()
+        return true
+      end,
+    },
+    bag = {
+      registeredItems = function()
+        return registered
+      end,
+    },
+  })
+  Assert.isFalse(host:openRegisteredBrowse(), "a different Key Item cannot open the Box")
+  Assert.equal(#made, 0, "an ineligible shortcut does not construct a screen")
+  registered[1] = "APRICORN_BOX"
+  Assert.isTrue(host:openRegisteredBrowse(), "the registered Apricorn Box opens its browse child")
+  local handle = assert(host:activeHandle())
+  Assert.equal(host:status().hostMode, "browse")
+  host:setPresentationReady(handle, true)
+  host:stepBrowse(handle, { { type = "navigate", direction = "down" } })
+  Assert.equal(made[1].updates, 1)
+  host:cancel("test")
+  host:cancel("test")
+  Assert.equal(made[1].disposed, 1, "closing the browse child releases it exactly once")
+  Assert.isFalse(host:isActive())
 end
 
 return { tests = T }

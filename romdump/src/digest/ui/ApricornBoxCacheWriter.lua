@@ -4,8 +4,14 @@ local Errors = require("libs.errors.src.Errors")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local Validate = require("libs.assets.src.Validate")
+local ApricornBoxSources = require("romdump.src.config.ApricornBoxSources")
 
 local ApricornBoxCacheWriter = {}
+local SOURCE_ARCHIVES = {
+  backgrounds = ApricornBoxSources.backgroundArchive,
+  resources = ApricornBoxSources.resdatArchive,
+  actionMenu = ApricornBoxSources.actionMenuArchive,
+}
 
 ApricornBoxCacheWriter.ERROR = {
   BUNDLE_INVALID = "APRICORN_BOX_CACHE_BUNDLE_INVALID",
@@ -23,19 +29,27 @@ local function validateBundle(bundle)
     Errors.raise(ApricornBoxCacheWriter.ERROR.BUNDLE_INVALID, "bundle is incomplete", {})
   end
   local provenance = bundle.provenance
+  local source = provenance.source
+  local sourceIsValid = type(source) == "table"
+  if sourceIsValid then
+    for role, expected in pairs(SOURCE_ARCHIVES) do
+      local record = source[role]
+      if
+        type(record) ~= "table"
+        or record.alias ~= expected.alias
+        or record.narcId ~= expected.narcId
+        or record.path ~= expected.path
+      then
+        sourceIsValid = false
+        break
+      end
+    end
+  end
   if
     not Validate.isSha1Key(provenance.versionRomSha1)
     or not Validate.isSha1Key(provenance.dependencyHash)
     or type(provenance.dependencies) ~= "table"
-    or type(provenance.source) ~= "table"
-    or type(provenance.source.backgrounds) ~= "table"
-    or provenance.source.backgrounds.alias ~= "apricorn_box_ui"
-    or provenance.source.backgrounds.narcId ~= 220
-    or provenance.source.backgrounds.path ~= "a/2/1/8"
-    or type(provenance.source.resources) ~= "table"
-    or provenance.source.resources.alias ~= "apricorn_box_resdat"
-    or provenance.source.resources.narcId ~= 175
-    or provenance.source.resources.path ~= "a/1/7/5"
+    or not sourceIsValid
   then
     Errors.raise(ApricornBoxCacheWriter.ERROR.BUNDLE_INVALID, "bundle provenance is invalid", {})
   end

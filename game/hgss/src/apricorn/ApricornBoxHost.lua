@@ -6,6 +6,7 @@ local ScriptErrors = require("libs.script.src.errors")
 ---@class ApricornBoxHost
 ---@field _makeApricornBox fun(mode: string): table<string, unknown>
 ---@field _service { submitKurt: fun(self: table<string, unknown>, apricornKey: string, quantity: integer): boolean }
+---@field _bag { registeredItems: fun(self: table<string, unknown>): string[] }
 ---@field _nextId integer
 ---@field _active table<string, unknown>?
 ---@field _disposed boolean
@@ -34,9 +35,11 @@ function ApricornBoxHost.new(opts)
   assert(type(opts.makeApricornBox) == "function", "Kurt Box host reuses the composed screen factory")
   assert(type(opts.service) == "table", "Kurt Box host requires the live MartService")
   assert(type(opts.service.submitKurt) == "function", "Kurt Box host submits through MartService")
+  assert(type(opts.bag) == "table" and type(opts.bag.registeredItems) == "function", "Box shortcut reads the live Bag")
   return setmetatable({
     _makeApricornBox = opts.makeApricornBox,
     _service = opts.service,
+    _bag = opts.bag,
     _nextId = 0,
     _active = nil,
     _disposed = false,
@@ -71,11 +74,67 @@ function ApricornBoxHost:open()
   self._active = {
     handle = handle,
     child = child,
+    mode = "kurt_select",
     result = nil,
     resultTaken = false,
     presentationReady = false,
   }
   return handle
+end
+
+---@return boolean true when the registered Apricorn Box opened
+function ApricornBoxHost:openRegisteredBrowse()
+  assert(not self._disposed, "disposed Kurt Box host cannot open a selector")
+  assert(self._active == nil, "Apricorn Box host already owns an open selector")
+  if self._bag:registeredItems()[1] ~= "APRICORN_BOX" then
+    return false
+  end
+  local ok, child = pcall(self._makeApricornBox, "browse")
+  if not ok then
+    error(child, 0)
+  end
+  local valid, err = pcall(validateChild, child)
+  if not valid then
+    if type(child) == "table" and type(child.dispose) == "function" then
+      disposeChild(child)
+    end
+    error(err, 0)
+  end
+  self._nextId = self._nextId + 1
+  self._active = {
+    handle = { id = self._nextId },
+    child = child,
+    mode = "browse",
+    result = nil,
+    resultTaken = false,
+    presentationReady = false,
+  }
+  return true
+end
+
+function ApricornBoxHost:isBrowseActive()
+  return self._active ~= nil and self._active.mode == "browse"
+end
+
+---@param handle table<string, unknown>
+---@param events table[] ordered semantic UI events
+function ApricornBoxHost:stepBrowse(handle, events)
+  local active = assert(self._active, "Apricorn Box has no open browse session")
+  assert(handle == active.handle, "Apricorn Box browse handle is stale or foreign")
+  assert(active.mode == "browse", "only registered browse sessions use the field lane")
+  assert(type(events) == "table", "Apricorn Box browse steps semantic UI events")
+  local ok, result = pcall(function()
+    active.child:updateFixed(active.presentationReady and events or {})
+    return active.child:takeResult()
+  end)
+  if not ok then
+    self:close(handle)
+    error(result, 0)
+  end
+  if result ~= nil then
+    assert(result.kind == "closed", "Apricorn Box browse returns after closing")
+    self:close(handle)
+  end
 end
 
 local function activeFor(self, handle)
@@ -169,6 +228,7 @@ function ApricornBoxHost:status()
   for key, value in pairs(active.child:status()) do
     status[key] = value
   end
+  status.hostMode = active.mode
   status.presentationReady = active.presentationReady
   return status
 end

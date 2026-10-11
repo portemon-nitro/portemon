@@ -989,6 +989,32 @@ function FieldSession:updateFixed(inputSnapshot)
     return
   end
 
+  local kurtBoxHost = self.kurtBoxHost
+  if kurtBoxHost ~= nil and kurtBoxHost:isBrowseActive() then
+    assert(
+      not self.applicationHost:isActive()
+        and not self.menuHost:isModal()
+        and not self.dialogue:isModal()
+        and not self.signpost:isModal()
+        and not self.contextChoice:isActive()
+        and not (self.yesNoHost ~= nil and self.yesNoHost:isModal())
+        and not (self.starterChoice ~= nil and self.starterChoice:isActive())
+        and not (self.partySelection ~= nil and self.partySelection:isActive())
+        and not (self.martHost ~= nil and self.martHost:isActive())
+        and not self.pcApplications:isActive()
+        and not (self.pokemonNaming ~= nil and self.pokemonNaming:isActive())
+        and not isForegroundActive(self.scriptScheduler),
+      "registered Apricorn Box owns the exclusive field modal lane"
+    )
+    local handle = assert(kurtBoxHost:activeHandle(), "active Apricorn Box publishes its handle")
+    kurtBoxHost:stepBrowse(handle, self.input:uiSnapshot(self.tick + 1))
+    if not kurtBoxHost:isBrowseActive() then
+      self.input:clearUi()
+    end
+    self:_advanceTick()
+    return
+  end
+
   -- Application ownership: while the application host is active (Start Menu
   -- or a child application, in any of its phases) it is the one modal owner
   -- -- the session steps only it, once per fixed tick, and freezes world
@@ -1078,6 +1104,16 @@ function FieldSession:updateFixed(inputSnapshot)
   -- presentation (actors, player, camera) on its tick, so it runs before
   -- the actor step.
   if self.applicationHost:takeReopen(self.tick + 1) then
+    self:_advanceTick()
+    return
+  end
+  if
+    inputSnapshot.apricornBoxPressed
+    and kurtBoxHost ~= nil
+    and canOpenStartMenu(self)
+    and kurtBoxHost:openRegisteredBrowse()
+  then
+    self.input:beginUi(self.tick + 1)
     self:_advanceTick()
     return
   end

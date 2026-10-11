@@ -135,10 +135,6 @@ local function readyCache()
     schema = ApricornBoxAssetCache.SCHEMA,
     versionRomSha1 = ROM_SHA1,
     dependencyHash = DEPENDENCY_SHA1,
-    source = {
-      backgrounds = { alias = "apricorn_box_ui", narcId = 220, path = "a/2/1/8" },
-      resources = { alias = "apricorn_box_resdat", narcId = 175, path = "a/1/7/5" },
-    },
     dependencies = { {} },
   }
   local marker = ApricornBoxAssetCache.marker(ROM_SHA1, DEPENDENCY_SHA1)
@@ -173,18 +169,16 @@ local function readyCache()
       return kind == "file" and files[path] ~= nil
     end,
   }
-  return cacheFs, manifest, provenance, marker, files
+  return cacheFs, manifest, marker, files
 end
 
-function T.readiness_requires_the_exact_source_identity_and_both_native_panes()
-  local cacheFs, _, provenance, marker = readyCache()
+function T.readiness_accepts_published_artifacts_without_source_identity_details()
+  local cacheFs, _, marker = readyCache()
   Assert.isTrue(ApricornBoxAssetCache.isReady(cacheFs, marker))
-  provenance.source.backgrounds.narcId = 244
-  Assert.isFalse(ApricornBoxAssetCache.isReady(cacheFs, marker))
 end
 
 function T.readiness_rejects_unknown_manifest_fields_and_missing_images()
-  local cacheFs, manifest, _, marker, files = readyCache()
+  local cacheFs, manifest, marker, files = readyCache()
   manifest.upper.placeholder = true
   Assert.isFalse(ApricornBoxAssetCache.isReady(cacheFs, marker))
   manifest.upper.placeholder = nil

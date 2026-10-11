@@ -11,6 +11,7 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
+local BagSave = require("libs.hgss.src.save.BagSave")
 
 local T = {
   metadata = {
@@ -373,6 +374,74 @@ function T.tests.route_30_apricorn_box_is_obtained_and_used_without_a_party_targ
     Assert.equal(returned.pocket, "key_items", "closing the Box returns to the prior Bag pocket")
     Assert.equal(slotKey(returned.selected), BOX_KEY, "closing the Box restores the previous Bag cursor")
     Assert.equal(bag:revision(), bagBeforeUse, "opening and closing the Box leave Bag revision unchanged")
+    Assert.equal(game:renderAttempts(), 0, "the journey stops before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.registered_apricorn_box_opens_the_browse_page_from_field_input()
+  local harness = AcceptanceHarness.new()
+  local defaultGameFactory = harness.gameFactory
+  harness.gameFactory = function(versionId, map)
+    local gameState = defaultGameFactory(versionId, map)
+    gameState.location = { mapSymbol = map, fieldX = 5, fieldZ = 6, facing = "north" }
+    gameState.bag = BagSave.empty()
+    gameState.bag.pockets.key_items = { { item = "BICYCLE", quantity = 1 } }
+    return gameState
+  end
+  local game = harness:boot({
+    versionId = AcceptanceHarness.defaultVersion(),
+    map = MAP,
+    save = "fresh",
+    fieldOptions = { recordingScriptHosts = true },
+  })
+  local ok, err = xpcall(function()
+    game:waitForFieldEntry()
+    local state = callbacks(game)
+    local bag = assert(game.runtime.bagService, "the production field runtime owns the Bag")
+    game:setWorldState({ flag = FLAG_GOT_BAG })
+    local scriptId = talkToApricornMan(game)
+    finishApricornManScript(game, scriptId)
+
+    Assert.deepEqual(bag:registeredItems(), {}, "the new profile has no registered item")
+    local joystick = {
+      getID = function()
+        return 1
+      end,
+    }
+    state:gamepadpressed(joystick, "y")
+    game:step()
+    state:gamepadreleased(joystick, "y")
+    Assert.equal(hostStatus(game).phase, FieldApplicationHost.PHASES.closed, "Y does not open an unregistered Box")
+    Assert.isNil(game.runtime.kurtBoxHost:status(), "unregistered Y leaves the Box closed")
+
+    Assert.equal(bag:tryRegister("BICYCLE"), "slot1", "the different Key Item occupies the registered slot")
+    state:gamepadpressed(joystick, "y")
+    game:step()
+    state:gamepadreleased(joystick, "y")
+    Assert.equal(
+      hostStatus(game).phase,
+      FieldApplicationHost.PHASES.closed,
+      "Y does not open the Apricorn Box when another Key Item is registered"
+    )
+    Assert.isNil(game.runtime.kurtBoxHost:status(), "another registered item leaves the Box closed")
+
+    Assert.isTrue(bag:unregister("BICYCLE"), "the live Bag service clears the other registered Key Item")
+    Assert.equal(bag:tryRegister(BOX_KEY), "slot1", "the live Bag service registers the Apricorn Box")
+    state:gamepadpressed(joystick, "y")
+    game:step()
+    state:gamepadreleased(joystick, "y")
+    game:advanceUntil("Y opens the Apricorn Box browse screen", function()
+      local status = game.runtime.kurtBoxHost:status()
+      return status ~= nil and status.hostMode == "browse" and status.phase == "browse"
+    end, 120)
+    local boxStatus = assert(game.runtime.kurtBoxHost:status(), "the registered shortcut opens the Apricorn Box")
+    Assert.equal(boxStatus.hostMode, "browse", "the registered shortcut opens the browse screen")
+    Assert.equal(boxStatus.phase, "browse", "the registered shortcut uses the native browse mode")
+    Assert.equal(hostStatus(game).phase, FieldApplicationHost.PHASES.closed, "the shortcut does not open Start Menu")
     Assert.equal(game:renderAttempts(), 0, "the journey stops before GPU rendering")
   end, debug.traceback)
   game:close()

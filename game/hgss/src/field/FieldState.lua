@@ -1273,6 +1273,9 @@ function FieldState:gamepadpressed(joystick, button)
   if button == "x" then
     self.runtime.input:pressMenu(source)
   end
+  if button == "y" then
+    self.runtime.input:pressApricornBox(source)
+  end
   local direction = GAMEPAD_DIRECTIONS[button]
   if direction then
     self.runtime.input:pressDirection(direction, source)
@@ -1291,6 +1294,9 @@ function FieldState:gamepadreleased(joystick, button)
   end
   if button == "x" then
     self.runtime.input:releaseMenu(source)
+  end
+  if button == "y" then
+    self.runtime.input:releaseApricornBox(source)
   end
   local direction = GAMEPAD_DIRECTIONS[button]
   if direction then

@@ -1185,6 +1185,7 @@ function FieldRuntime:_composeFieldServices(boot)
       "Kurt selector uses the composed source Apricorn Box factory"
     ),
     service = self.martService,
+    bag = self.bagService,
   })
   local PcApplicationHost = require("game.hgss.src.pc.PcApplicationHost")
   local function createStorage(request)

@@ -22,6 +22,8 @@
 ---@field menuSources table<string, boolean>
 ---@field menuDown boolean
 ---@field menuPressed boolean
+---@field apricornBoxSources table<string, boolean>
+---@field apricornBoxPressed boolean
 ---@field pressedDirection string?
 ---@field uiDirections table<string, { sources: table<string, boolean>, order: integer }>
 ---@field uiNextOrder integer
@@ -131,6 +133,7 @@ function FieldInput.new(options)
     menuSources = {},
     menuDown = false,
     menuPressed = false,
+    apricornBoxSources = {},
     uiDirections = {},
     uiNextOrder = 0,
     uiRepeatDelay = uiRepeatDelay,
@@ -303,6 +306,25 @@ function FieldInput:releaseMenu(source)
   if not next(self.menuSources) then
     self.menuDown = false
   end
+end
+
+---@param source string
+function FieldInput:pressApricornBox(source)
+  requireSource(source)
+  if self.apricornBoxSources[source] then
+    return
+  end
+  local wasDown = next(self.apricornBoxSources) ~= nil
+  self.apricornBoxSources[source] = true
+  if not wasDown then
+    self.apricornBoxPressed = true
+  end
+end
+
+---@param source string
+function FieldInput:releaseApricornBox(source)
+  requireSource(source)
+  self.apricornBoxSources[source] = nil
 end
 
 -- Menu navigation has independent source tracking and repeat timing. Field
@@ -638,10 +660,14 @@ function FieldInput:snapshot()
   if self.menuPressed then
     snapshot.menuPressed = true
   end
+  if self.apricornBoxPressed then
+    snapshot.apricornBoxPressed = true
+  end
   self.pressedDirection = nil
   self.actionPressed = nil
   self.cancelPressed = nil
   self.menuPressed = nil
+  self.apricornBoxPressed = nil
   return snapshot
 end
 
@@ -652,6 +678,7 @@ function FieldInput:clearEdges()
   self.actionPressed = nil
   self.cancelPressed = nil
   self.menuPressed = nil
+  self.apricornBoxPressed = nil
 end
 
 -- Focus loss clears held, edge, and queued UI state entirely, including every
@@ -670,6 +697,7 @@ function FieldInput:clearAll()
   self.cancelDown = false
   self.menuSources = {}
   self.menuDown = false
+  self.apricornBoxSources = {}
   self.uiDirections = {}
   clearTransientUi(self)
   self.stickDirections = {}
@@ -688,5 +716,6 @@ end
 ---@field cancelPressed boolean?
 ---@field menuDown boolean
 ---@field menuPressed boolean?
+---@field apricornBoxPressed boolean?
 
 return FieldInput
