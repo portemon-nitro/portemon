@@ -489,6 +489,11 @@ function T.inventory_compiles_membership_without_pixel_or_geometry_work()
     "explicit source exclusions keep their reasons"
   )
   Assert.isTrue(SourcePlan.validate(plan, identity("assembly-generation")), "the assembled inventory validates")
+  local projected = SourcePlan.project(plan)
+  Assert.deepEqual(projected.mapIds, { 7, 9 }, "projection preserves world map membership")
+  Assert.deepEqual(projected.scriptMemberIds, { 4, 6 }, "projection preserves script member order")
+  Assert.deepEqual(projected.audioBankIds, { 2, 5 }, "projection preserves audio member order")
+  Assert.equal(SourcePlan.marker("assembly-generation"), "g4-source-plan-v3:assembly-generation")
 end
 
 local function stageSynthetic(cacheFs, generation)

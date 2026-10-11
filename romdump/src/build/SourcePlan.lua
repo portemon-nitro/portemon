@@ -26,6 +26,29 @@ local function isInteger(value)
   return type(value) == "number" and value % 1 == 0
 end
 
+---@param value unknown
+---@param role string
+---@return true|nil
+---@return string|nil
+local function checkDenseSequence(value, role)
+  if type(value) ~= "table" then
+    return nil, "source inventory " .. role .. " are not a dense sequence"
+  end
+  local count = 0
+  local maximum = 0
+  for index in pairs(value) do
+    if not isInteger(index) or index < 1 then
+      return nil, "source inventory " .. role .. " are not a dense sequence"
+    end
+    count = count + 1
+    maximum = math.max(maximum, index)
+  end
+  if maximum ~= count then
+    return nil, "source inventory " .. role .. " are not a dense sequence"
+  end
+  return true
+end
+
 ---@param members table[]
 ---@param identityField string
 ---@param memberRole string singular member noun for diagnostics
@@ -33,6 +56,10 @@ end
 ---@return true|nil
 ---@return string|nil
 local function checkAscendingMembers(members, identityField, memberRole, orderRole)
+  local dense, denseReason = checkDenseSequence(members, orderRole)
+  if not dense then
+    return nil, denseReason
+  end
   local previous = nil
   for _, member in ipairs(members) do
     if type(member) ~= "table" or not isInteger(member[identityField]) or member[identityField] < 0 then
@@ -47,7 +74,7 @@ local function checkAscendingMembers(members, identityField, memberRole, orderRo
 end
 
 local function isAscendingUniqueKeys(values)
-  if type(values) ~= "table" then
+  if not checkDenseSequence(values, "cell keys") then
     return false
   end
   local previous = nil
@@ -185,6 +212,10 @@ local function validateWorld(plan)
   if type(worldMaps) ~= "table" then
     return nil, "source inventory carries no world membership"
   end
+  local dense, denseReason = checkDenseSequence(worldMaps, "world maps")
+  if not dense then
+    return nil, denseReason
+  end
   local worldIds = {}
   local seen = {}
   for _, record in ipairs(worldMaps) do
@@ -202,6 +233,10 @@ local function validateWorld(plan)
   local excluded = type(analysis) == "table" and analysis.excluded or nil --[[@as table[]|nil ]]
   if type(excluded) ~= "table" then
     return nil, "source inventory carries no source exclusion analysis"
+  end
+  dense, denseReason = checkDenseSequence(excluded, "source exclusions")
+  if not dense then
+    return nil, denseReason
   end
   for _, record in ipairs(excluded) do
     if
@@ -231,19 +266,42 @@ local function validateFieldCellIndexBundle(plan)
   if type(matrices) ~= "table" then
     return nil, "source inventory carries no canonical cell index"
   end
+  local dense, denseReason = checkDenseSequence(matrices, "cell matrices")
+  if not dense then
+    return nil, denseReason
+  end
+  local matrixIds = {}
   for _, matrix in ipairs(matrices) do
-    if type(matrix) ~= "table" or not isInteger(matrix.matrixMemberId) or type(matrix.cells) ~= "table" then
+    if
+      type(matrix) ~= "table"
+      or not isInteger(matrix.matrixMemberId)
+      or matrix.matrixMemberId < 0
+      or type(matrix.cells) ~= "table"
+    then
       return nil, "source inventory carries an unidentified cell matrix"
+    end
+    if matrixIds[matrix.matrixMemberId] then
+      return nil, "source inventory carries a duplicate matrix " .. tostring(matrix.matrixMemberId)
+    end
+    matrixIds[matrix.matrixMemberId] = true
+    dense, denseReason = checkDenseSequence(matrix.cells, "cells for matrix " .. tostring(matrix.matrixMemberId))
+    if not dense then
+      return nil, denseReason
     end
     for _, descriptor in ipairs(matrix.cells) do
       if
         type(descriptor) ~= "table"
         or descriptor.matrixMemberId ~= matrix.matrixMemberId
         or not isInteger(descriptor.index)
+        or descriptor.index < 0
       then
         return nil, "source inventory carries an unidentified cell"
       end
-      cells[descriptor.matrixMemberId .. "-" .. descriptor.index] = true
+      local cellKey = descriptor.matrixMemberId .. "-" .. descriptor.index
+      if cells[cellKey] then
+        return nil, "source inventory carries a duplicate cell " .. cellKey
+      end
+      cells[cellKey] = true
     end
   end
   return true, nil, cells
