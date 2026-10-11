@@ -273,7 +273,9 @@ function FieldMenuCompositionCoordinator:composeStartMenu(rememberedActionId)
   local progression = PlayerProgression.new(profile)
   local function runningShoesState()
     return {
-      visible = progression:hasRunningShoes() and runtime.playerAvatar:durableState() ~= "cycling",
+      visible = progression:hasRunningShoes()
+        and runtime.playerAvatar:durableState() ~= "cycling"
+        and runtime.applicationHost:phase() ~= FieldApplicationHost.PHASES.application,
       locked = progression:runningShoesLock(),
     }
   end

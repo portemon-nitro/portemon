@@ -77,6 +77,24 @@ local function tapShoes(game)
   game:step()
 end
 
+local function navigate(game, direction)
+  local source = "acceptance:running-shoes:" .. direction
+  game.runtime.input:pressDirection(direction, source)
+  game:step()
+  game.runtime.input:releaseDirection(source)
+  return menuStatus(game)
+end
+
+local function focusShoes(game)
+  -- A fresh field profile exposes trainer card, save and options in their
+  -- source-backed positions 4..6. Follow that graph to its lower-right
+  -- action, then enter the separate control with the D-pad.
+  Assert.equal(menuStatus(game).selectedPosition, 4, "fresh field selection starts at the first present fixed slot")
+  Assert.equal(navigate(game, "south").selectedPosition, 5, "down follows the source menu graph")
+  Assert.equal(navigate(game, "south").selectedPosition, 6, "down reaches the lower-right source action")
+  return navigate(game, "east")
+end
+
 -- Ticks one unheld ordinary step takes, in the first walkable direction.
 local function ticksPerTile(game)
   local direction
@@ -104,19 +122,43 @@ local function ticksPerTile(game)
   return ticks
 end
 
-function T.tests.start_menu_toggle_flips_the_persisted_lock_that_runs_without_b()
+function T.tests.controller_and_touch_toggle_the_persisted_lock_that_runs_without_b()
   withGame(true, function(game)
     local profile = game.runtime.playerData.profile
     Assert.equal(ticksPerTile(game), 8, "without B or the lock the player walks")
 
     toggleMenu(game, "opens")
+    Assert.equal(menuStatus(game).runningShoes.locked, false, "the owned shoes present their toggle, unlocked")
+    Assert.deepEqual(
+      focusShoes(game).runningShoes,
+      { locked = false, focused = true },
+      "D-pad navigation focuses the shoes without replacing normal selection"
+    )
+    game.runtime:pressAction()
+    game:step()
+    game.runtime:releaseAction()
     Assert.deepEqual(
       menuStatus(game).runningShoes,
-      { locked = false },
-      "the owned shoes present their toggle, unlocked"
+      { locked = true, focused = true },
+      "confirm locks auto-run while leaving the menu and shoes focus open"
     )
+    Assert.equal(game.runtime.applicationHost:status().phase, FieldApplicationHost.PHASES.menu)
+    game.runtime:pressAction()
+    game:step()
+    game.runtime:releaseAction()
+    Assert.deepEqual(
+      menuStatus(game).runningShoes,
+      { locked = false, focused = true },
+      "a second confirm unlocks auto-run exactly once and keeps the menu open"
+    )
+    Assert.equal(navigate(game, "west").selectedPosition, 6, "left returns to the remembered normal action")
+
     tapShoes(game)
-    Assert.deepEqual(menuStatus(game).runningShoes, { locked = true }, "a fresh touch locks auto-run")
+    Assert.deepEqual(
+      menuStatus(game).runningShoes,
+      { locked = true, focused = true },
+      "a fresh touch still locks auto-run"
+    )
     Assert.isTrue(profile.runningShoesLock, "the lock lives in the saved profile")
     toggleMenu(game, "closes")
     Assert.isTrue(
@@ -127,7 +169,11 @@ function T.tests.start_menu_toggle_flips_the_persisted_lock_that_runs_without_b(
 
     toggleMenu(game, "opens")
     tapShoes(game)
-    Assert.deepEqual(menuStatus(game).runningShoes, { locked = false }, "a second touch unlocks")
+    Assert.deepEqual(
+      menuStatus(game).runningShoes,
+      { locked = false, focused = true },
+      "a second touch unlocks"
+    )
     toggleMenu(game, "closes")
     Assert.equal(ticksPerTile(game), 8, "the unlocked player walks again")
   end)

@@ -304,16 +304,48 @@ function T.running_shoes_toggle_draws_button_and_indicator_in_the_lock_state()
     text = recordingText(),
     graphics = lg,
   })
-  renderer:draw({ selectedPosition = 0, actions = {}, runningShoes = { locked = false } }, canonicalPlacement())
+  renderer:draw({ selectedPosition = 0, actions = {}, runningShoes = { locked = false, focused = false } }, canonicalPlacement())
   Assert.equal(#lg.draws, 3, "chrome plus the button body and the lock indicator")
   Assert.deepEqual({ lg.draws[2].quad.x, lg.draws[2].x, lg.draws[2].y }, { 0, 184, 86 }, "the off button")
   Assert.deepEqual({ lg.draws[3].quad.x, lg.draws[3].x, lg.draws[3].y }, { 144, 210, 94 }, "the off indicator")
-  renderer:draw({ selectedPosition = 0, actions = {}, runningShoes = { locked = true } }, canonicalPlacement())
+  renderer:draw({ selectedPosition = 0, actions = {}, runningShoes = { locked = true, focused = false } }, canonicalPlacement())
   Assert.equal(#lg.draws, 6)
   Assert.equal(lg.draws[5].quad.x, 72, "the on button")
   Assert.equal(lg.draws[6].quad.x, 176, "the on indicator")
   renderer:draw({ selectedPosition = 0, actions = {} }, canonicalPlacement())
   Assert.equal(#lg.draws, 7, "no toggle in the presentation draws only the chrome")
+  renderer:release()
+end
+
+function T.running_shoes_focus_draws_contrasting_outline_and_deselects_normal_icon()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  local hitRect = ICON_MANIFEST.startMenu.runningShoes.hitRect
+  for _, locked in ipairs({ false, true }) do
+    renderer:draw({
+      selectedPosition = 1,
+      actions = { { id = "vanilla.pokemon", position = 1, icon = 1 } },
+      runningShoes = { locked = locked, focused = true },
+    }, canonicalPlacement())
+  end
+  Assert.equal(lg.draws[2].quad.y, 0, "a normal action is not selected while shoes have focus")
+  Assert.equal(#lg.rectangles, 4, "each lock state draws both focus strokes")
+  Assert.deepEqual(
+    { lg.rectangles[1].x, lg.rectangles[1].y, lg.rectangles[1].w, lg.rectangles[1].h, lg.rectangles[1].color },
+    { hitRect.x - 1, hitRect.y - 1, hitRect.width + 2, hitRect.height + 2, { 0, 0, 0, 1 } },
+    "outer stroke follows the generated bounds in black"
+  )
+  Assert.deepEqual(
+    { lg.rectangles[2].x, lg.rectangles[2].y, lg.rectangles[2].w, lg.rectangles[2].h, lg.rectangles[2].color },
+    { hitRect.x, hitRect.y, hitRect.width, hitRect.height, { 1, 1, 1, 1 } },
+    "inner stroke contrasts with the outer stroke"
+  )
+  Assert.deepEqual({ lg.getColor() }, { 1, 1, 1, 1 }, "renderer restores the caller's color after drawing")
   renderer:release()
 end
 

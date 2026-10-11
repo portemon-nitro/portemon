@@ -208,7 +208,7 @@ end
 -- action draws its selected visual; every other action draws its normal
 -- visual. Text-only rows draw no shared icon art.
 ---@param action table<string, unknown>
----@param selectedPosition integer
+---@param selectedPosition integer?
 ---@param gender string?
 function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender)
   local lg = assert(self._graphics)
@@ -263,6 +263,15 @@ function StartMenuRenderer:_drawRunningShoes(locked)
   end
 end
 
+---@param hitRect FieldDialogueTheme.Rect
+function StartMenuRenderer:_drawRunningShoesFocus(hitRect)
+  local lg = assert(self._graphics)
+  lg.setColor(0, 0, 0, 1)
+  lg.rectangle("line", hitRect.x - 1, hitRect.y - 1, hitRect.width + 2, hitRect.height + 2)
+  lg.setColor(1, 1, 1, 1)
+  lg.rectangle("line", hitRect.x, hitRect.y, hitRect.width, hitRect.height)
+end
+
 -- one presented action's resolved label in the action's own source label
 -- window: windows are keyed by source position, never by presentation
 -- order, so a sparse action list still labels the right row. Labels arrive
@@ -304,7 +313,7 @@ end
 -- canvas, shader, scissor, blend, depth, wireframe, cull, and color
 -- afterwards so the HUD and host overlays draw normally.
 
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean } }?
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean } }?
 ---@param placement LayoutGeometry.Placement the resolved content placement (frame, origin, scale, clip)
 function StartMenuRenderer:draw(presentation, placement)
   if not presentation or not self._subImage then
@@ -326,7 +335,7 @@ end
 -- draw draws nothing), then the SUB chrome at the canonical origin plus
 -- per-action icons and labels. The manifest rects are canonical, so
 -- nothing is scaled twice.
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean } }
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean } }
 function StartMenuRenderer:_drawSurface(presentation)
   local lg = assert(self._graphics)
   lg.setColor(1, 1, 1, 1)
@@ -362,15 +371,34 @@ function StartMenuRenderer:_drawSurface(presentation)
       )
     end
   end
+  local shoes = presentation.runningShoes
+  if shoes ~= nil then
+    assert(
+      type(shoes.locked) == "boolean" and type(shoes.focused) == "boolean",
+      "Running Shoes presentation needs lock and focus"
+    )
+    assert(
+      self.menu.runningShoes.hitRect ~= nil,
+      "the Running Shoes focus outline requires its generated hit rectangle"
+    )
+  end
+  ---@type integer?
+  local selectedPosition = presentation.selectedPosition
+  if shoes ~= nil and shoes.focused then
+    selectedPosition = nil
+  end
   lg.draw(assert(self._subImage), assert(self._subQuad), 0, 0)
   if actions ~= nil then
     for _, action in ipairs(actions) do
-      self:_drawActionIcon(action, presentation.selectedPosition, presentation.trainerGender)
+      self:_drawActionIcon(action, selectedPosition, presentation.trainerGender)
       self:_drawActionLabel(action)
     end
   end
-  if presentation.runningShoes ~= nil then
-    self:_drawRunningShoes(presentation.runningShoes.locked)
+  if shoes ~= nil then
+    self:_drawRunningShoes(shoes.locked)
+    if shoes.focused then
+      self:_drawRunningShoesFocus(self.menu.runningShoes.hitRect)
+    end
   end
 end
 
