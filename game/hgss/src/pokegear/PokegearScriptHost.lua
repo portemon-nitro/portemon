@@ -98,11 +98,80 @@ local function activeFor(self, handle)
   return record
 end
 
--- Opens one companion application under the shared lease. Only the call
--- mode has a concrete child yet; other named modes fail before any
--- effect. A failing construction takes no lease and keeps the original
--- error.
----@param args { mode: string, request: table<string, unknown>?, parentOwner: string }
+-- Validates one Fly field-move selection into a detached record: the
+-- initiating party slot and revision, the current map context, and the
+-- source-permitted destination set. Malformed combinations fail with
+-- attribution before any lease or map effect.
+---@param selection unknown
+---@return table<string, unknown> the detached validated selection
+local function checkFlySelection(selection)
+  if type(selection) ~= "table" then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "companion fly selection carries its field-move choice", {})
+  end
+  assert(type(selection) == "table", "fly selections stay records")
+  local record = selection --[[@as table<string, unknown>]]
+  local slot = record.slot
+  if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 5 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "companion fly selection names its party slot", {})
+  end
+  local partyRevision = record.partyRevision
+  if partyRevision ~= nil and (type(partyRevision) ~= "number" or partyRevision % 1 ~= 0) then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "companion fly selection carries its party revision", {})
+  end
+  local mapContext = record.mapContext
+  if type(mapContext) ~= "table" then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "companion fly selection carries its map context", {})
+  end
+  assert(type(mapContext) == "table", "fly map contexts stay records")
+  local context = mapContext --[[@as table<string, unknown>]]
+  if
+    type(context.fieldMap) ~= "string"
+    or type(context.location) ~= "string"
+    or type(context.matrixX) ~= "number"
+    or type(context.matrixY) ~= "number"
+    or type(context.region) ~= "string"
+    or type(context.unlockLevel) ~= "number"
+    or (context.specialMode ~= nil and type(context.specialMode) ~= "string")
+    or type(context.playerGender) ~= "string"
+  then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "companion fly selection carries its map context", {})
+  end
+  local destinations = record.destinations
+  if type(destinations) ~= "table" then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "companion fly selection carries its destinations", {})
+  end
+  assert(type(destinations) == "table", "fly destinations stay lists")
+  local keys = {}
+  for index, key in
+    ipairs(destinations --[[@as table]])
+  do
+    if type(key) ~= "string" or key == "" then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "companion fly destinations name semantic flypoints", {})
+    end
+    keys[index] = key
+  end
+  return {
+    slot = slot,
+    partyRevision = partyRevision,
+    mapContext = {
+      fieldMap = context.fieldMap,
+      location = context.location,
+      matrixX = context.matrixX,
+      matrixY = context.matrixY,
+      region = context.region,
+      unlockLevel = context.unlockLevel,
+      specialMode = context.specialMode,
+      playerGender = context.playerGender,
+    },
+    destinations = keys,
+  }
+end
+
+-- Opens one companion application under the shared lease. Call, Town
+-- map, and Fly entries each build their concrete child; unknown modes
+-- and malformed mode/request combinations fail before any effect. A
+-- failing construction takes no lease and keeps the original error.
+---@param args { mode: string, request: table<string, unknown>?, selection: table<string, unknown>?, parentOwner: string }
 ---@return table<string, unknown> the active handle
 function PokegearScriptHost:open(args)
   if self._disposed then
@@ -126,12 +195,8 @@ function PokegearScriptHost:open(args)
   if not isNonEmptyString(args.parentOwner) then
     Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "companion applications carry their parent identity", {})
   end
-  if args.mode ~= "call" then
-    Errors.raise(
-      ScriptErrors.FEATURE_UNAVAILABLE,
-      "the companion " .. tostring(args.mode) .. " entry has no concrete child yet",
-      { mode = args.mode }
-    )
+  if args.mode == "townMap" or args.mode == "fly" then
+    return self:_openMap(args --[[@as table<string, unknown>]])
   end
   checkCallRequest(args.request)
   local request = args.request --[[@as table<string, string>]]
@@ -164,6 +229,68 @@ function PokegearScriptHost:open(args)
     controller = controller,
     request = { id = request.id, contact = request.contact, direction = request.direction, kind = request.kind },
     parentOwner = args.parentOwner,
+  }
+  return handle
+end
+
+-- Opens the view-only Town map or the Fly destination selector under
+-- the shared lease. Town maps open with parent identity only and never
+-- receive a request or selection; Fly opens only with the authorized
+-- parent field-move selection. The host lends its borrowed catalog to
+-- the selector; full visuals arrive with the final composition, and the
+-- selector paints procedurally until then. A failing construction takes
+-- no lease and keeps the original error.
+---@param args table<string, unknown>
+---@return table<string, unknown> the active handle
+function PokegearScriptHost:_openMap(args)
+  local record = args --[[@as table<string, unknown>]]
+  local mode = record.mode --[[@as string]]
+  local selection = nil
+  if mode == "fly" then
+    if record.request ~= nil then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "companion fly opens through its field-move selection, never a call request",
+        { mode = mode }
+      )
+    end
+    selection = checkFlySelection(record.selection)
+  elseif record.request ~= nil or record.selection ~= nil then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "companion town maps open view-only without a request or selection",
+      { mode = mode }
+    )
+  end
+  local FlyMapController = require("game.hgss.src.pokegear.FlyMapController")
+  local identity = mode .. "-" .. tostring(self._nextId + 1)
+  local ok, controller = pcall(FlyMapController.new, {
+    mode = mode,
+    operationId = identity,
+    context = selection ~= nil and (selection --[[@as table<string, unknown>]]).mapContext or nil,
+    destinations = selection ~= nil and (selection --[[@as table<string, unknown>]]).destinations or nil,
+    assets = { catalog = self._catalog },
+    presentation = {},
+  })
+  if not ok then
+    if Errors.is(controller) then
+      error(controller, 0)
+    end
+    Errors.raise(
+      ScriptErrors.FEATURE_UNAVAILABLE,
+      "companion map construction failed: " .. tostring(controller),
+      { mode = mode }
+    )
+  end
+  assert(type(controller) == "table", "companion construction returns its controller")
+  self._nextId = self._nextId + 1
+  self._lastResult = nil
+  local handle = { id = self._nextId }
+  self._active = {
+    handle = handle,
+    mode = mode,
+    controller = controller,
+    parentOwner = record.parentOwner,
   }
   return handle
 end

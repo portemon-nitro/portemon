@@ -1,11 +1,12 @@
--- Runs one script-owned companion phone call and waits for its terminal
--- result. Creation only validates and stores the immutable request
--- identity; the first poll opens the shared feature host, later polls
--- step it through the scheduler UI events, and the terminal poll consumes
--- the single result and releases the lease. A missing handle after an
--- acquired call is an attributed lifecycle fault: the conversation is
--- never recreated and committed effects are never replayed. Cancellation
--- unwinds the host call once and stays terminal. Library task only: it
+-- Runs one script-owned companion application, a phone call or the
+-- view-only Town map, and waits for its terminal result. Creation only
+-- validates and stores the immutable request identity; the first poll
+-- opens the shared feature host, later polls step it through the
+-- scheduler UI events, and the terminal poll consumes the single result
+-- and releases the lease. A missing handle after an acquired application
+-- is an attributed lifecycle fault: the application is never recreated
+-- and committed effects are never replayed. Cancellation unwinds the
+-- host application once and stays terminal. Library task only: it
 -- borrows the injected host and names no caller program, source number,
 -- or renderer.
 
@@ -98,10 +99,17 @@ function PokegearApplicationTask.create(spec, ctx)
   assert(isNonEmptyString(spec.parentOwner), "phone application task carries its parent identity")
   local host = applicationHost(ctx)
   assert(host ~= nil, "phone application task requires its host before any effect")
+  if spec.kind == "townMap" then
+    return {
+      kind = "townMap",
+      parentOwner = spec.parentOwner,
+      completed = false,
+    }
+  end
   if spec.kind ~= "call" then
     Errors.raise(
       ScriptErrors.FEATURE_UNAVAILABLE,
-      "the companion " .. tostring(spec.kind) .. " entry has no concrete child yet",
+      "the companion " .. tostring(spec.kind) .. " entry needs its field-move selection",
       { kind = spec.kind }
     )
   end
@@ -126,7 +134,7 @@ function PokegearApplicationTask.poll(state, ctx)
     end
     Errors.raise(
       ScriptErrors.FEATURE_UNAVAILABLE,
-      "phone call handle is missing after its terminal result; the conversation is never recreated",
+      "companion handle is missing after its terminal result; the application is never recreated",
       { kind = state.kind }
     )
   end
@@ -139,7 +147,7 @@ function PokegearApplicationTask.poll(state, ctx)
   if handle == nil then
     Errors.raise(
       ScriptErrors.FEATURE_UNAVAILABLE,
-      "phone call handle is missing after acquisition; the conversation is never recreated",
+      "companion handle is missing after acquisition; the application is never recreated",
       { kind = state.kind }
     )
   end

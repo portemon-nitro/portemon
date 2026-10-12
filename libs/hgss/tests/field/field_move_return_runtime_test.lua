@@ -1,8 +1,9 @@
 -- Return-warp phase ownership: Dig plans from recorded entrances and
 -- Teleport plans from cited spawn destinations, both advancing
 -- acknowledge-then-warp through the world adapter exactly once; Fly
--- never plans; cancellation before the start leaves the service
--- untouched and repeated polls never re-warp.
+-- stages bounded destination choice before its validated travel;
+-- cancellation before the start leaves the service untouched and
+-- repeated polls never re-warp.
 
 local Assert = require("tests.support.Assert")
 local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
@@ -187,18 +188,40 @@ function T.teleport_plans_and_runs_to_done_through_one_warp()
   Assert.equal(world.warpCalls.begin, 1, "the warp must start exactly once across polls")
 end
 
-function T.fly_never_plans()
+function T.fly_stages_destination_choice()
   local world = worldDouble()
   local runtime = runtimeWith(world)
   local travel = travelWith(nil)
-  local fly = { move = "fly", slot = 1, partyRevision = 4, context = flyContextWith(), travel = travel }
+  local fly = {
+    move = "fly",
+    slot = 1,
+    partyRevision = 4,
+    context = flyContextWith(),
+    travel = travel,
+    mapContext = {
+      fieldMap = "test.field.new-bark",
+      location = "test.place.new-bark",
+      matrixX = 96,
+      matrixY = 64,
+      region = "johto",
+      unlockLevel = 1,
+      specialMode = nil,
+      playerGender = "boy",
+    },
+    destinations = { "test.fly.violet", "test.fly.new-bark" },
+  }
   local admitted = runtime:queue(fly)
   Assert.equal(admitted.kind, "accepted", "fly admission precedes planning")
-  local ok, err = pcall(function()
-    runtime:plan(runtime:takePending())
-  end)
-  Assert.isFalse(ok, "fly must never produce a field plan")
-  Assert.notNil(tostring(err):find("fly never plans", 1, true), "fly rejection names the invariant")
+  local plan = runtime:plan(runtime:takePending())
+  Assert.equal(plan.kind, "fly", "fly stages a destination-choice plan")
+  Assert.equal(plan.phase, "choose_destination", "fly waits in its choice phase")
+  Assert.isTrue(runtime:isBusy(), "the staged choice holds the runtime gate")
+  local outcome = runtime:advance(plan)
+  Assert.equal(outcome.kind, "running", "the choice waits without travel")
+  Assert.equal(world.warpCalls.begin, 0, "waiting on selection starts no warp")
+  Assert.isTrue(runtime:isBusy(), "the waiting choice keeps the runtime gate")
+  runtime:dispose()
+  Assert.isFalse(runtime:isBusy(), "disposing the waiting choice releases the gate")
 end
 
 return { tests = T }

@@ -721,12 +721,36 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
   Assert.equal(tasks[#tasks].type, "pokegear_application", "the open blocks on the companion task")
   Assert.equal(tasks[#tasks].spec.kind, "townMap", "the open carries its explicit mode")
   local PokegearApplicationTask = require("libs.hgss.src.script.tasks.PokegearApplicationTask")
-  local townMapOk, townMapErr = pcall(PokegearApplicationTask.create, {
+  -- The Town map entry has a real child: construction succeeds, the
+  -- first poll opens the view-only map through the shared host, a
+  -- view-only confirmation settles nothing, and cancellation closes it
+  -- back to its script with no travel.
+  local mapState = PokegearApplicationTask.create({
     kind = "townMap",
     parentOwner = "script:test-map",
   }, { services = { pokegearApplications = host } })
-  Assert.isFalse(townMapOk, "modes without a child fail before any effect")
-  Assert.equal(townMapErr.code, "FEATURE_UNAVAILABLE", "the failure names its unavailable mode")
+  Assert.isNil(PokegearApplicationTask.validate(mapState), "town map task state stays serializable")
+  local mapServices = { services = { pokegearApplications = host }, input = { uiEvents = {} } }
+  local mapOpened = PokegearApplicationTask.poll(mapState, mapServices)
+  Assert.isFalse(mapOpened.complete, "opening the view-only map waits for its close")
+  Assert.isTrue(host:isActive(), "the task opens the town map through the shared host")
+  local mapConfirmed = PokegearApplicationTask.poll(mapState, {
+    services = { pokegearApplications = host },
+    input = { uiEvents = { { type = "confirm" } } },
+  })
+  Assert.isFalse(mapConfirmed.complete, "a view-only confirmation settles nothing")
+  PokegearApplicationTask.cancel(mapState, "test map close", mapServices)
+  Assert.isFalse(host:isActive(), "cancelling the town map releases the lease")
+  Assert.isTrue(host:isStableForSave(), "a closed map captures saves again")
+  -- Fly task construction still needs its field-move selection, which no
+  -- script opcode supplies yet; the host-level Fly child stays reachable
+  -- through the field-move owner instead.
+  local flyOk, flyErr = pcall(PokegearApplicationTask.create, {
+    kind = "fly",
+    parentOwner = "script:test-fly",
+  }, { services = { pokegearApplications = host } })
+  Assert.isFalse(flyOk, "fly task construction waits for its field-move selection")
+  Assert.equal(flyErr.code, "FEATURE_UNAVAILABLE", "the failure names its missing selection")
 end
 
 return T
