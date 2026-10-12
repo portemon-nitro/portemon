@@ -2163,11 +2163,32 @@ local function stubSaleSession(bag, money)
 end
 
 ---@param bag HgssBagService
+-- Sale pointer geometry for tests that drive the sale quantity picker by
+-- pointer. Rectangles mirror the sale interaction composition; the shared
+-- manifest carries no sale section because keyboard-only sale tests never
+-- hit test the sale state.
+local function saleLayoutManifest()
+  local layoutManifest = manifest()
+  layoutManifest.interactive.sale = {
+    pressTicks = 2,
+    controls = {
+      { delta = 10, role = "increment", hitRect = { x = 120, y = 88, width = 32, height = 24 } },
+      { delta = 1, role = "increment", hitRect = { x = 152, y = 88, width = 32, height = 24 } },
+      { delta = -10, role = "decrement", hitRect = { x = 120, y = 136, width = 32, height = 24 } },
+      { delta = -1, role = "decrement", hitRect = { x = 152, y = 136, width = 32, height = 24 } },
+    },
+    confirm = { hitRect = { x = 96, y = 168, width = 78, height = 24 } },
+    cancel = { hitRect = { x = 178, y = 168, width = 78, height = 24 } },
+  }
+  return layoutManifest
+end
+
 ---@param cursor BagCursor
 ---@param session table
+---@param layoutManifest table<string, unknown>?
 ---@return BagController
-local function sellController(bag, cursor, session)
-  local layoutManifest = manifest()
+local function sellController(bag, cursor, session, layoutManifest)
+  layoutManifest = layoutManifest or manifest()
   local function resolveLayout()
     return BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   end
@@ -2494,6 +2515,198 @@ function T.batches_stop_at_the_intent_boundary_and_status_stays_read_only()
   Assert.equal(ackBag:revision(), ackRevision, "status never mutates")
   ack:updateFixed({ { type = "confirm" } })
   Assert.equal(ackBag:quantity("POTION"), 0, "only the acknowledgement input commits")
+end
+
+-- Keyboard and pointer input reach the same toss behavior: entering the
+-- action menu, choosing toss, stepping the native quantity controls,
+-- confirming into the modal prompt, and cancelling back to browsing all
+-- publish the same state, quantity, focus, selection, and inventory
+-- revision no matter which input path drove them.
+function T.keyboard_and_pointer_match_through_toss_quantity_and_cancel()
+  local function rig()
+    local bag = service()
+    Assert.isTrue(bag:add("POTION", 25))
+    local cursor = BagCursor.new()
+    cursor:setPocket("medicine")
+    local control, layoutManifest = controller(bag, cursor)
+    local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+    control:updateFixed({})
+    return bag, control, layout
+  end
+  local keyboardBag, keyboard = rig()
+  local pointerBag, pointer, pointerLayout = rig()
+  local keyboardRevision = keyboardBag:revision()
+  local pointerRevision = pointerBag:revision()
+
+  keyboard:updateFixed({ { type = "confirm" } })
+  settleEntry(keyboard)
+  tap(pointer, pointerLayout, 76, 56)
+  settleEntry(pointer)
+  Assert.equal(keyboard:status().state, "action_menu", "keyboard confirm enters the action menu")
+  Assert.equal(pointer:status().state, "action_menu", "pointer tap enters the action menu")
+
+  local keyboardTicks = 0
+  chooseActionSlot(keyboard, 1)
+  while keyboard:status().feedback ~= nil and keyboardTicks < 64 do
+    keyboard:updateFixed({})
+    keyboardTicks = keyboardTicks + 1
+  end
+  tap(pointer, pointerLayout, 144, 144)
+  local pointerTicks = 0
+  while pointer:status().feedback ~= nil and pointerTicks < 64 do
+    pointer:updateFixed({})
+    pointerTicks = pointerTicks + 1
+  end
+  Assert.equal(keyboardTicks, pointerTicks, "choosing toss latches the same feedback duration")
+  Assert.equal(keyboard:status().state, "toss_quantity", "keyboard choice enters the quantity picker")
+  Assert.equal(pointer:status().state, "toss_quantity", "pointer choice enters the quantity picker")
+
+  keyboard:updateFixed({ navigate("right") })
+  tap(pointer, pointerLayout, 48, 144)
+  Assert.equal(keyboard:status().quantity, 11, "keyboard ten-step advances the quantity")
+  Assert.equal(
+    pointer:status().quantity,
+    keyboard:status().quantity,
+    "the pointer ten-step matches the keyboard quantity"
+  )
+  keyboard:updateFixed({ navigate("up") })
+  tap(pointer, pointerLayout, 80, 144)
+  Assert.equal(
+    pointer:status().quantity,
+    keyboard:status().quantity,
+    "the pointer single-step matches the keyboard quantity"
+  )
+  keyboard:updateFixed({ navigate("down") })
+  tap(pointer, pointerLayout, 80, 176)
+  keyboard:updateFixed({ navigate("left") })
+  tap(pointer, pointerLayout, 48, 176)
+  Assert.equal(keyboard:status().quantity, 1, "keyboard steps return to a single copy")
+  Assert.equal(
+    pointer:status().quantity,
+    keyboard:status().quantity,
+    "the pointer decrement matches the keyboard quantity"
+  )
+
+  keyboard:updateFixed({ { type = "confirm" } })
+  local keyboardConfirmTicks = 0
+  while keyboard:status().feedback ~= nil and keyboardConfirmTicks < 64 do
+    keyboard:updateFixed({})
+    keyboardConfirmTicks = keyboardConfirmTicks + 1
+  end
+  tap(pointer, pointerLayout, 144, 176)
+  local pointerConfirmTicks = 0
+  while pointer:status().feedback ~= nil and pointerConfirmTicks < 64 do
+    pointer:updateFixed({})
+    pointerConfirmTicks = pointerConfirmTicks + 1
+  end
+  Assert.equal(keyboardConfirmTicks, pointerConfirmTicks, "confirming latches the same feedback duration")
+  local keyboardStatus = keyboard:status()
+  local pointerStatus = pointer:status()
+  Assert.equal(keyboardStatus.state, "toss_confirm", "keyboard confirm asks for confirmation")
+  Assert.equal(pointerStatus.state, "toss_confirm", "pointer confirm asks for confirmation")
+  Assert.equal(pointerStatus.quantity, keyboardStatus.quantity, "confirmation carries the same quantity")
+  Assert.equal(selectedKey(pointerStatus), selectedKey(keyboardStatus), "confirmation keeps the same item")
+  Assert.equal(pointerStatus.focus, keyboardStatus.focus, "confirmation keeps the same focus")
+  Assert.equal(keyboardBag:revision(), keyboardRevision, "keyboard confirmation never mutates")
+  Assert.equal(pointerBag:revision(), pointerRevision, "pointer confirmation never mutates")
+  Assert.isNil(keyboard:takeIntent(), "keyboard confirmation emits no intent")
+  Assert.isNil(pointer:takeIntent(), "pointer confirmation emits no intent")
+  Assert.isNil(keyboard:takeResult(), "keyboard confirmation closes nothing")
+  Assert.isNil(pointer:takeResult(), "pointer confirmation closes nothing")
+
+  local cancelKeyboardBag, cancelKeyboard = rig()
+  local cancelPointerBag, cancelPointer, cancelPointerLayout = rig()
+  cancelKeyboard:updateFixed({ { type = "confirm" } })
+  settleEntry(cancelKeyboard)
+  tap(cancelPointer, cancelPointerLayout, 76, 56)
+  settleEntry(cancelPointer)
+  chooseActionSlot(cancelKeyboard, 1)
+  settleFeedback(cancelKeyboard)
+  tap(cancelPointer, cancelPointerLayout, 144, 144)
+  settleFeedback(cancelPointer)
+  local cancelKeyboardRevision = cancelKeyboardBag:revision()
+  local cancelPointerRevision = cancelPointerBag:revision()
+  cancelKeyboard:updateFixed({ { type = "cancel" } })
+  settleFeedback(cancelKeyboard)
+  tap(cancelPointer, cancelPointerLayout, 217, 180)
+  settleFeedback(cancelPointer)
+  Assert.equal(cancelKeyboard:status().state, "browsing", "keyboard cancel returns to browsing")
+  Assert.equal(cancelPointer:status().state, "browsing", "pointer cancel returns to browsing")
+  Assert.equal(cancelKeyboardBag:revision(), cancelKeyboardRevision, "keyboard cancel never mutates")
+  Assert.equal(cancelPointerBag:revision(), cancelPointerRevision, "pointer cancel never mutates")
+
+  local saleBag = service()
+  Assert.isTrue(saleBag:add("POTION", 5))
+  local saleCursor = BagCursor.new()
+  saleCursor:setPocket("medicine")
+  local saleSession = stubSaleSession(saleBag, 1000)
+  local sale = sellController(saleBag, saleCursor, saleSession)
+  sale:updateFixed({})
+  sale:updateFixed({ { type = "confirm" } })
+  settleSaleState(sale, "sale_quantity")
+  settleSaleQuantityPrompt(sale)
+  Assert.equal(sale:status().quantityMax, 5, "a small stack caps the sale quantity")
+  sale:updateFixed({ navigate("right") })
+  Assert.equal(sale:status().quantity, 5, "the keyboard ten-step clamps to the small maximum")
+  sale:updateFixed({ navigate("right") })
+  Assert.equal(sale:status().quantity, 5, "repeating the ten-step keeps the clamped maximum")
+end
+
+-- Sale ten-step pointer controls admit the same steps as the keyboard
+-- once the stack allows them: with a large capped stack the pointer
+-- ten-step advances exactly like keyboard right instead of staying inert.
+function T.sale_ten_step_pointer_matches_keyboard_when_enabled()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 25))
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local session = stubSaleSession(bag, 1000)
+  local layoutManifest = saleLayoutManifest()
+  local function resolveLayout()
+    return BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  end
+  local control = BagController.new({
+    model = {
+      refresh = function()
+        return BagModel.build(bag, cursor)
+      end,
+    },
+    cursor = cursor,
+    context = "sell",
+    resolveLayout = resolveLayout,
+    promptShape = promptShape(),
+    tossPrompt = tossPrompt(),
+    salePrompt = tossPrompt(),
+    saleSession = session,
+    messages = saleTemplates(),
+    itemSelectTicks = 3,
+    textPolicy = textPolicy(),
+    commands = {
+      toss = function(itemKey, quantity)
+        return bag:take(itemKey, quantity)
+      end,
+      move = function(pocketKey, fromIndex, toIndex)
+        return bag:move(pocketKey, fromIndex, toIndex)
+      end,
+      register = function(itemKey)
+        return bag:tryRegister(itemKey)
+      end,
+      unregister = function(itemKey)
+        return bag:unregister(itemKey)
+      end,
+    },
+    resolveActions = BagActionPolicy.forService(bag),
+  })
+  control:updateFixed({})
+  control:updateFixed({ { type = "confirm" } })
+  settleSaleState(control, "sale_quantity")
+  settleSaleQuantityPrompt(control)
+  Assert.equal(control:status().quantityMax, 25, "a large stack enables the ten-step")
+  Assert.equal(control:status().quantity, 1, "a new sale starts at one item")
+  local revision = bag:revision()
+  tap(control, layoutManifest, 136, 100)
+  Assert.equal(control:status().quantity, 11, "the pointer ten-step matches keyboard right")
+  Assert.equal(bag:revision(), revision, "staging the quantity never mutates the inventory")
 end
 
 return { tests = T }

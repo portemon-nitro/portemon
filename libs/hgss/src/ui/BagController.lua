@@ -1351,6 +1351,21 @@ function BagController:_finishCommittedSale()
   end
 end
 
+-- Scans one input batch for typed-message acceleration: confirmation,
+-- cancellation, or a fresh pointer press reveals the message faster. The
+-- modal sale and toss phases that already consumed terminal dismissal
+-- share this scan; every other event waits for the message.
+---@param uiInput table[]
+---@return boolean
+local function messageAccelerate(uiInput)
+  for _, event in ipairs(uiInput) do
+    if event.type == "confirm" or event.type == "cancel" or event.type == "pointer_down" then
+      return true
+    end
+  end
+  return false
+end
+
 function BagController:_stepSaleQuantity(uiInput)
   if self._message ~= nil then
     if not self:_messageComplete() then
@@ -1409,13 +1424,7 @@ function BagController:_stepSaleOffer(uiInput)
     return
   end
   if not self:_messageComplete() then
-    local accelerate = false
-    for _, event in ipairs(uiInput) do
-      if event.type == "confirm" or event.type == "cancel" or event.type == "pointer_down" then
-        accelerate = true
-        break
-      end
-    end
+    local accelerate = messageAccelerate(uiInput)
     self:_stepMessage(accelerate)
     return
   end
@@ -1441,13 +1450,7 @@ function BagController:_stepSaleResult(uiInput)
     return
   end
   if not self:_messageComplete() then
-    local accelerate = false
-    for _, event in ipairs(uiInput) do
-      if event.type == "confirm" or event.type == "cancel" or event.type == "pointer_down" then
-        accelerate = true
-        break
-      end
-    end
+    local accelerate = messageAccelerate(uiInput)
     self:_stepMessage(accelerate)
     if not self:_messageComplete() then
       return
@@ -1924,14 +1927,6 @@ local function sameTarget(a, b)
     and a.delta == b.delta
 end
 
----@return table<string, unknown>
-function BagController:_pointerState()
-  return {
-    state = self:_visibleState(),
-    visibleSlots = self._view.visibleSlots,
-  }
-end
-
 -- Activates one hit-test target through the shared paths. In nested action
 -- states the same geometric targets carry the nested meaning: action
 -- buttons choose, grid cells steer the move target, and Cancel pops one
@@ -2093,19 +2088,12 @@ function BagController:_pointerDown(event)
   self._pressId = event.pointerId
   local layout = self._resolveLayout()
   local hitTest = assert(layout.hitTest, "the bag layout must carry its hit test")
-  local target = hitTest(event.x, event.y, self:_pointerState())
-  if target == nil then
-    self._pressCapture = nil
-  else
-    self._pressCapture = {
-      kind = target.kind,
-      pocket = target.pocket,
-      visibleIndex = target.visibleIndex,
-      actionNode = target.actionNode,
-      quantityControlIndex = target.quantityControlIndex,
-      delta = target.delta,
-    }
-  end
+  -- Admission reads the published status record, so the layout maps the
+  -- same presented enablement the renderer sees instead of a parallel
+  -- state snapshot. The capture holds the down-target once; the release
+  -- compares it against a fresh hit, so a state change between down and
+  -- up can never activate.
+  self._pressCapture = hitTest(event.x, event.y, self:status())
 end
 
 ---@param event table<string, unknown>
@@ -2118,7 +2106,7 @@ function BagController:_pointerMove(event)
   end
   local layout = self._resolveLayout()
   local hitTest = assert(layout.hitTest, "the bag layout must carry its hit test")
-  local target = hitTest(event.x, event.y, self:_pointerState())
+  local target = hitTest(event.x, event.y, self:status())
   if target ~= nil and target.kind == "item" and not self._overlay then
     local view = self._view
     local start = assert(view.visibleStart, "the bag view needs its window start")
@@ -2146,7 +2134,7 @@ function BagController:_pointerUp(event)
   end
   local layout = self._resolveLayout()
   local hitTest = assert(layout.hitTest, "the bag layout must carry its hit test")
-  local up = hitTest(event.x, event.y, self:_pointerState())
+  local up = hitTest(event.x, event.y, self:status())
   if sameTarget(down, up) then
     self:_activate(up)
   end
@@ -2218,13 +2206,7 @@ function BagController:_stepTossConfirm(uiInput)
     return
   end
   if not self:_messageComplete() then
-    local accelerate = false
-    for _, event in ipairs(uiInput) do
-      if event.type == "confirm" or event.type == "cancel" or event.type == "pointer_down" then
-        accelerate = true
-        break
-      end
-    end
+    local accelerate = messageAccelerate(uiInput)
     self:_stepMessage(accelerate)
     return
   end

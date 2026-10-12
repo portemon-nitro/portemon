@@ -130,6 +130,38 @@ end
 ---@field quantityControlIndex integer?
 ---@field delta integer?
 
+-- Admits one tap against a presented quantity control row: the row's
+-- controls in source order, then its confirm and cancel targets. Toss and
+-- sale share this admission with distinct control rows; only the sale row
+-- gates its ten-step controls on the presented stack maximum. Anything
+-- outside the row admits nothing, keeping quantity states closed over the
+-- browsing targets underneath.
+---@param controls table<integer, table<string, unknown>>
+---@param quantityMax integer?
+---@param gateTens boolean
+---@param confirmRect LayoutGeometry.Rect
+---@param cancelRect LayoutGeometry.Rect
+---@param logicalX number
+---@param logicalY number
+---@return BagLayout.Hit?
+local function hitQuantityControls(controls, quantityMax, gateTens, confirmRect, cancelRect, logicalX, logicalY)
+  for index, control in ipairs(controls) do
+    local tensDisabled = gateTens
+      and (control.delta == 10 or control.delta == -10)
+      and (type(quantityMax) ~= "number" or quantityMax < 10)
+    if not tensDisabled and LayoutGeometry.containsPoint(control.hitRect, logicalX, logicalY) then
+      return { kind = "quantity_delta", quantityControlIndex = index - 1, delta = control.delta }
+    end
+  end
+  if LayoutGeometry.containsPoint(confirmRect, logicalX, logicalY) then
+    return { kind = "confirm" }
+  end
+  if LayoutGeometry.containsPoint(cancelRect, logicalX, logicalY) then
+    return { kind = "cancel" }
+  end
+  return nil
+end
+
 ---@class BagLayout.Spec
 ---@field manifest table<string, unknown> the validated bag manifest carrying canonical interactive geometry
 ---@field heroVisible boolean true when the hero pane is composed beside the interaction pane
@@ -200,35 +232,20 @@ function BagLayout.resolve(spec)
       if quantity == nil then
         quantity, quantityPressTicks, quantityCancelRect, quantityConfirmRect = quantityControls(interactive)
       end
-      for index, control in ipairs(quantity) do
-        if LayoutGeometry.containsPoint(control.hitRect, logicalX, logicalY) then
-          return { kind = "quantity_delta", quantityControlIndex = index - 1, delta = control.delta }
-        end
-      end
-      if LayoutGeometry.containsPoint(quantityConfirmRect, logicalX, logicalY) then
-        return { kind = "confirm" }
-      end
-      if LayoutGeometry.containsPoint(quantityCancelRect, logicalX, logicalY) then
-        return { kind = "cancel" }
-      end
-      return nil
+      return hitQuantityControls(quantity, nil, false, quantityConfirmRect, quantityCancelRect, logicalX, logicalY)
     elseif buttonState == "sale_quantity" then
       local sale = assert(interactive.sale, "the sale state carries its presentation")
-      for index, control in ipairs(assert(sale.controls, "sale has four quantity controls")) do
-        local quantityMax = type(controllerState) == "table" and controllerState.quantityMax or nil
-        local tensDisabled = (control.delta == 10 or control.delta == -10)
-          and (type(quantityMax) ~= "number" or quantityMax < 10)
-        if not tensDisabled and LayoutGeometry.containsPoint(control.hitRect, logicalX, logicalY) then
-          return { kind = "quantity_delta", quantityControlIndex = index - 1, delta = control.delta }
-        end
-      end
-      if LayoutGeometry.containsPoint(sale.confirm.hitRect, logicalX, logicalY) then
-        return { kind = "confirm" }
-      end
-      if LayoutGeometry.containsPoint(sale.cancel.hitRect, logicalX, logicalY) then
-        return { kind = "cancel" }
-      end
-      return nil
+      local saleControls = assert(sale.controls, "sale has four quantity controls")
+      local quantityMax = type(controllerState) == "table" and controllerState.quantityMax or nil
+      return hitQuantityControls(
+        saleControls,
+        quantityMax,
+        true,
+        sale.confirm.hitRect,
+        sale.cancel.hitRect,
+        logicalX,
+        logicalY
+      )
     elseif
       buttonState == "sale_offer"
       or buttonState == "sale_result"

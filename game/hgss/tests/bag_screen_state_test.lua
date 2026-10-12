@@ -461,11 +461,7 @@ function T.fresh_equivalent_measurement_keeps_item_capture_across_ticks()
   for _ = 1, 3 do
     state:updateFixed({})
   end
-  Assert.equal(
-    state:status().state,
-    "action_menu",
-    "the selection entry completes into the action menu"
-  )
+  Assert.equal(state:status().state, "action_menu", "the selection entry completes into the action menu")
   Assert.equal(state:status().revision, revision, "opening the menu never mutates the inventory")
   state:dispose()
 end
@@ -776,10 +772,8 @@ local function composedManifest()
       },
     },
   }
-  manifested.interactive.sale.confirm.visual =
-    manifested.interactive.overlays.quantity.confirm.visual
-  manifested.interactive.sale.cancel.visual =
-    manifested.interactive.overlays.quantity.cancel.visual
+  manifested.interactive.sale.confirm.visual = manifested.interactive.overlays.quantity.confirm.visual
+  manifested.interactive.sale.cancel.visual = manifested.interactive.overlays.quantity.cancel.visual
   local tabs = {}
   local strips = {}
   for index = 0, 7 do
@@ -1591,10 +1585,7 @@ function T.state_or_geometry_changes_reresolve_while_hit_targets_hold()
   end
   local menu = state:status()
   Assert.equal(menu.state, "action_menu", "the entry clip still completes into the action menu")
-  Assert.isTrue(
-    type(menu.actions) == "table" and #menu.actions > 0,
-    "the menu overlay still lists its actions"
-  )
+  Assert.isTrue(type(menu.actions) == "table" and #menu.actions > 0, "the menu overlay still lists its actions")
   Assert.equal(menu.hero.pocket, "balls", "the hero cue still follows the browsed pocket")
   step({ { type = "cancel" } })
   for _ = 1, 8 do
@@ -1623,10 +1614,7 @@ function T.state_or_geometry_changes_reresolve_while_hit_targets_hold()
   step({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
   Assert.deepEqual(state:takeResult(), { kind = "close" }, "the mapped Cancel target still closes exactly once")
   Assert.isNil(state:takeResult(), "the close still reports exactly once")
-  Assert.isTrue(
-    spy.count < 2 * ticks,
-    "changed ticks resolve at most once instead of pre- and post-input"
-  )
+  Assert.isTrue(spy.count < 2 * ticks, "changed ticks resolve at most once instead of pre- and post-input")
   state:dispose()
 end
 
@@ -1717,6 +1705,84 @@ function T.battle_context_requires_its_policy_and_nothing_else()
     state:dispose()
   end)
   Assert.isFalse(fieldOk, "field contexts never take battle options")
+end
+
+-- Stale and disabled pointer releases never commit: a press held on a
+-- quantity control across an external revision bump and a state change
+-- stays inert on release, taps outside the quantity controls and taps
+-- owned by the modal prompt change nothing, and tapping an empty browse
+-- cell keeps legal browsing focus with the inventory untouched until a
+-- valid commit.
+function T.stale_and_disabled_pointer_releases_change_nothing()
+  local options, _, bag = composition()
+  options.cursor:setPocket("medicine")
+  local state = interactiveBagState(options)
+  state:updateFixed({})
+  local function hostPoint(logicalX, logicalY)
+    local placement = interactivePlacement(state)
+    return placement.frame.x + logicalX * placement.scale, placement.frame.y + logicalY * placement.scale
+  end
+  local function tapLogical(logicalX, logicalY)
+    local x, y = hostPoint(logicalX, logicalY)
+    state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
+    state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
+  end
+  state:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:status().state, "item_select", "setup enters the selection entry")
+  for _ = 1, 3 do
+    state:updateFixed({})
+  end
+  Assert.equal(state:status().state, "action_menu", "setup opens the action menu")
+  state:updateFixed({ { type = "confirm" } })
+  settleFeedback(state)
+  Assert.equal(state:status().state, "toss_quantity", "setup enters the quantity picker")
+  local revision = bag:revision()
+  tapLogical(200, 100)
+  Assert.equal(state:status().state, "toss_quantity", "a tap outside the quantity controls admits nothing")
+  Assert.equal(state:status().quantity, 1, "the dead-zone tap steps no quantity")
+  Assert.equal(bag:revision(), revision, "the dead-zone tap mutates nothing")
+  local downX, downY = hostPoint(80, 144)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = downX, y = downY } })
+  Assert.isTrue(bag:add("POKE_BALL", 1), "an external stock change advances the revision")
+  state:updateFixed({ { type = "confirm" } })
+  settleFeedback(state)
+  Assert.equal(state:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = downX, y = downY } })
+  local stale = state:status()
+  Assert.equal(stale.state, "toss_confirm", "a stale release after a state change activates nothing")
+  Assert.equal(stale.quantity, 1, "the stale release steps no quantity")
+  Assert.equal(bag:quantity("POTION"), 5, "the stale release removes no stock")
+  Assert.equal(bag:revision(), revision + 1, "only the external stock change advanced the revision")
+  Assert.isNil(state:takeResult(), "the stale release closes nothing")
+  Assert.isTrue(stale.open, "the bag stays open after the stale release")
+  for _ = 1, 512 do
+    if state:status().yesNoPrompt ~= nil then
+      break
+    end
+    state:updateFixed({})
+  end
+  Assert.isTrue(state:status().yesNoPrompt ~= nil, "the typed confirmation opens the modal prompt")
+  tapLogical(48, 56)
+  local modal = state:status()
+  Assert.equal(modal.state, "toss_confirm", "a tap owned by the modal prompt activates nothing")
+  Assert.isTrue(modal.yesNoPrompt ~= nil, "the modal tap leaves the prompt open")
+  Assert.equal(bag:quantity("POTION"), 5, "the modal tap removes no stock")
+  Assert.equal(bag:revision(), revision + 1, "the modal tap mutates nothing")
+  state:updateFixed({ { type = "cancel" } })
+  for _ = 1, 9 do
+    state:updateFixed({})
+  end
+  Assert.equal(state:status().state, "browsing", "one modal cancel returns to browsing")
+  tapLogical(176, 56)
+  local empty = state:status()
+  Assert.equal(empty.state, "browsing", "tapping an empty browse cell opens no menu")
+  Assert.equal(empty.focusedAbsoluteIndex, 1, "the empty cell keeps legal browsing focus")
+  Assert.isNil(selectedKey(empty), "the empty focus selects no item")
+  Assert.equal(bag:quantity("POTION"), 5, "focusing the empty cell removes no stock")
+  Assert.equal(bag:revision(), revision + 1, "the whole journey mutated only through the external stock change")
+  Assert.isNil(state:takeResult(), "no disabled or stale release closes the bag")
+  Assert.isTrue(empty.open, "the bag stays open")
+  state:dispose()
 end
 
 return { tests = T }
