@@ -45,7 +45,16 @@ local function harness()
         versionId = versionId,
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+          profile = {
+            name = "GOLD",
+            gender = 0,
+            trainerId = 1,
+            money = 3000,
+            badges = 0,
+            nationalDex = false,
+            runningShoes = false,
+            runningShoesLock = false,
+          },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -286,9 +295,9 @@ function T.tests.wild_and_trainer_battles_run_the_production_path_and_return()
     game:waitForFieldReady()
     Assert.equal(game:snapshot().mapSymbol, MAP, "the battles return to the map they launched from")
     Assert.isTrue(game.runtime.monService:partyCount() >= 1, "the live party survives the round trips")
-    local wildResult = BattleTask.result({ launchId = wildLaunch.id })
+    local wildResult = BattleTask.result({ launchId = wildLaunch.id }, { services = { battle = wild } })
     Assert.isTrue(wildResult.committed, "the script continuation resumes on the wild result")
-    local rivalResult = BattleTask.result({ launchId = trainerLaunch.id })
+    local rivalResult = BattleTask.result({ launchId = trainerLaunch.id }, { services = { battle = rival } })
     Assert.isTrue(rivalResult.committed, "the script continuation resumes on the trainer result")
     Assert.equal(game:renderAttempts(), 0, "the journey must stop before GPU rendering")
   end, debug.traceback)

@@ -109,7 +109,16 @@ end
 ---@return table player record and its validation context
 local function playerFacts(money)
   local record = {
-    profile = { name = "RED", gender = 0, trainerId = 1, money = money, badges = 0, nationalDex = false },
+    profile = {
+      name = "RED",
+      gender = 0,
+      trainerId = 1,
+      money = money,
+      badges = 0,
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+    },
     options = { textFrame = 0, textSpeed = "fastest" },
   }
   local context = { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }
@@ -409,8 +418,6 @@ end
 function T.unknown_capture_species_fails_the_resolution()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
-  local Committer = requirePresent(COMMITTER_MODULE, "end-to-end exactly-once result publication")
-
   local party = newPartyOwner()
   local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xAAAA0005))
   local launch =
@@ -427,7 +434,6 @@ function T.unknown_capture_species_fails_the_resolution()
   driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "failed", "an unknown capture never stages")
   Assert.isNil(battle:status().outcomeReceipt, "a failed resolution records no receipt")
-  Assert.isNil(Committer.receipt(launch.id), "a failed resolution records no success receipt")
   Assert.equal(party:partyCount(), 1, "the live party is unchanged")
   battle:dispose()
 end
@@ -435,7 +441,6 @@ end
 function T.unstaged_dex_reference_fails_the_resolution()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
-  local Committer = requirePresent(COMMITTER_MODULE, "end-to-end exactly-once result publication")
   local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
 
   local party = newPartyOwner()
@@ -453,7 +458,6 @@ function T.unstaged_dex_reference_fails_the_resolution()
   driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "failed", "an unstaged dex reference never publishes silently")
   Assert.isNil(battle:status().outcomeReceipt, "a failed resolution records no receipt")
-  Assert.isNil(Committer.receipt(launch.id), "a failed resolution records no success receipt")
   battle:dispose()
 end
 

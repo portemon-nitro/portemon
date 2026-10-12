@@ -2,64 +2,106 @@
 
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
+local PcStorageGeometry = require("libs.hgss.src.ui.PcStorageGeometry")
 
 local StorageInterface = {}
 local UPPER = { id = "upper", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local LOWER = { id = "lower", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 
-local function geometry(view, partyTouchTargets)
+local function geometry(view)
   local mode = assert(view.mode, "Storage plans carry the retail mode")
   assert(mode >= 0 and mode <= 3, "Storage plans use one of four retail modes")
   local modeGeometry = {
     mode = mode,
-    party = { x = 8, y = 24, columns = 1, rows = 6 },
-    box = { x = 80, y = 16, columns = 6, rows = 5 },
+    party = view.tray ~= "closed" and {
+      x = PcStorageGeometry.PARTY_TRAY_ORIGINS[view.tray].x,
+      y = PcStorageGeometry.PARTY_TRAY_ORIGINS[view.tray].y,
+      columns = 2,
+      rows = 3,
+    } or nil,
+    box = {
+      x = PcStorageGeometry.boxSlotRect(0).x,
+      y = PcStorageGeometry.boxSlotRect(0).y,
+      columns = PcStorageGeometry.BOX_COLUMNS,
+      rows = PcStorageGeometry.BOX_ROWS,
+    },
     carry = mode == 2,
     item = mode == 3,
   }
   local slots = {}
   for slot = 0, 29 do
-    local column, row = slot % 6, math.floor(slot / 6)
-    local rect = { x = 80 + column * 28, y = 16 + row * 28, width = 24, height = 24 }
-    slots[#slots + 1] = { rect = rect, target = { kind = "box", slot = slot } }
+    slots[#slots + 1] = { rect = PcStorageGeometry.boxSlotRect(slot), target = { kind = "box", slot = slot } }
   end
   local visibleParty = {}
-  for slot = 0, 5 do
-    visibleParty[#visibleParty + 1] = {
-      rect = { x = 8, y = 24 + slot * 24, width = 64, height = 20 },
-      target = { kind = "party", slot = slot },
-    }
+  if view.tray ~= "closed" then
+    for slot = 0, 5 do
+      visibleParty[#visibleParty + 1] = {
+        rect = PcStorageGeometry.partySlotRect(slot, view.tray),
+        target = { kind = "party", slot = slot },
+      }
+    end
   end
   local editorChoices = {}
   local editor = view.editor
   if editor ~= nil and editor.kind == "markings" then
     for bit = 0, 5 do
       editorChoices[#editorChoices + 1] = {
-        rect = { x = 120 + bit * 8, y = 8, width = 8, height = 8 },
+        rect = PcStorageGeometry.markingRect(bit),
         target = { type = "marking_choice", id = bit },
       }
     end
   elseif editor ~= nil and editor.kind == "wallpaper" then
-    local unlocks = assert(view.wallpaperUnlocks, "Storage plans carry wallpaper unlocks")
-    local current = assert(view.wallpaperId, "Storage plans carry the current wallpaper")
-    for choice = 0, 23 do
-      local column, row = choice % 4, math.floor(choice / 4)
-      local storedId = choice < 16 and choice or choice + 16
-      local unlocked = choice < 16 or unlocks[choice - 15] == true
-      if unlocked and storedId ~= current then
-        editorChoices[#editorChoices + 1] = {
-          rect = { x = 37 + column * 46, y = 20 + row * 24, width = 44, height = 20 },
-          target = { type = "wallpaper_choice", id = choice },
-        }
-      end
+    local pageStart = editor.selected - editor.selected % PcStorageGeometry.WALLPAPER_PAGE_SIZE
+    for slot = 0, PcStorageGeometry.WALLPAPER_PAGE_SIZE - 1 do
+      editorChoices[#editorChoices + 1] = {
+        rect = PcStorageGeometry.wallpaperSlotRect(slot),
+        target = { type = "wallpaper_choice", id = pageStart + slot },
+      }
     end
+    editorChoices[#editorChoices + 1] =
+      { rect = PcStorageGeometry.WALLPAPER_ARROW_RECTS.left, target = { type = "wallpaper_page", delta = -1 } }
+    editorChoices[#editorChoices + 1] =
+      { rect = PcStorageGeometry.WALLPAPER_ARROW_RECTS.right, target = { type = "wallpaper_page", delta = 1 } }
+    editorChoices[#editorChoices + 1] =
+      { rect = PcStorageGeometry.WALLPAPER_CONFIRM_RECT, target = { type = "submit" } }
+    editorChoices[#editorChoices + 1] = { rect = PcStorageGeometry.WALLPAPER_CANCEL_RECT, target = { type = "cancel" } }
+  end
+  -- Deposit mode only hit-tests the party tray until a deposit asks where.
+  local boxTouchable = editor == nil and (view.mode ~= 0 or view.carry ~= nil)
+  local menuButtons, controls = {}, {}
+  if editor == nil and view.menu ~= nil then
+    local count = #view.menu.actions
+    for index, action in ipairs(view.menu.actions) do
+      menuButtons[#menuButtons + 1] = {
+        rect = PcStorageGeometry.actionButtonRect(count, index - 1),
+        target = { type = "action", action = action },
+      }
+    end
+  end
+  if view.message ~= nil and view.message.yesNo then
+    controls[#controls + 1] = { rect = PcStorageGeometry.YES_RECT, target = { type = "confirm" } }
+    controls[#controls + 1] = { rect = PcStorageGeometry.NO_RECT, target = { type = "cancel" } }
+  end
+  for _, button in ipairs(PcStorageGeometry.bottomButtons(view)) do
+    controls[#controls + 1] = { rect = button.rect, target = button.target }
+  end
+  if editor == nil then
+    if view.carry == nil and view.menu == nil then
+      controls[#controls + 1] = { rect = PcStorageGeometry.BOX_TITLE_RECT, target = { type = "box_title" } }
+    end
+    controls[#controls + 1] =
+      { rect = PcStorageGeometry.BOX_ARROW_RECTS.left, target = { type = "navigate", direction = "left" } }
+    controls[#controls + 1] =
+      { rect = PcStorageGeometry.BOX_ARROW_RECTS.right, target = { type = "navigate", direction = "right" } }
   end
   return modeGeometry,
     {
-      boxSlots = editor == nil and slots or {},
-      partySlots = editor == nil and partyTouchTargets and visibleParty or {},
+      boxSlots = boxTouchable and slots or {},
+      partySlots = editor == nil and visibleParty or {},
       editorChoices = editorChoices,
+      menuButtons = menuButtons,
+      controls = controls,
     }
 end
 
@@ -75,6 +117,18 @@ local function mapInput(event, _, plan)
     return event
   end
   for _, hit in ipairs(plan.content.hitRegions.editorChoices) do
+    local rect = hit.rect
+    if event.x >= rect.x and event.x < rect.x + rect.width and event.y >= rect.y and event.y < rect.y + rect.height then
+      return hit.target
+    end
+  end
+  for _, hit in ipairs(plan.content.hitRegions.menuButtons) do
+    local rect = hit.rect
+    if event.x >= rect.x and event.x < rect.x + rect.width and event.y >= rect.y and event.y < rect.y + rect.height then
+      return hit.target
+    end
+  end
+  for _, hit in ipairs(plan.content.hitRegions.controls) do
     local rect = hit.rect
     if event.x >= rect.x and event.x < rect.x + rect.width and event.y >= rect.y and event.y < rect.y + rect.height then
       return hit.target
@@ -101,12 +155,12 @@ end
 local function renderPlan(resources, snapshot, resolved)
   local renderer = assert(resources.storageRenderer, "Storage rendering borrows its renderer")
   for _, pane in ipairs(resolved.panes) do
-    renderer:drawPane(snapshot, resources, pane.id, pane.placement, #resolved.panes == 1)
+    renderer:drawPane(snapshot, resources, pane.id, pane.placement)
   end
 end
 
-local function plan(manifest, panes, frames, view, partyTouchTargets)
-  local modeGeometry, hitRegions = geometry(view, partyTouchTargets)
+local function plan(manifest, panes, frames, view)
+  local modeGeometry, hitRegions = geometry(view)
   return {
     panes = panes,
     frames = frames or {},
@@ -168,7 +222,7 @@ function StorageInterface.defaults(manifest)
         inputKey = "pc-storage-inactive",
       }
     end
-    return plan(manifest, { { id = "lower", placement = lower, interactive = true } }, resolved.frames, view, true)
+    return plan(manifest, { { id = "lower", placement = lower, interactive = true } }, resolved.frames, view)
   end
   ---@param context ApplicationLayout.Context
   ---@param view table<string, unknown>

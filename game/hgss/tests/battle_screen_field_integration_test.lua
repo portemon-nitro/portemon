@@ -316,7 +316,7 @@ local SETTLE_BUDGET = 6000
 ---@param request table<string, unknown> pending player decision under test driving
 ---@return table? prepared native switch fragment when a living replacement is selectable now
 local function enabledSwitchFragment(runtime, request)
-  local battle = runtime.battleRuntime
+  local battle = runtime.battleCoordinator:activeBattle()
   if battle == nil or type(battle.decisionOptions) ~= "function" then
     return nil
   end
@@ -365,7 +365,7 @@ end
 ---@param item string battle item key under projection
 ---@return table? prepared native choice fragment when the item is executable now
 local function enabledItemFragment(runtime, request, item)
-  local battle = runtime.battleRuntime
+  local battle = runtime.battleCoordinator:activeBattle()
   if battle == nil or type(battle.decisionOptions) ~= "function" then
     return nil
   end
@@ -401,8 +401,8 @@ local function settleBattle(game, envelope, choose, budget)
   -- return without settling anything whenever the battle is still
   -- covering or leaving.
   local waited = 0
-  while runtime.battleRuntime == nil and runtime._battleLaunch ~= nil and waited < budget do
-    local pending = runtime._battleLaunch
+  while runtime.battleCoordinator:activeBattle() == nil and runtime.battleCoordinator._battleLaunch ~= nil and waited < budget do
+    local pending = runtime.battleCoordinator._battleLaunch
     if pending ~= nil and pending.phase == "failed" then
       error("the presented launch failed before construction: " .. tostring(pending.error or runtime.errorText), 0)
     end
@@ -410,11 +410,11 @@ local function settleBattle(game, envelope, choose, budget)
     envelope:updateFixed(TICK)
     waited = waited + 1
   end
-  Assert.notNil(runtime.battleRuntime, "the covered launch constructs its battle before settlement")
+  Assert.notNil(runtime.battleCoordinator:activeBattle(), "the covered launch constructs its battle before settlement")
   local turns = 0
   local ticks = 0
-  while runtime.battleRuntime ~= nil and ticks < budget do
-    local battle = runtime.battleRuntime
+  while runtime.battleCoordinator:activeBattle() ~= nil and ticks < budget do
+    local battle = runtime.battleCoordinator:activeBattle()
     local current = battle:status()
     if current.phase == "failed" then
       error("the presented battle failed: " .. tostring(current.error), 0)
@@ -434,7 +434,7 @@ local function settleBattle(game, envelope, choose, budget)
     -- input path exactly as a player would, alongside the decisions.
     -- Once the defeat enters recovery the disposed screen is gone, so
     -- the waiting defeat message gets its own genuine routed edge.
-    local launch = runtime._battleLaunch
+    local launch = runtime.battleCoordinator._battleLaunch
     if launch ~= nil and launch.phase == "recovering" then
       envelope:input({ { type = "confirm" } })
     else
@@ -450,7 +450,7 @@ local function settleBattle(game, envelope, choose, budget)
     envelope:updateFixed(TICK)
     ticks = ticks + 1
   end
-  Assert.isNil(runtime.battleRuntime, "answered decisions settle the owned presented lifetime")
+  Assert.isNil(runtime.battleCoordinator:activeBattle(), "answered decisions settle the owned presented lifetime")
   return turns
 end
 
@@ -535,9 +535,10 @@ function T.tests.committed_steps_launch_one_presented_battle_each()
   requireFactoryBinding(runtime)
   local envelope, binding, _ = bindEnvelope(game, versionId, dualMeasurement("presented-steps:dual"))
   local starts, attempts = 0, 0
-  local realStart = runtime.startBattle
+  local coordinator = runtime.battleCoordinator
+  local realStart = coordinator.startBattle
   local realAttempt = runtime.attemptEncounter
-  runtime.startBattle = function(self, args)
+  coordinator.startBattle = function(self, args)
     starts = starts + 1
     return realStart(self, args)
   end
@@ -551,7 +552,7 @@ function T.tests.committed_steps_launch_one_presented_battle_each()
     freezeActors(game)
     local facts = routeFacts(versionId)
     walkToGrass(game, facts)
-    Assert.isNil(runtime.battleRuntime, "the walk to the grass stays outside battle")
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "the walk to the grass stays outside battle")
     -- Turning in place never completes a step, so it never launches.
     local facing = playerCell(game).facing
     for _, direction in ipairs({ "north", "east", "south", "west" }) do
@@ -559,10 +560,10 @@ function T.tests.committed_steps_launch_one_presented_battle_each()
     end
     game:face(facing)
     pump(game, envelope, 10)
-    Assert.isNil(runtime.battleRuntime, "turning launches no presented battle")
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "turning launches no presented battle")
     -- Idle polling on the grass tile is not a step either.
     pump(game, envelope, 10)
-    Assert.isNil(runtime.battleRuntime, "idle polling launches no presented battle")
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "idle polling launches no presented battle")
     -- Pace across neighbouring grass tiles until the first prepared
     -- encounter reaches the real screen on its own. The fresh boot keeps
     -- world draws deterministic, so the walk either launches within
@@ -571,7 +572,7 @@ function T.tests.committed_steps_launch_one_presented_battle_each()
     local anchor = playerCell(game)
     local attemptsBefore = attempts
     for _ = 1, 150 do
-      if runtime.battleRuntime ~= nil then
+      if runtime.battleCoordinator:activeBattle() ~= nil then
         launched = true
         break
       end
@@ -603,7 +604,7 @@ function T.tests.committed_steps_launch_one_presented_battle_each()
     -- launch nothing.
     game:face("north")
     pump(game, envelope, 10)
-    Assert.isNil(runtime.battleRuntime, "turning after return launches nothing")
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "turning after return launches nothing")
     -- Revisiting the launch tile on a new real step stays eligible: the
     -- step is evaluated again instead of suppressed by its coordinate.
     -- Single press ticks only start or turn, so drive one settled step
@@ -619,7 +620,7 @@ function T.tests.committed_steps_launch_one_presented_battle_each()
     Assert.isTrue(attempts > evaluated, "a new real step on a revisited tile evaluates again")
     Assert.equal(game:renderAttempts(), 0, "the step route stops before GPU rendering")
   end, debug.traceback)
-  runtime.startBattle = realStart
+  coordinator.startBattle = realStart
   runtime.attemptEncounter = realAttempt
   local unbound, unbindErr = pcall(function()
     runtime:unbindBattlePresentation(binding)
@@ -647,8 +648,9 @@ function T.tests.scripted_launches_keep_their_result_ownership()
     requireFactoryBinding(runtime)
     local envelope, binding, doubles = bindEnvelope(game, versionId, dualMeasurement("presented-scripts:dual"))
     local starts = 0
-    local realStart = runtime.startBattle
-    runtime.startBattle = function(self, args)
+    local coordinator = runtime.battleCoordinator
+    local realStart = coordinator.startBattle
+    coordinator.startBattle = function(self, args)
       starts = starts + 1
       return realStart(self, args)
     end
@@ -699,7 +701,7 @@ function T.tests.scripted_launches_keep_their_result_ownership()
       Assert.equal(runtime.overworld:phase(), "absent", "scripted defeat holds cover while absent")
       Assert.equal(game:renderAttempts(), 0, "the script route stops before GPU rendering")
     end, debug.traceback)
-    runtime.startBattle = realStart
+    coordinator.startBattle = realStart
     local unbound = pcall(function()
       runtime:unbindBattlePresentation(binding)
     end)
@@ -743,9 +745,10 @@ function T.tests.covered_entry_waits_for_readiness_and_holds_music()
       end
     end
     local starts, attempts = 0, 0
-    local realStart = runtime.startBattle
+    local coordinator = runtime.battleCoordinator
+    local realStart = coordinator.startBattle
     local realAttempt = runtime.attemptEncounter
-    runtime.startBattle = function(self, args)
+    coordinator.startBattle = function(self, args)
       starts = starts + 1
       return realStart(self, args)
     end
@@ -768,12 +771,12 @@ function T.tests.covered_entry_waits_for_readiness_and_holds_music()
       -- Release the envelope: cover completes, leave is requested, and
       -- exactly one battle constructs under the same launch identity.
       local ticks = 0
-      while runtime.battleRuntime == nil and ticks < 600 do
+      while runtime.battleCoordinator:activeBattle() == nil and ticks < 600 do
         game:step()
         envelope:updateFixed(TICK)
         ticks = ticks + 1
       end
-      Assert.notNil(runtime.battleRuntime, "the covered launch constructs its battle")
+      Assert.notNil(runtime.battleCoordinator:activeBattle(), "the covered launch constructs its battle")
       Assert.equal(starts, 1, "one launch constructs one battle lifetime")
       local cover = envelope:cover()
       Assert.isTrue(type(cover) == "table" and cover.coefficient == 16, "the battle starts under full cover")
@@ -813,7 +816,7 @@ function T.tests.covered_entry_waits_for_readiness_and_holds_music()
       Assert.equal(runtime:battleStatus(launchId).result, "win", "the covered battle reports its win")
       Assert.equal(game:renderAttempts(), 0, "the covered route stops before GPU rendering")
     end, debug.traceback)
-    runtime.startBattle = realStart
+    coordinator.startBattle = realStart
     runtime.attemptEncounter = realAttempt
     audio.playMusic = realPlay
     if type(realStop) == "function" then
@@ -980,18 +983,18 @@ function T.tests.host_lifetime_survives_schedules_and_second_launches()
     }
     runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 4 } })
     local launched = 0
-    while runtime.battleRuntime == nil and runtime._battleLaunch ~= nil and launched < SETTLE_BUDGET do
+    while runtime.battleCoordinator:activeBattle() == nil and runtime.battleCoordinator._battleLaunch ~= nil and launched < SETTLE_BUDGET do
       for _ = 1, stepsPerPump do
         game:step()
       end
       envelope:updateFixed(stepsPerPump * TICK)
       launched = launched + 1
     end
-    Assert.notNil(runtime.battleRuntime, "the scheduled battle constructs")
+    Assert.notNil(runtime.battleCoordinator:activeBattle(), "the scheduled battle constructs")
     local turns = 0
     local ticks = 0
-    while runtime.battleRuntime ~= nil and ticks < SETTLE_BUDGET do
-      local battle = runtime.battleRuntime
+    while runtime.battleCoordinator:activeBattle() ~= nil and ticks < SETTLE_BUDGET do
+      local battle = runtime.battleCoordinator:activeBattle()
       local current = battle:status()
       if current.phase == "running" and current.request ~= nil then
         turns = turns + 1
@@ -1012,13 +1015,13 @@ function T.tests.host_lifetime_survives_schedules_and_second_launches()
       end
       envelope:updateFixed(stepsPerPump * TICK)
       -- Status polling never advances the clocks on its own.
-      battle = runtime.battleRuntime
+      battle = runtime.battleCoordinator:activeBattle()
       if battle ~= nil then
         battle:status()
       end
       ticks = ticks + 1
     end
-    Assert.isNil(runtime.battleRuntime, "the scheduled battle settles")
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "the scheduled battle settles")
     pump(game, envelope, 60)
     local consequence = {
       result = runtime:lastBattleResult(),
@@ -1078,14 +1081,14 @@ function T.tests.host_lifetime_survives_schedules_and_second_launches()
     -- Covered entry constructs only after full cover and semantic leave:
     -- wait for the live battle instead of assuming a fixed pump count.
     local launched = 0
-    while runtime.battleRuntime == nil and launched < 600 do
+    while runtime.battleCoordinator:activeBattle() == nil and launched < 600 do
       game:step()
       envelope:updateFixed(TICK)
       launched = launched + 1
     end
-    Assert.notNil(runtime.battleRuntime, "the third launch is live before the quit")
+    Assert.notNil(runtime.battleCoordinator:activeBattle(), "the third launch is live before the quit")
     runtime:dispose()
-    Assert.isNil(runtime.battleRuntime, "quitting releases the live battle")
+    Assert.isNil(runtime.battleCoordinator, "quitting releases the battle owner")
   end, debug.traceback)
   local unbound = pcall(function()
     runtime:unbindBattlePresentation(binding)
@@ -1160,7 +1163,7 @@ function T.tests.opening_walk_reaches_playable_battles()
     local launched = false
     local anchor = playerCell(game)
     for _ = 1, 150 do
-      if runtime.battleRuntime ~= nil then
+      if runtime.battleCoordinator:activeBattle() ~= nil then
         launched = true
         break
       end

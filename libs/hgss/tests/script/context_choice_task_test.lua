@@ -9,10 +9,28 @@ local T = {}
 
 local function ctxWithChoice()
   local provider = ContextChoiceProvider.new()
+  local printing = { done = true }
+  local dialogue = {
+    printProgress = function()
+      return printing
+    end,
+  }
   return {
-    services = { contextChoice = provider },
+    services = { contextChoice = provider, dialogue = dialogue },
     input = { uiEvents = {} },
-  }, provider
+  }, provider, printing
+end
+
+function T.choice_opens_only_after_the_message_finishes_printing()
+  local ctx, provider, printing = ctxWithChoice()
+  printing.done = false
+  local state = ContextChoiceTask.create(nil, ctx)
+  ContextChoiceTask.poll(state, ctx)
+  ContextChoiceTask.poll(state, ctx)
+  Assert.isFalse(provider:isActive(), "the provider stays closed while the message is printing")
+  printing.done = true
+  ContextChoiceTask.poll(state, ctx)
+  Assert.isTrue(provider:isActive(), "the provider opens once the printer reaches its end-of-text wait")
 end
 
 function T.focus_selects_the_host_row_before_confirm()

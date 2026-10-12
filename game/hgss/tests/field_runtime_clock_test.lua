@@ -88,6 +88,7 @@ function T.tests.apricorn_day_is_sampled_before_each_fixed_tick_and_only_advance
   local ok, err = xpcall(function()
     local runtime = FieldRuntime.new({ versionId = "heartgold", saveId = "test-save" }, { localClock = clock })
     runtime.eventState = eventState
+    runtime.battleCoordinator = { shouldPumpFromHost = function() return false end }
     runtime.martService = {
       processApricornDate = function(_, date)
         dates[#dates + 1] = date

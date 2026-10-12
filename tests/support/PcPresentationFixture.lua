@@ -61,6 +61,10 @@ function PcPresentationFixture.manifest()
       windowFrames[style]["paletteBank" .. bank] = sourceVisual("frame-" .. style .. "-" .. bank, 96, 8)
     end
   end
+  local wallpaperSwatches = { colors = {}, locked = { r = 0, g = 0, b = 0 } }
+  for logicalId = 0, 23 do
+    wallpaperSwatches.colors[logicalId] = { r = 10 * logicalId, g = 20, b = 30 }
+  end
   local markings = {}
   for bit = 0, 5 do
     markings[bit] = {
@@ -95,9 +99,22 @@ function PcPresentationFixture.manifest()
     storage = {
       backgrounds = { default = visual("storage-background") },
       wallpapers = wallpapers,
+      wallpaperSwatches = wallpaperSwatches,
       ui = {
         boxPane = sourceVisual("box-pane", 256, 192),
-        partyPane = sourceVisual("party-pane", 256, 192),
+        infoPane = sourceVisual("info-pane", 256, 192),
+        partyTray = sourceVisual("party-tray", 88, 144),
+        markingPanel = sourceVisual("marking-panel", 88, 144),
+        wallpaperBar = sourceVisual("wallpaper-bar", 256, 56),
+        arrows = {
+          left = sourceVisual("arrow-left", 16, 16),
+          right = sourceVisual("arrow-right", 16, 16),
+        },
+        cursors = {
+          browse = sourceVisual("cursor-browse", 20, 20),
+          menu = sourceVisual("cursor-menu", 20, 20),
+          carry = sourceVisual("cursor-carry", 20, 20),
+        },
         windowFrames = windowFrames,
         markings = markings,
       },

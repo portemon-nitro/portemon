@@ -407,6 +407,44 @@ function ScriptDialogueHost:closeYesNo()
   end
 end
 
+-- One resolver per substitution control in `template`; the buffer slot is each
+-- marker's own first argument, so a control occurring at several slots resolves
+-- every occurrence from its own slot. The node's own bindings win over
+-- instance textArgs.
+---@param template table<string, unknown> provider message template
+---@param bindings table<string, unknown> slot -> text value
+---@param textArgs table<string, unknown> slot -> text value
+---@return table<string, function> resolvers keyed by substitution control
+function ScriptDialogueHost:substitutionResolvers(template, bindings, textArgs)
+  local resolvers = {}
+  local templateTokens = template --[[@as table]].tokens
+  for _, token in ipairs(templateTokens) do
+    if token.kind == "substitution" and token.control == FieldMessageText.TRNAME then
+      local function resolvePlayerName()
+        return FieldMessageProvider.asciiGlyphTokens(self._player:name(), self._fontDef)
+      end
+      resolvers[token.control] = resolvePlayerName
+    elseif token.kind == "substitution" and token.args ~= nil and resolvers[token.control] == nil then
+      local function resolveSubstitution(_, args, _)
+        local slot = args and args[1]
+        local descriptor = bindings[slot] or textArgs[slot]
+        return resolveTextValue(
+          descriptor,
+          self._player,
+          self._fontDef,
+          self._world,
+          self._provider,
+          self._mons,
+          self._items,
+          self._locationNames
+        )
+      end
+      resolvers[token.control] = resolveSubstitution
+    end
+  end
+  return resolvers
+end
+
 -- Resolve a message reference to a controller-ready formatted message.
 ---@param message unknown string reference or external descriptor
 ---@param bindings table<string, unknown> slot -> text value
@@ -447,36 +485,8 @@ function ScriptDialogueHost:resolveMessage(message, bindings, textArgs)
     ---@cast context Errors.Context
     Errors.raise(err.code, err.message, context)
   end
-  -- One resolver per substitution control; the buffer slot is each marker's
-  -- own first argument, so a control occurring at several slots resolves
-  -- every occurrence from its own slot. The node's own bindings win over
-  -- instance textArgs.
-  local resolvers = {}
-  local templateTokens = template --[[@as table]].tokens
-  for _, token in ipairs(templateTokens) do
-    if token.kind == "substitution" and token.control == FieldMessageText.TRNAME then
-      local function resolvePlayerName()
-        return FieldMessageProvider.asciiGlyphTokens(self._player:name(), self._fontDef)
-      end
-      resolvers[token.control] = resolvePlayerName
-    elseif token.kind == "substitution" and token.args ~= nil and resolvers[token.control] == nil then
-      local function resolveSubstitution(_, args, _)
-        local slot = args and args[1]
-        local descriptor = bindings[slot] or textArgs[slot]
-        return resolveTextValue(
-          descriptor,
-          self._player,
-          self._fontDef,
-          self._world,
-          self._provider,
-          self._mons,
-          self._items,
-          self._locationNames
-        )
-      end
-      resolvers[token.control] = resolveSubstitution
-    end
-  end
+  ---@cast template table<string, unknown>
+  local resolvers = self:substitutionResolvers(template, bindings, textArgs)
   local okFormat, formatted = pcall(self._provider.format, self._provider, template, {}, resolvers)
   self._provider:releaseBank(bankId)
   if not okFormat then

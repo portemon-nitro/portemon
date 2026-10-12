@@ -9,7 +9,15 @@ local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local T = {}
 
 local function profile(badges)
-  return { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = badges }
+  return {
+    name = "GOLD",
+    gender = 0,
+    trainerId = 0,
+    money = 3000,
+    badges = badges,
+    runningShoes = false,
+    runningShoesLock = false,
+  }
 end
 
 function T.badge_order_covers_all_sixteen_badges()
@@ -109,6 +117,33 @@ function T.borrowed_profile_is_shared_not_copied()
   local progression = PlayerProgression.new(owned)
   progression:awardBadge("fog")
   Assert.equal(owned.badges, 2 ^ 3)
+end
+
+function T.running_shoes_lock_toggles_on_the_shared_profile_only_with_the_shoes()
+  local owned = profile(0)
+  local progression = PlayerProgression.new(owned)
+  Assert.isFalse(progression:runningShoesLock())
+  Assert.throws(function()
+    progression:toggleRunningShoesLock()
+  end)
+  progression:awardRunningShoes()
+  progression:toggleRunningShoesLock()
+  Assert.isTrue(progression:runningShoesLock())
+  Assert.isTrue(owned.runningShoesLock)
+  progression:toggleRunningShoesLock()
+  Assert.isFalse(progression:runningShoesLock())
+end
+
+function T.running_shoes_award_sets_the_shared_profile_flag_idempotently()
+  local owned = profile(0)
+  local progression = PlayerProgression.new(owned)
+  Assert.isFalse(progression:hasRunningShoes())
+  progression:awardRunningShoes()
+  Assert.isTrue(progression:hasRunningShoes())
+  Assert.isTrue(owned.runningShoes)
+  progression:awardRunningShoes()
+  Assert.isTrue(owned.runningShoes)
+  Assert.equal(owned.badges, 0, "the award leaves badge state untouched")
 end
 
 return { tests = T }

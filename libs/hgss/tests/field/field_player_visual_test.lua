@@ -114,6 +114,7 @@ local function player()
       out.gesturePose = self._gesturePose
       out.gestureTick = self._gestureTick
       out.gestureOffsetY = self._gestureOffsetY
+      out.ordinaryStepSpeed = nil
       return out
     end,
     presentationState = function(self)
@@ -123,6 +124,7 @@ local function player()
         gesturePose = self._gesturePose,
         gestureTick = self._gestureTick,
         gestureOffsetY = self._gestureOffsetY,
+        ordinaryStepSpeed = nil,
       }
     end,
   }
@@ -140,6 +142,12 @@ local function walkTick(subject, presentation, direction)
   local walkPoseAtTickStart = subject.motion == "walking" or subject.motion == "turning"
   subject:updateFixed({ heldDirection = direction, pressedDirection = direction })
   presentation:updateFixed(walkPoseAtTickStart)
+end
+
+local function gaitTick(subject, presentation, direction, run)
+  local before = subject:presentationState()
+  subject:updateFixed({ heldDirection = direction, pressedDirection = direction }, run)
+  presentation:updateFixed(before.locomotionActive, before.ordinaryStepSpeed)
 end
 
 ---@param subject FieldPlayer|FieldPlayerVisual.Source
@@ -310,6 +318,108 @@ function T.a_two_tile_walk_carries_the_phase_across_the_tile_commit()
   Assert.equal(presentation.poseTick, 16, "two tiles advance the full 16-tick cycle")
 end
 
+function T.running_advances_the_compiled_walk_frames_twice_per_update()
+  local subject = movingPlayer()
+  local definition = FieldActorFixture.visual(0, { frameCount = 4 })
+  for _, direction in pairs(definition.directions) do
+    direction.walk = {
+      frames = {
+        { frameIndex = 1, ticks = 4 },
+        { frameIndex = 2, ticks = 4 },
+        { frameIndex = 3, ticks = 4 },
+        { frameIndex = 4, ticks = 4 },
+      },
+      loop = true,
+      durationTicks = 16,
+      sourceRange = { startFrame = 0, endFrame = 15, endMode = 0 },
+    }
+  end
+  local presentation = visual(subject)
+  local sampledFrames = {}
+
+  for tick = 1, 8 do
+    gaitTick(subject, presentation, "east", false)
+    Assert.equal(presentation.poseTick, tick, "walking advances one pose tick per update")
+  end
+  Assert.equal(subject.fieldX, 1, "eight walking updates commit one tile")
+
+  for tick = 1, 8 do
+    gaitTick(subject, presentation, "east", true)
+    sampledFrames[tick] = FieldActorPose.frameIndex(definition, "east", "walk", presentation.poseTick)
+    Assert.equal(presentation.poseTick, 8 + tick * 2, "running advances two pose ticks per update")
+    if tick == 4 then
+      Assert.equal(subject.fieldX, 2, "four running updates commit one tile")
+    end
+  end
+
+  Assert.equal(subject.fieldX, 3, "eight running updates commit two tiles")
+  Assert.deepEqual(sampledFrames, { 3, 4, 4, 1, 1, 2, 2, 3 })
+end
+
+function T.step_speed_changes_only_at_tile_boundaries_and_keeps_pose_phase()
+  local subject = movingPlayer()
+  local presentation = visual(subject)
+
+  for tick = 1, 4 do
+    gaitTick(subject, presentation, "east", tick == 1)
+    Assert.equal(presentation.poseTick, tick * 2, "releasing run input cannot retime the active step")
+  end
+  Assert.equal(subject.fieldX, 1)
+  Assert.equal(subject:movementTransaction().speed, "run")
+
+  for tick = 1, 8 do
+    gaitTick(subject, presentation, "east", tick == 2)
+    Assert.equal(presentation.poseTick, 8 + tick, "pressing run input cannot retime the active walk")
+  end
+  Assert.equal(subject.fieldX, 2)
+  Assert.equal(subject:movementTransaction().speed, "normal")
+  Assert.equal(presentation.poseTick, 16, "normal-to-run boundary carries the animation phase")
+
+  for tick = 1, 4 do
+    gaitTick(subject, presentation, "east", true)
+    Assert.equal(presentation.poseTick, 16 + tick * 2)
+  end
+  Assert.equal(subject.fieldX, 3)
+  Assert.equal(subject:movementTransaction().speed, "run")
+  Assert.equal(presentation.poseTick, 24, "walk-to-run boundary also carries phase")
+end
+
+function T.presentation_snapshot_clears_stale_ordinary_speed_after_commit_and_scripted_motion()
+  local subject = movingPlayer()
+  local presentation = visual(subject)
+  local snapshot = {}
+
+  gaitTick(subject, presentation, "east", true)
+  Assert.isTrue(subject:presentationStateInto(snapshot) == snapshot, "snapshot table is reused")
+  Assert.equal(snapshot.ordinaryStepSpeed, "run", "active ordinary motion exposes its committed speed")
+  for _ = 1, 3 do
+    gaitTick(subject, presentation, "east", true)
+  end
+  Assert.equal(subject.motion, "idle")
+  Assert.equal(subject:movementTransaction().speed, "run", "the transaction remains available to followers")
+  Assert.isTrue(subject:presentationStateInto(snapshot) == snapshot, "the same snapshot table is reused")
+  Assert.isNil(snapshot.ordinaryStepSpeed, "idle clears stale speed despite the retained run transaction")
+
+  local poseBeforeScript = presentation.poseTick
+  subject:beginScriptedAction({ action = "walk", direction = "east", speed = "normal" })
+  subject:presentationStateInto(snapshot)
+  Assert.isNil(snapshot.ordinaryStepSpeed, "scripted walks do not inherit ordinary run speed")
+  presentation:updateFixed(true)
+  Assert.equal(presentation.poseTick, poseBeforeScript + 1, "scripted walking retains its existing one-tick cadence")
+  subject:cancelScriptedMovement()
+end
+
+function T.visual_rejects_an_invalid_explicit_ordinary_step_speed()
+  local subject = movingPlayer()
+  Assert.isTrue(subject:tryStep("east", true))
+  local presentation = visual(subject)
+  local ok, err = pcall(function()
+    presentation:updateFixed(true, false)
+  end)
+  Assert.isFalse(ok, "false is not a valid ordinary-step speed")
+  Assert.isTrue(tostring(err):find("ordinary step has unsupported speed", 1, true) ~= nil)
+end
+
 -- With the phase allowed to reach the full ROM range, every frame of that range
 -- displays: frame 3 of a 16-tick range is unreachable if the clock resets every
 -- eight ticks, which is exactly the bug this guards against.
@@ -455,7 +565,7 @@ function T.presentation_snapshot_distinguishes_locomotion_from_stationary_script
   Assert.isNil(idleSnap.gestureTick)
   Assert.equal(idleSnap.gestureOffsetY, 0)
 
-  subject.motion = "walking"
+  subject:updateFixed({ heldDirection = "east", pressedDirection = "east" })
   Assert.isTrue(subject:presentationState().locomotionActive, "manual walking is locomoting")
   subject.motion = "turning"
   Assert.isFalse(subject:presentationState().locomotionActive, "manual turning is not locomoting")

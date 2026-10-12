@@ -108,6 +108,7 @@ function StartMenuRenderer.new(opts)
     menu = {
       interactive = interactive,
       iconTable = iconTable,
+      runningShoes = assert(startMenu.runningShoes, "the field-UI manifest must carry the Running Shoes toggle"),
     },
   }, StartMenuRenderer)
 
@@ -174,6 +175,12 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
       end
     end
   end
+  local shoes = assert(startMenu.runningShoes, "the start menu must carry its Running Shoes toggle")
+  for _, part in ipairs({ shoes.button, shoes.indicator }) do
+    for _, state in ipairs({ part.off, part.on }) do
+      quadFor(assert(state.asset, "a Running Shoes visual must name its atlas"), assert(state.rect))
+    end
+  end
   if startMenu.pokeIcons ~= nil and startMenu.pokeIcons.asset ~= nil then
     local pokeAsset = startMenu.pokeIcons.asset
     if manifest.assets[pokeAsset] ~= nil then
@@ -201,7 +208,7 @@ end
 -- action draws its selected visual; every other action draws its normal
 -- visual. Text-only rows draw no shared icon art.
 ---@param action table<string, unknown>
----@param selectedPosition integer
+---@param selectedPosition integer?
 ---@param gender string?
 function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender)
   local lg = assert(self._graphics)
@@ -236,6 +243,33 @@ function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender)
     record.anchor.x + offset.x,
     record.anchor.y + offset.y
   )
+end
+
+-- The Running Shoes toggle: the button body then the lock indicator, each
+-- at its generated anchor plus the visual's source-relative offset, in the
+-- off or on state of the live auto-run lock.
+---@param locked boolean
+function StartMenuRenderer:_drawRunningShoes(locked)
+  local lg = assert(self._graphics)
+  local shoes = assert(self.menu.runningShoes, "the Running Shoes presentation requires its record")
+  for _, part in ipairs({ shoes.button, shoes.indicator }) do
+    local state = locked and part.on or part.off
+    lg.draw(
+      assert(self._imageByAsset[state.asset]),
+      self:_quadFor(state.asset, state.rect),
+      part.anchor.x + state.offset.x,
+      part.anchor.y + state.offset.y
+    )
+  end
+end
+
+---@param hitRect FieldDialogueTheme.Rect
+function StartMenuRenderer:_drawRunningShoesFocus(hitRect)
+  local lg = assert(self._graphics)
+  lg.setColor(0, 0, 0, 1)
+  lg.rectangle("line", hitRect.x - 1, hitRect.y - 1, hitRect.width + 2, hitRect.height + 2)
+  lg.setColor(1, 1, 1, 1)
+  lg.rectangle("line", hitRect.x, hitRect.y, hitRect.width, hitRect.height)
 end
 
 -- one presented action's resolved label in the action's own source label
@@ -279,7 +313,7 @@ end
 -- canvas, shader, scissor, blend, depth, wireframe, cull, and color
 -- afterwards so the HUD and host overlays draw normally.
 
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[] }?
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean } }?
 ---@param placement LayoutGeometry.Placement the resolved content placement (frame, origin, scale, clip)
 function StartMenuRenderer:draw(presentation, placement)
   if not presentation or not self._subImage then
@@ -301,7 +335,7 @@ end
 -- draw draws nothing), then the SUB chrome at the canonical origin plus
 -- per-action icons and labels. The manifest rects are canonical, so
 -- nothing is scaled twice.
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[] }
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean } }
 function StartMenuRenderer:_drawSurface(presentation)
   local lg = assert(self._graphics)
   lg.setColor(1, 1, 1, 1)
@@ -337,11 +371,33 @@ function StartMenuRenderer:_drawSurface(presentation)
       )
     end
   end
+  local shoes = presentation.runningShoes
+  if shoes ~= nil then
+    assert(
+      type(shoes.locked) == "boolean" and type(shoes.focused) == "boolean",
+      "Running Shoes presentation needs lock and focus"
+    )
+    assert(
+      self.menu.runningShoes.hitRect ~= nil,
+      "the Running Shoes focus outline requires its generated hit rectangle"
+    )
+  end
+  ---@type integer?
+  local selectedPosition = presentation.selectedPosition
+  if shoes ~= nil and shoes.focused then
+    selectedPosition = nil
+  end
   lg.draw(assert(self._subImage), assert(self._subQuad), 0, 0)
   if actions ~= nil then
     for _, action in ipairs(actions) do
-      self:_drawActionIcon(action, presentation.selectedPosition, presentation.trainerGender)
+      self:_drawActionIcon(action, selectedPosition, presentation.trainerGender)
       self:_drawActionLabel(action)
+    end
+  end
+  if shoes ~= nil then
+    self:_drawRunningShoes(shoes.locked)
+    if shoes.focused then
+      self:_drawRunningShoesFocus(self.menu.runningShoes.hitRect)
     end
   end
 end
@@ -376,5 +432,6 @@ end
 ---@class StartMenuRenderer.Menu
 ---@field interactive StartMenuRenderer.Interactive the generated interactive record (cancel bound plus positions 0..6)
 ---@field iconTable table<integer, table<string, unknown>>
+---@field runningShoes table<string, unknown> the generated Running Shoes toggle record (button and indicator visuals)
 
 return StartMenuRenderer

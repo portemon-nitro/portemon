@@ -502,10 +502,16 @@ local function openLiveSession(options)
   -- The fixture models a post-adoption session: source inventory and page
   -- membership read ready without worker work, so page and summary
   -- prerequisites proceed.
-  session.messageBankIds = options.bankIds
-  session.iconPageIds = options.iconPageIds or {}
-  session.sourceLoaded = true
-  session.pagesKnown = true
+  session:_adoptPublished({
+    messageBankIds = options.bankIds,
+    audioBankIds = {},
+    scriptMemberIds = {},
+    iconPageIds = options.iconPageIds or {},
+    portraitPageIds = {},
+    mapDataIds = session.mapDataIds,
+    mapIds = {},
+    mapCellKeys = {},
+  })
   local sourcePlanEntry = {
     kind = "source-plan",
     key = "global",
@@ -1274,9 +1280,15 @@ function T.new_game_intro_resolves_exact_bank_closures_after_adoption()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
   local session, _ = isolatedSession("new-game-final-generation", pool, backend)
-  session.sourceLoaded = true
-  session.audioBankIds = { 10, 20, 30, 40, 184 }
-  session.adopted = { audioPlan = oakAudioPlan() }
+  session:_adoptPublished({
+    messageBankIds = session.messageBankIds,
+    audioBankIds = { 10, 20, 30, 40, 184 },
+    scriptMemberIds = {},
+    mapDataIds = session.mapDataIds,
+    mapIds = {},
+    mapCellKeys = {},
+    audioPlan = oakAudioPlan(),
+  })
   local ready, failure = session:requestMilestone("new-game-intro", "required")
   Assert.isFalse(ready, "the intro milestone stays pending while cold")
   Assert.isNil(failure, "the intro milestone reports no failure while pending")
@@ -1335,10 +1347,11 @@ function T.required_scope_settles_while_unrelated_background_waits()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
   local session, _ = isolatedSession("scope-settlement-generation", pool, backend)
-  session.messageBankIds = { 31511 }
+  local bankId = session.messageBankIds[1]
+  local bankKey = tostring(bankId)
   pool.states["field-font:global"] = "ready"
-  local coldKey = "message-bank:31511"
-  local ready, requestFailure = session:requestJob("message-bank", "31511", "near")
+  local coldKey = "message-bank:" .. bankKey
+  local ready, requestFailure = session:requestJob("message-bank", bankKey, "near")
   Assert.isFalse(ready, "the cold background bank answers pending")
   Assert.isNil(requestFailure, "registration reports no failure")
   local milestoneReady, milestoneFailure = session:requestMilestone("bootstrap", "required")
@@ -1348,7 +1361,7 @@ function T.required_scope_settles_while_unrelated_background_waits()
   for _ = 1, 100 do
     session:update()
     local again = session:requestMilestone("bootstrap", "required")
-    local coldAgain = session:requestJob("message-bank", "31511", "near")
+    local coldAgain = session:requestJob("message-bank", bankKey, "near")
     if again and not coldAgain then
       settled = true
       break
@@ -1359,10 +1372,10 @@ function T.required_scope_settles_while_unrelated_background_waits()
   for _ = 1, 20 do
     session:update()
     session:requestMilestone("bootstrap", "required")
-    session:requestJob("message-bank", "31511", "near")
+    session:requestJob("message-bank", bankKey, "near")
   end
   Assert.equal(submissionCount(pool, coldKey), 1, "repeated notifications resubmit nothing")
-  local stillPending = session:requestJob("message-bank", "31511", "near")
+  local stillPending = session:requestJob("message-bank", bankKey, "near")
   Assert.isFalse(stillPending, "the unreplied leaf never borrows the scope's readiness")
 end
 
@@ -1416,17 +1429,7 @@ local function newFakeClock()
 end
 local function warmingSessionWithClock(generation, pool, backend, clock)
   local session, cacheFs = isolatedSession(generation, pool, backend, { clock = clock })
-  session.adopted = warmingAdopted()
-  session.sourceLoaded = true
-  session.pagesKnown = true
-  session.messageBankIds = { 1, 2 }
-  session.audioBankIds = { 3 }
-  session.scriptMemberIds = { 4 }
-  session.iconPageIds = { 0 }
-  session.portraitPageIds = { 1 }
-  session.mapDataIds = {}
-  session.mapIds = { 7 }
-  session.mapCellKeys = { [7] = {} }
+  session:_adoptPublished(warmingAdopted())
   for _, kind in ipairs({ "source-plan", "mon-layout" }) do
     local owner = readyOwnerEntry(kind)
     session.byKey[owner.jobKey] = owner
@@ -1488,6 +1491,85 @@ function T.foreground_demand_suppresses_the_sweep_clock_wait()
   tick.now = 0.5
   session:update()
   Assert.isNil(session:nextPlanningWakeDelay(), "foreground demand owns the next candidate, not the sweep clock")
+end
+
+function T.late_page_adoption_restarts_completion_without_duplicate_jobs()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("late-completion-adoption-generation", pool, backend, clock)
+  session:requestComplete("required")
+  session:enableSweep()
+  for _ = 1, 4 do
+    session:update()
+  end
+  local beforeAdoption = session:status().enumerated
+  Assert.isTrue(beforeAdoption > 0, "completion has enrolled jobs before page adoption")
+
+  local adopted = warmingAdopted()
+  adopted.iconPageIds = { 0, 2 }
+  session:_adoptPublished(adopted)
+  tick.now = 1.0
+  for _ = 1, 20 do
+    session:update()
+  end
+
+  Assert.notNil(session.byKey["mon-icon-page:2"], "late page membership enters the restarted completion walk")
+  Assert.isTrue(session:status().enumerated >= beforeAdoption, "adoption preserves prior completion accounting")
+  local submitted = {}
+  for _, jobKey in ipairs(pool.submitted) do
+    submitted[jobKey] = (submitted[jobKey] or 0) + 1
+    Assert.equal(submitted[jobKey], 1, "restarted completion submits each canonical job once: " .. jobKey)
+  end
+  Assert.equal(submissionCount(pool, "mon-icon-page:2"), 1, "the newly adopted page is enrolled once")
+end
+
+function T.authorized_sweep_failure_keeps_ready_foreground_scope_ready()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("sweep-failure-scope-generation", pool, backend, clock)
+  pool.states["field-font:global"] = "ready"
+  local ready, failure = session:requestMilestone("bootstrap", "required")
+  Assert.isFalse(ready, "bootstrap is pending until the pump observes its warm font")
+  Assert.isNil(failure, "bootstrap registration reports no failure")
+  for _ = 1, 20 do
+    session:update()
+  end
+  local bootstrapReady, bootstrapFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(bootstrapReady, "bootstrap settles before background authorization")
+  Assert.isNil(bootstrapFailure, "bootstrap has no foreground failure")
+  Assert.equal(session:status().sweepState, "idle", "a ready foreground scope does not authorize a sweep")
+  Assert.equal(
+    submissionCount(pool, "field-font:global"),
+    1,
+    "bootstrap submits its foreground font even when the worker already has it"
+  )
+  Assert.equal(#pool.submitted, 1, "no sweep candidate is submitted before authorization")
+
+  local submittedBeforeSweep = #pool.submitted
+  session:enableSweep()
+  tick.now = 1.0
+  local failedJobKey = nil
+  for _ = 1, 30 do
+    session:update()
+    if #pool.submitted > submittedBeforeSweep then
+      failedJobKey = pool.submitted[submittedBeforeSweep + 1]
+      break
+    end
+  end
+  local sweepJobKey = assert(failedJobKey, "the authorized sweep submits a background candidate")
+  pool.states[sweepJobKey] = { state = "failed", details = { error = "synthetic sweep failure" } }
+  for _ = 1, 10 do
+    session:update()
+  end
+
+  local sweepStatus = session:status()
+  Assert.isTrue(tostring(sweepStatus.sweepFailure):find("synthetic sweep failure", 1, true) ~= nil)
+  local stillReady, stillFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(stillReady, "a later sweep failure cannot revoke a settled foreground scope")
+  Assert.isNil(stillFailure, "the sweep failure is not promoted to the foreground answer")
+  Assert.equal(sweepStatus.bootstrap, "ready", "status keeps foreground and sweep answers separate")
 end
 
 function T.icon_page_demand_registers_through_the_canonical_record()
@@ -1581,30 +1663,27 @@ local function stageConvergentSemanticRecord(cacheFs, mapId)
   })
 end
 local function adoptSemanticInventory(session)
-  session.sourceLoaded = true
-  session.audioBankIds = { 10, 20, 30 }
-  session.scriptMemberIds = { SEMANTIC_SCRIPT_MEMBER }
-  session.mapDataIds = { SEMANTIC_MAP_ID, SEMANTIC_DEDUP_MAP_ID }
-  session.mapCellKeys = { [SEMANTIC_MAP_ID] = {}, [SEMANTIC_DEDUP_MAP_ID] = {} }
+  local messageBankIds = {}
   local hasBank = false
   for _, bankId in ipairs(session.messageBankIds) do
+    messageBankIds[#messageBankIds + 1] = bankId
     if bankId == SEMANTIC_MESSAGE_BANK then
       hasBank = true
     end
   end
   if not hasBank then
-    session.messageBankIds[#session.messageBankIds + 1] = SEMANTIC_MESSAGE_BANK
+    messageBankIds[#messageBankIds + 1] = SEMANTIC_MESSAGE_BANK
   end
-  session.adopted = {
+  session:_adoptPublished({
+    messageBankIds = messageBankIds,
+    audioBankIds = { 10, 20, 30 },
+    scriptMemberIds = { SEMANTIC_SCRIPT_MEMBER },
+    mapDataIds = { SEMANTIC_MAP_ID, SEMANTIC_DEDUP_MAP_ID },
+    mapIds = {},
+    mapCellKeys = { [SEMANTIC_MAP_ID] = {}, [SEMANTIC_DEDUP_MAP_ID] = {} },
     audioPlan = semanticAudioPlan(),
     scriptPlan = { generationKey = SEMANTIC_SCRIPT_GENERATION, marker = SEMANTIC_SCRIPT_MARKER },
-    messageBankIds = session.messageBankIds,
-    audioBankIds = session.audioBankIds,
-    scriptMemberIds = session.scriptMemberIds,
-    mapDataIds = session.mapDataIds,
-    mapIds = {},
-    mapCellKeys = session.mapCellKeys,
-  }
+  })
   session.byKey["source-plan:global"] = {
     kind = "source-plan",
     key = "global",
@@ -1839,31 +1918,27 @@ local function stageScriptAudioClosure(cacheFs, memberSequences)
   cacheFs:write(ScriptCache.generationMarkerPath(SCRIPT_AUDIO_GENERATION), SCRIPT_AUDIO_MARKER)
 end
 local function adoptScriptAudioInventory(session)
-  session.sourceLoaded = true
-  session.audioBankIds = { 10, 20, 30, SCRIPT_ONLY_BANK }
-  session.scriptMemberIds = { SCRIPT_AUDIO_MEMBER }
-  session.mapDataIds = { SCRIPT_AUDIO_MAP_ID }
-  session.mapCellKeys = { [SCRIPT_AUDIO_MAP_ID] = {} }
-  session.messageBankIds = session.messageBankIds or {}
+  local messageBankIds = {}
   local hasBank = false
   for _, bankId in ipairs(session.messageBankIds) do
+    messageBankIds[#messageBankIds + 1] = bankId
     if bankId == SCRIPT_AUDIO_MESSAGE_BANK then
       hasBank = true
     end
   end
   if not hasBank then
-    session.messageBankIds[#session.messageBankIds + 1] = SCRIPT_AUDIO_MESSAGE_BANK
+    messageBankIds[#messageBankIds + 1] = SCRIPT_AUDIO_MESSAGE_BANK
   end
-  session.adopted = {
+  session:_adoptPublished({
+    messageBankIds = messageBankIds,
+    audioBankIds = { 10, 20, 30, SCRIPT_ONLY_BANK },
+    scriptMemberIds = { SCRIPT_AUDIO_MEMBER },
+    mapDataIds = { SCRIPT_AUDIO_MAP_ID },
+    mapIds = {},
+    mapCellKeys = { [SCRIPT_AUDIO_MAP_ID] = {} },
     audioPlan = scriptAudioPlan(),
     scriptPlan = { generationKey = SCRIPT_AUDIO_GENERATION, marker = SCRIPT_AUDIO_MARKER },
-    messageBankIds = session.messageBankIds,
-    audioBankIds = session.audioBankIds,
-    scriptMemberIds = session.scriptMemberIds,
-    mapDataIds = session.mapDataIds,
-    mapIds = {},
-    mapCellKeys = session.mapCellKeys,
-  }
+  })
   session.byKey["source-plan:global"] = {
     kind = "source-plan",
     key = "global",
@@ -2035,6 +2110,56 @@ local function slimSessionRecord(generation)
     mapCellKeys = { [7] = {}, [9] = {} },
   }
 end
+local function indexedSessionRecord(generation, firstMemberId, matrixMemberId)
+  local plan = slimSessionRecord(generation)
+  local members = {}
+  local bankPlans = {}
+  local cells = {}
+  local cellKeys = {}
+  for offset = 0, 127 do
+    local memberId = firstMemberId + offset
+    members[#members + 1] = { memberId = memberId }
+    bankPlans[#bankPlans + 1] = { bankId = memberId }
+    local cellIndex = offset
+    cells[#cells + 1] = { matrixMemberId = matrixMemberId, index = cellIndex }
+    cellKeys[#cellKeys + 1] = matrixMemberId .. "-" .. cellIndex
+  end
+  table.sort(cellKeys)
+  plan.scriptPlan.members = members
+  plan.audioPlan.bankPlans = bankPlans
+  plan.fieldCellIndexBundle.index.matrices = { { matrixMemberId = matrixMemberId, cells = cells } }
+  plan.mapCellKeys[7] = cellKeys
+  return plan
+end
+local function countSequenceTraversals(sequences, action)
+  local watched = {}
+  local traversals = {}
+  for _, sequence in ipairs(sequences) do
+    watched[sequence] = true
+    traversals[sequence] = 0
+  end
+  local realPairs = pairs
+  local realIpairs = ipairs
+  _G.pairs = function(sequence)
+    if watched[sequence] then
+      traversals[sequence] = traversals[sequence] + 1
+    end
+    return realPairs(sequence)
+  end
+  _G.ipairs = function(sequence)
+    if watched[sequence] then
+      traversals[sequence] = traversals[sequence] + 1
+    end
+    return realIpairs(sequence)
+  end
+  local ok, failure = pcall(action)
+  _G.pairs = realPairs
+  _G.ipairs = realIpairs
+  if not ok then
+    error(failure, 0)
+  end
+  return traversals
+end
 local function stageSlimSessionRecord(cacheFs, generation)
   local SourcePlan = require("romdump.src.build.SourcePlan")
   cacheFs:writeLua(SourcePlan.PATH, slimSessionRecord(generation))
@@ -2144,6 +2269,87 @@ function T.static_membership_survives_source_and_page_adoption()
   Assert.deepEqual(sourceFirst.portraitPages, layoutFirst.portraitPages, "both orders reach the same closure")
 end
 
+function T.adopted_membership_and_cell_queries_use_session_local_lookups()
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local generationA = "indexed-membership-generation-a"
+  local planA = indexedSessionRecord(generationA, 1, 12)
+  local identityA = { versionId = "heartgold", generationId = generationA, producerId = PRODUCER_ID }
+  Assert.isTrue(SourcePlan.validate(planA, identityA), "the admitted index fixture is canonical")
+  local poolA = selectableRecordingPool()
+  local sessionA = isolatedSession(generationA, poolA, FakeCache.new())
+  sessionA:_adoptSource(planA)
+
+  local sourceMemberTraversals = countSequenceTraversals({ sessionA.scriptMemberIds }, function()
+    local sourceMemberReady, sourceMemberFailure = sessionA:requestJob("script-member", "128", "required")
+    Assert.isFalse(sourceMemberReady, "an admitted source member stays pending while its payload is cold")
+    Assert.isNil(sourceMemberFailure, "an admitted source member has no rejection")
+  end)
+  Assert.equal(sourceMemberTraversals[sessionA.scriptMemberIds], 0, "source adoption serves membership without walking its ordered list")
+
+  local plansA = SourcePlan.project(planA)
+  local expectedMemberIds = {}
+  for _, member in ipairs(planA.scriptPlan.members) do
+    expectedMemberIds[#expectedMemberIds + 1] = member.memberId
+  end
+  local pageIdsA = {}
+  for pageId = 0, 127 do
+    pageIdsA[#pageIdsA + 1] = pageId
+  end
+  plansA.iconPageIds = pageIdsA
+  plansA.portraitPageIds = pageIdsA
+  sessionA:_adoptPublished(plansA)
+
+  local watched = {
+    sessionA.scriptMemberIds,
+    sessionA.audioBankIds,
+    sessionA.iconPageIds,
+    sessionA.portraitPageIds,
+    sessionA.adopted.indexBundle.index.matrices,
+    sessionA.adopted.indexBundle.index.matrices[1].cells,
+  }
+  local publishedTraversals = countSequenceTraversals(watched, function()
+    local scriptReady, scriptFailure = sessionA:requestJob("script-member", "128", "required")
+    local audioReady, audioFailure = sessionA:requestJob("audio-bank", "128", "required")
+    local iconReady, iconFailure = sessionA:requestIconPage(127, "required")
+    local portraitReady, portraitFailure = sessionA:requestMonPortraitPage(127, "required")
+    local cellReady, cellFailure = sessionA:requestCell({ matrixMemberId = 12, index = 127 }, "required")
+    local canonicalCellReady, canonicalCellFailure = sessionA:requestJob("field-cell", "12-127", "required")
+    Assert.isFalse(scriptReady or audioReady or iconReady or portraitReady or cellReady or canonicalCellReady, "cold members stay pending")
+    Assert.isNil(scriptFailure, "an admitted script member has no rejection")
+    Assert.isNil(audioFailure, "an admitted audio bank has no rejection")
+    Assert.isNil(iconFailure, "an admitted icon page has no rejection")
+    Assert.isNil(portraitFailure, "an admitted portrait page has no rejection")
+    Assert.isNil(cellFailure, "an indexed cell descriptor has no rejection")
+    Assert.isNil(canonicalCellFailure, "the canonical cell key resolves to the same admitted cell")
+    local wrongIndexReady, wrongIndexFailure = sessionA:requestCell({ matrixMemberId = 12, index = 128 }, "required")
+    local wrongMatrixReady, wrongMatrixFailure = sessionA:requestJob("field-cell", "13-127", "required")
+    Assert.isFalse(wrongIndexReady or wrongMatrixReady, "unindexed cells stay unsupported")
+    Assert.isTrue(tostring(wrongIndexFailure):find("canonical index has no such cell", 1, true) ~= nil, "a missing cell keeps its diagnostic")
+    Assert.isTrue(tostring(wrongMatrixFailure):find("canonical index has no such cell", 1, true) ~= nil, "a missing matrix keeps its diagnostic")
+  end)
+  Assert.deepEqual(sessionA.scriptMemberIds, expectedMemberIds, "the authoritative source order remains intact")
+  Assert.deepEqual(sessionA.mapCellKeys[7], planA.mapCellKeys[7], "the authoritative cell key order remains intact")
+  for _, sequence in ipairs(watched) do
+    Assert.equal(publishedTraversals[sequence], 0, "published lookups avoid walking their ordered lists")
+  end
+
+  sessionA:retire()
+  local generationB = "indexed-membership-generation-b"
+  local planB = indexedSessionRecord(generationB, 201, 13)
+  local identityB = { versionId = "heartgold", generationId = generationB, producerId = PRODUCER_ID }
+  Assert.isTrue(SourcePlan.validate(planB, identityB), "the replacement index fixture is canonical")
+  local sessionB = isolatedSession(generationB, selectableRecordingPool(), FakeCache.new())
+  sessionB:_adoptPublished(SourcePlan.project(planB))
+  local staleReady, staleFailure = sessionB:requestJob("script-member", "128", "required")
+  local currentReady, currentFailure = sessionB:requestJob("script-member", "328", "required")
+  Assert.isFalse(staleReady or currentReady, "replacement generation members stay cold")
+  Assert.notNil(staleFailure, "a member from the retired generation is rejected")
+  Assert.isNil(currentFailure, "the replacement generation admits its own member")
+  Assert.throws(function()
+    sessionA:requestJob("script-member", "128", "required")
+  end, "a retired session remains ineligible")
+end
+
 -- Scope settlement stays parity across scope states: bootstrap reads
 -- observable without an explicit request, a requested scope stays pending
 -- through enrollment, cold intro membership without adopted inventory never
@@ -2249,14 +2455,17 @@ function T.status_settles_each_scope_from_its_own_retained_evidence()
   local scopeBackend = FakeCache.new()
   local scopePool = retryCapablePool()
   local scopeSession, _ = isolatedSession("scope-parity-background", scopePool, scopeBackend)
-  scopeSession.messageBankIds = { 31511 }
+  local backgroundBankKey = tostring(scopeSession.messageBankIds[1])
   local scopeReady, scopeFailure = scopeSession:requestMilestone("bootstrap", "required")
   Assert.isFalse(scopeReady, "the required scope stays pending until the pump runs")
   Assert.isNil(scopeFailure, "registration reports no failure")
-  local coldBackground, coldBackgroundFailure = scopeSession:requestJob("message-bank", "31511", "near")
+  local coldBackground, coldBackgroundFailure = scopeSession:requestJob("message-bank", backgroundBankKey, "near")
   Assert.isFalse(coldBackground, "the cold background bank answers pending")
   Assert.isNil(coldBackgroundFailure, "registration reports no failure")
-  scopePool.states["message-bank:31511"] = { state = "failed", details = { error = "synthetic background failure" } }
+  scopePool.states["message-bank:" .. backgroundBankKey] = {
+    state = "failed",
+    details = { error = "synthetic background failure" },
+  }
   for _ = 1, 10 do
     scopeSession:update()
   end
@@ -2509,10 +2718,10 @@ function T.requested_failure_settles_while_sweep_and_completion_stay_distinct()
   local scopeBackend = FakeCache.new()
   local scopePool = retryCapablePool()
   local scopeSession, _ = isolatedSession("distinct-background-generation", scopePool, scopeBackend)
-  scopeSession.messageBankIds = { 31511 }
+  local backgroundBankKey = tostring(scopeSession.messageBankIds[1])
   scopeSession:requestMilestone("bootstrap", "required")
-  scopeSession:requestJob("message-bank", "31511", "near")
-  scopePool.states["message-bank:31511"] = { state = "failed", details = { error = "synthetic background failure" } }
+  scopeSession:requestJob("message-bank", backgroundBankKey, "near")
+  scopePool.states["message-bank:" .. backgroundBankKey] = { state = "failed", details = { error = "synthetic background failure" } }
   for _ = 1, 10 do
     scopeSession:update()
   end

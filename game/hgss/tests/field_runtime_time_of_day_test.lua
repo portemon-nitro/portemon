@@ -5,8 +5,14 @@
 local Assert = require("tests.support.Assert")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 
 local T = { tests = {} }
+
+local function composeRuntime(runtime)
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
+  return runtime
+end
 
 local function clockAt(hour, minute, second)
   return {
@@ -17,7 +23,7 @@ local function clockAt(hour, minute, second)
 end
 
 local function runtimeWithEnvironment(clock, environment, sceneRuntime)
-  return FieldRuntimeFixture.withApricornDateOwner(setmetatable({
+  return composeRuntime(FieldRuntimeFixture.withApricornDateOwner(setmetatable({
     localClock = clock,
     runtimeMap = { renderEnvironment = environment, sceneRuntime = sceneRuntime },
     session = { accumulator = 0, setBattleActive = function() end, updateFixed = function() end },
@@ -34,7 +40,7 @@ local function runtimeWithEnvironment(clock, environment, sceneRuntime)
         return nil
       end,
     },
-  }, FieldRuntime))
+  }, FieldRuntime)))
 end
 
 function T.tests.update_advances_field_time_seconds_from_the_injected_clock()

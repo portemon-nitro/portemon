@@ -27,6 +27,8 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@class StartMenuController
 ---@field _visibleActions table<integer, StartMenuController.Action> visible actions keyed by display position
 ---@field _selectedPosition integer the selected display position
+---@field _shoesFocused boolean whether the separate shoes control has semantic focus
+---@field _shoesAnchor integer? normal action used to enter and leave shoes focus
 ---@field _result table<string, unknown>?
 ---@field _closed boolean
 ---@field _positions table<integer, StartMenuController.Position> the generated normal-position records keyed 0..6
@@ -34,6 +36,7 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field _pointerId string?
 ---@field _pointerDown { kind: "cancel"|"action"|"none", position: integer? }?
 ---@field _effect fun(sequence: string)? source UI sound effect boundary
+---@field _runningShoes StartMenuController.RunningShoes? the Running Shoes toggle port; absent menus present no toggle
 local StartMenuController = {}
 StartMenuController.__index = StartMenuController
 
@@ -125,12 +128,21 @@ end
 ---@field cancelHitRect FieldDialogueTheme.Rect
 ---@field positions table<integer, StartMenuController.Position>
 
+-- The Running Shoes toggle: the generated touch rectangle, the live
+-- presentation state (visible only while the shoes are owned and usable,
+-- locked while the auto-run lock holds B), and the lock flip. The
+-- controller owns no lock state.
+---@class StartMenuController.RunningShoes
+---@field hitRect FieldDialogueTheme.Rect
+---@field state fun(): { visible: boolean, locked: boolean }
+---@field toggle fun()
+
 -- opts.entries: the runtime-composed final interactive action list
 -- (id / targetApplication / displayPosition), never empty.
 -- opts.interactive: the generated manifest startMenu.interactive record
 -- (cancelHitRect plus positions 0..6). opts.rememberedActionId: the
 -- selection remembered across a child-application round trip.
----@param opts { entries: StartMenuController.Entry[], interactive: StartMenuController.Interactive, rememberedActionId?: string?, effect?: fun(sequence: string) }
+---@param opts { entries: StartMenuController.Entry[], interactive: StartMenuController.Interactive, rememberedActionId?: string?, effect?: fun(sequence: string), runningShoes?: StartMenuController.RunningShoes }
 ---@return StartMenuController
 function StartMenuController.new(opts)
   assert(type(opts) == "table", "the start menu controller requires options")
@@ -138,10 +150,15 @@ function StartMenuController.new(opts)
   assert(type(opts.interactive) == "table", "the start menu requires the generated interactive record")
   assert(type(opts.interactive.positions) == "table", "the start menu requires the generated normal-position records")
   assert(type(opts.interactive.cancelHitRect) == "table", "the start menu requires the generated cancel hit rectangle")
+  if opts.runningShoes ~= nil then
+    assert(type(opts.runningShoes.hitRect) == "table", "the Running Shoes control requires its generated hit rectangle")
+  end
   local display, ordered = composeDisplay(opts.entries, opts.interactive)
   local self = setmetatable({
     _visibleActions = display,
     _selectedPosition = initialPosition(ordered, opts.rememberedActionId),
+    _shoesFocused = false,
+    _shoesAnchor = nil,
     _result = nil,
     _closed = false,
     _positions = opts.interactive.positions,
@@ -149,6 +166,7 @@ function StartMenuController.new(opts)
     _pointerId = nil,
     _pointerDown = nil,
     _effect = opts.effect,
+    _runningShoes = opts.runningShoes,
   }, StartMenuController)
   return self
 end
@@ -182,6 +200,80 @@ end
 function StartMenuController:_selectPosition(position)
   assert(self._visibleActions[position] ~= nil, "cannot select an empty display position")
   self._selectedPosition = position
+  self._shoesFocused = false
+  self._shoesAnchor = nil
+end
+
+---@return FocusGraphMap
+function StartMenuController:_normalGraph()
+  local graph = {}
+  for position in pairs(self._visibleActions) do
+    local record = assert(self._positions[position], "start menu position needs its generated record")
+    graph[position] = {
+      up = assert(record.navigation.up),
+      down = assert(record.navigation.down),
+      left = assert(record.navigation.left),
+      right = assert(record.navigation.right),
+    }
+  end
+  return graph
+end
+
+---@param shoes StartMenuController.RunningShoes
+---@param graph FocusGraphMap
+---@return integer
+function StartMenuController:_shoesIngress(shoes, graph)
+  local reachable = { [self._selectedPosition] = true }
+  ---@type integer[]
+  local pending = { self._selectedPosition }
+  local directions = { "up", "down", "left", "right" }
+  local index = 1
+  while pending[index] ~= nil do
+    local position = pending[index]
+    index = index + 1
+    for _, direction in ipairs(directions) do
+      local candidate = FocusGraph.move(graph, position, direction)
+      assert(type(candidate) == "number" and candidate % 1 == 0, "normal focus resolves to a menu position")
+      ---@cast candidate integer
+      if not reachable[candidate] then
+        reachable[candidate] = true
+        pending[#pending + 1] = candidate
+      end
+    end
+  end
+  local candidates = {}
+  for position = 0, 6 do
+    if reachable[position] then
+      candidates[#candidates + 1] = {
+        id = position,
+        rect = assert(self._positions[position], "reachable menu position needs its generated record").hitRect,
+        order = position,
+      }
+    end
+  end
+  local anchor = FocusGraph.spatialCandidate(shoes.hitRect, candidates, "left")
+  assert(type(anchor) == "number", "a visible Running Shoes control requires a reachable normal action")
+  return anchor
+end
+
+---@return StartMenuController.RunningShoesState?
+function StartMenuController:_shoesState()
+  local shoes = self._runningShoes
+  if shoes == nil then
+    return nil
+  end
+  local state = shoes.state()
+  assert(type(state) == "table" and type(state.visible) == "boolean", "Running Shoes state needs visibility")
+  assert(type(state.locked) == "boolean", "Running Shoes state needs the profile lock")
+  return state
+end
+
+function StartMenuController:_reconcileShoesFocus()
+  local state = self:_shoesState()
+  if state == nil or not state.visible then
+    self._shoesFocused = false
+    self._shoesAnchor = nil
+  end
 end
 
 function StartMenuController:_moveSelection(direction)
@@ -189,16 +281,24 @@ function StartMenuController:_moveSelection(direction)
     direction == "up" or direction == "down" or direction == "left" or direction == "right",
     "unknown UI direction"
   )
-  local graph = {}
-  for position in pairs(self._visibleActions) do
-    local record =
-      assert(self._positions[position], "start menu display position " .. tostring(position) .. " has no record")
-    graph[position] = {
-      up = assert(record.navigation.up, "start menu position navigation needs an up list"),
-      down = assert(record.navigation.down, "start menu position navigation needs a down list"),
-      left = assert(record.navigation.left, "start menu position navigation needs a left list"),
-      right = assert(record.navigation.right, "start menu position navigation needs a right list"),
-    }
+  if self._shoesFocused then
+    if direction == "left" then
+      self._shoesFocused = false
+      self._selectedPosition = assert(self._shoesAnchor, "shoe focus needs its normal ingress anchor")
+      self._shoesAnchor = nil
+    end
+    return
+  end
+  local graph = self:_normalGraph()
+  local shoes = self._runningShoes
+  local shoesState = self:_shoesState()
+  if direction == "right" and shoes ~= nil and shoesState ~= nil and shoesState.visible then
+    local anchor = self:_shoesIngress(shoes, graph)
+    if self._selectedPosition == anchor then
+      self._shoesFocused = true
+      self._shoesAnchor = anchor
+      return
+    end
   end
   local resolved = FocusGraph.move(graph, self._selectedPosition, direction)
   assert(type(resolved) == "number" and resolved % 1 == 0, "start menu focus resolves to a source position")
@@ -213,6 +313,17 @@ end
 -- implemented routing -- the runtime must never compose enabled=true for one
 -- -- so activating it is a programming fault, not a silent close.
 function StartMenuController:_activate(position)
+  if self._shoesFocused then
+    local shoes = assert(self._runningShoes, "focused Running Shoes require their toggle port")
+    local state = self:_shoesState()
+    if state ~= nil and state.visible then
+      if self._effect then
+        self._effect("SEQ_SE_DP_SELECT")
+      end
+      shoes.toggle()
+    end
+    return
+  end
   local action = assert(self._visibleActions[position], "activation requires a visible action")
   if not action.enabled then
     return -- disabled entry is a no-op
@@ -263,6 +374,7 @@ function StartMenuController:updateFixed(uiInput)
   if self._closed then
     return
   end
+  self:_reconcileShoesFocus()
   local positions = self._positions
   local cancelHitRect = self._cancelHitRect
   for _, event in ipairs(uiInput) do
@@ -287,9 +399,16 @@ function StartMenuController:updateFixed(uiInput)
       self:cancelPointerCapture()
     elseif event.type == "pointer_move" then
       if self._pointerId == nil then
-        local position = positionAt(positions, self._visibleActions, event.x, event.y)
-        if position ~= nil then
-          self:_selectPosition(position)
+        local shoes = self._runningShoes
+        local shoesState = self:_shoesState()
+        if shoes ~= nil and shoesState ~= nil and shoesState.visible and contains(shoes.hitRect, event.x, event.y) then
+          self._shoesFocused = true
+          self._shoesAnchor = self:_shoesIngress(shoes, self:_normalGraph())
+        else
+          local position = positionAt(positions, self._visibleActions, event.x, event.y)
+          if position ~= nil then
+            self:_selectPosition(position)
+          end
         end
       end
     elseif event.type == "pointer_down" then
@@ -297,7 +416,16 @@ function StartMenuController:updateFixed(uiInput)
         assert(type(event.pointerId) == "string", "pointer down needs a pointer id")
         self._pointerId = event.pointerId
         local position = positionAt(positions, self._visibleActions, event.x, event.y)
-        if contains(cancelHitRect, event.x, event.y) then
+        local shoes = self._runningShoes
+        local shoesState = self:_shoesState()
+        if shoes ~= nil and shoesState ~= nil and shoesState.visible and contains(shoes.hitRect, event.x, event.y) then
+          -- Retail toggles on the fresh touch itself (the new-touch hit
+          -- table), so release changes nothing.
+          self._shoesFocused = true
+          self._shoesAnchor = self:_shoesIngress(shoes, self:_normalGraph())
+          shoes.toggle()
+          self._pointerDown = { kind = "none" }
+        elseif contains(cancelHitRect, event.x, event.y) then
           self._pointerDown = { kind = "cancel" }
         elseif position ~= nil then
           self:_selectPosition(position)
@@ -351,10 +479,15 @@ function StartMenuController:status()
       }
     end
   end
+  local shoesState = self:_shoesState()
   return {
     open = true,
     actions = actions,
     selectedPosition = self._selectedPosition,
+    runningShoes = shoesState ~= nil and shoesState.visible and {
+      locked = shoesState.locked,
+      focused = self._shoesFocused,
+    } or nil,
   }
 end
 
@@ -393,5 +526,10 @@ end
 ---@field open true
 ---@field actions StartMenuController.Action[]
 ---@field selectedPosition integer
+---@field runningShoes { locked: boolean, focused: boolean }? present only while the toggle is shown
+
+---@class StartMenuController.RunningShoesState
+---@field visible boolean
+---@field locked boolean
 
 return StartMenuController

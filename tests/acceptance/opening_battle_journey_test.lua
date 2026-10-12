@@ -43,7 +43,16 @@ local function harness()
         versionId = versionId,
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+          profile = {
+            name = "GOLD",
+            gender = 0,
+            trainerId = 1,
+            money = 3000,
+            badges = 0,
+            nationalDex = false,
+            runningShoes = false,
+            runningShoesLock = false,
+          },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -239,7 +248,7 @@ function T.tests.field_battle_returns_to_the_live_field_after_commit()
       game.runtime.monService:partyCount() >= 1,
       "the live party survives the round trip"
     )
-    local taskResult = BattleTask.result({ launchId = launch.id })
+    local taskResult = BattleTask.result({ launchId = launch.id }, { services = { battle = battle } })
     Assert.isTrue(taskResult.committed, "the script continuation resumes on the committed result")
     Assert.equal(game:renderAttempts(), 0, "the journey must stop before GPU rendering")
   end, debug.traceback)

@@ -301,12 +301,12 @@ local function validPokemonCenterHealDefinition(definition, _)
     return false
   end
   local expected = {
-    { x = -4.5, y = 12, z = -4.5 },
-    { x = 4.5, y = 12, z = -4.5 },
-    { x = -4.5, y = 12, z = 0 },
-    { x = 4.5, y = 12, z = 0 },
-    { x = -4.5, y = 12, z = 4.5 },
-    { x = 4.5, y = 12, z = 4.5 },
+    { x = -0.28125, y = 0.75, z = -0.28125 },
+    { x = 0.28125, y = 0.75, z = -0.28125 },
+    { x = -0.28125, y = 0.75, z = 0 },
+    { x = 0.28125, y = 0.75, z = 0 },
+    { x = -0.28125, y = 0.75, z = 0.28125 },
+    { x = 0.28125, y = 0.75, z = 0.28125 },
   }
   local expectedRoles = { "northwest", "northeast", "west", "east", "southwest", "southeast" }
   for index, position in ipairs(positions) do

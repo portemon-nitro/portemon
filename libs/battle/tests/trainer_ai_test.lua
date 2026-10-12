@@ -1043,7 +1043,16 @@ end
 ---@return table player record and its validation context
 local function playerFacts(money)
   local record = {
-    profile = { name = "RED", gender = 0, trainerId = 1, money = money, badges = 0, nationalDex = false },
+    profile = {
+      name = "RED",
+      gender = 0,
+      trainerId = 1,
+      money = money,
+      badges = 0,
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+    },
     options = { textFrame = 0, textSpeed = "fastest" },
   }
   local context = { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }

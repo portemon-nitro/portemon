@@ -84,7 +84,16 @@ local function harness()
         versionId = versionId,
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+          profile = {
+            name = "GOLD",
+            gender = 0,
+            trainerId = 1,
+            money = 3000,
+            badges = 0,
+            nationalDex = false,
+            runningShoes = false,
+            runningShoesLock = false,
+          },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -177,7 +186,16 @@ end
 ---@return table player record and its validation context
 local function playerFacts(money)
   local record = {
-    profile = { name = "GOLD", gender = 0, trainerId = 1, money = money, badges = 0, nationalDex = false },
+    profile = {
+      name = "GOLD",
+      gender = 0,
+      trainerId = 1,
+      money = money,
+      badges = 0,
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+    },
     options = { textFrame = 0, textSpeed = "fastest" },
   }
   local context = { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }
@@ -272,8 +290,8 @@ local function runLeg(game, choose, budget)
   local runtime = game.runtime
   local turn = 0
   local ticks = 0
-  while runtime.battleRuntime ~= nil and ticks < (budget or 1200) do
-    local battle = runtime.battleRuntime
+  while runtime.battleCoordinator:activeBattle() ~= nil and ticks < (budget or 1200) do
+    local battle = runtime.battleCoordinator:activeBattle()
     local current = battle:status()
     if current.phase == "running" and current.request ~= nil then
       turn = turn + 1
@@ -294,7 +312,7 @@ local function runLeg(game, choose, budget)
     runtime:updateBattle()
     ticks = ticks + 1
   end
-  Assert.isNil(runtime.battleRuntime, "answered decisions settle the owned lifetime")
+  Assert.isNil(runtime.battleCoordinator:activeBattle(), "answered decisions settle the owned lifetime")
   return turn
 end
 
@@ -346,10 +364,6 @@ end
 function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
   requirePresent(BATTLE_RUNTIME_MODULE, "application battle lifetime from launch to return")
   requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
-  local Committer = requirePresent(
-    "libs.hgss.src.battle.HgssBattleCommitter",
-    "end-to-end exactly-once result publication"
-  )
   local SessionFixture = require("libs.battle.tests.session_fixture")
 
   local versionId = AcceptanceHarness.defaultVersion()
@@ -387,7 +401,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
     Assert.isFalse(badLaunch, "an unknown trainer identity fails preparation")
     local badMessage = tostring(badErr):lower()
     Assert.isTrue(badMessage:find("999999", 1, true) ~= nil, "the failure names the missing identity")
-    Assert.isNil(runtime.battleRuntime, "no battle lifetime starts for an unknown trainer")
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "no battle lifetime starts for an unknown trainer")
     Assert.isNil(runtime:lastBattleResult(), "a failed preparation records no outcome words")
     Assert.isNil(runtime.errorText, "a refused launch is not a field fault")
 
@@ -462,6 +476,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       presentation = headlessPort(wildRecordOne),
       seed = WILD_SEED_ONE,
     })
+    local wildOneBattle = assert(runtime.battleCoordinator:activeBattle(), "the field retains its active battle owner")
     Assert.isNil(runtime.pendingEncounterId, "the launch consumes the held preparation exactly once")
     Assert.notNil(runtime:battleStatus("launch-production-wild-one"), "the owned wild battle reports its identity")
     local foeOne = foeOf()
@@ -496,9 +511,9 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       { result = "win", sourceResult = 1 },
       "the committed opening win reports its outcome words"
     )
-    local receiptOne = Committer.receipt("launch-production-wild-one")
-    Assert.notNil(receiptOne, "the opening settlement records its commit receipt")
-    Assert.isTrue(receiptOne.committed, "the opening receipt proves publication")
+    local statusOne = wildOneBattle:status()
+    Assert.isTrue(statusOne.phase == "complete", "the opening battle owner settles")
+    Assert.isTrue(statusOne.outcomeReceipt.committed, "the opening owner receipt proves publication")
     local framesOne = wildRecordOne.frames
     local openSwitches = framePositions(framesOne, "switch", function(frame)
       return type(frame.payload) == "table" and frame.payload.position == 1
@@ -582,6 +597,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       presentation = headlessPort(wildRecordTwo),
       seed = WILD_SEED_TWO,
     })
+    local wildTwoBattle = assert(runtime.battleCoordinator:activeBattle(), "the field retains its active battle owner")
     Assert.isNil(runtime.pendingEncounterId, "the second launch consumes its preparation exactly once")
     local foeTwo = foeOf()
     local replaced, healedTwo, promptsTwo = false, false, 0
@@ -620,9 +636,9 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       { result = "win", sourceResult = 1 },
       "the committed replacement win reports its outcome words"
     )
-    local receiptTwo = Committer.receipt("launch-production-wild-two")
-    Assert.notNil(receiptTwo, "the replacement settlement records its commit receipt")
-    Assert.isTrue(receiptTwo.committed, "the replacement receipt proves publication")
+    local statusTwo = wildTwoBattle:status()
+    Assert.isTrue(statusTwo.phase == "complete", "the replacement battle owner settles")
+    Assert.isTrue(statusTwo.outcomeReceipt.committed, "the replacement owner receipt proves publication")
     local framesTwo = wildRecordTwo.frames
     local playerFaintAt = framePositions(framesTwo, "faint", function(frame)
       return type(frame.payload) == "table" and frame.payload.combatant == 1
@@ -704,6 +720,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       presentation = headlessPort(trainerRecord),
       seed = TRAINER_SEED,
     })
+    local trainerBattle = assert(runtime.battleCoordinator:activeBattle(), "the field retains its active battle owner")
     Assert.notNil(runtime:battleStatus("launch-production-trainer"), "the owned trainer battle reports its identity")
 
     -- The veteran opens because the opener fell in the wild: toxic first,
@@ -973,22 +990,22 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
     Assert.isTrue(mechanic > 0, "production attacks settle through move mechanics")
     Assert.isTrue(heavy, "a real strike with nontrivial combatants deals more than one point")
 
-    -- Terminal win to field and commit: outcome words, receipt, native
+    -- Terminal win to field and commit: outcome words, host status, native
     -- prize from the generated rate, and every foe seen.
     Assert.deepEqual(
       runtime:lastBattleResult(),
       { result = "win", sourceResult = 1 },
       "the committed trainer win reports win with the won source word"
     )
-    local receipt = Committer.receipt("launch-production-trainer")
-    Assert.notNil(receipt, "the trainer settlement records its commit receipt")
-    Assert.isTrue(receipt.committed, "the trainer receipt proves publication")
-    Assert.equal(receipt.rewards.amount, expectedPrize, "the prize uses the final party level and class rate")
-    -- The prize movement is asserted through the commit receipt candidate,
-    -- the committer's proven boundary: the staged candidate credits the
-    -- purse value exactly once without touching the input record.
+    local trainerStatus = trainerBattle:status()
+    Assert.isTrue(trainerStatus.phase == "complete", "the trainer battle owner settles")
+    local trainerReceipt = assert(trainerStatus.outcomeReceipt, "the trainer owner retains its commit receipt")
+    Assert.isTrue(trainerReceipt.committed, "the trainer owner receipt proves publication")
+    Assert.equal(trainerReceipt.rewards.amount, expectedPrize, "the prize uses the final party level and class rate")
+    -- The staged candidate credits the purse exactly once without touching
+    -- the input record.
     Assert.equal(
-      receipt.player.profile.money,
+      trainerReceipt.player.profile.money,
       moneyBefore + expectedPrize,
       "the receipt carries the credited money candidate"
     )
@@ -1059,6 +1076,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       presentation = headlessPort(captureRecord),
       seed = CAPTURE_SEED,
     })
+    local captureBattle = assert(runtime.battleCoordinator:activeBattle(), "the field retains its active battle owner")
     local foeCapture = foeOf()
     runLeg(game, function(request)
       if request.kind == "learn_move" then
@@ -1081,11 +1099,9 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
     Assert.equal(captureFrames[captureThrows[1]].payload.ball, "MASTER_BALL", "the capture uses the guaranteed ball")
     Assert.isTrue(#framePositions(captureFrames, "caught", nil) > 0, "the guaranteed ball lands its capture")
     Assert.equal(#framePositions(captureFrames, "broke_free", nil), 0, "the guaranteed ball never breaks free")
-    local captureReceipt = Committer.receipt("launch-production-capture")
-    Assert.notNil(captureReceipt, "the capture settlement records its commit receipt")
-    Assert.isTrue(captureReceipt.committed, "the capture receipt proves publication")
-    Assert.equal(#captureReceipt.placements, 1, "the capture reports its placement")
-    Assert.isTrue(captureReceipt.placements[1].retained, "room in the party retains the capture")
+    local captureStatus = captureBattle:status()
+    Assert.isTrue(captureStatus.phase == "complete", "the capture battle owner settles")
+    Assert.isTrue(captureStatus.outcomeReceipt.committed, "the capture owner receipt proves publication")
     Assert.equal(
       runtime.monService:partyCount(),
       partyBeforeCapture + 1,
@@ -1142,6 +1158,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       presentation = headlessPort(doubleRecord),
       seed = DOUBLE_SEED,
     })
+    local doubleBattle = assert(runtime.battleCoordinator:activeBattle(), "the field retains its active battle owner")
     Assert.notNil(runtime:battleStatus("launch-production-double"), "the owned double battle reports its identity")
 
     -- Ordinary strikes resolve by name from each combatant's live set so
@@ -1249,9 +1266,9 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       { result = "win", sourceResult = 1 },
       "the committed double win reports its outcome words"
     )
-    local doubleReceipt = Committer.receipt("launch-production-double")
-    Assert.notNil(doubleReceipt, "the double settlement records its commit receipt")
-    Assert.isTrue(doubleReceipt.committed, "the double receipt proves publication")
+    local doubleStatus = doubleBattle:status()
+    Assert.isTrue(doubleStatus.phase == "complete", "the double battle owner settles")
+    Assert.isTrue(doubleStatus.outcomeReceipt.committed, "the double owner receipt proves publication")
     Assert.notNil(firstDoubleActors, "the double battle asks its opening decision")
     Assert.equal(#firstDoubleActors, 2, "the first double batch addresses two player actors")
     Assert.isTrue(

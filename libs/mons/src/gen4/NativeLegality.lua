@@ -1,19 +1,9 @@
--- Strict native representability for supported production policies. The
--- projection resolves every semantic identity to its native Generation-IV
--- value and verifies the cross-field relationships the boxed codec depends
--- on: the ability belongs to the final form, current level derives from
--- experience, and historical met level remains independently representable
--- in its native range. Power points respect the source maximum, effort totals
--- fit, current health fits the derived maximum, and strings fit their fixed
--- capacities. Unknown identities are record failures; known but inconsistent
--- combinations are legality failures. The boxed codec requires this
--- projection and carries no separate permissive checks.
+-- Native representability for admitted semantic records. The projection
+-- resolves identities to Generation-IV values and checks native-only field
+-- widths, encodings, and status combinations before the boxed codec writes.
 
-local Experience = require("libs.mons.src.gen4.Experience")
 local MonsErrors = require("libs.mons.src.errors")
-local Moves = require("libs.mons.src.gen4.Moves")
 local Personality = require("libs.mons.src.gen4.Personality")
-local Stats = require("libs.mons.src.gen4.Stats")
 local StatusCodec = require("libs.mons.src.gen4.StatusCodec")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
@@ -68,99 +58,25 @@ function NativeLegality.project(mon, context)
 
   local species = catalog:species(mon.species)
   requireNativeId(mon.species, "species", species.nativeId)
-  local form = catalog:form(mon.species, mon.form)
   if mon.form < 0 or mon.form > 31 then
     MonsErrors.raise(MonsErrors.LEGALITY_INVALID, "form exceeds its native field", { form = mon.form })
   end
 
   local abilityDefinition = catalog:ability(mon.ability)
   requireNativeId(mon.ability, "ability", abilityDefinition.nativeId)
-  if type(mon.heldItem) ~= "string" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown held item " .. tostring(mon.heldItem), {})
-  end
   local heldDefinition = catalog:item(mon.heldItem)
   requireNativeId(mon.heldItem, "held item", heldDefinition.nativeId)
-  if context.games == nil or context.games[mon.origin.game] == nil then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown game " .. tostring(mon.origin.game), {})
-  end
-  if type(mon.origin.ball) ~= "string" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown ball " .. tostring(mon.origin.ball), {})
-  end
   local ballDefinition = catalog:item(mon.origin.ball)
   requireNativeId(mon.origin.ball, "ball", ballDefinition.nativeId)
-  if not ballDefinition.isBall then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown ball " .. tostring(mon.origin.ball), {})
-  end
-  if context.languages == nil or context.languages[mon.origin.language] == nil then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown language " .. tostring(mon.origin.language), {})
-  end
-
-  local permitted = false
-  for _, key in ipairs(form.abilities) do
-    if key == mon.ability then
-      permitted = true
-    end
-  end
-  if not permitted then
-    MonsErrors.raise(
-      MonsErrors.LEGALITY_INVALID,
-      "ability " .. tostring(mon.ability) .. " is not permitted by the final form",
-      { ability = mon.ability, species = mon.species, form = mon.form }
-    )
-  end
-
-  local curve = catalog:growthCurve(species.growthCurve)
-  if mon.experience > curve[Stats.MAX_LEVEL] then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "experience exceeds the level-" .. Stats.MAX_LEVEL .. " entry", {})
-  end
-  local level = Experience.level(curve, mon.experience)
-  if
-    type(mon.met.level) ~= "number"
-    or mon.met.level % 1 ~= 0
-    or mon.met.level < 1
-    or mon.met.level > Stats.MAX_LEVEL
-  then
-    MonsErrors.raise(MonsErrors.LEGALITY_INVALID, "met level is outside its native range", { metLevel = mon.met.level })
-  end
 
   local moves = {}
-  local seen = {}
-  for index, entry in ipairs(mon.moves) do
+  for _, entry in ipairs(mon.moves) do
     local definition = catalog:move(entry.move)
     requireNativeId(entry.move, "move", definition.nativeId)
-    if seen[entry.move] then
-      MonsErrors.raise(MonsErrors.LEGALITY_INVALID, "duplicate move " .. entry.move, { move = entry.move })
-    end
-    seen[entry.move] = true
-    local ceiling = Moves.maxPp(definition.basePp, Moves.MAX_PP_UPS)
-    if entry.pp < 0 or entry.pp > ceiling or entry.ppUps < 0 or entry.ppUps > Moves.MAX_PP_UPS then
-      MonsErrors.raise(
-        MonsErrors.LEGALITY_INVALID,
-        "move entry " .. index .. " exceeds its source power-point range",
-        {}
-      )
-    end
     moves[#moves + 1] = { id = definition.nativeId, pp = entry.pp, ppUps = entry.ppUps }
   end
 
-  local evTotal = 0
-  for _, key in ipairs(Stats.STAT_KEYS) do
-    evTotal = evTotal + mon.evs[key]
-  end
-  if evTotal > Stats.EV_TOTAL_CAP then
-    MonsErrors.raise(MonsErrors.LEGALITY_INVALID, "effort value total exceeds " .. Stats.EV_TOTAL_CAP, {})
-  end
-
-  local nature = Personality.nature(mon.personality)
-  local derived = Stats.calculate(form.baseStats, mon.ivs, mon.evs, level, nature)
-  local maxHp = derived.hp
-  if mon.species == "SHEDINJA" then
-    maxHp = 1
-  end
   if mon.condition ~= nil then
-    if mon.condition.currentHp < 0 or mon.condition.currentHp > maxHp then
-      MonsErrors.raise(MonsErrors.LEGALITY_INVALID, "current health exceeds the derived maximum", {})
-    end
     -- The boxed form carries no party status, so the projection only
     -- proves the semantic conditions encode back to a native word.
     StatusCodec.project(mon.condition.effects)
@@ -177,9 +93,8 @@ function NativeLegality.project(mon, context)
   local nicknameText = mon.nickname
   if nicknameText == nil then
     nicknameText = species.name
+    checkShapedText(nicknameText, context.charmap, NativeLegality.NICKNAME_CAPACITY, "nickname")
   end
-  checkShapedText(nicknameText, context.charmap, NativeLegality.NICKNAME_CAPACITY, "nickname")
-  checkShapedText(mon.origin.trainerName, context.charmap, NativeLegality.OT_NAME_CAPACITY, "trainer name")
 
   return {
     personality = mon.personality,

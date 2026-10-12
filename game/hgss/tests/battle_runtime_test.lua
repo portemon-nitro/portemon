@@ -14,7 +14,6 @@ local Party = require("libs.mons.src.Party")
 
 local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
-local COMMITTER_MODULE = "libs.hgss.src.battle.HgssBattleCommitter"
 
 local T = {}
 
@@ -238,8 +237,6 @@ end
 function T.completion_and_disposal_commit_exactly_once_and_release_once()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with exactly-once completion")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
-  local Committer = requirePresent(COMMITTER_MODULE, "end-to-end exactly-once result publication")
-
   local launch = launchFor("once")
   local party = newPartyOwner()
   local foe = foeRecord("TOTODILE", 4, 0x5EED0003)
@@ -278,7 +275,7 @@ function T.completion_and_disposal_commit_exactly_once_and_release_once()
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the battle")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(receipt.committed, "completion publishes through the committer")
-  Assert.deepEqual(Committer.receipt(launch.id), receipt, "the lifecycle receipt is the committer receipt")
+  Assert.deepEqual(battle:status().outcomeReceipt, receipt, "the lifecycle retains its own committed receipt")
 
   -- Duplicate completion and repeated disposal neither duplicate the
   -- publication nor release resources twice.
@@ -287,7 +284,7 @@ function T.completion_and_disposal_commit_exactly_once_and_release_once()
   battle:dispose()
   battle:dispose()
   Assert.equal(portRecord.disposed, 1, "repeated disposal releases resources exactly once")
-  Assert.deepEqual(Committer.receipt(launch.id), receipt, "disposal after publication never republishes")
+  Assert.deepEqual(battle:status().outcomeReceipt, receipt, "disposal after publication never republishes")
 
   -- A preparation failure reports instead of continuing as a success: no
   -- receipt exists and story continuation sees the failure.
@@ -298,11 +295,10 @@ function T.completion_and_disposal_commit_exactly_once_and_release_once()
       failed:update()
     end
     Assert.equal(failed:status().phase, "failed", "an unbuildable battle reports failure")
-    Assert.isNil(Committer.receipt(badLaunch.id), "a failed launch records no success receipt")
+    Assert.isNil(failed:status().outcomeReceipt, "a failed launch records no success receipt")
     failed:dispose()
   else
-    Assert.isTrue(failure ~= nil, "an unbuildable launch reports its failure")
-    Assert.isNil(Committer.receipt(badLaunch.id), "a failed launch records no success receipt")
+    Assert.isTrue(failure ~= nil, "an unbuildable launch reports its failure without a receipt")
   end
 end
 

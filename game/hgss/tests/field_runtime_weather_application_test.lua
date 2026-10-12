@@ -5,6 +5,7 @@ local Assert = require("tests.support.Assert")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
@@ -141,7 +142,7 @@ local function runtimeWithClock(catalog, calls, currentMap)
       return false
     end,
   }
-  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
+  local runtime = setmetatable({
     weatherCatalog = catalog,
     weatherClock = clock,
     eventState = FieldEventState.new(),
@@ -199,7 +200,9 @@ local function runtimeWithClock(catalog, calls, currentMap)
       updateSourceFrame = function() end,
     },
     fieldEntranceIndicator = { updateFixed = function() end },
-  }, FieldRuntime))
+  }, FieldRuntime)
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
+  runtime = FieldRuntimeFixture.withApricornDateOwner(runtime)
   runtime.worldSwapCoordinator = FieldWorldSwapCoordinator.new(runtime)
   return runtime
 end

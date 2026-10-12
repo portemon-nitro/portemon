@@ -210,6 +210,26 @@ function T.accepted_step_commits_on_exactly_tick_eight()
   near(p.worldY, 0.5)
 end
 
+function T.run_step_commits_on_exactly_tick_four_at_run_speed()
+  local p = player(runtimeMap(), 0, 4, 0, "east")
+  for index = 1, 3 do
+    p:updateFixed({ heldDirection = "east", pressedDirection = index == 1 and "east" or nil }, true)
+    Assert.equal(p.fieldX, 0)
+    Assert.equal(p.motion, "walking")
+  end
+  Assert.equal(p:movementTransaction().speed, "run")
+  p:updateFixed({ heldDirection = "east" }, true)
+  Assert.equal(p.fieldX, 1)
+  Assert.equal(p.motion, "idle")
+end
+
+function T.run_is_ignored_while_turning_and_never_changes_a_blocked_step()
+  local p = player(runtimeMap(), 0, 4, 0, "south")
+  p:updateFixed({ heldDirection = "east", pressedDirection = "east" }, true)
+  Assert.equal(p.motion, "turning", "a facing change turns in place before any run step")
+  Assert.isNil(p:movementTransaction())
+end
+
 function T.held_perpendicular_direction_turns_then_walks_at_retail_cadence()
   local p = player(runtimeMap(), 0, 4, 0, "south")
   local start = {
@@ -801,8 +821,14 @@ end
 -- on the caller's reused table (the stale-field regression the reuse
 -- contract must not introduce).
 function T.presentation_state_into_matches_the_snapshot_and_clears_stale_optional_fields()
-  local p = player(runtimeMap(), 0, 4, 0)
-  local out = { locomotionActive = true, gesturePose = "stale", gestureTick = 7, gestureOffsetY = 99 }
+  local p = player(runtimeMap(), 0, 4, 0, "east")
+  local out = {
+    locomotionActive = true,
+    gesturePose = "stale",
+    gestureTick = 7,
+    gestureOffsetY = 99,
+    ordinaryStepSpeed = "run",
+  }
   local snapshot = p:presentationState()
   local returned = p:presentationStateInto(out)
   Assert.equal(returned, out, "presentationStateInto must return the caller-owned table")
@@ -810,11 +836,13 @@ function T.presentation_state_into_matches_the_snapshot_and_clears_stale_optiona
   Assert.isNil(out.gesturePose, "a stale gesture pose from a prior tick must not survive reuse")
   Assert.isNil(out.gestureTick, "a stale gesture tick from a prior tick must not survive reuse")
   Assert.equal(out.gestureOffsetY, snapshot.gestureOffsetY)
+  Assert.isNil(out.ordinaryStepSpeed, "a stale ordinary speed from a prior step must not survive reuse")
 
   tick(p, "east", "east")
   local walkingSnapshot = p:presentationState()
   p:presentationStateInto(out)
   Assert.equal(out.locomotionActive, walkingSnapshot.locomotionActive)
+  Assert.equal(out.ordinaryStepSpeed, "normal", "active ordinary walking exposes its committed speed")
 end
 
 -- collisionCandidatesInto must overwrite the caller-owned array/records in

@@ -44,7 +44,10 @@ local function map(backgrounds, facingBehavior)
       isBlockedLocal = function()
         return false
       end,
-      getLocal = function()
+      getLocal = function(_, x, z)
+        if type(facingBehavior) == "function" then
+          return { behavior = facingBehavior(x, z) }
+        end
         return { behavior = facingBehavior or 0 }
       end,
     },
@@ -257,6 +260,43 @@ function T.settled_player_with_actor_ahead_resolves_an_object_intent()
   Assert.equal(intent.object.spriteId, 99)
   Assert.isNil(intent.background)
   Assert.equal(intent.tick, 100)
+end
+
+local function counterAt(x, z)
+  return function(localX, localZ)
+    return localX == x and localZ == z and 128 or 0
+  end
+end
+
+function T.object_behind_a_counter_answers_the_action_button()
+  local nurse = actor("map:61:object:2", 2, 7, 4, 12, 5)
+  local r = resolver({ ["4:12"] = { surfaceId = 0, actor = nurse } })
+  local intent = r:resolve(baseSnapshot({ runtimeMap = map(nil, counterAt(4, 13)) }))
+  assert(intent, "an object past the counter must resolve")
+  Assert.equal(intent.kind, "object")
+  Assert.equal(intent.object.actorId, "map:61:object:2")
+  Assert.equal(intent.targetFieldZ, 12)
+  Assert.equal(intent.sourceFieldZ, 14)
+  Assert.equal(intent.scriptId, 5)
+end
+
+function T.counter_only_extends_the_object_lookup_by_one_tile()
+  local far = actor("map:61:object:3", 3, 7, 4, 11, 5)
+  local r = resolver({ ["4:11"] = { surfaceId = 0, actor = far } })
+  Assert.isNil(r:resolve(baseSnapshot({ runtimeMap = map(nil, counterAt(4, 13)) })))
+  -- Without a counter the facing tile is the only lookup cell.
+  local behind = actor("map:61:object:2", 2, 7, 4, 12, 5)
+  r = resolver({ ["4:12"] = { surfaceId = 0, actor = behind } })
+  Assert.isNil(r:resolve(baseSnapshot()))
+  -- Background events keep reading the facing tile itself; an object past the
+  -- counter still wins over them.
+  local m = map({ bgEvent(0, 9, 4, 13, 4) }, counterAt(4, 13))
+  local intent = resolver():resolve(baseSnapshot({ runtimeMap = m }))
+  assert(intent, "the counter tile's own background event must resolve")
+  Assert.equal(intent.kind, "background")
+  intent = r:resolve(baseSnapshot({ runtimeMap = m }))
+  assert(intent, "the object past the counter must resolve")
+  Assert.equal(intent.kind, "object")
 end
 
 function T.actor_and_background_ahead_object_wins()

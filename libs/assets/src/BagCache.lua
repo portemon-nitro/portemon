@@ -164,10 +164,7 @@ function BagCache.isReady(cacheFs, expectedMarker)
   then
     return false
   end
-  local ok, paths = pcall(BagCache.referencedPaths, manifest)
-  if not ok then
-    return false
-  end
+  local paths = BagCache.referencedPaths(manifest)
   for _, path in ipairs(paths) do
     if not cacheFs:exists(path, "file") then
       return false

@@ -57,6 +57,8 @@ MetatileBehavior.BEHAVIOR = {
   WARP_WEST = 109,
   WARP_NORTH = 110,
   WARP_SOUTH = 111,
+  -- TILE_BEHAVIOR_128 (`sub_0205B700`): objects behind it answer the Action button.
+  COUNTER = 128,
   PC = 131,
 }
 

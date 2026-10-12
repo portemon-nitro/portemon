@@ -113,7 +113,7 @@ T.tests["publishes the surf attachment definition and its referenced paths atomi
     },
   }
   local bundle = {
-    marker = "field-effect-cache-v10:rom:dep",
+    marker = "field-effect-cache-v11:rom:dep",
     index = {
       schema = "g4-field-effect-index-v3",
       effects = {

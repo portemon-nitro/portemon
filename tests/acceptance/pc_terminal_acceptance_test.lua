@@ -559,9 +559,9 @@ function T.tests.pokecenter_pc_metatile_routes_only_when_faced_north()
     -- The headless acceptance composition has no FieldState renderer to
     -- publish preparation completion; acknowledge the ready child explicitly.
     host:setPresentationReady(handle, true)
-    game.runtime:pressCancel()
-    game:step()
-    game.runtime:releaseCancel()
+    -- B asks "Continue Box operations?"; a second B answers No and leaves.
+    pressCancel(game)
+    pressCancel(game)
     advanceSourceDialogueUntil(game, "the source shell returns to its Storage submenu", function(snapshot)
       return not host:isActive() and snapshot.menu ~= nil and snapshot.menu.modal
     end)
@@ -689,8 +689,10 @@ function T.tests.generated_pc_shell_uses_bill_photo_and_hall_of_fame_source_gate
       local status = host:status()
       Assert.equal(status.app, "storage", "the selected source mode opens the production Storage child")
       Assert.equal(status.mode, mode, "the source menu value reaches the matching Storage mode")
+      Assert.isFalse(game.runtime.screenFade:isOpaque(), "Storage opens over the visible field without a fade")
       local handle = assert(host:activeHandle())
       host:setPresentationReady(handle, true)
+      pressCancel(game)
       pressCancel(game)
       nextSourcePcMenu(game, previous)
       exitSourcePcMenu(game)

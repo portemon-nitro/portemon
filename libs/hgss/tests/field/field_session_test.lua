@@ -1244,6 +1244,55 @@ function T.completed_transition_holds_the_arrival_tile_for_autosave()
   Assert.notNil(transition.completed)
 end
 
+-- Running Shoes gating: the session asks the player to run only when B is
+-- held, the progression owns the shoes, and the avatar is in its walking
+-- state (cycling and surfing never run).
+local function runSession(overrides)
+  local runs = {}
+  local player = defaultPlayer()
+  player.updateFixed = function(_, _, run)
+    runs[#runs + 1] = run
+    return false
+  end
+  local options = baseOptions({ player = player })
+  options.progression = {
+    hasRunningShoes = function()
+      return overrides.shoes
+    end,
+    runningShoesLock = function()
+      return overrides.lock == true
+    end,
+  }
+  if overrides.avatar then
+    options.playerAvatar = {
+      updateFixed = function() end,
+      durableState = function()
+        return overrides.avatar
+      end,
+    }
+  end
+  local session = FieldSession.new(options)
+  session:updateFixed({ heldDirection = "south", cancelDown = overrides.held })
+  return runs[1]
+end
+
+function T.held_cancel_runs_only_with_the_shoes_on_a_walking_avatar()
+  Assert.equal(runSession({ shoes = true, held = true, avatar = "walking" }), true)
+  Assert.equal(runSession({ shoes = true, held = true }), true, "no avatar owner means ordinary walking physics")
+  Assert.equal(runSession({ shoes = false, held = true, avatar = "walking" }), false, "no shoes, no run")
+  Assert.equal(runSession({ shoes = true, held = false, avatar = "walking" }), false, "B must be held")
+  Assert.equal(runSession({ shoes = true, held = true, avatar = "cycling" }), false)
+  Assert.equal(runSession({ shoes = true, held = true, avatar = "surfing" }), false)
+end
+
+-- The Start Menu lock holds B for the player (retail ORs B into the held
+-- keys), but only with the shoes on a walking avatar.
+function T.running_shoes_lock_runs_without_holding_cancel()
+  Assert.equal(runSession({ shoes = true, lock = true, held = false, avatar = "walking" }), true)
+  Assert.equal(runSession({ shoes = false, lock = true, held = false, avatar = "walking" }), false)
+  Assert.equal(runSession({ shoes = true, lock = true, held = false, avatar = "cycling" }), false)
+end
+
 function T.script_completion_consumes_its_final_action_edge()
   local resolved = 0
   local locked = true
@@ -3674,6 +3723,54 @@ local function movementSession(options)
     eventResolver = options.eventResolver,
   }))
   return session, player, map
+end
+
+function T.session_passes_committed_step_speed_to_the_player_visual()
+  local map = movementMap()
+  local player = FieldPlayer.new({
+    currentMap = map,
+    fieldX = 0,
+    fieldZ = 4,
+    surfaceId = 0,
+    facing = "east",
+  })
+  local visual = FieldPlayerVisual.new({ player = player, spriteId = 0 })
+  local locked = false
+  local session = FieldSession.new(baseOptions({
+    currentMap = map,
+    player = player,
+    playerVisual = visual,
+    progression = {
+      hasRunningShoes = function()
+        return true
+      end,
+      runningShoesLock = function()
+        return locked
+      end,
+    },
+  }))
+
+  session:updateFixed({ heldDirection = "east", pressedDirection = "east", cancelDown = true })
+  Assert.equal(player:movementTransaction().speed, "run")
+  Assert.equal(visual.poseTick, 2, "the initial held-button run advances by two")
+  for _ = 1, 3 do
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, 1, "releasing B does not change the active four-tick step")
+  Assert.equal(visual.poseTick, 8, "the run's commit tick retains its speed")
+
+  for _ = 1, 8 do
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, 2, "without B or lock, the next step is an eight-tick walk")
+  Assert.equal(visual.poseTick, 16, "walking resumes at one pose tick per update")
+
+  locked = true
+  for _ = 1, 4 do
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, 3, "the auto-run lock applies to the following step")
+  Assert.equal(visual.poseTick, 24, "the locked run keeps the source gait cadence")
 end
 
 local function ledgeSession(options)

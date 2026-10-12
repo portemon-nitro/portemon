@@ -172,6 +172,16 @@ function PcApplicationHost:draw(resources)
   active.child:draw(resources, active.child:status())
 end
 
+-- The plan the open child just drew, when it presents one with outer frames.
+---@return ApplicationPlan?
+function PcApplicationHost:presentationPlan()
+  local active = assert(self._active, "no PC application is open")
+  if not active.presentationReady or type(active.child.presentationPlan) ~= "function" then
+    return nil
+  end
+  return active.child:presentationPlan()
+end
+
 function PcApplicationHost:cancelPointerCapture()
   local active = self._active
   if active ~= nil and type(active.child.cancelPointerCapture) == "function" then

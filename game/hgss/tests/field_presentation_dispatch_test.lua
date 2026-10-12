@@ -1343,6 +1343,9 @@ function T.pc_renderers_are_owned_prepared_and_drawn_through_field_resources()
       draw = function(_, _)
         calls.pcChildDrawn = (calls.pcChildDrawn or 0) + 1
       end,
+      presentationPlan = function()
+        return nil
+      end,
     }
     local ready = resources:preparePcApplication(status, { monCatalog = {} })
     Assert.isTrue(ready, "photo icon resources are prepared before the drawable pass")
@@ -1441,6 +1444,38 @@ function T.construction_shares_one_window_renderer_with_the_dialogue_renderer()
     Assert.equal(calls.dialogue, 1, "repeat disposal releases the dialogue borrower exactly once")
     Assert.equal(calls.windowReleased, 1, "repeat disposal releases the shared owner exactly once")
   end)
+end
+
+-- PC children are drawn by their own owners but share the application outer
+-- frame, drawn after the child's content.
+function T.pc_application_plans_are_framed_after_child_content()
+  local PixelScale = require("libs.ui.src.PixelScale")
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local placement = assert(PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 272, 232))
+      local contentBox = { x = 8, y = 24, width = 256, height = 192 }
+      local host = {
+        draw = function()
+          sink[#sink + 1] = { "content" }
+        end,
+        presentationPlan = function()
+          return { frames = { { placement = placement, contentBox = contentBox } } }
+        end,
+      }
+      resources:drawPcApplication(host, { monCatalog = {} })
+      Assert.equal(sink[1][1], "content", "the PC child draws before its frame")
+      Assert.equal(sink[2][1], "frame", "the PC application receives the shared outer frame")
+      Assert.deepEqual(sink[2][2], contentBox, "the frame wraps the plan content box")
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 -- A framed plan paints application content before its selected border

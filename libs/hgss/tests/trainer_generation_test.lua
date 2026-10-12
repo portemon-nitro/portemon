@@ -510,6 +510,7 @@ end
 ---@return table field runtime fake carrying the trainer composition
 local function fieldLaunchRuntime(fields)
   local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+  local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
   local runtime = setmetatable({
     monService = {
       partyCount = function()
@@ -523,6 +524,7 @@ local function fieldLaunchRuntime(fields)
   for key, value in pairs(fields) do
     runtime[key] = value
   end
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
   return runtime
 end
 
@@ -555,7 +557,7 @@ function T.numeric_trainer_launches_resolve_their_compiled_party_into_the_scenar
     _trainerCatalog = trainerCatalog,
     _trainerFactory = vectorFactory(trainerCatalog, monCatalog),
   })
-  local scenario = runtime:_scenarioForRequest({ kind = "trainer", payload = { trainer = 8 } })
+  local scenario = runtime:buildBattleScenario({ kind = "trainer", payload = { trainer = 8 } })
   Assert.equal(scenario.kind, "trainer", "the launch shapes a trainer scenario")
   local roster = assert(scenario.participants[2], "the enemy side fields its trainer").roster
   Assert.equal(#roster, 2, "both compiled slots reach the scenario in order")
@@ -594,7 +596,7 @@ function T.unknown_trainer_identities_fail_before_a_battle_starts()
     _trainerCatalog = trainerCatalog,
     _trainerFactory = vectorFactory(trainerCatalog, monCatalog),
   })
-  local ok, err = pcall(runtime._scenarioForRequest, runtime, {
+  local ok, err = pcall(runtime.buildBattleScenario, runtime, {
     kind = "trainer",
     payload = { trainer = 9999 },
   })
@@ -605,7 +607,7 @@ function T.unknown_trainer_identities_fail_before_a_battle_starts()
     message:lower():find("unknown", 1, true) ~= nil,
     "the failure reports an unknown trainer rather than a missing party"
   )
-  Assert.isNil(runtime.battleRuntime, "no battle lifetime starts for an unknown trainer")
+  Assert.isNil(runtime.battleCoordinator:activeBattle(), "no battle lifetime starts for an unknown trainer")
 end
 
 -- Native party generation follows the source formula exactly: the seed

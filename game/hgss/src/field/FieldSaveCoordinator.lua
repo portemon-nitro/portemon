@@ -55,7 +55,8 @@ end
 ---@param runtime table<string, unknown>
 ---@return string? busy reason, or nil when no battle owns the field
 local function battleBusyReason(runtime)
-  local battle = runtime.battleRuntime --[[@as BattleSaveGate?]]
+  local coordinator = runtime.battleCoordinator
+  local battle = coordinator:activeBattle() --[[@as BattleSaveGate?]]
   if battle ~= nil then
     local saveable, reason = battle:canSave()
     if not saveable then
@@ -69,7 +70,7 @@ local function battleBusyReason(runtime)
   -- An admitted battle launch owns the field from cover through battle,
   -- settlement, restoration, and reveal: no shutdown or manual save may
   -- publish a half-battle field record before the safe field returns.
-  if runtime._battleLaunch ~= nil then
+  if coordinator:hasLaunch() then
     return "Save deferred: a battle launch owns the field"
   end
   return nil

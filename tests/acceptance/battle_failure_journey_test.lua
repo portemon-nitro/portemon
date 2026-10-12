@@ -94,7 +94,16 @@ local function harness()
         versionId = versionId,
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+          profile = {
+            name = "GOLD",
+            gender = 0,
+            trainerId = 1,
+            money = 3000,
+            badges = 0,
+            nationalDex = false,
+            runningShoes = false,
+            runningShoesLock = false,
+          },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -190,7 +199,6 @@ function T.tests.stale_party_and_bag_candidates_refuse_without_consuming()
   Assert.equal(party:partyRevision(), partyRevision, "a stale party staging moves no revision")
   Assert.equal(bag:quantity("POKE_BALL"), 5, "a stale bag staging touches nothing")
   Assert.equal(bag:revision(), bagRevision, "a stale bag staging moves no revision")
-  Assert.isNil(Committer.receipt("outcome-stale-refuses"), "a refused batch records no receipt")
 end
 
 function T.tests.duplicate_completion_reuses_the_receipt_without_republishing()
@@ -374,7 +382,6 @@ function T.tests.full_party_capture_fails_before_any_publication()
   Assert.isFalse(ok, "a capture without retention never stages: " .. tostring(err))
   Assert.equal(party:partyCount(), 6, "the refusal stores the mon nowhere")
   Assert.equal(party:partyRevision(), revisionBefore, "the refusal moves no live revision")
-  Assert.isNil(Committer.receipt("outcome-full-party-refused"), "a refused batch records no receipt")
 end
 
 return T

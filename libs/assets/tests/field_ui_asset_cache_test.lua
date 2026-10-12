@@ -174,6 +174,7 @@ local function validManifest()
       background = { x = 0, y = 0, width = 256, height = 192 },
       cursor = { frames = { { x = 0, y = 0, width = 32, height = 32, duration = 3 } } },
       interactive = FieldUiFixture.startMenuInteractive(),
+      runningShoes = FieldUiFixture.startMenuRunningShoes(),
       iconTable = (function()
         local rows = {}
         local spriteIcons = {
@@ -696,6 +697,37 @@ local function interactiveManifest()
   return manifest
 end
 
+function T.running_shoes_toggle_record_is_required_and_strict()
+  Assert.isTrue(FieldUiAssetCache.validateManifest(validManifest()))
+  local function rejects(mutate)
+    local manifest = validManifest()
+    mutate(manifest.startMenu.runningShoes)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok)
+    Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  end
+  local missing = validManifest()
+  missing.startMenu.runningShoes = nil
+  local ok, err = FieldUiAssetCache.validateManifest(missing)
+  Assert.isFalse(ok)
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  rejects(function(shoes)
+    shoes.hitRect.width = 300
+  end)
+  rejects(function(shoes)
+    shoes.button.anchor.x = 1.5
+  end)
+  rejects(function(shoes)
+    shoes.button.on = nil
+  end)
+  rejects(function(shoes)
+    shoes.indicator.off.rect.x = 400
+  end)
+  rejects(function(shoes)
+    shoes.indicator.on.offset = nil
+  end)
+end
+
 function T.interactive_position_contract_validates()
   Assert.isTrue(FieldUiAssetCache.validateManifest(interactiveManifest()))
 end
@@ -1061,6 +1093,34 @@ function T.generic_manifest_accepts_safe_timing_and_placement_variants()
   local palette = validManifest()
   palette.signposts.textColors = { foreground = 3, shadow = 11, background = 14 }
   Assert.isTrue(FieldUiAssetCache.validateManifest(palette), "in-range text slots stay consumable")
+end
+
+function T.valid_section_variants_remain_ready_as_one_published_manifest()
+  local manifest = interactiveManifest()
+  manifest.dialogueFrames.continueCursor.framePrinterTicks = 12
+  manifest.signposts.textColors = { foreground = 3, shadow = 11, background = 14 }
+  manifest.namingScreen.pokemonSubject.anchor = { x = -37, y = 104 }
+  manifest.namingScreen.pokemonSubject.frames[1].parts[1].offset = { x = -12, y = 4 }
+
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest))
+  Assert.isTrue(FieldUiAssetCache.isReady(publishedCache(manifest), FieldUiAssetCache.marker("rom-sha", "dep-hash")))
+end
+
+function T.start_menu_failure_precedes_naming_failure_and_repair_exposes_naming_error()
+  local manifest = validManifest()
+  manifest.startMenu.runningShoes.hitRect.width = 300
+  manifest.namingScreen.playerSubjects.female.anchor = nil
+
+  local ok, err = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isFalse(ok)
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  Assert.isTrue(assert(err).message:find("Running Shoes hit rectangle", 1, true) ~= nil)
+
+  manifest.startMenu.runningShoes.hitRect.width = 32
+  local repairedOk, namingErr = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isFalse(repairedOk)
+  Assert.equal(assert(namingErr).code, "FIELD_UI_MANIFEST_INVALID")
+  Assert.isTrue(assert(namingErr).message:find("namingScreen.playerSubjects.female", 1, true) ~= nil)
 end
 
 function T.readiness_reports_ready_without_repeating_the_deep_contract_audit()

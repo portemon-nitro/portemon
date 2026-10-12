@@ -5,6 +5,8 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local ScriptErrors = require("libs.script.src.errors")
+local LuaWriter = require("libs.codec.src.LuaWriter")
 local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
 
 local T = {}
@@ -12,11 +14,13 @@ local T = {}
 local function hostWith(statusByLaunch)
   return {
     launches = {},
+    statusReads = {},
     launchBattle = function(self, spec)
       self.launches[#self.launches + 1] = spec
       return (spec.launchId or "battle") .. "#" .. tostring(#self.launches)
     end,
-    battleStatus = function(_, launchId)
+    battleStatus = function(self, launchId)
+      self.statusReads[launchId] = (self.statusReads[launchId] or 0) + 1
       return statusByLaunch[launchId]
     end,
   }
@@ -80,9 +84,10 @@ function T.poll_records_completion_exactly_once()
   local second = BattleTask.poll(state, ctxWith(host))
   Assert.isTrue(first.complete and second.complete)
   Assert.equal(first.result, BattleTask.SOURCE_NOT_WON)
-  local read = BattleTask.result({ launchId = "launch-3" })
+  local read = BattleTask.result(state)
   Assert.equal(read.result, "loss")
   Assert.isTrue(read.committed)
+  Assert.equal(host.statusReads["launch-3"], 1, "completed polls never re-read the host")
 end
 
 function T.poll_faults_precisely_without_a_host_or_launch()
@@ -113,18 +118,43 @@ function T.validate_pins_the_persisted_shape()
   Assert.isTrue(Errors.is(BattleTask.validate({ launchId = "launch-6", sourceResult = 7 })))
 end
 
-function T.result_reads_are_pure_and_cover_pending_and_receipt_paths()
-  local pending = BattleTask.result({ launchId = "launch-never-seen" })
-  Assert.equal(pending.result, "pending")
-  Assert.isFalse(pending.committed)
-  local host = hostWith({ ["launch-7"] = { phase = "complete", committed = true, result = "win" } })
+function T.result_uses_saved_task_or_explicit_host_and_keeps_bare_ids_pending()
+  local statusByLaunch = {
+    ["launch-7"] = { phase = "complete", committed = true, result = "win" },
+    ["launch-host"] = { phase = "complete", committed = true, result = "capture" },
+    ["launch-error"] = { phase = "failed", committed = false, error = "host failure" },
+  }
+  local host = hostWith(statusByLaunch)
   local state = BattleTask.start({ launchId = "launch-7", kind = "wild" }, { services = {} })
   BattleTask.poll(state, ctxWith(host))
-  local first = BattleTask.result({ launchId = "launch-7" })
-  local second = BattleTask.result({ launchId = "launch-7" })
-  Assert.deepEqual(first, second, "result reads never re-run the outcome")
+
+  local serialized = assert(loadstring(LuaWriter.encode(state)))
+  local restored = serialized()
+  Assert.isNil(BattleTask.validate(restored), "completed task state keeps the serialized value-only shape")
+  local first = BattleTask.result(restored)
+  local second = BattleTask.result(restored)
+  Assert.deepEqual(first, second, "completed task reads use their retained record")
   Assert.equal(first.result, "win")
   Assert.equal(first.sourceResult, BattleTask.SOURCE_WON)
+  Assert.equal(host.statusReads["launch-7"], 1, "completed result reads do not poll the host")
+
+  local unowned = BattleTask.result({ launchId = "launch-7" })
+  Assert.equal(unowned.result, "pending", "a bare id cannot resurrect another task's completion")
+  Assert.isFalse(unowned.committed)
+
+  local hosted = BattleTask.result({ launchId = "launch-host" }, ctxWith(host))
+  Assert.isTrue(hosted.committed, "a committed host status is reported as committed")
+  Assert.equal(hosted.result, "capture", "a bare id reads only the supplied host")
+  Assert.equal(hosted.sourceResult, BattleTask.SOURCE_WON)
+  Assert.equal(host.statusReads["launch-host"], 1, "an explicit host is read once")
+  Assert.equal(#host.launches, 0, "result observation never launches a battle")
+
+  local hostError = Assert.throws(function()
+    BattleTask.result({ launchId = "launch-error" }, ctxWith(host))
+  end)
+  Assert.isTrue(Errors.is(hostError), "an explicit host failure stays a typed task error")
+  Assert.equal(hostError.code, ScriptErrors.SCRIPT_TASK_CALLBACK_FAULT)
+  Assert.equal(host.statusReads["launch-error"], 1, "host errors are observed without polling")
 end
 
 function T.task_registry_contract_holds_create_poll_and_validate()

@@ -46,7 +46,16 @@ function T.multibyte_player_name_validates_against_the_fixture_charmap()
   local def = FieldUiFixture.cardFontDefWithMultibyte()
   local context = { charmap = def.charmap, frameIndexes = { [0] = true } }
   local record = {
-    profile = { name = MULTIBYTE, gender = 0, trainerId = 0, money = 3000, badges = 0, nationalDex = false },
+    profile = {
+      name = MULTIBYTE,
+      gender = 0,
+      trainerId = 0,
+      money = 3000,
+      badges = 0,
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+    },
     options = { textFrame = 0, textSpeed = "mid" },
   }
   local validated = assert(PlayerData.validate(record, context))
@@ -59,6 +68,8 @@ function T.multibyte_player_name_validates_against_the_fixture_charmap()
       money = 3000,
       badges = 0,
       nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
     },
     options = { textFrame = 0, textSpeed = "fast" },
   }

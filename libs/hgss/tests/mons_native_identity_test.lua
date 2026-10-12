@@ -12,6 +12,7 @@ local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local BoxCodec = require("libs.mons.src.gen4.BoxCodec")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
+local Mon = require("libs.mons.src.Mon")
 local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local Party = require("libs.mons.src.Party")
 
@@ -108,12 +109,68 @@ function T.corrected_section_keeps_draws_identity_and_bytes()
   Assert.isTrue(ok, "the corrected candidate passes native legality")
 end
 
+function T.normal_and_gift_generation_admit_the_final_record_once()
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local request = CatalogFixture.normalRequest()
+  local originalValidate = Mon.validate
+  local originalProject = NativeLegality.project
+  local validations = 0
+  local projections = 0
+  Mon.validate = function(...)
+    validations = validations + 1
+    return originalValidate(...)
+  end
+  NativeLegality.project = function(...)
+    projections = projections + 1
+    return originalProject(...)
+  end
+  local ok, records = pcall(function()
+    local normal = factory:createNormal(request)
+    local normalValidations = validations
+    local normalProjections = projections
+    validations = 0
+    projections = 0
+    local gift = factory:createScriptGift({
+      species = request.species,
+      level = request.level,
+      profile = request.profile,
+      location = request.location,
+      date = request.date,
+      heldItem = "SITRUS_BERRY",
+      form = request.form,
+      ability = "OVERGROW",
+    })
+    return {
+      normal = normal,
+      normalValidations = normalValidations,
+      normalProjections = normalProjections,
+      gift = gift,
+      giftValidations = validations,
+      giftProjections = projections,
+    }
+  end)
+  Mon.validate = originalValidate
+  NativeLegality.project = originalProject
+
+  Assert.isTrue(ok, "normal and gift generation remain native-projectable")
+  local measured = assert(records)
+  Assert.equal(measured.normalValidations, 1)
+  Assert.equal(measured.normalProjections, 1)
+  Assert.equal(measured.giftValidations, 1, "the final gift record receives semantic admission once")
+  Assert.equal(measured.giftProjections, 1, "the final gift record receives native projection once")
+  Assert.equal(measured.normal.heldItem, "NONE")
+  Assert.equal(measured.gift.heldItem, "SITRUS_BERRY")
+  Assert.equal(measured.gift.ability, "OVERGROW")
+end
+
 function T.native_projection_follows_the_generated_catalog()
   local catalog = CatalogFixture.makeCatalog()
   local authoritative = contextFor(catalog)
   local factory = CatalogFixture.makeFactory(0x10000021, catalog)
   local record = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE", level = 5 }))
   record.heldItem = "SITRUS_BERRY"
+  record = Mon.validate(record, authoritative)
   local expectedId = catalog:item("SITRUS_BERRY").nativeId
   Assert.equal(expectedId, 158, "the fixture pins the representative native item identity")
   local expectedBytes = BoxCodec.encode(record, authoritative)

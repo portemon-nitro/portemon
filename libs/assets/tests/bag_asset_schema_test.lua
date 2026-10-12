@@ -6,6 +6,7 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
+local Errors = require("libs.errors.src.Errors")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local BagAssetSchema = require("libs.assets.src.BagAssetSchema")
 local BagCache = require("libs.assets.src.BagCache")
@@ -743,6 +744,47 @@ function T.cache_reports_ready_only_with_every_referenced_file()
   Assert.isTrue(BagCache.isReady(cacheFs, marker))
   cacheFs:remove("assets/generated/bag/tabs-mail.png")
   Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing tab image is not ready")
+end
+
+function T.manifest_validation_returns_expected_errors_and_propagates_unexpected_failures()
+  local valid = BagAssetSchema.assertManifest
+  local ok, failure = BagAssetSchema.isValidManifest({})
+  Assert.isFalse(ok, "schema-invalid manifests remain ordinary validation negatives")
+  Assert.isTrue(Errors.is(failure), "schema-invalid manifests preserve their typed reason")
+  Assert.equal(failure.code, "BAG_MANIFEST_INVALID")
+
+  local unexpected = {}
+  BagAssetSchema.assertManifest = function()
+    error(unexpected, 0)
+  end
+  local propagated, reason = pcall(BagAssetSchema.isValidManifest, {})
+  BagAssetSchema.assertManifest = valid
+
+  Assert.isFalse(propagated, "programming failures must not become stale-cache results")
+  Assert.equal(reason, unexpected, "the original unexpected failure is propagated")
+end
+
+function T.cache_readiness_propagates_trusted_manifest_path_failures()
+  local manifest = validFocusManifest()
+  local marker = BagCache.marker("deadbeef", "feedface")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  cacheFs:writeLua(BagCache.manifestPath(), manifest)
+  for _, path in ipairs(BagCache.referencedPaths(manifest)) do
+    cacheFs:write(path, "payload")
+  end
+  cacheFs:writeLua(BagCache.provenancePath(), { cacheFormat = BagCache.FORMAT, schema = BagCache.SCHEMA })
+  cacheFs:write(BagCache.markerPath(), marker)
+
+  local referencedPaths = BagCache.referencedPaths
+  local unexpected = {}
+  BagCache.referencedPaths = function()
+    error(unexpected, 0)
+  end
+  local propagated, reason = pcall(BagCache.isReady, cacheFs, marker)
+  BagCache.referencedPaths = referencedPaths
+
+  Assert.isFalse(propagated, "trusted-path invariant failures must not become cache misses")
+  Assert.equal(reason, unexpected, "the original unexpected failure is propagated")
 end
 
 function T.cache_reports_not_ready_without_the_quantity_cancel_visuals()

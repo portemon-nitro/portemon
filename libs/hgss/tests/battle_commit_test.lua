@@ -76,7 +76,6 @@ function T.staged_owners_publish_together_exactly_once()
   local Committer = requirePresent(COMMITTER_MODULE, "cross-owner result publication")
   Assert.isTrue(type(Committer.prepare) == "function", "the committer stages every owner before publishing")
   Assert.isTrue(type(Committer.commit) == "function", "the committer publishes staged owners synchronously")
-  Assert.isTrue(type(Committer.receipt) == "function", "the committer records one receipt per outcome")
 
   local outcome = { id = "outcome-together-once", result = "win" }
   local prepared = Committer.prepare({ outcome = outcome, party = partyPrep, bag = bagPrep })
@@ -87,11 +86,15 @@ function T.staged_owners_publish_together_exactly_once()
   Assert.equal(party:partyMon(0).heldItem, "SITRUS_BERRY", "the staged party update lands")
   Assert.equal(bag:quantity("POKE_BALL"), 4, "the staged ball consumption lands")
 
+  Assert.isTrue(bag:add("POKE_BALL", 1), "an external owner change advances the bag after commit")
+  local partyRevisionAfterCommit = party:partyRevision()
+  local bagRevisionAfterExternalChange = bag:revision()
   local repeatReceipt = Committer.commit(prepared)
+  Assert.equal(repeatReceipt, receipt, "a repeated completion returns the identical receipt")
   Assert.equal(repeatReceipt.outcomeId, receipt.outcomeId, "a repeated completion reuses the recorded receipt")
-  Assert.equal(party:partyRevision(), partyRevision + 1, "a repeated completion never duplicates the party")
-  Assert.equal(bag:revision(), bagRevision + 1, "a repeated completion never duplicates inventory")
-  Assert.equal(bag:quantity("POKE_BALL"), 4, "a repeated completion never consumes a second ball")
+  Assert.equal(party:partyRevision(), partyRevisionAfterCommit, "a repeated completion never republishes the party")
+  Assert.equal(bag:revision(), bagRevisionAfterExternalChange, "a repeated completion never republishes inventory")
+  Assert.equal(bag:quantity("POKE_BALL"), 5, "a repeated completion preserves the later inventory change")
 end
 
 function T.failed_preparation_leaves_every_live_owner_unchanged()
@@ -147,19 +150,32 @@ function T.stale_candidates_fail_at_commit_before_any_swap()
   Assert.equal(party:partyMon(0).heldItem, "NONE", "the party keeps its last known-good state")
   Assert.equal(party:partyRevision(), partyRevision, "the party publishes nothing")
   Assert.equal(bag:quantity("POKE_BALL"), 6, "the bag keeps only its live restock")
-  Assert.isNil(Committer.receipt("outcome-stale-at-commit"), "a failed commit records no receipt")
 end
 
-function T.receipt_accessor_returns_only_committed_outcomes()
+function T.independent_transactions_with_the_same_outcome_id_both_publish()
   local Committer = requirePresent(COMMITTER_MODULE, "cross-owner result publication")
-  Assert.isNil(Committer.receipt("outcome-never-committed"), "an unknown outcome has no receipt")
-  local prepared = Committer.prepare({
-    outcome = { id = "outcome-receipt-roundtrip", result = "win" },
-    rewards = { kind = "money", amount = 10 },
+  local firstBag = newBagOwner()
+  local secondBag = newBagOwner()
+  local outcome = { id = "same-launch-id", result = "win" }
+  local firstPrepared = Committer.prepare({
+    outcome = outcome,
+    bag = assert(firstBag:prepareInventoryChanges(firstBag:revision(), {
+      { op = "take", item = "POKE_BALL", quantity = 1 },
+    })),
   })
-  local receipt = Committer.commit(prepared)
-  local stored = Committer.receipt("outcome-receipt-roundtrip")
-  Assert.deepEqual(stored, receipt, "the accessor returns the recorded receipt")
+  local secondPrepared = Committer.prepare({
+    outcome = outcome,
+    bag = assert(secondBag:prepareInventoryChanges(secondBag:revision(), {
+      { op = "take", item = "POKE_BALL", quantity = 2 },
+    })),
+  })
+
+  local firstReceipt = Committer.commit(firstPrepared)
+  local secondReceipt = Committer.commit(secondPrepared)
+  Assert.isTrue(firstReceipt ~= secondReceipt, "each preparation owns its receipt")
+  Assert.equal(firstReceipt.outcomeId, secondReceipt.outcomeId, "both receipts retain the textual outcome id")
+  Assert.equal(firstBag:quantity("POKE_BALL"), 4, "the first transaction publishes to its bag")
+  Assert.equal(secondBag:quantity("POKE_BALL"), 3, "the second transaction publishes to its independent bag")
 end
 
 function T.dex_knowledge_publishes_through_the_committer()
@@ -230,7 +246,6 @@ function T.failing_roamer_writeback_leaves_staged_owners_alone()
   Assert.isFalse(ok, "a stale roamer delta never commits: " .. tostring(err))
   Assert.equal(party:partyMon(0).heldItem, "NONE", "the staged party update never lands")
   Assert.equal(party:partyRevision(), partyRevision, "the party publishes nothing")
-  Assert.isNil(Committer.receipt("outcome-roamer-stale-rejected"), "a failed commit records no receipt")
 end
 
 return { tests = T }

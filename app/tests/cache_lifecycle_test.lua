@@ -72,7 +72,16 @@ local function record(saveId, overrides)
     terrainDependencyHash = "terrain-heartgold",
     facing = "south",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0, nationalDex = false },
+      profile = {
+        name = "GOLD",
+        gender = 0,
+        trainerId = 0,
+        money = 3000,
+        badges = 0,
+        nationalDex = false,
+        runningShoes = false,
+        runningShoesLock = false,
+      },
       options = { textFrame = 0, textSpeed = "mid" },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },

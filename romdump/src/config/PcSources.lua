@@ -96,12 +96,39 @@ PcSources.storageMarkings = {
   setTileBase = 0x3a,
   count = 6,
 }
+-- ov14_021E5C54 loads member 1 (character) and member 0 (screen) into main
+-- BG3, the touch screen's cream base under the wallpaper tilemap; the palette
+-- is the member 4 bank shared with the box pane.
+PcSources.storageBaseMembers = { character = 1, palette = 4, screen = 0 }
 -- BG loaders in ov14_021E5C54 install these paired screen/character/palette
 -- compositions for the Storage application.
+-- boxPane: main BG2 (touch screen); infoPane: sub BG5 (top screen);
+-- partyTray: the 88x144 strip drawn to main BG1 at (168,48) while open
+-- (ov14_021E7BA4 strip manager; member 14 is the shared strip character set).
 PcSources.storageUiMembers = {
-  { character = 3, palette = 4, screen = 2 },
-  { character = 6, palette = 7, screen = 5 },
+  boxPane = { character = 3, palette = 4, screen = 2 },
+  infoPane = { character = 6, palette = 7, screen = 5 },
+  partyTray = { character = 14, palette = 4, screen = 9 },
+  -- The Marking editor's panel strip, drawn to main BG0 at (168,48).
+  markingPanel = { character = 14, palette = 4, screen = 10 },
+  -- The wallpaper chooser's 256x56 bar with four swatch wells, main BG1 at (0,0).
+  wallpaperBar = { character = 14, palette = 4, screen = 13 },
 }
+-- OBJ set A (ov14_021F44B4): the box arrows are animation 1 (left) and 3
+-- (right). The wallpaper chooser's swatches are flat colors from the 32-color
+-- OBJ palette member 75, indexed by logical wallpaper id; entry 24 is the
+-- locked swatch (ov14_021F46B0).
+PcSources.storageArrows = {
+  character = 66,
+  cell = 67,
+  animation = 68,
+  palette = 69,
+  animations = { left = 1, right = 3 },
+}
+-- The hand cursor is OBJ set A's anim 8 (browsing), 14 (menu rows and
+-- wallpaper swatches) and 10 (carrying), anchored at the nav-table node.
+PcSources.storageCursorAnimations = { browse = 8, menu = 14, carry = 10 }
+PcSources.storageWallpaperSwatches = { palette = 75, count = 24, lockedIndex = 24 }
 -- Sprite loaders in ov103_021EE2E0 and ov109_021E6EE4 bind these archive
 -- resources to the Mailbox and Photo Album application sprites.
 PcSources.mailboxUiMembers = { character = 7, palette = 10, cell = 8, animation = 9 }

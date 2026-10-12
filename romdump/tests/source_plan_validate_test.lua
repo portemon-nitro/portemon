@@ -132,6 +132,20 @@ function T.duplicate_world_map_is_rejected()
   end, "duplicate world map")
 end
 
+function T.sparse_world_maps_are_rejected()
+  expectRejected(function(plan)
+    plan.world.maps[2] = nil
+    plan.world.maps[3] = { id = 9 }
+    plan.mapCellKeys[9] = nil
+  end, "world maps")
+end
+
+function T.mixed_world_maps_are_rejected()
+  expectRejected(function(plan)
+    plan.world.maps.extra = { id = 11 }
+  end, "world maps")
+end
+
 function T.missing_exclusion_analysis_is_rejected()
   expectRejected(function(plan)
     plan.world.analysis = nil
@@ -142,6 +156,19 @@ function T.unexplained_exclusion_is_rejected()
   expectRejected(function(plan)
     plan.world.analysis.excluded[1].reason = ""
   end, "unexplained source exclusion")
+end
+
+function T.sparse_exclusions_are_rejected()
+  expectRejected(function(plan)
+    plan.world.analysis.excluded[2] = nil
+    plan.world.analysis.excluded[3] = { id = 4, reason = "unused" }
+  end, "exclusion")
+end
+
+function T.mixed_exclusions_are_rejected()
+  expectRejected(function(plan)
+    plan.world.analysis.excluded.extra = { id = 4, reason = "unused" }
+  end, "exclusion")
 end
 
 -- Field cell index bundle.
@@ -163,6 +190,67 @@ function T.unidentified_cell_is_rejected()
   end, "unidentified cell")
 end
 
+function T.sparse_cell_matrices_are_rejected()
+  expectRejected(function(plan)
+    plan.fieldCellIndexBundle.index.matrices[2] = nil
+    plan.fieldCellIndexBundle.index.matrices[3] = {
+      matrixMemberId = 12,
+      cells = { { matrixMemberId = 12, index = 0 } },
+    }
+  end, "matrices")
+end
+
+function T.sparse_matrix_cells_are_rejected()
+  expectRejected(function(plan)
+    local cells = plan.fieldCellIndexBundle.index.matrices[1].cells
+    cells[2] = nil
+    cells[3] = { matrixMemberId = 11, index = 1 }
+    plan.mapCellKeys[7] = { "11-0" }
+  end, "cells")
+end
+
+function T.duplicate_cell_matrices_are_rejected()
+  expectRejected(function(plan)
+    plan.fieldCellIndexBundle.index.matrices[2] = {
+      matrixMemberId = 11,
+      cells = { { matrixMemberId = 11, index = 2 } },
+    }
+  end, "duplicate matrix")
+end
+
+function T.duplicate_cell_descriptors_are_rejected()
+  expectRejected(function(plan)
+    plan.fieldCellIndexBundle.index.matrices[1].cells[3] = {
+      matrixMemberId = 11,
+      index = 1,
+    }
+  end, "duplicate cell")
+end
+
+function T.negative_cell_matrix_identity_is_rejected()
+  expectRejected(function(plan)
+    plan.fieldCellIndexBundle.index.matrices[2] = { matrixMemberId = -11, cells = {} }
+  end, "cell matrix")
+end
+
+function T.non_integer_cell_matrix_identity_is_rejected()
+  expectRejected(function(plan)
+    plan.fieldCellIndexBundle.index.matrices[1].matrixMemberId = 11.5
+  end, "cell matrix")
+end
+
+function T.negative_cell_index_is_rejected()
+  expectRejected(function(plan)
+    plan.fieldCellIndexBundle.index.matrices[1].cells[3] = { matrixMemberId = 11, index = -1 }
+  end, "cell")
+end
+
+function T.non_integer_cell_index_is_rejected()
+  expectRejected(function(plan)
+    plan.fieldCellIndexBundle.index.matrices[1].cells[1].index = 0.5
+  end, "cell")
+end
+
 -- Script membership.
 function T.missing_script_membership_is_rejected()
   expectRejected(function(plan)
@@ -182,6 +270,19 @@ function T.non_ascending_script_members_is_rejected()
   end, "script members are not ascending")
 end
 
+function T.sparse_script_members_are_rejected()
+  expectRejected(function(plan)
+    plan.scriptPlan.members[2] = nil
+    plan.scriptPlan.members[3] = { memberId = 8 }
+  end, "script members")
+end
+
+function T.mixed_script_members_are_rejected()
+  expectRejected(function(plan)
+    plan.scriptPlan.members.extra = { memberId = 8 }
+  end, "script members")
+end
+
 -- Audio membership and sound archive identity.
 function T.missing_audio_membership_is_rejected()
   expectRejected(function(plan)
@@ -193,6 +294,13 @@ function T.non_ascending_audio_banks_is_rejected()
   expectRejected(function(plan)
     plan.audioPlan.bankPlans = { { bankId = 5 }, { bankId = 2 } }
   end, "audio banks are not ascending")
+end
+
+function T.sparse_audio_banks_are_rejected()
+  expectRejected(function(plan)
+    plan.audioPlan.bankPlans[2] = nil
+    plan.audioPlan.bankPlans[3] = { bankId = 8 }
+  end, "audio banks")
 end
 
 function T.missing_audio_identity_is_rejected()
@@ -254,6 +362,25 @@ function T.non_canonical_cell_key_is_rejected()
   expectRejected(function(plan)
     plan.mapCellKeys[7] = { "99-99" }
   end, "is not canonical")
+end
+
+function T.sparse_map_cell_keys_are_rejected()
+  expectRejected(function(plan)
+    plan.mapCellKeys[7][2] = nil
+    plan.mapCellKeys[7][3] = "11-1"
+  end, "map 7")
+end
+
+function T.mixed_map_cell_keys_are_rejected()
+  expectRejected(function(plan)
+    plan.mapCellKeys[7].extra = "11-1"
+  end, "map 7")
+end
+
+function T.non_integer_map_cell_key_index_is_rejected()
+  expectRejected(function(plan)
+    plan.mapCellKeys[7][1.5] = "11-1"
+  end, "map 7")
 end
 
 return { tests = T }

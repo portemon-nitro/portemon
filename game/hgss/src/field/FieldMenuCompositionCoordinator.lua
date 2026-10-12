@@ -25,6 +25,7 @@ local PcCache = require("libs.assets.src.PcCache")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
+local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local StartMenuState = require("game.hgss.src.field.StartMenuState")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
@@ -269,11 +270,31 @@ function FieldMenuCompositionCoordinator:composeStartMenu(rememberedActionId)
   local function measureDisplay()
     return runtime.presentationDisplay
   end
+  -- The Running Shoes toggle shows while the shoes are owned and the avatar
+  -- is not cycling (ov27_0225A4D0); the lock itself is player progression.
+  local progression = PlayerProgression.new(profile)
+  local function runningShoesState()
+    return {
+      visible = progression:hasRunningShoes()
+        and runtime.playerAvatar:durableState() ~= "cycling"
+        and runtime.applicationHost:phase() ~= FieldApplicationHost.PHASES.application,
+      locked = progression:runningShoesLock(),
+    }
+  end
+  local function toggleRunningShoesLock()
+    progression:toggleRunningShoesLock()
+  end
+  local runningShoes = {
+    hitRect = assert(startMenuSection.runningShoes, "the field UI manifest must carry the Running Shoes toggle").hitRect,
+    state = runningShoesState,
+    toggle = toggleRunningShoesLock,
+  }
   return StartMenuState.new({
     entries = entries,
     interactive = startMenuInteractive,
     rememberedActionId = rememberedActionId,
     effect = playMenuSequence,
+    runningShoes = runningShoes,
     measureDisplay = measureDisplay,
     overrides = startMenuOverrides,
   })
@@ -294,6 +315,10 @@ function FieldMenuCompositionCoordinator:composeBag(activeGame, loadedGame)
   runtime.bagService = HgssBagService.new({ catalog = runtime.itemCatalog, bag = bucket })
   runtime.bagCursor = BagCursor.new()
 end
+
+-- The dex numbering every dex-showing surface uses until a national-dex flag is
+-- wired.
+local DEX_MODE = "regional"
 
 -- Builds the explicit read-only Summary display context per open: the
 -- trainer profile identity, the captured civil day, regional Dex mode
@@ -356,7 +381,7 @@ local function summaryContextProvider(innerRuntime, manifest)
     return {
       profile = { trainerId = profile.trainerId, name = profile.name, gender = profile.gender },
       dayOfMonth = day,
-      dexMode = "regional",
+      dexMode = DEX_MODE,
       performanceEnabled = performanceEnabled,
       aprijuiceBySlot = rows,
       specialRibbonDescriptions = specials,
@@ -518,6 +543,7 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
     textPolicy = bagTextPolicy,
     summaryManifest = summaryManifest,
     summaryContext = summaryContextProvider(runtime, summaryManifest),
+    dexMode = DEX_MODE,
     readSummaryNavigation = readSummaryNavigation,
     acquireSummaryPreparation = acquireSummaryPreparation,
     makeApricornBox = makeApricornBox,

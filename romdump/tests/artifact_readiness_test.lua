@@ -970,12 +970,12 @@ local function publishEffectFamily(cache)
         machineAnimation = "field-effect:center-heal-machine.clip",
         machineAnimationFrameCount = 4,
         ballPositions = {
-          { role = "northwest", offset = { x = -4.5, y = 12, z = -4.5 } },
-          { role = "northeast", offset = { x = 4.5, y = 12, z = -4.5 } },
-          { role = "west", offset = { x = -4.5, y = 12, z = 0 } },
-          { role = "east", offset = { x = 4.5, y = 12, z = 0 } },
-          { role = "southwest", offset = { x = -4.5, y = 12, z = 4.5 } },
-          { role = "southeast", offset = { x = 4.5, y = 12, z = 4.5 } },
+          { role = "northwest", offset = { x = -0.28125, y = 0.75, z = -0.28125 } },
+          { role = "northeast", offset = { x = 0.28125, y = 0.75, z = -0.28125 } },
+          { role = "west", offset = { x = -0.28125, y = 0.75, z = 0 } },
+          { role = "east", offset = { x = 0.28125, y = 0.75, z = 0 } },
+          { role = "southwest", offset = { x = -0.28125, y = 0.75, z = 0.28125 } },
+          { role = "southeast", offset = { x = 0.28125, y = 0.75, z = 0.28125 } },
         },
         spawnIntervalSourceFrames = 12,
         placementSound = "SEQ_SE_DP_BOWA",
@@ -1202,9 +1202,12 @@ function T.staged_source_inventory_with_current_marker_is_usable()
     audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
     mapCellKeys = {},
   })
-  Assert.isTrue(
-    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, identity),
-    "the staged source inventory under its current marker reads ready"
+  local ready, validatedPlan = ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, identity)
+  Assert.isTrue(ready, "the staged source inventory under its current marker reads ready")
+  Assert.equal(
+    assert(validatedPlan, "a ready source plan carries its validated record").generationId,
+    GENERATION,
+    "readiness returns the plan for immediate adoption"
   )
 end
 

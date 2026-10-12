@@ -57,7 +57,6 @@
 -- read, and all dependencies are pure-domain modules.
 
 local Errors = require("libs.errors.src.Errors")
-local Matrix4 = require("libs.math.src.Matrix4")
 local ErrorCodes = require("libs.assets.src.ErrorCodes")
 local NsbmdJointTransforms = require("libs.assets.src.model.NsbmdJointTransforms")
 local PoseContract = require("libs.assets.src.model.PoseContract")
@@ -128,6 +127,27 @@ end
 -- translation. The implicit fourth row is (0,0,0,1), which NODEMIX never sums.
 local AFFINE_INDICES = { 1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15 }
 
+---@param out number[]
+---@param a number[]
+---@param b number[]
+---@param product number[]
+---@return number[]
+local function multiplyInto(out, a, b, product)
+  assert(product ~= a and product ~= b and product ~= out)
+  for col = 0, 3 do
+    local offset = col * 4
+    local b0, b1, b2, b3 = b[offset + 1], b[offset + 2], b[offset + 3], b[offset + 4]
+    product[offset + 1] = a[1] * b0 + a[5] * b1 + a[9] * b2 + a[13] * b3
+    product[offset + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3
+    product[offset + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3
+    product[offset + 4] = a[4] * b0 + a[8] * b1 + a[12] * b2 + a[16] * b3
+  end
+  for i = 1, 16 do
+    out[i] = product[i]
+  end
+  return out
+end
+
 -- NitroSystem accumulates two independent sums for NODEMIX (sbc.c
 -- NNSi_G3dFuncSbc_NODEMIX):
 --   sum.M = Σ wᵢ · (positionSlot[slotᵢ] × invM[jointᵢ])
@@ -144,8 +164,11 @@ local AFFINE_INDICES = { 1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15 }
 ---@param program NsbmdSbcEvaluator.Program
 ---@param cmd table<string, unknown>
 ---@param matrixSlots table<integer, number[]>
+---@param out number[]
+---@param product number[]
+---@param blended number[]
 ---@return number[]
-local function nodemixMatrix(program, cmd, matrixSlots)
+local function nodemixMatrix(program, cmd, matrixSlots, out, product, blended)
   if not program.evpMatrices then
     Errors.raise(
       "NSBMD_SBC_NODEMIX_NO_EVP_MATRICES",
@@ -157,7 +180,10 @@ local function nodemixMatrix(program, cmd, matrixSlots)
   local terms = cmd.terms ---@type NsbmdSbcEvaluator.Term[]
   assert(#terms >= 2, "NODEMIX must blend at least two matrices")
 
-  local sum = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } ---@type number[]
+  for i = 1, 15 do
+    out[i] = 0
+  end
+  out[16] = 1
   for _, term in ipairs(terms) do
     local evp = program.evpMatrices[term.nodeIndex]
     if not evp then
@@ -170,13 +196,13 @@ local function nodemixMatrix(program, cmd, matrixSlots)
     -- The SDK restores the slot then multiplies invM into it, which in row-vector
     -- order applies invM to the vertex first.
     local evpMatrix = evp ---@type { invM: number[] }
-    local m = Matrix4.multiply(slotAt(program, matrixSlots, term.matrixSlot, cmd), evpMatrix.invM)
+    multiplyInto(blended, slotAt(program, matrixSlots, term.matrixSlot, cmd), evpMatrix.invM, product)
     local weight = term.ratio / 256 -- the operand is `ratio << 4` in fx32
     for _, i in ipairs(AFFINE_INDICES) do
-      sum[i] = sum[i] + weight * m[i]
+      out[i] = out[i] + weight * blended[i]
     end
   end
-  return sum
+  return out
 end
 
 local SUPPORTED_SCALING_RULES = {
@@ -196,7 +222,6 @@ local SUPPORTED_SCALING_RULES = {
 ---@field transformMode TransformMode
 ---@field baseTransform number[]|nil -- billboard draws only
 ---@field _base number[]? -- scratch-owned captured base storage, reused across evaluations
----@field _slotTables table<integer, number[]>? -- scratch-owned restore-stack cell storage
 
 ---@class SbcEvaluation
 ---@field draws SbcDraw[]
@@ -217,8 +242,15 @@ local SUPPORTED_SCALING_RULES = {
 ---@field _billboard number[] -- working captured billboard matrix
 ---@field _hasBillboard boolean
 ---@field _mayaCache table<integer, number[]|false>
----@field _slotPool table<integer, number[]> -- every matrix-stack table, retained across evaluations
+---@field _slotVersionPool table<integer, number[]> -- each write version, retained across evaluations
+---@field _slotWriteCount integer
 ---@field _nodePool table<integer, number[]> -- every node-matrix table, retained across evaluations
+---@field _local number[]
+---@field _jointOperation number[]
+---@field _jointProduct number[]
+---@field _multiply number[]
+---@field _blended number[]
+---@field _blendProduct number[]
 
 ---@param m number[]
 ---@param out number[]
@@ -230,7 +262,6 @@ local function copyInto(out, m)
   return out
 end
 
----@return number[]
 local function freshMatrix()
   return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
 end
@@ -252,6 +283,21 @@ local function reusablePooled(pool, live, key)
   return m
 end
 
+---@param scratch NsbmdSbcEvaluator.Scratch
+---@param matrixSlots table<integer, number[]>
+---@param slot integer
+---@param matrix number[]
+local function storeSlotVersion(scratch, matrixSlots, slot, matrix)
+  scratch._slotWriteCount = scratch._slotWriteCount + 1
+  local version = scratch._slotVersionPool[scratch._slotWriteCount]
+  if not version then
+    version = freshMatrix()
+    scratch._slotVersionPool[scratch._slotWriteCount] = version
+  end
+  copyInto(version, matrix)
+  matrixSlots[slot] = version
+end
+
 -- Owner-held reusable storage for one transform program. Draw records,
 -- node/slot matrices, and the result containers are allocated here (or on
 -- the cold first evaluation when a foreign program names more state) and
@@ -266,34 +312,13 @@ function NsbmdSbcEvaluator.newScratch(program)
     "NsbmdSbcEvaluator.newScratch requires a transform program"
   )
   -- The draw capacity is the SHP count: visibility only shrinks the active
-  -- prefix, so prebuilt records cover every warmed evaluation. The slot set
-  -- covers every matrix-stack index the stream can name.
+  -- prefix, so prebuilt records cover every warmed evaluation.
   local drawCapacity = 0
-  local slots = {}
-  for _, node in ipairs(program.nodes or {}) do
-    if node.matrixStackIndex ~= nil then
-      slots[node.matrixStackIndex] = true
-    end
-  end
   for _, rawCmd in ipairs(program.commands) do
     ---@cast rawCmd NsbmdSbcEvaluator.Command
     local cmd = rawCmd
     if cmd.opcode == 0x05 then
       drawCapacity = drawCapacity + 1
-    end
-    if cmd.matrixSlot ~= nil then
-      slots[cmd.matrixSlot] = true
-    end
-    if cmd.storeSlot ~= nil then
-      slots[cmd.storeSlot] = true
-    end
-    if cmd.restoreSlot ~= nil then
-      slots[cmd.restoreSlot] = true
-    end
-    if cmd.terms ~= nil then
-      for _, term in ipairs(cmd.terms) do
-        slots[term.matrixSlot] = true
-      end
     end
   end
   local scratch = {
@@ -308,14 +333,17 @@ function NsbmdSbcEvaluator.newScratch(program)
     _billboard = freshMatrix(),
     _hasBillboard = false,
     _mayaCache = {},
-    _slotPool = {},
+    _slotVersionPool = {},
+    _slotWriteCount = 0,
     _nodePool = {},
+    _local = freshMatrix(),
+    _jointOperation = freshMatrix(),
+    _jointProduct = freshMatrix(),
+    _multiply = freshMatrix(),
+    _blended = freshMatrix(),
+    _blendProduct = freshMatrix(),
   }
   for _ = 1, drawCapacity do
-    local slotTables = {}
-    for slot in pairs(slots) do
-      slotTables[slot] = freshMatrix()
-    end
     scratch.drawPool[#scratch.drawPool + 1] = {
       nodeIndex = 0,
       materialIndex = 0,
@@ -326,7 +354,6 @@ function NsbmdSbcEvaluator.newScratch(program)
       transformMode = PoseContract.STATIC,
       baseTransform = nil,
       _base = freshMatrix(),
-      _slotTables = slotTables,
     }
   end
   scratch.result = {
@@ -397,6 +424,7 @@ function NsbmdSbcEvaluator.evaluateInto(program, poseProvider, scratch)
   for key in pairs(matrixSlots) do
     matrixSlots[key] = nil
   end
+  scratch._slotWriteCount = 0
   for key in pairs(nodeMatrices) do
     nodeMatrices[key] = nil
   end
@@ -450,7 +478,6 @@ function NsbmdSbcEvaluator.evaluateInto(program, poseProvider, scratch)
             transformMode = PoseContract.STATIC,
             baseTransform = nil,
             _base = freshMatrix(),
-            _slotTables = {},
           }
           drawPool[activeCount] = record
         end
@@ -461,13 +488,7 @@ function NsbmdSbcEvaluator.evaluateInto(program, poseProvider, scratch)
         copyInto(record.matrix, currentMatrix)
         local restoreStack = record.restoreStack
         for slot, slotMatrix in pairs(matrixSlots) do
-          local cell = record._slotTables[slot]
-          if not cell then
-            cell = freshMatrix()
-            record._slotTables[slot] = cell
-          end
-          copyInto(cell, slotMatrix)
-          restoreStack[slot] = cell
+          restoreStack[slot] = slotMatrix
         end
         for slot in pairs(restoreStack) do
           if matrixSlots[slot] == nil then
@@ -515,12 +536,21 @@ function NsbmdSbcEvaluator.evaluateInto(program, poseProvider, scratch)
         copyInto(baseWork, parent)
       end
 
-      local localMatrix = NsbmdJointTransforms.localMatrix(scalingRule, srt, cmd, mayaScaleCache)
-      local world = Matrix4.multiply(baseWork, localMatrix)
+      local localMatrix = NsbmdJointTransforms.localMatrixInto(
+        scratch._local,
+        scalingRule,
+        srt,
+        cmd,
+        mayaScaleCache,
+        scratch._jointOperation,
+        scratch._jointProduct
+      )
+      multiplyInto(scratch._multiply, baseWork, localMatrix, scratch._blendProduct)
+      local world = scratch._multiply
       copyInto(reusablePooled(scratch._nodePool, nodeMatrices, cmd.nodeIndex), world)
-      copyInto(reusablePooled(scratch._slotPool, matrixSlots, srt.matrixStackIndex), world)
+      storeSlotVersion(scratch, matrixSlots, srt.matrixStackIndex, world)
       if cmd.storeSlot ~= nil then
-        copyInto(reusablePooled(scratch._slotPool, matrixSlots, cmd.storeSlot), world)
+        storeSlotVersion(scratch, matrixSlots, cmd.storeSlot, world)
       end
       copyInto(currentMatrix, world)
       currentNode = cmd.nodeIndex
@@ -541,8 +571,9 @@ function NsbmdSbcEvaluator.evaluateInto(program, poseProvider, scratch)
       identityInto(currentMatrix)
       currentNode = cmd.nodeIndex
     elseif op == 0x09 then -- NODEMIX
-      local blended = nodemixMatrix(program, cmd, matrixSlots)
-      copyInto(reusablePooled(scratch._slotPool, matrixSlots, cmd.storeSlot), blended)
+      local blended =
+        nodemixMatrix(program, cmd, matrixSlots, scratch._blended, scratch._blendProduct, scratch._multiply)
+      storeSlotVersion(scratch, matrixSlots, cmd.storeSlot, blended)
       copyInto(currentMatrix, blended)
       hasBillboard = false
     elseif op == 0x08 or op == 0x0A then
@@ -556,7 +587,9 @@ function NsbmdSbcEvaluator.evaluateInto(program, poseProvider, scratch)
       )
     elseif op == 0x0B then -- POSSCALE
       local scale = cmd.inverse and program.invPosScale or program.posScale
-      copyInto(currentMatrix, Matrix4.multiply(currentMatrix, Matrix4.scale(scale, scale, scale)))
+      identityInto(scratch._jointOperation)
+      scratch._jointOperation[1], scratch._jointOperation[6], scratch._jointOperation[11] = scale, scale, scale
+      multiplyInto(currentMatrix, currentMatrix, scratch._jointOperation, scratch._multiply)
     elseif op == 0x0D then -- PRJMAP
       -- PRJMAP selects projection-map texgen state (a matrix-palette entry;
       -- NNSi_G3dFuncSbc_PRJMAP in NitroSystem g3d/sbc.c reads two operands and

@@ -246,8 +246,99 @@ local function openPresentation(frameIndex)
     portraits = { { selector = "a", pageId = 0 }, { selector = "b", pageId = 0 }, { selector = "c", pageId = 1 } },
     frameIndex = frameIndex == nil and 3 or frameIndex,
   })
+  presentation._resources = {
+    instances = {}, renderMeshes = {}, staticBatches = {}, imageEntries = {}, meshEntries = {},
+    machineBackgroundImage = nil, infoBaseImage = nil, infoOverlayImage = nil, portraitQuads = {},
+  }
   presentation:reset()
   return presentation, manifest
+end
+
+function T.preparation_failure_disposes_acquired_resources_and_pending_tokens_once()
+  local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
+  local originalNew = GpuAssetPool.new
+  local poolReleases = 0
+  GpuAssetPool.new = function()
+    return {
+      meshFromPrepared = function(_, path)
+        return { mesh = {}, triangles = 0, center = { 0, 0, 0 }, bounds = {}, path = path }
+      end,
+      imageFromPrepared = function(_, path)
+        return {
+          getWidth = function()
+            return 256
+          end,
+          getHeight = function()
+            return 192
+          end,
+          path = path,
+        }
+      end,
+      release = function()
+        poolReleases = poolReleases + 1
+      end,
+    }
+  end
+  local requests, cancellations, kinds = 0, {}, {}
+  local queue = {
+    request = function(_, kind)
+      requests = requests + 1
+      kinds[requests] = kind
+      return requests
+    end,
+    poll = function(_, token)
+      if token == 1 then
+        return "ready"
+      end
+      if token == 2 then
+        return "failed", "fixture failure"
+      end
+      return "pending"
+    end,
+    take = function(_, token)
+      if kinds[token] == "image" then
+        return { imageData = {} }
+      end
+      return { vertexData = {}, indexData = {} }
+    end,
+    cancel = function(_, token)
+      cancellations[token] = (cancellations[token] or 0) + 1
+    end,
+  }
+  local backendReleases = 0
+  local presentation = openPresentation()
+  local ok, failure = pcall(function()
+    local first = presentation:advancePreparation({
+      assetPreparation = queue,
+      gxRenderer = {
+        release = function()
+          backendReleases = backendReleases + 1
+        end,
+      },
+    }, 1)
+    Assert.equal(first, 1, "one resource step is consumed within the budget")
+    Assert.isFalse(presentation:isReady(), "the scene waits for every resource")
+    Assert.isTrue(requests >= 3, "the bounded worker window advances after one payload is consumed")
+    local advanced, reason = pcall(presentation.advancePreparation, presentation, {
+      assetPreparation = queue,
+      gxRenderer = { release = function() end },
+    }, 1)
+    Assert.isFalse(advanced, "the next resource failure aborts preparation")
+    Assert.isTrue(tostring(reason):find("fixture failure", 1, true) ~= nil, "the resource failure stays visible")
+    Assert.equal(poolReleases, 1, "the acquired pool is released on partial failure")
+    Assert.isTrue(next(cancellations) ~= nil, "all outstanding tokens are canceled")
+    for _, count in pairs(cancellations) do
+      Assert.equal(count, 1, "each outstanding token is canceled once")
+    end
+    presentation:dispose()
+    presentation:dispose()
+    Assert.equal(poolReleases, 1, "repeated presentation disposal does not release the child twice")
+    Assert.equal(backendReleases, 0, "the borrowed graphics backend is never released")
+  end)
+  GpuAssetPool.new = originalNew
+  if not ok then
+    error(failure, 0)
+  end
 end
 
 local function snapshot(overrides)
@@ -436,7 +527,7 @@ end
 
 function T.static_tabletop_alpha_is_forwarded_without_a_second_normalization()
   local presentation = openPresentation()
-  presentation._staticBatches = {
+  presentation._resources.staticBatches = {
     {
       mesh = "mesh",
       material = {},
@@ -462,14 +553,14 @@ function T.static_tabletop_alpha_is_forwarded_without_a_second_normalization()
       end,
     }
   end
-  presentation._instances = {
+  presentation._resources.instances = {
     turntable = stubInstance(),
     ballEffect = stubInstance(),
     ball1 = stubInstance(),
     ball2 = stubInstance(),
     ball3 = stubInstance(),
   }
-  presentation._renderMeshes = {
+  presentation._resources.renderMeshes = {
     turntable = {},
     ballEffect = {},
     ball1 = {},
@@ -480,7 +571,7 @@ function T.static_tabletop_alpha_is_forwarded_without_a_second_normalization()
   Assert.isTrue(#items >= 1, "prepared static batches reach the renderer")
   Assert.equal(
     items[1].polygonAlpha,
-    presentation._staticBatches[1].polygonAlpha,
+    presentation._resources.staticBatches[1].polygonAlpha,
     "the prepared alpha is forwarded unchanged"
   )
   Assert.near(items[1].polygonAlpha, 1.0, 1e-9, "source alpha 31 reaches the renderer as 1.0")
@@ -538,7 +629,7 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
     end
     return nil
   end
-  presentation._imageEntries = {
+  presentation._resources.imageEntries = {
     [manifest.backgrounds.machine.image .. "|clamp|clamp"] = image(256, 192),
     [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
     [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
@@ -566,11 +657,11 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
     end
     return nil
   end
-  presentation._staticBatches = {}
-  presentation._instances = {}
-  presentation._renderMeshes = {}
+  presentation._resources.staticBatches = {}
+  presentation._resources.instances = {}
+  presentation._resources.renderMeshes = {}
   for _, role in ipairs({ "turntable", "ballEffect", "ball1", "ball2", "ball3" }) do
-    presentation._instances[role] = {
+    presentation._resources.instances[role] = {
       evaluatePose = function() end,
       drawItems = function()
         return {}
@@ -580,7 +671,7 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
       end,
       stop = function() end,
     }
-    presentation._renderMeshes[role] = {}
+    presentation._resources.renderMeshes[role] = {}
   end
   presentation:_finishPreparation()
 
@@ -591,16 +682,16 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
   Assert.equal(releaseCalls, 0, "releasing Starter's wrapper never releases the borrowed backend")
 
   presentation._staticDraws = {}
-  presentation._renderMeshes = {
+  presentation._resources.renderMeshes = {
     turntable = {},
     ballEffect = {},
     ball1 = {},
     ball2 = {},
     ball3 = {},
   }
-  presentation._instances = {}
+  presentation._resources.instances = {}
   for _, role in ipairs({ "turntable", "ballEffect", "ball1", "ball2", "ball3" }) do
-    presentation._instances[role] = {
+    presentation._resources.instances[role] = {
       evaluatePose = function() end,
       drawItems = function()
         return {}
@@ -704,14 +795,14 @@ function T.focused_camera_uses_absolute_target_and_distinct_inspect_pivot()
       end,
     }
   end
-  presentation._instances = {
+  presentation._resources.instances = {
     turntable = stubInstance(),
     ballEffect = stubInstance(),
     ball1 = stubInstance(),
     ball2 = stubInstance(),
     ball3 = stubInstance(),
   }
-  presentation._renderMeshes = {
+  presentation._resources.renderMeshes = {
     turntable = {},
     ballEffect = {},
     ball1 = {},
@@ -720,7 +811,7 @@ function T.focused_camera_uses_absolute_target_and_distinct_inspect_pivot()
   }
   local settled = snapshot({ selection = 0, selectionState = "inspect", transition = "waitZoom" })
   presentation:_drawItems(settled)
-  local selectedTransform = assert(presentation._instances.ball1.transform, "the selected ball transform is realized")
+  local selectedTransform = assert(presentation._resources.instances.ball1.transform, "the selected ball transform is realized")
   local arc = math.rad(layout.inspectArcDegrees)
   local pivotY = layout.modelY + 13.453 / 16
   local cosine, sine = math.cos(arc), math.sin(arc)
@@ -1049,7 +1140,7 @@ function T.starter_frames_draw_through_the_borrowed_field_window_primitive()
       }
     end
     local MonCache = require("libs.assets.src.MonCache")
-    presentation._imageEntries = {
+    presentation._resources.imageEntries = {
       [manifest.backgrounds.machine.image .. "|clamp|clamp"] = image(256, 192),
       [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
       [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
@@ -1078,11 +1169,11 @@ function T.starter_frames_draw_through_the_borrowed_field_window_primitive()
     presentation._cacheFs.read = function(_, _)
       return FieldUiFixture.stripBytes()
     end
-    presentation._staticBatches = {}
-    presentation._instances = {}
-    presentation._renderMeshes = {}
+    presentation._resources.staticBatches = {}
+    presentation._resources.instances = {}
+    presentation._resources.renderMeshes = {}
     for _, role in ipairs({ "turntable", "ballEffect", "ball1", "ball2", "ball3" }) do
-      presentation._instances[role] = {
+      presentation._resources.instances[role] = {
         evaluatePose = function() end,
         drawItems = function()
           return {}
@@ -1092,7 +1183,7 @@ function T.starter_frames_draw_through_the_borrowed_field_window_primitive()
         end,
         stop = function() end,
       }
-      presentation._renderMeshes[role] = {}
+      presentation._resources.renderMeshes[role] = {}
     end
     presentation:_finishPreparation()
     Assert.equal(constructions, 0, "preparing the chooser acquires no second window primitive")
@@ -1234,8 +1325,8 @@ local function adaptedPortraitDraws(presentation, snap)
   local portraitImage = { marker = "portrait-image" }
   local machineImage = { marker = "machine-background" }
   local target = { marker = "machine-target" }
-  presentation._machineBackgroundImage = machineImage
-  presentation._portraitQuads = {
+  presentation._resources.machineBackgroundImage = machineImage
+  presentation._resources.portraitQuads = {
     { image = portraitImage, quad = { marker = "q0" } },
     { image = portraitImage, quad = { marker = "q1" } },
     { image = portraitImage, quad = { marker = "q2" } },
@@ -1307,7 +1398,7 @@ function T.native_portrait_keeps_source_origin()
   local filesystem = previousLove and previousLove.filesystem or nil
   rawset(_G, "love", { graphics = lg, filesystem = filesystem })
   local portraitImage = { marker = "native-portrait" }
-  presentation._portraitQuads = {
+  presentation._resources.portraitQuads = {
     { image = portraitImage, quad = { marker = "n0" } },
     { image = portraitImage, quad = { marker = "n1" } },
     { image = portraitImage, quad = { marker = "n2" } },

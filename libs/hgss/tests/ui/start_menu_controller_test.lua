@@ -52,11 +52,142 @@ local function newController(opts)
     interactive = opts.interactive or POSITIONS,
     rememberedActionId = opts.rememberedActionId,
     effect = opts.effect,
+    runningShoes = opts.runningShoes,
   })
 end
 
 local function rectCenter(rect)
   return rect.x + rect.width / 2, rect.y + rect.height / 2
+end
+
+-- The Running Shoes toggle: a fresh touch inside its generated hit rectangle
+-- toggles the lock once, only while the shoes are visible; the controller
+-- owns no lock state and reports the live one through its status.
+local SHOES_RECT = FieldUiFixture.startMenuRunningShoes().hitRect
+
+local function shoesPort(visible)
+  local port = { toggles = 0, visible = visible, locked = false }
+  port.hitRect = SHOES_RECT
+  port.state = function()
+    return { visible = port.visible, locked = port.locked }
+  end
+  port.toggle = function()
+    port.toggles = port.toggles + 1
+    port.locked = not port.locked
+  end
+  return port
+end
+
+function T.running_shoes_touch_toggles_once_per_press_and_reports_the_lock()
+  local port = shoesPort(true)
+  local controller = newController({ runningShoes = port })
+  Assert.deepEqual(controller:status().runningShoes, { locked = false, focused = false })
+  local x, y = rectCenter(SHOES_RECT)
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  Assert.equal(port.toggles, 1, "the fresh touch toggles immediately")
+  Assert.deepEqual(controller:status().runningShoes, { locked = true, focused = true })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y } })
+  Assert.equal(port.toggles, 1, "release never toggles again")
+  Assert.isNil(controller:takeResult(), "the toggle never closes or launches")
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = x, y = y } })
+  Assert.equal(port.toggles, 2)
+  Assert.deepEqual(controller:status().runningShoes, { locked = false, focused = true })
+end
+
+function T.running_shoes_are_dpad_focusable_and_confirm_without_leaving_the_menu()
+  local port = shoesPort(true)
+  local effects = {}
+  local controller = newController({
+    runningShoes = port,
+    effect = function(sequence)
+      effects[#effects + 1] = sequence
+    end,
+  })
+  for _, direction in ipairs({ "right", "down", "down" }) do
+    controller:updateFixed({ { type = "navigate", direction = direction } })
+  end
+  Assert.equal(controller:status().selectedPosition, 6)
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.deepEqual(controller:status().runningShoes, { locked = false, focused = true })
+  Assert.equal(controller:status().selectedPosition, 6, "normal selection remains remembered")
+  for _ = 1, 2 do
+    controller:updateFixed({ { type = "confirm" } })
+  end
+  Assert.deepEqual(controller:status().runningShoes, { locked = false, focused = true })
+  Assert.equal(port.toggles, 2, "each confirm toggles exactly once")
+  Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT" })
+  Assert.isNil(controller:takeResult(), "shoes confirmation does not launch or close")
+  controller:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(controller:status().selectedPosition, 6, "left returns to the ingress action")
+  Assert.isFalse(controller:status().runningShoes.focused)
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(controller:takeResult().applicationId, "options", "normal confirmation still launches")
+end
+
+function T.running_shoes_focus_enters_from_sparse_reachable_actions_only()
+  for _, position in ipairs({ 0, 1, 2, 4, 5, 6 }) do
+    local controller = newController({
+      entries = {
+        { id = "vanilla.sparse", targetApplication = "sparse", actionKind = "application", displayPosition = position },
+      },
+      runningShoes = shoesPort(true),
+    })
+    Assert.equal(controller:status().selectedPosition, position)
+    controller:updateFixed({ { type = "navigate", direction = "right" } })
+    Assert.deepEqual(
+      controller:status().runningShoes,
+      { locked = false, focused = true },
+      "a one-action sparse menu enters shoes from position " .. position
+    )
+    Assert.equal(controller:status().selectedPosition, position, "no synthetic normal position is selected")
+    controller:updateFixed({ { type = "navigate", direction = "left" } })
+    Assert.equal(controller:status().selectedPosition, position, "left returns to the sparse ingress")
+  end
+end
+
+function T.hidden_shoes_clear_focus_before_the_next_confirm()
+  local port = shoesPort(true)
+  local controller = newController({ runningShoes = port })
+  for _, direction in ipairs({ "right", "down", "down", "right" }) do
+    controller:updateFixed({ { type = "navigate", direction = direction } })
+  end
+  Assert.isTrue(controller:status().runningShoes.focused)
+  port.visible = false
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(port.toggles, 0, "confirm cannot activate a newly hidden shoe target")
+  Assert.isNil(controller:status().runningShoes)
+  Assert.deepEqual(controller:takeResult(), {
+    kind = "launch",
+    applicationId = "options",
+    actionId = "vanilla.options",
+  }, "confirm falls back to the remembered normal action")
+end
+
+function T.pointer_hover_focuses_shoes_and_normal_hover_restores_action_focus()
+  local port = shoesPort(true)
+  local controller = newController({ runningShoes = port })
+  local shoesX, shoesY = rectCenter(SHOES_RECT)
+  controller:updateFixed({ { type = "pointer_move", x = shoesX, y = shoesY } })
+  Assert.isTrue(controller:status().runningShoes.focused)
+  Assert.equal(port.toggles, 0, "hover never toggles")
+  local actionX, actionY = rectCenter(POSITIONS.positions[4].hitRect)
+  controller:updateFixed({ { type = "pointer_move", x = actionX, y = actionY } })
+  Assert.isFalse(controller:status().runningShoes.focused)
+  Assert.equal(controller:status().selectedPosition, 4)
+end
+
+function T.running_shoes_touch_is_inert_outside_the_rect_or_while_hidden()
+  local port = shoesPort(true)
+  local controller = newController({ runningShoes = port })
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = SHOES_RECT.x - 1, y = SHOES_RECT.y } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = SHOES_RECT.x - 1, y = SHOES_RECT.y } })
+  Assert.equal(port.toggles, 0)
+  local hidden = shoesPort(false)
+  local hiddenController = newController({ runningShoes = hidden })
+  Assert.isNil(hiddenController:status().runningShoes, "an unowned or hidden toggle is not presented")
+  local x, y = rectCenter(SHOES_RECT)
+  hiddenController:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  Assert.equal(hidden.toggles, 0, "a hidden toggle has no touch region")
 end
 
 function T.construction_succeeds_with_only_the_documented_options()

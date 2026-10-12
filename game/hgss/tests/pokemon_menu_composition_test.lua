@@ -503,7 +503,6 @@ function T.tests.box_summary_moves_publish_to_the_selected_box(context)
   local storage = composition.makeStorageChild(1)
   storage:updateFixed({ { type = "confirm" } })
   storage:updateFixed({ { type = "navigate", direction = "down" } })
-  storage:updateFixed({ { type = "navigate", direction = "down" } })
   storage:updateFixed({ { type = "confirm" } })
   Assert.equal(storage:status().childKind, "summary", "Storage opens Summary for the selected box mon")
   for _ = 1, 12 do

@@ -9,6 +9,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
+local LocalClock = require("game.src.LocalClock")
 
 local T = {
   metadata = {
@@ -69,10 +70,7 @@ function T.tests.fresh_town_hides_cameron_through_the_transition_script()
       game.runtime.scripts.worldState:isFlagSet(FLAG_HIDE_CAMERON),
       "a fresh profile without the Plain Badge must hide Cameron"
     )
-    Assert.isNil(
-      game.runtime.actors:getById(cameronActorId(game)),
-      "a hidden Cameron must not remain live"
-    )
+    Assert.isNil(game.runtime.actors:getById(cameronActorId(game)), "a hidden Cameron must not remain live")
     Assert.equal(game:renderAttempts(), 0, "the transition flow must stop before GPU rendering")
   end, debug.traceback)
   game:close()
@@ -81,7 +79,10 @@ function T.tests.fresh_town_hides_cameron_through_the_transition_script()
   end
 end
 
-function T.tests.plain_badge_town_keeps_cameron_without_a_script_fault()
+-- With the Plain Badge the town script reads the weekday: Cameron appears
+-- on Tuesdays only and is hidden on the other days, with no script fault
+-- either way.
+local function plainBadgeTown(day)
   local harness = AcceptanceHarness.new()
   local defaultFactory = harness.gameFactory
   harness.gameFactory = function(versionId, map)
@@ -89,40 +90,33 @@ function T.tests.plain_badge_town_keeps_cameron_without_a_script_fault()
     PlayerProgression.new(game.playerData.profile):awardBadge("plain")
     return game
   end
+  local clock = LocalClock.new(function()
+    return { year = 2024, month = 2, day = day, hour = 12, minute = 0, second = 0 }
+  end)
   local game = harness:boot({
     versionId = AcceptanceHarness.defaultVersion(),
     map = TOWN,
     save = "fresh",
-    fieldOptions = { recordingScriptHosts = true },
+    fieldOptions = { recordingScriptHosts = true, localClock = clock },
   })
-  local ok, err = xpcall(function()
+  local ok, result = xpcall(function()
     local scriptId = settleTransition(game)
-    -- The retail badge-present branch reads the weekday next, and that
-    -- source read has no runtime lowering yet, so the script stops there
-    -- with the documented unsupported-operation fault. That gap is outside
-    -- badge wiring: what matters here is the badge check itself evaluates
-    -- without a service fault and the no-badge hide branch never runs.
-    local faults = game:recordsForScript(scriptId, "script.error")
-    for _, fault in ipairs(faults) do
-      Assert.isFalse(
-        fault.payload.code == "SCRIPT_SERVICE_MISSING",
-        "the badge check must evaluate through the live progression service"
-      )
-    end
-    Assert.isFalse(
-      game.runtime.scripts.worldState:isFlagSet(FLAG_HIDE_CAMERON),
-      "a profile carrying the Plain Badge must not take the no-badge hide branch"
-    )
-    Assert.notNil(
-      game.runtime.actors:getById(cameronActorId(game)),
-      "Cameron must stay live while the hide flag stays clear"
-    )
+    Assert.equal(#game:recordsForScript(scriptId, "script.error"), 0, "the weekday branch must not fault")
+    local hidden = game.runtime.scripts.worldState:isFlagSet(FLAG_HIDE_CAMERON)
     Assert.equal(game:renderAttempts(), 0, "the transition flow must stop before GPU rendering")
+    return hidden
   end, debug.traceback)
   game:close()
   if not ok then
-    error(err, 0)
+    error(result, 0)
   end
+  return result
+end
+
+function T.tests.plain_badge_town_shows_cameron_only_on_tuesdays()
+  -- 2024-02-26 is a Monday; the 27th a Tuesday.
+  Assert.isTrue(plainBadgeTown(26), "Cameron is hidden on Mondays")
+  Assert.isFalse(plainBadgeTown(27), "Cameron appears on Tuesdays")
 end
 
 return T

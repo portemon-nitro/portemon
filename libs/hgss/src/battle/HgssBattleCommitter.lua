@@ -6,8 +6,8 @@
 -- outcomes), and the live party owner when captures must be placed. The
 -- committer validates everything during preparation; a preparation
 -- failure changes no live owner, and a commit failure before publication
--- leaves every owner on its last known-good state. Repeating a
--- completion returns the recorded receipt instead of publishing twice, so
+-- leaves every owner on its last known-good state. The preparation retains
+-- its receipt so a repeated commit does not publish twice. This keeps
 -- reward money, ball consumption, party insertion, caught knowledge, and
 -- roamer updates never duplicate. No callbacks run between the owner
 -- swaps; there is no generic transaction framework here, only the ordered
@@ -15,15 +15,11 @@
 -- pipeline, which receives the validated player candidate through the
 -- receipt.
 
-local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Party = require("libs.mons.src.Party")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 
 ---@class HgssBattleCommitter
 local HgssBattleCommitter = {}
-
----@type table<string, table<string, unknown>>
-local RECEIPTS = {}
 
 ---@param owner unknown
 ---@return boolean
@@ -63,22 +59,6 @@ local function checkOutcome(outcome)
     error("battle commit requires an outcome result", 0)
   end
   return outcome.id
-end
-
----@param explicit unknown
----@return HgssMonService?
-local function resolveOwner(explicit)
-  if explicit ~= nil then
-    if not isPartyOwner(explicit) then
-      error("battle commit party owner must stage party batches", 0)
-    end
-    return explicit --[[@as HgssMonService]]
-  end
-  local owners = HgssMonService.liveOwners()
-  if #owners == 0 then
-    return nil
-  end
-  return owners[1]
 end
 
 ---@generic T
@@ -159,10 +139,13 @@ function HgssBattleCommitter.prepare(args)
   end
   local owner = nil
   if #updates > 0 or #captures > 0 then
-    owner = resolveOwner(args.partyOwner)
-    if owner == nil then
+    if args.partyOwner == nil then
       error("battle commit captures and party updates need a party owner", 0)
     end
+    if not isPartyOwner(args.partyOwner) then
+      error("battle commit party owner must stage party batches", 0)
+    end
+    owner = args.partyOwner
   end
   if args.party ~= nil and owner ~= nil then
     error("battle commit stages party updates and captures through one batch", 0)
@@ -262,6 +245,7 @@ end
 ---@field scriptFlags table<string, unknown>
 ---@field playerCandidate table<string, unknown>?
 ---@field roamer { owner: table<string, unknown>, key: string, outcome: string, expectedRevision: integer, details: table<string, unknown> }?
+---@field receipt table<string, unknown>?
 
 ---@param preparation unknown
 ---@param what string
@@ -285,9 +269,8 @@ function HgssBattleCommitter.commit(prepared)
   end
   assert(type(prepared) == "table", "commit reads its staged preparation")
   local staged = prepared --[[@as CommitPreparation]]
-  local recorded = RECEIPTS[staged.outcomeId]
-  if recorded ~= nil then
-    return recorded
+  if staged.receipt ~= nil then
+    return staged.receipt
   end
   local publishParty = checkedPublish(staged.party, "party candidate")
   local publishBag = checkedPublish(staged.bag, "bag candidate")
@@ -347,17 +330,8 @@ function HgssBattleCommitter.commit(prepared)
     player = copyValue(staged.playerCandidate),
     roamer = copyValue(roamerResult),
   }
-  RECEIPTS[staged.outcomeId] = receipt
+  staged.receipt = receipt
   return receipt
-end
-
--- Returns the recorded receipt for a committed outcome, or nil when the
--- outcome never committed (including preparations that failed before
--- publication).
----@param outcomeId string
----@return table<string, unknown>?
-function HgssBattleCommitter.receipt(outcomeId)
-  return RECEIPTS[outcomeId]
 end
 
 return HgssBattleCommitter

@@ -65,21 +65,21 @@ T.tests["draws each live healing model at its world position and releases it"] =
     }
     local renderer =
       Renderer.new({ definition = { models = { { dynamic = {}, materials = {} } }, ballAnimation = "pc_mb" } }, pool)
-    local handle = renderer:newBall({ x = -4.5, y = 12, z = -4.5 }, { role = "northwest" }, 1)
+    local handle = renderer:newBall({ x = -0.28125, y = 0.75, z = -0.28125 }, { role = "northwest" }, 1)
     handle:startAnimation()
     Assert.isFalse(handle:isFinished())
     handle:updateFixed()
     Assert.equal(instanceCounts.updated, 1, "the flow handle advances the model's fixed clock")
     Assert.isTrue(handle:isFinished(), "the generated clip completes through ModelInstance's play handle")
     local draws = renderer:drawItems({
-      balls = { { index = 1, position = { x = -4.5, y = 12, z = -4.5 } } },
+      balls = { { index = 1, position = { x = -0.28125, y = 0.75, z = -0.28125 } } },
     })
     Assert.equal(instanceCounts.created, 1)
     Assert.equal(instanceCounts.drawn, 1)
     Assert.equal(#draws, 1)
-    Assert.equal(draws[1].transform[13], -4.5)
-    Assert.equal(draws[1].transform[14], 12)
-    Assert.equal(draws[1].transform[15], -4.5)
+    Assert.equal(draws[1].transform[13], -0.28125)
+    Assert.equal(draws[1].transform[14], 0.75)
+    Assert.equal(draws[1].transform[15], -0.28125)
     Assert.equal(draws[1].fieldEffect, "pokemon_center_heal")
     handle:dispose()
     Assert.equal(#renderer:drawItems({ balls = {} }), 0)

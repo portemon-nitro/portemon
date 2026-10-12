@@ -29,6 +29,17 @@ local function screenFadeFake(calls)
   }
 end
 
+local function runtimeWithNoBattle(fields)
+  local runtime = setmetatable(fields, FieldRuntime)
+  runtime.battleCoordinator = {
+    reconcileBattleGate = function() end,
+    shouldPumpFromHost = function()
+      return false
+    end,
+  }
+  return runtime
+end
+
 local function runtimeWithAudio(calls, options)
   options = options or {}
   local transition = {
@@ -44,7 +55,7 @@ local function runtimeWithAudio(calls, options)
       calls[#calls + 1] = "audio"
     end,
   }
-  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(runtimeWithNoBattle({
     audio = audio,
     audioSink = options.audioSink,
     session = {
@@ -63,7 +74,7 @@ local function runtimeWithAudio(calls, options)
         return nil
       end,
     },
-  }, FieldRuntime))
+  }))
   return runtime
 end
 
@@ -76,7 +87,7 @@ local function runtimeWithoutAudio(calls)
     end,
     consumeCompleted = function() end,
   }
-  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(runtimeWithNoBattle({
     session = {
       accumulator = FieldSession.FIXED_DT - 1 / 60,
       setBattleActive = function() end,
@@ -93,14 +104,14 @@ local function runtimeWithoutAudio(calls)
         return nil
       end,
     },
-  }, FieldRuntime))
+  }))
   return runtime
 end
 
 local function runtimeForSemanticCatchUp(counters)
   local playTime = PlayTime.new(0.9)
   playTime:start()
-  return FieldRuntimeFixture.withApricornDateOwner(setmetatable({
+  return FieldRuntimeFixture.withApricornDateOwner(runtimeWithNoBattle({
     audio = {
       updateSoundFrame = function()
         counters.audio = counters.audio + 1
@@ -136,7 +147,7 @@ local function runtimeForSemanticCatchUp(counters)
         return nil
       end,
     },
-  }, FieldRuntime))
+  }))
 end
 
 function T.tests.large_host_delta_is_bounded_to_fixed_source_frames()
@@ -287,7 +298,7 @@ end
 
 function T.tests.zero_delta_does_not_advance_any_clock()
   local calls = {}
-  local runtime = setmetatable({
+  local runtime = runtimeWithNoBattle({
     session = {
       accumulator = 0,
       setBattleActive = function() end,
@@ -310,7 +321,7 @@ function T.tests.zero_delta_does_not_advance_any_clock()
         return nil
       end,
     },
-  }, FieldRuntime)
+  })
 
   runtime:update(0)
   Assert.deepEqual(calls, {})
@@ -322,7 +333,7 @@ end
 -- so the coordinator passes no idle-presentation option at all, regardless
 -- of dialogue state. A missing dialogue controller changes nothing.
 local function runtimeWithFollowerPresentation(updateOptions, modal)
-  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(runtimeWithNoBattle({
     session = {
       accumulator = 0,
       currentMap = { mapId = 61 },
@@ -365,12 +376,12 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
         return modal
       end,
     },
-  }, FieldRuntime))
+  }))
   return runtime
 end
 
 local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive, calls)
-  return FieldRuntimeFixture.withApricornDateOwner(setmetatable({
+  return FieldRuntimeFixture.withApricornDateOwner(runtimeWithNoBattle({
     session = {
       accumulator = 0,
       currentMap = { mapId = logicalMapId },
@@ -406,7 +417,7 @@ local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive
         return nil
       end,
     },
-  }, FieldRuntime))
+  }))
 end
 
 function T.tests.follower_update_carries_no_presentation_policy()

@@ -1,8 +1,8 @@
 -- Source script continuation for battle results. A battle_launch operation
 -- starts one pending launch through the injected battle host and suspends
 -- the script; each poll observes the host exactly once per completion, and
--- result reads the recorded outcome (or the committer receipt for
--- launchId-only lookups). The task never simulates combat: the host owns
+-- result reads the task's recorded outcome or an explicitly supplied
+-- battle host status. The task never simulates combat: the host owns
 -- the battle lifetime and the committer owns publication, so the script
 -- resumes only after the required commit. The same completed launch never
 -- records twice: poll guards on the state flag and result is a pure read.
@@ -19,8 +19,6 @@
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
-local HgssBattleCommitter = require("libs.hgss.src.battle.HgssBattleCommitter")
-
 ---@class BattleTask
 local BattleTask = {}
 
@@ -45,12 +43,6 @@ BattleTask.RESULTS = {
   flee = true,
   capture = true,
 }
-
--- Completed launch outcomes recorded by poll, keyed by launch identity.
--- This mirrors the committer receipt registry: poll observes the host's
--- committed outcome once and result reads it back without re-running
--- anything. Entries never leave this module.
-local COMPLETED = {}
 
 ---@param launchId unknown
 ---@return boolean
@@ -92,7 +84,7 @@ local function checkSpec(spec)
   end
 end
 
----@param ctx table<string, unknown>
+---@param ctx unknown
 ---@return table<string, unknown>?
 local function battleHost(ctx)
   if type(ctx) ~= "table" then
@@ -119,8 +111,7 @@ local function sourceCode(result)
 end
 
 -- Starts one pending launch. When the injected host offers launchBattle the
--- host issues the launch identity (unique per launch instance, so two runs
--- of one script site never share a committer receipt); otherwise the
+-- host issues the launch identity (unique per launch instance); otherwise the
 -- caller-supplied identity stands and the first poll observes the battle
 -- the caller drives itself.
 ---@param spec table<string, unknown>
@@ -159,18 +150,6 @@ end
 -- The scheduler creation entry: starting a launch is creating its pending
 -- task state.
 BattleTask.create = BattleTask.start
-
----@param state table<string, unknown>
----@param status table<string, unknown>
-local function recordCompletion(state, status)
-  if COMPLETED[state.launchId] ~= nil then
-    return
-  end
-  COMPLETED[state.launchId] = {
-    result = status.result,
-    sourceResult = status.sourceResult,
-  }
-end
 
 -- Polls the pending launch once. A completed state stays complete without
 -- touching the host again; otherwise the host status decides: a committed
@@ -217,7 +196,6 @@ function BattleTask.poll(state, ctx)
     })
   end
   local code = sourceCode(status.result)
-  recordCompletion(state, { result = status.result, sourceResult = code })
   state.completed = true
   state.result = status.result
   state.sourceResult = code
@@ -262,44 +240,74 @@ function BattleTask.validate(state)
   return nil
 end
 
--- Reads the source outcome for one launch without running anything. A
--- completed task state reports its recorded words; a bare launch identity
--- consults the committer receipt (commitment without recorded words reads
--- back unresolved); an unknown launch reads back pending. Every path is a
--- pure read: repeated calls never re-run or duplicate the result.
----@param ref { launchId: string, result: string?, sourceResult: integer? }
+-- Reads a task's recorded outcome or an explicitly supplied host without
+-- starting or polling a battle. A bare launch identity with no host remains
+-- pending because it carries no owned completion record.
+---@param ref { launchId: string, completed: boolean?, result: string?, sourceResult: integer? }
+---@param ctx table<string, unknown>?
 ---@return { launchId: string, result: string, sourceResult: integer?, committed: boolean }
-function BattleTask.result(ref)
+function BattleTask.result(ref, ctx)
   if type(ref) ~= "table" or not isLaunchId(ref.launchId) then
     Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "battle results require a launch identity", {})
   end
   assert(type(ref) == "table", "the reference check carries the launch identity")
-  local recorded = COMPLETED[ref.launchId]
-  if recorded ~= nil then
-    return {
-      launchId = ref.launchId,
-      result = recorded.result,
-      sourceResult = recorded.sourceResult,
-      committed = true,
-    }
-  end
-  if type(ref.result) == "string" and BattleTask.RESULTS[ref.result] == true then
+  if ref.completed == true then
+    if type(ref.result) ~= "string" or BattleTask.RESULTS[ref.result] ~= true then
+      Errors.raise(
+        ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
+        "completed battle tasks carry a known outcome word",
+        { launchId = ref.launchId, result = ref.result }
+      )
+    end
+    local code = sourceCode(ref.result)
+    if ref.sourceResult ~= nil and ref.sourceResult ~= code then
+      Errors.raise(
+        ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
+        "completed battle tasks carry the matching outcome code",
+        { launchId = ref.launchId, sourceResult = ref.sourceResult }
+      )
+    end
     return {
       launchId = ref.launchId,
       result = ref.result,
-      sourceResult = ref.sourceResult,
+      sourceResult = code,
       committed = true,
     }
   end
-  local receipt = HgssBattleCommitter.receipt(ref.launchId)
-  if receipt ~= nil then
-    return {
-      launchId = ref.launchId,
-      result = "unresolved",
-      sourceResult = BattleTask.SOURCE_NOT_WON,
-      committed = receipt.committed == true,
-    }
+
+  local host = battleHost(ctx)
+  if host ~= nil and type(host.battleStatus) == "function" then
+    local status = host:battleStatus(ref.launchId)
+    if status ~= nil then
+      if type(status) ~= "table" then
+        Errors.raise(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, "battle host status must be a record", {
+          launchId = ref.launchId,
+        })
+      end
+      if status.error ~= nil then
+        Errors.raise(ScriptErrors.SCRIPT_TASK_CALLBACK_FAULT, "the battle application failed", {
+          launchId = ref.launchId,
+          cause = status.error,
+        })
+      end
+      if status.committed == true then
+        if type(status.result) ~= "string" or BattleTask.RESULTS[status.result] ~= true then
+          Errors.raise(
+            ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
+            "committed battles report a known outcome word",
+            { launchId = ref.launchId, result = status.result }
+          )
+        end
+        return {
+          launchId = ref.launchId,
+          result = status.result,
+          sourceResult = sourceCode(status.result),
+          committed = true,
+        }
+      end
+    end
   end
+
   return {
     launchId = ref.launchId,
     result = "pending",

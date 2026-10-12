@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local Matrix4 = require("libs.math.src.Matrix4")
 local ErrorCodes = require("libs.assets.src.ErrorCodes")
 local NsbmdSbcEvaluator = require("libs.assets.src.model.NsbmdSbcEvaluator")
+local NsbmdJointTransforms = require("libs.assets.src.model.NsbmdJointTransforms")
 
 local T = {}
 
@@ -312,6 +313,49 @@ function T.stack_snapshot_is_independent()
   )
   assertMatrixAtPoint(draws[1].restoreStack[0], 0, 0, 0, 5, 0, 0, "first snapshot kept node0 in slot 0")
   assertMatrixAtPoint(draws[2].restoreStack[0], 0, 0, 0, 0, 7, 0, "second snapshot has node1 in slot 0")
+end
+
+function T.slot_snapshots_share_unchanged_versions_and_preserve_rewrites()
+  local p = program({
+    nodes = {
+      srt(0, { matrixStackIndex = 0, translation = { x = 5, y = 0, z = 0 } }),
+      srt(1, { matrixStackIndex = 0, translation = { x = 0, y = 7, z = 0 } }),
+    },
+    commands = oneDraw({
+      cmdNodedesc(0, 0),
+      cmdShp(0),
+      cmdShp(1),
+      cmdNodedesc(1, 1),
+      cmdShp(2),
+    }),
+  })
+  local animatedX = 5
+  local prov = provider({
+    nodeSRT = function(nodeIndex)
+      if nodeIndex == 0 then
+        return srt(0, { matrixStackIndex = 0, translation = { x = animatedX, y = 0, z = 0 } })
+      end
+      return p.nodes[2]
+    end,
+  })
+  local scratch = NsbmdSbcEvaluator.newScratch(p)
+  local live = NsbmdSbcEvaluator.evaluateInto(p, prov, scratch)
+  local firstVersion = live.draws[1].restoreStack[0]
+  local unchangedVersion = live.draws[2].restoreStack[0]
+  local rewrittenVersion = live.draws[3].restoreStack[0]
+
+  Assert.isTrue(firstVersion == unchangedVersion, "unchanged slot snapshots share their immutable version")
+  Assert.isTrue(firstVersion ~= rewrittenVersion, "a later slot write gets a distinct version")
+  assertMatrixAtPoint(firstVersion, 0, 0, 0, 5, 0, 0, "earlier draw retains the original slot version")
+  assertMatrixAtPoint(rewrittenVersion, 0, 0, 0, 0, 7, 0, "later draw observes the rewritten slot")
+
+  local detached = NsbmdSbcEvaluator.evaluate(p, prov)
+  Assert.isTrue(detached.draws[1].restoreStack[0] ~= firstVersion, "allocating evaluation detaches slot snapshots")
+  animatedX = 11
+  local replayed = NsbmdSbcEvaluator.evaluateInto(p, prov, scratch)
+  Assert.isTrue(replayed.draws[1].restoreStack[0] == firstVersion, "warm replay reuses its slot-version buffer")
+  assertMatrixAtPoint(firstVersion, 0, 0, 0, 11, 0, 0, "reused slot-version buffer carries the current pose")
+  assertMatrixAtPoint(detached.draws[1].restoreStack[0], 0, 0, 0, 5, 0, 0, "detached output survives scratch reuse")
 end
 
 -- The evaluation exposes the matrix-stack slots as of the end of the replay:
@@ -1231,6 +1275,30 @@ function T.in_place_evaluation_reuses_scratch_with_identical_semantics()
   Assert.equal(#reshown.draws, 4, "reappearing restores the draw list")
   Assert.isTrue(reshown.draws[4] == lastDraw, "reappearing reuses the established draw record")
   assertMatrixAtPoint(lastDraw.matrix, 0, 0, 0, 50, 20, 0, "reused records carry the current frame")
+end
+
+function T.in_place_maya_evaluation_matches_detached_results()
+  local parent = srt(0, { scale = { x = 2, y = 1, z = 1 }, inverseScale = { x = 0.5, y = 1, z = 1 } })
+  local child = srt(1, { scale = { x = 1, y = 3, z = 1 }, inverseScale = { x = 1, y = 1 / 3, z = 1 } })
+  local p = program({
+    scalingRule = NsbmdJointTransforms.MAYA,
+    nodes = { parent, child },
+    commands = oneDraw({
+      cmdNodedesc(0, 0, 0x02),
+      cmdNodedesc(1, 0, 0x01),
+    }),
+  })
+  local prov = provider({
+    nodeSRT = function(nodeIndex)
+      if nodeIndex == 0 then
+        return srt(0, { scale = { x = 4, y = 1, z = 1 }, inverseScale = { x = 0.25, y = 1, z = 1 } })
+      end
+      return srt(1, { scale = { x = 1, y = 5, z = 1 }, inverseScale = { x = 1, y = 0.2, z = 1 } })
+    end,
+  })
+  local scratch = NsbmdSbcEvaluator.newScratch(p)
+  local live = NsbmdSbcEvaluator.evaluateInto(p, prov, scratch)
+  assertEvaluationEqual(snapshotEvaluation(live), NsbmdSbcEvaluator.evaluate(p, prov), "Maya in-place versus allocating")
 end
 
 return { tests = T }

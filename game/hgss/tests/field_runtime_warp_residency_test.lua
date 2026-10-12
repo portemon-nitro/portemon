@@ -6,6 +6,7 @@ local Assert = require("tests.support.Assert")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldResidencyCoordinator = require("libs.hgss.src.world.FieldResidencyCoordinator")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 
 local T = {}
@@ -153,7 +154,7 @@ local function fixture(options)
   })
   coordinator:initialize()
 
-  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
+  local runtime = setmetatable({
     physicalCoverage = sourceCoverage,
     runtimeMap = maps[10],
     residency = coordinator,
@@ -192,7 +193,9 @@ local function fixture(options)
         return nil
       end,
     },
-  }, FieldRuntime))
+  }, FieldRuntime)
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
+  runtime = FieldRuntimeFixture.withApricornDateOwner(runtime)
   runtime.worldSwapCoordinator = FieldWorldSwapCoordinator.new(runtime)
   return {
     actors = actors,

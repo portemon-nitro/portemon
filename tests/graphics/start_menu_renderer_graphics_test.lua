@@ -137,8 +137,9 @@ end
 ---@param placement LayoutGeometry.Placement
 ---@param width integer
 ---@param height integer
+---@param shoesState { locked: boolean, focused: boolean }?
 ---@return love.ImageData
-local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, placement, width, height)
+local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, placement, width, height, shoesState)
   local lg = love.graphics
   local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cacheFs, manifest = manifest, text = recordingText() }))
   local canvas = scope:own(lg.newCanvas(width, height))
@@ -151,9 +152,47 @@ local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, pl
       { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
       { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" },
     },
+    runningShoes = shoesState,
   }, placement)
   lg.setCanvas()
   return scope:own(canvas:newImageData())
+end
+
+function T.running_shoes_focus_outline_is_visible_in_both_lock_states(scope)
+  local cache, manifest = selectorCacheAndManifest()
+  local rect = manifest.startMenu.runningShoes.hitRect
+  for _, locked in ipairs({ false, true }) do
+    local rendered = selectorRenderInto(
+      scope,
+      cache,
+      manifest,
+      1,
+      canonicalPlacement(),
+      CANONICAL_WIDTH,
+      CANONICAL_HEIGHT,
+      { locked = locked, focused = true }
+    )
+    local function colorAt(x, y)
+      local r, g, b, a = rendered:getPixel(x, y)
+      local function quantize(channel)
+        return math.floor(channel * 255 + 0.5)
+      end
+      return { quantize(r), quantize(g), quantize(b), quantize(a) }
+    end
+    local black, white = 0, 0
+    for y = rect.y - 3, rect.y + 3 do
+      for x = rect.x - 3, rect.x + rect.width + 3 do
+        local color = colorAt(x, y)
+        if color[1] < 100 and color[2] < 100 and color[3] < 100 then
+          black = black + 1
+        elseif color[1] > 130 and color[2] > 130 and color[3] > 130 then
+          white = white + 1
+        end
+      end
+    end
+    Assert.isTrue(black > 0, "outer focus stroke uses the compiled rectangle")
+    Assert.isTrue(white > 0, "inner focus stroke contrasts with the outer stroke")
+  end
 end
 
 -- The independent selector reference: the SUB chrome color everywhere, with

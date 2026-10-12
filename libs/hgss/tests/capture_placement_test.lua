@@ -123,6 +123,71 @@ function T.explicit_caught_record_appends_its_exact_identity()
   Assert.equal(stored.personality, caught.personality, "the appended mon keeps its identity")
 end
 
+function T.capture_only_reaches_its_explicit_party_owner()
+  local partyA = newPartyOwner(4)
+  local partyB = newPartyOwner(3)
+  local partyBCount = partyB:partyCount()
+  local partyBBefore = {}
+  for slot = 0, partyBCount - 1 do
+    partyBBefore[slot] = partyB:partyMon(slot)
+  end
+  local partyBRevision = partyB:partyRevision()
+  local Committer = requirePresent(COMMITTER_MODULE, "capture targets an explicit party owner")
+  local prepared = Committer.prepare({
+    outcome = { id = "outcome-explicit-owner-isolation", result = "capture" },
+    partyOwner = partyA,
+    captures = { { captureId = 9, ball = "POKE_BALL", success = true, mon = caughtMon() } },
+  })
+
+  local receipt = Committer.commit(prepared)
+
+  Assert.isTrue(receipt.committed, "the explicit owner's capture commits")
+  Assert.equal(#receipt.placements, 1, "the receipt reports one placement")
+  Assert.equal(receipt.placements[1].destination, "party", "the receipt reports party placement")
+  Assert.equal(receipt.placements[1].partySlot, 4, "the receipt reports the named party's first open slot")
+  Assert.equal(partyA:partyCount(), 5, "the named party receives the caught mon")
+  Assert.equal(partyA:partyMon(4).species, "EEVEE", "the caught mon lands in the named party")
+  Assert.equal(partyB:partyCount(), partyBCount, "the other party keeps its roster size")
+  Assert.equal(partyB:partyRevision(), partyBRevision, "the other party keeps its revision")
+  for slot = 0, partyBCount - 1 do
+    Assert.deepEqual(partyB:partyMon(slot), partyBBefore[slot], "the other party keeps slot " .. tostring(slot))
+  end
+end
+
+function T.successful_capture_without_party_owner_fails_before_publication()
+  local partyA = newPartyOwner(4)
+  local partyB = newPartyOwner(3)
+  local partyARevision = partyA:partyRevision()
+  local partyBRevision = partyB:partyRevision()
+  local partyABefore = partyA:partyMon(0)
+  local partyBBefore = partyB:partyMon(0)
+  local Committer = requirePresent(COMMITTER_MODULE, "successful capture requires a named party owner")
+
+  local ok, err = pcall(Committer.prepare, {
+    outcome = { id = "outcome-capture-without-owner", result = "capture" },
+    captures = { { captureId = 10, ball = "POKE_BALL", success = true, mon = caughtMon() } },
+  })
+
+  Assert.isFalse(ok, "a successful capture without a recipient fails during preparation: " .. tostring(err))
+  Assert.equal(partyA:partyRevision(), partyARevision, "the first party revision stays unchanged")
+  Assert.equal(partyB:partyRevision(), partyBRevision, "the second party revision stays unchanged")
+  Assert.deepEqual(partyA:partyMon(0), partyABefore, "the first party stays unchanged")
+  Assert.deepEqual(partyB:partyMon(0), partyBBefore, "the second party stays unchanged")
+end
+
+function T.failed_capture_without_party_owner_does_not_require_a_recipient()
+  local Committer = requirePresent(COMMITTER_MODULE, "failed capture has no placement recipient")
+  local prepared = Committer.prepare({
+    outcome = { id = "outcome-failed-capture-without-owner", result = "flee" },
+    captures = { { captureId = 11, species = "EEVEE", ball = "POKE_BALL", success = false } },
+  })
+
+  local receipt = Committer.commit(prepared)
+
+  Assert.isTrue(receipt.committed, "a failed capture can commit without a party recipient")
+  Assert.equal(#receipt.placements, 0, "a failed capture has no placement")
+end
+
 function T.failed_throw_yields_no_placement_but_still_commits()
   local party = newPartyOwner(5)
   local Committer = requirePresent(COMMITTER_MODULE, "capture commit into a free slot")
@@ -182,7 +247,6 @@ function T.full_party_capture_fails_before_any_publication()
   Assert.equal(bag:quantity("POKE_BALL"), 5, "the refused batch consumes no ball")
   Assert.equal(bag:revision(), bagRevision, "the refused batch moves no bag revision")
   Assert.isFalse(dex:isCaught("EEVEE"), "the refused batch registers no caught knowledge")
-  Assert.isNil(Committer.receipt("outcome-full-party-refused"), "a refused batch records no receipt")
 end
 
 -- Scarce capacity rejects the whole capture batch: with five mons and two
@@ -201,7 +265,6 @@ function T.scarce_party_rejects_the_batch_while_fitting_capture_commits()
   })
   Assert.isFalse(ok, "a batch without room for every capture never stages: " .. tostring(err))
   Assert.equal(crowded:partyCount(), 5, "a refused batch appends no fitting prefix")
-  Assert.isNil(Committer.receipt("outcome-scarce-refused"), "a refused batch records no receipt")
 
   local roomy = newPartyOwner(5)
   local solo = caughtMon()
@@ -255,7 +318,6 @@ function T.unknown_species_never_reaches_publication()
   })
   Assert.isFalse(ok, "an unknown species never stages: " .. tostring(err))
   Assert.equal(party:partyCount(), 5, "a rejected capture appends nothing")
-  Assert.isNil(Committer.receipt("outcome-unknown-species"), "a rejected capture records no receipt")
 end
 
 function T.successful_capture_without_a_caught_record_is_rejected_before_publication()
@@ -268,7 +330,6 @@ function T.successful_capture_without_a_caught_record_is_rejected_before_publica
   })
   Assert.isFalse(ok, "a species-only success never stages: " .. tostring(err))
   Assert.equal(party:partyCount(), 5, "a rejected capture appends nothing")
-  Assert.isNil(Committer.receipt("outcome-bare-species-rejected"), "a rejected capture records no receipt")
 end
 
 function T.retained_capture_keeps_the_exact_caught_record()

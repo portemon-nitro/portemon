@@ -56,7 +56,16 @@ local function harness(spawnKey, map, textSpeed)
         versionId = versionId,
         location = { mapSymbol = map, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+          profile = {
+            name = "GOLD",
+            gender = 0,
+            trainerId = 1,
+            money = 3000,
+            badges = 0,
+            nationalDex = false,
+            runningShoes = false,
+            runningShoesLock = false,
+          },
           options = { textSpeed = textSpeed or "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = spawnKey },
@@ -86,6 +95,7 @@ local function advanceRetailLoss(game, observeStaticBlackout)
   local SessionFixture = require("libs.battle.tests.session_fixture")
   local ticks = 0
   local battleResult = nil
+  local battleReceipt = nil
   local scriptCompletion = nil
   local messageFadeBoundaryPending = false
   local tickLimit = observeStaticBlackout and 8000 or 1600
@@ -109,7 +119,7 @@ local function advanceRetailLoss(game, observeStaticBlackout)
     local messageFadeCompletesThisTick = observeStaticBlackout
       and blackout.phase == "message_in"
       and blackout.coverAlpha == 0
-    local battle = game.runtime.battleRuntime
+    local battle = game.runtime.battleCoordinator:activeBattle()
     if battle ~= nil then
       local status = battle:status()
       if status.phase == "running" and status.request ~= nil then
@@ -122,6 +132,7 @@ local function advanceRetailLoss(game, observeStaticBlackout)
         Assert.isTrue(accepted, "the production battle accepts a legal move: " .. tostring(replyErr))
       end
       battleResult = battleResult or status.result
+      battleReceipt = battleReceipt or status.outcomeReceipt
     elseif observeStaticBlackout and blackout.phase == "message_in" then
       -- Let the source fade advance without accelerating a normal printer.
     elseif game:snapshot().dialogue.modal then
@@ -150,6 +161,7 @@ local function advanceRetailLoss(game, observeStaticBlackout)
   return {
     ticks = ticks,
     battleResult = battleResult,
+    battleReceipt = battleReceipt,
     scriptCompletion = scriptCompletion,
     runtimeError = game.runtime.errorText,
     scriptErrors = game:recordsNamed("script.error"),
@@ -205,6 +217,10 @@ function T.tests.retail_static_battle_loss_recovers_at_mother_spawn_and_runs_std
         .. result.ticks
         .. " ticks; runtimeError="
         .. tostring(result.runtimeError)
+    )
+    Assert.isTrue(
+      type(result.battleReceipt) == "table" and result.battleReceipt.committed == true,
+      "the field loss enters whiteout only after its battle outcome is committed"
     )
     Assert.isTrue(
       type(result.scriptCompletion) == "table" and result.scriptCompletion.completed == true,
@@ -286,6 +302,10 @@ function T.tests.non_mother_loss_uses_blackout_destination_separate_from_telepor
 
     local result = advanceRetailLoss(game)
     Assert.equal(result.battleResult, "loss", "the real trainer loss reaches OverworldWhiteOut recovery")
+    Assert.isTrue(
+      type(result.battleReceipt) == "table" and result.battleReceipt.committed == true,
+      "the field loss enters blackout only after its battle outcome is committed"
+    )
     Assert.isTrue(
       type(result.scriptCompletion) == "table" and result.scriptCompletion.completed == true,
       "non-mother recovery waits for the canonical std 2013 child; reason="

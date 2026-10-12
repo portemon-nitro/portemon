@@ -160,6 +160,7 @@ local function baseManifest()
       background = { x = 0, y = 0, width = 256, height = 192 },
       cursor = { frames = { { x = 0, y = 0, width = 32, height = 32, duration = 3 } } },
       interactive = FieldUiFixture.startMenuInteractive(),
+      runningShoes = FieldUiFixture.startMenuRunningShoes(),
       iconTable = (function()
         local rows = {}
         local cell = 0

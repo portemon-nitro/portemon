@@ -7,6 +7,14 @@ local Operands = require("romdump.src.digest.script.lowering.Operands")
 ---@class FieldServiceHandlers
 local FieldServiceHandlers = {}
 
+function FieldServiceHandlers.whiteout(_)
+  return { op = "whiteout" }
+end
+
+function FieldServiceHandlers.processSoundplate()
+  return { op = "process_soundplate" }
+end
+
 function FieldServiceHandlers.overworldLeave(_)
   return { op = "overworld_leave" }
 end
@@ -21,6 +29,10 @@ end
 
 function FieldServiceHandlers.timeOfDay(ins)
   return { op = "time_of_day", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.weekday(ins)
+  return { op = "weekday", result = Operands.varRef(ins.operands[1]) }
 end
 
 function FieldServiceHandlers.discardValue(ins)

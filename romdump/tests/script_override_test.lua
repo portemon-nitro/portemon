@@ -108,14 +108,19 @@ local function overrideFs(files)
   }
 end
 
-function T.tests.production_registry_uses_generated_resources()
+function T.tests.production_registry_keeps_vanilla_generated_resources_outside_its_overrides()
   local registry = Registry.new()
   for _, id in ipairs(PRODUCTION_IDS) do
     registry:installBase(id, generatedResource(id), "generated")
   end
 
+  -- Every checked-in override loads, and none replaces a covered vanilla resource.
   local installed = ScriptLoader.installOverrides(registry, productionFs())
-  Assert.equal(#installed, 0, "production must not install checked-in script overrides")
+  for _, id in ipairs(installed) do
+    for _, productionId in ipairs(PRODUCTION_IDS) do
+      Assert.isTrue(id ~= productionId, "production overrides leave " .. productionId .. " generated")
+    end
+  end
   for _, id in ipairs(PRODUCTION_IDS) do
     local resource = assert(registry:base(id))
     Assert.isFalse(resource.metadata ~= nil and resource.metadata.override == true)

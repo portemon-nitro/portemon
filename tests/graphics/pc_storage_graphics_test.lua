@@ -127,6 +127,9 @@ local function drawPlan(scope, cacheFs, manifest, view, plan, width, height)
   )
   local draws = { monIcons = 0, itemIcons = 0, texts = {} }
   local textSpy = {
+    textWidth = function(_, value)
+      return text:textWidth(value)
+    end,
     drawText = function(_, value, x, y)
       draws.texts[#draws.texts + 1] = value
       text:drawText(value, x, y)
@@ -269,7 +272,13 @@ function T.source_modes_keep_distinct_storage_geometry_and_live_hit_regions(scop
         state = "browse",
         activeBox = 0,
         wallpaperId = 0,
+        tray = "closed",
       }
+      if mode == 0 then
+        local idle = session:resolve(measurement("nativeLike"), view)
+        Assert.equal(#idle.content.hitRegions.boxSlots, 0, "deposit mode hit-tests only the party tray until it asks where")
+        view.carry = { kind = "mon", action = "deposit" }
+      end
       local plan = session:resolve(measurement("nativeLike"), view)
       Assert.equal(plan.content.mode, mode, "the published plan retains the source mode")
       Assert.deepEqual(
@@ -294,9 +303,9 @@ function T.source_modes_keep_distinct_storage_geometry_and_live_hit_regions(scop
         Assert.deepEqual(modeGeometry[mode], modeGeometry[mode - 1])
       end, "each retail mode publishes its own source geometry")
     end
-    local splitView = { mode = 0, state = "browse", activeBox = 0, wallpaperId = 0 }
+    local splitView = { mode = 1, state = "browse", activeBox = 0, wallpaperId = 0, tray = "left" }
     local splitPlan = session:resolve(measurement("dualDisplay"), splitView)
-    Assert.equal(#splitPlan.content.hitRegions.partySlots, 0, "the lower touch pane does not hit upper Party content")
+    Assert.equal(#splitPlan.content.hitRegions.partySlots, 6, "the touch pane hits its party tray")
     Assert.equal(#splitPlan.content.hitRegions.boxSlots, 30, "the lower touch pane exposes active box slots")
     local singlePlan = session:resolve(measurement("nativeLike"), splitView)
     Assert.equal(#singlePlan.content.hitRegions.partySlots, 6, "single-pane layouts expose the visible Party slots")
@@ -317,6 +326,7 @@ function T.actual_wallpaper_and_window_art_draw_through_each_paired_layout(scope
         state = "browse",
         activeBox = 0,
         wallpaperId = 0,
+        tray = "left",
         boxName = "STORAGE",
         boxSlots = {
           { iconKey = iconKey, nickname = "BOXMON", heldItem = "POTION", itemIconKey = "POTION", markings = 17 },
@@ -345,8 +355,6 @@ function T.actual_wallpaper_and_window_art_draw_through_each_paired_layout(scope
           .. table.concat(draws.texts, ",")
       )
       Assert.equal(draws.itemIcons, 1, "the box held item icon is drawn on the box pane once")
-      Assert.isTrue(table.concat(draws.texts, " "):find("PARTYMON", 1, true) ~= nil, "Party name is rendered")
-      Assert.isTrue(table.concat(draws.texts, " "):find("BOXMON", 1, true) ~= nil, "box name is rendered")
       Assert.isTrue(table.concat(draws.texts, " "):find("STORAGE", 1, true) ~= nil, "active box name is rendered")
       Assert.isTrue(
         nonTransparentPixels(image, pane(plan, "lower").placement.frame) > 0,
@@ -363,8 +371,8 @@ function T.actual_wallpaper_and_window_art_draw_through_each_paired_layout(scope
         versionId .. " " .. configuration .. " paints source frame tiles"
       )
       Assert.isTrue(
-        nonTransparentPixels(image, placedRect(pane(plan, "lower").placement, 80, 16, 56, 56)) > 100,
-        versionId .. " " .. configuration .. " paints the visible mon, item, markings and label"
+        nonTransparentPixels(image, placedRect(pane(plan, "lower").placement, 8, 28, 32, 32)) > 100,
+        versionId .. " " .. configuration .. " paints the visible box mon icon"
       )
       local expectedPanes = configuration == "nativeLike" and 1 or 2
       Assert.equal(#plan.panes, expectedPanes, versionId .. " " .. configuration .. " retains paired source screens")

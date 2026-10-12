@@ -15,7 +15,15 @@ local S = require("gen4.script")
 local T = {}
 
 local function progression()
-  return PlayerProgression.new({ name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0 })
+  return PlayerProgression.new({
+    name = "GOLD",
+    gender = 0,
+    trainerId = 0,
+    money = 3000,
+    badges = 0,
+    runningShoes = false,
+    runningShoesLock = false,
+  })
 end
 
 local function runWith(service)
@@ -64,6 +72,42 @@ function T.check_award_and_count_round_trip_through_real_progression()
   Assert.equal(run.services.world.vars.V_COUNT, 1, "a repeated award counts once")
 end
 
+function T.award_running_shoes_sets_the_profile_flag_through_the_service()
+  local profile = {
+    name = "GOLD",
+    gender = 0,
+    trainerId = 0,
+    money = 3000,
+    badges = 0,
+    runningShoes = false,
+    runningShoesLock = false,
+  }
+  local run = runWith(PlayerProgression.new(profile))
+  Assert.equal(Runtime.executeNode({ op = "award_running_shoes" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.isTrue(profile.runningShoes)
+  Assert.equal(Runtime.executeNode({ op = "award_running_shoes" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.isTrue(profile.runningShoes, "a repeated award stays set")
+end
+
+function T.check_running_shoes_writes_one_or_zero_from_the_profile_flag()
+  local profile = {
+    name = "GOLD",
+    gender = 0,
+    trainerId = 0,
+    money = 3000,
+    badges = 0,
+    runningShoes = false,
+    runningShoesLock = false,
+  }
+  local run = runWith(PlayerProgression.new(profile))
+  local node = { op = "check_running_shoes", result = var("V_SHOES") }
+  Assert.equal(Runtime.executeNode(node, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(run.services.world.vars.V_SHOES, 0)
+  profile.runningShoes = true
+  Assert.equal(Runtime.executeNode(node, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(run.services.world.vars.V_SHOES, 1)
+end
+
 function T.missing_progression_service_raises()
   local run = runWith(nil)
   local err = Assert.throws(function()
@@ -80,7 +124,11 @@ function T.constructors_emit_valid_nodes()
   Assert.equal(award.op, "award_badge")
   local count = S.countBadges({ result = S.var("V") })
   Assert.equal(count.op, "count_badges")
-  local script = S.script({ api = 1, id = "test.badges", steps = { check, award, count } })
+  local shoes = S.awardRunningShoes({})
+  Assert.equal(shoes.op, "award_running_shoes")
+  local checkShoes = S.checkRunningShoes({ result = S.var("V") })
+  Assert.equal(checkShoes.op, "check_running_shoes")
+  local script = S.script({ api = 1, id = "test.badges", steps = { check, award, count, shoes, checkShoes } })
   Assert.isTrue(S.validate(script))
   local bad = S.script({
     api = 1,

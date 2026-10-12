@@ -65,6 +65,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
+---@field progression PlayerProgression? Running Shoes owner; absent sessions never run
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field navigationBoundary table<string, unknown>?
 ---@field fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
@@ -111,6 +112,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
+---@field progression PlayerProgression? Running Shoes owner; absent sessions never run
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field initController table<string, unknown>|nil
 ---@field mapEntryStage FieldMapEntryStage? read-only view of mapEntryController state
@@ -192,7 +194,7 @@ end
 ---@field entranceInput { map: RuntimeFieldMap, player: FieldPlayer, transition: { ownsField: boolean } }
 ---@field coordinateProbe { fieldX: integer, fieldZ: integer, facing: string }
 ---@field terrainResponseInput table<string, unknown>
----@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
+---@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: ("normal"|"run")? }
 ---@field carriedMovementInput table<string, unknown>
 ---@field interactionSnapshot table<string, unknown>
 ---@field actorContext table<string, unknown>
@@ -229,7 +231,13 @@ local function newTickScratch(actorLocked)
       },
       direction = "south",
     },
-    playerPresentation = { locomotionActive = false, gestureOffsetY = 0 },
+    playerPresentation = {
+      locomotionActive = false,
+      gesturePose = nil,
+      gestureTick = nil,
+      gestureOffsetY = 0,
+      ordinaryStepSpeed = nil,
+    },
     carriedMovementInput = {},
     interactionSnapshot = {},
     actorContext = {
@@ -390,6 +398,7 @@ function FieldSession.new(options)
     fieldEntranceIndicator = options.fieldEntranceIndicator,
     terrainEffects = options.terrainEffects,
     playerAvatar = options.playerAvatar,
+    progression = options.progression,
     audio = options.audio,
     initController = options.initController,
     mapEntryController = FieldMapEntryController.new({
@@ -761,6 +770,24 @@ local function advancePostSchedulerBoundary(self)
     end
   end
   return TICK_CONTINUES
+end
+
+-- A fresh ordinary step runs when B is held or the Start Menu lock holds it
+-- for the player, the player owns the Running Shoes, and the avatar is in its
+-- walking state (cycling and surfing keep their own pace).
+---@param self FieldSession
+---@param inputSnapshot table<string, unknown>
+---@return boolean
+local function shouldRun(self, inputSnapshot)
+  local progression = self.progression
+  if progression == nil or not progression:hasRunningShoes() then
+    return false
+  end
+  if inputSnapshot.cancelDown ~= true and not progression:runningShoesLock() then
+    return false
+  end
+  local avatar = self.playerAvatar
+  return avatar == nil or avatar:durableState() == "walking"
 end
 
 ---@param self FieldSession
@@ -1173,9 +1200,8 @@ function FieldSession:updateFixed(inputSnapshot)
     end
     collapseCameraInterpolation(self.camera)
     if self.playerVisual then
-      local suppressedLocomotionAtTickStart =
-        self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
-      self.playerVisual:updateFixed(suppressedLocomotionAtTickStart)
+      local suppressedPresentation = self.player:presentationStateInto(self._tickScratch.playerPresentation)
+      self.playerVisual:updateFixed(suppressedPresentation.locomotionActive, suppressedPresentation.ordinaryStepSpeed)
     end
     self.camera:updateFixed(cameraTargetInto(self))
     self:_advanceTick()
@@ -1296,8 +1322,9 @@ function FieldSession:updateFixed(inputSnapshot)
   -- The pose clock treats a tick as locomoting if the player was locomoting at either
   -- end of it, so the gait phase carries across the tile commit instead of
   -- restarting on every arrival (the ROM's walk range spans two tiles).
-  local ordinaryLocomotionAtTickStart =
-    self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
+  local ordinaryPresentation = self.player:presentationStateInto(self._tickScratch.playerPresentation)
+  local ordinaryLocomotionAtTickStart = ordinaryPresentation.locomotionActive
+  local ordinaryStepSpeedAtTickStart = ordinaryPresentation.ordinaryStepSpeed
 
   local movementInput = inputSnapshot
   if carriedBoundaryDirection then
@@ -1365,7 +1392,7 @@ function FieldSession:updateFixed(inputSnapshot)
     end
   end
 
-  local stepCompleted = self.player:updateFixed(movementInput) == true
+  local stepCompleted = self.player:updateFixed(movementInput, shouldRun(self, inputSnapshot)) == true
   if motionAtPlayerUpdateStart == "idle" and self.player.motion == "jumping" and self.audio then
     self.audio:play("SEQ_SE_DP_DANSA")
   end
@@ -1443,7 +1470,7 @@ function FieldSession:updateFixed(inputSnapshot)
   -- Pose clocks advance only on a tick that could change the world, so a fade or
   -- a locked transition freezes animation instead of walking it in place.
   if self.playerVisual then
-    self.playerVisual:updateFixed(ordinaryLocomotionAtTickStart)
+    self.playerVisual:updateFixed(ordinaryLocomotionAtTickStart, ordinaryStepSpeedAtTickStart)
   end
   self.camera:updateFixed(cameraTargetInto(self))
   self:_advanceTick()

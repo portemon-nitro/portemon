@@ -9,6 +9,7 @@ local Assert = require("tests.support.Assert")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local S = require("gen4.script")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local FieldState = require("game.hgss.src.field.FieldState")
 local Registry = require("libs.script.src.Registry")
 local ScriptComposition = require("libs.script.src.Composition")
@@ -21,7 +22,7 @@ local T = {}
 
 local function runtimeWithTransitionError(transitionError)
   local calls = { session = 0 }
-  local runtime = FieldRuntimeFixture.withApricornDateOwner(setmetatable({
+  local runtime = setmetatable({
     scripts = {},
     session = {
       accumulator = 0,
@@ -55,7 +56,9 @@ local function runtimeWithTransitionError(transitionError)
         return nil
       end,
     },
-  }, FieldRuntime))
+  }, FieldRuntime)
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
+  runtime = FieldRuntimeFixture.withApricornDateOwner(runtime)
   return runtime, calls
 end
 

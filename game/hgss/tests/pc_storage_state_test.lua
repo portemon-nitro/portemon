@@ -2,6 +2,7 @@
 -- topologies and returns cleanly without taking custody from the domain.
 
 local Assert = require("tests.support.Assert")
+local Mon = require("libs.mons.src.Mon")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -214,6 +215,7 @@ local function openOptions(mons, mode, configuration)
       return measurement(configuration)
     end,
     audio = { play = function() end },
+    dexNumber = function() end,
     charmap = CatalogFixture.CHARMAP,
     icons = {},
     portraits = {},
@@ -275,6 +277,182 @@ function T.deposit_and_withdraw_run_through_the_mode_menus()
   withdraw:dispose()
 end
 
+function T.retail_lists_follow_each_mode_and_context()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0x55667788, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  local boxed = mons:partyMon(1)
+  local stored = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 4, mon = boxed } } }))
+  stored.publish()
+  local function boxTap(slot)
+    return { type = "storage_target", target = { kind = "box", box = 0, slot = slot } }
+  end
+
+  -- Deposit mode hit-tests only the party tray until a deposit asks where.
+  local deposit = PcStorageState.new(openOptions(mons, 0, "wide"))
+  Assert.equal(#deposit._session:plan().content.hitRegions.boxSlots, 0, "deposit mode has no box touch targets")
+  deposit:updateFixed({ boxTap(4) })
+  Assert.deepEqual(deposit:status().focus, { domain = "party", slot = 0 }, "a box tap in deposit mode is ignored")
+  deposit:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(deposit:status().menu.actions, { "deposit", "summary", "markings", "release" })
+  deposit:updateFixed({ { type = "confirm" } })
+  Assert.equal(#deposit._session:plan().content.hitRegions.boxSlots, 30, "a deposit asks where, so box slots answer")
+  deposit:dispose()
+
+  -- Withdraw mode lists a box mon, and leaves empty slots without a list.
+  local withdraw = PcStorageState.new(openOptions(mons, 1, "wide"))
+  withdraw:updateFixed({ boxTap(4), { type = "confirm" } })
+  Assert.deepEqual(withdraw:status().menu.actions, { "withdraw", "summary", "markings", "release" })
+  withdraw:updateFixed({ { type = "cancel" }, boxTap(9), { type = "confirm" } })
+  Assert.equal(withdraw:status().phase, "browse", "an empty box slot opens no list")
+  withdraw:dispose()
+
+  -- Move mode picks the mon up at once with its list showing.
+  local move = PcStorageState.new(openOptions(mons, 2, "wide"))
+  move:updateFixed({ boxTap(4), { type = "confirm" } })
+  Assert.equal(move:status().phase, "carry", "tapping a mon picks it up immediately")
+  Assert.deepEqual(move:status().menu.actions, { "move", "summary", "heldItems", "markings", "release" })
+  Assert.equal(move:status().menu.selected, 1, "MOVE is the highlighted entry")
+  move:updateFixed({ { type = "action", action = "markings" } })
+  Assert.equal(move:status().phase, "editor", "another entry puts the mon back and runs")
+  Assert.isNil(move:status().carry)
+  move:dispose()
+
+  -- Item mode has no list: a tap picks up the held item directly.
+  local held = mons:partyMon(0)
+  held.heldItem = "POTION"
+  assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 0, mon = held } })).publish()
+  local items = PcStorageState.new(openOptions(mons, 3, "wide"))
+  items:updateFixed({ { type = "confirm" } })
+  Assert.equal(items:status().phase, "carry", "a tap on a held item picks it up")
+  Assert.isNil(items:status().menu, "the item mode has no action list")
+  items:dispose()
+
+  -- HELD ITEMS is one entry that branches on the held item: take it back here,
+  -- or open the Bag to give one when the mon holds nothing.
+  local holdOptions = openOptions(mons, 2, "wide")
+  local pickerOpened = 0
+  holdOptions.childFactories = {
+    heldItemPicker = function()
+      pickerOpened = pickerOpened + 1
+      return { updateFixed = function() end, takeIntent = function() end, status = function() return {} end, dispose = function() end }
+    end,
+  }
+  local hold = PcStorageState.new(holdOptions)
+  hold:updateFixed({ { type = "action", action = "heldItems" } })
+  Assert.equal(mons:partyMon(0).heldItem, "NONE", "a held item is taken back to the Bag")
+  Assert.equal(holdOptions.bag:quantity("POTION"), 1)
+  hold:updateFixed({ { type = "action", action = "heldItems" } })
+  Assert.equal(pickerOpened, 1, "an empty hand opens the Bag picker to give an item")
+  Assert.equal(hold:status().childKind, "heldItemPicker")
+  hold:dispose()
+
+  -- The title plate opens the Wallpaper / Name pair.
+  local title = PcStorageState.new(openOptions(mons, 1, "wide"))
+  local plan = title._session:plan()
+  local event = plan.mapInput({ type = "pointer_down", x = 84, y = 28 }, title:_view(), plan)
+  Assert.deepEqual(event, { type = "box_title" })
+  title:updateFixed({ event })
+  Assert.deepEqual(title:status().menu.actions, { "wallpaper", "boxName" })
+  title:dispose()
+end
+
+function T.exit_prompts_leave_only_on_the_retail_answers()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
+  local plan = state._session:plan()
+  local function tap(x, y)
+    return plan.mapInput({ type = "pointer_down", x = x, y = y }, state:_view(), plan)
+  end
+  -- RETURN asks "Exit the Box?"; Yes leaves, No stays.
+  local event = tap(224, 180)
+  Assert.deepEqual(event, { type = "return" }, "the RETURN button raises its own event")
+  state:updateFixed({ event })
+  Assert.equal(state:_view().message.id, 11, "RETURN asks to exit")
+  Assert.isTrue(state:_view().message.yesNo)
+  state:updateFixed({ { type = "cancel" } })
+  Assert.isTrue(state:isActive(), "No keeps the Box open")
+  Assert.equal(state:_view().message.id, 18, "the browse prompt returns")
+  state:updateFixed({ { type = "return" } })
+  state:updateFixed({ { type = "confirm" } })
+  Assert.isFalse(state:isActive(), "Yes leaves")
+  state:dispose()
+
+  -- B asks "Continue Box operations?"; Yes continues, No leaves.
+  local back = PcStorageState.new(openOptions(mons, 1, "wide"))
+  back:updateFixed({ { type = "cancel" } })
+  Assert.equal(back:_view().message.id, 12, "B asks whether to continue")
+  back:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(back:isActive(), "Yes continues")
+  back:updateFixed({ { type = "cancel" } })
+  back:updateFixed({ { type = "cancel" } })
+  Assert.isFalse(back:isActive(), "No leaves")
+  back:dispose()
+end
+
+function T.party_tray_follows_each_mode()
+  local mons = monService()
+  local deposit = PcStorageState.new(openOptions(mons, 0, "wide"))
+  Assert.equal(deposit:_view().tray, "left", "Deposit starts with the tray open at the left")
+  deposit:updateFixed({ { type = "party" } })
+  Assert.equal(deposit:_view().tray, "left", "Deposit has no PARTY button")
+  deposit:dispose()
+
+  local withdraw = PcStorageState.new(openOptions(mons, 1, "wide"))
+  Assert.equal(withdraw:_view().tray, "closed", "Withdraw never shows the tray")
+  withdraw:updateFixed({ { type = "party" } })
+  Assert.equal(withdraw:_view().tray, "closed")
+  withdraw:dispose()
+
+  local move = PcStorageState.new(openOptions(mons, 2, "wide"))
+  Assert.equal(move:_view().tray, "closed", "Move starts with the tray closed")
+  local plan = move._session:plan()
+  Assert.equal(#plan.content.hitRegions.partySlots, 0, "a closed tray has no party touch targets")
+  move:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 0 } } })
+  Assert.equal(move:status().focus.domain, "party", "the default focus is untouched by an ignored tap")
+  move:updateFixed({ { type = "party" } })
+  Assert.equal(move:_view().tray, "left", "the PARTY button opens the tray at the left")
+  Assert.equal(#move._session:plan().content.hitRegions.partySlots, 6)
+  move:updateFixed({ { type = "tray_close" } })
+  Assert.equal(move:_view().tray, "closed", "EXIT closes the tray")
+  move:updateFixed({ { type = "party" }, { type = "cancel" } })
+  Assert.equal(move:_view().tray, "closed", "B closes the tray before asking to leave")
+  Assert.isNil(move._prompt)
+  move:dispose()
+end
+
+function T.messages_follow_the_screen_state_and_refusals()
+  local mons = monService()
+  local boxed = mons:partyMon(0)
+  assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 2, mon = boxed } } })).publish()
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
+  Assert.equal(state:_view().message.id, 18, "Withdraw browses with its prompt")
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 2 } }, { type = "confirm" } })
+  local selected = state:_view().message
+  Assert.equal(selected.id, 0, "a tapped mon reads \"is selected\"")
+  Assert.equal(selected.subject, Mon.displayName(boxed, mons:catalog()))
+  Assert.equal(selected.window, "W39")
+  state:dispose()
+
+  -- Depositing the last usable mon is refused, with that mon's message.
+  local deposit = PcStorageState.new(openOptions(mons, 0, "wide"))
+  deposit:updateFixed({ { type = "confirm" } })
+  deposit:updateFixed({ { type = "confirm" } })
+  deposit:updateFixed({ { type = "confirm" } })
+  Assert.equal(deposit:_view().message.id, 6, "the last Pokémon cannot be deposited")
+  Assert.equal(deposit:_view().message.window, "W37")
+  deposit:updateFixed({ { type = "navigate", direction = "up" } })
+  local after = deposit:_view().message
+  Assert.isTrue(after == nil or after.id ~= 6, "the message ends with the next input")
+  deposit:dispose()
+end
+
 function T.move_swap_cancel_and_held_item_routes_keep_domain_owners_authoritative()
   local mons = monService()
   local factory = CatalogFixture.makeFactory(0x22113344, mons:catalog())
@@ -288,6 +466,8 @@ function T.move_swap_cancel_and_held_item_routes_keep_domain_owners_authoritativ
   stored.publish()
 
   local move = PcStorageState.new(openOptions(mons, 2, "wide"))
+  move:updateFixed({ { type = "party" } })
+  Assert.equal(move:status().focus.domain, "party", "the PARTY button opens the tray on the party")
   move:updateFixed({ { type = "action", action = "move" } })
   Assert.equal(move:status().phase, "carry")
   move:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 4 } }, { type = "confirm" } })
@@ -503,7 +683,7 @@ function T.raw_pointer_selects_a_storage_target_through_the_state_owner()
     boxRevision = mons:boxRevision(),
   }, { boxUpdates = { { box = 0, slot = 4, mon = boxed } } }))
   change.publish()
-  local state = PcStorageState.new(openOptions(mons, 0, "nativeLike"))
+  local state = PcStorageState.new(openOptions(mons, 1, "nativeLike"))
   local target = assert(state._session:plan().content.hitRegions.boxSlots[5])
   local x, y = hostPointForRect(state, target.rect)
   local ok, failure = pcall(function()
@@ -615,7 +795,7 @@ end
 
 function T.storage_pointer_capture_cancellation_drops_release_and_reaches_child()
   local mons = monService()
-  local state = PcStorageState.new(openOptions(mons, 0, "nativeLike"))
+  local state = PcStorageState.new(openOptions(mons, 1, "nativeLike"))
   local target = assert(state._session:plan().content.hitRegions.boxSlots[3])
   local x, y = hostPointForRect(state, target.rect)
   state:updateFixed({ { type = "pointer_down", pointerId = "storage-touch", x = x, y = y } })
@@ -657,6 +837,7 @@ function T.refused_carry_keeps_storage_live_and_preserves_domain_custody()
     mons = mons,
     bag = bag,
     manifest = PcPresentationFixture.manifest(),
+    dexNumber = function() end,
     measureDisplay = function()
       return measurement("wide")
     end,
@@ -707,6 +888,7 @@ function T.take_held_item_and_edit_box_records_return_through_child_results()
       return measurement("wide")
     end,
     audio = { play = function() end },
+    dexNumber = function() end,
     icons = {},
     portraits = {},
     childFactories = {},
@@ -736,10 +918,12 @@ function T.take_held_item_and_edit_box_records_return_through_child_results()
       return measurement("wide")
     end,
     audio = { play = function() end },
+    dexNumber = function() end,
     icons = {},
     portraits = {},
     childFactories = {},
   })
+  itemSwap:updateFixed({ { type = "party" } })
   itemSwap:updateFixed({ { type = "action", action = "swapItems" } })
   Assert.equal(itemSwap:status().phase, "carry")
   itemSwap:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 1 } }, { type = "confirm" } })
@@ -779,7 +963,7 @@ function T.take_held_item_and_edit_box_records_return_through_child_results()
       }
     end
   end
-  local editingOptions = openOptions(mons, 0, "wide")
+  local editingOptions = openOptions(mons, 1, "wide")
   editingOptions.childFactories = childFactories
   local editing = PcStorageState.new(editingOptions)
   editing:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 7 } } })
@@ -824,7 +1008,7 @@ function T.cancelled_summary_and_name_children_return_to_parent()
       }
     end
   end
-  local options = openOptions(mons, 0, "wide")
+  local options = openOptions(mons, 1, "wide")
   options.childFactories = childFactories
   local state = PcStorageState.new(options)
   state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 7 } } })
@@ -833,7 +1017,7 @@ function T.cancelled_summary_and_name_children_return_to_parent()
     Assert.equal(state:status().phase, "child")
     state:updateFixed({ { type = "cancel" } })
     Assert.equal(state:status().phase, "browse")
-    Assert.equal(state:status().mode, 0)
+    Assert.equal(state:status().mode, 1)
     Assert.equal(state:status().activeBox, 0)
     Assert.deepEqual(state:status().focus, { domain = "box", slot = 7 })
   end
@@ -853,7 +1037,7 @@ function T.active_markings_editor_masks_box_slot_pointer_input()
   }, { boxUpdates = { { box = 0, slot = 7, mon = boxed } } }))
   change.publish()
 
-  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
   state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 7 } } })
   local browsePlan = state._session:plan()
   local boxSlot = assert(browsePlan.content.hitRegions.boxSlots[8])
@@ -931,7 +1115,7 @@ function T.markings_and_wallpaper_edit_as_local_source_phases()
   }, { boxUpdates = { { box = 0, slot = 7, mon = boxed } } }))
   stored.publish()
   local openedChildren = 0
-  local options = openOptions(mons, 0, "wide")
+  local options = openOptions(mons, 1, "wide")
   options.childFactories = {
     markings = function()
       openedChildren = openedChildren + 1
@@ -944,14 +1128,19 @@ function T.markings_and_wallpaper_edit_as_local_source_phases()
   }
   local state = PcStorageState.new(options)
   state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 7 } } })
+  local info = assert(state:_view().info, "the highlighted mon publishes its top-screen facts")
+  local highlighted = assert(mons:boxMon(0, 7))
+  Assert.equal(info.nickname, Mon.displayName(highlighted, mons:catalog()), "the info panel names the highlighted mon")
+  Assert.notNil(info.level, "a non-egg mon publishes its level")
+  Assert.notNil(info.natureName, "a non-egg mon publishes its nature")
   state:updateFixed({ { type = "action", action = "markings" } })
   Assert.equal(state:status().phase, "editor")
   Assert.equal(state:status().editor.kind, "markings")
   local markingPlan = state._session:plan()
   Assert.equal(#markingPlan.content.hitRegions.editorChoices, 6)
-  Assert.deepEqual(markingPlan.content.hitRegions.editorChoices[1].rect, { x = 120, y = 8, width = 8, height = 8 })
+  Assert.deepEqual(markingPlan.content.hitRegions.editorChoices[1].rect, { x = 188, y = 60, width = 16, height = 16 })
   Assert.deepEqual(
-    markingPlan.mapInput({ type = "pointer_down", x = 121, y = 9 }, state:_view(), markingPlan),
+    markingPlan.mapInput({ type = "pointer_down", x = 189, y = 61 }, state:_view(), markingPlan),
     { type = "marking_choice", id = 0 },
     "the source marking tile and its pointer target share one plan"
   )
@@ -965,25 +1154,43 @@ function T.markings_and_wallpaper_edit_as_local_source_phases()
   Assert.equal(state:status().phase, "editor")
   Assert.equal(state:status().editor.kind, "wallpaper")
   local plan = state._session:plan()
-  Assert.equal(#plan.content.hitRegions.editorChoices, 15, "locked and current wallpapers have no pointer hit")
-  local tap = plan.mapInput({ type = "pointer_down", x = 84, y = 21 }, state:_view(), plan)
+  Assert.equal(#plan.content.hitRegions.editorChoices, 8, "four swatches, two page arrows, confirm and Cancel")
+  local tap = plan.mapInput({ type = "pointer_down", x = 105, y = 35 }, state:_view(), plan)
   Assert.deepEqual(tap, { type = "wallpaper_choice", id = 1 }, "pointer and draw plans share wallpaper geometry")
-  local lockedTap = plan.mapInput({ type = "pointer_down", x = 40, y = 117 }, state:_view(), plan)
-  Assert.isNil(lockedTap, "locked bonus wallpaper has no pointer selection")
-  rawPointerAt(state, plan.content.hitRegions.editorChoices[1].rect, "wallpaper-choice")
+  Assert.deepEqual(
+    plan.mapInput({ type = "pointer_down", x = 240, y = 35 }, state:_view(), plan),
+    { type = "wallpaper_page", delta = 1 },
+    "the right arrow pages forward"
+  )
+  Assert.deepEqual(
+    plan.mapInput({ type = "pointer_down", x = 200, y = 130 }, state:_view(), plan),
+    { type = "submit" },
+    "the confirm button submits"
+  )
+  Assert.deepEqual(
+    plan.mapInput({ type = "pointer_down", x = 200, y = 180 }, state:_view(), plan),
+    { type = "cancel" },
+    "the Cancel button cancels"
+  )
+  rawPointerAt(state, plan.content.hitRegions.editorChoices[2].rect, "wallpaper-choice")
   Assert.equal(state:status().editor.selected, 1, "raw pointer input selects a local wallpaper choice")
   state:updateFixed({ { type = "wallpaper_choice", id = 16 } })
-  Assert.equal(state:status().editor.selected, 1, "locked bonus wallpaper preserves the current selection")
+  Assert.equal(state:status().editor.selected, 16, "a locked bonus entry can be highlighted")
+  state:updateFixed({ { type = "submit" } })
+  Assert.equal(state:status().phase, "editor", "confirming a locked entry keeps the chooser open")
+  Assert.equal(mons:boxMetadata(0).wallpaperId, 0, "a locked entry never reaches the box")
   state:updateFixed({ { type = "wallpaper_choice", id = 2 } })
   state:updateFixed({ { type = "submit" } })
   Assert.equal(mons:boxMetadata(0).wallpaperId, 2)
   Assert.equal(openedChildren, 0)
 
   state:updateFixed({ { type = "action", action = "wallpaper" } })
-  state:updateFixed({ { type = "wallpaper_choice", id = 2 } })
+  Assert.equal(state:status().editor.selected, 2, "the chooser opens on the box's current wallpaper")
   state:updateFixed({ { type = "submit" } })
-  Assert.equal(state:status().phase, "browse", "confirming the current wallpaper closes the editor")
+  Assert.equal(state:status().phase, "editor", "confirming the current wallpaper keeps the chooser open")
   Assert.equal(mons:boxMetadata(0).wallpaperId, 2, "confirming the current wallpaper does not mutate the box")
+  state:updateFixed({ { type = "cancel" } })
+  Assert.equal(state:status().phase, "browse")
 
   local unlocked = assert(mons:preparePcChanges({
     partyRevision = mons:partyRevision(),
@@ -992,18 +1199,22 @@ function T.markings_and_wallpaper_edit_as_local_source_phases()
   unlocked.publish()
   state:updateFixed({ { type = "action", action = "wallpaper" } })
   state:updateFixed({ { type = "navigate", direction = "right" }, { type = "navigate", direction = "right" } })
-  Assert.equal(state:status().editor.selected, 0, "horizontal movement wraps within four source columns")
-  state:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(state:status().editor.selected, 20, "vertical movement wraps six source rows by four")
+  Assert.equal(state:status().editor.selected, 0, "horizontal movement wraps within the page's four swatches")
   state:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(state:status().editor.selected, 0)
-  state:updateFixed({ { type = "wallpaper_choice", id = 20 } })
+  Assert.equal(state:status().editor.focus, "confirm", "down walks to the confirm button")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(state:status().editor.focus, "cancel", "then to Cancel")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(state:status().editor.focus, "slots", "up returns to the swatches")
+  state:updateFixed({ { type = "wallpaper_page", delta = -1 } })
+  Assert.equal(state:status().editor.selected, 20, "paging wraps across the six pages of four")
   state:updateFixed({ { type = "submit" } })
   Assert.equal(mons:boxMetadata(0).wallpaperId, 36, "logical bonus wallpaper maps to its stored identity")
 
   state:updateFixed({ { type = "action", action = "markings" } })
   local cancelledPlan = state._session:plan()
-  local markingTap = cancelledPlan.mapInput({ type = "pointer_down", x = 121, y = 9 }, state:_view(), cancelledPlan)
+  local markingTap = cancelledPlan.mapInput({ type = "pointer_down", x = 189, y = 61 }, state:_view(), cancelledPlan)
   state:updateFixed({ markingTap })
   state:updateFixed({ { type = "cancel" } })
   Assert.equal(assert(mons:boxMon(0, 7)).markings, 7, "cancel discards the local marking draft")
@@ -1137,7 +1348,7 @@ function T.visible_contents_follow_revisions_and_box_identity_while_overlays_adv
     },
   }))
   seeded.publish()
-  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
   state:updateFixed({ { type = "storage_target", target = { kind = "box", slot = 5 } } })
   Assert.deepEqual(state:status().focus, { domain = "box", slot = 5 }, "focus starts on a known slot")
   local added = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))
@@ -1392,6 +1603,7 @@ function T.sequential_confirmed_removals_share_one_storage_lifetime()
   end
   Assert.equal(mons:partyCount(), 4, "both added members join the party before the first release")
   local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ { type = "party" } })
 
   state:updateFixed({ { type = "release", address = { kind = "party", slot = 2 } } })
   local firstArmed = state:status().releaseCheck
@@ -1565,6 +1777,7 @@ function T.cancelled_and_stale_scans_admit_fresh_releases_without_replay()
   do
     local mons = releaseService()
     local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+    state:updateFixed({ { type = "party" } })
     state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
     Assert.equal(state:status().releaseCheck.outcome, "confirm")
     state:updateFixed({ { type = "confirm" } })
@@ -1598,6 +1811,7 @@ function T.cancelled_and_stale_scans_admit_fresh_releases_without_replay()
   do
     local mons = releaseService()
     local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+    state:updateFixed({ { type = "party" } })
     state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
     Assert.equal(state:status().releaseCheck.outcome, "confirm")
     state:updateFixed({ { type = "confirm" } })
@@ -1670,7 +1884,12 @@ end
 function T.state_changes_publish_once_while_idle_ticks_reuse_the_layout()
   for _, configuration in ipairs({ "nativeLike", "wide", "dualDisplay" }) do
     local mons = monService()
-    local state = PcStorageState.new(openOptions(mons, 0, configuration))
+    local seeded = assert(mons:preparePcChanges({
+      partyRevision = mons:partyRevision(),
+      boxRevision = mons:boxRevision(),
+    }, { boxUpdates = { { box = 0, slot = 3, mon = mons:partyMon(0) } } }))
+    seeded.publish()
+    local state = PcStorageState.new(openOptions(mons, 1, configuration))
     local builds, resolves = 0, 0
     local buildView = PcStorageState._buildView
     state._buildView = function(self)
@@ -1734,10 +1953,11 @@ function T.state_changes_publish_once_while_idle_ticks_reuse_the_layout()
     Assert.equal(state:status().activeBox, 1)
     Assert.equal(state:status().boxSlots[7], false, "the new box shows its own empty slot, not stale contents")
     Assert.deepEqual(state:status().focus, { domain = "box", slot = 0 })
-    state:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 0 } } })
+    state:updateFixed({ { type = "navigate", direction = "left" } })
+    state:updateFixed({ { type = "storage_target", target = { kind = "box", slot = 3 } } })
     state:updateFixed({ { type = "confirm" } })
     Assert.equal(state:status().phase, "menu")
-    local beforeMarkings = mons:partyMon(0).markings
+    local beforeMarkings = mons:boxMon(0, 3).markings
     state:updateFixed({ { type = "action", action = "markings" } })
     Assert.equal(state:status().phase, "editor")
     local draftMask = state:status().editor.mask
@@ -1749,7 +1969,7 @@ function T.state_changes_publish_once_while_idle_ticks_reuse_the_layout()
     Assert.equal(state:status().editor.mask, draftMask)
     state:updateFixed({ { type = "cancel" } })
     Assert.equal(state:status().phase, "browse")
-    Assert.equal(mons:partyMon(0).markings, beforeMarkings, "cancel discards the editor draft")
+    Assert.equal(mons:boxMon(0, 3).markings, beforeMarkings, "cancel discards the editor draft")
     local hit = assert(state._session:plan().content.hitRegions.boxSlots[1])
     local x, y = hostPointForRect(state, hit.rect)
     state:updateFixed({ { type = "pointer_down", pointerId = "republish-touch", x = x, y = y } })

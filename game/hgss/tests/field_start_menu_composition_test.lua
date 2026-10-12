@@ -14,6 +14,7 @@ local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = { tests = {} }
@@ -106,7 +107,12 @@ local function composeSelf(overrides)
   return {
     scripts = { worldState = overrides.worldState or worldWith(ALL_FLAGS) },
     uiManifest = overrides.uiManifest or manifestWithIcons(),
-    playerData = { profile = { name = "PLAYER" } },
+    playerData = { profile = { name = "PLAYER", badges = 0, runningShoes = false, runningShoesLock = false } },
+    playerAvatar = {
+      durableState = function()
+        return "walking"
+      end,
+    },
     messageProvider = overrides.messageProvider or providerWithLabels(),
     applications = {
       has = function()
@@ -124,6 +130,11 @@ local function composeSelf(overrides)
     saveStore = {},
     audio = nil,
     presentationDisplay = display,
+    applicationHost = {
+      phase = function()
+        return overrides.hostPhase ~= nil and overrides.hostPhase or "menu"
+      end,
+    },
   }
 end
 
@@ -168,6 +179,106 @@ function T.tests.sparse_menus_keep_fixed_positions_with_holes_instead_of_compact
   Assert.equal(actionById(status, "vanilla.save").position, 5)
   Assert.equal(actionById(status, "vanilla.options").position, 6)
   Assert.equal(actionById(status, "vanilla.trainer_card").label, "PLAYER")
+end
+
+function T.tests.running_shoes_visibility_tracks_live_ownership_avatar_and_child_phase()
+  local avatarState = "walking"
+  local hostPhase = "menu"
+  local self = composeSelf()
+  self.playerData.profile.runningShoes = true
+  self.playerData.profile.runningShoesLock = true
+  self.playerAvatar.durableState = function()
+    return avatarState
+  end
+  self.applicationHost.phase = function()
+    return hostPhase
+  end
+  local controller = composeStartMenu(self)
+  Assert.deepEqual(controller:status().runningShoes, { locked = true, focused = false })
+
+  avatarState = "cycling"
+  Assert.isNil(controller:status().runningShoes, "cycling hides the toggle")
+  avatarState = "walking"
+  hostPhase = "application"
+  Assert.isNil(controller:status().runningShoes, "a foreground child masks the retained parent control")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(self.playerData.profile.runningShoesLock, "confirm during child phase cannot toggle the profile")
+
+  hostPhase = "menu"
+  Assert.deepEqual(controller:status().runningShoes, { locked = true, focused = false })
+  self.playerData.profile.runningShoes = false
+  Assert.isNil(controller:status().runningShoes, "ownership is read live")
+end
+
+function T.tests.controller_accessible_shoes_survive_each_menu_layout()
+  local layouts = {
+    dualDisplay = {
+      width = 512,
+      height = 192,
+      topology = ScreenTopology.dualDisplay(
+        { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, role = "world", touch = false },
+        { id = "sub", rect = { x = 256, y = 0, width = 256, height = 192 }, role = "auxiliary", touch = false }
+      ),
+    },
+    nativeLike = {
+      width = 640,
+      height = 480,
+      topology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = 640, height = 480 },
+        role = "world",
+        touch = false,
+      }),
+    },
+    wide = {
+      width = 960,
+      height = 540,
+      topology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = 960, height = 540 },
+        role = "world",
+        touch = false,
+      }),
+    },
+    tall = {
+      width = 360,
+      height = 640,
+      topology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = 360, height = 640 },
+        role = "world",
+        touch = false,
+      }),
+    },
+  }
+
+  for expectedConfiguration, display in pairs(layouts) do
+    local runtime = composeSelf()
+    runtime.playerData.profile.runningShoes = true
+    runtime.presentationDisplay = {
+      width = display.width,
+      height = display.height,
+      topology = display.topology,
+      pixelRatio = 1,
+      signature = "running-shoes-layout:" .. expectedConfiguration,
+    }
+    Assert.equal(ApplicationLayout.classify(runtime.presentationDisplay), expectedConfiguration)
+
+    local menu = composeStartMenu(runtime)
+    menu:updateFixed({
+      { type = "navigate", direction = "right" },
+      { type = "navigate", direction = "down" },
+      { type = "navigate", direction = "down" },
+      { type = "navigate", direction = "right" },
+    })
+    Assert.isTrue(menu:status().runningShoes.focused, "controller focus reaches shoes in " .. expectedConfiguration)
+    menu:updateFixed({ { type = "confirm" } })
+    Assert.isTrue(runtime.playerData.profile.runningShoesLock, "confirm saves the lock in " .. expectedConfiguration)
+    Assert.isTrue(menu:status().open, "confirm keeps the menu open in " .. expectedConfiguration)
+    menu:updateFixed({ { type = "cancel" } })
+    Assert.isFalse(menu:status().open, "cancel closes the menu in " .. expectedConfiguration)
+    menu:dispose()
+  end
 end
 
 function T.tests.disabled_but_visible_actions_still_carry_their_labels()

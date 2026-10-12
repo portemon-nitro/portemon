@@ -16,12 +16,16 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
+
+local NORMAL_POSE_DELTA = MovementCalibration.poseProgressTicks({ action = "walk", speed = "normal" }, 1)
+local RUN_POSE_DELTA = MovementCalibration.poseProgressTicks({ action = "walk", speed = "run" }, 1)
 
 ---@class FieldPlayerVisual.Source
 ---@field facing string
 ---@field animationPaused boolean
----@field presentationStateInto fun(self: unknown, out: { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
----@field presentationState fun(self: unknown): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
+---@field presentationStateInto fun(self: unknown, out: { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }
+---@field presentationState fun(self: unknown): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }
 ---@field clearGesturePresentation fun(self: unknown)
 ---@field renderPositionInto fun(self: unknown, out: { x: number, y: number, z: number }, alpha: number?): { x: number, y: number, z: number }
 ---@field renderPosition fun(self: unknown, alpha: number?): { x: number, y: number, z: number }
@@ -29,7 +33,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@class FieldPlayerVisual.SourceInput
 ---@field facing string?
 ---@field animationPaused boolean?
----@field presentationState fun(self: FieldPlayerVisual.SourceInput): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }?
+---@field presentationState fun(self: FieldPlayerVisual.SourceInput): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }?
 ---@field clearGesturePresentation fun(self: FieldPlayerVisual.SourceInput)
 ---@field renderPosition fun(self: FieldPlayerVisual.SourceInput, alpha: number?): { x: number, y: number, z: number }
 
@@ -106,7 +110,7 @@ end
 -- player stops (the first genuinely idle tick) or changes facing, matching the
 -- original timeline: a standing actor holds the first frame of its facing
 -- range, and a turn starts the new range at its first frame.
-function FieldPlayerVisual:updateFixed(locomotionAtTickStart)
+function FieldPlayerVisual:updateFixed(locomotionAtTickStart, ordinaryStepSpeedAtTickStart)
   local snapshot = self.player:presentationStateInto(self._playerPresentation)
   local walking = not self.player.animationPaused
     and (locomotionAtTickStart == true or snapshot.locomotionActive == true)
@@ -119,7 +123,18 @@ function FieldPlayerVisual:updateFixed(locomotionAtTickStart)
 
   if walking then
     self.pose = "walk"
-    self.poseTick = self.poseTick + 1
+    local ordinaryStepSpeed = ordinaryStepSpeedAtTickStart
+    if ordinaryStepSpeed == nil then
+      ordinaryStepSpeed = snapshot.ordinaryStepSpeed
+    end
+    local poseDelta = NORMAL_POSE_DELTA
+    if ordinaryStepSpeed ~= nil then
+      assert(ordinaryStepSpeed == "normal" or ordinaryStepSpeed == "run", "ordinary step has unsupported speed")
+      if ordinaryStepSpeed == "run" then
+        poseDelta = RUN_POSE_DELTA
+      end
+    end
+    self.poseTick = self.poseTick + poseDelta
   else
     self.pose = "idle"
     self.poseTick = 0
