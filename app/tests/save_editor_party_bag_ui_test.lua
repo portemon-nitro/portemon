@@ -554,12 +554,14 @@ function T.controller_cancel_clears_pending_removal()
   controller:openModal("remove")
   local state = setmetatable({
     controller = controller,
+    modalStack = modalStackWith("bag-remove"),
     pendingRemove = { kind = "party", slot0 = 0 },
   }, SaveEditorState)
 
   state:_dispatchIntent(controller:press("cancel"))
 
   Assert.isNil(state.pendingRemove, "Escape/gamepad cancel drops the pending removal record")
+  Assert.equal(#state.modalStack:layers(), 0, "Escape/gamepad cancel retires the dialog layer")
 end
 
 function T.close_cancel_restores_an_open_removal_decision_without_resolving_it()
@@ -606,6 +608,84 @@ function T.close_cancel_restores_an_open_removal_decision_without_resolving_it()
   Assert.equal(state.monDraft, draft, "Cancel keeps the raw draft available")
   Assert.equal(state.valueEditor, valueEditor, "Cancel keeps the nested value editor available")
   Assert.equal(valueEditor:snapshot().buffer, "x", "Cancel preserves the exact nested value buffer")
+end
+
+function T.failed_layout_resolve_keeps_the_settled_pair_and_the_staged_editor()
+  local controller = Controller.new()
+  local state = setmetatable({
+    status = "ready",
+    disposed = false,
+    controller = controller,
+    modalStack = ModalStack.new(),
+    modalLayerSequence = 0,
+    session = nil,
+    valueEditor = nil,
+    valuePurpose = nil,
+    monDraft = nil,
+    fieldInput = { beginUi = function() end },
+    scopeEpoch = 0,
+    inputTick = 0,
+    numberPressUntilTick = 0,
+    tickRemainder = 0,
+    locationPreviewMemory = {},
+    width = 800,
+    height = 600,
+    dependencies = {
+      bagManifest = { interactive = { overlays = { quantity = {} } } },
+    },
+    renderer = {
+      metrics = function()
+        return {
+          lineHeight = 14,
+          measure = function(text)
+            return #text * 7
+          end,
+        }
+      end,
+    },
+    displayContext = {
+      measure = function(width, height)
+        return { signature = "test:" .. tostring(width) .. "x" .. tostring(height) }
+      end,
+    },
+    presentation = {
+      resolve = function(measurement, view)
+        return { content = { layout = { marker = "settled" } } }
+      end,
+    },
+  }, SaveEditorState)
+  state:_syncScope()
+
+  local settled = state:view()
+  Assert.notNil(settled.layout, "the editor publishes a settled pair before editing")
+
+  local editor = ValueEditor.new({ kind = "integer", value = 12, min = 0, max = 99, base = "decimal" })
+  Assert.isTrue(editor:textinput("7"), "the staged digit stays in the editor buffer")
+  state.valueEditor = editor
+  state.presentation = {
+    resolve = function(measurement, view)
+      error("simulated layout failure")
+    end,
+  }
+  local ok, failure = pcall(function()
+    return state:view()
+  end)
+  Assert.isFalse(ok, "a failed resolve propagates instead of publishing")
+  Assert.isTrue(
+    tostring(failure):find("simulated layout failure") ~= nil,
+    "the failure keeps its explicit classification"
+  )
+  Assert.isTrue(rawequal(state._publishedView, settled), "the failed candidate never replaces the settled pair")
+  Assert.isTrue(rawequal(state.valueEditor, editor), "the failed publish keeps the staged editor live")
+  Assert.equal(editor:snapshot().buffer, "7", "the failed publish preserves the exact staged buffer")
+
+  state.presentation = {
+    resolve = function(measurement, view)
+      return { content = { layout = { marker = "recovered" } } }
+    end,
+  }
+  local recovered = state:view()
+  Assert.equal(recovered.layout.marker, "recovered", "the staged editor republishes once resolve recovers")
 end
 
 function T.clean_edit_draft_does_not_veto_quit()

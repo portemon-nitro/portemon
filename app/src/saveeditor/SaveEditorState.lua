@@ -1777,6 +1777,22 @@ function State:_setDraftValue(descriptor, value)
   return draft:setScalar(descriptor.fieldId, value)
 end
 
+-- Retires a decided value editor after its domain write accepted: records
+-- the opener return focus, drops held number state, pops the editor layer
+-- and disposes the editor. Rejected writes keep the live editor through
+-- retry and never reach this path.
+---@param editor SaveEditorValueEditor
+---@return table<string, unknown> removedLayer the retired editor layer
+function State:_retireValueEditor(editor)
+  self.pendingFocusReturn = self.valueReturnFocus
+  self.numberHold = nil
+  self.numberPressTarget = nil
+  local removedLayer = self:_popValueLayer(editor)
+  self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
+  self.valueReturnFocus = nil
+  return removedLayer
+end
+
 function State:_finishValueEditor()
   local editor = self.valueEditor
   if editor == nil then
@@ -1790,19 +1806,15 @@ function State:_finishValueEditor()
   local purpose = self.valuePurpose
   local descriptor = self.activeDraftField
   if result.kind == "cancel" then
-    self.numberHold = nil
-    self.numberPressTarget = nil
-    self.pendingFocusReturn = self.valueReturnFocus
-    local removedLayer = self:_popValueLayer(editor)
-    self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
-    self.valueReturnFocus = nil
+    local removedLayer = self:_retireValueEditor(editor)
     local parentMove = self:_restoreMoveParent(removedLayer)
     if not parentMove and purpose == "bag_quantity" then
       local pending = assert(self.pendingQuantity)
       self.pendingQuantity = nil
       if pending.returnModal then
         self.controller:setFocus("bag:item:" .. pending.itemKey)
-        assert(self.modalStack:top() and self.modalStack:top().kind == "bag-item")
+        local restoredTop = self.modalStack:top()
+        assert(restoredTop and restoredTop.kind == "bag-item")
         self.controller.modal = pending.returnModal
       end
     end
@@ -1845,12 +1857,8 @@ function State:_finishValueEditor()
       return false
     end
     self.errorMessage = nil
+    local removedLayer = self:_retireValueEditor(editor)
     self.pendingFocusReturn = nil
-    self.numberHold = nil
-    self.numberPressTarget = nil
-    local removedLayer = self:_popValueLayer(editor)
-    self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
-    self.valueReturnFocus = nil
     self:_restoreMoveParent(removedLayer)
     return true
   elseif purpose == "bag_add_item" then
@@ -1883,12 +1891,7 @@ function State:_finishValueEditor()
       return false
     end
   end
-  self.pendingFocusReturn = self.valueReturnFocus
-  self.numberHold = nil
-  self.numberPressTarget = nil
-  self:_popValueLayer(editor)
-  self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
-  self.valueReturnFocus = nil
+  self:_retireValueEditor(editor)
   return true
 end
 
@@ -2467,6 +2470,33 @@ function State:_installValueEditor(editor, purpose, returnFocus)
   self.preserveChoiceScroll = false
 end
 
+---@param kind string decision identity owned by the controller
+---@return string modal layer identity owned by the stack
+local function decisionLayerKind(kind)
+  if kind == "party-move" then
+    return "move"
+  end
+  if kind == "remove" then
+    return "bag-remove"
+  end
+  return kind
+end
+
+---@param parent table<string, unknown>? detached top layer below a retired decision
+---@return string? decision identity restored on the controller
+local function parentDecisionModal(parent)
+  if parent == nil then
+    return nil
+  end
+  if parent.kind == "bag-item" then
+    return "bag-item"
+  end
+  if parent.kind == "move" then
+    return "party-move"
+  end
+  return nil
+end
+
 function State:_pushModalLayer(kind, payload)
   self.modalLayerSequence = self.modalLayerSequence + 1
   local scopeId = self.controller.scopeId
@@ -2517,20 +2547,16 @@ function State:_restoreMoveParent(childLayer)
 end
 
 function State:_openDecision(kind, payload)
-  local layerKind = kind == "party-move" and "move" or kind == "remove" and "bag-remove" or kind
-  self:_pushModalLayer(layerKind, payload or { decision = kind })
+  self:_pushModalLayer(decisionLayerKind(kind), payload or { decision = kind })
   self.controller:openModal(kind)
 end
 
 function State:_closeDecision()
   local kind = assert(self.controller.modal, "a decision layer is active")
-  local layerKind = kind == "party-move" and "move" or kind == "remove" and "bag-remove" or kind
-  self:_popModalLayer(layerKind)
+  self:_popModalLayer(decisionLayerKind(kind))
   local focus = self.controller:closeModal()
   local parent = self.modalStack:top()
-  self.controller.modal = parent and parent.kind == "bag-item" and "bag-item"
-    or parent and parent.kind == "move" and "party-move"
-    or nil
+  self.controller.modal = parentDecisionModal(parent)
   return focus
 end
 
@@ -3259,7 +3285,8 @@ function State:_discardSection()
   if section == "Party" then
     self.monDraft = nil
     self.pendingMoveSlot = nil
-    if self.modalStack:top() and self.modalStack:top().kind == "move" then
+    local moveTop = self.modalStack:top()
+    if moveTop and moveTop.kind == "move" then
       self:_popModalLayer("move")
       self.controller.modal = nil
     end
@@ -3286,11 +3313,10 @@ function State:_discardSection()
     if layer and (layer.kind == "bag-item" or layer.kind == "bag-remove") then
       self.pendingRemove = nil
       self.pendingQuantity = nil
-      while
-        self.modalStack:top()
-        and (self.modalStack:top().kind == "bag-item" or self.modalStack:top().kind == "bag-remove")
-      do
-        self:_popModalLayer(self.modalStack:top().kind)
+      local nested = self.modalStack:top()
+      while nested and (nested.kind == "bag-item" or nested.kind == "bag-remove") do
+        self:_popModalLayer(nested.kind)
+        nested = self.modalStack:top()
       end
       self.controller.modal = nil
       self.controller.bagItemKey = nil
@@ -3381,25 +3407,51 @@ function State:_rememberLocationPreview()
   }
 end
 
-function State:_popDecision(decision)
-  local modal = decision or assert(self.controller.modal, "decision pop needs its open decision")
-  assert(modal == self.controller.modal, "decision action must belong to the active decision")
-  if modal == "leave" and self.closeRequest ~= nil then
+-- Single owner for decision-dialog cancellation. Semantic command
+-- cancellation arrives with the dialog still open on the controller, Back
+-- arrives the same way, and translated UI cancellation arrives after
+-- Controller:press already retired the controller modal and returned focus
+-- to the opener. Callers resolve that origin difference; the per-kind
+-- pending-state cleanup and return-focus policy below is shared, and an
+-- already-retired controller layer only retires its matching stack layer.
+---@param kind string decision identity being cancelled
+---@param cause "semantic"|"translated"|"back" input origin of the cancellation
+function State:_cancelActiveDecision(kind, cause)
+  assert(cause == "semantic" or cause == "translated" or cause == "back", "decision cancellation owns its origin")
+  if kind == "leave" then
+    local request = assert(self.closeRequest, "leave cancellation owns its close request")
     self:_popModalLayer("leave")
-    local request = assert(self.closeRequest)
     self.closeRequest = nil
     self.controller.modal = request.previousModal
     self.controller.modalReturnFocus = request.previousModalReturnFocus
     self.controller:setFocus(request.previousFocus)
-  elseif modal == "party-move" then
+    return
+  end
+  if kind == "party-move" then
     self.pendingMoveSlot = nil
+  elseif kind == "remove" then
+    self.pendingRemove = nil
+  elseif kind ~= "bag-item" then
+    error("unknown cancelled decision kind " .. tostring(kind), 0)
+  end
+  if self.controller.modal == kind then
     self:_closeDecision()
   else
-    if modal == "remove" then
-      self.pendingRemove = nil
+    local top = self.modalStack:top()
+    if top ~= nil and top.kind == decisionLayerKind(kind) then
+      self.modalStack:pop()
+      self.controller.modal = parentDecisionModal(self.modalStack:top())
     end
-    self:_closeDecision()
   end
+  if kind == "remove" and self.controller.section == "Bag" and self.controller.bagItemKey then
+    self.controller.focus = "bag:item:" .. self.controller.bagItemKey
+  end
+end
+
+function State:_popDecision(decision)
+  local modal = decision or assert(self.controller.modal, "decision pop needs its open decision")
+  assert(modal == self.controller.modal, "decision action must belong to the active decision")
+  self:_cancelActiveDecision(modal, "back")
 end
 
 -- An occupied move slot owns a small decision layer with exactly three
@@ -3412,7 +3464,8 @@ function State:_showMoveOverlay(slot0, focusTarget)
     "a move overlay needs its occupied slot"
   )
   self.pendingMoveSlot = slot0
-  if self.modalStack:top() == nil or self.modalStack:top().kind ~= "move" then
+  local moveTop = self.modalStack:top()
+  if moveTop == nil or moveTop.kind ~= "move" then
     local entry = assert(draft:record().moves[slot0 + 1])
     local catalog = assert(self.dependencies.context.monCatalog)
     self:_openDecision("party-move", {
@@ -3557,27 +3610,7 @@ end
 -- the published descriptor set never reach this map.
 function State:_performDecisionCommand(kind, command, id)
   if command == "cancel" then
-    if kind == "leave" and self.closeRequest ~= nil then
-      self:_popModalLayer("leave")
-      local request = assert(self.closeRequest)
-      self.closeRequest = nil
-      self.controller.modal = request.previousModal
-      self.controller.modalReturnFocus = request.previousModalReturnFocus
-      self.controller.focus = request.previousFocus
-    elseif kind == "party-move" then
-      self.pendingMoveSlot = nil
-      self:_closeDecision()
-    elseif kind == "remove" then
-      self.pendingRemove = nil
-      self:_closeDecision()
-      if self.controller.section == "Bag" and self.controller.bagItemKey then
-        self.controller.focus = "bag:item:" .. self.controller.bagItemKey
-      end
-    elseif kind == "bag-item" then
-      self:_closeDecision()
-    else
-      error("unknown cancelled decision kind " .. tostring(kind), 0)
-    end
+    self:_cancelActiveDecision(kind, "semantic")
     return
   end
   if kind == "bag-item" then
@@ -3923,33 +3956,24 @@ function State:_dispatchIntent(intent)
     self:_performDeferred(intent)
   elseif intent.kind == "cancel" then
     if intent.modal == "leave" and self.closeRequest ~= nil then
-      self:_popModalLayer("leave")
-      local request = assert(self.closeRequest)
-      self.closeRequest = nil
-      self.controller.modal = request.previousModal
-      self.controller.modalReturnFocus = request.previousModalReturnFocus
-      self.controller:setFocus(request.previousFocus)
+      self:_cancelActiveDecision("leave", "translated")
     elseif self.valueEditor then
       self.valueEditor:cancel()
       self:_finishValueEditor()
-    elseif intent.modal == "party-move" then
-      self.pendingMoveSlot = nil
-      self:_closeDecision()
-    elseif intent.modal == "remove" then
-      self.pendingRemove = nil
-      self.controller.modalReturnFocus = nil
     else
-      self:_closeDecision()
+      self:_cancelActiveDecision(assert(intent.modal, "translated cancellation owns its dialog kind"), "translated")
     end
   elseif intent.kind == "scroll-drag" then
-    local view = self:_snapshot()
+    local view = self:_ensurePublished()
     if intent.scopeId ~= view.scope.id or intent.scopeEpoch ~= view.scope.epoch then
       return
     end
-    local layout = assert(self:_resolve(view).content.layout)
+    local plan = assert(self._publishedPlan, "the settled publication owns its plan")
+    local layout = assert(plan.content.layout)
     self:_setScrollOffset(view, layout, intent.viewportId, intent.offset)
   elseif intent.kind == "move" then
-    local plan = self:_resolve(self:_snapshot())
+    self:_ensurePublished()
+    local plan = assert(self._publishedPlan, "the settled publication owns its plan")
     local layout = assert(plan.content.layout)
     self:_navigate(layout, intent.direction)
     self.controller:cancelInteraction()

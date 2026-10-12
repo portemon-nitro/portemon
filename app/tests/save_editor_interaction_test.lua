@@ -5709,6 +5709,46 @@ function T.tests.back_closes_only_the_open_decision()
   Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
 end
 
+local function openRemoveForCancel()
+  local harness = backHarness({ section = "Party", dirty = true })
+  local opener = harness.controller.focus
+  harness.state.pendingRemove = { kind = "party", slot0 = 0 }
+  harness.state:_openDecision("remove", { decision = "remove" })
+  Assert.equal(harness.controller.modal, "remove", "the removal dialog owns input while open")
+  Assert.equal(#harness.state.modalStack:layers(), 1, "the open dialog retains exactly one layer")
+  harness.controller:pointer({ type = "pointer_down", targetId = "confirm_remove", pointerId = "mouse:1", x = 4, y = 4 })
+  return harness, opener
+end
+
+local function checkRemoveRetired(harness, opener, route)
+  Assert.isNil(harness.controller.modal, route .. " closes the dialog")
+  Assert.equal(#harness.state.modalStack:layers(), 0, route .. " retires exactly the one dialog layer")
+  Assert.equal(harness.controller.focus, opener, route .. " returns focus to the opener")
+  Assert.isNil(harness.state.pendingRemove, route .. " drops the pending removal")
+  Assert.deepEqual(harness.session.discardedSections, {}, route .. " writes no domain state")
+  Assert.deepEqual(harness.results, {}, route .. " never leaves the editor")
+  local stale = harness.controller:pointer({ type = "pointer_up", targetId = "confirm_remove", pointerId = "mouse:1" })
+  Assert.isNil(stale, route .. " leaves the stale release inert")
+end
+
+function T.tests.cancelled_remove_dialog_retires_its_layer_on_keyboard_cancel()
+  local harness, opener = openRemoveForCancel()
+  harness.state:_dispatchIntent(harness.controller:press("cancel"))
+  checkRemoveRetired(harness, opener, "keyboard cancel")
+end
+
+function T.tests.cancelled_remove_dialog_retires_its_layer_on_decision_cancel()
+  local harness, opener = openRemoveForCancel()
+  harness.state:_performDecisionCommand("remove", "cancel", "cancel")
+  checkRemoveRetired(harness, opener, "decision cancel")
+end
+
+function T.tests.cancelled_remove_dialog_retires_its_layer_on_back()
+  local harness, opener = openRemoveForCancel()
+  harness.state:_requestBack()
+  checkRemoveRetired(harness, opener, "back")
+end
+
 function T.tests.leave_save_keeps_invalid_value_editable_and_discard_remains_explicit()
   local invalid = ValueEditor.new({ kind = "integer", value = 12, min = 0, max = 99, base = "decimal" })
   Assert.isTrue(invalid:textinput("bad"), "invalid text remains in the editor buffer")
