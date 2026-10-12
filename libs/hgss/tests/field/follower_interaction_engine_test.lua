@@ -171,6 +171,9 @@ local function engine(ruleSpecs, formPerformance, options)
       return monCatalog
     end,
     partyMonDerived = function()
+      if options.omitDerivedLevel then
+        return { maxHp = mon.maxHp }
+      end
       return { level = mon.level, maxHp = mon.maxHp }
     end,
     monNature = function()
@@ -186,6 +189,9 @@ local function engine(ruleSpecs, formPerformance, options)
       return mon.friendship
     end,
     scriptMonLevel = function()
+      if options.scriptMonLevelCalls ~= nil then
+        options.scriptMonLevelCalls.count = (options.scriptMonLevelCalls.count or 0) + 1
+      end
       return mon.level
     end,
   }
@@ -443,6 +449,68 @@ T["Pokéathlon scoring preserves reachable threshold transitions and tie order"]
         .. tostring(actual)
     )
   end
+
+  -- Combined boundary projection: every class derives once from one live
+  -- read, so the assembled dictionary and the selection RNG trace are
+  -- exact at the requested HP/friendship/mood/time edges.
+  local combined, combinedRng = engine(
+    { { programId = 1, percentage = 100, criteria = { hpClass = 4, friendshipClass = 3 } } },
+    nil,
+    {
+      mon = {
+        condition = { currentHp = 25 },
+        maxHp = 100,
+        friendship = 150,
+        mood = 30,
+      },
+      civilTime = { year = 2024, month = 1, day = 1, hour = 9, minute = 0, second = 0 },
+    }
+  )
+  Assert.deepEqual(combined:_context(0), {
+    heldItemClass = 8,
+    hpClass = 4,
+    statusClass = 1,
+    friendshipClass = 3,
+    friendship = 150,
+    moodClass = 4,
+    mood = 30,
+    genderClass = 1,
+    natureClass = 4,
+    leafClass = 0,
+    shinyLeaves = 0,
+    speciesClass = 0,
+    specialSpriteClass = 0,
+    nearbyObjectClass = 0,
+    hiddenItemClass = 0,
+    hiddenItemCount = 0,
+    weatherClass = 1,
+    timeClass = 1,
+    facingClass = 4,
+    type1Class = 1,
+    type2Class = 1,
+    typeClass = 1,
+    pokeathlonClass = 1,
+    levelClass = 4,
+    encounterClass = 2,
+    mapId = 1,
+    metatileBehaviorId = 0,
+  })
+  Assert.deepEqual(combined:select(), { leadSlot = 0, programId = 1 })
+  Assert.equal(combinedRng:serialize().calls, 1, "one reached rule consumes one draw")
+  local expectedCombinedRng = ScriptRng.new(173)
+  expectedCombinedRng:chance(100, 100)
+  Assert.deepEqual(
+    combinedRng:serialize(),
+    expectedCombinedRng:serialize(),
+    "the combined selection persists exactly the reached RNG state"
+  )
+
+  for _, vector in ipairs({ { 1, 5 }, { 99, 2 } }) do
+    local hpEdge = engine({}, nil, { mon = { condition = { currentHp = vector[1] }, maxHp = 100 } })
+    Assert.equal(hpEdge:_context(0).hpClass, vector[2], "HP class at " .. vector[1] .. "%")
+  end
+  local moodEdge = engine({}, nil, { mon = { mood = -126 } })
+  Assert.equal(moodEdge:_context(0).moodClass, 7, "mood class at -126")
 
   local tied = performance(1, 1, 1)
   tied.stamina, tied.jump = { base = 5, min = 5, max = 5 }, { base = 5, min = 5, max = 5 }
@@ -929,6 +997,64 @@ T["daily performance modifiers keep the retail winner on the boundary vector"] =
     { year = 2024, month = 1, day = 1 }
   )
   Assert.equal(actual, 2, "the boundary vector keeps Stamina (class 2), got " .. tostring(actual))
+end
+
+T["successive selections reread live actor and hidden-item state"] = function()
+  Assert.notNil(FollowerInteractionEngine, "live field context classification must exist")
+  local spot = { fieldX = 1, fieldZ = 0 }
+  local roaming = {
+    objectEventId = 7,
+    spriteId = 1,
+    numericState = function()
+      return { fieldX = spot.fieldX, fieldZ = spot.fieldZ }
+    end,
+  }
+  local background = { { type = 2, hiddenItemFlagId = 900 } }
+  local flags = {}
+  local subject, rng = engine(
+    { { programId = 1, percentage = 100, criteria = { nearbyObjectClass = 1, hiddenItemClass = 1 } } },
+    nil,
+    {
+      player = { facing = "south", fieldX = 0, fieldZ = 0 },
+      actors = { roaming },
+      background = background,
+      flags = flags,
+    }
+  )
+  Assert.equal(subject:_context(0).nearbyObjectClass, 1, "a neighboring actor counts on the first tick")
+  Assert.equal(subject:_context(0).hiddenItemClass, 1, "an uncollected hidden item counts on the first tick")
+  Assert.deepEqual(subject:select(), { leadSlot = 0, programId = 1 })
+
+  -- The lead mon is untouched; only the live field moves.
+  spot.fieldX, spot.fieldZ = 5, 5
+  flags[900] = true
+  Assert.equal(subject:_context(0).nearbyObjectClass, 0, "a departed actor stops counting on the next tick")
+  Assert.equal(subject:_context(0).hiddenItemClass, 0, "a collected hidden item stops counting on the next tick")
+  Assert.equal(subject:select(), nil, "the same instance no longer matches after the field changes")
+
+  spot.fieldX, spot.fieldZ = 0, 1
+  flags[900] = nil
+  Assert.equal(subject:_context(0).nearbyObjectClass, 1, "a returned actor counts again")
+  Assert.equal(subject:_context(0).hiddenItemClass, 1, "an uncollected hidden item counts again")
+  Assert.deepEqual(subject:select(), { leadSlot = 0, programId = 1 })
+  Assert.equal(rng:serialize().calls, 3, "each successive selection consumes its own percentage draw")
+end
+
+T["absent derived level falls back to the script level exactly once"] = function()
+  Assert.notNil(FollowerInteractionEngine, "level context classification must exist")
+  local fallbackCalls = {}
+  local fallback = engine({}, nil, {
+    mon = { level = 50 },
+    omitDerivedLevel = true,
+    scriptMonLevelCalls = fallbackCalls,
+  })
+  Assert.equal(fallback:_context(0).levelClass, 6, "fallback level 50 keeps class 6")
+  Assert.equal(fallbackCalls.count, 1, "one context read derives the absent level once")
+
+  local derivedCalls = {}
+  local derived = engine({}, nil, { mon = { level = 50 }, scriptMonLevelCalls = derivedCalls })
+  Assert.equal(derived:_context(0).levelClass, 6, "present derived level 50 keeps class 6")
+  Assert.isNil(derivedCalls.count, "a present derived level never consults the script level")
 end
 
 return { tests = T }

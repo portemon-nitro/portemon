@@ -38,6 +38,18 @@ local POCK_CLASS = { items = 4, medicine = 2, balls = 1, tmhm = 7, berries = 6, 
 local CLASS_BY_STAT = { power = 1, skill = 3, speed = 5, jump = 4, stamina = 2 }
 local PERFORMANCE_ORDER = { "power", "skill", "speed", "jump", "stamina" }
 local FOLLOWER_SCAN_ORDER = { "power", "stamina", "jump", "skill", "speed" }
+
+-- Descending lower bounds for rangeClass: HP percentage and mood share the
+-- same "first bound at or below the value wins" rule as friendship. Mood
+-- bounds are exact on the integer mood domain (for example, mood > -30 is
+-- mood >= -29 for integer moods).
+local HP_LIMITS = { 100, 75, 50, 25 }
+local MOOD_LIMITS = { 127, 100, 50, 30, -29, -49, -126 }
+-- Ascending upper bounds with native (non-rank) class outputs, kept in source
+-- evaluation order; values above every bound take the fallback class.
+local TIME_CLASS_BUCKETS = { { 3, 5 }, { 9, 1 }, { 16, 2 }, { 19, 3 } }
+local LEVEL_CLASS_BUCKETS = { { 47, 4 }, { 52, 6 } }
+local WEATHER_CLASS_BY_ID = { [0] = 1, [1] = 3 }
 local NATURE_MODIFIERS = {
   { 10, 0, 0, 0, -10 },
   { 35, -35, 0, 0, 0 },
@@ -107,6 +119,62 @@ local function rangeClass(value, limits)
     end
   end
   return #limits + 1
+end
+
+-- Native class for an ascending upper-bound bucket table; the rows stay in
+-- source evaluation order and values above every bound take the fallback.
+---@param value number
+---@param buckets table<integer, table<integer, integer>>
+---@param fallback integer
+---@return integer
+local function bucketClass(value, buckets, fallback)
+  for _, bucket in ipairs(buckets) do
+    if value <= bucket[1] then
+      return bucket[2]
+    end
+  end
+  return fallback
+end
+
+-- Live actor vicinity: actors on the current map within one tile of the
+-- player, excluding the player/partner slots and special field sprites.
+---@param actors FieldActorManager
+---@param mapId integer
+---@param playerX integer
+---@param playerZ integer
+---@return integer
+local function nearbyObjectCount(actors, mapId, playerX, playerZ)
+  local nearby = 0
+  for _, actor in ipairs(actors:actorsOf(mapId)) do
+    local id = actor.objectEventId
+    local state = actor.numericState and actor:numericState() or {}
+    if
+      id ~= 0xFD
+      and id ~= 0xFF
+      and actor.spriteId ~= 0x54
+      and actor.spriteId ~= 0x55
+      and actor.spriteId ~= 0x56
+      and math.abs(state.fieldX - playerX) <= 1
+      and math.abs(state.fieldZ - playerZ) <= 1
+    then
+      nearby = nearby + 1
+    end
+  end
+  return nearby
+end
+
+-- Live background visibility: hidden-item events whose flag is not set.
+---@param background table<integer, table<string, unknown>>
+---@param world FollowerInteractionWorld
+---@return integer
+local function uncollectedHiddenItemCount(background, world)
+  local hidden = 0
+  for _, event in ipairs(background) do
+    if event.type == 2 and event.hiddenItemFlagId and not world:isFlagSet(event.hiddenItemFlagId) then
+      hidden = hidden + 1
+    end
+  end
+  return hidden
 end
 
 local function selectorMatches(kind, expected, actual, context)
@@ -227,38 +295,20 @@ function FollowerInteractionEngine:_pokeathlonClass(mon, civilDate)
 end
 
 function FollowerInteractionEngine:_context(leadSlot)
+  -- Trusted live facts, each read once: mon derivation, held item, clock,
+  -- partner state, actor vicinity, and hidden background events.
   local mon = assert(self.mons:partyMon(leadSlot), "living lead mon is missing")
   local derived = self.mons:partyMonDerived(leadSlot)
+  local level = derived.level or self.mons:scriptMonLevel(leadSlot)
   local item = mon.heldItem ~= nil and mon.heldItem ~= "NONE" and self.items:item(mon.heldItem) or nil
   local time = self.clock:nowLocal()
   local partnerId = assert(self.followingMon:partnerActorId(), "partner actor is unavailable")
   local partner = assert(self.actors:getById(partnerId), "partner actor is unavailable")
   local partnerState = partner.numericState and partner:numericState() or {}
   local playerPosition = self.player:position()
-  local playerX, playerZ = playerPosition.fieldX, playerPosition.fieldZ
-  local nearby = 0
-  for _, actor in ipairs(self.actors:actorsOf(self.runtimeMap.mapId)) do
-    local id = actor.objectEventId
-    local state = actor.numericState and actor:numericState() or {}
-    if id ~= 0xFD and id ~= 0xFF then
-      if
-        actor.spriteId ~= 0x54
-        and actor.spriteId ~= 0x55
-        and actor.spriteId ~= 0x56
-        and math.abs(state.fieldX - playerX) <= 1
-        and math.abs(state.fieldZ - playerZ) <= 1
-      then
-        nearby = nearby + 1
-      end
-    end
-  end
+  local nearby = nearbyObjectCount(self.actors, self.runtimeMap.mapId, playerPosition.fieldX, playerPosition.fieldZ)
   local background = assert(self.runtimeMap.fieldData.events.background, "current map background events are missing")
-  local hidden = 0
-  for _, event in ipairs(background) do
-    if event.type == 2 and event.hiddenItemFlagId and not self.world:isFlagSet(event.hiddenItemFlagId) then
-      hidden = hidden + 1
-    end
-  end
+  local hidden = uncollectedHiddenItemCount(background, self.world)
   local cell = partnerCell(self.runtimeMap, partnerState)
   local friendship = self.mons:monFriendship(leadSlot)
   local mood = mon.mood or 0
@@ -266,24 +316,17 @@ function FollowerInteractionEngine:_context(leadSlot)
   local gender = self.mons:monGender(leadSlot)
   local type1, type2 = self.mons:monTypes(leadSlot)
   local hpPercent = math.floor((mon.condition.currentHp * 100) / derived.maxHp)
-  local heldClass = item and POCK_CLASS[item.pocket] or 8
   local species = self.mons:catalog():species(mon.species)
   local speciesClass =
     assert(self.catalog.speciesClassBySpeciesId[species.nativeId], "follower species class is missing")
   local criteria = {
-    heldItemClass = heldClass,
-    hpClass = hpPercent == 100 and 1 or hpPercent >= 75 and 2 or hpPercent >= 50 and 3 or hpPercent >= 25 and 4 or 5,
+    -- Mon and held item.
+    heldItemClass = item and POCK_CLASS[item.pocket] or 8,
+    hpClass = rangeClass(hpPercent, HP_LIMITS),
     statusClass = statusClassOfEffects(assert(mon.condition.effects, "follower status class needs condition effects")),
     friendshipClass = rangeClass(friendship, { 255, 200, 150, 90, 60, 30, 1 }),
     friendship = friendship,
-    moodClass = mood >= 127 and 1
-      or mood >= 100 and 2
-      or mood >= 50 and 3
-      or mood >= 30 and 4
-      or mood > -30 and 5
-      or mood > -50 and 6
-      or mood > -127 and 7
-      or 8,
+    moodClass = rangeClass(mood, MOOD_LIMITS),
     mood = mood,
     genderClass = gender == 0 and 1 or 2,
     natureClass = assert(NATURE_CLASS[nature + 1]),
@@ -291,21 +334,23 @@ function FollowerInteractionEngine:_context(leadSlot)
     shinyLeaves = mon.shinyLeaves or 0,
     speciesClass = speciesClass,
     specialSpriteClass = 0,
+    -- Actor vicinity and background.
     nearbyObjectClass = nearby,
     hiddenItemClass = hidden,
     hiddenItemCount = hidden,
-    weatherClass = assert(self.runtimeMap.effectiveWeatherId, "current runtime weather is required") == 0 and 1
-      or self.runtimeMap.effectiveWeatherId == 1 and 3
-      or 0,
+    -- Time, weather, and terrain.
+    weatherClass = WEATHER_CLASS_BY_ID[assert(
+      self.runtimeMap.effectiveWeatherId,
+      "current runtime weather is required"
+    )] or 0,
     -- ov02_0224F64C: Field_GetTimeOfDay (morning 4-9, day 10-16, evening
     -- 17-19, night 20-23, late night 0-3) plus one.
-    timeClass = time.hour <= 3 and 5 or time.hour <= 9 and 1 or time.hour <= 16 and 2 or time.hour <= 19 and 3 or 4,
+    timeClass = bucketClass(time.hour, TIME_CLASS_BUCKETS, 4),
     facingClass = ({ east = 1, west = 2, north = 3, south = 4 })[partner.facing],
     typeClass = 0,
+    -- Special performance.
     pokeathlonClass = self:_pokeathlonClass(mon, time),
-    levelClass = (derived.level or self.mons:scriptMonLevel(leadSlot)) <= 47 and 4
-      or (derived.level or self.mons:scriptMonLevel(leadSlot)) <= 52 and 6
-      or 5,
+    levelClass = bucketClass(level, LEVEL_CLASS_BUCKETS, 5),
     encounterClass = 0,
     mapId = self.runtimeMap.mapId,
     metatileBehaviorId = cell.behavior,
