@@ -854,6 +854,212 @@ function StorageScreenState:acceptsText()
   return self._childKind == "boxName"
 end
 
+-- Answers the exit/continue prompt from one event. A closing answer
+-- marks the screen closed, which ends the batch at its closed check.
+---@param event table<string, unknown>
+function StorageScreenState:_resolvePromptInput(event)
+  -- Yes / No: the exit prompt leaves on Yes; "Continue Box operations?" leaves on No.
+  local yes = event.type == "confirm"
+  if yes or event.type == "cancel" then
+    local leave = (self._prompt.kind == "exit") == yes
+    self._prompt = nil
+    if leave then
+      self:cancel("input")
+    end
+  end
+end
+
+-- Applies the cancel precedence for one cancel event: an armed release first,
+-- then the pending item intent, carry, menu, tray, and finally the prompt.
+function StorageScreenState:_handleCancelInput()
+  if
+    self._releaseCheck ~= nil and (self._releaseCheck.outcome == "confirm" or self._releaseCheck.outcome == "pending")
+  then
+    self._releaseCheck.outcome = "cancelled"
+    self._releaseIntent = nil
+    self._releaseRevisions = nil
+  elseif self._pendingIntent ~= nil then
+    self._pendingIntent = nil
+  elseif self._carry ~= nil then
+    self._carry, self._menu = nil, nil
+  elseif self._menu ~= nil then
+    self._menu = nil
+  elseif self._mode >= 2 and self._tray ~= "closed" then
+    self:_closeTray()
+  else
+    self._prompt = { kind = "continue" }
+  end
+end
+
+-- Moves focus, tray, active box, or the title-pair menu for one event.
+---@param event table<string, unknown>
+function StorageScreenState:_handleFocusInput(event)
+  if event.type == "return" then
+    if self._carry == nil and self._menu == nil and self._pendingIntent == nil then
+      self._prompt = { kind = "exit" }
+    end
+  elseif event.type == "party" then
+    if self._mode >= 2 and self._carry == nil then
+      self._tray, self._focus = "left", { domain = "party", slot = 0 }
+    end
+  elseif event.type == "tray_close" then
+    self:_closeTray()
+  elseif event.type == "storage_target" then
+    local target = copy(assert(event.target, "mapped Storage inputs identify a target"))
+    local domain = target.domain or target.kind
+    -- Deposit mode only hit-tests the party tray until a deposit asks where.
+    local hidden = self._mode == 0 and domain == "box" and self._carry == nil
+      or domain == "party" and self._tray == "closed"
+    if not hidden then
+      self._focus = { domain = domain, slot = target.slot }
+      if target.box ~= nil then
+        self._activeBox = target.box
+      end
+    end
+  elseif event.type == "box_title" then
+    -- The title plate opens the Wallpaper / Name pair.
+    if self._carry == nil then
+      self._menu = { actions = { "wallpaper", "boxName" }, selected = 1 }
+    end
+  elseif event.type == "navigate" then
+    local direction = assert(event.direction)
+    if self._menu ~= nil and self._carry == nil and (direction == "up" or direction == "down") then
+      local delta = direction == "up" and -1 or 1
+      self._menu.selected = math.max(1, math.min(#self._menu.actions, self._menu.selected + delta))
+    elseif direction == "up" or direction == "down" then
+      local delta = direction == "up" and -1 or 1
+      self._focus.slot = math.max(0, math.min(self._focus.domain == "party" and 5 or 29, self._focus.slot + delta))
+    elseif direction == "left" or direction == "right" then
+      self._activeBox = (self._activeBox + (direction == "right" and 1 or -1)) % self._mons:boxCount()
+      self._focus = { domain = self._focus.domain, slot = 0 }
+      self._actions:commit(self:_preview({ kind = "activeBox", box = self._activeBox }))
+    end
+  else
+    assert(false, "unknown Storage focus event " .. tostring(event.type))
+  end
+end
+
+-- Dispatches one generic confirm or action event through the domain owner.
+---@param event table<string, unknown>
+function StorageScreenState:_handleConfirmInput(event)
+  if event.type == "confirm" then
+    if self._pendingIntent ~= nil then
+      self._lastAction = self._actions:commit(self._pendingIntent, true)
+      self._pendingIntent = nil
+    elseif self._carry ~= nil then
+      self:_confirmCarry()
+    elseif self._menu ~= nil then
+      local menu = assert(self._menu)
+      local selectedAction = assert(menu.actions[menu.selected], "Storage selection resolves to a menu action")
+      self:_beginAction(selectedAction)
+    else
+      self:_openMenu()
+    end
+  elseif event.type == "action" then
+    self:_beginAction(assert(event.action), event, self._menu == nil and self:_address(self._focus) or nil)
+  else
+    assert(false, "unknown Storage input event " .. tostring(event.type))
+  end
+end
+
+-- Dispatches one mapped event for the Storage-owned path. Returns true when
+-- the event confirms an armed release and starts its scan slice.
+---@param event table<string, unknown>
+---@return boolean
+function StorageScreenState:_dispatchStorageEvent(event)
+  if self._prompt ~= nil then
+    self:_resolvePromptInput(event)
+    return false
+  end
+  local eventType = event.type
+  if
+    eventType == "return"
+    or eventType == "party"
+    or eventType == "tray_close"
+    or eventType == "storage_target"
+    or eventType == "box_title"
+    or eventType == "navigate"
+  then
+    self:_handleFocusInput(event)
+    return false
+  elseif eventType == "release" then
+    self:_startRelease(assert(event.address))
+    return false
+  elseif eventType == "confirm" and self._releaseCheck ~= nil and self._releaseCheck.outcome == "confirm" then
+    self._releaseCheck.outcome = "pending"
+    return true
+  elseif eventType == "cancel" then
+    self:_handleCancelInput()
+    return false
+  elseif eventType == "pointer_cancel" then
+    -- The paired session has already discarded the invalid pointer capture.
+    return false
+  end
+  self:_handleConfirmInput(event)
+  return false
+end
+
+-- Dispatches the ordered batch until one action takes exclusive ownership.
+-- A terminal close or a newly opened child or editor ends the batch so
+-- later events never cross into another owner in the same tick. Returns the
+-- scan suppression and whether the batch closed the screen.
+---@param events table<string, unknown>[]
+---@return boolean, boolean
+function StorageScreenState:_dispatchStorageBatch(events)
+  local beganScan = false
+  for _, event in ipairs(events) do
+    assert(type(event) == "table" and type(event.type) == "string", "Storage events are tagged records")
+    if self:_dispatchStorageEvent(event) then
+      beganScan = true
+    end
+    if self._closed then
+      return beganScan, true
+    end
+    if self._child ~= nil or self._editor ~= nil then
+      break
+    end
+  end
+  return beganScan, false
+end
+
+-- Records the terminal outcome of one finished release scan.
+---@param check table<string, unknown>
+---@param result table<string, unknown>
+function StorageScreenState:_settleReleaseResult(check, result)
+  if result.kind == "stale" then
+    check.outcome = "stale"
+  elseif result.reason == "hm_return" then
+    check.outcome = "returned"
+  elseif result.kind == "changed" then
+    check.outcome = "removed"
+  else
+    check.outcome = "cancelled"
+  end
+end
+
+-- Advances the current release scan by exactly one fifteen-address slice.
+function StorageScreenState:_advanceRelease()
+  local check = self._releaseCheck
+  if check == nil or check.outcome ~= "pending" then
+    return
+  end
+  if
+    self._releaseRevisions.partyRevision ~= self._mons:partyRevision()
+    or self._releaseRevisions.boxRevision ~= self._mons:boxRevision()
+  then
+    check.outcome = "stale"
+    self._releaseIntent = nil
+    return
+  end
+  check.scanned = math.min(check.total, check.scanned + 15)
+  if check.scanned == check.total then
+    local intent = assert(self._releaseIntent)
+    local result = intent.reason == "hm_return" and intent or self._actions:commit(intent, true)
+    self:_settleReleaseResult(check, result)
+    self._releaseIntent = nil
+  end
+end
+
 ---@param events table<string, unknown>[] an ordered batch of normalized events
 function StorageScreenState:updateFixed(events)
   assert(not self._disposed, "disposed Storage does not update")
@@ -881,132 +1087,11 @@ function StorageScreenState:updateFixed(events)
     self:_ensurePublished()
     return
   end
-  local beganScan = false
-  for _, event in ipairs(events) do
-    assert(type(event) == "table" and type(event.type) == "string", "Storage events are tagged records")
-    if self._prompt ~= nil then
-      -- Yes / No: the exit prompt leaves on Yes; "Continue Box operations?" leaves on No.
-      local yes = event.type == "confirm"
-      if yes or event.type == "cancel" then
-        local leave = (self._prompt.kind == "exit") == yes
-        self._prompt = nil
-        if leave then
-          self:cancel("input")
-          return
-        end
-      end
-    elseif event.type == "return" then
-      if self._carry == nil and self._menu == nil and self._pendingIntent == nil then
-        self._prompt = { kind = "exit" }
-      end
-    elseif event.type == "party" then
-      if self._mode >= 2 and self._carry == nil then
-        self._tray, self._focus = "left", { domain = "party", slot = 0 }
-      end
-    elseif event.type == "tray_close" then
-      self:_closeTray()
-    elseif event.type == "release" then
-      self:_startRelease(assert(event.address))
-    elseif event.type == "confirm" and self._releaseCheck ~= nil and self._releaseCheck.outcome == "confirm" then
-      self._releaseCheck.outcome = "pending"
-      beganScan = true
-    elseif event.type == "cancel" then
-      if
-        self._releaseCheck ~= nil
-        and (self._releaseCheck.outcome == "confirm" or self._releaseCheck.outcome == "pending")
-      then
-        self._releaseCheck.outcome = "cancelled"
-        self._releaseIntent = nil
-        self._releaseRevisions = nil
-      elseif self._pendingIntent ~= nil then
-        self._pendingIntent = nil
-      elseif self._carry ~= nil then
-        self._carry, self._menu = nil, nil
-      elseif self._menu ~= nil then
-        self._menu = nil
-      elseif self._mode >= 2 and self._tray ~= "closed" then
-        self:_closeTray()
-      else
-        self._prompt = { kind = "continue" }
-      end
-    elseif event.type == "storage_target" then
-      local target = copy(assert(event.target, "mapped Storage inputs identify a target"))
-      local domain = target.domain or target.kind
-      -- Deposit mode only hit-tests the party tray until a deposit asks where.
-      local hidden = self._mode == 0 and domain == "box" and self._carry == nil
-        or domain == "party" and self._tray == "closed"
-      if not hidden then
-        self._focus = { domain = domain, slot = target.slot }
-        if target.box ~= nil then
-          self._activeBox = target.box
-        end
-      end
-    elseif event.type == "box_title" then
-      -- The title plate opens the Wallpaper / Name pair.
-      if self._carry == nil then
-        self._menu = { actions = { "wallpaper", "boxName" }, selected = 1 }
-      end
-    elseif event.type == "navigate" then
-      local direction = assert(event.direction)
-      if self._menu ~= nil and self._carry == nil and (direction == "up" or direction == "down") then
-        local delta = direction == "up" and -1 or 1
-        self._menu.selected = math.max(1, math.min(#self._menu.actions, self._menu.selected + delta))
-      elseif direction == "up" or direction == "down" then
-        local delta = direction == "up" and -1 or 1
-        self._focus.slot = math.max(0, math.min(self._focus.domain == "party" and 5 or 29, self._focus.slot + delta))
-      elseif direction == "left" or direction == "right" then
-        self._activeBox = (self._activeBox + (direction == "right" and 1 or -1)) % self._mons:boxCount()
-        self._focus = { domain = self._focus.domain, slot = 0 }
-        self._actions:commit(self:_preview({ kind = "activeBox", box = self._activeBox }))
-      end
-    elseif event.type == "pointer_cancel" then
-      -- The paired session has already discarded the invalid pointer capture.
-    elseif event.type == "confirm" then
-      if self._pendingIntent ~= nil then
-        self._lastAction = self._actions:commit(self._pendingIntent, true)
-        self._pendingIntent = nil
-      elseif self._carry ~= nil then
-        self:_confirmCarry()
-      elseif self._menu ~= nil then
-        local menu = assert(self._menu)
-        local selectedAction = assert(menu.actions[menu.selected], "Storage selection resolves to a menu action")
-        self:_beginAction(selectedAction)
-      else
-        self:_openMenu()
-      end
-    elseif event.type == "action" then
-      self:_beginAction(assert(event.action), event, self._menu == nil and self:_address(self._focus) or nil)
-    else
-      assert(false, "unknown Storage input event " .. event.type)
-    end
+  local beganScan, closedBatch = self:_dispatchStorageBatch(events)
+  if closedBatch then
+    return
   end
-
-  local check = self._releaseCheck
-  if check ~= nil and check.outcome == "pending" then
-    if
-      self._releaseRevisions.partyRevision ~= self._mons:partyRevision()
-      or self._releaseRevisions.boxRevision ~= self._mons:boxRevision()
-    then
-      check.outcome = "stale"
-      self._releaseIntent = nil
-    else
-      check.scanned = math.min(check.total, check.scanned + 15)
-      if check.scanned == check.total then
-        local intent = assert(self._releaseIntent)
-        local result = intent.reason == "hm_return" and intent or self._actions:commit(intent, true)
-        if result.kind == "stale" then
-          check.outcome = "stale"
-        elseif result.reason == "hm_return" then
-          check.outcome = "returned"
-        elseif result.kind == "changed" then
-          check.outcome = "removed"
-        else
-          check.outcome = "cancelled"
-        end
-        self._releaseIntent = nil
-      end
-    end
-  end
+  self:_advanceRelease()
   if not beganScan then
     self._transitionTick = self._transitionTick + 1
   end

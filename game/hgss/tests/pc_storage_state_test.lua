@@ -54,11 +54,7 @@ local function hostPointForRect(state, rect)
       and rect.x + rect.width <= placement.logicalWidth
       and rect.y + rect.height <= placement.logicalHeight
     then
-      x, y = LayoutGeometry.logicalToHost(
-        placement,
-        rect.x + rect.width / 2,
-        rect.y + rect.height / 2
-      )
+      x, y = LayoutGeometry.logicalToHost(placement, rect.x + rect.width / 2, rect.y + rect.height / 2)
       break
     end
   end
@@ -97,12 +93,7 @@ local function releaseService()
   local catalog = MonCatalog.new(root, CatalogFixture.makeItemCatalog())
   local mons = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(
-      Party.new():capture(),
-      Lcrng.new(0x10203040):capture(),
-      nil,
-      { configuredCount = 37 }
-    ),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x10203040):capture(), nil, { configuredCount = 37 }),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -338,7 +329,14 @@ function T.retail_lists_follow_each_mode_and_context()
   holdOptions.childFactories = {
     heldItemPicker = function()
       pickerOpened = pickerOpened + 1
-      return { updateFixed = function() end, takeIntent = function() end, status = function() return {} end, dispose = function() end }
+      return {
+        updateFixed = function() end,
+        takeIntent = function() end,
+        status = function()
+          return {}
+        end,
+        dispose = function() end,
+      }
     end,
   }
   local hold = PcStorageState.new(holdOptions)
@@ -435,7 +433,7 @@ function T.messages_follow_the_screen_state_and_refusals()
   Assert.equal(state:_view().message.id, 18, "Withdraw browses with its prompt")
   state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 2 } }, { type = "confirm" } })
   local selected = state:_view().message
-  Assert.equal(selected.id, 0, "a tapped mon reads \"is selected\"")
+  Assert.equal(selected.id, 0, 'a tapped mon reads "is selected"')
   Assert.equal(selected.subject, Mon.displayName(boxed, mons:catalog()))
   Assert.equal(selected.window, "W39")
   state:dispose()
@@ -614,8 +612,10 @@ function T.deposit_commits_to_the_currently_focused_box_target()
   local confirmed, failure = pcall(function()
     state:updateFixed({ { type = "confirm" } })
   end)
-  Assert.isTrue(confirmed, "Deposit confirmation uses the focused empty slot instead of the occupied initial slot: "
-    .. tostring(failure))
+  Assert.isTrue(
+    confirmed,
+    "Deposit confirmation uses the focused empty slot instead of the occupied initial slot: " .. tostring(failure)
+  )
   Assert.equal(mons:boxMon(0, 0).personality, occupied.personality, "the occupied source slot remains unchanged")
   local destination = mons:boxMon(0, 1)
   Assert.isTrue(destination ~= nil, "the focused empty destination receives the Party Pokemon")
@@ -766,7 +766,11 @@ function T.nested_child_receives_the_original_raw_pointer_batch()
   local raw = { type = "pointer_down", pointerId = "summary-touch", x = x, y = y }
   state:updateFixed({ raw })
   Assert.deepEqual(received, { raw }, "the child owns the raw host event and its coordinates")
-  Assert.deepEqual(state:status().focus, { domain = "party", slot = 0 }, "parent focus is untouched while the child owns input")
+  Assert.deepEqual(
+    state:status().focus,
+    { domain = "party", slot = 0 },
+    "parent focus is untouched while the child owns input"
+  )
   state:dispose()
 end
 
@@ -1556,7 +1560,8 @@ function T.menu_and_mapped_release_agree_on_removal_cancel_and_stale()
   menuStale:updateFixed({ { type = "confirm" } })
   local drifting = menuStaleMons:partyMon(1)
   drifting.heldItem = "SITRUS_BERRY"
-  local preparation = assert(menuStaleMons:preparePartyChanges(menuStaleMons:partyRevision(), { { slot = 1, mon = drifting } }))
+  local preparation =
+    assert(menuStaleMons:preparePartyChanges(menuStaleMons:partyRevision(), { { slot = 1, mon = drifting } }))
   preparation.publish()
   menuStale:updateFixed({})
   Assert.equal(menuStale:status().releaseCheck.outcome, "stale", "menu revision drift cancels the scan")
@@ -1818,8 +1823,7 @@ function T.cancelled_and_stale_scans_admit_fresh_releases_without_replay()
     Assert.equal(state:status().releaseCheck.outcome, "pending")
     local drifting = mons:partyMon(1)
     drifting.heldItem = "SITRUS_BERRY"
-    local preparation =
-      assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 1, mon = drifting } }))
+    local preparation = assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 1, mon = drifting } }))
     preparation.publish()
     state:updateFixed({})
     Assert.equal(state:status().releaseCheck.outcome, "stale", "revision drift cancels the scan")
@@ -1979,6 +1983,128 @@ function T.state_changes_publish_once_while_idle_ticks_reuse_the_layout()
     Assert.deepEqual(state:status().focus, { domain = "box", slot = 0 }, "the stale release activates nothing")
     state:dispose()
   end
+end
+
+function T.mixed_batch_opening_a_child_defers_trailing_input_to_the_child()
+  local mons = monService()
+  local disposed = 0
+  local batches = {}
+  local cancelled = false
+  local options = openOptions(mons, 2, "wide")
+  options.childFactories = {
+    summary = function()
+      return {
+        updateFixed = function(_, events)
+          batches[#batches + 1] = events
+          for _, event in ipairs(events) do
+            if event.type == "cancel" then
+              cancelled = true
+            end
+          end
+        end,
+        result = function()
+          if cancelled then
+            cancelled = false
+            return { kind = "cancel" }
+          end
+          return nil
+        end,
+        dispose = function()
+          disposed = disposed + 1
+        end,
+      }
+    end,
+  }
+  local state = PcStorageState.new(options)
+  -- One ordered batch opens the nested summary and carries a trailing
+  -- cancel. A single owner consumes the batch: the opener wins and the
+  -- trailing input waits for the child's own tick.
+  state:updateFixed({ { type = "action", action = "summary" }, { type = "cancel" } })
+  Assert.equal(state:status().phase, "child")
+  Assert.equal(state:status().childKind, "summary")
+  Assert.deepEqual(state:status().focus, { domain = "party", slot = 0 })
+  Assert.equal(#batches, 0, "the newly opened child sees nothing from the opening batch")
+  Assert.isNil(state:_view().message, "the trailing cancel never becomes a parent exit prompt")
+  -- The next tick belongs to the child alone: it observes the deferred
+  -- cancel while parent focus, box and mode stay untouched.
+  state:updateFixed({ { type = "cancel" } })
+  Assert.equal(#batches, 1, "the deferred input reaches the child exactly once")
+  Assert.deepEqual(batches[1], { { type = "cancel" } })
+  Assert.equal(state:status().phase, "browse", "the child's cancel returns to browsing")
+  Assert.equal(state:status().mode, 2)
+  Assert.equal(state:status().activeBox, 0)
+  Assert.deepEqual(state:status().focus, { domain = "party", slot = 0 })
+  Assert.equal(disposed, 1, "the returned child is disposed exactly once")
+  state:dispose()
+end
+
+function T.confirmed_release_advances_fifteen_addresses_once_per_tick_and_holds_the_transition_clock_on_confirmation()
+  local mons = releaseService()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  local armed = state:status().releaseCheck
+  Assert.equal(armed.outcome, "confirm")
+  Assert.equal(armed.scanned, 0)
+  Assert.equal(armed.total, 37 * 30 + 6)
+  local armedTick = state:status().transitionTick
+  state:updateFixed({ { type = "confirm" } })
+  local pending = state:status().releaseCheck
+  Assert.equal(pending.outcome, "pending")
+  Assert.equal(pending.scanned, 15, "confirmation advances exactly one fifteen-address slice")
+  Assert.equal(
+    state:status().transitionTick,
+    armedTick,
+    "the confirmation tick advances the scan instead of the transition clock"
+  )
+  state:updateFixed({})
+  local advanced = state:status().releaseCheck
+  Assert.equal(advanced.outcome, "pending")
+  Assert.equal(advanced.scanned, 30, "each following tick advances exactly one more slice")
+  Assert.equal(state:status().transitionTick, armedTick + 1)
+  local check = advanced
+  local maximumTicks = math.ceil(check.total / 15)
+  local ticks = 2
+  while check.outcome == "pending" do
+    Assert.isTrue(ticks < maximumTicks, "the scan completes within the candidate count")
+    state:updateFixed({})
+    ticks = ticks + 1
+    check = state:status().releaseCheck
+  end
+  Assert.equal(check.outcome, "removed")
+  Assert.equal(check.scanned, check.total, "the scan covers every candidate address")
+  Assert.equal(mons:partyCount(), 1, "the confirmed release commits exactly once")
+  local afterRevision = mons:partyRevision()
+  state:updateFixed({})
+  Assert.equal(state:status().releaseCheck.outcome, "removed", "idle ticks keep the settled result visible")
+  Assert.equal(mons:partyCount(), 1)
+  Assert.equal(mons:partyRevision(), afterRevision, "idle ticks never commit again")
+  state:dispose()
+end
+
+function T.editor_opening_mid_batch_keeps_trailing_cancel_from_the_parent_prompt()
+  local mons = monService()
+  local seeded = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = mons:partyMon(0) } } }))
+  seeded.publish()
+  local beforeMarkings = assert(mons:boxMon(0, 0)).markings
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
+  -- One ordered batch opens the markings editor and carries a trailing
+  -- cancel. The editor owns the next tick, so the trailing cancel never
+  -- becomes a parent continue prompt underneath it.
+  state:updateFixed({ { type = "action", action = "markings" }, { type = "cancel" } })
+  Assert.equal(state:status().phase, "editor")
+  Assert.equal(state:status().editor.kind, "markings")
+  Assert.equal(state:_view().message.id, 35, "the trailing cancel never prompts under the open editor")
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 0 })
+  -- The next tick belongs to the editor alone: it discards its draft while
+  -- the box record stays untouched and no prompt appears.
+  state:updateFixed({ { type = "cancel" } })
+  Assert.equal(state:status().phase, "browse")
+  Assert.equal(assert(mons:boxMon(0, 0)).markings, beforeMarkings)
+  Assert.equal(state:_view().message.id, 18, "the browse prompt returns with no continue prompt queued")
+  state:dispose()
 end
 
 return { tests = T }
