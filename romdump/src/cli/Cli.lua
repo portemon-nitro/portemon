@@ -25,10 +25,12 @@ Cli.USAGE = "usage: love romdump/ [--import-rom <path>] [--forcedump <path>] [--
   .. " [--discover-app <overlay-id|arm9-main> [--template-address <hex-address>] --rom-source <path> [--output <path>]"
   .. " [--resource-detail <fileId>:<memberId>]...]"
 
--- Every command flag maps to the command it selects; --import-rom,
--- --build-cache, and --forcedump have their own loop branches because they
--- consume a ROM path. --forcedump is a modifier, not a command flag: alone it
--- implies "import", alongside --build-cache it forces a re-import.
+-- Every command flag maps to the command it selects. --import-rom and
+-- --probe-rom share one loop branch through PATH_COMMANDS because both
+-- consume exactly one ROM path; --build-cache and --forcedump keep their
+-- own branches (optional positional path and dual-role modifier). Bare
+-- command flags (--prepare-cache/--check-dump/--check-derived-cache) share
+-- the trailing COMMAND_FLAGS branch because they take no inline operand.
 local COMMAND_FLAGS = {
   ["--import-rom"] = "import",
   ["--build-cache"] = "build-cache",
@@ -37,6 +39,15 @@ local COMMAND_FLAGS = {
   ["--discover-app"] = "discover-app",
   ["--probe-rom"] = "probe-rom",
   ["--prepare-cache"] = "prepare-cache",
+}
+
+-- Path-taking commands with identical token shape: each selects its
+-- command and consumes the following ROM path. This table never gains
+-- commands with a different operand shape; exceptionally shaped flags keep
+-- their explicit branches below.
+local PATH_COMMANDS = {
+  ["--import-rom"] = true,
+  ["--probe-rom"] = true,
 }
 
 -- Ordinary options share one interpreter in the token loop below: each row
@@ -194,7 +205,7 @@ function Cli.parse(argv)
   local i = 1
   while i <= #argv do
     local token = argv[i]
-    if token == "--import-rom" then
+    if PATH_COMMANDS[token] then
       setCommand(token)
       setPath(takePath(argv, i, token))
       i = i + 1
@@ -209,12 +220,6 @@ function Cli.parse(argv)
         setPath(path)
         i = i + 1
       end
-    elseif token == "--probe-rom" then
-      setCommand(token)
-      setPath(takePath(argv, i, token))
-      i = i + 1
-    elseif token == "--prepare-cache" then
-      setCommand(token)
     elseif ORDINARY_OPTIONS[token] then
       local spec = ORDINARY_OPTIONS[token]
       if spec.kind == "boolean" then

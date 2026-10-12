@@ -355,6 +355,58 @@ function T.discover_app_conflicts_with_every_existing_command()
   end
 end
 
+-- The probe and prepare commands also select exactly one command, so they
+-- conflict with --discover-app no matter which command flag appears first;
+-- the rejection must keep naming the conflicting pair.
+function T.discover_app_conflicts_with_probe_and_prepare_commands_in_either_order()
+  local discoverArgv = { "--discover-app", "15", "--rom-source", "/tmp/hg.nds" }
+  local others = {
+    { "--probe-rom", "/tmp/hg.nds" },
+    { "--prepare-cache", "--version", "heartgold", "--require", "bootstrap" },
+  }
+  for _, other in ipairs(others) do
+    for _, otherFirst in ipairs({ false, true }) do
+      local first, second = discoverArgv, other
+      if otherFirst then
+        first, second = second, first
+      end
+      local argv = {}
+      for _, tok in ipairs(first) do
+        argv[#argv + 1] = tok
+      end
+      for _, tok in ipairs(second) do
+        argv[#argv + 1] = tok
+      end
+      local err = Assert.throws(function()
+        Cli.parse(argv)
+      end, other[1] .. " must conflict with --discover-app in either order")
+      Assert.isTrue(
+        string.find(err, "conflicting commands", 1, true) ~= nil,
+        "a second command flag must report the conflict, got: " .. tostring(err)
+      )
+    end
+  end
+end
+
+-- Unknown flags are rejected even when discovery options already parsed
+-- successfully; a valid prefix must not swallow a later unknown token, and
+-- a leading unknown token must not defer to the later command.
+function T.unknown_options_are_rejected_alongside_discovery_flags()
+  for _, argv in ipairs({
+    { "--discover-app", "15", "--rom-source", "/tmp/hg.nds", "--fused" },
+    { "--bogus", "--discover-app", "15", "--rom-source", "/tmp/hg.nds" },
+    { "--discover-app", "15", "--rom-source", "/tmp/hg.nds", "--output", "/tmp/out.zip", "--nope" },
+  }) do
+    local err = Assert.throws(function()
+      Cli.parse(argv)
+    end)
+    Assert.isTrue(
+      string.find(err, "unknown option", 1, true) ~= nil,
+      "an unknown flag must not be swallowed, got: " .. tostring(err)
+    )
+  end
+end
+
 function T.discovery_only_flags_are_usage_errors_without_discover_app()
   Assert.throws(function()
     Cli.parse({ "--rom-source", "/tmp/hg.nds" })
