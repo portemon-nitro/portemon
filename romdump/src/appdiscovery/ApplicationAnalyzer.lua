@@ -120,9 +120,174 @@ local function joinStates(a, b)
   return result
 end
 
+-- Single register-list bit test shared by every push/pop/load-multiple
+-- scan, so the list membership rule lives in exactly one place.
+local function hasListedRegister(rlist, r)
+  return math.floor(rlist / 2 ^ r) % 2 == 1
+end
+
+local function countListedRegisters(rlist)
+  local count = 0
+  for r = 0, 7 do
+    if hasListedRegister(rlist, r) then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+-- Explicit-sign arithmetic shared by every add/sub operand form.
+local function addSubValue(isAdd, lhs, rhs)
+  if isAdd then
+    return lhs + rhs
+  end
+  return lhs - rhs
+end
+
+-- Explicit-kind shift shared by lsl/lsr/asr.
+local function shiftValue(m, rsVal, amount)
+  local scale = 2 ^ amount
+  if m == "lsl" then
+    return rsVal * scale
+  end
+  return math.floor(rsVal / scale)
+end
+
+local function applyMov(operands, getReg, setReg)
+  if operands.rs ~= nil then
+    setReg(operands.rd, getReg(operands.rs))
+  elseif operands.immediate ~= nil then
+    setReg(operands.rd, operands.immediate)
+  end
+end
+
+-- Canonical add/sub operand record: the register-plus-third-operand
+-- and accumulate-immediate forms resolve to one lhs/rhs pair, so the
+-- known/unknown rule below applies exactly once.
+local function arithmeticRecord(operands, getReg)
+  if operands.rs ~= nil then
+    local rhs = operands.immediate
+    if rhs == nil and operands.rn ~= nil then
+      rhs = getReg(operands.rn)
+    end
+    return { rd = operands.rd, lhs = getReg(operands.rs), rhs = rhs }
+  end
+  if operands.rd ~= nil then
+    return { rd = operands.rd, lhs = getReg(operands.rd), rhs = operands.immediate }
+  end
+  return nil
+end
+
+-- One canonical rule for every add/sub shape: SP-relative adjustment,
+-- a register-plus-third-operand computation, or an accumulate-immediate
+-- computation. Each resolves to a single compute-or-kill application
+-- instead of repeating the known/unknown branch per operand form.
+local function applyArithmetic(isAdd, operands, getReg, setReg, newState)
+  if operands.base == "sp" then
+    if operands.rd == nil then
+      if newState.spDelta ~= nil then
+        newState.spDelta = addSubValue(isAdd, newState.spDelta, operands.immediate)
+      end
+    else
+      setReg(operands.rd, nil)
+    end
+    return
+  end
+  local record = arithmeticRecord(operands, getReg)
+  if record == nil then
+    return
+  end
+  if record.lhs ~= nil and record.rhs ~= nil then
+    setReg(record.rd, addSubValue(isAdd, record.lhs, record.rhs))
+  else
+    setReg(record.rd, nil)
+  end
+end
+
+local function applyShift(m, operands, getReg, setReg)
+  local rsVal = getReg(operands.rs)
+  if rsVal ~= nil and operands.immediate ~= nil then
+    setReg(operands.rd, shiftValue(m, rsVal, operands.immediate))
+  else
+    setReg(operands.rd, nil)
+  end
+end
+
+-- One rule for SP-relative loads and stores: an unstable stack kills the
+-- load destination or drops every tracked word; a stable stack reads or
+-- folds the word.
+local function applyStackAccess(isLoad, operands, getReg, setReg, newState, stableStackOffset)
+  local stableOffset = stableStackOffset(operands.immediate)
+  if stableOffset == nil then
+    if isLoad then
+      setReg(operands.rd, nil)
+    else
+      newState.stack = {}
+    end
+  elseif isLoad then
+    setReg(operands.rd, newState.stack[stableOffset])
+  else
+    newState.stack[stableOffset] = getReg(operands.rd)
+  end
+end
+
+local function applyPush(operands, getReg, newState)
+  local rlist = operands.registerList or 0
+  local wordCount = countListedRegisters(rlist)
+  if operands.includesPcOrLr then
+    wordCount = wordCount + 1
+  end
+  if newState.spDelta == nil then
+    newState.stack = {}
+    return
+  end
+  newState.spDelta = newState.spDelta - wordCount * 4
+  local wordIndex = 0
+  for r = 0, 7 do
+    if hasListedRegister(rlist, r) then
+      newState.stack[newState.spDelta + wordIndex * 4] = getReg(r)
+      wordIndex = wordIndex + 1
+    end
+  end
+  if operands.includesPcOrLr then
+    newState.stack[newState.spDelta + wordIndex * 4] = nil
+  end
+end
+
+local function applyPop(operands, setReg, newState, stateIn)
+  local rlist = operands.registerList or 0
+  if newState.spDelta == nil then
+    for r = 0, 7 do
+      if hasListedRegister(rlist, r) then
+        setReg(r, nil)
+      end
+    end
+    newState.stack = {}
+    return
+  end
+  local wordIndex = 0
+  for r = 0, 7 do
+    if hasListedRegister(rlist, r) then
+      setReg(r, stateIn.stack[stateIn.spDelta + wordIndex * 4])
+      wordIndex = wordIndex + 1
+    end
+  end
+  newState.spDelta = newState.spDelta + wordIndex * 4
+end
+
+local function applyLoadMultiple(operands, setReg)
+  local rlist = operands.registerList or 0
+  for r = 0, 7 do
+    if hasListedRegister(rlist, r) then
+      setReg(r, nil)
+    end
+  end
+end
+
 -- Exact-value transfer for ordinary register/stack-affecting Thumb
--- operations. Any operation not explicitly modeled invalidates only the
--- destination register it can modify.
+-- operations. Related mnemonic families share one abstract-state rule
+-- through the helpers above. Any operation not explicitly modeled
+-- invalidates only the destination register it can modify.
 local function transfer(instr, stateIn)
   local operands = instr.operands
   local newState = cloneState(stateIn)
@@ -149,127 +314,25 @@ local function transfer(instr, stateIn)
   end
 
   if m == "mov" then
-    if operands.rs ~= nil then
-      setReg(operands.rd, getReg(operands.rs))
-    elseif operands.immediate ~= nil then
-      setReg(operands.rd, operands.immediate)
-    end
+    applyMov(operands, getReg, setReg)
   elseif m == "add" or m == "sub" then
-    if operands.base == "sp" then
-      if operands.rd == nil then
-        if newState.spDelta ~= nil then
-          local amount = operands.immediate
-          newState.spDelta = m == "add" and newState.spDelta + amount or newState.spDelta - amount
-        end
-      else
-        setReg(operands.rd, nil)
-      end
-    elseif operands.rs ~= nil then
-      local rsVal = getReg(operands.rs)
-      local rhs = operands.immediate
-      if rhs == nil and operands.rn ~= nil then
-        rhs = getReg(operands.rn)
-      end
-      if rsVal ~= nil and rhs ~= nil then
-        setReg(operands.rd, m == "add" and (rsVal + rhs) or (rsVal - rhs))
-      else
-        setReg(operands.rd, nil)
-      end
-    elseif operands.rd ~= nil then
-      local rdVal = getReg(operands.rd)
-      if rdVal ~= nil and operands.immediate ~= nil then
-        setReg(operands.rd, m == "add" and (rdVal + operands.immediate) or (rdVal - operands.immediate))
-      else
-        setReg(operands.rd, nil)
-      end
-    end
-  elseif m == "cmp" or m == "cmn" or m == "tst" then
-    -- flag-only: no register write
+    applyArithmetic(m == "add", operands, getReg, setReg, newState)
+  elseif m == "cmp" or m == "cmn" or m == "tst" or m == "stmia" then
+    -- flag-only comparisons and untracked stores leave abstract state unchanged
   elseif m == "lsl" or m == "lsr" or m == "asr" then
-    local rsVal = getReg(operands.rs)
-    if rsVal ~= nil and operands.immediate ~= nil then
-      local scale = 2 ^ operands.immediate
-      if m == "lsl" then
-        setReg(operands.rd, rsVal * scale)
-      else
-        setReg(operands.rd, math.floor(rsVal / scale))
-      end
-    else
-      setReg(operands.rd, nil)
-    end
+    applyShift(m, operands, getReg, setReg)
   elseif m == "adr" then
     setReg(operands.rd, operands.address)
   elseif (m == "ldr" or m == "str") and operands.base == "sp" then
-    local stableOffset = stableStackOffset(operands.immediate)
-    if stableOffset == nil then
-      if m == "ldr" then
-        setReg(operands.rd, nil)
-      else
-        newState.stack = {}
-      end
-    elseif m == "ldr" then
-      setReg(operands.rd, newState.stack[stableOffset])
-    else
-      newState.stack[stableOffset] = getReg(operands.rd)
-    end
+    applyStackAccess(m == "ldr", operands, getReg, setReg, newState, stableStackOffset)
   elseif m == "push" then
-    local rlist = operands.registerList or 0
-    local wordCount = 0
-    for r = 0, 7 do
-      if math.floor(rlist / 2 ^ r) % 2 == 1 then
-        wordCount = wordCount + 1
-      end
-    end
-    if operands.includesPcOrLr then
-      wordCount = wordCount + 1
-    end
-    if newState.spDelta == nil then
-      newState.stack = {}
-    else
-      newState.spDelta = newState.spDelta - wordCount * 4
-      local wordIndex = 0
-      for r = 0, 7 do
-        if math.floor(rlist / 2 ^ r) % 2 == 1 then
-          newState.stack[newState.spDelta + wordIndex * 4] = getReg(r)
-          wordIndex = wordIndex + 1
-        end
-      end
-      if operands.includesPcOrLr then
-        newState.stack[newState.spDelta + wordIndex * 4] = nil
-      end
-    end
+    applyPush(operands, getReg, newState)
   elseif m == "pop" then
-    local rlist = operands.registerList or 0
-    if newState.spDelta == nil then
-      for r = 0, 7 do
-        if math.floor(rlist / 2 ^ r) % 2 == 1 then
-          setReg(r, nil)
-        end
-      end
-      newState.stack = {}
-    else
-      local wordIndex = 0
-      for r = 0, 7 do
-        if math.floor(rlist / 2 ^ r) % 2 == 1 then
-          setReg(r, stateIn.stack[stateIn.spDelta + wordIndex * 4])
-          wordIndex = wordIndex + 1
-        end
-      end
-      newState.spDelta = newState.spDelta + wordIndex * 4
-    end
+    applyPop(operands, setReg, newState, stateIn)
   elseif m == "ldmia" then
-    local rlist = operands.registerList or 0
-    for r = 0, 7 do
-      if math.floor(rlist / 2 ^ r) % 2 == 1 then
-        setReg(r, nil)
-      end
-    end
-  elseif m == "stmia" then
-    -- source registers unaffected; memory writes are not tracked
-  else
-    if operands.rd ~= nil then
-      setReg(operands.rd, nil)
-    end
+    applyLoadMultiple(operands, setReg)
+  elseif operands.rd ~= nil then
+    setReg(operands.rd, nil)
   end
   return newState
 end

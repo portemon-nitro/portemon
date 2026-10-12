@@ -897,8 +897,7 @@ function T.overlay_targets_keep_the_established_cross_image_template_search()
   end
 
   local emptyImage, _ = buildImage(OVERLAY_ID, string.rep("\0", 16))
-  local emptyEvidence, _ =
-    ApplicationAnalyzer.analyze(emptyImage, { kind = "arm9-overlay", overlayId = OVERLAY_ID })
+  local emptyEvidence, _ = ApplicationAnalyzer.analyze(emptyImage, { kind = "arm9-overlay", overlayId = OVERLAY_ID })
   Assert.equal(#emptyEvidence.entrypointCandidates, 0)
   local gap = nil
   for _, g in ipairs(emptyEvidence.gaps) do
@@ -921,6 +920,86 @@ function T.analysis_is_deterministic_for_identical_input()
   local evidence2, disassembly2 = ApplicationAnalyzer.analyze(image2, target2)
   Assert.deepEqual(evidence1, evidence2)
   Assert.deepEqual(disassembly1, disassembly2)
+end
+
+--------------------------------------------------------------------------
+-- Exact transfer-state parity: a straight-line arithmetic/shift chain with
+-- a stack round-trip must keep every proven value at the call boundary.
+--------------------------------------------------------------------------
+
+function T.exact_shift_add_sub_chain_reaches_call_with_folded_stack_word()
+  -- 0:  MOVS R0, #3        seed a known constant
+  -- 2:  LSL R0, R0, #1     3 * 2 = 6
+  -- 4:  ADDS R0, #4         6 + 4 = 10
+  -- 6:  SUBS R0, #2         10 - 2 = 8
+  -- 8:  ASR R0, R0, #1      8 / 2 = 4
+  -- 10: ADD R1, R0, #0      register-plus-immediate copy, r1 = 4
+  -- 12: CMP R1, #4          flag-only, must not clobber r1
+  -- 14: STR R1, [SP, #0]    fold the proven word onto the stack
+  -- 16: LDR R2, [SP, #0]    reload it into r2
+  -- 18: BL callee
+  local content =
+    hw(0x2003, 0x0040, 0x3004, 0x3802, 0x1040, 0x1C01, 0x2904, 0x9100, 0x9A00, 0xF000, 0xF801, 0x4770, 0x4770)
+  content = padTo(content, 4)
+  local callSite = OVERLAY_RAM + 18
+  local callee = OVERLAY_RAM + 24
+  content = content .. template(OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_ID)
+
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence = ApplicationAnalyzer.analyze(image, target)
+  local call = assert(findCallBySite(evidence.calls, callSite), "missing call after the arithmetic chain")
+  Assert.equal(call.target, callee)
+  Assert.equal(call.knownArgs.registers.r0, 4)
+  Assert.equal(call.knownArgs.registers.r1, 4)
+  Assert.equal(call.knownArgs.registers.r2, 4)
+  local stack = assert(call.knownArgs.stack)
+  Assert.equal(stack[0], 4)
+  Assert.equal(#evidence.switches, 0)
+end
+
+function T.unsupported_writes_kill_destinations_without_inventing_constants()
+  -- 0:  MOVS R0, #9        known register seed
+  -- 2:  MOVS R2, #5        known register seed
+  -- 4:  STR R0, [SP, #0]   proven outgoing stack word
+  -- 6:  EOR R0, R1         unmodeled ALU op: must kill r0, keep the stack
+  -- 8:  LDR R2, [R1, #0]   non-stack load: must kill r2, invent nothing
+  -- 10: BL callee
+  local content = hw(0x2009, 0x2205, 0x9000, 0x4048, 0x680A, 0xF000, 0xF801, 0x4770, 0x4770)
+  content = padTo(content, 4)
+  local callSite = OVERLAY_RAM + 10
+  local callee = OVERLAY_RAM + 16
+  content = content .. template(OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_ID)
+
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence = ApplicationAnalyzer.analyze(image, target)
+  local call = assert(findCallBySite(evidence.calls, callSite), "missing call after unsupported writes")
+  Assert.equal(call.target, callee)
+  Assert.isNil(call.knownArgs.registers.r0, "an unmodeled ALU write must not keep the old constant")
+  Assert.isNil(call.knownArgs.registers.r2, "a non-stack load must not invent a constant")
+  local stack = assert(call.knownArgs.stack)
+  Assert.equal(stack[0], 9)
+  Assert.equal(#evidence.switches, 0, "killed values must not create spurious switch evidence")
+end
+
+function T.register_register_add_and_sub_fold_second_source_into_destination()
+  -- 0:  MOVS R0, #10       first source seed
+  -- 2:  MOVS R1, #3        second source seed
+  -- 4:  ADD R2, R0, R1     register-plus-register form, r2 = 13
+  -- 6:  SUB R3, R0, R1     register-plus-register form, r3 = 7
+  -- 8:  BL callee
+  local content = hw(0x200A, 0x2103, 0x1842, 0x1A43, 0xF000, 0xF801, 0x4770, 0x4770)
+  content = padTo(content, 4)
+  local callSite = OVERLAY_RAM + 8
+  local callee = OVERLAY_RAM + 14
+  content = content .. template(OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_ID)
+
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence = ApplicationAnalyzer.analyze(image, target)
+  local call = assert(findCallBySite(evidence.calls, callSite), "missing call after register-operand arithmetic")
+  Assert.equal(call.target, callee)
+  Assert.equal(call.knownArgs.registers.r2, 13)
+  Assert.equal(call.knownArgs.registers.r3, 7)
+  Assert.equal(#evidence.switches, 0)
 end
 
 return { tests = T }
