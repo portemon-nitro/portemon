@@ -648,7 +648,7 @@ local function checkRestorable(data, contacts, locations)
   end
   assert(type(phone.history) == "table" and type(phone.rematches) == "table", "restoration reads phone journals")
   for key, entry in pairs(phone.rematches) do
-    if type(key) ~= "string" or key == "" or type(entry) ~= "table" then
+    if type(key) ~= "string" or key == "" or contacts[key] ~= true or type(entry) ~= "table" then
       fail("pokegear rematch state carries challenger records", { key = key })
     end
     assert(type(entry) == "table", "restoration reads rematch entries")
@@ -702,6 +702,61 @@ local function checkRestorable(data, contacts, locations)
   checkU32(data.calendar.dailyGroupSeed, "daily group seed")
   checkU32(data.calendar.outbreakSeed, "outbreak seed")
   data.random = PokegearState.validateRandomBucket(data.random)
+end
+
+---@param data table<string, unknown>
+---@param contacts table<string, boolean>
+---@param key unknown
+---@param record unknown
+---@return boolean changed
+local function applySetRematch(data, contacts, key, record)
+  checkSemanticKey(key, "rematch state")
+  assert(type(key) == "string", "rematch writes read the contact key")
+  if contacts[key] ~= true then
+    fail("pokegear rematch state references missing contact " .. key, { key = key })
+  end
+  assert(type(data) == "table" and type(data.phone) == "table", "rematch writes read phone state")
+  local phone = data.phone
+  assert(
+    type(phone) == "table" and type(phone.contacts) == "table" and type(phone.rematches) == "table",
+    "rematch writes edit phone records"
+  )
+  if phone.contacts[key] == nil then
+    fail("pokegear rematch state needs registered contact " .. key, { key = key })
+  end
+  local clean = nil
+  if record ~= nil then
+    if type(record) ~= "table" then
+      fail("pokegear rematch entry must be a record", { key = key })
+    end
+    local candidate = record --[[@as table<string, unknown>]]
+    for field in pairs(candidate) do
+      if field ~= "stage" and field ~= "wins" then
+        fail("pokegear rematch entry contains an unknown field", { key = key, field = field })
+      end
+    end
+    local stage, wins = candidate.stage, candidate.wins
+    if
+      type(stage) ~= "number"
+      or stage % 1 ~= 0
+      or stage < 0
+      or type(wins) ~= "number"
+      or wins % 1 ~= 0
+      or wins < 0
+    then
+      fail("pokegear rematch entry carries non-negative counters", { key = key })
+    end
+    clean = { stage = stage, wins = wins }
+  end
+  local current = phone.rematches[key]
+  if clean == nil and current == nil then
+    return false
+  end
+  if clean ~= nil and type(current) == "table" and current.stage == clean.stage and current.wins == clean.wins then
+    return false
+  end
+  phone.rematches[key] = clean
+  return true
 end
 
 ---@param seed integer
@@ -1404,6 +1459,30 @@ function PokegearState:setContactReward(key, reward)
   return self:_commit(applySetContactReward(self._data, self._contacts, key, reward))
 end
 
+-- Stores the registered caller's rematch stage and win count. Clearing an
+-- absent record and writing an identical record are revision-preserving.
+---@param key string
+---@param record { stage: integer, wins: integer }?
+---@return table<string, unknown>
+function PokegearState:setRematch(key, record)
+  return self:_commit(applySetRematch(self._data, self._contacts, key, record))
+end
+
+-- Reads one detached rematch record for the registered contact.
+---@param key string
+---@return { stage: integer, wins: integer }?
+function PokegearState:queryRematch(key)
+  checkSemanticKey(key, "rematch query")
+  assert(type(key) == "string", "rematch queries read the contact key")
+  if self._contacts[key] ~= true then
+    fail("pokegear rematch query references missing contact " .. key, { key = key })
+  end
+  local phone = self._data.phone --[[@as table<string, unknown>]]
+  local records = phone.rematches --[[@as table<string, unknown>]]
+  local record = records[key]
+  return record == nil and nil or detach(record) --[[@as { stage: integer, wins: integer }?]]
+end
+
 -- Stores the four icon and four word slots for a catalog location, using
 -- explicit false for empty slots. A nil marking clears the location.
 -- Writing identical slots never moves the revision.
@@ -1461,6 +1540,9 @@ function PokegearState:prepare(expectedRevision, mutate)
   local function editSetContactReward(_, key, reward)
     applySetContactReward(draft, contacts, key, reward)
   end
+  local function editSetRematch(_, key, record)
+    applySetRematch(draft, contacts, key, record)
+  end
   local function editSetMarking(_, locationKey, marking)
     applySetMarking(draft, locations, locationKey, marking)
   end
@@ -1471,6 +1553,7 @@ function PokegearState:prepare(expectedRevision, mutate)
     setMom = editSetMom,
     setTrigger = editSetTrigger,
     setContactReward = editSetContactReward,
+    setRematch = editSetRematch,
     setMarking = editSetMarking,
   }
   mutate(edit)

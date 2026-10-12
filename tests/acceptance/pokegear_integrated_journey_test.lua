@@ -168,12 +168,27 @@ function T.tests.acquired_facts_survive_save_and_reload_verbatim()
     local world = assert(game.runtime.scripts.worldState, "the durability leg needs live world state")
     local gearState = assert(game.runtime.pokegearState, "the durability leg needs live gear state")
     Assert.isTrue(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_STARTER), "the durability leg keeps the played starter")
+    local rematchContact = nil
+    for _, contact in ipairs(game.runtime.pokegearCatalog.contacts) do
+      if contact.family == "gym" then
+        rematchContact = contact.key
+        break
+      end
+    end
+    rematchContact = assert(rematchContact, "the compiled phonebook carries a gym contact")
+    gearState:registerContact(rematchContact)
+    gearState:setRematch(rematchContact, { stage = 1, wins = 2 })
     game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
     Fixture.openGearThroughMenu(game)
     Fixture.closeGearThroughMenu(game)
     Fixture.saveAndReload(game)
     world = assert(game.runtime.scripts.worldState, "the reloaded leg needs live world state")
     gearState = assert(game.runtime.pokegearState, "the reloaded leg needs live gear state")
+    Assert.deepEqual(
+      gearState:queryRematch(rematchContact),
+      { stage = 1, wins = 2 },
+      "production save and reload retain rematch readiness and wins"
+    )
     Assert.isTrue(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_STARTER), "reload must retain the played starter")
     Assert.equal(world:getVar(Fixture.VARS.VAR_SCENE_ELMS_LAB), 2, "reload must retain the corridor gift")
     Assert.isTrue(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_POKEGEAR), "reload must retain the acquired gear")
@@ -213,6 +228,52 @@ function T.tests.unavailable_specialty_facts_fail_attributed_without_mutation()
     Assert.equal(gearState:revision(), revisionBefore, "failed dependency reads must not mutate gear state")
     Assert.deepEqual(gearState:readPhone().triggers, triggersBefore, "failed dependency reads must raise no trigger")
     Assert.equal(Fixture.scriptFaults(game), 0, "the dependency leg must run without script faults")
+  end)
+end
+
+-- The composed phone samples Mother from the real FieldRuntime and writes
+-- her choice through the live event owner. The cleared native flag selects
+-- the source offer; accepting its default save choice must set the source
+-- flag, not a temporary field on the phone facade.
+function T.tests.mother_call_reads_and_writes_the_live_savings_flag()
+  Fixture.withGame(Fixture.POKECENTER, function(game)
+    Fixture.compositionGates(game)
+    local state = assert(game.runtime.pokegearState, "the call borrows the field's durable phonebook")
+    local contacts = assert(game.runtime.pokegearCatalog.contacts, "the call uses compiled native phonebook data")
+    local mother = nil
+    for _, record in ipairs(contacts) do
+      if record.id == 0 then
+        mother = record
+        break
+      end
+    end
+    mother = assert(mother, "the compiled phonebook carries native contact zero")
+    local contact = mother.key
+    Assert.notNil(state:readPhone().contacts[contact], "the field runtime registers Mom before composing calls")
+
+    local flag = Fixture.FLAGS.FLAG_SYS_MOMS_SAVINGS
+    local events = assert(game.runtime.eventState, "the live field owns the native story flags")
+    events:clearFlag(flag)
+    Assert.isFalse(events:isFlagSet(flag), "the initial phone choice starts with savings disabled")
+
+    local host = assert(game.runtime.pokegear.scriptHost, "the real composition owns the script phone host")
+    local handle = host:open({
+      mode = "call",
+      request = { id = "mother-savings-acceptance", contact = contact, direction = "outgoing", kind = "ordinary" },
+      parentOwner = "acceptance-field-script",
+    })
+    for _ = 1, 32 do
+      if host:result(handle) ~= nil then
+        break
+      end
+      host:step(handle, { { type = "confirm" } })
+    end
+    local result = host:result(handle)
+    Assert.notNil(result, "the composed source call completes after its choice is accepted")
+    Assert.equal(result.program, "mother-offer", "the current native savings flag selects the offer branch")
+    Assert.isTrue(events:isFlagSet(flag), "accepting save updates FieldEventState's native flag")
+    host:close(handle)
+    Assert.equal(Fixture.scriptFaults(game), 0, "the live flag call must not fault its field script")
   end)
 end
 

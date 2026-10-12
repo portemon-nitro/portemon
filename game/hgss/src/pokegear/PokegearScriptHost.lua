@@ -453,7 +453,7 @@ end
 -- conversation engine over the borrowed owners. Pure read: no lease, no
 -- mutation.
 ---@param contact string
----@return { ready: boolean, tier: integer }
+---@return { ready: boolean, tier: integer? }
 function PokegearScriptHost:queryRematch(contact)
   assert(isNonEmptyString(contact), "rematch queries name their contact")
   local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")

@@ -328,7 +328,6 @@ function T.outgoing_call_completes_with_real_greeting_refs(romFs, versionId)
   })
   local result = settleCall(host, handle)
   Assert.equal(result.contact, MOM_KEY, "the outgoing call completes for its contact")
-  Assert.isTrue(result.signal, "the outgoing call keeps its signal")
   host:close(handle)
   messages.dispose(messages)
   -- The frozen lease token resolves through the same bank pipeline: the

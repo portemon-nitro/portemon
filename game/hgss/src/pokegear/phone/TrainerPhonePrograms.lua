@@ -93,21 +93,9 @@ function TrainerPhonePrograms.select(world, request)
   }
 end
 
----@param world table<string, unknown>
----@return table<string, boolean> the borrowed readiness table, created on first staging
-local function readinessTable(world)
-  local ready = world.rematchReady
-  if ready == nil then
-    ready = {}
-    world.rematchReady = ready
-  end
-  assert(type(ready) == "table", "rematch readiness stages through the world table")
-  return ready --[[@as table<string, boolean>]]
-end
-
 -- Advances one program step. Invitation and ordinary trainer programs
--- stage readiness once on the first step; every other branch only
--- resolves its message. Returns done once the branch has resolved.
+-- never create an invitation: no generated source record identifies a
+-- native invitation stage yet. Returns done once the branch resolves.
 ---@param session table<string, unknown>
 ---@param input table<string, unknown>
 ---@return string "done"
@@ -120,26 +108,17 @@ function TrainerPhonePrograms.step(session, input)
     return "done"
   end
   session.effectDone = true
-  local program = session.program --[[@as string]]
-  if program == "trainer-rematch" or program == "trainer-ordinary" or program == "gym-rematch" then
-    local world = session.world --[[@as table<string, unknown>]]
-    assert(type(world) == "table", "trainer effects stage through the borrowed world")
-    readinessTable(world)[
-      session.contact --[[@as string]]
-    ] = true
-  end
   return "done"
 end
 
--- Reports the story tier behind rematch teams. Defaults to the first
--- tier when the borrowed world carries no story facts.
+-- Reports a story tier only when the runtime has source facts for it.
 ---@param world table<string, unknown> borrowed world table
----@return integer story tier
+---@return integer? story tier
 function TrainerPhonePrograms.tierFor(world)
   assert(type(world) == "table", "rematch tiers read the borrowed world")
   local tier = world.storyTier
   if tier == nil then
-    return 1
+    return nil
   end
   assert(type(tier) == "number" and tier % 1 == 0 and tier >= 1, "the story tier stays a positive integer")
   return tier --[[@as integer]]
@@ -147,39 +126,43 @@ end
 
 ---@param contact string
 ---@param catalog table<string, unknown>?
----@return { weekday: string?, morning: boolean? }? the catalog window for the contact, when one is recorded
+---@return { weekday: number, timeOfDay: number }? native contact window
 local function catalogWindow(contact, catalog)
   if type(catalog) ~= "table" then
     return nil
   end
-  local rematches = catalog.rematches
-  if type(rematches) ~= "table" then
+  local contacts = catalog.contacts
+  if type(contacts) ~= "table" then
     return nil
   end
   for _, entry in
-    ipairs(rematches --[[@as table<integer, unknown>]])
+    ipairs(contacts --[[@as table<integer, unknown>]])
   do
     if type(entry) == "table" then
       local record = entry --[[@as table<string, unknown>]]
-      if record.contact == contact and record.weekday ~= nil then
-        assert(type(record.weekday) == "string", "catalog rematch windows name their weekday")
-        local morning = record.morning
-        if morning ~= nil then
-          assert(type(morning) == "boolean", "catalog rematch windows name their morning half")
+      if record.key == contact then
+        local weekday, timeOfDay = record.rematchWeekday, record.rematchTime
+        if
+          type(weekday) == "number"
+          and weekday % 1 == 0
+          and weekday >= 0
+          and weekday <= 6
+          and type(timeOfDay) == "number"
+          and timeOfDay % 1 == 0
+          and timeOfDay >= 0
+          and timeOfDay <= 2
+        then
+          return { weekday = weekday, timeOfDay = timeOfDay }
         end
-        return {
-          weekday = record.weekday --[[@as string]],
-          morning = morning --[[@as boolean?]],
-        }
+        return nil
       end
     end
   end
   return nil
 end
 
--- Reports whether the contact's weekday and time window currently
--- holds. Contacts without a recorded window stay eligible; the staged
--- invitation still gates readiness separately.
+-- Reports whether the native weekday and time fields match the live
+-- field clock. Missing data cannot manufacture eligibility.
 ---@param contact string
 ---@param world table<string, unknown> borrowed world table
 ---@param catalog table<string, unknown>? borrowed contact catalog
@@ -189,34 +172,35 @@ function TrainerPhonePrograms.eligible(contact, world, catalog)
   assert(type(world) == "table", "rematch eligibility reads the borrowed world")
   local window = catalogWindow(contact, catalog)
   if window == nil then
-    return true
-  end
-  if world.weekday ~= nil and world.weekday ~= window.weekday then
     return false
   end
-  if window.morning ~= nil and world.morning ~= nil and world.morning ~= window.morning then
-    return false
-  end
-  return true
+  local readFacts = world.rematchFacts
+  local facts = type(readFacts) == "function" and readFacts(world, contact) or world
+  assert(type(facts) == "table", "rematch eligibility reads live contact window facts")
+  return facts.weekday == window.weekday and facts.timeOfDay == window.timeOfDay
 end
 
--- The single field readiness query: ready only when an invitation was
--- staged and the source window holds. Registration alone, a defeat, or
--- an unstaged contact never reports ready. Pure read: no mutation.
+---@param world table<string, unknown>
+---@param contact string
+---@return { stage: integer, wins: integer }? saved record
+local function rematchRecord(world, contact)
+  local query = world.queryRematch
+  assert(type(query) == "function", "rematch queries read durable companion state")
+  return query(world, contact)
+end
+
+-- Readiness projects one saved record through the native contact window.
 ---@param contact string
 ---@param world table<string, unknown> borrowed world table
 ---@param catalog table<string, unknown>? borrowed contact catalog
----@return { ready: boolean, tier: integer }
+---@return { ready: boolean, tier: integer? }
 function TrainerPhonePrograms.query(contact, world, catalog)
   assert(type(contact) == "string" and contact ~= "", "rematch queries name their contact")
   assert(type(world) == "table", "rematch queries read the borrowed world")
   local tier = TrainerPhonePrograms.tierFor(world)
-  local ready = world.rematchReady
-  local staged = type(ready) == "table" and ready[contact] == true
-  if staged ~= true then
-    return { ready = false, tier = tier }
-  end
-  return { ready = TrainerPhonePrograms.eligible(contact, world, catalog), tier = tier }
+  local record = rematchRecord(world, contact)
+  local staged = type(record) == "table" and record.stage > 0
+  return { ready = staged == true and TrainerPhonePrograms.eligible(contact, world, catalog), tier = tier }
 end
 
 -- Projects the map marker for a contact: the same tier the query
@@ -224,18 +208,16 @@ end
 ---@param contact string
 ---@param world table<string, unknown> borrowed world table
 ---@param catalog table<string, unknown>? borrowed contact catalog
----@return { tier: integer, ready: boolean }
+---@return { tier: integer?, ready: boolean }
 function TrainerPhonePrograms.marker(contact, world, catalog)
   local status = TrainerPhonePrograms.query(contact, world, catalog)
   return { tier = status.tier, ready = status.ready }
 end
 
--- Launches the accepted rematch at the queried tier: the team owner for
--- that tier must exist, and the launched team is the tier team, never a
--- neighboring tier. Fails with attribution when the tier team is
--- missing instead of substituting another team.
+-- Launches only through a runtime resolver backed by a generated source
+-- mapping. The present catalog has no such mapping.
 ---@param contact string
----@param world table<string, unknown> borrowed world table carrying tier teams
+---@param world table<string, unknown> borrowed world table
 ---@param catalog table<string, unknown>? borrowed contact catalog
 ---@return { tier: integer, team: table<string, unknown> }
 function TrainerPhonePrograms.launch(contact, world, catalog)
@@ -248,46 +230,51 @@ function TrainerPhonePrograms.launch(contact, world, catalog)
     )
     error({ code = failure.code, message = failure.message, context = failure.context, domain = "trainer" })
   end
-  local teams = world.teamsByTier
-  assert(type(teams) == "table", "rematch launches read the borrowed tier teams")
-  local team = (teams --[[@as table<integer, unknown>]])[status.tier]
+  local resolve = world.resolveRematchTeam
+  if type(resolve) ~= "function" or status.tier == nil then
+    local failure = Errors.new(
+      ScriptErrors.FEATURE_UNAVAILABLE,
+      "no source-backed rematch team is available for contact " .. contact,
+      { contact = contact }
+    )
+    error({ code = failure.code, message = failure.message, context = failure.context, domain = "trainer" })
+  end
+  local team = resolve(world, contact, status.tier)
   if type(team) ~= "table" then
     local failure = Errors.new(
       ScriptErrors.FEATURE_UNAVAILABLE,
-      "no tier team waits for contact " .. contact .. " at tier " .. tostring(status.tier),
+      "no source-backed rematch team is available for contact " .. contact,
       { contact = contact, tier = status.tier }
     )
     error({ code = failure.code, message = failure.message, context = failure.context, domain = "trainer" })
   end
-  return {
-    tier = status.tier,
-    team = team --[[@as table<string, unknown>]],
-  }
+  return { tier = status.tier, team = team }
 end
 
--- Resolves the launched rematch. Only a qualified win clears the
--- staged invitation; losses, cancellations, blackouts, and full-party
--- interruptions preserve it for another attempt.
+-- Resolves a rematch win once. Settling to stage zero makes repeated
+-- receipts idempotent while preserving the accumulated win count.
 ---@param contact string
 ---@param world table<string, unknown> borrowed world table
 ---@param outcome string source resolution outcome
 ---@return { contact: string, outcome: string, ready: boolean }
 function TrainerPhonePrograms.resolve(contact, world, outcome)
   assert(type(contact) == "string" and contact ~= "", "rematch resolution names its contact")
-  assert(type(world) == "table", "rematch resolution writes the borrowed world")
+  assert(type(world) == "table", "rematch resolution writes durable companion state")
   assert(
     outcome == "win" or TrainerPhonePrograms.PRESERVING_OUTCOMES[outcome] == true,
     "rematch resolution names a source outcome"
   )
   if outcome == "win" then
-    local ready = world.rematchReady
-    if type(ready) == "table" then
-      ready[contact] = nil
+    local record = rematchRecord(world, contact)
+    if type(record) == "table" and record.stage > 0 then
+      local write = world.setRematch
+      assert(type(write) == "function", "rematch wins settle through durable companion state")
+      write(world, contact, { stage = 0, wins = record.wins + 1 })
     end
     return { contact = contact, outcome = outcome, ready = false }
   end
-  local ready = world.rematchReady
-  local staged = type(ready) == "table" and ready[contact] == true
+  local record = rematchRecord(world, contact)
+  local staged = type(record) == "table" and record.stage > 0
   return { contact = contact, outcome = outcome, ready = staged }
 end
 

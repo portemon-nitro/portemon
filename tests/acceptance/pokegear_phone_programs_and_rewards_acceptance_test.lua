@@ -1,11 +1,6 @@
--- Phone rematch agreement through representative field ownership: the phone
--- invitation, the field readiness query, the map marker, and the launched
--- trainer team all report the same tier, and only a source-qualified
--- completion clears or advances readiness. Wins clear the invitation, losses
--- and cancellations preserve it, unregistered trainers stay unreadied, and a
--- full party or blackout never completes a rematch spuriously. World owners
--- are real-shaped injected fixtures; only the host audio boundary is
--- stubbed. No ROM data is required.
+-- Durable phone rematches use PokegearState and native contact windows.
+-- The current generated catalog has no contact-to-team mapping, so launch
+-- stays attributed and leaves saved progress unchanged.
 
 local Assert = require("tests.support.Assert")
 
@@ -50,7 +45,13 @@ local function fixtureManifest()
     radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
     catalog = {
       contacts = {
-        { key = "custom.leader-falkner", family = "gym", sortWeight = 10 },
+        {
+          key = "custom.leader-falkner",
+          family = "gym",
+          sortWeight = 10,
+          rematchWeekday = 6,
+          rematchTime = 1,
+        },
       },
       contactOrder = { "custom.leader-falkner" },
       callDefinitions = {},
@@ -71,12 +72,10 @@ local function fixtureManifest()
   }
 end
 
--- A phone invitation, its field readiness query, its map marker, and its
--- launched trainer team agree on one tier: the query reports ready inside
--- the source weekday window, the launched team carries the queried tier, a
--- win clears readiness while a loss or cancellation preserves it, and an
--- unregistered trainer is never ready.
-function T.tests.invited_rematch_query_marker_and_trainer_team_agree_on_one_tier()
+-- An existing save record and the native contact window drive one query
+-- and marker. Launch is refused before any battle or record mutation when
+-- source data cannot resolve the trainer team.
+function T.tests.saved_rematch_window_is_shared_by_query_and_marker_without_fake_team()
   local PhoneCall = requireFeature(
     "game.hgss.src.pokegear.PhoneCall",
     "phone calls have no foreground session owner yet: invitations, readiness queries, and launched trainer tiers cannot agree"
@@ -91,17 +90,20 @@ function T.tests.invited_rematch_query_marker_and_trainer_team_agree_on_one_tier
   local state = PokegearState.new({ seed = 2024 }, { catalog = record.catalog })
   state:registerContact("custom.leader-falkner")
 
-  -- Real-shaped world fixture: story tier, weekday clock inside the source
-  -- eligibility window, and a trainer team owner keyed by tier.
+  state:setRematch("custom.leader-falkner", { stage = 1, wins = 2 })
   local world = {
-    storyTier = 2,
-    weekday = "saturday",
-    morning = true,
-    teamsByTier = {
-      [2] = { tier = 2, members = { { species = "custom.pidgeotto", level = 13 } } },
-    },
-    launchedTier = nil,
-    fieldFlags = {},
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
+    rematchFacts = function()
+      return { weekday = 6, timeOfDay = 1 }
+    end,
+    queryRematch = function(_, contact)
+      return state:queryRematch(contact)
+    end,
+    setRematch = function(_, contact, entry)
+      state:setRematch(contact, entry)
+    end,
   }
   local random = PokegearRandom.new(2024)
   local audio = {
@@ -118,71 +120,18 @@ function T.tests.invited_rematch_query_marker_and_trainer_team_agree_on_one_tier
     random = random,
   })
 
-  -- The outgoing invitation stages readiness at its source step.
-  local handle = call:begin({
-    id = "rematch-1",
-    contact = "custom.leader-falkner",
-    direction = "outgoing",
-    kind = "rematch",
-  })
-  call:step(handle, {})
-  call:step(handle, {})
-  local invitation = call:result(handle)
-  Assert.notNil(invitation, "the accepted invitation reports a result")
-  Assert.equal(invitation.ready, true, "the invitation stages readiness")
-
-  -- The field query, the map marker, and the launched team agree with the
-  -- invitation on a single tier.
+  -- The field query and map marker read one saved record and live window.
   local query = call:queryRematch("custom.leader-falkner")
   Assert.equal(query.ready, true, "the field query reports ready inside the eligibility window")
-  Assert.equal(query.tier, 2, "the query reports the story tier")
+  Assert.isNil(query.tier, "the query does not guess a story tier")
   local marker = call:rematchMarker("custom.leader-falkner")
-  Assert.equal(marker.tier, query.tier, "the map marker projects the queried tier")
-  local launched = call:launchRematch("custom.leader-falkner", world)
-  Assert.equal(launched.tier, query.tier, "the launched trainer carries the queried tier")
-  Assert.deepEqual(launched.team, world.teamsByTier[2], "the launched team is the tier-two team")
-
-  -- A win clears readiness; the next query is no longer ready.
-  call:resolveRematch("custom.leader-falkner", "win")
-  local afterWin = call:queryRematch("custom.leader-falkner")
-  Assert.equal(afterWin.ready, false, "only a source-qualified win clears readiness")
-
-  -- A fresh invitation followed by a loss or a cancellation preserves
-  -- readiness for another attempt.
-  local second = call:begin({
-    id = "rematch-2",
-    contact = "custom.leader-falkner",
-    direction = "outgoing",
-    kind = "rematch",
-  })
-  call:step(second, {})
-  call:step(second, {})
-  call:resolveRematch("custom.leader-falkner", "loss")
-  Assert.equal(
-    call:queryRematch("custom.leader-falkner").ready,
-    true,
-    "a loss preserves the staged readiness"
-  )
-  call:resolveRematch("custom.leader-falkner", "cancel")
-  Assert.equal(
-    call:queryRematch("custom.leader-falkner").ready,
-    true,
-    "a cancellation preserves the staged readiness"
-  )
-
-  -- An unregistered trainer is never rematch-ready, and a blackout never
-  -- completes a rematch spuriously.
-  Assert.equal(
-    call:queryRematch("custom.unregistered").ready,
-    false,
-    "an unregistered trainer reports no readiness"
-  )
-  call:resolveRematch("custom.leader-falkner", "blackout")
-  Assert.equal(
-    call:queryRematch("custom.leader-falkner").ready,
-    true,
-    "a blackout leaves the staged readiness untouched"
-  )
+  Assert.equal(marker.ready, query.ready, "the map marker reads the same durable readiness")
+  local before = state:queryRematch("custom.leader-falkner")
+  local failure = Assert.throws(function()
+    call:launchRematch("custom.leader-falkner")
+  end, "launching without a source-backed mapping fails")
+  Assert.equal(failure.code, require("libs.script.src.errors").FEATURE_UNAVAILABLE, "the missing team is attributed")
+  Assert.deepEqual(state:queryRematch("custom.leader-falkner"), before, "unsupported launch preserves saved progress")
 end
 
 -- A registered trainer without an invitation is never ready: neither
@@ -204,12 +153,12 @@ function T.tests.registered_trainer_without_an_invitation_is_never_ready()
   local state = PokegearState.new({ seed = 3031 }, { catalog = record.catalog })
   state:registerContact("custom.leader-falkner")
   local world = {
-    storyTier = 2,
-    weekday = "saturday",
-    morning = true,
-    teamsByTier = {
-      [2] = { tier = 2, members = { { species = "custom.pidgeotto", level = 13 } } },
-    },
+    queryRematch = function(_, contact)
+      return state:queryRematch(contact)
+    end,
+    rematchFacts = function()
+      return { weekday = 6, timeOfDay = 1 }
+    end,
   }
   local call = PhoneCall.new({
     state = state,
@@ -226,19 +175,18 @@ function T.tests.registered_trainer_without_an_invitation_is_never_ready()
 
   local query = call:queryRematch("custom.leader-falkner")
   Assert.equal(query.ready, false, "registration without an invitation never reports ready")
-  Assert.equal(query.tier, 2, "the query still reports the story tier")
+  Assert.isNil(query.tier, "the query never guesses a story tier")
   local marker = call:rematchMarker("custom.leader-falkner")
   Assert.equal(marker.ready, false, "the marker agrees that no invitation waits")
-  Assert.equal(marker.tier, query.tier, "the marker projects the queried tier")
+  Assert.isNil(marker.tier, "the marker carries no invented tier")
   Assert.throws(function()
-    call:launchRematch("custom.leader-falkner", world)
+    call:launchRematch("custom.leader-falkner")
   end, "launching without readiness never invents a team")
 end
 
--- A full party never completes a staged rematch: the interruption
--- preserves the invitation for another attempt exactly like a loss,
--- a cancellation, or a blackout.
-function T.tests.full_party_never_completes_a_staged_rematch()
+-- Calling a rematch-shaped contact does not invent readiness when no
+-- generated source stage authorizes an invitation.
+function T.tests.unsourced_phone_call_does_not_stage_a_rematch()
   local PhoneCall = requireFeature(
     "game.hgss.src.pokegear.PhoneCall",
     "phone calls have no foreground session owner yet: invitations, readiness queries, and launched trainer tiers cannot agree"
@@ -253,12 +201,18 @@ function T.tests.full_party_never_completes_a_staged_rematch()
   local state = PokegearState.new({ seed = 3032 }, { catalog = record.catalog })
   state:registerContact("custom.leader-falkner")
   local world = {
-    storyTier = 2,
-    weekday = "saturday",
-    morning = true,
-    teamsByTier = {
-      [2] = { tier = 2, members = { { species = "custom.pidgeotto", level = 13 } } },
-    },
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
+    rematchFacts = function()
+      return { weekday = 6, timeOfDay = 1 }
+    end,
+    queryRematch = function(_, contact)
+      return state:queryRematch(contact)
+    end,
+    setRematch = function(_, contact, entry)
+      state:setRematch(contact, entry)
+    end,
   }
   local call = PhoneCall.new({
     state = state,
@@ -280,16 +234,15 @@ function T.tests.full_party_never_completes_a_staged_rematch()
   })
   call:step(handle, {})
   call:step(handle, {})
+  Assert.isNil(state:queryRematch("custom.leader-falkner"), "the phone program does not fabricate an invitation")
+  Assert.isFalse(call:queryRematch("custom.leader-falkner").ready, "an unsourced contact is not ready")
+  local failure = Assert.throws(function()
+    call:launchRematch("custom.leader-falkner")
+  end, "an unsourced challenge cannot launch")
   Assert.equal(
-    call:queryRematch("custom.leader-falkner").ready,
-    true,
-    "the invitation stages readiness"
-  )
-  call:resolveRematch("custom.leader-falkner", "full-party")
-  Assert.equal(
-    call:queryRematch("custom.leader-falkner").ready,
-    true,
-    "a full party preserves the staged readiness"
+    failure.code,
+    require("libs.script.src.errors").FEATURE_UNAVAILABLE,
+    "the unsupported launch is attributed"
   )
 end
 

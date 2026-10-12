@@ -268,7 +268,9 @@ function T.tests.old_saves_keep_their_domains_and_gain_no_invented_contact_histo
     saveId = "test-gear-migration",
     versionId = "heartgold",
     playTimeSeconds = 3600,
-    playerData = { profile = { name = "GOLD", money = 3000 } },
+    playerData = {
+      profile = { name = "GOLD", money = 3000, runningShoes = false, runningShoesLock = false },
+    },
     world = world,
     party = party,
     bag = bag,
@@ -712,6 +714,52 @@ function T.tests.stale_and_replayed_candidates_cannot_publish()
   Assert.throws(function()
     outdated.publish()
   end, "publishing an outdated candidate must fail")
+end
+
+function T.tests.rematch_records_use_strict_direct_and_staged_mutations()
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local state = PokegearState.new(nil, catalogRefs(record))
+  state:registerContact("custom.elm")
+  local key = "custom.elm"
+  local base = state:revision()
+
+  state:setRematch(key, { stage = 1, wins = 2 })
+  Assert.equal(state:revision(), base + 1, "a rematch write advances one revision")
+  Assert.deepEqual(state:queryRematch(key), { stage = 1, wins = 2 }, "the owner returns detached progress")
+  state:queryRematch(key).wins = 99
+  Assert.equal(state:queryRematch(key).wins, 2, "rematch reads cannot mutate their owner")
+  state:setRematch(key, { stage = 1, wins = 2 })
+  Assert.equal(state:revision(), base + 1, "an identical record is a no-op")
+
+  local candidate = state:prepare(state:revision(), function(edit)
+    edit:setRematch(key, { stage = 0, wins = 3 })
+  end)
+  candidate.publish()
+  Assert.deepEqual(state:queryRematch(key), { stage = 0, wins = 3 }, "staged and direct writes share one schema")
+  local restored = PokegearState.restore(state:capture(), catalogRefs(record))
+  Assert.deepEqual(restored:queryRematch(key), { stage = 0, wins = 3 }, "save restoration preserves stage and wins")
+
+  local settled = state:revision()
+  for _, bad in ipairs({
+    { stage = -1, wins = 0 },
+    { stage = 1.5, wins = 0 },
+    { stage = 1, wins = -1 },
+    { stage = 1, wins = 0, tier = 2 },
+  }) do
+    Assert.throws(function()
+      state:setRematch(key, bad)
+    end, "malformed rematch candidates fail before mutation")
+  end
+  Assert.throws(function()
+    state:setRematch("custom.ghost", { stage = 1, wins = 0 })
+  end, "foreign contacts cannot acquire rematch records")
+  Assert.equal(state:revision(), settled, "invalid rematches leave the state revision untouched")
+  state:setRematch(key, nil)
+  Assert.isNil(state:queryRematch(key), "clearing removes the one durable record")
 end
 
 function T.tests.month_boundaries_advance_days_and_step_seeds_per_day()

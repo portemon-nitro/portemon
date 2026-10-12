@@ -891,9 +891,11 @@ function T.tests.world_reads_distinguish_absent_owners_from_zero_counts()
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
   assert(record ~= nil, "synthetic catalog validated above")
   local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 
   local state = PokegearState.new({ seed = 61 }, catalogRefs(record))
-  local bare = PhoneWorldContext.new({ state = state, flags = {} })
+  local bare = PhoneWorldContext.new({ state = state })
 
   local kurtErr = Assert.throws(function()
     bare:read("kurt.production")
@@ -917,13 +919,26 @@ function T.tests.world_reads_distinguish_absent_owners_from_zero_counts()
 
   -- Present owners answer, including zero and false: those are facts,
   -- not missing dependencies.
-  local stocked = PhoneWorldContext.new({ state = state, flags = {}, pc = { freeSlots = 0 } })
+  local stocked = PhoneWorldContext.new({ state = state, flags = FieldEventState.new(), pc = { freeSlots = 0 } })
   Assert.equal(stocked:read("bill.pc-free"), 0, "a full box reports zero free slots")
-  local saving = PhoneWorldContext.new({ state = state, flags = { savingsChoice = false } })
-  Assert.isFalse(saving:read("mom.savings-choice"), "an explicit keep choice reads false")
-  Assert.isNil(bare:read("mom.savings-choice"), "an unset choice reads nil, never a fabricated default")
-  local dex = PhoneWorldContext.new({ state = state, flags = {}, dex = { seen = 5, caught = 2 } })
-  Assert.equal(dex:read("dex.seen"), 5, "present Dex knowledge reads through")
+  Assert.isFalse(stocked:read("mom.savings-choice"), "the clear native flag reports savings disabled")
+  stocked:setMomSavingsChoice(true)
+  Assert.isTrue(stocked:read("mom.savings-choice"), "an accepted choice reads the native flag")
+  Assert.isTrue(
+    FieldEventState.new({ flags = { [FieldScriptSymbols.flagsByName.FLAG_SYS_MOMS_SAVINGS] = true } })
+      :isFlagSet(FieldScriptSymbols.flagsByName.FLAG_SYS_MOMS_SAVINGS),
+    "the native savings symbol resolves to an event flag"
+  )
+  local dex = PhoneWorldContext.new({
+    state = state,
+    flags = FieldEventState.new(),
+    dex = {
+      bucket = function()
+        return { seen = { "custom.cyndaquil" }, caught = {} }
+      end,
+    },
+  })
+  Assert.equal(dex:read("dex.seen"), 1, "present Dex knowledge reads its live count")
 end
 
 -- A service stage without its owner fails before any effect: the call
@@ -1083,7 +1098,16 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
   lead.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
   Assert.isTrue(owner:addMon(lead), "the prize battle needs its live party lead")
   local playerRecord = {
-    profile = { name = "RED", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
+    profile = {
+      name = "RED",
+      gender = 0,
+      trainerId = 1,
+      money = 3000,
+      badges = 0,
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+    },
     options = { textFrame = 0, textSpeed = "fastest" },
   }
   local playerContext = { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }

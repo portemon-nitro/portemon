@@ -153,8 +153,9 @@ end
 ---@param world table<string, unknown>
 ---@param kind string
 ---@param direction string
+---@param record table<string, unknown>?
 ---@return table<string, unknown> frozen dispatch facts
-local function snapshotFacts(world, kind, direction)
+local function snapshotFacts(world, kind, direction, record)
   local facts = {}
   for _, name in ipairs(FACT_KEYS) do
     if world[name] ~= nil then
@@ -167,12 +168,17 @@ local function snapshotFacts(world, kind, direction)
   if kind == "rematch" then
     facts.invitation = true
   end
-  local flags = world.flags
-  if type(flags) == "table" and facts.savingsChoice == nil then
-    local choice = (flags --[[@as table<string, unknown>]]).savingsChoice
-    if choice ~= nil then
-      facts.savingsChoice = choice
+  local readFacts = world.callFacts
+  if type(record) == "table" and type(readFacts) == "function" then
+    local live = readFacts(world, record)
+    assert(type(live) == "table", "phone calls read current source facts as one record")
+    for name, value in pairs(live) do
+      facts[name] = value
     end
+  end
+  local reader = world.read
+  if type(record) == "table" and record.family == "mother" and type(reader) == "function" then
+    facts.savingsChoice = reader(world, "mom.savings-choice")
   end
   return facts
 end
@@ -299,8 +305,6 @@ function PhoneCall:begin(args)
     unacquiredContact(args.contact)
   end
   local greeting = frozenGreeting(self._messages)
-  local signal = self._world.signal
-  local reception = self._world.reception
   local session = {
     id = args.id,
     contact = args.contact,
@@ -309,7 +313,7 @@ function PhoneCall:begin(args)
     world = self._world,
     record = record,
     greeting = greeting,
-    facts = snapshotFacts(self._world, args.kind, args.direction),
+    facts = snapshotFacts(self._world, args.kind, args.direction, record),
     owner = nil,
     family = nil,
     program = nil,
@@ -325,13 +329,6 @@ function PhoneCall:begin(args)
     result = nil,
     hangupDone = false,
   }
-  if signal == "none" or reception == "none" then
-    session.stage = "noSignal"
-    session.terminal = true
-    session.result = { id = args.id, contact = args.contact, kind = args.kind, signal = false, ready = false }
-    self._calls[args.id] = session
-    return { id = args.id }
-  end
   -- A rematch kind always takes the trainer invitation path; every
   -- other kind follows the contact's generated family.
   local owner, family = "trainer", "trainer"
@@ -519,11 +516,10 @@ local function resolveNativeDialogue(messages, session)
   return resolveLine(messages, session.contact, scriptId)
 end
 
----@param self PhoneCall
 ---@param session table<string, unknown>
 ---@param failure unknown
 ---@return boolean handled as an unavailable source feature
-local function failCall(self, session, failure)
+function PhoneCall:_failCall(session, failure)
   session.failed = failure
   session.stage = "done"
   session.terminal = true
@@ -555,16 +551,14 @@ function PhoneCall:_finishHangup(session)
     self._hangups = count + 1
   end
   if session.result == nil then
-    local ready = self._world.rematchReady
-    local staged = type(ready) == "table" and ready[
-      session.contact --[[@as string]]
-    ] == true
+    local query = self._world.queryRematch
+    local rematch = type(query) == "function" and query(self._world, session.contact --[[@as string]]) or nil
+    local staged = type(rematch) == "table" and rematch.stage > 0
     session.result = {
       id = session.id,
       contact = session.contact,
       kind = session.kind,
       program = session.program,
-      signal = true,
       ready = staged,
     }
   end
@@ -611,7 +605,7 @@ function PhoneCall:step(handle, input)
       end
       local ok, formatted = pcall(resolveNativeDialogue, self._messages, session)
       if not ok then
-        failCall(self, session, formatted)
+        self:_failCall(session, formatted)
         return
       end
       assert(
@@ -657,7 +651,7 @@ function PhoneCall:step(handle, input)
     elseif stage == "program" then
       local ok, outcome = pcall(stepProgram, session, edges)
       if not ok then
-        failCall(self, session, outcome)
+        self:_failCall(session, outcome)
         return
       end
       if outcome == "waiting" then
@@ -673,7 +667,7 @@ function PhoneCall:step(handle, input)
       end
       local ok, outcome = pcall(stepProgram, session, edges)
       if not ok then
-        failCall(self, session, outcome)
+        self:_failCall(session, outcome)
         return
       end
       if outcome == "waiting" then
@@ -804,40 +798,27 @@ function PhoneCall:release(handle)
   ] = nil
 end
 
--- The single field readiness query for a contact: ready only when an
--- invitation was staged and the source window holds.
+-- The single field readiness query for a contact, projected from durable
+-- state through the native contact window.
 ---@param contact string
----@return { ready: boolean, tier: integer }
+---@return { ready: boolean, tier: integer? }
 function PhoneCall:queryRematch(contact)
   return TrainerPhonePrograms.query(contact, self._world, self._catalog)
 end
 
--- Projects the map marker for a contact at the queried tier.
+-- Projects the map marker from the same durable record and native window.
 ---@param contact string
----@return { tier: integer, ready: boolean }
+---@return { tier: integer?, ready: boolean }
 function PhoneCall:rematchMarker(contact)
   return TrainerPhonePrograms.marker(contact, self._world, self._catalog)
 end
 
 -- Launches the accepted rematch at the queried tier.
 ---@param contact string
----@param world table<string, unknown>? tier team owner, defaulting to the borrowed world
+---@param world table<string, unknown>? the already composed world, when explicitly supplied
 ---@return { tier: integer, team: table<string, unknown> }
 function PhoneCall:launchRematch(contact, world)
-  local teams = world or self._world
-  assert(type(teams) == "table", "rematch launches read their tier teams")
-  if teams ~= self._world then
-    local merged = {}
-    for key, value in pairs(self._world) do
-      merged[key] = value
-    end
-    for key, value in
-      pairs(teams --[[@as table<string, unknown>]])
-    do
-      merged[key] = value
-    end
-    return TrainerPhonePrograms.launch(contact, merged, self._catalog)
-  end
+  assert(world == nil or world == self._world, "rematch launches cannot override the composed world")
   return TrainerPhonePrograms.launch(contact, self._world, self._catalog)
 end
 

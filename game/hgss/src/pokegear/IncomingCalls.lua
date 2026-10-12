@@ -458,11 +458,6 @@ function IncomingCalls:onOpportunity(args)
     end
     return
   end
-  local signal = self._world.signal
-  local reception = self._world.reception
-  if signal == "none" or reception == "none" then
-    return
-  end
   if self._cooldown < IncomingCalls.COOLDOWN_MINUTES then
     return
   end

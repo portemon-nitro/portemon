@@ -80,6 +80,64 @@ function PhoneWorldContext:nativeSelectorFacts(contact)
   }
 end
 
+-- Reads current source facts at call entry. Runtime-owned services are
+-- looked up here instead of being frozen during early Pokegear boot.
+---@param contact table<string, unknown>
+---@return table<string, unknown>
+function PhoneWorldContext:callFacts(contact)
+  local runtime = self._owners.runtime
+  assert(type(runtime) == "table", "phone calls read the live field runtime")
+  local facts = self:nativeSelectorFacts(contact) --[[@as table<string, unknown>]]
+  local playerData = runtime.playerData
+  if type(playerData) == "table" and type(playerData.profile) == "table" then
+    facts.money = playerData.profile.money
+  end
+  local clock = runtime.localClock
+  if type(clock) == "table" and type(clock.nowLocal) == "function" then
+    local sample = clock:nowLocal()
+    assert(type(sample) == "table", "phone calls read a civil clock sample")
+    if
+      type(sample.year) == "number"
+      and type(sample.month) == "number"
+      and type(sample.day) == "number"
+      and type(sample.hour) == "number"
+    then
+      local CivilDate = require("libs.hgss.src.field.CivilDate")
+      local _, weekday = CivilDate.parts({ year = sample.year, month = sample.month, day = sample.day })
+      facts.weekday = weekday
+      local hour = math.floor(sample.hour)
+      facts.timeOfDay = hour >= 4 and hour < 10 and 0 or (hour >= 20 or hour < 4) and 2 or 1
+    end
+  end
+  local party = runtime.monService
+  if type(party) == "table" and type(party.partyCount) == "function" then
+    facts.partyCount = party:partyCount()
+  end
+  local dex = runtime.dexKnowledge
+  if type(dex) == "table" and type(dex.bucket) == "function" then
+    local bucket = dex:bucket()
+    assert(type(bucket) == "table", "phone calls read the Dex bucket")
+    facts.dexSeen = #bucket.seen
+    facts.dexCaught = #bucket.caught
+    facts.nationalDex = dex:isNationalDexComplete()
+  end
+  return facts
+end
+
+---@param contact string
+---@return table<string, unknown>
+function PhoneWorldContext:rematchFacts(contact)
+  local catalog = self._owners.catalog
+  assert(type(catalog) == "table" and type(catalog.contacts) == "table", "rematch windows read the contact catalog")
+  for _, entry in ipairs(catalog.contacts) do
+    if type(entry) == "table" and entry.key == contact then
+      return self:callFacts(entry)
+    end
+  end
+  missingOwner("phone", "no catalog contact describes rematch window " .. contact)
+  error("unreachable", 0)
+end
+
 ---@param key unknown
 ---@return string domain, string fact
 local function splitKey(key)
@@ -199,6 +257,22 @@ end
 function PhoneWorldContext:_domainOwner(domain)
   local owner = self._owners[domain]
   if type(owner) ~= "table" then
+    local runtime = self._owners.runtime
+    if type(runtime) == "table" then
+      local runtimeFields = {
+        party = "monService",
+        dex = "dexKnowledge",
+        bag = "bagService",
+        pc = "pcService",
+        trainer = "_trainerFactory",
+      }
+      local field = runtimeFields[domain]
+      if field ~= nil then
+        owner = runtime[field]
+      end
+    end
+  end
+  if type(owner) ~= "table" then
     missingOwner(domain, "no live " .. domain .. " simulation is available")
   end
   assert(type(owner) == "table", "phone world reads borrow a live domain owner")
@@ -239,43 +313,111 @@ function PhoneWorldContext:read(key)
     assert(false, "phone box reads name a known bill fact")
   end
   if domain == "mom" then
-    local flags = self._owners.flags
+    local runtime = self._owners.runtime
+    local flags = self._owners.flags or (type(runtime) == "table" and runtime.eventState or nil)
     if type(flags) ~= "table" then
       missingOwner("flags", "no live world flag owner is available")
     end
     assert(type(flags) == "table", "phone flag reads borrow the live flag owner")
     if fact == "savings-choice" then
-      local choice = (flags --[[@as table<string, unknown>]]).savingsChoice
-      if choice == nil then
-        return nil
-      end
-      assert(type(choice) == "boolean", "the world savings choice stays a boolean once set")
-      return choice
+      local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+      local flag = symbols.flagsByName.FLAG_SYS_MOMS_SAVINGS
+      assert(type(flag) == "number", "Mother savings reads the native event flag")
+      local isFlagSet = flags.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+      assert(type(isFlagSet) == "function", "Mother savings reads the event state")
+      return isFlagSet(flags, flag --[[@as integer]])
     end
     assert(false, "phone flag reads name a known mom fact")
   end
   if domain == "dex" then
     local dex = self:_domainOwner("dex")
     if fact == "seen" or fact == "caught" then
-      return dex[fact]
+      local bucket = dex.bucket --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
+      assert(type(bucket) == "function", "phone Dex reads its current knowledge bucket")
+      local data = bucket(dex)
+      assert(type(data) == "table" and type(data[fact]) == "table", "phone Dex reads sorted knowledge")
+      return #data[fact] --[[@as table<integer, unknown>]]
     end
     assert(false, "phone dex reads name a known dex fact")
   end
   if domain == "party" then
     local party = self:_domainOwner("party")
     if fact == "count" then
-      return party.count
+      local count = party.partyCount --[[@as fun(self: table<string, unknown>): integer]]
+      assert(type(count) == "function", "phone party reads the live party service")
+      return count(party)
     end
     assert(false, "phone party reads name a known party fact")
   end
   if domain == "bag" then
     local bag = self:_domainOwner("bag")
     if fact == "free-slots" then
-      return bag.freeSlots
+      local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
+      assert(type(capture) == "function", "phone Bag reads the live inventory")
+      local inventory = capture(bag)
+      local pockets = inventory.pockets --[[@as table<string, unknown>]]
+      local catalog = bag.catalog --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
+      assert(type(catalog) == "function", "phone Bag reads its pocket capacities")
+      local itemCatalog = catalog(bag)
+      local BagSave = require("libs.hgss.src.save.BagSave")
+      local free = 0
+      for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
+        local definition = itemCatalog:pocket(pocketKey)
+        local slots = pockets[pocketKey]
+        assert(type(slots) == "table", "phone Bag reads captured pocket slots")
+        free = free + math.max(0, definition.capacity - #slots)
+      end
+      return free
     end
     assert(false, "phone bag reads name a known bag fact")
   end
   error("phone world reads name a known domain", 0)
+end
+
+---@param contact string
+---@return { stage: integer, wins: integer }?
+function PhoneWorldContext:queryRematch(contact)
+  local state = self._owners.state
+  assert(
+    type(state) == "table" and type(state.queryRematch) == "function",
+    "phone rematches read durable companion state"
+  )
+  return state:queryRematch(contact)
+end
+
+---@param contact string
+---@param record { stage: integer, wins: integer }?
+function PhoneWorldContext:setRematch(contact, record)
+  local state = self._owners.state
+  assert(
+    type(state) == "table" and type(state.setRematch) == "function",
+    "phone rematches write durable companion state"
+  )
+  state:setRematch(contact, record)
+end
+
+-- Writes Mother's source flag through the event-state owner. The save
+-- choice has one authoritative representation; no phone-local shadow is
+-- published.
+---@param saving boolean
+function PhoneWorldContext:setMomSavingsChoice(saving)
+  assert(type(saving) == "boolean", "Mother savings choice is a boolean")
+  local runtime = self._owners.runtime
+  local flags = self._owners.flags or (type(runtime) == "table" and runtime.eventState or nil)
+  if type(flags) ~= "table" then
+    missingOwner("flags", "no live world flag owner is available")
+  end
+  assert(type(flags) == "table", "Mother savings writes through a live event state")
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local flag = symbols.flagsByName.FLAG_SYS_MOMS_SAVINGS
+  assert(type(flag) == "number", "Mother savings writes the native event flag")
+  local setFlag, clearFlag = flags.setFlag, flags.clearFlag
+  assert(type(setFlag) == "function" and type(clearFlag) == "function", "Mother savings writes through FieldEventState")
+  if saving then
+    setFlag(flags, flag --[[@as integer]])
+  else
+    clearFlag(flags, flag --[[@as integer]])
+  end
 end
 
 return PhoneWorldContext

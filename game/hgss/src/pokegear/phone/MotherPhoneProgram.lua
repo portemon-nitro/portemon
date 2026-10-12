@@ -46,14 +46,6 @@ function MotherPhoneProgram.select(world, request)
   }
 end
 
----@param world table<string, unknown>
----@return table<string, unknown> the borrowed world flag table
-local function flagTable(world)
-  local flags = world.flags
-  assert(type(flags) == "table", "mother savings choices write the borrowed world flags")
-  return flags --[[@as table<string, unknown>]]
-end
-
 -- Advances one program step. Choice branches wait for an explicit save
 -- or keep choice and write the savings flag exactly once; announcement
 -- and greeting branches resolve without writing. Returns waiting while a
@@ -78,7 +70,9 @@ function MotherPhoneProgram.step(session, input)
     session.effectDone = true
     local world = session.world --[[@as table<string, unknown>]]
     assert(type(world) == "table", "mother effects stage through the borrowed world")
-    flagTable(world).savingsChoice = choice == "save"
+    local writeChoice = world.setMomSavingsChoice
+    assert(type(writeChoice) == "function", "mother savings choices write the native event flag")
+    writeChoice(world, choice == "save")
     return "done"
   end
   session.effectDone = true
