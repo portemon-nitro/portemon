@@ -18,6 +18,48 @@ local function validateRect(value, label)
   assert(value.width > 0 and value.height > 0, label .. " must have positive dimensions")
 end
 
+-- Pure lexicographic rank comparison with the same ordered keys as the
+-- previous full-sort comparator: beam candidates precede non-beam ones; beam
+-- ranks by edge gap then perpendicular offset; non-beam ranks by edge distance,
+-- perpendicular offset, then edge gap; declared order and input position break
+-- remaining ties. Returns true when the challenger outranks the incumbent.
+local function isBetterRank(
+  candidateBeam,
+  candidateEdgeGap,
+  candidatePerpendicular,
+  candidateEdgeDistance,
+  candidateOrder,
+  candidateInputOrder,
+  incumbentBeam,
+  incumbentEdgeGap,
+  incumbentPerpendicular,
+  incumbentEdgeDistance,
+  incumbentOrder,
+  incumbentInputOrder
+)
+  if candidateBeam ~= incumbentBeam then
+    return candidateBeam
+  elseif candidateBeam then
+    if candidateEdgeGap ~= incumbentEdgeGap then
+      return candidateEdgeGap < incumbentEdgeGap
+    elseif candidatePerpendicular ~= incumbentPerpendicular then
+      return candidatePerpendicular < incumbentPerpendicular
+    end
+  else
+    if candidateEdgeDistance ~= incumbentEdgeDistance then
+      return candidateEdgeDistance < incumbentEdgeDistance
+    elseif candidatePerpendicular ~= incumbentPerpendicular then
+      return candidatePerpendicular < incumbentPerpendicular
+    elseif candidateEdgeGap ~= incumbentEdgeGap then
+      return candidateEdgeGap < incumbentEdgeGap
+    end
+  end
+  if candidateOrder ~= incumbentOrder then
+    return candidateOrder < incumbentOrder
+  end
+  return candidateInputOrder < incumbentInputOrder
+end
+
 ---@param sourceRect table<string, number>
 ---@param candidates {id: FocusNodeId, rect: table<string, number>, order: integer}[]
 ---@param direction FocusDirection
@@ -34,7 +76,13 @@ function FocusGraph.spatialCandidate(sourceRect, candidates, direction)
 
   local sourceCenterX = sourceRect.x + sourceRect.width / 2
   local sourceCenterY = sourceRect.y + sourceRect.height / 2
-  local ranked = {}
+  local bestId = nil
+  local bestBeam = false
+  local bestEdgeGap = 0
+  local bestPerpendicular = 0
+  local bestEdgeDistance = 0
+  local bestOrder = 0
+  local bestInputOrder = 0
   local seen = {}
   for index, candidate in ipairs(candidates) do
     assert(type(candidate) == "table", "spatial candidate must be a record")
@@ -73,41 +121,36 @@ function FocusGraph.spatialCandidate(sourceRect, candidates, direction)
         math.max(0, math.max(sourceRect.x - (rect.x + rect.width), rect.x - (sourceRect.x + sourceRect.width)))
       local verticalGap =
         math.max(0, math.max(sourceRect.y - (rect.y + rect.height), rect.y - (sourceRect.y + sourceRect.height)))
-      ranked[#ranked + 1] = {
-        id = candidate.id,
-        order = candidate.order,
-        beam = overlap > 0,
-        edgeGap = edgeGap,
-        perpendicular = perpendicular,
-        edgeDistance = horizontalGap * horizontalGap + verticalGap * verticalGap,
-        inputOrder = index,
-      }
+      local beam = overlap > 0
+      local edgeDistance = horizontalGap * horizontalGap + verticalGap * verticalGap
+      if
+        bestId == nil
+        or isBetterRank(
+          beam,
+          edgeGap,
+          perpendicular,
+          edgeDistance,
+          candidate.order,
+          index,
+          bestBeam,
+          bestEdgeGap,
+          bestPerpendicular,
+          bestEdgeDistance,
+          bestOrder,
+          bestInputOrder
+        )
+      then
+        bestId = candidate.id
+        bestBeam = beam
+        bestEdgeGap = edgeGap
+        bestPerpendicular = perpendicular
+        bestEdgeDistance = edgeDistance
+        bestOrder = candidate.order
+        bestInputOrder = index
+      end
     end
   end
-  table.sort(ranked, function(a, b)
-    if a.beam ~= b.beam then
-      return a.beam
-    elseif a.beam then
-      if a.edgeGap ~= b.edgeGap then
-        return a.edgeGap < b.edgeGap
-      elseif a.perpendicular ~= b.perpendicular then
-        return a.perpendicular < b.perpendicular
-      end
-    else
-      if a.edgeDistance ~= b.edgeDistance then
-        return a.edgeDistance < b.edgeDistance
-      elseif a.perpendicular ~= b.perpendicular then
-        return a.perpendicular < b.perpendicular
-      elseif a.edgeGap ~= b.edgeGap then
-        return a.edgeGap < b.edgeGap
-      end
-    end
-    if a.order ~= b.order then
-      return a.order < b.order
-    end
-    return a.inputOrder < b.inputOrder
-  end)
-  return ranked[1] and ranked[1].id or nil
+  return bestId
 end
 
 ---@param graph FocusGraphMap

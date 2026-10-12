@@ -251,4 +251,127 @@ function T.spatial_candidate_is_directional_and_invariant_under_translation_and_
   Assert.isNil(FocusGraph.spatialCandidate(source, {}, "left"), "no forward candidate returns nil")
 end
 
+local function copyRect(rect)
+  return { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
+end
+
+local function snapshotCandidates(candidates)
+  local copy = {}
+  for index, candidate in ipairs(candidates) do
+    copy[index] = { id = candidate.id, order = candidate.order, rect = copyRect(candidate.rect) }
+  end
+  return copy
+end
+
+function T.spatial_candidate_keeps_directional_winners_without_sorting_or_mutation()
+  local FocusGraph = focusGraphModule()
+  Assert.isTrue(type(FocusGraph.spatialCandidate) == "function", "spatial rectangle ranking is missing")
+
+  local source = { x = 10, y = 10, width = 10, height = 10 }
+  local candidates = {
+    { id = "up", rect = { x = 12, y = 0, width = 10, height = 8 }, order = 1 },
+    { id = "down", rect = { x = 12, y = 24, width = 10, height = 8 }, order = 2 },
+    { id = "left", rect = { x = 0, y = 12, width = 8, height = 10 }, order = 3 },
+    { id = "right", rect = { x = 24, y = 12, width = 8, height = 10 }, order = 4 },
+    { id = "right-diagonal", rect = { x = 25, y = 22, width = 2, height = 2 }, order = 5 },
+  }
+  local sourceBefore = copyRect(source)
+  local candidatesBefore = snapshotCandidates(candidates)
+
+  local realSort = table.sort
+  local sortCalls = 0
+  local function select(sourceRect, list, direction)
+    table.sort = function(entries, comparator)
+      sortCalls = sortCalls + 1
+      return realSort(entries, comparator)
+    end
+    local ok, result = pcall(FocusGraph.spatialCandidate, sourceRect, list, direction)
+    table.sort = realSort
+    Assert.isTrue(ok, "spatial selection must succeed: " .. tostring(result))
+    return result
+  end
+
+  for _, direction in ipairs({ "up", "down", "left", "right" }) do
+    Assert.equal(select(source, candidates, direction), direction)
+  end
+  Assert.equal(
+    select({ x = 0, y = 0, width = 10, height = 10 }, {
+      { id = "diagonal", rect = { x = 11, y = 11, width = 2, height = 2 }, order = 1 },
+      { id = "beam", rect = { x = 14, y = 2, width = 8, height = 6 }, order = 2 },
+    }, "right"),
+    "beam",
+    "perpendicular beam overlap outranks a closer diagonal"
+  )
+  Assert.equal(
+    select(source, {
+      { id = 7, rect = { x = 24, y = 12, width = 8, height = 10 }, order = 2 },
+      { id = 9, rect = { x = 24, y = 12, width = 8, height = 10 }, order = 1 },
+    }, "right"),
+    9,
+    "integer ids resolve by declaration order on an exact tie"
+  )
+  local translatedSource = { x = 1010, y = -490, width = 10, height = 10 }
+  local translated = {}
+  for index, candidate in ipairs(candidates) do
+    translated[index] = {
+      id = candidate.id,
+      order = candidate.order,
+      rect = {
+        x = candidate.rect.x + 1000,
+        y = candidate.rect.y - 500,
+        width = candidate.rect.width,
+        height = candidate.rect.height,
+      },
+    }
+  end
+  Assert.equal(select(translatedSource, translated, "right"), "right")
+  Assert.isNil(select(source, {}, "left"), "no forward candidate returns nil")
+  Assert.equal(sortCalls, 0, "spatial selection must rank in a single pass without sorting")
+  Assert.deepEqual(source, sourceBefore, "source rectangle must be left untouched")
+  Assert.deepEqual(candidates, candidatesBefore, "candidate list must be left untouched")
+end
+
+function T.spatial_candidate_breaks_exact_ties_by_input_position()
+  local FocusGraph = focusGraphModule()
+  local source = { x = 0, y = 0, width = 10, height = 10 }
+  local function pair(firstId, secondId)
+    return {
+      { id = firstId, rect = { x = 14, y = 2, width = 8, height = 6 }, order = 1 },
+      { id = secondId, rect = { x = 14, y = 2, width = 8, height = 6 }, order = 1 },
+    }
+  end
+  Assert.equal(
+    FocusGraph.spatialCandidate(source, pair("first", "second"), "right"),
+    "first",
+    "an exact rank tie keeps the earlier input"
+  )
+  Assert.equal(
+    FocusGraph.spatialCandidate(source, pair("second", "first"), "right"),
+    "second",
+    "an exact rank tie keeps the earlier input regardless of id"
+  )
+end
+
+function T.spatial_candidate_rejects_a_malformed_trailing_candidate_after_a_winner()
+  local FocusGraph = focusGraphModule()
+  Assert.isTrue(type(FocusGraph.spatialCandidate) == "function", "spatial rectangle ranking is missing")
+
+  local source = { x = 0, y = 0, width = 10, height = 10 }
+  local function winnerFirst()
+    return {
+      { id = "winner", rect = { x = 14, y = 2, width = 8, height = 6 }, order = 1 },
+    }
+  end
+  local withDuplicate = winnerFirst()
+  withDuplicate[2] = { id = "winner", rect = { x = 30, y = 2, width = 8, height = 6 }, order = 2 }
+  Assert.throws(function()
+    FocusGraph.spatialCandidate(source, withDuplicate, "right")
+  end, "a duplicate trailing id must reject the whole input instead of returning the early winner")
+  local withBadRect = winnerFirst()
+  withBadRect[2] = { id = "trailing", rect = { x = 30, y = 2, width = 0, height = 6 }, order = 2 }
+  Assert.throws(function()
+    FocusGraph.spatialCandidate(source, withBadRect, "right")
+  end, "an invalid trailing rectangle must reject the whole input instead of returning the early winner")
+end
+
 return { tests = T }
