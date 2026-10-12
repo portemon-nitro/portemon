@@ -319,6 +319,7 @@ end
 
 function T.kurt_selector_uses_the_script_modal_lane_and_balances_capture()
   local active = false
+  local openAttempts = 0
   local input = recordingInput()
   local scheduler = recordingScheduler()
   scheduler.step = function(_, _, schedulerInput)
@@ -336,19 +337,115 @@ function T.kurt_selector_uses_the_script_modal_lane_and_balances_capture()
     isBrowseActive = function()
       return false
     end,
+    openRegisteredBrowse = function()
+      openAttempts = openAttempts + 1
+      return true
+    end,
   }
   local options = optionsWith({ kurtBoxHost = host, input = input, scriptScheduler = scheduler })
   local session = FieldSession.new(options)
   session:updateFixed({ pressedDirection = "south", actionPressed = true, cancelPressed = true })
   Assert.equal(input.begins, 1, "opening Kurt's selector begins UI capture")
-  session:updateFixed({ pressedDirection = "north", actionPressed = true, cancelPressed = true })
+  session:updateFixed({
+    pressedDirection = "north",
+    actionPressed = true,
+    cancelPressed = true,
+    registeredSlotPressed = 2,
+  })
   local routed = scheduler.seen[2]
   Assert.equal(routed.uiEvents, input.batch, "the Kurt task receives the normalized UI batch")
   Assert.isNil(routed.pressedDirection, "field direction is suppressed while the selector is open")
   Assert.isNil(routed.pressedAction, "field action is suppressed while the selector is open")
   Assert.isNil(routed.pressedCancel, "field cancel is suppressed while the selector is open")
+  Assert.equal(openAttempts, 0, "a registered shortcut on the close tick is consumed by Kurt's selector")
   session:updateFixed({})
   Assert.equal(input.clears, 1, "closing Kurt's selector clears captured UI edges")
+end
+
+function T.registered_slot_open_claims_the_idle_tick_and_preserves_slot_identity()
+  local openedSlot = nil
+  local active = false
+  local host = {
+    isActive = function()
+      return active
+    end,
+    isBrowseActive = function()
+      return active
+    end,
+    openRegisteredBrowse = function(_, slot)
+      openedSlot = slot
+      active = true
+      return true
+    end,
+  }
+  local input = recordingInput()
+  local options = optionsWith({ kurtBoxHost = host, input = input })
+  local session = FieldSession.new(options)
+  session:updateFixed({ registeredSlotPressed = 2 })
+  Assert.equal(openedSlot, 2, "the exact input slot reaches the registered Box host")
+  Assert.equal(input.begins, 1, "opening the Box begins UI capture")
+  Assert.equal(session.tick, 1, "the successful open consumes the field tick")
+end
+
+function T.registered_slot_edge_is_consumed_while_an_application_modal_owns_the_tick()
+  local openAttempts = 0
+  local boxHost = {
+    isActive = function()
+      return false
+    end,
+    isBrowseActive = function()
+      return false
+    end,
+    openRegisteredBrowse = function()
+      openAttempts = openAttempts + 1
+      return true
+    end,
+  }
+  local applicationHost = {
+    isActive = function()
+      return true
+    end,
+    phase = function()
+      return "menu"
+    end,
+    updateFixed = function() end,
+    requestOpen = function()
+      return false
+    end,
+    takeReopen = function()
+      return false
+    end,
+  }
+  local session = FieldSession.new(optionsWith({ kurtBoxHost = boxHost, applicationHost = applicationHost }))
+  session:updateFixed({ registeredSlotPressed = 2 })
+  Assert.equal(openAttempts, 0, "an application modal retains exclusive input ownership")
+  session:updateFixed({})
+  Assert.equal(openAttempts, 0, "the modal press is not replayed after the application resumes")
+end
+
+function T.registered_slot_edge_is_consumed_when_party_selection_closes()
+  local openAttempts = 0
+  local boxHost = {
+    isActive = function()
+      return false
+    end,
+    isBrowseActive = function()
+      return false
+    end,
+    openRegisteredBrowse = function()
+      openAttempts = openAttempts + 1
+      return true
+    end,
+  }
+  local options = optionsWith({
+    kurtBoxHost = boxHost,
+    partySelection = partyLane({ activeFrom = 1, inactiveFrom = 2 }),
+  })
+  local session = FieldSession.new(options)
+  session:updateFixed({ registeredSlotPressed = 2 })
+  Assert.equal(openAttempts, 0, "party selection owns its close tick")
+  session:updateFixed({})
+  Assert.equal(openAttempts, 0, "the party modal shortcut edge is not replayed")
 end
 
 return { tests = T }

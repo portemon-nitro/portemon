@@ -93,7 +93,7 @@ function T.cancel_does_not_submit_and_stale_order_disposes_before_faulting()
 end
 
 function T.registered_browse_reuses_the_box_child_and_releases_it_once()
-  local registered = { "BICYCLE" }
+  local registered = { "BICYCLE", "APRICORN_BOX" }
   local made = {}
   local host = ApricornBoxHost.new({
     makeApricornBox = function(mode)
@@ -113,10 +113,9 @@ function T.registered_browse_reuses_the_box_child_and_releases_it_once()
       end,
     },
   })
-  Assert.isFalse(host:openRegisteredBrowse(), "a different Key Item cannot open the Box")
+  Assert.isFalse(host:openRegisteredBrowse(1), "a different Key Item cannot open the Box")
   Assert.equal(#made, 0, "an ineligible shortcut does not construct a screen")
-  registered[1] = "APRICORN_BOX"
-  Assert.isTrue(host:openRegisteredBrowse(), "the registered Apricorn Box opens its browse child")
+  Assert.isTrue(host:openRegisteredBrowse(2), "the Box opens only from its requested slot")
   local handle = assert(host:activeHandle())
   Assert.equal(host:status().hostMode, "browse")
   host:setPresentationReady(handle, true)
@@ -126,6 +125,16 @@ function T.registered_browse_reuses_the_box_child_and_releases_it_once()
   host:cancel("test")
   Assert.equal(made[1].disposed, 1, "closing the browse child releases it exactly once")
   Assert.isFalse(host:isActive())
+
+  registered[1] = "APRICORN_BOX"
+  registered[2] = "BICYCLE"
+  Assert.isFalse(host:openRegisteredBrowse(2), "the old slot is not treated as an any-slot match")
+  Assert.isTrue(host:openRegisteredBrowse(1), "the live compacted registration opens from slot one")
+  host:cancel("test")
+  Assert.equal(made[2].disposed, 1)
+  Assert.throws(function()
+    host:openRegisteredBrowse(3)
+  end, "invalid registered slots are programming errors")
 end
 
 return { tests = T }

@@ -1159,6 +1159,11 @@ function FieldState:keypressed(key, _, _)
   if self.runtime.menuKeys[key] then
     self.runtime.input:pressMenu("key:" .. key)
   end
+  if key == "y" then
+    self.runtime.input:pressRegisteredSlot(1, "key:y")
+  elseif key == "u" then
+    self.runtime.input:pressRegisteredSlot(2, "key:u")
+  end
   local direction = KEY_DIRECTIONS[key]
   if direction then
     self.runtime.input:pressDirection(direction, "key:" .. key)
@@ -1195,6 +1200,11 @@ function FieldState:keyreleased(key, _)
   end
   if self.runtime.menuKeys[key] then
     self.runtime.input:releaseMenu("key:" .. key)
+  end
+  if key == "y" then
+    self.runtime.input:releaseRegisteredSlot(1, "key:y")
+  elseif key == "u" then
+    self.runtime.input:releaseRegisteredSlot(2, "key:u")
   end
   local direction = KEY_DIRECTIONS[key]
   if direction then
@@ -1274,7 +1284,9 @@ function FieldState:gamepadpressed(joystick, button)
     self.runtime.input:pressMenu(source)
   end
   if button == "y" then
-    self.runtime.input:pressApricornBox(source)
+    self.runtime.input:pressRegisteredSlot(1, source)
+  elseif button == "rightshoulder" then
+    self.runtime.input:pressRegisteredSlot(2, source)
   end
   local direction = GAMEPAD_DIRECTIONS[button]
   if direction then
@@ -1296,7 +1308,9 @@ function FieldState:gamepadreleased(joystick, button)
     self.runtime.input:releaseMenu(source)
   end
   if button == "y" then
-    self.runtime.input:releaseApricornBox(source)
+    self.runtime.input:releaseRegisteredSlot(1, source)
+  elseif button == "rightshoulder" then
+    self.runtime.input:releaseRegisteredSlot(2, source)
   end
   local direction = GAMEPAD_DIRECTIONS[button]
   if direction then

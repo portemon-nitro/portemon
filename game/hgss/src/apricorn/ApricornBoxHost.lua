@@ -82,11 +82,13 @@ function ApricornBoxHost:open()
   return handle
 end
 
+---@param slot integer
 ---@return boolean true when the registered Apricorn Box opened
-function ApricornBoxHost:openRegisteredBrowse()
+function ApricornBoxHost:openRegisteredBrowse(slot)
+  assert(slot == 1 or slot == 2, "registered slot must be one of two native slots")
   assert(not self._disposed, "disposed Kurt Box host cannot open a selector")
   assert(self._active == nil, "Apricorn Box host already owns an open selector")
-  if self._bag:registeredItems()[1] ~= "APRICORN_BOX" then
+  if self._bag:registeredItems()[slot] ~= "APRICORN_BOX" then
     return false
   end
   local ok, child = pcall(self._makeApricornBox, "browse")

@@ -22,8 +22,8 @@
 ---@field menuSources table<string, boolean>
 ---@field menuDown boolean
 ---@field menuPressed boolean
----@field apricornBoxSources table<string, boolean>
----@field apricornBoxPressed boolean
+---@field registeredSources table<integer, table<string, boolean>>
+---@field registeredSlotPressed integer?
 ---@field pressedDirection string?
 ---@field uiDirections table<string, { sources: table<string, boolean>, order: integer }>
 ---@field uiNextOrder integer
@@ -133,7 +133,7 @@ function FieldInput.new(options)
     menuSources = {},
     menuDown = false,
     menuPressed = false,
-    apricornBoxSources = {},
+    registeredSources = { [1] = {}, [2] = {} },
     uiDirections = {},
     uiNextOrder = 0,
     uiRepeatDelay = uiRepeatDelay,
@@ -308,23 +308,28 @@ function FieldInput:releaseMenu(source)
   end
 end
 
+---@param slot integer
 ---@param source string
-function FieldInput:pressApricornBox(source)
+function FieldInput:pressRegisteredSlot(slot, source)
+  assert(slot == 1 or slot == 2, "registered slot must be one of two native slots")
   requireSource(source)
-  if self.apricornBoxSources[source] then
+  local sources = self.registeredSources[slot]
+  if sources[source] then
     return
   end
-  local wasDown = next(self.apricornBoxSources) ~= nil
-  self.apricornBoxSources[source] = true
-  if not wasDown then
-    self.apricornBoxPressed = true
+  local wasDown = next(sources) ~= nil
+  sources[source] = true
+  if not wasDown and self.registeredSlotPressed == nil then
+    self.registeredSlotPressed = slot
   end
 end
 
+---@param slot integer
 ---@param source string
-function FieldInput:releaseApricornBox(source)
+function FieldInput:releaseRegisteredSlot(slot, source)
+  assert(slot == 1 or slot == 2, "registered slot must be one of two native slots")
   requireSource(source)
-  self.apricornBoxSources[source] = nil
+  self.registeredSources[slot][source] = nil
 end
 
 -- Menu navigation has independent source tracking and repeat timing. Field
@@ -660,14 +665,14 @@ function FieldInput:snapshot()
   if self.menuPressed then
     snapshot.menuPressed = true
   end
-  if self.apricornBoxPressed then
-    snapshot.apricornBoxPressed = true
+  if self.registeredSlotPressed then
+    snapshot.registeredSlotPressed = self.registeredSlotPressed
   end
   self.pressedDirection = nil
   self.actionPressed = nil
   self.cancelPressed = nil
   self.menuPressed = nil
-  self.apricornBoxPressed = nil
+  self.registeredSlotPressed = nil
   return snapshot
 end
 
@@ -678,7 +683,7 @@ function FieldInput:clearEdges()
   self.actionPressed = nil
   self.cancelPressed = nil
   self.menuPressed = nil
-  self.apricornBoxPressed = nil
+  self.registeredSlotPressed = nil
 end
 
 -- Focus loss clears held, edge, and queued UI state entirely, including every
@@ -697,7 +702,7 @@ function FieldInput:clearAll()
   self.cancelDown = false
   self.menuSources = {}
   self.menuDown = false
-  self.apricornBoxSources = {}
+  self.registeredSources = { [1] = {}, [2] = {} }
   self.uiDirections = {}
   clearTransientUi(self)
   self.stickDirections = {}
@@ -716,6 +721,6 @@ end
 ---@field cancelPressed boolean?
 ---@field menuDown boolean
 ---@field menuPressed boolean?
----@field apricornBoxPressed boolean?
+---@field registeredSlotPressed integer?
 
 return FieldInput

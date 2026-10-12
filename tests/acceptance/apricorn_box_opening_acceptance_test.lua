@@ -12,11 +12,12 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "field-runtime", "map:127", "map-data:127", "apricorn-box:global" },
+    derivedAssets = { "field-runtime", "map:127", "map-data:127", "apricorn-box:global", "message-bank:376" },
     tags = { "field", "bag", "apricorn" },
   },
   tests = {},
@@ -51,6 +52,32 @@ local function bagView(game)
   local flow = assert(status.application, "the application host exposes the active menu flow")
   Assert.equal(flow.root, "bag", "the flow remains rooted in the Bag")
   return assert(flow.child, "the Bag flow exposes its current screen status")
+end
+
+local function apricornBoxView(game)
+  local view = bagView(game)
+  Assert.equal(view.mode, "browse", "the Bag flow keeps the Box in browse mode")
+  return view
+end
+
+local function tapBrowseAction(game, view, actionIndex)
+  local menu = assert(view.controls.actions.browse, "the browse action menu uses generated hit geometry")
+  local pane
+  for _, candidate in ipairs(assert(view.presentation.panes, "the Box plan publishes pane placements")) do
+    if candidate.id == "lower" then
+      pane = candidate
+      break
+    end
+  end
+  local placement = assert(assert(pane, "the Box plan has a lower pane").placement)
+  local logicalX = (menu.x + 1) * 8 + menu.width * 4
+  local logicalY = (menu.y + 1) * 8 + 24 * (actionIndex - 1) + 8
+  local hostX, hostY = LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
+  local source = "acceptance:apricorn-box-action:" .. tostring(actionIndex)
+  game.runtime.input:pointerDown(source, hostX, hostY)
+  game:step()
+  game.runtime.input:pointerUp(source, hostX, hostY)
+  game:step()
 end
 
 local function pressConfirm(game)
@@ -295,7 +322,20 @@ local function finishApricornManScript(game, scriptId)
       game:step()
     end
   end
-  error("the source Apricorn Box script did not finish its dialogue and grant", 0)
+  local snapshot = game:snapshot()
+  error(
+    "the source Apricorn Box script did not finish its dialogue and grant; flag="
+      .. tostring(game.runtime.scripts.worldState:isFlagSet(FLAG_GOT_APRICORN_BOX))
+      .. " quantity="
+      .. tostring(game.runtime.bagService:quantity(BOX_KEY))
+      .. " fieldLocked="
+      .. tostring(snapshot.fieldLocked)
+      .. " dialogue="
+      .. tostring(snapshot.dialogue.modal)
+      .. " scriptErrors="
+      .. tostring(#game:recordsForScript(scriptId, "script.error")),
+    0
+  )
 end
 
 function T.tests.route_30_apricorn_box_is_obtained_and_used_without_a_party_target()
@@ -319,6 +359,7 @@ function T.tests.route_30_apricorn_box_is_obtained_and_used_without_a_party_targ
     local mart = assert(game.runtime.martService, "the production field runtime owns Apricorn stock")
     Assert.equal(bag:quantity(BOX_KEY), 0, "the fresh profile has not collected the Box")
     Assert.equal(game.runtime.monService:partyCount(), 0, "the acquisition path has no party members")
+    Assert.isTrue(mart:tryGiveApricorn("RED_APRICORN", 3), "the journey seeds live stock for the browse actions")
     game:setWorldState({ flag = FLAG_GOT_BAG })
 
     local scriptId = talkToApricornMan(game)
@@ -354,8 +395,60 @@ function T.tests.route_30_apricorn_box_is_obtained_and_used_without_a_party_targ
     Assert.equal(flow.page, "apricorn_box", "Bag Use opens the Box directly without a party target")
     Assert.equal(bag:revision(), bagBeforeUse, "opening the Box does not change Bag inventory")
     Assert.equal(bag:quantity(BOX_KEY), 1, "the Box remains in the Bag while open")
+    local boxView = apricornBoxView(game)
+    Assert.equal(boxView.mode, "browse", "Bag Use opens the read-only browse mode")
+    Assert.equal(boxView.phase, "browse")
+    Assert.isFalse(type(boxView.flowMessage) == "string", "Bag browsing never shows Kurt's selection instruction")
     Assert.equal(mart:apricornTotal(), apricornBefore, "viewing the Box does not change Apricorn stock")
     Assert.deepEqual(mart:capture(), martBefore, "the read-only Box does not publish mart state")
+
+    pressConfirm(game)
+    game:advanceUntil("selecting stock opens the browse action menu", function()
+      local current = apricornBoxView(game)
+      return current.phase == "actions"
+    end, 120)
+    boxView = apricornBoxView(game)
+    Assert.isFalse(type(boxView.flowMessage) == "string", "the browse action menu never shows Kurt-only wording")
+    Assert.isTrue(type(boxView.actionLabels[2]) == "string", "the native USE label remains visible")
+    Assert.isTrue(type(boxView.actionLabels[3]) == "string", "the native TASTE label remains visible")
+    Assert.isTrue(type(boxView.actionLabels[4]) == "string", "the native CANCEL label remains visible")
+    Assert.deepEqual(boxView.actionsEnabled, { false, false, true }, "only browse CANCEL is enabled")
+    Assert.equal(boxView.selectedAction, 3, "focus starts on the only enabled browse action")
+    for _, direction in ipairs({ "up", "down" }) do
+      tapDirection(game, state, ({ up = "w", down = "s" })[direction])
+      boxView = apricornBoxView(game)
+      Assert.equal(boxView.selectedAction, 3, "disabled browse actions cannot receive keyboard focus")
+    end
+
+    local disabledRevision = bag:revision()
+    local disabledMart = mart:capture()
+    tapBrowseAction(game, boxView, 1)
+    boxView = apricornBoxView(game)
+    Assert.equal(boxView.phase, "actions", "touching disabled USE leaves the Box open")
+    Assert.equal(boxView.selectedAction, 3, "touching disabled USE cannot move focus")
+    tapBrowseAction(game, boxView, 2)
+    boxView = apricornBoxView(game)
+    Assert.equal(boxView.phase, "actions", "touching disabled TASTE leaves the Box open")
+    Assert.equal(boxView.selectedAction, 3, "touching disabled TASTE cannot move focus")
+    Assert.equal(bag:revision(), disabledRevision, "disabled actions do not change Bag state")
+    Assert.equal(bag:quantity(BOX_KEY), 1, "disabled actions do not consume the Box")
+    Assert.deepEqual(mart:capture(), disabledMart, "disabled actions do not change Apricorn or Kurt state")
+    Assert.equal(mart:apricornTotal(), apricornBefore, "disabled actions leave stock untouched")
+    Assert.equal(
+      hostStatus(game).application.page,
+      "apricorn_box",
+      "disabled actions do not publish a close or success result"
+    )
+
+    pressConfirm(game)
+    game:advanceUntil("the enabled browse CANCEL returns to stock", function()
+      return apricornBoxView(game).phase == "browse"
+    end, 120)
+    Assert.equal(apricornBoxView(game).selectedIndex, 1, "CANCEL returns to the selected stock row")
+    Assert.isFalse(
+      type(apricornBoxView(game).flowMessage) == "string",
+      "returning to browse still hides Kurt-only wording"
+    )
 
     game.runtime:pressCancel()
     game:step()
@@ -382,7 +475,49 @@ function T.tests.route_30_apricorn_box_is_obtained_and_used_without_a_party_targ
   end
 end
 
-function T.tests.registered_apricorn_box_opens_the_browse_page_from_field_input()
+local function pressKeyboardShortcut(game, state, key)
+  state:keypressed(key)
+  game:step()
+  state:keyreleased(key)
+end
+
+local function pressGamepadShortcut(game, state, joystick, button)
+  state:gamepadpressed(joystick, button)
+  game:step()
+  state:gamepadreleased(joystick, button)
+end
+
+local function assertBoxClosed(game, label)
+  Assert.isNil(game.runtime.kurtBoxHost:status(), label)
+  Assert.equal(
+    hostStatus(game).phase,
+    FieldApplicationHost.PHASES.closed,
+    "the shortcut leaves field applications closed"
+  )
+end
+
+local function assertBoxOpened(game, label)
+  game:advanceUntil(label, function()
+    local status = game.runtime.kurtBoxHost:status()
+    return status ~= nil and status.hostMode == "browse" and status.phase == "browse"
+  end, 120)
+  local status = assert(game.runtime.kurtBoxHost:status(), "the registered shortcut opens the Apricorn Box")
+  Assert.equal(status.hostMode, "browse", "the registered shortcut opens the browse screen")
+  Assert.equal(status.phase, "browse", "the registered shortcut uses the native browse mode")
+  game.runtime.kurtBoxHost:setPresentationReady(assert(game.runtime.kurtBoxHost:activeHandle()), true)
+  Assert.equal(hostStatus(game).phase, FieldApplicationHost.PHASES.closed, "the shortcut does not open Start Menu")
+end
+
+local function closeRegisteredBox(game)
+  game.runtime:pressCancel()
+  game:step()
+  game.runtime:releaseCancel()
+  game:advanceUntil("Cancel closes the registered Box", function()
+    return game.runtime.kurtBoxHost:status() == nil
+  end, 120)
+end
+
+function T.tests.registered_apricorn_box_shortcuts_target_each_slot_on_keyboard_and_gamepad()
   local harness = AcceptanceHarness.new()
   local defaultGameFactory = harness.gameFactory
   harness.gameFactory = function(versionId, map)
@@ -412,36 +547,41 @@ function T.tests.registered_apricorn_box_opens_the_browse_page_from_field_input(
         return 1
       end,
     }
-    state:gamepadpressed(joystick, "y")
-    game:step()
-    state:gamepadreleased(joystick, "y")
-    Assert.equal(hostStatus(game).phase, FieldApplicationHost.PHASES.closed, "Y does not open an unregistered Box")
-    Assert.isNil(game.runtime.kurtBoxHost:status(), "unregistered Y leaves the Box closed")
-
     Assert.equal(bag:tryRegister("BICYCLE"), "slot1", "the different Key Item occupies the registered slot")
-    state:gamepadpressed(joystick, "y")
-    game:step()
-    state:gamepadreleased(joystick, "y")
-    Assert.equal(
-      hostStatus(game).phase,
-      FieldApplicationHost.PHASES.closed,
-      "Y does not open the Apricorn Box when another Key Item is registered"
-    )
-    Assert.isNil(game.runtime.kurtBoxHost:status(), "another registered item leaves the Box closed")
+    Assert.equal(bag:tryRegister(BOX_KEY), "slot2", "the Box can occupy the second registered slot")
+    local bicycleFirst = bag:registeredItems()
 
-    Assert.isTrue(bag:unregister("BICYCLE"), "the live Bag service clears the other registered Key Item")
-    Assert.equal(bag:tryRegister(BOX_KEY), "slot1", "the live Bag service registers the Apricorn Box")
-    state:gamepadpressed(joystick, "y")
-    game:step()
-    state:gamepadreleased(joystick, "y")
-    game:advanceUntil("Y opens the Apricorn Box browse screen", function()
-      local status = game.runtime.kurtBoxHost:status()
-      return status ~= nil and status.hostMode == "browse" and status.phase == "browse"
-    end, 120)
-    local boxStatus = assert(game.runtime.kurtBoxHost:status(), "the registered shortcut opens the Apricorn Box")
-    Assert.equal(boxStatus.hostMode, "browse", "the registered shortcut opens the browse screen")
-    Assert.equal(boxStatus.phase, "browse", "the registered shortcut uses the native browse mode")
-    Assert.equal(hostStatus(game).phase, FieldApplicationHost.PHASES.closed, "the shortcut does not open Start Menu")
+    pressKeyboardShortcut(game, state, "y")
+    assertBoxClosed(game, "keyboard Y does not open the Box in slot 2")
+    pressKeyboardShortcut(game, state, "u")
+    assertBoxOpened(game, "keyboard U opens the Box in slot 2")
+    closeRegisteredBox(game)
+
+    pressGamepadShortcut(game, state, joystick, "y")
+    assertBoxClosed(game, "gamepad Y does not open the Box in slot 2")
+    pressGamepadShortcut(game, state, joystick, "rightshoulder")
+    assertBoxOpened(game, "gamepad right shoulder opens the Box in slot 2")
+    closeRegisteredBox(game)
+
+    Assert.isTrue(bag:unregister("BICYCLE"), "unregistering slot 1 compacts the Box into slot 1")
+    Assert.equal(bag:tryRegister("BICYCLE"), "slot2", "the different Key Item now occupies slot 2")
+    local boxFirst = bag:registeredItems()
+    Assert.deepEqual(boxFirst, { BOX_KEY, "BICYCLE" }, "the live registration order is reversed")
+
+    pressKeyboardShortcut(game, state, "y")
+    assertBoxOpened(game, "keyboard Y opens the Box in slot 1")
+    closeRegisteredBox(game)
+    pressKeyboardShortcut(game, state, "u")
+    assertBoxClosed(game, "keyboard U does not open the Box in slot 1")
+
+    pressGamepadShortcut(game, state, joystick, "y")
+    assertBoxOpened(game, "gamepad Y opens the Box in slot 1")
+    closeRegisteredBox(game)
+    pressGamepadShortcut(game, state, joystick, "rightshoulder")
+    assertBoxClosed(game, "gamepad right shoulder does not open the Box in slot 1")
+
+    Assert.deepEqual(bag:registeredItems(), boxFirst, "shortcut attempts preserve the current Bag registrations")
+    Assert.deepEqual(bicycleFirst, { "BICYCLE", BOX_KEY }, "the first slot order was captured before reordering")
     Assert.equal(game:renderAttempts(), 0, "the journey stops before GPU rendering")
   end, debug.traceback)
   game:close()

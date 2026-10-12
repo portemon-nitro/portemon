@@ -766,6 +766,7 @@ end
 ---@param self FieldSession
 ---@param inputSnapshot table<string, unknown>
 ---@return boolean playerInputOwnedAtTickStart
+---@return boolean modalInputOwnedAtTickStart
 local function runScriptPhase(self, inputSnapshot)
   local playerInputOwnedAtTickStart = playerInputOwned(self.scriptScheduler)
   local schedulerInput = self._tickScratch.schedulerInput
@@ -800,6 +801,18 @@ local function runScriptPhase(self, inputSnapshot)
   local pcApplicationModal = pcApplications:isActive()
   local pokemonNaming = self.pokemonNaming
   local pokemonNamingModal = pokemonNaming ~= nil and pokemonNaming:isActive()
+  local modalInputOwnedAtTickStart = menuModal
+    or contextChoiceModal
+    or yesNoModal
+    or starterChoiceModal
+    or partySelectionModal
+    or martModal
+    or kurtBoxModal
+    or pcApplicationModal
+    or pokemonNamingModal
+    or self.dialogue:isModal()
+    or self.signpost:isModal()
+    or self.applicationHost:isActive()
   assert(not (starterChoiceModal and pokemonNamingModal), "script-owned field modals are mutually exclusive")
   assert(
     not (martModal and (starterChoiceModal or pokemonNamingModal or partySelectionModal or pcApplicationModal)),
@@ -934,7 +947,7 @@ local function runScriptPhase(self, inputSnapshot)
   elseif kurtBoxModal and not kurtBoxNowModal then
     self.input:clearUi()
   end
-  return playerInputOwnedAtTickStart
+  return playerInputOwnedAtTickStart, modalInputOwnedAtTickStart
 end
 
 function FieldSession:updateFixed(inputSnapshot)
@@ -1074,7 +1087,7 @@ function FieldSession:updateFixed(inputSnapshot)
   end
 
   self.actors:beginFixedStep()
-  local playerInputOwnedAtTickStart = runScriptPhase(self, inputSnapshot)
+  local playerInputOwnedAtTickStart, modalInputOwnedAtTickStart = runScriptPhase(self, inputSnapshot)
   if advancePostSchedulerBoundary(self) == TICK_CONSUMED then
     return
   end
@@ -1089,7 +1102,10 @@ function FieldSession:updateFixed(inputSnapshot)
 
   local playerInputOwnedAfterScheduler = isPlayerInputOwned(self.scriptScheduler)
   local foregroundActive = isForegroundActive(self.scriptScheduler)
-  local inputSuppressedThisTick = playerInputOwnedAtTickStart or playerInputOwnedAfterScheduler or self.battleActive
+  local inputSuppressedThisTick = playerInputOwnedAtTickStart
+    or playerInputOwnedAfterScheduler
+    or self.battleActive
+    or modalInputOwnedAtTickStart
 
   -- Start Menu arbitration: a pending script reopen request (opcode 61's
   -- startMenuReopen service) opens the menu unconditionally at this point,
@@ -1108,10 +1124,11 @@ function FieldSession:updateFixed(inputSnapshot)
     return
   end
   if
-    inputSnapshot.apricornBoxPressed
+    inputSnapshot.registeredSlotPressed
     and kurtBoxHost ~= nil
+    and not inputSuppressedThisTick
     and canOpenStartMenu(self)
-    and kurtBoxHost:openRegisteredBrowse()
+    and kurtBoxHost:openRegisteredBrowse(inputSnapshot.registeredSlotPressed)
   then
     self.input:beginUi(self.tick + 1)
     self:_advanceTick()
