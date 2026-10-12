@@ -45,6 +45,14 @@ TrainerAi.OPENING_SCORE = 100
 local initThresholds
 local executePrograms
 local buildEvaluationFacts
+-- Identity projection shared across one decision, defined beside the
+-- slot compiler below.
+local identityOf
+-- Immutable catalog maps shared across one decision, defined with the
+-- scoring extras below.
+local moveIdMap
+local fullMoveMap
+local projectNaturalGifts
 
 -- Schema mark for the persisted native record. The entry-turn table keyed
 -- by combatant identity joins the record at mark 3 with stale rejection
@@ -1025,16 +1033,231 @@ local function staticFacts(speciesFacts, mon)
   return static --[[@as table<string, unknown>]]
 end
 
+---@param authorities TrainerAiAuthorities session-owned read authorities
 ---@param mon table<string, unknown> battle mon record under evaluation
 ---@param stages unknown battle-local stat stages for the entry
----@param speciesFacts table<string, table<integer, table<string, unknown>>> static species facts by species and form
+---@param shared TrainerAiDecisionShared? decision-local identity cache, when answering
 ---@return TrainerAiStats level and stage-effective battle stats for evaluation
-local function estimateFighter(mon, stages, speciesFacts)
+local function estimateFighter(authorities, mon, stages, shared)
+  local identity = identityOf(shared, authorities, mon)
+  if type(stages) ~= "table" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its battle-local stages", {}))
+  end
+  local staged = stages --[[@as table<string, integer>]]
+  local combat = {
+    level = identity.level,
+    types = {} --[[@as string[] ]],
+    attack = 0,
+    defense = 0,
+    specialAttack = 0,
+    specialDefense = 0,
+  }
+  -- Types ride the admitted identity: the projection validated each
+  -- semantic key once, so scoring and switch preparation copy without
+  -- re-checking.
+  for _, key in ipairs(identity.types) do
+    combat.types[#combat.types + 1] = key
+  end
+  for _, key in ipairs({ "attack", "defense", "specialAttack", "specialDefense" }) do
+    local stage = staged[key] or 0
+    if type(stage) ~= "number" or stage % 1 ~= 0 or stage < StatStages.MIN or stage > StatStages.MAX then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its battle-local stages", {}))
+    end
+    combat[key] = StatStages.effective(identity.unstaged[key] --[[@as integer]], stage, key)
+  end
+  return combat
+end
+
+---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
+---@param key unknown executing move identity under resolution
+---@return table<string, unknown> immutable move facts for the identity
+local function factsFor(moveFacts, key)
+  if type(key) ~= "string" or key == "" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its move identity", {}))
+  end
+  local record = moveFacts[key]
+  if type(record) ~= "table" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move facts", { key = key }))
+  end
+  return record
+end
+
+---@class TrainerAiStaticSlot
+---@field key string executing move identity, empty for vacant slots
+---@field id integer numeric move identity, zero for vacant slots
+---@field moveType string semantic move type
+---@field power integer compiled move power, zero for status moves
+---@field category string physical, special, or status
+---@field accuracy integer compiled hit chance
+---@field effect integer compiled move effect identity gating routine draws
+
+--- Compiles one move entry into its static slot facts. Vacant entries
+--- answer nil so the caller stages the native vacant shape; anything
+--- less than the full compiled shape fails closed at this site.
+---@param entry unknown battle move entry under slot resolution
+---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
+---@return TrainerAiStaticSlot? static slot facts, nil for vacant entries
+local function compileSlot(entry, moveFacts)
+  if type(entry) ~= "table" then
+    return nil
+  end
+  local record = entry --[[@as table<string, unknown>]]
+  local facts = factsFor(moveFacts, record.move)
+  local nativeId = facts.nativeId
+  if type(nativeId) ~= "number" or nativeId % 1 ~= 0 or nativeId <= 0 then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its numeric move identity", {
+      key = record.move,
+    }))
+  end
+  local power = facts.power
+  local moveType = facts.moveType
+  local category = facts.category
+  local accuracy = facts.accuracy
+  local effect = facts.effect
+  if type(power) ~= "number" or power % 1 ~= 0 or power < 0 then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move power", { key = record.move }))
+  end
+  if type(effect) ~= "number" or effect % 1 ~= 0 or effect < 0 then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move effect", { key = record.move }))
+  end
+  if type(moveType) ~= "string" or moveType == "" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its move type", { key = record.move }))
+  end
+  if type(category) ~= "string" or category == "" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its move category", { key = record.move }))
+  end
+  if type(accuracy) ~= "number" or accuracy % 1 ~= 0 or accuracy < 0 then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its compiled accuracy", { key = record.move }))
+  end
+  return {
+    key = record.move,
+    id = nativeId --[[@as integer]],
+    moveType = moveType,
+    power = power,
+    category = category,
+    accuracy = accuracy,
+    effect = effect --[[@as integer]],
+  }
+end
+
+--- Stages the static half of the native vacant slot shape for the
+--- identity projection; power points overlay live at each use.
+---@return TrainerAiStaticSlot vacant static slot facts
+local function vacantStatic()
+  return {
+    key = "",
+    id = 0,
+    moveType = "typeless",
+    power = 0,
+    category = "status",
+    accuracy = 0,
+    effect = 0,
+  }
+end
+
+--- Stages the native vacant slot shape for unscouted entries.
+---@return TrainerAiMove vacant slot facts in source order
+local function vacantSlot()
+  return {
+    key = "",
+    id = 0,
+    moveType = "typeless",
+    power = 0,
+    category = "status",
+    accuracy = 0,
+    effect = 0,
+    pp = 0,
+    usable = false,
+  }
+end
+
+---@param authorities TrainerAiAuthorities session-owned read authorities
+---@param mon table<string, unknown> battle mon record under slot resolution
+---@param shared TrainerAiDecisionShared? decision-local identity cache, when answering
+---@return TrainerAiMove[] four native move slots in source order
+local function resolveSlots(authorities, mon, shared)
+  local identity = identityOf(shared, authorities, mon)
+  local entries = mon.moves
+  local slots = {}
+  for index = 1, 4 do
+    local entry = entries[index]
+    if type(entry) ~= "table" then
+      slots[index] = vacantSlot()
+    else
+      local liveKey = (entry --[[@as table<string, unknown>]]).move
+      local static = identity.slots[index]
+      local compiled = nil
+      if liveKey == static.key and static.key ~= "" then
+        compiled = static
+      else
+        -- The live entry left the admitted projection (no
+        -- in-decision writer does this): compile from source state.
+        compiled = compileSlot(entry, authorities.moveFacts) or vacantStatic()
+      end
+      -- Power points and usability always re-read live at this point.
+      local pp = (entry --[[@as table<string, unknown>]]).pp
+      slots[index] = {
+        key = compiled.key,
+        id = compiled.id,
+        moveType = compiled.moveType,
+        power = compiled.power,
+        category = compiled.category,
+        accuracy = compiled.accuracy,
+        effect = compiled.effect,
+        pp = pp,
+        usable = type(pp) ~= "number" or pp > 0,
+      }
+    end
+  end
+  return slots
+end
+
+---@class TrainerAiIdentity decision-lifetime static projection for one mon
+---@field level integer battle level from growth and experience
+---@field unstaged table<string, integer> derived stats before stage application
+---@field types string[] semantic combatant types in declared order
+---@field gender integer native gender identity, 2 when unstated
+---@field weightHg unknown native weight under preview
+---@field slots TrainerAiStaticSlot[] compiled move slots in source order, vacant slots staged native
+
+---@class TrainerAiDecisionShared decision-local shared evaluation state
+---@field identities table<table<string, unknown>, TrainerAiIdentity> static projections by live mon record
+---@field authorities TrainerAiAuthorities session-owned read authorities
+---@field moveIdByKey table<string, integer>? native move identities by key, built on first scoring use
+---@field fullMoveById table<integer, table<string, unknown>>? compiled move facts by native identity
+---@field naturalGifts table<integer, table<string, integer>>? gift power by native item identity
+
+--- Opens the decision-local shared state for one answer. The cache dies
+--- with the answer: later answers rebuild from live battle state, so no
+--- cross-decision projection ever survives a state change.
+---@param authorities TrainerAiAuthorities session-owned read authorities
+---@return TrainerAiDecisionShared empty decision-local shared state
+local function newDecisionShared(authorities)
+  return { identities = {}, authorities = authorities }
+end
+
+--- Builds (or reuses) the detached static identity for one mon from its
+--- canonical admitted records: species/form growth, derived base stats,
+--- semantic types, and compiled move slots. Every check below already
+--- guarded the first touch of these fields, so later consumers copy
+--- without re-checking; live facts (health, status, stages, volatiles,
+--- held state, history, power points) never enter this record.
+---@param shared TrainerAiDecisionShared? decision-local identity cache, when answering
+---@param authorities TrainerAiAuthorities session-owned read authorities
+---@param mon table<string, unknown> battle mon record under evaluation
+---@return TrainerAiIdentity detached static identity for the decision
+function identityOf(shared, authorities, mon)
+  if shared ~= nil then
+    local cached = shared.identities[mon]
+    if cached ~= nil then
+      return cached
+    end
+  end
   if type(mon) ~= "table" then
     error(BattleErrors.missingBehavior("trainer evaluation reads its combat facts", { fact = "mon" }))
   end
   local record = mon --[[@as table<string, unknown>]]
-  local static = staticFacts(speciesFacts, record)
+  local static = staticFacts(authorities.speciesFacts, record)
   if type(static.baseStats) ~= "table" or type(static.growthCurve) ~= "table" or type(static.types) ~= "table" then
     error(BattleErrors.missingBehavior("trainer evaluation reads its static species facts", {
       fact = record.species,
@@ -1060,117 +1283,86 @@ local function estimateFighter(mon, stages, speciesFacts)
     level,
     nature
   )
-  if type(stages) ~= "table" then
-    error(BattleErrors.missingBehavior("trainer evaluation reads its battle-local stages", {}))
-  end
-  local staged = stages --[[@as table<string, integer>]]
-  local combat = {
-    level = level,
-    types = {} --[[@as string[] ]],
-    attack = 0,
-    defense = 0,
-    specialAttack = 0,
-    specialDefense = 0,
-  }
+  local types = {} ---@type string[]
   for _, key in
     ipairs(static.types --[[@as string[] ]])
   do
     if type(key) ~= "string" or key == "" then
       error(BattleErrors.missingBehavior("trainer evaluation reads its semantic type facts", { fact = "types" }))
     end
-    combat.types[#combat.types + 1] = key
+    types[#types + 1] = key
   end
-  for _, key in ipairs({ "attack", "defense", "specialAttack", "specialDefense" }) do
-    local stage = staged[key] or 0
-    if type(stage) ~= "number" or stage % 1 ~= 0 or stage < StatStages.MIN or stage > StatStages.MAX then
-      error(BattleErrors.missingBehavior("trainer evaluation reads its battle-local stages", {}))
+  local gender = 2
+  local ratio = static.genderRatio
+  if type(ratio) == "number" then
+    local genders = Personality.gender(ratio, personality)
+    if genders == "male" then
+      gender = 0
+    elseif genders == "female" then
+      gender = 1
     end
-    combat[key] = StatStages.effective(stats[key] --[[@as integer]], stage, key)
   end
-  return combat
-end
-
----@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
----@param key unknown executing move identity under resolution
----@return table<string, unknown> immutable move facts for the identity
-local function factsFor(moveFacts, key)
-  if type(key) ~= "string" or key == "" then
-    error(BattleErrors.missingBehavior("trainer evaluation reads its move identity", {}))
-  end
-  local record = moveFacts[key]
-  if type(record) ~= "table" then
-    error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move facts", { key = key }))
-  end
-  return record
-end
-
----@param mon table<string, unknown> battle mon record under slot resolution
----@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
----@return TrainerAiMove[] four native move slots in source order
-local function resolveSlots(mon, moveFacts)
-  local entries = mon.moves
+  local entries = record.moves
   if type(entries) ~= "table" then
     error(BattleErrors.missingBehavior("trainer evaluation reads its move entries", {}))
   end
-  local slots = {}
+  local slots = {} ---@type TrainerAiStaticSlot[]
   for index = 1, 4 do
-    local entry = entries[index]
-    if type(entry) ~= "table" then
-      slots[index] = {
-        key = "",
-        id = 0,
-        moveType = "typeless",
-        power = 0,
-        category = "status",
-        accuracy = 0,
-        effect = 0,
-        pp = 0,
-        usable = false,
-      }
+    local compiled = compileSlot(entries[index], authorities.moveFacts)
+    if compiled == nil then
+      slots[index] = vacantStatic()
     else
-      local record = entry --[[@as table<string, unknown>]]
-      local facts = factsFor(moveFacts, record.move)
-      local nativeId = facts.nativeId
-      if type(nativeId) ~= "number" or nativeId % 1 ~= 0 or nativeId <= 0 then
-        error(BattleErrors.missingBehavior("trainer evaluation reads its numeric move identity", {
-          key = record.move,
-        }))
-      end
-      local power = facts.power
-      local moveType = facts.moveType
-      local category = facts.category
-      local accuracy = facts.accuracy
-      local effect = facts.effect
-      if type(power) ~= "number" or power % 1 ~= 0 or power < 0 then
-        error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move power", { key = record.move }))
-      end
-      if type(effect) ~= "number" or effect % 1 ~= 0 or effect < 0 then
-        error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move effect", { key = record.move }))
-      end
-      if type(moveType) ~= "string" or moveType == "" then
-        error(BattleErrors.missingBehavior("trainer evaluation reads its move type", { key = record.move }))
-      end
-      if type(category) ~= "string" or category == "" then
-        error(BattleErrors.missingBehavior("trainer evaluation reads its move category", { key = record.move }))
-      end
-      if type(accuracy) ~= "number" or accuracy % 1 ~= 0 or accuracy < 0 then
-        error(BattleErrors.missingBehavior("trainer evaluation reads its compiled accuracy", { key = record.move }))
-      end
-      local pp = record.pp
-      slots[index] = {
-        key = record.move,
-        id = nativeId --[[@as integer]],
-        moveType = moveType,
-        power = power,
-        category = category,
-        accuracy = accuracy,
-        effect = effect --[[@as integer]],
-        pp = record.pp,
-        usable = type(pp) ~= "number" or pp > 0,
-      }
+      slots[index] = compiled
     end
   end
-  return slots
+  local identity = {
+    level = level,
+    unstaged = {
+      attack = stats.attack,
+      defense = stats.defense,
+      specialAttack = stats.specialAttack,
+      specialDefense = stats.specialDefense,
+      speed = stats.speed,
+    },
+    types = types,
+    gender = gender,
+    weightHg = static.weightHg,
+    slots = slots,
+  }
+  if shared ~= nil then
+    shared.identities[mon] = identity
+  end
+  return identity
+end
+
+--- Reads the shared native move identities, building them once per
+--- decision from the immutable session catalog on first scoring use so
+--- switch and item gates keep their source error timing.
+---@param shared TrainerAiDecisionShared decision-local shared state
+---@return table<string, integer> native move identities by key
+local function sharedMoveIds(shared)
+  if shared.moveIdByKey == nil then
+    shared.moveIdByKey = moveIdMap(shared.authorities)
+  end
+  return shared.moveIdByKey --[[@as table<string, integer>]]
+end
+
+---@param shared TrainerAiDecisionShared decision-local shared state
+---@return table<integer, table<string, unknown>> compiled move facts by native identity
+local function sharedFullMoves(shared)
+  if shared.fullMoveById == nil then
+    shared.fullMoveById = fullMoveMap(shared.authorities)
+  end
+  return shared.fullMoveById --[[@as table<integer, table<string, unknown>>]]
+end
+
+---@param shared TrainerAiDecisionShared decision-local shared state
+---@return table<integer, table<string, integer>> gift power by native item identity
+local function sharedGifts(shared)
+  if shared.naturalGifts == nil then
+    shared.naturalGifts = projectNaturalGifts(shared.authorities)
+  end
+  return shared.naturalGifts --[[@as table<integer, table<string, integer>>]]
 end
 
 ---@param state table<string, unknown> live battle state under inspection
@@ -1467,19 +1659,17 @@ end
 ---@param state table<string, unknown> live battle state under inspection
 ---@param authorities TrainerAiAuthorities session-owned read authorities
 ---@param holderId integer acting combatant under the history read
+---@param shared TrainerAiDecisionShared? decision-local identity cache, when answering
 ---@return TrainerAiResolvedHit? resolved striking facts, nil when never struck
-local function resolveReceivedHit(state, authorities, holderId)
+local function resolveReceivedHit(state, authorities, holderId, shared)
   local hit = receivedHit(state, holderId)
   if hit == nil then
     return nil
   end
   local moveType, power = hitMoveFacts(authorities.moveFacts, hit.move --[[@as string]])
   local userCombatant = BattleState.combatant(state, hit.user --[[@as integer]])
-  local userTypes = estimateFighter(
-    userCombatant.mon --[[@as table<string, unknown>]],
-    userCombatant.stages,
-    authorities.speciesFacts
-  ).types
+  local userTypes =
+    estimateFighter(authorities, userCombatant.mon --[[@as table<string, unknown>]], userCombatant.stages, shared).types
   return {
     move = hit.move --[[@as string]],
     user = hit.user --[[@as integer]],
@@ -1761,8 +1951,9 @@ end
 ---@param authorities TrainerAiAuthorities session-owned read authorities
 ---@param facts TrainerAiSwitchFacts evaluated switch facts for the holder
 ---@param stream table<string, unknown> caller-owned battle stream for branch draws
+---@param shared TrainerAiDecisionShared? decision-local identity cache, when answering
 ---@return integer? benched combatant answering the threat, nil when the holder stays
-local function selectReplacement(state, authorities, facts, stream)
+local function selectReplacement(state, authorities, facts, stream, shared)
   local chart = authorities.chart
   if #facts.reserves == 0 then
     return nil
@@ -1787,7 +1978,7 @@ local function selectReplacement(state, authorities, facts, stream)
     -- Absorb-ability tail (ov10_0221FE8C past its head): a never-struck
     -- holder stays without drawing while a recorded last hit scans the
     -- bench for its guard reply.
-    local hit = resolveReceivedHit(state, authorities, facts.holderId)
+    local hit = resolveReceivedHit(state, authorities, facts.holderId, shared)
     if hit ~= nil and hit.power > 0 then
       local exchange = absorbSwitch(state, facts.holderAbility, hit.moveType, facts.reserves, stream)
       if exchange ~= nil then
@@ -1807,7 +1998,7 @@ local function selectReplacement(state, authorities, facts, stream)
       -- resist tails stay without drawing, and the open coin closes. A
       -- powerless last hit spends only its status-move coin before the
       -- tails; a damaging one probes first and closes on the final coin.
-      local hit = resolveReceivedHit(state, authorities, facts.holderId)
+      local hit = resolveReceivedHit(state, authorities, facts.holderId, shared)
       if hit == nil then
         if stream:nextU16("switch_relief_roll", {}) % 2 == 1 then
           return facts.reserves[1].id
@@ -1847,7 +2038,7 @@ local function selectReplacement(state, authorities, facts, stream)
   -- Immunity and resist tails (ov10_02220010 with stay odds 2 and 3):
   -- both key on the last-hit move and its user, staying without drawing
   -- while the holder stands never struck.
-  local tail = resolveReceivedHit(state, authorities, facts.holderId)
+  local tail = resolveReceivedHit(state, authorities, facts.holderId, shared)
   if tail ~= nil then
     local exchange = effectTail(chart, tail.moveType, tail.userTypes, facts.reserves, stream, true, 2)
     if exchange ~= nil then
@@ -2266,12 +2457,13 @@ end
 
 ---@param authorities TrainerAiAuthorities session-owned read authorities
 ---@param combatant table<string, unknown> acting combatant under evaluation
+---@param shared TrainerAiDecisionShared? decision-local identity cache, when answering
 ---@return TrainerAiActorFacts evaluated actor facts for attack selection
-local function actorFacts(authorities, combatant)
+local function actorFacts(authorities, combatant, shared)
   return {
     combatant = combatant,
-    user = estimateFighter(combatant.mon --[[@as table<string, unknown>]], combatant.stages, authorities.speciesFacts),
-    slots = resolveSlots(combatant.mon --[[@as table<string, unknown>]], authorities.moveFacts),
+    user = estimateFighter(authorities, combatant.mon --[[@as table<string, unknown>]], combatant.stages, shared),
+    slots = resolveSlots(authorities, combatant.mon --[[@as table<string, unknown>]], shared),
   }
 end
 
@@ -2369,7 +2561,7 @@ end
 --- staging a guessed power later.
 ---@param authorities TrainerAiAuthorities session-owned read authorities
 ---@return table<integer, table<string, integer>> gift power by native item identity under preview
-local function projectNaturalGifts(authorities)
+function projectNaturalGifts(authorities)
   local items = authorities.itemFacts
   if type(items) ~= "table" then
     error(BattleErrors.missingBehavior("trainer evaluation reads its compiled item facts", {}))
@@ -2411,8 +2603,9 @@ end
 ---@param combatant table<string, unknown> acting combatant under evaluation
 ---@param moveIdByKey table<string, integer> native move identities by move key
 ---@param heldEffects table<integer, integer> native hold-effect bytes by native item identity under evaluation
+---@param shared TrainerAiDecisionShared? decision-local identity cache, when answering
 ---@return table<string, unknown> live evaluation context for scoring
-local function battlerProgramFacts(state, authorities, combatant, moveIdByKey, heldEffects)
+local function battlerProgramFacts(state, authorities, combatant, moveIdByKey, heldEffects, shared)
   local combatantId = combatant.id --[[@as integer]]
   local function hasVolatile(key)
     local bag = state.effectBag
@@ -2431,19 +2624,12 @@ local function battlerProgramFacts(state, authorities, combatant, moveIdByKey, h
     return false
   end
   local mon = combatant.mon --[[@as table<string, unknown>]]
-  local speciesFacts = authorities.speciesFacts
-  local static = staticFacts(speciesFacts, mon)
-  local experience = mon.experience --[[@as integer]]
-  local personality = mon.personality --[[@as integer]]
-  local level = Experience.level(static.growthCurve --[[@as integer[] ]], experience)
-  local nature = Personality.nature(personality)
-  local base = Stats.calculate(
-    static.baseStats --[[@as table<string, integer>]],
-    mon.ivs --[[@as table<string, integer>]],
-    mon.evs --[[@as table<string, integer>]],
-    level,
-    nature
-  )
+  -- Static growth, derived stats, and type identity ride the admitted
+  -- decision projection; health, stages, volatiles, and held/move state
+  -- below still re-read live at this source point.
+  local identity = identityOf(shared, authorities, mon)
+  local level = identity.level
+  local base = identity.unstaged
   local stages = combatant.stages
   if type(stages) ~= "table" then
     error(BattleErrors.missingBehavior("trainer evaluation reads its battle-local stages", {}))
@@ -2503,7 +2689,7 @@ local function battlerProgramFacts(state, authorities, combatant, moveIdByKey, h
   local t1 = 0
   local t2 = 0
   local typeIds = TrainerAiProgram.TYPE_IDS --[[@as table<string, integer>]]
-  local formTypes = static.types --[[@as string[] ]]
+  local formTypes = identity.types
   if type(formTypes[1]) == "string" then
     t1 = typeIds[formTypes[1]] or -1
   end
@@ -2515,17 +2701,8 @@ local function battlerProgramFacts(state, authorities, combatant, moveIdByKey, h
   if t1 == -1 or t2 == -1 then
     error(BattleErrors.missingBehavior("trainer evaluation reads its semantic types", {}))
   end
-  local gender = 2
-  local ratio = static.genderRatio
-  if type(ratio) == "number" then
-    local genders = Personality.gender(ratio, personality)
-    if genders == "male" then
-      gender = 0
-    elseif genders == "female" then
-      gender = 1
-    end
-  end
-  local weightHg = static.weightHg
+  local gender = identity.gender
+  local weightHg = identity.weightHg
   local entryWord = nil ---@type integer?
   local enteredWithItem = false
   local arrival = arrivalOf(state, combatantId)
@@ -2611,7 +2788,7 @@ local function battlerProgramFacts(state, authorities, combatant, moveIdByKey, h
   return record
 end
 
-local function moveIdMap(authorities)
+function moveIdMap(authorities)
   local map = {}
   for key, record in pairs(authorities.moveFacts) do
     local facts = record --[[@as table<string, unknown>]]
@@ -2623,7 +2800,7 @@ local function moveIdMap(authorities)
   return map
 end
 
-local function fullMoveMap(authorities)
+function fullMoveMap(authorities)
   local map = {}
   for _, record in pairs(authorities.moveFacts) do
     local facts = record --[[@as table<string, unknown>]]
@@ -2733,7 +2910,7 @@ local function partyMemberFacts(authorities, member, heldEffects)
   return record
 end
 
-local function buildLiveExtra(state, authorities, combatant, foeCombatant)
+local function buildLiveExtra(state, authorities, combatant, foeCombatant, shared)
   local extra = {} ---@type table<string, unknown>
   extra.round = state.round
   local formatDoubles = DOUBLE_FORMATS[
@@ -2748,15 +2925,15 @@ local function buildLiveExtra(state, authorities, combatant, foeCombatant)
     extra.battlerCount = 4
   end
   extra.liveBattlers = { [0] = true, [1] = true }
-  extra.moveIdByKey = moveIdMap(authorities)
-  extra.fullMoveById = fullMoveMap(authorities)
+  extra.moveIdByKey = sharedMoveIds(shared)
+  extra.fullMoveById = sharedFullMoves(shared)
   extra.fullMoveIdByKey = extra.moveIdByKey
   extra.heldEffects = {}
-  extra.naturalGifts = projectNaturalGifts(authorities)
+  extra.naturalGifts = sharedGifts(shared)
   local atkId = combatant.id --[[@as integer]]
   local foeId = foeCombatant.id --[[@as integer]]
-  local atkRecord = battlerProgramFacts(state, authorities, combatant, extra.moveIdByKey, extra.heldEffects)
-  local foeRecord = battlerProgramFacts(state, authorities, foeCombatant, extra.moveIdByKey, extra.heldEffects)
+  local atkRecord = battlerProgramFacts(state, authorities, combatant, extra.moveIdByKey, extra.heldEffects, shared)
+  local foeRecord = battlerProgramFacts(state, authorities, foeCombatant, extra.moveIdByKey, extra.heldEffects, shared)
   atkRecord.suppressed = volatilePresent(state, atkId, "GASTRO_ACID")
   foeRecord.suppressed = volatilePresent(state, foeId, "GASTRO_ACID")
   atkRecord.magnetRise = volatilePresent(state, atkId, "magnetrise")
@@ -2926,7 +3103,7 @@ local function buildLiveExtra(state, authorities, combatant, foeCombatant)
   return extra
 end
 
-local function evaluateSingles(state, authorities, facts, opponents, bits, stream)
+local function evaluateSingles(state, authorities, facts, opponents, bits, stream, shared)
   local foeIds = {}
   for _, opposed in ipairs(opponents) do
     foeIds[#foeIds + 1] = opposed.combatant
@@ -2940,12 +3117,12 @@ local function evaluateSingles(state, authorities, facts, opponents, bits, strea
   end
   assert(foePosition >= 1, "selected targets resolve to their position")
   local foe = BattleState.combatant(state, foeId)
-  local foeStats = estimateFighter(foe.mon --[[@as table<string, unknown>]], foe.stages, authorities.speciesFacts)
+  local foeStats = estimateFighter(authorities, foe.mon --[[@as table<string, unknown>]], foe.stages, shared)
   local foeHp = foe.hp
   if type(foeHp) ~= "number" or foeHp % 1 ~= 0 or foeHp < 0 then
     error(BattleErrors.missingBehavior("trainer evaluation reads its opposing health", {}))
   end
-  local live = buildLiveExtra(state, authorities, facts.combatant, foe)
+  local live = buildLiveExtra(state, authorities, facts.combatant, foe, shared)
   local scored = TrainerAi.scoreSlots(
     authorities.chart,
     facts.slots,
@@ -2977,17 +3154,18 @@ end
 ---@param byId table<integer, table<string, unknown>> live combatants by battler identity
 ---@param attackerId integer acting battler identity under evaluation
 ---@param targetId integer candidate battler identity under evaluation
+---@param shared TrainerAiDecisionShared decision-local shared state
 ---@return table<string, unknown> live evaluation context for scoring
-local function buildDoublesExtra(state, authorities, attacker, byId, attackerId, targetId)
+local function buildDoublesExtra(state, authorities, attacker, byId, attackerId, targetId, shared)
   local extra = {} ---@type table<string, unknown>
   extra.round = state.round
   extra.battleType = 3
   extra.battlerCount = 4
-  extra.moveIdByKey = moveIdMap(authorities)
-  extra.fullMoveById = fullMoveMap(authorities)
+  extra.moveIdByKey = sharedMoveIds(shared)
+  extra.fullMoveById = sharedFullMoves(shared)
   extra.fullMoveIdByKey = extra.moveIdByKey
   extra.heldEffects = {}
-  extra.naturalGifts = projectNaturalGifts(authorities)
+  extra.naturalGifts = sharedGifts(shared)
   local records = {}
   local live = {}
   local switchIn = {}
@@ -3094,7 +3272,7 @@ local function buildDoublesExtra(state, authorities, attacker, byId, attackerId,
     local combatant = byId[battler]
     if combatant ~= nil then
       local combatantId = combatant.id --[[@as integer]]
-      local record = battlerProgramFacts(state, authorities, combatant, extra.moveIdByKey, extra.heldEffects)
+      local record = battlerProgramFacts(state, authorities, combatant, extra.moveIdByKey, extra.heldEffects, shared)
       record.suppressed = volatilePresent(state, combatantId, "GASTRO_ACID")
       record.magnetRise = volatilePresent(state, combatantId, "magnetrise")
       record.miracleEye = volatilePresent(state, combatantId, "miracleeye")
@@ -3180,8 +3358,9 @@ end
 ---@param state table<string, unknown> live battle state under inspection
 ---@param bits integer[] enabled native flag bits in ascending order
 ---@param stream table<string, unknown> caller-owned battle stream for decision draws
+---@param shared TrainerAiDecisionShared decision-local shared state
 ---@return table<string, unknown> attack choice in the shared decision shape
-local function evaluateDoubles(authorities, facts, state, bits, stream)
+local function evaluateDoubles(authorities, facts, state, bits, stream, shared)
   local firstTurn = firstTurnOf(state)
   local evenIds = {}
   local oddIds = {}
@@ -3257,8 +3436,8 @@ local function evaluateDoubles(authorities, facts, state, bits, stream)
       local candidateHp = targetHp --[[@as integer]]
       if candidateHp > 0 then
         local targetStats =
-          estimateFighter(target.mon --[[@as table<string, unknown>]], target.stages, authorities.speciesFacts)
-        local live = buildDoublesExtra(state, authorities, facts.combatant, byId, attacker, candidate)
+          estimateFighter(authorities, target.mon --[[@as table<string, unknown>]], target.stages, shared)
+        local live = buildDoublesExtra(state, authorities, facts.combatant, byId, attacker, candidate, shared)
         local scored = TrainerAi.scoreSlots(
           authorities.chart,
           facts.slots,
@@ -3356,7 +3535,11 @@ local function answerActor(state, authorities, participant, actor, opponents, cl
   if type(active) ~= "table" or active.activation ~= actor.activation then
     error(BattleErrors.input("locked references die with their entry", { combatant = actor.combatant }))
   end
-  local facts = actorFacts(authorities, combatant)
+  -- One static identity projection serves switch preparation and attack
+  -- scoring for this answer; it dies with the answer while health,
+  -- stages, volatiles, and histories re-read live at every source point.
+  local shared = newDecisionShared(authorities)
+  local facts = actorFacts(authorities, combatant, shared)
   local holderHp, holderCeiling = holderHealth(combatant)
   if
     not switchHeld(state, actor.combatant --[[@as integer]], facts.user.types, opponents)
@@ -3368,12 +3551,8 @@ local function answerActor(state, authorities, participant, actor, opponents, cl
         local reserve = BattleState.combatant(state, reserveId)
         reserves[#reserves + 1] = {
           id = reserveId,
-          stats = estimateFighter(
-            reserve.mon --[[@as table<string, unknown>]],
-            reserve.stages,
-            authorities.speciesFacts
-          ),
-          slots = resolveSlots(reserve.mon --[[@as table<string, unknown>]], authorities.moveFacts),
+          stats = estimateFighter(authorities, reserve.mon --[[@as table<string, unknown>]], reserve.stages, shared),
+          slots = resolveSlots(authorities, reserve.mon --[[@as table<string, unknown>]], shared),
         }
       end
       local foes = {}
@@ -3386,7 +3565,7 @@ local function answerActor(state, authorities, participant, actor, opponents, cl
         foes[#foes + 1] = {
           id = opposed.combatant,
           position = opposed.position,
-          stats = estimateFighter(foe.mon --[[@as table<string, unknown>]], foe.stages, authorities.speciesFacts),
+          stats = estimateFighter(authorities, foe.mon --[[@as table<string, unknown>]], foe.stages, shared),
           hp = foeHp,
         }
       end
@@ -3423,7 +3602,7 @@ local function answerActor(state, authorities, participant, actor, opponents, cl
         foeWonderGuard = battleAbility(foeMon) == "WONDER_GUARD",
         foesScanned = #foes,
         foesHealthy = foesHealthy,
-      }, stream)
+      }, stream, shared)
       if exchange ~= nil then
         local verdict = Switching.eligible({
           reason = "voluntary",
@@ -3452,9 +3631,9 @@ local function answerActor(state, authorities, participant, actor, opponents, cl
   end
   local attack
   if doubles then
-    attack = evaluateDoubles(authorities, facts, state, bits, stream)
+    attack = evaluateDoubles(authorities, facts, state, bits, stream, shared)
   else
-    attack = evaluateSingles(state, authorities, facts, opponents, bits, stream)
+    attack = evaluateSingles(state, authorities, facts, opponents, bits, stream, shared)
   end
   attack.actor = actor
   return attack

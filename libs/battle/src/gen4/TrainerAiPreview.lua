@@ -113,6 +113,13 @@ local Preview = {}
 
 -- Forward declarations for the remaining matchup helpers defined below.
 local matchupRank
+-- File-private pure staging helpers shared by the damage and pipeline
+-- previews below. Both read only their arguments at the call site:
+-- stage doubling and held-effect resolution keep their source-timed
+-- reads, only organized once instead of once per simulated move.
+local doubledStages
+local heldEffectOf
+local requireHeldEffect
 local moveTypeOf
 local matchupValue
 local effectiveMoveType
@@ -483,6 +490,58 @@ local function stageBaseDamage(work)
   work.damage = damage
 end
 
+--- Doubles every stage offset around neutral, clamped to the native
+--- six-step range. Pure arithmetic over the caller-provided stages.
+---@param stages table<integer, integer> native stages under doubling
+---@return table<integer, integer> doubled native stages
+function doubledStages(stages)
+  local out = {}
+  for index = 1, 8 do
+    local delta = stages[index] --[[@as integer]] - 6
+    delta = delta * 2
+    if delta < -6 then
+      delta = -6
+    end
+    if delta > 6 then
+      delta = 6
+    end
+    out[index] = delta + 6
+  end
+  return out
+end
+
+--- Resolves one held identity to its effect byte from the
+--- decision-local held map. Absent holders resolve to effect 0 with
+--- presence 0 so each call site keeps its own missing-item law.
+---@param held table<integer, integer> native hold-effect bytes by native item identity
+---@param item integer native held item identity, 0 when none
+---@return integer effect byte, 0 when none
+---@return integer 1 while the held effect resolved
+function heldEffectOf(held, item)
+  if item == 0 then
+    return 0, 1
+  end
+  local resolved = held[item]
+  if resolved == nil then
+    return 0, 0
+  end
+  return resolved, 1
+end
+
+--- Resolves one held identity to its effect byte from the
+--- decision-local held map, failing closed exactly like the inline
+--- scans it replaces. Callers keep their own effect comparisons.
+---@param held table<integer, integer> native hold-effect bytes by native item identity
+---@param item integer native held item identity under evaluation
+---@return integer effect byte under evaluation
+function requireHeldEffect(held, item)
+  local effect = held[item]
+  if effect == nil then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its held item facts", { item = item }))
+  end
+  return effect
+end
+
 -- Staged damage estimate for one explicit move identity: the entry point
 -- stages every fact the estimate reads into the numeric work record,
 -- then runs the native stages in transcribed order.
@@ -504,26 +563,8 @@ local function calcPreview(state, moveId, power, moveType, category)
   local itemT = target.item --[[@as integer]]
   local held = facts.heldEffects --[[@as table<integer, integer>]]
   local modA = facts.heldMods --[[@as table<integer, integer>]]
-  local effA = 0
-  local hasEffA = 1
-  if itemA ~= 0 then
-    local resolved = held[itemA]
-    if resolved == nil then
-      hasEffA = 0
-    else
-      effA = resolved
-    end
-  end
-  local effT = 0
-  local hasEffT = 1
-  if itemT ~= 0 then
-    local resolved = held[itemT]
-    if resolved == nil then
-      hasEffT = 0
-    else
-      effT = resolved
-    end
-  end
+  local effA, hasEffA = heldEffectOf(held, itemA)
+  local effT, hasEffT = heldEffectOf(held, itemT)
   local modValue = modA[itemA]
   local attackerSpecies = attacker.species --[[@as string?]]
   local targetSpecies = target.species --[[@as string?]]
@@ -539,28 +580,13 @@ local function calcPreview(state, moveId, power, moveType, category)
   end
   local atkStages = attacker.stages --[[@as table<integer, integer>]]
   local defStages = target.stages --[[@as table<integer, integer>]]
-  local function doubled(stages)
-    local out = {}
-    for index = 1, 8 do
-      local delta = stages[index] --[[@as integer]] - 6
-      delta = delta * 2
-      if delta < -6 then
-        delta = -6
-      end
-      if delta > 6 then
-        delta = 6
-      end
-      out[index] = delta + 6
-    end
-    return out
-  end
   local pickedAtk = atkStages
   local pickedDef = defStages
   if abilityA == 86 then
-    pickedAtk = doubled(atkStages)
+    pickedAtk = doubledStages(atkStages)
   end
   if abilityT == 86 and mold == 0 then
-    pickedDef = doubled(defStages)
+    pickedDef = doubledStages(defStages)
   end
   local sAtk = pickedAtk[2]
   local sSpa = pickedAtk[5]
@@ -895,11 +921,7 @@ local function pipelinePreview(state, moveId, moveType, damage)
   local held = facts.heldEffects --[[@as table<integer, integer>]]
   local grounded = 0
   if itemT ~= 0 then
-    local effect = held[itemT]
-    if effect == nil then
-      error(BattleErrors.missingBehavior("trainer evaluation reads its held item facts", { item = itemT }))
-    end
-    if effect == 106 then
+    if requireHeldEffect(held, itemT) == 106 then
       grounded = 1
     end
   end
@@ -937,16 +959,7 @@ local function pipelinePreview(state, moveId, moveType, damage)
     end
   end
   local itemA = attacker.item --[[@as integer]]
-  local effA = 0
-  local hasEffA = 1
-  if itemA ~= 0 then
-    local effect = held[itemA]
-    if effect == nil then
-      hasEffA = 0
-    else
-      effA = effect
-    end
-  end
+  local effA, hasEffA = heldEffectOf(held, itemA)
   local modA = facts.heldMods --[[@as table<integer, integer>]]
   local modValue = modA[itemA]
   local hit = facts.chargeHit
@@ -1156,10 +1169,7 @@ function effectiveMoveType(state, moveId)
       return 0
     end
     local held = facts.heldEffects --[[@as table<integer, integer>]]
-    local effect = held[item]
-    if effect == nil then
-      error(BattleErrors.missingBehavior("trainer evaluation reads its held item facts", { item = item }))
-    end
+    local effect = requireHeldEffect(held, item)
     if effect >= 126 and effect <= 141 then
       local plate = Data.TYPE_BOOSTS[effect]
       if plate ~= nil then
@@ -1574,10 +1584,7 @@ function comparePair(state, first, second)
     local item = record.item --[[@as integer]]
     if item ~= 0 then
       local held = facts.heldEffects --[[@as table<integer, integer>]]
-      local effect = held[item]
-      if effect == nil then
-        error(BattleErrors.missingBehavior("trainer evaluation reads its held item facts", { item = item }))
-      end
+      local effect = requireHeldEffect(held, item)
       if effect == 52 or effect == 45 or effect == 107 then
         error(BattleErrors.missingBehavior("trainer evaluation reads its priority clock", { item = item }))
       end
@@ -2010,11 +2017,7 @@ function itemEffectLoad(state, selector)
     return
   end
   local held = facts.heldEffects --[[@as table<integer, integer>]]
-  local effect = held[item]
-  if effect == nil then
-    error(BattleErrors.missingBehavior("trainer evaluation reads its held item facts", { item = item }))
-  end
-  state.scratch = effect
+  state.scratch = requireHeldEffect(held, item)
 end
 -- Power-point use jumps (handler ov10_0221E018 for opcode 89): any party
 -- member outside the battler's own slot with current power points below

@@ -142,7 +142,15 @@ local function fourSlots()
     slotWith({ key = "TACKLE" }),
     slotWith({ key = "RAZOR_LEAF", id = 75, moveType = "grass", power = 55, accuracy = 95 }),
     slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "EMBER", id = 52, moveType = "fire", power = 40, category = "special", accuracy = 100, usable = false }),
+    slotWith({
+      key = "EMBER",
+      id = 52,
+      moveType = "fire",
+      power = 40,
+      category = "special",
+      accuracy = 100,
+      usable = false,
+    }),
   }
 end
 
@@ -174,11 +182,7 @@ function T.move_scores_open_at_the_shared_baseline_before_flag_evaluation()
   for _ = 1, 4 do
     expectedValues[#expectedValues + 1] = probe:nextU16("init_probe", { slot = #expectedValues })
   end
-  Assert.deepEqual(
-    stream:drawValues(),
-    expectedValues,
-    "initialization consumes the shared stream head in slot order"
-  )
+  Assert.deepEqual(stream:drawValues(), expectedValues, "initialization consumes the shared stream head in slot order")
   local second = TrainerAi.scoreSlots(
     nativeChart(),
     fourSlots(),
@@ -254,11 +258,7 @@ function T.tied_top_scores_break_uniformly_through_one_selection_draw()
   local loneStream = spyStream(FIXED_SEED)
   local loneBefore = loneStream:capture().calls
   Assert.equal(TrainerAi.selectMove(lone, loneStream), 0, "the lone leader answers its slot")
-  Assert.equal(
-    loneStream:capture().calls,
-    loneBefore + 1,
-    "a lone leader still spends its selection draw"
-  )
+  Assert.equal(loneStream:capture().calls, loneBefore + 1, "a lone leader still spends its selection draw")
 end
 
 ---@param id integer nonreused positive combatant identity
@@ -363,7 +363,9 @@ local function trainerStockScenario(pack, trainerMons, foeMons, moveKeys, opts)
   trainer.context = { aiPasses = options.passes or { "ai_pass_0", "ai_pass_1" } }
   if options.trainerItems ~= nil then
     local ordered = {}
-    for _, key in ipairs(options.trainerItems --[[@as string[] ]]) do
+    for _, key in
+      ipairs(options.trainerItems --[[@as string[] ]])
+    do
       ordered[#ordered + 1] = key
     end
     trainer.context.trainerItems = ordered
@@ -440,7 +442,7 @@ function T.a_wounded_lead_without_a_native_trigger_takes_the_stocked_cure()
   lead.mon.moves = {
     { move = "GROWL", pp = 40, ppUps = 0 },
     { move = "TAIL_WHIP", pp = 30, ppUps = 0 },
-  };
+  }
   (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
   local reserve = leveledCombatant(3, 24, "TOTODILE", 5)
   reserve.mon.moves = {
@@ -477,7 +479,7 @@ function T.without_a_reserve_the_same_wound_takes_the_stocked_cure()
   loneLead.mon.moves = {
     { move = "GROWL", pp = 40, ppUps = 0 },
     { move = "TAIL_WHIP", pp = 30, ppUps = 0 },
-  };
+  }
   (loneLead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
   local loneFoe = leveledCombatant(2, 41, "EEVEE", 5)
   local loneSession = waitingSession(
@@ -595,11 +597,7 @@ function T.ai_memory_rides_the_native_snapshot_and_restores_exactly()
     "selection clears the served source slot in place"
   )
   SessionFixture.assertPlainData(session:capture().trainerAi, "captured trainer memory")
-  Assert.equal(
-    session:capture().inventories["trainer-stock"].quantities.POTION,
-    1,
-    "answering alone consumes no stock"
-  )
+  Assert.equal(session:capture().inventories["trainer-stock"].quantities.POTION, 1, "answering alone consumes no stock")
   local foeRequest = openRequest(session, "player")
   local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
   Assert.isTrue(session:submit(first), "the serving binds")
@@ -615,11 +613,7 @@ function T.ai_memory_rides_the_native_snapshot_and_restores_exactly()
   )
   local held = session:capture()
   Assert.equal(type(held.trainerAi), "table", "the capture carries the detached trainer record")
-  Assert.equal(
-    (held.trainerAi --[[@as table<string, unknown>]]).version,
-    3,
-    "the record carries its schema mark"
-  )
+  Assert.equal((held.trainerAi --[[@as table<string, unknown>]]).version, 3, "the record carries its schema mark")
   Assert.equal(memoryEntryOf(held).itemCount, 1, "the carried count survives the serving")
   local nextUninterrupted = session:answerTrainer(openRequest(session, "trainer:1"))
   local uninterruptedCalls = session:capture().rng.calls
@@ -1161,7 +1155,15 @@ function T.bad_move_program_routes_listed_effects_through_its_gate()
   local user = fighterWith({ types = { "normal" } })
   local foe = fighterWith({ types = { "normal" } })
   local listed = {
-    slotWith({ key = "P7", id = 100, moveType = "normal", power = 40, category = "physical", accuracy = 100, effect = 7 }),
+    slotWith({
+      key = "P7",
+      id = 100,
+      moveType = "normal",
+      power = 40,
+      category = "physical",
+      accuracy = 100,
+      effect = 7,
+    }),
     slotWith({ key = "TACKLE", id = 34 }),
     slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
     slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
@@ -1190,7 +1192,15 @@ function T.faint_seeking_dispatch_reaches_routine_commands_for_listed_effects()
   local user = fighterWith({ types = { "normal" } })
   local foe = fighterWith({ types = { "normal" } })
   local listed = {
-    slotWith({ key = "SCREECH", id = 103, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
+    slotWith({
+      key = "SCREECH",
+      id = 103,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 100,
+      effect = 7,
+    }),
     slotWith({ key = "TACKLE", id = 34 }),
     slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
     slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
@@ -1225,7 +1235,15 @@ function T.effectiveness_program_gates_on_turn_and_effect_list()
   local user = fighterWith({ types = { "normal" } })
   local foe = fighterWith({ types = { "normal" } })
   local listed = {
-    slotWith({ key = "LEER", id = 43, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 19 }),
+    slotWith({
+      key = "LEER",
+      id = 43,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 100,
+      effect = 19,
+    }),
     slotWith({ key = "TACKLE", id = 34 }),
     slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
     slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
@@ -1255,7 +1273,15 @@ function T.preference_programs_follow_the_list_gate_draw_shape()
   local user = fighterWith({ types = { "normal" } })
   local foe = fighterWith({ types = { "normal" } })
   local listed38 = {
-    slotWith({ key = "P38", id = 200, moveType = "normal", power = 40, category = "physical", accuracy = 100, effect = 38 }),
+    slotWith({
+      key = "P38",
+      id = 200,
+      moveType = "normal",
+      power = 40,
+      category = "physical",
+      accuracy = 100,
+      effect = 38,
+    }),
     slotWith({ key = "TACKLE", id = 34 }),
     slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
     slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
@@ -1265,7 +1291,15 @@ function T.preference_programs_follow_the_list_gate_draw_shape()
   Assert.equal(#stream:drawLabels(), 5, "the listed effect draws its routine")
   Assert.equal(scored[1].score, 102, "the routine draw at threshold adds two")
   local nine = {
-    slotWith({ key = "LEER", id = 43, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 19 }),
+    slotWith({
+      key = "LEER",
+      id = 43,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 100,
+      effect = 19,
+    }),
     slotWith({ key = "TACKLE", id = 34 }),
     slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
     slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
@@ -1275,7 +1309,6 @@ function T.preference_programs_follow_the_list_gate_draw_shape()
   Assert.equal(#nineStream:drawLabels(), 5, "the listed unpredictability effect draws once")
   Assert.equal(ninth[1].score, 102, "its routine adds two at threshold")
 end
-
 
 -- Fresh trainer memory opens zeroed: the schema mark rides version
 -- one, ordered slots mirror the scenario list, learned knowledge
@@ -1326,11 +1359,7 @@ function T.fresh_trainer_memory_opens_zeroed_beside_the_session()
     )
   )
   local bareOwned = memoryEntryOf(bare:capture())
-  Assert.deepEqual(
-    bareOwned.slots,
-    { "NONE", "NONE", "NONE", "NONE" },
-    "an itemless trainer opens four gaps"
-  )
+  Assert.deepEqual(bareOwned.slots, { "NONE", "NONE", "NONE", "NONE" }, "an itemless trainer opens four gaps")
   Assert.equal(bareOwned.itemCount, 0, "an itemless trainer opens with a zero count")
   bare:dispose()
 end
@@ -1382,48 +1411,46 @@ function T.malformed_trainer_records_fail_restore_as_incompatible()
       "a well-formed record validates"
     )
   end
-  for _, broken in
-    ipairs({
-      { version = 3, controllers = {} },
-      {
-        version = 1,
-        controllers = { ["trainer:1"] = { slots = { "POTION", "NONE", "NONE", "NONE" }, knownMoves = {} } },
-      },
-      {
-        version = 2,
-        controllers = { ["trainer:1"] = { slots = { "POTION", "SUPER_POTION", "NONE", "NONE" }, knownMoves = {} } },
-      },
-      {
-        version = 2,
-        controllers = { ["trainer:1"] = owned({ "POTION", "SUPER_POTION", "NONE", "NONE" }, 5) },
-      },
-      {
-        version = 2,
-        controllers = { ["trainer:1"] = owned({ "POTION", "SUPER_POTION", "POTION", "NONE" }, 2) },
-      },
-      {
-        version = 2,
-        controllers = { ["trainer:1"] = owned({ "" }, 2) },
-      },
-      {
-        version = 2,
-        controllers = { ["trainer:1"] = owned({ "POTION" }, 1) },
-      },
-      {
-        version = 2,
-        controllers = { ["trainer:1"] = owned({ "POTION", "NONE", "NONE", "NONE", "POTION" }, 2) },
-      },
-      {
-        version = 2,
-        controllers = { ["trainer:1"] = { slots = { "NONE", "NONE", "NONE", "NONE" }, knownMoves = { [0] = {} } } },
-      },
-      {
-        version = 3,
-        controllers = { ["trainer:1"] = owned({ "POTION", "NONE", "NONE", "NONE" }, 1) },
-        arrivals = { [1] = { counter = 0, enteredWithItem = true } },
-      },
-    })
-  do
+  for _, broken in ipairs({
+    { version = 3, controllers = {} },
+    {
+      version = 1,
+      controllers = { ["trainer:1"] = { slots = { "POTION", "NONE", "NONE", "NONE" }, knownMoves = {} } },
+    },
+    {
+      version = 2,
+      controllers = { ["trainer:1"] = { slots = { "POTION", "SUPER_POTION", "NONE", "NONE" }, knownMoves = {} } },
+    },
+    {
+      version = 2,
+      controllers = { ["trainer:1"] = owned({ "POTION", "SUPER_POTION", "NONE", "NONE" }, 5) },
+    },
+    {
+      version = 2,
+      controllers = { ["trainer:1"] = owned({ "POTION", "SUPER_POTION", "POTION", "NONE" }, 2) },
+    },
+    {
+      version = 2,
+      controllers = { ["trainer:1"] = owned({ "" }, 2) },
+    },
+    {
+      version = 2,
+      controllers = { ["trainer:1"] = owned({ "POTION" }, 1) },
+    },
+    {
+      version = 2,
+      controllers = { ["trainer:1"] = owned({ "POTION", "NONE", "NONE", "NONE", "POTION" }, 2) },
+    },
+    {
+      version = 2,
+      controllers = { ["trainer:1"] = { slots = { "NONE", "NONE", "NONE", "NONE" }, knownMoves = { [0] = {} } } },
+    },
+    {
+      version = 3,
+      controllers = { ["trainer:1"] = owned({ "POTION", "NONE", "NONE", "NONE" }, 1) },
+      arrivals = { [1] = { counter = 0, enteredWithItem = true } },
+    },
+  }) do
     local failure = Assert.throws(function()
       TrainerAi.validateMemory(broken)
     end, "a malformed record fails instead of guessing")
@@ -1482,11 +1509,7 @@ function T.ordered_slots_win_over_alphabetical_stock()
   Assert.equal(owned.itemCount, 2, "the carried count rides beside the working slots")
   local first = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(first.choices[1].kind, "item", "an eligible serving answers")
-  Assert.equal(
-    first.choices[1].payload.item,
-    "SUPER_POTION",
-    "the first source slot wins over alphabetical stock"
-  )
+  Assert.equal(first.choices[1].payload.item, "SUPER_POTION", "the first source slot wins over alphabetical stock")
   local second = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(second.choices[1].kind, "item", "the second slot still serves")
   Assert.equal(second.choices[1].payload.item, "POTION", "the proposal moves down the ordered slots")
@@ -1592,19 +1615,15 @@ local function sessionWithPredictedPostStrike(contracts, seeds, build, predict)
     local foeRequest = openRequest(session, "player")
     local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
     Assert.isTrue(
-      session:submit(
-        SessionFixture.replyFor(trainerRequest, {
-          SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
-        })
-      ),
+      session:submit(SessionFixture.replyFor(trainerRequest, {
+        SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
+      })),
       "the opening trainer strike binds"
     )
     Assert.isTrue(
-      session:submit(
-        SessionFixture.replyFor(foeRequest, {
-          SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
-        })
-      ),
+      session:submit(SessionFixture.replyFor(foeRequest, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+      })),
       "the opening foe strike binds"
     )
     session:advance(1024)
@@ -1627,7 +1646,7 @@ function T.unknown_hit_history_fails_the_next_answer_closed()
   local TrainerAi = trainerPolicy()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "TOTODILE", 10)
-  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
   (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
   local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
   local foe = leveledCombatant(13, 41, "EEVEE", 10)
@@ -1646,17 +1665,13 @@ function T.unknown_hit_history_fails_the_next_answer_closed()
   Assert.equal(opening.choices[1].kind, "attack", "the opening answer strikes without knowledge")
   local foeRequest = openRequest(session, "player")
   local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
-  local stored, storeErr = session:submit(
-    SessionFixture.replyFor(openRequest(session, "trainer:1"), {
-      SessionFixture.attackChoice(opening.choices[1].actor, 0, SessionFixture.positionTarget(1)),
-    })
-  )
+  local stored, storeErr = session:submit(SessionFixture.replyFor(openRequest(session, "trainer:1"), {
+    SessionFixture.attackChoice(opening.choices[1].actor, 0, SessionFixture.positionTarget(1)),
+  }))
   Assert.isTrue(stored, "the trainer strike binds: " .. tostring(storeErr))
-  local storedFoe, foeErr = session:submit(
-    SessionFixture.replyFor(foeRequest, {
-      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
-    })
-  )
+  local storedFoe, foeErr = session:submit(SessionFixture.replyFor(foeRequest, {
+    SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+  }))
   Assert.isTrue(storedFoe, "the revealing strike binds: " .. tostring(foeErr))
   session:advance(1024)
   local learned = session:capture().trainerAi --[[@as table<string, unknown>]]
@@ -1680,8 +1695,7 @@ function T.unknown_hit_history_fails_the_next_answer_closed()
     speciesFacts = scenarioSpeciesFacts({ holder, reserve, foe }),
     itemFacts = {},
   }
-  local activation =
-    (session:capture().combatants --[[@as table<integer, table<string, unknown>>]])[11].active.activation
+  local activation = (session:capture().combatants --[[@as table<integer, table<string, unknown>>]])[11].active.activation
   local request = {
     requestId = 1,
     epoch = 1,
@@ -1697,11 +1711,7 @@ function T.unknown_hit_history_fails_the_next_answer_closed()
   )
   local stream = spyStream(FIXED_SEED)
   local reply = TrainerAi.answer(syntheticState({}), authorities, request, stream, {})
-  Assert.equal(
-    reply.choices[1].kind,
-    "attack",
-    "an empty history answers from never-struck knowledge"
-  )
+  Assert.equal(reply.choices[1].kind, "attack", "an empty history answers from never-struck knowledge")
   Assert.equal(stream:capture().calls, 5, "the never-struck answer spends only its strike draws")
   session:dispose()
 end
@@ -1712,7 +1722,7 @@ end
 function T.recorded_last_hits_answer_instead_of_faulting()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "TOTODILE", 10)
-  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
   (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
   local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
   local foe = leveledCombatant(13, 41, "EEVEE", 10)
@@ -1732,17 +1742,13 @@ function T.recorded_last_hits_answer_instead_of_faulting()
   local foeRequest = openRequest(session, "player")
   local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
   Assert.isTrue(
-    session:submit(
-      SessionFixture.replyFor(trainerRequest, { SessionFixture.switchChoice(trainerActor, 12) })
-    ),
+    session:submit(SessionFixture.replyFor(trainerRequest, { SessionFixture.switchChoice(trainerActor, 12) })),
     "the withdrawal binds"
   )
   Assert.isTrue(
-    session:submit(
-      SessionFixture.replyFor(foeRequest, {
-        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
-      })
-    ),
+    session:submit(SessionFixture.replyFor(foeRequest, {
+      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+    })),
     "the revealing strike binds"
   )
   session:advance(1024)
@@ -1754,11 +1760,7 @@ function T.recorded_last_hits_answer_instead_of_faulting()
   local held = session:capture()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "attack", "the recorded last hit answers with a strike")
-  Assert.equal(
-    session:capture().rng.calls - held.rng.calls,
-    5,
-    "the strike spends only its selection draws"
-  )
+  Assert.equal(session:capture().rng.calls - held.rng.calls, 5, "the strike spends only its selection draws")
   session:dispose()
 end
 
@@ -1773,7 +1775,7 @@ function T.absorb_tail_exchanges_for_a_covering_reserve()
     local guard = leveledCombatant(12, 24, "TOTODILE", 10);
     (guard.mon --[[@as table<string, unknown>]]).ability = "WATER_ABSORB"
     local foe = leveledCombatant(13, 41, "TOTODILE", 5)
-    foe.mon.moves = { { move = "WATER_GUN", pp = 25, ppUps = 0 } };
+    foe.mon.moves = { { move = "WATER_GUN", pp = 25, ppUps = 0 } }
     (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
     return trainerStockScenario(
       SessionFixture.inventory("trainer-stock", { 2 }, {}),
@@ -1794,11 +1796,7 @@ function T.absorb_tail_exchanges_for_a_covering_reserve()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "switch", "the guard reserve answers the water strike")
   Assert.equal(reply.choices[1].payload.replacement, 12, "the water guard takes the field")
-  Assert.equal(
-    session:capture().rng.calls - held.rng.calls,
-    1,
-    "the exchange spends only its branch draw"
-  )
+  Assert.equal(session:capture().rng.calls - held.rng.calls, 1, "the exchange spends only its branch draw")
   session:dispose()
 end
 
@@ -1808,12 +1806,12 @@ end
 function T.absorb_tail_holds_when_the_holder_carries_the_guard()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "EEVEE", 20)
-  holder.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } };
+  holder.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
   (holder.mon --[[@as table<string, unknown>]]).ability = "WATER_ABSORB"
   local guard = leveledCombatant(12, 24, "TOTODILE", 10);
   (guard.mon --[[@as table<string, unknown>]]).ability = "WATER_ABSORB"
   local foe = leveledCombatant(13, 41, "TOTODILE", 5)
-  foe.mon.moves = { { move = "WATER_GUN", pp = 25, ppUps = 0 } };
+  foe.mon.moves = { { move = "WATER_GUN", pp = 25, ppUps = 0 } }
   (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
   local session = waitingSession(
     contracts,
@@ -1830,30 +1828,22 @@ function T.absorb_tail_holds_when_the_holder_carries_the_guard()
   local foeRequest = openRequest(session, "player")
   local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
   Assert.isTrue(
-    session:submit(
-      SessionFixture.replyFor(trainerRequest, {
-        SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
-      })
-    ),
+    session:submit(SessionFixture.replyFor(trainerRequest, {
+      SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
+    })),
     "the holder status strike binds"
   )
   Assert.isTrue(
-    session:submit(
-      SessionFixture.replyFor(foeRequest, {
-        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
-      })
-    ),
+    session:submit(SessionFixture.replyFor(foeRequest, {
+      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+    })),
     "the water strike binds"
   )
   session:advance(1024)
   local held = session:capture()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "attack", "the guard holder stays and strikes")
-  Assert.equal(
-    session:capture().rng.calls - held.rng.calls,
-    5,
-    "the stay spends only its strike draws"
-  )
+  Assert.equal(session:capture().rng.calls - held.rng.calls, 5, "the stay spends only its strike draws")
   session:dispose()
 end
 
@@ -1871,7 +1861,7 @@ function T.immunity_tail_exchanges_for_a_covering_reserve()
       { move = "SCRATCH", pp = 35, ppUps = 0 },
     }
     local foe = leveledCombatant(13, 41, "TOTODILE", 5)
-    foe.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+    foe.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
     (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
     return trainerStockScenario(
       SessionFixture.inventory("trainer-stock", { 2 }, {}),
@@ -1892,11 +1882,7 @@ function T.immunity_tail_exchanges_for_a_covering_reserve()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "switch", "the covering reserve answers the immune strike")
   Assert.equal(reply.choices[1].payload.replacement, 12, "the immune reserve takes the field")
-  Assert.equal(
-    session:capture().rng.calls - held.rng.calls,
-    1,
-    "the exchange spends only its branch draw"
-  )
+  Assert.equal(session:capture().rng.calls - held.rng.calls, 1, "the exchange spends only its branch draw")
   session:dispose()
 end
 
@@ -1914,7 +1900,7 @@ function T.resist_tail_exchanges_for_a_covering_reserve()
       { move = "SCRATCH", pp = 35, ppUps = 0 },
     }
     local foe = leveledCombatant(13, 41, "TOTODILE", 5)
-    foe.mon.moves = { { move = "WATER_GUN", pp = 25, ppUps = 0 } };
+    foe.mon.moves = { { move = "WATER_GUN", pp = 25, ppUps = 0 } }
     (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
     return trainerStockScenario(
       SessionFixture.inventory("trainer-stock", { 2 }, {}),
@@ -1935,11 +1921,7 @@ function T.resist_tail_exchanges_for_a_covering_reserve()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "switch", "the covering reserve answers the resisted strike")
   Assert.equal(reply.choices[1].payload.replacement, 12, "the resisting reserve takes the field")
-  Assert.equal(
-    session:capture().rng.calls - held.rng.calls,
-    1,
-    "the exchange spends only its branch draw"
-  )
+  Assert.equal(session:capture().rng.calls - held.rng.calls, 1, "the exchange spends only its branch draw")
   session:dispose()
 end
 
@@ -1951,12 +1933,11 @@ function T.relief_with_a_damaging_last_hit_probes_before_its_final_coin()
   local function build(seed)
     local holder = leveledCombatant(31, 23, "EEVEE", 20);
     (holder.mon --[[@as table<string, unknown>]]).ability = "NATURAL_CURE"
-    ;(holder.mon --[[@as table<string, unknown>]]).condition.effects =
-      { { key = "sleep", state = { turns = 5 } } }
+    (holder.mon --[[@as table<string, unknown>]]).condition.effects = { { key = "sleep", state = { turns = 5 } } }
     holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
     local reserve = leveledCombatant(32, 24, "TOTODILE", 10)
     local foe = leveledCombatant(33, 41, "TOTODILE", 5)
-    foe.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+    foe.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
     (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
     return trainerStockScenario(
       SessionFixture.inventory("trainer-stock", { 2 }, {}),
@@ -1977,11 +1958,7 @@ function T.relief_with_a_damaging_last_hit_probes_before_its_final_coin()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "switch", "the relief coin answers with the first reserve")
   Assert.equal(reply.choices[1].payload.replacement, 32, "the first living reserve takes the field")
-  Assert.equal(
-    session:capture().rng.calls - held.rng.calls,
-    1,
-    "the exchange spends only its branch draw"
-  )
+  Assert.equal(session:capture().rng.calls - held.rng.calls, 1, "the exchange spends only its branch draw")
   session:dispose()
 end
 
@@ -1994,8 +1971,7 @@ function T.relief_with_a_powerless_last_hit_still_exchanges()
   local function build(seed)
     local holder = leveledCombatant(31, 23, "EEVEE", 20);
     (holder.mon --[[@as table<string, unknown>]]).ability = "NATURAL_CURE"
-    ;(holder.mon --[[@as table<string, unknown>]]).condition.effects =
-      { { key = "sleep", state = { turns = 5 } } }
+    (holder.mon --[[@as table<string, unknown>]]).condition.effects = { { key = "sleep", state = { turns = 5 } } }
     holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
     local reserve = leveledCombatant(32, 24, "SHEDINJA", 5)
     reserve.mon.moves = {
@@ -2003,7 +1979,7 @@ function T.relief_with_a_powerless_last_hit_still_exchanges()
       { move = "SCRATCH", pp = 35, ppUps = 0 },
     }
     local foe = leveledCombatant(33, 41, "TOTODILE", 5)
-    foe.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } };
+    foe.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
     (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
     return trainerStockScenario(
       SessionFixture.inventory("trainer-stock", { 2 }, {}),
@@ -2019,19 +1995,15 @@ function T.relief_with_a_powerless_last_hit_still_exchanges()
   local foeRequest = openRequest(session, "player")
   local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
   Assert.isTrue(
-    session:submit(
-      SessionFixture.replyFor(trainerRequest, {
-        SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
-      })
-    ),
+    session:submit(SessionFixture.replyFor(trainerRequest, {
+      SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
+    })),
     "the sleeper strike binds"
   )
   Assert.isTrue(
-    session:submit(
-      SessionFixture.replyFor(foeRequest, {
-        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
-      })
-    ),
+    session:submit(SessionFixture.replyFor(foeRequest, {
+      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+    })),
     "the status strike binds"
   )
   session:advance(1024)
@@ -2074,19 +2046,15 @@ function T.used_move_history_records_first_use_order()
     local foeRequest = openRequest(session, "player")
     local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
     Assert.isTrue(
-      session:submit(
-        SessionFixture.replyFor(trainerRequest, {
-          SessionFixture.attackChoice(trainerActor, moveSlot, SessionFixture.positionTarget(1)),
-        })
-      ),
+      session:submit(SessionFixture.replyFor(trainerRequest, {
+        SessionFixture.attackChoice(trainerActor, moveSlot, SessionFixture.positionTarget(1)),
+      })),
       "the turn " .. turn .. " trainer strike binds"
     )
     Assert.isTrue(
-      session:submit(
-        SessionFixture.replyFor(foeRequest, {
-          SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
-        })
-      ),
+      session:submit(SessionFixture.replyFor(foeRequest, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+      })),
       "the turn " .. turn .. " foe strike binds"
     )
     session:advance(1024)
@@ -2131,29 +2099,21 @@ function T.populated_use_order_scores_without_faulting()
     local foeRequest = openRequest(session, "player")
     local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
     Assert.isTrue(
-      session:submit(
-        SessionFixture.replyFor(trainerRequest, {
-          SessionFixture.attackChoice(trainerActor, moveSlot, SessionFixture.positionTarget(1)),
-        })
-      ),
+      session:submit(SessionFixture.replyFor(trainerRequest, {
+        SessionFixture.attackChoice(trainerActor, moveSlot, SessionFixture.positionTarget(1)),
+      })),
       "the turn " .. turn .. " trainer strike binds"
     )
     Assert.isTrue(
-      session:submit(
-        SessionFixture.replyFor(foeRequest, {
-          SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
-        })
-      ),
+      session:submit(SessionFixture.replyFor(foeRequest, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+      })),
       "the turn " .. turn .. " foe strike binds"
     )
     session:advance(1024)
   end
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
-  Assert.equal(
-    reply.choices[1].kind,
-    "attack",
-    "the ordered history scores instead of faulting"
-  )
+  Assert.equal(reply.choices[1].kind, "attack", "the ordered history scores instead of faulting")
   session:dispose()
 end
 
@@ -2190,16 +2150,8 @@ function T.literal_mode_zero_compares_full_scale_regardless_of_use_order()
   Assert.equal(first[2].score, 99, "the first use order compares at full scale")
   Assert.equal(second[2].score, 99, "the second use order compares at full scale")
   Assert.equal(fresh[2].score, 99, "an empty history compares at full scale")
-  Assert.deepEqual(
-    secondStream:drawLabels(),
-    firstStream:drawLabels(),
-    "different use orders draw identically"
-  )
-  Assert.deepEqual(
-    freshStream:drawLabels(),
-    firstStream:drawLabels(),
-    "an empty history draws identically"
-  )
+  Assert.deepEqual(secondStream:drawLabels(), firstStream:drawLabels(), "different use orders draw identically")
+  Assert.deepEqual(freshStream:drawLabels(), firstStream:drawLabels(), "an empty history draws identically")
 end
 
 -- Ledgers predating the order fail the history read closed: a restored
@@ -2232,19 +2184,15 @@ function T.predated_unordered_ledgers_fail_the_history_read_closed()
     local foeRequest = openRequest(session, "player")
     local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
     Assert.isTrue(
-      session:submit(
-        SessionFixture.replyFor(trainerRequest, {
-          SessionFixture.attackChoice(trainerActor, moveSlot, SessionFixture.positionTarget(1)),
-        })
-      ),
+      session:submit(SessionFixture.replyFor(trainerRequest, {
+        SessionFixture.attackChoice(trainerActor, moveSlot, SessionFixture.positionTarget(1)),
+      })),
       "the turn " .. turn .. " trainer strike binds"
     )
     Assert.isTrue(
-      session:submit(
-        SessionFixture.replyFor(foeRequest, {
-          SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
-        })
-      ),
+      session:submit(SessionFixture.replyFor(foeRequest, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+      })),
       "the turn " .. turn .. " foe strike binds"
     )
     session:advance(1024)
@@ -2273,7 +2221,7 @@ function T.executed_strikes_record_their_received_hit_per_struck_combatant()
   local Executor = sessionOwner()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "TOTODILE", 10)
-  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
   (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
   local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
   local foe = leveledCombatant(13, 41, "EEVEE", 10)
@@ -2292,17 +2240,13 @@ function T.executed_strikes_record_their_received_hit_per_struck_combatant()
   Assert.equal(opening.choices[1].kind, "attack", "the opening answer strikes without knowledge")
   local foeRequest = openRequest(session, "player")
   local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
-  local stored, storeErr = session:submit(
-    SessionFixture.replyFor(openRequest(session, "trainer:1"), {
-      SessionFixture.attackChoice(opening.choices[1].actor, 0, SessionFixture.positionTarget(1)),
-    })
-  )
+  local stored, storeErr = session:submit(SessionFixture.replyFor(openRequest(session, "trainer:1"), {
+    SessionFixture.attackChoice(opening.choices[1].actor, 0, SessionFixture.positionTarget(1)),
+  }))
   Assert.isTrue(stored, "the trainer strike binds: " .. tostring(storeErr))
-  local storedFoe, foeErr = session:submit(
-    SessionFixture.replyFor(foeRequest, {
-      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
-    })
-  )
+  local storedFoe, foeErr = session:submit(SessionFixture.replyFor(foeRequest, {
+    SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+  }))
   Assert.isTrue(storedFoe, "the revealing strike binds: " .. tostring(foeErr))
   session:advance(1024)
   -- The foe outruns the holder, so the holder acts after being struck:
@@ -2330,7 +2274,7 @@ end
 function T.received_hit_clears_when_its_holder_acts_unstruck()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "TOTODILE", 10)
-  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
   (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
   local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
   local foe = leveledCombatant(13, 41, "EEVEE", 10)
@@ -2351,19 +2295,15 @@ function T.received_hit_clears_when_its_holder_acts_unstruck()
   local foeRequest = openRequest(session, "player")
   local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
   Assert.isTrue(
-    session:submit(
-      SessionFixture.replyFor(openRequest(session, "trainer:1"), {
-        SessionFixture.attackChoice(opening.choices[1].actor, 0, SessionFixture.positionTarget(1)),
-      })
-    ),
+    session:submit(SessionFixture.replyFor(openRequest(session, "trainer:1"), {
+      SessionFixture.attackChoice(opening.choices[1].actor, 0, SessionFixture.positionTarget(1)),
+    })),
     "the trainer strike binds"
   )
   Assert.isTrue(
-    session:submit(
-      SessionFixture.replyFor(foeRequest, {
-        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
-      })
-    ),
+    session:submit(SessionFixture.replyFor(foeRequest, {
+      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+    })),
     "the revealing strike binds"
   )
   session:advance(1024)
@@ -2378,17 +2318,13 @@ function T.received_hit_clears_when_its_holder_acts_unstruck()
   local nextFoeRequest = openRequest(session, "player")
   local nextFoeActor = assert(nextFoeRequest.actors[1], "the opposing request addresses its lead")
   Assert.isTrue(
-    session:submit(
-      SessionFixture.replyFor(trainerRequest, {
-        SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
-      })
-    ),
+    session:submit(SessionFixture.replyFor(trainerRequest, {
+      SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
+    })),
     "the holder strike binds"
   )
   Assert.isTrue(
-    session:submit(
-      SessionFixture.replyFor(nextFoeRequest, { SessionFixture.switchChoice(nextFoeActor, 14) })
-    ),
+    session:submit(SessionFixture.replyFor(nextFoeRequest, { SessionFixture.switchChoice(nextFoeActor, 14) })),
     "the foe withdrawal binds"
   )
   session:advance(1024)
@@ -2691,10 +2627,7 @@ function T.doubles_forces_the_doubles_pass_without_a_stored_mark()
     return doublesVectorScenario(lead, nil, foeA, foeB, seed)
   end
   local session, held, values = sessionWithDoublesBranch(contracts, VECTOR_SEEDS, build, 20, function(draws)
-    return draws[10] % 256 >= 50
-      and draws[11] % 256 >= 50
-      and draws[17] % 256 >= 50
-      and draws[18] % 256 >= 50
+    return draws[10] % 256 >= 50 and draws[11] % 256 >= 50 and draws[17] % 256 >= 50 and draws[18] % 256 >= 50
   end)
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
@@ -2746,11 +2679,7 @@ function T.doubles_scratch_initializes_once_per_candidate()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
   local target = ({ 1, 2 })[(values[25] % 2) + 1]
-  Assert.equal(
-    reply.choices[1].payload.target.position,
-    target,
-    "the foe tie breaks over the final draw"
-  )
+  Assert.equal(reply.choices[1].payload.target.position, target, "the foe tie breaks over the final draw")
   -- The lead candidate fields a lone leader (plain strike outscores the
   -- setup strike outright), so its selection draw is spent but unused and
   -- the slot stays deterministic across lawful stream shifts.
@@ -2843,11 +2772,7 @@ function T.doubles_tied_bids_consume_the_final_selection_draw()
   if target == 2 then
     pick = values[15]
   end
-  Assert.equal(
-    reply.choices[1].payload.target.position,
-    target,
-    "the foe tie breaks over the final draw"
-  )
+  Assert.equal(reply.choices[1].payload.target.position, target, "the foe tie breaks over the final draw")
   Assert.equal(
     reply.choices[1].payload.moveSlot,
     ({ 0, 1 })[(pick % 2) + 1],
@@ -2867,8 +2792,6 @@ function T.doubles_tied_bids_consume_the_final_selection_draw()
   )
   replayed:dispose()
 end
-
-
 
 -- The doubles pass draws in source order per slot: initialization precedes
 -- flag evaluation, the setup slot spends its attacker-side and target-side
@@ -2902,8 +2825,7 @@ function T.doubles_pass_draws_follow_the_source_order_per_slot()
     liveBattlers = { [0] = true, [1] = true },
   }
   local stream = spyStream(FIXED_SEED)
-  local scored =
-    TrainerAi.scoreSlots(chart, slots, fighterWith({}), fighterWith({}), 100, { 7 }, false, stream, extra)
+  local scored = TrainerAi.scoreSlots(chart, slots, fighterWith({}), fighterWith({}), 100, { 7 }, false, stream, extra)
   Assert.deepEqual(
     stream:drawLabels(),
     { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance", "program_chance" },
@@ -3132,7 +3054,15 @@ function T.membership_draws_fire_per_listed_effect()
   TrainerAi.scoreSlots(chart, fourSlots(), user, foe, 14, { 3 }, false, plainStabStream)
   Assert.equal(#plainStabStream:drawLabels(), 4, "an unlisted same-type line draws nothing")
   local leerNine = {
-    slotWith({ key = "LEER", id = 43, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 19 }),
+    slotWith({
+      key = "LEER",
+      id = 43,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 100,
+      effect = 19,
+    }),
     slotWith({ key = "TACKLE" }),
     slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
     slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
@@ -3250,17 +3180,11 @@ function T.duplicate_item_slots_clear_independently_at_their_source_positions()
   local foe = leveledCombatant(2, 41, "EEVEE", 5)
   local session = waitingSession(
     contracts,
-    trainerStockScenario(
-      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 2 }),
-      { lead },
-      { foe },
-      nil,
-      {
-        passes = {},
-        itemFacts = { POTION = { partyUse = potionFacts() } },
-        trainerItems = { "POTION", "POTION" },
-      }
-    )
+    trainerStockScenario(SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 2 }), { lead }, { foe }, nil, {
+      passes = {},
+      itemFacts = { POTION = { partyUse = potionFacts() } },
+      trainerItems = { "POTION", "POTION" },
+    })
   )
   local first = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(first.choices[1].kind, "item", "the opening answer serves")
@@ -3337,11 +3261,7 @@ function T.later_carried_slots_unlock_as_the_living_party_shrinks()
   Assert.equal(pairFirst.choices[1].kind, "item", "the first slot answers with a full party")
   Assert.equal(pairFirst.choices[1].payload.item, "POTION", "the first source slot answers first")
   local pairSecond = pair:answerTrainer(openRequest(pair, "trainer:1"))
-  Assert.equal(
-    pairSecond.choices[1].kind,
-    "attack",
-    "the second slot stays gated while two members stand"
-  )
+  Assert.equal(pairSecond.choices[1].kind, "attack", "the second slot stays gated while two members stand")
   Assert.deepEqual(
     memorySlotsOf(pair:capture()),
     { "NONE", "SUPER_POTION", "NONE", "NONE" },
@@ -3402,7 +3322,7 @@ end
 function T.full_low_health_servings_answer_below_quarter_health()
   local contracts = SessionFixture.sessionContracts()
   local lead = leveledCombatant(1, 23, "EEVEE", 20);
-  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4;
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
   (lead.mon --[[@as table<string, unknown>]]).condition.effects = { { key = "poison" } }
   local foe = leveledCombatant(2, 41, "EEVEE", 5)
   local session = waitingSession(
@@ -3513,10 +3433,7 @@ function T.missing_effects_fail_closed_before_any_draw()
   local failure = Assert.throws(function()
     TrainerAi.scoreSlots(chart, slots, fighterWith({}), fighterWith({}), 14, { 2 }, true, stream)
   end, "an effect-less slot fails instead of guessing membership")
-  Assert.isTrue(
-    string.find(tostring(failure), "effect", 1, true) ~= nil,
-    "the failure names the missing effect"
-  )
+  Assert.isTrue(string.find(tostring(failure), "effect", 1, true) ~= nil, "the failure names the missing effect")
   Assert.equal(#stream:drawLabels(), 0, "the failed evaluation draws nothing")
 end
 
@@ -3580,11 +3497,7 @@ function T.wonder_guard_exchange_answers_a_covering_reserve()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "switch", "the covering reserve answers the wonder-guard foe")
   Assert.equal(reply.choices[1].payload.replacement, 12, "the selective reserve takes the field")
-  Assert.equal(
-    session:capture().rng.calls - held.rng.calls,
-    1,
-    "the exchange spends only its branch draw"
-  )
+  Assert.equal(session:capture().rng.calls - held.rng.calls, 1, "the exchange spends only its branch draw")
   session:dispose()
 end
 
@@ -3617,18 +3530,18 @@ end
 -- once and exchanges on an even draw while the holder strikes otherwise.
 function T.ineffective_coverage_exchanges_for_a_neutral_reserve()
   local contracts = SessionFixture.sessionContracts()
-  local session, held =
-    sessionWithPredictedExchange(contracts, EXCHANGE_SEEDS, ineffectiveExchangeScenario, function(first)
+  local session, held = sessionWithPredictedExchange(
+    contracts,
+    EXCHANGE_SEEDS,
+    ineffectiveExchangeScenario,
+    function(first)
       return first % 2 == 0
-    end)
+    end
+  )
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "switch", "the neutral reserve answers the immune holder line")
   Assert.equal(reply.choices[1].payload.replacement, 22, "the neutral reserve takes the field")
-  Assert.equal(
-    session:capture().rng.calls - held.rng.calls,
-    1,
-    "the exchange spends only its branch draw"
-  )
+  Assert.equal(session:capture().rng.calls - held.rng.calls, 1, "the exchange spends only its branch draw")
   session:dispose()
 end
 
@@ -3655,11 +3568,7 @@ function T.wonder_branch_draws_only_where_the_predicate_holds()
   local calmHeld = calm:capture()
   local calmReply = calm:answerTrainer(openRequest(calm, "trainer:1"))
   Assert.equal(calmReply.choices[1].kind, "attack", "without the predicate the holder strikes")
-  Assert.equal(
-    calm:capture().rng.calls - calmHeld.rng.calls,
-    5,
-    "without the predicate no gate draw fires"
-  )
+  Assert.equal(calm:capture().rng.calls - calmHeld.rng.calls, 5, "without the predicate no gate draw fires")
   Assert.isTrue(delta ~= 5, "the predicate vector costs its branch draw either way")
   calm:dispose()
 end
@@ -3734,7 +3643,34 @@ function T.unknown_opposing_ability_fails_the_exchange_closed()
   session:dispose()
 end
 
--- Relief exchanges wake a sleeping holder: asleep at full health with
+-- Modded holder abilities fail the strike closed: an ability outside the
+-- native identity table passes the switch and item gates untouched, then
+-- attack evaluation raises naming the ability instead of guessing a move.
+function T.modded_holder_ability_fails_the_strike_closed()
+  local contracts = SessionFixture.sessionContracts()
+  local holder = leveledCombatant(51, 23, "EEVEE", 10);
+  (holder.mon --[[@as table<string, unknown>]]).ability = "MODDED_GUARD"
+  local foe = leveledCombatant(52, 41, "TOTODILE", 10)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder },
+      { foe },
+      { "TACKLE" },
+      { passes = {} }
+    )
+  )
+  local failure = Assert.throws(function()
+    session:answerTrainer(openRequest(session, "trainer:1"))
+  end, "the strike needs its holder ability identity")
+  Assert.isTrue(
+    string.find(string.lower(tostring(failure)), "ability", 1, true) ~= nil,
+    "the failure names the missing ability fact"
+  )
+  session:dispose()
+end
+
 -- natural cure and no hit history, the opening coin exchanges for the
 -- first living reserve while tails falls through to the strike.
 function T.relief_coin_exchanges_a_sleeping_holder()
@@ -3742,7 +3678,7 @@ function T.relief_coin_exchanges_a_sleeping_holder()
   local function build(seed)
     local holder = leveledCombatant(31, 23, "EEVEE", 20);
     (holder.mon --[[@as table<string, unknown>]]).ability = "NATURAL_CURE"
-    ;(holder.mon --[[@as table<string, unknown>]]).condition.effects = { { key = "sleep" } }
+    (holder.mon --[[@as table<string, unknown>]]).condition.effects = { { key = "sleep" } }
     local reserve = leveledCombatant(32, 24, "TOTODILE", 10)
     local foe = leveledCombatant(33, 41, "EEVEE", 10)
     return trainerStockScenario(
@@ -3759,11 +3695,7 @@ function T.relief_coin_exchanges_a_sleeping_holder()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "switch", "the relief coin answers with the first reserve")
   Assert.equal(reply.choices[1].payload.replacement, 32, "the first living reserve takes the field")
-  Assert.equal(
-    session:capture().rng.calls - held.rng.calls,
-    1,
-    "the exchange spends only its branch draw"
-  )
+  Assert.equal(session:capture().rng.calls - held.rng.calls, 1, "the exchange spends only its branch draw")
   session:dispose()
 end
 
@@ -3798,7 +3730,15 @@ function T.passes_without_draw_sites_still_reach_routine_randomness()
   local variants = {
     fourSlots(),
     {
-      slotWith({ key = "SCREECH", id = 103, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
+      slotWith({
+        key = "SCREECH",
+        id = 103,
+        moveType = "normal",
+        power = 0,
+        category = "status",
+        accuracy = 100,
+        effect = 7,
+      }),
       slotWith({ key = "TACKLE" }),
       slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
       slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
@@ -3897,7 +3837,15 @@ function T.knockout_and_setup_passes_execute_genuine_branches()
   local slots = {
     slotWith({ key = "WATER_GUN", id = 55, moveType = "water", power = 40, category = "special", accuracy = 100 }),
     slotWith({ key = "TACKLE" }),
-    slotWith({ key = "SCREECH", id = 103, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
+    slotWith({
+      key = "SCREECH",
+      id = 103,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 100,
+      effect = 7,
+    }),
     slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
   }
   local members = {
@@ -3912,7 +3860,17 @@ function T.knockout_and_setup_passes_execute_genuine_branches()
     defender = { ability = "RUN_AWAY" },
   }
   local function scoresFor(bit, seed)
-    local scored = TrainerAi.scoreSlots(chart, slots, states[1].user, states[1].foe, states[1].foeHp, { bit }, false, spyStream(seed), extra)
+    local scored = TrainerAi.scoreSlots(
+      chart,
+      slots,
+      states[1].user,
+      states[1].foe,
+      states[1].foeHp,
+      { bit },
+      false,
+      spyStream(seed),
+      extra
+    )
     local points = {}
     for index, entry in ipairs(scored) do
       points[index] = entry.score
@@ -4126,18 +4084,14 @@ function T.knockout_program_scores_a_status_slot_through_both_chance_gates()
     { 100, 100, 93, 0 },
     "both gates fall through to the three-up-ten-down line"
   )
-  Assert.deepEqual(
-    stream:drawLabels(),
-    {
-      "score_init_0",
-      "score_init_1",
-      "score_init_2",
-      "score_init_3",
-      "program_chance",
-      "program_chance",
-    },
-    "initialization precedes the two reached gates"
-  )
+  Assert.deepEqual(stream:drawLabels(), {
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "program_chance",
+    "program_chance",
+  }, "initialization precedes the two reached gates")
   local probe = BattleRng.new(NATIVE_SEED)
   local expected = {}
   for _ = 1, 6 do
@@ -4195,18 +4149,14 @@ function T.excluded_heavy_strike_takes_the_status_path()
     { 93, 100, 100, 0 },
     "the excluded strike scores through the status gates"
   )
-  Assert.deepEqual(
-    stream:drawLabels(),
-    {
-      "score_init_0",
-      "score_init_1",
-      "score_init_2",
-      "score_init_3",
-      "program_chance",
-      "program_chance",
-    },
-    "initialization precedes the two reached gates"
-  )
+  Assert.deepEqual(stream:drawLabels(), {
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "program_chance",
+    "program_chance",
+  }, "initialization precedes the two reached gates")
   local probe = BattleRng.new(NATIVE_SEED)
   local expected = {}
   for _ = 1, 6 do
@@ -4248,18 +4198,14 @@ function T.setup_program_leaves_quiet_lines_untouched()
     { 100, 100, 100, 0 },
     "no reached command moves any quiet slot"
   )
-  Assert.deepEqual(
-    stream:drawLabels(),
-    {
-      "score_init_0",
-      "score_init_1",
-      "score_init_2",
-      "score_init_3",
-      "program_chance",
-      "program_chance",
-    },
-    "each ranked line spends its own chance gate"
-  )
+  Assert.deepEqual(stream:drawLabels(), {
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "program_chance",
+    "program_chance",
+  }, "each ranked line spends its own chance gate")
   local probe = BattleRng.new(FIXED_SEED)
   local expected = {}
   for _ = 1, 6 do
@@ -4367,7 +4313,11 @@ function T.health_restore_berry_leaves_the_damage_preview_untouched()
     "the estimate-neutral effect scores exactly like the bare holder"
   )
   Assert.deepEqual(ignoredStream:drawLabels(), plainStream:drawLabels(), "the estimate-neutral path draws identically")
-  Assert.deepEqual(ignoredStream:drawValues(), plainStream:drawValues(), "the estimate-neutral path spends identical draws")
+  Assert.deepEqual(
+    ignoredStream:drawValues(),
+    plainStream:drawValues(),
+    "the estimate-neutral path spends identical draws"
+  )
 end
 
 ---@return table four explicit move slots routing the wish block to the party scan
@@ -4449,19 +4399,15 @@ function T.strong_bench_member_takes_the_party_matchup_jump()
     { 102, 100, 100, 0 },
     "the taken jump pays one point on the wish slot"
   )
-  Assert.deepEqual(
-    stream:drawLabels(),
-    {
-      "score_init_0",
-      "score_init_1",
-      "score_init_2",
-      "score_init_3",
-      "program_chance",
-      "program_chance",
-      "program_chance",
-    },
-    "the taken path spends one trailing routine draw"
-  )
+  Assert.deepEqual(stream:drawLabels(), {
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "program_chance",
+    "program_chance",
+    "program_chance",
+  }, "the taken path spends one trailing routine draw")
   local probe = BattleRng.new(MATCHUP_SEED)
   local expected = {}
   for _ = 1, 7 do
@@ -4491,18 +4437,14 @@ function T.quiet_bench_leaves_the_party_matchup_untouched()
     { 101, 100, 100, 0 },
     "the quiet path holds one point below the taken jump"
   )
-  Assert.deepEqual(
-    stream:drawLabels(),
-    {
-      "score_init_0",
-      "score_init_1",
-      "score_init_2",
-      "score_init_3",
-      "program_chance",
-      "program_chance",
-    },
-    "the quiet path skips the taken trailing draw"
-  )
+  Assert.deepEqual(stream:drawLabels(), {
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "program_chance",
+    "program_chance",
+  }, "the quiet path skips the taken trailing draw")
   local probe = BattleRng.new(MATCHUP_SEED)
   local expected = {}
   for _ = 1, 6 do
@@ -4528,8 +4470,7 @@ function T.quiet_bench_leaves_the_party_matchup_untouched()
   local holderSide = matchupExtra(moveless)
   holderSide.parties[1][1] = strongBench()
   local holderStream = spyStream(MATCHUP_SEED)
-  local holder =
-    TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, holderStream, holderSide)
+  local holder = TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, holderStream, holderSide)
   Assert.deepEqual(
     { holder[1].score, holder[2].score, holder[3].score, holder[4].score },
     { 101, 100, 100, 0 },
@@ -4549,7 +4490,17 @@ function T.unresolved_bench_facts_fail_the_matchup_closed()
   local held = strongBench()
   held.heldKey = "MYSTERY_ITEM"
   local heldFailure = Assert.throws(function()
-    TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, spyStream(MATCHUP_SEED), matchupExtra(held))
+    TrainerAi.scoreSlots(
+      chart,
+      matchupSlots(),
+      user,
+      foe,
+      60,
+      { 1 },
+      false,
+      spyStream(MATCHUP_SEED),
+      matchupExtra(held)
+    )
   end, "an unresolvable bench held item fails instead of guessing")
   Assert.isTrue(
     string.find(tostring(heldFailure), "held item facts", 1, true) ~= nil,
@@ -4558,7 +4509,17 @@ function T.unresolved_bench_facts_fail_the_matchup_closed()
   local moved = strongBench()
   moved.moves = { { move = "MYSTERY_MOVE", pp = 5, ppUps = 0 } }
   local movedFailure = Assert.throws(function()
-    TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, spyStream(MATCHUP_SEED), matchupExtra(moved))
+    TrainerAi.scoreSlots(
+      chart,
+      matchupSlots(),
+      user,
+      foe,
+      60,
+      { 1 },
+      false,
+      spyStream(MATCHUP_SEED),
+      matchupExtra(moved)
+    )
   end, "an unknown bench move fails instead of guessing")
   Assert.isTrue(
     string.find(tostring(movedFailure), "compiled move facts", 1, true) ~= nil,
@@ -4567,7 +4528,17 @@ function T.unresolved_bench_facts_fail_the_matchup_closed()
   local skilled = strongBench()
   skilled.ability = "MYSTERY_ABILITY"
   local skilledFailure = Assert.throws(function()
-    TrainerAi.scoreSlots(chart, matchupSlots(), user, foe, 60, { 1 }, false, spyStream(MATCHUP_SEED), matchupExtra(skilled))
+    TrainerAi.scoreSlots(
+      chart,
+      matchupSlots(),
+      user,
+      foe,
+      60,
+      { 1 },
+      false,
+      spyStream(MATCHUP_SEED),
+      matchupExtra(skilled)
+    )
   end, "an unknown bench ability fails instead of guessing")
   Assert.isTrue(
     string.find(tostring(skilledFailure), "ability identity", 1, true) ~= nil,
@@ -4605,7 +4576,8 @@ local function answerWithLabels(session, request)
   BattleRng.nextU16 = original
   Assert.isTrue(ok, "the trainer answer completes: " .. tostring(reply))
   assert(type(reply) == "table", "the trainer answer replies")
-  return reply --[[@as table]], labels
+  return reply, --[[@as table]]
+    labels
 end
 
 function T.doubles_normal_entry_draws_before_candidate_scoring()
@@ -4771,7 +4743,8 @@ function T.previous_move_preview_decides_the_compare_jump()
   local strong, strongStream = scoreWith(241, 500, 501)
   local level, levelStream = scoreWith(241, 500, 500)
   local weak, weakStream = scoreWith(241, 500, 33)
-  local takenLabels = { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance", "program_chance" }
+  local takenLabels =
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance", "program_chance" }
   local quietLabels = { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" }
   Assert.deepEqual(strongStream:drawLabels(), takenLabels, "the taken jump spends its gate draw")
   Assert.deepEqual(levelStream:drawLabels(), quietLabels, "the level preview falls through")
@@ -4853,7 +4826,15 @@ function T.acting_partner_strength_decides_the_held_slot()
   local water = program.TYPE_IDS["water"] --[[@as integer]]
   local fire = program.TYPE_IDS["fire"] --[[@as integer]]
   local slots = {
-    slotWith({ key = "PROBE", id = 600, moveType = "water", power = 40, category = "special", accuracy = 100, effect = 0 }),
+    slotWith({
+      key = "PROBE",
+      id = 600,
+      moveType = "water",
+      power = 40,
+      category = "special",
+      accuracy = 100,
+      effect = 0,
+    }),
     slotWith({ key = "TACKLE", id = 33, usable = false }),
     slotWith({ key = "TACKLE", id = 34, usable = false }),
     slotWith({ key = "TACKLE", id = 35, usable = false }),
@@ -4903,16 +4884,24 @@ function T.acting_partner_strength_decides_the_held_slot()
   )
   Assert.equal(weak[1].score, 99, "the held slot scores past the rank-2 continuation")
   Assert.equal(strong[1].score, 100, "the held slot scores past the rank-1 path")
-  local observed = (weakExtra.doublesBattlers --[[@as table<string, unknown>]])
+  local observed = weakExtra.doublesBattlers --[[@as table<string, unknown>]]
   Assert.equal(observed.tgt, 0, "the partner preview leaves the shared target alone")
-  local records = (observed.records --[[@as table<integer, table<string, unknown>>]])
+  local records = observed.records --[[@as table<integer, table<string, unknown>>]]
   Assert.deepEqual(
     (records[3] --[[@as table<string, unknown>]]).moves,
     { 0, 0, 0, 0 },
     "the partner preview leaves the acting-partner record alone"
   )
   local quietSlots = {
-    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
+    slotWith({
+      key = "GROWL",
+      id = 45,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 100,
+      effect = 7,
+    }),
     slotWith({ key = "TACKLE", id = 33, usable = false }),
     slotWith({ key = "TACKLE", id = 34, usable = false }),
     slotWith({ key = "TACKLE", id = 35, usable = false }),
@@ -4948,7 +4937,15 @@ function T.target_partner_moves_leave_the_held_slot_alone()
   local fire = program.TYPE_IDS["fire"] --[[@as integer]]
   local grass = program.TYPE_IDS["grass"] --[[@as integer]]
   local slots = {
-    slotWith({ key = "PROBE", id = 600, moveType = "water", power = 40, category = "special", accuracy = 100, effect = 0 }),
+    slotWith({
+      key = "PROBE",
+      id = 600,
+      moveType = "water",
+      power = 40,
+      category = "special",
+      accuracy = 100,
+      effect = 0,
+    }),
     slotWith({ key = "TACKLE", id = 33, usable = false }),
     slotWith({ key = "TACKLE", id = 34, usable = false }),
     slotWith({ key = "TACKLE", id = 35, usable = false }),
@@ -4980,9 +4977,8 @@ function T.target_partner_moves_leave_the_held_slot_alone()
     return scored, stream, extra
   end
   local before, beforeStream, beforeExtra = scoreWith(previewBattler({ t1 = fire, t2 = fire, moves = { 0, 0, 0, 0 } }))
-  local after, afterStream, afterExtra = scoreWith(
-    previewBattler({ t1 = water, t2 = water, moves = { 600, 601, 45, 33 } })
-  )
+  local after, afterStream, afterExtra =
+    scoreWith(previewBattler({ t1 = water, t2 = water, moves = { 600, 601, 45, 33 } }))
   local function pointsOf(scored)
     local points = {}
     for index, entry in ipairs(scored) do
@@ -4991,15 +4987,11 @@ function T.target_partner_moves_leave_the_held_slot_alone()
     return points
   end
   Assert.deepEqual(pointsOf(after), pointsOf(before), "target-partner-only changes keep every score")
-  Assert.deepEqual(
-    afterStream:drawLabels(),
-    beforeStream:drawLabels(),
-    "target-partner-only changes draw identically"
-  )
+  Assert.deepEqual(afterStream:drawLabels(), beforeStream:drawLabels(), "target-partner-only changes draw identically")
   for _, extra in ipairs({ beforeExtra, afterExtra }) do
-    local observed = (extra.doublesBattlers --[[@as table<string, unknown>]])
+    local observed = extra.doublesBattlers --[[@as table<string, unknown>]]
     Assert.equal(observed.tgt, 0, "scoring leaves the shared target alone")
-    local records = (observed.records --[[@as table<integer, table<string, unknown>>]])
+    local records = observed.records --[[@as table<integer, table<string, unknown>>]]
     Assert.equal(records[0].t1, fire, "scoring leaves the target record alone")
     Assert.deepEqual(
       (records[3] --[[@as table<string, unknown>]]).moves,
@@ -5852,17 +5844,8 @@ function T.doubles_records_share_the_same_arrival_counter_semantics()
   }
   for _, vector in ipairs(vectors) do
     local stream = spyStream(FIXED_SEED)
-    local scored = TrainerAi.scoreSlots(
-      chart,
-      arrivalSlots(183),
-      user,
-      user,
-      14,
-      { 1 },
-      false,
-      stream,
-      arrivalDoubles(vector.word)
-    )
+    local scored =
+      TrainerAi.scoreSlots(chart, arrivalSlots(183), user, user, 14, { 1 }, false, stream, arrivalDoubles(vector.word))
     Assert.equal(
       scored[1].score,
       vector.score,
@@ -6357,16 +6340,8 @@ function T.unburden_doubles_only_the_emptied_holder()
   local twinHi = runWith("RUN_AWAY", 0, false, 40)
   local twinLo = runWith("RUN_AWAY", 0, false, 20)
   Assert.isTrue(twinHi ~= twinLo, "the speed twins straddle the compare")
-  Assert.equal(
-    runWith("UNBURDEN", 0, true, 20),
-    twinHi,
-    "the emptied holder matches its doubled twin"
-  )
-  Assert.equal(
-    runWith("UNBURDEN", 158, true, 20),
-    twinLo,
-    "the laden holder matches its plain twin"
-  )
+  Assert.equal(runWith("UNBURDEN", 0, true, 20), twinHi, "the emptied holder matches its doubled twin")
+  Assert.equal(runWith("UNBURDEN", 158, true, 20), twinLo, "the laden holder matches its plain twin")
 end
 
 -- Unmapped clocks and orbs stay fail-closed: orb effects, an unmapped
@@ -6489,7 +6464,15 @@ function T.item_moves_preview_their_projected_power()
     end
     extra.liveAttacker = previewBattler(attacker)
     extra.liveTarget = previewBattler({ t1 = ground, t2 = ground })
-    return compareScores(chart, ngStrike, ngUser, ngFoe, extra, { power = calPower, type = "water", cat = "special" }, lasts)
+    return compareScores(
+      chart,
+      ngStrike,
+      ngUser,
+      ngFoe,
+      extra,
+      { power = calPower, type = "water", cat = "special" },
+      lasts
+    )
   end
   local function giftTwin(id, moveType, power, calPower)
     local extra = probePartyContext()
@@ -6583,10 +6566,7 @@ function T.item_moves_preview_their_projected_power()
   local darkTrip = plateTwin(525, "dark", 100, 700, 140, 160)
   local steelTrip = plateTwin(526, "steel", 100, 701, 141, 160)
   Assert.isTrue(darkTrip ~= steelTrip, "the plate twins straddle the compare")
-  Assert.isTrue(
-    plateRun(700, 140, 100, 160) ~= plateRun(701, 141, 100, 160),
-    "the plate selects the staged type"
-  )
+  Assert.isTrue(plateRun(700, 140, 100, 160) ~= plateRun(701, 141, 100, 160), "the plate selects the staged type")
   -- Compiled power: the 100 striker lands apart from the 40 striker.
   local powerTripHi = plateTwin(525, "dark", 100, 700, 140, 130)
   local powerTripLo = plateTwin(527, "dark", 40, 700, 140, 130)
@@ -6612,17 +6592,11 @@ end
 -- copy of the word stream or the lookup constants can drift.
 function T.trainer_program_tables_have_a_single_authority()
   local program = programOwner()
-  local data = requirePresent(
-    "libs.battle.src.gen4.TrainerAiProgramData",
-    "the program data owns the literal tables"
-  )
+  local data = requirePresent("libs.battle.src.gen4.TrainerAiProgramData", "the program data owns the literal tables")
   Assert.isTrue(program.WORDS == data.WORDS, "the facade exposes the authoritative word stream")
   Assert.isTrue(program.ENTRY == data.ENTRY, "the facade exposes the authoritative entries")
   Assert.equal(program.BASE, data.BASE, "the facade exposes the authoritative base")
-  Assert.isTrue(
-    program.ABILITY_IDS == data.ABILITY_IDS,
-    "the facade exposes the authoritative ability names"
-  )
+  Assert.isTrue(program.ABILITY_IDS == data.ABILITY_IDS, "the facade exposes the authoritative ability names")
   Assert.isTrue(program.TYPE_IDS == data.TYPE_IDS, "the facade exposes the authoritative type names")
   Assert.equal(program.BASE, 2504, "the base keeps its transcribed word numbering")
   Assert.equal(data.ENTRY[0], 8355, "the opening entry keeps its transcribed position")
@@ -6634,20 +6608,13 @@ end
 -- entry point with no registration surface, while outside-set opcodes
 -- and untranscribed slots fail closed instead of scoring approximately.
 function T.trainer_commands_dispatch_through_a_closed_table()
-  local commands = requirePresent(
-    "libs.battle.src.gen4.TrainerAiCommands",
-    "the command owner executes opcodes"
-  )
+  local commands = requirePresent("libs.battle.src.gen4.TrainerAiCommands", "the command owner executes opcodes")
   Assert.equal(type(commands.execute), "function", "command execution is a single entry point")
   Assert.isTrue(commands.registerOpcode == nil, "opcode dispatch takes no registrations")
   local unknown = Assert.throws(function()
     commands.execute({ bit = 0 }, 200, 2504)
   end, "an outside-set opcode fails instead of scoring")
-  Assert.equal(
-    unknown.code,
-    "BATTLE_MISSING_BEHAVIOR",
-    "the unknown opcode stays a structured missing behavior"
-  )
+  Assert.equal(unknown.code, "BATTLE_MISSING_BEHAVIOR", "the unknown opcode stays a structured missing behavior")
   local gap = Assert.throws(function()
     commands.execute({ bit = 1 }, 78, 2504)
   end, "an untranscribed slot fails instead of scoring")
@@ -6658,18 +6625,9 @@ end
 -- preview arithmetic, and command dispatch owners all load beside the
 -- facade and the trainer policy without import cycles.
 function T.trainer_siblings_load_beside_the_facade_without_cycles()
-  local context = requirePresent(
-    "libs.battle.src.gen4.TrainerAiContext",
-    "the context owns shared native readers"
-  )
-  local preview = requirePresent(
-    "libs.battle.src.gen4.TrainerAiPreview",
-    "the preview owns native preview arithmetic"
-  )
-  local commands = requirePresent(
-    "libs.battle.src.gen4.TrainerAiCommands",
-    "the command owner executes opcodes"
-  )
+  local context = requirePresent("libs.battle.src.gen4.TrainerAiContext", "the context owns shared native readers")
+  local preview = requirePresent("libs.battle.src.gen4.TrainerAiPreview", "the preview owns native preview arithmetic")
+  local commands = requirePresent("libs.battle.src.gen4.TrainerAiCommands", "the command owner executes opcodes")
   local program = programOwner()
   local policy = trainerPolicy()
   Assert.equal(type(context.resolveBattler), "function", "the context reads battler identities")
@@ -6722,6 +6680,62 @@ function T.native_preview_scores_survive_decomposition_unchanged()
     "program_chance",
     "program_chance",
   }, "the transcribed line draws exactly")
+end
+
+-- Reused answers track live battle state across turns: a wounded lone
+-- lead serves its first stocked cure without moving health or stock, the
+-- executed serving heals and decrements exactly once, and the next-turn
+-- answer strikes from the healed record even though a second cure waits;
+-- a freshly restored projection of the same capture answers identically.
+function T.reused_answers_track_live_battle_state_across_turns()
+  local Executor = sessionOwner()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "CHIKORITA", 5)
+  lead.mon.moves = {
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "TAIL_WHIP", pp = 30, ppUps = 0 },
+  }
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 2 }),
+      { lead },
+      { foe },
+      { "TACKLE", "GROWL", "TAIL_WHIP" },
+      { trainerItems = { "POTION", "POTION" } }
+    )
+  )
+  local before = session:capture()
+  local first = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(first.choices[1].kind, "item", "the wounded lead serves its first stocked cure")
+  Assert.equal(first.choices[1].payload.item, "POTION", "the first serving names the stocked cure")
+  local answered = session:capture()
+  Assert.deepEqual(answered.combatants, before.combatants, "answering moves no health or records")
+  Assert.deepEqual(answered.inventories, before.inventories, "answering consumes no stock")
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(session:submit(first), "the first serving binds")
+  local bound, bindErr = session:submit(SessionFixture.replyFor(foeRequest, {
+    SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(bound, "the opposing strike binds: " .. tostring(bindErr))
+  session:advance(1024)
+  local healed = session:capture()
+  Assert.equal(
+    healed.inventories["trainer-stock"].quantities.POTION,
+    1,
+    "execution decrements the served stock exactly once"
+  )
+  Assert.isTrue(healed.combatants[1].hp > 4, "the serving restores through the ordinary item path")
+  local second = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(second.choices[1].kind, "attack", "the healed lead strikes instead of serving its second cure")
+  local fresh = Executor.restore(healed, trainerContent())
+  local replayed = fresh:answerTrainer(openRequest(fresh, "trainer:1"))
+  Assert.deepEqual(replayed, second, "a freshly restored projection answers identically")
+  fresh:dispose()
+  session:dispose()
 end
 
 return { tests = T }
