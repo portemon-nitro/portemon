@@ -548,6 +548,65 @@ function T.tests.call_cancellation_is_terminal_at_each_stage_and_disposal_releas
   end, "a disposed host opens nothing")
 end
 
+function T.tests.phone_uses_saved_contact_order_and_keeps_automatic_sort_temporary()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: saved contact order cannot be displayed"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 99 }, { catalog = record.catalog })
+  state:registerContact("custom.trainer-plain")
+  state:registerContact("custom.mom")
+  local function phone()
+    return PhoneController.new({
+      state = state,
+      catalog = record.catalog,
+      messages = { greeting = "custom.greeting" },
+      world = worldFixture(),
+      random = PokegearRandom.new(99),
+    })
+  end
+
+  local controller = phone()
+  local rows = controller:status().view.list.rows
+  Assert.deepEqual(
+    { rows[1].contact, rows[2].contact },
+    { "custom.trainer-plain", "custom.mom" },
+    "the phone opens in the durable registration order"
+  )
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  rows = controller:status().view.list.rows
+  Assert.deepEqual(
+    { rows[1].contact, rows[2].contact },
+    { "custom.mom", "custom.trainer-plain" },
+    "automatic source sorting changes only the visible order"
+  )
+  Assert.deepEqual(
+    state:readPhone().contactOrder,
+    { "custom.trainer-plain", "custom.mom" },
+    "automatic sorting leaves canonical order untouched"
+  )
+  controller:dispose()
+
+  state:registerContact("custom.leader-falkner")
+  local reopened = phone()
+  rows = reopened:status().view.list.rows
+  Assert.deepEqual(
+    { rows[1].contact, rows[2].contact, rows[3].contact },
+    { "custom.trainer-plain", "custom.mom", "custom.leader-falkner" },
+    "new registrations append after the saved order"
+  )
+  reopened:dispose()
+end
+
 -- The declarative script surface stays closed and delegates meaning:
 -- builders return ordinary records, the schema rejects extra keys and
 -- bad enums, and runtime routes queries and updates through the
@@ -562,16 +621,12 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     "setup builds its ordinary op record"
   )
   Assert.deepEqual(S.phoneRunCall(), { op = "phone_run_call" }, "run builds its operand-free record")
-  Assert.deepEqual(
-    S.pokegearQuery({ kind = "contact_registered", contact = "custom.mom", result = S.var("seen") }),
-    {
-      op = "pokegear_query",
-      kind = "contact_registered",
-      contact = "custom.mom",
-      result = { value = "var", id = "seen" },
-    },
-    "query builds its typed record"
-  )
+  Assert.deepEqual(S.pokegearQuery({ kind = "contact_registered", contact = "custom.mom", result = S.var("seen") }), {
+    op = "pokegear_query",
+    kind = "contact_registered",
+    contact = "custom.mom",
+    result = { value = "var", id = "seen" },
+  }, "query builds its typed record")
   Assert.isNil(S.pokegearInvoke, "phone operations expose no open-ended dispatch")
   Assert.isTrue(
     S.validate(S.script({
@@ -633,25 +688,29 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     input = {},
   }
   Assert.equal(
-    Runtime.executeNode(
-      { op = "pokegear_query", kind = "contact_registered", contact = "custom.trainer-plain", result = {
+    Runtime.executeNode({
+      op = "pokegear_query",
+      kind = "contact_registered",
+      contact = "custom.trainer-plain",
+      result = {
         value = "var",
         id = "plain_seen",
-      } },
-      run
-    ),
+      },
+    }, run),
     Runtime.OUTCOME_CONTINUE,
     "registration queries resolve synchronously"
   )
   Assert.equal(variables.plain_seen, 1, "an acquired contact reads back registered")
   Assert.equal(
-    Runtime.executeNode(
-      { op = "pokegear_query", kind = "rematch_ready", contact = "custom.leader-falkner", result = {
+    Runtime.executeNode({
+      op = "pokegear_query",
+      kind = "rematch_ready",
+      contact = "custom.leader-falkner",
+      result = {
         value = "var",
         id = "ready",
-      } },
-      run
-    ),
+      },
+    }, run),
     Runtime.OUTCOME_CONTINUE,
     "readiness queries resolve synchronously"
   )
@@ -662,22 +721,21 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     "registration updates commit synchronously"
   )
   Assert.equal(
-    Runtime.executeNode(
-      { op = "pokegear_query", kind = "contact_registered", contact = "custom.mom", result = {
+    Runtime.executeNode({
+      op = "pokegear_query",
+      kind = "contact_registered",
+      contact = "custom.mom",
+      result = {
         value = "var",
         id = "mom_seen",
-      } },
-      run
-    ),
+      },
+    }, run),
     Runtime.OUTCOME_CONTINUE,
     "the registered contact reads back registered"
   )
   Assert.equal(variables.mom_seen, 1, "the update committed through the durable owner")
-  local updateOk, updateErr = pcall(
-    Runtime.executeNode,
-    { op = "pokegear_update", kind = "register_contact", contact = "custom.stranger" },
-    run
-  )
+  local updateOk, updateErr =
+    pcall(Runtime.executeNode, { op = "pokegear_update", kind = "register_contact", contact = "custom.stranger" }, run)
   Assert.isFalse(updateOk, "unknown contacts never register")
   Assert.notNil(tostring(updateErr):find("custom.stranger", 1, true), "the failure names its contact")
   local directionOk, directionErr = pcall(
@@ -711,10 +769,7 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     "the missing-request failure carries its script context"
   )
   Assert.equal(
-    Runtime.executeNode(
-      { op = "pokegear_open", mode = "townMap" },
-      run
-    ),
+    Runtime.executeNode({ op = "pokegear_open", mode = "townMap" }, run),
     Runtime.OUTCOME_BLOCK,
     "explicit opens without a child still route through the shared task"
   )

@@ -493,8 +493,6 @@ function T.setup_skin_selection_commits_and_spotlights(scope)
   state:registerCard("radio")
   state:setPreference("lastApp", "configure")
   state:setPreference("unlockedSkins", { 0, 1, 2, 3, 4, 5 })
-  -- Skin 5 is deliberately relocked through the named preference write.
-  state:setPreference("unlockedSkins", { 0, 1, 2, 3, 4 })
   local revisionAtOpen = state:revision()
 
   local configureHandle = {}
@@ -528,15 +526,17 @@ function T.setup_skin_selection_commits_and_spotlights(scope)
     end
   end
 
-  -- Confirming the locked cell is a no-op: saved skin, revision, and open
-  -- state all stay put. Child navigation never moves strip focus either:
-  -- the card owns its directional input while it is active.
+  -- Every compiled source cell is available even if a stale saved subset
+  -- is present. Child navigation never moves strip focus either: the card
+  -- owns its directional input while it is active.
   driveCursorTo(host.shell, configure, 5)
   Assert.equal(host.shell:status().focus, "configure", "setup navigation keeps strip focus on the card")
   host.shell:updateFixed({ { type = "confirm" } })
-  Assert.equal(state:readPreferences().skin, 0, "confirming a locked skin writes nothing")
-  Assert.equal(state:revision(), revisionAtOpen, "confirming a locked skin moves no revision")
-  Assert.isFalse(configure:status().menuOpen, "confirming a locked skin opens no menu")
+  Assert.isTrue(configure:status().menuOpen, "confirming source skin five opens its context menu")
+  Assert.equal(state:readPreferences().skin, 0, "opening the skin menu writes nothing")
+  Assert.equal(state:revision(), revisionAtOpen, "opening the skin menu moves no revision")
+  host.shell:updateFixed({ { type = "cancel" } })
+  Assert.isFalse(configure:status().menuOpen, "cancelling closes the skin context menu")
 
   -- Opening the context menu then cancelling leaves the saved skin alone.
   driveCursorTo(host.shell, configure, 2)
@@ -579,7 +579,7 @@ function T.setup_skin_selection_commits_and_spotlights(scope)
   local resources = renderResources(scope, manifest)
   local baseline = drawShell(scope, host.shell, resources, 512, 192)
 
-  -- Confirming an unlocked skin writes once at the confirmation boundary
+  -- Confirming a source skin writes once at the confirmation boundary
   -- and swaps every affected visual without any asset rebuild.
   driveCursorTo(host.shell, configure, 3)
   local beforeConfirm = state:revision()
@@ -929,10 +929,7 @@ function T.unprepared_graphics_fail_before_drawing(scope)
     plan.render({ graphics = resources.graphics, images = {}, textRenderer = resources.textRenderer }, status, plan)
   end)
   Assert.notNil(emptyErr, "drawing without prepared images fails")
-  Assert.notNil(
-    tostring(emptyErr):find("prepared", 1, true),
-    "the missing-image failure names its prepared image"
-  )
+  Assert.notNil(tostring(emptyErr):find("prepared", 1, true), "the missing-image failure names its prepared image")
   Assert.throws(function()
     plan.render({ images = resources.images, textRenderer = resources.textRenderer }, status, plan)
   end, "drawing without host graphics fails")

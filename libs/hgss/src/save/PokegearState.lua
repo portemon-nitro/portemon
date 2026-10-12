@@ -602,6 +602,11 @@ local function checkRestorable(data, contacts, locations)
     fail("pokegear phone contacts must be a record", {})
   end
   assert(type(phone.contacts) == "table", "restoration reads phone contacts")
+  for _, contactKey in ipairs(data.contactOrder) do
+    if phone.contacts[contactKey] == nil then
+      fail("pokegear contact order references an unregistered contact " .. contactKey, { key = contactKey })
+    end
+  end
   for contactKey, entry in pairs(phone.contacts) do
     if contacts[contactKey] ~= true then
       fail("pokegear phone contacts reference missing contact " .. tostring(contactKey), { key = contactKey })
@@ -1220,6 +1225,9 @@ local function applySetContactOrder(data, contacts, order)
     fail("pokegear contact order must be a list", {})
   end
   assert(type(order) == "table", "contact order writes read the order list")
+  assert(type(data) == "table" and type(data.phone) == "table", "contact order writes read phone state")
+  local registered = (data.phone --[[@as table<string, unknown>]]).contacts
+  assert(type(registered) == "table", "contact order writes read registered contacts")
   local count = 0
   for _ in pairs(order) do
     count = count + 1
@@ -1233,14 +1241,14 @@ local function applySetContactOrder(data, contacts, order)
     if contacts[contactKey] ~= true then
       fail("pokegear contact order references missing contact " .. contactKey, { key = contactKey })
     end
+    if registered[contactKey] == nil then
+      fail("pokegear contact order references an unregistered contact " .. contactKey, { key = contactKey })
+    end
     if seen[contactKey] then
       fail("pokegear contact order repeats a contact", { key = contactKey })
     end
     seen[contactKey] = true
   end
-  assert(type(data) == "table" and type(data.phone) == "table", "contact order writes read phone state")
-  local registered = (data.phone --[[@as table<string, unknown>]]).contacts
-  assert(type(registered) == "table", "contact order writes read registered contacts")
   for contactKey in
     pairs(registered --[[@as table<string, unknown>]])
   do

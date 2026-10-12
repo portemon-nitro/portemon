@@ -56,8 +56,9 @@ local function fixtureManifest()
       contacts = {
         { key = "custom.elm", family = "elm", sortWeight = 10 },
         { key = "custom.mom", family = "mother", sortWeight = 20 },
+        { key = "custom.bill", family = "service", sortWeight = 30 },
       },
-      contactOrder = { "custom.elm", "custom.mom" },
+      contactOrder = { "custom.elm", "custom.mom", "custom.bill" },
       callDefinitions = {},
       callTriggers = {},
       rematches = {},
@@ -223,6 +224,13 @@ function T.tests.contact_registration_round_trips_through_capture_and_stays_idem
     { icons = { 1, 2, false, false }, words = { "custom.word-a", false, false, false } },
     "four-slot markings survive capture and restore with explicit empty slots"
   )
+
+  local unregistered = revived:capture()
+  unregistered.contactOrder[#unregistered.contactOrder + 1] = "custom.bill"
+  local restored = pcall(PokegearState.restore, unregistered, catalogRefs(record))
+  Assert.isFalse(restored, "restoration rejects catalogued contacts that were never registered")
+  local reordered = pcall(revived.setContactOrder, revived, { "custom.elm", "custom.mom", "custom.bill" })
+  Assert.isFalse(reordered, "manual ordering rejects catalogued contacts that were never registered")
 
   local borrowed = revived:readPhone()
   borrowed.contactOrder[#borrowed.contactOrder + 1] = "custom.ghost"

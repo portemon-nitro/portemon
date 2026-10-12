@@ -246,7 +246,9 @@ function T.tests.composed_map_tab_samples_live_roamers_without_moving_them()
   Assert.notNil(markers, "the composed map publishes its markers")
   local found = {}
   for _, marker in ipairs(markers) do
-    if (marker --[[@as table]]).kind == "roamer" then
+    if
+      (marker --[[@as table]]).kind == "roamer"
+    then
       found[#found + 1] = (marker --[[@as table]]).key
     end
   end
@@ -380,11 +382,8 @@ function T.tests.unknown_contacts_and_selectors_fail_loudly()
   local friends = companion()
   local bundle = composeGear(friends)
   local run = handlerRun(scriptServices(bundle, friends))
-  local okContact, errContact = pcall(
-    Runtime.executeNode,
-    { op = "pokegear_update", kind = "register_contact", contact = 999 },
-    run
-  )
+  local okContact, errContact =
+    pcall(Runtime.executeNode, { op = "pokegear_update", kind = "register_contact", contact = 999 }, run)
   Assert.isFalse(okContact, "unknown contact numbers never register")
   Assert.notNil(tostring(errContact):find("999", 1, true), "the failure names its number")
   local okDirection, errDirection = pcall(Runtime.executeNode, {
@@ -403,11 +402,8 @@ function T.tests.unknown_contacts_and_selectors_fail_loudly()
   }, run)
   Assert.isFalse(okKind, "unknown kind codes never stage")
   Assert.equal(errKind.code, "SCRIPT_INVALID_REFERENCE", "the failure carries its vocabulary")
-  local okTrigger, errTrigger = pcall(
-    Runtime.executeNode,
-    { op = "pokegear_set_trigger", trigger = 300, active = true },
-    run
-  )
+  local okTrigger, errTrigger =
+    pcall(Runtime.executeNode, { op = "pokegear_set_trigger", trigger = 300, active = true }, run)
   Assert.isFalse(okTrigger, "out-of-range slots never switch")
   Assert.notNil(tostring(errTrigger):find("300", 1, true), "the failure names its slot")
 end
@@ -710,6 +706,14 @@ function T.tests.save_gate_denies_live_controllers_and_defers_to_later_gates()
   local coordinator = FieldSaveCoordinator.new({
     pokegear = bundle,
     pcApplicationHost = idleHost,
+    battleCoordinator = {
+      activeBattle = function()
+        return nil
+      end,
+      hasLaunch = function()
+        return false
+      end,
+    },
   })
   local host = bundle.scriptHost
   local handle = host:open({
@@ -750,6 +754,14 @@ function T.tests.save_gate_denies_live_controllers_and_defers_to_later_gates()
         return true
       end,
     },
+    battleCoordinator = {
+      activeBattle = function()
+        return nil
+      end,
+      hasLaunch = function()
+        return false
+      end,
+    },
   }
   local record2, reason2 = FieldSaveCoordinator.new(martBusy):capture(false)
   Assert.isNil(record2, "later gates still refuse after the companion gate passes")
@@ -786,10 +798,7 @@ function T.tests.composition_requires_shared_message_references()
   })
   Assert.isFalse(ok, "a composition without message references never assembles silently")
   Assert.equal(err.code, ScriptErrors.SCRIPT_SERVICE_MISSING, "the refusal carries its attribution")
-  Assert.notNil(
-    tostring(err.message):find("message references", 1, true),
-    "the refusal names its missing owner"
-  )
+  Assert.notNil(tostring(err.message):find("message references", 1, true), "the refusal names its missing owner")
 end
 
 function T.tests.composition_rejects_the_unresolved_greeting_sentinel()
@@ -900,8 +909,7 @@ function T.tests.radio_facts_resolve_reception_sets_without_a_location_record()
   Assert.isTrue(alph.map.alph, "the Alph set marks its member")
   Assert.isFalse(alph.map.mahogany, "the Alph member is not a Mahogany member")
   Assert.equal(RadioReception.forContext(alph.map, alph.flags), "alph", "an Alph map tunes its own table")
-  local mahogany =
-    PokegearComposition.radioFacts(radioRuntime("MAP_MAHOGANY", {}), regionCatalog())
+  local mahogany = PokegearComposition.radioFacts(radioRuntime("MAP_MAHOGANY", {}), regionCatalog())
   Assert.isTrue(mahogany.map.mahogany, "the Mahogany set marks its member")
   Assert.isFalse(mahogany.map.alph, "the Mahogany member is not an Alph member")
   Assert.equal(

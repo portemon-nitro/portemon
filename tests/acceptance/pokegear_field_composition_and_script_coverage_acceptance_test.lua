@@ -59,8 +59,7 @@ local T = {
   tests = {},
 }
 
-local function void(_)
-end
+local function void(_) end
 
 local FLAGS = FieldScriptSymbols.flagsByName
 local FLAG_GOT_POKEGEAR = FLAGS.FLAG_GOT_POKEGEAR
@@ -69,13 +68,24 @@ local FLAG_GOT_RADIO_CARD = FLAGS.FLAG_GOT_RADIO_CARD
 local FLAG_GOT_ELMS_PANIC_CALL = FLAGS.FLAG_GOT_ELMS_PANIC_CALL
 local VAR_SCENE_ELMS_LAB = FieldScriptSymbols.variablesByName.VAR_SCENE_ELMS_LAB
 
+local function nativeMomKey(game)
+  local catalog = assert(game.runtime.pokegearCatalog, "the field runtime owns its compiled phone catalog")
+  for _, contact in ipairs(assert(catalog.contacts, "the compiled phone catalog lists contacts")) do
+    if contact.id == 0 then
+      assert(contact.family == "mother", "native phonebook contact zero is Mom")
+      local key = assert(contact.key, "native Mom carries its semantic key")
+      return key
+    end
+  end
+  error("the compiled phone catalog contains native contact zero", 0)
+end
+
 local TOWN = "MAP_NEW_BARK"
 local HOUSE_1F = "MAP_NEW_BARK_PLAYER_HOUSE_1F"
 local LAB_1F = "MAP_NEW_BARK_ELMS_LAB_1F"
 local TOWN_HOUSE_DOOR_APPROACH = { fieldX = 695, fieldZ = 397 }
 local POKEGEAR_ACTION = "vanilla.pokegear"
 local SAVE_ACTION = "vanilla.save"
-
 
 -- Loads a gear module that does not exist yet at this baseline. The
 -- failure names the missing behaviour instead of surfacing as a suite
@@ -126,10 +136,7 @@ local function compositionGates(game)
     "game.hgss.src.pokegear.PokegearComposition",
     "the field has no composed gear owner yet: runtime, menus, and scripts cannot reach the feature"
   )
-  Assert.notNil(
-    PokegearComposition.compose,
-    "the gear composition must publish its explicit construction entrypoint"
-  )
+  Assert.notNil(PokegearComposition.compose, "the gear composition must publish its explicit construction entrypoint")
   local coordinator = FieldMenuCompositionCoordinator.new(game.runtime)
   local found = false
   for _, descriptor in ipairs(coordinator:applicationDescriptors()) do
@@ -349,10 +356,8 @@ local function talkTo(game, actorId)
   -- Actors may wander between planning and arrival, so every attempt
   -- re-reads the live position instead of trusting a stale read.
   for _ = 1, 3 do
-    local live = assert(
-      game.runtime.actors:getById(actorId),
-      "the target actor must be live before talking: " .. actorId
-    )
+    local live =
+      assert(game.runtime.actors:getById(actorId), "the target actor must be live before talking: " .. actorId)
     local committed = live:getFieldPosition()
     local ax = assert(committed.fieldX, "live actors carry their field column: " .. actorId)
     local az = assert(committed.fieldZ, "live actors carry their field row: " .. actorId)
@@ -397,10 +402,8 @@ end
 local function takeWarpTo(game, targetSymbol)
   local origin = assert(game:snapshot().mapSymbol, "warp search needs the current map symbol")
   settleArrival(game, origin)
-  local warps = assert(
-    game.runtime.runtimeMap.fieldData.events.warps,
-    "warp search needs production warp data on " .. origin
-  )
+  local warps =
+    assert(game.runtime.runtimeMap.fieldData.events.warps, "warp search needs production warp data on " .. origin)
   local deltas = {
     { dx = 1, dz = 0, direction = "east" },
     { dx = -1, dz = 0, direction = "west" },
@@ -535,10 +538,7 @@ local function takeWarpTo(game, targetSymbol)
       local reached = reach(neighbor)
       if reached and game:snapshot().mapSymbol == origin then
         if game:snapshot().dialogue.modal then
-          Assert.isTrue(
-            drainField(game, 240),
-            "a warp-side scene must settle before bumping " .. step.direction
-          )
+          Assert.isTrue(drainField(game, 240), "a warp-side scene must settle before bumping " .. step.direction)
         elseif pressDirection(step.direction) then
           return true
         elseif onTile() then
@@ -689,9 +689,7 @@ local function openGearThroughMenu(game)
   }, FieldState)
   for _ = 1, (#status.menu.actions + 1) * 2 do
     local current = game.runtime.applicationHost:status()
-    if
-      assert(current.menu, "the menu phase must expose its controller status").selectedPosition == target
-    then
+    if assert(current.menu, "the menu phase must expose its controller status").selectedPosition == target then
       break
     end
     callbacks:keypressed("s")
@@ -820,19 +818,11 @@ local function saveAndReload(game)
       and not snapshot.fieldLocked
   end, 240)
   local saveId = game.runtime.saveId
-  local persisted = assert(
-    game.runtime.saveStore:load(saveId),
-    "the actual save store must reload the published record"
-  )
+  local persisted =
+    assert(game.runtime.saveStore:load(saveId), "the actual save store must reload the published record")
   game:_disposeRuntime()
-  local runtime = game.harness:_newRuntime(
-    persisted,
-    game.saveNamespace,
-    game.faults,
-    game.lifecycle,
-    game.fieldOptions,
-    false
-  )
+  local runtime =
+    game.harness:_newRuntime(persisted, game.saveNamespace, game.faults, game.lifecycle, game.fieldOptions, false)
   game.runtime = runtime
   game.hosts = runtime.scriptHosts or {}
   game.runtimeDisposed = false
@@ -857,10 +847,8 @@ end
 function T.tests.opening_play_reaches_the_lab_frontier_behind_a_sealed_exit()
   withGame(TOWN, function(game)
     compositionGates(game)
-    local world = assert(
-      game.runtime.scripts and game.runtime.scripts.worldState,
-      "the opening journey needs live world state"
-    )
+    local world =
+      assert(game.runtime.scripts and game.runtime.scripts.worldState, "the opening journey needs live world state")
     local gearState = assert(game.runtime.pokegearState, "the opening journey needs live gear state")
     Assert.isFalse(world:isFlagSet(FLAG_GOT_POKEGEAR), "a genuine New Game starts without the gear")
 
@@ -886,10 +874,7 @@ function T.tests.opening_play_reaches_the_lab_frontier_behind_a_sealed_exit()
     takeWarpTo(game, LAB_1F)
     Assert.isTrue(settleField(game), "the lab welcome must settle before Elm is approached")
     game:moveTo({ fieldX = 4, fieldZ = 10 })
-    Assert.isTrue(
-      settleScripting(game),
-      "the lab welcome scene must conclude and release the field"
-    )
+    Assert.isTrue(settleScripting(game), "the lab welcome scene must conclude and release the field")
     local ELM_SCRIPT = "vanilla.hgss.scr_seq.0843.script_000"
     local elmFound = false
     do
@@ -906,20 +891,14 @@ function T.tests.opening_play_reaches_the_lab_frontier_behind_a_sealed_exit()
             if game:interaction().scriptId == ELM_SCRIPT then
               elmFound = true
             else
-              Assert.isTrue(
-                drainField(game, 200),
-                "a neighbourly chat must settle before Elm is approached"
-              )
+              Assert.isTrue(drainField(game, 200), "a neighbourly chat must settle before Elm is approached")
             end
           end
         end
       end
     end
     Assert.isTrue(elmFound, "Elm must start his dispatcher script through the real interaction")
-    Assert.isTrue(
-      settleScripting(game),
-      "Elm's conversation must conclude and release the field"
-    )
+    Assert.isTrue(settleScripting(game), "Elm's conversation must conclude and release the field")
     local STARTER_SCRIPT = "vanilla.hgss.scr_seq.0843.script_012"
     local triggered = false
     for _, tile in ipairs({
@@ -968,24 +947,27 @@ function T.tests.opening_play_reaches_the_lab_frontier_behind_a_sealed_exit()
     Assert.isTrue(settleField(game), "the corridor gift must release the field")
 
     -- Frontier truth: the starter errand is underway, the gear is still
-    -- unowned, and no scripted registration point has played yet (neither
-    -- the house nor the lab scripts carry a registration site), so the
-    -- contact list is honestly empty.
+    -- unowned, and no scripted registration point has played yet. The
+    -- native Mom default exists independently of those script effects.
     Assert.isTrue(world:isFlagSet(FLAG_GOT_STARTER), "the frontier keeps the played starter")
     Assert.equal(world:getVar(VAR_SCENE_ELMS_LAB), 2, "the frontier keeps the concluded corridor gift")
     Assert.isFalse(world:isFlagSet(FLAG_GOT_POKEGEAR), "the gear still waits past the frontier")
-    Assert.deepEqual(gearState:readPhone().contactOrder, {}, "no played script has registered a caller yet")
+    Assert.deepEqual(
+      gearState:readPhone().contactOrder,
+      { nativeMomKey(game) },
+      "only the native Mom default is registered"
+    )
     Assert.equal(scriptFaults(game), 0, "the opening scenes must run without script faults")
 
     -- The frontier roundtrips through a permitted save: the starter, the
-    -- scene, and the empty contact list all survive verbatim.
+    -- scene, and native Mom default all survive verbatim.
     saveAndReload(game)
     world = assert(game.runtime.scripts.worldState, "the reloaded journey needs live world state")
     gearState = assert(game.runtime.pokegearState, "the reloaded journey needs live gear state")
     Assert.isTrue(world:isFlagSet(FLAG_GOT_STARTER), "reload must retain the played starter")
     Assert.equal(world:getVar(VAR_SCENE_ELMS_LAB), 2, "reload must retain the corridor gift")
     Assert.isFalse(world:isFlagSet(FLAG_GOT_POKEGEAR), "reload must not invent the gear")
-    Assert.deepEqual(gearState:readPhone().contactOrder, {}, "reload must retain the empty contact list")
+    Assert.deepEqual(gearState:readPhone().contactOrder, { nativeMomKey(game) }, "reload retains only native Mom")
     Assert.equal(game:snapshot().mapSymbol, LAB_1F, "reload must resume inside the lab")
 
     -- Sealed-exit leg: every lab door warp anchor is occupied by a live
@@ -993,10 +975,7 @@ function T.tests.opening_play_reaches_the_lab_frontier_behind_a_sealed_exit()
     -- a bounded exit attempt changes no map, fires no transition, faults
     -- no script, and mutates no gear fact. The block lands pre-mutation:
     -- revisions, contacts, and flags read identical before and after.
-    local warps = assert(
-      game.runtime.runtimeMap.fieldData.events.warps,
-      "the frontier needs production warp data"
-    )
+    local warps = assert(game.runtime.runtimeMap.fieldData.events.warps, "the frontier needs production warp data")
     do
       local revisionBefore = gearState:revision()
       local faultsBefore = scriptFaults(game)
@@ -1044,7 +1023,11 @@ function T.tests.opening_play_reaches_the_lab_frontier_behind_a_sealed_exit()
       Assert.equal(game:snapshot().transition.phase, "idle", "the blocked exit must never fire a transition")
       Assert.equal(scriptFaults(game), faultsBefore, "the blocked exit must fault no script")
       Assert.equal(gearState:revision(), revisionBefore, "the blocked exit must mutate no gear fact")
-      Assert.deepEqual(gearState:readPhone().contactOrder, {}, "the blocked exit must register nobody")
+      Assert.deepEqual(
+        gearState:readPhone().contactOrder,
+        { nativeMomKey(game) },
+        "the blocked exit adds no callers beyond native Mom"
+      )
       Assert.isTrue(settleField(game), "the blocked exit must release the field")
     end
 
@@ -1052,7 +1035,11 @@ function T.tests.opening_play_reaches_the_lab_frontier_behind_a_sealed_exit()
     -- leg below reads live behind the still-sealed door; none is skipped:
     -- the town-exit Elm registration cannot run outside town.
     Assert.equal(game:snapshot().mapSymbol, LAB_1F, "every tail below starts behind the sealed door")
-    Assert.deepEqual(gearState:readPhone().contactOrder, {}, "Elm registration waits past the sealed door")
+    Assert.deepEqual(
+      gearState:readPhone().contactOrder,
+      { nativeMomKey(game) },
+      "Elm registration waits past the sealed door"
+    )
     -- The home-Mom gear handoff cannot run outside the house.
     Assert.isFalse(world:isFlagSet(FLAG_GOT_POKEGEAR), "the gear handoff waits past the sealed door")
     -- No road registration can occur: the full script census carries no
@@ -1060,7 +1047,11 @@ function T.tests.opening_play_reaches_the_lab_frontier_behind_a_sealed_exit()
     -- Cherrygrove town scripts hold no number registration; every static
     -- site is map-scoped to a giver point), so registrations happen only
     -- at played scripted points, and none has played yet.
-    Assert.deepEqual(gearState:readPhone().contactOrder, {}, "unreachable roads register nobody")
+    Assert.deepEqual(
+      gearState:readPhone().contactOrder,
+      { nativeMomKey(game) },
+      "unreachable roads add no callers beyond native Mom"
+    )
     -- The scripted Elm panic call cannot ring or run: its source flag sits
     -- past the seal, and no ambient call is pending. The staged-call task
     -- mechanics such a call would use stay proven through the real
@@ -1080,7 +1071,6 @@ function T.tests.opening_play_reaches_the_lab_frontier_behind_a_sealed_exit()
   end)
 end
 
-
 -- Goldenrod coverage runs every bootable map through its source scripts:
 -- the Pokecenter pocket proves the card locks hold and registers nothing,
 -- the tower second floor runs Buena's password service through its gate,
@@ -1096,16 +1086,11 @@ function T.tests.goldenrod_bootable_maps_cover_tabs_and_mark_unloadable_maps()
   -- trigger-clear script) sits beyond reach and only pocket tiles sweep.
   withGame("MAP_GOLDENROD_POKECENTER_1F", function(game)
     compositionGates(game)
-    local world = assert(
-      game.runtime.scripts and game.runtime.scripts.worldState,
-      "the Goldenrod journey needs live world state"
-    )
+    local world =
+      assert(game.runtime.scripts and game.runtime.scripts.worldState, "the Goldenrod journey needs live world state")
     local gearState = assert(game.runtime.pokegearState, "the Goldenrod journey needs live gear state")
     Assert.isFalse(world:isFlagSet(FLAG_GOT_POKEGEAR), "a fresh arrival owns no gear and no tab")
-    Assert.isFalse(
-      world:isFlagSet(FLAG_GOT_RADIO_CARD),
-      "a fresh arrival owns no radio card and no station"
-    )
+    Assert.isFalse(world:isFlagSet(FLAG_GOT_RADIO_CARD), "a fresh arrival owns no radio card and no station")
 
     -- Card locks hold: without the source flags the menu offers no usable
     -- gear route, so every later tab effect proves its own acquisition.
@@ -1169,7 +1154,11 @@ function T.tests.goldenrod_bootable_maps_cover_tabs_and_mark_unloadable_maps()
       "no reachable actor can hand over the Radio Card from the sealed pocket"
     )
     Assert.isFalse(world:isFlagSet(FLAG_GOT_RADIO_CARD), "the pocket sweep must not invent the card")
-    Assert.deepEqual(gearState:readPhone().contactOrder, {}, "the pocket sweep must register nobody")
+    Assert.deepEqual(
+      gearState:readPhone().contactOrder,
+      { nativeMomKey(game) },
+      "the pocket sweep adds no contacts beyond native Mom"
+    )
 
     -- With the card still unowned, the gear opens through setup only and
     -- every tab draws on its real backing: contacts, locations, programs,
@@ -1195,11 +1184,7 @@ function T.tests.goldenrod_bootable_maps_cover_tabs_and_mark_unloadable_maps()
 
     -- Nothing here may answer a fictional fact.
     acceptRingingCall(game)
-    Assert.deepEqual(
-      gearState:readPhone().triggers,
-      {},
-      "no Goldenrod trigger may linger unfired"
-    )
+    Assert.deepEqual(gearState:readPhone().triggers, {}, "no Goldenrod trigger may linger unfired")
     Assert.equal(scriptFaults(game), 0, "the Goldenrod scripts must run without script faults")
     Assert.isTrue(settleField(game), "Goldenrod must return to ordinary play")
   end)
@@ -1212,10 +1197,8 @@ function T.tests.goldenrod_bootable_maps_cover_tabs_and_mark_unloadable_maps()
   -- the default-answer harness cannot give.
   withGame("MAP_GOLDENROD_RADIO_TOWER_2F", function(game)
     compositionGates(game)
-    local world = assert(
-      game.runtime.scripts and game.runtime.scripts.worldState,
-      "the tower climb needs live world state"
-    )
+    local world =
+      assert(game.runtime.scripts and game.runtime.scripts.worldState, "the tower climb needs live world state")
     local gearState = assert(game.runtime.pokegearState, "the tower climb needs live gear state")
     Assert.isTrue(settleField(game), "the tower floor must settle before its actors are approached")
     sweepActors(game, function()
@@ -1229,8 +1212,8 @@ function T.tests.goldenrod_bootable_maps_cover_tabs_and_mark_unloadable_maps()
     Assert.isFalse(world:isFlagSet(FLAG_GOT_RADIO_CARD), "the tower sweep must not invent the card")
     Assert.deepEqual(
       gearState:readPhone().contactOrder,
-      {},
-      "the password gate must register nobody on default answers"
+      { nativeMomKey(game) },
+      "the password gate must add no contacts beyond native Mom on default answers"
     )
     Assert.equal(scriptFaults(game), 0, "the tower scripts must run without script faults")
     Assert.isTrue(settleField(game), "the tower must return to ordinary play")
@@ -1241,17 +1224,19 @@ function T.tests.goldenrod_bootable_maps_cover_tabs_and_mark_unloadable_maps()
   -- site, so nothing registers and nothing faults.
   withGame("MAP_GOLDENROD_FLOWER_SHOP", function(game)
     compositionGates(game)
-    local world = assert(
-      game.runtime.scripts and game.runtime.scripts.worldState,
-      "the flower shop needs live world state"
-    )
+    local world =
+      assert(game.runtime.scripts and game.runtime.scripts.worldState, "the flower shop needs live world state")
     local gearState = assert(game.runtime.pokegearState, "the flower shop needs live gear state")
     Assert.isTrue(settleField(game), "the flower shop must settle before its actors are approached")
     sweepActors(game, function()
       return false
     end, 8)
     Assert.isFalse(world:isFlagSet(FLAG_GOT_RADIO_CARD), "the flower sweep must not invent the card")
-    Assert.deepEqual(gearState:readPhone().contactOrder, {}, "the flower sweep must register nobody")
+    Assert.deepEqual(
+      gearState:readPhone().contactOrder,
+      { nativeMomKey(game) },
+      "the flower sweep adds no callers beyond native Mom"
+    )
     Assert.equal(scriptFaults(game), 0, "the flower scripts must run without script faults")
     Assert.isTrue(settleField(game), "the flower shop must return to ordinary play")
   end)
@@ -1332,7 +1317,6 @@ function T.tests.goldenrod_bootable_maps_cover_tabs_and_mark_unloadable_maps()
   end
 end
 
-
 -- Competing entries keep exactly one modal owner: the normal menu gear,
 -- scripted calls, Fly selection, battle, warps, and dialogue never step
 -- one screen from two lanes, a failed launch unwinds without capturing
@@ -1390,11 +1374,7 @@ function T.tests.competing_field_entries_keep_a_single_modal_owner()
     -- dialogue or a second application behind it.
     game:pressAction()
     Assert.isTrue(drainField(game, 120), "field input during the gear must settle without a second owner")
-    Assert.equal(
-      hostPhase(),
-      FieldApplicationHost.PHASES.application,
-      "field dialogue must not open under the gear"
-    )
+    Assert.equal(hostPhase(), FieldApplicationHost.PHASES.application, "field dialogue must not open under the gear")
 
     -- Cancel closes exactly once: the field resumes and committed state
     -- survives the round trip.
@@ -1433,11 +1413,7 @@ function T.tests.competing_field_entries_keep_a_single_modal_owner()
     local playerBeforeFly = game:snapshot().player
     Assert.isTrue(settleField(game), "the field must be idle before the Fly refusal probe")
     Assert.equal(game:snapshot().mapSymbol, mapBeforeFly, "the refusal probe must not warp")
-    Assert.equal(
-      game:snapshot().player.fieldX,
-      playerBeforeFly.fieldX,
-      "the refusal probe must not move the player"
-    )
+    Assert.equal(game:snapshot().player.fieldX, playerBeforeFly.fieldX, "the refusal probe must not move the player")
     Assert.isTrue(settleField(game), "the journey must end back on an owned field")
   end)
 end
@@ -1501,16 +1477,8 @@ function T.tests.gear_save_reload_keeps_facts_without_resurrecting_calls()
     saveAndReload(game)
     gearState = assert(game.runtime.pokegearState, "the reloaded game needs live gear state")
     local phone = gearState:readPhone()
-    Assert.deepEqual(
-      phone.contactOrder,
-      { secondKey, firstKey },
-      "reload must retain the manual contact order"
-    )
-    Assert.deepEqual(
-      phone.triggers,
-      { [triggerKey] = true },
-      "reload must retain the pending durable trigger"
-    )
+    Assert.deepEqual(phone.contactOrder, { secondKey, firstKey }, "reload must retain the manual contact order")
+    Assert.deepEqual(phone.triggers, { [triggerKey] = true }, "reload must retain the pending durable trigger")
     local preferences = gearState:readPreferences()
     Assert.equal(preferences.skin, 2, "reload must retain the chosen skin")
     Assert.isTrue(preferences.mapZoomed, "reload must retain the map zoom")
@@ -1533,15 +1501,9 @@ function T.tests.gear_save_reload_keeps_facts_without_resurrecting_calls()
     -- modal screen blocks the snapshot, closing resumes it, and the
     -- committed facts above still reload afterwards.
     openGearThroughMenu(game)
-    Assert.isNil(
-      game.runtime:captureGameSave(),
-      "an open gear must refuse save capture while it owns the tick"
-    )
+    Assert.isNil(game.runtime:captureGameSave(), "an open gear must refuse save capture while it owns the tick")
     closeGearThroughMenu(game)
-    Assert.notNil(
-      game.runtime:captureGameSave(),
-      "closing the gear must resume save capture"
-    )
+    Assert.notNil(game.runtime:captureGameSave(), "closing the gear must resume save capture")
     saveAndReload(game)
     gearState = assert(game.runtime.pokegearState, "the second reload needs live gear state")
     Assert.deepEqual(
@@ -1615,15 +1577,13 @@ function T.tests.dependency_bound_contacts_and_shows_stay_honest()
     OpeningLifecycle.completeOpeningHouseScene(game)
     Assert.isTrue(settleField(game), "the house scene must release the field")
     takeWarpTo(game, TOWN)
-    local worldState = assert(
-      game.runtime.scripts and game.runtime.scripts.worldState,
-      "coverage needs live world state"
-    )
+    local worldState =
+      assert(game.runtime.scripts and game.runtime.scripts.worldState, "coverage needs live world state")
     local gearState = assert(game.runtime.pokegearState, "coverage needs live gear state")
     Assert.equal(
       walkSteps(game, "west", {
         stop = function()
-          return #gearState:readPhone().contactOrder > 0
+          return #gearState:readPhone().contactOrder > 1
         end,
         budget = 900,
       }),
@@ -1635,12 +1595,16 @@ function T.tests.dependency_bound_contacts_and_shows_stay_honest()
     -- the gear flag never set, and no script faulted along the way. The
     -- registration's town-exit script needs the starter path, which the
     -- opening play proves dead-ends at the occupied lab door.
-    Assert.deepEqual(gearState:readPhone().contactOrder, {}, "Elm registration waits past the sealed lab door")
+    Assert.deepEqual(
+      gearState:readPhone().contactOrder,
+      { nativeMomKey(game) },
+      "Elm registration waits past the sealed lab door while native Mom remains registered"
+    )
     Assert.isFalse(worldState:isFlagSet(FLAG_GOT_POKEGEAR), "the gear handoff waits past the sealed lab door")
-    -- The universe partition at the reachable frontier: the played set
-    -- (empty -- the house scene registers nobody), the excluded
-    -- dependency-bound contacts, and every other native contact
-    -- policy-only. The sums hold exactly; no contact is reclassified to
+    -- The universe partition at the reachable frontier: the bootstrapped
+    -- Mom contact, the played set (empty -- the house scene registers
+    -- nobody), the excluded dependency-bound contacts, and every other
+    -- native contact policy-only. The sums hold exactly; no contact is reclassified to
     -- hide the frontier. The exclusions below are registered only inside
     -- their absent-subsystem maps: the Day-Care couple registers in the
     -- Route-34 Day-Care lobby, and Kurt registers in Kurt's house. No
@@ -1655,15 +1619,21 @@ function T.tests.dependency_bound_contacts_and_shows_stay_honest()
       Assert.isTrue(seen[key] == true, "every excluded contact is a compiled native caller: " .. key)
     end
     local playedOrder = gearState:readPhone().contactOrder
+    local bootstrappedMomKey = nativeMomKey(game)
     local endToEnd = {}
     for _, key in ipairs(playedOrder) do
-      endToEnd[key] = true
+      if key ~= bootstrappedMomKey then
+        endToEnd[key] = true
+      end
     end
     local endToEndCount = 0
+    local bootstrappedCount = 0
     local excludedCount = 0
     local policyOnlyCount = 0
     for _, contact in ipairs(nativeContacts) do
-      if endToEnd[contact.key] then
+      if contact.key == bootstrappedMomKey then
+        bootstrappedCount = bootstrappedCount + 1
+      elseif endToEnd[contact.key] then
         Assert.isNil(excluded[contact.key], "a played contact is never excluded: " .. contact.key)
         endToEndCount = endToEndCount + 1
       elseif excluded[contact.key] then
@@ -1672,19 +1642,15 @@ function T.tests.dependency_bound_contacts_and_shows_stay_honest()
         policyOnlyCount = policyOnlyCount + 1
       end
     end
-    Assert.equal(
-      endToEndCount,
-      0,
-      "the frontier certifies no contact end-to-end: the house scene registers nobody"
-    )
+    Assert.equal(endToEndCount, 0, "the frontier certifies no contact end-to-end: the house scene registers nobody")
+    Assert.equal(bootstrappedCount, 1, "the default Mom contact is accounted for once")
     Assert.equal(excludedCount, 3, "the exclusion set holds exactly its Day-Care pair and Kurt")
-    Assert.equal(policyOnlyCount, 72, "every remaining native contact stays policy-only, never certified")
+    Assert.equal(policyOnlyCount, 71, "every remaining native contact stays policy-only, never certified")
     Assert.equal(
-      endToEndCount + excludedCount + policyOnlyCount,
+      bootstrappedCount + endToEndCount + excludedCount + policyOnlyCount,
       75,
       "the coverage table must account for every native contact exactly once"
     )
-
 
     -- Missing larger-world facts fail with attribution before any state
     -- change: no fabricated egg, box-full, dex-threshold, safari, or
@@ -1697,18 +1663,10 @@ function T.tests.dependency_bound_contacts_and_shows_stay_honest()
         world:read(key)
       end, "absent " .. key .. " must fail instead of fabricating a call")
       local domain = key:match("^([^.]+)%.")
-      Assert.equal(
-        (failure --[[@as table]]).domain,
-        domain,
-        "the absent read must attribute " .. domain
-      )
+      Assert.equal((failure --[[@as table]]).domain, domain, "the absent read must attribute " .. domain)
     end
     Assert.equal(gearState:revision(), revisionBefore, "failed dependency reads must not mutate gear state")
-    Assert.deepEqual(
-      gearState:readPhone().triggers,
-      triggersBefore,
-      "failed dependency reads must raise no trigger"
-    )
+    Assert.deepEqual(gearState:readPhone().triggers, triggersBefore, "failed dependency reads must raise no trigger")
     Assert.equal(scriptFaults(game), 0, "coverage must run without script faults")
   end)
 end

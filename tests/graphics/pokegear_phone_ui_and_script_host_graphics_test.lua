@@ -216,6 +216,7 @@ local function openPhone(manifest, skin)
   for _, contact in ipairs(manifest.catalog.contacts) do
     state:registerContact(contact.key)
   end
+  state:setContactOrder(manifest.catalog.contactOrder)
   local controller = PhoneController.new({
     state = state,
     catalog = record.catalog,

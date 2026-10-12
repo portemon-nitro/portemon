@@ -2125,6 +2125,47 @@ function FieldRuntime:_composePokegear(loadedGame, cacheFs)
     self.pokegearState = PokegearState.new({ seed = seed }, refs)
     self.pokegearRandom = PokegearRandom.new(seed)
   end
+  local contacts = assert(manifest.catalog.contacts, "companion composition reads its compiled contacts")
+  local momKey = nil
+  for _, entry in
+    ipairs(contacts --[[@as table[] ]])
+  do
+    local contact = entry --[[@as table<string, unknown>]]
+    if contact.id == 0 then
+      assert(contact.family == "mother", "native contact zero is Mom")
+      assert(momKey == nil, "the compiled phonebook has one native Mom contact")
+      assert(type(contact.key) == "string" and contact.key ~= "", "native Mom carries its semantic key")
+      momKey = contact.key --[[@as string]]
+    end
+  end
+  local nativeMom = assert(momKey, "the compiled phonebook has native contact zero")
+  local phone = self.pokegearState:readPhone()
+  assert(type(phone) == "table" and type(phone.contacts) == "table", "field composition reads phonebook state")
+  if phone.contacts[nativeMom] == nil then
+    self.pokegearState:registerContact(nativeMom)
+  end
+
+  local sourceSkins = assert(manifest.skins, "companion composition reads its six compiled skins")
+  local unlockedSkins = {}
+  for skin = 0, 5 do
+    assert(sourceSkins[skin] ~= nil, "the compiled Configure palette includes every source skin")
+    unlockedSkins[#unlockedSkins + 1] = skin
+  end
+  local preferences = self.pokegearState:readPreferences()
+  assert(type(preferences) == "table", "field composition reads companion preferences")
+  local savedSkins = assert(preferences.unlockedSkins, "field composition reads saved Configure skins")
+  local sameSkins = #savedSkins == #unlockedSkins
+  if sameSkins then
+    for index, skin in ipairs(unlockedSkins) do
+      if savedSkins[index] ~= skin then
+        sameSkins = false
+        break
+      end
+    end
+  end
+  if not sameSkins then
+    self.pokegearState:setPreference("unlockedSkins", unlockedSkins)
+  end
   self.pokegearCalendar = PokegearCalendar.new(self.pokegearState)
   self.pokegearManifest = manifest
   self.pokegearCatalog = manifest.catalog

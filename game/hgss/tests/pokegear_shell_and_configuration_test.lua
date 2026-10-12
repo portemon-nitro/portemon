@@ -919,11 +919,15 @@ function T.tests.shell_construction_rejects_malformed_options()
     local options = validOptions()
     options.children = stubChildren(freshLog())
     options.children.phone = function(_)
-      return { updateFixed = function(_) end, status = function()
-        return {}
-      end, takeResult = function()
-        return nil
-      end }
+      return {
+        updateFixed = function(_) end,
+        status = function()
+          return {}
+        end,
+        takeResult = function()
+          return nil
+        end,
+      }
     end
     PokegearScreenState.new(options)
   end, "a shell whose factory returns a partial controller fails")
@@ -1040,6 +1044,34 @@ function T.tests.close_is_reported_once_and_disposal_is_silent()
   Assert.isNil(host.shell:takeResult(), "disposal reports no close")
   host.shell:dispose()
   Assert.equal(host.state:readPreferences().lastApp, entered, "a completed exit remembers the actual last card")
+end
+
+function T.tests.configuration_accepts_all_source_skins_with_an_old_saved_subset()
+  local ConfigureController = require("game.hgss.src.pokegear.ConfigureController")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local state = PokegearState.new(nil, catalogRefs(record))
+  state:setPreference("unlockedSkins", { 0 })
+
+  local keyboard = ConfigureController.new({ state = state, assets = fixtureManifest() })
+  for _ = 1, 5 do
+    keyboard:updateFixed({ { type = "navigate", direction = "right" } })
+  end
+  keyboard:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(keyboard:status().menuOpen, "keyboard focus can open the source skin five menu")
+  keyboard:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:readPreferences().skin, 5, "keyboard selection persists source skin five")
+  keyboard:dispose()
+
+  state:setPreference("skin", 0)
+  local pointer = ConfigureController.new({ state = state, assets = fixtureManifest() })
+  pointer:updateFixed({ { type = "pointer_down", x = 208, y = 116 } })
+  pointer:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(pointer:status().menuOpen, "pointer selection can open the source skin five menu")
+  pointer:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:readPreferences().skin, 5, "pointer selection persists source skin five")
+  pointer:dispose()
 end
 
 -- Small resizes within and across the near-native hysteresis band change no

@@ -26,6 +26,18 @@ local T = {
   tests = {},
 }
 
+local function nativeMomKey(game)
+  local catalog = assert(game.runtime.pokegearCatalog, "the field runtime owns its compiled phone catalog")
+  for _, contact in ipairs(assert(catalog.contacts, "the compiled phone catalog lists contacts")) do
+    if contact.id == 0 then
+      assert(contact.family == "mother", "native phonebook contact zero is Mom")
+      local key = assert(contact.key, "native Mom carries its semantic key")
+      return key
+    end
+  end
+  error("the compiled phone catalog contains native contact zero", 0)
+end
+
 -- The opening play runs the genuine New Game through the lab frontier
 -- and marks the naming route blocked at the sealed lab door: the
 -- starter errand is underway past a permitted save roundtrip, and every
@@ -37,31 +49,36 @@ local T = {
 function T.tests.opening_play_holds_the_frontier_behind_the_sealed_lab_exit()
   Fixture.withGame(Fixture.TOWN, function(game)
     Fixture.compositionGates(game)
-    local world = assert(game.runtime.scripts and game.runtime.scripts.worldState, "the opening journey needs live world state")
+    local world =
+      assert(game.runtime.scripts and game.runtime.scripts.worldState, "the opening journey needs live world state")
     local gearState = assert(game.runtime.pokegearState, "the opening journey needs live gear state")
 
     Fixture.playOpeningToLabFrontier(game)
 
     -- Frontier truth: the starter errand is underway, the gear is still
-    -- unowned, and no scripted registration point has played yet, so the
-    -- contact list is honestly empty.
+    -- unowned, and no scripted registration point has played yet. The
+    -- native Mom default exists independently of those script effects.
     world = assert(game.runtime.scripts.worldState, "the frontier needs live world state")
     gearState = assert(game.runtime.pokegearState, "the frontier needs live gear state")
     Assert.isTrue(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_STARTER), "the frontier keeps the played starter")
     Assert.equal(world:getVar(Fixture.VARS.VAR_SCENE_ELMS_LAB), 2, "the frontier keeps the concluded corridor gift")
     Assert.isFalse(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_POKEGEAR), "the gear still waits past the frontier")
-    Assert.deepEqual(gearState:readPhone().contactOrder, {}, "no played script has registered a caller yet")
+    Assert.deepEqual(
+      gearState:readPhone().contactOrder,
+      { nativeMomKey(game) },
+      "only the native Mom default is registered"
+    )
     Assert.equal(Fixture.scriptFaults(game), 0, "the opening scenes must run without script faults")
 
     -- The frontier roundtrips through a permitted save: the starter, the
-    -- scene, and the empty contact list all survive verbatim.
+    -- scene, and native Mom default all survive verbatim.
     Fixture.saveAndReload(game)
     world = assert(game.runtime.scripts.worldState, "the reloaded journey needs live world state")
     gearState = assert(game.runtime.pokegearState, "the reloaded journey needs live gear state")
     Assert.isTrue(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_STARTER), "reload must retain the played starter")
     Assert.equal(world:getVar(Fixture.VARS.VAR_SCENE_ELMS_LAB), 2, "reload must retain the corridor gift")
     Assert.isFalse(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_POKEGEAR), "reload must not invent the gear")
-    Assert.deepEqual(gearState:readPhone().contactOrder, {}, "reload must retain the empty contact list")
+    Assert.deepEqual(gearState:readPhone().contactOrder, { nativeMomKey(game) }, "reload retains only native Mom")
     Assert.equal(game:snapshot().mapSymbol, Fixture.LAB_1F, "reload must resume inside the lab")
 
     -- Past the frontier the lab door stands sealed: every door warp
@@ -86,14 +103,8 @@ function T.tests.opening_play_holds_the_frontier_behind_the_sealed_lab_exit()
         end
       end
       Assert.notNil(blocker, "a live actor must stand on the lab door anchor")
-      Assert.isNil(
-        FieldMovement.route(game, tile),
-        "production movement must not route onto the occupied door anchor"
-      )
-      Assert.isTrue(
-        pcall(Fixture.talkTo, game, blocker),
-        "the door blocker must be addressable"
-      )
+      Assert.isNil(FieldMovement.route(game, tile), "production movement must not route onto the occupied door anchor")
+      Assert.isTrue(pcall(Fixture.talkTo, game, blocker), "the door blocker must be addressable")
       Assert.equal(
         game:interaction().scriptId,
         "runtime.inert_interaction",
@@ -119,7 +130,11 @@ function T.tests.opening_play_holds_the_frontier_behind_the_sealed_lab_exit()
     Assert.equal(game:snapshot().transition.phase, "idle", "the blocked exit must never fire a transition")
     Assert.equal(Fixture.scriptFaults(game), faultsBefore, "the blocked exit must fault no script")
     Assert.equal(gearState:revision(), revisionBefore, "the blocked exit must mutate no gear fact")
-    Assert.deepEqual(gearState:readPhone().contactOrder, {}, "the blocked exit must register nobody")
+    Assert.deepEqual(
+      gearState:readPhone().contactOrder,
+      { nativeMomKey(game) },
+      "the blocked exit adds no caller beyond native Mom"
+    )
     Assert.isTrue(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_STARTER), "the seal keeps the played starter")
     Assert.equal(world:getVar(Fixture.VARS.VAR_SCENE_ELMS_LAB), 2, "the seal keeps the corridor gift")
     Assert.isFalse(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_POKEGEAR), "the gear handoff waits past the sealed door")
@@ -135,7 +150,10 @@ function T.tests.fresh_arrival_offers_no_usable_gear_route()
     Fixture.compositionGates(game)
     local world = assert(game.runtime.scripts and game.runtime.scripts.worldState, "the arrival needs live world state")
     Assert.isFalse(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_POKEGEAR), "a fresh arrival owns no gear and no tab")
-    Assert.isFalse(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_RADIO_CARD), "a fresh arrival owns no radio card and no station")
+    Assert.isFalse(
+      world:isFlagSet(Fixture.FLAGS.FLAG_GOT_RADIO_CARD),
+      "a fresh arrival owns no radio card and no station"
+    )
     game.runtime:pressMenu()
     game:step()
     game.runtime:releaseMenu()

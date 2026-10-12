@@ -111,6 +111,28 @@ local function isSkin(skin)
   return type(skin) == "number" and skin % 1 == 0 and skin >= 0 and skin <= 5
 end
 
+---@param assets table<string, unknown>
+---@return integer[] the source palette in identity order
+local function sourceSkins(assets)
+  local compiled = assert(assets.skins, "the setup card reads its compiled source skins")
+  assert(type(compiled) == "table", "the setup card borrows its compiled source palette")
+  local skins = {}
+  for key, value in pairs(compiled) do
+    local skin = value
+    if type(value) ~= "number" then
+      skin = key
+    end
+    assert(isSkin(skin), "compiled setup skins carry source identities")
+    skins[#skins + 1] = skin --[[@as integer]]
+  end
+  table.sort(skins)
+  assert(#skins == 6, "the setup card uses all six compiled source skins")
+  for index, skin in ipairs(skins) do
+    assert(skin == index - 1, "the compiled setup palette has each source skin once")
+  end
+  return skins
+end
+
 -- Right/left walk the six cells in reading order with wrap; down crosses to
 -- the other row; up crosses to the other row one column over, so a fixed
 -- directional exploration always reaches every cell.
@@ -151,8 +173,7 @@ function ConfigureController.new(opts)
   assert(opts.effect == nil or type(opts.effect) == "function", "the setup sound boundary must be a function")
   local preferences = opts.state:readPreferences()
   assert(type(preferences) == "table", "the setup card reads its saved preferences")
-  local unlocked = assert(preferences.unlockedSkins, "the setup card reads its unlocked skins")
-  assert(type(unlocked) == "table" and #unlocked > 0, "the setup card needs at least one unlocked skin")
+  local unlocked = sourceSkins(opts.assets)
   local cursor = preferences.skin
   if not isSkin(cursor) or not isUnlocked(unlocked, cursor) then
     cursor = unlocked[1]
@@ -170,9 +191,7 @@ end
 
 ---@return table<integer, integer>
 function ConfigureController:_unlocked()
-  local preferences = self._state:readPreferences()
-  assert(type(preferences) == "table", "the setup card reads its saved preferences")
-  return assert(preferences.unlockedSkins, "the setup card reads its unlocked skins")
+  return sourceSkins(self._assets --[[@as table<string, unknown>]])
 end
 
 -- One fixed tick: directional input walks the six grid positions while no

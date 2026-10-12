@@ -23,6 +23,18 @@ local T = {
   tests = {},
 }
 
+local function nativeMomKey(game)
+  local catalog = assert(game.runtime.pokegearCatalog, "the field runtime owns its compiled phone catalog")
+  for _, contact in ipairs(assert(catalog.contacts, "the compiled phone catalog lists contacts")) do
+    if contact.id == 0 then
+      assert(contact.family == "mother", "native phonebook contact zero is Mom")
+      local key = assert(contact.key, "native Mom carries its semantic key")
+      return key
+    end
+  end
+  error("the compiled phone catalog contains native contact zero", 0)
+end
+
 -- The fully acquired shell keeps one owner across every card: the gear
 -- opens through the production menu over real backing data, ticks without
 -- changing owners, and closes back to an owned field with zero faults and
@@ -165,7 +177,7 @@ function T.tests.unavailable_specialty_facts_fail_attributed_without_mutation()
   end)
 end
 
--- Played scripts register no caller before the seal: the full opening
+-- Played scripts register no additional caller before the seal: the full opening
 -- path (house Mom scene, lab dispatcher, starter pick, corridor gift)
 -- carries no number site, the pokecenter pocket sweep finds no giver,
 -- and the tower second floor runs the password service to completion
@@ -181,8 +193,8 @@ function T.tests.played_opening_scripts_register_no_caller_before_the_seal()
     Fixture.playOpeningToLabFrontier(game)
     Assert.deepEqual(
       gearState:readPhone().contactOrder,
-      {},
-      "the played house and lab scripts carry no registration site"
+      { nativeMomKey(game) },
+      "the played house and lab scripts add no caller beyond native Mom"
     )
     Assert.equal(Fixture.scriptFaults(game), 0, "the opening census must run without script faults")
     Assert.isTrue(Fixture.settleField(game), "the opening census must rest on an owned field")
@@ -196,15 +208,16 @@ function T.tests.played_opening_scripts_register_no_caller_before_the_seal()
     end, 16)
     Assert.deepEqual(
       gearState:readPhone().contactOrder,
-      {},
-      "the pocket sweep must register nobody: its scripts hold no number site"
+      { nativeMomKey(game) },
+      "the pocket sweep adds no caller beyond native Mom: its scripts hold no number site"
     )
     Assert.equal(Fixture.scriptFaults(game), 0, "the pocket census must run without script faults")
     Assert.isTrue(Fixture.settleField(game), "the pocket census must rest on an owned field")
   end)
   Fixture.withGame(Fixture.TOWER_2F, function(game)
     Fixture.compositionGates(game)
-    local world = assert(game.runtime.scripts and game.runtime.scripts.worldState, "the tower census needs live world state")
+    local world =
+      assert(game.runtime.scripts and game.runtime.scripts.worldState, "the tower census needs live world state")
     local gearState = assert(game.runtime.pokegearState, "the tower census needs live gear state")
     Assert.isTrue(Fixture.settleField(game), "the tower floor must settle before its actors are approached")
     Fixture.sweepActors(game, function()
@@ -215,14 +228,11 @@ function T.tests.played_opening_scripts_register_no_caller_before_the_seal()
       #game:recordsForScript(buenaScript, "script.ended") > 0,
       "the password service must run to completion through its source script"
     )
-    Assert.isFalse(
-      world:isFlagSet(Fixture.FLAGS.FLAG_GOT_RADIO_CARD),
-      "the tower sweep must not invent the card"
-    )
+    Assert.isFalse(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_RADIO_CARD), "the tower sweep must not invent the card")
     Assert.deepEqual(
       gearState:readPhone().contactOrder,
-      {},
-      "the password gate registers nobody on default answers"
+      { nativeMomKey(game) },
+      "the password gate adds no caller beyond native Mom on default answers"
     )
     Assert.equal(Fixture.scriptFaults(game), 0, "the tower census must run without script faults")
     Assert.isTrue(Fixture.settleField(game), "the tower census must rest on an owned field")

@@ -220,14 +220,15 @@ function PhoneController.new(opts)
   return self
 end
 
--- Reads the session order from the catalog order arranged by acquisition:
--- the saved catalog sequence filtered to registered contacts. Weights,
--- labels, and class tokens ride along from the same records.
+-- Reads the canonical saved order for registered contacts. Weights,
+-- labels, and class tokens ride along from the same catalog records.
 function PhoneController:_readCatalog()
   local phone = (self._state --[[@as table<string, unknown>]]).readPhone(self._state)
   assert(type(phone) == "table", "the phone card reads its registered contacts")
   local registered = (phone --[[@as table<string, unknown>]]).contacts
   assert(type(registered) == "table", "the phone card reads its registered contacts")
+  local saved = (phone --[[@as table<string, unknown>]]).contactOrder --[[@as string[] ]]
+  assert(type(saved) == "table", "the phone card reads its saved contact order")
   local contacts = (self._catalog --[[@as table<string, unknown>]]).contacts --[[@as table[] ]]
   local byKey = {}
   for _, entry in ipairs(contacts) do
@@ -261,17 +262,20 @@ function PhoneController:_readCatalog()
     assert(type(class) == "string", "contact rows carry their class token")
     self._classes[key] = class --[[@as string]]
   end
-  local saved = (self._catalog --[[@as table<string, unknown>]]).contactOrder --[[@as string[] ]]
-  local order = {}
+  local order, seen = {}, {}
   for _, key in ipairs(saved) do
-    if
-      type(key) == "string"
-      and (registered --[[@as table<string, unknown>]])[key] ~= nil
-      and byKey[key] ~= nil
-    then
-      order[#order + 1] = key
-    end
+    assert(isNonEmptyString(key), "saved phone order entries carry contact keys")
+    assert(registered[key] ~= nil, "saved phone order entries are registered")
+    assert(byKey[key] ~= nil, "saved phone order entries resolve through the catalog")
+    assert(not seen[key], "saved phone order contains each contact once")
+    seen[key] = true
+    order[#order + 1] = key
   end
+  local registeredCount = 0
+  for _ in pairs(registered) do
+    registeredCount = registeredCount + 1
+  end
+  assert(#order == registeredCount, "saved phone order contains every registered contact")
   self._order = order
   self._selected = 0
   self._scroll = 0
