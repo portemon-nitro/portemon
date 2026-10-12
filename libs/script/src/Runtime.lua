@@ -1897,6 +1897,174 @@ function HANDLERS.pc_hof_open(_, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+-- The main chunk is at LuaJIT's 200-local limit; the foreground phone
+-- lane lives in a block so its names never become more file-scoped
+-- locals. Setup stages one evaluated request without blocking, run
+-- consumes it and blocks, queries and updates resolve synchronously
+-- through the injected companion service, and open enters an explicit
+-- application mode. No handler names a concrete caller program, source
+-- number, or renderer: game meaning stays in the injected service.
+do
+  local PHONE_DIRECTIONS = { incoming = true, outgoing = true }
+  local PHONE_KINDS = { ordinary = true, rematch = true, predefined = true, incoming = true }
+
+  local function phoneService(run)
+    local host = requireService(run, "pokegearApplications")
+    assert(host ~= nil, "companion service is available after the missing-service error")
+    return host
+  end
+
+  ---@param node table<string, unknown>
+  ---@param run table<string, unknown>
+  ---@param name string
+  ---@param op string
+  ---@return string the evaluated semantic key
+  local function evalPhoneKey(node, run, name, op)
+    local value = semanticsFor(run).evaluateValue(node[name], run)
+    if type(value) ~= "string" or value == "" then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "phone " .. name .. " must name a semantic key",
+        { scriptId = run.instance.scriptId, op = op }
+      )
+    end
+    return value --[[@as string]]
+  end
+
+  local function handlePhoneSetCall(node, run)
+    requireForeground(run, "phone_set_call")
+    local host = phoneService(run)
+    local contact = evalPhoneKey(node, run, "contact", "phone_set_call")
+    local direction = evalPhoneKey(node, run, "direction", "phone_set_call")
+    if PHONE_DIRECTIONS[direction] ~= true then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "phone setup names an incoming or outgoing direction",
+        { scriptId = run.instance.scriptId, op = "phone_set_call", direction = direction }
+      )
+    end
+    local kind = evalPhoneKey(node, run, "kind", "phone_set_call")
+    if PHONE_KINDS[kind] ~= true then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "phone setup names a known source call kind",
+        { scriptId = run.instance.scriptId, op = "phone_set_call", kind = kind }
+      )
+    end
+    host:stageCall(run.instance.instanceId, { contact = contact, direction = direction, kind = kind })
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handlePhoneRunCall(_, run)
+    requireForeground(run, "phone_run_call")
+    local host = phoneService(run)
+    local pending = host:takeStagedCall(run.instance.instanceId)
+    if pending == nil then
+      Errors.raise(
+        ScriptErrors.FEATURE_UNAVAILABLE,
+        "phone run has no staged pending request",
+        { scriptId = run.instance.scriptId, op = "phone_run_call" }
+      )
+    end
+    assert(type(pending) == "table", "staged phone requests stay records")
+    local staged = pending --[[@as table<string, string>]]
+    local scriptId = run.instance.scriptId
+    assert(type(scriptId) == "string", "staged phone runs carry their script context")
+    local request = {
+      id = "phone:" .. tostring(run.instance.instanceId) .. ":" .. tostring(run.tick),
+      contact = staged.contact,
+      direction = staged.direction,
+      kind = staged.kind,
+    }
+    return blockOnTask(run, "pokegear_application", {
+      kind = "call",
+      request = request,
+      parentOwner = "script:" .. tostring(scriptId),
+    })
+  end
+
+  local function handlePokegearQuery(node, run)
+    local host = phoneService(run)
+    local semantics = semanticsFor(run)
+    local answer = nil
+    if node.kind == "rematch_ready" then
+      local contact = evalPhoneKey(node, run, "contact", "pokegear_query")
+      answer = host:queryRematch(contact).ready == true and 1 or 0
+    elseif node.kind == "contact_registered" then
+      local contact = evalPhoneKey(node, run, "contact", "pokegear_query")
+      answer = host:isContactRegistered(contact) and 1 or 0
+    else
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "companion query names a known query kind",
+        { scriptId = run.instance.scriptId, op = "pokegear_query" }
+      )
+    end
+    semantics.writeRef(node.result, answer, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handlePokegearUpdate(node, run)
+    requireForeground(run, "pokegear_update")
+    local host = phoneService(run)
+    if node.kind == "register_contact" then
+      host:registerContact(evalPhoneKey(node, run, "contact", "pokegear_update"))
+    else
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "companion update names a known update kind",
+        { scriptId = run.instance.scriptId, op = "pokegear_update" }
+      )
+    end
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handlePokegearOpen(node, run)
+    requireForeground(run, "pokegear_open")
+    phoneService(run)
+    local scriptId = run.instance.scriptId
+    if node.mode == "call" then
+      local contact = evalPhoneKey(node, run, "contact", "pokegear_open")
+      local direction = evalPhoneKey(node, run, "direction", "pokegear_open")
+      if PHONE_DIRECTIONS[direction] ~= true then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "companion open names an incoming or outgoing direction",
+          { scriptId = scriptId, op = "pokegear_open", direction = direction }
+        )
+      end
+      local kind = evalPhoneKey(node, run, "kind", "pokegear_open")
+      if PHONE_KINDS[kind] ~= true then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "companion open names a known source call kind",
+          { scriptId = scriptId, op = "pokegear_open", kind = kind }
+        )
+      end
+      return blockOnTask(run, "pokegear_application", {
+        kind = "call",
+        request = {
+          id = "phone:" .. tostring(run.instance.instanceId) .. ":" .. tostring(run.tick),
+          contact = contact,
+          direction = direction,
+          kind = kind,
+        },
+        parentOwner = "script:" .. tostring(scriptId),
+      })
+    end
+    return blockOnTask(run, "pokegear_application", {
+      kind = node.mode,
+      parentOwner = "script:" .. tostring(scriptId),
+    })
+  end
+
+  HANDLERS.phone_set_call = handlePhoneSetCall
+  HANDLERS.phone_run_call = handlePhoneRunCall
+  HANDLERS.pokegear_query = handlePokegearQuery
+  HANDLERS.pokegear_update = handlePokegearUpdate
+  HANDLERS.pokegear_open = handlePokegearOpen
+end
+
 ---@class RuntimeOverworld
 ---@field phase fun(self: RuntimeOverworld): string
 ---@field requestRestore fun(self: RuntimeOverworld)

@@ -364,6 +364,31 @@ function M.pcCount(spec)
   return op("pc_count", spec)
 end
 
+function M.phoneSetCall(spec)
+  assert(type(spec) == "table", "phone call setup spec must be a table")
+  return op("phone_set_call", spec)
+end
+
+function M.phoneRunCall(spec)
+  assert(spec == nil or type(spec) == "table", "phone call run takes no operands")
+  return op("phone_run_call", spec)
+end
+
+function M.pokegearQuery(spec)
+  assert(type(spec) == "table", "companion query spec must be a table")
+  return op("pokegear_query", spec)
+end
+
+function M.pokegearUpdate(spec)
+  assert(type(spec) == "table", "companion update spec must be a table")
+  return op("pokegear_update", spec)
+end
+
+function M.pokegearOpen(spec)
+  assert(type(spec) == "table", "companion open spec must be a table")
+  return op("pokegear_open", spec)
+end
+
 function M.pcCapsules()
   return op("pc_capsules")
 end

@@ -1163,6 +1163,67 @@ local function applySetContactReward(data, contacts, key, reward)
 end
 
 ---@param data table<string, unknown>
+---@param contacts table<string, boolean>
+---@param order unknown
+---@return boolean changed
+local function applySetContactOrder(data, contacts, order)
+  if type(order) ~= "table" then
+    fail("pokegear contact order must be a list", {})
+  end
+  assert(type(order) == "table", "contact order writes read the order list")
+  local count = 0
+  for _ in pairs(order) do
+    count = count + 1
+  end
+  local seen = {}
+  for index = 1, count do
+    local contactKey = order[index]
+    if type(contactKey) ~= "string" then
+      fail("pokegear contact order carries contact keys", {})
+    end
+    if contacts[contactKey] ~= true then
+      fail("pokegear contact order references missing contact " .. contactKey, { key = contactKey })
+    end
+    if seen[contactKey] then
+      fail("pokegear contact order repeats a contact", { key = contactKey })
+    end
+    seen[contactKey] = true
+  end
+  assert(type(data) == "table" and type(data.phone) == "table", "contact order writes read phone state")
+  local registered = (data.phone --[[@as table<string, unknown>]]).contacts
+  assert(type(registered) == "table", "contact order writes read registered contacts")
+  for contactKey in
+    pairs(registered --[[@as table<string, unknown>]])
+  do
+    if seen[contactKey] ~= true then
+      fail("pokegear phone contacts stay in registration order", { key = contactKey })
+    end
+  end
+  local current = data.contactOrder
+  assert(type(current) == "table", "contact order writes read the saved order")
+  local same = true
+  if #current ~= count then
+    same = false
+  else
+    for index = 1, count do
+      if current[index] ~= order[index] then
+        same = false
+        break
+      end
+    end
+  end
+  if same then
+    return false
+  end
+  local clean = {}
+  for index = 1, count do
+    clean[index] = order[index]
+  end
+  data.contactOrder = clean
+  return true
+end
+
+---@param data table<string, unknown>
 ---@param locations table<string, boolean>
 ---@param locationKey unknown
 ---@param marking unknown
@@ -1284,6 +1345,17 @@ end
 ---@return table<string, unknown>
 function PokegearState:setMarking(locationKey, marking)
   return self:_commit(applySetMarking(self._data, self._locations, locationKey, marking))
+end
+
+-- Replaces the saved contact order with a validated permutation. Every
+-- registered contact stays listed exactly once and unknown or repeated
+-- keys fail naming their key; writing the current order never moves the
+-- revision. Registration stays append-only: this is the manual-reorder
+-- write path, not a second registration.
+---@param order string[]
+---@return table<string, unknown>
+function PokegearState:setContactOrder(order)
+  return self:_commit(applySetContactOrder(self._data, self._contacts, order))
 end
 
 -- Stages a revisioned candidate: the draft function edits a detached copy

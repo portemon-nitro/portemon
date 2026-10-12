@@ -56,6 +56,24 @@ Schema.ENUMS = {
   mart_kind = { "standard", "special", "seal", "decoration", "athlete", "data_cards", "custom", "sell" },
   mart_query = { "athlete_available", "card_prefix" },
   pc_application = { "storage", "mailbox", "photoAlbum" },
+  -- The foreground phone call direction across the shared menu/script
+  -- application lane; numeric source selectors never appear past the
+  -- producer boundary.
+  phone_direction = { "incoming", "outgoing" },
+  -- The foreground phone call kind. A menu or staged script request names
+  -- one of these; the conversation engine resolves the caller program
+  -- from the kind and the contact identity.
+  phone_kind = { "ordinary", "rematch", "predefined", "incoming" },
+  -- Closed phone query vocabulary: read-only questions the injected
+  -- companion service answers synchronously, never through a task.
+  pokegear_query_kind = { "rematch_ready", "contact_registered" },
+  -- Closed phone update vocabulary: single validated mutations the
+  -- injected companion service commits synchronously.
+  pokegear_update_kind = { "register_contact" },
+  -- Explicit companion application modes a script may open through the
+  -- shared feature lease. Only call has a concrete child yet; townMap
+  -- and fly stay named but unavailable until their owners arrive.
+  pokegear_open_mode = { "call", "townMap", "fly" },
   pc_count_kind = { "mailbox", "photos", "seals" },
   pc_terminal_action = { "start", "on", "off", "wait", "release" },
   -- The three persistent follower map-object movement modes opcode 604 may
@@ -317,6 +335,53 @@ Schema.OPERATIONS = {
   pc_hof_status = { fields = { result = { type = "writable_value", required = true } } },
   pc_hof_open = { fields = {} },
   restore_overworld = { fields = {} },
+  -- Staged foreground phone call setup: evaluates its operands and stores
+  -- one pending source request on the calling script session without
+  -- taking the feature lease or blocking. The run operation below consumes
+  -- it. Contact, direction, and kind accept evaluated value references so
+  -- intervening commands observe the staging order; runtime revalidates
+  -- evaluated enum operands against the closed vocabulary.
+  phone_set_call = {
+    fields = {
+      contact = { type = "scalar_or_value", required = true },
+      direction = { type = "scalar_or_value", required = true },
+      kind = { type = "scalar_or_value", required = true },
+    },
+  },
+  -- Blocking foreground phone call run: consumes the pending request
+  -- staged by phone_set_call and blocks on the shared application task.
+  -- Running without a staged request faults with its script context.
+  phone_run_call = { fields = {} },
+  -- Synchronous companion queries: read-only questions answered from the
+  -- injected companion service in the same tick. Contact-scoped kinds
+  -- require the contact operand; runtime enforces the per-kind shape.
+  pokegear_query = {
+    fields = {
+      kind = { type = "enum:pokegear_query_kind", required = true },
+      contact = { type = "scalar_or_value" },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- Synchronous companion updates: single validated mutations committed
+  -- through the injected companion service in the same tick.
+  pokegear_update = {
+    fields = {
+      kind = { type = "enum:pokegear_update_kind", required = true },
+      contact = { type = "scalar_or_value" },
+    },
+  },
+  -- Explicit companion application open: blocks on the shared feature
+  -- task for the named mode. The call mode carries its full request and
+  -- opens immediately; modes without a concrete child fail before any
+  -- source effect.
+  pokegear_open = {
+    fields = {
+      mode = { type = "enum:pokegear_open_mode", required = true },
+      contact = { type = "scalar_or_value" },
+      direction = { type = "scalar_or_value" },
+      kind = { type = "scalar_or_value" },
+    },
+  },
   wait_ticks = {
     fields = {
       ticks = { type = "integer", required = true },
@@ -1531,6 +1596,37 @@ Schema.CONSTRUCTORS = {
         signature = "S.restoreOverworld()",
         canonical = "op=restore_overworld",
         notes = "Completes the source application's return boundary.",
+      },
+    },
+  },
+  {
+    section = "Phone application constructors",
+    notes = "Typed field-script operations for the shared foreground phone lane: setup stages one pending request without blocking, run consumes it and blocks, queries and updates resolve synchronously through the injected companion service, and open enters an explicit application mode.",
+    rows = {
+      {
+        signature = "S.phoneSetCall(spec)",
+        canonical = "op=phone_set_call",
+        notes = "spec={contact,direction,kind}; direction is incoming or outgoing, kind is ordinary, rematch, predefined, or incoming. Each operand accepts an evaluated value reference.",
+      },
+      {
+        signature = "S.phoneRunCall(spec=nil)",
+        canonical = "op=phone_run_call",
+        notes = "Consumes the staged request and blocks; faults without one. Takes no operands.",
+      },
+      {
+        signature = "S.pokegearQuery(spec)",
+        canonical = "op=pokegear_query",
+        notes = "spec={kind,result,contact=nil}; kind is rematch_ready or contact_registered. Contact-scoped kinds require contact; the source result convention writes 1 or 0.",
+      },
+      {
+        signature = "S.pokegearUpdate(spec)",
+        canonical = "op=pokegear_update",
+        notes = "spec={kind,contact=nil}; kind is register_contact, which requires contact.",
+      },
+      {
+        signature = "S.pokegearOpen(spec)",
+        canonical = "op=pokegear_open",
+        notes = "spec={mode,contact=nil,direction=nil,kind=nil}; mode is call, townMap, or fly. The call mode requires its full request; modes without a concrete child fail before any effect.",
       },
     },
   },
