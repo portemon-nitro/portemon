@@ -576,5 +576,375 @@ function T.battle_children_ignore_foreign_input_edges()
   Assert.isTrue(flows:status().active, "foreign edges keep the child")
   flows:dispose()
 end
+---@return table<integer, table<string, unknown>> occupied six-slot roster under test preparation
+local function sixSlotRoster()
+  local roster = {}
+  for slot = 0, 5 do
+    roster[#roster + 1] = {
+      combatant = slot + 1,
+      slot = slot,
+      name = "MON" .. tostring(slot),
+      level = 20,
+      hp = 30,
+      maxHp = 30,
+    }
+  end
+  return roster
+end
+
+---@param reserve integer stable combatant identity of an eligible reserve
+---@return table<string, unknown> native switch choice for the synthetic options
+local function reserveChoice(reserve)
+  return {
+    id = "switch:" .. tostring(reserve),
+    role = "switch",
+    enabled = true,
+    reason = "refused",
+    display = { combatant = reserve },
+    choice = {
+      actor = { combatant = 1, activation = 5 },
+      kind = "switch",
+      payload = { replacement = reserve },
+    },
+  }
+end
+
+---@return table<string, unknown> detached action options projecting two reserve switches
+local function twoReserveOptions()
+  return {
+    requestId = 7,
+    epoch = 3,
+    controller = "player",
+    kind = "action",
+    actors = {
+      { combatant = 1, activation = 5, kind = "action", choices = { reserveChoice(2), reserveChoice(5) } },
+    },
+  }
+end
+
+---@return table<string, integer> multi-pocket battle stock under test preparation
+local function variedStock()
+  return {
+    POTION = 5,
+    POKE_BALL = 3,
+    SOOTHE_BELL = 1,
+    CHERI_BERRY = 2,
+    ITEM_6 = 1,
+    ITEM_12 = 1,
+    ITEM_18 = 1,
+    ITEM_24 = 1,
+    ITEM_30 = 1,
+    ITEM_36 = 1,
+    ITEM_42 = 1,
+  }
+end
+
+---@return table<string, unknown> detached action options with two own serving targets
+local function twoTargetServingOptions()
+  return itemOptions({ itemChoice("POTION", 1, true), itemChoice("POTION", 2, true) })
+end
+
+---@param sealed table<string, unknown> staged choice fragment under comparison
+---@param choices table<integer, table<string, unknown>> projected native choices under comparison
+---@param message string failure context under comparison
+local function assertSealedAmong(sealed, choices, message)
+  for _, candidate in ipairs(choices) do
+    local matches = pcall(Assert.deepEqual, sealed, candidate.choice, message)
+    if matches then
+      return
+    end
+  end
+  error(message .. " (no projected choice matched)", 0)
+end
+
+---@param view table<string, unknown> detached child view under inspection
+---@return table<integer, string> visible row labels in order
+local function rowLabels(view)
+  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
+  local labels = {}
+  for _, row in ipairs(rows) do
+    labels[#labels + 1] = tostring(row.label)
+  end
+  return labels
+end
+
+function T.party_child_lists_six_stable_rows_with_no_hidden_screens()
+  local flows = coordinator()
+  local options = twoReserveOptions()
+  Assert.isTrue(
+    flows:open(partyIntent({ party = sixSlotRoster(), options = options })),
+    "the six-slot child opens"
+  )
+  -- No update or tick ran yet: the rows are already answerable.
+  local view = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.isTrue(view.interactive == true, "the roster answers with no waiting")
+  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(#rows, 6, "all six slots list")
+  for slot = 0, 5 do
+    Assert.equal(rows[slot + 1].id, "party:" .. tostring(slot), "slot keeps its stable row")
+  end
+  Assert.isTrue(type(view.focusId) == "string", "focus already rests somewhere meaningful")
+  -- Confirming with no clock step still seals a projected reserve.
+  flows:update({ { type = "confirm" } })
+  local result = flows:takeResult()
+  Assert.notNil(result, "confirming without any tick still seals")
+  assertSealedAmong(
+    result.reply.choices[1],
+    options.actors[1].choices,
+    "the seal names a projected reserve"
+  )
+  flows:dispose()
+end
+
+function T.party_keys_and_taps_seal_the_same_projected_reserve()
+  local options = twoReserveOptions()
+  local keyed = coordinator()
+  Assert.isTrue(
+    keyed:open(partyIntent({ party = sixSlotRoster(), options = options })),
+    "keys open the roster"
+  )
+  for _ = 1, 10 do
+    local view = keyed:status().childView --[[@as table<string, unknown>]]
+    if view.focusId == "party:1" then
+      break
+    end
+    keyed:update({ { type = "navigate", direction = "down" } })
+  end
+  local focused = keyed:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(focused.focusId, "party:1", "keys reach the first reserve row")
+  keyed:update({ { type = "confirm" } })
+  local keyedResult = keyed:takeResult()
+  Assert.notNil(keyedResult, "keys seal the reserve")
+  keyed:dispose()
+  local tapped = coordinator()
+  Assert.isTrue(
+    tapped:open(partyIntent({ party = sixSlotRoster(), options = options })),
+    "taps open the roster"
+  )
+  Assert.isTrue(tapped:activateControl("party:1"), "the reserve row takes the tap")
+  local tappedResult = tapped:takeResult()
+  Assert.notNil(tappedResult, "the tap seals the reserve")
+  Assert.deepEqual(
+    tappedResult.reply.choices[1],
+    keyedResult.reply.choices[1],
+    "both input modes seal the same fragment"
+  )
+  Assert.deepEqual(
+    tappedResult.reply.choices[1],
+    options.actors[1].choices[1].choice,
+    "the sealed fragment copies the projection"
+  )
+  tapped:dispose()
+end
+
+function T.bag_pocket_tabs_match_between_keys_and_pointer()
+  local catalog = ItemFixture.makeCatalog()
+  local keyed = coordinator(catalog)
+  Assert.isTrue(keyed:open(bagIntent(variedStock(), twoTargetServingOptions())), "keys open the stocked bag")
+  local opened = keyed:status().childView --[[@as table<string, unknown>]]
+  Assert.isTrue(opened.interactive == true, "the bag answers with no waiting")
+  local openedRows = opened.rows --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(#openedRows, 6, "the bag shows its six visible cells")
+  for cell = 0, 5 do
+    Assert.equal(openedRows[cell + 1].id, "bag:" .. tostring(cell), "cells keep their stable rows")
+  end
+  local openedPage = opened.page --[[@as table<string, integer>]]
+  Assert.equal(openedPage.count, 2, "the crowded pocket spans two pages")
+  -- Keys scroll onto the second page with no clock step of their own.
+  for _ = 1, 12 do
+    local view = keyed:status().childView --[[@as table<string, unknown>]]
+    local page = view.page --[[@as table<string, integer>]]
+    if page.current == 2 then
+      break
+    end
+    keyed:update({ { type = "navigate", direction = "down" } })
+  end
+  local scrolled = keyed:status().childView --[[@as table<string, unknown>]]
+  local scrolledPage = scrolled.page --[[@as table<string, integer>]]
+  Assert.equal(scrolledPage.current, 2, "keys scroll onto the second page")
+  keyed:closeChild()
+  -- Keys hop one pocket over through the tabs.
+  Assert.isTrue(keyed:open(bagIntent(variedStock(), twoTargetServingOptions())), "keys reopen the bag")
+  keyed:update({ { type = "navigate", direction = "up" } })
+  keyed:update({ { type = "navigate", direction = "right" } })
+  keyed:update({ { type = "navigate", direction = "down" } })
+  local keyedView = keyed:status().childView --[[@as table<string, unknown>]]
+  keyed:dispose()
+  -- Pointer takes the same hop through the next tab.
+  local tapped = coordinator(catalog)
+  Assert.isTrue(tapped:open(bagIntent(variedStock(), twoTargetServingOptions())), "taps open the bag")
+  Assert.isTrue(tapped:activateControl("pocket_next"), "the next tab takes the tap")
+  local tappedView = tapped:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(tappedView.currentPocket, keyedView.currentPocket, "both modes land in the same pocket")
+  Assert.deepEqual(rowLabels(tappedView), rowLabels(keyedView), "both modes list the same cells")
+  tapped:dispose()
+end
+
+function T.bag_target_cancel_restores_the_resting_browse_without_spending()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog)
+  local options = twoTargetServingOptions()
+  Assert.isTrue(flows:open(bagIntent(variedStock(), options)), "the stocked bag opens")
+  for _ = 1, 8 do
+    if flows:status().childView.currentPocket == "medicine" then
+      break
+    end
+    Assert.isTrue(flows:activateControl("pocket_next"), "tabs keep answering")
+  end
+  local resting = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(resting.currentPocket, "medicine", "the browse reaches the serving pocket")
+  local restingPage = resting.page --[[@as table<string, integer>]]
+  -- The lone serving stages straight from its cell through the tap lane.
+  Assert.isTrue(flows:activateControl("bag:0"), "the serving cell takes the tap")
+  Assert.equal(flows:status().stagedItem, "POTION", "the serving stages")
+  Assert.isNil(flows:takeResult(), "staging seals no reply")
+  flows:update({ { type = "cancel" } })
+  Assert.isNil(flows:takeResult(), "target cancel seals no reply")
+  Assert.isNil(flows:status().stagedItem, "target cancel drops the staging")
+  local returned = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(returned.currentPocket, "medicine", "cancel keeps the pocket")
+  Assert.equal(returned.focusId, resting.focusId, "cancel keeps the focus")
+  local returnedPage = returned.page --[[@as table<string, integer>]]
+  Assert.equal(returnedPage.current, restingPage.current, "cancel keeps the page")
+  Assert.deepEqual(rowLabels(returned), rowLabels(resting), "cancel keeps the listed cells")
+  local foundServing = false
+  for _, row in ipairs(returned.rows --[[@as table<integer, table<string, unknown>>]]) do
+    if row.label == "Potion" then
+      Assert.equal(row.sub, "x5", "the serving spends nothing on cancel")
+      foundServing = true
+    end
+  end
+  Assert.isTrue(foundServing, "the serving still lists after cancel")
+  -- Staging again and accepting seals the exact projected serving.
+  Assert.isTrue(flows:activateControl("bag:0"), "the serving stages again")
+  for _ = 1, 10 do
+    local view = flows:status().childView --[[@as table<string, unknown>]]
+    if view.focusId == "party:0" then
+      break
+    end
+    flows:update({ { type = "navigate", direction = "down" } })
+  end
+  flows:update({ { type = "confirm" } })
+  local result = flows:takeResult()
+  Assert.notNil(result, "accepting the serving seals its reply")
+  Assert.deepEqual(
+    result.reply.choices[1],
+    options.actors[1].choices[1].choice,
+    "the serving copies the projected fragment"
+  )
+  flows:dispose()
+end
+
+function T.refused_throws_and_empty_bags_close_without_hidden_screens()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog)
+  local refused = itemChoice("POKE_BALL", 1, false)
+  Assert.isTrue(flows:open(bagIntent({ POKE_BALL = 5 }, itemOptions({ refused }))), "the stocked bag opens")
+  Assert.isTrue(flows:status().childView.interactive == true, "the bag answers with no waiting")
+  walkToBalls(flows)
+  flows:update({ { type = "confirm" } })
+  Assert.isNil(flows:takeResult(), "the refused throw seals no reply")
+  Assert.isTrue(type(flows:status().notice) == "string", "the refusal names its reason")
+  flows:closeChild()
+  flows:dispose()
+  local empty = coordinator(nil)
+  Assert.isTrue(empty:open(bagIntent({}, itemOptions({}))), "the empty bag opens without a catalog")
+  Assert.equal(empty:status().childView.focusId, "back", "the empty bag rests on its way out")
+  empty:update({ { type = "cancel" } })
+  local result = empty:takeResult()
+  Assert.notNil(result, "empty cancel stages a result")
+  Assert.equal(result.kind, "cancelled", "empty cancel reports a navigation cancellation")
+  empty:dispose()
+end
+
+function T.forced_replacement_restages_whole_replies_after_close()
+  local flows = coordinator()
+  local options = twoReserveOptions()
+  local intent = partyIntent({
+    party = sixSlotRoster(),
+    options = options,
+    purpose = "replacement",
+    cancellable = false,
+  })
+  Assert.isTrue(flows:open(intent), "forced replacement opens")
+  flows:update({ { type = "cancel" } })
+  Assert.isNil(flows:takeResult(), "forced cancel seals nothing")
+  for _ = 1, 10 do
+    local view = flows:status().childView --[[@as table<string, unknown>]]
+    if view.focusId == "party:1" then
+      break
+    end
+    flows:update({ { type = "navigate", direction = "down" } })
+  end
+  -- A doubled confirm edge in one batch still stages exactly one reply.
+  flows:update({ { type = "confirm" }, { type = "confirm" } })
+  local first = flows:takeResult()
+  Assert.notNil(first, "the doubled edge stages its reply")
+  Assert.isNil(flows:takeResult(), "the doubled edge stages no second reply")
+  Assert.deepEqual(
+    first.reply.choices[1],
+    options.actors[1].choices[1].choice,
+    "the reply copies the projected reserve"
+  )
+  -- Closing and reopening the same request restages cleanly.
+  flows:closeChild()
+  Assert.isTrue(flows:open(intent), "the same request restages after close")
+  for _ = 1, 10 do
+    local view = flows:status().childView --[[@as table<string, unknown>]]
+    if view.focusId == "party:4" then
+      break
+    end
+    flows:update({ { type = "navigate", direction = "down" } })
+  end
+  flows:update({ { type = "confirm" } })
+  local restaged = flows:takeResult()
+  Assert.notNil(restaged, "the restaged child seals")
+  Assert.deepEqual(
+    restaged.reply.choices[1],
+    options.actors[1].choices[2].choice,
+    "the restage names the other projected reserve"
+  )
+  flows:dispose()
+end
+
+function T.learning_stages_every_held_choice_through_keys_and_taps()
+  for slot = 0, 3 do
+    local flows = coordinator()
+    Assert.isTrue(flows:open(learnIntent(1)), "learning opens for the held recipient")
+    for _ = 1, slot do
+      flows:update({ { type = "navigate", direction = "down" } })
+    end
+    flows:update({ { type = "confirm" } })
+    Assert.isNil(flows:takeResult(), "staging seals no reply")
+    flows:update({ { type = "confirm" } })
+    local result = flows:takeResult()
+    Assert.notNil(result, "confirming seals the replace")
+    Assert.equal(result.reply.choices[1].payload.decision, "replace", "the payload decides replace")
+    Assert.equal(result.reply.choices[1].payload.slot, slot, "the payload names the zero-based move slot")
+    flows:dispose()
+  end
+  local tapped = coordinator()
+  Assert.isTrue(tapped:open(learnIntent(1)), "learning opens for the pointer decline")
+  Assert.isTrue(tapped:activateControl("learn:decline"), "the decline row takes the tap")
+  Assert.isNil(tapped:takeResult(), "staging decline seals no reply yet")
+  Assert.isTrue(tapped:activateControl("confirm"), "the confirmation takes the tap")
+  local declined = tapped:takeResult()
+  Assert.notNil(declined, "confirming seals the decline")
+  Assert.equal(declined.reply.choices[1].payload.decision, "decline", "the tap confirms the decline")
+  tapped:dispose()
+end
+
+function T.closed_children_drop_stale_pointer_edges()
+  local flows = coordinator()
+  Assert.isTrue(flows:open(partyIntent({})), "the party child opens")
+  flows:update({ { type = "pointer_down", pointerId = "stale", x = 8, y = 8 } })
+  flows:closeChild()
+  flows:update({ { type = "pointer_up", pointerId = "stale", x = 8, y = 8 } })
+  Assert.isNil(flows:takeResult(), "the stale release seals nothing")
+  Assert.isFalse(flows:activateControl("party:1"), "taps miss the closed child")
+  Assert.isTrue(flows:open(partyIntent({ requestId = 8, epoch = 9 })), "the replacement child opens")
+  Assert.isTrue(flows:status().active, "the fresh child owns input")
+  flows:dispose()
+end
 
 return { tests = T }

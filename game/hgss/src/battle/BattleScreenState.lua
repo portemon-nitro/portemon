@@ -168,7 +168,6 @@ function BattleScreenState.new(opts)
       launchId = opts.launchId,
       itemCatalog = opts.itemCatalog,
       monCatalog = opts.monCatalog,
-      measureDisplay = opts.measureDisplay,
     }),
     _partySnapshot = nil,
     _inventorySnapshot = nil,

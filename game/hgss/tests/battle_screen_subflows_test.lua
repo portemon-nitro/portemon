@@ -1436,4 +1436,363 @@ function T.voluntary_party_child_lists_focused_roster_and_pointer_seals_reserve(
   end
 end
 
+---@param layout string "paired" or "compact" surface arrangement under test preparation
+---@return table<integer, table<string, unknown>> six-member party descriptions under test preparation
+local function sixMemberParty()
+  -- One lead, one living reserve, four fainted bench slots: the kernel
+  -- projects exactly one reserve switch while all six slots still list.
+  return {
+    { species = "EEVEE", level = 20, seed = 0x33333331 },
+    { species = "EEVEE", level = 19, seed = 0x33333332, ability = "RUN_AWAY" },
+    { species = "EEVEE", level = 18, seed = 0x33333333, currentHp = 0 },
+    { species = "EEVEE", level = 17, seed = 0x33333334, currentHp = 0 },
+    { species = "EEVEE", level = 16, seed = 0x33333335, currentHp = 0 },
+    { species = "EEVEE", level = 15, seed = 0x33333336, currentHp = 0 },
+  }
+end
+
+---@param rig table live screen rig under inspection
+---@return string? bag header drawn by the open child under inspection
+local function drawnBagHeader(rig)
+  local ink = renderedContents(rig)
+  for content, _ in pairs(ink) do
+    if tostring(content):match("^BAG: ") ~= nil then
+      return tostring(content)
+    end
+  end
+  return nil
+end
+
+-- Six-slot voluntary party plus multi-pocket bag stay identical across
+-- keyboard and pointer on both display cases: stable row identities,
+-- cancel and reopen over the same request, one sealed native fragment
+-- per flow, and rows already interactive the moment the child opens.
+function T.six_slot_party_and_bag_answer_at_once_on_both_displays()
+  for _, layout in ipairs({ "paired", "compact" }) do
+    local tag = " (" .. layout .. ")"
+    requireChildOwner("battle party and bag selection")
+    local rig = openRig({
+      layout = layout,
+      launchId = "launch-local-party-" .. layout,
+      party = sixMemberParty(),
+      bag = {
+        { key = "POTION", qty = 5 },
+        { key = "POKE_BALL", qty = 5 },
+        { key = "SOOTHE_BELL", qty = 1 },
+        { key = "CHERI_BERRY", qty = 2 },
+      },
+    })
+    driveToMode(rig, "command")
+    local commandRequest = openScreenRequest(rig)
+    local _, expectedSwitch = projectedReserveSwitch(rig, commandRequest)
+    local commandInk = renderedContents(rig)
+    openPartyFromCommand(rig)
+    -- No pump ran since the child opened: its own rows already paint.
+    local partyInk = renderedContents(rig)
+    -- The compact modal drops row sub-facts, so the level marker only
+    -- paints on paired; compact proves the same entries through the
+    -- painted roster occupancy instead. Both markers read already-painted
+    -- vocabulary, never new paint expectations.
+    local partyMarker = "19"
+    if layout == "compact" then
+      partyMarker = "6/6"
+    end
+    assertPaintsOwnRows(commandInk, partyInk, partyMarker, "party roster" .. tag)
+    press(rig, { type = "cancel" })
+    Assert.equal(rig.screen:status().mode, "command", "party cancel returns to command" .. tag)
+    Assert.equal(
+      openScreenRequest(rig).requestId,
+      commandRequest.requestId,
+      "cancel keeps the command request" .. tag
+    )
+    openPartyFromCommand(rig)
+    Assert.deepEqual(renderedContents(rig), partyInk, "reopen paints the same roster" .. tag)
+    chooseReserveThroughChild(rig)
+    Assert.equal(#rig.submits, 1, "keys seal exactly one reply" .. tag)
+    Assert.deepEqual(rig.submits[1].choices[1], expectedSwitch, "keys name the stable reserve" .. tag)
+    rig.screen:dispose()
+    rig.battle:dispose()
+    -- Pointer seals the same projected reserve on a fresh rig.
+    local yLo, yHi = 8, 184
+    if layout == "paired" then
+      yLo, yHi = 200, 376
+    end
+    local tapped = openRig({
+      layout = layout,
+      launchId = "launch-local-tap-" .. layout,
+      party = sixMemberParty(),
+      bag = {},
+    })
+    driveToMode(tapped, "command")
+    local tapRequest = openScreenRequest(tapped)
+    local _, tapExpected = projectedReserveSwitch(tapped, tapRequest)
+    openPartyFromCommand(tapped)
+    local function reopen()
+      openPartyFromCommand(tapped)
+    end
+    Assert.isTrue(tapSealsReply(tapped, yLo, yHi, reopen), "a tap seals the reserve" .. tag)
+    Assert.equal(#tapped.submits, 1, "the tap seals exactly one reply" .. tag)
+    Assert.deepEqual(tapped.submits[1].choices[1], tapExpected, "the tap names the stable reserve" .. tag)
+    tapped.screen:dispose()
+    tapped.battle:dispose()
+    -- Bag browses by keys across pockets and spends nothing to stage.
+    local bagged = openRig({
+      layout = layout,
+      launchId = "launch-local-bag-" .. layout,
+      party = {
+        { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+        { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+      },
+      bag = {
+        { key = "POTION", qty = 5 },
+        { key = "POKE_BALL", qty = 5 },
+        { key = "SOOTHE_BELL", qty = 1 },
+      },
+    })
+    driveToMode(bagged, "command")
+    local bagRequest = openScreenRequest(bagged)
+    local bagOptions = optionsFor(bagged, bagRequest)
+    local enabledPotions = {}
+    for _, actor in ipairs(bagOptions.actors) do
+      for _, choice in ipairs(actor.choices) do
+        if type(choice.id) == "string" and choice.id:match("^item:POTION:") ~= nil then
+          if choice.enabled == true then
+            enabledPotions[#enabledPotions + 1] = choice.choice
+          end
+        end
+      end
+    end
+    Assert.isTrue(#enabledPotions >= 1, "the serving stays selectable" .. tag)
+    local revision = bagged.bag:revision()
+    openBagFromCommand(bagged)
+    local openingHeader = drawnBagHeader(bagged)
+    Assert.isTrue(
+      type(openingHeader) == "string" and openingHeader:match("^BAG: %S+ 1/1$") ~= nil,
+      "the bag names its pocket and page" .. tag
+    )
+    walkToMedicineFirstCell(bagged)
+    Assert.equal(drawnBagHeader(bagged), "BAG: medicine 1/1", "keys reach the serving pocket" .. tag)
+    press(bagged, { type = "confirm" })
+    Assert.equal(#bagged.submits, 0, "staging seals no reply" .. tag)
+    Assert.equal(bagged.screen:status().mode, "child", "staging keeps the child" .. tag)
+    press(bagged, { type = "cancel" })
+    Assert.equal(bagged.screen:status().mode, "child", "target cancel returns to the bag" .. tag)
+    press(bagged, { type = "cancel" })
+    Assert.equal(bagged.screen:status().mode, "command", "bag cancel returns to command" .. tag)
+    Assert.equal(bagged.bag:revision(), revision, "browsing moves no stock" .. tag)
+    Assert.equal(bagged.bag:quantity("POTION"), 5, "staging takes no stock" .. tag)
+    openBagFromCommand(bagged)
+    walkToMedicineFirstCell(bagged)
+    press(bagged, { type = "confirm" })
+    press(bagged, { type = "confirm" })
+    if #bagged.submits == 0 and bagged.screen:status().mode == "child" then
+      press(bagged, { type = "navigate", direction = "down" })
+      press(bagged, { type = "confirm" })
+    end
+    Assert.equal(#bagged.submits, 1, "accepting seals exactly one reply" .. tag)
+    assertChoiceAmong(bagged.submits[1].choices[1], enabledPotions, "the serving matches its fragment" .. tag)
+    Assert.equal(bagged.bag:quantity("POTION"), 5, "the battle path spends no field stock" .. tag)
+    bagged.screen:dispose()
+    bagged.battle:dispose()
+  end
+end
+
+-- A crowded pocket pages by keys, a cancelled serving restores the exact
+-- resting browse, and refused or empty browsing closes without spending.
+function T.crowded_browse_pages_and_restores_after_target_cancel()
+  for _, layout in ipairs({ "paired", "compact" }) do
+    local tag = " (" .. layout .. ")"
+    requireChildOwner("battle bag paging and restore")
+    local scroller = openRig({
+      layout = layout,
+      launchId = "launch-local-pages-" .. layout,
+      party = {
+        { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+        { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+      },
+      bag = {
+        { key = "POTION", qty = 5 },
+        { key = "ITEM_1", qty = 1 },
+        { key = "ITEM_13", qty = 1 },
+        { key = "ITEM_19", qty = 1 },
+        { key = "ITEM_25", qty = 1 },
+        { key = "ITEM_31", qty = 1 },
+        { key = "ITEM_37", qty = 1 },
+        { key = "ITEM_43", qty = 1 },
+      },
+    })
+    driveToMode(scroller, "command")
+    openBagFromCommand(scroller)
+    -- The crowded pocket may not be current on open, so step the
+    -- tabs until a two-page header paints.
+    press(scroller, { type = "navigate", direction = "up" })
+    local crowdedHeader = nil
+    for _ = 1, 8 do
+      local header = drawnBagHeader(scroller)
+      if type(header) == "string" and header:match(" 1/2$") ~= nil then
+        crowdedHeader = header
+        break
+      end
+      press(scroller, { type = "navigate", direction = "right" })
+    end
+    Assert.isTrue(crowdedHeader ~= nil, "the crowded pocket spans two pages" .. tag)
+    for _ = 1, 12 do
+      local header = drawnBagHeader(scroller)
+      if type(header) == "string" and header:match(" 2/2$") ~= nil then
+        break
+      end
+      press(scroller, { type = "navigate", direction = "down" })
+    end
+    local scrolledHeader = drawnBagHeader(scroller)
+    Assert.isTrue(
+      type(scrolledHeader) == "string" and scrolledHeader:match(" 2/2$") ~= nil,
+      "keys scroll onto the second page" .. tag
+    )
+    press(scroller, { type = "cancel" })
+    Assert.equal(scroller.screen:status().mode, "command", "paging cancel returns to command" .. tag)
+    scroller.screen:dispose()
+    scroller.battle:dispose()
+    -- A staged serving cancels back to the exact resting browse.
+    local healing = openRig({
+      layout = layout,
+      launchId = "launch-local-restore-" .. layout,
+      party = {
+        { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+        { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+      },
+      bag = {
+        { key = "POTION", qty = 5 },
+        { key = "POKE_BALL", qty = 5 },
+      },
+    })
+    driveToMode(healing, "command")
+    local healRequest = openScreenRequest(healing)
+    local healOptions = optionsFor(healing, healRequest)
+    local enabledPotions = {}
+    for _, actor in ipairs(healOptions.actors) do
+      for _, choice in ipairs(actor.choices) do
+        if type(choice.id) == "string" and choice.id:match("^item:POTION:") ~= nil then
+          if choice.enabled == true then
+            enabledPotions[#enabledPotions + 1] = choice.choice
+          end
+        end
+      end
+    end
+    Assert.isTrue(#enabledPotions >= 1, "the serving stays selectable" .. tag)
+    local revision = healing.bag:revision()
+    openBagFromCommand(healing)
+    walkToMedicineFirstCell(healing)
+    local restingHeader = drawnBagHeader(healing)
+    Assert.equal(restingHeader, "BAG: medicine 1/1", "the browse rests on the serving page" .. tag)
+    press(healing, { type = "confirm" })
+    Assert.equal(#healing.submits, 0, "staging seals no reply" .. tag)
+    press(healing, { type = "cancel" })
+    Assert.equal(healing.screen:status().mode, "child", "target cancel returns to the bag" .. tag)
+    Assert.equal(drawnBagHeader(healing), restingHeader, "cancel restores the resting page" .. tag)
+    -- Confirming with no further navigation stages again, so the
+    -- cancelled browse kept its focus on the serving cell.
+    press(healing, { type = "confirm" })
+    Assert.equal(#healing.submits, 0, "the kept focus stages no reply" .. tag)
+    Assert.equal(healing.screen:status().mode, "child", "the kept focus stays on its target" .. tag)
+    press(healing, { type = "cancel" })
+    Assert.equal(healing.screen:status().mode, "child", "the second cancel returns to the bag" .. tag)
+    Assert.equal(healing.bag:revision(), revision, "the cancelled serving moves no stock" .. tag)
+    press(healing, { type = "confirm" })
+    press(healing, { type = "confirm" })
+    if #healing.submits == 0 and healing.screen:status().mode == "child" then
+      press(healing, { type = "navigate", direction = "down" })
+      press(healing, { type = "confirm" })
+    end
+    Assert.equal(#healing.submits, 1, "accepting seals exactly one reply" .. tag)
+    assertChoiceAmong(healing.submits[1].choices[1], enabledPotions, "the serving matches its fragment" .. tag)
+    healing.screen:dispose()
+    healing.battle:dispose()
+    -- A trainer throw stays refused and an empty browse closes cleanly.
+    local trainer = openRig({
+      layout = layout,
+      launchId = "launch-local-trainer-" .. layout,
+      party = {
+        { species = "EEVEE", level = 20, seed = 0x33333333 },
+        { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+      },
+      bag = {
+        { key = "POKE_BALL", qty = 5 },
+      },
+      trainer = true,
+    })
+    driveToMode(trainer, "command")
+    openBagFromCommand(trainer)
+    walkToBallsFirstCell(trainer)
+    press(trainer, { type = "confirm" })
+    Assert.equal(#trainer.submits, 0, "the refused throw seals no reply" .. tag)
+    Assert.equal(trainer.screen:status().mode, "child", "the refusal keeps the child" .. tag)
+    trainer.screen:dispose()
+    trainer.battle:dispose()
+    local empty = openRig({
+      layout = layout,
+      launchId = "launch-local-empty-" .. layout,
+      party = {
+        { species = "EEVEE", level = 20, seed = 0x33333333 },
+        { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+      },
+      bag = {},
+    })
+    driveToMode(empty, "command")
+    press(empty, { type = "navigate", direction = "down" })
+    press(empty, { type = "navigate", direction = "left" })
+    press(empty, { type = "confirm" })
+    if empty.screen:status().mode == "child" then
+      press(empty, { type = "cancel" })
+      Assert.equal(empty.screen:status().mode, "command", "empty cancel returns to command" .. tag)
+    else
+      Assert.equal(empty.screen:status().mode, "command", "the empty browse never traps" .. tag)
+    end
+    Assert.equal(#empty.submits, 0, "the empty browse seals nothing" .. tag)
+    empty.screen:dispose()
+    empty.battle:dispose()
+  end
+end
+
+-- A real faint opens forced replacement with cancel held shut until the
+-- one eligible reserve seals exactly one whole native reply.
+function T.forced_replacement_holds_cancel_and_seals_one_reply()
+  for _, layout in ipairs({ "paired", "compact" }) do
+    local tag = " (" .. layout .. ")"
+    requireChildOwner("battle forced replacement")
+    local rig = openRig({
+      layout = layout,
+      launchId = "launch-local-forced-" .. layout,
+      party = {
+        { species = "EEVEE", level = 5, seed = 0x55555555 },
+        { species = "EEVEE", level = 5, seed = 0x66666666 },
+      },
+      bag = {},
+      foe = { species = "EEVEE", level = 30, seed = 0x5EED0002 },
+    })
+    driveToMode(rig, "command")
+    waitForBattleDecision(rig, "replacement")
+    local replacementRequest = waitForScreenDecision(rig, "replacement")
+    Assert.equal(rig.screen:status().mode, "child", "the faint opens the replacement child" .. tag)
+    local _, expectedReplacement = projectedReserveSwitch(rig, replacementRequest)
+    local replacementInk = renderedContents(rig)
+    Assert.isTrue(
+      replacementInk["Choose a replacement!"] ~= nil,
+      "replacement titles its modal" .. tag
+    )
+    Assert.isTrue(replacementInk["2/6"] ~= nil, "replacement lists both roster slots" .. tag)
+    press(rig, { type = "cancel" })
+    Assert.equal(#rig.submits, 0, "forced cancel seals nothing" .. tag)
+    Assert.equal(rig.screen:status().mode, "child", "forced cancel keeps the child" .. tag)
+    chooseReserveThroughChild(rig)
+    Assert.equal(#rig.submits, 1, "replacement seals exactly one reply" .. tag)
+    Assert.deepEqual(
+      rig.submits[1].choices[1],
+      expectedReplacement,
+      "replacement names the stable reserve" .. tag
+    )
+    rig.screen:dispose()
+    rig.battle:dispose()
+  end
+end
+
 return { tests = T }
