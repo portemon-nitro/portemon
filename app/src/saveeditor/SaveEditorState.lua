@@ -26,6 +26,9 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
 local MapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog")
 local SaveEditorPreset = require("app.src.saveeditor.SaveEditorPreset")
+local SaveEditorPokegearDraft = require("app.src.saveeditor.SaveEditorPokegearDraft")
+local SaveEditorPokegearCard = require("app.src.saveeditor.SaveEditorPokegearCard")
+local PokegearPresets = require("app.src.saveeditor.PokegearPresets")
 
 ---@class SaveEditorBagItemMetadata
 ---@field item string
@@ -326,6 +329,7 @@ end
 ---@field _publishedScopeEpoch integer?
 ---@field _publishedSession SaveEditorSession?
 ---@field _publishedSessionRevision integer?
+---@field _companionCache { owner: table<string, unknown>, revision: integer, value: table<string, unknown> }?
 ---@field _publishedScopeId string?
 ---@field _publishedScopeRevision string?
 ---@field _publishedSignature string?
@@ -875,10 +879,110 @@ function State:_hasUnsavedChanges(session)
   local sessionDirty = dirtySections.money
     or dirtySections.frame
     or dirtySections.flags
+    or dirtySections.pokegear
     or dirtySections.party
     or dirtySections.bag
     or dirtySections.location
   return sessionDirty or (self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty()))
+end
+
+-- The focused companion projection for the current staged transaction.
+-- Pure observation over the session candidate: hand-built harnesses
+-- without a candidate boundary observe no companion card, and a missing
+-- catalog reports the card unavailable instead of inventing references.
+-- Results cache on the owning session revision beside the session
+-- snapshot cache above.
+---@return table<string, unknown>?
+function State:_companionView()
+  local owner = self.session
+  if owner == nil or type(owner.captureCandidate) ~= "function" then
+    self._companionCache = nil
+    return nil
+  end
+  local revision = owner:revision()
+  local cached = self._companionCache
+  if cached ~= nil and cached.owner == owner and cached.revision == revision then
+    return cached.value
+  end
+  local candidate = owner:captureCandidate()
+  local value = SaveEditorPokegearCard.describe(candidate, self:_pokegearRefs())
+  self._companionCache = { owner = owner, revision = revision, value = value }
+  return value
+end
+
+---@return table<string, unknown>?
+function State:_pokegearRefs()
+  local dependencies = self.dependencies
+  if type(dependencies) ~= "table" then
+    return nil
+  end
+  if type(dependencies.pokegearRefs) ~= "table" then
+    return nil
+  end
+  return dependencies.pokegearRefs --[[@as table<string, unknown>]]
+end
+
+-- Applies one named reproducible scenario through the existing session
+-- transaction. Validation failures keep the staged transaction and
+-- surface as the editor message; the save flow still owns publication.
+---@param name string
+---@return boolean applied
+function State:_applyCompanionPreset(name)
+  local refs = self:_pokegearRefs()
+  if refs == nil then
+    self.errorMessage = "The companion catalog is not provisioned for this version."
+    return false
+  end
+  local owner = assert(self.session, "companion scenarios stage through the open session")
+  local updated, presetError = PokegearPresets.applyToRecord(name, owner:captureCandidate(), refs)
+  if updated == nil then
+    self.errorMessage = message(assert(presetError))
+    return false
+  end
+  local staged = owner:adoptPokegearRecord(updated, refs)
+  if not staged.ok then
+    self.errorMessage = message(staged.error)
+    return false
+  end
+  self.errorMessage = nil
+  return true
+end
+
+function State:_repairCompanionOwnership()
+  local refs = self:_pokegearRefs()
+  if refs == nil then
+    self.errorMessage = "The companion catalog is not provisioned for this version."
+    return
+  end
+  local owner = assert(self.session, "companion repair stages through the open session")
+  local draft = SaveEditorPokegearDraft.new({ record = owner:captureCandidate(), refs = refs })
+  draft:change("repairLegacyOwnership")
+  local result = owner:applyPokegearDraft(draft)
+  if not result.ok then
+    self.errorMessage = message(result.error)
+  else
+    self.errorMessage = nil
+  end
+end
+
+function State:_chooseCompanionPreset()
+  local refs = self:_pokegearRefs()
+  if refs == nil then
+    self.errorMessage = "The companion catalog is not provisioned for this version."
+    return
+  end
+  local options = {}
+  for _, name in ipairs(PokegearPresets.names()) do
+    local description = PokegearPresets.describe(name)
+    if description.available then
+      options[#options + 1] = { key = name, label = description.label }
+    end
+  end
+  if #options == 0 then
+    self.errorMessage = "No companion scenario is available for this version."
+    return
+  end
+  self:_installValueEditor(ValueEditor.new({ kind = "choice", options = options }), "companion_preset")
 end
 
 -- Publishes the live value-editor snapshot into its modal layer.
@@ -924,6 +1028,7 @@ function State:_snapshot()
   end
   local party = session and section == "Party" and self:_partyView() or {}
   local bag = session and section == "Bag" and self:_bagView() or {}
+  local companion = session and self:_companionView() or nil
   local modalLayers = self.modalStack:layers()
   local valueEditorSnapshot = self.valueEditor and self.valueEditor:snapshot() or nil
   if valueEditorSnapshot ~= nil then
@@ -949,6 +1054,7 @@ function State:_snapshot()
       valueEditorSnapshot.selectedKey
     ) or nil,
     ready = session ~= nil,
+    companion = companion,
     dirty = session ~= nil and self:_hasUnsavedChanges(session),
     dirtySections = session and session.dirtySections or { money = false, flags = false },
     sectionDirty = self:_sectionDirty(session),
@@ -1870,6 +1976,11 @@ function State:_finishValueEditor()
     self.valueReturnFocus = "bag:add"
     self:_openBagQuantity("add")
     return true
+  elseif purpose == "companion_preset" then
+    if not self:_applyCompanionPreset(result.value) then
+      editor:retry()
+      return false
+    end
   elseif purpose == "bag_quantity" then
     local pending = assert(self.pendingQuantity)
     if not self:_publishBagQuantity(pending.itemKey, result.value) then
@@ -3904,6 +4015,12 @@ local ACTIVATION_HANDLERS = {
   ["bag.select-item"] = function(self, action)
     self.controller:selectBagItem(action.itemKey)
     self:_openDecision("bag-item")
+  end,
+  ["companion.repair-ownership"] = function(self)
+    self:_repairCompanionOwnership()
+  end,
+  ["companion.choose-preset"] = function(self)
+    self:_chooseCompanionPreset()
   end,
   ["bag.add-item"] = function(self)
     self:_beginBagAdd()

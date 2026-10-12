@@ -12,6 +12,7 @@ local Party = require("libs.mons.src.Party")
 local Mon = require("libs.mons.src.Mon")
 local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local SaveEditorMonDraft = require("app.src.saveeditor.SaveEditorMonDraft")
+local PokegearState = require("libs.hgss.src.save.PokegearState")
 
 local SaveEditorSession = {}
 SaveEditorSession.__index = SaveEditorSession
@@ -36,6 +37,7 @@ local PRESET_UNAVAILABLE = "SAVE_EDITOR_PRESET_UNAVAILABLE"
 ---@class SaveEditorDirtySections
 ---@field money boolean
 ---@field flags boolean
+---@field pokegear boolean
 ---@field party boolean
 ---@field bag boolean
 ---@field location boolean
@@ -78,8 +80,12 @@ local PRESET_UNAVAILABLE = "SAVE_EDITOR_PRESET_UNAVAILABLE"
 ---@field setMoney fun(self: SaveEditorSession, value: unknown): table<string, unknown>
 ---@field setFrameIndex fun(self: SaveEditorSession, value: unknown): table<string, unknown>
 ---@field setFlag fun(self: SaveEditorSession, name: unknown, value: unknown): table<string, unknown>
+---@field pokegearBucket fun(self: SaveEditorSession): table<string, unknown>?
+---@field applyPokegearDraft fun(self: SaveEditorSession, draft: table<string, unknown>): table<string, unknown>
+---@field adoptPokegearRecord fun(self: SaveEditorSession, record: table<string, unknown>, refs: table<string, unknown>): table<string, unknown>
 ---@field setLocation fun(self: SaveEditorSession, placement: SaveEditorLocation): table<string, unknown>
 ---@field applyPreset fun(self: SaveEditorSession, preset: SaveEditorPresetData, options: table<string, unknown>): table<string, unknown>
+---@field captureCandidate fun(self: SaveEditorSession): table<string, unknown>
 ---@field save fun(self: SaveEditorSession, hasUnappliedDraft: boolean?): table<string, unknown>
 ---@field discard fun(self: SaveEditorSession): boolean
 ---@field discardSection fun(self: SaveEditorSession, section: string): boolean
@@ -91,6 +97,7 @@ local PRESET_UNAVAILABLE = "SAVE_EDITOR_PRESET_UNAVAILABLE"
 ---@field private _location SaveEditorLocation
 ---@field private _facing string
 ---@field private _events FieldEventState
+---@field private _pokegear table<string, unknown>?
 ---@field private _symbols table<string, unknown>
 ---@field private _saveStore table<string, unknown>
 ---@field private _saveFs SaveFs
@@ -403,6 +410,7 @@ function SaveEditorSession.new(options)
   local session = setmetatable({
     _baseline = baseline,
     _entryCheckpoint = copy(baseline),
+    _pokegear = copy(baseline.pokegear),
     _money = profile.money,
     _frameIndex = frameIndex,
     _frameIndexes = frameIndexes,
@@ -437,6 +445,7 @@ function SaveEditorSession:snapshot()
   local stagedLocation = copy(self._location)
   local locationChanged = not sameLocation(stagedLocation, baselineLocation)
   local dirtyMoney, dirtyFlags = dirtyAgainst(self._baseline, self._money, self._events)
+  local pokegearDirty = not equal(self._pokegear, self._baseline.pokegear)
   local partyDirty = not equal(self._monService:capture(), self._baseline.mons)
   local bagDirty = not equal(self._bagService:capture(), self._baseline.bag)
   local snapshot = {
@@ -454,6 +463,7 @@ function SaveEditorSession:snapshot()
       money = dirtyMoney,
       frame = self._frameIndex ~= (self._baseline.playerData --[[@as table<string, unknown>]]).options.textFrame,
       flags = dirtyFlags,
+      pokegear = pokegearDirty,
       party = partyDirty,
       bag = bagDirty,
       location = locationChanged or self._facing ~= self._baseline.facing,
@@ -699,7 +709,7 @@ end
 ---@return boolean
 function SaveEditorSession:isDirty()
   local dirty = self:snapshot().dirtySections
-  return dirty.money or dirty.frame or dirty.flags or dirty.party or dirty.bag or dirty.location
+  return dirty.money or dirty.frame or dirty.flags or dirty.pokegear or dirty.party or dirty.bag or dirty.location
 end
 
 ---@param value unknown
@@ -1146,9 +1156,91 @@ function SaveEditorSession:setLocation(placement)
   return success(true)
 end
 
+---@return table<string, unknown>?
+function SaveEditorSession:pokegearBucket()
+  return copy(self._pokegear) --[[@as table<string, unknown>?]]
+end
+
+---@param draft table<string, unknown>
+---@return table<string, unknown>
+function SaveEditorSession:applyPokegearDraft(draft)
+  if self._busy then
+    return failure(BUSY, "A save operation is already in progress.", {})
+  end
+  if type(draft) ~= "table" or type(draft.applyTo) ~= "function" then
+    return failure(VALUE_INVALID, "Apply a companion draft from this session's candidate.", {})
+  end
+  local updated, applyError = draft:applyTo(self:captureCandidate())
+  if updated == nil then
+    return { ok = false, error = assert(applyError) }
+  end
+  return self:_stagePokegearBucket(updated.pokegear, updated)
+end
+
+-- Stages one validated companion record through the existing transaction:
+-- the bucket and its coherent ownership flag move together, unrelated
+-- domains stay untouched, and the revision moves only on an actual change.
+---@param record table<string, unknown>
+---@param refs table<string, unknown>
+---@return table<string, unknown>
+function SaveEditorSession:adoptPokegearRecord(record, refs)
+  if self._busy then
+    return failure(BUSY, "A save operation is already in progress.", {})
+  end
+  if type(record) ~= "table" or type(record.pokegear) ~= "table" then
+    return failure(VALUE_INVALID, "Adopt a record carrying a companion bucket.", {})
+  end
+  if type(refs) ~= "table" then
+    return failure(VALUE_INVALID, "Adopting companion state requires its catalog references.", {})
+  end
+  local ok, validationError = pcall(PokegearState.restore, copy(record.pokegear), refs)
+  if not ok then
+    if Errors.is(validationError) then
+      return { ok = false, error = validationError }
+    end
+    error(validationError, 0)
+  end
+  return self:_stagePokegearBucket(copy(record.pokegear), record)
+end
+
+---@param bucket unknown
+---@param source table<string, unknown>
+---@return table<string, unknown>
+function SaveEditorSession:_stagePokegearBucket(bucket, source)
+  local changed = not equal(bucket, self._pokegear)
+  self._pokegear = copy(bucket)
+  local flagId = self._symbols.flagsByName.FLAG_GOT_POKEGEAR
+  if finiteInteger(flagId) and flagId >= 0 and flagId <= 0xFFFF then
+    local world = source.world --[[@as table<string, unknown>]]
+    local want = type(world) == "table"
+      and type(world.flags) == "table"
+      and (world.flags --[[@as table<integer, boolean>]])[flagId] == true
+    if self._events:isFlagSet(flagId) ~= want then
+      local candidate = FieldEventState.new(self._events:serialize())
+      if want then
+        candidate:setFlag(flagId)
+      else
+        candidate:clearFlag(flagId)
+      end
+      local serialized, eventError = FieldEventState.validate(candidate:serialize())
+      if serialized == nil then
+        self._pokegear = copy(self._baseline.pokegear)
+        return { ok = false, error = assert(eventError) }
+      end
+      self._events = FieldEventState.new(serialized)
+      changed = true
+    end
+  end
+  if changed then
+    self._revision = self._revision + 1
+  end
+  return success(changed)
+end
+
 ---@return table<string, unknown>
 function SaveEditorSession:captureCandidate()
   local candidate = copy(self._baseline)
+  candidate.pokegear = copy(self._pokegear)
   local playerData = candidate.playerData --[[@as table<string, unknown>]]
   local profile = playerData.profile --[[@as table<string, unknown>]]
   local playerOptions = playerData.options --[[@as table<string, unknown>]]
@@ -1176,14 +1268,13 @@ function SaveEditorSession:save(hasUnappliedDraft)
   if hasUnappliedDraft then
     return failure(DRAFT_PENDING, "Apply or cancel the pending edit before saving.", {})
   end
-  if not self:isDirty() then
-    return success(false)
-  end
 
   self._busy = true
   local ok, result = pcall(function()
-    local candidate = self:captureCandidate()
-
+    -- Currency is checked before dirtiness: a store replaced behind a
+    -- clean session still conflicts instead of reporting a success the
+    -- baseline no longer backs. Nothing is written on this path either
+    -- way, so the external replacement stays preserved.
     local current, loadError = self._saveStore:load(self._baseline.saveId)
     if current == nil then
       if Errors.is(loadError) then
@@ -1196,6 +1287,10 @@ function SaveEditorSession:save(hasUnappliedDraft)
         saveId = self._baseline.saveId,
       })
     end
+    if not self:isDirty() then
+      return success(false)
+    end
+    local candidate = self:captureCandidate()
 
     if not self._backupPublished then
       local backupPath = "editor-backups/" .. self._baseline.saveId .. ".lua"
@@ -1229,7 +1324,14 @@ function SaveEditorSession:save(hasUnappliedDraft)
   error(result)
 end
 
-local SECTION_NAMES = { Location = true, Player = true, Party = true, Bag = true, Progress = true }
+local SECTION_NAMES = {
+  Location = true,
+  Player = true,
+  Party = true,
+  Bag = true,
+  Progress = true,
+  Companion = true,
+}
 
 ---@param section string
 ---@return boolean changed
@@ -1262,6 +1364,32 @@ local function resetSection(self, section)
       return true
     end
     return false
+  elseif section == "Companion" then
+    local changed = false
+    if not equal(self._pokegear, self._baseline.pokegear) then
+      self._pokegear = copy(self._baseline.pokegear)
+      changed = true
+    end
+    -- The companion ownership flag stages beside the bucket, so a
+    -- Companion reset restores it while other field flags stay staged.
+    local flagId = self._symbols.flagsByName.FLAG_GOT_POKEGEAR
+    if finiteInteger(flagId) and flagId >= 0 and flagId <= 0xFFFF then
+      local world = self._baseline.world --[[@as table<string, unknown>]]
+      local baselineFlags = world.flags --[[@as table<integer, boolean>]]
+      if self._events:isFlagSet(flagId) ~= (baselineFlags[flagId] == true) then
+        local candidate = FieldEventState.new(self._events:serialize())
+        if baselineFlags[flagId] == true then
+          candidate:setFlag(flagId)
+        else
+          candidate:clearFlag(flagId)
+        end
+        local serialized, eventError = FieldEventState.validate(candidate:serialize())
+        assert(serialized ~= nil, "companion reset restores a baseline flag: " .. tostring(eventError))
+        self._events = FieldEventState.new(serialized)
+        changed = true
+      end
+    end
+    return changed
   end
   assert(section == "Bag", "save editor section reset covers every top-level section")
   if not equal(self._bagService:capture(), self._baseline.bag) then
@@ -1286,6 +1414,7 @@ function SaveEditorSession:discard()
   local partyChanged = resetSection(self, "Party")
   resetSection(self, "Player")
   resetSection(self, "Progress")
+  resetSection(self, "Companion")
   resetSection(self, "Location")
   resetSection(self, "Bag")
   if partyChanged then
