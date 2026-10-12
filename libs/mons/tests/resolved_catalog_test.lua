@@ -52,10 +52,8 @@ function T.custom_entries_resolve_without_native_identities()
     type(MonCatalog.fromResolved) == "function",
     "missing mon catalog contract MonCatalog.fromResolved: composed definitions have no catalog owner"
   )
-  local ResolvedMonSchema = requireContract(
-    "libs.mons.src.ResolvedMonSchema",
-    "composed mon definitions have no runtime schema"
-  )
+  local ResolvedMonSchema =
+    requireContract("libs.mons.src.ResolvedMonSchema", "composed mon definitions have no runtime schema")
 
   local root = CatalogFixture.buildAssetRoot()
   addCustomEntries(root)
@@ -158,6 +156,37 @@ function T.strict_native_schema_still_requires_native_identities()
   end)
 end
 
+function T.composed_custom_vocabulary_passes_resolved_schema_but_fails_strict_schema()
+  local ResolvedMonSchema = require("libs.mons.src.ResolvedMonSchema")
+  local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
+
+  local root = CatalogFixture.buildAssetRoot()
+  local species = copy(root.species.CHIKORITA)
+  species.name = "EMBERPUP"
+  species.nativeId = nil
+  species.forms[0].types = { "ember:BRAVE" }
+  species.forms[0].fieldNote = "ember field note"
+  species.forms[0].tmhm = { "TOXIC", "CUT" }
+  local oath = function(_, context)
+    return context.oathKept == true
+  end
+  species.forms[0].evolutions = {
+    { method = "ember:OATH", target = "TOTODILE", form = 0, matches = oath },
+  }
+  root.species["ember:EMBERPUP"] = species
+
+  -- The composed schema accepts the custom root exactly as before: open
+  -- native identity, custom type keys, extra metadata, unsorted
+  -- compatibility lists, and namespaced methods with predicates.
+  Assert.isTrue(ResolvedMonSchema.assertCatalog(root) ~= false, "the resolved schema accepts custom vocabulary")
+  -- The strict generated-asset schema still rejects that same root:
+  -- missing native identities, custom types, and custom methods never
+  -- validate there.
+  Assert.throws(function()
+    MonAssetSchema.assertCatalog(root)
+  end, "the strict schema rejects the composed custom root")
+end
+
 ---@param overrides table<string, unknown>?
 ---@return table<string, unknown>
 local function overdriveMove(overrides)
@@ -176,10 +205,8 @@ end
 
 function T.custom_move_numbers_beyond_native_limits_stay_readable_while_native_bounds_hold()
   local MonCatalog = require("libs.mons.src.MonCatalog")
-  local ResolvedMonSchema = requireContract(
-    "libs.mons.src.ResolvedMonSchema",
-    "composed mon definitions have no runtime schema"
-  )
+  local ResolvedMonSchema =
+    requireContract("libs.mons.src.ResolvedMonSchema", "composed mon definitions have no runtime schema")
   local Errors = require("libs.errors.src.Errors")
   local MonsErrors = require("libs.mons.src.errors")
   local Mon = require("libs.mons.src.Mon")

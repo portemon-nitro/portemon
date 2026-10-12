@@ -79,6 +79,7 @@ local SHARED = {
   "MenuProtocol",
   "MonAssetSchema",
   "MonCache",
+  "MonSharedEnums",
   "PartyAssetSchema",
   "PartyCache",
   "PcAssetSchema",

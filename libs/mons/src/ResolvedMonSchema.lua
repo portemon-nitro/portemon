@@ -13,6 +13,7 @@
 local Errors = require("libs.errors.src.Errors")
 local Validate = require("libs.assets.src.Validate")
 local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
+local MonSharedEnums = require("libs.assets.src.MonSharedEnums")
 
 ---@class ResolvedMonSchema
 local ResolvedMonSchema = {}
@@ -21,47 +22,11 @@ local STAT_SET = { hp = true, attack = true, defense = true, speed = true, speci
 
 local STAT_KEYS = { "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }
 
-local GROWTH_KEYS = {
-  medium_fast = true,
-  erratic = true,
-  fluctuating = true,
-  medium_slow = true,
-  fast = true,
-  slow = true,
-  unused_6 = true,
-  unused_7 = true,
-}
+local GROWTH_KEYS = MonSharedEnums.growthCurves
 
-local CATEGORY_KEYS = { physical = true, special = true, status = true }
+local CATEGORY_KEYS = MonSharedEnums.moveCategories
 
-local EVO_METHODS = {
-  friendship = true,
-  friendship_day = true,
-  friendship_night = true,
-  level = true,
-  trade = true,
-  trade_item = true,
-  stone = true,
-  level_atk_gt_def = true,
-  level_atk_eq_def = true,
-  level_atk_lt_def = true,
-  level_pid_lo = true,
-  level_pid_hi = true,
-  level_ninjask = true,
-  level_shedinja = true,
-  beauty = true,
-  stone_male = true,
-  stone_female = true,
-  item_day = true,
-  item_night = true,
-  has_move = true,
-  other_party_mon = true,
-  level_male = true,
-  level_female = true,
-  coronet = true,
-  eterna = true,
-  route217 = true,
-}
+local EVO_METHODS = MonSharedEnums.nativeEvolutionMethods
 
 local FORM_FIELDS = {
   baseStats = true,

@@ -6,6 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 
 local T = {}
 
@@ -79,6 +80,60 @@ function T.rejects_wrong_size_unknown_methods_and_nonzero_padding()
   Assert.isNil(bad)
   Assert.isTrue(Errors.is(badErr))
   Assert.equal(assert(badErr).code, "MON_EVO_BAD_VALUE")
+end
+
+-- Fixed native vocabulary parity: the strict generated-asset schema and
+-- the composed resolved schema share the same growth-curve, move-category,
+-- and native evolution-method membership while keeping their different
+-- admission policies. Known native values validate in both; unsupported
+-- values fail in both.
+function T.known_native_vocabularies_validate_in_both_schemas()
+  local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
+  local ResolvedMonSchema = require("libs.mons.src.ResolvedMonSchema")
+
+  local root = CatalogFixture.buildAssetRoot()
+  -- The synthetic fixture carries no evolutions, so name one native
+  -- method through both validators alongside the fixture's curves and
+  -- categories.
+  root.species.CHIKORITA.forms[0].evolutions = {
+    { method = "level", level = 16, target = "TOTODILE", form = 0 },
+  }
+  Assert.isTrue(MonAssetSchema.assertCatalog(root) ~= false, "the strict schema accepts native vocabulary")
+  Assert.isTrue(ResolvedMonSchema.assertCatalog(root) ~= false, "the resolved schema accepts native vocabulary")
+end
+
+function T.unknown_native_vocabularies_fail_in_both_schemas()
+  local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
+  local ResolvedMonSchema = require("libs.mons.src.ResolvedMonSchema")
+
+  local badGrowth = CatalogFixture.buildAssetRoot()
+  badGrowth.species.CHIKORITA.growthCurve = "dawn"
+  Assert.throws(function()
+    MonAssetSchema.assertCatalog(badGrowth)
+  end, "the strict schema rejects an unknown growth curve")
+  Assert.throws(function()
+    ResolvedMonSchema.assertCatalog(badGrowth)
+  end, "the resolved schema rejects an unknown growth curve")
+
+  local badCategory = CatalogFixture.buildAssetRoot()
+  badCategory.moves.TACKLE.category = "cosmic"
+  Assert.throws(function()
+    MonAssetSchema.assertCatalog(badCategory)
+  end, "the strict schema rejects an unknown move category")
+  Assert.throws(function()
+    ResolvedMonSchema.assertCatalog(badCategory)
+  end, "the resolved schema rejects an unknown move category")
+
+  local badMethod = CatalogFixture.buildAssetRoot()
+  badMethod.species.CHIKORITA.forms[0].evolutions = {
+    { method = "warp", target = "TOTODILE", form = 0 },
+  }
+  Assert.throws(function()
+    MonAssetSchema.assertCatalog(badMethod)
+  end, "the strict schema rejects an unknown evolution method")
+  Assert.throws(function()
+    ResolvedMonSchema.assertCatalog(badMethod)
+  end, "the resolved schema rejects an unknown evolution method")
 end
 
 return { tests = T }
