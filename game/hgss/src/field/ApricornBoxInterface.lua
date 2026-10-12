@@ -25,6 +25,9 @@ local function mapInput(event, view)
   end
   if event.type == "pointer_down" then
     local mode = assert(view.mode, "Box input retains its application mode")
+    if mode == "kurt_select" and view.phase == "confirm" then
+      return event
+    end
     if view.phase == "actions" then
       local menu = assert(view.controls.actions[mode == "browse" and "browse" or "kurtSelect"])
       for index = 1, menu.windowCount do
@@ -47,6 +50,9 @@ local function mapInput(event, view)
           return { type = "quantity_control", index = index }
         end
       end
+      return nil
+    end
+    if view.phase ~= "browse" and view.phase ~= "rows" then
       return nil
     end
     for index, hitbox in ipairs(assert(view.rowHitboxes, "Box input shares source row hitboxes")) do

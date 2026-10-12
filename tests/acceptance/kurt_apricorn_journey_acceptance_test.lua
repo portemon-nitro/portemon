@@ -8,6 +8,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local MartSave = require("libs.hgss.src.save.MartSave")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local LocalClock = require("game.src.LocalClock")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
 
@@ -302,7 +303,7 @@ local function selectKurtOrder(game, host, apricornKey, quantity)
   game.runtime:releaseAction()
 end
 
-local function selectKurtOrderAtRow(game, host, targetIndex)
+local function openKurtQuantityAtRow(game, host, targetIndex, quantity)
   local status = assert(host:status(), "Kurt's source selector publishes its live status")
   Assert.equal(status.mode, "kurt_select", "the source script opens the shared selector in Kurt mode")
   while status.selectedIndex ~= targetIndex do
@@ -328,14 +329,39 @@ local function selectKurtOrderAtRow(game, host, targetIndex)
   game.runtime:releaseAction()
   status = assert(host:status(), "selecting the Apricorn opens quantity selection")
   Assert.equal(status.phase, "quantity")
+  for _ = 2, quantity do
+    tapDirection(game, "east")
+    status = assert(host:status(), "Kurt's selector stays open during quantity selection")
+  end
+  Assert.equal(status.quantity, quantity)
   game.runtime:pressAction()
   game:step()
   game.runtime:releaseAction()
-  status = assert(host:status(), "the selected quantity opens the native confirmation prompt")
+  status = assert(host:status(), "the selected quantity opens Kurt's confirmation")
   Assert.equal(status.phase, "confirm")
+end
+
+local function selectKurtOrderAtRow(game, host, targetIndex)
+  openKurtQuantityAtRow(game, host, targetIndex, 1)
   game.runtime:pressAction()
   game:step()
   game.runtime:releaseAction()
+end
+
+local function pointerTapBoxPoint(game, presentation, x, y)
+  local lowerPane
+  for _, pane in ipairs(assert(presentation.panes, "the Box plan publishes its interactive pane placements")) do
+    if pane.id == "lower" then
+      lowerPane = pane
+      break
+    end
+  end
+  local placement = assert(assert(lowerPane, "the Box plan includes a lower pane").placement)
+  local hostX, hostY = LayoutGeometry.logicalToHost(placement, x, y)
+  local source = "acceptance:kurt-box:" .. tostring(x) .. ":" .. tostring(y)
+  game.runtime.input:pointerDown(source, hostX, hostY)
+  game:step()
+  game.runtime.input:pointerUp(source, hostX, hostY)
 end
 
 finishKurtConversation = function(game)
@@ -518,6 +544,76 @@ function T.tests.yellow_and_blue_rows_keep_their_native_apricorn_and_ball_identi
       Assert.equal(bag:quantity(case.ballKey), 1, "the selected native color produces its matching Ball")
     end, { date = date })
   end
+end
+
+function T.tests.kurt_confirmation_formats_the_choice_and_owns_pointer_input_until_one_answer()
+  withGame(function(game)
+    local mart = assert(game.runtime.martService, "the production field runtime owns Apricorn stock and Kurt's order")
+    talkToKurt(game)
+    local host = advanceToKurtSelector(game)
+    openKurtQuantityAtRow(game, host, 3, 3)
+
+    local status = assert(host:status(), "Kurt's confirmation publishes its live view")
+    Assert.equal(status.phase, "confirm")
+    Assert.isTrue(type(status.confirmationPrompt) == "table", "Kurt's confirmation exposes its active choice")
+    Assert.isTrue(type(status.confirmationText) == "string", "Kurt's confirmation publishes expanded source text")
+    Assert.isTrue(status.confirmationText:find("3", 1, true) ~= nil, "the question names the selected quantity")
+    Assert.isTrue(
+      status.confirmationText:find("Blu Apricorn", 1, true) ~= nil,
+      "the question names the selected native Apricorn"
+    )
+    Assert.isFalse(
+      status.confirmationText:find("STRVAR", 1, true) ~= nil,
+      "the question has no raw substitution control"
+    )
+    Assert.equal(mart:apricornQuantity("BLU_APRICORN"), 3, "opening confirmation does not spend stock")
+    Assert.equal(mart:pendingKurt(), nil, "opening confirmation does not create an order")
+
+    local selectedIndex = status.selectedIndex
+    local quantity = status.quantity
+    local row = assert(status.rowHitboxes[1], "the source row hitboxes remain visible behind the choice")
+    pointerTapBoxPoint(game, status.presentation, row.x, row.y)
+    status = assert(host:status(), "a row press cannot dismiss Kurt's confirmation")
+    Assert.equal(status.phase, "confirm", "the prompt retains modal ownership")
+    Assert.equal(status.selectedIndex, selectedIndex, "a background row press cannot change the Apricorn")
+    Assert.equal(status.quantity, quantity, "a background row press cannot reset the quantity")
+    Assert.equal(mart:pendingKurt(), nil, "a background row press cannot submit Kurt's order")
+
+    local noButton = assert(status.confirmationPrompt.buttons.no, "the native prompt publishes its No hit bounds")
+    pointerTapBoxPoint(game, status.presentation, noButton.x + 4, noButton.y + 4)
+    game:advanceUntil("No returns Kurt to the selected quantity", function()
+      local current = host:status()
+      return current ~= nil and current.phase == "quantity"
+    end, 20)
+    status = assert(host:status(), "No keeps the selector open for correction")
+    Assert.equal(status.selectedIndex, selectedIndex, "No preserves the selected Apricorn")
+    Assert.equal(status.quantity, quantity, "No preserves the selected quantity")
+    Assert.equal(mart:apricornQuantity("BLU_APRICORN"), 3, "No leaves the selected stock untouched")
+    Assert.equal(mart:pendingKurt(), nil, "No does not create an order")
+
+    game.runtime:pressAction()
+    game:step()
+    game.runtime:releaseAction()
+    status = assert(host:status(), "reopening the choice retains the proposed order")
+    Assert.equal(status.phase, "confirm")
+    local yesButton = assert(status.confirmationPrompt.buttons.yes, "the native prompt publishes its Yes hit bounds")
+    pointerTapBoxPoint(game, status.presentation, yesButton.x + 4, yesButton.y + 4)
+    for _ = 1, 8 do
+      game:step()
+    end
+    Assert.equal(mart:pendingKurt(), nil, "the Yes choice waits for its confirmation blink")
+    Assert.equal(mart:apricornQuantity("BLU_APRICORN"), 3, "the pending Yes animation does not spend stock early")
+    game:advanceUntil("the completed Yes choice submits Kurt's order", function()
+      return mart:pendingKurt() ~= nil
+    end, 20)
+    Assert.deepEqual(
+      mart:pendingKurt(),
+      { apricornKey = "BLU_APRICORN", quantity = 3 },
+      "the completed prompt submits the selected order exactly once"
+    )
+    Assert.equal(mart:apricornQuantity("BLU_APRICORN"), 0, "Yes spends only the selected Apricorns")
+    Assert.equal(mart:apricornTotal(), 18, "Yes leaves the other six colors untouched")
+  end)
 end
 
 return T

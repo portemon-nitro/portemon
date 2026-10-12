@@ -1,6 +1,7 @@
 -- Draws source-derived Apricorn Box panes and seven animated stock rows.
 
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
+local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
 ---@class ApricornBoxRenderer
 ---@field _graphics love.graphics
@@ -8,6 +9,8 @@ local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 ---@field _text table<string, unknown>
 ---@field _manifest table<string, unknown>
 ---@field _images table<string, love.Image>
+---@field _promptRenderer YesNoPromptRenderer
+---@field _released boolean
 local ApricornBoxRenderer = {}
 ApricornBoxRenderer.__index = ApricornBoxRenderer
 
@@ -22,12 +25,12 @@ local function imageFor(self, path)
   end
   local bytes = assert(self._cacheFs:read(path), "generated Apricorn Box image exists: " .. path)
   image = self._graphics.newImage(love.filesystem.newFileData(bytes, path))
-  image:setFilter("nearest", "nearest")
   self._images[path] = image
+  image:setFilter("nearest", "nearest")
   return image
 end
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: table<string, unknown>, graphics?: love.graphics }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: table<string, unknown>, uiManifest: table<string, unknown>, graphics?: love.graphics }
 ---@return ApricornBoxRenderer
 function ApricornBoxRenderer.new(opts)
   assert(type(opts) == "table", "Apricorn Box renderer options are records")
@@ -38,12 +41,20 @@ function ApricornBoxRenderer.new(opts)
   assert(type(graphics) == "table" and type(graphics.draw) == "function", "Apricorn Box rendering needs love.graphics")
   local text = assert(opts.text, "Apricorn Box rendering borrows the generated field font")
   assert(type(text.drawText) == "function", "Apricorn Box rendering borrows text drawing")
+  local uiManifest = assert(opts.uiManifest, "Apricorn Box rendering borrows generated prompt art")
   local self = setmetatable(
-    { _graphics = graphics, _cacheFs = cacheFs, _images = {}, _manifest = manifest, _text = text },
+    { _graphics = graphics, _cacheFs = cacheFs, _images = {}, _manifest = manifest, _text = text, _released = false },
     ApricornBoxRenderer
   )
-  for _, path in ipairs(ApricornBoxAssetCache.referencedPaths(manifest)) do
-    imageFor(self, path)
+  local ok, err = pcall(function()
+    for _, path in ipairs(ApricornBoxAssetCache.referencedPaths(manifest)) do
+      imageFor(self, path)
+    end
+    self._promptRenderer = YesNoPromptRenderer.new({ cacheFs = cacheFs, manifest = uiManifest, graphics = graphics })
+  end)
+  if not ok then
+    self:release()
+    error(err, 0)
   end
   return self
 end
@@ -51,6 +62,9 @@ end
 ---@param view table<string, unknown>
 ---@param pane { id: string, placement: table<string, unknown> }
 function ApricornBoxRenderer:drawPane(view, pane)
+  if self._released then
+    return
+  end
   assert(pane.id == "upper" or pane.id == "lower", "Apricorn Box pane identity is source-defined")
   local manifest = self._manifest
   local image = imageFor(self, manifest[pane.id].image)
@@ -122,7 +136,7 @@ function ApricornBoxRenderer:drawPane(view, pane)
   end
   self._text:drawText(label, detail.x * 8, detailY)
   if view.phase == "confirm" then
-    self._text:drawText(view.promptChoice == "yes" and "> Yes  No" or "  Yes > No", detail.x * 8, detailY + 16)
+    self._promptRenderer:draw(assert(view.confirmationPrompt, "confirmation renders its active prompt status"))
   end
   if view.phase == "actions" then
     local modeName = view.mode == "browse" and "browse" or "kurtSelect"
@@ -152,7 +166,13 @@ function ApricornBoxRenderer:drawPane(view, pane)
       drawTile(side, x, rowY + 8)
       drawTile(side + 2, x + (menu.width + 1) * 8, rowY + 8)
       local actionLabel = assert(view.actionLabels[menu.messageIds[index]], "source action message resolves")
-      self._text:drawText(actionLabel, x + 8 + 2, rowY)
+      if view.actionsEnabled[index] then
+        self._text:drawText(actionLabel, x + 8 + 2, rowY)
+      else
+        graphics.setColor(0.45, 0.45, 0.45, 1)
+        self._text:drawText(actionLabel, x + 8 + 2, rowY)
+        setWhite(graphics)
+      end
     end
     for index = 1, menu.windowCount - 1 do
       local separatorIndex = 6
@@ -171,6 +191,14 @@ function ApricornBoxRenderer:drawPane(view, pane)
 end
 
 function ApricornBoxRenderer:release()
+  if self._released then
+    return
+  end
+  self._released = true
+  if self._promptRenderer ~= nil then
+    self._promptRenderer:release()
+    self._promptRenderer = nil
+  end
   for path, image in pairs(self._images) do
     self._images[path] = nil
     image:release()

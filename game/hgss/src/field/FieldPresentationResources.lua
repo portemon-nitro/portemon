@@ -985,6 +985,7 @@ function FieldPresentationResources:getApricornBoxRenderer()
       cacheFs = self.cacheFs,
       manifest = manifest,
       text = assert(self.textRenderer, "Apricorn Box presentation requires the field text renderer"),
+      uiManifest = self.uiManifest,
     })
   end
   return self._apricornBoxRenderer

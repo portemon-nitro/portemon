@@ -4,6 +4,7 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local ApricornBoxRenderer = require("libs.hgss.src.ui.ApricornBoxRenderer")
@@ -91,12 +92,16 @@ local function render(scope, cacheFs, manifest, renderer, window, topologyName, 
   local topology, width, height = makeTopology(topologyName)
   local currentMeasurement = measurement(topology, width, height, topologyName)
   local provider = messageProvider(cacheFs)
+  local fontDef = FieldFontLoader.load(cacheFs)
+  local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
   local screen = ApricornBoxScreenState.new({
     mode = mode,
     service = stock(manifest),
     effect = function() end,
     manifest = manifest,
     messageProvider = provider,
+    fontDef = fontDef,
+    uiManifest = uiManifest,
     measureDisplay = function()
       return currentMeasurement
     end,
@@ -111,9 +116,12 @@ local function render(scope, cacheFs, manifest, renderer, window, topologyName, 
     for _ = 1, 4 do
       screen:updateFixed({})
     end
+    screen:updateFixed({ { type = "confirm" } })
+    screen:updateFixed({ { type = "navigate", direction = "right" } })
+    screen:updateFixed({ { type = "confirm" } })
   end
   local view = screen:status()
-  Assert.equal(view.phase, "actions", "capture shows the source action menu")
+  Assert.equal(view.phase, mode == "browse" and "actions" or "confirm", "capture shows the mode's active Box controls")
   local canvas = scope:own(love.graphics.newCanvas(width, height))
   love.graphics.setCanvas(canvas)
   love.graphics.clear(BACKGROUND[1], BACKGROUND[2], BACKGROUND[3], 1)
@@ -144,6 +152,117 @@ local function assertSourceLabels(cacheFs, manifest)
   provider:releaseBank(manifest.messageBankId)
 end
 
+local function trackingGraphics(failAt, failFilterAt)
+  local calls = { created = 0, released = 0, filters = 0 }
+  local graphics = {
+    newImage = function()
+      calls.created = calls.created + 1
+      if calls.created == failAt then
+        error("injected Box image allocation failure")
+      end
+      return {
+        setFilter = function()
+          calls.filters = calls.filters + 1
+          if calls.filters == failFilterAt then
+            error("injected Box image filter failure")
+          end
+        end,
+        getWidth = function()
+          return 512
+        end,
+        getHeight = function()
+          return 512
+        end,
+        release = function()
+          calls.released = calls.released + 1
+        end,
+      }
+    end,
+    newQuad = function()
+      return {}
+    end,
+    draw = function() end,
+    setColor = function() end,
+  }
+  return graphics, calls
+end
+
+function T.box_renderer_releases_prompt_and_source_images_once(_)
+  local cacheFs = CacheFs.forVersion("heartgold")
+  local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
+  local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
+  local promptAssets = {}
+  local compact = uiManifest.yesNoPrompt.shapes.compact
+  for _, row in ipairs({ compact.yes, compact.no }) do
+    for _, state in ipairs({ row.normal, row.selected }) do
+      promptAssets[state.asset] = true
+    end
+  end
+  local promptAssetCount = 0
+  for _ in pairs(promptAssets) do
+    promptAssetCount = promptAssetCount + 1
+  end
+  local successGraphics, successCalls = trackingGraphics()
+  local renderer = ApricornBoxRenderer.new({
+    cacheFs = cacheFs,
+    manifest = manifest,
+    text = { drawText = function() end },
+    uiManifest = uiManifest,
+    graphics = successGraphics,
+  })
+  renderer:release()
+  renderer:release()
+  Assert.equal(successCalls.released, successCalls.created, "successful construction releases every owned image once")
+
+  local boxAssetCount = #ApricornBoxAssetCache.referencedPaths(manifest)
+  local failureGraphics, failureCalls = trackingGraphics(boxAssetCount + 1)
+  local ok, err = pcall(ApricornBoxRenderer.new, {
+    cacheFs = cacheFs,
+    manifest = manifest,
+    text = { drawText = function() end },
+    uiManifest = uiManifest,
+    graphics = failureGraphics,
+  })
+  Assert.isFalse(ok, "a prompt image allocation failure propagates")
+  Assert.isTrue(tostring(err):find("injected Box image allocation failure", 1, true) ~= nil)
+  Assert.equal(
+    failureCalls.created,
+    boxAssetCount + 1,
+    "failure occurs after source Box images were acquired"
+  )
+  Assert.equal(failureCalls.released, boxAssetCount, "partial construction releases every source image once")
+
+  local filterFailureGraphics, filterFailureCalls = trackingGraphics(nil, 1)
+  local filterOk, filterErr = pcall(ApricornBoxRenderer.new, {
+    cacheFs = cacheFs,
+    manifest = manifest,
+    text = { drawText = function() end },
+    uiManifest = uiManifest,
+    graphics = filterFailureGraphics,
+  })
+  Assert.isFalse(filterOk, "an image filter failure propagates")
+  Assert.isTrue(tostring(filterErr):find("injected Box image filter failure", 1, true) ~= nil)
+  Assert.equal(filterFailureCalls.created, 1, "filter failure follows image acquisition")
+  Assert.equal(filterFailureCalls.released, 1, "filter failure releases the acquired image once")
+
+  local promptFilterGraphics, promptFilterCalls = trackingGraphics(nil, boxAssetCount + 1)
+  local promptFilterOk, promptFilterErr = pcall(ApricornBoxRenderer.new, {
+    cacheFs = cacheFs,
+    manifest = manifest,
+    text = { drawText = function() end },
+    uiManifest = uiManifest,
+    graphics = promptFilterGraphics,
+  })
+  Assert.isFalse(promptFilterOk, "a prompt image filter failure propagates")
+  Assert.isTrue(tostring(promptFilterErr):find("injected Box image filter failure", 1, true) ~= nil)
+  Assert.equal(promptFilterCalls.created, boxAssetCount + 1, "prompt filter failure follows image acquisition")
+  Assert.equal(
+    promptFilterCalls.released,
+    boxAssetCount + 1,
+    "prompt filter failure releases source and prompt images once"
+  )
+end
+
 function T.source_box_renders_browse_and_kurt_modes_for_each_layout(scope)
   local cacheFs = CacheFs.forVersion("heartgold")
   local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
@@ -160,6 +279,7 @@ function T.source_box_renders_browse_and_kurt_modes_for_each_layout(scope)
     cacheFs = cacheFs,
     manifest = manifest,
     text = text,
+    uiManifest = uiManifest,
     graphics = love.graphics,
   }))
   for _, topology in ipairs({ "native", "wide", "tall", "dual" }) do

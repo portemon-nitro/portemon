@@ -505,6 +505,8 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
       service = assert(runtime.martService, "the Box borrows the live Apricorn stock service"),
       manifest = apricornBoxManifest,
       messageProvider = assert(runtime.messageProvider, "the Box borrows the field message provider"),
+      fontDef = assert(runtime.fontDef, "the Box formats source messages with the generated font"),
+      uiManifest = assert(runtime.uiManifest, "the Box composes its generated prompt art"),
       measureDisplay = measureDisplay,
       effect = playBagSequence,
       overrides = runtime.presentationOverrides ~= nil and runtime.presentationOverrides.apricorn_box or nil,

@@ -3,6 +3,8 @@
 local Assert = require("tests.support.Assert")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local ApricornBoxScreenState = require("game.hgss.src.apricorn.ApricornBoxScreenState")
+local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
 local T = { tests = {} }
 
@@ -10,6 +12,20 @@ local KEYS =
   { "RED_APRICORN", "YLW_APRICORN", "BLU_APRICORN", "GRN_APRICORN", "PNK_APRICORN", "WHT_APRICORN", "BLK_APRICORN" }
 local CENTERS = { { 27, 49 }, { 75, 65 }, { 27, 81 }, { 75, 97 }, { 27, 113 }, { 75, 129 }, { 27, 145 } }
 local WINDOWS = { { 5, 6 }, { 11, 8 }, { 5, 10 }, { 11, 12 }, { 5, 14 }, { 11, 16 }, { 5, 18 } }
+
+local function fontDef()
+  local charmap = {}
+  for code = 32, 126 do
+    local char = string.char(code)
+    charmap[char] = code
+  end
+  return { charmap = charmap }
+end
+
+local function compactPromptShape()
+  local row = { normal = {}, selected = {} }
+  return { width = 48, height = 32, yes = row, no = row }
+end
 
 local function cursorStates()
   local states = {}
@@ -155,6 +171,19 @@ end
 local function dependencies(mode)
   local releases, lookups = 0, {}
   local sounds = {}
+  local generatedFont = fontDef()
+  local messageText = {
+    [7] = "Red Apricorn",
+    [8] = "Ylw Apricorn",
+    [9] = "Blu Apricorn",
+    [10] = "Grn Apricorn",
+    [11] = "Pnk Apricorn",
+    [12] = "Wht Apricorn",
+    [13] = "Blk Apricorn",
+    [37] = "Select which Apricorns to give.",
+    [38] = "Give how many?",
+    [39] = "Give {STRVAR_1 51, 1, 0} {STRVAR_1 8, 0, 0}?",
+  }
   local provider = {
     acquireBank = function(_, bankId)
       Assert.equal(bankId, 21)
@@ -163,7 +192,12 @@ local function dependencies(mode)
     get = function(_, bankId, messageId)
       Assert.equal(bankId, 21)
       lookups[#lookups + 1] = messageId
-      return { text = "Apricorn " .. messageId }
+      local text = messageText[messageId] or ("Apricorn " .. messageId)
+      local tokens = FieldMessageText.parse(text, generatedFont)
+      return { bankId = bankId, messageId = messageId, text = text, tokens = tokens }
+    end,
+    format = function(self, template, context, resolvers)
+      return FieldMessageProvider.format(self, template, context, resolvers)
     end,
     releaseBank = function(_, bankId)
       Assert.equal(bankId, 21)
@@ -187,13 +221,15 @@ local function dependencies(mode)
     end,
     manifest = manifest(),
     messageProvider = provider,
+    fontDef = generatedFont,
+    uiManifest = { yesNoPrompt = { shapes = { compact = compactPromptShape() } } },
     measureDisplay = function()
       return measurement(256, 192, "small")
     end,
   })
   return screen, function()
     return releases
-  end, lookups, sounds
+  end, lookups, sounds, provider
 end
 
 local function failedOpen(stage)
@@ -219,10 +255,16 @@ local function failedOpen(stage)
   }
   local ok = pcall(ApricornBoxScreenState.new, {
     mode = "browse",
-    service = { capture = function() return { apricorns = {} } end },
+    service = {
+      capture = function()
+        return { apricorns = {} }
+      end,
+    },
     effect = function() end,
     manifest = manifest(),
     messageProvider = provider,
+    fontDef = fontDef(),
+    uiManifest = { yesNoPrompt = { shapes = { compact = compactPromptShape() } } },
     measureDisplay = function()
       if stage == "construction" then
         error("session composition failed")
@@ -238,12 +280,12 @@ function T.tests.row_touch_selects_the_source_message_and_detail_and_disposal_re
   local screen, releaseCount = dependencies()
   local before = screen:status()
   Assert.equal(before.selectedIndex, 1)
-  Assert.equal(before.selectedName, "Apricorn 7")
+  Assert.equal(before.selectedName, "Red Apricorn")
   Assert.equal(before.rows[1].quantity, 1)
   screen:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 74, y = 128 } })
   local selected = screen:status()
   Assert.equal(selected.selectedIndex, 6, "source circle 6 selects the sixth Apricorn row")
-  Assert.equal(selected.selectedName, "Apricorn 12", "the selected-detail label follows the source message id")
+  Assert.equal(selected.selectedName, "Wht Apricorn", "the selected-detail label follows the source message id")
   Assert.equal(selected.rows[6].quantity, 6)
   screen:cancelPointerCapture()
   screen:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 74, y = 128 } })
@@ -290,7 +332,7 @@ function T.tests.kurt_touch_select_delay_quantity_controls_and_confirmation_are_
   end
   Assert.equal(screen:status().phase, "actions")
   Assert.equal(screen:status().cursorSequenceId, 5)
-  Assert.equal(screen:status().flowMessage, "Apricorn 37")
+  Assert.equal(screen:status().flowMessage, "Select which Apricorns to give.")
   local actionPlan = screen:status().presentation
   local action = actionPlan.mapInput({ type = "pointer_down", x = 153, y = 105 }, screen:status())
   Assert.equal(action.type, "action_control", "mode-specific source list windows map touch to semantic actions")
@@ -300,15 +342,40 @@ function T.tests.kurt_touch_select_delay_quantity_controls_and_confirmation_are_
   })
   Assert.equal(screen:status().selectedAction, 1)
   Assert.equal(screen:status().phase, "quantity")
-  Assert.equal(screen:status().flowMessage, "Apricorn 38")
+  Assert.equal(screen:status().flowMessage, "Give how many?")
   local snapshot = screen:status()
   local mapped = snapshot.presentation.mapInput({ type = "pointer_down", x = 95, y = 100 }, snapshot)
   Assert.equal(mapped.type, "quantity_control")
-  screen:updateFixed({ { type = "pointer_down", pointerId = "touch:plus", x = 95, y = 100 } })
+  screen:updateFixed({
+    { type = "pointer_down", pointerId = "touch:plus", x = 95, y = 100 },
+    { type = "pointer_up", pointerId = "touch:plus", x = 95, y = 100 },
+  })
   Assert.equal(screen:status().quantity, 2, "source quantity touch geometry changes the same value as keyboard input")
   screen:updateFixed({ { type = "confirm" } })
   Assert.equal(screen:status().phase, "confirm")
-  Assert.equal(screen:status().flowMessage, "Apricorn 39")
+  local confirmation = screen:status()
+  Assert.equal(confirmation.flowMessage, "Give 2 Wht Apricorn?")
+  Assert.equal(confirmation.confirmationText, "Give 2 Wht Apricorn?")
+  Assert.isTrue(confirmation.confirmationPrompt.active)
+  local hiddenRow = confirmation.presentation.mapInput({ type = "pointer_down", x = 26, y = 48 }, confirmation)
+  Assert.equal(hiddenRow.type, "pointer_down", "confirmation forwards raw pointer input to the prompt")
+  local no = confirmation.presentation.mapInput({ type = "pointer_down", x = 150, y = 132 }, confirmation)
+  Assert.equal(no.type, "pointer_down", "the visible prompt receives its logical pointer coordinates")
+  screen:updateFixed({ { type = "pointer_down", pointerId = "touch:no", x = 150, y = 132 } })
+  Assert.equal(screen:status().confirmationPrompt.selected, "no", "No pointer press selects its visible button")
+  for _ = 1, 9 do
+    screen:updateFixed({ { type = "touch_row", index = 1 } })
+  end
+  Assert.equal(screen:status().phase, "quantity", "No returns to editing after the prompt blink")
+  Assert.equal(screen:status().selectedIndex, 6)
+  Assert.equal(screen:status().quantity, 2)
+  screen:updateFixed({ { type = "pointer_up", pointerId = "touch:no", x = 150, y = 132 } })
+  screen:updateFixed({ { type = "confirm" } })
+  screen:updateFixed({ { type = "pointer_down", pointerId = "touch:yes", x = 150, y = 100 } })
+  screen:updateFixed({ { type = "pointer_up", pointerId = "touch:yes", x = 150, y = 100 } })
+  for _ = 1, 9 do
+    screen:updateFixed({})
+  end
   screen:updateFixed({ { type = "confirm" } })
   local result = screen:takeResult()
   Assert.equal(result.selected.apricornKey, KEYS[6])
@@ -317,23 +384,21 @@ function T.tests.kurt_touch_select_delay_quantity_controls_and_confirmation_are_
   screen:dispose()
 end
 
-function T.tests.browse_actions_keep_mode_specific_rows_and_taste_returns_to_browsing()
+function T.tests.browse_actions_keep_labels_but_only_cancel_is_enabled()
   local screen = dependencies("browse")
   screen:updateFixed({ { type = "pointer_down", pointerId = "touch:row", x = 26, y = 48 } })
   local status = screen:status()
   Assert.equal(status.phase, "actions")
+  Assert.isNil(status.flowMessage, "Bag browse does not show Kurt's selection instruction")
+  Assert.deepEqual(status.actionsEnabled, { false, false, true })
   Assert.equal(status.cursorSequenceId, 5)
   Assert.equal(status.controls.actions.browse.windowCount, 3)
   local touch = status.presentation.mapInput({ type = "pointer_down", x = 193, y = 169 }, status)
   Assert.equal(touch.type, "action_control")
   Assert.equal(touch.index, 3, "the source third action window maps to the third browse action")
-  screen:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(screen:status().selectedAction, 2)
   screen:updateFixed({ { type = "confirm" } })
-  Assert.equal(screen:status().phase, "row_return_delay")
-  Assert.equal(screen:status().cursorSequenceId, 4)
   for _ = 1, 4 do
-    screen:updateFixed({ { type = "navigate", direction = "down" } })
+    screen:updateFixed({})
   end
   Assert.equal(screen:status().phase, "browse")
   Assert.equal(screen:status().cursorSequenceId, 3)

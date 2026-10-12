@@ -13,10 +13,13 @@
 ---@field private _returnPhase string?
 ---@field private _action integer
 ---@field private _effect fun(sequence: string|integer)
+---@field private _prompt YesNoPromptController
+---@field private _promptPlacement { x: integer, y: integer, shape: string, initialSelection: string }
 ---@field private _closed boolean
 ---@field private _result table<string, unknown>?
 local ApricornBoxController = {}
 ApricornBoxController.__index = ApricornBoxController
+local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 local SOURCE_SOUND = { browseSelect = 1515, select = 1500, cancel = 1514, touchCancel = 1666 }
 local ROW_SELECTION_DELAY = 4
@@ -43,6 +46,10 @@ function ApricornBoxController.new(opts)
     ownedKeys[#ownedKeys + 1] = key
   end
   assert(type(opts.effect) == "function", "the Box controller needs the composed UI sound port")
+  local promptShape = assert(opts.promptShape, "the Box controller requires the generated compact prompt shape")
+  local promptPlacement = assert(opts.promptPlacement, "the Box controller requires source action placement")
+  assert(promptPlacement.shape == "compact", "the Box controller uses the compact source prompt")
+  local prompt = YesNoPromptController.new(promptShape, opts.effect)
   return setmetatable({
     _mode = opts.mode,
     _service = service,
@@ -52,8 +59,10 @@ function ApricornBoxController.new(opts)
     _phase = opts.mode == "browse" and "browse" or "rows",
     _delay = 0,
     _cursorOffsetY = 0,
-    _action = 1,
+    _action = opts.mode == "browse" and 3 or 1,
     _effect = opts.effect,
+    _prompt = prompt,
+    _promptPlacement = promptPlacement,
     _closed = false,
     _result = nil,
   }, ApricornBoxController)
@@ -64,8 +73,11 @@ function ApricornBoxController:_play(sequence)
 end
 
 function ApricornBoxController:_selectRow(index, touch)
+  if self._phase ~= "browse" and self._phase ~= "rows" then
+    return
+  end
   self._selected = index
-  self._action = 1
+  self._action = self._mode == "browse" and 3 or 1
   local row = self:status().rows[index]
   if row.quantity == 0 then
     return
@@ -97,6 +109,9 @@ local function adjustQuantity(self, delta)
 end
 
 local function activateAction(self)
+  if self._mode == "browse" and self._action ~= 3 then
+    return
+  end
   if self._mode == "kurt_select" then
     if self._action == 1 then
       self._phase = "quantity"
@@ -118,10 +133,30 @@ local function activateAction(self)
   end
 end
 
+function ApricornBoxController:_openPrompt()
+  self._phase = "confirm"
+  self._prompt:open(self._promptPlacement)
+end
+
 ---@param uiInput table[] semantic input events from the owning application
 function ApricornBoxController:updateFixed(uiInput)
   assert(type(uiInput) == "table", "Box input is an ordered event list")
   if self._closed then
+    return
+  end
+  if self._phase == "confirm" then
+    self._prompt:updateFixed(uiInput)
+    local answer = self._prompt:takeResult()
+    if answer == "yes" then
+      local row = self:status().rows[self._selected]
+      self._result = {
+        kind = "closed",
+        selected = { apricornKey = row.apricornKey, quantity = self._quantity },
+      }
+      self._closed = true
+    elseif answer == "no" then
+      self._phase = "quantity"
+    end
     return
   end
   if self._phase == "row_return_delay" then
@@ -148,9 +183,7 @@ function ApricornBoxController:updateFixed(uiInput)
       -- The presentation session drops a captured pointer before stale up events.
     elseif event.type == "cancel" or event.type == "dismiss" then
       self:_play(event.source == "touch" and SOURCE_SOUND.touchCancel or SOURCE_SOUND.cancel)
-      if self._phase == "confirm" then
-        self._phase = "quantity"
-      elseif self._phase == "actions" then
+      if self._phase == "actions" then
         self._phase = "row_return_delay"
         self._returnPhase = self._mode == "browse" and "browse" or "rows"
         self._cursorReturnTicks = 4
@@ -168,16 +201,15 @@ function ApricornBoxController:updateFixed(uiInput)
         event.direction == "up" or event.direction == "down" or event.direction == "left" or event.direction == "right",
         "Box navigation uses a cardinal direction"
       )
-      if self._phase == "confirm" then
-        if event.direction == "up" or event.direction == "down" then
-          self._promptChoice = self._promptChoice == "yes" and "no" or "yes"
-          self:_play(SOURCE_SOUND.select)
-        end
-      elseif self._phase == "actions" then
+      if self._phase == "actions" then
         local count = self._mode == "browse" and 3 or 2
         local previous = self._action
-        self._action = event.direction == "up" and (previous == 1 and count or previous - 1)
-          or (previous == count and 1 or previous + 1)
+        if self._mode == "browse" then
+          self._action = 3
+        else
+          self._action = event.direction == "up" and (previous == 1 and count or previous - 1)
+            or (previous == count and 1 or previous + 1)
+        end
         if previous ~= self._action then
           self:_play(SOURCE_SOUND.select)
         end
@@ -203,8 +235,7 @@ function ApricornBoxController:updateFixed(uiInput)
       assert(integer(event.index, 1, 6), "quantity controls use the six source controls")
       if self._phase == "quantity" then
         if event.index == 1 then
-          self._phase = "confirm"
-          self._promptChoice = "yes"
+          self:_openPrompt()
           self:_play(SOURCE_SOUND.select)
         elseif event.index == 2 then
           self._phase = "quantity"
@@ -217,11 +248,15 @@ function ApricornBoxController:updateFixed(uiInput)
       local count = self._mode == "browse" and 3 or 2
       assert(integer(event.index, 1, count), "Box action selection names a source menu row")
       if self._phase == "actions" then
-        self._action = event.index
-        self:_play(SOURCE_SOUND.select)
-        activateAction(self)
-        if self._closed then
-          return
+        if self._mode == "browse" and event.index ~= 3 then
+          -- Source USE and TASTE labels remain visible until their effects exist.
+        else
+          self._action = event.index
+          self:_play(SOURCE_SOUND.select)
+          activateAction(self)
+          if self._closed then
+            return
+          end
         end
       end
     elseif event.type == "confirm" then
@@ -230,8 +265,7 @@ function ApricornBoxController:updateFixed(uiInput)
       elseif self._phase == "rows" then
         self:_selectRow(self._selected, false)
       elseif self._phase == "quantity" then
-        self._phase = "confirm"
-        self._promptChoice = "yes"
+        self:_openPrompt()
         self:_play(SOURCE_SOUND.select)
       elseif self._phase == "actions" then
         self:_play(SOURCE_SOUND.select)
@@ -239,18 +273,6 @@ function ApricornBoxController:updateFixed(uiInput)
         if self._closed then
           return
         end
-      elseif self._phase == "confirm" then
-        self:_play(SOURCE_SOUND.select)
-        if self._promptChoice == "yes" then
-          local row = self:status().rows[self._selected]
-          self._result = {
-            kind = "closed",
-            selected = { apricornKey = row.apricornKey, quantity = self._quantity },
-          }
-          self._closed = true
-          return
-        end
-        self._phase = "quantity"
       end
     else
       assert(event.type == "pointer_down", "Box input supports source actions and application pointer events")
@@ -281,9 +303,10 @@ function ApricornBoxController:status()
     rows = rows,
     selectedIndex = self._selected,
     selectedAction = self._action,
+    actionsEnabled = self._mode == "browse" and { false, false, true } or { true, true },
     quantity = self._quantity,
     maximum = rows[self._selected].quantity,
-    promptChoice = self._promptChoice,
+    confirmationPrompt = self._phase == "confirm" and self._prompt:status() or nil,
     cursorSequenceId = cursorSequenceId,
     cursorOffsetY = self._cursorOffsetY,
   }
@@ -299,6 +322,7 @@ end
 function ApricornBoxController:dispose()
   self._result = nil
   self._closed = true
+  self._prompt:dispose()
 end
 
 return ApricornBoxController

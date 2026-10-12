@@ -105,9 +105,9 @@ function YesNoPromptRenderer:_acquire(cacheFs, manifest)
     end
     data = assert(data)
     local image = graphics.newImage(love.filesystem.newFileData(data, path))
-    image:setFilter("nearest", "nearest")
     self._images[#self._images + 1] = image
     self._imageByAsset[assetId] = image
+    image:setFilter("nearest", "nearest")
     return image
   end
   local function quadFor(assetId, rect)
