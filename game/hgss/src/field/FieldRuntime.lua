@@ -201,6 +201,7 @@ end
 ---@field pokegearState table<string, unknown> the owned companion state, calendar checkpoint, and persisted draw seeds
 ---@field pokegearRandom table<string, unknown>? the live companion draw pair (nil after teardown)
 ---@field pokegearCalendar table<string, unknown>? the companion-local civil calendar adapter (nil after teardown)
+---@field incomingCalls table<string, unknown>? the owned ambient incoming-call coordinator (nil after teardown)
 ---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
 ---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
@@ -1353,6 +1354,9 @@ function FieldRuntime:_startFieldSession(boot)
   end
   local function onZoneChange(change)
     self.lastZoneChange = change
+    if self.incomingCalls ~= nil then
+      self.incomingCalls:resetTransient("transition")
+    end
   end
   self.zoneController = FieldZoneController.new({
     currentMap = self.runtimeMap,
@@ -1443,6 +1447,7 @@ function FieldRuntime:_startFieldSession(boot)
     eventResolver = FieldEventResolver,
     eventState = self.eventState,
     fieldEntranceIndicator = self.fieldEntranceIndicator,
+    incomingCalls = assert(self.incomingCalls, "the field session routes the ambient phone opportunity"),
     enterMapActors = enterMapActors,
     autoAcknowledgePresentation = not self.presentation,
     terrainEffects = self.fieldTerrainEffectController,
@@ -1628,6 +1633,7 @@ function FieldRuntime:update(dt)
 
   -- After the fixed ticks: a tick may activate a new map, whose render
   -- environment must carry the current time in the frame that draws it.
+  self:_pumpIncomingClock()
   self:_refreshFieldTimeOfDay()
 
   -- The owned battle lifetime pumps once per runtime update, after the
@@ -1667,6 +1673,9 @@ function FieldRuntime:update(dt)
     end
   end
   local completed = self.transition:consumeCompleted()
+  if completed and self.incomingCalls ~= nil then
+    self.incomingCalls:resetTransient("transition")
+  end
   if completed and self.camera then
     -- The transition may finish on the same fixed tick that applies the
     -- destination stair/door arrival. Publish a settled camera pair with the
@@ -1674,6 +1683,48 @@ function FieldRuntime:update(dt)
     -- interpolate from the pre-arrival Y history.
     self.camera:collapseRenderInterpolation()
   end
+end
+
+-- Samples the host-local civil clock into the incoming-call owner once
+-- per field update, never from rendering or the displayed clock. The
+-- sample pauses while a higher-priority owner holds the field, matching
+-- the source advancement that only runs without a field task.
+function FieldRuntime:_pumpIncomingClock()
+  local calls = self.incomingCalls
+  local session = self.session
+  if calls == nil or session == nil then
+    return
+  end
+  if session:isBattleActive() then
+    return
+  end
+  local transition = session.transition
+  if transition ~= nil and transition.phase ~= nil then
+    local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+    if transition.phase ~= FieldTransition.PHASES.idle then
+      return
+    end
+  end
+  if session.mapEntryController:isActive() then
+    return
+  end
+  if session.dialogue:isModal() then
+    return
+  end
+  if session.applicationHost:isActive() then
+    return
+  end
+  local scripts = self.scripts
+  local scheduler = scripts ~= nil and scripts.scheduler or nil
+  if scheduler ~= nil then
+    if type(scheduler.playerInputOwned) == "function" and scheduler:playerInputOwned() then
+      return
+    end
+    if type(scheduler.foregroundEnvironmentId) == "function" and scheduler:foregroundEnvironmentId() ~= nil then
+      return
+    end
+  end
+  calls:onFieldClock(self.localClock:nowLocal())
 end
 
 -- Every semantic-input entry point below needs the same live-input guard;
@@ -2039,6 +2090,61 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
   self._battleHost = { launchBattle = hostLaunch, battleStatus = hostStatus, lastBattleResult = hostResult }
 end
 
+-- The ring tone owner over the composed field audio: the coordinator
+-- speaks its source sequence identity while the runtime resolves the
+-- audio symbol. Missing or partial audio (headless composition) means a
+-- silent ring; the banner still notifies.
+---@param audio table<string, unknown>?
+---@return table<string, unknown>?
+local function ringAudioFor(audio)
+  if audio == nil then
+    return nil
+  end
+  if type(audio.play) ~= "function" or type(audio.isEffectPlaying) ~= "function" or type(audio.stop) ~= "function" then
+    return nil
+  end
+  local symbol = "SEQ_SE_GS_PHONE1"
+  local function playRing(_, sequence)
+    assert(sequence == "PHONE1", "the field ring tone plays its source sequence")
+    audio:play(symbol)
+  end
+  local function isRingPlaying()
+    return audio:isEffectPlaying(symbol)
+  end
+  local function stopRing()
+    audio:stop(symbol)
+  end
+  return {
+    playRing = playRing,
+    isRingPlaying = isRingPlaying,
+    stopRing = stopRing,
+  }
+end
+
+-- Composes the one ambient incoming-call owner over the real companion
+-- providers: durable state, civil calendar, live draw streams, the bare
+-- world adapter, and the audio-derived ring tone owner. The companion
+-- host arrives with the final feature composition, so acceptance through
+-- this owner fails explicitly until then instead of succeeding falsely.
+---@param runtime FieldRuntime
+---@param manifest table<string, unknown>
+---@return table<string, unknown>
+local function composeIncomingCalls(runtime, manifest)
+  local IncomingCalls = require("game.hgss.src.pokegear.IncomingCalls")
+  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
+  assert(type(manifest) == "table" and type(manifest.catalog) == "table", "incoming calls borrow the contact catalog")
+  local catalog = manifest.catalog --[[@as table<string, unknown>]]
+  return IncomingCalls.new({
+    state = assert(runtime.pokegearState, "incoming calls persist through the companion state"),
+    catalog = catalog,
+    calendar = assert(runtime.pokegearCalendar, "incoming calls advance through the companion calendar"),
+    random = assert(runtime.pokegearRandom, "incoming calls draw through the companion streams"),
+    world = PhoneWorldContext.new({ state = assert(runtime.pokegearState, "incoming calls read companion facts") }),
+    host = nil,
+    audio = ringAudioFor(runtime.audio),
+  })
+end
+
 -- Composes the one companion owner: durable state restored with generated
 -- catalog references (or started fresh with the session seed when the
 -- record predates the bucket), the live draw pair continuing the persisted
@@ -2070,6 +2176,7 @@ function FieldRuntime:_composePokegear(loadedGame, cacheFs)
     self.pokegearRandom = PokegearRandom.new(seed)
   end
   self.pokegearCalendar = PokegearCalendar.new(self.pokegearState)
+  self.incomingCalls = composeIncomingCalls(self, manifest)
 end
 
 -- The companion seed boundary: the validated trainer identity when the
@@ -2360,7 +2467,11 @@ end
 ---@param args table<string, unknown>
 ---@return table<string, unknown> the owned application battle lifetime
 function FieldRuntime:startBattle(args)
-  return self.battleCoordinator:startBattle(args)
+  local battle = self.battleCoordinator:startBattle(args)
+  if self.incomingCalls ~= nil then
+    self.incomingCalls:resetTransient("battle")
+  end
+  return battle
 end
 
 function FieldRuntime:_reconcileBattleGate()
@@ -3154,6 +3265,10 @@ function FieldRuntime:_releaseAll()
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
   self.mailbox, self.photoAlbum = nil, nil
+  if self.incomingCalls ~= nil then
+    self.incomingCalls:dispose()
+  end
+  self.incomingCalls = nil
   self.pokegearState, self.pokegearRandom, self.pokegearCalendar = nil, nil, nil
   self.martStockResolver = nil
   self.itemCatalog = nil

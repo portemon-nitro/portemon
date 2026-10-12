@@ -443,6 +443,10 @@ end
 -- pack deterministically left to right in icon-row order (normal, selected,
 -- then the female normal/selected pair), so the manifest boundary is stable
 -- for a fixed source.
+-- Forward declaration: the ringing frames compile with the icon bank above
+-- but read clearest as their own stage below it.
+local compileStartMenuRinging
+
 local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   local cfg = manifestConfig.startMenu
   local function g2d(kind, memberId, label)
@@ -640,7 +644,100 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
     deps[#deps + 1] =
       { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
   end
-  return visuals, shoesVisuals
+  return visuals, shoesVisuals, compileStartMenuRinging(cfg, iconAnim, iconCell, iconPal, g2d, assets, manifestAssets)
+end
+
+-- The incoming-call ringing frames: the Pokegear icon char rendered
+-- through every frame of the shared ringing animation with the normal
+-- palette, packed left to right in source order. The animation bank,
+-- char, cell, and palette members are the same ones pinned above, so no
+-- new source dependency enters here.
+---@param cfg table<string, unknown>
+---@param iconAnim FieldUiCompiler.AnimationData
+---@param iconCell FieldUiCompiler.CellData
+---@param iconPal FieldUiCompiler.PaletteData
+---@param g2d fun(kind: string, memberId: integer, label: string): unknown
+---@param assets table<string, string>
+---@param manifestAssets table<string, table<string, unknown>>
+---@return table<string, unknown> the ringing animation record
+function compileStartMenuRinging(cfg, iconAnim, iconCell, iconPal, g2d, assets, manifestAssets)
+  local pokegearIconIndex =
+    assert(cfg.actionIcons["vanilla.pokegear"], "the start menu config maps the pokegear action to its icon")
+  local pokegearRow = assert(cfg.iconRows[pokegearIconIndex + 1], "the pokegear icon row carries the ringing char")
+  assert(pokegearRow.art == "sprite", "the pokegear icon row carries shared icon art")
+  local ringingAnim = iconAnim.anims[cfg.iconRingingAnim + 1]
+  if ringingAnim == nil or #ringingAnim.frames == 0 then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon animation bank has no ringing animation", {
+      anim = cfg.iconRingingAnim,
+      available = #iconAnim.anims,
+    })
+  end
+  assert(ringingAnim ~= nil, "missing ringing animations fail above")
+  local ringingChar = g2d("decodeChar", pokegearRow.char, "start menu ringing icon char")
+  local ringingSource = { asset = "start menu ringing icon", member = pokegearRow.char }
+  local ringingFrames = {}
+  for frameIndex = 1, #ringingAnim.frames do
+    local decoded = ringingAnim.frames[frameIndex]
+    local frame = G2dRasterizer.renderAnimationFrame(
+      ringingChar,
+      { colors = iconPal.colors },
+      iconCell,
+      ringingAnim,
+      frameIndex,
+      ringingSource
+    )
+    assert(
+      type(frame.offset.x) == "number"
+        and frame.offset.x % 1 == 0
+        and type(frame.offset.y) == "number"
+        and frame.offset.y % 1 == 0,
+      "the ringing compositor must return an integral source-relative offset"
+    )
+    ringingFrames[#ringingFrames + 1] = {
+      width = frame.width,
+      height = frame.height,
+      pixels = frame.pixels,
+      offset = { x = frame.offset.x, y = frame.offset.y },
+      duration = decoded.duration,
+    }
+  end
+  local ringingWidth, ringingHeight = 0, 0
+  for _, frame in ipairs(ringingFrames) do
+    ringingWidth = ringingWidth + frame.width
+    ringingHeight = math.max(ringingHeight, frame.height)
+  end
+  local ringingRows = {}
+  for y = 0, ringingHeight - 1 do
+    for _, frame in ipairs(ringingFrames) do
+      if y < frame.height then
+        ringingRows[#ringingRows + 1] = frame.pixels:sub(y * frame.width * 4 + 1, (y + 1) * frame.width * 4)
+      else
+        ringingRows[#ringingRows + 1] = string.rep(string.char(0, 0, 0, 0), frame.width * 4)
+      end
+    end
+  end
+  local ringingPath = FieldUiAssetCache.assetDir() .. "/start-menu-ringing.png"
+  assets[ringingPath] = PngWriter.encode(ringingWidth, ringingHeight, table.concat(ringingRows))
+  manifestAssets[FieldUiAssetCache.ASSET.START_MENU_RINGING] =
+    { image = ringingPath, width = ringingWidth, height = ringingHeight }
+  local ringing = {
+    asset = FieldUiAssetCache.ASSET.START_MENU_RINGING,
+    playMode = ringingAnim.playMode,
+    loopStartFrameIdx = ringingAnim.loopStartFrameIdx,
+    frames = {},
+  }
+  do
+    local x = 0
+    for index, frame in ipairs(ringingFrames) do
+      ringing.frames[index] = {
+        rect = { x = x, y = 0, width = frame.width, height = frame.height },
+        offset = frame.offset,
+        duration = frame.duration,
+      }
+      x = x + frame.width
+    end
+  end
+  return ringing
 end
 
 local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
@@ -655,7 +752,8 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   end
   local background = compileStartMenuMain(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   local subPalette = compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
-  local iconVisuals, shoesVisuals = compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  local iconVisuals, shoesVisuals, ringingVisual =
+    compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
 
   -- The label roles are source palette slots, not font colors: the label
   -- windows live on the SUB background's palette bank 4, so foreground 14,
@@ -846,6 +944,24 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
     chrome = {
       main = { asset = FieldUiAssetCache.ASSET.START_MENU_BACKGROUND, transparentAboveY = 136 },
       sub = { asset = FieldUiAssetCache.ASSET.START_MENU_CHROME_SUB },
+    },
+    phoneNotification = {
+      window = {
+        tileLeft = cfg.phoneNotification.tileLeft,
+        top = cfg.phoneNotification.top,
+        height = cfg.phoneNotification.height,
+        maxWidth = cfg.phoneNotification.maxWidthTiles,
+      },
+      ringing = ringingVisual,
+    },
+    phoneNotification = {
+      window = {
+        tileLeft = cfg.phoneNotification.tileLeft,
+        top = cfg.phoneNotification.top,
+        height = cfg.phoneNotification.height,
+        maxWidth = cfg.phoneNotification.maxWidthTiles,
+      },
+      ringing = ringingVisual,
     },
   }
 end

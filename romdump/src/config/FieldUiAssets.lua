@@ -89,6 +89,20 @@ return {
     -- decoded banks.
     iconAnim = 0,
     iconSelectedPalette = 1,
+    -- While an incoming call rings, the Pokegear icon renders through the
+    -- shared ringing animation instead of the stable frame (overlay 27
+    -- caller notification; zero-based into the same animation bank).
+    iconRingingAnim = 5,
+    -- The caller-name window on the information screen: source background 5
+    -- at tile left 11, top 19, height 2 tiles, with the width capped at 9
+    -- tiles (overlay 27 caller notification geometry).
+    phoneNotification = {
+      subBg = 5,
+      tileLeft = 11,
+      top = 19,
+      height = 2,
+      maxWidthTiles = 9,
+    },
     cursorCharMember = 64,
     cursorPaletteMember = 61,
     cursorCellMember = 62,

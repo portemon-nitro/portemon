@@ -383,7 +383,18 @@ local function fixture(opts)
   end
   startMenuMembers[15] = lz10Wrap(palette16())
   startMenuMembers[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
-  startMenuMembers[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
+  -- The shared icon animation bank carries the stable opening animation
+  -- plus the incoming-call ringing animation at index 5; the middle
+  -- entries are minimal single-frame animations the icon path never
+  -- selects.
+  startMenuMembers[18] = lz10Wrap(animBank({
+    { { duration = 3, cell = 0 }, { duration = 3, cell = 0 } },
+    0,
+    0,
+    0,
+    0,
+    { { duration = 3, cell = 0 }, { duration = 3, cell = 0 } },
+  }))
   startMenuMembers[8] = lz10Wrap(subPaletteData())
   startMenuMembers[9] = lz10Wrap(charData(192))
   -- The Running Shoes toggle's own cell/anim/char triple (members 68..70):
@@ -807,7 +818,14 @@ local function withIconBank(members)
   -- selection while the selection bank proves the selected-state render.
   members[15] = lz10Wrap(paletteData(distinctSignpostPalette(4)))
   members[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
-  members[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
+  members[18] = lz10Wrap(animBank({
+    { { duration = 3, cell = 0 }, { duration = 3, cell = 0 } },
+    0,
+    0,
+    0,
+    0,
+    { { duration = 3, cell = 0 }, { duration = 3, cell = 0 } },
+  }))
   return members
 end
 

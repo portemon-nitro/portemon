@@ -73,6 +73,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field initController table<string, unknown>|nil
 ---@field enterMapActors fun()?
 ---@field autoAcknowledgePresentation boolean?
+---@field incomingCalls { onOpportunity: fun(self: table<string, unknown>, args: table<string, unknown>) }? ambient incoming-call collaborator; absent sessions offer no phone opportunity
 
 ---@class FieldSession.Interactions
 ---@field resolve fun(self: FieldSession.Interactions, snapshot: InteractionResolverSnapshot): InteractionIntent?
@@ -119,6 +120,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field mapEntryController FieldMapEntryController
 ---@field private fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
 ---@field private overworld table<string, unknown>|nil
+---@field incomingCalls { onOpportunity: fun(self: table<string, unknown>, args: table<string, unknown>) }? ambient incoming-call collaborator; absent sessions offer no phone opportunity
 ---@field childResumePending boolean
 ---@field battleActive boolean whether an application battle owns player input
 ---@field foregroundHold boolean whether a presented battle holds field gameplay advancement
@@ -368,6 +370,12 @@ function FieldSession.new(options)
       "field session audio field-policy update and effect playback required"
     )
   end
+  if options.incomingCalls ~= nil then
+    assert(
+      type(options.incomingCalls) == "table" and type(options.incomingCalls.onOpportunity) == "function",
+      "field session incoming-call collaborator needs its opportunity input"
+    )
+  end
   local session = setmetatable({
     versionId = options.versionId,
     currentMap = options.currentMap,
@@ -415,6 +423,7 @@ function FieldSession.new(options)
     navigationBoundary = options.navigationBoundary,
     fieldMoves = options.fieldMoves,
     overworld = options.overworld,
+    incomingCalls = options.incomingCalls,
     tick = 0,
     accumulator = 0,
     _boundaryMovementDirection = nil,
@@ -557,6 +566,64 @@ end
 -- narrower application/menu-lane concern.
 local function isPlayerInputOwned(scheduler)
   return playerInputOwned(scheduler)
+end
+
+-- Whether a higher-priority field owner holds the tick against an ambient
+-- incoming call: battles, held presentation, transitions, modals, script
+-- input ownership, foreground scripts, and script-owned choice surfaces.
+-- A script running its own phone child holds input here too, so its
+-- authorized task path stays out of the ambient gate by construction.
+---@param self FieldSession
+---@return boolean
+local function phoneClaimed(self)
+  if self.battleActive or self.foregroundHold then
+    return true
+  end
+  if self.transition.phase ~= FieldTransition.PHASES.idle then
+    return true
+  end
+  if self.dialogue:isModal() or self.signpost:isModal() then
+    return true
+  end
+  if self.menuHost:isModal() or self.contextChoice:isActive() then
+    return true
+  end
+  if self.applicationHost:isActive() then
+    return true
+  end
+  local function hostModal(host)
+    return host ~= nil and type(host.isActive) == "function" and host:isActive()
+  end
+  if hostModal(self.yesNoHost) or hostModal(self.starterChoice) or hostModal(self.partySelection) then
+    return true
+  end
+  if hostModal(self.martHost) or hostModal(self.pokemonNaming) or hostModal(self.pcApplications) then
+    return true
+  end
+  if isPlayerInputOwned(self.scriptScheduler) or isForegroundActive(self.scriptScheduler) then
+    return true
+  end
+  return false
+end
+
+-- Offers one phone opportunity to the ambient incoming-call collaborator:
+-- a claimed tick clears only transient ring state, a settled tick
+-- evaluates. Mid-step ticks offer nothing so the banner never interrupts
+-- motion. Absent collaborators cost nothing.
+---@param self FieldSession
+---@param claimed boolean
+local function offerPhoneOpportunity(self, claimed)
+  local collaborator = self.incomingCalls
+  if collaborator == nil then
+    return
+  end
+  local currentMap = self.currentMap
+  collaborator:onOpportunity({
+    mapKey = currentMap.mapSymbol or currentMap.mapId,
+    mapId = currentMap.mapId,
+    movementState = "none",
+    higherPriorityClaimed = claimed,
+  })
 end
 
 -- The idle-boundary gate for the Start Menu open edge: the menu may open
@@ -1184,6 +1251,9 @@ function FieldSession:updateFixed(inputSnapshot)
   end
 
   if inputSuppressedThisTick then
+    -- A held tick belongs to its higher-priority owner: an ambient ring
+    -- quiets here while its pending trigger survives for a settled tick.
+    offerPhoneOpportunity(self, true)
     if self.player.motion == "idle" and type(self.player.collapseRenderInterpolation) == "function" then
       self.player:collapseRenderInterpolation()
     end
@@ -1462,6 +1532,13 @@ function FieldSession:updateFixed(inputSnapshot)
     self.playerVisual:updateFixed(ordinaryLocomotionAtTickStart, ordinaryStepSpeedAtTickStart)
   end
   self.camera:updateFixed(cameraTargetInto(self))
+  -- The ambient phone opportunity lives at this settled boundary, after
+  -- every higher-priority owner declined the tick by falling through.
+  -- A claimed tick clears only transient ring state; a settled idle tick
+  -- evaluates. Ticks that moved the player offer nothing.
+  if self.incomingCalls ~= nil and self.player.motion == "idle" then
+    offerPhoneOpportunity(self, phoneClaimed(self))
+  end
   self:_advanceTick()
 end
 

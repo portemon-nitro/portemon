@@ -1053,6 +1053,55 @@ local function applySetPreference(data, name, value)
   end
 end
 
+---@param history unknown
+---@return table<string, boolean> the canonical caller set
+local function checkCallHistory(history)
+  if type(history) ~= "table" then
+    fail("pokegear call history must be a caller set", {})
+  end
+  assert(type(history) == "table", "history writes read the caller set")
+  local clean = {}
+  for contactKey, value in pairs(history) do
+    if type(contactKey) ~= "string" or contactKey == "" or value ~= true then
+      fail("pokegear call history carries only called contact keys", { key = contactKey })
+    end
+    clean[contactKey] = true
+  end
+  return clean
+end
+
+---@param data table<string, unknown>
+---@param history unknown
+---@return boolean changed
+local function applySetCallHistory(data, history)
+  local clean = checkCallHistory(history)
+  assert(type(data) == "table" and type(data.phone) == "table", "history writes read phone state")
+  local phone = data.phone
+  assert(type(phone) == "table" and type(phone.history) == "table", "history writes edit the call journal")
+  local current = phone.history
+  assert(type(current) == "table", "history writes compare the call journal")
+  local same = true
+  for contactKey in pairs(clean) do
+    if current[contactKey] ~= true then
+      same = false
+      break
+    end
+  end
+  if same then
+    for contactKey in pairs(current) do
+      if clean[contactKey] ~= true then
+        same = false
+        break
+      end
+    end
+  end
+  if same then
+    return false
+  end
+  phone.history = clean
+  return true
+end
+
 ---@param data table<string, unknown>
 ---@param savings unknown
 ---@return boolean changed
@@ -1324,6 +1373,16 @@ end
 ---@return table<string, unknown>
 function PokegearState:setTrigger(key, active)
   return self:_commit(applySetTrigger(self._data, key, active))
+end
+
+-- Replaces the called-contact journal with a validated set. Recording an
+-- already-listed caller, or clearing an already-empty journal, never moves
+-- the revision. The incoming-call owner records ordinary callers here at
+-- acceptance and drops pool-covering entries before filtering.
+---@param history table<string, boolean>
+---@return table<string, unknown>
+function PokegearState:setCallHistory(history)
+  return self:_commit(applySetCallHistory(self._data, history))
 end
 
 -- Stages a pending item reward for a registered contact, retaining item

@@ -88,6 +88,7 @@ FieldUiAssetCache.ASSET = {
   START_MENU_CURSOR = "hgss.start_menu.cursor",
   START_MENU_ICONS = "hgss.start_menu.icons",
   START_MENU_ICON_PALETTE = "hgss.start_menu.icon_palette",
+  START_MENU_RINGING = "hgss.start_menu.ringing",
   START_MENU_POKE_ICONS = "hgss.start_menu.poke_icons",
   START_MENU_CHROME_SUB = "hgss.start_menu.chrome_sub",
   TRAINER_CARD_FRONT = "hgss.trainer_card.front",

@@ -257,6 +257,48 @@ local function distinctSignpostPalette(numTypes)
   return colors
 end
 
+-- A multi-animation bank mirroring the source animation table: each entry
+-- is either a cell index or a list of frames. The shared icon bank
+-- carries the stable opening animation plus the incoming-call ringing
+-- animation at index 5.
+local function animBank(animCells)
+  local count = #animCells
+  local totalFrames = 0
+  for _, frames in ipairs(animCells) do
+    totalFrames = totalFrames + (type(frames) == "table" and #frames or 1)
+  end
+  local anims, frames, data = {}, {}, {}
+  local frameCursor = 0
+  local dataCursor = 0
+  for _, sourceFrames in ipairs(animCells) do
+    local animationFrames = type(sourceFrames) == "table" and sourceFrames or { { cell = sourceFrames, duration = 3 } }
+    anims[#anims + 1] = u32(#animationFrames) .. u16(0) .. u16(1) .. u32(1) .. u32(frameCursor * 8)
+    for _, frame in ipairs(animationFrames) do
+      frames[#frames + 1] = u32(dataCursor * 2) .. u16(frame.duration) .. u16(0)
+      data[#data + 1] = u16(frame.cell)
+      frameCursor = frameCursor + 1
+      dataCursor = dataCursor + 1
+    end
+  end
+  local animsOffset = 0x18
+  local framesOffset = animsOffset + 16 * count
+  local dataOffset = framesOffset + 8 * totalFrames
+  return container("RNAN", {
+    block(
+      "ABNK",
+      u16(count)
+        .. u16(totalFrames)
+        .. u32(animsOffset)
+        .. u32(framesOffset)
+        .. u32(dataOffset)
+        .. string.rep("\0", 8)
+        .. table.concat(anims)
+        .. table.concat(frames)
+        .. table.concat(data)
+    ),
+  })
+end
+
 local function fixture(opts)
   opts = opts or {}
   local startMenuMembers = {}
@@ -272,7 +314,14 @@ local function fixture(opts)
   end
   startMenuMembers[15] = lz10Wrap(palette16())
   startMenuMembers[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
-  startMenuMembers[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
+  startMenuMembers[18] = lz10Wrap(animBank({
+    { { duration = 3, cell = 0 }, { duration = 3, cell = 0 } },
+    0,
+    0,
+    0,
+    0,
+    { { duration = 3, cell = 0 }, { duration = 3, cell = 0 } },
+  }))
   startMenuMembers[8] = lz10Wrap(subPaletteData())
   startMenuMembers[9] = lz10Wrap(charData(192))
   -- The Running Shoes toggle's own cell/anim/char triple (members 68..70).

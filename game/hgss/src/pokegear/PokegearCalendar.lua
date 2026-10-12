@@ -70,9 +70,6 @@ local function civilFromSerial(serial)
     month = monthPrime - 9
     year = year + 1
   end
-  if month <= 2 then
-    year = year + 1
-  end
   return { year = year, month = month, day = day }
 end
 

@@ -320,6 +320,10 @@ DerivedAssetContract.fieldEmotes = {
   schema = "g4-field-emote-v2",
 }
 
+-- fieldUi schema 21: the Start Menu section carries the incoming-call
+-- notification projection (the source caller-window tile geometry plus the
+-- shared ringing animation frames), so a stale pre-change cache without
+-- that section must fail readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
   schema = "g4-field-ui-v21",
