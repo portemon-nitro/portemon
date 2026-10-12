@@ -341,6 +341,10 @@ function CatalogFixture.buildAssetRoot()
       BULLET_SEED = moveEntry(331, "Bullet Seed", "Shoots seeds.", "physical", 10, "grass", 100, 30),
       CUT = moveEntry(15, "Cut", "Cuts the foe.", "physical", 50, "normal", 95, 30),
       TOXIC = moveEntry(92, "Toxic", "Badly poisons the foe.", "status", 0, "poison", 85, 10),
+      -- The exhausted fallback every battle runtime may project: source
+      -- native identity 165 with its ordinary single-foe bracket, so
+      -- synthetic sessions can seal and execute it like catalog moves.
+      STRUGGLE = moveEntry(165, "Struggle", "Struggles with no PP left.", "physical", 50, "normal", 100, 1),
     },
     abilities = {
       OVERGROW = abilityEntry(65, "Overgrow"),

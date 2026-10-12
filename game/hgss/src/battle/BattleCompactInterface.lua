@@ -202,19 +202,9 @@ local function targetRows(view)
     end
     return dockRows(rows)
   end
-  local rows = {}
-  if type(view.battlers) == "table" then
-    for _, battler in ipairs(view.battlers) do
-      if type(battler) == "table" and battler.side ~= 1 and battler.visible ~= false and #rows < 2 then
-        rows[#rows + 1] = {
-          id = "target:" .. tostring(#rows),
-          name = battler.name,
-          level = battler.level,
-        }
-      end
-    end
-  end
-  return dockRows(rows)
+  -- Without admitted candidates the dock offers only Back: rows never
+  -- infer targets from the party layout.
+  return dockRows({})
 end
 
 ---@param mode string controller mode under resolution

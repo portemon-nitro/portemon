@@ -285,7 +285,7 @@ function BattleScreenState:_snapshot()
         position = candidate.position,
         enabled = candidate.enabled == true,
         reason = candidate.reason,
-        name = (type(known) == "table" and type(known.name) == "string") and known.name or "Foe",
+        name = (type(known) == "table" and type(known.name) == "string") and known.name or "Target",
         level = type(known) == "table" and known.level or nil,
       }
     end
@@ -1087,9 +1087,78 @@ function BattleScreenState:_openVoluntaryChild(kind, purpose)
   self._notice = nil
 end
 
+---@return table<string, unknown>? enabled native struggle option when it is the only usable move, nil otherwise
+function BattleScreenState:_struggleOnlyOption()
+  local entry = self:_actorOptions()
+  if type(entry) ~= "table" or type(entry.choices) ~= "table" then
+    return nil
+  end
+  local struggle = nil
+  for _, choice in ipairs(entry.choices) do
+    if type(choice) == "table" and choice.role == "move" and type(choice.id) == "string" then
+      if choice.id == "move:struggle" then
+        if choice.enabled == true then
+          struggle = choice
+        end
+      elseif choice.enabled == true then
+        return nil
+      end
+    end
+  end
+  return struggle
+end
+
+---@return boolean usable true while some move choice stays enabled
+---@return string? reason first kernel refusal in slot order with struggle last, nil while usable or reasonless
+function BattleScreenState:_usableMove()
+  local entry = self:_actorOptions()
+  local reasons = {} ---@type table<integer, string>
+  local struggleReason = nil
+  local usable = false
+  if type(entry) == "table" and type(entry.choices) == "table" then
+    for _, choice in ipairs(entry.choices) do
+      if type(choice) == "table" and choice.role == "move" and type(choice.id) == "string" then
+        if choice.enabled == true then
+          usable = true
+        else
+          local reason = (type(choice.reason) == "string" and choice.reason ~= "") and choice.reason or nil
+          local slot = tonumber((choice.id --[[@as string]]):match("^move:(%d+)$") or "")
+          if slot ~= nil then
+            if reason ~= nil and reasons[slot] == nil then
+              reasons[slot] = reason
+            end
+          elseif choice.id == "move:struggle" and reason ~= nil and struggleReason == nil then
+            struggleReason = reason
+          end
+        end
+      end
+    end
+  end
+  local firstReason = struggleReason
+  for slot = 0, 3 do
+    if reasons[slot] ~= nil then
+      firstReason = reasons[slot]
+      break
+    end
+  end
+  return usable, firstReason
+end
+
 ---@param id string command identity under activation
 function BattleScreenState:_activateCommand(id)
   if id == "fight" then
+    local struggle = self:_struggleOnlyOption()
+    if struggle ~= nil then
+      self:_submitMove(struggle)
+      return
+    end
+    -- With no usable move Fight refuses with the kernel reason
+    -- instead of opening a dead move list.
+    local usable, reason = self:_usableMove()
+    if not usable then
+      self:_refuse(reason)
+      return
+    end
     self._mode = "moves"
     self._selection = self:_defaultMoveSelection()
     self._notice = nil
@@ -1176,10 +1245,16 @@ function BattleScreenState:_activateTarget(id, armed)
   local _ = armed
   if id == "cancel" then
     self._targetCandidates = nil
-    self._mode = "moves"
-    if self._pendingMoveId ~= nil then
-      self._selection = self._pendingMoveId
+    if self._pendingMoveId == "move:struggle" then
       self._pendingMoveId = nil
+      self._mode = "command"
+      self._selection = "fight"
+    else
+      self._mode = "moves"
+      if self._pendingMoveId ~= nil then
+        self._selection = self._pendingMoveId
+        self._pendingMoveId = nil
+      end
     end
     self._notice = nil
     self:cancelPointerCapture()
@@ -1360,12 +1435,13 @@ function BattleScreenState:_consume(event)
             self._selection = id
           end
         end
-      elseif event.control.scope == "target" then
-        local id = event.control.id --[[@as string]]
-        if id == "cancel" or self:_targetVariant(id) ~= nil then
-          self._selection = id
-        end
       end
+      -- Target presses arm through the shared capture above without
+      -- moving selection: the matched release seals the pressed
+      -- candidate (or Back) directly, so pointer taps settle the
+      -- identical fragment as keyboard confirm on every layout.
+      -- Keyboard focus still moves through navigate; command and move
+      -- presses keep their focus bookkeeping above.
     elseif self._mode == "narration" or self._mode == "outcome" then
       -- A dialogue tap arms exactly like a command press so the matched
       -- release can acknowledge the shown page; an unmatched press never

@@ -154,6 +154,11 @@ local function snapshot(mode, overrides)
     view.selection = "move:0"
   elseif mode == "target" then
     view.selection = "target:0"
+    -- The reachable target dock always carries its admitted
+    -- candidates: rows never infer targets from the party layout.
+    view.targetCandidates = {
+      { id = "target:0", position = 1, combatant = 3, enabled = true, name = "FOE", level = 20 },
+    }
   end
   if overrides ~= nil then
     for key, value in pairs(overrides) do

@@ -619,8 +619,9 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
   rig.pump(2)
   Assert.equal(#rig.submits, 1, "edges and stale taps while waiting seal nothing more")
 
-  -- A disabled slot keeps its reason: with no usable PP the slots stay
-  -- listed but refused, and confirming refuses without spending the turn.
+  -- A spent move set seals through Fight alone: with no usable PP the
+  -- kernel projects its struggle option, so tapping Fight completes
+  -- the turn with the projected struggle instead of opening moves.
   local spentModules = modules
   local spent = openWildRig(
     spentModules,
@@ -630,22 +631,54 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
     foeRecord("EEVEE", 20, 0x5EED0009)
   )
   driveToMode(spent, "command", 600)
-  local spentRequest = assert(spent.screen:status().request, "the spent battle mirrors its open request").requestId
+  local spentStatus = assert(spent.screen:status().request, "the spent battle mirrors its open request")
+  local spentOptions, spentOptionsErr = spent.battle:decisionOptions(spentStatus.requestId)
+  Assert.notNil(spentOptions, "the runtime projects options for the spent request: " .. tostring(spentOptionsErr))
+  local spentAddressed = assert(spentStatus.actors[1], "the spent request addresses its lead")
+  local spentStruggle = nil
+  for _, entry in ipairs(assert(spentOptions.actors, "the spent projection addresses its actors")) do
+    if
+      type(entry) == "table"
+      and entry.combatant == spentAddressed.combatant
+      and entry.activation == spentAddressed.activation
+    then
+      for _, choice in ipairs(entry.choices) do
+        if type(choice) == "table" and choice.role == "move" and type(choice.id) == "string" then
+          if choice.id == "move:struggle" then
+            spentStruggle = choice
+          else
+            Assert.isFalse(choice.enabled == true, "no ordinary move stays usable beside the struggle")
+          end
+        end
+      end
+    end
+  end
+  spentStruggle = assert(spentStruggle, "the kernel projects its struggle option")
+  Assert.isTrue(spentStruggle.enabled == true, "the projected struggle stays enabled")
+  local spentEnabled = {}
+  if type(spentStruggle.targets) == "table" then
+    for _, variant in ipairs(spentStruggle.targets) do
+      if type(variant) == "table" and variant.enabled == true then
+        spentEnabled[#spentEnabled + 1] = variant
+      end
+    end
+  end
+  Assert.isTrue(#spentEnabled <= 1, "the spent single holds at most one struggle recipient")
+  local spentExpected = spentStruggle.choice
+  if #spentEnabled == 1 then
+    spentExpected = spentEnabled[1].choice
+  end
   tap(spent, 128, 83 + 192)
   spent.pump(1)
-  Assert.equal(spent.screen:status().mode, "moves", "Fight still opens with no usable PP")
-  local spentMoves = assert(spent.screen:view().moves, "the spent slots stay listed")
-  Assert.isFalse(spentMoves[1].enabled, "the spent slot is not selectable")
-  Assert.isTrue(
-    type(spentMoves[1].reason) == "string" and spentMoves[1].reason ~= "",
-    "the spent slot keeps its supplied refusal reason"
+  Assert.equal(
+    spent.screen:status().mode,
+    "awaiting_resolution",
+    "Fight seals the projected struggle without opening moves"
   )
-  tap(spent, 64, 45 + 192)
-  spent.screen:input({ { type = "confirm" } })
-  spent.pump(2)
-  Assert.equal(spent.screen:status().mode, "moves", "confirming a disabled slot stays on the same decision")
-  Assert.equal(#spent.submits, 0, "a refused slot spends no turn")
-  Assert.equal(spent.screen:status().request.requestId, spentRequest, "a refused slot keeps the same request open")
+  Assert.equal(#spent.submits, 1, "the spent turn submits exactly one reply")
+  local spentSealed = assert(spent.submits[1], "the spent reply is recorded")
+  Assert.deepEqual(spentSealed.choices[1], spentExpected, "the sealed fragment keeps the projected struggle")
+  Assert.isNil(spent.screen:status().request, "the answered request is no longer mirrored as open")
 
   -- A refused run stays put: in a trainer battle the run command is
   -- listed but disabled, and confirming it never spends the turn.

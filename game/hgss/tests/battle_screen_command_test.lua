@@ -87,6 +87,19 @@ local function dualMeasurement()
   }
 end
 
+---@return table caller-owned single-surface display facts for compact layout checks
+local function compactMeasurement()
+  return {
+    width = 256,
+    height = 192,
+    topology = ScreenTopology.oneDisplay(
+      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = true, role = "world" }
+    ),
+    pixelRatio = 1,
+    signature = "battle-screen-command-test:compact",
+  }
+end
+
 ---@return table recording text boundary with drawn content
 local function recordingText()
   local text = { draws = {} }
@@ -107,7 +120,7 @@ local function openRig(opts)
   local BattleScreenState = require(STATE_MODULE)
   local Model = require(MODEL_MODULE)
   local holder = {}
-  local rig = { submits = {}, measurement = dualMeasurement(), text = recordingText() }
+  local rig = { submits = {}, measurement = opts.measurement or dualMeasurement(), text = recordingText() }
   rig.windows = { calls = {} }
   function rig.windows.drawWindow(box, frameKey, background)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
@@ -203,6 +216,52 @@ local function driveToMode(rig, mode)
   error("the battle screen never reached " .. mode, 0)
 end
 
+---@param rig table live screen rig under test driving
+---@param request table open request under projection
+---@return table the enabled kernel struggle option for the acting lead
+local function struggleOptionFor(rig, request)
+  local options, optionsErr = rig.battle:decisionOptions(request.requestId)
+  Assert.notNil(options, "the runtime projects options for the open request: " .. tostring(optionsErr))
+  local addressed = assert(request.actors[1], "the open request addresses its lead")
+  local entries = assert(options.actors, "the projection addresses its actors")
+  for _, entry in ipairs(entries) do
+    if type(entry) == "table" and entry.combatant == addressed.combatant and entry.activation == addressed.activation then
+      local struggle = nil
+      for _, choice in ipairs(entry.choices) do
+        if type(choice) == "table" and choice.role == "move" and type(choice.id) == "string" then
+          if choice.id == "move:struggle" then
+            struggle = choice
+          else
+            Assert.isFalse(choice.enabled == true, "no ordinary move stays usable beside the struggle")
+          end
+        end
+      end
+      Assert.notNil(struggle, "the kernel projects its struggle option")
+      Assert.isTrue(struggle.enabled == true, "the projected struggle stays enabled")
+      return struggle --[[@as table<string, unknown>]]
+    end
+  end
+  error("the open request has no projected actor entry", 0)
+end
+
+---@param struggle table enabled kernel struggle option under projection
+---@return table the exact native fragment a direct struggle seals without a picker
+local function expectedDirectFragment(struggle)
+  local enabled = {}
+  if type(struggle.targets) == "table" then
+    for _, variant in ipairs(struggle.targets) do
+      if type(variant) == "table" and variant.enabled == true then
+        enabled[#enabled + 1] = variant
+      end
+    end
+  end
+  Assert.isTrue(#enabled <= 1, "the spent single holds at most one struggle recipient")
+  if #enabled == 1 then
+    return enabled[1].choice
+  end
+  return struggle.choice
+end
+
 -- Command walking stays on one request: Fight opens moves, cancel
 -- returns, reentrant confirms seal exactly one reply, and stale edges in
 -- waiting seal nothing.
@@ -264,23 +323,20 @@ end
 function T.spent_slots_refuse_with_their_reason()
   local rig = openRig({ leadPp = 0, launchId = "launch-screen-spent-local" })
   driveToMode(rig, "command")
+  local request = assert(rig.screen:status().request, "the prompt mirrors its request")
+  local struggle = struggleOptionFor(rig, request)
+  local expected = expectedDirectFragment(struggle)
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "moves", "Fight still opens with no usable power")
-  local moves = assert(rig.screen:view().moves, "the spent slots stay listed")
-  Assert.isFalse(moves[1].enabled, "the spent slot is not selectable")
-  Assert.isTrue(type(moves[1].reason) == "string" and moves[1].reason ~= "", "the spent slot keeps its reason")
-  local struggle = nil
-  for _, move in ipairs(moves) do
-    if move.slot == 4 then
-      struggle = move
-    end
-  end
-  Assert.notNil(struggle, "the kernel struggle entry stays reachable")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "moves", "confirming the spent slot stays on the decision")
-  Assert.equal(#rig.submits, 0, "the refused slot spends no turn")
+  Assert.equal(
+    rig.screen:status().mode,
+    "awaiting_resolution",
+    "Fight completes the spent turn through the projected struggle"
+  )
+  Assert.equal(#rig.submits, 1, "the completed turn submits exactly one reply")
+  local sealed = assert(rig.submits[1], "the spent reply is recorded")
+  Assert.deepEqual(sealed.choices[1], expected, "the sealed fragment keeps the projected struggle")
+  Assert.isNil(rig.screen:status().request, "the answered request is no longer mirrored as open")
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -390,13 +446,17 @@ function openSealingScreen(launchId, specs, requestId)
     }
     BattleProtocol.validateTarget(spec.target)
     BattleProtocol.validateChoice(choice, "action")
-    offered[#offered + 1] = {
+    local offeredChoice = {
       id = spec.id,
       role = "move",
       display = { move = spec.move, name = spec.name, pp = spec.pp, maxPp = spec.maxPp },
-      enabled = true,
+      enabled = spec.enabled ~= false,
       choice = choice,
-    }
+    } --[[@as table<string, unknown>]]
+    if spec.reason ~= nil then
+      offeredChoice.reason = spec.reason
+    end
+    offered[#offered + 1] = offeredChoice
     rig.expectedById[spec.id] = choice
   end
   local actors = {
@@ -476,6 +536,37 @@ function openSealingScreen(launchId, specs, requestId)
   end
   error("the sealing screen never reached its command decision", 0)
   return rig
+end
+
+-- A Fight with no usable move refuses with the kernel reason instead
+-- of opening a dead move list: the decision stays open, nothing
+-- seals, and repeating Fight still seals nothing.
+function T.fight_with_no_usable_move_refuses_without_spending()
+  local rig = openSealingScreen("launch-screen-spent-fight-local", {
+    { id = "move:0", slot = 0, move = "TACKLE", name = "Tackle", pp = 0, maxPp = 35, enabled = false, reason = "no_pp", target = { kind = "position", position = 2 } },
+    { id = "move:1", slot = 1, move = "GROWL", name = "Growl", pp = 0, maxPp = 40, enabled = false, reason = "no_pp", target = { kind = "position", position = 2 } },
+  }, 9021)
+  local request = assert(rig.screen:status().request, "the prompt mirrors its request")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "command", "Fight with no usable move stays on the command decision")
+  Assert.equal(#rig.submits, 0, "the refusal spends no turn")
+  Assert.equal(
+    rig.screen:status().request.requestId,
+    request.requestId,
+    "the refusal keeps the same request open"
+  )
+  Assert.equal(rig.screen:view().message, "no_pp", "the refusal repeats the kernel reason")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "command", "a repeated Fight still stays on the command decision")
+  Assert.equal(#rig.submits, 0, "a repeated Fight still seals nothing")
+  Assert.equal(
+    rig.screen:status().request.requestId,
+    request.requestId,
+    "a repeated Fight keeps the same request open"
+  )
+  rig.screen:dispose()
 end
 
 -- Complete projected intents seal unchanged: side-wide and field-wide
@@ -1587,6 +1678,70 @@ function T.launches_keep_their_own_narration_pace_and_edges()
   slow.screen:dispose()
   quickest.screen:dispose()
   plain.screen:dispose()
+end
+
+-- An all-power-spent lead finishes its turn through Fight alone: the
+-- projected struggle seals directly on both layouts through key and
+-- pointer edges, the round advances, and no fifth cell is ever
+-- addressed along the way.
+function T.exhausted_lead_finishes_through_fight_without_a_fifth_cell()
+  local layouts = {
+    { name = "dual", makeMeasurement = dualMeasurement, fight = { x = 128, y = 276 } },
+    { name = "compact", makeMeasurement = compactMeasurement, fight = { x = 152, y = 154 } },
+  }
+  for _, layout in ipairs(layouts) do
+    local keyRig = openRig({
+      leadPp = 0,
+      launchId = "launch-exhausted-key-" .. layout.name,
+      measurement = layout.makeMeasurement(),
+    })
+    driveToMode(keyRig, "command")
+    local request = assert(keyRig.screen:status().request, "the prompt mirrors its request (" .. layout.name .. ")")
+    local expected = expectedDirectFragment(struggleOptionFor(keyRig, request))
+    keyRig.screen:input({ { type = "confirm" } })
+    keyRig.pump(1)
+    Assert.equal(
+      keyRig.screen:status().mode,
+      "awaiting_resolution",
+      "confirming Fight seals the struggle without opening moves (" .. layout.name .. ")"
+    )
+    Assert.equal(#keyRig.submits, 1, "the struggle seals exactly one reply (" .. layout.name .. ")")
+    local sealed = assert(keyRig.submits[1], "the struggle reply is recorded (" .. layout.name .. ")")
+    Assert.deepEqual(sealed.choices[1], expected, "the sealed fragment keeps the projected struggle (" .. layout.name .. ")")
+    Assert.isNil(keyRig.screen:status().request, "the answered request is no longer mirrored as open (" .. layout.name .. ")")
+    keyRig.screen:dispose()
+    keyRig.battle:dispose()
+    local touchRig = openRig({
+      leadPp = 0,
+      launchId = "launch-exhausted-touch-" .. layout.name,
+      measurement = layout.makeMeasurement(),
+    })
+    driveToMode(touchRig, "command")
+    local touchRequest =
+      assert(touchRig.screen:status().request, "the touch prompt mirrors its request (" .. layout.name .. ")")
+    local touchExpected = expectedDirectFragment(struggleOptionFor(touchRig, touchRequest))
+    touchRig.screen:input({
+      { type = "pointer_down", pointerId = "touch:fight", x = layout.fight.x, y = layout.fight.y },
+    })
+    touchRig.screen:input({
+      { type = "pointer_up", pointerId = "touch:fight", x = layout.fight.x, y = layout.fight.y },
+    })
+    touchRig.pump(1)
+    Assert.equal(
+      touchRig.screen:status().mode,
+      "awaiting_resolution",
+      "tapping Fight seals the struggle without opening moves (" .. layout.name .. ")"
+    )
+    Assert.equal(#touchRig.submits, 1, "the tapped struggle seals exactly one reply (" .. layout.name .. ")")
+    local touchSealed = assert(touchRig.submits[1], "the tapped reply is recorded (" .. layout.name .. ")")
+    Assert.deepEqual(
+      touchSealed.choices[1],
+      touchExpected,
+      "the tapped fragment keeps the projected struggle (" .. layout.name .. ")"
+    )
+    touchRig.screen:dispose()
+    touchRig.battle:dispose()
+  end
 end
 
 return { tests = T }

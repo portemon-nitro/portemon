@@ -73,6 +73,11 @@ local function snapshot(mode, overrides)
     view.selection = "move:0"
   elseif mode == "target" then
     view.selection = "target:0"
+    -- The reachable target dock always carries its admitted
+    -- candidates: rows never infer targets from the party layout.
+    view.targetCandidates = {
+      { id = "target:0", position = 1, combatant = 3, enabled = true, name = "FOE", level = 20 },
+    }
   end
   if overrides ~= nil then
     for key, value in pairs(overrides) do
@@ -197,6 +202,18 @@ function T.move_dock_grid_back_and_info()
     Assert.isTrue(region.x + region.width <= cellX + 88 - 1, "slot label regions never cross their cell edge")
     Assert.isTrue(region.y >= cellY and region.y + 16 <= cellY + 28, "slot label rows stay inside their cell")
   end
+end
+
+-- A target dock without admitted candidates offers only Back: rows
+-- never infer targets from the party layout.
+function T.target_dock_without_candidates_offers_only_back()
+  require(COMPACT_MODULE)
+  local candidateLess = snapshot("target")
+  candidateLess.targetCandidates = nil
+  local aimed = resolve(singleMeasurement(256, 192, "compact-plan-test:target-back"), candidateLess)
+  local aimContent = assert(aimed.content, "the target plan carries its content")
+  Assert.equal(#aimContent.targetRows, 1, "a candidate-less dock carries only its Back row")
+  Assert.equal(aimContent.targetRows[1].id, "cancel", "the lone row carries the shared cancel identity")
 end
 
 -- Target rows derive from the admitted rows with a Back row beneath, and
