@@ -632,7 +632,18 @@ function BoxCodec.decode(bytes, context)
     if hasNickname then
       projection.nickname = nicknameText
     end
-    NativeLegality.project(projection, context)
+
+    -- Boxed records omit party-owned health/status and presentation fields.
+    -- Admit the decoded semantic values with neutral values for those omitted
+    -- fields before applying native-only representability checks.
+    local validationRecord = {} --[[@as table<string, unknown>]]
+    for key, value in pairs(projection) do
+      validationRecord[key] = value
+    end
+    validationRecord.condition = { currentHp = 0, effects = {} }
+    validationRecord.capsule = { id = 0, seals = {} }
+    validationRecord.mail = {}
+    NativeLegality.project(Mon.validate(validationRecord, context), context)
     return projection
   end) --[[@as table<string, unknown>]]
 end

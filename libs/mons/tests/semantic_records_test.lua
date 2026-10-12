@@ -278,6 +278,68 @@ function T.unrepresentable_records_fail_with_structured_errors()
   Assert.equal(BoxCodec.decode(BoxCodec.encode(historical, context), context).met.level, 6)
 end
 
+function T.native_projection_reuses_semantic_derivations()
+  local catalog = CatalogFixture.makeCatalog()
+  local context = CatalogFixture.domainContext(catalog)
+  local Mon = require("libs.mons.src.Mon")
+  local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
+  local Stats = require("libs.mons.src.gen4.Stats")
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local record = factory:createNormal(CatalogFixture.normalRequest())
+
+  local originalCalculate = Stats.calculate
+  local calculations = 0
+  Stats.calculate = function(...)
+    calculations = calculations + 1
+    return originalCalculate(...)
+  end
+  local ok, result = pcall(function()
+    return NativeLegality.project(Mon.validate(record, context), context)
+  end)
+  Stats.calculate = originalCalculate
+
+  Assert.isTrue(ok, "a semantic record still projects to native form")
+  Assert.notNil(result)
+  Assert.equal(calculations, 1, "semantic validation owns the derived-stat walk")
+end
+
+function T.native_projection_retains_status_and_fallback_name_rejections()
+  local catalog = CatalogFixture.makeCatalog()
+  local context = CatalogFixture.domainContext(catalog)
+  local Mon = require("libs.mons.src.Mon")
+  local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local record = factory:createNormal(CatalogFixture.normalRequest())
+
+  local combinedStatus = copy(record)
+  combinedStatus.condition.effects = {
+    { key = "poison", version = 1, state = {} },
+    { key = "burn", version = 1, state = {} },
+  }
+  local canonicalStatus = Mon.validate(combinedStatus, context)
+  throwsCode("MON_LEGALITY_INVALID", function()
+    NativeLegality.project(canonicalStatus, context)
+  end)
+
+  local noCCharmap = copy(context.charmap)
+  noCCharmap.C = nil
+  local noFallbackGlyph = copy(record)
+  local canonicalWithoutFallbackGlyph = Mon.validate(noFallbackGlyph, {
+    catalog = catalog,
+    charmap = noCCharmap,
+    games = context.games,
+    languages = context.languages,
+  })
+  throwsCode("MON_RECORD_INVALID", function()
+    NativeLegality.project(canonicalWithoutFallbackGlyph, {
+      catalog = catalog,
+      charmap = noCCharmap,
+      games = context.games,
+      languages = context.languages,
+    })
+  end)
+end
+
 function T.numeric_boundaries_and_domain_relationships_hold_at_the_validation_boundary()
   local catalog = CatalogFixture.makeCatalog()
   local context = CatalogFixture.domainContext(catalog)

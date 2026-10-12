@@ -330,6 +330,35 @@ function T.wild_creation_assigns_held_items_from_the_species_entries()
   Assert.equal(plainStream:calls(), 6, "the held-item trace stays uniform")
 end
 
+function T.wild_held_item_is_admitted_with_the_final_record_once()
+  local catalogs = Fixture.berryCatalogs()
+  local factory = wildFactory(catalogs)
+  local Mon = require("libs.mons.src.Mon")
+  local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
+  local originalValidate = Mon.validate
+  local originalProject = NativeLegality.project
+  local validations = 0
+  local projections = 0
+  Mon.validate = function(...)
+    validations = validations + 1
+    return originalValidate(...)
+  end
+  NativeLegality.project = function(...)
+    projections = projections + 1
+    return originalProject(...)
+  end
+  local ok, mon = pcall(function()
+    return factory:create("EEVEE", 8, Fixture.spyStream(0), wildOptions())
+  end)
+  Mon.validate = originalValidate
+  NativeLegality.project = originalProject
+
+  Assert.isTrue(ok, "the wild mon remains valid with its selected held item")
+  Assert.equal(assert(mon).heldItem, "SITRUS_BERRY")
+  Assert.equal(validations, 1, "the final held-item record receives semantic admission once")
+  Assert.equal(projections, 1, "the final held-item record receives native projection once")
+end
+
 function T.lead_synchronize_coerces_nature_after_its_check_draw()
   local factory = standardFactory()
   local forced =

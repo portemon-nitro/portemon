@@ -7,6 +7,7 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Mon = require("libs.mons.src.Mon")
+local MonsErrors = require("libs.mons.src.errors")
 
 local T = {}
 
@@ -243,6 +244,34 @@ function T.boxed_origin_games_round_trip_every_representable_native_identity()
     Assert.equal(decoded.origin.game, game)
     Assert.equal(context.games[decoded.origin.game], nativeId)
   end
+end
+
+function T.decoded_records_are_semantically_admitted_inside_the_codec_boundary()
+  local catalog = CatalogFixture.makeCatalog()
+  local context = CatalogFixture.domainContext(catalog)
+  local BoxCodec = require("libs.mons.src.gen4.BoxCodec")
+  local originalValidate = Mon.validate
+  local validations = 0
+  Mon.validate = function(...)
+    validations = validations + 1
+    return originalValidate(...)
+  end
+  local ok, decoded = pcall(BoxCodec.decode, CatalogFixture.fromHex(FIRST_HEX), context)
+  Mon.validate = originalValidate
+
+  Assert.isTrue(ok, "a valid boxed mon decodes")
+  local decodedRecord = assert(decoded) --[[@as table<string, unknown>]]
+  Assert.equal(validations, 1, "decoded semantic fields cross admission exactly once")
+  Assert.isNil(decodedRecord.condition, "decode preserves the boxed projection shape")
+
+  Mon.validate = function()
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "semantic admission rejected decoded data", {})
+  end
+  local malformed, err = pcall(BoxCodec.decode, CatalogFixture.fromHex(FIRST_HEX), context)
+  Mon.validate = originalValidate
+  Assert.isFalse(malformed, "semantic rejection prevents decoded data from escaping")
+  Assert.isTrue(Errors.is(err), "semantic rejection remains structured at the byte boundary")
+  Assert.equal(assert(err).code, "MON_CODEC_INVALID", "decode reports malformed semantic content as a codec failure")
 end
 
 return { tests = T }

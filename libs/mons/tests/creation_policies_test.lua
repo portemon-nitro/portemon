@@ -106,8 +106,8 @@ function T.script_gift_applies_item_form_and_ability_after_creation()
   local encoded = BoxCodec.encode(mon, context)
   Assert.equal(#encoded, 136)
 
-  -- An ability the final form cannot represent fails without a mon.
-  throwsCode("MON_LEGALITY_INVALID", function()
+  -- An ability outside the final form fails at semantic record admission.
+  throwsCode("MON_RECORD_INVALID", function()
     factory:createScriptGift({
       species = "EEVEE",
       level = 5,
@@ -119,7 +119,7 @@ function T.script_gift_applies_item_form_and_ability_after_creation()
       ability = "OVERGROW",
     })
   end)
-  throwsCode("ITEM_RECORD_INVALID", function()
+  throwsCode("MON_RECORD_INVALID", function()
     factory:createScriptGift({
       species = "EEVEE",
       level = 5,

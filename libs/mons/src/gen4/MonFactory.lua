@@ -4,8 +4,8 @@
 -- src/trainer_memo.c (trainer memo assignment). Creation consumes exactly
 -- four generator draws in source order: two for the personality value (low
 -- draw first) and two for the six individual values. The factory never
--- inserts into a party; the caller owns publication. Every method returns a
--- validated, native-projectable record or fails.
+-- inserts into a party; the caller owns publication. Public creation methods
+-- return a validated, native-projectable record or fail.
 
 local Experience = require("libs.mons.src.gen4.Experience")
 local Mon = require("libs.mons.src.Mon")
@@ -76,9 +76,9 @@ function MonFactory:_finish(record)
   return canonical
 end
 
----@param request { species: string, level: integer, form: integer, profile: { name: string, gender: integer, trainerId: integer }, ball: string, location: integer, terrain: integer, date: { year: integer, month: integer, day: integer } }
+---@param request { species: string, level: integer, form: integer, profile: { name: string, gender: integer, trainerId: integer }, ball: string, location: integer, terrain: integer, date: { year: integer, month: integer, day: integer }, heldItem?: string }
 ---@return table<string, unknown>
-function MonFactory:createNormal(request)
+function MonFactory:_normalRecord(request)
   assert(type(request) == "table", "normal creation requires a request record")
   local species = self._catalog:species(request.species)
   local form = self._catalog:form(request.species, request.form)
@@ -125,6 +125,10 @@ function MonFactory:createNormal(request)
 
   local slot = Personality.abilitySlot(#form.abilities, personality)
   local ability = form.abilities[slot]
+  local heldItem = request.heldItem
+  if heldItem == nil then
+    heldItem = "NONE"
+  end
   local curve = self._catalog:growthCurve(species.growthCurve)
   local experience = Experience.expFor(curve, request.level)
   local nature = Personality.nature(personality)
@@ -143,7 +147,7 @@ function MonFactory:createNormal(request)
     experience = experience,
     friendship = species.baseFriendship,
     ability = ability,
-    heldItem = "NONE",
+    heldItem = heldItem,
     markings = 0,
     evs = evs,
     contest = { cool = 0, beauty = 0, cute = 0, smart = 0, tough = 0, sheen = 0 },
@@ -179,7 +183,13 @@ function MonFactory:createNormal(request)
     capsule = { id = 0, seals = {} },
     mail = {},
   }
-  return self:_finish(record)
+  return record
+end
+
+---@param request { species: string, level: integer, form: integer, profile: { name: string, gender: integer, trainerId: integer }, ball: string, location: integer, terrain: integer, date: { year: integer, month: integer, day: integer }, heldItem?: string }
+---@return table<string, unknown>
+function MonFactory:createNormal(request)
+  return self:_finish(self:_normalRecord(request))
 end
 
 ---@param request { species: string, profile: { name: string, gender: integer, trainerId: integer }, location: integer, date: unknown }
@@ -202,7 +212,7 @@ end
 ---@return table<string, unknown>
 function MonFactory:createScriptGift(request)
   assert(type(request) == "table", "script-gift creation requires a request record")
-  local mon = self:createNormal({
+  local mon = self:_normalRecord({
     species = request.species,
     level = request.level,
     form = 0,
@@ -212,13 +222,11 @@ function MonFactory:createScriptGift(request)
     terrain = 24,
     date = request.date,
   })
-  mon.heldItem = request.heldItem or "NONE"
+  mon.heldItem = request.heldItem == nil and "NONE" or request.heldItem
   mon.form = request.form or 0
   if request.ability ~= nil then
     mon.ability = request.ability
   end
-  local context = self:_context()
-  NativeLegality.project(mon, context)
   return self:_finish(mon)
 end
 

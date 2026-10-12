@@ -14,9 +14,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
-local Mon = require("libs.mons.src.Mon")
 local MonFactory = require("libs.mons.src.gen4.MonFactory")
-local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local Stats = require("libs.mons.src.gen4.Stats")
 local U32 = require("libs.codec.src.U32")
 
@@ -248,6 +246,7 @@ function WildMonFactory:_createWithLead(species, level, stream, options, leadNat
   end
   assert(type(options) == "table", "construction reads its capture record")
   local draws = drawIdentity(stream, leadNature)
+  local held = self:_heldItemOrRaise(speciesDef, draws)
   local inner = MonFactory.new({
     catalog = self._catalog,
     rng = stagedGenerator(draws),
@@ -266,13 +265,8 @@ function WildMonFactory:_createWithLead(species, level, stream, options, leadNat
     location = options.location,
     terrain = options.terrain,
     date = options.date,
+    heldItem = held,
   })
-  local held = self:_heldItemOrRaise(speciesDef, draws)
-  if held ~= "NONE" then
-    mon.heldItem = held
-    NativeLegality.project(mon, self:_context())
-    mon = Mon.validate(mon, self:_context())
-  end
   return mon
 end
 
