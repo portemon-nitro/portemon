@@ -423,4 +423,64 @@ function T.validated_copies_stay_independent_across_party_and_save_capture()
   Assert.deepEqual(Mon.validate(restored.party:get(0), context), second)
 end
 
+-- Box staging publishes atomically: nothing moves before publish, a stale
+-- revision is refused, a same-value preparation bumps no revision, and a
+-- preparation publishes exactly once.
+function T.box_preparation_publishes_atomically_with_stale_and_single_use_guard()
+  local Boxes = require("libs.mons.src.Boxes")
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0x00ABCDEF, catalog)
+  local boxes = Boxes.new(nil, { configuredCount = 2 })
+  local first = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", level = 5 }))
+  local seed = boxes:prepareChanges(boxes:revision(), {
+    updates = { { box = 0, slot = 0, mon = first } },
+  })
+  Assert.notNil(seed)
+  seed.publish()
+  local revision = boxes:revision()
+
+  local second = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE", level = 6 }))
+  local staged = boxes:prepareChanges(revision, {
+    updates = { { box = 0, slot = 1, mon = second } },
+    metadata = { { box = 1, name = "RESERVE", wallpaperId = 3 } },
+  })
+  Assert.notNil(staged)
+  Assert.isTrue(staged.changed)
+  Assert.isTrue(staged.isCurrent())
+  Assert.isNil(boxes:mon(0, 1), "live slots stay put until publish")
+  Assert.isNil(boxes:metadata(1).name)
+  Assert.equal(boxes:revision(), revision)
+  staged.publish()
+  Assert.deepEqual(boxes:mon(0, 1), second)
+  Assert.deepEqual(boxes:mon(0, 0), first)
+  Assert.equal(boxes:metadata(1).name, "RESERVE")
+  Assert.equal(boxes:metadata(1).wallpaperId, 3)
+  Assert.equal(boxes:revision(), revision + 1)
+  Assert.isFalse(staged.isCurrent(), "publication moves the revision past the preparation")
+  Assert.throws(function()
+    staged.publish()
+  end, "a repeated publish is a programming error")
+  Assert.equal(boxes:revision(), revision + 1, "a duplicate publish never increments twice")
+
+  local stale, reason = boxes:prepareChanges(revision, {
+    updates = { { box = 0, slot = 2, mon = second } },
+  })
+  Assert.isNil(stale)
+  Assert.equal(reason, "stale")
+  Assert.isNil(boxes:mon(0, 2))
+
+  local current = boxes:revision()
+  local same = assert(boxes:mon(0, 1))
+  local noop = boxes:prepareChanges(current, {
+    updates = { { box = 0, slot = 1, mon = same } },
+    metadata = { { box = 1, name = "RESERVE", wallpaperId = 3 } },
+  })
+  Assert.notNil(noop)
+  Assert.isFalse(noop.changed, "rewriting identical values changes nothing")
+  Assert.isTrue(noop.isCurrent())
+  noop.publish()
+  Assert.equal(boxes:revision(), current, "a no-op publishes no replacement")
+  Assert.deepEqual(boxes:mon(0, 1), same)
+end
+
 return { tests = T }

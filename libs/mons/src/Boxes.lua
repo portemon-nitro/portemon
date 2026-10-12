@@ -265,7 +265,29 @@ function Boxes:prepareChanges(expectedRevision, changes)
   if expectedRevision ~= self._revision then
     return nil, "stale"
   end
-  local candidate = self:capture()
+  -- Staged copy-on-write candidate: the boxes array is a shallow copy
+  -- referencing untouched live boxes, which stay immutable-by-contract
+  -- until cloned below on first write to that box.
+  local boxCount = #self._boxes
+  local candidateBoxes = {}
+  for index = 1, boxCount do
+    candidateBoxes[index] = self._boxes[index]
+  end
+  local candidateActive = self._activeBox
+  local candidateUnlocks = self._bonusUnlocks
+  local cloned = {}
+  local function stagedBox(box)
+    if not cloned[box] then
+      local live = self._boxes[box + 1]
+      local slots = {}
+      for slot = 1, Boxes.SLOTS_PER_BOX do
+        slots[slot] = live.slots[slot]
+      end
+      candidateBoxes[box + 1] = { name = live.name, wallpaperId = live.wallpaperId, slots = slots }
+      cloned[box] = true
+    end
+    return candidateBoxes[box + 1]
+  end
   local changed = false
   local written = {}
   local updates = changes.updates or {}
@@ -292,9 +314,9 @@ function Boxes:prepareChanges(expectedRevision, changes)
     if update.mon ~= false and type(update.mon) ~= "table" then
       fail("box update requires a mon or false")
     end
-    local value = update.mon == false and false or copy(update.mon)
-    if not deepEqual(candidate.boxes[box + 1].slots[slot + 1], value) then
-      candidate.boxes[box + 1].slots[slot + 1] = value
+    local wanted = update.mon == false and false or update.mon
+    if not deepEqual(candidateBoxes[box + 1].slots[slot + 1], wanted) then
+      stagedBox(box).slots[slot + 1] = update.mon == false and false or copy(update.mon)
       changed = true
     end
   end
@@ -322,18 +344,18 @@ function Boxes:prepareChanges(expectedRevision, changes)
       fail("box metadata is written twice", { box = box })
     end
     metadataSeen[box] = true
-    local target = candidate.boxes[box + 1]
+    local current = candidateBoxes[box + 1]
     if update.clearName then
-      if target.name ~= nil then
-        target.name = nil
+      if current.name ~= nil then
+        stagedBox(box).name = nil
         changed = true
       end
     elseif update.name ~= nil then
       if type(update.name) ~= "string" then
         fail("box name must be text", { box = box })
       end
-      if target.name ~= update.name then
-        target.name = update.name
+      if current.name ~= update.name then
+        stagedBox(box).name = update.name
         changed = true
       end
     end
@@ -342,16 +364,16 @@ function Boxes:prepareChanges(expectedRevision, changes)
       if not integer(wallpaper, 0) or not (wallpaper <= 15 or (wallpaper >= 32 and wallpaper <= 39)) then
         fail("box wallpaper is invalid", { box = box })
       end
-      if target.wallpaperId ~= wallpaper then
-        target.wallpaperId = wallpaper
+      if current.wallpaperId ~= wallpaper then
+        stagedBox(box).wallpaperId = wallpaper
         changed = true
       end
     end
   end
   if changes.activeBox ~= nil then
     boxAt(self, changes.activeBox)
-    if candidate.activeBox ~= changes.activeBox then
-      candidate.activeBox = changes.activeBox
+    if candidateActive ~= changes.activeBox then
+      candidateActive = changes.activeBox
       changed = true
     end
   end
@@ -370,22 +392,22 @@ function Boxes:prepareChanges(expectedRevision, changes)
         fail("bonus unlocks must contain eight booleans")
       end
     end
-    if not deepEqual(candidate.bonusUnlocks, unlocks) then
-      candidate.bonusUnlocks = copy(unlocks)
+    if not deepEqual(candidateUnlocks, unlocks) then
+      candidateUnlocks = copy(unlocks)
       changed = true
     end
   end
   local revision = self._revision + (changed and 1 or 0)
-  local owner, consumed = self, false
+  local consumed = false
   local function isCurrent()
-    return self._revision == expectedRevision and self == owner
+    return self._revision == expectedRevision
   end
   local function publish()
     assert(not consumed, "box preparation publishes exactly once")
     consumed = true
     if changed then
       self._boxes, self._activeBox, self._bonusUnlocks, self._revision =
-        candidate.boxes, candidate.activeBox, candidate.bonusUnlocks, revision
+        candidateBoxes, candidateActive, candidateUnlocks, revision
     end
   end
   return { changed = changed, isCurrent = isCurrent, publish = publish }
