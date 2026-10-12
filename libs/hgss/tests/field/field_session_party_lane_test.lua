@@ -448,4 +448,68 @@ function T.registered_slot_edge_is_consumed_when_party_selection_closes()
   Assert.equal(openAttempts, 0, "the party modal shortcut edge is not replayed")
 end
 
+function T.modal_tick_borrows_exactly_one_normalized_snapshot()
+  local active = { activeFrom = 1 }
+  local options = optionsWith({ partySelection = partyLane(active) })
+  local input = options.input
+  local uiSnapshots = 0
+  local rawUiSnapshot = input.uiSnapshot
+  function input:uiSnapshot(tick)
+    uiSnapshots = uiSnapshots + 1
+    return rawUiSnapshot(self, tick)
+  end
+  local session = FieldSession.new(options)
+  session:updateFixed({
+    heldDirection = nil,
+    pressedDirection = "south",
+    actionPressed = true,
+    cancelPressed = true,
+    menuPressed = false,
+  })
+  Assert.equal(uiSnapshots, 1, "one modal tick borrows exactly one normalized UI snapshot")
+  local scheduler = options.scriptScheduler
+  local last = scheduler.seen[#scheduler.seen]
+  Assert.equal(last.uiEvents, input.batch, "the single snapshot reaches the scheduler")
+  Assert.isNil(last.pressedDirection, "raw direction never reaches script input on the lane")
+  Assert.isNil(last.pressedAction, "raw action never reaches script input on the lane")
+  Assert.isNil(last.pressedCancel, "raw cancel never reaches script input on the lane")
+end
+
+function T.modal_handoff_between_lanes_keeps_capture_held()
+  -- One modal owner replaces another during the same scheduler step: the
+  -- party lane releases while the mart lane acquires, so the field-to-modal
+  -- capture never lapses and the tick needs at most one capture transition.
+  local partyActive, martActive = true, false
+  local input = recordingInput()
+  local scheduler = recordingScheduler()
+  scheduler.step = function(_, _, schedulerInput)
+    scheduler.seen[#scheduler.seen + 1] = schedulerInput
+    partyActive, martActive = false, true
+  end
+  local options = optionsWith({
+    input = input,
+    scriptScheduler = scheduler,
+    partySelection = {
+      isActive = function()
+        return partyActive
+      end,
+    },
+    martHost = {
+      isActive = function()
+        return martActive
+      end,
+    },
+  })
+  local session = FieldSession.new(options)
+  session:updateFixed({ pressedDirection = "south", actionPressed = true, cancelPressed = true })
+  local routed = scheduler.seen[#scheduler.seen]
+  Assert.equal(routed.uiEvents, input.batch, "the handoff tick still routes the normalized UI batch")
+  Assert.isNil(routed.pressedDirection, "field direction is suppressed across the handoff")
+  local transitions = input.begins + input.clears
+  Assert.isTrue(
+    transitions <= 1,
+    "a same-tick modal handoff keeps capture held with at most one transition, got " .. transitions
+  )
+end
+
 return { tests = T }

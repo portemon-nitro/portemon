@@ -790,6 +790,88 @@ local function shouldRun(self, inputSnapshot)
   return avatar == nil or avatar:durableState() == "walking"
 end
 
+---@class FieldSession.ModalStatus
+---@field menu boolean
+---@field contextChoice boolean
+---@field yesNo boolean
+---@field starterChoice boolean
+---@field naming boolean
+---@field party boolean
+---@field mart boolean
+---@field kurt boolean
+---@field pc boolean
+
+-- One modal-status snapshot per tick edge: each host is probed exactly
+-- once per snapshot, and the currently prohibited combinations fail here
+-- instead of scattering per-lane checks across the tick. Menu and the
+-- live choice route a tick's input without holding field-to-modal
+-- capture; the context/script/party/mart/kurt/PC lanes hold it.
+---@param self FieldSession
+---@return FieldSession.ModalStatus
+local function snapshotModalStatus(self)
+  local yesNoHost = self.yesNoHost
+  local starterChoice = self.starterChoice
+  local partySelection = self.partySelection
+  local martHost = self.martHost
+  local kurtBoxHost = self.kurtBoxHost
+  local pokemonNaming = self.pokemonNaming
+  local status = {
+    menu = self.menuHost:isModal(),
+    contextChoice = self.contextChoice:isActive(),
+    yesNo = yesNoHost ~= nil and yesNoHost:isModal(),
+    starterChoice = starterChoice ~= nil and starterChoice:isActive(),
+    naming = pokemonNaming ~= nil and pokemonNaming:isActive(),
+    party = partySelection ~= nil and partySelection:isActive(),
+    mart = martHost ~= nil and martHost:isActive(),
+    kurt = kurtBoxHost ~= nil and kurtBoxHost:isActive(),
+    pc = self.pcApplications:isActive(),
+  }
+  assert(
+    not (status.yesNo and status.contextChoice),
+    "field cannot present opcode-63 and contextual two-choice prompts at once"
+  )
+  assert(not (status.starterChoice and status.naming), "script-owned field modals are mutually exclusive")
+  assert(
+    not (status.mart and (status.starterChoice or status.naming or status.party or status.pc)),
+    "script-owned field modals are mutually exclusive"
+  )
+  assert(
+    not (status.kurt and (status.starterChoice or status.naming or status.party or status.pc or status.mart)),
+    "script-owned field modals are mutually exclusive"
+  )
+  assert(
+    not (status.pc and (status.starterChoice or status.naming or status.party)),
+    "script-owned field modals are mutually exclusive"
+  )
+  return status
+end
+
+-- The capture-holding lane behind a snapshot, or nil on the raw field
+-- lane. At most one capture lane can be active (see snapshotModalStatus).
+---@param status FieldSession.ModalStatus
+---@return string? capture-holding lane name
+local function captureOwner(status)
+  if status.contextChoice then
+    return "context"
+  end
+  if status.starterChoice or status.naming then
+    return "script"
+  end
+  if status.party then
+    return "party"
+  end
+  if status.mart then
+    return "mart"
+  end
+  if status.pc then
+    return "pc"
+  end
+  if status.kurt then
+    return "kurt"
+  end
+  return nil
+end
+
 ---@param self FieldSession
 ---@param inputSnapshot table<string, unknown>
 ---@return boolean playerInputOwnedAtTickStart
@@ -803,83 +885,49 @@ local function runScriptPhase(self, inputSnapshot)
   schedulerInput.pressedCancel = inputSnapshot.cancelPressed
   schedulerInput.menuEvents = nil
   schedulerInput.uiEvents = nil
-  local menuModal = self.menuHost:isModal()
-  local contextChoiceModal = self.contextChoice:isActive()
-  local yesNoHost = self.yesNoHost
-  local yesNoModal = yesNoHost ~= nil and yesNoHost:isModal()
-  assert(
-    not (yesNoModal and contextChoiceModal),
-    "field cannot present opcode-63 and contextual two-choice prompts at once"
-  )
   -- The script-owned starter modal routes the same normalized UI events to
   -- the scheduler while it owns the choice; like the contextual choice it
   -- suppresses the raw field edges for that tick. The script-owned party
   -- modal rides the same lane: one shared snapshot reaches the scheduler
   -- and the session never steps either controller.
-  local starterChoice = self.starterChoice
-  local starterChoiceModal = starterChoice ~= nil and starterChoice:isActive()
-  local partySelection = self.partySelection
-  local partySelectionModal = partySelection ~= nil and partySelection:isActive()
-  local martHost = self.martHost
-  local martModal = martHost ~= nil and martHost:isActive()
-  local kurtBoxHost = self.kurtBoxHost
-  local kurtBoxModal = kurtBoxHost ~= nil and kurtBoxHost:isActive()
-  local pcApplications = self.pcApplications
-  local pcApplicationModal = pcApplications:isActive()
-  local pokemonNaming = self.pokemonNaming
-  local pokemonNamingModal = pokemonNaming ~= nil and pokemonNaming:isActive()
-  local modalInputOwnedAtTickStart = menuModal
-    or contextChoiceModal
-    or yesNoModal
-    or starterChoiceModal
-    or partySelectionModal
-    or martModal
+  local before = snapshotModalStatus(self)
+  local kurtBoxModal = before.kurt
+  local modalInputOwnedAtTickStart = before.menu
+    or before.contextChoice
+    or before.yesNo
+    or before.starterChoice
+    or before.party
+    or before.mart
     or kurtBoxModal
-    or pcApplicationModal
-    or pokemonNamingModal
+    or before.pc
+    or before.naming
     or self.dialogue:isModal()
     or self.signpost:isModal()
     or self.applicationHost:isActive()
-  assert(not (starterChoiceModal and pokemonNamingModal), "script-owned field modals are mutually exclusive")
-  assert(
-    not (martModal and (starterChoiceModal or pokemonNamingModal or partySelectionModal or pcApplicationModal)),
-    "script-owned field modals are mutually exclusive"
-  )
-  assert(
-    not (
-        kurtBoxModal
-        and (starterChoiceModal or pokemonNamingModal or partySelectionModal or pcApplicationModal or martModal)
-      ),
-    "script-owned field modals are mutually exclusive"
-  )
-  assert(
-    not (pcApplicationModal and (starterChoiceModal or pokemonNamingModal or partySelectionModal)),
-    "script-owned field modals are mutually exclusive"
-  )
-  local scriptModal = starterChoiceModal or pokemonNamingModal
   -- A borrowed gesture is valid only while its choice stays open: every
   -- tick without an active contextual choice drops stale capture so a
   -- release from an old choice cannot answer a later one. This runs even
   -- on fully idle ticks, covering the close tick's successor.
-  if not contextChoiceModal and yesNoHost ~= nil then
-    yesNoHost:clearBorrowedChoice()
+  if not before.contextChoice and self.yesNoHost ~= nil then
+    self.yesNoHost:clearBorrowedChoice()
   end
   if
-    menuModal
-    or contextChoiceModal
-    or scriptModal
-    or partySelectionModal
-    or martModal
-    or kurtBoxModal
-    or pcApplicationModal
-    or yesNoModal
+    before.menu
+    or before.contextChoice
+    or before.starterChoice
+    or before.naming
+    or before.party
+    or before.mart
+    or before.kurt
+    or before.pc
+    or before.yesNo
   then
     local uiEvents = self.input:uiSnapshot(self.tick + 1)
-    if menuModal then
+    if before.menu then
       schedulerInput.menuEvents = self.menuHost:inputEvents(uiEvents)
-    elseif yesNoModal then
+    elseif before.yesNo then
       schedulerInput.uiEvents = assert(self.yesNoHost, "active choice requires its host"):inputEvents(uiEvents)
-    elseif contextChoiceModal then
+    elseif before.contextChoice then
       local present =
         assert(self.contextChoicePresentation, "field session contextChoicePresentation callback required")
       -- A nil record means the choice is open but unpresentable (no screen
@@ -901,78 +949,19 @@ local function runScriptPhase(self, inputSnapshot)
   end
   self.scriptScheduler:step(self.tick + 1, schedulerInput)
   self.menuHost:advance(self.tick + 1)
-  local contextChoiceNowModal = self.contextChoice:isActive()
-  if not contextChoiceModal and contextChoiceNowModal then
-    self.input:beginUi(self.tick + 1)
-  elseif contextChoiceModal and not contextChoiceNowModal then
-    self.input:clearUi()
-  end
-  local starterChoiceNowModal = starterChoice ~= nil and starterChoice:isActive()
-  local pokemonNamingNowModal = pokemonNaming ~= nil and pokemonNaming:isActive()
-  assert(not (starterChoiceNowModal and pokemonNamingNowModal), "script-owned field modals are mutually exclusive")
-  local scriptModalNow = starterChoiceNowModal or pokemonNamingNowModal
-  if not scriptModal and scriptModalNow then
-    self.input:beginUi(self.tick + 1)
-  elseif scriptModal and not scriptModalNow then
-    self.input:clearUi()
-  end
-  local partySelectionNowModal = partySelection ~= nil and partySelection:isActive()
-  assert(
-    not (
-        martHost ~= nil
-        and martHost:isActive()
-        and (starterChoiceNowModal or pokemonNamingNowModal or partySelectionNowModal)
-      ),
-    "script-owned field modals are mutually exclusive"
-  )
-  if not partySelectionModal and partySelectionNowModal then
-    self.input:beginUi(self.tick + 1)
-  elseif partySelectionModal and not partySelectionNowModal then
-    self.input:clearUi()
-  end
-  local martNowModal = martHost ~= nil and martHost:isActive()
-  if not martModal and martNowModal then
-    self.input:beginUi(self.tick + 1)
-  elseif martModal and not martNowModal then
-    self.input:clearUi()
-  end
-  local pcApplicationNowModal = pcApplications:isActive()
-  local kurtBoxNowModal = kurtBoxHost ~= nil and kurtBoxHost:isActive()
-  assert(
-    not (
-        pcApplicationNowModal
-        and (
-          starterChoiceNowModal
-          or pokemonNamingNowModal
-          or partySelectionNowModal
-          or martNowModal
-          or kurtBoxNowModal
-        )
-      ),
-    "script-owned field modals are mutually exclusive"
-  )
-  if not pcApplicationModal and pcApplicationNowModal then
-    self.input:beginUi(self.tick + 1)
-  elseif pcApplicationModal and not pcApplicationNowModal then
-    self.input:clearUi()
-  end
-  assert(
-    not (
-        kurtBoxNowModal
-        and (
-          starterChoiceNowModal
-          or pokemonNamingNowModal
-          or partySelectionNowModal
-          or martNowModal
-          or pcApplicationNowModal
-        )
-      ),
-    "script-owned field modals are mutually exclusive"
-  )
-  if not kurtBoxModal and kurtBoxNowModal then
-    self.input:beginUi(self.tick + 1)
-  elseif kurtBoxModal and not kurtBoxNowModal then
-    self.input:clearUi()
+  -- One capture transition per tick edge from the before/after ownership
+  -- sets: entering a capture lane begins once, leaving one clears once,
+  -- and one capture owner replacing another inside the same scheduler
+  -- step keeps capture held with no toggle.
+  local after = snapshotModalStatus(self)
+  local beforeOwner = captureOwner(before)
+  local afterOwner = captureOwner(after)
+  if beforeOwner ~= afterOwner then
+    if beforeOwner == nil then
+      self.input:beginUi(self.tick + 1)
+    elseif afterOwner == nil then
+      self.input:clearUi()
+    end
   end
   return playerInputOwnedAtTickStart, modalInputOwnedAtTickStart
 end
