@@ -790,6 +790,12 @@ local function stagedPortraitBattleManifest()
     },
     playerHud = sprite(PORTRAIT_MENU_IMAGE),
     enemyHud = sprite(PORTRAIT_MENU_IMAGE),
+    doublesHud = {
+      playerLeft = sprite(PORTRAIT_MENU_IMAGE),
+      playerRight = sprite(PORTRAIT_MENU_IMAGE),
+      enemyLeft = sprite(PORTRAIT_MENU_IMAGE),
+      enemyRight = sprite(PORTRAIT_MENU_IMAGE),
+    },
     arrow = sprite(PORTRAIT_MENU_IMAGE),
     partyGauges = {
       sprite(PORTRAIT_MENU_IMAGE),

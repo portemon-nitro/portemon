@@ -175,6 +175,12 @@ local function validManifest()
     },
     playerHud = sprite("assets/generated/battle/menu-command-1.png"),
     enemyHud = sprite("assets/generated/battle/menu-command-1.png"),
+    doublesHud = {
+      playerLeft = sprite("assets/generated/battle/menu-command-1.png"),
+      playerRight = sprite("assets/generated/battle/menu-command-1.png"),
+      enemyLeft = sprite("assets/generated/battle/menu-command-1.png"),
+      enemyRight = sprite("assets/generated/battle/menu-command-1.png"),
+    },
     arrow = sprite("assets/generated/battle/menu-command-1.png"),
     partyGauges = {
       sprite("assets/generated/battle/menu-command-1.png"),

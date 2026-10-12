@@ -97,6 +97,32 @@ function T.every_terrain_carries_its_type_and_daylight_triple()
   Assert.equal(seen, 18, "no extra terrain hides beside the table")
 end
 
+function T.doubled_health_box_families_keep_their_archive_members()
+  local Sources = sources()
+  local roles = assert(Sources.ROLES, "the source inventory carries its member roles")
+  Assert.deepEqual(
+    roles.enemyHudDoubleLeft,
+    { nanr = 192, ncer = 193, ncgr = 194 },
+    "the enemy left health box keeps its animation, cell, and character members"
+  )
+  Assert.deepEqual(
+    roles.enemyHudDoubleRight,
+    { nanr = 195, ncer = 196, ncgr = 197 },
+    "the enemy right health box keeps its animation, cell, and character members"
+  )
+  Assert.deepEqual(
+    roles.playerHudDoubleLeft,
+    { nanr = 198, ncer = 199, ncgr = 200 },
+    "the player left health box keeps its animation, cell, and character members"
+  )
+  Assert.deepEqual(
+    roles.playerHudDoubleRight,
+    { nanr = 201, ncer = 202, ncgr = 203 },
+    "the player right health box keeps its animation, cell, and character members"
+  )
+  Assert.isTrue(Sources.validate(), "the source tables validate with the doubled families")
+end
+
 function T.scene_keys_round_trip_and_reject_effect_backgrounds()
   local Sources = sources()
   local key = Sources.sceneKey("general", "grass", "day")

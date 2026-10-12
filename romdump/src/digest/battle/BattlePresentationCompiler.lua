@@ -402,6 +402,28 @@ function provenanceRoles()
   end
   tripleRoles("playerHud", ROLES.playerHud)
   tripleRoles("enemyHud", ROLES.enemyHud)
+  roles.doublesHud = {
+    playerLeft = {
+      nanr = { narc = Sources.SCENE_NARC, member = ROLES.playerHudDoubleLeft.nanr },
+      ncer = { narc = Sources.SCENE_NARC, member = ROLES.playerHudDoubleLeft.ncer },
+      ncgr = { narc = Sources.SCENE_NARC, member = ROLES.playerHudDoubleLeft.ncgr },
+    },
+    playerRight = {
+      nanr = { narc = Sources.SCENE_NARC, member = ROLES.playerHudDoubleRight.nanr },
+      ncer = { narc = Sources.SCENE_NARC, member = ROLES.playerHudDoubleRight.ncer },
+      ncgr = { narc = Sources.SCENE_NARC, member = ROLES.playerHudDoubleRight.ncgr },
+    },
+    enemyLeft = {
+      nanr = { narc = Sources.SCENE_NARC, member = ROLES.enemyHudDoubleLeft.nanr },
+      ncer = { narc = Sources.SCENE_NARC, member = ROLES.enemyHudDoubleLeft.ncer },
+      ncgr = { narc = Sources.SCENE_NARC, member = ROLES.enemyHudDoubleLeft.ncgr },
+    },
+    enemyRight = {
+      nanr = { narc = Sources.SCENE_NARC, member = ROLES.enemyHudDoubleRight.nanr },
+      ncer = { narc = Sources.SCENE_NARC, member = ROLES.enemyHudDoubleRight.ncer },
+      ncgr = { narc = Sources.SCENE_NARC, member = ROLES.enemyHudDoubleRight.ncgr },
+    },
+  }
   tripleRoles("arrow", ROLES.arrow)
   roles.gauges = {}
   for _, family in ipairs(ROLES.gauges) do
@@ -541,10 +563,32 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     end
     local playerTriple = decodeTriple(sceneArchive, ROLES.playerHud, hudPalette, "player HUD")
     local enemyTriple = decodeTriple(sceneArchive, ROLES.enemyHud, hudPalette, "enemy HUD")
+    local playerDoubleLeftTriple =
+      decodeTriple(sceneArchive, ROLES.playerHudDoubleLeft, hudPalette, "player left doubled HUD")
+    local playerDoubleRightTriple =
+      decodeTriple(sceneArchive, ROLES.playerHudDoubleRight, hudPalette, "player right doubled HUD")
+    local enemyDoubleLeftTriple =
+      decodeTriple(sceneArchive, ROLES.enemyHudDoubleLeft, hudPalette, "enemy left doubled HUD")
+    local enemyDoubleRightTriple =
+      decodeTriple(sceneArchive, ROLES.enemyHudDoubleRight, hudPalette, "enemy right doubled HUD")
     local arrowTriple = decodeTriple(sceneArchive, ROLES.arrow, lowerObjPalette, "player arrow")
     checkArrow(arrowTriple)
     local playerHud = compileSprite(playerTriple, "hud-player-chars", "player HUD")
     local enemyHud = compileSprite(enemyTriple, "hud-enemy-chars", "enemy HUD")
+    -- Doubled health boxes ride the same HUD palette association as the
+    -- single-battle boxes, never the lower OBJ palette. Each family
+    -- keeps its staged strip, source cells, animation, and palette
+    -- behind one semantic slot key.
+    local doublesHud = {
+      playerLeft = compileSprite(playerDoubleLeftTriple, "hud-doubles-player-left-chars", "player left doubled HUD"),
+      playerRight = compileSprite(
+        playerDoubleRightTriple,
+        "hud-doubles-player-right-chars",
+        "player right doubled HUD"
+      ),
+      enemyLeft = compileSprite(enemyDoubleLeftTriple, "hud-doubles-enemy-left-chars", "enemy left doubled HUD"),
+      enemyRight = compileSprite(enemyDoubleRightTriple, "hud-doubles-enemy-right-chars", "enemy right doubled HUD"),
+    }
     local arrow = compileSprite(arrowTriple, "arrow-chars", "player arrow")
     local partyGauges = {}
     for familyIndex, family in ipairs(ROLES.gauges) do
@@ -588,6 +632,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       },
       playerHud = playerHud,
       enemyHud = enemyHud,
+      doublesHud = doublesHud,
       arrow = arrow,
       partyGauges = partyGauges,
       terrain = {

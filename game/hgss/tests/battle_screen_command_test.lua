@@ -1744,4 +1744,260 @@ function T.exhausted_lead_finishes_through_fight_without_a_fifth_cell()
   end
 end
 
+-- Doubled native snapshots keep opaque slot identities in view order:
+-- the renderer sorts within each side, so the first sorted slot of a
+-- side owns that side's left row whatever the view order. Positions
+-- below are deliberately non-sequential to prove no hardcoded numbering.
+---@param overrides table? snapshot overrides under test
+---@return table doubled detail snapshot with two live battlers per side
+local function doublesDetailView(overrides)
+  local view = {
+    mode = "command",
+    arrowFrame = 1,
+    actor = { combatant = 5, index = 1, total = 2 },
+    battlers = {
+      {
+        combatant = 11,
+        side = 1,
+        position = 12,
+        activation = 101,
+        active = true,
+        visible = true,
+        name = "ALLY-B",
+        level = 9,
+        hp = 35,
+        maxHp = 35,
+        exp = 8100,
+        portraitSelector = "SHINX/f0/male/plain/back",
+        shakeDx = 0,
+      },
+      {
+        combatant = 5,
+        side = 1,
+        position = 5,
+        activation = 100,
+        active = true,
+        visible = true,
+        name = "ALLY-A",
+        level = 8,
+        hp = 40,
+        maxHp = 40,
+        exp = 8000,
+        portraitSelector = "STARLY/f0/male/plain/back",
+        shakeDx = 0,
+      },
+      {
+        combatant = 30,
+        side = 2,
+        position = 30,
+        activation = 103,
+        active = true,
+        visible = true,
+        name = "FOE-B",
+        level = 5,
+        hp = 30,
+        maxHp = 30,
+        portraitSelector = "PICHU/f0/male/plain/front",
+        shakeDx = 0,
+      },
+      {
+        combatant = 8,
+        side = 2,
+        position = 8,
+        activation = 102,
+        active = true,
+        visible = true,
+        name = "FOE-A",
+        level = 4,
+        hp = 45,
+        maxHp = 45,
+        portraitSelector = "BIDOOF/f0/male/plain/front",
+        shakeDx = 0,
+      },
+    },
+  }
+  if overrides ~= nil then
+    for key, value in pairs(overrides) do
+      view[key] = value
+    end
+  end
+  return view
+end
+
+---@param graphics table recording graphics boundary under inspection
+---@param handle string artwork identity under inspection
+---@return table? first draw carrying that artwork identity, nil when never drawn
+local function firstDrawOf(graphics, handle)
+  local found = drawsOf(graphics, handle)
+  return found[1]
+end
+
+-- Doubled portraits settle at the sourced centers: the source table
+-- gives center-style anchors for nominal 80x80 pictures, so each
+-- top-left origin sits one half picture (40 pixels) left and above
+-- its center. The first sorted slot of a side owns that side's left
+-- row: the enemy left row sits screen-right of the enemy right row,
+-- exactly as the source table lays it out.
+function T.doubled_portraits_settle_at_the_sourced_centers()
+  local drawn = drawNativePane("detail", doublesDetailView(), nil, {})
+  local expected = {
+    ["mon:STARLY/f0/male/plain/back"] = { x = 0, y = 72 },
+    ["mon:SHINX/f0/male/plain/back"] = { x = 40, y = 80 },
+    ["mon:BIDOOF/f0/male/plain/front"] = { x = 176, y = 10 },
+    ["mon:PICHU/f0/male/plain/front"] = { x = 136, y = 2 },
+  }
+  for handle, origin in pairs(expected) do
+    local found = drawsOf(drawn.graphics, handle)
+    Assert.equal(#found, 1, "the " .. handle .. " picture draws exactly once")
+    Assert.equal(found[1].x, origin.x, "the " .. handle .. " picture keeps its settled column")
+    Assert.equal(found[1].y, origin.y, "the " .. handle .. " picture keeps its settled row")
+  end
+  local foeLeft = assert(firstDrawOf(drawn.graphics, "mon:BIDOOF/f0/male/plain/front"), "the foe left picture draws")
+  local foeRight =
+    assert(firstDrawOf(drawn.graphics, "mon:PICHU/f0/male/plain/front"), "the foe right picture draws")
+  Assert.isTrue(
+    foeLeft.x > foeRight.x,
+    "the first sorted foe slot sits screen-right of its partner, as the source rows lay out"
+  )
+end
+
+-- Doubled health boxes use their dedicated staged families at the
+-- sourced anchors: each side-ordered slot draws its own strip with the
+-- unmodified object templates, and every dynamic row follows its own
+-- anchor through the single-battle template offsets.
+function T.doubled_health_boxes_use_dedicated_art_at_the_sourced_anchors()
+  local drawn = drawNativePane("detail", doublesDetailView(), nil, {})
+  local composites = {
+    ["hud:player-left"] = { x = 128, y = 71 },
+    ["hud:player-right"] = { x = 134, y = 100 },
+    ["hud:enemy-left"] = { x = 0, y = -12 },
+    ["hud:enemy-right"] = { x = -6, y = 17 },
+  }
+  for artKey, origin in pairs(composites) do
+    local bands = drawsOf(drawn.graphics, artKey)
+    Assert.equal(#bands, 16, "the " .. artKey .. " strip bands its two objects")
+    Assert.equal(bands[1].x, origin.x, "the " .. artKey .. " composite keeps its anchor column")
+    Assert.equal(bands[1].y, origin.y, "the " .. artKey .. " composite keeps its anchor row")
+    Assert.equal(bands[1].quad.imgW, 1024, "the " .. artKey .. " quads reference the staged strip width")
+    Assert.equal(bands[9].x, origin.x + 64, "the " .. artKey .. " second object abuts the first")
+  end
+  Assert.equal(#drawsOf(drawn.graphics, "hud:player"), 0, "no doubled ally shares the single-battle strip")
+  Assert.equal(#drawsOf(drawn.graphics, "hud:enemy"), 0, "no doubled foe shares the single-battle strip")
+  Assert.isTrue(textAt(drawn.text, "ALLY-A", 144, 79), "the left ally names its own row")
+  Assert.isTrue(textAt(drawn.text, "Lv8", 144, 91), "the left ally levels its own row")
+  Assert.isTrue(textAt(drawn.text, "40/40", 144, 103), "the left ally prints its numeric health")
+  Assert.isTrue(textAt(drawn.text, "8000", 192, 103), "the left ally prints its experience")
+  Assert.isTrue(textAt(drawn.text, "ALLY-B", 150, 108), "the right ally names its own row")
+  Assert.isTrue(textAt(drawn.text, "35/35", 150, 132), "the right ally prints its numeric health")
+  Assert.isTrue(textAt(drawn.text, "FOE-A", 14, -4), "the left foe names its own row")
+  Assert.isTrue(textAt(drawn.text, "Lv4", 14, 8), "the left foe levels its own row")
+  Assert.isTrue(textAt(drawn.text, "FOE-B", 8, 25), "the right foe names its own row")
+  local bars = {}
+  for _, entry in ipairs(drawn.graphics.rectangles) do
+    if entry.mode == "fill" then
+      bars[#bars + 1] = entry
+    end
+  end
+  Assert.equal(#bars, 4, "all four partners fill their own health bar")
+  local byOrigin = {}
+  for _, bar in ipairs(bars) do
+    byOrigin[bar.x .. ":" .. bar.y] = bar.w
+  end
+  Assert.equal(byOrigin["144:95"], 48, "the left ally bar keeps its row")
+  Assert.equal(byOrigin["150:124"], 48, "the right ally bar keeps its row")
+  Assert.equal(byOrigin["14:24"], 48, "the left foe bar keeps its row")
+  Assert.equal(byOrigin["8:53"], 48, "the right foe bar keeps its row")
+end
+
+-- The doubled selection arrow follows the acting partner: its column
+-- sits one horizontal arrow offset left of the acting health-box
+-- anchor, derived at draw time instead of hardcoded.
+function T.doubled_arrow_follows_the_acting_partner_health_box()
+  local leftActing = drawNativePane("detail", doublesDetailView({ actor = { combatant = 5, index = 1, total = 2 } }), nil, {})
+  local leftBands = drawsOf(leftActing.graphics, "arrow")
+  Assert.equal(#leftBands, 2, "the acting left partner shows the arrow")
+  Assert.equal(leftBands[1].x, 112, "the arrow sits one offset left of the left anchor")
+  Assert.equal(leftBands[1].y, 95, "the arrow shares the left anchor row")
+  local rightActing =
+    drawNativePane("detail", doublesDetailView({ actor = { combatant = 11, index = 2, total = 2 } }), nil, {})
+  local rightBands = drawsOf(rightActing.graphics, "arrow")
+  Assert.equal(#rightBands, 2, "the acting right partner shows the arrow")
+  Assert.equal(rightBands[1].x, 118, "the arrow sits one offset left of the right anchor")
+  Assert.equal(rightBands[1].y, 124, "the arrow shares the right anchor row")
+end
+
+-- A single battle keeps its established anchors while its lead hides
+-- mid-switch: the visible foe never slides onto a doubles row before
+-- the replacement reveals.
+function T.hidden_singles_lead_keeps_singles_anchors_mid_switch()
+  local hidden = nativeView({
+    battlers = {
+      {
+        combatant = 1,
+        side = 1,
+        position = 1,
+        activation = 11,
+        active = true,
+        visible = false,
+        name = "LEAD",
+        level = 9,
+        hp = 30,
+        maxHp = 30,
+        exp = 120,
+        condition = nil,
+        portraitSelector = "EEVEE/f0/male/plain/back",
+        shakeDx = 0,
+      },
+      {
+        combatant = 2,
+        side = 2,
+        position = 2,
+        activation = 12,
+        active = true,
+        visible = true,
+        name = "FOE",
+        level = 3,
+        hp = 12,
+        maxHp = 12,
+        exp = nil,
+        condition = nil,
+        portraitSelector = "EEVEE/f0/male/plain/front",
+        shakeDx = 0,
+      },
+    },
+  })
+  local drawn = drawNativePane("detail", hidden, nil, {})
+  local foe = drawsOf(drawn.graphics, "mon:EEVEE/f0/male/plain/front")
+  Assert.equal(#foe, 1, "the visible foe still draws exactly once")
+  Assert.equal(foe[1].x, 192, "the foe keeps its singles column mid-switch")
+  Assert.equal(foe[1].y, 56, "the foe keeps its singles row mid-switch")
+  Assert.equal(#drawsOf(drawn.graphics, "mon:EEVEE/f0/male/plain/back"), 0, "the hidden lead draws nothing")
+  Assert.equal(#drawsOf(drawn.graphics, "hud:enemy-left"), 0, "no doubles strip draws in a single battle")
+  Assert.equal(#drawsOf(drawn.graphics, "hud:player-left"), 0, "no doubles strip draws in a single battle")
+  Assert.isTrue(#drawsOf(drawn.graphics, "hud:enemy") > 0, "the singles foe strip still draws")
+end
+
+-- A doubles survivor keeps its canonical row while its partner hides
+-- mid-transition: the remaining slot never reindexes onto the hidden
+-- neighbor's row.
+function T.doubles_survivor_keeps_its_row_while_partner_hides()
+  local gapped = doublesDetailView()
+  for _, battler in ipairs(gapped.battlers) do
+    if battler.combatant == 8 then
+      battler.visible = false
+    end
+  end
+  local drawn = drawNativePane("detail", gapped, nil, {})
+  local survivor = drawsOf(drawn.graphics, "mon:PICHU/f0/male/plain/front")
+  Assert.equal(#survivor, 1, "the surviving foe still draws exactly once")
+  Assert.equal(survivor[1].x, 136, "the survivor keeps its right column while its partner hides")
+  Assert.equal(survivor[1].y, 2, "the survivor keeps its right row while its partner hides")
+  local hidden = drawsOf(drawn.graphics, "mon:BIDOOF/f0/male/plain/front")
+  Assert.equal(#hidden, 0, "the hidden partner draws nothing")
+  local allyLeft = drawsOf(drawn.graphics, "mon:STARLY/f0/male/plain/back")
+  Assert.equal(#allyLeft, 1, "the undisturbed ally still draws exactly once")
+  Assert.equal(allyLeft[1].x, 0, "the undisturbed ally keeps its settled column")
+  Assert.equal(allyLeft[1].y, 72, "the undisturbed ally keeps its settled row")
+end
+
 return { tests = T }

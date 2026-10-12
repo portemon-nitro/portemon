@@ -83,7 +83,11 @@ BattlePresentationSources.TERRAIN = {
 
 -- Exact shared menu/HUD member roles. All numbers below are zero-based
 -- archive members: lower-screen roles live in the lower archive, HUD/arrow
--- and terrain roles in the scene archive.
+-- and terrain roles in the scene archive. The doubled health-box
+-- families follow src/battle/battle_hp_bar.c:sSpriteTemplate_HpBarDouble*
+-- (pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36): one
+-- animation, cell, and character member per slot, in left/right row
+-- order per side.
 BattlePresentationSources.ROLES = {
   lowerChars = 28,
   commandScreens = { 36, 41, 43 },
@@ -95,6 +99,10 @@ BattlePresentationSources.ROLES = {
   lowerObjPalette = 72,
   playerHud = { nanr = 189, ncer = 190, ncgr = 191 },
   enemyHud = { nanr = 186, ncer = 187, ncgr = 188 },
+  playerHudDoubleLeft = { nanr = 198, ncer = 199, ncgr = 200 },
+  playerHudDoubleRight = { nanr = 201, ncer = 202, ncgr = 203 },
+  enemyHudDoubleLeft = { nanr = 192, ncer = 193, ncgr = 194 },
+  enemyHudDoubleRight = { nanr = 195, ncer = 196, ncgr = 197 },
   arrow = { nanr = 183, ncer = 184, ncgr = 185 },
   gauges = {
     { ncer = 204, ncgr = 205, nanr = 206 },
@@ -290,7 +298,15 @@ function BattlePresentationSources.validate()
       end
     end
   end
-  for _, field in ipairs({ "playerHud", "enemyHud", "arrow" }) do
+  for _, field in ipairs({
+    "playerHud",
+    "enemyHud",
+    "playerHudDoubleLeft",
+    "playerHudDoubleRight",
+    "enemyHudDoubleLeft",
+    "enemyHudDoubleRight",
+    "arrow",
+  }) do
     local role = roles[field]
     if type(role) ~= "table" or not member(role.nanr) or not member(role.ncer) or not member(role.ncgr) then
       return false

@@ -169,10 +169,73 @@ local function displayedOf(record)
     condition = record.condition,
     moves = copyValue(record.moves),
   }
+  -- The native slot identity rides the displayed record for live
+  -- active battlers only: benched or historic records never claim a
+  -- slot, and the model position stays opaque (keyed verbatim, never
+  -- reinterpreted here).
+  if record.active ~= false then
+    if type(record.position) == "number" then
+      shown.position = record.position
+    end
+    if type(record.activation) == "number" then
+      shown.activation = record.activation
+    end
+  end
   if type(record.portraitSelector) == "string" and record.portraitSelector ~= "" then
     shown.portraitSelector = record.portraitSelector
   end
   return shown
+end
+
+-- Loud slot coherence: every currently visible record claiming a native
+-- slot must hold a whole slot identity, and no slot is ever visibly
+-- claimed twice. Records without a slot (legacy singles fixtures) are
+-- exempt; hidden, benched and historic records never claim.
+---@param self BattleTimeline
+local function checkSlotClaims(self)
+  local claimed = {}
+  for id, shown in pairs(self._battlers) do
+    if type(shown) == "table" and shown.visible ~= false and type(shown.position) == "number" then
+      local slot = shown.position --[[@as integer]]
+      assert(slot % 1 == 0, "native slots are whole slot identities (combatant " .. tostring(id) .. ")")
+      local other = claimed[slot]
+      assert(
+        other == nil,
+        "native slot "
+          .. tostring(slot)
+          .. " is visibly claimed twice (combatants "
+          .. tostring(other)
+          .. " and "
+          .. tostring(id)
+          .. ")"
+      )
+      claimed[slot] = id
+    end
+  end
+end
+
+-- True while a queued or playing cue still owns the slot transition for
+-- one combatant: withdrawal, reveal and faint cues gate position and
+-- activation updates so reconciliation can never outrun them.
+---@param self BattleTimeline
+---@param id integer combatant identity under reconciliation
+---@return boolean gated
+local function slotGated(self, id)
+  local function gates(cue)
+    if type(cue) ~= "table" or cue.combatant ~= id then
+      return false
+    end
+    return cue.kind == "withdraw" or cue.kind == "reveal" or cue.kind == "faint"
+  end
+  if gates(self._active) then
+    return true
+  end
+  for _, cue in ipairs(self._queue) do
+    if gates(cue) then
+      return true
+    end
+  end
+  return false
 end
 
 -- Installs the opening displayed facts from the first detached view:
@@ -203,6 +266,7 @@ function BattleTimeline:reset(view)
   installActive(view.foes)
   indexFacts(self, view)
   self._latest = view
+  checkSlotClaims(self)
   self._queue = {}
   self._active = nil
 end
@@ -977,6 +1041,7 @@ function BattleTimeline:_installReveal(id)
   if record ~= nil then
     self._battlers[id] = displayedOf(record --[[@as table<string, unknown>]])
     self._battlers[id].visible = false
+    checkSlotClaims(self)
     local seen = false
     for _, known in ipairs(self._order) do
       if known == id then
@@ -1391,6 +1456,21 @@ function BattleTimeline:reconcileBattler(record, known)
     else
       shown.portraitSelector = nil
     end
+    -- Slot identity follows only when no withdrawal, reveal or faint
+    -- cue for this combatant is still queued or playing: a withdrawn
+    -- record keeps its old slot until its withdrawal cue hides it,
+    -- and a new occupant takes its slot on its reveal cue. Health and
+    -- name reconciliation never moves a slot and never changes
+    -- visibility; cue owns that.
+    if not slotGated(self, id) and record.active ~= false then
+      if type(record.position) == "number" then
+        shown.position = record.position
+      end
+      if type(record.activation) == "number" then
+        shown.activation = record.activation
+      end
+    end
+    checkSlotClaims(self)
   elseif not known then
     self._battlers[id] = displayedOf(record)
     self._battlers[id].visible = false

@@ -457,4 +457,328 @@ function T.paired_anchors_unchanged()
   Assert.isTrue(dual.content.compact ~= true, "the paired plan carries no compact marker")
 end
 
+---@return table internal semantic snapshot with two live leads and two live foes
+local function doubledSnapshot(overrides)
+  local view = snapshot({
+    mode = "command",
+    battlers = {
+      {
+        combatant = 1,
+        side = 1,
+        position = 1,
+        activation = 11,
+        hp = 40,
+        maxHp = 40,
+        visible = true,
+        name = "LEFTY",
+        level = 8,
+        exp = 8000,
+        condition = nil,
+        portraitSelector = MonCache.portraitSelector("STARLY", 0, "male", false, "back"),
+        shakeDx = 0,
+      },
+      {
+        combatant = 2,
+        side = 1,
+        position = 2,
+        activation = 12,
+        hp = 35,
+        maxHp = 38,
+        visible = true,
+        name = "RIGHTY",
+        level = 9,
+        exp = 8100,
+        condition = nil,
+        portraitSelector = MonCache.portraitSelector("SHINX", 0, "male", false, "back"),
+        shakeDx = 0,
+      },
+      {
+        combatant = 3,
+        side = 2,
+        position = 3,
+        activation = 13,
+        hp = 45,
+        maxHp = 45,
+        visible = true,
+        name = "FOE-A",
+        level = 4,
+        exp = nil,
+        condition = nil,
+        portraitSelector = MonCache.portraitSelector("BIDOOF", 0, "male", false),
+        shakeDx = 0,
+      },
+      {
+        combatant = 4,
+        side = 2,
+        position = 4,
+        activation = 14,
+        hp = 30,
+        maxHp = 33,
+        visible = true,
+        name = "FOE-B",
+        level = 5,
+        exp = nil,
+        condition = nil,
+        portraitSelector = MonCache.portraitSelector("PICHU", 0, "male", false),
+        shakeDx = 0,
+      },
+    },
+  })
+  if overrides ~= nil then
+    for key, value in pairs(overrides) do
+      view[key] = value
+    end
+  end
+  return view
+end
+
+---@param hud table plan hud content under inspection
+---@return table[] anchored HUD boxes in top-to-bottom, left-to-right order
+local function hudBoxes(hud)
+  local boxes = {}
+  local function visit(node)
+    if type(node) ~= "table" then
+      return
+    end
+    if type(node.x) == "number" and type(node.y) == "number" and type(node.width) == "number" and type(node.height) == "number" then
+      if type(node.regions) == "table" then
+        boxes[#boxes + 1] = node
+      end
+      return
+    end
+    for _, child in pairs(node) do
+      visit(child)
+    end
+  end
+  visit(hud)
+  table.sort(boxes, function(a, b)
+    if a.y ~= b.y then
+      return a.y < b.y
+    end
+    return a.x < b.x
+  end)
+  return boxes
+end
+
+---@param drawn table graphics, text and plan behind one draw under inspection
+---@return table[] health bars inside the scene viewport
+local function sceneBars(drawn)
+  local bars = {}
+  for _, rectangle in ipairs(drawn.graphics.rectangles) do
+    if rectangle.y < 136 and rectangle.h == 4 and rectangle.w <= 48 then
+      bars[#bars + 1] = rectangle
+    end
+  end
+  return bars
+end
+
+-- Both partners on each side draw their own portrait, HUD box and
+-- wording inside the scene without touching the dock, and a wound
+-- moves exactly one bar plus its own health wording.
+function T.both_partners_draw_their_own_portrait_and_health_above_the_dock()
+  local view = doubledSnapshot()
+  local plan = resolve(singleMeasurement(256, 192, "compact-hud-test:doubles"), view)
+  local content = assert(plan.content, "the compact plan carries its content")
+  local boxes = hudBoxes(assert(content.hud, "the plan carries its hud"))
+  Assert.equal(#boxes, 4, "both partners on both sides own a HUD box")
+  for _, box in ipairs(boxes) do
+    Assert.isTrue(box.x >= 0 and box.y >= 0, "every HUD box starts inside the scene")
+    Assert.isTrue(box.x + box.width <= 256, "every HUD box ends inside the scene width")
+    Assert.isTrue(box.y + box.height <= 136, "every HUD box stays above the dock")
+  end
+  for index = 1, #boxes do
+    for other = index + 1, #boxes do
+      local a = boxes[index]
+      local b = boxes[other]
+      local apart = a.x + a.width <= b.x or b.x + b.width <= a.x or a.y + a.height <= b.y or b.y + b.height <= a.y
+      Assert.isTrue(apart, "partner HUD boxes never overlap")
+    end
+  end
+  local result = drawnHud(view, {})
+  local portraits = {
+    "mon:" .. MonCache.portraitSelector("STARLY", 0, "male", false, "back"),
+    "mon:" .. MonCache.portraitSelector("SHINX", 0, "male", false, "back"),
+    "mon:" .. MonCache.portraitSelector("BIDOOF", 0, "male", false),
+    "mon:" .. MonCache.portraitSelector("PICHU", 0, "male", false),
+  }
+  for _, key in ipairs(portraits) do
+    Assert.equal(#drawsOf(result.graphics, key), 1, "each partner portrait draws exactly once")
+  end
+  Assert.equal(#sceneBars(result), 4, "all four partners draw their health bar")
+  local expected = {}
+  for _, box in ipairs(boxes) do
+    for _, region in ipairs(box.regions) do
+      if type(region.text) == "string" and region.text ~= "" then
+        expected[#expected + 1] = region
+      end
+    end
+  end
+  Assert.isTrue(#expected >= 8, "four boxes publish their names and health")
+  for _, region in ipairs(expected) do
+    local found = 0
+    for _, drawn in ipairs(result.text.draws) do
+      if drawn.content == region.text and drawn.x == region.x and drawn.y == region.y then
+        found = found + 1
+      end
+    end
+    Assert.equal(found, 1, "the " .. region.id .. " wording draws once at its published origin")
+  end
+  local hurtView = doubledSnapshot()
+  hurtView.battlers[4].hp = 17
+  local hurtResult = drawnHud(hurtView, {})
+  Assert.equal(#sceneBars(hurtResult), 4, "the wounded side still draws all four bars")
+  local function widths(drawn)
+    local out = {}
+    for _, bar in ipairs(sceneBars(drawn)) do
+      out[#out + 1] = bar.w
+    end
+    table.sort(out)
+    return out
+  end
+  local full = widths(result)
+  local hurt = widths(hurtResult)
+  local kept = 0
+  local dropped = nil
+  local remaining = {}
+  for _, width in ipairs(hurt) do
+    remaining[#remaining + 1] = width
+  end
+  for _, width in ipairs(full) do
+    local at = nil
+    for index, value in ipairs(remaining) do
+      if value == width then
+        at = index
+        break
+      end
+    end
+    if at ~= nil then
+      kept = kept + 1
+      table.remove(remaining, at)
+    else
+      dropped = width
+    end
+  end
+  Assert.equal(kept, 3, "three health bars keep their exact width")
+  Assert.equal(#remaining, 1, "the wound resolves to one new width")
+  Assert.isTrue(remaining[1] < (dropped or 49), "the wounded bar shrinks")
+  local hurtWords = {}
+  for _, drawn in ipairs(hurtResult.text.draws) do
+    hurtWords[drawn.content] = (hurtWords[drawn.content] or 0) + 1
+  end
+  Assert.equal(hurtWords["17/33"], 1, "the wounded foe resolves its exact health wording")
+  Assert.equal(hurtWords["45/45"], 1, "the partner foe keeps its health wording")
+end
+
+-- The doubled compact pane keeps every control reachable: the command
+-- cells still claim Fight, both foe target rows map to their own
+-- candidate, and a below-1x host keeps integer mapping.
+function T.doubled_compact_pane_keeps_every_control_reachable()
+  local view = doubledSnapshot()
+  local plan = resolve(singleMeasurement(256, 192, "compact-hud-test:doubles-controls"), view)
+  local content = assert(plan.content, "the compact plan carries its content")
+  Assert.deepEqual(
+    { content.dock.x, content.dock.y, content.dock.width, content.dock.height },
+    { 0, 136, 256, 56 },
+    "the command dock keeps its documented bounds"
+  )
+  local fight = nil
+  for _, cell in ipairs(assert(content.commands, "the plan carries its commands").cells) do
+    if cell.id == "fight" then
+      fight = cell
+    end
+  end
+  Assert.notNil(fight, "the Fight cell resolves")
+  local pressed = plan.mapInput(
+    { type = "pointer_down", pointerId = "touch:0", x = fight.x + 2, y = fight.y + 2 },
+    view,
+    plan
+  )
+  Assert.notNil(pressed, "the Fight cell claims its control")
+  Assert.equal(pressed.control.id, "fight", "the Fight cell keeps its identity")
+  local tiny = resolve(singleMeasurement(200, 150, "compact-hud-test:doubles-tiny"), view)
+  local placement = assert(tiny.panes[1], "the tiny pane resolves").placement
+  Assert.equal(placement.scale, 1, "a below-1x host keeps integer mapping")
+  local aimed = doubledSnapshot({
+    mode = "target",
+    targetCandidates = {
+      { id = "foe:3", position = 3, enabled = true, name = "FOE-A", level = 4 },
+      { id = "foe:4", position = 4, enabled = true, name = "FOE-B", level = 5 },
+    },
+  })
+  local aiming = resolve(singleMeasurement(256, 192, "compact-hud-test:doubles-target"), aimed)
+  local aimingContent = assert(aiming.content, "the target plan carries its content")
+  local wanted = { ["foe:3"] = true, ["foe:4"] = true }
+  local foeRows = {}
+  for _, row in ipairs(assert(aimingContent.targetRows, "the target plan carries its rows")) do
+    if wanted[row.id] then
+      foeRows[#foeRows + 1] = row
+    end
+  end
+  Assert.equal(#foeRows, 2, "both foe slots stay choosable")
+  for _, row in ipairs(foeRows) do
+    local hit = aiming.mapInput(
+      { type = "pointer_down", pointerId = "touch:1", x = row.x + 2, y = row.y + 2 },
+      aimed,
+      aiming
+    )
+    Assert.notNil(hit, "the " .. row.id .. " row claims its control")
+    Assert.equal(hit.control.id, row.id, "the target row keeps its candidate identity")
+  end
+end
+
+-- A doubles transition keeps every survivor on its cell while a
+-- partner hides: portraits never reindex onto the hidden slot, and
+-- the hidden slot keeps its HUD box with no live owner to paint.
+function T.hidden_transition_slots_keep_their_doubles_cells()
+  local full = drawnHud(doubledSnapshot(), {})
+  local gapped = doubledSnapshot()
+  for _, battler in ipairs(gapped.battlers) do
+    if battler.combatant == 4 then
+      battler.visible = false
+    end
+  end
+  local partial = drawnHud(gapped, {})
+  local function origins(drawn)
+    local found = {}
+    for _, entry in ipairs(drawn.graphics.draws) do
+      if type(entry.image) == "table" and type(entry.image.handle) == "string" then
+        local handle = entry.image.handle --[[@as string]]
+        if handle:sub(1, 4) == "mon:" then
+          Assert.isNil(found[handle], "the " .. handle .. " picture draws exactly once")
+          found[handle] = tostring(entry.x) .. ":" .. tostring(entry.y)
+        end
+      end
+    end
+    return found
+  end
+  local before, after = origins(full), origins(partial)
+  local survivors = 0
+  for handle, origin in pairs(before) do
+    if after[handle] ~= nil then
+      survivors = survivors + 1
+      Assert.equal(after[handle], origin, "the " .. handle .. " survivor keeps its cell mid-transition")
+    end
+  end
+  Assert.equal(survivors, 3, "three survivors keep drawing while one partner hides")
+  local content = assert(partial.plan.content, "the compact plan carries its content")
+  local boxes = hudBoxes(assert(content.hud, "the plan carries its hud"))
+  Assert.equal(#boxes, 4, "the hidden slot keeps its HUD box with no live owner")
+end
+
+-- A single-side view draws identically whether or not its records
+-- carry native slots: singles keep their documented anchors.
+function T.single_sides_draw_identically_with_or_without_native_slots()
+  local plain = snapshot()
+  local slotted = snapshot()
+  slotted.battlers[1].position = 1
+  slotted.battlers[1].activation = 11
+  slotted.battlers[2].position = 3
+  slotted.battlers[2].activation = 13
+  local first = drawnHud(plain, {})
+  local second = drawnHud(slotted, {})
+  Assert.deepEqual(second.graphics.draws, first.graphics.draws, "native slots never move single-side pictures")
+  Assert.deepEqual(second.graphics.rectangles, first.graphics.rectangles, "native slots never move single-side bars")
+  Assert.deepEqual(second.text.draws, first.text.draws, "native slots never move single-side wording")
+end
+
 return { tests = T }

@@ -355,6 +355,31 @@ local function stagedArtPath(envelope, key)
   if key == "hud:player" then
     return type(manifest.playerHud) == "table" and manifest.playerHud.image or nil
   end
+  -- Doubled health boxes resolve through the staged doubled family by
+  -- slot: each row owns its dedicated strip, never a shared
+  -- single-battle strip.
+  local doublesSlot = tostring(key):match("^hud:(.+)$")
+  if
+    doublesSlot == "player-left"
+    or doublesSlot == "player-right"
+    or doublesSlot == "enemy-left"
+    or doublesSlot == "enemy-right"
+  then
+    local family = type(manifest.doublesHud) == "table" and manifest.doublesHud or nil
+    local section = nil
+    if type(family) == "table" then
+      if doublesSlot == "player-left" then
+        section = family.playerLeft
+      elseif doublesSlot == "player-right" then
+        section = family.playerRight
+      elseif doublesSlot == "enemy-left" then
+        section = family.enemyLeft
+      else
+        section = family.enemyRight
+      end
+    end
+    return type(section) == "table" and section.image or nil
+  end
   if key == "menu:command" then
     return type(manifest.command) == "table" and manifest.command.image or nil
   end
@@ -470,6 +495,10 @@ local function checkStagedMembers(envelope)
     { key = "menu:target", path = type(manifest.target) == "table" and manifest.target.image or nil },
     { key = "hud:enemy", path = type(manifest.enemyHud) == "table" and manifest.enemyHud.image or nil },
     { key = "hud:player", path = type(manifest.playerHud) == "table" and manifest.playerHud.image or nil },
+    { key = "hud:player-left", path = stagedArtPath(envelope, "hud:player-left") },
+    { key = "hud:player-right", path = stagedArtPath(envelope, "hud:player-right") },
+    { key = "hud:enemy-left", path = stagedArtPath(envelope, "hud:enemy-left") },
+    { key = "hud:enemy-right", path = stagedArtPath(envelope, "hud:enemy-right") },
   }
   for _, entry in ipairs(required) do
     local bytes = type(entry.path) == "string" and cacheFs:read(entry.path) or nil

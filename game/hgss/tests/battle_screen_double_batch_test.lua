@@ -117,6 +117,10 @@ local function openDoubleRig(opts)
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
   local catalog = CatalogFixture.makeCatalog()
   local wounded = opts.wounded == true
+  local leadSpecies = opts.leadSpecies or { "EEVEE", "EEVEE" }
+  local leadLevels = opts.leadLevels or { 8, 8 }
+  local foeSpecies = opts.foeSpecies or { "EEVEE", "EEVEE" }
+  local foeLevels = opts.foeLevels or { 4, 4 }
   local function hp()
     return wounded and 10 or nil
   end
@@ -137,11 +141,11 @@ local function openDoubleRig(opts)
   local firstLeadMoves = opts.firstLeadMoves or { { move = "TACKLE", pp = 35, ppUps = 0 } }
   local secondLeadMoves = opts.secondLeadMoves or { { move = "GROWL", pp = 40, ppUps = 0 } }
   Assert.isTrue(
-    party:addMon(leadRecord(catalog, 0x33333333, "EEVEE", 8, firstLeadMoves, hp())),
+    party:addMon(leadRecord(catalog, 0x33333333, leadSpecies[1], leadLevels[1], firstLeadMoves, hp())),
     "the first lead enters the live party"
   )
   Assert.isTrue(
-    party:addMon(leadRecord(catalog, 0x44444444, "EEVEE", 8, secondLeadMoves, hp())),
+    party:addMon(leadRecord(catalog, 0x44444444, leadSpecies[2], leadLevels[2], secondLeadMoves, hp())),
     "the second lead enters the live party"
   )
   Assert.isTrue(
@@ -169,9 +173,9 @@ local function openDoubleRig(opts)
   rig.bag = bag
   local launchId = opts.launchId or "launch-double-batch"
   local foeCatalog = CatalogFixture.makeCatalog()
-  local function foeRecord(species, seed)
+  local function foeRecord(species, level, seed)
     local factory = CatalogFixture.makeFactory(seed, foeCatalog)
-    local record = factory:createNormal(CatalogFixture.normalRequest({ species = species, level = 4 }))
+    local record = factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level }))
     record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
     return record
   end
@@ -182,7 +186,7 @@ local function openDoubleRig(opts)
       {
         id = trainerId,
         class = 2,
-        party = { foeRecord("EEVEE", 0x5EED0001), foeRecord("EEVEE", 0x5EED0002) },
+        party = { foeRecord(foeSpecies[1], foeLevels[1], 0x5EED0001), foeRecord(foeSpecies[2], foeLevels[2], 0x5EED0002) },
         partyLevels = { 4, 4 },
         prizeMoney = { trainerClass = 2, classRate = 4 },
         aiPasses = {},
@@ -1225,6 +1229,256 @@ function T.target_pickers_name_projected_recipients_on_both_layouts()
     )
     tapRig.screen:dispose()
   end
+end
+
+---@param snapshot table internal semantic snapshot under drawing
+---@return table<string, table> live battler facts keyed by native slot under test driving
+local function battlersByPosition(snapshot)
+  local live = {}
+  for _, entry in ipairs(snapshot.battlers) do
+    if entry.visible ~= false then
+      live[#live + 1] = entry
+    else
+      Assert.equal(entry.side, 1, "only benched own reserves hide at the opening")
+    end
+  end
+  Assert.equal(#live, 4, "both partners on both sides stay visible, got " .. #live)
+  local byPosition = {}
+  for _, entry in ipairs(live) do
+    Assert.notNil(entry.position, "every live battler keeps its native slot")
+    Assert.isNil(byPosition[entry.position], "no native slot is claimed twice")
+    byPosition[entry.position] = entry
+  end
+  return byPosition
+end
+
+---@param name string arrangement identity under test driving
+---@param width integer host width under test driving
+---@param height integer host height under test driving
+---@param topology table display topology under test driving
+---@return table caller-owned display facts for the arrangement
+local function arrangementMeasurement(name, width, height, topology)
+  return {
+    width = width,
+    height = height,
+    topology = topology,
+    pixelRatio = 1,
+    signature = "battle-double-batch-test:four-pictures-" .. name,
+  }
+end
+
+-- Both sides field two battlers with their own pictures and health:
+-- the opening snapshot keys four live records by native slot with
+-- distinct portraits, every native arrangement paints all four at
+-- four distinct destinations, a strike moves only its target's
+-- health, and the public view leaks no reserves.
+function T.both_sides_field_two_battlers_with_their_own_pictures_and_health()
+  local rig = openDoubleRig({
+    launchId = "launch-double-four-pictures",
+    layout = "paired",
+    leadSpecies = { "CHIKORITA", "EEVEE" },
+    leadLevels = { 8, 9 },
+    foeSpecies = { "EEVEE", "TOTODILE" },
+    foeLevels = { 4, 5 },
+  })
+  driveToMode(rig, "command")
+  local opening = rig.screen:_snapshot()
+  local byPosition = battlersByPosition(opening)
+  local near, far = {}, {}
+  for position, entry in pairs(byPosition) do
+    if entry.side == 1 then
+      near[#near + 1] = position
+    else
+      far[#far + 1] = position
+    end
+  end
+  Assert.equal(#near, 2, "the near side fields both partners")
+  Assert.equal(#far, 2, "the far side fields both partners")
+  local liveBattlers = {}
+  for _, entry in pairs(byPosition) do
+    liveBattlers[#liveBattlers + 1] = entry
+  end
+  local selectors = {}
+  for _, entry in ipairs(liveBattlers) do
+    Assert.isNil(selectors[entry.portraitSelector], "each slot owns its portrait")
+    selectors[entry.portraitSelector] = true
+  end
+  local distinct = 0
+  for _ in pairs(selectors) do
+    distinct = distinct + 1
+  end
+  Assert.equal(distinct, 4, "four distinct species own four distinct portraits")
+  local public = rig.screen:view()
+  local livePublic = 0
+  for _, entry in ipairs(public.battlers) do
+    local keys = {}
+    for key in pairs(entry) do
+      keys[#keys + 1] = key
+    end
+    table.sort(keys)
+    Assert.deepEqual(keys, { "hp", "maxHp", "side", "visible" }, "the public battler carries only visible facts")
+    if entry.visible ~= false then
+      livePublic = livePublic + 1
+    end
+  end
+  Assert.equal(livePublic, 4, "the public view shows exactly the four live battlers")
+  local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+  local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local arrangements = {
+    dual = arrangementMeasurement(
+      "dual",
+      256,
+      384,
+      ScreenTopology.dualDisplay(
+        { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+        { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+      )
+    ),
+    wide = arrangementMeasurement(
+      "wide",
+      512,
+      192,
+      ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = 512, height = 192 },
+        touch = true,
+        role = "world",
+      })
+    ),
+    tall = arrangementMeasurement(
+      "tall",
+      256,
+      384,
+      ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = 256, height = 384 },
+        touch = true,
+        role = "world",
+      })
+    ),
+  }
+  for name, measurement in pairs(arrangements) do
+    local session = ApplicationPresentation.new(BattleScreenInterface.defaults(), nil)
+    local plan = session:resolve(measurement, opening)
+    Assert.equal(#plan.panes, 2, "the " .. name .. " arrangement keeps both native panes")
+    local graphics = FakeGraphics.new({})
+    local text = { draws = {} }
+    function text.measure(content)
+      return { width = 8 * #tostring(content), height = 16 }
+    end
+    function text.drawText(content, x, y)
+      text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y }
+    end
+    function text.drawTextWithPalette(content, x, y, palette)
+      text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y, palette = palette }
+    end
+    local resources = {
+      graphics = graphics,
+      text = text,
+      windows = {
+        drawWindow = function(_, _, _) end,
+      },
+      assets = {
+        drawable = function(_, key)
+          return { handle = key }
+        end,
+      },
+      frameKey = "four-pictures-frame",
+      sceneImageKey = "scene:test",
+    }
+    ApplicationPresentation.draw(graphics, resources, opening, plan)
+    local pictures = {}
+    for _, drawn in ipairs(graphics.draws) do
+      if type(drawn.image) == "table" and type(drawn.image.handle) == "string" and drawn.image.handle:sub(1, 4) == "mon:" then
+        pictures[#pictures + 1] = drawn
+      end
+    end
+    Assert.equal(#pictures, 4, "the " .. name .. " arrangement paints all four pictures")
+    local handles = {}
+    local seats = {}
+    for _, drawn in ipairs(pictures) do
+      Assert.isNil(handles[drawn.image.handle], "the " .. name .. " arrangement never repeats a picture")
+      handles[drawn.image.handle] = true
+      local seat = tostring(drawn.x) .. ":" .. tostring(drawn.y)
+      Assert.isNil(seats[seat], "the " .. name .. " arrangement never stacks two pictures")
+      seats[seat] = true
+    end
+    local words = {}
+    for _, drawn in ipairs(text.draws) do
+      words[tostring(drawn.content)] = true
+    end
+    for _, entry in ipairs(liveBattlers) do
+      Assert.isTrue(words[entry.name] == true, "the " .. name .. " arrangement names " .. tostring(entry.name))
+    end
+  end
+  local beforeHp = {}
+  for _, entry in ipairs(rig.screen:_snapshot().battlers) do
+    beforeHp[entry.combatant] = entry.hp
+  end
+  local requestId = assert(rig.screen:status().request, "the prompt mirrors its request").requestId
+  press(rig, { type = "confirm" })
+  Assert.equal(rig.screen:status().mode, "moves", "confirming Fight opens move selection")
+  press(rig, { type = "confirm" })
+  Assert.equal(rig.screen:status().mode, "target", "a move with two foes opens target selection")
+  local targets = rig.screen:view().targets
+  Assert.notNil(targets, "the target list stays observable")
+  Assert.equal(#targets, 2, "both foe slots stay selectable")
+  local struckPosition = assert(targets[1], "the first target resolves").position
+  press(rig, { type = "confirm" })
+  Assert.equal(#rig.submits, 0, "the first staged strike submits nothing")
+  Assert.equal(rig.screen:view().actor.index, 2, "staging advances to the second lead")
+  press(rig, { type = "confirm" })
+  Assert.equal(rig.screen:status().mode, "moves", "the second lead reaches move selection")
+  press(rig, { type = "confirm" })
+  if rig.screen:status().mode == "target" then
+    press(rig, { type = "confirm" })
+  end
+  Assert.equal(#rig.submits, 1, "the completed pair submits exactly once")
+  for _ = 1, 3000 do
+    rig.pump(1)
+    local status = rig.screen:status()
+    if status.mode == "failed" then
+      error("the battle screen failed while resolving the turn: " .. tostring(status.error), 0)
+    end
+    if status.mode == "command" and status.request ~= nil and status.request.requestId ~= requestId then
+      break
+    end
+  end
+  local renewed = rig.screen:status()
+  Assert.isTrue(
+    renewed.request ~= nil and renewed.request.requestId ~= requestId,
+    "the turn resolves into a new command"
+  )
+  local resolved = rig.screen:_snapshot()
+  local resolvedByPosition = battlersByPosition(resolved)
+  for position, entry in pairs(resolvedByPosition) do
+    Assert.equal(entry.side, byPosition[position].side, "slot " .. position .. " keeps its side after the turn")
+  end
+  local struckHp = nil
+  local partnerHp = nil
+  for _, entry in ipairs(resolved.battlers) do
+    if entry.side == 2 and entry.position == struckPosition then
+      struckHp = entry.hp
+    elseif entry.side == 2 then
+      partnerHp = entry.hp
+    end
+  end
+  Assert.notNil(struckHp, "the struck foe still holds its slot")
+  Assert.notNil(partnerHp, "the partner foe still holds its slot")
+  local struckCombatant = nil
+  for _, entry in ipairs(resolved.battlers) do
+    if entry.side == 2 and entry.position == struckPosition then
+      struckCombatant = entry.combatant
+    end
+  end
+  Assert.isTrue(struckHp < beforeHp[struckCombatant], "the targeted foe loses health")
+  for _, entry in ipairs(resolved.battlers) do
+    if entry.side == 2 and entry.position ~= struckPosition then
+      Assert.equal(entry.hp, beforeHp[entry.combatant], "the untargeted foe keeps its exact health")
+    end
+  end
+  rig.screen:dispose()
 end
 
 return { tests = T }

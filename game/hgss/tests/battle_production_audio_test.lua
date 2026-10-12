@@ -195,6 +195,12 @@ local function stagedManifest(sceneImage)
     },
     playerHud = sprite(MENU_IMAGE),
     enemyHud = sprite(MENU_IMAGE),
+    doublesHud = {
+      playerLeft = sprite(MENU_IMAGE),
+      playerRight = sprite(MENU_IMAGE),
+      enemyLeft = sprite(MENU_IMAGE),
+      enemyRight = sprite(MENU_IMAGE),
+    },
     arrow = sprite(MENU_IMAGE),
     partyGauges = {
       sprite(MENU_IMAGE),

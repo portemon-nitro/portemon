@@ -674,4 +674,241 @@ function T.named_speeds_reveal_bounded_glyphs_at_their_cadence()
   Assert.isFalse(ok, "an unknown pace fails instead of guessing")
 end
 
+---@param combatant integer native combatant identity under test driving
+---@param position integer opaque runtime slot identity under test driving
+---@param activation integer entry token under test driving
+---@param own boolean true for the near side under test driving
+---@param species string
+---@param name string
+---@param level integer
+---@param hp integer current health under test driving
+---@param maxHp integer
+---@return table model battler record carrying its native slot
+local function doubleRecord(combatant, position, activation, own, species, name, level, hp, maxHp)
+  return {
+    combatant = combatant,
+    participant = combatant,
+    side = own and 1 or 2,
+    controller = own and "player" or "wild",
+    active = true,
+    position = position,
+    activation = activation,
+    hp = hp,
+    maxHp = maxHp,
+    species = species,
+    form = 0,
+    name = name,
+    level = level,
+    selector = own and "back" or "front",
+    portraitSelector = MonCache.portraitSelector(species, 0, "male", false, own and "back" or nil),
+    moves = own and { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } } or nil,
+    experience = 8000,
+  }
+end
+
+---@return table detached opening dynamic view with two live leads and two live foes
+local function doubleOpeningView()
+  return {
+    round = 1,
+    status = "running",
+    own = {
+      doubleRecord(1, 1, 11, true, "STARLY", "LEFTY", 8, 40, 40),
+      doubleRecord(2, 2, 12, true, "SHINX", "RIGHTY", 9, 35, 38),
+    },
+    foes = {
+      doubleRecord(3, 3, 13, false, "BIDOOF", "FOE-A", 4, 45, 45),
+      doubleRecord(4, 4, 14, false, "PICHU", "FOE-B", 5, 30, 33),
+    },
+    participants = {},
+    environment = {},
+  }
+end
+
+---@param combatant integer native combatant identity under test driving
+---@param position integer opaque runtime slot identity under test driving
+---@param side integer
+---@param hp integer
+---@param maxHp integer
+---@return table checkpoint fragment for one combatant
+local function doubleCheckpoint(combatant, position, side, hp, maxHp)
+  return {
+    activation = combatant,
+    controller = side == 1 and "player" or "wild",
+    experience = 100,
+    form = 0,
+    hp = hp,
+    maxHp = maxHp,
+    participant = combatant,
+    position = position,
+    side = side,
+    species = "BIDOOF",
+  }
+end
+
+---@param id integer packet identity under test driving
+---@param events table ordered sanitized events under test driving
+---@param after table detached after view under test driving
+---@return table delivery-shaped packet over the doubled opening
+local function doublePacket(id, events, after)
+  return {
+    launchId = "timeline-double-probe",
+    packetId = id,
+    events = events,
+    before = doubleOpeningView(),
+    after = after,
+    request = nil,
+    result = nil,
+  }
+end
+
+---@param kind string sanitized event kind under test driving
+---@param payload table event addressing under test driving
+---@param health table<integer, table> per-combatant slot and health facts under test driving
+---@return table one sanitized event
+local function doubleEvent(kind, payload, health)
+  local combatants = {}
+  local hp = {}
+  for combatant, facts in pairs(health) do
+    combatants[combatant] = doubleCheckpoint(combatant, facts.position, facts.side, facts.hp, facts.maxHp)
+    hp[combatant] = facts.hp
+  end
+  return {
+    sequence = 1,
+    kind = kind,
+    cause = { key = "TACKLE" },
+    audience = "public",
+    payload = payload,
+    after = { hp = hp, combatants = combatants },
+  }
+end
+
+-- Paired slots keep their native positions from reset through
+-- reconciliation: every live slot stays addressable by its source
+-- position and entry token, health-only updates never move a slot, and
+-- benched reserves never surface.
+function T.paired_slots_keep_native_positions_through_reset_and_reconcile()
+  local timeline = BattleTimeline.new({ sound = function(_) end })
+  timeline:reset(doubleOpeningView())
+  Assert.equal(#timeline:battlers(), 4, "both partners on both sides display")
+  for _, slot in ipairs({ { 1, 1, 11 }, { 2, 2, 12 }, { 3, 3, 13 }, { 4, 4, 14 } }) do
+    local entry = battler(timeline:battlers(), slot[1])
+    Assert.equal(entry.position, slot[2], "combatant " .. slot[1] .. " keeps its native slot")
+    Assert.equal(entry.activation, slot[3], "combatant " .. slot[1] .. " keeps its entry token")
+    Assert.isTrue(entry.visible, "combatant " .. slot[1] .. " opens visible")
+  end
+  local selectors = {}
+  for _, entry in ipairs(timeline:battlers()) do
+    selectors[entry.portraitSelector] = true
+  end
+  local distinct = 0
+  for _ in pairs(selectors) do
+    distinct = distinct + 1
+  end
+  Assert.equal(distinct, 4, "four distinct species own four distinct portraits")
+  local wounded = doubleOpeningView()
+  wounded.foes[2].hp = 17
+  for _, group in ipairs({ wounded.own, wounded.foes }) do
+    for _, record in ipairs(group) do
+      timeline:reconcileBattler(record, true)
+    end
+  end
+  local hurt = battler(timeline:battlers(), 4)
+  Assert.equal(hurt.hp, 17, "the wounded foe reconciles its exact health")
+  Assert.equal(hurt.position, 4, "a health update never moves the wounded slot")
+  Assert.equal(hurt.activation, 14, "a health update never re-tokens the wounded slot")
+  local partner = battler(timeline:battlers(), 3)
+  Assert.equal(partner.hp, 45, "the partner foe keeps its health")
+  Assert.equal(partner.position, 3, "the partner foe keeps its slot")
+  local benched = doubleOpeningView()
+  local reserve = doubleRecord(5, 3, 15, false, "BIDOOF", "BENCH", 4, 40, 40)
+  reserve.active = false
+  reserve.position = nil
+  reserve.activation = nil
+  benched.foes[#benched.foes + 1] = reserve
+  local probe = BattleTimeline.new({ sound = function(_) end })
+  probe:reset(benched)
+  Assert.equal(#probe:battlers(), 4, "an inactive reserve never takes a display slot")
+  for _, entry in ipairs(probe:battlers()) do
+    Assert.isTrue(entry.combatant ~= 5, "the reserve identity never surfaces")
+  end
+end
+
+-- A knockout with a queued replacement keeps every identity on its
+-- native slot: only the struck record recoils, only it hides at its
+-- faint cue, the partner never moves, and the reserve walks out at the
+-- vacated slot with its own portrait while the retired record stays
+-- hidden. Both foes share one species yet stay two combatants.
+function T.knockout_reveal_keeps_vacated_slot_and_leaves_partner_alone()
+  local opening = doubleOpeningView()
+  opening.foes[2] = doubleRecord(4, 4, 14, false, "BIDOOF", "FOE-B", 5, 30, 33)
+  local timeline = BattleTimeline.new({ sound = function(_) end })
+  timeline:reset(opening)
+  Assert.equal(battler(timeline:battlers(), 3).species, "BIDOOF", "the first foe opens with the shared species")
+  Assert.equal(battler(timeline:battlers(), 4).species, "BIDOOF", "the second foe opens with the shared species")
+  local after = doubleOpeningView()
+  after.foes[1] = doubleRecord(3, 3, 13, false, "BIDOOF", "FOE-A", 4, 45, 45)
+  after.foes[2] = doubleRecord(5, 4, 15, false, "PICHU", "FOE-C", 5, 33, 33)
+  local health = {
+    [1] = { position = 1, side = 1, hp = 40, maxHp = 40 },
+    [2] = { position = 2, side = 1, hp = 35, maxHp = 38 },
+    [3] = { position = 3, side = 2, hp = 45, maxHp = 45 },
+    [4] = { position = 4, side = 2, hp = 0, maxHp = 33 },
+    [5] = { position = 4, side = 2, hp = 33, maxHp = 33 },
+  }
+  Assert.isTrue(
+    timeline:present(doublePacket(1, {
+      doubleEvent("struck", { target = 4, damage = 30, hitIndex = 1 }, health),
+      doubleEvent("faint", { combatant = 4, activation = 14, position = 4 }, health),
+      doubleEvent("switch", { from = 4, incoming = 5 }, health),
+    }, after)),
+    "the knockout packet is accepted"
+  )
+  local shookTarget = false
+  local partnerShook = false
+  local faintAt = nil
+  local revealedAt = nil
+  local ticks = 0
+  while not timeline:settled() and ticks < 3000 do
+    advance(timeline, TICK)
+    ticks = ticks + 1
+    if timeline:shake(4) ~= 0 then
+      shookTarget = true
+    end
+    if timeline:shake(3) ~= 0 then
+      partnerShook = true
+    end
+    if battler(timeline:battlers(), 4).visible == false and faintAt == nil then
+      faintAt = ticks
+    end
+    for _, entry in ipairs(timeline:battlers()) do
+      if entry.combatant == 5 and entry.visible == true and revealedAt == nil then
+        revealedAt = ticks
+      end
+    end
+  end
+  Assert.isTrue(shookTarget, "the struck record recoils through its hit cue")
+  Assert.isFalse(partnerShook, "the surviving partner never recoils")
+  Assert.notNil(faintAt, "the faint cue hides its record")
+  Assert.notNil(revealedAt, "the reveal cue walks the reserve out")
+  Assert.isTrue(timeline:settled(), "every queued cue drains")
+  local final = {}
+  for _, entry in ipairs(timeline:battlers()) do
+    Assert.isNil(final[entry.combatant], "no retired record draws twice")
+    final[entry.combatant] = entry
+  end
+  Assert.isFalse(final[4].visible, "the retired record stays hidden")
+  Assert.isTrue(final[5].visible, "the reserve ends visible")
+  Assert.equal(final[5].position, 4, "the reserve takes the vacated native slot")
+  Assert.equal(final[5].activation, 15, "the reserve carries its own entry token")
+  Assert.equal(
+    final[5].portraitSelector,
+    MonCache.portraitSelector("PICHU", 0, "male", false),
+    "the reserve draws its own portrait, never the retired one"
+  )
+  Assert.equal(final[3].hp, 45, "the surviving partner keeps its health")
+  Assert.equal(final[3].position, 3, "the surviving partner keeps its slot")
+  Assert.isTrue(final[3].visible, "the surviving partner stays visible")
+  Assert.isTrue(revealedAt --[[@as integer]] >= faintAt --[[@as integer]], "the reveal never precedes the faint")
+end
+
 return { tests = T }

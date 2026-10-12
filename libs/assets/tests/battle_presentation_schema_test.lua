@@ -77,6 +77,10 @@ local function manifest()
       ["assets/generated/battle/lower-chars.png"] = { width = 3072, height = 8 },
       ["assets/generated/battle/hud-player-chars.png"] = { width = 1024, height = 8 },
       ["assets/generated/battle/hud-enemy-chars.png"] = { width = 1024, height = 8 },
+      ["assets/generated/battle/hud-doubles-player-left-chars.png"] = { width = 1024, height = 8 },
+      ["assets/generated/battle/hud-doubles-player-right-chars.png"] = { width = 1024, height = 8 },
+      ["assets/generated/battle/hud-doubles-enemy-left-chars.png"] = { width = 1024, height = 8 },
+      ["assets/generated/battle/hud-doubles-enemy-right-chars.png"] = { width = 1024, height = 8 },
       ["assets/generated/battle/arrow-chars.png"] = { width = 208, height = 8 },
       ["assets/generated/battle/gauges-0-chars.png"] = { width = 128, height = 8 },
       ["assets/generated/battle/gauges-1-chars.png"] = { width = 512, height = 8 },
@@ -97,6 +101,12 @@ local function manifest()
     },
     playerHud = spriteSection("assets/generated/battle/hud-player-chars.png"),
     enemyHud = spriteSection("assets/generated/battle/hud-enemy-chars.png"),
+    doublesHud = {
+      playerLeft = spriteSection("assets/generated/battle/hud-doubles-player-left-chars.png"),
+      playerRight = spriteSection("assets/generated/battle/hud-doubles-player-right-chars.png"),
+      enemyLeft = spriteSection("assets/generated/battle/hud-doubles-enemy-left-chars.png"),
+      enemyRight = spriteSection("assets/generated/battle/hud-doubles-enemy-right-chars.png"),
+    },
     arrow = spriteSection("assets/generated/battle/arrow-chars.png"),
     partyGauges = {
       spriteSection("assets/generated/battle/gauges-0-chars.png"),
@@ -130,6 +140,12 @@ function T.manifests_reject_missing_roles_and_bad_geometry()
   local missing = manifest()
   missing.arrow = nil
   Assert.isFalse(Schema.isValidManifest(missing), "a manifest without its arrow role never validates")
+  local missingDoubles = manifest()
+  missingDoubles.doublesHud = nil
+  Assert.isFalse(
+    Schema.isValidManifest(missingDoubles),
+    "a manifest without its doubled health-box family never validates"
+  )
   local badCell = manifest()
   badCell.playerHud.cells[1].objs[1].width = 0 - (0 / 0)
   Assert.isFalse(Schema.isValidManifest(badCell), "NaN sprite geometry never validates")

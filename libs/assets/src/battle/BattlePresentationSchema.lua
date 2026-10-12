@@ -299,6 +299,9 @@ end
 -- animation metadata, the supported scene inventory, staged image
 -- references, and text/audio roles. Every sprite descriptor preserves its
 -- source cell geometry; no runtime consumer needs a native identity.
+-- The doubled health-box family reuses the sprite-section shape: the
+-- closed manifest record carries no key for the four slot families, so
+-- one grouped record names them instead of a new schema or shape.
 function BattlePresentationSchema.assertManifest(manifest)
   local context = {}
   SchemaCheck.checkRecord(manifest, {
@@ -314,6 +317,7 @@ function BattlePresentationSchema.assertManifest(manifest)
     lower = true,
     playerHud = true,
     enemyHud = true,
+    doublesHud = true,
     arrow = true,
     partyGauges = true,
     terrain = true,
@@ -391,6 +395,16 @@ function BattlePresentationSchema.assertManifest(manifest)
   end
   checkSpriteSection(manifest.playerHud, context, CODE_MANIFEST, "manifest playerHud")
   checkSpriteSection(manifest.enemyHud, context, CODE_MANIFEST, "manifest enemyHud")
+  SchemaCheck.checkRecord(
+    manifest.doublesHud,
+    { playerLeft = true, playerRight = true, enemyLeft = true, enemyRight = true },
+    context,
+    CODE_MANIFEST,
+    "manifest doublesHud"
+  )
+  for _, slot in ipairs({ "playerLeft", "playerRight", "enemyLeft", "enemyRight" }) do
+    checkSpriteSection(manifest.doublesHud[slot], context, CODE_MANIFEST, "manifest doublesHud " .. slot)
+  end
   checkSpriteSection(manifest.arrow, context, CODE_MANIFEST, "manifest arrow")
   if not Validate.isArray(manifest.partyGauges) or #manifest.partyGauges ~= 2 then
     fail(CODE_MANIFEST, "manifest must carry both party gauge families", context)
@@ -412,6 +426,9 @@ function BattlePresentationSchema.assertManifest(manifest)
   end
   for _, field in ipairs({ "playerHud", "enemyHud", "arrow" }) do
     checkImageRef(manifest[field].image, "manifest " .. field .. " image")
+  end
+  for _, slot in ipairs({ "playerLeft", "playerRight", "enemyLeft", "enemyRight" }) do
+    checkImageRef(manifest.doublesHud[slot].image, "manifest doublesHud " .. slot .. " image")
   end
   for index, family in ipairs(manifest.partyGauges) do
     checkImageRef(family.image, "manifest partyGauges[" .. index .. "] image")

@@ -220,10 +220,90 @@ local function scopeFor(mode)
   return "command"
 end
 
+---@param record table<string, unknown> displayed battler facts under resolution
+---@return boolean true when the record owns a live compact slot
+local function liveSlot(record)
+  -- Only live active records resolve geometry: hidden, inactive and
+  -- historic records never claim a HUD box or sprite anchor.
+  return type(record) == "table" and record.visible ~= false and record.active ~= false
+end
+
+---@param records table<integer, table<string, unknown>> one side live records under ordering
+local function sortBySlot(records)
+  -- Positions stay opaque: only the relative order within a side
+  -- decides the cell, never a hardcoded slot number. The combatant
+  -- identity breaks ties deterministically.
+  table.sort(records, function(a, b)
+    local pa, pb = a.position, b.position
+    if type(pa) == "number" and type(pb) == "number" and pa ~= pb then
+      return pa < pb
+    end
+    return a.combatant < b.combatant
+  end)
+end
+
+-- Canonical side slot order behind stable cells: every distinct native
+-- position an active record claims on the side, hidden records
+-- included, in slot order. Cues hide and show records without moving
+-- slots, so the survivors keep their cells while a neighbor
+-- transitions instead of reindexing onto its cell.
+---@param view table<string, unknown> internal semantic snapshot under resolution
+---@param playerSide boolean true for the near player side, false for the far foe side
+---@return integer[] distinct claimed native positions in slot order
+local function canonicalOrder(view, playerSide)
+  local seen = {} ---@type table<integer, boolean>
+  local order = {} ---@type integer[]
+  if type(view.battlers) == "table" then
+    for _, battler in ipairs(view.battlers) do
+      if
+        type(battler) == "table"
+        and battler.active ~= false
+        and type(battler.position) == "number"
+        and (battler.side == 1) == playerSide
+        and not seen[
+          battler.position --[[@as integer]]
+        ]
+      then
+        seen[
+          battler.position --[[@as integer]]
+        ] = true
+        order[#order + 1] = battler.position --[[@as integer]]
+      end
+    end
+  end
+  table.sort(order)
+  return order
+end
+
+-- Layout family follows occupied native slots, never transient
+-- visibility: a double battle keeps its four cells while a neighbor
+-- hides mid-transition. Single battles never reach doubles occupancy,
+-- so their legacy geometry stays untouched.
+---@param view table<string, unknown> internal semantic snapshot under resolution
+---@param players table<integer, table<string, unknown>> live allies in slot order
+---@param enemies table<integer, table<string, unknown>> live foes in slot order
+---@return boolean true while the battle occupies doubles slots
+local function doublesFormat(view, players, enemies)
+  if #canonicalOrder(view, true) >= 2 or #canonicalOrder(view, false) >= 2 then
+    return true
+  end
+  if #players == 2 and #enemies == 2 then
+    for _, battler in ipairs({ players[1], players[2], enemies[1], enemies[2] }) do
+      if type(battler.position) ~= "number" then
+        return false
+      end
+    end
+    return true
+  end
+  return false
+end
+
 ---@param view table<string, unknown> internal semantic snapshot
----@return table<string, unknown>? player-side battler facts
----@return table<string, unknown>? enemy-side battler facts
-local function splitBattlers(view)
+---@return table<string, unknown>? first player-side battler facts in view order
+---@return table<string, unknown>? first enemy-side battler facts in view order
+local function singleSlots(view)
+  -- The legacy singles projection: first record per side in view
+  -- order. Untouched so single-side geometry never moves.
   local player, enemy = nil, nil
   if type(view.battlers) == "table" then
     for _, battler in ipairs(view.battlers) do
@@ -238,6 +318,34 @@ local function splitBattlers(view)
   end
   return player, enemy
 end
+
+---@param view table<string, unknown> internal semantic snapshot
+---@return table<integer, table<string, unknown>> live player-side battler facts in slot order
+---@return table<integer, table<string, unknown>> live enemy-side battler facts in slot order
+local function splitBattlers(view)
+  local players, enemies = {}, {}
+  if type(view.battlers) == "table" then
+    for _, battler in ipairs(view.battlers) do
+      if liveSlot(battler) then
+        if battler.side == 1 then
+          players[#players + 1] = battler
+        else
+          enemies[#enemies + 1] = battler
+        end
+      end
+    end
+  end
+  sortBySlot(players)
+  sortBySlot(enemies)
+  return players, enemies
+end
+
+-- Adapted compact doubles geometry: a modern one-screen arrangement
+-- inside the 256x136 scene, explicitly NOT a copy of DS positions.
+-- Foe boxes share the top row, ally boxes the bottom row above the
+-- dock; every box stays inside the scene and pairwise disjoint while
+-- the lower dock keeps its full interactive bounds. Sprite anchors sit
+-- in the free middle band in deterministic slot order.
 
 ---@param hp unknown health value under bounding
 ---@param maxHp unknown health ceiling under bounding
@@ -449,6 +557,110 @@ local function childContent(child)
 end
 
 ---@param view table<string, unknown> internal semantic snapshot under resolution
+---@param players table<integer, table<string, unknown>> live allies in slot order under resolution
+---@param enemies table<integer, table<string, unknown>> live foes in slot order under resolution
+---@return table<string, unknown> position-keyed HUD boxes in deterministic slot order
+local function doublesHud(view, players, enemies)
+  -- Cells follow the canonical claimed order, keyed by the opaque
+  -- native position of each row. A hidden transition slot keeps its
+  -- cell with no live owner: paint skips ownerless boxes while the
+  -- survivors stay on their rows. Draw and hit regions consume these
+  -- same bounds.
+  local live = {} ---@type table<integer, table<string, unknown>>
+  for _, battler in ipairs(players) do
+    if type(battler.position) == "number" then
+      live[
+        battler.position --[[@as integer]]
+      ] = battler
+    end
+  end
+  for _, battler in ipairs(enemies) do
+    if type(battler.position) == "number" then
+      live[
+        battler.position --[[@as integer]]
+      ] = battler
+    end
+  end
+  -- Side identity behind an ownerless transition cell comes from the
+  -- side's live records; every doubles view fields one, so the plan
+  -- keeps the owner's side without guessing it.
+  local function sideOf(list, playerSide)
+    for _, battler in ipairs(list) do
+      if type(battler.side) == "number" then
+        return battler.side --[[@as integer]]
+      end
+    end
+    if type(view.battlers) == "table" then
+      for _, battler in ipairs(view.battlers) do
+        if type(battler) == "table" and (battler.side == 1) == playerSide and type(battler.side) == "number" then
+          return battler.side --[[@as integer]]
+        end
+      end
+    end
+    return playerSide and 1 or 2
+  end
+  local foeSide = sideOf(enemies, false)
+  local allySide = sideOf(players, true)
+  local boxes = {} ---@type table<integer, table<string, unknown>>
+  local function add(order, cells, fallback, size, withExp, side)
+    for index, position in ipairs(order) do
+      local cell = cells[index]
+      assert(cell ~= nil, "the compact doubles cells cover every claimed slot")
+      local owner = live[position]
+      local box = hudBox(owner, fallback, cell, size, withExp)
+      box.position = position
+      box.side = (owner ~= nil and owner.side or side) --[[@as integer]]
+      boxes[#boxes + 1] = box
+    end
+  end
+  add(canonicalOrder(view, false), { { x = 4, y = 4 }, { x = 156, y = 4 } }, "FOE", HUD_ENEMY_BOX, false, foeSide)
+  add(canonicalOrder(view, true), { { x = 4, y = 84 }, { x = 148, y = 84 } }, "LEAD", HUD_PLAYER_BOX, true, allySide)
+  table.sort(boxes, function(a, b)
+    if a.y ~= b.y then
+      return a.y < b.y
+    end
+    return a.x < b.x
+  end)
+  return { boxes = boxes }
+end
+
+---@param view table<string, unknown> internal semantic snapshot under resolution
+---@param players table<integer, table<string, unknown>> live allies in slot order under resolution
+---@param enemies table<integer, table<string, unknown>> live foes in slot order under resolution
+---@return table<integer, table<string, unknown>> compact sprite anchors keyed by native position
+local function doublesSpriteCenters(view, players, enemies)
+  -- Anchors follow the canonical claimed order so a surviving slot
+  -- never slides onto a hidden neighbor's anchor mid-transition.
+  -- Records without a native position keep their live-order anchor.
+  local spots = {} ---@type table<integer, table<string, unknown>>
+  local function add(list, order, cells)
+    for index, battler in ipairs(list) do
+      local row = index
+      if type(battler.position) == "number" then
+        for candidate, slot in ipairs(order) do
+          if slot == battler.position then
+            row = candidate
+            break
+          end
+        end
+      end
+      local cell = cells[row]
+      assert(cell ~= nil, "the compact doubles anchors cover every live battler")
+      spots[#spots + 1] = { position = battler.position, x = cell.x, y = cell.y }
+    end
+  end
+  add(enemies, canonicalOrder(view, false), { { x = 56, y = 48 }, { x = 184, y = 48 } })
+  add(players, canonicalOrder(view, true), { { x = 56, y = 72 }, { x = 184, y = 72 } })
+  table.sort(spots, function(a, b)
+    local pa = a.position
+    local pb = b.position
+    assert(type(pa) == "number" and type(pb) == "number", "doubles sprite anchors key on native positions")
+    return pa < pb
+  end)
+  return spots
+end
+
+---@param view table<string, unknown> internal semantic snapshot under resolution
 ---@return table<string, unknown> canonical compact plan content
 function BattleCompactInterface.contentFor(view)
   local mode = view.mode
@@ -481,6 +693,12 @@ function BattleCompactInterface.contentFor(view)
   if mode == "child" and type(view.childView) == "table" then
     childPlan = childContent(view.childView --[[@as table<string, unknown>]])
   end
+  -- Doubles take the position-keyed layout whenever some side claims
+  -- doubles slots, even while a neighbor hides mid-transition; hidden
+  -- slots keep their cells with no live owner. Every other occupancy
+  -- keeps the legacy single-side geometry untouched.
+  local players, enemies = splitBattlers(view)
+  local doubles = doublesFormat(view, players, enemies)
   return {
     kind = "battle",
     layout = scopeFor(type(mode) == "string" and mode or "command"),
@@ -520,7 +738,10 @@ function BattleCompactInterface.contentFor(view)
       width = NARRATION_WIDTH,
     },
     hud = (function()
-      local player, enemy = splitBattlers(view)
+      if doubles then
+        return doublesHud(view, players, enemies)
+      end
+      local player, enemy = singleSlots(view)
       local foe = hudBox(enemy, "FOE", { x = HUD_ENEMY.x, y = HUD_ENEMY.y }, HUD_ENEMY_BOX, false)
       local ally = hudBox(
         player,
@@ -535,6 +756,7 @@ function BattleCompactInterface.contentFor(view)
     end)(),
     playerCenter = { x = PLAYER_CENTER.x, y = PLAYER_CENTER.y },
     enemyCenter = { x = ENEMY_CENTER.x, y = ENEMY_CENTER.y },
+    spriteCenters = doubles and doublesSpriteCenters(view, players, enemies) or nil,
   }
 end
 
@@ -1205,7 +1427,34 @@ local function drawCompactHud(resources, view, content)
   if type(viewport) ~= "table" then
     viewport = { x = 0, y = 0, width = 256, height = 136 }
   end
-  local player, enemy = splitBattlers(view)
+  local boxes = (type(hud.boxes) == "table" and hud.boxes or nil) --[[@as table<integer, table<string, unknown>>?]]
+  if boxes ~= nil then
+    -- Doubles: one HUD box per live slot, matched by native position
+    -- in the plan's box order with its own name, health and bar. The
+    -- same resolved bounds drive paint; hidden slots draw nothing.
+    local players, enemies = splitBattlers(view)
+    local live = {}
+    for _, battler in ipairs(players) do
+      if type(battler.position) == "number" then
+        live[battler.position] = { battler = battler, artKey = "hud:player" }
+      end
+    end
+    for _, battler in ipairs(enemies) do
+      if type(battler.position) == "number" then
+        live[battler.position] = { battler = battler, artKey = "hud:enemy" }
+      end
+    end
+    LogicalSurface.clip(graphics, viewport, function()
+      for _, box in ipairs(boxes) do
+        local entry = live[box.position]
+        if entry ~= nil then
+          drawHudSide(graphics, assets, text, entry.artKey, entry.battler, box)
+        end
+      end
+    end)
+    return
+  end
+  local player, enemy = singleSlots(view)
   LogicalSurface.clip(graphics, viewport, function()
     drawHudSide(graphics, assets, text, "hud:enemy", enemy, hud.enemy --[[@as table<string, unknown>?]])
     drawHudSide(graphics, assets, text, "hud:player", player, hud.player --[[@as table<string, unknown>?]])

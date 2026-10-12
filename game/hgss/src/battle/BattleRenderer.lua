@@ -154,23 +154,231 @@ local function restoreColor(graphics, r, g, b, a)
   graphics.setColor(r, g, b, a)
 end
 
----@param view table<string, unknown> internal semantic snapshot
----@return table<string, unknown>? player-side battler facts
----@return table<string, unknown>? enemy-side battler facts
-local function splitBattlers(view)
-  local player, enemy = nil, nil
+---@param record table<string, unknown> displayed battler facts under drawing
+---@return boolean true when the record owns a live battlefield slot
+local function liveSlot(record)
+  -- Only live active records draw: hidden (cue-withdrawn, fainted,
+  -- unrevealed), inactive (benched) and historic records never own a
+  -- current sprite or HUD.
+  return type(record) == "table" and record.visible ~= false and record.active ~= false
+end
+
+---@param records table<integer, table<string, unknown>> one side live records under ordering
+local function sortBySlot(records)
+  -- Positions stay opaque: only the relative order within a side
+  -- decides the left/right cell, never a hardcoded slot number. The
+  -- combatant identity breaks ties deterministically.
+  table.sort(records, function(a, b)
+    local pa, pb = a.position, b.position
+    if type(pa) == "number" and type(pb) == "number" and pa ~= pb then
+      return pa < pb
+    end
+    return a.combatant < b.combatant
+  end)
+end
+
+-- Canonical side slot order behind stable rows: every distinct native
+-- position an active record claims on the side, hidden records
+-- included, in slot order. Withdrawal, faint and reveal cues hide and
+-- show records without moving slots, so the survivors keep their rows
+-- while a neighbor transitions instead of reindexing onto its row.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param playerSide boolean true for the near player side, false for the far foe side
+---@return integer[] distinct claimed native positions in slot order
+local function canonicalOrder(view, playerSide)
+  local seen = {} ---@type table<integer, boolean>
+  local order = {} ---@type integer[]
   if type(view.battlers) == "table" then
     for _, battler in ipairs(view.battlers) do
-      if type(battler) == "table" then
-        if battler.side == 1 and player == nil then
-          player = battler
-        elseif battler.side ~= 1 and enemy == nil then
-          enemy = battler
+      if
+        type(battler) == "table"
+        and battler.active ~= false
+        and type(battler.position) == "number"
+        and (battler.side == 1) == playerSide
+        and not seen[
+          battler.position --[[@as integer]]
+        ]
+      then
+        seen[
+          battler.position --[[@as integer]]
+        ] = true
+        order[#order + 1] = battler.position --[[@as integer]]
+      end
+    end
+  end
+  table.sort(order)
+  return order
+end
+
+-- Layout family follows occupied native slots, never transient
+-- visibility: a single battle keeps its established anchors while a
+-- lead hides mid-switch, and a double battle keeps its rows while a
+-- neighbor hides mid-transition. The live-count fallback keeps
+-- position-less views on their established layout.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param players table<integer, table<string, unknown>> live player-side battler facts
+---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts
+---@return boolean true while the battle occupies doubles slots
+local function doublesFormat(view, players, enemies)
+  if #players > 1 or #enemies > 1 then
+    return true
+  end
+  return #canonicalOrder(view, true) >= 2 or #canonicalOrder(view, false) >= 2
+end
+
+-- Resolves one live battler's stable sourced row: its index in the
+-- canonical claimed order, so a surviving slot never slides onto a
+-- hidden neighbor's row. Records without a native position keep
+-- their live-order row, matching the legacy layout.
+---@param order integer[] canonical claimed positions in slot order
+---@param battler table<string, unknown> live battler facts under drawing
+---@param fallback integer live-order row behind position-less records
+---@param rows table<integer, table<string, unknown>> sourced rows behind the side
+---@param context string assertion context naming the sourced rows
+---@return table<string, unknown> the battler's stable row
+local function doublesRow(order, battler, fallback, rows, context)
+  local position = battler.position
+  if type(position) == "number" then
+    for index, slot in ipairs(order) do
+      if slot == position then
+        assert(rows[index] ~= nil, context)
+        return rows[index]
+      end
+    end
+  end
+  assert(rows[fallback] ~= nil, context)
+  return rows[fallback]
+end
+
+-- Doubled battlefield rows from the retail source tables, in 256x192
+-- upper-screen pixels. Settled X and the HUD anchors come from the
+-- doubles layout tables; portrait anchors are center-style for nominal
+-- 80x80 pictures (species height offsets from the retail picture
+-- routine have no mon-fact counterpart here, so the vertical
+-- composition uses the base row unshifted). Rows stay verbatim per
+-- side: the enemy left row sits screen-right of the enemy right row.
+-- Source: overlay_07 asm settled-X and entry/base/Z tables, the
+-- opponent-controller construction and entry-to-settled move, the four
+-- doubled health-bar sprite templates, and the picture-center
+-- semantics (pret/pokeheartgold@9d8b7591). Positions stay opaque: the
+-- first sorted slot of a side owns that side's left row, whatever
+-- screen side that row lands on. Entry coordinates and depths are
+-- source data, never 2D layering: paint order follows slot order.
+local DOUBLES_ROWS = {
+  player = {
+    {
+      type = 2,
+      sprite = { x = 40, y = 112 },
+      hud = { x = 192, y = 103 },
+      art = "hud:player-left",
+    },
+    {
+      type = 4,
+      sprite = { x = 80, y = 120 },
+      hud = { x = 198, y = 132 },
+      art = "hud:player-right",
+    },
+  },
+  enemy = {
+    {
+      type = 3,
+      sprite = { x = 216, y = 50 },
+      hud = { x = 64, y = 16 },
+      art = "hud:enemy-left",
+    },
+    {
+      type = 5,
+      sprite = { x = 176, y = 42 },
+      hud = { x = 58, y = 45 },
+      art = "hud:enemy-right",
+    },
+  },
+}
+
+-- Half the nominal picture edge: sourced centers convert to top-left
+-- draw origins through this inset. No per-species picture height rides
+-- the mon facts, so no height shift applies; that gap stays open until
+-- a sourced height counterpart lands.
+local PORTRAIT_HALF = 40
+
+-- Doubled dynamic rows reuse the single-battle template offsets
+-- unmodified: each row's wording and bar follow its own HUD anchor
+-- through the same relative geometry the single-battle rows use. The
+-- staged doubled strips may carry their own object cells, but this
+-- composition keeps the established templates until those cells are
+-- adopted from a staged dump.
+local DOUBLES_PLAYER_TEXT = {
+  name = { dx = -48, dy = -24 },
+  condition = { dx = -16, dy = -12 },
+  hp = { dx = -48, dy = 0 },
+  exp = { dx = 0, dy = 0 },
+}
+local DOUBLES_PLAYER_BAR = { dx = -48, dy = -8, width = 48, height = 4 }
+local DOUBLES_ENEMY_TEXT = { name = { dx = -50, dy = -20 }, condition = { dx = -18, dy = -8 } }
+local DOUBLES_ENEMY_BAR = { dx = -50, dy = 8, width = 48, height = 4 }
+
+-- Loud doubles occupancy: at most two live records per side and no
+-- shared visible slot. Identity rides the message so a doubled claim
+-- names both combatants.
+---@param players table<integer, table<string, unknown>> live player-side battler facts
+---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts
+local function checkDoublesSlots(players, enemies)
+  assert(#players <= 2, "at most two live player battlers draw (got " .. tostring(#players) .. ")")
+  assert(#enemies <= 2, "at most two live enemy battlers draw (got " .. tostring(#enemies) .. ")")
+  local claimed = {}
+  for _, battler in ipairs(players) do
+    if type(battler.position) == "number" then
+      local other = claimed[battler.position]
+      assert(
+        other == nil,
+        "native slot "
+          .. tostring(battler.position)
+          .. " is visibly claimed twice (combatants "
+          .. tostring(other)
+          .. " and "
+          .. tostring(battler.combatant)
+          .. ")"
+      )
+      claimed[battler.position] = battler.combatant
+    end
+  end
+  for _, battler in ipairs(enemies) do
+    if type(battler.position) == "number" then
+      local other = claimed[battler.position]
+      assert(
+        other == nil,
+        "native slot "
+          .. tostring(battler.position)
+          .. " is visibly claimed twice (combatants "
+          .. tostring(other)
+          .. " and "
+          .. tostring(battler.combatant)
+          .. ")"
+      )
+      claimed[battler.position] = battler.combatant
+    end
+  end
+end
+
+---@param view table<string, unknown> internal semantic snapshot
+---@return table<integer, table<string, unknown>> live player-side battler facts in slot order
+---@return table<integer, table<string, unknown>> live enemy-side battler facts in slot order
+local function splitBattlers(view)
+  local players, enemies = {}, {}
+  if type(view.battlers) == "table" then
+    for _, battler in ipairs(view.battlers) do
+      if liveSlot(battler) then
+        if battler.side == 1 then
+          players[#players + 1] = battler
+        else
+          enemies[#enemies + 1] = battler
         end
       end
     end
   end
-  return player, enemy
+  sortBySlot(players)
+  sortBySlot(enemies)
+  return players, enemies
 end
 
 ---@param assets table<string, unknown> injected asset holder
@@ -271,6 +479,133 @@ local function setBarColor(graphics, fraction)
   end
 end
 
+---@param graphics table<string, unknown> injected host graphics
+---@param text table<string, unknown> borrowed text services
+---@param assets table<string, unknown> injected asset holder
+---@param r number borrowed red channel for restoration
+---@param g number borrowed green channel for restoration
+---@param b number borrowed blue channel for restoration
+---@param a number borrowed alpha channel for restoration
+---@param view table<string, unknown> internal semantic snapshot carrying claimed slots
+---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
+---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts in slot order
+local function drawDoublesDetail(graphics, text, assets, r, g, b, a, view, players, enemies)
+  -- Every live slot paints its own sprite and HUD at its canonical
+  -- sourced row: the surviving partner never reindexes when a slot
+  -- empties mid-transition, and a missing portrait or strip draws
+  -- nothing under the existing missing-art pending path (never a
+  -- fallback mon or a shared single-battle strip).
+  checkDoublesSlots(players, enemies)
+  local foeOrder = canonicalOrder(view, false)
+  local allyOrder = canonicalOrder(view, true)
+  for index, foe in ipairs(enemies) do
+    local row = doublesRow(foeOrder, foe, index, DOUBLES_ROWS.enemy, "the sourced enemy rows cover every live foe")
+    local front = battlerImage(assets, foe)
+    if front ~= nil then
+      local dx = (type(foe.shakeDx) == "number" and foe.shakeDx or 0) --[[@as number]]
+      graphics.draw(front, row.sprite.x - PORTRAIT_HALF + dx, row.sprite.y - PORTRAIT_HALF)
+    end
+    drawHudComposite(graphics, assets, row.art, row.hud, ENEMY_HUD_OBJECTS)
+    drawNameLevel(
+      graphics,
+      text,
+      foe.name or "FOE",
+      foe.level --[[@as integer?]],
+      row.hud.x + DOUBLES_ENEMY_TEXT.name.dx,
+      row.hud.y + DOUBLES_ENEMY_TEXT.name.dy
+    )
+    if type(foe.condition) == "string" and foe.condition ~= "" then
+      text.drawText(
+        foe.condition --[[@as string]],
+        row.hud.x + DOUBLES_ENEMY_TEXT.condition.dx,
+        row.hud.y + DOUBLES_ENEMY_TEXT.condition.dy
+      )
+    end
+    local foeHp = (type(foe.hp) == "number" and foe.hp or 0) --[[@as number]]
+    local foeMaxHp = (type(foe.maxHp) == "number" and foe.maxHp or 1) --[[@as number]]
+    local foeFraction = barFraction(foeHp, foeMaxHp)
+    setBarColor(graphics, foeFraction)
+    graphics.rectangle(
+      "fill",
+      row.hud.x + DOUBLES_ENEMY_BAR.dx,
+      row.hud.y + DOUBLES_ENEMY_BAR.dy,
+      DOUBLES_ENEMY_BAR.width * foeFraction,
+      DOUBLES_ENEMY_BAR.height
+    )
+    restoreColor(graphics, r, g, b, a)
+  end
+  for index, ally in ipairs(players) do
+    local row = doublesRow(allyOrder, ally, index, DOUBLES_ROWS.player, "the sourced player rows cover every live ally")
+    local back = battlerImage(assets, ally)
+    if back ~= nil then
+      local dx = (type(ally.shakeDx) == "number" and ally.shakeDx or 0) --[[@as number]]
+      graphics.draw(back, row.sprite.x - PORTRAIT_HALF + dx, row.sprite.y - PORTRAIT_HALF)
+    end
+    drawHudComposite(graphics, assets, row.art, row.hud, PLAYER_HUD_OBJECTS)
+    local hp = (type(ally.hp) == "number" and ally.hp or 0) --[[@as number]]
+    local maxHp = (type(ally.maxHp) == "number" and ally.maxHp or 1) --[[@as number]]
+    drawNameLevel(
+      graphics,
+      text,
+      ally.name or "LEAD",
+      ally.level --[[@as integer?]],
+      row.hud.x + DOUBLES_PLAYER_TEXT.name.dx,
+      row.hud.y + DOUBLES_PLAYER_TEXT.name.dy
+    )
+    if type(ally.condition) == "string" and ally.condition ~= "" then
+      text.drawText(
+        ally.condition --[[@as string]],
+        row.hud.x + DOUBLES_PLAYER_TEXT.condition.dx,
+        row.hud.y + DOUBLES_PLAYER_TEXT.condition.dy
+      )
+    end
+    text.drawText(
+      tostring(hp) .. "/" .. tostring(maxHp),
+      row.hud.x + DOUBLES_PLAYER_TEXT.hp.dx,
+      row.hud.y + DOUBLES_PLAYER_TEXT.hp.dy
+    )
+    local fraction = barFraction(hp, maxHp)
+    setBarColor(graphics, fraction)
+    graphics.rectangle(
+      "fill",
+      row.hud.x + DOUBLES_PLAYER_BAR.dx,
+      row.hud.y + DOUBLES_PLAYER_BAR.dy,
+      DOUBLES_PLAYER_BAR.width * fraction,
+      DOUBLES_PLAYER_BAR.height
+    )
+    restoreColor(graphics, r, g, b, a)
+    if type(ally.exp) == "number" then
+      text.drawText(
+        tostring(ally.exp --[[@as number]]),
+        row.hud.x + DOUBLES_PLAYER_TEXT.exp.dx,
+        row.hud.y + DOUBLES_PLAYER_TEXT.exp.dy
+      )
+    end
+  end
+end
+
+-- The doubled arrow base follows the acting partner at draw time:
+-- one arrow offset left of that slot's health-box anchor, never a
+-- hardcoded column. Without an acting identity the first player row
+-- anchors it. The single-battle base stays frozen for pixel identity.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
+---@return number base horizontal origin
+---@return number base vertical origin
+local function doublesArrowBase(view, players)
+  local row = DOUBLES_ROWS.player[1]
+  local actor = view.actor --[[@as table<string, unknown>?]]
+  if type(actor) == "table" and actor.combatant ~= nil then
+    for index, ally in ipairs(players) do
+      if ally.combatant == actor.combatant then
+        row = assert(DOUBLES_ROWS.player[index], "the sourced player rows cover every live ally")
+        break
+      end
+    end
+  end
+  return row.hud.x - BattleRenderer.ARROW_OFFSET, row.hud.y
+end
+
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
 local function drawDetail(resources, view)
@@ -283,7 +618,13 @@ local function drawDetail(resources, view)
   if scene ~= nil then
     graphics.draw(scene, 0, 0)
   end
-  local player, enemy = splitBattlers(view)
+  local players, enemies = splitBattlers(view)
+  local singles = not doublesFormat(view, players, enemies)
+  if not singles then
+    drawDoublesDetail(graphics, text, assets, r, g, b, a, view, players, enemies)
+  end
+  local player = singles and players[1] or nil
+  local enemy = singles and enemies[1] or nil
   if enemy ~= nil and enemy.visible ~= false then
     local front = battlerImage(assets, enemy)
     if front ~= nil then
@@ -329,8 +670,13 @@ local function drawDetail(resources, view)
     if type(cell) == "number" and cell >= 1 and cell <= #ARROW_CELLS - 1 then
       local art = assets:drawable("arrow")
       if art ~= nil then
-        local baseX = BattleRenderer.PLAYER_HUD.x - BattleRenderer.ARROW_OFFSET
-        local baseY = BattleRenderer.PLAYER_HUD.y - 2
+        local baseX, baseY
+        if singles then
+          baseX = BattleRenderer.PLAYER_HUD.x - BattleRenderer.ARROW_OFFSET
+          baseY = BattleRenderer.PLAYER_HUD.y - 2
+        else
+          baseX, baseY = doublesArrowBase(view, players)
+        end
         for _, obj in ipairs(ARROW_CELLS[cell + 1]) do
           drawSpriteObject(graphics, art --[[@as table<string, unknown>]], ARROW_STRIP_WIDTH, baseX, baseY, obj)
         end
@@ -801,6 +1147,78 @@ local function drawInteraction(resources, view, content)
   drawGauges(resources, view)
 end
 
+---@param view table<string, unknown> internal semantic snapshot
+---@return table<string, unknown>? first player-side battler facts in view order
+---@return table<string, unknown>? first enemy-side battler facts in view order
+local function singleSlots(view)
+  -- The legacy singles projection: first record per side in view
+  -- order, visibility decided by the caller. Untouched so single-side
+  -- pictures never move with or without native slots.
+  local player, enemy = nil, nil
+  if type(view.battlers) == "table" then
+    for _, battler in ipairs(view.battlers) do
+      if type(battler) == "table" then
+        if battler.side == 1 and player == nil then
+          player = battler
+        elseif battler.side ~= 1 and enemy == nil then
+          enemy = battler
+        end
+      end
+    end
+  end
+  return player, enemy
+end
+
+---@param graphics table<string, unknown> injected host graphics
+---@param assets table<string, unknown> injected asset holder
+---@param view table<string, unknown> internal semantic snapshot
+---@param spots table<integer, table<string, unknown>> compact sprite anchors keyed by native position
+local function drawCompactSlots(graphics, assets, view, spots)
+  -- One sprite per declared slot, matched by the opaque native
+  -- position in the plan's paint order. Hidden, benched and historic
+  -- records own no slot; a missing portrait draws nothing under the
+  -- existing pending path, never a fallback picture. Draw never
+  -- mutates engine or cue state.
+  local players, enemies = splitBattlers(view)
+  local live = {}
+  for _, battler in ipairs(players) do
+    if type(battler.position) == "number" then
+      assert(
+        live[battler.position] == nil,
+        "compact slot "
+          .. tostring(battler.position)
+          .. " is visibly claimed twice (combatant "
+          .. tostring(battler.combatant)
+          .. ")"
+      )
+      live[battler.position] = battler
+    end
+  end
+  for _, battler in ipairs(enemies) do
+    if type(battler.position) == "number" then
+      assert(
+        live[battler.position] == nil,
+        "compact slot "
+          .. tostring(battler.position)
+          .. " is visibly claimed twice (combatant "
+          .. tostring(battler.combatant)
+          .. ")"
+      )
+      live[battler.position] = battler
+    end
+  end
+  for _, spot in ipairs(spots) do
+    local battler = live[spot.position]
+    if battler ~= nil then
+      local image = battlerImage(assets, battler)
+      if image ~= nil then
+        local dx = (type(battler.shakeDx) == "number" and battler.shakeDx or 0) --[[@as number]]
+        graphics.draw(image, spot.x + dx, spot.y)
+      end
+    end
+  end
+end
+
 -- Draws one compact scene inside the single-pane viewport: the same
 -- selected source scene with the battler pictures at the plan's compact
 -- image centers, clipped to the compact scene viewport without scaling.
@@ -834,19 +1252,24 @@ local function drawCompactScene(resources, view, content)
     if scene ~= nil then
       graphics.draw(scene, 0, 0)
     end
-    local player, enemy = splitBattlers(view)
-    if enemy ~= nil and enemy.visible ~= false then
-      local front = battlerImage(assets, enemy)
-      if front ~= nil then
-        local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
-        graphics.draw(front, enemyCenter.x + dx, enemyCenter.y)
+    local spots = content.spriteCenters
+    if type(spots) == "table" then
+      drawCompactSlots(graphics, assets, view, spots --[[@as table<integer, table<string, unknown>>]])
+    else
+      local player, enemy = singleSlots(view)
+      if enemy ~= nil and enemy.visible ~= false then
+        local front = battlerImage(assets, enemy)
+        if front ~= nil then
+          local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
+          graphics.draw(front, enemyCenter.x + dx, enemyCenter.y)
+        end
       end
-    end
-    if player ~= nil and player.visible ~= false then
-      local back = battlerImage(assets, player)
-      if back ~= nil then
-        local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
-        graphics.draw(back, playerCenter.x + dx, playerCenter.y)
+      if player ~= nil and player.visible ~= false then
+        local back = battlerImage(assets, player)
+        if back ~= nil then
+          local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
+          graphics.draw(back, playerCenter.x + dx, playerCenter.y)
+        end
       end
     end
   end)

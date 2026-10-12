@@ -85,6 +85,34 @@ function T.shared_menu_and_hud_definitions_compile_from_the_dump(romFs, versionI
     type(bundle.manifest.playerHud) == "table" and type(bundle.manifest.enemyHud) == "table",
     versionId .. ": both single-battle health boxes resolve"
   )
+  local doubles = assert(
+    bundle.manifest.doublesHud,
+    versionId .. ": the manifest carries its doubled health-box family"
+  )
+  for _, slot in ipairs({ "playerLeft", "playerRight", "enemyLeft", "enemyRight" }) do
+    local section = assert(
+      doubles[slot],
+      versionId .. ": the doubled family carries its " .. slot .. " health box"
+    )
+    Assert.isTrue(
+      type(section.image) == "string" and section.image ~= "",
+      versionId .. ": the " .. slot .. " health box resolves a staged image, not a bare recipe"
+    )
+    Assert.isTrue(
+      type(section.cells) == "table" and #section.cells > 0,
+      versionId .. ": the " .. slot .. " health box keeps its source cells"
+    )
+    Assert.isTrue(
+      bundle.manifest.images[section.image] ~= nil,
+      versionId .. ": the " .. slot .. " staged image is inventoried"
+    )
+    local geometry = assert(
+      bundle.manifest.images[section.image],
+      versionId .. ": the " .. slot .. " staged image carries its geometry"
+    )
+    Assert.equal(geometry.width, 1024, versionId .. ": the " .. slot .. " strip keeps the staged strip width")
+    Assert.equal(geometry.height, 8, versionId .. ": the " .. slot .. " strip keeps the staged strip row")
+  end
   local flat = bundle.manifest
   local function scan(value, path)
     if type(value) ~= "table" then
