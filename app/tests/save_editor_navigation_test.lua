@@ -377,20 +377,25 @@ end
 
 function T.tests.navigation_debug_overlay_shows_the_current_region_and_resolver_reasons()
   local controller = Controller.new()
-  local layout = Layout.compute({
-    status = "ready",
-    ready = true,
-    dirty = false,
-    sectionDirty = false,
-    section = "Player",
-    scope = controller:snapshot().scope,
-    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
-  }, 800, 600, {
-    lineHeight = 14,
-    measure = function(text)
-      return #text * 7
-    end,
-  })
+  local layout = Layout.compute(
+    {
+      status = "ready",
+      ready = true,
+      dirty = false,
+      sectionDirty = false,
+      section = "Player",
+      scope = controller:snapshot().scope,
+      session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+    },
+    800,
+    600,
+    {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    }
+  )
   controller:setFocus("money")
   controller.scopeId, controller.scopeEpoch = layout.scopeId, layout.scopeEpoch
   local lines = {}
@@ -552,10 +557,7 @@ function T.tests.keyboard_gamepad_and_semantic_choice_input_agree_and_release_po
   for _, device in ipairs({ "keyboard", "gamepad", "semantic" }) do
     local harness = navigated[device]
     Assert.equal(harness.controller.focus, "choice:K06", device .. " Down moves one logical choice row")
-    Assert.isNil(
-      harness.controller.capturedTarget,
-      device .. " navigation releases the in-flight pointer capture"
-    )
+    Assert.isNil(harness.controller.capturedTarget, device .. " navigation releases the in-flight pointer capture")
     Assert.isNil(harness.controller.pointerId, device .. " navigation releases the pointer identity")
     Assert.isTrue(harness.controller.focusVisible, device .. " navigation keeps keyboard focus visible")
     Assert.isNil(harness.controller.modal, device .. " navigation opens no modal layer")
@@ -602,6 +604,179 @@ function T.tests.keyboard_gamepad_and_semantic_choice_input_agree_and_release_po
     Assert.isNil(harness.state.editorFeedback, device .. " confirm reports no diagnostic")
     Assert.isNil(harness.controller.modal, device .. " confirm opens no modal layer")
   end
+end
+
+function T.tests.compiled_publication_keeps_direction_tab_override_and_reconciliation_meaning()
+  local Navigation = navigationModule()
+  Assert.isTrue(
+    type(Navigation.compile) == "function",
+    "published navigation exposes a single checked publication entry"
+  )
+  local rowIds = { "flag:1", "flag:2", "flag:3" }
+  local raw = {
+    scope = { id = "editor", epoch = 1 },
+    regions = {
+      {
+        id = "rail",
+        rect = { x = 0, y = 0, width = 20, height = 120 },
+        kind = "spatial",
+        order = 1,
+        defaultId = "section:Progress",
+      },
+      {
+        id = "flags",
+        rect = { x = 32, y = 24, width = 180, height = 100 },
+        kind = "list",
+        viewportId = "flags",
+        order = 2,
+        defaultId = rowIds[1],
+        logical = {
+          count = #rowIds,
+          idAt = function(index)
+            return rowIds[index]
+          end,
+          indexOf = function(id)
+            for index, rowId in ipairs(rowIds) do
+              if rowId == id then
+                return index
+              end
+            end
+            return nil
+          end,
+        },
+        exits = { left = { kind = "region", id = "rail", entry = "spatial", fallback = "stop" } },
+      },
+    },
+    controls = {
+      control("section:Progress", "rail", 2, 28, 16, 16, 1, { left = { kind = "stop" } }),
+      control(rowIds[1], "flags", 40, 32, 140, 16, 2),
+      control(rowIds[2], "flags", 40, 52, 140, 16, 3),
+    },
+    remembered = { flags = rowIds[3] },
+  }
+
+  local compiled = Navigation.compile(raw)
+  Assert.notNil(compiled, "compilation publishes a navigation record")
+  Assert.isTrue(compiled ~= raw, "compilation publishes a fresh record")
+  Assert.equal(compiled.scope.id, "editor", "the publication keeps its scope identity")
+  Assert.equal(compiled.scope.epoch, 1, "the publication keeps its scope epoch")
+  Assert.equal(#compiled.regions, 2, "the publication keeps every region")
+  Assert.equal(#compiled.controls, 3, "the publication keeps every control")
+  Assert.equal(compiled.remembered.flags, rowIds[3], "the publication keeps remembered focus")
+  Assert.equal(#raw.regions, 2, "compilation leaves the caller region list alone")
+  Assert.equal(#raw.controls, 3, "compilation leaves the caller control list alone")
+
+  local down = Navigation.resolve(compiled, focus("flags", rowIds[1]), "down")
+  Assert.equal(down.kind, "move", "Down resolves a logical row move")
+  Assert.equal(down.targetId, rowIds[2], "Down advances one logical row")
+  Assert.equal(down.regionId, "flags", "logical row movement remains in the list region")
+  Assert.equal(down.reason, "container", "the logical move keeps its stop reason")
+  Assert.equal(down.reveal.index, 2, "the logical move keeps its reveal anchor")
+
+  local exit = Navigation.resolve(compiled, focus("flags", rowIds[1]), "left")
+  Assert.equal(exit.kind, "move", "the declared exit resolves a move")
+  Assert.equal(exit.targetId, "section:Progress", "the boundary exit enters the section rail")
+  Assert.equal(exit.regionId, "rail", "only boundary movement changes regions")
+
+  local stopped = Navigation.resolve(compiled, focus("rail", "section:Progress"), "left")
+  Assert.equal(stopped.kind, "stay", "an explicit stop prevents escape")
+  Assert.equal(stopped.reason, "override-stop", "the stop keeps its reason")
+  Assert.equal(stopped.regionId, "rail", "a stop retains the active region")
+
+  local tabbed = Navigation.resolveTab(compiled, focus("flags", rowIds[1]), "next")
+  Assert.equal(tabbed.kind, "move", "tab leaves the current region")
+  Assert.equal(tabbed.targetId, "section:Progress", "tab enters the ordered neighbouring region")
+  Assert.equal(tabbed.regionId, "rail", "tab movement records the entered region")
+  Assert.equal(tabbed.reason, "tab-region", "the tab move keeps its reason")
+
+  local reconciled = Navigation.reconcile(compiled, focus("flags", rowIds[3]), {})
+  Assert.equal(reconciled.regionId, "flags", "reconciliation keeps the offscreen row in its region")
+  Assert.equal(reconciled.targetId, rowIds[3], "reconciliation keeps offscreen identity")
+end
+
+function T.tests.navigation_publication_rejects_malformed_graphs_before_any_move()
+  local Navigation = navigationModule()
+  Assert.isTrue(
+    type(Navigation.compile) == "function",
+    "published navigation exposes a single checked publication entry"
+  )
+  local function baseRaw()
+    return {
+      scope = { id = "editor", epoch = 1 },
+      regions = {
+        {
+          id = "rail",
+          rect = { x = 0, y = 0, width = 20, height = 120 },
+          kind = "spatial",
+          order = 1,
+          defaultId = "section:Progress",
+        },
+      },
+      controls = { control("section:Progress", "rail", 2, 28, 16, 16, 1) },
+    }
+  end
+
+  local duplicated = baseRaw()
+  duplicated.controls[#duplicated.controls + 1] = control("section:Progress", "rail", 4, 48, 16, 16, 2)
+  Assert.throws(function()
+    Navigation.compile(duplicated)
+  end, "a duplicate target id is rejected before publication")
+
+  local stray = baseRaw()
+  stray.controls = { control("section:Progress", "missing", 2, 28, 16, 16, 1) }
+  Assert.throws(function()
+    Navigation.compile(stray)
+  end, "a control pointing at an undeclared region is rejected before publication")
+
+  local broken = baseRaw()
+  broken.regions = {
+    {
+      id = "rail",
+      rect = { x = "left", y = 0, width = 20, height = 120 },
+      kind = "spatial",
+      order = 1,
+      defaultId = "section:Progress",
+    },
+  }
+  Assert.throws(function()
+    Navigation.compile(broken)
+  end, "malformed region coordinates are rejected before publication")
+end
+
+function T.tests.compiled_publication_stays_detached_from_caller_records()
+  local Navigation = navigationModule()
+  local raw = {
+    scope = { id = "editor", epoch = 1 },
+    regions = {
+      {
+        id = "rail",
+        rect = { x = 0, y = 0, width = 20, height = 120 },
+        kind = "spatial",
+        order = 1,
+        defaultId = "section:Progress",
+      },
+    },
+    controls = { control("section:Progress", "rail", 2, 28, 16, 16, 1) },
+    remembered = { rail = "section:Progress" },
+  }
+  local compiled = Navigation.compile(raw)
+  raw.regions[#raw.regions + 1] = {
+    id = "late",
+    rect = { x = 40, y = 0, width = 20, height = 120 },
+    kind = "spatial",
+    order = 2,
+    defaultId = "section:Late",
+  }
+  raw.controls[#raw.controls + 1] = control("section:Late", "late", 42, 28, 16, 16, 2)
+  raw.remembered.rail = "section:Late"
+  raw.scope.epoch = 2
+  Assert.equal(#compiled.regions, 1, "later caller regions do not leak into the publication")
+  Assert.equal(#compiled.controls, 1, "later caller controls do not leak into the publication")
+  Assert.equal(compiled.remembered.rail, "section:Progress", "the publication keeps its settled focus")
+  Assert.equal(compiled.scope.epoch, 1, "the publication keeps its settled epoch")
+  local stayed = Navigation.resolve(compiled, focus("rail", "section:Progress"), "left")
+  Assert.equal(stayed.kind, "stay", "the settled publication still resolves without the late region")
+  Assert.equal(stayed.reason, "stop", "the settled resolution keeps its stop reason")
 end
 
 return T

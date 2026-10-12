@@ -8080,4 +8080,156 @@ function T.tests.unlocated_map_browse_represents_a_missing_preview_coordinate()
   Assert.isFalse(mixedOk, "a half-initialized single-axis cursor is rejected")
 end
 
+function T.tests.stable_publication_compiles_once_and_revised_scope_recompiles()
+  local Navigation = require("app.src.saveeditor.SaveEditorNavigation")
+  Assert.isTrue(
+    type(Navigation.compile) == "function",
+    "published navigation exposes a single checked publication entry"
+  )
+  local rowIds = {}
+  for index = 1, 60 do
+    rowIds[index] = "flag:" .. index
+  end
+  local function logicalFor(ids)
+    return {
+      count = #ids,
+      idAt = function(index)
+        return ids[index]
+      end,
+      indexOf = function(id)
+        for index, rowId in ipairs(ids) do
+          if rowId == id then
+            return index
+          end
+        end
+        return nil
+      end,
+    }
+  end
+  local function spatialControl(id, x, order)
+    return {
+      id = id,
+      regionId = "rail",
+      rect = { x = x, y = 20, width = 16, height = 16 },
+      order = order,
+      eligible = true,
+      action = { kind = "activate", targetId = id },
+    }
+  end
+  local function listControl(id, y, order)
+    return {
+      id = id,
+      regionId = "flags",
+      rect = { x = 40, y = y, width = 140, height = 12 },
+      order = order,
+      eligible = true,
+      action = { kind = "activate", targetId = id },
+    }
+  end
+  local raw = {
+    scope = { id = "editor", epoch = 1 },
+    regions = {
+      {
+        id = "rail",
+        rect = { x = 0, y = 0, width = 60, height = 60 },
+        kind = "spatial",
+        order = 1,
+        defaultId = "section:One",
+      },
+      {
+        id = "flags",
+        rect = { x = 32, y = 24, width = 180, height = 100 },
+        kind = "list",
+        viewportId = "flags",
+        order = 2,
+        defaultId = rowIds[1],
+        logical = logicalFor(rowIds),
+      },
+    },
+    controls = {
+      spatialControl("section:One", 2, 1),
+      spatialControl("section:Two", 26, 2),
+      listControl(rowIds[1], 32, 3),
+      listControl(rowIds[2], 46, 4),
+      listControl(rowIds[3], 60, 5),
+    },
+  }
+  local compileCalls = 0
+  local originalCompile = Navigation.compile
+  Navigation.compile = function(snapshot)
+    compileCalls = compileCalls + 1
+    return originalCompile(snapshot)
+  end
+  local ok, err = pcall(function()
+    local published = Navigation.compile(raw)
+    Assert.equal(compileCalls, 1, "a stable epoch publishes its navigation once")
+    local first =
+      Navigation.resolve(published, { scopeId = "editor", regionId = "flags", targetId = rowIds[40] }, "down")
+    Assert.equal(first.targetId, rowIds[41], "the first move advances one logical row")
+    Assert.equal(first.reveal.index, 41, "the first move keeps its reveal anchor")
+    local second =
+      Navigation.resolve(published, { scopeId = "editor", regionId = "flags", targetId = first.targetId }, "down")
+    Assert.equal(second.targetId, rowIds[42], "the second move advances from the first result")
+    Assert.equal(compileCalls, 1, "two consecutive moves share one publication without recompiling")
+
+    local revisedIds = {}
+    for index = 1, 10 do
+      revisedIds[index] = rowIds[index]
+    end
+    local revised = {
+      scope = { id = "editor", epoch = 2 },
+      regions = {
+        {
+          id = "rail",
+          rect = { x = 0, y = 0, width = 60, height = 60 },
+          kind = "spatial",
+          order = 1,
+          defaultId = "section:One",
+        },
+        {
+          id = "flags",
+          rect = { x = 32, y = 24, width = 180, height = 100 },
+          kind = "list",
+          viewportId = "flags",
+          order = 2,
+          defaultId = revisedIds[1],
+          logical = logicalFor(revisedIds),
+        },
+      },
+      controls = {
+        spatialControl("section:One", 2, 1),
+        (function()
+          local retired = spatialControl("section:Two", 26, 2)
+          retired.eligible = false
+          return retired
+        end)(),
+        listControl(revisedIds[1], 32, 3),
+        listControl(revisedIds[2], 46, 4),
+        listControl(revisedIds[3], 60, 5),
+      },
+    }
+    local republished = Navigation.compile(revised)
+    Assert.equal(compileCalls, 2, "a scope and eligibility revision publishes a fresh record")
+    Assert.isTrue(republished ~= published, "the revision replaces the publication")
+    Assert.equal(republished.scope.epoch, 2, "the fresh publication carries the revised epoch")
+    local rerouted =
+      Navigation.resolve(republished, { scopeId = "editor", regionId = "rail", targetId = "section:One" }, "right")
+    Assert.isTrue(
+      not (rerouted.kind == "move" and rerouted.targetId == "section:Two"),
+      "the fresh publication never selects the retired target"
+    )
+    local recovered = Navigation.reconcile(republished, {
+      scopeId = "editor",
+      regionId = "flags",
+      targetId = rowIds[40],
+    }, { revisedIds[1] })
+    Assert.equal(recovered.targetId, revisedIds[1], "stale focus falls back instead of reusing a removed row")
+    Assert.equal(recovered.regionId, "flags", "the fallback stays in the revised region")
+  end)
+  Navigation.compile = originalCompile
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return T

@@ -7,6 +7,7 @@ local PixelScale = require("libs.ui.src.PixelScale")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local ListSurface = require("libs.ui.src.ListSurface")
 local SaveEditorCard = require("app.src.saveeditor.SaveEditorCard")
+local SaveEditorNavigation = require("app.src.saveeditor.SaveEditorNavigation")
 local SaveEditorNumberLayout = require("app.src.saveeditor.SaveEditorNumberLayout")
 
 local BAG_ICON_SIZE_COMPACT = 16
@@ -2477,7 +2478,11 @@ local function buildFocusNavigation(ctx, targetRecords)
   if ctx.partyStrip ~= nil and nav.partyTab == "Stats" then
     orderPartyRegions(nav.regions, nav.regionsById)
   end
-  return { regions = nav.regions, controls = nav.controls }
+  return SaveEditorNavigation.compile({
+    scope = { id = ctx.scope.id, epoch = ctx.scope.epoch },
+    regions = nav.regions,
+    controls = nav.controls,
+  })
 end
 
 local function publishPlan(ctx)
