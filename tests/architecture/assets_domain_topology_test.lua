@@ -65,6 +65,9 @@ local DOMAINS = {
 local SHARED = {
   "BagAssetSchema",
   "BagCache",
+  "BagHeroValidation",
+  "BagInteractiveValidation",
+  "BagManifestChecks",
   "DerivedAssetContract",
   "ErrorCodes",
   "ItemAssetSchema",
