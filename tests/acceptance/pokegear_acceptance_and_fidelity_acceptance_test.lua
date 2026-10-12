@@ -13,6 +13,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 local CacheFs = require("libs.storage.src.CacheFs")
 local PokegearCache = require("libs.assets.src.PokegearCache")
+local LocalClock = require("game.src.LocalClock")
 local Fixture = require("tests.support.PokegearJourneyFixture")
 
 local T = {
@@ -73,7 +74,8 @@ end
 function T.tests.backtrack_and_permitted_save_roundtrips_preserve_the_frontier()
   Fixture.withGame(Fixture.TOWN, function(game)
     Fixture.compositionGates(game)
-    local world = assert(game.runtime.scripts and game.runtime.scripts.worldState, "the backtrack needs live world state")
+    local world =
+      assert(game.runtime.scripts and game.runtime.scripts.worldState, "the backtrack needs live world state")
     game:moveTo(Fixture.TOWN_HOUSE_DOOR_APPROACH)
     game:step({ direction = "north" })
     local entered = game:waitForTransition()
@@ -160,10 +162,79 @@ function T.tests.warm_prepared_assets_serve_repeated_opens_without_rebuilding()
       catalogBefore.shows,
       "repeated opens must reuse the prepared programs without rebuilding"
     )
-    Assert.deepEqual(manifestAfter.catalog.locations, catalogBefore.locations, "repeated opens must reuse the prepared places")
+    Assert.deepEqual(
+      manifestAfter.catalog.locations,
+      catalogBefore.locations,
+      "repeated opens must reuse the prepared places"
+    )
     Assert.equal(Fixture.scriptFaults(game), 0, "the warm leg must run without script faults")
     Assert.isTrue(Fixture.settleField(game), "the warm leg must rest on an owned field")
   end)
+end
+
+-- A fresh owner counts every live minute after its baseline sample. The
+-- same persisted calendar suppresses only the offline jump after reload,
+-- while daily identity still catches up and the next ten live minutes
+-- remain eligible. The calls travel through the real field runtime and
+-- the save travels through the production menu and save store.
+function T.tests.incoming_call_cooldown_starts_at_first_live_minute()
+  local sample = { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 }
+  local clock = LocalClock.new(function()
+    return {
+      year = sample.year,
+      month = sample.month,
+      day = sample.day,
+      hour = sample.hour,
+      minute = sample.minute,
+      second = sample.second,
+    }
+  end)
+  Fixture.withGame(Fixture.TOWN, function(game)
+    Fixture.compositionGates(game)
+    Fixture.playOpeningToLabFrontier(game)
+    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
+
+    local gearState = assert(game.runtime.pokegearState, "incoming call journey needs the production gear state")
+    local catalog = assert(game.runtime.pokegearCatalog, "incoming call journey needs the compiled source catalog")
+    for _, contact in ipairs(catalog.contacts) do
+      gearState:registerContact(contact.key)
+    end
+    for _, trigger in ipairs(catalog.callTriggers) do
+      gearState:setTrigger(trigger.key, true)
+    end
+
+    Assert.isTrue(Fixture.settleField(game), "the fresh call journey must settle in the real field")
+    game:step()
+    local calls = assert(game.runtime.incomingCalls, "the production field must own incoming calls")
+    sample.minute = 9
+    game:step()
+    Assert.isFalse(calls:notification(), "a fresh owner is not eligible before ten live minutes")
+    sample.minute = 10
+    game:step()
+    game:step()
+    Assert.isTrue(calls:notification(), "a fresh owner is eligible at ten continuous live minutes")
+
+    local savedDay = gearState:readCalendar().daySerial
+    sample = { year = 2024, month = 1, day = 11, hour = 10, minute = 10, second = 0 }
+    Fixture.saveAndReload(game)
+
+    calls = assert(game.runtime.incomingCalls, "the reloaded field must own a fresh incoming-call lifetime")
+    local reloadedState = assert(game.runtime.pokegearState, "reload must restore the production gear state")
+    Assert.isTrue(
+      reloadedState:readCalendar().daySerial > savedDay,
+      "the restored calendar advances its daily identity across the offline jump"
+    )
+    Assert.isFalse(calls:notification(), "the restored owner does not count the offline jump as eligibility")
+
+    sample.minute = 19
+    game:step()
+    Assert.isFalse(calls:notification(), "the restored owner waits through nine live minutes")
+    sample.minute = 20
+    game:step()
+    game:step()
+    Assert.isTrue(calls:notification(), "the restored owner is eligible after ten live minutes")
+    Assert.equal(Fixture.scriptFaults(game), 0, "the incoming-call journey runs without script faults")
+  end, { localClock = clock })
 end
 
 return T

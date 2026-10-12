@@ -419,12 +419,30 @@ function T.tests.field_time_advances_in_whole_minutes_with_local_weekdays()
   -- A long suspension reports the full elapsed count at the adapter: the
   -- caller owns ignoring that backlog for ringing, never the calendar.
   do
-    local calendar = freshCalendar()
+    local U32 = require("libs.codec.src.U32")
+    local state = PokegearState.new(nil, catalogRefs(record))
+    local calendar = PokegearCalendar.new(state)
     local base = { year = 2024, month = 1, day = 1, hour = 0, minute = 0, second = 0 }
     calendar:observeField(civilSample(base))
-    local offline = calendar:observeField(civilSample(shiftSeconds(base, 3 * 86400 + 25 * 60)))
+    local restored = PokegearState.restore(state:capture(), catalogRefs(record))
+    local restoredCalendar = PokegearCalendar.new(restored)
+    local before = restored:readDailyIdentity()
+    local offlineSample = civilSample(shiftSeconds(base, 3 * 86400 + 25 * 60))
+    local offline = restoredCalendar:observeField(offlineSample)
     Assert.equal(offline.dayAdvance, 3, "three days offline advance three whole days")
     Assert.equal(offline.minuteAdvance, 3 * 1440 + 25, "the adapter reports the full elapsed minutes")
+    local after = restored:readDailyIdentity()
+    local expectedGroupSeed = before.dailyGroupSeed
+    for _ = 1, 3 do
+      expectedGroupSeed = U32.add(U32.mul(expectedGroupSeed, 1812433253), 1)
+    end
+    Assert.equal(after.dailyGroupSeed, expectedGroupSeed, "restored offline days retain the source daily recurrence")
+    Assert.equal(after.daySerial - before.daySerial, 3, "the restored calendar commits all offline days")
+    Assert.deepEqual(
+      restored:readCalendar().checkpoint,
+      offlineSample,
+      "the restored calendar commits its exact offline sample"
+    )
   end
 
   -- Each whole-day advance steps the shared daily seed once per day through
@@ -570,7 +588,10 @@ function T.tests.unknown_reference_keys_fail_by_name_without_moving_revision()
   local triggerErr = Assert.throws(function()
     state:setTrigger("", true)
   end, "an empty trigger key must fail")
-  Assert.notNil(tostring((type(triggerErr) == "table" and triggerErr.message) or triggerErr), "trigger failure carries a message")
+  Assert.notNil(
+    tostring((type(triggerErr) == "table" and triggerErr.message) or triggerErr),
+    "trigger failure carries a message"
+  )
   Assert.equal(state:revision(), base, "a failed trigger leaves the revision alone")
 end
 
@@ -713,7 +734,8 @@ function T.tests.month_boundaries_advance_days_and_step_seeds_per_day()
     local calendar = PokegearCalendar.new(state)
     local base = { year = 2024, month = 4, day = 30, hour = 23, minute = 59, second = 30 }
     calendar:observeField(civilSample(base))
-    local crossed = calendar:observeField(civilSample({ year = 2024, month = 5, day = 1, hour = 0, minute = 0, second = 31 }))
+    local crossed =
+      calendar:observeField(civilSample({ year = 2024, month = 5, day = 1, hour = 0, minute = 0, second = 31 }))
     Assert.equal(crossed.minuteAdvance, 1, "sixty-one seconds across the month boundary advance one whole minute")
     Assert.equal(crossed.dayAdvance, 1, "the April to May transition advances exactly one day")
     Assert.isTrue(

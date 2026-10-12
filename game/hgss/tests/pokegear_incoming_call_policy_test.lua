@@ -208,6 +208,127 @@ function T.tests.incoming_call_construction_rejects_malformed_collaborators()
   calls:dispose()
 end
 
+-- Fresh owners count live minutes from their initial calendar sample,
+-- while restored owners discard only the first offline report.
+function T.tests.cooldown_counts_from_first_live_minute_for_fresh_and_restored_owners()
+  local seed = findPassingSeed()
+  local contacts = { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" } }
+  local fresh = freshRig(seed, contacts, {}, {})
+  fresh.calls:onFieldClock(moment(0))
+  fresh.calls:onFieldClock(moment(9))
+  fresh.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isFalse(fresh.calls:notification(), "fresh play is not eligible before ten live minutes")
+  fresh.calls:onFieldClock(moment(10))
+  fresh.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isTrue(type(fresh.calls:notification()) == "table", "fresh play is eligible at ten continuous live minutes")
+  fresh.calls:dispose()
+
+  local restoredSource = freshRig(seed, contacts, {}, {})
+  local base = moment(0)
+  restoredSource.calls:onFieldClock(base)
+  local bucket = restoredSource.state:capture()
+  local restoredState = PokegearState.restore(bucket, { catalog = restoredSource.record.catalog })
+  local restoredCalendar = PokegearCalendar.new(restoredState)
+  local observeCount = 0
+  local observeField = restoredCalendar.observeField
+  function restoredCalendar:observeField(sample)
+    observeCount = observeCount + 1
+    return observeField(self, sample)
+  end
+  local restored = IncomingCalls.new({
+    state = restoredState,
+    catalog = restoredSource.record.catalog,
+    calendar = restoredCalendar,
+    random = PokegearRandom.new(seed),
+    world = PhoneWorldContext.new({ state = restoredState, flags = {} }),
+    host = recordingHost(),
+    audio = silentAudio(),
+  })
+  local offline = { year = 2024, month = 1, day = 11, hour = 10, minute = 0, second = 0 }
+  local calendarBeforeOffline = restoredState:readCalendar()
+  local dailyBeforeOffline = restoredState:readDailyIdentity()
+  restored:onFieldClock(offline)
+  local calendarAfterOffline = restoredState:readCalendar()
+  local dailyAfterOffline = restoredState:readDailyIdentity()
+  Assert.equal(
+    calendarAfterOffline.daySerial - calendarBeforeOffline.daySerial,
+    3,
+    "the restored calendar still processes three offline days"
+  )
+  Assert.deepEqual(
+    calendarAfterOffline.checkpoint,
+    offline,
+    "the restored checkpoint still advances to the offline sample"
+  )
+  Assert.isTrue(
+    dailyAfterOffline.dailyGroupSeed ~= dailyBeforeOffline.dailyGroupSeed,
+    "the restored offline days still advance the persisted daily identity"
+  )
+  restored:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isFalse(restored:notification(), "restored offline minutes do not count toward call eligibility")
+  Assert.equal(observeCount, 1, "one field clock tick observes the calendar once")
+  Assert.deepEqual(restoredState:readCalendar(), calendarAfterOffline, "reading status does not advance the calendar")
+  restored:onFieldClock({ year = 2024, month = 1, day = 11, hour = 10, minute = 9, second = 0 })
+  restored:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isFalse(restored:notification(), "restored play needs ten live minutes after the offline sample")
+  restored:onFieldClock({ year = 2024, month = 1, day = 11, hour = 10, minute = 10, second = 0 })
+  restored:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isTrue(type(restored:notification()) == "table", "restored play is eligible after ten live minutes")
+  restored:dispose()
+  restoredSource.calls:dispose()
+
+  -- A restored same-time opening sample still consumes the one-shot
+  -- decision, so its next positive minute is counted.
+  local sameTimeSource = freshRig(seed, contacts, {}, {})
+  sameTimeSource.calls:onFieldClock(base)
+  local sameTimeBucket = sameTimeSource.state:capture()
+  local sameTimeState = PokegearState.restore(sameTimeBucket, { catalog = sameTimeSource.record.catalog })
+  local sameTime = IncomingCalls.new({
+    state = sameTimeState,
+    catalog = sameTimeSource.record.catalog,
+    calendar = PokegearCalendar.new(sameTimeState),
+    random = PokegearRandom.new(seed),
+    world = PhoneWorldContext.new({ state = sameTimeState, flags = {} }),
+    host = recordingHost(),
+    audio = silentAudio(),
+  })
+  sameTime:onFieldClock(base)
+  sameTime:onFieldClock(moment(1))
+  sameTime:onFieldClock(moment(9))
+  sameTime:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isFalse(sameTime:notification(), "the restored owner remains below ten after nine live minutes")
+  sameTime:onFieldClock(moment(10))
+  sameTime:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isTrue(type(sameTime:notification()) == "table", "the first live minute after a zero restored sample counts")
+  sameTime:dispose()
+  sameTimeSource.calls:dispose()
+
+  -- A backward first report also consumes the opening decision; time
+  -- after the calendar rebases is live and can fill the threshold.
+  local backwardSource = freshRig(seed, contacts, {}, {})
+  backwardSource.calls:onFieldClock(base)
+  local backwardBucket = backwardSource.state:capture()
+  local backwardState = PokegearState.restore(backwardBucket, { catalog = backwardSource.record.catalog })
+  local backward = IncomingCalls.new({
+    state = backwardState,
+    catalog = backwardSource.record.catalog,
+    calendar = PokegearCalendar.new(backwardState),
+    random = PokegearRandom.new(seed),
+    world = PhoneWorldContext.new({ state = backwardState, flags = {} }),
+    host = recordingHost(),
+    audio = silentAudio(),
+  })
+  backward:onFieldClock({ year = 2024, month = 1, day = 8, hour = 9, minute = 59, second = 0 })
+  backward:onFieldClock({ year = 2024, month = 1, day = 8, hour = 10, minute = 8, second = 0 })
+  backward:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isFalse(backward:notification(), "backward time does not count toward eligibility before ten live minutes")
+  backward:onFieldClock({ year = 2024, month = 1, day = 8, hour = 10, minute = 9, second = 0 })
+  backward:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isTrue(type(backward:notification()) == "table", "ten minutes after a backward opening sample qualify exactly")
+  backward:dispose()
+  backwardSource.calls:dispose()
+end
+
 -- Corrupt selected facts fail with attribution instead of selecting a
 -- plausible caller: an unknown trigger kind and a trigger naming a
 -- contact outside the catalog both name their trigger key.
@@ -408,10 +529,7 @@ function T.tests.a_kind_zero_trigger_records_history_without_clearing()
   Assert.equal(ringing.contactKey, TRAINER_KEY, "the ordinary trigger names its caller")
   rig.calls:accept("field:test-parent")
   Assert.equal(#rig.host.opens, 1, "acceptance enters the companion host exactly once")
-  Assert.isTrue(
-    rig.state:readPhone().history[TRAINER_KEY] == true,
-    "accepting the ordinary trigger records its caller"
-  )
+  Assert.isTrue(rig.state:readPhone().history[TRAINER_KEY] == true, "accepting the ordinary trigger records its caller")
   Assert.isTrue(
     rig.state:readPhone().triggers["custom.callback"] == true,
     "accepting the ordinary trigger never clears its flag"

@@ -21,7 +21,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field private _host table<string, unknown>? the borrowed companion application host
 ---@field private _audio table<string, unknown>? the borrowed ring tone owner
 ---@field private _cooldown integer accumulated eligible minutes
----@field private _firstAdvanceSeen boolean whether the opening offline jump passed
+---@field private _openingSamplePending boolean whether the first field clock sample is pending
+---@field private _openingCheckpointRestored boolean whether construction found a saved calendar checkpoint
 ---@field private _ring table<string, unknown>? the active ring record
 ---@field private _disposed boolean
 local IncomingCalls = {}
@@ -99,6 +100,7 @@ function IncomingCalls.new(opts)
   assert(
     type(opts.state) == "table"
       and type(opts.state.readPhone) == "function"
+      and type(opts.state.readCalendar) == "function"
       and type(opts.state.setTrigger) == "function"
       and type(opts.state.setCallHistory) == "function",
     "incoming calls persist trigger and history facts through the companion state"
@@ -133,6 +135,8 @@ function IncomingCalls.new(opts)
       ),
     "incoming calls repeat their tone through the ring tone owner"
   )
+  local calendarState = opts.state.readCalendar(opts.state)
+  assert(type(calendarState) == "table", "incoming calls inspect the persisted calendar checkpoint")
   return setmetatable({
     _state = opts.state,
     _catalog = opts.catalog,
@@ -142,7 +146,8 @@ function IncomingCalls.new(opts)
     _host = opts.host,
     _audio = opts.audio,
     _cooldown = 0,
-    _firstAdvanceSeen = false,
+    _openingSamplePending = true,
+    _openingCheckpointRestored = calendarState.checkpoint ~= nil,
     _ring = nil,
     _disposed = false,
   }, IncomingCalls)
@@ -387,27 +392,26 @@ function IncomingCalls:_eligibleCallers(category, args, withHistory)
 end
 
 -- Observes one civil sample: advances the cooldown by completed whole
--- minutes and expires an active ring on strict second bounds. The first
--- positive advance is the opening offline jump and is ignored for
--- cooldown. A backward sample returns early through the calendar and
--- preserves the ring. Polling, expiry, and evaluation draw nothing here.
+-- minutes and expires an active ring on strict second bounds. A restored
+-- checkpoint's opening report may include offline time, which is ignored
+-- once. A fresh checkpoint starts at its opening sample, so its next live
+-- minute counts. A backward sample preserves the ring. Polling, expiry,
+-- and evaluation draw nothing here.
 ---@param sample table<string, integer>
 function IncomingCalls:onFieldClock(sample)
   self:_checkLive()
   local observe = self._calendar.observeField --[[@as fun(self: table<string, unknown>, sample: table<string, integer>): table<string, integer>]]
   local report = observe(self._calendar, sample)
   assert(type(report) == "table", "calendar observations report their advance")
+  local openingSample = self._openingSamplePending
+  self._openingSamplePending = false
   if report.backward == true then
     return
   end
   local advance = report.minuteAdvance
   assert(type(advance) == "number", "calendar observations report whole elapsed minutes")
-  if advance > 0 then
-    if not self._firstAdvanceSeen then
-      self._firstAdvanceSeen = true
-    else
-      self._cooldown = self._cooldown + advance
-    end
+  if advance > 0 and not (openingSample and self._openingCheckpointRestored) then
+    self._cooldown = self._cooldown + advance
   end
   local ring = self._ring
   if ring ~= nil then
