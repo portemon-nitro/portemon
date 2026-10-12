@@ -18,18 +18,13 @@
 -- exactly once on dispose.
 
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local StarterChoicePreparation = require("game.hgss.src.starters.StarterChoicePreparation")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
-local MonCache = require("libs.assets.src.MonCache")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
-local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local Matrix4 = require("libs.math.src.Matrix4")
-local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
-local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local Rgb555 = require("libs.codec.src.Rgb555")
-local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
-local FixedPoint = require("libs.math.src.FixedPoint")
 
 ---@class StarterChoicePresentation
 ---@field _manifest table<string, unknown> immutable trusted starter-application manifest
@@ -37,30 +32,13 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _portraits table[] per-candidate portrait descriptors ({ selector }) borrowed from state
 ---@field _frameIndex integer player-owned text-frame choice for the framed info message
 ---@field _machineTarget table<string, unknown>? owned source-sized machine raster once first drawn
----@field _pool GpuAssetPool? GPU mesh/image owner once preparation starts
 ---@field _renderer FieldRenderer? field renderer wrapper once preparation finishes
 ---@field _ready boolean preparation completed and the scene is drawable
 ---@field _disposed boolean
----@field _prepareQueue table<string, unknown>? borrowed preparation queue while preparation runs
 ---@field _backend table<string, unknown>? borrowed field graphics backend for the wrapper
----@field _plan table<string, unknown>[]? ordered preparation steps while preparation runs
----@field _planIndex integer next preparation step to run
----@field _outstanding table<integer, boolean> preparation tokens awaiting a result
----@field _pageHost table<string, function>? borrowed semantic host while portrait pages gate submission
----@field _pageReady table<integer, boolean> actual portrait pages confirmed current by the host
----@field _meshEntries table<string, table<string, unknown>> realized mesh entries by geometry path
----@field _imageEntries table<string, unknown> realized images by path-plus-wrap key
----@field _definitions table<string, ModelDefinition> model definitions by scene role
----@field _renderMeshes table<string, table<string, unknown>> render meshes by role then mesh id
----@field _wraps table<string, table<string, unknown>> sampler wraps by role then zero-based material index
----@field _instances table<string, ModelInstance> model instances by scene role
----@field _staticBatches table[] prepared tabletop batches
+---@field _preparation StarterChoicePreparation? owned resource acquisition child
+---@field _resources table<string, unknown>? borrowed ready resources from the child
 ---@field _staticDraws table[] realized tabletop draw items, built once at readiness and reused by every draw
----@field _machineBackgroundImage GpuAssetPool.Image? source MAIN BG2 artwork once realized
----@field _infoBaseImage GpuAssetPool.Image? info-surface base artwork once realized
----@field _infoOverlayImage GpuAssetPool.Image? info-surface overlay artwork once realized
----@field _portraitImages table<integer, GpuAssetPool.Image> mon portrait page images by zero-based page id once realized
----@field _portraitQuads table[] portrait quads with their page image per candidate slot once realized
 ---@field _clipNames { turntable: string, ballEffect: string, ballRock: string[], ballOpen: string } instance play names resolved from bindings
 ---@field _sceneRuntime table<string, unknown> minimal renderer scene state (edge colors, fog, flat lighting)
 ---@field _entryTransition string? transition of the last semantic clock sync
@@ -84,7 +62,6 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 local StarterChoicePresentation = {}
 StarterChoicePresentation.__index = StarterChoicePresentation
 
-local ROLES = { "tabletop", "turntable", "ballEffect", "ball1", "ball2", "ball3" }
 local BALL_ROLES = { "ball1", "ball2", "ball3" }
 
 -- Confirm state widens the inspected ball's hit region; the spacing-derived
@@ -100,7 +77,6 @@ local EMISSIVE_WHITE = Rgb555.encode(31, 31, 31)
 -- window would retain an entire chooser's decoded payloads waiting for
 -- one-frame-at-a-time upload; two keeps the worker fed while bounding
 -- retained work.
-local PREPARATION_WINDOW = 2
 -- Source message-printer policy for the chooser's typed copy: the window
 -- opens on the reset tick, then one glyph per following source tick, with
 -- no button acceleration. The field dialogue controller owns the same
@@ -195,30 +171,13 @@ function StarterChoicePresentation.new(opts)
     _portraits = opts.portraits,
     _frameIndex = opts.frameIndex,
     _machineTarget = nil,
-    _pool = nil,
     _renderer = nil,
     _ready = false,
     _disposed = false,
-    _prepareQueue = nil,
     _backend = nil,
-    _plan = nil,
-    _planIndex = 1,
-    _outstanding = {},
-    _pageHost = nil,
-    _pageReady = {},
-    _meshEntries = {},
-    _imageEntries = {},
-    _definitions = {},
-    _renderMeshes = {},
-    _wraps = {},
-    _instances = {},
-    _staticBatches = {},
+    _preparation = nil,
+    _resources = nil,
     _staticDraws = {},
-    _machineBackgroundImage = nil,
-    _infoBaseImage = nil,
-    _infoOverlayImage = nil,
-    _portraitImages = {},
-    _portraitQuads = {},
     _clipNames = { turntable = "", ballEffect = "", ballRock = {}, ballOpen = "" },
     _sceneRuntime = {},
     _entryTransition = nil,
@@ -641,53 +600,43 @@ function StarterChoicePresentation:ballAt(x, y, snapshot)
   return best
 end
 
----@param descriptor table<string, unknown> static model descriptor
----@param acquire StarterChoiceAcquisition realized mesh/image entries behind the pool call shape
----@return table[] prepared batches
-local function prepareStatic(descriptor, acquire)
-  assert(type(descriptor.materials) == "table", "starter static model requires its materials")
-  assert(type(descriptor.batches) == "table", "starter static model requires its batches")
-  local materialById = {}
-  for listIndex, record in ipairs(descriptor.materials) do
-    local wrap = SceneDescriptor.wrap(record)
-    materialById[record.id] = {
-      id = record.id,
-      name = record.name,
-      image = acquire:imageFor(record.texture, wrap.x, wrap.y),
-      texMatrix = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
-      wrap = wrap,
-      listIndex = listIndex,
-    }
-  end
-  local batches = {}
-  for _, batch in ipairs(descriptor.batches) do
-    local mesh = acquire:meshFor(batch.geometry)
-    batches[#batches + 1] = {
-      mesh = mesh.mesh,
-      material = materialById[batch.material],
-      center = mesh.center,
-      alphaClass = batch.alphaClass,
-      cullMode = batch.cullMode,
-      polygonAlpha = batch.polygonAlpha / FixedPoint.RGB5_MAX,
-      polygonMode = batch.polygonMode,
-      polygonId = batch.polygonId,
-      translucentDepthWrite = batch.translucentDepthWrite,
-      depthEqual = batch.depthEqual,
-      lightMask = batch.lightMask,
-      fogEnabled = batch.fogEnabled,
-    }
-  end
-  return batches
+-- Whether the presentation scene is fully prepared and drawable.
+---@return boolean
+function StarterChoicePresentation:isReady()
+  return self._ready
 end
 
--- Manifest animation bindings address clips by descriptor id or name
--- while the instance player resolves by clip name: map each binding to the
--- play name through the descriptor's own clip list. A binding that resolves
--- to no clip is malformed generated data and fails loudly.
----@param role string
----@param descriptor table<string, unknown>
----@param binding string|integer
----@return string clip name
+-- Advances bounded resource acquisition through the per-scene owner, then
+-- installs its borrowed ready view before the presentation-specific setup.
+---@param context StarterChoicePrepContext
+---@param maxWorkUnits integer?
+---@return integer completed units
+function StarterChoicePresentation:advancePreparation(context, maxWorkUnits)
+  assert(not self._disposed, "starter presentation is disposed")
+  if self._ready then
+    return 0
+  end
+  assert(type(context) == "table", "starter preparation requires its composition")
+  self._backend = assert(context.gxRenderer, "starter preparation requires the field graphics backend")
+  if self._preparation == nil then
+    self._preparation = StarterChoicePreparation.new(self._manifest, self._cacheFs, self._portraits)
+  end
+  local ok, completed = pcall(self._preparation.advance, self._preparation, context, maxWorkUnits)
+  if not ok then
+    self:_releaseGpu()
+    error(completed, 0)
+  end
+  if self._preparation:isReady() then
+    self._resources = self._preparation:resources()
+    local finishOk, finishError = pcall(self._finishPreparation, self)
+    if not finishOk then
+      self:_releaseGpu()
+      error(finishError, 0)
+    end
+  end
+  return completed
+end
+
 local function clipNameFor(role, descriptor, binding)
   assert(type(descriptor.animations) == "table", "starter model " .. role .. " owns no clips")
   for _, clip in ipairs(descriptor.animations) do
@@ -699,588 +648,10 @@ local function clipNameFor(role, descriptor, binding)
   error("starter animation binding " .. tostring(binding) .. " resolves to no clip on " .. role, 0)
 end
 
----@param role string
----@param descriptor table<string, unknown> dynamic model descriptor
----@param acquire StarterChoiceAcquisition realized mesh/image entries behind the pool call shape
----@param presentation StarterChoicePresentation
-local function realizeDynamic(role, descriptor, acquire, presentation)
-  assert(type(descriptor.dynamic) == "table", "starter model " .. role .. " requires its dynamic batches")
-  assert(type(descriptor.materials) == "table", "starter model " .. role .. " requires its materials")
-  assert(type(descriptor.animations) == "table", "starter model " .. role .. " requires its clips")
-  local nitroDescriptor = descriptor --[[@as ModelDefinition.Descriptor]]
-  local definition = ModelDefinition.fromNitroDescriptor(nitroDescriptor, { key = "starter-choice:" .. role })
-  local renderMeshes = {}
-  for _, mesh in ipairs(definition.meshes) do
-    local resource = acquire:meshFor(mesh.geometry)
-    renderMeshes[mesh.id] = resource.mesh
-    mesh.center = resource.center
-  end
-  local wraps = {}
-  for listIndex, record in ipairs(descriptor.materials) do
-    wraps[listIndex - 1] = SceneDescriptor.wrap(record)
-  end
-  ---@param path string
-  ---@param materialId integer
-  ---@return GpuAssetPool.Image?
-  local function resolveImage(path, materialId)
-    local wrap = assert(wraps[materialId], "starter model " .. role .. " has no sampler wrap")
-    return acquire:imageFor(path, wrap.x, wrap.y)
-  end
-  local instance = ModelInstance.new(definition, {
-    resolveImage = resolveImage,
-  })
-  presentation._definitions[role] = definition
-  presentation._renderMeshes[role] = renderMeshes
-  presentation._wraps[role] = wraps
-  presentation._instances[role] = instance
-end
-
--- The mesh/image entries behind the pool call shape once preparation has
--- realized them. Assembly reads only these entries, so draws and selection
--- changes after readiness never touch the cache, the queue, or the pool.
----@class StarterChoiceAcquisition
----@field meshFor fun(self: StarterChoiceAcquisition, path: string): StarterChoiceMeshEntry
----@field imageFor fun(self: StarterChoiceAcquisition, path: string?, wrapX: string, wrapY: string): GpuAssetPool.Image?
-
----@class StarterChoiceMeshEntry
----@field mesh unknown
----@field triangles integer
----@field center number[]
----@field bounds table<string, unknown>
-
----@class StarterChoicePrepStep
----@field kind "mesh"|"image"|"models"|"finish"
----@field path string?
----@field wrapX string?
----@field wrapY string?
----@field width number?
----@field height number?
----@field pageId integer? portrait atlas page gating image submission while set
----@field token integer? live submitted token while the window holds this step
----@field requested boolean? whether this step was ever submitted to the queue
-
----@class StarterChoicePrepContext
----@field assetPreparation table<string, unknown>? borrowed preparation queue; nil prepares synchronously from the cache
----@field gxRenderer table<string, unknown> borrowed field graphics backend for the renderer wrapper
----@field derivedAssets table<string, function>? borrowed semantic host gating actual portrait pages
-
--- One realized entry source over the presentation-owned entry tables.
----@param presentation StarterChoicePresentation
----@return StarterChoiceAcquisition
-local function realizedSource(presentation)
-  local source = {}
-  function source:meshFor(path)
-    local entry = presentation._meshEntries[path]
-    assert(entry ~= nil, "starter model geometry is not prepared: " .. tostring(path))
-    return entry
-  end
-  function source:imageFor(path, wrapX, wrapY)
-    if path == nil then
-      return nil
-    end
-    local entry = presentation._imageEntries[path .. "|" .. wrapX .. "|" .. wrapY]
-    assert(entry ~= nil, "starter texture is not prepared: " .. tostring(path))
-    return entry
-  end
-  return source --[[@as StarterChoiceAcquisition]]
-end
-
--- Stand-in records own no graphics objects and carry no animation state,
--- so their lifecycle operations do nothing.
-local function updateStandIn() end
-
--- A model instance stand-in for descriptors with no drawable batches. It
--- keeps the assembly shape (transform, fixed-tick advance, pose evaluation,
--- and a stable live draw list) while drawing nothing.
----@return ModelInstance
-local function stubInstance()
-  local draws = {}
-  local instance = { transform = Matrix4.identity() }
-  function instance:updateFixed() end
-  function instance:evaluatePose() end
-  function instance:drawItems()
-    return draws
-  end
-  function instance:play()
-    return {
-      player = {
-        completed = false,
-        updateFixed = updateStandIn,
-      },
-    }
-  end
-  function instance:stop()
-    return 0
-  end
-  return instance --[[@as ModelInstance]]
-end
-
--- A prepared payload carries upload buffers exactly when it came from the
--- preparation worker. Anything else is malformed generated data and fails
--- loudly below instead of rendering a blank scene.
----@param payload table<string, unknown>?
----@return boolean
-local function isMeshPayload(payload)
-  return type(payload) == "table" and payload.vertexData ~= nil and payload.indexData ~= nil
-end
-
----@param payload table<string, unknown>?
----@return boolean
-local function isImagePayload(payload)
-  return type(payload) == "table" and payload.imageData ~= nil
-end
-
--- Every concrete mesh path and image (path plus sampler) the manifest
--- needs, in first-use order with shared resources listed once. Mirrors the
--- acquisition the first-draw path performed, so nothing drawable is missed.
--- Portraits resolve to the deduplicated page images of the actual candidate
--- descriptors: the whole portrait atlas is never requested.
----@param manifest table<string, unknown>
----@param portraits table[] per-candidate portrait descriptors ({ selector: string, pageId: integer })
----@return string[] meshPaths, StarterChoicePrepStep[] imageSteps
-local function collectResources(manifest, portraits)
-  local models = assert(manifest.models, "starter manifest is missing its models")
-  local meshPaths, seenMesh = {}, {}
-  local function addMesh(path)
-    assert(type(path) == "string", "starter model batch references no geometry path")
-    if not seenMesh[path] then
-      seenMesh[path] = true
-      meshPaths[#meshPaths + 1] = path
-    end
-  end
-  local imageSteps, seenImage = {}, {}
-  local function addImage(path, wrapX, wrapY, width, height, pageId)
-    assert(type(path) == "string", "starter image reference carries no path")
-    local key = path .. "|" .. wrapX .. "|" .. wrapY
-    if not seenImage[key] then
-      seenImage[key] = true
-      imageSteps[#imageSteps + 1] =
-        { kind = "image", path = path, wrapX = wrapX, wrapY = wrapY, width = width, height = height, pageId = pageId }
-    end
-  end
-  local function addMaterialImages(materials)
-    assert(type(materials) == "table", "starter model carries no materials")
-    for _, record in ipairs(materials) do
-      local wrap = SceneDescriptor.wrap(record)
-      if record.texture ~= nil then
-        addImage(record.texture, wrap.x, wrap.y)
-      end
-      for _, variant in ipairs(record.variants or {}) do
-        if variant.texture ~= nil then
-          addImage(variant.texture, wrap.x, wrap.y)
-        end
-      end
-    end
-  end
-  for _, role in ipairs(ROLES) do
-    local descriptor = assert(models[role], "starter manifest is missing model role " .. role)
-    if descriptor.kind == "static" then
-      for _, batch in ipairs(assert(descriptor.batches, "starter static model " .. role .. " carries no batches")) do
-        addMesh(batch.geometry)
-      end
-      addMaterialImages(descriptor.materials)
-    else
-      local dynamic = assert(descriptor.dynamic, "starter model " .. role .. " requires its dynamic batches")
-      for _, batch in ipairs(assert(dynamic.batches, "starter model " .. role .. " carries no batches")) do
-        addMesh(batch.geometry)
-      end
-      addMaterialImages(descriptor.materials)
-    end
-  end
-  local backgrounds = assert(manifest.backgrounds, "starter manifest is missing its backgrounds")
-  local machineBackground = assert(backgrounds.machine, "starter manifest is missing its machine background")
-  addImage(
-    assert(machineBackground.image, "starter manifest is missing its machine background image"),
-    "clamp",
-    "clamp",
-    machineBackground.width,
-    machineBackground.height
-  )
-  local infoArtwork = assert(backgrounds.info, "starter manifest is missing its info artwork")
-  local infoBase = assert(infoArtwork.base, "starter manifest is missing its info base layer")
-  addImage(
-    assert(infoBase.image, "starter manifest is missing its info base image"),
-    "clamp",
-    "clamp",
-    infoBase.width,
-    infoBase.height
-  )
-  local infoOverlay = assert(infoArtwork.overlay, "starter manifest is missing its info overlay layer")
-  addImage(
-    assert(infoOverlay.image, "starter manifest is missing its info overlay image"),
-    "clamp",
-    "clamp",
-    infoOverlay.width,
-    infoOverlay.height
-  )
-  portraits = portraits or {}
-  local seenPages = {}
-  for index, descriptor in ipairs(portraits) do
-    assert(type(descriptor) == "table", "starter portrait descriptor " .. index .. " carries its page")
-    local rawPageId = assert(descriptor.pageId, "starter portrait descriptor " .. index .. " carries its page")
-    assert(
-      type(rawPageId) == "number" and rawPageId % 1 == 0 and rawPageId >= 0,
-      "starter portrait descriptor " .. index .. " carries its page"
-    )
-    local pageId = math.floor(rawPageId)
-    if not seenPages[pageId] then
-      seenPages[pageId] = true
-      addImage(MonCache.portraitPagePath(pageId), "clamp", "clamp", nil, nil, pageId)
-    end
-  end
-  return meshPaths, imageSteps
-end
-
--- The distinct actual portrait pages this chooser's candidates select,
--- in first-use order. The whole atlas is never requested.
----@return integer[]
-function StarterChoicePresentation:_portraitPages()
-  local pages, seen = {}, {}
-  for _, descriptor in ipairs(self._portraits) do
-    local pageId = assert(descriptor.pageId, "starter portrait descriptor carries its page")
-    if not seen[pageId] then
-      seen[pageId] = true
-      pages[#pages + 1] = pageId
-    end
-  end
-  return pages
-end
-
--- Requests each distinct actual portrait page as required and records
--- current pages. A nil host leaves readiness untouched, preserving the
--- established hostless preparation path. A page failure is malformed or
--- missing generated data and fails loudly: no absent page is ever loaded
--- as an old-generation file or replaced with a default portrait.
----@param host table<string, function>?
----@return boolean allReady
-function StarterChoicePresentation:_pollPortraitPages(host)
-  if host == nil then
-    return true
-  end
-  self._pageHost = host
-  local allReady = true
-  for _, pageId in ipairs(self:_portraitPages()) do
-    if not self._pageReady[pageId] then
-      local ready, failure = host.requestMonPortraitPage(pageId, "required")
-      if failure ~= nil then
-        error("starter portrait page " .. tostring(pageId) .. " is unavailable: " .. tostring(failure), 0)
-      end
-      if ready then
-        self._pageReady[pageId] = true
-      else
-        allReady = false
-      end
-    end
-  end
-  return allReady
-end
-
--- Whether the presentation scene is fully prepared and drawable.
----@return boolean
-function StarterChoicePresentation:isReady()
-  return self._ready == true
-end
-
--- Advances preparation by at most maxWorkUnits resource steps and returns
--- the steps completed. A step waiting on preparation work returns without
--- consuming anything. Errors release owned objects and cancel outstanding
--- requests before propagating; the shared backend is never released.
----@param context StarterChoicePrepContext borrowed queue and field backend
----@param maxWorkUnits integer? preparation steps allowed this update, one by default
----@return integer steps completed
-function StarterChoicePresentation:advancePreparation(context, maxWorkUnits)
-  assert(not self._disposed, "starter presentation is disposed")
-  if self._ready then
-    return 0
-  end
-  assert(type(context) == "table", "starter preparation requires its composition")
-  local backend = assert(context.gxRenderer, "starter preparation requires the field graphics backend")
-  maxWorkUnits = maxWorkUnits or 1
-  assert(
-    type(maxWorkUnits) == "number" and maxWorkUnits >= 0 and maxWorkUnits % 1 == 0,
-    "starter preparation requires a non-negative integer step budget"
-  )
-  if maxWorkUnits == 0 then
-    return 0
-  end
-  if context.derivedAssets ~= nil then
-    local pollOk, pollError = pcall(self._pollPortraitPages, self, context.derivedAssets)
-    if not pollOk then
-      self:_releaseGpu()
-      error(pollError, 0)
-    end
-  end
-  if self._plan == nil then
-    local meshPaths, imageSteps = collectResources(self._manifest, self._portraits)
-    local queue = context.assetPreparation --[[@as AssetPreparationQueue?]]
-    local pool = GpuAssetPool.new(self._cacheFs)
-    local plan = {}
-    for _, path in ipairs(meshPaths) do
-      plan[#plan + 1] = { kind = "mesh", path = path }
-    end
-    for _, step in ipairs(imageSteps) do
-      plan[#plan + 1] = step
-    end
-    plan[#plan + 1] = { kind = "models" }
-    plan[#plan + 1] = { kind = "finish" }
-    if queue ~= nil then
-      self._prepareQueue = queue
-      self._pool = pool
-      self._backend = backend
-      self._plan = plan
-      self._planIndex = 1
-      local submitOk, submitErr = pcall(function()
-        self:_submitWindow()
-      end)
-      if not submitOk then
-        self:_releaseGpu()
-        error(submitErr, 0)
-      end
-    else
-      self._pool = pool
-      self._backend = backend
-      self._plan = plan
-      self._planIndex = 1
-    end
-  end
-  local completed = 0
-  while completed < maxWorkUnits and not self._ready do
-    local ok, progressed = pcall(function()
-      return self:_advancePlanStep()
-    end)
-    if not ok then
-      self:_releaseGpu()
-      error(progressed, 0)
-    end
-    if not progressed then
-      break
-    end
-    completed = completed + 1
-  end
-  return completed
-end
-
--- Submits the earliest never-submitted resource steps until the
--- submitted-but-unconsumed window is full. Portrait image steps wait for
--- their page receipt before submission, so already-derived resources keep
--- flowing through the window while a page compiles. Runs once when the plan
--- is created and again after every consumed payload, so at most
--- PREPARATION_WINDOW tokens stay outstanding while every staged asset is
--- still eventually requested.
-function StarterChoicePresentation:_submitWindow()
-  local queue = assert(self._prepareQueue, "starter preparation owns no queue")
-  local plan = assert(self._plan, "starter preparation owns no plan")
-  local outstanding = 0
-  for _ in pairs(self._outstanding) do
-    outstanding = outstanding + 1
-  end
-  for _, step in ipairs(plan) do
-    if outstanding >= PREPARATION_WINDOW then
-      return
-    end
-    if (step.kind == "mesh" or step.kind == "image") and not step.requested then
-      if step.pageId ~= nil and self._pageHost ~= nil and not self._pageReady[step.pageId] then
-        -- The page is not current yet: later ready steps may still fill the
-        -- window, and this step submits once its receipt arrives.
-      else
-        step.token = queue:request(step.kind, assert(step.path, "starter preparation step carries no path"), "demand")
-        assert(step.token ~= nil, "starter preparation request returned no token")
-        step.requested = true
-        self._outstanding[step.token] = true
-        outstanding = outstanding + 1
-      end
-    end
-  end
-end
-
--- Runs the next plan step. Returns true when a step completed and false
--- while preparation work is still outstanding.
----@return boolean
-function StarterChoicePresentation:_advancePlanStep()
-  local plan = assert(self._plan, "starter preparation owns no plan")
-  local step = plan[self._planIndex]
-  if step == nil then
-    return false
-  end
-  if step.pageId ~= nil and self._pageHost ~= nil and not self._pageReady[step.pageId] then
-    -- The page receipt is still pending: other already-derived steps ahead
-    -- of it completed in order, and preparation resumes here once it is
-    -- current. No absent path reaches the queue or the pool.
-    return false
-  end
-  if step.kind == "models" then
-    self:_assembleModels()
-    self._planIndex = self._planIndex + 1
-    return true
-  end
-  if step.kind == "finish" then
-    self:_finishPreparation()
-    self._planIndex = self._planIndex + 1
-    return true
-  end
-  local queue = self._prepareQueue
-  if queue ~= nil then
-    if step.token == nil then
-      -- Skipped while its page was pending and never submitted since: submit
-      -- now that the receipt is current, or wait when the window is full.
-      self:_submitWindow()
-      if step.token == nil then
-        return false
-      end
-    end
-    local token = assert(step.token, "starter preparation step owns no token")
-    local status, failure = queue:poll(token)
-    if status == "pending" then
-      return false
-    end
-    step.token = nil
-    self._outstanding[token] = nil
-    if status ~= "ready" then
-      error(
-        "starter preparation failed for "
-          .. tostring(step.path)
-          .. " ("
-          .. tostring(step.kind)
-          .. "): "
-          .. tostring(failure),
-        0
-      )
-    end
-    self:_realizePrepared(step, queue:take(token))
-    self._planIndex = self._planIndex + 1
-    self:_submitWindow()
-    return true
-  else
-    self:_realizeSynchronous(step)
-  end
-  self._planIndex = self._planIndex + 1
-  return true
-end
-
--- Realizes one taken payload through the owned pool. A payload without
--- upload buffers is malformed and fails instead of rendering a blank scene.
----@param step StarterChoicePrepStep
----@param payload table<string, unknown>
-function StarterChoicePresentation:_realizePrepared(step, payload)
-  local pool = assert(self._pool, "starter preparation owns no pool")
-  local path = assert(step.path, "starter preparation step carries no path")
-  if step.kind == "mesh" then
-    if not isMeshPayload(payload) then
-      error("starter preparation produced no mesh upload buffers for " .. tostring(path), 0)
-    end
-    self._meshEntries[path] = pool:meshFromPrepared(path, payload --[[@as SceneMesh.PreparedMesh]])
-    return
-  end
-  assert(step.kind == "image", "starter preparation step carries an unknown kind " .. tostring(step.kind))
-  local wrapX, wrapY =
-    assert(step.wrapX, "starter image step carries no wrap"), assert(step.wrapY, "starter image step carries no wrap")
-  if not isImagePayload(payload) then
-    error("starter preparation produced no image upload buffers for " .. tostring(path), 0)
-  end
-  self._imageEntries[path .. "|" .. wrapX .. "|" .. wrapY] =
-    pool:imageFromPrepared(path, wrapX, wrapY, payload --[[@as { imageData: unknown }]])
-end
-
--- Realizes one resource synchronously from the cache for compositions
--- without a preparation queue.
----@param step StarterChoicePrepStep
-function StarterChoicePresentation:_realizeSynchronous(step)
-  local pool = assert(self._pool, "starter preparation owns no pool")
-  local path = assert(step.path, "starter preparation step carries no path")
-  if step.kind == "mesh" then
-    self._meshEntries[path] = pool:meshFor(path)
-    return
-  end
-  assert(step.kind == "image", "starter preparation step carries an unknown kind " .. tostring(step.kind))
-  local wrapX, wrapY =
-    assert(step.wrapX, "starter image step carries no wrap"), assert(step.wrapY, "starter image step carries no wrap")
-  self._imageEntries[path .. "|" .. wrapX .. "|" .. wrapY] = pool:imageFor(path, wrapX, wrapY)
-end
-
--- Builds every model definition and instance from the realized entries. A
--- dynamic role with no drawable batches keeps a stand-in instance so the
--- draw composition holds its shape; anything malformed fails loudly here,
--- before the first visible draw.
-function StarterChoicePresentation:_assembleModels()
-  local acquire = realizedSource(self)
-  local models = assert(self._manifest.models, "starter manifest is missing its models")
-  for _, role in ipairs(ROLES) do
-    local descriptor = assert(models[role], "starter manifest is missing model role " .. role)
-    local roleOk, roleErr = pcall(function()
-      if descriptor.kind == "static" then
-        self._staticBatches = prepareStatic(descriptor, acquire)
-      else
-        local dynamic = descriptor.dynamic
-        local batches = type(dynamic) == "table" and dynamic.batches or nil
-        if type(batches) == "table" and #batches == 0 then
-          self._instances[role] = stubInstance()
-          self._renderMeshes[role] = {}
-          self._wraps[role] = {}
-        else
-          realizeDynamic(role, descriptor, acquire, self)
-        end
-      end
-    end)
-    if not roleOk then
-      error("starter presentation cannot prepare " .. role .. ": " .. tostring(roleErr), 0)
-    end
-  end
-end
-
--- Finishes portraits, window, wrapper, and static records, then marks the
--- presentation drawable atomically. Draws use current dimensions, never
--- dimensions captured when preparation started.
+-- Completes rendering-specific state after the child has published all
+-- acquired resources. No cache or queue work occurs after this boundary.
 function StarterChoicePresentation:_finishPreparation()
   self:_buildStaticDraws()
-  local graphics = love and love.graphics
-  local backgrounds = assert(self._manifest.backgrounds, "starter manifest is missing its backgrounds")
-  local machineBackground = assert(backgrounds.machine, "starter manifest is missing its machine background")
-  self._machineBackgroundImage = assert(
-    self._imageEntries[assert(machineBackground.image, "starter manifest is missing its machine background image") .. "|clamp|clamp"],
-    "starter presentation owns no machine background image"
-  )
-  local infoArtwork = assert(backgrounds.info, "starter manifest is missing its info artwork")
-  self._infoBaseImage = assert(
-    self._imageEntries[assert(infoArtwork.base, "starter manifest is missing its info base layer").image .. "|clamp|clamp"],
-    "starter presentation owns no info base layer"
-  )
-  self._infoOverlayImage = assert(
-    self._imageEntries[assert(infoArtwork.overlay, "starter manifest is missing its info overlay layer").image .. "|clamp|clamp"],
-    "starter presentation owns no info overlay layer"
-  )
-  self._portraitImages = {}
-  for _, descriptor in ipairs(self._portraits) do
-    local pageId = assert(descriptor.pageId, "starter portrait descriptor carries its page")
-    if self._portraitImages[pageId] == nil then
-      self._portraitImages[pageId] = assert(
-        self._imageEntries[MonCache.portraitPagePath(pageId) .. "|clamp|clamp"],
-        "starter presentation owns no portrait page " .. pageId
-      )
-    end
-  end
-  local portraitManifest = self._cacheFs:loadLua(MonCache.portraitManifestPath())
-  assert(portraitManifest ~= nil, "starter presentation requires the mon portrait entries")
-  local entries = assert(portraitManifest.entries, "starter presentation requires the mon portrait entries")
-  local quads = {}
-  for index, descriptor in ipairs(self._portraits) do
-    local entry = assert(
-      entries[descriptor.selector],
-      "starter candidate has no portrait entry for " .. tostring(descriptor.selector)
-    )
-    local pageImage = assert(
-      self._portraitImages[descriptor.pageId],
-      "starter presentation owns no portrait page for " .. tostring(descriptor.selector)
-    )
-    local atlasWidth, atlasHeight = pageImage:getWidth(), pageImage:getHeight()
-    local quad
-    if graphics ~= nil and graphics.newQuad ~= nil then
-      quad = graphics.newQuad(entry.x, entry.y, entry.width, entry.height, atlasWidth, atlasHeight)
-    else
-      quad = { x = entry.x, y = entry.y, width = entry.width, height = entry.height }
-    end
-    quads[index] = { image = pageImage, quad = quad }
-  end
-  self._portraitQuads = quads
   local fogTable = {}
   for index = 1, 32 do
     fogTable[index] = 0
@@ -1313,12 +684,13 @@ function StarterChoicePresentation:_finishPreparation()
     },
     ballOpen = clipNameFor("ball1", models.ball1, animations.ballOpen),
   }
-  local turntable = assert(self._instances.turntable, "starter presentation is missing the turntable instance")
+  local turntable =
+    assert(self._resources.instances.turntable, "starter presentation is missing the turntable instance")
   turntable:play(self._clipNames.turntable, { loopMode = "loop" })
   self._ready = true
 end
 
----@param instance ModelInstance
+---@param instance { stop: fun(self: unknown, clip: string): integer }
 ---@param presentation StarterChoicePresentation
 local function stopBallClips(instance, presentation)
   instance:stop(presentation._clipNames.ballOpen)
@@ -1363,14 +735,14 @@ function StarterChoicePresentation:_syncRealized(snapshot)
   if not self._ready then
     return
   end
-  if self._instances.ball1 == nil then
+  if self._resources.instances.ball1 == nil then
     return
   end
   if rockActive(snapshot) then
     if self._rockPlayingFor ~= snapshot.selection then
       local selected = snapshot.selection + 1
       for index, role in ipairs(BALL_ROLES) do
-        local instance = self._instances[role]
+        local instance = self._resources.instances[role]
         if instance ~= nil then
           stopBallClips(instance, self)
           if index == selected then
@@ -1378,7 +750,7 @@ function StarterChoicePresentation:_syncRealized(snapshot)
           end
         end
       end
-      local effect = self._instances.ballEffect
+      local effect = self._resources.instances.ballEffect
       if effect ~= nil then
         effect:stop(self._clipNames.ballEffect)
       end
@@ -1391,7 +763,7 @@ function StarterChoicePresentation:_syncRealized(snapshot)
     if not self._exitPlaying then
       local selected = snapshot.selection + 1
       for index, role in ipairs(BALL_ROLES) do
-        local instance = self._instances[role]
+        local instance = self._resources.instances[role]
         if instance ~= nil then
           stopBallClips(instance, self)
           if index == selected then
@@ -1399,7 +771,7 @@ function StarterChoicePresentation:_syncRealized(snapshot)
           end
         end
       end
-      local effect = self._instances.ballEffect
+      local effect = self._resources.instances.ballEffect
       if effect ~= nil then
         effect:stop(self._clipNames.ballEffect)
         fastForward(effect:play(self._clipNames.ballEffect, { loopMode = "once" }), self._effectFrame)
@@ -1411,12 +783,12 @@ function StarterChoicePresentation:_syncRealized(snapshot)
   end
   if self._rockPlayingFor ~= nil or self._exitPlaying then
     for _, role in ipairs(BALL_ROLES) do
-      local instance = self._instances[role]
+      local instance = self._resources.instances[role]
       if instance ~= nil then
         stopBallClips(instance, self)
       end
     end
-    local effect = self._instances.ballEffect
+    local effect = self._resources.instances.ballEffect
     if effect ~= nil then
       effect:stop(self._clipNames.ballEffect)
     end
@@ -1549,7 +921,7 @@ function StarterChoicePresentation:update(snapshot)
   self:_advancePrinter(snapshot)
   if self._ready then
     for _, role in ipairs({ "turntable", "ballEffect", "ball1", "ball2", "ball3" }) do
-      local instance = self._instances[role]
+      local instance = self._resources.instances[role]
       if instance ~= nil then
         instance:updateFixed()
       end
@@ -1580,7 +952,7 @@ end
 -- instead of rebuilding them every frame.
 function StarterChoicePresentation:_buildStaticDraws()
   local draws = {}
-  for _, batch in ipairs(self._staticBatches) do
+  for _, batch in ipairs(self._resources.staticBatches) do
     draws[#draws + 1] = {
       mesh = batch.mesh,
       material = batch.material,
@@ -1626,7 +998,7 @@ function StarterChoicePresentation:_drawItems(snapshot, sample)
   end
   local dynamicRoles = { "turntable", "ballEffect", "ball1", "ball2", "ball3" }
   for _, role in ipairs(dynamicRoles) do
-    local instance = assert(self._instances[role], "starter presentation is missing " .. role)
+    local instance = assert(self._resources.instances[role], "starter presentation is missing " .. role)
     if role == "turntable" then
       instance.transform = platform
     elseif role == "ballEffect" then
@@ -1657,14 +1029,18 @@ function StarterChoicePresentation:_drawItems(snapshot, sample)
   -- The effect only draws while the lock plays it.
   local ordered = { "turntable", "ball1", "ball2", "ball3" }
   for _, role in ipairs(ordered) do
-    local instance = self._instances[role]
-    for _, item in ipairs(instance:drawItems(assert(self._renderMeshes[role], "starter meshes missing for " .. role))) do
+    local instance = self._resources.instances[role]
+    for _, item in
+      ipairs(instance:drawItems(assert(self._resources.renderMeshes[role], "starter meshes missing for " .. role)))
+    do
       items[#items + 1] = item
     end
   end
   if snapshot.transition == "lockExit" or snapshot.transition == "done" then
-    local effect = self._instances.ballEffect
-    for _, item in ipairs(effect:drawItems(assert(self._renderMeshes.ballEffect, "starter effect meshes are missing"))) do
+    local effect = self._resources.instances.ballEffect
+    for _, item in
+      ipairs(effect:drawItems(assert(self._resources.renderMeshes.ballEffect, "starter effect meshes are missing")))
+    do
       items[#items + 1] = item
     end
   end
@@ -1752,10 +1128,10 @@ end
 function StarterChoicePresentation:_drawInfoArtwork()
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(assert(self._infoBaseImage, "starter presentation owns no info base layer"), 0, 0)
+  graphics.draw(assert(self._resources.infoBaseImage, "starter presentation owns no info base layer"), 0, 0)
   local red, green, blue, alpha = graphics.getColor()
   graphics.setColor(1, 1, 1, self._manifest.backgrounds.info.overlayAlpha)
-  graphics.draw(assert(self._infoOverlayImage, "starter presentation owns no info overlay layer"), 0, 0)
+  graphics.draw(assert(self._resources.infoOverlayImage, "starter presentation owns no info overlay layer"), 0, 0)
   graphics.setColor(red, green, blue, alpha)
 end
 
@@ -1954,7 +1330,7 @@ end
 ---@param rect table<string, integer> draw origin and documented portrait size
 function StarterChoicePresentation:_drawInfoPortrait(snapshot, rect)
   local framed = assert(
-    self._portraitQuads[snapshot.selection + 1],
+    self._resources.portraitQuads[snapshot.selection + 1],
     "starter presentation owns no portrait for the inspected candidate"
   )
   assert(type(rect) == "table", "starter portrait drawing requires its origin")
@@ -2057,7 +1433,7 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
   LogicalSurface.draw(graphics, machinePlacement, function()
     graphics.draw(target, 0, 0)
     if machinePromptVisible(sampledSnapshot) then
-      graphics.draw(assert(self._machineBackgroundImage), 0, 0)
+      graphics.draw(assert(self._resources.machineBackgroundImage), 0, 0)
       self:_drawMessageLines(
         surfaces.machine.prompt,
         promptText,
@@ -2110,7 +1486,7 @@ function StarterChoicePresentation:_drawAdaptedPane(
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   LogicalSurface.draw(graphics, machinePlacement, function()
     graphics.draw(target, 0, 0)
-    graphics.draw(assert(self._machineBackgroundImage), 0, 0)
+    graphics.draw(assert(self._resources.machineBackgroundImage), 0, 0)
     local adaptedInfo, _ = infoMessageFor(self, snapshot)
     self:_drawMessageLines(
       surfaces.machine.prompt,
@@ -2126,7 +1502,11 @@ function StarterChoicePresentation:_drawAdaptedPane(
 end
 
 function StarterChoicePresentation:_releaseGpu()
-  self:_cancelTokens()
+  if self._preparation ~= nil then
+    self._preparation:dispose()
+    self._preparation = nil
+  end
+  self._resources = nil
   local target = self._machineTarget
   self._machineTarget = nil
   if target ~= nil then
@@ -2136,45 +1516,10 @@ function StarterChoicePresentation:_releaseGpu()
     self._renderer:release()
     self._renderer = nil
   end
-  if self._pool ~= nil then
-    self._pool:release()
-    self._pool = nil
-  end
-  self._definitions = {}
-  self._renderMeshes = {}
-  self._wraps = {}
-  self._instances = {}
-  self._staticBatches = {}
   self._staticDraws = {}
-  self._machineBackgroundImage = nil
-  self._infoBaseImage = nil
-  self._infoOverlayImage = nil
-  self._portraitImages = {}
-  self._portraitQuads = {}
   self._clipNames = { turntable = "", ballEffect = "", ballRock = {}, ballOpen = "" }
   self._ready = false
-  self._prepareQueue = nil
   self._backend = nil
-  self._plan = nil
-  self._planIndex = 1
-  self._outstanding = {}
-  self._meshEntries = {}
-  self._imageEntries = {}
-end
-
--- Drops every outstanding preparation request without touching owned
--- objects. Release stays infallible even if the queue is already gone.
-function StarterChoicePresentation:_cancelTokens()
-  local queue = self._prepareQueue
-  local outstanding = self._outstanding
-  self._outstanding = {}
-  self._prepareQueue = nil
-  if queue == nil then
-    return
-  end
-  for token in pairs(outstanding) do
-    pcall(queue.cancel, queue, token)
-  end
 end
 
 -- Release every acquired GPU/model resource exactly once. Safe before

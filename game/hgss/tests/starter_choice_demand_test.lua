@@ -704,7 +704,8 @@ function T.ready_draws_acquire_no_resources_and_reuse_stable_records()
   local queueRequestsBefore = queue:requestCount()
   local queueTakesBefore = queue.takes
   local presentation = assert(host._presentation, "readiness owns the presentation records")
-  local staticBefore = presentation._staticBatches
+  local resources = assert(presentation._resources, "readiness publishes the borrowed resource view")
+  local staticBefore = resources.staticBatches
   local text = {
     drawLine = function() end,
     drawLineWithColorVariants = function() end,
@@ -728,7 +729,7 @@ function T.ready_draws_acquire_no_resources_and_reuse_stable_records()
       Assert.isTrue(items[index] == staticIdentities[index], "static draw records keep their identity after warmup")
     end
   end
-  Assert.isTrue(presentation._staticBatches == staticBefore, "static draw records keep their identity after warmup")
+  Assert.isTrue(resources.staticBatches == staticBefore, "static draw records keep their identity after warmup")
   Assert.equal(queue:requestCount(), queueRequestsBefore, "ready draws issue no preparation requests")
   Assert.equal(queue.takes, queueTakesBefore, "ready draws take no preparation payloads")
   spies.queueRequests = queue:requestCount() - queueRequestsBefore
@@ -833,11 +834,12 @@ function T.turntable_and_ball_animation_timing_survives_demand_preparation()
   local status = host:status()
   Assert.equal(status.cursor, 1, "one settled right step advances exactly one candidate")
 
-  local turntable = assert(presentation._instances.turntable, "the turntable record stays live")
-  local firstDraws = turntable:drawItems(assert(presentation._renderMeshes.turntable, "turntable meshes stay resident"))
+  local resources = assert(presentation._resources, "readiness publishes the borrowed resource view")
+  local turntable = assert(resources.instances.turntable, "the turntable record stays live")
+  local firstDraws = turntable:drawItems(assert(resources.renderMeshes.turntable, "turntable meshes stay resident"))
   host:update()
   local secondDraws =
-    turntable:drawItems(assert(presentation._renderMeshes.turntable, "turntable meshes stay resident"))
+    turntable:drawItems(assert(resources.renderMeshes.turntable, "turntable meshes stay resident"))
   Assert.isTrue(firstDraws == secondDraws, "animated draw records keep stable live identities across ticks")
 
   host:confirm()
@@ -851,7 +853,7 @@ function T.turntable_and_ball_animation_timing_survives_demand_preparation()
     end
   end
   Assert.isTrue(confirmed, "inspection still settles into confirmation after demand preparation")
-  local ball = assert(presentation._instances.ball2, "the selected ball record stays live through selection")
+  local ball = assert(resources.instances.ball2, "the selected ball record stays live through selection")
   Assert.notNil(ball, "ball animation records survive selection changes")
   host:close()
   host:dispose()
