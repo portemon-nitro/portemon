@@ -1,4 +1,5 @@
--- The emitted Box graphics retain source geometry and carry visible pixels.
+-- The emitted Box graphics retain pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
+-- source geometry and bank 21 labels while carrying visible pixels.
 
 local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
@@ -19,7 +20,8 @@ local ROW_KEYS = {
   "WHT_APRICORN",
   "BLK_APRICORN",
 }
-local ROW_LABELS = { "Red Apricorn", "Ylw Apricorn", "Blu Apricorn", "Grn Apricorn", "Pnk Apricorn", "Wht Apricorn", "Blk Apricorn" }
+local ROW_LABELS =
+  { "Red Apricorn", "Ylw Apricorn", "Blu Apricorn", "Grn Apricorn", "Pnk Apricorn", "Wht Apricorn", "Blk Apricorn" }
 
 local function bundleFor(romFs, versionId)
   if compiled[versionId] == nil then
@@ -52,6 +54,8 @@ function T.box_panes_and_row_animation_frames_are_source_backed(romFs, versionId
     Assert.isTrue(opaque, paneName .. " pane contains visible source pixels")
   end
   Assert.equal(#bundle.manifest.rows, 7)
+  Assert.deepEqual(bundle.manifest.controls.sourceTable, ApricornBoxSources.geometry.touchMenu.sourceTable)
+  Assert.deepEqual(bundle.manifest.actionMessageIds, ApricornBoxSources.messages.actionLabels)
   local actionMenu = bundle.manifest.actionMenu
   local menuWidth, menuHeight, menuPixels = PngReader.rgba(assert(bundle.assets[actionMenu.image]))
   Assert.equal(menuWidth, 216, "the source action control emits the 27 local NCGR tiles")
@@ -71,6 +75,17 @@ function T.box_panes_and_row_animation_frames_are_source_backed(romFs, versionId
     local source = ApricornBoxSources.geometry.rowIcons[rowIndex]
     Assert.equal(row.icon.x, source.x)
     Assert.equal(row.icon.y, source.y)
+    local hitbox = bundle.manifest.rowHitboxes[rowIndex]
+    local sourceHitbox = ApricornBoxSources.geometry.rowHitboxes[rowIndex]
+    Assert.equal(hitbox.x, sourceHitbox.x)
+    Assert.equal(hitbox.y, sourceHitbox.y)
+    Assert.equal(hitbox.radius, sourceHitbox.radius)
+    local countWindow = row.quantity.window
+    local sourceCountWindow = ApricornBoxSources.geometry.countWindows[rowIndex]
+    Assert.equal(countWindow.x, sourceCountWindow.x)
+    Assert.equal(countWindow.y, sourceCountWindow.y)
+    Assert.equal(countWindow.width, sourceCountWindow.width)
+    Assert.equal(countWindow.height, sourceCountWindow.height)
     Assert.equal(row.icon.playMode, "forward_loop")
     Assert.isTrue(#row.icon.frames > 0, "source animation " .. source.animation .. " contains frames")
     for _, frame in ipairs(row.icon.frames) do

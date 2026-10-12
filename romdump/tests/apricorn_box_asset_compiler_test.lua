@@ -1,4 +1,5 @@
--- The Box producer resolves and compiles its exact pane and sprite sources.
+-- The Box producer follows pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981:
+-- overlay_59.s, touchscreen_list_menu.c, msg_0021.gmm and the source UI resources.
 
 local Assert = require("tests.support.Assert")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
@@ -19,6 +20,94 @@ local ROW_KEYS = {
   "WHT_APRICORN",
   "BLK_APRICORN",
 }
+local SOURCE_ROWS = {
+  {
+    key = "RED_APRICORN",
+    label = 7,
+    animation = 9,
+    iconX = 27,
+    iconY = 49,
+    hitX = 26,
+    hitY = 48,
+    radius = 24,
+    countX = 5,
+    countY = 6,
+  },
+  {
+    key = "YLW_APRICORN",
+    label = 8,
+    animation = 10,
+    iconX = 75,
+    iconY = 65,
+    hitX = 74,
+    hitY = 64,
+    radius = 24,
+    countX = 11,
+    countY = 8,
+  },
+  {
+    key = "BLU_APRICORN",
+    label = 9,
+    animation = 11,
+    iconX = 27,
+    iconY = 81,
+    hitX = 26,
+    hitY = 80,
+    radius = 24,
+    countX = 5,
+    countY = 10,
+  },
+  {
+    key = "GRN_APRICORN",
+    label = 10,
+    animation = 12,
+    iconX = 75,
+    iconY = 97,
+    hitX = 74,
+    hitY = 96,
+    radius = 24,
+    countX = 11,
+    countY = 12,
+  },
+  {
+    key = "PNK_APRICORN",
+    label = 11,
+    animation = 13,
+    iconX = 27,
+    iconY = 113,
+    hitX = 26,
+    hitY = 112,
+    radius = 24,
+    countX = 5,
+    countY = 14,
+  },
+  {
+    key = "WHT_APRICORN",
+    label = 12,
+    animation = 14,
+    iconX = 75,
+    iconY = 129,
+    hitX = 74,
+    hitY = 128,
+    radius = 24,
+    countX = 11,
+    countY = 16,
+  },
+  {
+    key = "BLK_APRICORN",
+    label = 13,
+    animation = 15,
+    iconX = 27,
+    iconY = 145,
+    hitX = 26,
+    hitY = 144,
+    radius = 24,
+    countX = 5,
+    countY = 18,
+  },
+}
+local SOURCE_CONTROL_BYTES = { 0, 2, 1, 0, 0, 4, 3, 0, 0, 6, 5, 0, 3, 4, 0, 11, 0, 0, 58, 0, 31, 0, 48, 0 }
+local SOURCE_ACTION_LABELS = { 2, 3, 4, 5, 6 }
 
 local function bundleFor(romFs, versionId)
   if bundles[versionId] == nil then
@@ -92,9 +181,63 @@ function T.compiler_emits_source_panes_rows_and_the_action_menu_atlas(romFs, ver
   Assert.equal(bundle.manifest.lower.height, 192)
   Assert.equal(#bundle.manifest.rows, 7)
   Assert.equal(bundle.manifest.messageBankId, 21)
+  Assert.deepEqual(ApricornBoxSources.itemKeys, ROW_KEYS, "the producer preserves the native row order")
+  Assert.deepEqual(
+    ApricornBoxSources.messages.actionLabels,
+    SOURCE_ACTION_LABELS,
+    "the producer pins source action labels"
+  )
+  Assert.deepEqual(
+    bundle.manifest.actionMessageIds,
+    SOURCE_ACTION_LABELS,
+    "the manifest retains source action label IDs"
+  )
+  Assert.deepEqual(
+    bundle.manifest.controls.sourceTable,
+    SOURCE_CONTROL_BYTES,
+    "the emitted touchscreen list controls retain the source byte sequence"
+  )
   for rowIndex, row in ipairs(bundle.manifest.rows) do
-    Assert.equal(row.apricornKey, ROW_KEYS[rowIndex], "the source row retains its native inventory identity")
-    Assert.equal(row.nameMessageId, rowIndex + 6, "the native row uses its matching source label")
+    local source = SOURCE_ROWS[rowIndex]
+    Assert.equal(row.apricornKey, source.key, "the source row retains its native inventory identity")
+    Assert.equal(row.nameMessageId, source.label, "the native row uses its matching source label")
+    Assert.equal(ApricornBoxSources.geometry.rowIcons[rowIndex].animation, source.animation)
+    Assert.equal(row.icon.x, source.iconX, "the sprite origin retains its overlay position")
+    Assert.equal(row.icon.y, source.iconY, "the sprite origin retains its overlay position")
+    local hitbox = bundle.manifest.rowHitboxes[rowIndex]
+    Assert.equal(hitbox.x, source.hitX, "the touch row retains its source center")
+    Assert.equal(hitbox.y, source.hitY, "the touch row retains its source center")
+    Assert.equal(hitbox.radius, source.radius, "the touch row retains its source radius")
+    local countWindow = row.quantity.window
+    Assert.equal(countWindow.x, source.countX, "the count window retains its source position")
+    Assert.equal(countWindow.y, source.countY, "the count window retains its source position")
+    Assert.equal(countWindow.width, 2)
+    Assert.equal(countWindow.height, 2)
+  end
+  Assert.deepEqual(ApricornBoxSources.geometry.touchMenu.actions.browse, {
+    x = 22,
+    y = 14,
+    width = 8,
+    windowCount = 3,
+    messageIds = { 2, 3, 4 },
+  }, "the source action labels retain their native menu placement")
+  Assert.deepEqual(ApricornBoxSources.geometry.touchMenu.actions.kurtSelect, {
+    x = 17,
+    y = 12,
+    width = 8,
+    windowCount = 2,
+    messageIds = { 5, 6 },
+  }, "the Kurt action labels retain their native menu placement")
+  Assert.deepEqual(bundle.manifest.controls.actions, ApricornBoxSources.geometry.touchMenu.actions)
+  local dependencyNames = {}
+  for _, dependency in ipairs(bundle.provenance.dependencies) do
+    dependencyNames[dependency.name] = true
+  end
+  for _, source in ipairs(SOURCE_ROWS) do
+    Assert.isTrue(
+      dependencyNames["overlay59:row-animation:" .. source.animation],
+      "the source row uses its matching sprite sequence"
+    )
   end
   for _, sequenceId in ipairs({ 0, 3, 4, 5 }) do
     Assert.isTrue(#bundle.manifest.selectionCursor.states[sequenceId].frames > 0, "source cursor state compiles")

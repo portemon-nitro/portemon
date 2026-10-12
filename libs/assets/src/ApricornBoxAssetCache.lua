@@ -1,4 +1,4 @@
--- Validated paths and source contract for the HGSS Apricorn Box presentation.
+-- Validates the generated Apricorn Box asset contract for consumers.
 
 local Contract = require("libs.assets.src.DerivedAssetContract")
 local Validate = require("libs.assets.src.Validate")
@@ -10,40 +10,60 @@ ApricornBoxAssetCache.SCHEMA = Contract.apricornBox.schema
 
 local DATA_DIR = "data/generated/apricorn-box"
 local ASSET_DIR = "assets/generated/apricorn-box"
-local ROW_KEYS =
-  { "RED_APRICORN", "YLW_APRICORN", "BLU_APRICORN", "GRN_APRICORN", "PNK_APRICORN", "WHT_APRICORN", "BLK_APRICORN" }
-local ROW_NAME_MESSAGES = { 7, 8, 9, 10, 11, 12, 13 }
-local ACTION_MESSAGE_IDS = { 2, 3, 4, 5, 6 }
-local ROW_ICON_POSITIONS = {
-  { 27, 49 },
-  { 75, 65 },
-  { 27, 81 },
-  { 75, 97 },
-  { 27, 113 },
-  { 75, 129 },
-  { 27, 145 },
+local ROW_KEYS = {
+  RED_APRICORN = true,
+  YLW_APRICORN = true,
+  BLU_APRICORN = true,
+  GRN_APRICORN = true,
+  PNK_APRICORN = true,
+  WHT_APRICORN = true,
+  BLK_APRICORN = true,
 }
-local ROW_HITBOXES = {
-  { 26, 48 },
-  { 74, 64 },
-  { 26, 80 },
-  { 74, 96 },
-  { 26, 112 },
-  { 74, 128 },
-  { 26, 144 },
+local CURSOR_STATE_IDS = { 0, 3, 4, 5 }
+local MANIFEST_FIELDS = {
+  schema = true,
+  upper = true,
+  lower = true,
+  actionMenu = true,
+  messageBankId = true,
+  actionMessageIds = true,
+  flowMessageIds = true,
+  modeMessages = true,
+  controls = true,
+  rows = true,
+  rowHitboxes = true,
+  selectedDetail = true,
+  selectionCursor = true,
 }
-local COUNT_WINDOWS = {
-  { 5, 6 },
-  { 11, 8 },
-  { 5, 10 },
-  { 11, 12 },
-  { 5, 14 },
-  { 11, 16 },
-  { 5, 18 },
+local IMAGE_FIELDS = { image = true, width = true, height = true, offsetX = true, offsetY = true }
+local FRAME_FIELDS = {
+  image = true,
+  width = true,
+  height = true,
+  offsetX = true,
+  offsetY = true,
+  durationTicks = true,
 }
-local CONTROL_BYTES = { 0, 2, 1, 0, 0, 4, 3, 0, 0, 6, 5, 0, 3, 4, 0, 11, 0, 0, 58, 0, 31, 0, 48, 0 }
-local MODE_MESSAGES = { 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48 }
-local FLOW_MESSAGE_IDS = { selection = 37, quantity = 38, confirmation = 39 }
+local SEQUENCE_FIELDS = { frames = true, totalTicks = true, playMode = true }
+local ROW_ICON_FIELDS = { x = true, y = true, playMode = true, frames = true, totalTicks = true }
+local ROW_FIELDS = { apricornKey = true, nameMessageId = true, icon = true, quantity = true }
+local QUANTITY_FIELDS = { window = true, alignment = true, textWidth = true, textHeight = true, color = true }
+local TILE_RECT_FIELDS = { x = true, y = true, width = true, height = true }
+local HITBOX_FIELDS = { x = true, y = true, radius = true }
+local CONTROL_FIELDS = {
+  sourceTable = true,
+  windowCount = true,
+  windowOriginTiles = true,
+  windowWidthTiles = true,
+  selection = true,
+  quantityHitboxes = true,
+  actions = true,
+}
+local ACTION_FIELDS = { x = true, y = true, width = true, windowCount = true, messageIds = true }
+local DETAIL_FIELDS = { window = true, messageWindowIndex = true }
+local DETAIL_WINDOW_FIELDS =
+  { bg = true, x = true, y = true, width = true, height = true, palette = true, baseTile = true }
+local CURSOR_FIELDS = { image = true, width = true, height = true, offsetX = true, offsetY = true, states = true }
 
 function ApricornBoxAssetCache.dir()
   return DATA_DIR
@@ -69,349 +89,316 @@ function ApricornBoxAssetCache.marker(romSha1, dependencyHash)
   return string.format("%s:%s:%s", ApricornBoxAssetCache.FORMAT, romSha1, dependencyHash)
 end
 
-local function validImage(ref, width, height, path)
-  return type(ref) == "table"
+local function hasOnlyFields(value, fields)
+  if type(value) ~= "table" then
+    return false
+  end
+  for key in pairs(value) do
+    if not fields[key] then
+      return false
+    end
+  end
+  return true
+end
+
+local function validArray(value, length)
+  return Validate.isArray(value) and #value == length
+end
+
+local function finite(value, minimum, maximum)
+  return type(value) == "number"
+    and value == value
+    and value ~= math.huge
+    and value ~= -math.huge
+    and value >= minimum
+    and value <= maximum
+end
+
+local function integer(value, minimum, maximum)
+  return finite(value, minimum, maximum) and value % 1 == 0
+end
+
+local function validAssetPath(path, paths)
+  local prefix = ASSET_DIR .. "/"
+  if
+    type(path) ~= "string"
+    or path:sub(1, #prefix) ~= prefix
+    or path:sub(-4) ~= ".png"
+    or path:find("\\", 1, true)
+    or path:find("//", 1, true)
+  then
+    return false
+  end
+  local relative = path:sub(#prefix + 1)
+  if relative == "" then
+    return false
+  end
+  for segment in relative:gmatch("[^/]+") do
+    if segment == "." or segment == ".." then
+      return false
+    end
+  end
+  if paths[path] then
+    return false
+  end
+  paths[path] = true
+  return true
+end
+
+local function validImage(ref, width, height, path, paths)
+  return hasOnlyFields(ref, IMAGE_FIELDS)
     and ref.image == path
-    and ref.width == width
-    and ref.height == height
-    and ref.offsetX == 0
-    and ref.offsetY == 0
+    and validAssetPath(ref.image, paths)
+    and integer(ref.width, width, width)
+    and integer(ref.height, height, height)
+    and finite(ref.offsetX, -256, 256)
+    and finite(ref.offsetY, -256, 256)
+end
+
+local function validTileRect(rect)
+  return hasOnlyFields(rect, TILE_RECT_FIELDS)
+    and integer(rect.x, 0, 31)
+    and integer(rect.y, 0, 23)
+    and integer(rect.width, 1, 32)
+    and integer(rect.height, 1, 24)
+    and rect.x + rect.width <= 32
+    and rect.y + rect.height <= 24
+end
+
+local function validPixelRect(rect)
+  return hasOnlyFields(rect, TILE_RECT_FIELDS)
+    and integer(rect.x, 0, 255)
+    and integer(rect.y, 0, 191)
+    and integer(rect.width, 1, 256)
+    and integer(rect.height, 1, 192)
+    and rect.x + rect.width <= 256
+    and rect.y + rect.height <= 192
+end
+
+local function validFrame(frame, paths)
+  return hasOnlyFields(frame, FRAME_FIELDS)
+    and validAssetPath(frame.image, paths)
+    and integer(frame.width, 1, 256)
+    and integer(frame.height, 1, 192)
+    and finite(frame.offsetX, -256, 256)
+    and finite(frame.offsetY, -192, 192)
+    and integer(frame.durationTicks, 1, 65535)
+end
+
+local function validSequence(sequence, fields, paths)
+  if
+    not hasOnlyFields(sequence, fields)
+    or (sequence.playMode ~= "forward" and sequence.playMode ~= "forward_loop")
+    or not integer(sequence.totalTicks, 1, 1000000)
+    or not Validate.isArray(sequence.frames)
+    or #sequence.frames == 0
+  then
+    return false
+  end
+  local totalTicks = 0
+  for _, frame in ipairs(sequence.frames) do
+    if not validFrame(frame, paths) then
+      return false
+    end
+    totalTicks = totalTicks + frame.durationTicks
+  end
+  return totalTicks == sequence.totalTicks
+end
+
+local function validMessageIds(ids, length)
+  if not validArray(ids, length) then
+    return false
+  end
+  local seen = {}
+  for _, messageId in ipairs(ids) do
+    if not integer(messageId, 0, 65535) or seen[messageId] then
+      return false
+    end
+    seen[messageId] = true
+  end
+  return true
+end
+
+local function validActions(actions, actionIds)
+  if not hasOnlyFields(actions, { browse = true, kurtSelect = true }) then
+    return false
+  end
+  for mode, count in pairs({ browse = 3, kurtSelect = 2 }) do
+    local menu = actions[mode]
+    if
+      not hasOnlyFields(menu, ACTION_FIELDS)
+      or not integer(menu.x, 0, 31)
+      or not integer(menu.y, 0, 23)
+      or not integer(menu.width, 1, 32)
+      or not integer(menu.windowCount, count, count)
+      or menu.x + menu.width + 2 > 32
+      or menu.y + 1 + menu.windowCount * 3 > 24
+      or not validMessageIds(menu.messageIds, count)
+    then
+      return false
+    end
+    for _, messageId in ipairs(menu.messageIds) do
+      if not actionIds[messageId] then
+        return false
+      end
+    end
+  end
+  return true
 end
 
 local function validManifest(manifest)
   if
-    type(manifest) ~= "table"
+    not hasOnlyFields(manifest, MANIFEST_FIELDS)
     or manifest.schema ~= ApricornBoxAssetCache.SCHEMA
     or manifest.messageBankId ~= 21
-    or type(manifest.actionMessageIds) ~= "table"
-    or #manifest.actionMessageIds ~= 5
-    or type(manifest.flowMessageIds) ~= "table"
-    or type(manifest.flowMessageIds.selection) ~= "number"
-    or type(manifest.flowMessageIds.quantity) ~= "number"
-    or type(manifest.flowMessageIds.confirmation) ~= "number"
-    or type(manifest.modeMessages) ~= "table"
-    or #manifest.modeMessages ~= 23
-    or type(manifest.controls) ~= "table"
-    or not validImage(manifest.actionMenu, 216, 8, ASSET_DIR .. "/action-menu-tiles.png")
-    or manifest.actionMenu.charOffset ~= 31
-    or type(manifest.controls.sourceTable) ~= "table"
-    or #manifest.controls.sourceTable ~= 24
-    or manifest.controls.windowCount ~= 3
-    or type(manifest.controls.windowOriginTiles) ~= "table"
-    or manifest.controls.windowOriginTiles.x ~= 14
-    or manifest.controls.windowOriginTiles.y ~= 8
-    or manifest.controls.windowWidthTiles ~= 22
-    or manifest.controls.selection ~= 0
-    or type(manifest.controls.actions) ~= "table"
-    or type(manifest.controls.quantityHitboxes) ~= "table"
-    or #manifest.controls.quantityHitboxes ~= 6
-    or type(manifest.rows) ~= "table"
-    or #manifest.rows ~= 7
-    or type(manifest.rowHitboxes) ~= "table"
-    or #manifest.rowHitboxes ~= 7
-    or type(manifest.selectedDetail) ~= "table"
-    or manifest.selectedDetail.messageWindowIndex ~= 4
-    or type(manifest.selectedDetail.window) ~= "table"
-    or type(manifest.selectionCursor) ~= "table"
-    or type(manifest.selectionCursor.states) ~= "table"
-    or type(manifest.selectionCursor.width) ~= "number"
-    or manifest.selectionCursor.width < 1
-    or type(manifest.selectionCursor.height) ~= "number"
-    or manifest.selectionCursor.height < 1
-    or type(manifest.selectionCursor.offsetX) ~= "number"
-    or type(manifest.selectionCursor.offsetY) ~= "number"
-    or manifest.selectionCursor.image ~= ASSET_DIR .. "/selection-cursor.png"
+    or not validMessageIds(manifest.actionMessageIds, 5)
+    or not hasOnlyFields(manifest.flowMessageIds, { selection = true, quantity = true, confirmation = true })
+    or not hasOnlyFields(manifest.controls, CONTROL_FIELDS)
+    or not validArray(manifest.modeMessages, 23)
+    or not validArray(manifest.rows, 7)
+    or not validArray(manifest.rowHitboxes, 7)
+    or not hasOnlyFields(manifest.selectedDetail, DETAIL_FIELDS)
+    or not integer(manifest.selectedDetail.messageWindowIndex, 0, 65535)
+    or not hasOnlyFields(manifest.selectedDetail.window, DETAIL_WINDOW_FIELDS)
+    or not integer(manifest.selectedDetail.window.bg, 0, 7)
+    or not integer(manifest.selectedDetail.window.x, 0, 31)
+    or not integer(manifest.selectedDetail.window.y, 0, 23)
+    or not integer(manifest.selectedDetail.window.width, 1, 32)
+    or not integer(manifest.selectedDetail.window.height, 1, 24)
+    or manifest.selectedDetail.window.x + manifest.selectedDetail.window.width > 32
+    or manifest.selectedDetail.window.y + manifest.selectedDetail.window.height > 24
+    or not integer(manifest.selectedDetail.window.palette, 0, 15)
+    or not integer(manifest.selectedDetail.window.baseTile, 0, 1023)
   then
     return false
   end
-  for key in pairs(manifest) do
-    if
-      key ~= "schema"
-      and key ~= "upper"
-      and key ~= "lower"
-      and key ~= "actionMenu"
-      and key ~= "messageBankId"
-      and key ~= "actionMessageIds"
-      and key ~= "flowMessageIds"
-      and key ~= "modeMessages"
-      and key ~= "controls"
-      and key ~= "rows"
-      and key ~= "rowHitboxes"
-      and key ~= "selectedDetail"
-      and key ~= "selectionCursor"
-    then
+
+  local messages = {}
+  for _, messageId in ipairs(manifest.actionMessageIds) do
+    messages[messageId] = true
+  end
+  for _, messageId in ipairs(manifest.modeMessages) do
+    if not integer(messageId, 0, 65535) then
       return false
     end
   end
-  for key in pairs(manifest.actionMenu) do
-    if
-      key ~= "image"
-      and key ~= "width"
-      and key ~= "height"
-      and key ~= "offsetX"
-      and key ~= "offsetY"
-      and key ~= "charOffset"
-    then
+  for _, phase in ipairs({ "selection", "quantity", "confirmation" }) do
+    local messageId = manifest.flowMessageIds[phase]
+    if not integer(messageId, 0, 65535) or messages[messageId] then
       return false
     end
+    messages[messageId] = true
   end
-  for index, value in ipairs(ACTION_MESSAGE_IDS) do
-    if manifest.actionMessageIds[index] ~= value then
-      return false
-    end
-  end
-  for key, value in pairs(FLOW_MESSAGE_IDS) do
-    if manifest.flowMessageIds[key] ~= value then
-      return false
-    end
-  end
-  local actions = manifest.controls.actions
-  for key, expected in pairs({
-    browse = { x = 22, y = 14, width = 8, windowCount = 3, labels = { 2, 3, 4 } },
-    kurtSelect = { x = 17, y = 12, width = 8, windowCount = 2, labels = { 5, 6 } },
-  }) do
-    local menu = actions[key]
-    if
-      type(menu) ~= "table"
-      or menu.x ~= expected.x
-      or menu.y ~= expected.y
-      or menu.width ~= expected.width
-      or menu.windowCount ~= expected.windowCount
-      or type(menu.messageIds) ~= "table"
-      or #menu.messageIds ~= #expected.labels
-    then
-      return false
-    end
-    for index, messageId in ipairs(expected.labels) do
-      if menu.messageIds[index] ~= messageId then
-        return false
-      end
-    end
-    for field in pairs(menu) do
-      if field ~= "x" and field ~= "y" and field ~= "width" and field ~= "windowCount" and field ~= "messageIds" then
-        return false
-      end
-    end
-  end
-  for key in pairs(actions) do
-    if key ~= "browse" and key ~= "kurtSelect" then
-      return false
-    end
-  end
-  for key, value in pairs(manifest.flowMessageIds) do
+  for key in pairs(manifest.flowMessageIds) do
     if key ~= "selection" and key ~= "quantity" and key ~= "confirmation" then
       return false
     end
-    if value ~= FLOW_MESSAGE_IDS[key] then
-      return false
-    end
   end
-  for key in pairs(manifest.selectionCursor) do
-    if
-      key ~= "image"
-      and key ~= "width"
-      and key ~= "height"
-      and key ~= "offsetX"
-      and key ~= "offsetY"
-      and key ~= "states"
-    then
-      return false
-    end
-  end
-  for _, sequenceId in ipairs({ 0, 3, 4, 5 }) do
-    local sequence = manifest.selectionCursor.states[sequenceId]
-    if
-      type(sequence) ~= "table"
-      or type(sequence.frames) ~= "table"
-      or #sequence.frames == 0
-      or type(sequence.totalTicks) ~= "number"
-      or sequence.totalTicks < 1
-      or (sequence.playMode ~= "forward" and sequence.playMode ~= "forward_loop")
-    then
-      return false
-    end
-    for _, frame in ipairs(sequence.frames) do
-      if
-        type(frame) ~= "table"
-        or type(frame.image) ~= "string"
-        or type(frame.width) ~= "number"
-        or frame.width < 1
-        or type(frame.height) ~= "number"
-        or frame.height < 1
-        or type(frame.offsetX) ~= "number"
-        or type(frame.offsetY) ~= "number"
-        or type(frame.durationTicks) ~= "number"
-        or frame.durationTicks < 1
-      then
-        return false
-      end
-    end
-  end
-  for sequenceId in pairs(manifest.selectionCursor.states) do
-    if sequenceId ~= 0 and sequenceId ~= 3 and sequenceId ~= 4 and sequenceId ~= 5 then
-      return false
-    end
-  end
-  for index, value in ipairs(CONTROL_BYTES) do
-    if manifest.controls.sourceTable[index] ~= value then
-      return false
-    end
-  end
-  for key in pairs(manifest.controls) do
-    if
-      key ~= "sourceTable"
-      and key ~= "windowCount"
-      and key ~= "windowOriginTiles"
-      and key ~= "windowWidthTiles"
-      and key ~= "selection"
-      and key ~= "quantityHitboxes"
-      and key ~= "actions"
-    then
-      return false
-    end
-  end
-  local quantityBounds = {
-    { 104, 136, 16, 48 },
-    { 128, 136, 16, 48 },
-    { 88, 94, 16, 14 },
-    { 128, 94, 16, 14 },
-    { 88, 74, 16, 14 },
-    { 128, 74, 16, 14 },
-  }
-  for index, expected in ipairs(quantityBounds) do
-    local bounds = manifest.controls.quantityHitboxes[index]
-    if
-      type(bounds) ~= "table"
-      or bounds.x ~= expected[1]
-      or bounds.y ~= expected[2]
-      or bounds.width ~= expected[3]
-      or bounds.height ~= expected[4]
-    then
-      return false
-    end
-    for key in pairs(bounds) do
-      if key ~= "x" and key ~= "y" and key ~= "width" and key ~= "height" then
-        return false
-      end
-    end
-  end
-  for index, value in ipairs(MODE_MESSAGES) do
-    if manifest.modeMessages[index] ~= value then
-      return false
-    end
-  end
-  for _, pane in ipairs({ "upper", "lower" }) do
-    if not validImage(manifest[pane], 256, 192, ASSET_DIR .. "/" .. pane .. "-background.png") then
-      return false
-    end
-    for key in pairs(manifest[pane]) do
-      if key ~= "image" and key ~= "width" and key ~= "height" and key ~= "offsetX" and key ~= "offsetY" then
-        return false
-      end
-    end
-  end
-  for index, row in ipairs(manifest.rows) do
-    local icon = type(row) == "table" and row.icon
-    local quantity = type(row) == "table" and row.quantity
-    local position = ROW_ICON_POSITIONS[index]
-    local window = COUNT_WINDOWS[index]
-    if
-      row.apricornKey ~= ROW_KEYS[index]
-      or row.nameMessageId ~= ROW_NAME_MESSAGES[index]
-      or type(icon) ~= "table"
-      or icon.x ~= position[1]
-      or icon.y ~= position[2]
-      or icon.playMode ~= "forward_loop"
-      or type(icon.frames) ~= "table"
-      or #icon.frames == 0
-      or type(icon.totalTicks) ~= "number"
-      or icon.totalTicks < 1
-      or type(quantity) ~= "table"
-      or type(quantity.window) ~= "table"
-      or quantity.window.x ~= window[1]
-      or quantity.window.y ~= window[2]
-      or quantity.window.width ~= 2
-      or quantity.window.height ~= 2
-      or quantity.alignment ~= "center"
-      or quantity.textWidth ~= 16
-      or quantity.textHeight ~= 16
-      or quantity.color ~= 2
-    then
-      return false
-    end
-    for key in pairs(row) do
-      if key ~= "apricornKey" and key ~= "nameMessageId" and key ~= "icon" and key ~= "quantity" then
-        return false
-      end
-    end
-    local totalTicks = 0
-    for _, frame in ipairs(icon.frames) do
-      if
-        type(frame) ~= "table"
-        or type(frame.image) ~= "string"
-        or frame.image:sub(1, #ASSET_DIR + 1) ~= ASSET_DIR .. "/"
-        or frame.image:find("..", 1, true)
-        or type(frame.width) ~= "number"
-        or frame.width < 1
-        or type(frame.height) ~= "number"
-        or frame.height < 1
-        or type(frame.offsetX) ~= "number"
-        or type(frame.offsetY) ~= "number"
-        or type(frame.durationTicks) ~= "number"
-        or frame.durationTicks < 1
-      then
-        return false
-      end
-      for key in pairs(frame) do
-        if
-          key ~= "image"
-          and key ~= "width"
-          and key ~= "height"
-          and key ~= "offsetX"
-          and key ~= "offsetY"
-          and key ~= "durationTicks"
-        then
-          return false
-        end
-      end
-      totalTicks = totalTicks + frame.durationTicks
-    end
-    if totalTicks ~= icon.totalTicks then
-      return false
-    end
-  end
-  for index, hitbox in ipairs(manifest.rowHitboxes) do
-    local center = ROW_HITBOXES[index]
-    if type(hitbox) ~= "table" or hitbox.x ~= center[1] or hitbox.y ~= center[2] or hitbox.radius ~= 24 then
-      return false
-    end
-    for key in pairs(hitbox) do
-      if key ~= "x" and key ~= "y" and key ~= "radius" then
-        return false
-      end
-    end
-  end
-  local detail = manifest.selectedDetail.window
+
+  local paths = {}
   if
-    detail.bg ~= 7
-    or detail.x ~= 2
-    or detail.y ~= 17
-    or detail.width ~= 28
-    or detail.height ~= 6
-    or detail.palette ~= 12
-    or detail.baseTile ~= 0x358
+    not validImage(manifest.upper, 256, 192, ASSET_DIR .. "/upper-background.png", paths)
+    or not validImage(manifest.lower, 256, 192, ASSET_DIR .. "/lower-background.png", paths)
+    or not hasOnlyFields(manifest.actionMenu, {
+      image = true,
+      width = true,
+      height = true,
+      offsetX = true,
+      offsetY = true,
+      charOffset = true,
+    })
+    or manifest.actionMenu.image ~= ASSET_DIR .. "/action-menu-tiles.png"
+    or not validAssetPath(manifest.actionMenu.image, paths)
+    or not integer(manifest.actionMenu.width, 216, 216)
+    or not integer(manifest.actionMenu.height, 8, 8)
+    or not finite(manifest.actionMenu.offsetX, -256, 256)
+    or not finite(manifest.actionMenu.offsetY, -192, 192)
+    or not integer(manifest.actionMenu.charOffset, 0, 65535)
   then
     return false
   end
-  for key in pairs(detail) do
+
+  local cursor = manifest.selectionCursor
+  if
+    not hasOnlyFields(cursor, CURSOR_FIELDS)
+    or cursor.image ~= ASSET_DIR .. "/selection-cursor.png"
+    or not validAssetPath(cursor.image, paths)
+    or not integer(cursor.width, 1, 256)
+    or not integer(cursor.height, 1, 192)
+    or not finite(cursor.offsetX, -256, 256)
+    or not finite(cursor.offsetY, -192, 192)
+    or not hasOnlyFields(cursor.states, { [0] = true, [3] = true, [4] = true, [5] = true })
+  then
+    return false
+  end
+  for _, stateId in ipairs(CURSOR_STATE_IDS) do
+    if not validSequence(cursor.states[stateId], SEQUENCE_FIELDS, paths) then
+      return false
+    end
+  end
+
+  local controls = manifest.controls
+  if
+    not validArray(controls.sourceTable, 24)
+    or not integer(controls.windowCount, 1, 24)
+    or not hasOnlyFields(controls.windowOriginTiles, { x = true, y = true })
+    or not integer(controls.windowOriginTiles.x, 0, 31)
+    or not integer(controls.windowOriginTiles.y, 0, 23)
+    or not integer(controls.windowWidthTiles, 1, 32)
+    or not integer(controls.selection, 0, 65535)
+    or not validArray(controls.quantityHitboxes, 6)
+    or not validActions(controls.actions, messages)
+  then
+    return false
+  end
+  for _, value in ipairs(controls.sourceTable) do
+    if not integer(value, 0, 255) then
+      return false
+    end
+  end
+  for _, bounds in ipairs(controls.quantityHitboxes) do
+    if not validPixelRect(bounds) then
+      return false
+    end
+  end
+
+  local seenKeys = {}
+  local seenNames = {}
+  for _, row in ipairs(manifest.rows) do
     if
-      key ~= "bg"
-      and key ~= "x"
-      and key ~= "y"
-      and key ~= "width"
-      and key ~= "height"
-      and key ~= "palette"
-      and key ~= "baseTile"
+      not hasOnlyFields(row, ROW_FIELDS)
+      or not ROW_KEYS[row.apricornKey]
+      or seenKeys[row.apricornKey]
+      or not integer(row.nameMessageId, 0, 65535)
+      or seenNames[row.nameMessageId]
+      or not hasOnlyFields(row.icon, ROW_ICON_FIELDS)
+      or not integer(row.icon.x, 0, 255)
+      or not integer(row.icon.y, 0, 191)
+      or row.icon.playMode ~= "forward_loop"
+      or not validSequence(row.icon, ROW_ICON_FIELDS, paths)
+      or not hasOnlyFields(row.quantity, QUANTITY_FIELDS)
+      or not validTileRect(row.quantity.window)
+      or row.quantity.alignment ~= "center"
+      or not integer(row.quantity.textWidth, 1, 256)
+      or not integer(row.quantity.textHeight, 1, 192)
+      or not integer(row.quantity.color, 0, 15)
+    then
+      return false
+    end
+    seenKeys[row.apricornKey] = true
+    seenNames[row.nameMessageId] = true
+    messages[row.nameMessageId] = true
+  end
+  for _, hitbox in ipairs(manifest.rowHitboxes) do
+    if
+      not hasOnlyFields(hitbox, HITBOX_FIELDS)
+      or not integer(hitbox.x, 0, 255)
+      or not integer(hitbox.y, 0, 191)
+      or not integer(hitbox.radius, 1, 128)
+      or hitbox.x - hitbox.radius < 0
+      or hitbox.x + hitbox.radius > 256
+      or hitbox.y - hitbox.radius < 0
+      or hitbox.y + hitbox.radius > 192
     then
       return false
     end
