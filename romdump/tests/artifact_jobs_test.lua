@@ -295,6 +295,76 @@ function T.complete_inventory_drains_the_incremental_enumerator()
   end
 end
 
+-- Mon and battle execution share the dispatcher-owned stage and failure
+-- receipt protocol even when their compilers fail.
+function T.mon_and_battle_compile_failures_use_the_central_artifact_wrapper()
+  local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
+  local BattleDataCompiler = require("romdump.src.digest.battle.BattleDataCompiler")
+  local originalMonCompile = MonCatalogCompiler.compileCatalog
+  local originalBattleCompile = BattleDataCompiler.compileFromDump
+  local ok, failure = pcall(function()
+    local cases = {
+      {
+        kind = "mon-catalog",
+        key = "global",
+        stageName = "d10-mon-failure",
+        message = "injected mon compilation failure",
+        context = { romFs = {} },
+        inject = function()
+          MonCatalogCompiler.compileCatalog = function()
+            return nil, "injected mon compilation failure"
+          end
+        end,
+      },
+      {
+        kind = "battle-data",
+        key = "global",
+        stageName = "d10-battle-failure",
+        message = "injected battle compilation failure",
+        context = { romFs = {}, versionId = "heartgold" },
+        inject = function()
+          BattleDataCompiler.compileFromDump = function()
+            return nil, "injected battle compilation failure"
+          end
+        end,
+      },
+    }
+    for _, case in ipairs(cases) do
+      local backend = FakeCache.new()
+      local cacheFs = CacheFs.forVersion("heartgold", backend)
+      case.context.cacheFs = cacheFs
+      case.inject()
+      local executeOk, executeFailure = pcall(ArtifactJobs.execute, {
+        kind = case.kind,
+        key = case.key,
+        generationId = "d10-generation",
+        producerFingerprint = "d10-producer",
+        stageName = case.stageName,
+        epoch = 1,
+      }, case.context)
+      Assert.isFalse(executeOk, "the injected family compiler failure escapes")
+      Assert.isTrue(
+        tostring(executeFailure):find(case.message, 1, true) ~= nil,
+        "the family failure keeps its cause: " .. tostring(executeFailure)
+      )
+      local staged = CacheFs.forArtifactStage("heartgold", case.stageName, backend)
+      local manifest = staged:loadLua("_prepared/result.lua")
+      Assert.equal(manifest.status, "failure", "the dispatcher finalizes one failed staged artifact")
+      Assert.isNil(manifest.result, "a failed artifact carries no successful result")
+      Assert.equal(#manifest.ownedRoots, 0, "a compiler failure publishes no family roots")
+      Assert.isNil(
+        cacheFs:loadLua(ArtifactState.path(case.kind, case.key)),
+        "a compiler failure publishes no live success receipt"
+      )
+    end
+  end)
+  MonCatalogCompiler.compileCatalog = originalMonCompile
+  BattleDataCompiler.compileFromDump = originalBattleCompile
+  if not ok then
+    error(failure, 0)
+  end
+end
+
 -- A published message bank validates warm through the worker-facing
 -- wrapper without a source reader: the authoritative family rule decides
 -- reuse, and a missing bank validates cold. No ROM handle is opened.

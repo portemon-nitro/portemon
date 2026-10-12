@@ -8,6 +8,8 @@
 
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
+local ArtifactMonJobs = require("romdump.src.build.ArtifactMonJobs")
+local ArtifactBattleJobs = require("romdump.src.build.ArtifactBattleJobs")
 
 ---@class ArtifactJobs.Job
 ---@field kind string
@@ -57,6 +59,7 @@ local MART_AUDIO_SEQUENCES = { "SEQ_SE_DP_SELECT", "SEQ_SE_GS_GEARCANCEL", "SEQ_
 ---@field key string
 ---@field plans ArtifactJobs.Plans
 ---@field marker string retained receipt marker
+---@field childReady fun(childKind: string, childKey: string, ready: fun(marker: string): boolean): boolean
 ---@field identity table<string, unknown>|nil expected source identity, mandatory for source-plan
 
 -- One closed record per derived job kind: the size class plus the exact
@@ -357,29 +360,6 @@ local function scriptSessionFor(context, generationKey, producerFingerprint)
   return plan, session
 end
 
----@param romFs table<string, unknown>
----@return table<string, unknown> catalog
-local function compileCatalog(romFs)
-  local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
-  local catalog, catalogErr = MonCatalogCompiler.compileCatalog(romFs)
-  if catalog == nil then
-    error(catalogErr, 0)
-  end
-  return catalog
-end
-
----@param romFs table<string, unknown>
----@param catalog table<string, unknown>
----@return table<string, unknown> presentation
-local function planPresentation(romFs, catalog)
-  local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
-  local presentation, presentationErr = MonPresentationCompiler.plan(romFs, catalog)
-  if presentation == nil then
-    error(presentationErr, 0)
-  end
-  return presentation
-end
-
 ---@param compile fun(): table<string, unknown>?, unknown
 ---@param label string
 ---@return table<string, unknown>
@@ -651,125 +631,6 @@ local function executeSpawnDestinations(artifact, context)
   -- raises with its cause, so no nil-guarding wrapper applies here.
   local bundle = FieldMapDataCompiler.compileSpawnDestinations(romFs)
   return FieldMapDataCacheWriter.stageSpawnIndex(artifact, bundle)
-end
-
-local function executeMonCatalog(artifact, context)
-  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
-  local romFs = assert(context.romFs, "mon catalog jobs require a source reader")
-  local catalog = compileCatalog(romFs)
-  local romSha1 = romFs:metadata().sha1
-  return MonCacheWriter.stageCatalog(artifact, {
-    catalog = catalog,
-    marker = MonCacheWriter.catalogMarker(romSha1, catalog),
-  })
-end
-
-local function executeMonLayout(artifact, context, generationId)
-  local MonCache = require("libs.assets.src.MonCache")
-  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
-  local romFs = assert(context.romFs, "mon layout jobs require a source reader")
-  local cacheFs = assert(context.cacheFs, "mon layout jobs require a cache filesystem")
-  assert(type(generationId) == "string" and generationId ~= "", "mon layout jobs require a generation")
-  local catalog = MonCache.loadCatalog(cacheFs)
-  local presentation = planPresentation(romFs, catalog)
-  local romSha1 = romFs:metadata().sha1
-  return MonCacheWriter.stageLayout(artifact, {
-    icons = presentation.icons,
-    portraits = presentation.portraits,
-    marker = MonCacheWriter.layoutMarker(romSha1, presentation.icons, presentation.portraits),
-    pagePlans = { iconPages = presentation.iconPages, portraitPages = presentation.portraitPages },
-    generationId = generationId,
-  })
-end
-
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param pageKind "icons"|"portraits"
----@param pageId integer
----@param generationId string
----@return string
-local function executeMonPage(artifact, context, pageKind, pageId, generationId)
-  local MonCache = require("libs.assets.src.MonCache")
-  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
-  local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
-  local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
-  local romFs = assert(context.romFs, "mon page jobs require a source reader")
-  local cacheFs = assert(context.cacheFs, "mon page jobs require a cache filesystem")
-  assert(type(generationId) == "string" and generationId ~= "", "mon page jobs require a generation")
-  local layoutMarker = cacheFs:read(MonCache.layoutMarkerPath())
-  if type(layoutMarker) ~= "string" or layoutMarker == "" then
-    error("mon page " .. pageKind .. "/" .. tostring(pageId) .. " has no published layout", 0)
-  end
-  local pagePlan, planReason = MonCacheWriter.loadPagePlan(cacheFs, generationId, pageKind, pageId, layoutMarker)
-  if pagePlan == nil then
-    error("mon page " .. pageKind .. "/" .. tostring(pageId) .. " has no source plan: " .. tostring(planReason), 0)
-  end
-  local manifestPath = pageKind == "icons" and MonCache.iconManifestPath() or MonCache.portraitManifestPath()
-  local manifestOk, manifest = pcall(cacheFs.loadLua, cacheFs, manifestPath)
-  if not manifestOk or type(manifest) ~= "table" then
-    error("mon page " .. pageKind .. "/" .. tostring(pageId) .. " has no published manifest", 0)
-  end
-  if pageKind == "icons" then
-    local valid, schemaErr = pcall(MonAssetSchema.assertIconManifest, manifest)
-    if not valid then
-      error(schemaErr, 0)
-    end
-  else
-    local valid, schemaErr = pcall(MonAssetSchema.assertPortraitManifest, manifest)
-    if not valid then
-      error(schemaErr, 0)
-    end
-  end
-  local page, pageErr = MonPresentationCompiler.compilePage(romFs, pageKind, pagePlan)
-  if page == nil then
-    error(pageErr, 0)
-  end
-  local marker = MonCacheWriter.pageMarker(romFs:metadata().sha1, pageKind, pageId, manifest)
-  return MonCacheWriter.stagePage(artifact, {
-    kind = pageKind,
-    pageId = pageId,
-    width = page.width,
-    height = page.height,
-    pixels = page.pixels,
-    marker = marker,
-  })
-end
-
-local function executeMonSummary(artifact, context)
-  local Hashing = require("romdump.src.digest.Hashing")
-  local MonSources = require("romdump.src.config.MonSources")
-  local MonCache = require("libs.assets.src.MonCache")
-  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
-  local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
-  local romFs = assert(context.romFs, "mon summary jobs require a source reader")
-  local cacheFs = assert(context.cacheFs, "mon summary jobs require a cache filesystem")
-  local catalog = MonCache.loadCatalog(cacheFs)
-  local icons = cacheFs:loadLua(MonCache.iconManifestPath())
-  MonAssetSchema.assertIconManifest(icons)
-  local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
-  MonAssetSchema.assertPortraitManifest(portraits)
-  assert(icons ~= nil and portraits ~= nil, "mon summary requires its published manifests")
-  local iconMarkers, portraitMarkers = {}, {}
-  for _, pageId in ipairs(icons.pageIds) do
-    local marker = cacheFs:read(MonCache.pageMarkerPath("icons", pageId))
-    if type(marker) ~= "string" or marker == "" then
-      error("mon summary misses the staged icon page " .. tostring(pageId), 0)
-    end
-    iconMarkers[#iconMarkers + 1] = marker
-  end
-  for _, pageId in ipairs(portraits.pageIds) do
-    local marker = cacheFs:read(MonCache.pageMarkerPath("portraits", pageId))
-    if type(marker) ~= "string" or marker == "" then
-      error("mon summary misses the staged portrait page " .. tostring(pageId), 0)
-    end
-    portraitMarkers[#portraitMarkers + 1] = marker
-  end
-  local index = MonCacheWriter.buildIndex(catalog.version, Hashing.hashLua(catalog), iconMarkers, portraitMarkers)
-  return MonCacheWriter.stageSummary(artifact, index, {
-    schema = "g4-mon-provenance-v1",
-    source = MonSources.provenance,
-    rom = { version = catalog.version.id, sha1 = romFs:metadata().sha1 },
-  })
 end
 
 local function executeMessageBank(artifact, context, bankId)
@@ -1197,157 +1058,6 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
-local function validateMonCatalog(check)
-  local MonCache = require("libs.assets.src.MonCache")
-  return MonCache.isCatalogReady(check.cacheFs, check.marker)
-end
-
----@return { kind: string, key: string }[], boolean
-local function dependenciesMonLayout()
-  return { { kind = "mon-catalog", key = "global" } }, true
-end
-
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param job ArtifactJobs.Job
----@return string
-local function executeMonLayoutJob(artifact, context, job)
-  return executeMonLayout(artifact, context, assert(job.generationId, "mon layout jobs require a generation"))
-end
-
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateMonLayout(check)
-  local MonCache = require("libs.assets.src.MonCache")
-  if not MonCache.isLayoutReady(check.cacheFs, check.marker) then
-    return false
-  end
-  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
-  local ready, _ = MonCacheWriter.isLayoutSourceReady(check.cacheFs, check.generationId, check.marker)
-  return ready == true
-end
-
----@param plans ArtifactJobs.Plans
----@return { kind: string, key: string }[], boolean
-local function dependenciesMonIconPage(_, plans)
-  local deps = {
-    { kind = "source-plan", key = "global" },
-    { kind = "mon-layout", key = "global" },
-  }
-  if plans.iconPageIds == nil then
-    return deps, false
-  end
-  return deps, true
-end
-
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param job ArtifactJobs.Job
----@return string
-local function executeMonIconPage(artifact, context, job)
-  return executeMonPage(
-    artifact,
-    context,
-    "icons",
-    canonicalKeyId(job.key, "page key"),
-    assert(job.generationId, "mon page jobs require a generation")
-  )
-end
-
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateMonIconPage(check)
-  local MonCache = require("libs.assets.src.MonCache")
-  return MonCache.isPageReady(check.cacheFs, "icons", canonicalKeyId(check.key, "page key"), check.marker)
-end
-
----@param plans ArtifactJobs.Plans
----@return { kind: string, key: string }[], boolean
-local function dependenciesMonPortraitPage(_, plans)
-  local deps = {
-    { kind = "source-plan", key = "global" },
-    { kind = "mon-layout", key = "global" },
-  }
-  if plans.portraitPageIds == nil then
-    return deps, false
-  end
-  return deps, true
-end
-
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param job ArtifactJobs.Job
----@return string
-local function executeMonPortraitPage(artifact, context, job)
-  return executeMonPage(
-    artifact,
-    context,
-    "portraits",
-    canonicalKeyId(job.key, "page key"),
-    assert(job.generationId, "mon page jobs require a generation")
-  )
-end
-
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateMonPortraitPage(check)
-  local MonCache = require("libs.assets.src.MonCache")
-  return MonCache.isPageReady(check.cacheFs, "portraits", canonicalKeyId(check.key, "page key"), check.marker)
-end
-
----@param plans ArtifactJobs.Plans
----@return { kind: string, key: string }[], boolean
-local function dependenciesMonSummary(_, plans)
-  local deps = {
-    { kind = "source-plan", key = "global" },
-    { kind = "mon-catalog", key = "global" },
-    { kind = "mon-layout", key = "global" },
-  }
-  if plans.iconPageIds == nil or plans.portraitPageIds == nil then
-    return deps, false
-  end
-  for _, pageId in ipairs(plans.iconPageIds) do
-    deps[#deps + 1] = { kind = "mon-icon-page", key = tostring(pageId) }
-  end
-  for _, pageId in ipairs(plans.portraitPageIds) do
-    deps[#deps + 1] = { kind = "mon-portrait-page", key = tostring(pageId) }
-  end
-  return deps, true
-end
-
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateMonSummary(check)
-  local MonCache = require("libs.assets.src.MonCache")
-  local cacheFs, generationId, plans, marker = check.cacheFs, check.generationId, check.plans, check.marker
-  if not MonCache.isReady(cacheFs, marker) then
-    return false
-  end
-  for _, pageId in ipairs(assert(plans.iconPageIds, "mon summary needs the icon pages")) do
-    local pageKey = tostring(pageId)
-    if
-      not childReady(cacheFs, generationId, "mon-icon-page", pageKey, function(childMarker)
-        return MonCache.isPageReady(cacheFs, "icons", pageId, childMarker)
-      end)
-    then
-      return false
-    end
-  end
-  for _, pageId in ipairs(assert(plans.portraitPageIds, "mon summary needs the portrait pages")) do
-    local pageKey = tostring(pageId)
-    if
-      not childReady(cacheFs, generationId, "mon-portrait-page", pageKey, function(childMarker)
-        return MonCache.isPageReady(cacheFs, "portraits", pageId, childMarker)
-      end)
-    then
-      return false
-    end
-  end
-  return true
-end
-
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
 local function validateItems(check)
   local ItemCache = require("libs.assets.src.ItemCache")
   return ItemCache.isReady(check.cacheFs, check.marker)
@@ -1370,211 +1080,6 @@ end
 local function validateParty(check)
   local PartyCache = require("libs.assets.src.PartyCache")
   return PartyCache.isReady(check.cacheFs, check.marker)
-end
-
--- Battle input families stage their whole semantic payload plus a
--- completion marker; readiness revalidates the staged payload through its
--- semantic schema. Dependencies name the semantic identity catalogs the
--- projection resolves against (species/move/item keys).
----@return { kind: string, key: string }[], boolean
-local function dependenciesBattleData()
-  return { { kind = "mon-catalog", key = "global" }, { kind = "items", key = "global" } }, true
-end
-
----@return { kind: string, key: string }[], boolean
-local function dependenciesTrainers()
-  return { { kind = "mon-catalog", key = "global" }, { kind = "items", key = "global" } }, true
-end
-
----@return { kind: string, key: string }[], boolean
-local function dependenciesEncounters()
-  return { { kind = "mon-catalog", key = "global" } }, true
-end
-
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param job ArtifactJobs.Job
----@param family string
----@param compile fun(romFs: table<string, unknown>, versionId: string): table<string, unknown>?, unknown
----@param payloadPath string
----@param markerPath string
----@param mark fun(romSha1: string, depHash: string): string
----@return string compiler marker for the receipt
-local function executeBattleFamily(artifact, context, job, family, compile, payloadPath, markerPath, mark)
-  local Hashing = require("romdump.src.digest.Hashing")
-  local romFs = assert(context.romFs, family .. " jobs require a source reader")
-  local versionId = assert(context.versionId, family .. " jobs require a version")
-  local compiled, compileErr = compile(romFs, versionId)
-  if compiled == nil then
-    error(family .. " emission failed for generation " .. job.generationId .. ": " .. tostring(compileErr), 0)
-  end
-  assert(compiled ~= nil, family .. " emission produced no payload")
-  local stage = artifact:stageFs()
-  artifact:addOwnedRoot(payloadPath)
-  artifact:addOwnedRoot(markerPath)
-  stage:writeLua(payloadPath, compiled)
-  local metadata = romFs:metadata()
-  local marker = mark(metadata.sha1, Hashing.hashLua(compiled))
-  stage:write(markerPath, marker)
-  return marker
-end
-
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param job ArtifactJobs.Job
----@return string
-local function executeBattleDataJob(artifact, context, job)
-  local BattleDataCompiler = require("romdump.src.digest.battle.BattleDataCompiler")
-  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
-  local function compile(romFs, versionId)
-    return BattleDataCompiler.compileFromDump(romFs, { versionId = versionId })
-  end
-  return executeBattleFamily(
-    artifact,
-    context,
-    job,
-    "battle-data",
-    compile,
-    BattleDataCache.battleDataPath(),
-    BattleDataCache.battleDataMarkerPath(),
-    BattleDataCache.marker
-  )
-end
-
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param job ArtifactJobs.Job
----@return string
-local function executeTrainersJob(artifact, context, job)
-  local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
-  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
-  local function compile(romFs, versionId)
-    return TrainerCatalogCompiler.compileFromDump(romFs, { versionId = versionId })
-  end
-  return executeBattleFamily(
-    artifact,
-    context,
-    job,
-    "trainers",
-    compile,
-    BattleDataCache.trainersPath(),
-    BattleDataCache.trainersMarkerPath(),
-    BattleDataCache.trainersMarker
-  )
-end
-
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param job ArtifactJobs.Job
----@return string
-local function executeEncountersJob(artifact, context, job)
-  local EncounterCatalogCompiler = require("romdump.src.digest.encounters.EncounterCatalogCompiler")
-  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
-  local function compile(romFs, versionId)
-    return EncounterCatalogCompiler.compileFromDump(romFs, { versionId = versionId })
-  end
-  return executeBattleFamily(
-    artifact,
-    context,
-    job,
-    "encounters",
-    compile,
-    BattleDataCache.encountersPath(),
-    BattleDataCache.encountersMarkerPath(),
-    BattleDataCache.encountersMarker
-  )
-end
-
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateBattleData(check)
-  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
-  return BattleDataCache.isBattleDataReady(check.cacheFs, check.marker)
-end
-
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateTrainers(check)
-  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
-  return BattleDataCache.isTrainersReady(check.cacheFs, check.marker)
-end
-
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateEncounters(check)
-  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
-  return BattleDataCache.isEncountersReady(check.cacheFs, check.marker)
-end
-
--- Battle presentation families stage validated semantic pixels through the
--- existing worker: the global job compiles the shared menu/HUD definitions
--- once, and each scene job compiles exactly its validated scene key on top
--- of the staged global. Scene keys are validated semantic keys, never
--- filesystem paths.
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param job ArtifactJobs.Job
----@return string compiler marker for the receipt
-local function executeBattlePresentationJob(artifact, context, job)
-  local BattlePresentationCompiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
-  local romFs = assert(context.romFs, "battle presentation jobs require a source reader")
-  local versionId = assert(context.versionId, "battle presentation jobs require a version")
-  local bundle, compileErr = BattlePresentationCompiler.compileGlobal(romFs, { versionId = versionId })
-  if bundle == nil then
-    error("battle presentation emission failed for generation " .. job.generationId .. ": " .. tostring(compileErr), 0)
-  end
-  assert(bundle ~= nil, "battle presentation emission produced no bundle")
-  local metadata = romFs:metadata()
-  return BattlePresentationCompiler.stageGlobal(
-    artifact,
-    bundle,
-    BattlePresentationCompiler.globalMarker(metadata.sha1, bundle)
-  )
-end
-
----@param key string semantic scene key
----@param plans ArtifactJobs.Plans
----@return { kind: string, key: string }[], boolean
-local function dependenciesBattleScene(key, plans)
-  assert(type(plans) == "table", "dependency edges require the session plans")
-  local Sources = require("romdump.src.config.BattlePresentationSources")
-  assert(Sources.validateSceneKey(key), "invalid battle scene key: " .. tostring(key))
-  return { { kind = "battle-presentation", key = "global" } }, true
-end
-
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param job ArtifactJobs.Job
----@return string compiler marker for the receipt
-local function executeBattleSceneJob(artifact, context, job)
-  local BattlePresentationCompiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
-  local romFs = assert(context.romFs, "battle scene jobs require a source reader")
-  local versionId = assert(context.versionId, "battle scene jobs require a version")
-  local scene, compileErr = BattlePresentationCompiler.compileScene(romFs, { versionId = versionId }, job.key)
-  if scene == nil then
-    error("battle scene emission failed for generation " .. job.generationId .. ": " .. tostring(compileErr), 0)
-  end
-  assert(scene ~= nil, "battle scene emission produced no scene")
-  local metadata = romFs:metadata()
-  return BattlePresentationCompiler.stageScene(
-    artifact,
-    scene,
-    BattlePresentationCompiler.sceneMarker(metadata.sha1, scene)
-  )
-end
-
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateBattlePresentation(check)
-  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  return BattlePresentationCache.isGlobalReady(check.cacheFs, check.marker)
-end
-
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateBattleScene(check)
-  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  return BattlePresentationCache.isSceneReady(check.cacheFs, check.key, check.marker)
 end
 
 ---@param check ArtifactJobs.ReadinessCheck
@@ -1966,32 +1471,32 @@ DESCRIPTORS = {
   -- Mon families.
   ["mon-catalog"] = {
     size = "heavy",
-    execute = executeMonCatalog,
-    validate = validateMonCatalog,
+    execute = ArtifactMonJobs.executeCatalog,
+    validate = ArtifactMonJobs.validateCatalog,
   },
   ["mon-layout"] = {
     size = "heavy",
-    dependencies = dependenciesMonLayout,
-    execute = executeMonLayoutJob,
-    validate = validateMonLayout,
+    dependencies = ArtifactMonJobs.dependenciesLayout,
+    execute = ArtifactMonJobs.executeLayout,
+    validate = ArtifactMonJobs.validateLayout,
   },
   ["mon-icon-page"] = {
     size = "normal",
-    dependencies = dependenciesMonIconPage,
-    execute = executeMonIconPage,
-    validate = validateMonIconPage,
+    dependencies = ArtifactMonJobs.dependenciesIconPage,
+    execute = ArtifactMonJobs.executeIconPage,
+    validate = ArtifactMonJobs.validateIconPage,
   },
   ["mon-portrait-page"] = {
     size = "normal",
-    dependencies = dependenciesMonPortraitPage,
-    execute = executeMonPortraitPage,
-    validate = validateMonPortraitPage,
+    dependencies = ArtifactMonJobs.dependenciesPortraitPage,
+    execute = ArtifactMonJobs.executePortraitPage,
+    validate = ArtifactMonJobs.validatePortraitPage,
   },
   ["mon-summary"] = {
     size = "normal",
-    dependencies = dependenciesMonSummary,
-    execute = executeMonSummary,
-    validate = validateMonSummary,
+    dependencies = ArtifactMonJobs.dependenciesSummary,
+    execute = ArtifactMonJobs.executeSummary,
+    validate = ArtifactMonJobs.validateSummary,
   },
   -- Item, bag and party presentation: no prerequisite.
   items = {
@@ -2002,34 +1507,34 @@ DESCRIPTORS = {
   -- Battle input families: semantic projection over the supported dump.
   ["battle-data"] = {
     size = "normal",
-    dependencies = dependenciesBattleData,
-    execute = executeBattleDataJob,
-    validate = validateBattleData,
+    dependencies = ArtifactBattleJobs.dependenciesBattleData,
+    execute = ArtifactBattleJobs.executeBattleData,
+    validate = ArtifactBattleJobs.validateBattleData,
   },
   trainers = {
     size = "normal",
-    dependencies = dependenciesTrainers,
-    execute = executeTrainersJob,
-    validate = validateTrainers,
+    dependencies = ArtifactBattleJobs.dependenciesTrainers,
+    execute = ArtifactBattleJobs.executeTrainers,
+    validate = ArtifactBattleJobs.validateTrainers,
   },
   encounters = {
     size = "normal",
-    dependencies = dependenciesEncounters,
-    execute = executeEncountersJob,
-    validate = validateEncounters,
+    dependencies = ArtifactBattleJobs.dependenciesEncounters,
+    execute = ArtifactBattleJobs.executeEncounters,
+    validate = ArtifactBattleJobs.validateEncounters,
   },
   -- Battle presentation: the shared ordinary menu/HUD definitions once,
   -- then one lazily compiled persistent scene per demanded semantic key.
   ["battle-presentation"] = {
     size = "normal",
-    execute = executeBattlePresentationJob,
-    validate = validateBattlePresentation,
+    execute = ArtifactBattleJobs.executePresentation,
+    validate = ArtifactBattleJobs.validatePresentation,
   },
   ["battle-scene"] = {
     size = "normal",
-    dependencies = dependenciesBattleScene,
-    execute = executeBattleSceneJob,
-    validate = validateBattleScene,
+    dependencies = ArtifactBattleJobs.dependenciesScene,
+    execute = ArtifactBattleJobs.executeScene,
+    validate = ArtifactBattleJobs.validateScene,
   },
   bag = {
     size = "normal",
@@ -2177,12 +1682,16 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans, identity
   if marker == nil then
     return false
   end
+  local function isChildReady(childKind, childKey, isReady)
+    return childReady(cacheFs, generationId, childKind, childKey, isReady)
+  end
   local ready, validatedPlan = descriptor.validate({
     cacheFs = cacheFs,
     generationId = generationId,
     key = key,
     plans = plans,
     marker = marker,
+    childReady = isChildReady,
     identity = identity,
   })
   if ready ~= true then
