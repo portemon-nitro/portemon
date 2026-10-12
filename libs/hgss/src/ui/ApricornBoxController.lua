@@ -112,22 +112,16 @@ local function activateAction(self)
   if self._mode == "browse" and self._action ~= 3 then
     return
   end
-  if self._mode == "kurt_select" then
-    if self._action == 1 then
-      self._phase = "quantity"
-    else
-      self._phase = "row_return_delay"
-      self._returnPhase = "rows"
-      self._cursorReturnTicks = 4
-      self._cursorOffsetY = 6
-    end
-  elseif self._action == 1 then
-    local row = self:status().rows[self._selected]
-    self._result = { kind = "closed", selected = { apricornKey = row.apricornKey, quantity = 1 } }
-    self._closed = true
-  else
+  if self._mode == "browse" then
     self._phase = "row_return_delay"
     self._returnPhase = "browse"
+    self._cursorReturnTicks = 4
+    self._cursorOffsetY = 6
+  elseif self._action == 1 then
+    self._phase = "quantity"
+  else
+    self._phase = "row_return_delay"
+    self._returnPhase = "rows"
     self._cursorReturnTicks = 4
     self._cursorOffsetY = 6
   end

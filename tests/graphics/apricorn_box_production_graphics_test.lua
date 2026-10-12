@@ -88,6 +88,44 @@ local function assertVisiblePixels(pixels)
   Assert.isTrue(changedPixels >= 1024, "the rendered capture contains at least 1024 visible pixels")
 end
 
+local function assertPromptButtons(image, cacheFs, uiManifest, placement, prompt)
+  local origin = placement.origin or placement.frame
+  local selected = assert(prompt.selected, "the active confirmation prompt identifies its focused choice")
+  local highlighted = assert(prompt.selectionHighlighted, "the active prompt identifies its focus highlight")
+  for _, choice in ipairs({ "yes", "no" }) do
+    local state = choice == selected and highlighted and "selected" or "normal"
+    local visual = assert(uiManifest.yesNoPrompt.shapes.compact[choice][state])
+    local asset = assert(uiManifest.assets[visual.asset])
+    local data = assert(cacheFs:read(asset.image), "the source prompt-button image exists")
+    local source = love.image.newImageData(love.filesystem.newFileData(data, asset.image))
+    local button = assert(prompt.buttons[choice], "the active prompt exposes its button rectangle")
+    local matchingPixels = 0
+    local opaquePixels = 0
+    for sourceY = 0, visual.rect.height - 1 do
+      for sourceX = 0, visual.rect.width - 1 do
+        local red, green, blue, alpha = source:getPixel(visual.rect.x + sourceX, visual.rect.y + sourceY)
+        if alpha > 0.95 then
+          opaquePixels = opaquePixels + 1
+          local hostX = math.floor(origin.x + (button.x + sourceX + 0.5) * placement.scale)
+          local hostY = math.floor(origin.y + (button.y + sourceY + 0.5) * placement.scale)
+          local actualRed, actualGreen, actualBlue = image:getPixel(hostX, hostY)
+          if
+            math.abs(actualRed - red) < 0.025
+            and math.abs(actualGreen - green) < 0.025
+            and math.abs(actualBlue - blue) < 0.025
+          then
+            matchingPixels = matchingPixels + 1
+          end
+        end
+      end
+    end
+    Assert.isTrue(
+      opaquePixels > 0 and matchingPixels >= opaquePixels * 0.9,
+      choice .. " button matches its focused source art inside the transformed button rectangle"
+    )
+  end
+end
+
 local function render(scope, cacheFs, manifest, renderer, window, topologyName, mode)
   local topology, width, height = makeTopology(topologyName)
   local currentMeasurement = measurement(topology, width, height, topologyName)
@@ -134,7 +172,42 @@ local function render(scope, cacheFs, manifest, renderer, window, topologyName, 
   love.graphics.setCanvas()
   local image = scope:own(canvas:newImageData())
   assertVisiblePixels(image:getString())
+  if mode == "kurt_select" then
+    local lowerPane
+    for _, pane in ipairs(view.presentation.panes) do
+      if pane.id == "lower" then
+        lowerPane = pane
+        break
+      end
+    end
+    assertPromptButtons(image, cacheFs, uiManifest, assert(lowerPane).placement, assert(view.confirmationPrompt))
+  end
   writeCapture(image, mode .. "-" .. topologyName .. ".png")
+
+  if mode == "kurt_select" then
+    screen:updateFixed({ { type = "navigate", direction = "down" } })
+    view = screen:status()
+    Assert.equal(view.confirmationPrompt.selected, "no", "navigation changes the focused prompt choice")
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(BACKGROUND[1], BACKGROUND[2], BACKGROUND[3], 1)
+    view.presentation.render({ graphics = love.graphics, apricornBoxRenderer = renderer }, view, view.presentation)
+    for _, frame in ipairs(view.presentation.frames) do
+      LogicalSurface.draw(love.graphics, frame.placement, function()
+        window:drawApplicationFrame(frame.contentBox, 0)
+      end)
+    end
+    love.graphics.setCanvas()
+    local noImage = scope:own(canvas:newImageData())
+    local lowerPane
+    for _, pane in ipairs(view.presentation.panes) do
+      if pane.id == "lower" then
+        lowerPane = pane
+        break
+      end
+    end
+    assertPromptButtons(noImage, cacheFs, uiManifest, assert(lowerPane).placement, assert(view.confirmationPrompt))
+    writeCapture(noImage, mode .. "-" .. topologyName .. "-no.png")
+  end
 end
 
 local function assertSourceLabels(cacheFs, manifest)
@@ -291,7 +364,7 @@ end
 
 local suite = GraphicsSmoke.suite(T, {
   tags = { "apricorn" },
-  capabilities = { "derived_assets" },
+  capabilities = { "graphics", "derived_assets" },
 })
 suite.metadata.derivedAssets = { "apricorn-box:global", "field-font:global", "field-ui:global" }
 
