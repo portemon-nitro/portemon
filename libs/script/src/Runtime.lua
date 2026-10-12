@@ -1514,7 +1514,7 @@ local function handleMenuAdd(node, run)
 end
 local function handleMenuExec(_, run)
   requireForeground(run, "menu_exec")
-  local request = requireScriptMenu(run):execute(run.instance.menuBuilder)
+  local request = requireScriptMenu(run):execute(run.instance.menuBuilder, run.instance.textArgs)
   assert(type(request) == "table" and type(request.items) == "table", "script menu host returned an invalid request")
   run.instance.menuBuilder = nil
   return blockOnTask(run, "menu", { menu = request }, request.result)

@@ -39,6 +39,9 @@ local function host()
   local provider = assert(FieldMessageProvider.new(cache))
   local h = ScriptMenuHost.new({
     provider = provider,
+    substitutionResolvers = function()
+      return {}
+    end,
   })
   return h, provider
 end
@@ -60,7 +63,7 @@ function T.resolves_standard_and_script_messages_without_changing_item_values()
     result = "VAR_RESULT",
   })
   h:addItem(standardBuilder, { messageId = 0, vanillaMetadata = 255, value = 42 })
-  local standardMenu = h:execute(standardBuilder)
+  local standardMenu = h:execute(standardBuilder, {})
   Assert.equal(standardMenu.items[1].text.text, "Standard")
   Assert.equal(standardMenu.items[1].value, 42)
   Assert.equal(standardMenu.items[1].vanillaMetadata, 255)
@@ -72,7 +75,7 @@ function T.resolves_standard_and_script_messages_without_changing_item_values()
     result = "VAR_RESULT",
   })
   h:addItem(scriptBuilder, { messageId = 0, vanillaMetadata = 17, value = 900 })
-  local scriptMenu = h:execute(scriptBuilder)
+  local scriptMenu = h:execute(scriptBuilder, {})
   Assert.equal(scriptMenu.items[1].text.text, "Script")
   Assert.equal(scriptMenu.items[1].value, 900)
 end
@@ -88,7 +91,7 @@ function T.retains_var_derived_item_operands_as_concrete_values()
     result = "VAR_RESULT",
   })
   h:addItem(builder, { messageId = 0, vanillaMetadata = 73, value = 401 })
-  local menu = h:execute(builder)
+  local menu = h:execute(builder, {})
   Assert.equal(menu.items[1].vanillaMetadata, 73)
   Assert.equal(menu.items[1].value, 401)
 end
@@ -172,13 +175,59 @@ function T.semantic_choices_fault_before_publication_when_text_cannot_resolve()
   end)
 end
 
+-- Source menu labels such as "<PLAYER>'s PC" expand against the running
+-- script's buffered text, like dialogue.
+function T.builder_items_expand_buffered_script_text()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(FieldMessageCache.bankPath(MenuProtocol.STANDARD_MESSAGE_BANK), {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = MenuProtocol.STANDARD_MESSAGE_BANK,
+    messageCount = 1,
+    source = { narc = "NARC_msgdata_msg", memberId = MenuProtocol.STANDARD_MESSAGE_BANK, memberSha1 = "synthetic" },
+    messages = {
+      [0] = {
+        id = 0,
+        raw = { 0xFFFF },
+        text = "",
+        tokens = {
+          { kind = "substitution", control = "STRVAR", args = { 0 } },
+          { kind = "glyph", text = "'s PC" },
+          { kind = "eos", raw = { 0xFFFF } },
+        },
+      },
+    },
+  })
+  local seen
+  local h = ScriptMenuHost.new({
+    provider = assert(FieldMessageProvider.new(cache)),
+    substitutionResolvers = function(_, textArgs)
+      seen = textArgs
+      return {
+        STRVAR = function()
+          return { { kind = "glyph", text = "GOLD" } }
+        end,
+      }
+    end,
+  })
+  local builder = h:beginMenu({
+    messageSource = "standard",
+    initialCursor = 0,
+    cancellable = false,
+    result = "VAR_RESULT",
+  })
+  h:addItem(builder, { messageId = 0, vanillaMetadata = 255, value = 0 })
+  local textArgs = { [0] = { text = "player_name" } }
+  Assert.equal(h:execute(builder, textArgs).items[1].text.text, "GOLD's PC")
+  Assert.equal(seen, textArgs)
+end
+
 function T.rejects_builder_misuse()
   local h = host()
   throwsCode("SCRIPT_MENU_NOT_INITIALIZED", function()
     h:addItem(nil, { messageId = 0, vanillaMetadata = 0, value = 1 })
   end)
   throwsCode("SCRIPT_MENU_EMPTY", function()
-    h:execute({ items = {} })
+    h:execute({ items = {} }, {})
   end)
 end
 
@@ -195,7 +244,7 @@ function T.unresolved_messages_release_the_provider_without_publishing_a_menu()
   })
   h:addItem(builder, { messageId = 99, vanillaMetadata = 0, value = 1 })
   throwsCode("SCRIPT_MENU_MESSAGE_UNRESOLVED", function()
-    h:execute(builder)
+    h:execute(builder, {})
   end)
   Assert.equal(provider:stats().references, 0)
   local nextBuilder = h:beginMenu({
@@ -217,7 +266,7 @@ function T.retains_an_explicit_zero_cancellation_value()
     result = "VAR_RESULT",
   })
   h:addItem(builder, { messageId = 0, vanillaMetadata = 0, value = 1 })
-  Assert.equal(h:execute(builder).cancelValue, 0)
+  Assert.equal(h:execute(builder, {}).cancelValue, 0)
 end
 
 return { tests = T }

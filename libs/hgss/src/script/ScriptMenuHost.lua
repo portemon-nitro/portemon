@@ -9,6 +9,7 @@ local MenuProtocol = require("libs.assets.src.MenuProtocol")
 ---@class ScriptMenuHost
 ---@field _provider FieldMessageProvider
 ---@field _resolveText fun(message: unknown): table<string, unknown>|nil
+---@field _substitutionResolvers fun(template: table<string, unknown>, textArgs: table<string, unknown>): table<string, function>
 local ScriptMenuHost = {}
 ScriptMenuHost.__index = ScriptMenuHost
 
@@ -39,8 +40,9 @@ end
 ---@param self ScriptMenuHost
 ---@param source unknown
 ---@param messageId integer
+---@param textArgs table<string, unknown> buffered script text by slot
 ---@return table<string, unknown>
-local function resolveMessage(self, source, messageId)
+local function resolveMessage(self, source, messageId, textArgs)
   local bankId = messageBank(source)
   local acquired, bankErr = self._provider:acquireBank(bankId)
   if not acquired then
@@ -55,7 +57,10 @@ local function resolveMessage(self, source, messageId)
     ---@cast context Errors.Context
     Errors.raise(ScriptErrors.SCRIPT_MENU_MESSAGE_UNRESOLVED, "menu message is unavailable", context)
   end
-  local ok, formatted = pcall(self._provider.format, self._provider, template, {})
+  ---@cast template table<string, unknown>
+  local ok, formatted = pcall(function()
+    return self._provider:format(template, {}, self._substitutionResolvers(template, textArgs))
+  end)
   self._provider:releaseBank(bankId)
   if not ok then
     error(formatted)
@@ -91,10 +96,11 @@ local function resolveSemanticText(self, message)
   return { text = message }
 end
 
----@param opts table<string, unknown> { provider, resolveText?: fun(message: unknown): table<string, unknown> }
+---@param opts table<string, unknown> { provider, substitutionResolvers, resolveText?: fun(message: unknown): table<string, unknown> }
 ---@return ScriptMenuHost
 function ScriptMenuHost.new(opts)
   assert(type(opts) == "table" and opts.provider, "script menu host requires a message provider")
+  assert(type(opts.substitutionResolvers) == "function", "script menu host requires its substitution resolvers")
   assert(
     opts.resolveText == nil or type(opts.resolveText) == "function",
     "script menu text resolver must be a function"
@@ -102,6 +108,7 @@ function ScriptMenuHost.new(opts)
   return setmetatable({
     _provider = opts.provider,
     _resolveText = opts.resolveText,
+    _substitutionResolvers = opts.substitutionResolvers,
   }, ScriptMenuHost)
 end
 
@@ -185,8 +192,9 @@ end
 -- released after each lookup; on any failure no controller request is made
 -- and the builder remains available for diagnostic inspection by its caller.
 ---@param builder table<string, unknown>|nil imported HGSS menu builder owned by a ScriptInstance
+---@param textArgs table<string, unknown> the instance's buffered text by slot
 ---@return unknown menuController
-function ScriptMenuHost:execute(builder)
+function ScriptMenuHost:execute(builder, textArgs)
   if builder == nil then
     Errors.raise(ScriptErrors.SCRIPT_MENU_NOT_INITIALIZED, "script menu executed without a menu builder")
   end
@@ -197,7 +205,7 @@ function ScriptMenuHost:execute(builder)
   local items = {}
   for luaIndex, item in ipairs(builder.items) do
     items[luaIndex] = {
-      text = resolveMessage(self, item.text.source, item.text.id),
+      text = resolveMessage(self, item.text.source, item.text.id, textArgs),
       message = item.text,
       vanillaMetadata = item.vanillaMetadata,
       value = item.value,

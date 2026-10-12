@@ -397,9 +397,13 @@ function FieldScripts.new(opts)
   local function resolveText(message)
     return dialogueHost:resolveMessage(message, {}, {})
   end
+  local function substitutionResolvers(template, textArgs)
+    return dialogueHost:substitutionResolvers(template, {}, textArgs)
+  end
   local menuHost = ScriptMenuHost.new({
     provider = opts.messageProvider,
     resolveText = resolveText,
+    substitutionResolvers = substitutionResolvers,
   })
   -- The signpost host reuses the dialogue host's public message-resolution
   -- operation through injection; it never reaches an underscored helper or
