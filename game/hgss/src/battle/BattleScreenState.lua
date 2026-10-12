@@ -1862,6 +1862,7 @@ function BattleScreenState:draw(resources)
     text = self._text,
     windows = self._windows,
     assets = self._assets,
+    doublesHud = self._manifest.doublesHud,
     frameKey = self._assets:frameKey(),
     sceneImageKey = self._assets:sceneImage(),
   }

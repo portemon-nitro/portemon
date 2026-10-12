@@ -301,21 +301,40 @@ local DOUBLES_ROWS = {
 -- a sourced height counterpart lands.
 local PORTRAIT_HALF = 40
 
--- Doubled dynamic rows reuse the single-battle template offsets
--- unmodified: each row's wording and bar follow its own HUD anchor
--- through the same relative geometry the single-battle rows use. The
--- staged doubled strips may carry their own object cells, but this
--- composition keeps the established templates until those cells are
--- adopted from a staged dump.
-local DOUBLES_PLAYER_TEXT = {
-  name = { dx = -48, dy = -24 },
-  condition = { dx = -16, dy = -12 },
-  hp = { dx = -48, dy = 0 },
-  exp = { dx = 0, dy = 0 },
+local DOUBLES_HUD_SECTIONS = {
+  ["hud:player-left"] = "playerLeft",
+  ["hud:player-right"] = "playerRight",
+  ["hud:enemy-left"] = "enemyLeft",
+  ["hud:enemy-right"] = "enemyRight",
 }
-local DOUBLES_PLAYER_BAR = { dx = -48, dy = -8, width = 48, height = 4 }
-local DOUBLES_ENEMY_TEXT = { name = { dx = -50, dy = -20 }, condition = { dx = -18, dy = -8 } }
-local DOUBLES_ENEMY_BAR = { dx = -50, dy = 8, width = 48, height = 4 }
+local DOUBLES_FIELDS = {
+  ["hud:player-left"] = {
+    name = { x = 144, y = 88 },
+    level = { x = 224, y = 91 },
+    condition = { x = 208, y = 91 },
+    bar = { x = 192, y = 107 },
+  },
+  ["hud:player-right"] = {
+    name = { x = 150, y = 117 },
+    level = { x = 230, y = 120 },
+    condition = { x = 214, y = 120 },
+    bar = { x = 198, y = 136 },
+  },
+  ["hud:enemy-left"] = {
+    name = { x = 14, y = 4 },
+    level = { x = 88, y = 4 },
+    condition = { x = 72, y = 4 },
+    bar = { x = 56, y = 20 },
+  },
+  ["hud:enemy-right"] = {
+    name = { x = 8, y = 33 },
+    level = { x = 82, y = 33 },
+    condition = { x = 66, y = 33 },
+    bar = { x = 50, y = 49 },
+  },
+}
+local DOUBLES_BAR_WIDTH = 48
+local DOUBLES_BAR_HEIGHT = 4
 
 -- Loud doubles occupancy: at most two live records per side and no
 -- shared visible slot. Identity rides the message so a doubled claim
@@ -466,6 +485,37 @@ local function drawHudComposite(graphics, assets, artKey, anchor, objects)
   end
 end
 
+-- Draws the opening cell of a staged native doubles HUD at its template
+-- anchor. The source compiler normalizes cell-bank tile bases into staged
+-- strip indices while preserving the existing cell shape.
+---@param graphics table<string, unknown> injected host graphics
+---@param assets table<string, unknown> injected asset holder
+---@param sections table<string, unknown> staged role sections
+---@param artKey string semantic doubles HUD image key
+---@param anchor table<string, number> native sprite template anchor
+local function drawDoublesHudCell(graphics, assets, sections, artKey, anchor)
+  local sectionKey = assert(DOUBLES_HUD_SECTIONS[artKey], "doubles HUD rows name a source section")
+  local section = assert(sections[sectionKey], "the doubled battle manifest carries " .. sectionKey)
+  local animation = assert(section.animation, "the doubled HUD section carries its selected animation")
+  local firstFrame = assert(animation.frames[1], "the doubled HUD animation carries its opening frame")
+  local cell = assert(section.cells[firstFrame.cell + 1], "the doubled HUD animation selects a source cell")
+  local art = assets:drawable(artKey)
+  if art == nil then
+    return
+  end
+  for index, obj in ipairs(cell.objs) do
+    local context = sectionKey .. " source object " .. tostring(index)
+    assert(not obj.affine, context .. " uses unsupported affine drawing")
+    assert(not obj.flipH and not obj.flipV, context .. " uses unsupported object flipping")
+    assert(obj.palette == 0, context .. " selects the staged role palette")
+    assert(not obj.mosaic and obj.objMode == "normal", context .. " uses unsupported object display flags")
+    assert(obj.colorMode == "16-color", context .. " uses unsupported color depth")
+    if not obj.disabled then
+      drawSpriteObject(graphics, art, HUD_STRIP_WIDTH, anchor.x, anchor.y, obj)
+    end
+  end
+end
+
 -- Colors one health fill by its fraction: full, worn, then critical.
 ---@param graphics table<string, unknown> injected host graphics
 ---@param fraction number health fraction under coloring
@@ -482,6 +532,7 @@ end
 ---@param graphics table<string, unknown> injected host graphics
 ---@param text table<string, unknown> borrowed text services
 ---@param assets table<string, unknown> injected asset holder
+---@param sections table<string, unknown> staged role sections
 ---@param r number borrowed red channel for restoration
 ---@param g number borrowed green channel for restoration
 ---@param b number borrowed blue channel for restoration
@@ -489,7 +540,7 @@ end
 ---@param view table<string, unknown> internal semantic snapshot carrying claimed slots
 ---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
 ---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts in slot order
-local function drawDoublesDetail(graphics, text, assets, r, g, b, a, view, players, enemies)
+local function drawDoublesDetail(graphics, text, assets, sections, r, g, b, a, view, players, enemies)
   -- Every live slot paints its own sprite and HUD at its canonical
   -- sourced row: the surviving partner never reindexes when a slot
   -- empties mid-transition, and a missing portrait or strip draws
@@ -505,33 +556,20 @@ local function drawDoublesDetail(graphics, text, assets, r, g, b, a, view, playe
       local dx = (type(foe.shakeDx) == "number" and foe.shakeDx or 0) --[[@as number]]
       graphics.draw(front, row.sprite.x - PORTRAIT_HALF + dx, row.sprite.y - PORTRAIT_HALF)
     end
-    drawHudComposite(graphics, assets, row.art, row.hud, ENEMY_HUD_OBJECTS)
-    drawNameLevel(
-      graphics,
-      text,
-      foe.name or "FOE",
-      foe.level --[[@as integer?]],
-      row.hud.x + DOUBLES_ENEMY_TEXT.name.dx,
-      row.hud.y + DOUBLES_ENEMY_TEXT.name.dy
-    )
+    drawDoublesHudCell(graphics, assets, sections, row.art, row.hud)
+    local fields = assert(DOUBLES_FIELDS[row.art], "doubled enemy rows carry field bounds")
+    text.drawText(tostring(foe.name or "FOE"), fields.name.x, fields.name.y)
+    if type(foe.level) == "number" then
+      text.drawText("Lv" .. tostring(foe.level), fields.level.x, fields.level.y)
+    end
     if type(foe.condition) == "string" and foe.condition ~= "" then
-      text.drawText(
-        foe.condition --[[@as string]],
-        row.hud.x + DOUBLES_ENEMY_TEXT.condition.dx,
-        row.hud.y + DOUBLES_ENEMY_TEXT.condition.dy
-      )
+      text.drawText(foe.condition --[[@as string]], fields.condition.x, fields.condition.y)
     end
     local foeHp = (type(foe.hp) == "number" and foe.hp or 0) --[[@as number]]
     local foeMaxHp = (type(foe.maxHp) == "number" and foe.maxHp or 1) --[[@as number]]
     local foeFraction = barFraction(foeHp, foeMaxHp)
     setBarColor(graphics, foeFraction)
-    graphics.rectangle(
-      "fill",
-      row.hud.x + DOUBLES_ENEMY_BAR.dx,
-      row.hud.y + DOUBLES_ENEMY_BAR.dy,
-      DOUBLES_ENEMY_BAR.width * foeFraction,
-      DOUBLES_ENEMY_BAR.height
-    )
+    graphics.rectangle("fill", fields.bar.x, fields.bar.y, DOUBLES_BAR_WIDTH * foeFraction, DOUBLES_BAR_HEIGHT)
     restoreColor(graphics, r, g, b, a)
   end
   for index, ally in ipairs(players) do
@@ -541,46 +579,21 @@ local function drawDoublesDetail(graphics, text, assets, r, g, b, a, view, playe
       local dx = (type(ally.shakeDx) == "number" and ally.shakeDx or 0) --[[@as number]]
       graphics.draw(back, row.sprite.x - PORTRAIT_HALF + dx, row.sprite.y - PORTRAIT_HALF)
     end
-    drawHudComposite(graphics, assets, row.art, row.hud, PLAYER_HUD_OBJECTS)
+    drawDoublesHudCell(graphics, assets, sections, row.art, row.hud)
+    local fields = assert(DOUBLES_FIELDS[row.art], "doubled player rows carry field bounds")
     local hp = (type(ally.hp) == "number" and ally.hp or 0) --[[@as number]]
     local maxHp = (type(ally.maxHp) == "number" and ally.maxHp or 1) --[[@as number]]
-    drawNameLevel(
-      graphics,
-      text,
-      ally.name or "LEAD",
-      ally.level --[[@as integer?]],
-      row.hud.x + DOUBLES_PLAYER_TEXT.name.dx,
-      row.hud.y + DOUBLES_PLAYER_TEXT.name.dy
-    )
-    if type(ally.condition) == "string" and ally.condition ~= "" then
-      text.drawText(
-        ally.condition --[[@as string]],
-        row.hud.x + DOUBLES_PLAYER_TEXT.condition.dx,
-        row.hud.y + DOUBLES_PLAYER_TEXT.condition.dy
-      )
+    text.drawText(tostring(ally.name or "LEAD"), fields.name.x, fields.name.y)
+    if type(ally.level) == "number" then
+      text.drawText("Lv" .. tostring(ally.level), fields.level.x, fields.level.y)
     end
-    text.drawText(
-      tostring(hp) .. "/" .. tostring(maxHp),
-      row.hud.x + DOUBLES_PLAYER_TEXT.hp.dx,
-      row.hud.y + DOUBLES_PLAYER_TEXT.hp.dy
-    )
+    if type(ally.condition) == "string" and ally.condition ~= "" then
+      text.drawText(ally.condition --[[@as string]], fields.condition.x, fields.condition.y)
+    end
     local fraction = barFraction(hp, maxHp)
     setBarColor(graphics, fraction)
-    graphics.rectangle(
-      "fill",
-      row.hud.x + DOUBLES_PLAYER_BAR.dx,
-      row.hud.y + DOUBLES_PLAYER_BAR.dy,
-      DOUBLES_PLAYER_BAR.width * fraction,
-      DOUBLES_PLAYER_BAR.height
-    )
+    graphics.rectangle("fill", fields.bar.x, fields.bar.y, DOUBLES_BAR_WIDTH * fraction, DOUBLES_BAR_HEIGHT)
     restoreColor(graphics, r, g, b, a)
-    if type(ally.exp) == "number" then
-      text.drawText(
-        tostring(ally.exp --[[@as number]]),
-        row.hud.x + DOUBLES_PLAYER_TEXT.exp.dx,
-        row.hud.y + DOUBLES_PLAYER_TEXT.exp.dy
-      )
-    end
   end
 end
 
@@ -596,9 +609,10 @@ local function doublesArrowBase(view, players)
   local row = DOUBLES_ROWS.player[1]
   local actor = view.actor --[[@as table<string, unknown>?]]
   if type(actor) == "table" and actor.combatant ~= nil then
+    local order = canonicalOrder(view, true)
     for index, ally in ipairs(players) do
       if ally.combatant == actor.combatant then
-        row = assert(DOUBLES_ROWS.player[index], "the sourced player rows cover every live ally")
+        row = doublesRow(order, ally, index, DOUBLES_ROWS.player, "the sourced player rows cover every live ally")
         break
       end
     end
@@ -613,6 +627,7 @@ local function drawDetail(resources, view)
   local text = assert(resources.text, "the battle render borrows its text services")
   local windows = assert(resources.windows, "the battle render borrows its window services")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
+  local doublesHud = resources.doublesHud --[[@as table<string, unknown>?]]
   local r, g, b, a = saveColor(graphics)
   local scene = assets:drawable(resources.sceneImageKey --[[@as string]])
   if scene ~= nil then
@@ -621,7 +636,19 @@ local function drawDetail(resources, view)
   local players, enemies = splitBattlers(view)
   local singles = not doublesFormat(view, players, enemies)
   if not singles then
-    drawDoublesDetail(graphics, text, assets, r, g, b, a, view, players, enemies)
+    drawDoublesDetail(
+      graphics,
+      text,
+      assets,
+      assert(doublesHud, "the doubled battle render borrows its verified HUD sections"),
+      r,
+      g,
+      b,
+      a,
+      view,
+      players,
+      enemies
+    )
   end
   local player = singles and players[1] or nil
   local enemy = singles and enemies[1] or nil

@@ -92,9 +92,12 @@ local function compactMeasurement()
   return {
     width = 256,
     height = 192,
-    topology = ScreenTopology.oneDisplay(
-      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = true, role = "world" }
-    ),
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 256, height = 192 },
+      touch = true,
+      role = "world",
+    }),
     pixelRatio = 1,
     signature = "battle-screen-command-test:compact",
   }
@@ -154,7 +157,14 @@ local function openRig(opts)
   local launch = {
     id = launchId,
     kind = "wild",
-    payload = { attemptId = launchId .. "-attempt", species = "EEVEE", form = 0, level = 4, personality = 1, ability = "RUN_AWAY" },
+    payload = {
+      attemptId = launchId .. "-attempt",
+      species = "EEVEE",
+      form = 0,
+      level = 4,
+      personality = 1,
+      ability = "RUN_AWAY",
+    },
   }
   local ScenarioFactory = require(SCENARIO_FACTORY_MODULE)
   local scenario = ScenarioFactory.fromEncounter(
@@ -163,7 +173,12 @@ local function openRig(opts)
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    manifest = {
+      schema = "test",
+      version = { id = "t", language = "english" },
+      verified = false,
+      scenes = { { key = "general/plain/day" } },
+    },
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -225,7 +240,11 @@ local function struggleOptionFor(rig, request)
   local addressed = assert(request.actors[1], "the open request addresses its lead")
   local entries = assert(options.actors, "the projection addresses its actors")
   for _, entry in ipairs(entries) do
-    if type(entry) == "table" and entry.combatant == addressed.combatant and entry.activation == addressed.activation then
+    if
+      type(entry) == "table"
+      and entry.combatant == addressed.combatant
+      and entry.activation == addressed.activation
+    then
       local struggle = nil
       for _, choice in ipairs(entry.choices) do
         if type(choice) == "table" and choice.role == "move" and type(choice.id) == "string" then
@@ -349,8 +368,24 @@ local openSealingScreen ---@type fun(launchId: string, specs: table[], requestId
 -- release seals nothing more.
 function T.paired_second_tap_seals_the_focused_move_once()
   local rig = openSealingScreen("launch-paired-confirm-local", {
-    { id = "move:0", slot = 0, move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, target = { kind = "position", position = 2 } },
-    { id = "move:1", slot = 1, move = "GROWL", name = "Growl", pp = 40, maxPp = 40, target = { kind = "position", position = 2 } },
+    {
+      id = "move:0",
+      slot = 0,
+      move = "TACKLE",
+      name = "Tackle",
+      pp = 35,
+      maxPp = 35,
+      target = { kind = "position", position = 2 },
+    },
+    {
+      id = "move:1",
+      slot = 1,
+      move = "GROWL",
+      name = "Growl",
+      pp = 40,
+      maxPp = 40,
+      target = { kind = "position", position = 2 },
+    },
   }, 9010)
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
@@ -414,7 +449,12 @@ function openSealingScreen(launchId, specs, requestId)
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    manifest = {
+      schema = "test",
+      version = { id = "t", language = "english" },
+      verified = false,
+      scenes = { { key = "general/plain/day" } },
+    },
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -543,29 +583,41 @@ end
 -- seals, and repeating Fight still seals nothing.
 function T.fight_with_no_usable_move_refuses_without_spending()
   local rig = openSealingScreen("launch-screen-spent-fight-local", {
-    { id = "move:0", slot = 0, move = "TACKLE", name = "Tackle", pp = 0, maxPp = 35, enabled = false, reason = "no_pp", target = { kind = "position", position = 2 } },
-    { id = "move:1", slot = 1, move = "GROWL", name = "Growl", pp = 0, maxPp = 40, enabled = false, reason = "no_pp", target = { kind = "position", position = 2 } },
+    {
+      id = "move:0",
+      slot = 0,
+      move = "TACKLE",
+      name = "Tackle",
+      pp = 0,
+      maxPp = 35,
+      enabled = false,
+      reason = "no_pp",
+      target = { kind = "position", position = 2 },
+    },
+    {
+      id = "move:1",
+      slot = 1,
+      move = "GROWL",
+      name = "Growl",
+      pp = 0,
+      maxPp = 40,
+      enabled = false,
+      reason = "no_pp",
+      target = { kind = "position", position = 2 },
+    },
   }, 9021)
   local request = assert(rig.screen:status().request, "the prompt mirrors its request")
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
   Assert.equal(rig.screen:status().mode, "command", "Fight with no usable move stays on the command decision")
   Assert.equal(#rig.submits, 0, "the refusal spends no turn")
-  Assert.equal(
-    rig.screen:status().request.requestId,
-    request.requestId,
-    "the refusal keeps the same request open"
-  )
+  Assert.equal(rig.screen:status().request.requestId, request.requestId, "the refusal keeps the same request open")
   Assert.equal(rig.screen:view().message, "no_pp", "the refusal repeats the kernel reason")
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
   Assert.equal(rig.screen:status().mode, "command", "a repeated Fight still stays on the command decision")
   Assert.equal(#rig.submits, 0, "a repeated Fight still seals nothing")
-  Assert.equal(
-    rig.screen:status().request.requestId,
-    request.requestId,
-    "a repeated Fight keeps the same request open"
-  )
+  Assert.equal(rig.screen:status().request.requestId, request.requestId, "a repeated Fight keeps the same request open")
   rig.screen:dispose()
 end
 
@@ -573,7 +625,15 @@ end
 -- fragments never open a picker and never rewrite their target.
 function T.projected_side_and_field_targets_seal_unchanged()
   local side = openSealingScreen("launch-sealed-side-local", {
-    { id = "move:0", slot = 0, move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, target = { kind = "side", side = 2 } },
+    {
+      id = "move:0",
+      slot = 0,
+      move = "TACKLE",
+      name = "Tackle",
+      pp = 35,
+      maxPp = 35,
+      target = { kind = "side", side = 2 },
+    },
   }, 9001)
   side.screen:input({ { type = "confirm" } })
   side.pump(1)
@@ -677,14 +737,11 @@ function T.case_overrides_replace_plans_and_bad_keys_fail()
   local rig = openRig({ overrides = { cases = custom }, launchId = "launch-screen-override-local" })
   driveToMode(rig, "command")
   Assert.isTrue(#seen > 0, "the per-case override resolves")
-  Assert.equal(
-    rig.screen:status().presentation.content.overrideTag,
-    "local-probe",
-    "the override plan publishes"
-  )
+  Assert.equal(rig.screen:status().presentation.content.overrideTag, "local-probe", "the override plan publishes")
   rig.screen:dispose()
   rig.battle:dispose()
-  local sad = openRig({ overrides = { cases = { noSuchCase = function() end } }, launchId = "launch-screen-badkey-local" })
+  local sad =
+    openRig({ overrides = { cases = { noSuchCase = function() end } }, launchId = "launch-screen-badkey-local" })
   sad.pump(2)
   Assert.equal(sad.screen:status().mode, "failed", "an unknown override key fails explicitly")
   sad.screen:dispose()
@@ -720,7 +777,14 @@ function T.screen_draw_restores_borrowed_state()
   local graphics = FakeGraphics.new({})
   local function state()
     local r, g, b, a = graphics.getColor()
-    return { color = { r, g, b, a }, canvas = graphics.getCanvas(), shader = graphics.getShader(), blend = graphics.getBlendMode(), scissor = graphics.getScissor(), depth = graphics:pushDepth() }
+    return {
+      color = { r, g, b, a },
+      canvas = graphics.getCanvas(),
+      shader = graphics.getShader(),
+      blend = graphics.getBlendMode(),
+      scissor = graphics.getScissor(),
+      depth = graphics:pushDepth(),
+    }
   end
   local before = state()
   rig.screen:draw({ graphics = graphics })
@@ -802,7 +866,7 @@ end
 ---@param layout string? interaction layout under drawing
 ---@param held string[]? artwork keys reporting unavailable
 ---@return table graphics, text, and window records behind one draw
-local function drawNativePane(paneId, view, layout, held)
+local function drawNativePane(paneId, view, layout, held, doublesHud)
   local BattleRenderer = require(RENDERER_MODULE)
   local graphics = FakeGraphics.new({})
   local text = recordingText()
@@ -828,6 +892,104 @@ local function drawNativePane(paneId, view, layout, held)
     },
     frameKey = "default",
     sceneImageKey = "scene:test",
+    doublesHud = doublesHud or {
+      playerLeft = {
+        cells = {
+          {
+            objs = {
+              {
+                tile = 6,
+                width = 8,
+                height = 8,
+                x = -5,
+                y = -7,
+                flipH = false,
+                flipV = false,
+                palette = 0,
+                affine = false,
+                disabled = false,
+                mosaic = false,
+                objMode = "normal",
+                colorMode = "16-color",
+              },
+            },
+          },
+        },
+        animation = { frames = { { cell = 0 } } },
+      },
+      playerRight = {
+        cells = {
+          {
+            objs = {
+              {
+                tile = 14,
+                width = 16,
+                height = 8,
+                x = -9,
+                y = -11,
+                flipH = false,
+                flipV = false,
+                palette = 0,
+                affine = false,
+                disabled = false,
+                mosaic = false,
+                objMode = "normal",
+                colorMode = "16-color",
+              },
+            },
+          },
+        },
+        animation = { frames = { { cell = 0 } } },
+      },
+      enemyLeft = {
+        cells = {
+          {
+            objs = {
+              {
+                tile = 22,
+                width = 8,
+                height = 16,
+                x = -13,
+                y = -17,
+                flipH = false,
+                flipV = false,
+                palette = 0,
+                affine = false,
+                disabled = false,
+                mosaic = false,
+                objMode = "normal",
+                colorMode = "16-color",
+              },
+            },
+          },
+        },
+        animation = { frames = { { cell = 0 } } },
+      },
+      enemyRight = {
+        cells = {
+          {
+            objs = {
+              {
+                tile = 30,
+                width = 16,
+                height = 16,
+                x = -19,
+                y = -23,
+                flipH = false,
+                flipV = false,
+                palette = 0,
+                affine = false,
+                disabled = false,
+                mosaic = false,
+                objMode = "normal",
+                colorMode = "16-color",
+              },
+            },
+          },
+        },
+        animation = { frames = { { cell = 0 } } },
+      },
+    },
   }
   local content = {}
   if paneId == "interaction" then
@@ -1064,9 +1226,15 @@ function T.native_move_facts_use_compiled_type_and_split_pp_anchors()
   rig.screen:draw({ graphics = graphics })
   local text = rig.text
   Assert.isTrue(textAt(text, first.name, 64, 45), "the first move name keeps its anchor: " .. tostring(first.name))
-  Assert.isTrue(textAt(text, first.moveType, 32, 61), "the type sits left on the lower row: " .. tostring(first.moveType))
+  Assert.isTrue(
+    textAt(text, first.moveType, 32, 61),
+    "the type sits left on the lower row: " .. tostring(first.moveType)
+  )
   Assert.isTrue(textAt(text, tostring(first.pp), 59, 61), "the PP current keeps its field: " .. tostring(first.pp))
-  Assert.isTrue(textAt(text, "/" .. tostring(first.maxPp), 76, 61), "the PP max keeps its field: " .. tostring(first.maxPp))
+  Assert.isTrue(
+    textAt(text, "/" .. tostring(first.maxPp), 76, 61),
+    "the PP max keeps its field: " .. tostring(first.maxPp)
+  )
   for _, entry in ipairs(text.draws) do
     Assert.isNil(
       tostring(entry.content):match("^PP %d+/%d+$"),
@@ -1183,7 +1351,14 @@ local function openWeakTerminalRig(launchId)
   local launch = {
     id = launchId,
     kind = "wild",
-    payload = { attemptId = launchId .. "-attempt", species = "EEVEE", form = 0, level = 4, personality = 1, ability = "RUN_AWAY" },
+    payload = {
+      attemptId = launchId .. "-attempt",
+      species = "EEVEE",
+      form = 0,
+      level = 4,
+      personality = 1,
+      ability = "RUN_AWAY",
+    },
   }
   local ScenarioFactory = require(SCENARIO_FACTORY_MODULE)
   local scenario = ScenarioFactory.fromEncounter(
@@ -1192,7 +1367,12 @@ local function openWeakTerminalRig(launchId)
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    manifest = {
+      schema = "test",
+      version = { id = "t", language = "english" },
+      verified = false,
+      scenes = { { key = "general/plain/day" } },
+    },
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -1328,7 +1508,12 @@ local function openLongOutcomeRig(launchId)
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    manifest = {
+      schema = "test",
+      version = { id = "t", language = "english" },
+      verified = false,
+      scenes = { { key = "general/plain/day" } },
+    },
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -1627,25 +1812,13 @@ function T.launches_keep_their_own_narration_pace_and_edges()
   local quickest = openPacedScreen("launch-paced-quickest-local", "fastest")
   slow.pump(2)
   quickest.pump(2)
-  Assert.equal(
-    glyphCount(slow.screen:view().message),
-    1,
-    "the unhurried launch shows one glyph after two ticks"
-  )
-  Assert.equal(
-    glyphCount(quickest.screen:view().message),
-    4,
-    "the hurried launch shows four glyphs after two ticks"
-  )
+  Assert.equal(glyphCount(slow.screen:view().message), 1, "the unhurried launch shows one glyph after two ticks")
+  Assert.equal(glyphCount(quickest.screen:view().message), 4, "the hurried launch shows four glyphs after two ticks")
   local badOk, _ = pcall(openPacedScreen, "launch-paced-bad-local", "warp")
   Assert.isFalse(badOk, "an unknown launch pace fails instead of guessing")
   local plain = openPacedScreen("launch-paced-plain-local", nil)
   plain.pump(5)
-  Assert.equal(
-    glyphCount(plain.screen:view().message),
-    2,
-    "omitting the launch pace keeps the middle cadence"
-  )
+  Assert.equal(glyphCount(plain.screen:view().message), 2, "omitting the launch pace keeps the middle cadence")
   local narration = BattleTimeline.new({ sound = function(_) end, textSpeed = "slow" })
   narration:announce("ABCDEFGHIJKLMNOPQRST", true)
   narration:update(TICK, function(_)
@@ -1707,8 +1880,15 @@ function T.exhausted_lead_finishes_through_fight_without_a_fifth_cell()
     )
     Assert.equal(#keyRig.submits, 1, "the struggle seals exactly one reply (" .. layout.name .. ")")
     local sealed = assert(keyRig.submits[1], "the struggle reply is recorded (" .. layout.name .. ")")
-    Assert.deepEqual(sealed.choices[1], expected, "the sealed fragment keeps the projected struggle (" .. layout.name .. ")")
-    Assert.isNil(keyRig.screen:status().request, "the answered request is no longer mirrored as open (" .. layout.name .. ")")
+    Assert.deepEqual(
+      sealed.choices[1],
+      expected,
+      "the sealed fragment keeps the projected struggle (" .. layout.name .. ")"
+    )
+    Assert.isNil(
+      keyRig.screen:status().request,
+      "the answered request is no longer mirrored as open (" .. layout.name .. ")"
+    )
     keyRig.screen:dispose()
     keyRig.battle:dispose()
     local touchRig = openRig({
@@ -1832,6 +2012,89 @@ local function firstDrawOf(graphics, handle)
   return found[1]
 end
 
+function T.doubles_missing_source_section_fails_without_singles_substitute()
+  local sections = {
+    playerLeft = {
+      cells = {
+        {
+          objs = {
+            {
+              tile = 3,
+              width = 8,
+              height = 8,
+              x = -5,
+              y = -7,
+              flipH = false,
+              flipV = false,
+              palette = 0,
+              affine = false,
+              disabled = false,
+              mosaic = false,
+              objMode = "normal",
+              colorMode = "16-color",
+            },
+          },
+        },
+      },
+      animation = { frames = { { cell = 0 } } },
+    },
+    playerRight = {
+      cells = {
+        {
+          objs = {
+            {
+              tile = 7,
+              width = 16,
+              height = 8,
+              x = -9,
+              y = -11,
+              flipH = false,
+              flipV = false,
+              palette = 0,
+              affine = false,
+              disabled = false,
+              mosaic = false,
+              objMode = "normal",
+              colorMode = "16-color",
+            },
+          },
+        },
+      },
+      animation = { frames = { { cell = 0 } } },
+    },
+    enemyLeft = {
+      cells = {
+        {
+          objs = {
+            {
+              tile = 11,
+              width = 8,
+              height = 16,
+              x = -13,
+              y = -17,
+              flipH = false,
+              flipV = false,
+              palette = 0,
+              affine = false,
+              disabled = false,
+              mosaic = false,
+              objMode = "normal",
+              colorMode = "16-color",
+            },
+          },
+        },
+      },
+      animation = { frames = { { cell = 0 } } },
+    },
+  }
+  local ok, drawn = pcall(drawNativePane, "detail", doublesDetailView(), nil, {}, sections)
+  Assert.isFalse(ok, "a missing required enemy-right source section fails the doubled draw")
+  if ok then
+    Assert.equal(#drawsOf(drawn.graphics, "hud:player"), 0, "a missing source section never substitutes singles art")
+    Assert.equal(#drawsOf(drawn.graphics, "hud:enemy"), 0, "a missing source section never substitutes singles art")
+  end
+end
+
 -- Doubled portraits settle at the sourced centers: the source table
 -- gives center-style anchors for nominal 80x80 pictures, so each
 -- top-left origin sits one half picture (40 pixels) left and above
@@ -1853,8 +2116,7 @@ function T.doubled_portraits_settle_at_the_sourced_centers()
     Assert.equal(found[1].y, origin.y, "the " .. handle .. " picture keeps its settled row")
   end
   local foeLeft = assert(firstDrawOf(drawn.graphics, "mon:BIDOOF/f0/male/plain/front"), "the foe left picture draws")
-  local foeRight =
-    assert(firstDrawOf(drawn.graphics, "mon:PICHU/f0/male/plain/front"), "the foe right picture draws")
+  local foeRight = assert(firstDrawOf(drawn.graphics, "mon:PICHU/f0/male/plain/front"), "the foe right picture draws")
   Assert.isTrue(
     foeLeft.x > foeRight.x,
     "the first sorted foe slot sits screen-right of its partner, as the source rows lay out"
@@ -1865,33 +2127,36 @@ end
 -- sourced anchors: each side-ordered slot draws its own strip with the
 -- unmodified object templates, and every dynamic row follows its own
 -- anchor through the single-battle template offsets.
-function T.doubled_health_boxes_use_dedicated_art_at_the_sourced_anchors()
+function T.doubled_health_boxes_use_each_role_source_cell_and_default_fields()
   local drawn = drawNativePane("detail", doublesDetailView(), nil, {})
-  local composites = {
-    ["hud:player-left"] = { x = 128, y = 71 },
-    ["hud:player-right"] = { x = 134, y = 100 },
-    ["hud:enemy-left"] = { x = 0, y = -12 },
-    ["hud:enemy-right"] = { x = -6, y = 17 },
+  local objects = {
+    ["hud:player-left"] = { x = 187, y = 96, tile = 6, width = 8, height = 8 },
+    ["hud:player-right"] = { x = 189, y = 121, tile = 14, width = 16, height = 8 },
+    ["hud:enemy-left"] = { x = 51, y = -1, tile = 22, width = 8, height = 16 },
+    ["hud:enemy-right"] = { x = 39, y = 22, tile = 30, width = 16, height = 16 },
   }
-  for artKey, origin in pairs(composites) do
+  for artKey, expected in pairs(objects) do
     local bands = drawsOf(drawn.graphics, artKey)
-    Assert.equal(#bands, 16, "the " .. artKey .. " strip bands its two objects")
-    Assert.equal(bands[1].x, origin.x, "the " .. artKey .. " composite keeps its anchor column")
-    Assert.equal(bands[1].y, origin.y, "the " .. artKey .. " composite keeps its anchor row")
+    Assert.equal(#bands, expected.height / 8, "the " .. artKey .. " draws its selected source object rows")
+    Assert.equal(bands[1].quad.x, expected.tile * 8, "the " .. artKey .. " applies the cell-bank mapping to its tile")
+    Assert.equal(bands[1].x, expected.x, "the " .. artKey .. " applies its source object x offset")
+    Assert.equal(bands[1].y, expected.y, "the " .. artKey .. " applies its source object y offset")
+    Assert.equal(bands[1].quad.w, expected.width, "the " .. artKey .. " keeps its source object width")
     Assert.equal(bands[1].quad.imgW, 1024, "the " .. artKey .. " quads reference the staged strip width")
-    Assert.equal(bands[9].x, origin.x + 64, "the " .. artKey .. " second object abuts the first")
   end
   Assert.equal(#drawsOf(drawn.graphics, "hud:player"), 0, "no doubled ally shares the single-battle strip")
   Assert.equal(#drawsOf(drawn.graphics, "hud:enemy"), 0, "no doubled foe shares the single-battle strip")
-  Assert.isTrue(textAt(drawn.text, "ALLY-A", 144, 79), "the left ally names its own row")
-  Assert.isTrue(textAt(drawn.text, "Lv8", 144, 91), "the left ally levels its own row")
-  Assert.isTrue(textAt(drawn.text, "40/40", 144, 103), "the left ally prints its numeric health")
-  Assert.isTrue(textAt(drawn.text, "8000", 192, 103), "the left ally prints its experience")
-  Assert.isTrue(textAt(drawn.text, "ALLY-B", 150, 108), "the right ally names its own row")
-  Assert.isTrue(textAt(drawn.text, "35/35", 150, 132), "the right ally prints its numeric health")
-  Assert.isTrue(textAt(drawn.text, "FOE-A", 14, -4), "the left foe names its own row")
-  Assert.isTrue(textAt(drawn.text, "Lv4", 14, 8), "the left foe levels its own row")
-  Assert.isTrue(textAt(drawn.text, "FOE-B", 8, 25), "the right foe names its own row")
+  Assert.isTrue(textAt(drawn.text, "ALLY-A", 144, 88), "the left ally names its own row")
+  Assert.isTrue(textAt(drawn.text, "Lv8", 224, 91), "the left ally level uses its mapped source patch")
+  Assert.isFalse(textAt(drawn.text, "40/40", 144, 103), "default doubled HUD omits numeric player health")
+  Assert.isFalse(textAt(drawn.text, "8000", 192, 103), "default doubled HUD omits player experience")
+  Assert.isTrue(textAt(drawn.text, "ALLY-B", 150, 117), "the right ally names its own row")
+  Assert.isTrue(textAt(drawn.text, "Lv9", 230, 120), "the right ally level uses its mapped source patch")
+  Assert.isFalse(textAt(drawn.text, "35/35", 150, 141), "default doubled HUD omits numeric health for every ally")
+  Assert.isTrue(textAt(drawn.text, "FOE-A", 14, 4), "the left foe names its own row")
+  Assert.isTrue(textAt(drawn.text, "Lv4", 88, 4), "the left foe level uses its mapped source patch")
+  Assert.isTrue(textAt(drawn.text, "FOE-B", 8, 33), "the right foe names its own row")
+  Assert.isTrue(textAt(drawn.text, "Lv5", 82, 33), "the right foe level uses its mapped source patch")
   local bars = {}
   for _, entry in ipairs(drawn.graphics.rectangles) do
     if entry.mode == "fill" then
@@ -1899,21 +2164,84 @@ function T.doubled_health_boxes_use_dedicated_art_at_the_sourced_anchors()
     end
   end
   Assert.equal(#bars, 4, "all four partners fill their own health bar")
-  local byOrigin = {}
-  for _, bar in ipairs(bars) do
-    byOrigin[bar.x .. ":" .. bar.y] = bar.w
+  local barOrigins = {
+    { x = 56, y = 20 },
+    { x = 50, y = 49 },
+    { x = 192, y = 107 },
+    { x = 198, y = 136 },
+  }
+  for index, origin in ipairs(barOrigins) do
+    Assert.equal(bars[index].x, origin.x, "health bar " .. index .. " uses its mapped source tile origin")
+    Assert.equal(bars[index].y, origin.y, "health bar " .. index .. " uses its mapped source tile row")
   end
-  Assert.equal(byOrigin["144:95"], 48, "the left ally bar keeps its row")
-  Assert.equal(byOrigin["150:124"], 48, "the right ally bar keeps its row")
-  Assert.equal(byOrigin["14:24"], 48, "the left foe bar keeps its row")
-  Assert.equal(byOrigin["8:53"], 48, "the right foe bar keeps its row")
+end
+
+function T.doubled_health_bars_follow_each_slot_without_numeric_or_experience_labels()
+  local view = doublesDetailView()
+  local health = {
+    [8] = { 25, 100 },
+    [30] = { 1, 100 },
+    [5] = { 40, 40 },
+    [11] = { 0, 100 },
+  }
+  for _, battler in ipairs(view.battlers) do
+    local values = health[battler.combatant]
+    battler.hp = values[1]
+    battler.maxHp = values[2]
+    if battler.combatant == 8 then
+      battler.condition = "PSN"
+    end
+  end
+  local first = drawNativePane("detail", view, nil, {})
+  local expectedWidths = {
+    ["56:20"] = 12,
+    ["50:49"] = 0.48,
+    ["192:107"] = 48,
+    ["198:136"] = 0,
+  }
+  local firstWidths = {}
+  local firstBarCount = 0
+  for _, bar in ipairs(first.graphics.rectangles) do
+    if bar.mode == "fill" then
+      local key = bar.x .. ":" .. bar.y
+      Assert.equal(bar.w, expectedWidths[key], "each sourced slot owns its health fraction at " .. key)
+      firstWidths[key] = bar.w
+      firstBarCount = firstBarCount + 1
+    end
+  end
+  Assert.equal(firstBarCount, 4, "all four source slots have independent health bars")
+  Assert.isTrue(textAt(first.text, "PSN", 72, 4), "a supported foe condition stays on its own source row")
+  for _, entry in ipairs(first.text.draws) do
+    Assert.isNil(entry.content:match("%d+/%d+"), "native doubles do not show numeric current/max HP")
+    Assert.isFalse(entry.content == "8000" or entry.content == "8100", "native doubles do not show player EXP")
+  end
+
+  for _, battler in ipairs(view.battlers) do
+    if battler.combatant == 5 then
+      battler.hp = 1
+    end
+  end
+  local changed = drawNativePane("detail", view, nil, {})
+  local changedWidths = {}
+  for _, bar in ipairs(changed.graphics.rectangles) do
+    if bar.mode == "fill" then
+      changedWidths[bar.x .. ":" .. bar.y] = bar.w
+    end
+  end
+  Assert.near(changedWidths["192:107"], 1.2, 1e-9, "only the changed ally bar follows its new HP")
+  for key, width in pairs(firstWidths) do
+    if key ~= "192:107" then
+      Assert.equal(changedWidths[key], width, "slot " .. key .. " retains its independent HP")
+    end
+  end
 end
 
 -- The doubled selection arrow follows the acting partner: its column
 -- sits one horizontal arrow offset left of the acting health-box
 -- anchor, derived at draw time instead of hardcoded.
 function T.doubled_arrow_follows_the_acting_partner_health_box()
-  local leftActing = drawNativePane("detail", doublesDetailView({ actor = { combatant = 5, index = 1, total = 2 } }), nil, {})
+  local leftActing =
+    drawNativePane("detail", doublesDetailView({ actor = { combatant = 5, index = 1, total = 2 } }), nil, {})
   local leftBands = drawsOf(leftActing.graphics, "arrow")
   Assert.equal(#leftBands, 2, "the acting left partner shows the arrow")
   Assert.equal(leftBands[1].x, 112, "the arrow sits one offset left of the left anchor")
@@ -1924,6 +2252,20 @@ function T.doubled_arrow_follows_the_acting_partner_health_box()
   Assert.equal(#rightBands, 2, "the acting right partner shows the arrow")
   Assert.equal(rightBands[1].x, 118, "the arrow sits one offset left of the right anchor")
   Assert.equal(rightBands[1].y, 124, "the arrow shares the right anchor row")
+end
+
+function T.doubled_arrow_keeps_the_right_slot_when_left_partner_hides()
+  local view = doublesDetailView({ actor = { combatant = 11, index = 2, total = 2 } })
+  for _, battler in ipairs(view.battlers) do
+    if battler.combatant == 5 then
+      battler.visible = false
+    end
+  end
+  local drawn = drawNativePane("detail", view, nil, {})
+  local bands = drawsOf(drawn.graphics, "arrow")
+  Assert.equal(#bands, 2, "the acting right partner retains the arrow")
+  Assert.equal(bands[1].x, 118, "the arrow remains anchored to the right slot after the left hides")
+  Assert.equal(bands[1].y, 124, "the arrow remains on the right slot row after the left hides")
 end
 
 -- A single battle keeps its established anchors while its lead hides

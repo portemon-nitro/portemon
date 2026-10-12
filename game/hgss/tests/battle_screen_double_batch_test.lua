@@ -21,6 +21,38 @@ local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 
+local function testDoublesHud()
+  local function object(tile, x, y, width, height)
+    return {
+      tile = tile,
+      x = x,
+      y = y,
+      width = width,
+      height = height,
+      flipH = false,
+      flipV = false,
+      palette = 0,
+      affine = false,
+      disabled = false,
+      mosaic = false,
+      objMode = "normal",
+      colorMode = "16-color",
+    }
+  end
+  local function section(tile, x, y, width, height)
+    return {
+      cells = { { objs = { object(tile, x, y, width, height) } } },
+      animation = { frames = { { cell = 0, duration = 1 } } },
+    }
+  end
+  return {
+    playerLeft = section(3, -5, -7, 8, 8),
+    playerRight = section(7, -9, -11, 16, 8),
+    enemyLeft = section(11, -13, -17, 8, 16),
+    enemyRight = section(15, -19, -23, 16, 16),
+  }
+end
+
 ---@param layout string "paired" or "compact" surface arrangement under test driving
 ---@return table caller-owned display facts for the layout
 local function measurementFor(layout)
@@ -83,7 +115,7 @@ local function openDoubleRig(opts)
     text = { draws = {} },
     windows = { calls = {} },
     audio = { plays = {} },
-    assets = { prepared = {}, released = {} },
+    assets = { prepared = {}, released = {}, requested = {} },
   }
   function rig.text.measure(content)
     return { width = 8 * #tostring(content), height = 16 }
@@ -103,6 +135,7 @@ local function openDoubleRig(opts)
     return true
   end
   function rig.assets.drawable(key)
+    rig.assets.requested[#rig.assets.requested + 1] = key
     if rig.assets.images == nil then
       rig.assets.images = {}
     end
@@ -186,7 +219,10 @@ local function openDoubleRig(opts)
       {
         id = trainerId,
         class = 2,
-        party = { foeRecord(foeSpecies[1], foeLevels[1], 0x5EED0001), foeRecord(foeSpecies[2], foeLevels[2], 0x5EED0002) },
+        party = {
+          foeRecord(foeSpecies[1], foeLevels[1], 0x5EED0001),
+          foeRecord(foeSpecies[2], foeLevels[2], 0x5EED0002),
+        },
         partyLevels = { 4, 4 },
         prizeMoney = { trainerClass = 2, classRate = 4 },
         aiPasses = {},
@@ -194,14 +230,19 @@ local function openDoubleRig(opts)
       },
     },
   }, { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  local manifest = {
+    schema = "test",
+    version = { id = "t", language = "english" },
+    verified = false,
+    scenes = { { key = "general/plain/day" } },
+    doublesHud = testDoublesHud(),
+  }
+  if opts.missingHud then
+    manifest.doublesHud = {}
+  end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = manifest,
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -825,7 +866,11 @@ local function struggleOptionForActor(rig, request, position)
   local options = optionsFor(rig, request)
   local addressed = assert(request.actors[position], "the doubled turn addresses its lead")
   for _, entry in ipairs(options.actors) do
-    if type(entry) == "table" and entry.combatant == addressed.combatant and entry.activation == addressed.activation then
+    if
+      type(entry) == "table"
+      and entry.combatant == addressed.combatant
+      and entry.activation == addressed.activation
+    then
       for _, choice in ipairs(entry.choices) do
         if type(choice) == "table" and choice.id == "move:struggle" then
           return choice --[[@as table<string, unknown>]]
@@ -1017,7 +1062,14 @@ local function openTargetLabelRig(layout, launchId, requestId)
   local ownSideTargets = {
     { id = "target:0", position = 1, combatant = 1, enabled = true, choice = attackChoice(1, 1) },
     { id = "target:1", position = 2, combatant = 2, enabled = true, choice = attackChoice(1, 2) },
-    { id = "target:2", position = 2, combatant = 2, enabled = false, reason = "disallowed", choice = attackChoice(1, 2) },
+    {
+      id = "target:2",
+      position = 2,
+      combatant = 2,
+      enabled = false,
+      reason = "disallowed",
+      choice = attackChoice(1, 2),
+    },
   }
   local foeSideTargets = {
     { id = "target:0", position = 3, combatant = 5, enabled = true, choice = attackChoice(2, 3) },
@@ -1386,11 +1438,16 @@ function T.both_sides_field_two_battlers_with_their_own_pictures_and_health()
       },
       frameKey = "four-pictures-frame",
       sceneImageKey = "scene:test",
+      doublesHud = testDoublesHud(),
     }
     ApplicationPresentation.draw(graphics, resources, opening, plan)
     local pictures = {}
     for _, drawn in ipairs(graphics.draws) do
-      if type(drawn.image) == "table" and type(drawn.image.handle) == "string" and drawn.image.handle:sub(1, 4) == "mon:" then
+      if
+        type(drawn.image) == "table"
+        and type(drawn.image.handle) == "string"
+        and drawn.image.handle:sub(1, 4) == "mon:"
+      then
         pictures[#pictures + 1] = drawn
       end
     end
@@ -1479,6 +1536,26 @@ function T.both_sides_field_two_battlers_with_their_own_pictures_and_health()
     end
   end
   rig.screen:dispose()
+end
+
+function T.missing_native_doubles_sections_fail_the_screen_draw_without_substitution()
+  local rig = openDoubleRig({ launchId = "launch-double-missing-hud", missingHud = true })
+  driveToMode(rig, "command")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local requestedBeforeDraw = #rig.assets.requested
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  local status = rig.screen:status()
+  Assert.equal(status.mode, "failed", "the screen reports its required source-cell failure")
+  Assert.isTrue(
+    tostring(status.error):find("enemyLeft", 1, true) ~= nil,
+    "the failure identifies the absent role: " .. tostring(status.error)
+  )
+  for index = requestedBeforeDraw + 1, #rig.assets.requested do
+    local key = rig.assets.requested[index]
+    Assert.isFalse(key == "hud:player" or key == "hud:enemy", "the failed draw never requests singles substitute art")
+  end
+  rig.screen:dispose()
+  rig.battle:dispose()
 end
 
 return { tests = T }

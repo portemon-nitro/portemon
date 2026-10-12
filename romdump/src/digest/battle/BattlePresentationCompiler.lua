@@ -230,10 +230,23 @@ end
 ---@param role { nanr: integer, ncer: integer, ncgr: integer }
 ---@param palette { colors: table[] }
 ---@param label string
+---@param normalizeObjTiles? boolean normalize cell tile bases for the staged tile strip
 ---@return { anims: table[], cells: table[], chars: { depth: integer, tiles: string }, palette: { colors: table[] } }
-local function decodeTriple(archive, role, palette, label)
+local function decodeTriple(archive, role, palette, label, normalizeObjTiles)
   local animation = decodeAnimation(archive, role.nanr, label .. " animation")
-  local cells = decodeCells(archive, role.ncer, label .. " cells")
+  local cellBytes = decodeMember(archive, role.ncer, label .. " cells")
+  local decodedCells, cellErr = G2dDecoder.decodeCell(cellBytes, { label = label .. " cells" })
+  local cells = mustDecode(decodedCells, cellErr, label .. " cells")
+  if normalizeObjTiles then
+    local decodedMapping, mappingErr = G2dDecoder.decodeCellMapping(cellBytes, { label = label .. " cells" })
+    local mapping = mustDecode(decodedMapping, mappingErr, label .. " cell mapping")
+    local scale = 2 ^ mapping --[[@as integer]]
+    for _, cell in ipairs(cells.cells) do
+      for _, obj in ipairs(cell.objs) do
+        obj.tile = obj.tile * scale
+      end
+    end
+  end
   local chars = decodeChars(archive, role.ncgr, label .. " characters")
   if chars.depth ~= 3 then
     error(
@@ -564,13 +577,13 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local playerTriple = decodeTriple(sceneArchive, ROLES.playerHud, hudPalette, "player HUD")
     local enemyTriple = decodeTriple(sceneArchive, ROLES.enemyHud, hudPalette, "enemy HUD")
     local playerDoubleLeftTriple =
-      decodeTriple(sceneArchive, ROLES.playerHudDoubleLeft, hudPalette, "player left doubled HUD")
+      decodeTriple(sceneArchive, ROLES.playerHudDoubleLeft, hudPalette, "player left doubled HUD", true)
     local playerDoubleRightTriple =
-      decodeTriple(sceneArchive, ROLES.playerHudDoubleRight, hudPalette, "player right doubled HUD")
+      decodeTriple(sceneArchive, ROLES.playerHudDoubleRight, hudPalette, "player right doubled HUD", true)
     local enemyDoubleLeftTriple =
-      decodeTriple(sceneArchive, ROLES.enemyHudDoubleLeft, hudPalette, "enemy left doubled HUD")
+      decodeTriple(sceneArchive, ROLES.enemyHudDoubleLeft, hudPalette, "enemy left doubled HUD", true)
     local enemyDoubleRightTriple =
-      decodeTriple(sceneArchive, ROLES.enemyHudDoubleRight, hudPalette, "enemy right doubled HUD")
+      decodeTriple(sceneArchive, ROLES.enemyHudDoubleRight, hudPalette, "enemy right doubled HUD", true)
     local arrowTriple = decodeTriple(sceneArchive, ROLES.arrow, lowerObjPalette, "player arrow")
     checkArrow(arrowTriple)
     local playerHud = compileSprite(playerTriple, "hud-player-chars", "player HUD")
@@ -580,14 +593,25 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     -- keeps its staged strip, source cells, animation, and palette
     -- behind one semantic slot key.
     local doublesHud = {
-      playerLeft = compileSprite(playerDoubleLeftTriple, "hud-doubles-player-left-chars", "player left doubled HUD"),
+      playerLeft = compileSprite(
+        playerDoubleLeftTriple,
+        "hud-doubles-player-left-chars",
+        "player left doubled HUD",
+        nil
+      ),
       playerRight = compileSprite(
         playerDoubleRightTriple,
         "hud-doubles-player-right-chars",
-        "player right doubled HUD"
+        "player right doubled HUD",
+        nil
       ),
-      enemyLeft = compileSprite(enemyDoubleLeftTriple, "hud-doubles-enemy-left-chars", "enemy left doubled HUD"),
-      enemyRight = compileSprite(enemyDoubleRightTriple, "hud-doubles-enemy-right-chars", "enemy right doubled HUD"),
+      enemyLeft = compileSprite(enemyDoubleLeftTriple, "hud-doubles-enemy-left-chars", "enemy left doubled HUD", nil),
+      enemyRight = compileSprite(
+        enemyDoubleRightTriple,
+        "hud-doubles-enemy-right-chars",
+        "enemy right doubled HUD",
+        nil
+      ),
     }
     local arrow = compileSprite(arrowTriple, "arrow-chars", "player arrow")
     local partyGauges = {}
