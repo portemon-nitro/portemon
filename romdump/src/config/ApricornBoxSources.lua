@@ -53,8 +53,7 @@ ApricornBoxSources.actionMenuArchive = {
 }
 
 ApricornBoxSources.messages = {
-  bankId = 27,
-  memberId = 21,
+  bankId = 21,
   itemNames = { 7, 8, 9, 10, 11, 12, 13 },
   actionLabels = { 2, 3, 4, 5, 6 },
   flowMessages = { selection = 37, quantity = 38, confirmation = 39 },
@@ -63,8 +62,8 @@ ApricornBoxSources.messages = {
 
 ApricornBoxSources.itemKeys = {
   "RED_APRICORN",
-  "BLU_APRICORN",
   "YLW_APRICORN",
+  "BLU_APRICORN",
   "GRN_APRICORN",
   "PNK_APRICORN",
   "WHT_APRICORN",

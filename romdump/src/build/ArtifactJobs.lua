@@ -572,7 +572,7 @@ end
 
 local function dependenciesApricornBox(key)
   assert(key == "global", "Apricorn Box family only has the global job")
-  return { { kind = "message-bank", key = "27" } }, true
+  return { { kind = "message-bank", key = "21" } }, true
 end
 
 local function dependenciesMart(key, plans)

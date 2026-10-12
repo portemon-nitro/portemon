@@ -11,7 +11,7 @@ ApricornBoxAssetCache.SCHEMA = Contract.apricornBox.schema
 local DATA_DIR = "data/generated/apricorn-box"
 local ASSET_DIR = "assets/generated/apricorn-box"
 local ROW_KEYS =
-  { "RED_APRICORN", "BLU_APRICORN", "YLW_APRICORN", "GRN_APRICORN", "PNK_APRICORN", "WHT_APRICORN", "BLK_APRICORN" }
+  { "RED_APRICORN", "YLW_APRICORN", "BLU_APRICORN", "GRN_APRICORN", "PNK_APRICORN", "WHT_APRICORN", "BLK_APRICORN" }
 local ROW_NAME_MESSAGES = { 7, 8, 9, 10, 11, 12, 13 }
 local ACTION_MESSAGE_IDS = { 2, 3, 4, 5, 6 }
 local ROW_ICON_POSITIONS = {
@@ -82,7 +82,7 @@ local function validManifest(manifest)
   if
     type(manifest) ~= "table"
     or manifest.schema ~= ApricornBoxAssetCache.SCHEMA
-    or manifest.messageBankId ~= 27
+    or manifest.messageBankId ~= 21
     or type(manifest.actionMessageIds) ~= "table"
     or #manifest.actionMessageIds ~= 5
     or type(manifest.flowMessageIds) ~= "table"

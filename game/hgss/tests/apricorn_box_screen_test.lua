@@ -7,7 +7,7 @@ local ApricornBoxScreenState = require("game.hgss.src.apricorn.ApricornBoxScreen
 local T = { tests = {} }
 
 local KEYS =
-  { "RED_APRICORN", "BLU_APRICORN", "YLW_APRICORN", "GRN_APRICORN", "PNK_APRICORN", "WHT_APRICORN", "BLK_APRICORN" }
+  { "RED_APRICORN", "YLW_APRICORN", "BLU_APRICORN", "GRN_APRICORN", "PNK_APRICORN", "WHT_APRICORN", "BLK_APRICORN" }
 local CENTERS = { { 27, 49 }, { 75, 65 }, { 27, 81 }, { 75, 97 }, { 27, 113 }, { 75, 129 }, { 27, 145 } }
 local WINDOWS = { { 5, 6 }, { 11, 8 }, { 5, 10 }, { 11, 12 }, { 5, 14 }, { 11, 16 }, { 5, 18 } }
 
@@ -88,7 +88,7 @@ local function manifest()
       offsetY = 0,
       charOffset = 31,
     },
-    messageBankId = 27,
+    messageBankId = 21,
     actionMessageIds = { 2, 3, 4, 5, 6 },
     flowMessageIds = { selection = 37, quantity = 38, confirmation = 39 },
     modeMessages = { 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48 },
@@ -157,16 +157,16 @@ local function dependencies(mode)
   local sounds = {}
   local provider = {
     acquireBank = function(_, bankId)
-      Assert.equal(bankId, 27)
+      Assert.equal(bankId, 21)
       return {}
     end,
     get = function(_, bankId, messageId)
-      Assert.equal(bankId, 27)
+      Assert.equal(bankId, 21)
       lookups[#lookups + 1] = messageId
       return { text = "Apricorn " .. messageId }
     end,
     releaseBank = function(_, bankId)
-      Assert.equal(bankId, 27)
+      Assert.equal(bankId, 21)
       releases = releases + 1
     end,
   }
@@ -194,6 +194,44 @@ local function dependencies(mode)
   return screen, function()
     return releases
   end, lookups, sounds
+end
+
+local function failedOpen(stage)
+  local events = { acquire = {}, release = {} }
+  local provider = {
+    acquireBank = function(_, bankId)
+      events.acquire[#events.acquire + 1] = bankId
+      if stage == "acquire" then
+        error("bank acquisition failed")
+      end
+      return {}
+    end,
+    get = function(_, bankId)
+      Assert.equal(bankId, 21)
+      if stage == "lookup" then
+        error("message lookup failed")
+      end
+      return { text = "Apricorn" }
+    end,
+    releaseBank = function(_, bankId)
+      events.release[#events.release + 1] = bankId
+    end,
+  }
+  local ok = pcall(ApricornBoxScreenState.new, {
+    mode = "browse",
+    service = { capture = function() return { apricorns = {} } end },
+    effect = function() end,
+    manifest = manifest(),
+    messageProvider = provider,
+    measureDisplay = function()
+      if stage == "construction" then
+        error("session composition failed")
+      end
+      return measurement(256, 192, "small")
+    end,
+  })
+  Assert.isFalse(ok, "the selected constructor stage fails")
+  return events
 end
 
 function T.tests.row_touch_selects_the_source_message_and_detail_and_disposal_releases_once()
@@ -226,6 +264,18 @@ function T.tests.display_measurement_is_resolved_again_on_each_fixed_update()
   Assert.isTrue(first ~= second, "a changed display measurement publishes a new presentation plan")
   Assert.equal(screen:status().animationTick, 1, "fixed updates advance source animation timing")
   screen:dispose()
+end
+
+function T.tests.message_bank_lease_is_released_once_for_each_failed_constructor_stage()
+  for _, stage in ipairs({ "acquire", "lookup", "construction" }) do
+    local events = failedOpen(stage)
+    Assert.deepEqual(events.acquire, { 21 }, stage .. " attempts only the manifest bank")
+    if stage == "acquire" then
+      Assert.deepEqual(events.release, {}, "a failed acquire never releases an unowned bank")
+    else
+      Assert.deepEqual(events.release, { 21 }, stage .. " releases the acquired lease once")
+    end
+  end
 end
 
 function T.tests.kurt_touch_select_delay_quantity_controls_and_confirmation_are_composed()

@@ -290,6 +290,12 @@ function T.member_with_a_missing_script_body_is_cold_before_its_summary()
   Assert.isTrue(found, "summary repair routes through the damaged member first")
 end
 
+function T.apricorn_box_job_requires_its_message_bank_member()
+  local dependencies, complete = ArtifactJobs.dependencies("apricorn-box", "global", {})
+  Assert.isTrue(complete, "the Box job has a final dependency list")
+  Assert.deepEqual(dependencies, { { kind = "message-bank", key = "21" } })
+end
+
 -- A cold leaf plus an injected staging failure keeps the previous live
 -- bytes, receipts and attestation untouched; nothing partial publishes.
 function T.failed_leaf_repair_keeps_the_last_good_publication()

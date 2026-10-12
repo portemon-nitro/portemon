@@ -129,10 +129,26 @@ local function render(scope, cacheFs, manifest, renderer, window, topologyName, 
   writeCapture(image, mode .. "-" .. topologyName .. ".png")
 end
 
+local function assertSourceLabels(cacheFs, manifest)
+  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+  local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+  local provider = FieldMessageProvider.new(cacheFs)
+  Assert.isTrue(cacheFs:exists(FieldMessageCache.bankPath(21)), "the focused Box import publishes bank 21")
+  local bank = assert(provider:acquireBank(manifest.messageBankId))
+  Assert.equal(bank.bankId, 21)
+  local labels = { "Red Apricorn", "Ylw Apricorn", "Blu Apricorn" }
+  for rowIndex, expected in ipairs(labels) do
+    local row = manifest.rows[rowIndex]
+    Assert.equal(provider:get(manifest.messageBankId, row.nameMessageId).text, expected)
+  end
+  provider:releaseBank(manifest.messageBankId)
+end
+
 function T.source_box_renders_browse_and_kurt_modes_for_each_layout(scope)
   local cacheFs = CacheFs.forVersion("heartgold")
   local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
   Assert.isTrue(ApricornBoxAssetCache.isManifestValid(manifest), "the prepared ROM supplies the strict source manifest")
+  assertSourceLabels(cacheFs, manifest)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs, graphics = love.graphics }))
   local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
   local window = scope:own(FieldWindowRenderer.new({
@@ -153,8 +169,10 @@ function T.source_box_renders_browse_and_kurt_modes_for_each_layout(scope)
   end
 end
 
-return GraphicsSmoke.suite(T, {
+local suite = GraphicsSmoke.suite(T, {
   tags = { "apricorn" },
   capabilities = { "derived_assets" },
-  derivedAssets = { "apricorn-box:global", "field-font:global", "field-ui:global" },
 })
+suite.metadata.derivedAssets = { "apricorn-box:global", "field-font:global", "field-ui:global" }
+
+return suite

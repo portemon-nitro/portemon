@@ -4,11 +4,22 @@ local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local ApricornBoxAssetCompiler = require("romdump.src.digest.ui.ApricornBoxAssetCompiler")
+local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local ApricornBoxSources = require("romdump.src.config.ApricornBoxSources")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
 local compiled = {}
+local ROW_KEYS = {
+  "RED_APRICORN",
+  "YLW_APRICORN",
+  "BLU_APRICORN",
+  "GRN_APRICORN",
+  "PNK_APRICORN",
+  "WHT_APRICORN",
+  "BLK_APRICORN",
+}
+local ROW_LABELS = { "Red Apricorn", "Ylw Apricorn", "Blu Apricorn", "Grn Apricorn", "Pnk Apricorn", "Wht Apricorn", "Blk Apricorn" }
 
 local function bundleFor(romFs, versionId)
   if compiled[versionId] == nil then
@@ -19,6 +30,10 @@ end
 
 function T.box_panes_and_row_animation_frames_are_source_backed(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
+  Assert.equal(bundle.manifest.messageBankId, 21)
+  local session = FieldMessageCompiler.newSession(romFs)
+  local messageBundle = assert(session:compileBank(21))
+  session:close()
   local paneNames = { "upper", "lower" }
   for _, paneName in ipairs(paneNames) do
     local pane = bundle.manifest[paneName]
@@ -50,6 +65,9 @@ function T.box_panes_and_row_animation_frames_are_source_backed(romFs, versionId
   end
   Assert.isTrue(menuVisible, "NARC165 provides visible native rounded list-menu art")
   for rowIndex, row in ipairs(bundle.manifest.rows) do
+    Assert.equal(row.apricornKey, ROW_KEYS[rowIndex], "visible row has its native Apricorn identity")
+    Assert.equal(row.nameMessageId, rowIndex + 6, "visible row points to its native source label")
+    Assert.equal(messageBundle.bank.messages[row.nameMessageId].text, ROW_LABELS[rowIndex])
     local source = ApricornBoxSources.geometry.rowIcons[rowIndex]
     Assert.equal(row.icon.x, source.x)
     Assert.equal(row.icon.y, source.y)

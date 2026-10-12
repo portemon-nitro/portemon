@@ -8,7 +8,7 @@ local T = {}
 local ROM_SHA1 = string.rep("a", 40)
 local DEPENDENCY_SHA1 = string.rep("b", 40)
 local ROW_KEYS =
-  { "RED_APRICORN", "BLU_APRICORN", "YLW_APRICORN", "GRN_APRICORN", "PNK_APRICORN", "WHT_APRICORN", "BLK_APRICORN" }
+  { "RED_APRICORN", "YLW_APRICORN", "BLU_APRICORN", "GRN_APRICORN", "PNK_APRICORN", "WHT_APRICORN", "BLK_APRICORN" }
 local ICON_POSITIONS = { { 27, 49 }, { 75, 65 }, { 27, 81 }, { 75, 97 }, { 27, 113 }, { 75, 129 }, { 27, 145 } }
 local COUNT_WINDOWS = { { 5, 6 }, { 11, 8 }, { 5, 10 }, { 11, 12 }, { 5, 14 }, { 11, 16 }, { 5, 18 } }
 
@@ -92,7 +92,7 @@ local function readyCache()
       offsetY = 0,
       states = cursorStates(),
     },
-    messageBankId = 27,
+    messageBankId = 21,
     actionMessageIds = { 2, 3, 4, 5, 6 },
     flowMessageIds = { selection = 37, quantity = 38, confirmation = 39 },
     modeMessages = { 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48 },

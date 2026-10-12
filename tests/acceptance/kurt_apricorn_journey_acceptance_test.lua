@@ -302,6 +302,42 @@ local function selectKurtOrder(game, host, apricornKey, quantity)
   game.runtime:releaseAction()
 end
 
+local function selectKurtOrderAtRow(game, host, targetIndex)
+  local status = assert(host:status(), "Kurt's source selector publishes its live status")
+  Assert.equal(status.mode, "kurt_select", "the source script opens the shared selector in Kurt mode")
+  while status.selectedIndex ~= targetIndex do
+    local direction = status.selectedIndex < targetIndex and "south" or "north"
+    tapDirection(game, direction)
+    status = assert(host:status(), "Kurt's source selector stays open during color selection")
+  end
+  game.runtime:pressAction()
+  game:step()
+  game.runtime:releaseAction()
+  status = assert(host:status(), "confirming the focused row starts native row selection")
+  Assert.equal(status.phase, "selection_delay")
+  for _ = 1, 8 do
+    if status.phase == "actions" then
+      break
+    end
+    game:step()
+    status = assert(host:status(), "Kurt's row transition keeps the selector open")
+  end
+  Assert.equal(status.phase, "actions", "the selected row finishes its native cursor delay")
+  game.runtime:pressAction()
+  game:step()
+  game.runtime:releaseAction()
+  status = assert(host:status(), "selecting the Apricorn opens quantity selection")
+  Assert.equal(status.phase, "quantity")
+  game.runtime:pressAction()
+  game:step()
+  game.runtime:releaseAction()
+  status = assert(host:status(), "the selected quantity opens the native confirmation prompt")
+  Assert.equal(status.phase, "confirm")
+  game.runtime:pressAction()
+  game:step()
+  game.runtime:releaseAction()
+end
+
 finishKurtConversation = function(game)
   for _ = 1, 2400 do
     local errors = game:recordsForScript(KURT_SCRIPT, "script.error")
@@ -446,6 +482,42 @@ function T.tests.kurt_order_spends_once_and_the_matching_ball_is_ready_after_mid
       "pickup leaves the daily making flag clear after rollover"
     )
   end, { date = date })
+end
+
+function T.tests.yellow_and_blue_rows_keep_their_native_apricorn_and_ball_identities()
+  local cases = {
+    { rowIndex = 2, apricornKey = "YLW_APRICORN", otherKey = "BLU_APRICORN", ballKey = "MOON_BALL" },
+    { rowIndex = 3, apricornKey = "BLU_APRICORN", otherKey = "YLW_APRICORN", ballKey = "LURE_BALL" },
+  }
+  for _, case in ipairs(cases) do
+    local date = { year = 2000, month = 1, day = 1, hour = 12, minute = 0, second = 0 }
+    withGame(function(game)
+      local mart = assert(game.runtime.martService, "the production field runtime owns Apricorn stock and Kurt's order")
+      talkToKurt(game)
+      local host = advanceToKurtSelector(game)
+      selectKurtOrderAtRow(game, host, case.rowIndex)
+      game:advanceUntil("Kurt accepts the selected Apricorn row", function()
+        return mart:pendingKurt() ~= nil
+      end, 1200)
+
+      Assert.deepEqual(
+        mart:pendingKurt(),
+        { apricornKey = case.apricornKey, quantity = 1 },
+        "the visible source row submits its matching Apricorn"
+      )
+      Assert.equal(mart:apricornQuantity(case.apricornKey), 2, "the selected Apricorn alone is deducted")
+      Assert.equal(mart:apricornQuantity(case.otherKey), 3, "the adjacent Yellow/Blue stock remains untouched")
+
+      finishKurtConversation(game)
+      date.day = 2
+      game:restart()
+      game:waitForFieldEntry()
+      local bag = assert(game.runtime.bagService, "the reloaded field runtime owns ordinary Ball grants")
+      talkToKurt(game)
+      finishKurtPickup(game)
+      Assert.equal(bag:quantity(case.ballKey), 1, "the selected native color produces its matching Ball")
+    end, { date = date })
+  end
 end
 
 return T

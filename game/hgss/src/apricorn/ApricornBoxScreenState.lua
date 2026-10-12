@@ -14,12 +14,11 @@ local ApricornBoxInterface = require("game.hgss.src.field.ApricornBoxInterface")
 ---@field private _actionLabels string[]
 ---@field private _flowMessages table<string, string>
 ---@field private _messageProvider FieldMessageProvider
+---@field private _messageBankId integer
 ---@field private _animationTick integer
 ---@field private _disposed boolean
 local ApricornBoxScreenState = {}
 ApricornBoxScreenState.__index = ApricornBoxScreenState
-
-local MESSAGE_BANK = 27
 
 ---@param opts table<string, unknown>
 ---@return ApricornBoxScreenState
@@ -27,8 +26,9 @@ function ApricornBoxScreenState.new(opts)
   assert(type(opts) == "table", "Apricorn Box screen options are records")
   local manifest = assert(opts.manifest, "Apricorn Box screen requires its generated manifest")
   assert(ApricornBoxAssetCache.isManifestValid(manifest), "Apricorn Box screen requires a valid generated manifest")
+  local messageBankId = manifest.messageBankId
   local messageProvider = assert(opts.messageProvider, "Apricorn Box screen requires the field message provider")
-  local bank, bankErr = messageProvider:acquireBank(MESSAGE_BANK)
+  local bank, bankErr = messageProvider:acquireBank(messageBankId)
   assert(bank ~= nil, "Apricorn Box source message bank is ready: " .. tostring(bankErr))
   local names = {}
   local actionLabels = {}
@@ -48,7 +48,7 @@ function ApricornBoxScreenState.new(opts)
     end
   end)
   if not loaded then
-    messageProvider:releaseBank(MESSAGE_BANK)
+    messageProvider:releaseBank(messageBankId)
     error(loadErr, 0)
   end
   local controller
@@ -76,7 +76,7 @@ function ApricornBoxScreenState.new(opts)
     if session ~= nil then
       session:dispose()
     end
-    messageProvider:releaseBank(MESSAGE_BANK)
+    messageProvider:releaseBank(messageBankId)
     error(constructionErr, 0)
   end
   return setmetatable({
@@ -88,6 +88,7 @@ function ApricornBoxScreenState.new(opts)
     _actionLabels = actionLabels,
     _flowMessages = flowMessages,
     _messageProvider = messageProvider,
+    _messageBankId = messageBankId,
     _animationTick = 0,
     _disposed = false,
   }, ApricornBoxScreenState)
@@ -150,7 +151,7 @@ function ApricornBoxScreenState:dispose()
   self._disposed = true
   self._session:dispose()
   self._controller:dispose()
-  self._messageProvider:releaseBank(MESSAGE_BANK)
+  self._messageProvider:releaseBank(self._messageBankId)
 end
 
 return ApricornBoxScreenState

@@ -39,6 +39,8 @@ local function sourceReferenceBankIds()
   ids[445] = true
   ids[40] = true
   ids[265] = true
+  -- The Apricorn Box source config addresses its labels in msg_0021.gmm.
+  ids[21] = true
   -- Retail blackout.c reads this global recovery message bank outside script
   -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
   ids[203] = true
@@ -193,6 +195,8 @@ function T.source_references_form_one_sorted_bank_set()
   expected[445] = true
   expected[40] = true
   expected[265] = true
+  -- The Apricorn Box source config addresses its labels in msg_0021.gmm.
+  expected[21] = true
   -- Retail blackout.c reads this global recovery message bank outside script
   -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
   expected[203] = true

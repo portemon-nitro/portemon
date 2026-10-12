@@ -10,6 +10,15 @@ local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
 local bundles = {}
+local ROW_KEYS = {
+  "RED_APRICORN",
+  "YLW_APRICORN",
+  "BLU_APRICORN",
+  "GRN_APRICORN",
+  "PNK_APRICORN",
+  "WHT_APRICORN",
+  "BLK_APRICORN",
+}
 
 local function bundleFor(romFs, versionId)
   if bundles[versionId] == nil then
@@ -82,6 +91,11 @@ function T.compiler_emits_source_panes_rows_and_the_action_menu_atlas(romFs, ver
   Assert.equal(bundle.manifest.lower.width, 256)
   Assert.equal(bundle.manifest.lower.height, 192)
   Assert.equal(#bundle.manifest.rows, 7)
+  Assert.equal(bundle.manifest.messageBankId, 21)
+  for rowIndex, row in ipairs(bundle.manifest.rows) do
+    Assert.equal(row.apricornKey, ROW_KEYS[rowIndex], "the source row retains its native inventory identity")
+    Assert.equal(row.nameMessageId, rowIndex + 6, "the native row uses its matching source label")
+  end
   for _, sequenceId in ipairs({ 0, 3, 4, 5 }) do
     Assert.isTrue(#bundle.manifest.selectionCursor.states[sequenceId].frames > 0, "source cursor state compiles")
   end
