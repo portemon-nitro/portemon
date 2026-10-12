@@ -444,6 +444,19 @@ function RadioProgram:endProgram()
   self._suspended = nil
 end
 
+-- Closes the tuned station the way leaving every station does: the show
+-- tears down and the source music stop clears the radio latch at once.
+-- Idempotent.
+function RadioProgram:closeStation()
+  self:_clearActive()
+  self._suspended = nil
+  local audio = self._audio
+  assert(type(audio) == "table", "station teardown keeps its audio facade")
+  local stopRadio = audio.stopRadio
+  assert(type(stopRadio) == "function", "the audio facade stops radio sequences")
+  stopRadio(audio)
+end
+
 -- Releases the dispatcher exactly once. Ending and disposal never stop
 -- surviving audio.
 function RadioProgram:dispose()

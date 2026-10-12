@@ -13,6 +13,7 @@
 
 local EncounterSelection = require("libs.hgss.src.encounters.EncounterSelection")
 local Errors = require("libs.errors.src.Errors")
+local HgssEncounterRate = require("libs.hgss.src.encounters.HgssEncounterRate")
 local Stats = require("libs.mons.src.gen4.Stats")
 
 ---@class HgssEncounterService
@@ -46,6 +47,41 @@ local FORCED_MOVEMENTS = { forced = true, forced_movement = true }
 local SCRIPTED_MOVEMENTS = { scripted = true, scripted_movement = true }
 
 local LEAD_ABILITIES = { synchronize = true, intimidate = true }
+
+-- The closed live-music effect vocabulary the request modifiers carry.
+-- Species replacement reads hoenn/sinnoh; the rate stage reads
+-- march/lullaby; every other effect tunes neither slots nor rates.
+local RADIO_EFFECTS = {
+  none = true,
+  march = true,
+  lullaby = true,
+  hoenn = true,
+  sinnoh = true,
+  unown = true,
+  pokeflute = true,
+}
+
+-- Maps one live-music effect to the catalog radio identity: only regional
+-- music replaces species; every other effect resolves silence.
+---@param effect string
+---@return string
+local function catalogRadioForEffect(effect)
+  if effect == "hoenn" or effect == "sinnoh" then
+    return effect
+  end
+  return "none"
+end
+
+-- Maps one live-music effect to the rate-stage music fact: only march and
+-- lullaby shift the staged rate; every other effect stages silence.
+---@param effect string
+---@return string
+local function rateMusicForEffect(effect)
+  if effect == "march" or effect == "lullaby" then
+    return effect
+  end
+  return "none"
+end
 
 ---@param value unknown
 ---@return unknown
@@ -173,6 +209,11 @@ local function checkModifiers(modifiers)
   end
   if modifiers.radio ~= nil and type(modifiers.radio) ~= "string" then
     Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter radio state must be a string", {})
+  end
+  if type(modifiers.radio) == "string" and RADIO_EFFECTS[modifiers.radio] ~= true then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter radio effect " .. tostring(modifiers.radio) .. " is unknown", {
+      radio = modifiers.radio,
+    })
   end
   if modifiers.rod ~= nil and type(modifiers.rod) ~= "string" then
     Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter rod state must be a string", {})
@@ -393,10 +434,12 @@ function HgssEncounterService:_attemptTable(context, stream, attemptId)
   assert(type(modifiers) == "table", "table attempts read the modifier record")
   local method = context.method
   assert(type(method) == "string", "table attempts read the encounter method")
+  local radioEffect = modifiers.radio or "none"
+  assert(type(radioEffect) == "string", "table attempts read the music effect")
   local resolved = self._catalog:tableFor(context.mapId, {
     timeOfDay = context.timeOfDay,
     swarm = modifiers.swarm == true,
-    radio = modifiers.radio or "none",
+    radio = catalogRadioForEffect(radioEffect),
     game = self._game,
     rod = modifiers.rod,
   })
@@ -404,7 +447,11 @@ function HgssEncounterService:_attemptTable(context, stream, attemptId)
     timeOfDay = context.timeOfDay,
     rod = modifiers.rod,
   })
-  local rate = selected.rate
+  local rate = HgssEncounterRate.compute({
+    baseRate = selected.rate,
+    radio = rateMusicForEffect(radioEffect),
+    method = method,
+  })
   local leadAbility = modifiers.leadAbility
   if leadAbility == "intimidate" then
     rate = math.floor(rate / 2)

@@ -235,9 +235,16 @@ function T.table_resolution_applies_replacements_at_lookup()
   local hoenn = catalog:tableFor(11, { timeOfDay = "day", swarm = false, radio = "hoenn", game = "soulsilver" })
   Assert.equal(hoenn.day[3].species, "SHEDINJA", "hoenn music replaces the third and fourth slots")
   Assert.equal(hoenn.day[4].species, "SHEDINJA")
-  Assert.equal(hoenn.day[5].species, "EEVEE")
+  -- Native radio music replaces two pairs: the first species covers the
+  -- third and fourth slots while the second covers the fifth and sixth,
+  -- with levels and weights staying on the slots.
+  Assert.equal(hoenn.day[5].species, "TOTODILE", "hoenn music replaces the fifth and sixth slots")
+  Assert.equal(hoenn.day[6].species, "TOTODILE")
   local sinnoh = catalog:tableFor(11, { timeOfDay = "day", swarm = false, radio = "sinnoh", game = "soulsilver" })
   Assert.equal(sinnoh.day[3].species, "EEVEE", "sinnoh music replaces the same music slots")
+  Assert.equal(sinnoh.day[4].species, "EEVEE")
+  Assert.equal(sinnoh.day[5].species, "CHIKORITA", "sinnoh music replaces the fifth and sixth slots")
+  Assert.equal(sinnoh.day[6].species, "CHIKORITA")
   Assert.equal(#plain.day, 12, "lookup preserves the twelve ordered slots")
   local fished = catalog:tableFor(14, { timeOfDay = "day", rod = "good_rod", game = "soulsilver" })
   Assert.equal(fished.goodRod[4].species, "EEVEE", "night fishing replaces the good-rod slot")

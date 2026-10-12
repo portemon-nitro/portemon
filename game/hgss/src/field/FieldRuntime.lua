@@ -2523,6 +2523,60 @@ function FieldRuntime:attemptEncounter(context)
   return result
 end
 
+-- The current semantic radio music effect behind live encounters and the
+-- script music query: the audio latch through the one shared
+-- sequence-to-effect mapping. Frame-read-only; never restarts, resumes,
+-- or polls audio. Without audio there is no effect.
+---@return string the semantic music effect
+function FieldRuntime:_currentRadioEffect()
+  local audio = self.audio
+  local latch = nil
+  if type(audio) == "table" and type(audio.currentRadioSequence) == "function" then
+    latch = audio:currentRadioSequence()
+  end
+  local PokegearRadioEffects = require("game.hgss.src.pokegear.PokegearRadioEffects")
+  return PokegearRadioEffects.fromSequence(latch)
+end
+
+-- Answers the source radio script query for one semantic effect: exact
+-- comparison against the retained audio latch on the calling tick. The
+-- query mutates no world or actor state. This is the script-service
+-- boundary the opcode adapter consumes; encounters read the same mapping
+-- through preparation.
+---@param effect string the semantic music effect under test
+---@return boolean
+function FieldRuntime:radioMusicIs(effect)
+  assert(type(effect) == "string", "radio music queries compare a semantic effect")
+  return self:_currentRadioEffect() == effect
+end
+
+-- Whether the committed step swarms: the outbreak-active flag stays with
+-- the encounter owner while the outbreak identity is the shared companion
+-- seed resolved through the same lookup the broadcast announces, so field
+-- encounters can never swarm a different outbreak. Per-map applicability
+-- stays with the catalog's active-replacement gate. Without owners there
+-- is no swarm.
+---@return boolean
+function FieldRuntime:_stepSwarmActive()
+  local roamers = self.roamerState
+  if type(roamers) ~= "table" or type(roamers.isSwarmActive) ~= "function" then
+    return false
+  end
+  if roamers:isSwarmActive() ~= true then
+    return false
+  end
+  local gear = self.pokegearState
+  if type(gear) ~= "table" or type(gear.readDailyIdentity) ~= "function" then
+    return false
+  end
+  local identity = gear:readDailyIdentity()
+  if type(identity) ~= "table" or type(identity.outbreakSeed) ~= "number" then
+    return false
+  end
+  local RadioWorldContext = require("game.hgss.src.pokegear.RadioWorldContext")
+  return RadioWorldContext.swarmInfoFromSeed(identity.outbreakSeed) ~= nil
+end
+
 -- The committed-step encounter boundary, once per fixed tick: at most one
 -- fresh unclaimed completed step is considered, after that step's warp,
 -- coordinate-script, and map-boundary arbitration already ran inside the
@@ -2574,7 +2628,10 @@ function FieldRuntime:_consumeCommittedStep()
     mapId = memberId,
     method = method,
     movement = "step",
-    modifiers = {},
+    modifiers = {
+      radio = self:_currentRadioEffect(),
+      swarm = self:_stepSwarmActive(),
+    },
     environment = {},
     timeOfDay = self:_encounterTimeOfDay(),
     playerProfile = self.playerData.profile,

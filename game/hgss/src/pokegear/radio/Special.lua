@@ -37,6 +37,13 @@ local ROCKET_SEQUENCE = "radio.rocket"
 local MAHOGANY_TITLE_BANK, MAHOGANY_TITLE_ENTRY = 510, 1
 local MAHOGANY_LINES_BANK, MAHOGANY_FIRST_ENTRY, MAHOGANY_LINE_COUNT = 510, 2, 2
 local MAHOGANY_SEQUENCE = "radio.mahogany"
+
+-- The latched audio sequence identities behind the flute and unown shows.
+-- Gameplay effects and the script music query resolve through these, never
+-- through the show keys above.
+Special.FLUTE_SEQUENCE = FLUTE_SEQUENCE
+Special.UNOWN_SEQUENCE = UNOWN_SEQUENCE
+
 local COMMERCIAL_TITLE_BANK, COMMERCIAL_TITLE_ENTRY = 511, 1
 local COMMERCIAL_LINES_BANK, COMMERCIAL_FIRST_ENTRY, COMMERCIAL_LINE_COUNT = 511, 2, 2
 local COMMERCIAL_SEQUENCE = "radio.commercial"

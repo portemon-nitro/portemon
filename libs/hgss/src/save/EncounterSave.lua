@@ -1,10 +1,12 @@
 -- Semantic encounter persistence: the versioned encounter bucket carrying
--- authoritative counters, the active radio/swarm context, and the roamer
--- records. Validation is strict and reference-based: malformed buckets and
--- missing selected species or maps fail with the exact reference, while
--- unrelated catalog growth stays compatible and whole encounter tables
--- never persist. A missing bucket restores to the defined source initial
--- state. Pure domain module: no love dependency.
+-- authoritative counters, the swarm context, and the roamer records.
+-- Validation is strict and reference-based: malformed buckets and missing
+-- selected species or maps fail with the exact reference, while unrelated
+-- catalog growth stays compatible and whole encounter tables never persist.
+-- A stored radio string is obsolete legacy: it migrates to silence and new
+-- captures omit it, so playback authority can never resume from a save. A
+-- missing bucket restores to the defined source initial state. Pure domain
+-- module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
 
@@ -79,7 +81,9 @@ local function checkShape(bucket)
   if type(bucket.swarm) ~= "boolean" then
     fail("encounter swarm state must be a boolean", {})
   end
-  if type(bucket.radio) ~= "string" or bucket.radio == "" then
+  -- The radio key is obsolete: legacy buckets may still carry a music
+  -- string, but only a string ever validates. New captures omit the key.
+  if bucket.radio ~= nil and (type(bucket.radio) ~= "string" or bucket.radio == "") then
     fail("encounter radio state must be a non-empty string", {})
   end
   if type(bucket.roamers) ~= "table" then
@@ -146,18 +150,22 @@ end
 
 -- Validates a bucket against the selected references, returning its
 -- canonical detached record. Unrelated reference growth stays compatible;
--- missing selected references fail naming the reference.
+-- missing selected references fail naming the reference. Legacy radio
+-- strings migrate to silence here: the obsolete value carries no playback
+-- authority past this boundary.
 ---@param bucket unknown
 ---@param refs { species: table<string, boolean>, maps: table<integer, boolean> }
 ---@return table<string, unknown>
 function EncounterSave.validate(bucket, refs)
   local shaped = checkShape(bucket)
   checkReferences(shaped, refs)
+  shaped.radio = "none"
   return shaped
 end
 
 -- Captures a bucket from a state owner exposing the persistable encounter
--- fields. Only authoritative counters, context, and roamer records persist.
+-- fields. Only authoritative counters, context, and roamer records
+-- persist; the obsolete radio key is never written.
 ---@param state table<string, unknown>
 ---@return table<string, unknown>
 function EncounterSave.capture(state)
@@ -178,7 +186,6 @@ function EncounterSave.capture(state)
     steps = capture.steps,
     repelSteps = capture.repelSteps,
     swarm = capture.swarm,
-    radio = capture.radio,
     roamers = capture.roamers,
   })
 end
