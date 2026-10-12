@@ -149,4 +149,57 @@ function T.header_sets_validate_bindings_and_reject_bad_transfers()
   )
 end
 
+-- Map location and flypoint records keep their five identities distinct
+-- across outdoor, indoor, fallback, and special roles, and every
+-- flypoint reference resolves. Unknown versions fail loudly and records
+-- detach from the producer tables.
+function T.map_location_and_flypoint_records_cover_their_roles()
+  local PokegearSources = require("romdump.src.config.PokegearSources")
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local locations = PokegearSources.mapLocationRecords(versionId)
+    Assert.isTrue(#locations > 0, versionId .. " compiles a non-empty location table")
+    local flypoints = PokegearSources.mapFlypointRecords(versionId)
+    Assert.isTrue(#flypoints > 0, versionId .. " compiles a non-empty flypoint table")
+    local flyKeys = {}
+    for _, fly in ipairs(flypoints) do
+      Assert.notNil(fly.key, "flypoints carry semantic keys")
+      flyKeys[fly.key] = true
+    end
+    local roles = { outdoor = 0, indoor = 0, fallback = 0 }
+    local specials = {}
+    for _, entry in ipairs(locations) do
+      for _, role in ipairs({ "fieldMap", "matrix", "location", "section", "flypoint" }) do
+        Assert.notNil(entry[role], versionId .. " locations distinguish their " .. role .. " identity")
+      end
+      Assert.notNil(entry.key, "locations carry semantic keys")
+      Assert.notNil(entry.region, "locations carry their region")
+      if type(entry.flypoint) == "string" then
+        Assert.isTrue(flyKeys[entry.flypoint] == true, "location flypoints reference the compiled table")
+      end
+      if entry.special ~= nil then
+        specials[entry.special] = true
+      elseif entry.explicitX == nil then
+        roles.outdoor = roles.outdoor + 1
+      elseif entry.explicitX == 0 and entry.explicitY == 0 then
+        roles.fallback = roles.fallback + 1
+      else
+        roles.indoor = roles.indoor + 1
+      end
+    end
+    Assert.isTrue(roles.outdoor > 0, "outdoor main-matrix maps project without header coordinates")
+    Assert.isTrue(roles.indoor > 0, "indoor maps keep explicit header coordinates")
+    Assert.isTrue(roles.fallback > 0, "zero-coordinate maps take the exterior fallback")
+    for _, special in ipairs({ "mt-silver", "indigo", "sinjoh", "aqua" }) do
+      Assert.isTrue(specials[special] == true, "the " .. special .. " special keeps its tabled coordinates")
+    end
+  end
+  Assert.throws(function()
+    PokegearSources.mapLocationRecords("platinum")
+  end, "an unsupported version never compiles an empty map")
+  local first = PokegearSources.mapLocationRecords("heartgold")
+  first[1].matrix.x = -1
+  local second = PokegearSources.mapLocationRecords("heartgold")
+  Assert.isTrue(second[1].matrix.x ~= -1, "location records detach from the producer table")
+end
+
 return { tests = T }

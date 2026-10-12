@@ -296,6 +296,213 @@ PokegearSources.broadcastText = {
   staticParameter = 70,
 }
 
+-- Region-map location and flypoint records for the compiled map catalog.
+-- Identities stay in five distinct roles because several places share a
+-- label: the field map symbol, the world-matrix anchor, the displayed
+-- location, the map section, and the flypoint. Outdoor main-matrix maps
+-- carry a matrix anchor in world coordinates and no header coordinates;
+-- their world cell is the anchor divided by thirty-two. Indoor and cave
+-- maps carry their explicit header world coordinates verbatim from the
+-- frozen map-header reference (romdump/src/reference/hgss/maps.lua); a
+-- map with both header coordinates zero resolves through the
+-- last-exterior fallback instead. The four special locations keep their
+-- tabled source coordinates: Mt Silver and Indigo resolve through the
+-- header coordinates tabled for their areas rather than matrix division,
+-- and the Sinjoh and S.S. Aqua maps keep their tabled coordinates
+-- regardless of exterior state. Matrix anchors for outdoor maps are the
+-- destination-global arrival coordinates transcribed in
+-- FieldMoveSources.SPAWN_DESTINATIONS; indoor matrix anchors repeat the
+-- explicit coordinates times thirty-two so the anchor divided by
+-- thirty-two stays the header cell. mapRef is the numeric map-header id
+-- from the same frozen reference, letting runtime marker projections
+-- match encounter map facts without parsing ROM data. Region follows the
+-- header region field. Flypoint keys name the retail fly destinations
+-- among these locations; other locations carry no flypoint.
+PokegearSources.mapVersions = { heartgold = true, soulsilver = true }
+
+PokegearSources.mapLocations = {
+  {
+    key = "hg.place.new-bark",
+    fieldMap = "MAP_NEW_BARK",
+    mapRef = 60,
+    matrix = { x = 695, y = 397 },
+    location = "hg.location.new-bark-town",
+    section = "hg.section.new-bark-town",
+    region = "johto",
+    flypoint = "hg.flypoint.new-bark",
+  },
+  {
+    key = "hg.place.violet",
+    fieldMap = "MAP_VIOLET",
+    mapRef = 73,
+    matrix = { x = 497, y = 272 },
+    location = "hg.location.violet-city",
+    section = "hg.section.violet-city",
+    region = "johto",
+    flypoint = "hg.flypoint.violet",
+  },
+  {
+    key = "hg.place.route-26",
+    fieldMap = "MAP_ROUTE_26",
+    mapRef = 30,
+    matrix = { x = 909, y = 297 },
+    location = "hg.location.route-26",
+    section = "hg.section.route-26",
+    region = "kanto",
+    flypoint = false,
+  },
+  {
+    key = "hg.place.pallet",
+    fieldMap = "MAP_PALLET",
+    mapRef = 49,
+    matrix = { x = 1033, y = 364 },
+    location = "hg.location.pallet-town",
+    section = "hg.section.pallet-town",
+    region = "kanto",
+    flypoint = "hg.flypoint.pallet",
+  },
+  {
+    key = "hg.place.mount-silver",
+    fieldMap = "MAP_MOUNT_SILVER",
+    mapRef = 90,
+    matrix = { x = 820, y = 266 },
+    location = "hg.location.mount-silver",
+    section = "hg.section.mount-silver",
+    region = "johto",
+    flypoint = "hg.flypoint.mount-silver",
+    explicitX = 25,
+    explicitY = 8,
+    special = "mt-silver",
+  },
+  {
+    key = "hg.place.indigo-plateau",
+    fieldMap = "MAP_INDIGO_PLATEAU",
+    mapRef = 58,
+    matrix = { x = 912, y = 201 },
+    location = "hg.location.indigo-plateau",
+    section = "hg.section.indigo-plateau",
+    region = "kanto",
+    flypoint = "hg.flypoint.indigo-plateau",
+    explicitX = 28,
+    explicitY = 6,
+    special = "indigo",
+  },
+  {
+    key = "hg.place.sinjoh-ruins",
+    fieldMap = "MAP_SINJOH_RUINS_EXTERIOR",
+    mapRef = 521,
+    matrix = { x = 640, y = 32 },
+    location = "hg.location.sinjoh-ruins",
+    section = "hg.section.sinjoh-ruins",
+    region = "johto",
+    flypoint = false,
+    explicitX = 20,
+    explicitY = 1,
+    special = "sinjoh",
+  },
+  {
+    key = "hg.place.ss-aqua",
+    fieldMap = "MAP_SS_AQUA_1F",
+    mapRef = 307,
+    matrix = { x = 800, y = 448 },
+    location = "hg.location.ss-aqua",
+    section = "hg.section.ss-aqua",
+    region = "johto",
+    flypoint = false,
+    explicitX = 25,
+    explicitY = 14,
+    special = "aqua",
+  },
+  {
+    key = "hg.place.new-bark-player-house",
+    fieldMap = "MAP_NEW_BARK_PLAYER_HOUSE_1F",
+    mapRef = 63,
+    matrix = { x = 672, y = 384 },
+    location = "hg.location.new-bark-town",
+    section = "hg.section.new-bark-town",
+    region = "johto",
+    flypoint = false,
+    explicitX = 21,
+    explicitY = 12,
+  },
+  {
+    key = "hg.place.ecruteak-gym",
+    fieldMap = "MAP_ECRUTEAK_GYM",
+    mapRef = 80,
+    matrix = { x = 352, y = 160 },
+    location = "hg.location.ecruteak-city",
+    section = "hg.section.ecruteak-city",
+    region = "johto",
+    flypoint = false,
+    explicitX = 11,
+    explicitY = 5,
+  },
+  {
+    key = "hg.place.league-wifi-room",
+    fieldMap = "MAP_POKEMON_LEAGUE_ENTRANCE_WIFI_ROOM",
+    mapRef = 539,
+    matrix = { x = 896, y = 192 },
+    location = "hg.location.pokemon-league",
+    section = "hg.section.pokemon-league",
+    region = "johto",
+    flypoint = false,
+    explicitX = 0,
+    explicitY = 0,
+  },
+}
+
+PokegearSources.mapFlypoints = {
+  { key = "hg.flypoint.new-bark" },
+  { key = "hg.flypoint.violet" },
+  { key = "hg.flypoint.pallet" },
+  { key = "hg.flypoint.mount-silver" },
+  { key = "hg.flypoint.indigo-plateau" },
+}
+
+-- Version-qualified catalog location records for one game version. Both
+-- versions share the same geography; the version is still validated so an
+-- unsupported version fails loudly instead of compiling an empty map.
+-- Returns detached copies; mutating them never touches the producer table.
+---@param versionId string
+---@return table<integer, table<string, unknown>>
+function PokegearSources.mapLocationRecords(versionId)
+  assert(type(versionId) == "string" and versionId ~= "", "map location records need a game version")
+  assert(
+    PokegearSources.mapVersions[versionId] == true,
+    "map location records name a supported game version, got " .. versionId
+  )
+  local records = {}
+  for _, entry in ipairs(PokegearSources.mapLocations) do
+    local copy = { matrix = { x = entry.matrix.x, y = entry.matrix.y } }
+    for key, value in pairs(entry) do
+      if key ~= "matrix" then
+        copy[key] = value
+      end
+    end
+    records[#records + 1] = copy
+  end
+  assert(#records > 0, "map location records cover the region map for " .. versionId)
+  return records
+end
+
+-- Version-qualified catalog flypoint records for one game version.
+-- Returns detached copies; mutating them never touches the producer table.
+---@param versionId string
+---@return table<integer, table<string, string>>
+function PokegearSources.mapFlypointRecords(versionId)
+  assert(type(versionId) == "string" and versionId ~= "", "map flypoint records need a game version")
+  assert(
+    PokegearSources.mapVersions[versionId] == true,
+    "map flypoint records name a supported game version, got " .. versionId
+  )
+  local records = {}
+  for _, entry in ipairs(PokegearSources.mapFlypoints) do
+    records[#records + 1] = { key = entry.key }
+  end
+  assert(#records > 0, "map flypoint records cover the fly destinations for " .. versionId)
+  return records
+end
+
 -- Version-qualified catalog show records for one game version, in source
 -- program order. Unknown versions fail loudly; a version carrying no
 -- show is a producer error, never an empty broadcast band.

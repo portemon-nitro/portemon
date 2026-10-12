@@ -55,6 +55,110 @@ local function splitKey(key)
     fact --[[@as string]]
 end
 
+-- Builds the source-normalized map context for the region map from the
+-- actual field map and player reads plus the compiled location table:
+-- the field map symbol resolves its displayed location, region, and
+-- special mode through the catalog, never through display labels or
+-- cached menu views. Matrix coordinates are the live world player
+-- position. Header-derived coordinates travel inside the compiled
+-- location record, which the projection owner reads; live
+-- last-exterior and special-spawn travel facts have no room in the
+-- normalized context and stay with their travel owner. The unlocked
+-- tier reuses the saved map progression fact, starting at Johto when
+-- unset. Feature-local: existing world owners stay authoritative and no
+-- long-lived caches are kept.
+---@param field { mapSymbol: string, playerX: number, playerZ: number, playerGender: string }
+---@param catalog table<string, unknown> the borrowed compiled map catalog
+---@return { fieldMap: string, location: string, matrixX: number, matrixY: number, region: string, unlockLevel: integer, specialMode: string?, playerGender: string }
+function PhoneWorldContext:mapInit(field, catalog)
+  assert(type(field) == "table", "map initialization reads the field map, header, and travel facts")
+  assert(type(field.mapSymbol) == "string" and field.mapSymbol ~= "", "map initialization names the actual field map")
+  assert(
+    type(field.playerX) == "number" and type(field.playerZ) == "number",
+    "map initialization carries the world player position"
+  )
+  assert(
+    type(field.playerGender) == "string" and field.playerGender ~= "",
+    "map initialization names the player gender"
+  )
+  assert(
+    type(catalog) == "table" and type(catalog.locations) == "table",
+    "map initialization borrows its location table"
+  )
+  local record = nil
+  for _, entry in ipairs(catalog.locations) do
+    if type(entry) == "table" and entry.fieldMap == field.mapSymbol then
+      record = entry
+      break
+    end
+  end
+  if record == nil then
+    missingOwner("map", "no compiled location covers field map " .. field.mapSymbol)
+  end
+  assert(type(record) == "table", "map initialization resolves its compiled location")
+  assert(type(record.location) == "string", "compiled locations carry their displayed location")
+  assert(type(record.region) == "string", "compiled locations carry their region")
+  local state = self._owners.state
+  assert(type(state) == "table", "phone world reads borrow the companion state")
+  local preferences = state:readPreferences()
+  assert(type(preferences) == "table", "map initialization reads the saved progression facts")
+  local unlockLevel = preferences.mapUnlockLevel
+  if type(unlockLevel) ~= "number" or unlockLevel < 1 then
+    unlockLevel = 1
+  end
+  return {
+    fieldMap = field.mapSymbol,
+    location = record.location,
+    matrixX = field.playerX,
+    matrixY = field.playerZ,
+    region = record.region,
+    unlockLevel = unlockLevel,
+    specialMode = record.special,
+    playerGender = field.playerGender,
+  }
+end
+
+-- The shared contact availability query behind the map's contact markers:
+-- rematch readiness from the borrowed conversation owner plus durable
+-- pending gifts from gear state, resolved per location without caching a
+-- separate copy. contactPlaces maps registered contacts to their map
+-- locations. Only contacts with a ready rematch or a pending gift
+-- project; unstaged contacts show nothing.
+---@param location string
+---@param phone table<string, unknown> the borrowed conversation owner
+---@param contactPlaces table<string, string> contact key to map location
+---@return table<integer, table<string, unknown>> markers
+function PhoneWorldContext:locationMarkers(location, phone, contactPlaces)
+  assert(type(location) == "string" and location ~= "", "contact markers name their map location")
+  assert(
+    type(phone) == "table" and type(phone.rematchMarker) == "function",
+    "contact markers read the shared conversation owner"
+  )
+  assert(type(contactPlaces) == "table", "contact markers read the contact placement facts")
+  local state = self._owners.state
+  assert(type(state) == "table", "phone world reads borrow the companion state")
+  local bucket = state:capture()
+  assert(type(bucket) == "table" and type(bucket.phone) == "table", "contact markers read the phone facts")
+  local contacts = (bucket --[[@as table<string, unknown>]]).phone.contacts
+  assert(type(contacts) == "table", "contact markers read the registered contacts")
+  local markers = {}
+  for contact, place in pairs(contactPlaces) do
+    if place == location then
+      local marker = phone:rematchMarker(contact)
+      assert(type(marker) == "table", "the conversation owner projects its rematch marker")
+      local pending = contacts[contact]
+      local gift = type(pending) == "table" and pending.reward or nil
+      if marker.ready == true or gift ~= nil then
+        markers[#markers + 1] = { contact = contact, tier = marker.tier, ready = marker.ready, gift = gift }
+      end
+    end
+  end
+  table.sort(markers, function(a, b)
+    return a.contact < b.contact
+  end)
+  return markers
+end
+
 ---@param domain string
 ---@return table<string, unknown> the borrowed domain owner
 function PhoneWorldContext:_domainOwner(domain)
