@@ -708,6 +708,58 @@ local function countSourceMatches(capture, source, rect, offsetX, offsetY)
   return matches, occupied
 end
 
+-- Counts pixels matching a nearest-neighbor half-size presentation of an
+-- original 80x80 staged portrait. The source portrait remains untouched.
+local function countHalfScalePortraitMatches(capture, source, rect, offsetX, offsetY, phaseX, phaseY)
+  Assert.equal(source:getWidth(), 80, "the staged portrait keeps its 80-pixel source width")
+  Assert.equal(source:getHeight(), 80, "the staged portrait keeps its 80-pixel source height")
+  local matches, occupied = 0, 0
+  for y = 0, 39 do
+    for x = 0, 39 do
+      -- Nearest filtering selects one pixel from each 2x2 source footprint;
+      -- the host pixel-center convention determines which row and column.
+      local sx, sy = x * 2 + (phaseX or 1), y * 2 + (phaseY or 1)
+      local _, _, _, alpha = source:getPixel(sx, sy)
+      if alpha > 0.5 then
+        occupied = occupied + 1
+        local r1, g1, b1, a1 = capture:getPixel(rect.x + (offsetX or 0) + x, rect.y + (offsetY or 0) + y)
+        local r2, g2, b2, a2 = source:getPixel(sx, sy)
+        if
+          quantize(r1) == quantize(r2)
+          and quantize(g1) == quantize(g2)
+          and quantize(b1) == quantize(b2)
+          and quantize(a1) == quantize(a2)
+        then
+          matches = matches + 1
+        end
+      end
+    end
+  end
+  return matches, occupied
+end
+
+-- Counts pixels in a rendered scene rectangle that differ from the
+-- staged background at the same scene-relative coordinates.
+local function countSceneChanges(capture, scene, rect, sceneOriginX, sceneOriginY)
+  local changed = 0
+  for y = rect.y, rect.y + rect.height - 1 do
+    for x = rect.x, rect.x + rect.width - 1 do
+      local sx, sy = x - sceneOriginX, y - sceneOriginY
+      local r1, g1, b1, a1 = capture:getPixel(x, y)
+      local r2, g2, b2, a2 = scene:getPixel(sx, sy)
+      if
+        quantize(r1) ~= quantize(r2)
+        or quantize(g1) ~= quantize(g2)
+        or quantize(b1) ~= quantize(b2)
+        or quantize(a1) ~= quantize(a2)
+      then
+        changed = changed + 1
+      end
+    end
+  end
+  return changed
+end
+
 local function hostRect(frame, local_)
   return { x = frame.x + local_.x, y = frame.y + local_.y, width = local_.width, height = local_.height }
 end
@@ -1205,6 +1257,266 @@ function T.native_doubles_draws_the_four_staged_source_hud_cells(scope, context)
     end
   end
 end
+
+-- Four staged portrait selectors are drawn through the production compact
+-- battle composition. The actual pixel surface must show each portrait at
+-- nearest-neighbor half scale, above both the move and target docks, with
+-- bounded independent panels and no raw packed HUD strip painted as a panel.
+function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the compact doubles capture needs a ready user-owned ROM with staged battle assets")
+  end
+
+  local portraitSpecs = {
+    { position = 1, selector = MonCache.portraitSelector("RATTATA", 0, "male", false), pageId = 164 },
+    { position = 2, selector = MonCache.portraitSelector("HEATRAN", 0, "male", false), pageId = 86 },
+    { position = 3, selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back"), pageId = 34 },
+    { position = 4, selector = MonCache.portraitSelector("HERACROSS", 0, "female", false, "back"), pageId = 86 },
+  }
+  local portraitByPosition = {}
+  for _, portrait in ipairs(portraitSpecs) do
+    portraitByPosition[portrait.position] = portrait
+  end
+
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local screen, images, portraitCells = captureScreen(scope, cacheFs, versionId, compactMeasurement())
+    for _, portrait in ipairs(portraitSpecs) do
+      local image, pixels = cropPortrait(scope, cacheFs, portrait.selector, portrait.pageId)
+      images["mon:" .. portrait.selector] = image
+      portraitCells["mon:" .. portrait.selector] = pixels
+    end
+
+    local packet = openingPacket()
+    packet.after.own = {
+      {
+        combatant = 0,
+        side = 1,
+        position = 3,
+        active = true,
+        species = "CHIKORITA",
+        form = 0,
+        selector = "back",
+        portraitSelector = portraitByPosition[3].selector,
+        name = "CHIKORITA",
+        level = 9,
+        hp = 30,
+        maxHp = 30,
+        experience = 120,
+      },
+      {
+        combatant = 1,
+        side = 1,
+        position = 4,
+        active = true,
+        species = "HERACROSS",
+        form = 0,
+        selector = "back",
+        portraitSelector = portraitByPosition[4].selector,
+        name = "HERACROSS",
+        level = 12,
+        hp = 18,
+        maxHp = 24,
+        experience = 100,
+      },
+    }
+    packet.after.foes = {
+      {
+        combatant = 2,
+        side = 2,
+        position = 1,
+        active = true,
+        species = "RATTATA",
+        form = 0,
+        selector = "front",
+        portraitSelector = portraitByPosition[1].selector,
+        name = "RATTATA",
+        level = 3,
+        hp = 12,
+        maxHp = 12,
+      },
+      {
+        combatant = 3,
+        side = 2,
+        position = 2,
+        active = true,
+        species = "HEATRAN",
+        form = 0,
+        selector = "front",
+        portraitSelector = portraitByPosition[2].selector,
+        name = "HEATRAN",
+        level = 40,
+        hp = 31,
+        maxHp = 48,
+      },
+    }
+    local move = moveChoice("move:0", "TACKLE", 35, 35, "NORMAL", 0)
+    move.targets = {
+      {
+        id = "target:0",
+        position = 1,
+        combatant = 2,
+        name = "RATTATA",
+        enabled = true,
+        choice = { kind = "attack", payload = { moveSlot = 0, target = { kind = "position", position = 1 } } },
+      },
+      {
+        id = "target:1",
+        position = 2,
+        combatant = 3,
+        name = "HEATRAN",
+        enabled = true,
+        choice = { kind = "attack", payload = { moveSlot = 0, target = { kind = "position", position = 2 } } },
+      },
+    }
+    packet.request.actors = { { kind = "command" }, { kind = "command" } }
+    packet.request.options.actors = {
+      {
+        kind = "command",
+        choices = { move, { role = "run", enabled = true, choice = { kind = "run", payload = {} } } },
+      },
+      { kind = "command", choices = { moveChoice("move:0", "TACKLE", 35, 35, "NORMAL", 0) } },
+    }
+    drivePacketToCommand(screen, versionId, packet)
+
+    local function assertCapture(mode, captureName)
+      Assert.equal(screen:status().mode, mode, versionId .. " reaches the " .. mode .. " compact dock")
+      local plan = livePlan(screen, versionId)
+      local content = assert(plan.content, versionId .. " carries its compact content")
+      local width, height = canvasSize(plan, versionId)
+      Assert.equal(width, 256, versionId .. " keeps the compact canvas width")
+      Assert.equal(height, 192, versionId .. " keeps the compact canvas height")
+      local frame = assert(plan.panes[1].placement.frame, versionId .. " frames the compact pane")
+      local hud = assert(content.hud, versionId .. " carries the compact HUD")
+      local boxes = assert(hud.boxes, versionId .. " plans one panel for each active battler")
+      Assert.equal(#boxes, 4, versionId .. " plans four separate compact panels")
+      local dock = hostRect(frame, assert(content.dock, versionId .. " publishes the active dock"))
+      local scene = hostRect(frame, assert(content.scene, versionId .. " publishes the scene viewport"))
+      local sceneSource = decodeData(
+        scope,
+        cacheFs,
+        BattlePresentationCache.sceneImagePath(SCENE_KEY),
+        versionId .. " compact doubles scene source"
+      )
+      local first = renderCapture(scope, screen, width, height)
+      local second = renderCapture(scope, screen, width, height)
+      Assert.equal(
+        imageDataDigest(first),
+        imageDataDigest(second),
+        versionId .. " renders four compact doubles deterministically in " .. mode
+      )
+      saveCapture(first, versionId .. "-compact-doubles-" .. captureName)
+
+      local seenPositions, seenPanels, pictures = {}, {}, {}
+      for _, box in ipairs(boxes) do
+        Assert.isNil(seenPositions[box.position], versionId .. " assigns one panel to each slot")
+        seenPositions[box.position] = true
+        local panel = hostRect(frame, box)
+        Assert.isTrue(panel.x >= scene.x and panel.y >= scene.y, versionId .. " keeps each panel inside the scene")
+        Assert.isTrue(
+          panel.x + panel.width <= scene.x + scene.width and panel.y + panel.height <= 120,
+          versionId .. " keeps each panel above the earliest move/target dock"
+        )
+        for _, prior in ipairs(seenPanels) do
+          Assert.isFalse(rectanglesOverlap(panel, prior), versionId .. " keeps compact panels independent")
+        end
+        seenPanels[#seenPanels + 1] = panel
+        local labelRegion = nil
+        for _, region in ipairs(box.regions or {}) do
+          if region.id == "name" then
+            labelRegion = region
+            break
+          end
+        end
+        Assert.notNil(labelRegion, versionId .. " publishes a name region for each panel")
+        Assert.isTrue(
+          countSceneChanges(first, sceneSource, hostRect(frame, labelRegion), scene.x, scene.y) > 10,
+          versionId .. " prints the " .. tostring(box.name) .. " panel name"
+        )
+        if type(box.bar) == "table" then
+          Assert.isTrue(
+            countColor(first, hostRect(frame, box.bar), { 51, 204, 51 }) > 2,
+            versionId .. " paints the " .. tostring(box.name) .. " health bar"
+          )
+        end
+      end
+
+      local manifest = BattlePresentationCache.load(cacheFs)
+      for _, portrait in ipairs(portraitSpecs) do
+        local spot = nil
+        for _, candidate in ipairs(assert(content.spriteCenters, versionId .. " plans every portrait spot")) do
+          if candidate.position == portrait.position then
+            spot = candidate
+            break
+          end
+        end
+        Assert.notNil(spot, versionId .. " preserves the portrait's native slot")
+        local rect = {
+          x = frame.x + spot.x,
+          y = frame.y + spot.y,
+          width = 40,
+          height = 40,
+        }
+        Assert.isTrue(rect.x >= scene.x and rect.y >= scene.y, versionId .. " keeps portraits on the scene")
+        Assert.isTrue(
+          rect.x + rect.width <= scene.x + scene.width and rect.y + rect.height <= 120,
+          versionId .. " keeps every 40x40 portrait above the earliest dock"
+        )
+        Assert.isFalse(rectanglesOverlap(rect, dock), versionId .. " keeps portraits clear of the active dock")
+        for _, panel in ipairs(seenPanels) do
+          Assert.isFalse(rectanglesOverlap(rect, panel), versionId .. " keeps portraits clear of HUD panels")
+        end
+        for _, prior in ipairs(pictures) do
+          Assert.isFalse(rectanglesOverlap(rect, prior), versionId .. " keeps all four portrait boxes separate")
+        end
+        pictures[#pictures + 1] = rect
+
+        local source = assert(portraitCells["mon:" .. portrait.selector], versionId .. " stages " .. portrait.selector)
+        local matches, occupied = 0, 0
+        for phaseY = 0, 1 do
+          for phaseX = 0, 1 do
+            local phaseMatches, phaseOccupied = countHalfScalePortraitMatches(first, source, rect, 0, 0, phaseX, phaseY)
+            if phaseOccupied > 0 and phaseMatches / phaseOccupied > matches / math.max(occupied, 1) then
+              matches, occupied = phaseMatches, phaseOccupied
+            end
+          end
+        end
+        Assert.isTrue(occupied > 100, versionId .. " has visible source pixels for " .. portrait.selector)
+        Assert.isTrue(
+          matches / occupied > 0.9,
+          versionId .. " paints the nearest-neighbor half-scale pixels for " .. portrait.selector
+        )
+      end
+
+      local sources = {
+        { asset = assert(manifest.enemyHud, versionId .. " stages enemy HUD strip") },
+        { asset = assert(manifest.playerHud, versionId .. " stages player HUD strip") },
+      }
+      for _, panel in ipairs(seenPanels) do
+        local owner = panel.y < 80 and "enemy" or "player"
+        local sourceRecord = owner == "enemy" and sources[1].asset or sources[2].asset
+        local strip = decodeData(scope, cacheFs, sourceRecord.image, versionId .. " " .. owner .. " strip")
+        local sample = { x = panel.x, y = panel.y, width = math.min(panel.width, 96), height = 8 }
+        local matches, occupied = countSourceMatches(first, strip, sample, panel.x, panel.y)
+        Assert.isTrue(occupied > 10, versionId .. " samples the staged " .. owner .. " HUD strip")
+        Assert.isTrue(
+          matches / occupied < 0.5,
+          versionId .. " does not paint a packed " .. owner .. " HUD strip as a finished panel"
+        )
+      end
+    end
+
+    assertCapture("command", "command")
+    screen:input({ { type = "confirm" } })
+    screen:updateFixed(TICK)
+    Assert.equal(screen:status().mode, "moves", versionId .. " opens its move list")
+    screen:input({ { type = "confirm" } })
+    screen:updateFixed(TICK)
+    assertCapture("target", "target")
+  end
+end
+
 
 -- The compact Fight view prints its move facts through the staged font:
 -- named move labels in their grid cells, the type and PP rows in the

@@ -77,6 +77,23 @@ local HUD_PLAYER_BOX = { width = 104, height = 48 }
 local HUD_BAR_WIDTH = 48
 local HUD_BAR_HEIGHT = 4
 local HUD_ROW_HEIGHT = 12
+local DOUBLES_HUD_CELLS = {
+  enemy = { { x = 4, y = 0 }, { x = 132, y = 0 } },
+  player = { { x = 4, y = 80 }, { x = 132, y = 80 } },
+}
+local DOUBLES_PICTURE_CELLS = {
+  enemy = { { x = 24, y = 40 }, { x = 152, y = 40 } },
+  player = { { x = 72, y = 40 }, { x = 200, y = 40 } },
+}
+local DOUBLES_HUD_WIDTH = 120
+local DOUBLES_HUD_HEIGHT = 40
+local DOUBLES_BAR_X = 4
+local DOUBLES_BAR_Y = 35
+local DOUBLES_BAR_WIDTH = 48
+local DOUBLES_NAME_WIDTH = 76
+local DOUBLES_LEVEL_WIDTH = 32
+local DOUBLES_CONDITION_WIDTH = 44
+local DOUBLES_HEALTH_WIDTH = 59
 local PLAYER_CENTER = { x = 60, y = 96 }
 local ENEMY_CENTER = { x = 196, y = 44 }
 
@@ -480,6 +497,67 @@ local function hudBox(battler, fallback, origin, size, withExp)
   }
 end
 
+---@param battler table<string, unknown>? current owner of one compact doubles slot
+---@param fallback string fallback wording when the slot is temporarily ownerless
+---@param origin table<string, number> authored panel origin
+---@param position integer opaque source slot identity
+---@param side integer side identity for an ownerless transition slot
+---@return table<string, unknown> compact doubles panel geometry and its own semantic fields
+local function compactDoublesHudBox(battler, fallback, origin, position, side)
+  local hp = battler ~= nil and battler.hp or 0
+  local maxHp = battler ~= nil and battler.maxHp or 0
+  local fraction = hudFraction(hp, maxHp)
+  return {
+    x = origin.x,
+    y = origin.y,
+    width = DOUBLES_HUD_WIDTH,
+    height = DOUBLES_HUD_HEIGHT,
+    position = position,
+    side = battler ~= nil and battler.side or side,
+    regions = {
+      {
+        id = "name",
+        x = origin.x + 4,
+        y = origin.y + 1,
+        width = DOUBLES_NAME_WIDTH,
+        height = 16,
+        text = hudName(battler, fallback),
+      },
+      {
+        id = "level",
+        x = origin.x + 84,
+        y = origin.y + 1,
+        width = DOUBLES_LEVEL_WIDTH,
+        height = 16,
+        text = hudLevel(battler),
+      },
+      {
+        id = "condition",
+        x = origin.x + 4,
+        y = origin.y + 17,
+        width = DOUBLES_CONDITION_WIDTH,
+        height = 16,
+        text = hudCondition(battler),
+      },
+      {
+        id = "hp",
+        x = origin.x + 57,
+        y = origin.y + 17,
+        width = DOUBLES_HEALTH_WIDTH,
+        height = 16,
+        text = hudHealth(battler),
+      },
+    },
+    bar = {
+      x = origin.x + DOUBLES_BAR_X,
+      y = origin.y + DOUBLES_BAR_Y,
+      width = DOUBLES_BAR_WIDTH * fraction,
+      height = HUD_BAR_HEIGHT,
+      fraction = fraction,
+    },
+  }
+end
+
 -- Pure single-pane geometry for one semantic snapshot: dock allocations,
 -- framed content boxes, hit cells, cursor and label origins, HUD anchors
 -- and image centers. The controller owns no rectangles; draw and input
@@ -602,19 +680,16 @@ local function doublesHud(view, players, enemies)
   local foeSide = sideOf(enemies, false)
   local allySide = sideOf(players, true)
   local boxes = {} ---@type table<integer, table<string, unknown>>
-  local function add(order, cells, fallback, size, withExp, side)
+  local function add(order, cells, fallback, side)
     for index, position in ipairs(order) do
       local cell = cells[index]
       assert(cell ~= nil, "the compact doubles cells cover every claimed slot")
       local owner = live[position]
-      local box = hudBox(owner, fallback, cell, size, withExp)
-      box.position = position
-      box.side = (owner ~= nil and owner.side or side) --[[@as integer]]
-      boxes[#boxes + 1] = box
+      boxes[#boxes + 1] = compactDoublesHudBox(owner, fallback, cell, position, side)
     end
   end
-  add(canonicalOrder(view, false), { { x = 4, y = 4 }, { x = 156, y = 4 } }, "FOE", HUD_ENEMY_BOX, false, foeSide)
-  add(canonicalOrder(view, true), { { x = 4, y = 84 }, { x = 148, y = 84 } }, "LEAD", HUD_PLAYER_BOX, true, allySide)
+  add(canonicalOrder(view, false), DOUBLES_HUD_CELLS.enemy, "FOE", foeSide)
+  add(canonicalOrder(view, true), DOUBLES_HUD_CELLS.player, "LEAD", allySide)
   table.sort(boxes, function(a, b)
     if a.y ~= b.y then
       return a.y < b.y
@@ -646,11 +721,18 @@ local function doublesSpriteCenters(view, players, enemies)
       end
       local cell = cells[row]
       assert(cell ~= nil, "the compact doubles anchors cover every live battler")
-      spots[#spots + 1] = { position = battler.position, x = cell.x, y = cell.y }
+      spots[#spots + 1] = {
+        position = battler.position,
+        x = cell.x,
+        y = cell.y,
+        width = 40,
+        height = 40,
+        scale = 0.5,
+      }
     end
   end
-  add(enemies, canonicalOrder(view, false), { { x = 56, y = 48 }, { x = 184, y = 48 } })
-  add(players, canonicalOrder(view, true), { { x = 56, y = 72 }, { x = 184, y = 72 } })
+  add(enemies, canonicalOrder(view, false), DOUBLES_PICTURE_CELLS.enemy)
+  add(players, canonicalOrder(view, true), DOUBLES_PICTURE_CELLS.player)
   table.sort(spots, function(a, b)
     local pa = a.position
     local pb = b.position
@@ -1408,6 +1490,36 @@ local function drawHudSide(graphics, assets, text, artKey, battler, side)
   end
 end
 
+---@param resources table<string, unknown> borrowed presentation services
+---@param box table<string, unknown> one live, position-matched compact doubles panel
+local function drawCompactDoublesPanel(resources, box)
+  local graphics = assert(resources.graphics, "the compact render borrows its host graphics")
+  local text = assert(resources.text, "the compact render borrows its text services")
+  local windows = assert(resources.windows, "the compact render borrows its window services")
+  local background = backgroundOf(resources)
+  LogicalSurface.clip(graphics, box, function()
+    fillBox(graphics, background, box)
+    for _, region in ipairs(box.regions) do
+      if type(region.text) == "string" and region.text ~= "" then
+        drawLabel(text, fitText(text, region.text, region.width), region.x, region.y)
+      end
+    end
+    local bar = box.bar
+    local fraction = assert(bar.fraction, "a compact doubles bar carries its own fraction")
+    local r, g, b, a = graphics.getColor()
+    if fraction > 0.5 then
+      graphics.setColor(0.2, 0.8, 0.2, 1)
+    elseif fraction > 0.2 then
+      graphics.setColor(0.9, 0.8, 0.2, 1)
+    else
+      graphics.setColor(0.9, 0.2, 0.2, 1)
+    end
+    graphics.rectangle("fill", bar.x, bar.y, bar.width, bar.height)
+    graphics.setColor(r, g, b, a)
+    windows.drawApplicationFrame(contentOf(box), resources.frameKey)
+  end)
+end
+
 -- Draws both combatant HUDs at the plan bounds clipped to the scene
 -- viewport. Hidden battlers draw neither artwork nor bar; the selection
 -- arrow and party gauges stay hidden because the text cursor and the
@@ -1436,22 +1548,19 @@ local function drawCompactHud(resources, view, content)
     local live = {}
     for _, battler in ipairs(players) do
       if type(battler.position) == "number" then
-        live[battler.position] = { battler = battler, artKey = "hud:player" }
+        live[battler.position] = true
       end
     end
     for _, battler in ipairs(enemies) do
       if type(battler.position) == "number" then
-        live[battler.position] = { battler = battler, artKey = "hud:enemy" }
+        live[battler.position] = true
       end
     end
-    LogicalSurface.clip(graphics, viewport, function()
-      for _, box in ipairs(boxes) do
-        local entry = live[box.position]
-        if entry ~= nil then
-          drawHudSide(graphics, assets, text, entry.artKey, entry.battler, box)
-        end
+    for _, box in ipairs(boxes) do
+      if live[box.position] ~= nil then
+        drawCompactDoublesPanel(resources, box)
       end
-    end)
+    end
     return
   end
   local player, enemy = singleSlots(view)

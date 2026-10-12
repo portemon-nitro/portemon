@@ -139,6 +139,7 @@ local function drawnHud(view, held)
   local text = recordingText()
   local windows = recordingWindows()
   local missing = {}
+  local requests = {}
   for _, key in ipairs(held or {}) do
     missing[key] = true
   end
@@ -148,6 +149,7 @@ local function drawnHud(view, held)
     windows = windows,
     assets = {
       drawable = function(_, key)
+        requests[#requests + 1] = key
         if missing[key] then
           return nil
         end
@@ -158,7 +160,7 @@ local function drawnHud(view, held)
     sceneImageKey = "scene:test",
   }
   ApplicationPresentation.draw(graphics, resources, view, plan)
-  return { graphics = graphics, text = text, windows = windows, plan = plan }
+  return { graphics = graphics, text = text, windows = windows, plan = plan, requests = requests }
 end
 
 ---@param graphics table recording graphics boundary under inspection
@@ -186,10 +188,7 @@ function T.enemy_composite_draws_unscaled_at_left_top_bounds()
   Assert.equal(#composites, 1, "the enemy artwork draws exactly once")
   Assert.equal(composites[1].x, bounds.x, "the enemy composite starts at the bounds left")
   Assert.equal(composites[1].y, bounds.y, "the enemy composite starts at the bounds top")
-  Assert.isTrue(
-    composites[1].sx == nil or composites[1].sx == 1,
-    "the enemy composite draws unscaled horizontally"
-  )
+  Assert.isTrue(composites[1].sx == nil or composites[1].sx == 1, "the enemy composite draws unscaled horizontally")
   Assert.isTrue(composites[1].sy == nil or composites[1].sy == 1, "the enemy composite draws unscaled vertically")
   Assert.isNil(composites[1].quad, "the enemy composite draws whole, never a sub-cell")
 end
@@ -206,10 +205,7 @@ function T.player_composite_right_and_bottom_edges_hold_above_dock()
   Assert.equal(#composites, 1, "the player artwork draws exactly once")
   Assert.equal(composites[1].x, bounds.x, "the player composite starts at the bounds left")
   Assert.equal(composites[1].y, bounds.y, "the player composite starts at the bounds top")
-  Assert.isTrue(
-    composites[1].sx == nil or composites[1].sx == 1,
-    "the player composite draws unscaled horizontally"
-  )
+  Assert.isTrue(composites[1].sx == nil or composites[1].sx == 1, "the player composite draws unscaled horizontally")
   Assert.isTrue(composites[1].sy == nil or composites[1].sy == 1, "the player composite draws unscaled vertically")
   Assert.isNil(composites[1].quad, "the player composite draws whole, never a sub-cell")
 end
@@ -386,17 +382,13 @@ function T.arrow_and_ball_strips_stay_hidden()
     end
   end
   table.sort(handles)
-  Assert.deepEqual(
-    handles,
-    {
-      "hud:enemy",
-      "hud:player",
-      "mon:" .. MonCache.portraitSelector("FOE", 0, "male", false),
-      "mon:" .. MonCache.portraitSelector("LEAD", 0, "male", false, "back"),
-      "scene:test",
-    },
-    "the compact scene draws only its scene, battlers and composites"
-  )
+  Assert.deepEqual(handles, {
+    "hud:enemy",
+    "hud:player",
+    "mon:" .. MonCache.portraitSelector("FOE", 0, "male", false),
+    "mon:" .. MonCache.portraitSelector("LEAD", 0, "male", false, "back"),
+    "scene:test",
+  }, "the compact scene draws only its scene, battlers and composites")
 end
 
 -- Every HUD draw and bar stays inside the scene viewport under the scene
@@ -540,7 +532,12 @@ local function hudBoxes(hud)
     if type(node) ~= "table" then
       return
     end
-    if type(node.x) == "number" and type(node.y) == "number" and type(node.width) == "number" and type(node.height) == "number" then
+    if
+      type(node.x) == "number"
+      and type(node.y) == "number"
+      and type(node.width) == "number"
+      and type(node.height) == "number"
+    then
       if type(node.regions) == "table" then
         boxes[#boxes + 1] = node
       end
@@ -669,6 +666,146 @@ function T.both_partners_draw_their_own_portrait_and_health_above_the_dock()
   Assert.equal(hurtWords["45/45"], 1, "the partner foe keeps its health wording")
 end
 
+-- Compact doubles panels are authored with the current theme and local
+-- graphics, while source HUD strips are never requested as finished art.
+function T.doubles_panels_compose_fields_without_raw_hud_art()
+  local view = doubledSnapshot()
+  local result = drawnHud(view, {})
+  local boxes = hudBoxes(assert(result.plan.content.hud, "the plan carries its hud"))
+  Assert.equal(#boxes, 4, "four authored panels resolve")
+  local insets = require("libs.hgss.src.ui.FieldDialogueTheme").applicationFrameInsets()
+  local panelFrames = {}
+  for _, frame in ipairs(result.windows.frames) do
+    if frame.box.y < 120 then
+      panelFrames[#panelFrames + 1] = frame
+    end
+  end
+  Assert.equal(#panelFrames, 4, "each authored panel has an outline")
+  for index, box in ipairs(boxes) do
+    local frame = panelFrames[index].box
+    Assert.deepEqual({ frame.x, frame.y, frame.width, frame.height }, {
+      box.x + insets.left,
+      box.y + insets.top + 1,
+      120 - insets.left - insets.right,
+      40 - insets.top - insets.bottom - 2,
+    }, "the themed panel outline uses its authored bounds")
+    local fill = false
+    for _, rectangle in ipairs(result.graphics.rectangles) do
+      if
+        rectangle.mode == "fill"
+        and rectangle.x == box.x
+        and rectangle.y == box.y
+        and rectangle.w == 120
+        and rectangle.h == 40
+      then
+        fill = true
+      end
+    end
+    Assert.isTrue(fill, "panel backgrounds fill only their authored bounds")
+  end
+  for _, key in ipairs(result.requests) do
+    Assert.isTrue(key:sub(1, 4) ~= "hud:", "compact doubles never requests packed HUD art")
+  end
+  for _, draw in ipairs(result.graphics.draws) do
+    local handle = type(draw.image) == "table" and draw.image.handle or ""
+    Assert.isTrue(tostring(handle):sub(1, 4) ~= "hud:", "compact doubles never paints packed HUD art")
+  end
+  local expected = { "LEFTY", "Lv8", "RIGHTY", "Lv9", "FOE-A", "Lv4", "FOE-B", "Lv5" }
+  local drawn = {}
+  for _, entry in ipairs(result.text.draws) do
+    drawn[entry.content] = (drawn[entry.content] or 0) + 1
+  end
+  for _, wording in ipairs(expected) do
+    Assert.equal(drawn[wording], 1, wording .. " is drawn once in its own panel")
+  end
+  local bars = sceneBars(result)
+  Assert.equal(#bars, 4, "each panel has its own health bar")
+  local widths = {}
+  for _, bar in ipairs(bars) do
+    widths[bar.x .. ":" .. bar.y] = bar.w
+  end
+  Assert.equal(widths[8 .. ":" .. 115], 48, "the full-health ally keeps a full bar")
+  Assert.equal(widths[8 .. ":" .. 35], 48, "the full-health foe keeps a full bar")
+  Assert.equal(widths[136 .. ":" .. 115], 48 * (35 / 38), "the second ally keeps its own fraction")
+  Assert.equal(widths[136 .. ":" .. 35], 48 * (30 / 33), "the second foe keeps its own fraction")
+end
+
+-- Doubles portraits use presentation-only half scale and recoil remains
+-- clipped to each allocated picture cell at its maximum displacement.
+function T.doubles_portraits_draw_half_scale_inside_their_cells()
+  local view = doubledSnapshot()
+  for _, battler in ipairs(view.battlers) do
+    battler.shakeDx = 2
+  end
+  local result = drawnHud(view, {})
+  local expected = {
+    [1] = { x = 72, y = 40 },
+    [2] = { x = 200, y = 40 },
+    [3] = { x = 24, y = 40 },
+    [4] = { x = 152, y = 40 },
+  }
+  local found = {}
+  for _, entry in ipairs(result.graphics.draws) do
+    local handle = type(entry.image) == "table" and entry.image.handle or ""
+    if type(handle) == "string" and handle:sub(1, 4) == "mon:" then
+      local positionByHandle = {
+        ["mon:" .. MonCache.portraitSelector("STARLY", 0, "male", false, "back")] = 1,
+        ["mon:" .. MonCache.portraitSelector("SHINX", 0, "male", false, "back")] = 2,
+        ["mon:" .. MonCache.portraitSelector("BIDOOF", 0, "male", false)] = 3,
+        ["mon:" .. MonCache.portraitSelector("PICHU", 0, "male", false)] = 4,
+      }
+      local position = assert(positionByHandle[handle], "each source portrait has its own slot")
+      local cell = expected[position]
+      Assert.equal(entry.x, cell.x + 1, "two recoil pixels move the half-scale portrait one screen pixel")
+      Assert.equal(entry.y, cell.y, "the half-scale portrait keeps its vertical origin")
+      Assert.equal(entry.sx, 0.5, "each compact doubles picture scales horizontally by one half")
+      Assert.equal(entry.sy, 0.5, "each compact doubles picture scales vertically by one half")
+      found[position] = true
+    end
+  end
+  Assert.equal(#result.graphics.draws, 5, "the scene and four source portraits draw without substitute art")
+  for position, cell in pairs(expected) do
+    Assert.isTrue(found[position] == true, "position " .. position .. " has its distinct portrait")
+    local clipped = false
+    for _, intersection in ipairs(result.graphics.scissorIntersections) do
+      local rect = intersection.requested
+      if rect[1] == cell.x and rect[2] == cell.y and rect[3] == 40 and rect[4] == 40 then
+        clipped = true
+      end
+    end
+    Assert.isTrue(clipped, "position " .. position .. " recoil stays clipped to its 40x40 picture cell")
+  end
+end
+
+-- Long dynamic fields pass through the live measurement adapter and
+-- keep their glyph widths inside the finite field regions.
+function T.doubles_panel_text_is_measured_to_each_field_width()
+  local view = doubledSnapshot()
+  view.battlers[1].name = string.rep("LONGNAME", 8)
+  view.battlers[1].condition = string.rep("STATUS", 4)
+  view.battlers[1].hp = 123456789
+  view.battlers[1].maxHp = 987654321
+  local result = drawnHud(view, {})
+  for _, box in ipairs(hudBoxes(assert(result.plan.content.hud))) do
+    for _, region in ipairs(box.regions) do
+      if type(region.text) == "string" and region.text ~= "" then
+        local matching = nil
+        for _, draw in ipairs(result.text.draws) do
+          if draw.x == region.x and draw.y == region.y then
+            matching = draw
+            break
+          end
+        end
+        Assert.notNil(matching, "the " .. region.id .. " field is still visible")
+        Assert.isTrue(
+          result.text.measure(matching.content).width <= region.width,
+          "the " .. region.id .. " glyphs fit their panel-local width"
+        )
+      end
+    end
+  end
+end
+
 -- The doubled compact pane keeps every control reachable: the command
 -- cells still claim Fight, both foe target rows map to their own
 -- candidate, and a below-1x host keeps integer mapping.
@@ -688,11 +825,8 @@ function T.doubled_compact_pane_keeps_every_control_reachable()
     end
   end
   Assert.notNil(fight, "the Fight cell resolves")
-  local pressed = plan.mapInput(
-    { type = "pointer_down", pointerId = "touch:0", x = fight.x + 2, y = fight.y + 2 },
-    view,
-    plan
-  )
+  local pressed =
+    plan.mapInput({ type = "pointer_down", pointerId = "touch:0", x = fight.x + 2, y = fight.y + 2 }, view, plan)
   Assert.notNil(pressed, "the Fight cell claims its control")
   Assert.equal(pressed.control.id, "fight", "the Fight cell keeps its identity")
   local tiny = resolve(singleMeasurement(200, 150, "compact-hud-test:doubles-tiny"), view)
@@ -716,11 +850,8 @@ function T.doubled_compact_pane_keeps_every_control_reachable()
   end
   Assert.equal(#foeRows, 2, "both foe slots stay choosable")
   for _, row in ipairs(foeRows) do
-    local hit = aiming.mapInput(
-      { type = "pointer_down", pointerId = "touch:1", x = row.x + 2, y = row.y + 2 },
-      aimed,
-      aiming
-    )
+    local hit =
+      aiming.mapInput({ type = "pointer_down", pointerId = "touch:1", x = row.x + 2, y = row.y + 2 }, aimed, aiming)
     Assert.notNil(hit, "the " .. row.id .. " row claims its control")
     Assert.equal(hit.control.id, row.id, "the target row keeps its candidate identity")
   end

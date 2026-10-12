@@ -240,27 +240,17 @@ function T.target_rows_and_narration_boxes()
     Assert.notNil(mapped, "each exposed row claims its own control")
     Assert.equal(mapped.control.id, row.id, "pointer regions derive from the same rows as the drawing")
   end
-  local narration = resolve(
-    singleMeasurement(256, 192, "compact-plan-test:narration"),
-    snapshot("narration", { selection = nil })
-  )
+  local narration =
+    resolve(singleMeasurement(256, 192, "compact-plan-test:narration"), snapshot("narration", { selection = nil }))
   local narrated = assert(narration.content, "the narration plan carries its content")
   assertRect(narrated.narration.content, { x = 8, y = 144, width = 240, height = 40 }, "narration fills the dock")
   Assert.equal(narrated.narration.origin.x, 12, "narration keeps its text origin")
   Assert.equal(narrated.narration.origin.y, 146, "narration keeps its text row")
   Assert.equal(narrated.narration.width, 232, "narration keeps its text width")
   local quiet = snapshot("narration", { selection = nil })
-  local down = narration.mapInput(
-    { type = "pointer_down", pointerId = "touch:0", x = 152, y = 154 },
-    quiet,
-    narration
-  )
+  local down = narration.mapInput({ type = "pointer_down", pointerId = "touch:0", x = 152, y = 154 }, quiet, narration)
   Assert.notNil(down, "the narration dock answers taps")
-  local up = narration.mapInput(
-    { type = "pointer_up", pointerId = "touch:0", x = 152, y = 154 },
-    quiet,
-    narration
-  )
+  local up = narration.mapInput({ type = "pointer_up", pointerId = "touch:0", x = 152, y = 154 }, quiet, narration)
   Assert.notNil(up, "the narration tap completes")
   local confirms = up.type == "confirm"
     or (up.type == "battle_activate" and type(up.control) == "table" and up.control.scope == "narration")
@@ -306,11 +296,8 @@ function T.half_open_edges_and_single_session_transform()
   local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
   local logicalX, logicalY = LayoutGeometry.hostToLogical(placement, hostX, hostY)
   Assert.notNil(logicalX, "the fitted placement inverts the host point")
-  local pressed = fitted.mapInput(
-    { type = "pointer_down", pointerId = "touch:0", x = logicalX, y = logicalY },
-    view,
-    fitted
-  )
+  local pressed =
+    fitted.mapInput({ type = "pointer_down", pointerId = "touch:0", x = logicalX, y = logicalY }, view, fitted)
   Assert.notNil(pressed, "the once-inverted point claims its control")
   Assert.equal(pressed.control.id, "fight", "the fitted pane answers the same Fight cell")
 end
@@ -322,24 +309,15 @@ function T.focused_slot_release_confirms_through_shared_confirm()
   require(COMPACT_MODULE)
   local plan = resolve(singleMeasurement(256, 192, "compact-plan-test:confirm"), snapshot("moves"))
   local focused = snapshot("moves")
-  local confirm = plan.mapInput(
-    { type = "pointer_up", pointerId = "touch:0", x = 52, y = 142 },
-    focused,
-    plan
-  )
+  local confirm = plan.mapInput({ type = "pointer_up", pointerId = "touch:0", x = 52, y = 142 }, focused, plan)
   Assert.notNil(confirm, "releasing over the focused slot answers")
   Assert.equal(confirm.type, "confirm", "the focused slot submits through the shared confirm semantic")
   local unfocused = snapshot("moves", { selection = "move:1" })
-  local activate = plan.mapInput(
-    { type = "pointer_up", pointerId = "touch:0", x = 52, y = 142 },
-    unfocused,
-    plan
-  )
+  local activate = plan.mapInput({ type = "pointer_up", pointerId = "touch:0", x = 52, y = 142 }, unfocused, plan)
   Assert.notNil(activate, "releasing over an unfocused slot answers")
   Assert.equal(activate.type, "battle_activate", "unfocused releases keep the press convention")
   Assert.equal(activate.control.id, "move:0", "the release still names its own slot")
-  local commandPlan =
-    resolve(singleMeasurement(256, 192, "compact-plan-test:confirm-command"), snapshot("command"))
+  local commandPlan = resolve(singleMeasurement(256, 192, "compact-plan-test:confirm-command"), snapshot("command"))
   local commandRelease = commandPlan.mapInput(
     { type = "pointer_up", pointerId = "touch:0", x = 152, y = 154 },
     snapshot("command"),
@@ -348,11 +326,8 @@ function T.focused_slot_release_confirms_through_shared_confirm()
   Assert.notNil(commandRelease, "command releases answer")
   Assert.equal(commandRelease.type, "battle_activate", "the command grid keeps the press convention")
   local aimed = resolve(singleMeasurement(256, 192, "compact-plan-test:confirm-target"), snapshot("target"))
-  local aimRelease = aimed.mapInput(
-    { type = "pointer_up", pointerId = "touch:0", x = 128, y = 138 },
-    snapshot("target"),
-    aimed
-  )
+  local aimRelease =
+    aimed.mapInput({ type = "pointer_up", pointerId = "touch:0", x = 128, y = 138 }, snapshot("target"), aimed)
   Assert.notNil(aimRelease, "releasing over the focused target answers")
   Assert.equal(aimRelease.type, "confirm", "the focused target submits through the shared confirm semantic")
 end
@@ -389,7 +364,11 @@ function T.disabled_focusable_absent_blank()
   local drawn = resources.text.draws
   local named = 0
   for _, entry in ipairs(drawn) do
-    if entry.content:find("TACKLE", 1, true) ~= nil or entry.content == "GROWL" or entry.content:find("TAIL WHIP", 1, true) ~= nil then
+    if
+      entry.content:find("TACKLE", 1, true) ~= nil
+      or entry.content == "GROWL"
+      or entry.content:find("TAIL WHIP", 1, true) ~= nil
+    then
       named = named + 1
     end
   end
@@ -409,8 +388,22 @@ function T.label_clip_regions_bound_drawn_text()
   require(COMPACT_MODULE)
   local wide = snapshot("moves", {
     moves = {
-      { slot = 0, name = "A davastatingly long technique name", pp = 35, maxPp = 35, moveType = "DRAGON", enabled = true },
-      { slot = 1, name = "つるぎのまいかぜおこし", pp = 20, maxPp = 20, moveType = "FLYING", enabled = true },
+      {
+        slot = 0,
+        name = "A davastatingly long technique name",
+        pp = 35,
+        maxPp = 35,
+        moveType = "DRAGON",
+        enabled = true,
+      },
+      {
+        slot = 1,
+        name = "つるぎのまいかぜおこし",
+        pp = 20,
+        maxPp = 20,
+        moveType = "FLYING",
+        enabled = true,
+      },
       { slot = 2, name = "SPLASH", pp = 0, maxPp = 40, moveType = "NORMAL", enabled = false, reason = "no PP left" },
       { slot = 3, enabled = false, reason = "empty" },
     },
@@ -421,10 +414,7 @@ function T.label_clip_regions_bound_drawn_text()
   for index, region in ipairs(content.moveLabels) do
     local column = (index - 1) % 2
     local cellX = 8 + column * 88
-    Assert.isTrue(
-      region.x + region.width <= cellX + 88 - 1,
-      "even the longest label region stays inside its own cell"
-    )
+    Assert.isTrue(region.x + region.width <= cellX + 88 - 1, "even the longest label region stays inside its own cell")
   end
   local graphics = FakeGraphics.new({})
   local order = {}
@@ -532,7 +522,8 @@ function T.hud_anchors_and_native_defaults_unaffected()
   }, snapshot("command"))
   Assert.equal(#dual.panes, 2, "the dual composition keeps both native panes")
   Assert.isTrue(dual.content.compact ~= true, "the paired plan carries no compact marker")
-  local native = dual.mapInput({ type = "pointer_down", pointerId = "touch:0", x = 128, y = 83 }, snapshot("command"), dual)
+  local native =
+    dual.mapInput({ type = "pointer_down", pointerId = "touch:0", x = 128, y = 83 }, snapshot("command"), dual)
   Assert.notNil(native, "the native Fight anchor still claims its control")
   Assert.equal(native.control.id, "fight", "the native Fight anchor keeps its identity")
 end
@@ -548,10 +539,7 @@ function T.input_key_semantics()
     resolve(measurement, snapshot("command", { selection = "bag" })).inputKey ~= key,
     "a semantic selection change turns the key"
   )
-  Assert.isTrue(
-    resolve(measurement, snapshot("moves")).inputKey ~= key,
-    "a mode change turns the key"
-  )
+  Assert.isTrue(resolve(measurement, snapshot("moves")).inputKey ~= key, "a mode change turns the key")
   Assert.isTrue(
     resolve(measurement, snapshot("command", { requestId = 9 })).inputKey ~= key,
     "a request change turns the key"
@@ -637,6 +625,84 @@ function T.pair_fallback_is_compact_integer_addressable()
     plan.mapInput({ type = "pointer_down", pointerId = "touch:0", outside = true }, view, plan),
     "coordinates outside the application do nothing"
   )
+end
+
+-- Doubles use four fixed compact panels and four half-size portrait
+-- allocations, all clear of every dock while retaining canonical slots.
+function T.doubles_panels_and_portraits_fit_the_locked_compact_band()
+  require(COMPACT_MODULE)
+  local view = snapshot("command", {
+    battlers = {
+      { combatant = 3, side = 2, position = 3, hp = 1, maxHp = 20, visible = true, name = "FOE LEFT", level = 5 },
+      { combatant = 1, side = 1, position = 1, hp = 12, maxHp = 12, visible = true, name = "ALLY LEFT", level = 8 },
+      { combatant = 4, side = 2, position = 4, hp = 20, maxHp = 20, visible = true, name = "FOE RIGHT", level = 7 },
+      { combatant = 2, side = 1, position = 2, hp = 3, maxHp = 15, visible = true, name = "ALLY RIGHT", level = 9 },
+    },
+  })
+  local panelRects = {
+    { x = 4, y = 0, width = 120, height = 40 },
+    { x = 132, y = 0, width = 120, height = 40 },
+    { x = 4, y = 80, width = 120, height = 40 },
+    { x = 132, y = 80, width = 120, height = 40 },
+  }
+  local pictureRects = {
+    { position = 1, x = 72, y = 40, width = 40, height = 40, scale = 0.5 },
+    { position = 2, x = 200, y = 40, width = 40, height = 40, scale = 0.5 },
+    { position = 3, x = 24, y = 40, width = 40, height = 40, scale = 0.5 },
+    { position = 4, x = 152, y = 40, width = 40, height = 40, scale = 0.5 },
+  }
+  for _, mode in ipairs({ "command", "moves", "target", "narration" }) do
+    view.mode = mode
+    local content = assert(resolve(singleMeasurement(256, 192, "compact-doubles:" .. mode), view).content)
+    local boxes = assert(content.hud.boxes)
+    Assert.equal(#boxes, 4, mode .. " retains all canonical panel slots")
+    for index, expected in ipairs(panelRects) do
+      assertRect(boxes[index], expected, mode .. " panel " .. index)
+      Assert.isTrue(boxes[index].y + boxes[index].height <= 120, mode .. " panel stays above the earliest dock")
+    end
+    Assert.equal(#content.spriteCenters, 4, mode .. " retains all canonical portrait slots")
+    for index, expected in ipairs(pictureRects) do
+      local actual = content.spriteCenters[index]
+      for _, key in ipairs({ "position", "x", "y", "width", "height", "scale" }) do
+        Assert.equal(actual[key], expected[key], mode .. " portrait " .. index .. " " .. key)
+      end
+      Assert.isTrue(actual.x + actual.width <= 256, mode .. " portrait stays within the right edge")
+      Assert.isTrue(actual.y + actual.height <= 120, mode .. " portrait stays above the earliest dock")
+    end
+    for _, picture in ipairs(content.spriteCenters) do
+      for _, panel in ipairs(boxes) do
+        local disjoint = picture.x + picture.width <= panel.x
+          or panel.x + panel.width <= picture.x
+          or picture.y + picture.height <= panel.y
+          or panel.y + panel.height <= picture.y
+        Assert.isTrue(disjoint, mode .. " portrait never overlaps a panel")
+      end
+    end
+  end
+end
+
+-- Compact fallback cases share logical portrait geometry across host
+-- aspect ratios; paired native panes do not consume the adapted plan.
+function T.doubles_compact_geometry_survives_fitted_host_topologies()
+  require(COMPACT_MODULE)
+  local view = snapshot("moves", {
+    battlers = {
+      { combatant = 1, side = 1, position = 1, visible = true },
+      { combatant = 2, side = 1, position = 2, visible = true },
+      { combatant = 3, side = 2, position = 3, visible = true },
+      { combatant = 4, side = 2, position = 4, visible = true },
+    },
+  })
+  local expected = { { 72, 40 }, { 200, 40 }, { 24, 40 }, { 152, 40 } }
+  for _, dimensions in ipairs({ { 320, 240 }, { 400, 240 }, { 240, 400 }, { 320, 320 } }) do
+    local plan =
+      resolve(singleMeasurement(dimensions[1], dimensions[2], "compact-doubles-fitted:" .. dimensions[1]), view)
+    local content = assert(plan.content)
+    for index, point in ipairs(expected) do
+      local spot = content.spriteCenters[index]
+      Assert.deepEqual({ spot.x, spot.y }, point, "fitted host keeps authored logical picture slot " .. index)
+    end
+  end
 end
 
 -- A below-1x native-like host keeps integer mapping at the logical

@@ -1201,6 +1201,7 @@ end
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param spots table<integer, table<string, unknown>> compact sprite anchors keyed by native position
 local function drawCompactSlots(graphics, assets, view, spots)
+  local LogicalSurface = require("libs.ui.src.LogicalSurface")
   -- One sprite per declared slot, matched by the opaque native
   -- position in the plan's paint order. Hidden, benched and historic
   -- records own no slot; a missing portrait draws nothing under the
@@ -1240,7 +1241,11 @@ local function drawCompactSlots(graphics, assets, view, spots)
       local image = battlerImage(assets, battler)
       if image ~= nil then
         local dx = (type(battler.shakeDx) == "number" and battler.shakeDx or 0) --[[@as number]]
-        graphics.draw(image, spot.x + dx, spot.y)
+        local scale = assert(spot.scale, "compact doubles portraits carry their authored presentation scale")
+        local allocation = { x = spot.x, y = spot.y, width = spot.width, height = spot.height }
+        LogicalSurface.clip(graphics, allocation, function()
+          graphics.draw(image, spot.x + dx * scale, spot.y, 0, scale, scale)
+        end)
       end
     end
   end
