@@ -147,6 +147,9 @@ local function fixture(programs, options)
     self.messages[#self.messages + 1] = { message = message, bindings = bindings }
   end
   function dialogue:printProgress()
+    if not self.open then
+      return { done = true }
+    end
     return { done = self.finished }
   end
   function dialogue:close()
