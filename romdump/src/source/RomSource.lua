@@ -26,7 +26,28 @@ end
 
 function RomSource.fromString(data, displayName)
   assert(type(data) == "string", "RomSource requires string data")
-  return setmetatable({ data = data, name = displayName or "rom", _sha1 = nil }, RomSource)
+  local name = displayName or "rom"
+  return setmetatable({
+    data = data,
+    name = name,
+    _sha1 = nil,
+    _origin = { kind = "nds", path = false, zipEntry = false, displayName = name },
+  }, RomSource)
+end
+
+-- A borrowed view over one immutable shared buffer. The view never owns the
+-- buffer: release() only forgets the reference so peer views keep reading.
+-- Callers that need the buffer itself (for channel handoff) use byteData().
+function RomSource.fromByteData(byteData, displayName)
+  assert(type(byteData) == "userdata" and type(byteData.getSize) == "function", "RomSource requires shared buffer data")
+  local name = displayName or "rom"
+  return setmetatable({
+    _bytes = byteData,
+    name = name,
+    _sha1 = nil,
+    _size = nil,
+    _origin = { kind = "nds", path = false, zipEntry = false, displayName = name },
+  }, RomSource)
 end
 
 local function isZip(name)
@@ -70,7 +91,9 @@ local function findNdsCandidate(zipBytes, zipName, versions)
           if not bytes then
             Errors.raise("ZIP_READ_FAILED", "could not read .nds entry: " .. full, { name = zipName, entry = full })
           end
-          local candidate = RomSource.fromString(bytes, zipName .. ":" .. full:sub(#RomSource.MOUNT_POINT + 2))
+          local member = full:sub(#RomSource.MOUNT_POINT + 2)
+          local candidate = RomSource.fromString(bytes, zipName .. ":" .. member)
+          candidate._origin = { kind = "zip", path = false, zipEntry = member, displayName = zipName }
           if versions.forSha1(candidate:sha1()) then
             if fallback then
               fallback:release()
@@ -123,9 +146,15 @@ function RomSource.fromPath(path)
     return nil, Errors.new("ROM_READ_FAILED", "could not read file", { path = path })
   end
   if isZip(path) then
-    return RomSource.fromZipData(data, basename(path))
+    local zipped, zipErr = RomSource.fromZipData(data, basename(path))
+    if zipped then
+      zipped._origin.path = path
+    end
+    return zipped, zipErr
   end
-  return RomSource.fromString(data, basename(path))
+  local source = RomSource.fromString(data, basename(path))
+  source._origin.path = path
+  return source
 end
 
 function RomSource.fromDroppedFile(droppedFile)
@@ -151,28 +180,64 @@ local function isNonNegativeInteger(value)
 end
 
 function RomSource:size()
-  return self.data and #self.data or self._size or 0
+  if self.data then
+    return #self.data
+  end
+  if self._bytes then
+    return self._bytes:getSize()
+  end
+  return self._size or 0
+end
+
+function RomSource:byteData()
+  if self._bytes then
+    return self._bytes
+  end
+  if self.data then
+    Errors.raise("ROM_NOT_SHARED", "string-backed source has no shared buffer", { name = self.name })
+  end
+  Errors.raise("ROM_RELEASED", "ROM source has been released", {})
+  error("unreachable", 0)
+end
+
+-- The verified container/member identity behind this view: the exact
+-- reopenable filesystem location (or false when the bytes cannot be
+-- reopened, as for memory views and dropped files), never inferred from
+-- the display label. Returns a fresh table on every call.
+function RomSource:origin()
+  local source = self._origin or { kind = "nds", path = false, zipEntry = false, displayName = self.name }
+  return {
+    kind = source.kind,
+    path = source.path,
+    zipEntry = source.zipEntry,
+    displayName = source.displayName,
+  }
 end
 
 function RomSource:read(offset, length)
-  if not self.data then
+  if not self.data and not self._bytes then
     return nil, Errors.new("ROM_RELEASED", "ROM source has been released", {})
   end
-  if not isNonNegativeInteger(offset) or not isNonNegativeInteger(length) or offset + length > #self.data then
+  local size = self:size()
+  if not isNonNegativeInteger(offset) or not isNonNegativeInteger(length) or offset + length > size then
     return nil,
-      Errors.new(
-        "ROM_READ_OUT_OF_BOUNDS",
-        "read outside ROM bounds",
-        { offset = offset, length = length, size = #self.data }
-      )
+      Errors.new("ROM_READ_OUT_OF_BOUNDS", "read outside ROM bounds", { offset = offset, length = length, size = size })
   end
-  return string.sub(self.data, offset + 1, offset + length)
+  if self.data then
+    return string.sub(self.data, offset + 1, offset + length)
+  end
+  if length == 0 then
+    return ""
+  end
+  -- 11.5 has no ranged Data:getString: view the slice, then read it whole.
+  return love.data.newDataView(self._bytes, offset, length):getString()
 end
 
 function RomSource:sha1()
   if not self._sha1 then
-    assert(self.data, "cannot hash a released ROM source")
-    self._sha1 = toHex(love.data.hash("sha1", self.data))
+    local backing = self.data or self._bytes
+    assert(backing, "cannot hash a released ROM source")
+    self._sha1 = toHex(love.data.hash("sha1", backing))
   end
   return self._sha1
 end
@@ -184,8 +249,13 @@ end
 function RomSource:release()
   if self.data then
     self._size = #self.data
+  elseif self._bytes and not self._size then
+    self._size = self._bytes:getSize()
   end
+  -- Borrowed views only forget their reference: the shared buffer itself is
+  -- never released here, so peer views keep reading after one view closes.
   self.data = nil
+  self._bytes = nil
 end
 
 return RomSource

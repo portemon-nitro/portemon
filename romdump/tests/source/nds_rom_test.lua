@@ -3,6 +3,7 @@ local Errors = require("libs.errors.src.Errors")
 local NdsRom = require("romdump.src.source.NdsRom")
 local RomSource = require("romdump.src.source.RomSource")
 local NdsBuilder = require("tests.support.NdsBuilder")
+local BackwardsLz = require("tests.support.BackwardsLz")
 
 local T = {}
 
@@ -180,6 +181,50 @@ end
 function T.rejects_out_of_range_section()
   local data = NdsBuilder.build(corruptFixture({ sectionOutOfRange = true }))
   throwsOpenCode("NDS_SECTION_OUT_OF_RANGE", RomSource.fromString(data), matchingVersions(data, "IPKE"))
+end
+
+-- Direct overlay reads are the canonical anchor other readers must match:
+-- one raw overlay plus one backwards-LZ overlay whose FAT bytes are the
+-- smaller stream and whose declared ramSize is the larger decoded length.
+function T.reads_raw_and_compressed_overlays_directly()
+  local compressed, decodedLength = BackwardsLz.growing(string.byte("O"), 40)
+  local spec = {
+    gameCode = "IPKE",
+    title = "TESTHG",
+    overlays9 = {
+      "OVERLAY0-DATA",
+      {
+        content = compressed,
+        ramAddress = 0x02200000,
+        ramSize = decodedLength,
+        flags = 16777216 + #compressed,
+      },
+    },
+    unmapped = { "UNMAPPED-DATA" },
+    tree = { files = { { name = "root.bin", content = "ROOT" } }, dirs = {} },
+  }
+  local rom = assertOk(openFixture(spec))
+  local raw, rawErr = rom:readOverlay("arm9", 0)
+  Assert.notNil(raw, "raw overlay read failed: " .. Errors.format(rawErr))
+  Assert.equal(raw, "OVERLAY0-DATA")
+  local decoded, decodedErr = rom:readOverlay("arm9", 1)
+  Assert.notNil(decoded, "compressed overlay read failed: " .. Errors.format(decodedErr))
+  Assert.equal(decoded, string.rep("O", decodedLength))
+  local info = assert(rom:overlayInfo("arm9", 1))
+  Assert.equal(info.fileId, 1)
+  Assert.equal(info.ramSize, decodedLength)
+  Assert.equal(info.isCompressed, true)
+  Assert.equal(info.compressedSize, #compressed)
+end
+
+function T.overlay_lookup_reports_typed_errors_for_unknown_cpu_and_id()
+  local rom = assertOk(openFixture())
+  local _, cpuErr = rom:overlayInfo("arm11", 0)
+  Assert.equal(assert(cpuErr).code, "NDS_OVERLAY_UNKNOWN_CPU")
+  local _, idErr = rom:readOverlay("arm9", 7)
+  Assert.equal(assert(idErr).code, "NDS_OVERLAY_UNKNOWN_ID")
+  local _, arm7Err = rom:readOverlay("arm7", 0)
+  Assert.equal(assert(arm7Err).code, "NDS_OVERLAY_UNKNOWN_ID")
 end
 
 return { tests = T }

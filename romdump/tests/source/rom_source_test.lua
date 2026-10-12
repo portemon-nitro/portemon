@@ -465,7 +465,201 @@ function T.zip_scan_releases_replaced_candidates_and_keeps_one_fallback()
   Assert.equal(s:read(0, 3), "one", "the first .nds is the retained fallback")
 end
 
--- The fallback itself is released when a later supported candidate wins, so
+-- A view over one immutable shared buffer must present exactly the same
+-- identity, size, and slice bytes as a string view over identical bytes, and
+-- must hand back the borrowed buffer itself instead of a copy.
+local function requireSharedBufferView()
+  Assert.isTrue(
+    type(RomSource.fromByteData) == "function",
+    "expected a shared-buffer source view that presents the same bytes without copying the ROM"
+  )
+end
+
+local function sharedTestBytes()
+  return NdsBuilder.build(DumpFixture.spec())
+end
+
+function T.byte_data_view_matches_the_string_view_for_identity_and_slices()
+  requireSharedBufferView()
+  local data = sharedTestBytes()
+  local bytes = love.data.newByteData(data)
+  local fromData = RomSource.fromByteData(bytes, "rom.nds")
+  local fromString = RomSource.fromString(data, "rom.nds")
+  Assert.isTrue(type(fromData.byteData) == "function", "expected the view to hand back its borrowed buffer")
+  Assert.equal(fromData:size(), #data)
+  Assert.equal(fromData:sha1(), fromString:sha1())
+  Assert.equal(fromData:read(0, 4), fromString:read(0, 4))
+  Assert.equal(fromData:read(0, #data), data)
+  Assert.equal(fromData:read(#data - 3, 3), data:sub(-3))
+  Assert.isTrue(fromData:byteData() == bytes, "the view must borrow the shared buffer instead of copying it")
+end
+
+function T.byte_data_read_rejects_out_of_range_like_the_string_view()
+  requireSharedBufferView()
+  local data = sharedTestBytes()
+  local fromData = RomSource.fromByteData(love.data.newByteData(data), "rom.nds")
+  local fromString = RomSource.fromString(data, "rom.nds")
+  local invalid = {
+    { -1, 1 },
+    { 0, -1 },
+    { 0, #data + 1 },
+    { #data, 1 },
+    { 0.5, 1 },
+    { 0, 0.5 },
+  }
+  for _, bad in ipairs(invalid) do
+    local label = string.format("offset %s length %s", tostring(bad[1]), tostring(bad[2]))
+    local viewData, viewErr = fromData:read(bad[1], bad[2])
+    local stringData, stringErr = fromString:read(bad[1], bad[2])
+    Assert.isNil(viewData, label .. " must not return data")
+    Assert.isNil(stringData, label .. " must not return data")
+    Assert.equal(assert(viewErr).code, "ROM_READ_OUT_OF_BOUNDS", label)
+    Assert.equal(assert(stringErr).code, assert(viewErr).code, label)
+  end
+end
+
+-- Releasing one borrowed view must never release the shared buffer: a peer
+-- view over the same buffer keeps reading, while the released view reports
+-- the release and no longer hands out the buffer.
+function T.releasing_one_borrowed_view_keeps_peer_views_on_the_same_buffer()
+  requireSharedBufferView()
+  local data = sharedTestBytes()
+  local shared = love.data.newByteData(data)
+  local first = RomSource.fromByteData(shared, "first.nds")
+  local second = RomSource.fromByteData(shared, "second.nds")
+  Assert.isTrue(
+    type(first.byteData) == "function" and type(second.byteData) == "function",
+    "expected both views to hand back their borrowed buffer"
+  )
+  first:release()
+  Assert.equal(second:read(0, 4), data:sub(1, 4))
+  Assert.isTrue(second:byteData() == shared, "a peer view must keep the shared buffer after a release")
+  local releasedData, releasedErr = first:read(0, 1)
+  Assert.isNil(releasedData)
+  Assert.equal(assert(releasedErr).code, "ROM_RELEASED")
+  local ok = pcall(function()
+    return first:byteData()
+  end)
+  Assert.isFalse(ok, "a released view must no longer hand out the shared buffer")
+end
+
+local function requireOrigin()
+  local probe = RomSource.fromString("x")
+  Assert.isTrue(
+    type(probe.origin) == "function",
+    "expected every source to describe its container without inventing a location"
+  )
+end
+
+function T.origin_describes_memory_views_without_inventing_a_location()
+  requireSharedBufferView()
+  requireOrigin()
+  local data = sharedTestBytes()
+  local view = RomSource.fromByteData(love.data.newByteData(data), "rom.nds")
+  local origin = view:origin()
+  Assert.equal(origin.kind, "nds")
+  Assert.isTrue(origin.path == false, "a view with no durable location must report an explicit false")
+  Assert.isTrue(origin.zipEntry == false, "a bare view has no archive member")
+  Assert.equal(origin.displayName, "rom.nds")
+  local stringOrigin = RomSource.fromString(data, "label.nds"):origin()
+  Assert.equal(stringOrigin.kind, "nds")
+  Assert.isTrue(stringOrigin.path == false, "a string view has no durable location")
+  Assert.isTrue(stringOrigin.zipEntry == false, "a string view has no archive member")
+  Assert.equal(stringOrigin.displayName, "label.nds")
+end
+
+function T.origin_reports_filesystem_and_dropped_containers()
+  requireOrigin()
+  withOwnedRoot(function(root)
+    local romPath = root .. "/game.nds"
+    local writer = assert(io.open(romPath, "wb"))
+    writer:write("abc")
+    assert(writer:close())
+    local fromPath = assert(RomSource.fromPath(romPath))
+    local pathOrigin = fromPath:origin()
+    Assert.equal(pathOrigin.kind, "nds")
+    Assert.equal(pathOrigin.path, romPath)
+    Assert.isTrue(pathOrigin.zipEntry == false, "a bare file has no archive member")
+    Assert.equal(pathOrigin.displayName, "game.nds")
+
+    local zipPath = root .. "/game.zip"
+    local zipBytes = ZipBuilder.build({ { name = "only.nds", data = "unsupported bytes" } })
+    local zipWriter = assert(io.open(zipPath, "wb"))
+    zipWriter:write(zipBytes)
+    assert(zipWriter:close())
+    local fromZip = assert(RomSource.fromPath(zipPath))
+    local zipOrigin = fromZip:origin()
+    Assert.equal(zipOrigin.kind, "zip")
+    Assert.equal(zipOrigin.path, zipPath)
+    Assert.isTrue(
+      type(zipOrigin.zipEntry) == "string" and zipOrigin.zipEntry:match("%.nds$") ~= nil,
+      "a zip source must name its selected member"
+    )
+    Assert.equal(zipOrigin.displayName, "game.zip")
+  end)
+
+  local stub = {
+    open = function()
+      return true
+    end,
+    read = function()
+      return "abc"
+    end,
+    close = function()
+      return true
+    end,
+    getFilename = function()
+      return "dropped.nds"
+    end,
+  }
+  local dropped = assert(RomSource.fromDroppedFile(stub))
+  local droppedOrigin = dropped:origin()
+  Assert.equal(droppedOrigin.kind, "nds")
+  Assert.isTrue(droppedOrigin.path == false, "a dropped file has no durable location")
+  Assert.isTrue(droppedOrigin.zipEntry == false, "a dropped bare file has no archive member")
+  Assert.equal(droppedOrigin.displayName, "dropped.nds")
+end
+
+function T.byte_data_size_and_identity_survive_release_when_cached()
+  requireSharedBufferView()
+  local data = sharedTestBytes()
+  local view = RomSource.fromByteData(love.data.newByteData(data), "rom.nds")
+  local sha1 = view:sha1()
+  view:release()
+  view:release()
+  Assert.equal(view:size(), #data, "a released view keeps its size")
+  Assert.equal(view:sha1(), sha1, "a released view keeps its cached identity")
+  local _, err = view:read(0, 1)
+  Assert.equal(assert(err).code, "ROM_RELEASED")
+end
+
+function T.byte_data_zero_length_slice_is_empty()
+  requireSharedBufferView()
+  local data = sharedTestBytes()
+  local view = RomSource.fromByteData(love.data.newByteData(data), "rom.nds")
+  Assert.equal(view:read(0, 0), "")
+  Assert.equal(view:read(#data, 0), "")
+end
+
+function T.string_view_has_no_shared_buffer()
+  local view = RomSource.fromString("abcdef", "rom.nds")
+  local err = Assert.throws(function()
+    view:byteData()
+  end)
+  Assert.equal(assert(err).code, "ROM_NOT_SHARED")
+end
+
+function T.zip_origin_names_a_relative_member()
+  requireOrigin()
+  local zip = ZipBuilder.build({ { name = "roms/good.nds", data = "unsupported bytes" } })
+  local view = assert(RomSource.fromZipData(zip, "rom.zip", versionsFor("none")))
+  local origin = view:origin()
+  Assert.equal(origin.kind, "zip")
+  Assert.isTrue(origin.path == false, "an in-memory archive has no durable location")
+  Assert.isTrue(origin.zipEntry:sub(1, 1) ~= "/", "the member must stay a relative path")
+  Assert.isTrue(origin.zipEntry:match("%.nds$") ~= nil, "the member must name the selected ROM")
+  Assert.equal(origin.displayName, "rom.zip")
+end
 -- only the winning source survives the scan. ("a1.nds" lists before
 -- "good.nds" for these names, so the unsupported candidate becomes the
 -- fallback before the match.)
