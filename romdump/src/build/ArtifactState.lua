@@ -59,6 +59,7 @@ ArtifactState.KINDS = {
   party = true,
   pc = true,
   pokegear = true,
+  ["pokegear-word-entry"] = true,
   summary = true,
   -- One staged battle input artifact per job: move battle facts, trainer
   -- records, and encounter tables each own their payload and marker.
@@ -147,6 +148,10 @@ local function checkKey(kind, key)
   end
   if kind == "pokegear" then
     assert(key == "global", "pokegear artifacts require the global key")
+    return
+  end
+  if kind == "pokegear-word-entry" then
+    assert(key == "global", "pokegear word-entry artifacts require the global key")
     return
   end
   if kind == "battle-presentation" then

@@ -31,6 +31,85 @@ function PokegearCache.markerPath()
   return DATA_DIR .. "/complete"
 end
 
+-- The separately published single-word entry section stages beside the
+-- core family without joining its manifest: its own section, provenance,
+-- and completion marker keep core readiness independent.
+function PokegearCache.wordEntryManifestPath()
+  return DATA_DIR .. "/word-entry.lua"
+end
+
+function PokegearCache.wordEntryProvenancePath()
+  return DATA_DIR .. "/word-entry-provenance.lua"
+end
+
+function PokegearCache.wordEntryMarkerPath()
+  return DATA_DIR .. "/word-entry-complete"
+end
+
+---@param romSha1 string
+---@param dependencyHash string
+---@return string
+function PokegearCache.wordEntryMarker(romSha1, dependencyHash)
+  return string.format("%s:%s:%s", PokegearCache.FORMAT, romSha1, dependencyHash)
+end
+
+---@param section table<string, unknown>
+---@return string[]
+function PokegearCache.wordEntryReferencedPaths(section)
+  local validated, err = PokegearAssetSchema.validateWordEntry(section)
+  if validated == nil then
+    error(err, 0)
+  end
+  local paths, seen = {}, {}
+  local cursor = validated.cursor --[[@as table<string, unknown>]]
+  local sequences = cursor.sequences --[[@as table]]
+  for _, sequence in ipairs(sequences) do
+    local frames = sequence.frames --[[@as table]]
+    for _, frame in ipairs(frames) do
+      local image = frame.image
+      assert(type(image) == "string", "validated word-entry frames have image paths")
+      if not seen[image] then
+        seen[image] = true
+        paths[#paths + 1] = image
+      end
+    end
+  end
+  return paths
+end
+
+---@param cacheFs CacheFs
+---@param expectedMarker string
+---@return boolean
+function PokegearCache.isWordEntryReady(cacheFs, expectedMarker)
+  local marker = cacheFs:read(PokegearCache.wordEntryMarkerPath())
+  if
+    type(marker) ~= "string"
+    or type(expectedMarker) ~= "string"
+    or marker ~= expectedMarker
+    or marker:sub(1, #PokegearCache.FORMAT + 1) ~= PokegearCache.FORMAT .. ":"
+  then
+    return false
+  end
+  local section = cacheFs:loadLua(PokegearCache.wordEntryManifestPath())
+  if PokegearAssetSchema.validateWordEntry(section) == nil then
+    return false
+  end
+  local provenance = cacheFs:loadLua(PokegearCache.wordEntryProvenancePath())
+  if type(provenance) ~= "table" then
+    return false
+  end
+  local ok, paths = pcall(PokegearCache.wordEntryReferencedPaths, section)
+  if not ok then
+    return false
+  end
+  for _, path in ipairs(paths) do
+    if not cacheFs:exists(path, "file") then
+      return false
+    end
+  end
+  return true
+end
+
 ---@param romSha1 string
 ---@param dependencyHash string
 ---@return string

@@ -189,4 +189,79 @@ function T.contact_keys_require_a_namespace()
   Assert.notNil(err, "an unnamespaced contact key must carry an error")
 end
 
+local WORD_BANKS = { 237, 751, 735, 721, 285, 286, 287, 288, 289, 290, 291 }
+local GROUP_COUNTS = { 496, 468, 18, 124, 38, 38, 107, 104, 47, 32, 23 }
+local GROUP_BASES = { 0, 496, 964, 982, 1106, 1144, 1182, 1289, 1393, 1440, 1472 }
+
+local function wordEntrySection()
+  local groups = {}
+  for index = 1, 11 do
+    groups[index] =
+      { group = index - 1, bank = WORD_BANKS[index], count = GROUP_COUNTS[index], firstWordId = GROUP_BASES[index] }
+  end
+  return {
+    groups = groups,
+    cursor = {
+      sequences = {
+        {
+          frames = {
+            {
+              image = "assets/generated/pokegear/word-entry-cursor-1-1.png",
+              width = 16,
+              height = 16,
+              anchorX = 0,
+              anchorY = 0,
+              duration = 4,
+            },
+          },
+          playMode = "forward",
+          loopStartFrameIdx = 0,
+        },
+      },
+    },
+    background = { screenMember = 0, charMember = 1, layers = { 0, 4 } },
+    text = { interfaceBanks = { 282, 283, 284 }, interfaceCounts = { 14, 15, 3 } },
+    input = { hitboxes = 5, touchYMin = 28, touchYMax = 226, confirmSound = 1500 },
+  }
+end
+
+function T.word_entry_sections_keep_eleven_ordered_groups_and_cursor_frames()
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record, err = PokegearAssetSchema.validateWordEntry(wordEntrySection())
+  Assert.notNil(record, "a well-formed word-entry section must validate: " .. tostring(err and err.message or err))
+  Assert.equal(#record.groups, 11, "the section keeps all eleven source groups")
+
+  local flat = wordEntrySection()
+  flat.groups = { { group = 0, bank = 237, count = 1495, firstWordId = 0 } }
+  Assert.isNil(
+    PokegearAssetSchema.validateWordEntry(flat),
+    "a flattened single-group section must not validate"
+  )
+
+  local unordered = wordEntrySection()
+  unordered.groups[2].group = 5
+  Assert.isNil(
+    PokegearAssetSchema.validateWordEntry(unordered),
+    "an out-of-order group index must not validate"
+  )
+
+  local empty = wordEntrySection()
+  empty.groups[3].count = 0
+  Assert.isNil(PokegearAssetSchema.validateWordEntry(empty), "an empty source group must not validate")
+
+  local shifted = wordEntrySection()
+  shifted.groups[2].firstWordId = 0
+  Assert.isNil(
+    PokegearAssetSchema.validateWordEntry(shifted),
+    "a base that breaks the cumulative word order must not validate"
+  )
+
+  local badCursor = wordEntrySection()
+  badCursor.cursor.sequences[1].frames[1].image = "assets/generated/pc/word-entry-cursor-1.png"
+  Assert.isNil(
+    PokegearAssetSchema.validateWordEntry(badCursor),
+    "a cursor frame outside the pokegear family must not validate"
+  )
+end
+
 return { tests = T }

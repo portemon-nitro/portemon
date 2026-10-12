@@ -504,6 +504,178 @@ function PokegearAssetSchema.validate(manifest)
   return manifest
 end
 
+-- The separately published single-word entry section: eleven ordered
+-- source groups with cumulative decimal bases plus the selector cursor
+-- sequences. Core manifests never carry this record; producer staging and
+-- explicit audit validate it here instead.
+---@param section unknown
+---@return table<string, unknown>|nil record
+---@return Errors.Error|nil
+function PokegearAssetSchema.validateWordEntry(section)
+  if type(section) ~= "table" then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry must be a record", {})
+  end
+  ---@cast section table<string, unknown>
+  for key in pairs(section) do
+    if key ~= "groups" and key ~= "cursor" and key ~= "background" and key ~= "text" and key ~= "input" then
+      return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry has unexpected key " .. tostring(key), {})
+    end
+  end
+  local groups = section.groups
+  if type(groups) ~= "table" or #groups ~= 11 then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry groups must list eleven source groups", {})
+  end
+  local base = 0
+  for index, entry in ipairs(groups) do
+    local label = "word entry groups[" .. index .. "]"
+    if type(entry) ~= "table" then
+      return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must be a record", {})
+    end
+    ---@cast entry table<string, unknown>
+    for key in pairs(entry) do
+      if key ~= "group" and key ~= "bank" and key ~= "count" and key ~= "firstWordId" then
+        return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " has unexpected key " .. tostring(key), {})
+      end
+    end
+    if entry.group ~= index - 1 then
+      return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " breaks the source group order", {})
+    end
+    if
+      not isInteger(entry.bank)
+      or entry.bank --[[@as integer]]
+        <= 0
+    then
+      return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. ".bank must be a positive message bank", {})
+    end
+    if
+      not isInteger(entry.count)
+      or entry.count --[[@as integer]]
+        < 1
+    then
+      return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. ".count must be a positive word count", {})
+    end
+    if entry.firstWordId ~= base then
+      return nil,
+        fail(
+          PokegearAssetSchema.ERROR.SHAPE_INVALID,
+          label .. ".firstWordId must continue the cumulative word order",
+          {}
+        )
+    end
+    base = base + entry.count --[[@as integer]]
+  end
+  local cursor = section.cursor
+  if type(cursor) ~= "table" then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry cursor must be a record", {})
+  end
+  ---@cast cursor table<string, unknown>
+  for key in pairs(cursor) do
+    if key ~= "sequences" then
+      return nil,
+        fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry cursor has unexpected key " .. tostring(key), {})
+    end
+  end
+  local sequences = cursor.sequences
+  if type(sequences) ~= "table" or #sequences == 0 then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry cursor must carry its source sequences", {})
+  end
+  for index, sequence in ipairs(sequences) do
+    local sequenceError = checkAnimation(sequence, "word entry cursor.sequences[" .. index .. "]")
+    if sequenceError then
+      return nil, sequenceError
+    end
+  end
+  local background = section.background
+  if type(background) ~= "table" then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry background must be a record", {})
+  end
+  ---@cast background table<string, unknown>
+  for key in pairs(background) do
+    if key ~= "screenMember" and key ~= "charMember" and key ~= "layers" then
+      return nil,
+        fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry background has unexpected key " .. tostring(key), {})
+    end
+  end
+  if not isInteger(background.screenMember) or not isInteger(background.charMember) then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry background members must be integers", {})
+  end
+  local layers = background.layers
+  if type(layers) ~= "table" then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry background layers must be a list", {})
+  end
+  for _, layer in ipairs(layers) do
+    if not isInteger(layer) then
+      return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry background layers must be integers", {})
+    end
+  end
+  local text = section.text
+  if type(text) ~= "table" then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry text must be a record", {})
+  end
+  ---@cast text table<string, unknown>
+  for key in pairs(text) do
+    if key ~= "interfaceBanks" and key ~= "interfaceCounts" then
+      return nil,
+        fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry text has unexpected key " .. tostring(key), {})
+    end
+  end
+  for _, field in ipairs({ "interfaceBanks", "interfaceCounts" }) do
+    local list = text[field]
+    if type(list) ~= "table" or #list == 0 then
+      return nil,
+        fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry text." .. field .. " must be a non-empty list", {})
+    end
+    for _, bank in ipairs(list) do
+      if
+        not isInteger(bank)
+        or bank --[[@as integer]]
+          <= 0
+      then
+        return nil,
+          fail(
+            PokegearAssetSchema.ERROR.SHAPE_INVALID,
+            "word entry text." .. field .. " must carry positive message banks",
+            {}
+          )
+      end
+    end
+  end
+  local input = section.input
+  if type(input) ~= "table" then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry input must be a record", {})
+  end
+  ---@cast input table<string, unknown>
+  for key in pairs(input) do
+    if key ~= "hitboxes" and key ~= "touchYMin" and key ~= "touchYMax" and key ~= "confirmSound" then
+      return nil,
+        fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry input has unexpected key " .. tostring(key), {})
+    end
+  end
+  if
+    not isInteger(input.hitboxes)
+    or input.hitboxes --[[@as integer]]
+      <= 0
+  then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry input.hitboxes must be positive", {})
+  end
+  if
+    not isInteger(input.touchYMin)
+    or not isInteger(input.touchYMax)
+    or input.touchYMin --[[@as integer]]
+      >= input.touchYMax --[[@as integer]]
+  then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry input touch bounds must order", {})
+  end
+  if
+    not isInteger(input.confirmSound)
+    or input.confirmSound --[[@as integer]]
+      <= 0
+  then
+    return nil, fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "word entry input.confirmSound must be positive", {})
+  end
+  return section
+end
+
 ---@param manifest unknown
 ---@return table<string, unknown> record
 function PokegearAssetSchema.assertManifest(manifest)

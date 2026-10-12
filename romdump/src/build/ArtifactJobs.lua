@@ -622,6 +622,59 @@ local function executePokegear(artifact, context)
   return PokegearCacheWriter.stage(artifact, bundle)
 end
 
+-- The word-entry closure is statically bounded: the selector reads its
+-- own graphics and message members from the dump and reuses the published
+-- PC dictionary identities, so the PC family is its only prerequisite.
+---@return { kind: string, key: string }[], boolean
+local function dependenciesPokegearWordEntry()
+  return { { kind = "pc", key = "global" } }, true
+end
+
+local function executePokegearWordEntry(artifact, context)
+  local PokegearWordEntryCompiler = require("romdump.src.digest.ui.PokegearWordEntryCompiler")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearCache = require("libs.assets.src.PokegearCache")
+  local romFs = assert(context.romFs, "pokegear word-entry jobs require a source reader")
+  local versionId = assert(context.versionId, "pokegear word-entry jobs require a version")
+  local bundle = compileOrRaise(function()
+    return PokegearWordEntryCompiler.compile(romFs, versionId)
+  end, "pokegear word entry")
+  assert(type(bundle.marker) == "string" and bundle.marker ~= "", "word-entry bundle carries no marker")
+  assert(type(bundle.section) == "table", "word-entry bundle carries no section")
+  local assets = bundle.assets ~= nil and bundle.assets or bundle.files
+  assert(type(assets) == "table", "word-entry bundle carries no assets")
+  local validated, schemaErr = PokegearAssetSchema.validateWordEntry(bundle.section)
+  if validated == nil then
+    error(schemaErr, 0)
+  end
+  for _, path in ipairs(PokegearCache.wordEntryReferencedPaths(bundle.section)) do
+    if assets[path] == nil then
+      error("word-entry bundle is missing referenced asset " .. path, 0)
+    end
+  end
+  artifact:addOwnedRoot(PokegearCache.assetDir())
+  artifact:addOwnedRoot(PokegearCache.dir())
+  local stage = artifact:stageFs()
+  local cacheFs = artifact:cacheFs()
+  for _, path in ipairs(PokegearCache.wordEntryReferencedPaths(bundle.section)) do
+    stage:write(path, assets[path])
+  end
+  stage:writeLua(PokegearCache.wordEntryManifestPath(), bundle.section)
+  stage:writeLua(PokegearCache.wordEntryProvenancePath(), bundle.provenance or {})
+  local readback = stage:loadLua(PokegearCache.wordEntryManifestPath())
+  local readbackRecord, readbackErr = PokegearAssetSchema.validateWordEntry(readback)
+  if readbackRecord == nil then
+    error(readbackErr or "word-entry section readback is invalid", 0)
+  end
+  for _, path in ipairs(PokegearCache.wordEntryReferencedPaths(bundle.section)) do
+    if not stage:exists(path, "file") and not cacheFs:exists(path, "file") then
+      error("word-entry asset missing after stage: " .. path, 0)
+    end
+  end
+  stage:write(PokegearCache.wordEntryMarkerPath(), bundle.marker)
+  return bundle.marker
+end
+
 local function dependenciesPc(key)
   assert(key == "global", "PC family only has the global job")
   return sortedJobs({
@@ -1133,6 +1186,13 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
+local function validatePokegearWordEntry(check)
+  local PokegearCache = require("libs.assets.src.PokegearCache")
+  return PokegearCache.isWordEntryReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
 local function validateSummary(check)
   local SummaryCache = require("libs.assets.src.SummaryCache")
   return SummaryCache.isReady(check.cacheFs, check.marker)
@@ -1610,6 +1670,14 @@ DESCRIPTORS = {
     size = "normal",
     execute = executePokegear,
     validate = validatePokegear,
+  },
+  -- Single-word entry: the bounded selector closure over the existing
+  -- dictionary identities, staged beside the core family.
+  ["pokegear-word-entry"] = {
+    size = "normal",
+    dependencies = dependenciesPokegearWordEntry,
+    execute = executePokegearWordEntry,
+    validate = validatePokegearWordEntry,
   },
   -- Summary presentation: builds over the current mon catalog and
   -- layout families, never over paged portrait pixels.

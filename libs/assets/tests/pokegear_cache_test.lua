@@ -112,4 +112,88 @@ function T.marker_binds_format_and_source_identities()
   Assert.equal(PokegearCache.assetDir(), "assets/generated/pokegear", "the asset directory is stable")
 end
 
+local WORD_BANKS = { 237, 751, 735, 721, 285, 286, 287, 288, 289, 290, 291 }
+local GROUP_COUNTS = { 496, 468, 18, 124, 38, 38, 107, 104, 47, 32, 23 }
+local GROUP_BASES = { 0, 496, 964, 982, 1106, 1144, 1182, 1289, 1393, 1440, 1472 }
+
+local function wordEntrySection()
+  local groups = {}
+  for index = 1, 11 do
+    groups[index] =
+      { group = index - 1, bank = WORD_BANKS[index], count = GROUP_COUNTS[index], firstWordId = GROUP_BASES[index] }
+  end
+  return {
+    groups = groups,
+    cursor = {
+      sequences = {
+        {
+          frames = {
+            {
+              image = "assets/generated/pokegear/word-entry-cursor-1-1.png",
+              width = 16,
+              height = 16,
+              anchorX = 0,
+              anchorY = 0,
+              duration = 4,
+            },
+          },
+          playMode = "forward",
+          loopStartFrameIdx = 0,
+        },
+      },
+    },
+    background = { screenMember = 0, charMember = 1, layers = { 0, 4 } },
+    text = { interfaceBanks = { 282, 283, 284 }, interfaceCounts = { 14, 15, 3 } },
+    input = { hitboxes = 5, touchYMin = 28, touchYMax = 226, confirmSound = 1500 },
+  }
+end
+
+local function stagedWordEntry(section, marker)
+  local PokegearCache = require("libs.assets.src.PokegearCache")
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  for _, path in ipairs(PokegearCache.wordEntryReferencedPaths(section)) do
+    cache:write(path, "fixture asset")
+  end
+  cache:writeLua(PokegearCache.wordEntryManifestPath(), section)
+  cache:writeLua(PokegearCache.wordEntryProvenancePath(), { staged = true })
+  cache:write(PokegearCache.wordEntryMarkerPath(), marker)
+  return cache
+end
+
+function T.word_entry_readiness_is_tracked_separately_from_core()
+  local PokegearCache = require("libs.assets.src.PokegearCache")
+  Assert.isFalse(
+    PokegearCache.wordEntryManifestPath() == PokegearCache.manifestPath(),
+    "the word-entry section stages outside the core manifest"
+  )
+  Assert.isFalse(
+    PokegearCache.wordEntryMarkerPath() == PokegearCache.markerPath(),
+    "the word-entry marker stages outside the core marker"
+  )
+  local marker = PokegearCache.wordEntryMarker("rom-sha", "deps-sha")
+  Assert.isTrue(
+    marker:find("rom-sha", 1, true) ~= nil,
+    "the word-entry marker binds the source identity"
+  )
+  local section = wordEntrySection()
+  local cache = stagedWordEntry(section, marker)
+  Assert.isTrue(
+    PokegearCache.isWordEntryReady(cache, marker),
+    "a complete word-entry publication must read ready"
+  )
+  local stale = PokegearCache.wordEntryMarker("rom-sha", "other-deps")
+  local staleOk, staleReady = pcall(PokegearCache.isWordEntryReady, cache, stale)
+  Assert.isTrue(staleOk, "a stale word-entry marker is a readiness refusal, not an exception")
+  Assert.isFalse(staleReady, "a stale word-entry marker must not read ready")
+
+  local coreMarker = PokegearCache.marker("rom-sha", "deps-sha")
+  local coreReady = pcall(PokegearCache.isReady, cache, coreMarker)
+  Assert.isTrue(coreReady, "word-entry staging alone never raises core readiness")
+  Assert.isFalse(
+    PokegearCache.isReady(cache, coreMarker),
+    "word-entry staging alone never completes the core family"
+  )
+end
+
 return { tests = T }

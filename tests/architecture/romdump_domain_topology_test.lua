@@ -135,6 +135,7 @@ local DOMAINS = {
     "PokegearAssetCompiler",
     "PokegearCacheWriter",
     "PokegearCatalogCompiler",
+    "PokegearWordEntryCompiler",
     "RgbaImage",
     "SummaryAssetCompiler",
     "SummaryCacheWriter",
