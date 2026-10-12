@@ -2718,7 +2718,9 @@ return {
     capabilities = { "rom_dump", "derived_assets" },
     derivedAssets = {
       "field-runtime",
+      "map-data:63",
       "map-data:64",
+      "map:63",
       "map:64",
       "trainers:global",
       "encounters:global",

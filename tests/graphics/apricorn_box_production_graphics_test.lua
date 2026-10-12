@@ -7,9 +7,11 @@ local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
+local GameVersion = require("romdump.src.source.GameVersion")
 local ApricornBoxRenderer = require("libs.hgss.src.ui.ApricornBoxRenderer")
 local ApricornBoxScreenState = require("game.hgss.src.apricorn.ApricornBoxScreenState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 
@@ -35,6 +37,22 @@ end
 local function messageProvider(cacheFs)
   local provider = require("libs.hgss.src.interaction.FieldMessageProvider").new(cacheFs)
   return provider
+end
+
+-- Versions with an imported ROM and a prepared Apricorn Box manifest:
+-- the smoke renders every ready version and skips cleanly when no
+-- user-owned ROM is available, exactly like the other asset smokes.
+local function readyVersions()
+  local versions = {}
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    if RomImporter.isReady(versionId) then
+      local cacheFs = CacheFs.forVersion(versionId)
+      if cacheFs:exists(ApricornBoxAssetCache.manifestPath()) then
+        versions[#versions + 1] = versionId
+      end
+    end
+  end
+  return versions
 end
 
 local function makeTopology(name)
@@ -126,7 +144,7 @@ local function assertPromptButtons(image, cacheFs, uiManifest, placement, prompt
   end
 end
 
-local function render(scope, cacheFs, manifest, renderer, window, topologyName, mode)
+local function render(scope, cacheFs, manifest, renderer, window, versionId, topologyName, mode)
   local topology, width, height = makeTopology(topologyName)
   local currentMeasurement = measurement(topology, width, height, topologyName)
   local provider = messageProvider(cacheFs)
@@ -182,7 +200,7 @@ local function render(scope, cacheFs, manifest, renderer, window, topologyName, 
     end
     assertPromptButtons(image, cacheFs, uiManifest, assert(lowerPane).placement, assert(view.confirmationPrompt))
   end
-  writeCapture(image, mode .. "-" .. topologyName .. ".png")
+  writeCapture(image, versionId .. "-" .. mode .. "-" .. topologyName .. ".png")
 
   if mode == "kurt_select" then
     screen:updateFixed({ { type = "navigate", direction = "down" } })
@@ -206,7 +224,7 @@ local function render(scope, cacheFs, manifest, renderer, window, topologyName, 
       end
     end
     assertPromptButtons(noImage, cacheFs, uiManifest, assert(lowerPane).placement, assert(view.confirmationPrompt))
-    writeCapture(noImage, mode .. "-" .. topologyName .. "-no.png")
+    writeCapture(noImage, versionId .. "-" .. mode .. "-" .. topologyName .. "-no.png")
   end
 end
 
@@ -260,104 +278,116 @@ local function trackingGraphics(failAt, failFilterAt)
   return graphics, calls
 end
 
-function T.box_renderer_releases_prompt_and_source_images_once(_)
-  local cacheFs = CacheFs.forVersion("heartgold")
-  local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
-  local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
-  local promptAssets = {}
-  local compact = uiManifest.yesNoPrompt.shapes.compact
-  for _, row in ipairs({ compact.yes, compact.no }) do
-    for _, state in ipairs({ row.normal, row.selected }) do
-      promptAssets[state.asset] = true
+function T.box_renderer_releases_prompt_and_source_images_once(_, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the Box smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
+    local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
+    local promptAssets = {}
+    local compact = uiManifest.yesNoPrompt.shapes.compact
+    for _, row in ipairs({ compact.yes, compact.no }) do
+      for _, state in ipairs({ row.normal, row.selected }) do
+        promptAssets[state.asset] = true
+      end
     end
+    local promptAssetCount = 0
+    for _ in pairs(promptAssets) do
+      promptAssetCount = promptAssetCount + 1
+    end
+    local successGraphics, successCalls = trackingGraphics()
+    local renderer = ApricornBoxRenderer.new({
+      cacheFs = cacheFs,
+      manifest = manifest,
+      text = { drawText = function() end },
+      uiManifest = uiManifest,
+      graphics = successGraphics,
+    })
+    renderer:release()
+    renderer:release()
+    Assert.equal(successCalls.released, successCalls.created, "successful construction releases every owned image once")
+
+    local boxAssetCount = #ApricornBoxAssetCache.referencedPaths(manifest)
+    local failureGraphics, failureCalls = trackingGraphics(boxAssetCount + 1)
+    local ok, err = pcall(ApricornBoxRenderer.new, {
+      cacheFs = cacheFs,
+      manifest = manifest,
+      text = { drawText = function() end },
+      uiManifest = uiManifest,
+      graphics = failureGraphics,
+    })
+    Assert.isFalse(ok, "a prompt image allocation failure propagates")
+    Assert.isTrue(tostring(err):find("injected Box image allocation failure", 1, true) ~= nil)
+    Assert.equal(
+      failureCalls.created,
+      boxAssetCount + 1,
+      "failure occurs after source Box images were acquired"
+    )
+    Assert.equal(failureCalls.released, boxAssetCount, "partial construction releases every source image once")
+
+    local filterFailureGraphics, filterFailureCalls = trackingGraphics(nil, 1)
+    local filterOk, filterErr = pcall(ApricornBoxRenderer.new, {
+      cacheFs = cacheFs,
+      manifest = manifest,
+      text = { drawText = function() end },
+      uiManifest = uiManifest,
+      graphics = filterFailureGraphics,
+    })
+    Assert.isFalse(filterOk, "an image filter failure propagates")
+    Assert.isTrue(tostring(filterErr):find("injected Box image filter failure", 1, true) ~= nil)
+    Assert.equal(filterFailureCalls.created, 1, "filter failure follows image acquisition")
+    Assert.equal(filterFailureCalls.released, 1, "filter failure releases the acquired image once")
+
+    local promptFilterGraphics, promptFilterCalls = trackingGraphics(nil, boxAssetCount + 1)
+    local promptFilterOk, promptFilterErr = pcall(ApricornBoxRenderer.new, {
+      cacheFs = cacheFs,
+      manifest = manifest,
+      text = { drawText = function() end },
+      uiManifest = uiManifest,
+      graphics = promptFilterGraphics,
+    })
+    Assert.isFalse(promptFilterOk, "a prompt image filter failure propagates")
+    Assert.isTrue(tostring(promptFilterErr):find("injected Box image filter failure", 1, true) ~= nil)
+    Assert.equal(promptFilterCalls.created, boxAssetCount + 1, "prompt filter failure follows image acquisition")
+    Assert.equal(
+      promptFilterCalls.released,
+      boxAssetCount + 1,
+      "prompt filter failure releases source and prompt images once"
+    )
   end
-  local promptAssetCount = 0
-  for _ in pairs(promptAssets) do
-    promptAssetCount = promptAssetCount + 1
-  end
-  local successGraphics, successCalls = trackingGraphics()
-  local renderer = ApricornBoxRenderer.new({
-    cacheFs = cacheFs,
-    manifest = manifest,
-    text = { drawText = function() end },
-    uiManifest = uiManifest,
-    graphics = successGraphics,
-  })
-  renderer:release()
-  renderer:release()
-  Assert.equal(successCalls.released, successCalls.created, "successful construction releases every owned image once")
-
-  local boxAssetCount = #ApricornBoxAssetCache.referencedPaths(manifest)
-  local failureGraphics, failureCalls = trackingGraphics(boxAssetCount + 1)
-  local ok, err = pcall(ApricornBoxRenderer.new, {
-    cacheFs = cacheFs,
-    manifest = manifest,
-    text = { drawText = function() end },
-    uiManifest = uiManifest,
-    graphics = failureGraphics,
-  })
-  Assert.isFalse(ok, "a prompt image allocation failure propagates")
-  Assert.isTrue(tostring(err):find("injected Box image allocation failure", 1, true) ~= nil)
-  Assert.equal(
-    failureCalls.created,
-    boxAssetCount + 1,
-    "failure occurs after source Box images were acquired"
-  )
-  Assert.equal(failureCalls.released, boxAssetCount, "partial construction releases every source image once")
-
-  local filterFailureGraphics, filterFailureCalls = trackingGraphics(nil, 1)
-  local filterOk, filterErr = pcall(ApricornBoxRenderer.new, {
-    cacheFs = cacheFs,
-    manifest = manifest,
-    text = { drawText = function() end },
-    uiManifest = uiManifest,
-    graphics = filterFailureGraphics,
-  })
-  Assert.isFalse(filterOk, "an image filter failure propagates")
-  Assert.isTrue(tostring(filterErr):find("injected Box image filter failure", 1, true) ~= nil)
-  Assert.equal(filterFailureCalls.created, 1, "filter failure follows image acquisition")
-  Assert.equal(filterFailureCalls.released, 1, "filter failure releases the acquired image once")
-
-  local promptFilterGraphics, promptFilterCalls = trackingGraphics(nil, boxAssetCount + 1)
-  local promptFilterOk, promptFilterErr = pcall(ApricornBoxRenderer.new, {
-    cacheFs = cacheFs,
-    manifest = manifest,
-    text = { drawText = function() end },
-    uiManifest = uiManifest,
-    graphics = promptFilterGraphics,
-  })
-  Assert.isFalse(promptFilterOk, "a prompt image filter failure propagates")
-  Assert.isTrue(tostring(promptFilterErr):find("injected Box image filter failure", 1, true) ~= nil)
-  Assert.equal(promptFilterCalls.created, boxAssetCount + 1, "prompt filter failure follows image acquisition")
-  Assert.equal(
-    promptFilterCalls.released,
-    boxAssetCount + 1,
-    "prompt filter failure releases source and prompt images once"
-  )
 end
 
-function T.source_box_renders_browse_and_kurt_modes_for_each_layout(scope)
-  local cacheFs = CacheFs.forVersion("heartgold")
-  local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
-  Assert.isTrue(ApricornBoxAssetCache.isManifestValid(manifest), "the prepared ROM supplies the strict source manifest")
-  assertSourceLabels(cacheFs, manifest)
-  local text = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs, graphics = love.graphics }))
-  local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
-  local window = scope:own(FieldWindowRenderer.new({
-    cacheFs = cacheFs,
-    manifest = uiManifest,
-    graphics = love.graphics,
-  }))
-  local renderer = scope:own(ApricornBoxRenderer.new({
-    cacheFs = cacheFs,
-    manifest = manifest,
-    text = text,
-    uiManifest = uiManifest,
-    graphics = love.graphics,
-  }))
-  for _, topology in ipairs({ "native", "wide", "tall", "dual" }) do
-    for _, mode in ipairs({ "browse", "kurt_select" }) do
-      render(scope, cacheFs, manifest, renderer, window, topology, mode)
+function T.source_box_renders_browse_and_kurt_modes_for_each_layout(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the Box smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
+    Assert.isTrue(ApricornBoxAssetCache.isManifestValid(manifest), "the prepared ROM supplies the strict source manifest")
+    assertSourceLabels(cacheFs, manifest)
+    local text = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs, graphics = love.graphics }))
+    local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
+    local window = scope:own(FieldWindowRenderer.new({
+      cacheFs = cacheFs,
+      manifest = uiManifest,
+      graphics = love.graphics,
+    }))
+    local renderer = scope:own(ApricornBoxRenderer.new({
+      cacheFs = cacheFs,
+      manifest = manifest,
+      text = text,
+      uiManifest = uiManifest,
+      graphics = love.graphics,
+    }))
+    for _, topology in ipairs({ "native", "wide", "tall", "dual" }) do
+      for _, mode in ipairs({ "browse", "kurt_select" }) do
+        render(scope, cacheFs, manifest, renderer, window, versionId, topology, mode)
+      end
     end
   end
 end
