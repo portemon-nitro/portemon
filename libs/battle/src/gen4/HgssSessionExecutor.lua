@@ -3434,6 +3434,15 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     assert(type(stream.nextU16) == "function", "native strikes draw from the battle stream")
     local actor = action.actor --[[@as table<string, unknown>]]
     local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+    -- The admitted move list travels with the mon record: an empty list
+    -- still answers struggle, while a missing list rejects instead of
+    -- impersonating one. The check runs before any gate draws so a
+    -- corrupt record fails before publishing half-built state.
+    if
+      type((combatant.mon --[[@as table<string, unknown>]]).moves) ~= "table"
+    then
+      error(BattleErrors.missingBehavior("strikes read their admitted move list", { fact = "moves" }))
+    end
     -- Finite volatile effects gate the strike before persistent status:
     -- a denied action never starts, spends nothing, and draws nothing
     -- beyond the timing's own labeled rolls. Switching and item use
@@ -3506,13 +3515,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local attackerAbility = strike.attackerAbility
     local attackerCondition = strike.attackerCondition
     local defenderTypes = strike.defenderTypes
-    local moves = combatant
-      .mon --[[@as table<string, unknown>]]
-      .moves
-    if type(moves) ~= "table" then
-      moves = {}
-    end
+    local moves = (combatant.mon --[[@as table<string, unknown>]]).moves
+    assert(type(moves) == "table", "strike frames carry their admitted move list")
     local userMon = combatant.mon --[[@as table<string, unknown>]]
+    -- The recent-move record stays legitimately absent on fresh
+    -- battles, so a missing ledger still reads as never-struck.
     local recentMoves = state.lastMoves
     if type(recentMoves) ~= "table" then
       recentMoves = {}

@@ -64,7 +64,9 @@ local function scenarioMoveFacts(seeds)
   }
   for _, seed in ipairs(seeds or {}) do
     local learned = seed.mon --[[@as table<string, unknown>]]
-    for _, entry in ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]]) do
+    for _, entry in
+      ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]])
+    do
       if type(entry) == "table" and type(entry.move) == "string" and facts[entry.move] == nil then
         facts[entry.move] = catalog:move(entry.move)
       end
@@ -83,7 +85,9 @@ end
 ---@return string[] detached semantic types for the form
 local function copyFormTypes(formRecord)
   local types = {} ---@type string[]
-  for _, key in ipairs(formRecord.types --[[@as string[] ]]) do
+  for _, key in
+    ipairs(formRecord.types --[[@as string[] ]])
+  do
     types[#types + 1] = key --[[@as string]]
   end
   return types
@@ -652,10 +656,7 @@ function T.fainted_leads_are_replaced_before_the_next_turn()
   Assert.equal(replaced.positions[1].occupant, 3, "the reserve takes the vacated position")
   Assert.isNil(replaced.combatants[1].active, "the fainted lead stays out of the field")
   Assert.notNil(replaced.combatants[3].active, "the reserve enters the field")
-  Assert.isTrue(
-    replaced.combatants[3].active.activation ~= leadActivation,
-    "the reserve enters with a fresh entry"
-  )
+  Assert.isTrue(replaced.combatants[3].active.activation ~= leadActivation, "the reserve enters with a fresh entry")
   local following = SessionFixture.driveUntilSettled(session)
   Assert.equal(following.status, "waiting", "the following turn asks for decisions")
   local addressesReserve = false
@@ -697,10 +698,7 @@ function T.fainted_leads_are_replaced_before_the_next_turn()
       break
     end
     for _, request in ipairs(boundary.request.requests) do
-      Assert.isTrue(
-        request.controller ~= "beta",
-        "the opposing reserve arrives without an external decision"
-      )
+      Assert.isTrue(request.controller ~= "beta", "the opposing reserve arrives without an external decision")
       local advanceOk, advanceErr = foeSession:submit(SessionFixture.replyFor(request, answer(request)))
       Assert.isTrue(advanceOk, "standing-side replies are accepted")
       Assert.isNil(advanceErr, "accepted replies carry no input error")
@@ -894,14 +892,12 @@ function T.replacement_replies_must_name_a_living_reserve()
   end
   Assert.notNil(replacement, "the bereaved side is asked for its replacement")
   local actor = assert(replacement.actors[1], "the replacement addresses its fainted entry")
-  local refused, refuseErr = session:submit(
-    SessionFixture.replyFor(replacement, { SessionFixture.switchChoice(actor, 2) })
-  )
+  local refused, refuseErr =
+    session:submit(SessionFixture.replyFor(replacement, { SessionFixture.switchChoice(actor, 2) }))
   Assert.isFalse(refused, "a foreign active mon answers no replacement")
   Assert.notNil(refuseErr, "refused replacements report their input error")
-  local fainted, faintErr = session:submit(
-    SessionFixture.replyFor(replacement, { SessionFixture.switchChoice(actor, 1) })
-  )
+  local fainted, faintErr =
+    session:submit(SessionFixture.replyFor(replacement, { SessionFixture.switchChoice(actor, 1) }))
   Assert.isFalse(fainted, "the fainted lead cannot replace itself")
   Assert.notNil(faintErr, "refused replacements report their input error")
   local again = SessionFixture.driveUntilSettled(session)
@@ -911,9 +907,7 @@ function T.replacement_replies_must_name_a_living_reserve()
     replacement.requestId,
     "the bereaved side is asked again with the same request"
   )
-  local ok, replyErr = session:submit(
-    SessionFixture.replyFor(replacement, { SessionFixture.switchChoice(actor, 3) })
-  )
+  local ok, replyErr = session:submit(SessionFixture.replyFor(replacement, { SessionFixture.switchChoice(actor, 3) }))
   Assert.isTrue(ok, "the living reserve is accepted")
   Assert.isNil(replyErr, "accepted replacements carry no input error")
   session:advance(64)
@@ -1075,11 +1069,7 @@ local function chartContent()
     builder:define("types", attack, { key = attack, name = attack, relations = relations }, "projection-tests")
   end
   local behaviors = BattleBehaviorBuilder.new()
-  behaviors:registerRuleset(
-    Executor.RULESET,
-    { key = Executor.RULESET, chart = Executor.RULESET },
-    "projection-tests"
-  )
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "projection-tests")
   behaviors:registerFormat(NATIVE_FORMAT, { key = NATIVE_FORMAT }, "projection-tests")
   return BattleContent.new(builder:freeze(), behaviors:freeze())
 end
@@ -1156,7 +1146,7 @@ local function damageTaken(session, combatant)
   local snapshot = session:capture()
   local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
   local record = combatants[combatant] --[[@as table<string, unknown>]]
-  return (record.entryHp --[[@as integer]]) - (record.hp --[[@as integer]])
+  return record.entryHp --[[@as integer]] - record.hp --[[@as integer]]
 end
 
 -- Move priority brackets dominate Speed while lowered priority waits: across
@@ -1184,11 +1174,7 @@ function T.slower_raised_priority_strikes_first_and_faster_lowered_priority_stri
       species,
       seed
     )
-    Assert.equal(
-      firstStriker(playOpeningTurn(raised)),
-      "QUICK_ATTACK",
-      "raised priority beats Speed on seed " .. seed
-    )
+    Assert.equal(firstStriker(playOpeningTurn(raised)), "QUICK_ATTACK", "raised priority beats Speed on seed " .. seed)
     raised:dispose()
 
     local lowered = projectionDuel(
@@ -1198,11 +1184,7 @@ function T.slower_raised_priority_strikes_first_and_faster_lowered_priority_stri
       species,
       seed
     )
-    Assert.equal(
-      firstStriker(playOpeningTurn(lowered)),
-      "TACKLE",
-      "lowered priority waits on seed " .. seed
-    )
+    Assert.equal(firstStriker(playOpeningTurn(lowered)), "TACKLE", "lowered priority waits on seed " .. seed)
     lowered:dispose()
   end
 end
@@ -1241,11 +1223,7 @@ function T.unequal_speeds_order_without_tie_draws_while_true_ties_draw_once()
   playOpeningTurn(tied)
   local tiedCalls = tied:capture().rng.calls
   tied:dispose()
-  Assert.equal(
-    tiedCalls,
-    mixedCalls + 2,
-    "a genuine tie costs one action tie draw plus one residual battler tie draw"
-  )
+  Assert.equal(tiedCalls, mixedCalls + 2, "a genuine tie costs one action tie draw plus one residual battler tie draw")
   for seed = 1, 8 do
     local duel = projectionDuel(
       singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE"),
@@ -1254,11 +1232,7 @@ function T.unequal_speeds_order_without_tie_draws_while_true_ties_draw_once()
       species,
       seed
     )
-    Assert.equal(
-      firstStriker(playOpeningTurn(duel)),
-      "QUICK_ATTACK",
-      "the faster combatant leads on seed " .. seed
-    )
+    Assert.equal(firstStriker(playOpeningTurn(duel)), "QUICK_ATTACK", "the faster combatant leads on seed " .. seed)
     duel:dispose()
   end
 end
@@ -1521,10 +1495,14 @@ local function copySnapshotStages(snapshot)
   for key, value in pairs(snapshot) do
     if type(value) == "table" then
       local branch = {}
-      for innerKey, innerValue in pairs(value --[[@as table<unknown, unknown>]]) do
+      for innerKey, innerValue in
+        pairs(value --[[@as table<unknown, unknown>]])
+      do
         if type(innerValue) == "table" then
           local leaf = {}
-          for leafKey, leafValue in pairs(innerValue --[[@as table<unknown, unknown>]]) do
+          for leafKey, leafValue in
+            pairs(innerValue --[[@as table<unknown, unknown>]])
+          do
             leaf[leafKey] = leafValue
           end
           branch[innerKey] = leaf
@@ -1584,11 +1562,7 @@ function T.restored_speed_stages_steer_the_replayed_order()
 
   local boosted = copySnapshotStages(snapshot)
   local revived = Executor.restore(boosted, chartContent())
-  Assert.equal(
-    firstStriker(playOpeningTurn(revived)),
-    "TACKLE",
-    "a fully raised slower lead moves first after restore"
-  )
+  Assert.equal(firstStriker(playOpeningTurn(revived)), "TACKLE", "a fully raised slower lead moves first after restore")
   Assert.isTrue(damageTaken(revived, 1) > 0, "the staged restore still lands the slower strike")
   Assert.isTrue(damageTaken(revived, 2) > 0, "the staged restore still lands the faster strike")
   revived:dispose()
@@ -1606,11 +1580,7 @@ function T.knockout_rewards_pause_on_move_learning_before_the_outcome()
   local session = contracts.Battle.newSession(rewardScenario(), content)
   local opening = SessionFixture.driveUntilSettled(session)
   Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
-  Assert.equal(
-    #session:capture().combatants[1].mon.moves,
-    4,
-    "the recipient enters with a full move set"
-  )
+  Assert.equal(#session:capture().combatants[1].mon.moves, 4, "the recipient enters with a full move set")
   for _, request in ipairs(opening.request.requests) do
     local ok, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
     Assert.isTrue(ok, "opening replies are accepted")
@@ -1619,11 +1589,7 @@ function T.knockout_rewards_pause_on_move_learning_before_the_outcome()
   local boundary, collected = advanceCollecting(session, 64)
   Assert.isTrue(announcesFaint(collected, 2), "the strike knocks out the wounded foe")
   Assert.equal(session:capture().combatants[2].hp, 0, "the foe stays knocked out")
-  Assert.equal(
-    boundary.status,
-    "waiting",
-    "the knockout suspends on its learning prompt instead of ending the battle"
-  )
+  Assert.equal(boundary.status, "waiting", "the knockout suspends on its learning prompt instead of ending the battle")
   Assert.notNil(boundary.request, "suspended battles carry their pending prompt")
   local prompt = findLearnPrompt(boundary)
   Assert.notNil(prompt, "the suspension names the pending learning prompt")
@@ -1672,26 +1638,17 @@ function T.knockout_rewards_pause_on_move_learning_before_the_outcome()
     12,
     "the award crosses to level twelve"
   )
-  local ok, replyErr =
-    session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 3) }))
+  local ok, replyErr = session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 3) }))
   Assert.isTrue(ok, "the learning reply is accepted")
   Assert.isNil(replyErr, "accepted replies carry no input error")
   local ended, closing = advanceCollecting(session, 64)
-  Assert.equal(
-    ended.status,
-    "ended",
-    "the battle ends once learning resolves with no reserve behind the foe"
-  )
+  Assert.equal(ended.status, "ended", "the battle ends once learning resolves with no reserve behind the foe")
   local learned = findSessionEvent(closing, "learn")
   Assert.notNil(learned, "the reply learns its move")
   Assert.equal(learned.move, "SYNTHESIS", "the reply learns the prompted move")
   Assert.equal(learned.combatant, 1, "the reply learns on the battle recipient")
   local finished = session:capture()
-  Assert.equal(
-    finished.combatants[1].mon.moves[4].move,
-    "SYNTHESIS",
-    "the replacement lands in the named slot"
-  )
+  Assert.equal(finished.combatants[1].mon.moves[4].move, "SYNTHESIS", "the replacement lands in the named slot")
   Assert.equal(countSessionEvents(collected, "exp"), 1, "the opening run awards experience once")
   Assert.equal(countSessionEvents(closing, "exp"), 0, "the reply awards no experience again")
   Assert.equal(
@@ -1700,13 +1657,8 @@ function T.knockout_rewards_pause_on_move_learning_before_the_outcome()
     "the reply never awards twice"
   )
   Assert.notNil(ended.outcome, "the finished battle names its terminal result")
-  Assert.deepEqual(
-    ended.outcome.evolutionEligible,
-    { 1 },
-    "the level gain surfaces once for post-battle handling"
-  )
-  local again, againErr =
-    session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 3) }))
+  Assert.deepEqual(ended.outcome.evolutionEligible, { 1 }, "the level gain surfaces once for post-battle handling")
+  local again, againErr = session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 3) }))
   Assert.isFalse(again, "a stale reply after completion answers nothing")
   Assert.notNil(againErr, "stale replies report their input error")
   session:dispose()
@@ -1742,17 +1694,11 @@ function T.learning_suspensions_restore_without_a_second_award()
   local secondPrompt = findLearnPrompt(second)
   Assert.notNil(firstPrompt, "the uninterrupted run keeps its prompt")
   Assert.notNil(secondPrompt, "the restored run keeps its prompt")
-  Assert.equal(
-    secondPrompt.incomingMove,
-    firstPrompt.incomingMove,
-    "both runs prompt the same move"
-  )
+  Assert.equal(secondPrompt.incomingMove, firstPrompt.incomingMove, "both runs prompt the same move")
   for _, live in ipairs({ session, revived }) do
     local held = live == session and firstPrompt or secondPrompt
     local entry = assert(held.actors[1], "the prompt addresses its recipient")
-    local liveOk, liveErr = live:submit(
-      SessionFixture.replyFor(held, { learnChoice(entry, "replace", 3) })
-    )
+    local liveOk, liveErr = live:submit(SessionFixture.replyFor(held, { learnChoice(entry, "replace", 3) }))
     Assert.isTrue(liveOk, "restored sessions accept the open learning reply")
     Assert.isNil(liveErr, "accepted replies carry no input error")
   end
@@ -1772,11 +1718,7 @@ function T.learning_suspensions_restore_without_a_second_award()
     twin.combatants[1].mon.experience,
     "both runs award identical experience"
   )
-  Assert.deepEqual(
-    firstEnded.outcome.evolutionEligible,
-    { 1 },
-    "the uninterrupted run surfaces eligibility once"
-  )
+  Assert.deepEqual(firstEnded.outcome.evolutionEligible, { 1 }, "the uninterrupted run surfaces eligibility once")
   Assert.deepEqual(
     secondEnded.outcome.evolutionEligible,
     firstEnded.outcome.evolutionEligible,
@@ -1839,26 +1781,14 @@ function T.rewards_with_a_free_slot_learn_silently_without_a_prompt()
   Assert.notNil(learned, "the free slot reports its learned move")
   Assert.equal(learned.move, "SYNTHESIS", "the free slot learns the level-twelve move")
   local finished = session:capture()
-  Assert.equal(
-    finished.combatants[1].mon.moves[3].move,
-    "SYNTHESIS",
-    "the new move fills the first free slot"
-  )
-  Assert.equal(
-    finished.combatants[1].mon.moves[3].pp,
-    5,
-    "an auto-learned move resets to its base power points"
-  )
+  Assert.equal(finished.combatants[1].mon.moves[3].move, "SYNTHESIS", "the new move fills the first free slot")
+  Assert.equal(finished.combatants[1].mon.moves[3].pp, 5, "an auto-learned move resets to its base power points")
   Assert.equal(
     finished.combatants[1].mon.experience,
     972 + award.gained --[[@as integer]],
     "the award lands exactly once on the battle copy"
   )
-  Assert.deepEqual(
-    ended.outcome.evolutionEligible,
-    { 1 },
-    "the level gain surfaces once for post-battle handling"
-  )
+  Assert.deepEqual(ended.outcome.evolutionEligible, { 1 }, "the level gain surfaces once for post-battle handling")
   session:dispose()
 end
 
@@ -1883,8 +1813,7 @@ function T.invalid_learning_replies_hold_the_prompt_open()
   Assert.notNil(prompt, "the suspension names the pending learning prompt")
   local actor = assert(prompt.actors[1], "the prompt addresses its recipient")
   local held = session:capture().combatants[1].mon
-  local unknown, unknownErr =
-    session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "forget") }))
+  local unknown, unknownErr = session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "forget") }))
   Assert.isFalse(unknown, "an unknown decision answers nothing")
   Assert.notNil(unknownErr, "rejected replies report their input error")
   local stray, strayErr = session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 9) }))
@@ -1900,33 +1829,16 @@ function T.invalid_learning_replies_hold_the_prompt_open()
   Assert.notNil(foreignErr, "foreign requests report their input error")
   local again = SessionFixture.driveUntilSettled(session)
   Assert.equal(again.status, "waiting", "rejected replies leave the prompt open")
-  Assert.equal(
-    findLearnPrompt(again).requestId,
-    prompt.requestId,
-    "the same prompt waits after every rejection"
-  )
-  Assert.equal(
-    session:capture().combatants[1].mon.experience,
-    held.experience,
-    "rejected replies award nothing more"
-  )
-  local declined, declineErr =
-    session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "decline") }))
+  Assert.equal(findLearnPrompt(again).requestId, prompt.requestId, "the same prompt waits after every rejection")
+  Assert.equal(session:capture().combatants[1].mon.experience, held.experience, "rejected replies award nothing more")
+  local declined, declineErr = session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "decline") }))
   Assert.isTrue(declined, "the decline is accepted")
   Assert.isNil(declineErr, "accepted replies carry no input error")
   local ended, closing = advanceCollecting(session, 64)
   Assert.equal(ended.status, "ended", "the decline completes the battle")
   Assert.isNil(findSessionEvent(closing, "learn"), "a decline learns no move")
-  Assert.equal(
-    session:capture().combatants[1].mon.moves[4].move,
-    "POISONPOWDER",
-    "a decline keeps the old set"
-  )
-  Assert.deepEqual(
-    ended.outcome.evolutionEligible,
-    { 1 },
-    "the level gain still surfaces once after a decline"
-  )
+  Assert.equal(session:capture().combatants[1].mon.moves[4].move, "POISONPOWDER", "a decline keeps the old set")
+  Assert.deepEqual(ended.outcome.evolutionEligible, { 1 }, "the level gain still surfaces once after a decline")
   session:dispose()
 end
 
@@ -2200,8 +2112,7 @@ function T.voluntary_switches_refuse_ineligible_reserves_without_moving_anyone()
   local callsBefore = before.rng.calls
   local alpha = requestFor(opening, "alpha")
   local actor = assert(alpha.actors[1], "the owning request addresses its lead")
-  local refused, refuseErr =
-    session:submit(SessionFixture.replyFor(alpha, { SessionFixture.switchChoice(actor, 5) }))
+  local refused, refuseErr = session:submit(SessionFixture.replyFor(alpha, { SessionFixture.switchChoice(actor, 5) }))
   Assert.isFalse(refused, "an exchange into a fainted reserve is refused")
   Assert.notNil(refuseErr, "refused exchanges report their input error")
   local waiting = SessionFixture.driveUntilSettled(session)
@@ -2213,11 +2124,7 @@ function T.voluntary_switches_refuse_ineligible_reserves_without_moving_anyone()
   )
   local settled = session:capture()
   Assert.equal(settled.positions[1].occupant, 1, "the outgoing lead stays on the field")
-  Assert.equal(
-    settled.combatants[1].active.activation,
-    leadActivation,
-    "the outgoing entry keeps its token"
-  )
+  Assert.equal(settled.combatants[1].active.activation, leadActivation, "the outgoing entry keeps its token")
   Assert.isNil(settled.combatants[5].active, "the fainted reserve stays benched")
   Assert.isNil(settled.combatants[3].active, "the healthy reserve stays benched")
   Assert.equal(countKind(waiting.events, "switch"), 0, "refused exchanges emit no exchange event")
@@ -2262,10 +2169,7 @@ function T.voluntary_switches_complete_the_exchange_with_a_fresh_entry()
   Assert.equal(settled.positions[1].occupant, 3, "the reserve takes the vacated position")
   Assert.isNil(settled.combatants[1].active, "the outgoing lead leaves the field")
   Assert.notNil(settled.combatants[3].active, "the reserve enters the field")
-  Assert.isTrue(
-    settled.combatants[3].active.activation ~= leadActivation,
-    "the reserve enters with a fresh entry"
-  )
+  Assert.isTrue(settled.combatants[3].active.activation ~= leadActivation, "the reserve enters with a fresh entry")
   Assert.equal(
     settled.combatants[3].hp,
     settled.combatants[3].entryHp,
@@ -2327,12 +2231,10 @@ function T.bag_healing_restores_health_and_spends_exactly_one_unit()
   local beta = requestFor(opening, "beta")
   local actor = assert(alpha.actors[1], "the owning request addresses its lead")
   local foe = assert(beta.actors[1], "the opposing request addresses its lead")
-  local ok, replyErr =
-    session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "POTION", 1) }))
+  local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "POTION", 1) }))
   Assert.isTrue(ok, "the healing choice is accepted")
   Assert.isNil(replyErr, "accepted bag use carries no input error")
-  local answered, answerErr =
-    session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  local answered, answerErr = session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
   Assert.isTrue(answered, "the opposing exchange is accepted")
   Assert.isNil(answerErr, "accepted exchanges carry no input error")
   local turn = session:advance(64)
@@ -2350,11 +2252,7 @@ function T.bag_healing_restores_health_and_spends_exactly_one_unit()
   local spent, spentErr = session:submit(SessionFixture.replyFor(again, { bagChoice(user, "POTION", 1) }))
   Assert.isFalse(spent, "the spent stack serves nothing more")
   Assert.notNil(spentErr, "the spent stack reports its input error")
-  Assert.equal(
-    session:capture().inventories.party.quantities.POTION,
-    0,
-    "the refused serving consumes nothing more"
-  )
+  Assert.equal(session:capture().inventories.party.quantities.POTION, 0, "the refused serving consumes nothing more")
   session:dispose()
 
   local freshLead = leveledCombatant(1, 23, "EEVEE", 20)
@@ -2377,11 +2275,7 @@ function T.bag_healing_restores_health_and_spends_exactly_one_unit()
   }))
   Assert.isFalse(refused, "a holder that is not on the field is refused")
   Assert.notNil(refuseErr, "the refused holder reports its input error")
-  Assert.equal(
-    fresh:capture().inventories.party.quantities.POTION,
-    1,
-    "the refused holder leaves the stock untouched"
-  )
+  Assert.equal(fresh:capture().inventories.party.quantities.POTION, 1, "the refused holder leaves the stock untouched")
   fresh:dispose()
 end
 
@@ -2440,11 +2334,7 @@ function T.thrown_balls_record_the_caught_mon_and_close_the_wild_battle()
   Assert.equal(boundary.status, "ended", "the successful wild capture ends the battle")
   Assert.notNil(boundary.outcome, "the closed capture names its terminal result")
   local settled = session:capture()
-  Assert.equal(
-    settled.inventories.party.quantities.MASTER_BALL,
-    0,
-    "the throw spends exactly one ball"
-  )
+  Assert.equal(settled.inventories.party.quantities.MASTER_BALL, 0, "the throw spends exactly one ball")
   Assert.equal(settled.rng.calls, callsBefore, "the guaranteed throw spends no roll")
   Assert.equal(countKind(turn.events, "struck"), 0, "the catch preempts the queued strike")
   local ledger = settled.captures
@@ -2497,8 +2387,7 @@ function T.run_attempts_follow_escape_law_and_trainer_flight_stays_refused()
   local ok, replyErr = slow:submit(SessionFixture.replyFor(alpha, { runChoice(runner) }))
   Assert.isTrue(ok, "the wild run is accepted")
   Assert.isNil(replyErr, "accepted runs carry no input error")
-  local answered, answerErr =
-    slow:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  local answered, answerErr = slow:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
   Assert.isTrue(answered, "the opposing exchange is accepted")
   Assert.isNil(answerErr, "accepted exchanges carry no input error")
   slow:advance(64)
@@ -2507,11 +2396,7 @@ function T.run_attempts_follow_escape_law_and_trainer_flight_stays_refused()
   Assert.isNil(slow:capture().outcome, "the failed attempt names no terminal result")
   local settled = slow:capture()
   Assert.equal(settled.positions[1].occupant, 1, "the slow lead stays on the field")
-  Assert.equal(
-    settled.combatants[1].active.activation,
-    slowActivation,
-    "the slow entry keeps its token"
-  )
+  Assert.equal(settled.combatants[1].active.activation, slowActivation, "the slow entry keeps its token")
   Assert.equal(settled.positions[2].occupant, 4, "the opposing exchange still runs its turn")
   -- One odds roll for the failed flight plus the four pre-turn samples
   -- of the following batch, already spent while it waits for decisions.
@@ -2625,8 +2510,7 @@ function T.smoke_ball_guarantees_wild_flight_for_slower_leads()
     local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { runChoice(runner) }))
     Assert.isTrue(ok, "the wild run is accepted")
     Assert.isNil(replyErr, "accepted runs carry no input error")
-    local answered, answerErr =
-      session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+    local answered, answerErr = session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
     Assert.isTrue(answered, "the opposing exchange is accepted")
     Assert.isNil(answerErr, "accepted exchanges carry no input error")
     return session:advance(64).events or {}
@@ -2683,8 +2567,7 @@ function T.bag_unknown_items_refuse_without_spending_stock()
   local hpBefore = session:capture().combatants[1].hp
   local alpha = requestFor(opening, "alpha")
   local actor = assert(alpha.actors[1], "the owning request addresses its lead")
-  local refused, refuseErr =
-    session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "ANTIDOTE", 1) }))
+  local refused, refuseErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "ANTIDOTE", 1) }))
   Assert.isFalse(refused, "a serving the stack never carried is refused")
   Assert.notNil(refuseErr, "the refused serving reports its input error")
   local waiting = SessionFixture.driveUntilSettled(session)
@@ -2736,11 +2619,7 @@ function T.interruption_captures_preserve_item_facts_for_restored_servings()
   facts.POTION.partyUse.restore.amount = 999
   local hpBefore = session:capture().combatants[1].hp
   local held = session:capture()
-  Assert.equal(
-    held.itemFacts.POTION.partyUse.restore.amount,
-    20,
-    "the held capture keeps the projected restoration"
-  )
+  Assert.equal(held.itemFacts.POTION.partyUse.restore.amount, 20, "the held capture keeps the projected restoration")
   Assert.deepEqual(held.itemFacts.POTION.partyUse.cures, {
     sleep = false,
     poison = false,
@@ -2760,8 +2639,7 @@ function T.interruption_captures_preserve_item_facts_for_restored_servings()
     local ok, replyErr = live:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "POTION", 1) }))
     Assert.isTrue(ok, "the restored facts accept the serving")
     Assert.isNil(replyErr, "accepted servings carry no input error")
-    local answered, answerErr =
-      live:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+    local answered, answerErr = live:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
     Assert.isTrue(answered, "the opposing exchange is accepted")
     Assert.isNil(answerErr, "accepted exchanges carry no input error")
     served[#served + 1] = live:advance(64)
@@ -2815,8 +2693,7 @@ function T.thrown_balls_refuse_trainer_targets_without_spending()
   local callsBefore = session:capture().rng.calls
   local alpha = requestFor(opening, "alpha")
   local actor = assert(alpha.actors[1], "the owning request addresses its lead")
-  local refused, refuseErr =
-    session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "MASTER_BALL", 2) }))
+  local refused, refuseErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "MASTER_BALL", 2) }))
   Assert.isFalse(refused, "a throw at a trainer target is refused")
   Assert.notNil(refuseErr, "the refused throw reports its input error")
   local waiting = SessionFixture.driveUntilSettled(session)
@@ -2869,8 +2746,7 @@ function T.escape_attempts_and_capture_ledgers_survive_restore_without_duplicati
     local ok, replyErr = live:submit(SessionFixture.replyFor(alpha, { runChoice(runner) }))
     Assert.isTrue(ok, "the wild run is accepted")
     Assert.isNil(replyErr, "accepted runs carry no input error")
-    local answered, answerErr =
-      live:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+    local answered, answerErr = live:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
     Assert.isTrue(answered, "the opposing exchange is accepted")
     Assert.isNil(answerErr, "accepted exchanges carry no input error")
     live:advance(64)
@@ -2924,11 +2800,7 @@ function T.escape_attempts_and_capture_ledgers_survive_restore_without_duplicati
   local kept = Executor.restore(caught, content)
   Assert.deepEqual(kept:capture().captures, caught.captures, "restore keeps the one ledger record")
   Assert.equal(kept:capture().captureSeq, caught.captureSeq, "restore keeps the capture identity counter")
-  Assert.equal(
-    kept:capture().inventories.party.quantities.MASTER_BALL,
-    0,
-    "restore never re-spends the ball"
-  )
+  Assert.equal(kept:capture().inventories.party.quantities.MASTER_BALL, 0, "restore never re-spends the ball")
   local reclosed = SessionFixture.driveUntilSettled(kept)
   Assert.equal(reclosed.status, "ended", "the restored capture stays ended")
   Assert.equal(reclosed.outcome.kind, "captured", "the restored capture keeps its terminal result")
@@ -2989,9 +2861,8 @@ function T.switched_reserves_keep_their_wounded_health_across_restore()
   local betaAgain = requestFor(following, "beta")
   local lead = assert(alphaAgain.actors[1], "the following request addresses the lead")
   local foeAgain = assert(betaAgain.actors[1], "the opposing request addresses its lead")
-  local switched, switchErr = session:submit(
-    SessionFixture.replyFor(alphaAgain, { SessionFixture.switchChoice(lead, 3) })
-  )
+  local switched, switchErr =
+    session:submit(SessionFixture.replyFor(alphaAgain, { SessionFixture.switchChoice(lead, 3) }))
   Assert.isTrue(switched, "the exchange is accepted")
   Assert.isNil(switchErr, "accepted exchanges carry no input error")
   local struck, struckErr = session:submit(
@@ -3017,9 +2888,8 @@ function T.switched_reserves_keep_their_wounded_health_across_restore()
   local reserve = assert(revivedAlpha.actors[1], "the restored request addresses the reserve")
   Assert.equal(reserve.combatant, 3, "the restored turn addresses the reserve")
   local revivedFoe = assert(revivedBeta.actors[1], "the restored opposing request addresses its lead")
-  local returned, returnErr = revived:submit(
-    SessionFixture.replyFor(revivedAlpha, { SessionFixture.switchChoice(reserve, 1) })
-  )
+  local returned, returnErr =
+    revived:submit(SessionFixture.replyFor(revivedAlpha, { SessionFixture.switchChoice(reserve, 1) }))
   Assert.isTrue(returned, "the return exchange is accepted")
   Assert.isNil(returnErr, "accepted exchanges carry no input error")
   local revivedAnswered, revivedAnswerErr = revived:submit(
@@ -3068,11 +2938,7 @@ function T.switched_reserves_keep_their_wounded_health_across_restore()
   }, "the returning lead resets only its activation-local stages")
   Assert.isNil(reseated.combatants[3].active, "the reserve leaves the field")
   Assert.equal(reseated.combatants[3].hp, reserveHp, "the benched reserve keeps its own wounded value")
-  Assert.equal(
-    reseated.combatants[3].entryHp,
-    reserveFullHp,
-    "the benched reserve keeps its own baseline"
-  )
+  Assert.equal(reseated.combatants[3].entryHp, reserveFullHp, "the benched reserve keeps its own baseline")
   Assert.isNil(reseated.outcome, "no terminal result is named across the round trip")
   session:dispose()
   revived:dispose()
@@ -3157,11 +3023,7 @@ function T.replacement_obligations_survive_learning_suspension_in_order()
   Assert.isTrue(announcesFaint(collected, 5), "the second strike knocks out its foe")
   Assert.equal(session:capture().combatants[2].hp, 0, "the first foe stays knocked out")
   Assert.equal(session:capture().combatants[5].hp, 0, "the second foe stays knocked out")
-  Assert.equal(
-    boundary.status,
-    "waiting",
-    "the double knockout suspends on its learning prompt instead of replacing"
-  )
+  Assert.equal(boundary.status, "waiting", "the double knockout suspends on its learning prompt instead of replacing")
   local prompt = findLearnPrompt(boundary)
   Assert.notNil(prompt, "the suspension names the pending learning prompt")
   Assert.equal(prompt.controller, "alpha", "the owning side answers its own learning prompt")
@@ -3172,7 +3034,9 @@ function T.replacement_obligations_survive_learning_suspension_in_order()
   for _, event in ipairs(collected) do
     if event.kind == "faint" then
       local payload = event.payload --[[@as table<string, unknown>]]
-      activations[payload.combatant --[[@as integer]]] = payload.activation
+      activations[
+        payload.combatant --[[@as integer]]
+      ] = payload.activation
     end
   end
   Assert.notNil(activations[2], "the first faint binds its entry token")
@@ -3201,11 +3065,7 @@ function T.replacement_obligations_survive_learning_suspension_in_order()
       internal = true,
     },
   }
-  Assert.deepEqual(
-    heldObligations.obligations,
-    wanted,
-    "the suspension holds one ordered obligation per fainted entry"
-  )
+  Assert.deepEqual(heldObligations.obligations, wanted, "the suspension holds one ordered obligation per fainted entry")
   local suspensions = 0
   local answeredSynthesis = false
   while findLearnPrompt(boundary) ~= nil and suspensions < 6 do
@@ -3259,13 +3119,24 @@ function T.replacement_obligations_survive_learning_suspension_in_order()
   for _, event in ipairs(collected) do
     if event.kind == "switch" then
       local payload = event.payload --[[@as table<string, unknown>]]
-      if entered[payload.to --[[@as integer]]] ~= nil then
-        entered[payload.to --[[@as integer]]] = entered[payload.to --[[@as integer]]] + 1
+      if
+        entered[
+          payload.to --[[@as integer]]
+        ] ~= nil
+      then
+        entered[
+          payload.to --[[@as integer]]
+        ] = entered[
+          payload.to --[[@as integer]]
+        ] + 1
       end
     elseif event.kind == "exp" then
       awards = awards + 1
       if event.combatant == 1 then
-        gained = gained + (event.gained --[[@as integer]] or 0)
+        gained = gained + (
+            event.gained --[[@as integer]]
+            or 0
+          )
       end
     elseif event.kind == "learn" then
       if event.combatant == 1 and event.move == "SYNTHESIS" then
@@ -3276,11 +3147,7 @@ function T.replacement_obligations_survive_learning_suspension_in_order()
   Assert.equal(entered[4], 1, "the first reserve enters exactly once")
   Assert.equal(entered[7], 1, "the second reserve enters exactly once")
   Assert.equal(awards, 4, "both knockouts award both recipients exactly once")
-  Assert.equal(
-    settled.combatants[1].mon.experience,
-    972 + gained,
-    "the recipient keeps exactly its awarded experience"
-  )
+  Assert.equal(settled.combatants[1].mon.experience, 972 + gained, "the recipient keeps exactly its awarded experience")
   Assert.equal(learned, 1, "the answered prompt learns its move exactly once")
   Assert.isNil(settled.outcome, "no terminal result is named while reserves stand")
   session:dispose()
@@ -3390,15 +3257,33 @@ function T.paralysis_quarters_speed_while_quick_feet_keeps_passive_speed()
     { species = "CHIKORITA", types = { "grass" } },
     { species = "EEVEE", types = { "normal" } },
   })
-  local healthy = projectionDuel(fastCombatant(11), singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, PROJECTION_SEED)
+  local healthy = projectionDuel(
+    fastCombatant(11),
+    singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"),
+    facts,
+    species,
+    PROJECTION_SEED
+  )
   Assert.equal(firstActor(playOpeningTurn(healthy)), 1, "healthy the faster combatant acts first")
   healthy:dispose()
 
-  local held = projectionDuel(fastCombatant(11, "paralysis"), singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, PROJECTION_SEED)
+  local held = projectionDuel(
+    fastCombatant(11, "paralysis"),
+    singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"),
+    facts,
+    species,
+    PROJECTION_SEED
+  )
   Assert.equal(firstActor(playOpeningTurn(held)), 2, "paralyzed the slower combatant acts first")
   held:dispose()
 
-  local fleet = projectionDuel(fastCombatant(11, "paralysis", "QUICK_FEET"), singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, PROJECTION_SEED)
+  local fleet = projectionDuel(
+    fastCombatant(11, "paralysis", "QUICK_FEET"),
+    singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"),
+    facts,
+    species,
+    PROJECTION_SEED
+  )
   Assert.equal(
     firstActor(playOpeningTurn(fleet)),
     1,
@@ -3429,7 +3314,8 @@ function T.held_items_reshape_effective_speed_before_status()
 
   local braced = fastCombatant(11)
   braced.mon.heldItem = "MACHO_BRACE"
-  local slow = projectionDuel(braced, singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, PROJECTION_SEED)
+  local slow =
+    projectionDuel(braced, singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, PROJECTION_SEED)
   Assert.equal(firstActor(playOpeningTurn(slow)), 2, "a braced faster combatant acts last")
   slow:dispose()
 end
@@ -3477,29 +3363,59 @@ function T.burn_halves_physical_damage_while_guts_keeps_its_boost()
     { species = "EEVEE", types = { "normal" } },
   })
 
-  local plain = projectionDuel(statusAttacker(11, nil, nil, "TACKLE"), singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), physical, species, PROJECTION_SEED)
+  local plain = projectionDuel(
+    statusAttacker(11, nil, nil, "TACKLE"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    physical,
+    species,
+    PROJECTION_SEED
+  )
   playOpeningTurn(plain)
   local healthyDamage = damageTaken(plain, 2)
   plain:dispose()
 
-  local burned = projectionDuel(statusAttacker(11, "burn", nil, "TACKLE"), singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), physical, species, PROJECTION_SEED)
+  local burned = projectionDuel(
+    statusAttacker(11, "burn", nil, "TACKLE"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    physical,
+    species,
+    PROJECTION_SEED
+  )
   playOpeningTurn(burned)
   local burnedDamage = damageTaken(burned, 2)
   burned:dispose()
   Assert.isTrue(burnedDamage < healthyDamage, "burn halves ordinary physical output")
 
-  local gutsy = projectionDuel(statusAttacker(11, "burn", "GUTS", "TACKLE"), singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), physical, species, PROJECTION_SEED)
+  local gutsy = projectionDuel(
+    statusAttacker(11, "burn", "GUTS", "TACKLE"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    physical,
+    species,
+    PROJECTION_SEED
+  )
   playOpeningTurn(gutsy)
   local gutsDamage = damageTaken(gutsy, 2)
   gutsy:dispose()
   Assert.isTrue(gutsDamage > healthyDamage, "a statused Guts holder keeps its attack boost past the burn")
 
-  local castPlain = projectionDuel(statusAttacker(11, nil, nil, "AURA_SPHERE"), singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), special, species, PROJECTION_SEED)
+  local castPlain = projectionDuel(
+    statusAttacker(11, nil, nil, "AURA_SPHERE"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    special,
+    species,
+    PROJECTION_SEED
+  )
   playOpeningTurn(castPlain)
   local healthySpecial = damageTaken(castPlain, 2)
   castPlain:dispose()
 
-  local castBurned = projectionDuel(statusAttacker(11, "burn", nil, "AURA_SPHERE"), singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), special, species, PROJECTION_SEED)
+  local castBurned = projectionDuel(
+    statusAttacker(11, "burn", nil, "AURA_SPHERE"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    special,
+    species,
+    PROJECTION_SEED
+  )
   playOpeningTurn(castBurned)
   local burnedSpecial = damageTaken(castBurned, 2)
   castBurned:dispose()
@@ -3599,17 +3515,14 @@ function T.decision_stream_lease_rejects_foreign_requests_without_drawing()
     )
   end, "unknown requests never borrow the decision stream")
   Assert.throws(function()
-    session:withDecisionStream(
-      {
-        requestId = player.requestId,
-        epoch = player.epoch + 1,
-        controller = "wild",
-        actors = player.actors,
-      },
-      function(stream)
-        stream:nextU16("wild_strike", { controller = "wild", request = player.requestId })
-      end
-    )
+    session:withDecisionStream({
+      requestId = player.requestId,
+      epoch = player.epoch + 1,
+      controller = "wild",
+      actors = player.actors,
+    }, function(stream)
+      stream:nextU16("wild_strike", { controller = "wild", request = player.requestId })
+    end)
   end, "stale epochs never borrow the decision stream")
   Assert.equal(session:capture().rng.calls, callsBefore, "rejected leases draw nothing")
   session:dispose()
@@ -3725,7 +3638,10 @@ function T.bound_entries_cannot_flee_or_voluntarily_switch()
   Assert.isTrue(fled, "the bound run is accepted as an attempt")
   Assert.isNil(fledErr, "accepted runs carry no input error")
   local chased, chasedErr = session:submit(
-    SessionFixture.replyFor(requestFor(held, "beta"), { SessionFixture.attackChoice(chaser, 0, SessionFixture.positionTarget(1)) })
+    SessionFixture.replyFor(
+      requestFor(held, "beta"),
+      { SessionFixture.attackChoice(chaser, 0, SessionFixture.positionTarget(1)) }
+    )
   )
   Assert.isTrue(chased, "the chasing strike is accepted")
   Assert.isNil(chasedErr, "accepted strikes carry no input error")
@@ -3884,10 +3800,7 @@ function T.trick_room_reverses_speed_order()
   end
   Assert.notNil(slowIndex, "the slow strike lands")
   Assert.notNil(fastIndex, "the fast strike lands")
-  Assert.isTrue(
-    (slowIndex --[[@as integer]]) < (fastIndex --[[@as integer]]),
-    "trick room orders the slow strike first"
-  )
+  Assert.isTrue(slowIndex --[[@as integer]] < fastIndex --[[@as integer]], "trick room orders the slow strike first")
   session:dispose()
 end
 
@@ -4196,18 +4109,11 @@ end
 function T.stored_mark_reaches_the_live_knockout_reward()
   local contracts = SessionFixture.sessionContracts()
   local content = nativeContent()
-  local session = contracts.Battle.newSession(
-    markedRewardScenario(markedRecipient(1, 11, "NONE", 1)),
-    content
-  )
+  local session = contracts.Battle.newSession(markedRewardScenario(markedRecipient(1, 11, "NONE", 1)), content)
   settleMarkedKnockout(session)
   local expected = blankReward()
   expected.specialDefense = 2
-  Assert.deepEqual(
-    session:capture().combatants[1].mon.evs,
-    expected,
-    "the marked recipient banks the doubled yield"
-  )
+  Assert.deepEqual(session:capture().combatants[1].mon.evs, expected, "the marked recipient banks the doubled yield")
   session:dispose()
 end
 
@@ -4216,18 +4122,11 @@ end
 function T.carried_training_item_bonuses_before_the_live_doubling()
   local contracts = SessionFixture.sessionContracts()
   local content = nativeContent()
-  local session = contracts.Battle.newSession(
-    markedRewardScenario(markedRecipient(1, 11, "POWER_BAND", 1)),
-    content
-  )
+  local session = contracts.Battle.newSession(markedRewardScenario(markedRecipient(1, 11, "POWER_BAND", 1)), content)
   settleMarkedKnockout(session)
   local expected = blankReward()
   expected.specialDefense = 10
-  Assert.deepEqual(
-    session:capture().combatants[1].mon.evs,
-    expected,
-    "the band bonus stages before the live doubling"
-  )
+  Assert.deepEqual(session:capture().combatants[1].mon.evs, expected, "the band bonus stages before the live doubling")
   session:dispose()
 end
 
@@ -4258,10 +4157,8 @@ function T.every_nonzero_stored_mark_doubles_identically()
   local content = nativeContent()
   local cases = { { mark = 0, expected = 1 }, { mark = 1, expected = 2 }, { mark = 23, expected = 2 } }
   for _, case in ipairs(cases) do
-    local session = contracts.Battle.newSession(
-      markedRewardScenario(markedRecipient(1, 11, "NONE", case.mark)),
-      content
-    )
+    local session =
+      contracts.Battle.newSession(markedRewardScenario(markedRecipient(1, 11, "NONE", case.mark)), content)
     settleMarkedKnockout(session)
     local expected = blankReward()
     expected.specialDefense = case.expected
@@ -4374,15 +4271,10 @@ function T.suppressed_holdings_lose_ordinary_effects_while_raw_speed_halving_sur
   ---@return integer combatant identity acting first
   ---@return table live session after its opening turn
   local function orderAfterTurn(slow, foeSpecies)
-    local session = projectionDuel(
-      slow,
-      singleMoveCombatant(2, 23, foeSpecies, "TACKLE"),
-      facts,
-      species,
-      7
-    )
+    local session = projectionDuel(slow, singleMoveCombatant(2, 23, foeSpecies, "TACKLE"), facts, species, 7)
     local first = firstActor(playOpeningTurn(session))
-    return first --[[@as integer]], session
+    return first, --[[@as integer]]
+      session
   end
 
   local swift = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
@@ -4440,8 +4332,7 @@ function T.suppressed_holdings_lose_ordinary_effects_while_raw_speed_halving_sur
   local fled, fledErr = flight:submit(SessionFixture.replyFor(alpha, { runChoice(runner) }))
   Assert.isTrue(fled, "the wild run is accepted")
   Assert.isNil(fledErr, "accepted runs carry no input error")
-  local answered, answerErr =
-    flight:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  local answered, answerErr = flight:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
   Assert.isTrue(answered, "the opposing exchange is accepted")
   Assert.isNil(answerErr, "accepted exchanges carry no input error")
   flight:advance(64)
@@ -4574,20 +4465,11 @@ function T.canonical_passives_change_live_battle_state()
     local striker = singleMoveCombatant(1, 11, "TOTODILE", "TACKLE")
     local guard = singleMoveCombatant(2, 23, "SHEDINJA", "TACKLE")
     guard.mon.ability = "WONDER_GUARD"
-    local session = projectionDuel(
-      striker,
-      guard,
-      { TACKLE = strikeFacts(0, "water", 60), STRUGGLE = struggleFacts() },
-      species,
-      7
-    )
+    local session =
+      projectionDuel(striker, guard, { TACKLE = strikeFacts(0, "water", 60), STRUGGLE = struggleFacts() }, species, 7)
     playOpeningTurn(session)
     local guarded = session:capture().combatants
-    Assert.equal(
-      guarded[2].hp,
-      guarded[2].entryHp,
-      "the ward leaves the guarded holder unwounded"
-    )
+    Assert.equal(guarded[2].hp, guarded[2].entryHp, "the ward leaves the guarded holder unwounded")
     session:dispose()
   end
 
@@ -4626,10 +4508,7 @@ function T.canonical_passives_change_live_battle_state()
     session:dispose()
     return dealt
   end
-  Assert.isTrue(
-    poisonedDamage("MARVEL_SCALE") < poisonedDamage(nil),
-    "a statused scale holder softens the strike"
-  )
+  Assert.isTrue(poisonedDamage("MARVEL_SCALE") < poisonedDamage(nil), "a statused scale holder softens the strike")
 
   ---@param ability string? striker ability reshaping the resisted strike
   ---@return integer damage dealt through the resisted matchup
@@ -4644,10 +4523,7 @@ function T.canonical_passives_change_live_battle_state()
     session:dispose()
     return dealt
   end
-  Assert.isTrue(
-    resistedDamage("TINTED_LENS") > resistedDamage(nil),
-    "a piercing ability restores the resisted strike"
-  )
+  Assert.isTrue(resistedDamage("TINTED_LENS") > resistedDamage(nil), "a piercing ability restores the resisted strike")
 
   ---@param item string? striker holding answering the landed strike
   ---@return integer striker health after dealing its strike
@@ -4745,11 +4621,7 @@ function T.consumed_holdings_stay_empty_for_later_checkpoints()
   local bareMiddle, _, bareFinish, bare = twoTurns(nil)
   Assert.isTrue(berriedMiddle > bareMiddle, "the berry heals on its triggering turn")
   Assert.isNil(berriedHeld, "the consumed berry stays empty for the later turn")
-  Assert.equal(
-    berriedFinish - berriedMiddle,
-    bareFinish - bareMiddle,
-    "the later turn recovers nothing more"
-  )
+  Assert.equal(berriedFinish - berriedMiddle, bareFinish - bareMiddle, "the later turn recovers nothing more")
   berried:dispose()
   bare:dispose()
 end
@@ -4942,8 +4814,7 @@ function T.open_learning_prompts_resume_identically_across_snapshots()
     { live = revived, asked = secondPrompt },
   }) do
     local actor = assert(entry.asked.actors[1], "the prompt addresses its recipient")
-    local ok, replyErr =
-      entry.live:submit(SessionFixture.replyFor(entry.asked, { learnChoice(actor, "decline") }))
+    local ok, replyErr = entry.live:submit(SessionFixture.replyFor(entry.asked, { learnChoice(actor, "decline") }))
     Assert.isTrue(ok, "restored sessions accept the same decline")
     Assert.isNil(replyErr, "accepted declines carry no input error")
   end
@@ -5003,9 +4874,11 @@ function T.explicit_captures_reject_nonplain_and_colliding_extensions()
     Snapshot.capture(liveDouble(), { note = loop })
   end, "cyclic extensions never assemble")
   rejects(function()
-    Snapshot.capture(liveDouble(), { note = function()
-      return 1
-    end })
+    Snapshot.capture(liveDouble(), {
+      note = function()
+        return 1
+      end,
+    })
   end, "executable extensions never assemble")
   rejects(function()
     Snapshot.capture(liveDouble(), { ruleset = "forged" })
@@ -5476,11 +5349,7 @@ function T.open_batches_keep_their_order_samples_across_restore()
   Assert.isFalse(refused, "a strike at an undeclared position is rejected")
   Assert.notNil(refuseErr, "rejected replies report their input error")
   Assert.equal(session:capture().rng.calls, cursor, "rejected replies consume no generator draws")
-  Assert.deepEqual(
-    session:capture().pending.nativeOrderRolls,
-    rolls,
-    "rejected replies keep the open order samples"
-  )
+  Assert.deepEqual(session:capture().pending.nativeOrderRolls, rolls, "rejected replies keep the open order samples")
   local revived = Executor.restore(held, content)
   local recaptured = revived:capture()
   Assert.deepEqual(recaptured.pending.nativeOrderRolls, rolls, "restore keeps the identical order samples")
@@ -5499,6 +5368,111 @@ function T.open_batches_keep_their_order_samples_across_restore()
   Assert.deepEqual(revived:capture(), session:capture(), "identical replies reach identical state")
   session:dispose()
   revived:dispose()
+end
+
+---@return table detached native battle setup record with a sleep-locked opening lead
+local function sleepyDuelScenario()
+  local Executor = executorOwner()
+  local alpha = tackleCombatant(1, 11)
+  alpha.mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
+  local beta = tackleCombatant(2, 23)
+  local seeds = { alpha, beta }
+  return {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { alpha }),
+      SessionFixture.participant(2, 2, "beta", { beta }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+end
+
+---@param session table live native session at its opening decision boundary
+---@return table[] turn events in execution order
+local function playSleepyTurn(session)
+  local frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the sleep-locked turn opens its decision boundary")
+  for _, request in ipairs(frame.request.requests) do
+    local accepted, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(accepted, "sleep-locked replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local turn = session:advance(64)
+  return turn.events or {}
+end
+
+-- A denied strike spends nothing and draws only its prescribed timing
+-- rolls: the sleep-locked lead keeps its power points while the healthy
+-- foe spends exactly one, the turn emits the executed strike before the
+-- single status gate over nine stream draws, and the same turn replays
+-- identically through an interruption capture.
+function T.denied_strikes_spend_no_power_and_replay_identically_across_restore()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = nativeContent()
+  local direct = contracts.Battle.newSession(sleepyDuelScenario(), content)
+  local opening = SessionFixture.driveUntilSettled(direct)
+  Assert.equal(opening.status, "waiting", "the sleep-locked turn opens its decision boundary")
+  for _, request in ipairs(opening.request.requests) do
+    local accepted, replyErr = direct:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(accepted, "sleep-locked replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local callsBefore = direct:capture().rng.calls
+  local directTurn = direct:advance(64)
+  local directEvents = directTurn.events or {}
+  local directCapture = direct:capture()
+  local kinds = {} ---@type string[]
+  for _, event in ipairs(directEvents) do
+    kinds[#kinds + 1] = event.kind
+  end
+  Assert.deepEqual(kinds, { "struck", "status-gate" }, "the denied turn strikes once, then gates")
+  local gated = nil
+  for _, event in ipairs(directEvents) do
+    if event.kind == "status-gate" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      gated = payload.combatant
+    end
+  end
+  Assert.equal(gated, 1, "the denied turn gates the sleep-locked lead")
+  Assert.equal(
+    directCapture.rng.calls - callsBefore,
+    9,
+    "the denied turn draws only its prescribed timing and strike rolls"
+  )
+  Assert.equal(directCapture.combatants[1].mon.moves[1].pp, 35, "the denied strike spends no power points")
+  Assert.equal(directCapture.combatants[2].mon.moves[1].pp, 34, "the executed strike spends exactly one power point")
+  Assert.isTrue(
+    directCapture.combatants[1].hp < directCapture.combatants[1].entryHp,
+    "the denied lead still takes the foe strike"
+  )
+  Assert.equal(
+    directCapture.combatants[2].hp,
+    directCapture.combatants[2].entryHp,
+    "the denied strike deals nothing back"
+  )
+  direct:dispose()
+
+  local live = contracts.Battle.newSession(sleepyDuelScenario(), content)
+  SessionFixture.driveUntilSettled(live)
+  local twin = Executor.restore(live:capture(), content)
+  local liveEvents = playSleepyTurn(live)
+  local twinEvents = playSleepyTurn(twin)
+  Assert.deepEqual(twinEvents, liveEvents, "restored sessions replay the same denied turn events")
+  Assert.deepEqual(twin:capture(), live:capture(), "restored sessions reach the same denied turn state")
+  live:dispose()
+  twin:dispose()
 end
 
 return { tests = T }

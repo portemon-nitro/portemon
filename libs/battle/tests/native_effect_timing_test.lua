@@ -19,10 +19,7 @@ local CONFUSION_HIT_THRESHOLD = 32768
 ---@param behavior string missing owner under test
 ---@return table the loaded native effect handler owner
 local function handlersOwner(behavior)
-  return SessionFixture.requirePresent(
-    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
-    behavior
-  )
+  return SessionFixture.requirePresent("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers", behavior)
 end
 
 ---@return table live effect bag over no instances
@@ -47,10 +44,8 @@ end
 ---@param context table<string, unknown> pass context under invocation
 ---@return table dispatch outcome for the timing
 local function invoke(bag, handlers, timing, context)
-  local EffectDispatch = SessionFixture.requirePresent(
-    "libs.battle.src.EffectDispatch",
-    "one dispatcher owns finite timing order"
-  )
+  local EffectDispatch =
+    SessionFixture.requirePresent("libs.battle.src.EffectDispatch", "one dispatcher owns finite timing order")
   return EffectDispatch.new(bag, handlers):invoke(timing, context)
 end
 
@@ -78,7 +73,11 @@ local function nativeChart()
   local builder = ContentBuilder.new()
   NativeTypeChart.install(builder, "entry-hazard-tests")
   local behaviors = BattleBehaviorBuilder.new()
-  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "entry-hazard-tests")
+  behaviors:registerRuleset(
+    Executor.RULESET,
+    { key = Executor.RULESET, chart = Executor.RULESET },
+    "entry-hazard-tests"
+  )
   local BattleContent = require("libs.battle.src.BattleContent")
   local content = BattleContent.new(builder:freeze(), behaviors:freeze())
   return assert(content:typeChart(Executor.RULESET), "the native chart resolves for the entry probes")
@@ -125,8 +124,7 @@ function T.confusion_gates_actions_with_its_countdown()
   local spent = addInstance(bag, "confusion", scope, { version = 1, turns = 1 })
   local spentHealth = { [2] = 100 }
   local spentContext = { health = spentHealth, stream = BattleRng.new(FIXED_SEED) }
-  local spentOutcome =
-    invoke(bag, Handlers.handlersFor(beforeFacts(), "beforeAction"), "beforeAction", spentContext)
+  local spentOutcome = invoke(bag, Handlers.handlersFor(beforeFacts(), "beforeAction"), "beforeAction", spentContext)
   Assert.isTrue(spentOutcome.done, "the confused pass completes")
   Assert.equal(#spentOutcome.events, 1, "the last counted turn answers exactly once")
   Assert.equal(spentOutcome.events[1].kind, "expire", "the zeroed countdown snaps out")
@@ -198,8 +196,7 @@ function T.infatuation_immobilizes_on_a_fair_draw()
   addInstance(held, "infatuation", scope, { version = 1 })
   local heldHealth = { [2] = 100 }
   local heldContext = { health = heldHealth, stream = BattleRng.new(heldSeed) }
-  local heldOutcome =
-    invoke(held, Handlers.handlersFor(beforeFacts(), "beforeAction"), "beforeAction", heldContext)
+  local heldOutcome = invoke(held, Handlers.handlersFor(beforeFacts(), "beforeAction"), "beforeAction", heldContext)
   Assert.isTrue(heldOutcome.done, "the infatuation pass completes")
   Assert.equal(#heldOutcome.events, 1, "the immobilized entry answers exactly once")
   Assert.equal(heldOutcome.events[1].kind, "blocked", "infatuation emits its block")
@@ -250,8 +247,7 @@ function T.taunt_refuses_status_strikes_and_spares_damage()
   local spent = liveBag()
   addInstance(spent, "taunt", scope, { version = 1, turns = 1 })
   local spentContext = { health = { [2] = 100 }, move = "SWORDS_DANCE", power = 0 }
-  local spentOutcome =
-    invoke(spent, Handlers.handlersFor(beforeFacts(), "beforeAction"), "beforeAction", spentContext)
+  local spentOutcome = invoke(spent, Handlers.handlersFor(beforeFacts(), "beforeAction"), "beforeAction", spentContext)
   Assert.isTrue(spentOutcome.done, "the final pass completes")
   Assert.equal(#spentOutcome.events, 0, "the zeroed taunt expires silently")
   Assert.isNil(spentContext.blockedBy, "the expired taunt denies nothing")
@@ -286,8 +282,7 @@ function T.disable_encore_and_torment_gate_their_named_selections()
   local quiet = liveBag()
   addInstance(quiet, "disable", scope, { version = 1, turns = 1, move = "TACKLE" })
   local quietContext = { health = { [2] = 100 }, move = "TACKLE", power = 40 }
-  local quietOutcome =
-    invoke(quiet, Handlers.handlersFor(beforeFacts(), "beforeAction"), "beforeAction", quietContext)
+  local quietOutcome = invoke(quiet, Handlers.handlersFor(beforeFacts(), "beforeAction"), "beforeAction", quietContext)
   Assert.equal(#quietOutcome.events, 0, "the zeroed disable expires silently")
   Assert.isNil(quietContext.blockedBy, "the expired disable denies nothing")
 
@@ -512,8 +507,10 @@ end
 
 ---@return table<string, function> every native passive handler by source key
 local function passiveHandlers()
-  local NativePassives =
-    SessionFixture.requirePresent("libs.battle.src.gen4.behaviors.NativePassives", "native passives own the ability set")
+  local NativePassives = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.NativePassives",
+    "native passives own the ability set"
+  )
   local handlers = {}
   NativePassives.register(handlers)
   return handlers
@@ -526,7 +523,9 @@ local function copyValue(value)
     return value
   end
   local out = {}
-  for key, item in pairs(value --[[@as table<unknown, unknown>]]) do
+  for key, item in
+    pairs(value --[[@as table<unknown, unknown>]])
+  do
     out[key] = copyValue(item)
   end
   return out
@@ -537,8 +536,7 @@ end
 ---@param facts table<string, unknown> turn and checkpoint facts under test
 ---@return table dispatch outcome with its stored state and draw counts
 local function answerAbility(key, timing, facts)
-  local EffectBag =
-    SessionFixture.requirePresent("libs.battle.src.EffectBag", "scoped instances own battle state")
+  local EffectBag = SessionFixture.requirePresent("libs.battle.src.EffectBag", "scoped instances own battle state")
   local bag = EffectBag.new()
   local definition = EffectFixture.define({
     key = key,
@@ -558,10 +556,8 @@ local function answerAbility(key, timing, facts)
   for name, value in pairs(facts) do
     context[name] = value
   end
-  local EffectDispatch = SessionFixture.requirePresent(
-    "libs.battle.src.EffectDispatch",
-    "one dispatcher owns finite timing order"
-  )
+  local EffectDispatch =
+    SessionFixture.requirePresent("libs.battle.src.EffectDispatch", "one dispatcher owns finite timing order")
   local outcome = EffectDispatch.new(bag, passiveHandlers()):invoke(timing, context)
   Assert.isTrue(outcome.done, "the ability pass runs to completion")
   return {
@@ -644,6 +640,185 @@ function T.speed_boost_skips_the_entry_turn()
   local boosted = boostedAt(6)
   Assert.equal(#boosted, 1, "the next turn end boosts exactly once")
   Assert.equal(boosted[1].stat, "speed", "speed boost raises the speed")
+end
+
+local STRIKE_FORMAT = "test:strike-format"
+local STRIKE_SEED = 0x1BADB002
+
+---@return table loaded native session owner
+local function sessionOwner()
+  return SessionFixture.requirePresent(
+    "libs.battle.src.gen4.HgssSessionExecutor",
+    "the private native lifecycle owns HGSS ruleset sessions"
+  )
+end
+
+---@return table frozen battle content carrying the native ruleset binding
+local function strikeContent()
+  local ContentBuilder = require("libs.content.src.ContentBuilder")
+  local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
+  local BattleContent = require("libs.battle.src.BattleContent")
+  local NativeTypeChart = require("libs.battle.src.gen4.NativeTypeChart")
+  local Executor = sessionOwner()
+  local builder = ContentBuilder.new()
+  NativeTypeChart.install(builder, "strike-fact-tests")
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "strike-fact-tests")
+  behaviors:registerFormat(STRIKE_FORMAT, { key = STRIKE_FORMAT }, "strike-fact-tests")
+  return BattleContent.new(builder:freeze(), behaviors:freeze())
+end
+
+---@return table combatant seed striking with a single known move
+local function strikeCombatant(id, seed)
+  local entry = SessionFixture.combatant(id, seed)
+  entry.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return entry
+end
+
+---@param seeds table[] combatant seeds whose strikes resolve
+---@return table<string, table<string, unknown>> immutable move facts for the fixture strikes
+local function strikeFactsFor(seeds)
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local facts = {
+    TACKLE = catalog:move("TACKLE"),
+    STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
+  }
+  for _, seed in ipairs(seeds) do
+    for _, entry in ipairs(seed.mon.moves or {}) do
+      if type(entry) == "table" and type(entry.move) == "string" and facts[entry.move] == nil then
+        facts[entry.move] = catalog:move(entry.move)
+      end
+    end
+  end
+  return facts
+end
+
+---@param seeds table[] combatant seeds under fact resolution
+---@return table<string, table<integer, table<string, unknown>>> static species facts for the fixture combatants
+local function strikeSpeciesFor(seeds)
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local facts = {}
+  for _, seed in ipairs(seeds) do
+    local mon = seed.mon --[[@as table<string, unknown>]]
+    local species = mon.species --[[@as string]]
+    local form = mon.form --[[@as integer]]
+    local speciesRecord = catalog:species(species)
+    local formRecord = catalog:form(species, form)
+    local bucket = facts[species]
+    if bucket == nil then
+      bucket = {}
+      facts[species] = bucket
+    end
+    bucket[form] = {
+      baseStats = formRecord.baseStats,
+      growthCurve = catalog:growthCurve(speciesRecord.growthCurve --[[@as string]]),
+      types = formRecord.types,
+      levelUpMoves = formRecord.levelUpMoves,
+      baseExpYield = speciesRecord.baseExpYield,
+      evYield = speciesRecord.evYield,
+    }
+  end
+  return facts
+end
+
+---@param alpha table combatant seed for the owning side
+---@param beta table combatant seed for the opposing side
+---@return table detached native battle setup record
+local function strikeScenario(alpha, beta)
+  local Executor = sessionOwner()
+  local seeds = { alpha, beta }
+  return {
+    ruleset = Executor.RULESET,
+    format = STRIKE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { alpha }),
+      SessionFixture.participant(2, 2, "beta", { beta }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = STRIKE_SEED },
+    formatState = {},
+    moveFacts = strikeFactsFor(seeds),
+    speciesFacts = strikeSpeciesFor(seeds),
+  }
+end
+
+---@param request table pending decision request under test
+---@return table[] one strike per addressed actor against the opposing slot
+local function strikeReplies(request)
+  local opposing = 2
+  if request.controller == "beta" then
+    opposing = 1
+  end
+  local choices = {}
+  for _, actor in ipairs(request.actors) do
+    choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(opposing))
+  end
+  return choices
+end
+
+---@param session table live native session at its opening decision boundary
+---@return table[] turn events in execution order
+local function playStrikeTurn(session)
+  local frame = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(frame.request.requests) do
+    local accepted, replyErr = session:submit(SessionFixture.replyFor(request, strikeReplies(request)))
+    Assert.isTrue(accepted, "strike replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local turn = session:advance(64)
+  return turn.events or {}
+end
+
+-- A strike without its required admitted move list rejects instead of
+-- impersonating an empty one: the move list the mon domain guarantees
+-- can never silently become an empty selection behind a live strike.
+function T.strikes_reject_a_missing_required_move_list()
+  local contracts = SessionFixture.sessionContracts()
+  local content = strikeContent()
+  local alpha = strikeCombatant(1, 11)
+  alpha.mon.moves = nil
+  local session = contracts.Battle.newSession(strikeScenario(alpha, strikeCombatant(2, 23)), content)
+  local failure = Assert.throws(function()
+    playStrikeTurn(session)
+  end, "a strike without its required move list rejects")
+  Assert.notNil(failure, "a strike without its required move list rejects")
+  session:dispose()
+end
+
+-- Admissible absences keep their original answers: an explicitly empty
+-- move list still falls back to the struggle action, and a missing held
+-- item still strikes without holder effects.
+function T.strikes_keep_their_admissible_absences()
+  local contracts = SessionFixture.sessionContracts()
+  local content = strikeContent()
+  local empty = strikeCombatant(1, 11)
+  empty.mon.moves = {}
+  local struggling = contracts.Battle.newSession(strikeScenario(empty, strikeCombatant(2, 23)), content)
+  local struggleEvents = playStrikeTurn(struggling)
+  struggling:dispose()
+  local recoiled = false
+  for _, event in ipairs(struggleEvents) do
+    if event.kind == "recoil" then
+      recoiled = true
+    end
+  end
+  Assert.isTrue(recoiled, "the empty move list still struggles")
+
+  local bare = strikeCombatant(1, 11)
+  bare.mon.heldItem = nil
+  local unheld = contracts.Battle.newSession(strikeScenario(bare, strikeCombatant(2, 23)), content)
+  playStrikeTurn(unheld)
+  local held = unheld:capture()
+  unheld:dispose()
+  Assert.isTrue(held.combatants[2].hp < held.combatants[2].entryHp, "the held-item absence still strikes")
 end
 
 return { tests = T }
