@@ -1828,5 +1828,119 @@ function T.forced_replacement_holds_cancel_and_seals_one_reply()
     rig.battle:dispose()
   end
 end
+-- its own modal geometry: compact stays a fullscreen modal and the
+-- paired screen keeps its lower-pane modal, both focus the same
+-- reserve with the same guidance and roster count, and cancelling
+-- from either returns to the command prompt without sealing a reply.
+---@param ink table<string, integer> drawn text census under inspection
+---@return integer? focused child row number under inspection
+local function focusedChildRow(ink)
+  for content, _ in pairs(ink) do
+    local standard = tostring(content):match("^> (%d+)%.$")
+    if standard ~= nil then
+      return tonumber(standard)
+    end
+    local compact = tostring(content):match("^\226\128\163 (%d+)%.$")
+    if compact ~= nil then
+      return tonumber(compact)
+    end
+  end
+  return nil
+end
+
+---@param rig table live screen rig under test driving
+---@return table<string, integer> drawn text census for one rendered frame
+local function drawnInk(rig)
+  rig.text.draws = {}
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  local ink = {}
+  for _, drawn in ipairs(rig.text.draws) do
+    local content = tostring(drawn.content)
+    ink[content] = (ink[content] or 0) + 1
+  end
+  return ink
+end
+function T.same_party_child_shares_wording_across_layouts_while_keeping_its_own_modal()
+  local captured = {}
+  for _, layout in ipairs({ "paired", "compact" }) do
+    local tag = " (" .. layout .. ")"
+    local rig = openRig({
+      layout = layout,
+      launchId = "launch-shared-child-modal-" .. layout,
+      party = {
+        { species = "EEVEE", level = 20, seed = 0x33333333 },
+        { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+      },
+      bag = {},
+    })
+    driveToMode(rig, "command")
+    openPartyFromCommand(rig)
+    Assert.equal(rig.screen:status().mode, "child", "the Pokemon command opens the party child" .. tag)
+    rig.windows.calls = {}
+    local openedInk = drawnInk(rig)
+    local openedFocus = focusedChildRow(openedInk)
+    Assert.notNil(openedFocus, "the open child focuses its reserve" .. tag)
+    local frames = {}
+    for _, call in ipairs(rig.windows.calls) do
+      frames[#frames + 1] = call
+    end
+    captured[layout] = { ink = openedInk, frames = frames, focus = openedFocus }
+    press(rig, { type = "navigate", direction = "down" })
+    Assert.equal(rig.screen:status().mode, "child", "navigation keeps the party child" .. tag)
+    captured[layout].movedFocus = focusedChildRow(drawnInk(rig))
+    press(rig, { type = "cancel" })
+    Assert.equal(rig.screen:status().mode, "command", "cancelling the party child returns to command" .. tag)
+    Assert.equal(#rig.submits, 0, "cancelling the party child seals no reply" .. tag)
+    rig.screen:dispose()
+    rig.battle:dispose()
+  end
+  Assert.equal(captured.paired.focus, captured.compact.focus, "both layouts focus the same reserve")
+  Assert.equal(
+    captured.paired.movedFocus,
+    captured.compact.movedFocus,
+    "navigation moves both layouts to the same reserve"
+  )
+  Assert.isTrue(captured.paired.ink["Select a reserve."] ~= nil, "the paired modal guides its voluntary party child")
+  Assert.isTrue(
+    captured.compact.ink["Select a reserve."] ~= nil,
+    "the compact modal guides its voluntary party child identically"
+  )
+  local shared = {}
+  for content, _ in pairs(captured.compact.ink) do
+    if content:match("^%d+/%d+$") ~= nil then
+      shared[#shared + 1] = content
+    end
+  end
+  Assert.isTrue(#shared >= 1, "the compact modal counts its occupied roster")
+  for _, fraction in ipairs(shared) do
+    Assert.isTrue(
+      captured.paired.ink[fraction] ~= nil,
+      "the paired modal counts its occupied roster identically: " .. fraction
+    )
+  end
+  local compactFrame = nil
+  for _, call in ipairs(captured.compact.frames) do
+    if type(call.applicationBox) == "table" then
+      compactFrame = call.applicationBox
+    end
+  end
+  Assert.notNil(compactFrame, "the compact child frames its fullscreen modal")
+  Assert.deepEqual(
+    { x = compactFrame.x, y = compactFrame.y, width = compactFrame.width, height = compactFrame.height },
+    { x = 8, y = 8, width = 240, height = 176 },
+    "the compact child keeps its fullscreen modal frame"
+  )
+  local pairedModal = false
+  for _, call in ipairs(captured.paired.frames) do
+    Assert.isNil(call.applicationBox, "the paired child keeps its lower-pane modal")
+    if type(call.box) == "table" then
+      local box = call.box
+      if box.x == 0 and box.y == 0 and box.width == 256 and box.height == 192 then
+        pairedModal = true
+      end
+    end
+  end
+  Assert.isTrue(pairedModal, "the paired child draws its lower-pane modal window")
+end
 
 return { tests = T }

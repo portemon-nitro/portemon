@@ -769,4 +769,188 @@ function T.dock_draw_uses_shared_background_and_shared_frame()
   Assert.isTrue(fills >= 2, "both dock panels establish their background fills")
 end
 
+-- Child footer wording stays identical across the two presentations:
+-- the same detached child view draws the same guidance caption and
+-- the same occupied-roster fraction through the compact fullscreen
+-- modal and the paired lower-pane modal. Bag, target, forced and
+-- voluntary party selection, move learning, and a party selection
+-- with no admitted rows cover every footer branch; learning titles
+-- its modal with no footer caption or fraction on either
+-- presentation, and only battlefield health fractions may accompany
+-- a missing occupancy.
+---@param count integer row count under test driving
+---@param occupied integer leading occupied rows under test driving
+---@return table detached roster rows under test driving
+local function footerRosterRows(count, occupied)
+  local rows = {}
+  for index = 1, count do
+    rows[index] = {
+      id = "slot:" .. index,
+      label = "ALLY" .. index,
+      sub = "Lv5",
+      detail = "HP 10",
+      occupied = index <= occupied,
+      enabled = true,
+    }
+  end
+  return rows
+end
+
+---@param plan table resolved plan under test driving
+---@param view table internal semantic snapshot under test driving
+---@return table<string, integer> drawn text census keyed by content
+local function childDrawCensus(plan, view)
+  local graphics = FakeGraphics.new({})
+  local order = {}
+  local text = recordingText(order)
+  ApplicationPresentation.draw(graphics, {
+    graphics = graphics,
+    text = text,
+    windows = recordingWindows(order),
+    assets = {
+      drawable = function(_, key)
+        return { handle = key }
+      end,
+    },
+    frameKey = "compact-plan-test-frame",
+    sceneImageKey = "scene:test",
+  }, view, plan)
+  local census = {}
+  for _, entry in ipairs(text.draws) do
+    local content = tostring(entry.content)
+    census[content] = (census[content] or 0) + 1
+  end
+  return census
+end
+
+---@param view table internal semantic snapshot under test driving
+---@param signature string stable measurement identity under test driving
+---@return table resolved paired plan
+local function resolvePairedChild(view, signature)
+  local session = ApplicationPresentation.new(BattleScreenInterface.defaults(), nil)
+  return session:resolve({
+    width = 256,
+    height = 384,
+    topology = ScreenTopology.dualDisplay(
+      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+      { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+    ),
+    pixelRatio = 1,
+    signature = signature,
+  }, view)
+end
+
+function T.child_footer_wording_matches_across_compact_and_paired_draws()
+  local cases = {
+    {
+      name = "bag",
+      child = {
+        kind = "bag",
+        cancellable = true,
+        currentPocket = "MEDICINE",
+        page = { current = 1, count = 2 },
+        stock = 5,
+        focusId = "item:1",
+        rows = {
+          { id = "item:1", label = "POTION", sub = "x5", detail = "CURES", enabled = true },
+          { id = "item:2", label = "BALL", sub = "x5", detail = "CATCH", enabled = true },
+        },
+      },
+      caption = "Select an item.",
+      occupancy = nil,
+    },
+    {
+      name = "target",
+      child = { kind = "target", stagedItem = "POTION", focusId = "slot:1", rows = footerRosterRows(3, 2) },
+      caption = "Select the target.",
+      occupancy = "2/3",
+    },
+    {
+      name = "forced-party",
+      child = { kind = "party", focusId = "slot:1", rows = footerRosterRows(3, 2) },
+      caption = "Select its replacement.",
+      occupancy = "2/3",
+    },
+    {
+      name = "voluntary-party",
+      child = { kind = "party", cancellable = true, focusId = "slot:1", rows = footerRosterRows(3, 2) },
+      caption = "Select a reserve.",
+      occupancy = "2/3",
+    },
+    {
+      name = "learn",
+      child = {
+        kind = "learn",
+        incomingMove = "EMBER",
+        focusId = "move:0",
+        rows = {
+          { id = "move:0", label = "TACKLE", detail = "NORMAL", enabled = true },
+          { id = "move:1", label = "GROWL", detail = "NORMAL", enabled = true },
+          { id = "move:2", label = "SPLASH", detail = "NORMAL", enabled = false },
+          { id = "move:3", label = "REST", detail = "PSYCHIC", enabled = true },
+        },
+      },
+      caption = nil,
+      occupancy = nil,
+      title = "Forget a move for EMBER?",
+    },
+    {
+      name = "missing-rows-party",
+      child = { kind = "party" },
+      caption = "Select its replacement.",
+      occupancy = nil,
+    },
+  }
+  local captions = {
+    "Select the target.",
+    "Select an item.",
+    "Select a move to forget.",
+    "Select a reserve.",
+    "Select its replacement.",
+  }
+  for _, case in ipairs(cases) do
+    local tag = " (" .. case.name .. ")"
+    local view = snapshot("child", { childView = case.child })
+    local paired = resolvePairedChild(view, "compact-plan-test:child-" .. case.name)
+    Assert.equal(#paired.panes, 2, "the paired child keeps both native panes" .. tag)
+    Assert.isTrue(paired.content.compact ~= true, "the paired child is not the compact composition" .. tag)
+    local compact = resolve(singleMeasurement(256, 192, "compact-plan-test:child-" .. case.name), view)
+    local compactInk = childDrawCensus(compact, view)
+    local pairedInk = childDrawCensus(paired, view)
+    local battlefield = {}
+    for _, battler in ipairs(view.battlers) do
+      if type(battler.hp) == "number" and type(battler.maxHp) == "number" then
+        battlefield[tostring(battler.hp) .. "/" .. tostring(battler.maxHp)] = true
+      end
+    end
+    if case.title ~= nil then
+      Assert.isTrue(compactInk[case.title] ~= nil, "the compact modal titles its learning" .. tag)
+      Assert.isTrue(pairedInk[case.title] ~= nil, "the paired modal titles its learning" .. tag)
+    end
+    if case.caption ~= nil then
+      Assert.isTrue(compactInk[case.caption] ~= nil, "the compact modal guides its child" .. tag)
+      Assert.isTrue(pairedInk[case.caption] ~= nil, "the paired modal guides its child identically" .. tag)
+    else
+      for _, wording in ipairs(captions) do
+        Assert.isNil(compactInk[wording], "the compact modal carries no footer guidance" .. tag)
+        Assert.isNil(pairedInk[wording], "the paired modal carries no footer guidance" .. tag)
+      end
+    end
+    if case.occupancy ~= nil then
+      Assert.isTrue(compactInk[case.occupancy] ~= nil, "the compact modal counts its roster" .. tag)
+      Assert.isTrue(pairedInk[case.occupancy] ~= nil, "the paired modal counts its roster identically" .. tag)
+    end
+    for _, ink in ipairs({ compactInk, pairedInk }) do
+      for content, _ in pairs(ink) do
+        if content:match("^%d+/%d+$") ~= nil and content ~= case.occupancy then
+          Assert.isTrue(
+            battlefield[content] == true,
+            "only battlefield health accompanies a child without occupancy: " .. content .. tag
+          )
+        end
+      end
+    end
+  end
+end
+
 return { tests = T }

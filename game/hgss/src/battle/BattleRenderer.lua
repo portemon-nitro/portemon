@@ -11,6 +11,8 @@
 ---@class BattleRenderer
 local BattleRenderer = {}
 
+local BattleChildText = require("game.hgss.src.battle.BattleChildText")
+
 -- Interim battler centers on the native canvas: a product baseline for
 -- the idle pose, not a forensic claim about every species pose.
 BattleRenderer.PLAYER_CENTER = { x = 64, y = 112 }
@@ -993,40 +995,6 @@ local function learnConfirmText(child)
   return "Forget " .. name .. "?"
 end
 
----@param child table<string, unknown> detached child view under guidance wording
----@return string footer guidance wording
-local function childSubtitle(child)
-  if child.kind == "target" then
-    return "Select the target."
-  elseif child.kind == "bag" then
-    return "Select an item."
-  elseif child.kind == "learn" then
-    return "Select a move to forget."
-  elseif child.cancellable == true then
-    return "Select a reserve."
-  end
-  return "Select its replacement."
-end
-
----@param child table<string, unknown> detached child view under occupancy wording
----@return string? occupied roster fraction, nil outside party selection
-local function childOccupancy(child)
-  if child.kind ~= "party" and child.kind ~= "target" then
-    return nil
-  end
-  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
-  if type(rows) ~= "table" then
-    return nil
-  end
-  local occupied = 0
-  for _, row in ipairs(rows) do
-    if type(row) == "table" and row.occupied == true then
-      occupied = occupied + 1
-    end
-  end
-  return tostring(occupied) .. "/" .. tostring(#rows)
-end
-
 -- Draws the open child as a battle-local modal over the lower pane:
 -- the title, every projected row with its focus and disabled marks,
 -- the staged learning confirmation, and the permitted Back/Confirm
@@ -1039,7 +1007,7 @@ local function drawChild(resources, view, child)
   local windows = assert(resources.windows, "the battle render borrows its window services")
   windows.drawWindow({ x = 0, y = 0, width = 256, height = 192 }, resources.frameKey, { 0, 0, 0 })
   text.drawText(fitLabel(text, childTitle(child), CHILD_TITLE.maxWidth), CHILD_TITLE.x, CHILD_TITLE.y)
-  local occupancy = childOccupancy(child)
+  local occupancy = BattleChildText.occupancy(child)
   if occupancy ~= nil then
     text.drawText(occupancy, 216, CHILD_TITLE.y)
   end
@@ -1115,7 +1083,11 @@ local function drawChild(resources, view, child)
       text.drawText(fitLabel(text, child.notice, CHILD_NOTICE.maxWidth), CHILD_NOTICE.x, CHILD_NOTICE.y)
     end
   elseif child.kind ~= "learn" then
-    text.drawText(fitLabel(text, childSubtitle(child), CHILD_NOTICE.maxWidth), CHILD_NOTICE.x, CHILD_NOTICE.y)
+    text.drawText(
+      fitLabel(text, BattleChildText.subtitle(child), CHILD_NOTICE.maxWidth),
+      CHILD_NOTICE.x,
+      CHILD_NOTICE.y
+    )
   end
   local _ = view
 end

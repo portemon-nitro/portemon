@@ -14,6 +14,7 @@
 -- semantic controls.
 
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
@@ -1563,40 +1564,6 @@ local function drawCompactHud(resources, view, content)
   end)
 end
 
----@param child table<string, unknown> detached child view under guidance wording
----@return string footer guidance wording
-local function childSubtitle(child)
-  if child.kind == "target" then
-    return "Select the target."
-  elseif child.kind == "bag" then
-    return "Select an item."
-  elseif child.kind == "learn" then
-    return "Select a move to forget."
-  elseif child.cancellable == true then
-    return "Select a reserve."
-  end
-  return "Select its replacement."
-end
-
----@param child table<string, unknown> detached child view under occupancy wording
----@return string? occupied roster fraction, nil outside party selection
-local function childOccupancy(child)
-  if child.kind ~= "party" and child.kind ~= "target" then
-    return nil
-  end
-  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
-  if type(rows) ~= "table" then
-    return nil
-  end
-  local occupied = 0
-  for _, row in ipairs(rows) do
-    if type(row) == "table" and row.occupied == true then
-      occupied = occupied + 1
-    end
-  end
-  return tostring(occupied) .. "/" .. tostring(#rows)
-end
-
 -- Draws the open child as a fullscreen 256x192 modal: the title,
 -- every projected row with its focus and disabled marks, the staged
 -- learning confirmation, and the permitted Back/Confirm and pocket
@@ -1615,7 +1582,7 @@ local function drawChildModal(resources, view, content)
   local title = childPlan.title --[[@as string?]]
   drawLabel(text, fitText(text, tostring(title or ""), 200), 12, 10)
   if type(childView) == "table" then
-    local occupancy = childOccupancy(childView --[[@as table<string, unknown>]])
+    local occupancy = BattleChildText.occupancy(childView --[[@as table<string, unknown>]])
     if occupancy ~= nil then
       drawLabel(text, occupancy, 216, 10)
     end
@@ -1710,7 +1677,7 @@ local function drawChildModal(resources, view, content)
       drawLabel(text, fitText(text, childView.notice, 232), 12, 172)
     end
   elseif type(childView) == "table" and childView.kind ~= "learn" then
-    drawLabel(text, fitText(text, childSubtitle(childView --[[@as table<string, unknown>]]), 232), 12, 172)
+    drawLabel(text, fitText(text, BattleChildText.subtitle(childView --[[@as table<string, unknown>]]), 232), 12, 172)
   end
   windows.drawApplicationFrame({ x = 8, y = 8, width = 240, height = 176 }, frame)
 end
