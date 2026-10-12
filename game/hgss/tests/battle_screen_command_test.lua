@@ -1632,10 +1632,8 @@ function T.multipage_terminal_acknowledgment_consumes_each_edge_once()
   rig.screen:dispose()
 end
 
--- A matched dialogue tap acknowledges exactly like a key edge: a
--- release with no press and a press whose release leaves the pane
--- never touch the page, while one matched tap per reveal stage
--- accelerates, turns, then finally acknowledges without sealing.
+-- Matched dialogue taps advance the terminal page through the real input
+-- boundary, while a foreign pointer release cannot acknowledge it.
 function T.matched_dialogue_taps_acknowledge_the_terminal_page()
   local rig = openLongOutcomeRig("launch-outcome-tap-local")
   local reached = false
@@ -1670,8 +1668,17 @@ function T.matched_dialogue_taps_acknowledge_the_terminal_page()
   for _ = 1, 300 do
     rig.pump(1)
   end
-  Assert.equal(rig.screen:status().mode, "outcome", "the final page holds before its tap")
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "the final page holds before its tap")
+  Assert.equal(rig.screen:status().mode, "outcome", "the final page holds before its pointer input")
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "the final page holds before its pointer input")
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:A", x = 128, y = 288 } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:B", x = 128, y = 288 } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "outcome", "a foreign pointer cannot acknowledge the final page")
+  Assert.isFalse(rig.port.leave({ kind = "wild" }), "a foreign pointer never releases the outcome")
+  Assert.isFalse(rig.port.ready(), "a foreign pointer never settles the battle")
+  -- ApplicationPresentation retains A's capture after dropping B's up.
+  -- Release A outside the pane to cancel that capture before fresh taps.
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:A", x = 300, y = 300 } })
   rig.screen:input({ { type = "pointer_down", pointerId = "touch:tap-drag", x = 128, y = 288 } })
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:tap-drag", x = 300, y = 300 } })
   rig.pump(1)

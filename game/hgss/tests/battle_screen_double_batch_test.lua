@@ -1283,6 +1283,33 @@ function T.target_pickers_name_projected_recipients_on_both_layouts()
   end
 end
 
+-- An empty-content press does not authenticate the focused compact
+-- target row: releasing over that row must leave the current actor's
+-- projected choice open until the same control was actually pressed.
+function T.compact_focused_target_needs_its_matching_control_press()
+  local rig = openTargetLabelRig("compact", "launch-target-capture", 7204)
+  openScreenRequest(rig)
+  press(rig, { type = "confirm" })
+  Assert.equal(rig.screen:status().mode, "moves", "Fight opens the compact move picker")
+  press(rig, { type = "confirm" })
+  Assert.equal(rig.screen:status().mode, "target", "the move opens its multi-target picker")
+  Assert.equal(rig.screen:view().selection, "target:0", "the first target is highlighted")
+  Assert.equal(rig.screen:view().actor.index, 1, "the first actor owns the open picker")
+
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:orphan", x = 128, y = 138 } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "target", "the host drops a truly orphan target release")
+  Assert.equal(rig.screen:view().actor.index, 1, "an orphan release leaves the current actor unchanged")
+
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:empty", x = 10, y = 10 } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:empty", x = 128, y = 138 } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "target", "a press on empty content cannot choose the focused target")
+  Assert.equal(rig.screen:view().actor.index, 1, "an empty-content release does not stage the target")
+  Assert.equal(#rig.submits, 0, "unarmed target releases seal no reply")
+  rig.screen:dispose()
+end
+
 ---@param snapshot table internal semantic snapshot under drawing
 ---@return table<string, table> live battler facts keyed by native slot under test driving
 local function battlersByPosition(snapshot)

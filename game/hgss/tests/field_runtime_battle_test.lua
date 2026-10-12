@@ -95,7 +95,7 @@ local function fakeRuntime(overrides)
     -- Presented launches read the player narration pace; production
     -- boot always composes it, so the composition fake carries it too.
     playerData = { options = { textSpeed = "mid", textFrame = 0 } },
-  }, FieldRuntime)
+  }, FieldRuntime))
   for key, value in pairs(overrides or {}) do
     runtime[key] = value
   end

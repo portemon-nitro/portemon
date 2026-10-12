@@ -1276,6 +1276,40 @@ function T.children_keep_exclusive_input_and_release_once()
   end
 end
 
+-- The child overlay shares the battle screen's captured control identity:
+-- a second pointer cannot complete a party-row press, but a fresh matched
+-- tap on that projected row still submits its original switch choice.
+function T.child_party_tap_requires_the_matching_pointer()
+  for _, layout in ipairs({ "paired", "compact" }) do
+    local rig = openRig({
+      layout = layout,
+      launchId = "launch-child-pointer-identity-" .. layout,
+      party = {
+        { species = "EEVEE", level = 20, seed = 0x33333333 },
+        { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+      },
+      bag = {},
+    })
+    driveToMode(rig, "command")
+    openPartyFromCommand(rig)
+
+    local x = 100
+    local y = layout == "paired" and 244 or 52
+    rig.screen:input({ { type = "pointer_down", pointerId = "touch:A", x = x, y = y } })
+    rig.screen:input({ { type = "pointer_up", pointerId = "touch:B", x = x, y = y } })
+    rig.pump(1)
+    Assert.equal(rig.screen:status().mode, "child", "a foreign pointer cannot activate the party row (" .. layout .. ")")
+    Assert.equal(#rig.submits, 0, "a foreign pointer seals no party choice (" .. layout .. ")")
+
+    rig.screen:input({ { type = "pointer_down", pointerId = "touch:A", x = x, y = y } })
+    rig.screen:input({ { type = "pointer_up", pointerId = "touch:A", x = x, y = y } })
+    rig.pump(1)
+    Assert.equal(#rig.submits, 1, "a matched pointer submits the party choice once (" .. layout .. ")")
+    rig.screen:dispose()
+    rig.battle:dispose()
+  end
+end
+
 -- Renders one frame through the recording text boundary and censuses
 -- drawn text by content, so row visibility reads exactly what the
 -- battle puts on screen.

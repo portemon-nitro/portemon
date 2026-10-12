@@ -1504,6 +1504,39 @@ function T.relayout_keeps_the_decision_and_cancels_the_held_pointer()
   rig.battle:dispose()
 end
 
+-- The host filters truly orphan releases, but the compact mapper must not
+-- turn a captured press on empty content into confirm when its release lands
+-- on the already-focused move or target.
+function T.uncontrolled_compact_move_releases_do_not_select()
+  local moveRig = openRig({ launchId = "launch-compact-orphan-move", measurement = compactMeasurement() })
+  driveToMode(moveRig, "command")
+  press(moveRig, { type = "confirm" })
+  Assert.equal(moveRig.screen:status().mode, "moves", "the compact move picker opens")
+  Assert.equal(moveRig.screen:view().selection, "move:0", "the first compact move is focused")
+  local moveSounds = #moveRig.audio.plays
+
+  moveRig.screen:input({ { type = "pointer_up", pointerId = "touch:orphan", x = 52, y = 142 } })
+  moveRig.pump(1)
+  Assert.equal(moveRig.screen:status().mode, "moves", "the host drops an orphan move release")
+  Assert.equal(moveRig.screen:view().selection, "move:0", "the orphan move release keeps focus")
+  Assert.equal(#moveRig.submits, 0, "the orphan move release seals no request")
+  Assert.equal(#moveRig.audio.plays, moveSounds, "the orphan move release plays no sound")
+
+  moveRig.screen:input({ { type = "pointer_down", pointerId = "touch:outside", x = 10, y = 10 } })
+  moveRig.screen:input({ { type = "pointer_up", pointerId = "touch:outside", x = 52, y = 142 } })
+  moveRig.pump(1)
+  Assert.equal(moveRig.screen:status().mode, "moves", "an outside-control press cannot arm the focused move")
+  moveRig.screen:input({ { type = "pointer_down", pointerId = "touch:cancel", x = 52, y = 142 } })
+  moveRig.screen:input({ { type = "pointer_cancel", pointerId = "touch:cancel" } })
+  moveRig.screen:input({ { type = "pointer_up", pointerId = "touch:cancel", x = 52, y = 142 } })
+  moveRig.pump(1)
+  Assert.equal(moveRig.screen:status().mode, "moves", "a cancelled press cannot activate the focused move")
+  Assert.equal(#moveRig.submits, 0, "invalid compact move edges seal nothing")
+  Assert.equal(#moveRig.audio.plays, moveSounds, "invalid compact move edges play no sound")
+  moveRig.screen:dispose()
+  moveRig.battle:dispose()
+end
+
 -- A pair that cannot fit at least 1x takes the compact pane instead of
 -- reporting too-small: the full command composition stays reachable and
 -- pointer-operable on the tiny host.

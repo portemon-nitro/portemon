@@ -1115,13 +1115,6 @@ function BattleCompactInterface.mapInput(event, view, plan)
   end
   if eventType == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
     local region = hitRegion(regions, event.x, event.y)
-    -- Move and target slots focus on the first tap and submit on a
-    -- release over the already-focused slot through the shared confirm
-    -- semantic; the command grid keeps the press convention because the
-    -- controller acts on command releases directly.
-    if region ~= nil and (view.mode == "moves" or view.mode == "target") and view.selection == region.id then
-      return { type = "confirm" }
-    end
     local control = nil
     if region ~= nil then
       control = { scope = region.scope, id = region.id }

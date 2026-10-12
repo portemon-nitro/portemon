@@ -769,9 +769,14 @@ end
 
 ---@param armed table<string, unknown>? pressed control awaiting release
 ---@param control table<string, unknown>? activated control under sealing
+---@param pointerId string? identity of the pointer edge
 ---@return boolean sealed
-local function sameControl(armed, control)
-  return armed ~= nil and control ~= nil and armed.scope == control.scope and armed.id == control.id
+local function sameControl(armed, control, pointerId)
+  return armed ~= nil
+    and control ~= nil
+    and armed.scope == control.scope
+    and armed.id == control.id
+    and armed.pointerId == pointerId
 end
 
 ---@param reason string? supplied refusal reason under display
@@ -1397,7 +1402,7 @@ function BattleScreenState:_consume(event)
       end
     elseif eventType == "child_slide" then
       if
-        not sameControl(self._armed, event.control --[[@as table<string, unknown>?]])
+        not sameControl(self._armed, event.control --[[@as table<string, unknown>?]], event.pointerId)
       then
         self._armed = nil
       end
@@ -1405,7 +1410,7 @@ function BattleScreenState:_consume(event)
       local armed = self._armed
       self._armed = nil
       local control = event.control --[[@as table<string, unknown>?]]
-      if type(control) == "table" and type(control.id) == "string" and sameControl(armed, control) then
+      if type(control) == "table" and type(control.id) == "string" and sameControl(armed, control, event.pointerId) then
         if
           self._subflows:activateControl(control.id --[[@as string]])
         then
@@ -1454,7 +1459,7 @@ function BattleScreenState:_consume(event)
   end
   if eventType == "battle_slide" then
     if
-      not sameControl(self._armed, event.control --[[@as table<string, unknown>?]])
+      not sameControl(self._armed, event.control --[[@as table<string, unknown>?]], event.pointerId)
     then
       self._armed = nil
     end
@@ -1464,7 +1469,7 @@ function BattleScreenState:_consume(event)
     local armed = self._armed
     self._armed = nil
     if
-      sameControl(armed, event.control --[[@as table<string, unknown>?]])
+      sameControl(armed, event.control --[[@as table<string, unknown>?]], event.pointerId)
     then
       if self._mode == "narration" or self._mode == "outcome" then
         local control = event.control --[[@as table<string, unknown>?]]

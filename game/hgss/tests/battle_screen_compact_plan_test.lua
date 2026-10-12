@@ -302,16 +302,21 @@ function T.half_open_edges_and_single_session_transform()
   Assert.equal(pressed.control.id, "fight", "the fitted pane answers the same Fight cell")
 end
 
--- Releasing over an already-focused move or target slot confirms
--- through the shared confirm semantic, while other releases keep the
--- press convention and the command grid is unaffected.
-function T.focused_slot_release_confirms_through_shared_confirm()
+-- Releasing over a focused move or target still maps to a scoped pointer
+-- activation. The screen owner, which has the armed press identity, decides
+-- whether that release may activate it.
+function T.focused_slot_release_stays_a_scoped_activation()
   require(COMPACT_MODULE)
   local plan = resolve(singleMeasurement(256, 192, "compact-plan-test:confirm"), snapshot("moves"))
   local focused = snapshot("moves")
-  local confirm = plan.mapInput({ type = "pointer_up", pointerId = "touch:0", x = 52, y = 142 }, focused, plan)
-  Assert.notNil(confirm, "releasing over the focused slot answers")
-  Assert.equal(confirm.type, "confirm", "the focused slot submits through the shared confirm semantic")
+  local focusedRelease = plan.mapInput(
+    { type = "pointer_up", pointerId = "touch:0", x = 52, y = 142 },
+    focused,
+    plan
+  )
+  Assert.notNil(focusedRelease, "releasing over the focused slot answers")
+  Assert.equal(focusedRelease.type, "battle_activate", "the focused move release stays scoped")
+  Assert.equal(focusedRelease.control.id, "move:0", "the focused move release names its own slot")
   local unfocused = snapshot("moves", { selection = "move:1" })
   local activate = plan.mapInput({ type = "pointer_up", pointerId = "touch:0", x = 52, y = 142 }, unfocused, plan)
   Assert.notNil(activate, "releasing over an unfocused slot answers")
@@ -329,7 +334,8 @@ function T.focused_slot_release_confirms_through_shared_confirm()
   local aimRelease =
     aimed.mapInput({ type = "pointer_up", pointerId = "touch:0", x = 128, y = 138 }, snapshot("target"), aimed)
   Assert.notNil(aimRelease, "releasing over the focused target answers")
-  Assert.equal(aimRelease.type, "confirm", "the focused target submits through the shared confirm semantic")
+  Assert.equal(aimRelease.type, "battle_activate", "the focused target release stays scoped")
+  Assert.equal(aimRelease.control.id, "target:0", "the focused target release names its own row")
 end
 
 -- Disabled options stay focusable while empty slots stay blank: the grid
