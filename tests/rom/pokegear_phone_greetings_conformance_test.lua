@@ -37,19 +37,58 @@ end
 -- real reference as the shared lease token. Production owner:
 -- FieldRuntime._composePokegearFeature.
 ---@param catalog table<string, unknown>
----@return table<string, string>
-local function greetingMessages(catalog)
+---@return table<string, unknown>
+local function greetingMessages(catalog, versionId)
   local messages = {}
+  local provider = assert(FieldMessageProvider.new(CacheFs.forVersion(versionId)))
+  local resolvers = {}
   local firstRef = nil
+  local byKey = {}
   for _, record in ipairs(assert(catalog.contacts, "greeting references read the compiled contacts")) do
     local contact = record --[[@as table<string, unknown>]]
+    byKey[
+      contact.key --[[@as string]]
+    ] = contact
     local ref = string.format("msg.hgss.%d.%d", contact.messageBank, contact.greeting)
-    messages[contact.key --[[@as string]]] = ref
+    messages[
+      contact.key --[[@as string]]
+    ] = ref
     if firstRef == nil then
       firstRef = ref
     end
   end
   messages.greeting = assert(firstRef, "greeting references need at least one compiled contact")
+  local function resolveMessage(bankId, entry)
+    assert(provider:acquireBank(bankId), "the phone message bank is available")
+    local template = assert(provider:get(bankId, entry), "the phone message entry is available")
+    local formatted = provider:format(template, { playerName = "GOLD" }, resolvers)
+    provider:releaseBank(bankId)
+    return formatted
+  end
+  local function resolveName(_, key)
+    local contact = assert(byKey[key], "caller names resolve through the compiled contacts")
+    return resolveMessage(contact.name.bank, contact.name.entry).text
+  end
+  local function resolveClass(_, key)
+    local contact = assert(byKey[key], "caller classes resolve through the compiled contacts")
+    if contact.class.kind == "blank" then
+      return ""
+    end
+    return resolveMessage(contact.class.bank, contact.class.entry).text
+  end
+  local function resolveLine(_, key, scriptId)
+    local contact = assert(byKey[key], "caller dialogue resolves through the compiled contacts")
+    local definition = assert(catalog.callDefinitions[scriptId], "caller dialogue has a native definition")
+    assert(definition.male.bank == contact.messageBank, "the selected script belongs to its caller bank")
+    return resolveMessage(definition.male.bank, definition.male.entry)
+  end
+  messages.resolveName = resolveName
+  messages.resolveClass = resolveClass
+  messages.resolveLine = resolveLine
+  local function dispose()
+    provider:dispose()
+  end
+  messages.dispose = dispose
   return messages
 end
 
@@ -80,15 +119,31 @@ function T.contacts_carry_their_source_message_bank(romFs, versionId)
     local contact = record --[[@as table<string, unknown>]]
     Assert.equal(
       contact.messageBank,
-      PokegearSources.phoneMessageBanks[(contact.id --[[@as integer]]) + 1],
+      PokegearSources.phoneMessageBanks[
+        contact.id --[[@as integer]] + 1
+      ],
       "contact " .. tostring(contact.id) .. " reads its source bank"
     )
-    byKey[contact.key --[[@as string]]] = contact
+    byKey[
+      contact.key --[[@as string]]
+    ] = contact
   end
   Assert.equal(byKey[MOM_KEY].messageBank, 664, "the mother greeting reads bank 664")
   Assert.equal(byKey[ELM_KEY].messageBank, 716, "the elm greeting reads bank 716")
   Assert.equal(byKey[MOM_KEY].greeting, 23, "the mother greeting reads number 23")
   Assert.equal(byKey[ELM_KEY].greeting, 1, "the elm greeting reads number 1")
+  Assert.equal(byKey[MOM_KEY].class.kind, "blank", "Mom's trainer class has no label")
+  Assert.equal(byKey[ELM_KEY].class.bank, 271, "the professor phone-only class uses bank 271")
+  Assert.equal(
+    byKey[ELM_KEY].class.entry,
+    byKey[ELM_KEY].trainer - 201 + 38,
+    "the professor class entry follows the native class code"
+  )
+  Assert.deepEqual(
+    catalog.landmarkLabels,
+    { bank = 279, fallbackBank = 280, fallbackEntry = 2 },
+    "landmark resolver references come from the generated source catalog"
+  )
 end
 
 -- Every referenced greeting bank is demandable through the existing bank
@@ -105,11 +160,7 @@ function T.greeting_banks_are_demandable(romFs, versionId)
       seen[bank] = true
       local acquired, acquireErr = provider:acquireBank(bank)
       Assert.notNil(acquired, "greeting bank " .. bank .. " must be demandable: " .. tostring(acquireErr))
-      Assert.equal(
-        (acquired --[[@as table<string, unknown>]]).bankId,
-        bank,
-        "the demandable bank carries its identity"
-      )
+      Assert.equal((acquired --[[@as table<string, unknown>]]).bankId, bank, "the demandable bank carries its identity")
       provider:releaseBank(bank)
     end
   end
@@ -143,14 +194,24 @@ function T.greeting_entries_report_their_standing(romFs, versionId)
       "greeting bank " .. bank .. " must be demandable for " .. tostring(contact.key) .. ": " .. tostring(acquireErr)
     )
     local bankCount = (acquired --[[@as table<string, unknown>]]).messageCount --[[@as integer]]
-    local where = "bank " .. bank .. " number " .. entry .. " (" .. tostring(contact.key) .. ", bank holds " .. bankCount .. ")"
+    local where = "bank "
+      .. bank
+      .. " number "
+      .. entry
+      .. " ("
+      .. tostring(contact.key)
+      .. ", bank holds "
+      .. bankCount
+      .. ")"
     local template, templateErr = provider:get(bank, entry)
     if template == nil then
       unmapped[#unmapped + 1] = where .. ": " .. tostring(templateErr and templateErr.code or templateErr)
     else
       local ok, formatted = pcall(provider.format, provider, template, { playerName = "GOLD" }, resolvers)
       if ok then
-        if (formatted --[[@as table<string, unknown>]]).hadUnresolvedSubstitutions == true then
+        if
+          (formatted --[[@as table<string, unknown>]]).hadUnresolvedSubstitutions == true
+        then
           unresolved[#unresolved + 1] = "bank " .. bank .. " entry " .. entry .. " (" .. tostring(contact.key) .. ")"
         else
           clean = clean + 1
@@ -194,23 +255,23 @@ function T.greeting_entries_report_their_standing(romFs, versionId)
   local byKey = {}
   for _, record in ipairs(catalog.contacts) do
     local contact = record --[[@as table<string, unknown>]]
-    byKey[contact.key --[[@as string]]] = contact
+    byKey[
+      contact.key --[[@as string]]
+    ] = contact
   end
   for _, key in ipairs({ ELM_KEY }) do
     local contact = byKey[key]
-    local template = assert(provider:acquireBank(contact.messageBank) and provider:get(contact.messageBank, contact.greeting))
+    local template =
+      assert(provider:acquireBank(contact.messageBank) and provider:get(contact.messageBank, contact.greeting))
     local formatted = provider:format(template, { playerName = "GOLD" }, resolvers)
-    Assert.isFalse(
-      formatted.hadUnresolvedSubstitutions,
-      key .. " formats cleanly through the token machinery"
-    )
+    Assert.isFalse(formatted.hadUnresolvedSubstitutions, key .. " formats cleanly through the token machinery")
     provider:releaseBank(contact.messageBank)
   end
   provider:dispose()
 end
 
 ---@param catalog table<string, unknown>
----@param messages table<string, string>
+---@param messages table<string, unknown>
 ---@return table host, table state the real script host over the compiled owners
 local function openHost(catalog, messages)
   local PokegearScriptHost = require("game.hgss.src.pokegear.PokegearScriptHost")
@@ -221,7 +282,14 @@ local function openHost(catalog, messages)
     state = state,
     catalog = catalog,
     messages = messages,
-    world = { flags = {}, rematchReady = {}, player = { x = 5, y = 7 } },
+    world = {
+      flags = {},
+      rematchReady = {},
+      player = { x = 5, y = 7 },
+      nativeSelectorFacts = function()
+        return { localMap = true }
+      end,
+    },
     audio = {
       playDialing = function() end,
       playHangup = function() end,
@@ -248,7 +316,7 @@ end
 
 function T.outgoing_call_completes_with_real_greeting_refs(romFs, versionId)
   local catalog = compileCatalog(romFs, versionId)
-  local messages = greetingMessages(catalog)
+  local messages = greetingMessages(catalog, versionId)
   Assert.equal(messages[ELM_KEY], "msg.hgss.716.1", "the elm reference names its bank and entry")
   Assert.equal(messages[MOM_KEY], "msg.hgss.664.23", "the mother reference names its bank and entry")
   local host, state = openHost(catalog, messages)
@@ -262,6 +330,7 @@ function T.outgoing_call_completes_with_real_greeting_refs(romFs, versionId)
   Assert.equal(result.contact, MOM_KEY, "the outgoing call completes for its contact")
   Assert.isTrue(result.signal, "the outgoing call keeps its signal")
   host:close(handle)
+  messages.dispose(messages)
   -- The frozen lease token resolves through the same bank pipeline: the
   -- provider serves the referenced bank and entry with real tokens.
   local provider = assert(FieldMessageProvider.new(CacheFs.forVersion(versionId)))
@@ -277,9 +346,9 @@ end
 
 function T.scripted_call_completes_through_the_real_task_and_host(romFs, versionId)
   local catalog = compileCatalog(romFs, versionId)
-  local messages = greetingMessages(catalog)
+  local messages = greetingMessages(catalog, versionId)
   local host, state = openHost(catalog, messages)
-  state:registerContact(ELM_KEY)
+  state:registerContact(MOM_KEY)
   local FieldScriptComposition = require("game.hgss.src.field.FieldScriptComposition")
   local Runtime = require("libs.script.src.Runtime")
   local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
@@ -301,9 +370,17 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
     },
     tick = 9,
   }
-  -- Opcode 430 with the panic triple (contact 1, incoming, ordinary).
+  local mom = nil
+  for _, contact in ipairs(catalog.contacts) do
+    if contact.key == MOM_KEY then
+      mom = contact
+      break
+    end
+  end
+  mom = assert(mom, "the compiled phonebook carries Mom")
+  -- The phonebook number is source-derived; the current map facts select Mom's local reply.
   Assert.equal(
-    Runtime.executeNode({ op = "phone_set_call", contact = 1, direction = 2, kind = 0 }, run),
+    Runtime.executeNode({ op = "phone_set_call", contact = mom.id, direction = "outgoing", kind = 0 }, run),
     Runtime.OUTCOME_CONTINUE,
     "the scripted setup stages same-tick"
   )
@@ -314,10 +391,14 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
       return "task-staged"
     end,
   }
-  Assert.equal(Runtime.executeNode({ op = "phone_run_call" }, run), Runtime.OUTCOME_BLOCK, "the run consumes and blocks")
+  Assert.equal(
+    Runtime.executeNode({ op = "phone_run_call" }, run),
+    Runtime.OUTCOME_BLOCK,
+    "the run consumes and blocks"
+  )
   Assert.equal(#staged, 1, "the run blocks on exactly one application task")
-  Assert.equal(staged[1].spec.request.contact, ELM_KEY, "phonebook number 1 stages the elm contact")
-  Assert.equal(staged[1].spec.request.direction, "incoming", "the panic triple stages incoming")
+  Assert.equal(staged[1].spec.request.contact, MOM_KEY, "the source phonebook number stages Mom")
+  Assert.equal(staged[1].spec.request.direction, "outgoing", "the native local selector takes the outgoing path")
   local PokegearApplicationTask = require("libs.hgss.src.script.tasks.PokegearApplicationTask")
   local taskCtx = { services = { pokegearApplications = host }, input = { uiEvents = {} } }
   local taskState = PokegearApplicationTask.create({
@@ -334,12 +415,9 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
       break
     end
   end
-  Assert.isTrue(done, "the scripted panic call completes through its task and host")
+  Assert.isTrue(done, "the scripted local call completes through its task and host")
   Assert.isFalse(host:isActive(), "completion releases the feature lease")
-  -- The staged elm reference resolves through the same bank pipeline.
-  -- The elm bank holds entries 0..44 behind the script displays
-  -- msg_0716_00001..00044, so entry 1 is script 1's greeting: the driven
-  -- call freezes a true greeting reference, not just a plausible one.
+  messages.dispose(messages)
   local provider = assert(FieldMessageProvider.new(CacheFs.forVersion(versionId)))
   local elmBank = assert(provider:acquireBank(716))
   Assert.equal(elmBank.messageCount, 45, "the elm bank holds entries 0..44")

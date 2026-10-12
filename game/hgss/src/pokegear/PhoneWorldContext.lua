@@ -45,6 +45,41 @@ function PhoneWorldContext.new(owners)
   return setmetatable({ _owners = checkOwners(owners) }, PhoneWorldContext)
 end
 
+-- Reads the native Mom selector facts from the live map-section and
+-- event owners. The pinned selector compares PhoneBookEntry.mapId with
+-- the player's map section and checks these two save flags in order.
+---@param contact table<string, unknown>
+---@return table<string, boolean> the native Mom selector facts
+function PhoneWorldContext:nativeSelectorFacts(contact)
+  assert(
+    type(contact) == "table" and type(contact.map) == "number",
+    "native phone selection reads the contact map section"
+  )
+  local runtime = self._owners.runtime
+  assert(type(runtime) == "table", "native phone selection reads the live field runtime")
+  local session = runtime.session
+  local currentMap = type(session) == "table" and session.currentMap or runtime.runtimeMap
+  assert(
+    type(currentMap) == "table" and type(currentMap.mapSectionNativeId) == "number",
+    "native phone selection reads the current map section"
+  )
+  local events = self._owners.flags
+  assert(
+    type(events) == "table" and type(events.isFlagSet) == "function",
+    "native phone selection reads live story flags"
+  )
+  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local flags = FieldScriptSymbols.flagsByName
+  assert(type(flags) == "table", "native phone selection reads story flag identities")
+  local isFlagSet = events.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+  return {
+    localMap = contact.map == currentMap.mapSectionNativeId,
+    gaveRivalName = isFlagSet(events, flags.FLAG_GAVE_RIVAL_NAME_TO_OFFICER) == true,
+    talkedAfterNamingRival = isFlagSet(events, flags.FLAG_TALKED_TO_MOM_AFTER_NAMING_RIVAL) == true,
+    eggCallPending = isFlagSet(events, flags.FLAG_SYS_TRIGGER_EGG_CALL) == true,
+  }
+end
+
 ---@param key unknown
 ---@return string domain, string fact
 local function splitKey(key)

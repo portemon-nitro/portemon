@@ -273,6 +273,7 @@ local function _compile(romFs, versionId)
     error(catalogErr, 0)
   end
   entries[#entries + 1] = { name = PokegearSources.phonebook.path, sha1 = catalogBundle.phonebook.sha1 }
+  entries[#entries + 1] = { name = "pokegear-phone-catalog", sha1 = catalogBundle.phonebook.sourceHash }
 
   local Narc = require("libs.nds.src.nitro.Narc")
   local spriteBytes, spriteErr = romFs:readSourcePath(PokegearSources.spriteArchive.path)

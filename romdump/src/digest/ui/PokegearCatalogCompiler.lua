@@ -9,6 +9,7 @@ local BinaryReader = require("libs.codec.src.BinaryReader")
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
 local PokegearSources = require("romdump.src.config.PokegearSources")
+local PokegearPhoneScriptSources = require("romdump.src.config.PokegearPhoneScriptSources")
 
 local PokegearCatalogCompiler = {}
 
@@ -20,6 +21,57 @@ PokegearCatalogCompiler.ERROR = {
 }
 
 local SENTINEL_U32 = 4294967294
+local PHONE_SCRIPT_COUNT = 455
+
+local function phoneClassReference(trainerClass)
+  local source = PokegearSources.phoneClassLabels
+  if trainerClass == source.motherClass then
+    return { kind = "blank" }
+  end
+  if trainerClass >= source.professorClass then
+    return {
+      kind = "message",
+      bank = source.specialBank,
+      entry = trainerClass - source.professorClass + source.specialFirstEntry,
+    }
+  end
+  return { kind = "message", bank = source.trainerBank, entry = trainerClass }
+end
+
+local function compilePhoneDefinitions()
+  local definitions = PokegearPhoneScriptSources.definitions
+  assert(type(definitions) == "table" and #definitions == PHONE_SCRIPT_COUNT, "native phone script table is complete")
+  local out = {}
+  for index, source in ipairs(definitions) do
+    assert(type(source) == "table" and source.id == index, "native phone script IDs are contiguous")
+    for _, gender in ipairs({ "male", "female" }) do
+      local ref = source[gender]
+      assert(type(ref) == "table" and type(ref.bank) == "number" and type(ref.entry) == "number")
+      assert(
+        ref.bank >= 641 and ref.bank <= 716 and ref.entry >= 0,
+        "phone script message references a phone bank entry"
+      )
+    end
+    assert(source.male.bank == source.female.bank, "gendered phone lines stay in one caller bank")
+    assert(
+      source.kind == "none"
+        or source.kind == "flag"
+        or source.kind == "rematch"
+        or source.kind == "item"
+        or source.kind == "word",
+      "native phone script types use the source enum"
+    )
+    out[index] = {
+      id = source.id,
+      male = { bank = source.male.bank, entry = source.male.entry },
+      female = { bank = source.female.bank, entry = source.female.entry },
+      kind = source.kind,
+      param0 = source.param0,
+      param1 = source.param1,
+    }
+  end
+  return out
+end
 
 local function readU32Field(reader, offset, label)
   local ok, value = pcall(reader.u32le, reader, offset)
@@ -123,6 +175,8 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
       localScript = localScript,
       greeting = greeting,
       messageBank = messageBank,
+      name = { bank = messageBank, entry = 0 },
+      class = phoneClassReference(trainer),
       rematchWeekday = rematchWeekday,
       rematchTime = rematchTime,
       category = category,
@@ -355,7 +409,7 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
   local catalog = {
     contacts = decoded.contacts,
     contactOrder = decoded.contactOrder,
-    callDefinitions = {},
+    callDefinitions = compilePhoneDefinitions(),
     callTriggers = PokegearSources.phoneTriggerRecords(versionId),
     rematches = {},
     gifts = {},
@@ -365,12 +419,21 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
     reception = PokegearSources.radioReceptionRecords(versionId),
     shows = PokegearSources.broadcastShowRecords(versionId),
     radioEffects = {},
+    landmarkLabels = {
+      bank = PokegearSources.phoneClassLabels.landmarkBank,
+      fallbackBank = PokegearSources.phoneClassLabels.landmarkFallbackBank,
+      fallbackEntry = PokegearSources.phoneClassLabels.landmarkFallbackEntry,
+    },
   }
   return {
     catalog = catalog,
     text = {},
     bindings = bindings,
-    phonebook = { sha1 = Hashing.sha1hex(phonebookBytes), size = #phonebookBytes },
+    phonebook = {
+      sha1 = Hashing.sha1hex(phonebookBytes),
+      size = #phonebookBytes,
+      sourceHash = Hashing.hashLua({ catalog = catalog, classLabels = PokegearSources.phoneClassLabels }),
+    },
   }
 end
 

@@ -256,9 +256,19 @@ function PhoneController:_readCatalog()
     end
     self._records[key] = record
     local label = record.name or record.label or key
+    if type(label) == "table" then
+      local resolveName = self._messages.resolveName
+      assert(type(resolveName) == "function", "native phone names resolve through the field message provider")
+      label = resolveName(self._messages, key)
+    end
     assert(type(label) == "string", "contact rows carry their label")
     self._labels[key] = label --[[@as string]]
-    local class = record.className or record.class or ""
+    local class = record.className or record.class or record.classNameRef or ""
+    if type(class) == "table" then
+      local resolveClass = self._messages.resolveClass
+      assert(type(resolveClass) == "function", "native phone classes resolve through the field message provider")
+      class = resolveClass(self._messages, key)
+    end
     assert(type(class) == "string", "contact rows carry their class token")
     self._classes[key] = class --[[@as string]]
   end
@@ -715,6 +725,11 @@ function PhoneController:updateFixed(uiInput)
   local panelRunning = self._panelTicks ~= nil
   for _, event in ipairs(uiInput) do
     if type(event) == "table" and type(event.type) == "string" then
+      local previousMode = self._mode
+      local previousCall = nil
+      if previousMode == "call" and self._callHandle ~= nil then
+        previousCall = self._call:view(self._callHandle --[[@as table<string, unknown>]])
+      end
       local record = event --[[@as table<string, unknown>]]
       if self._mode == "call" then
         self:_handleCall(record)
@@ -726,6 +741,15 @@ function PhoneController:updateFixed(uiInput)
         self:_handleManual(record)
       else
         self:_handleList(record)
+      end
+      if previousMode ~= "call" and self._mode == "call" then
+        break
+      end
+      if previousCall ~= nil then
+        local nextCall = self._call:view(self._callHandle --[[@as table<string, unknown>]])
+        if previousCall.stage ~= nextCall.stage or previousCall.page ~= nextCall.page then
+          break
+        end
       end
     end
   end
@@ -778,6 +802,12 @@ function PhoneController:_callView()
   for key, value in pairs(shown) do
     detached[key] = value
   end
+  detached.name = self._labels[
+    shown.contact --[[@as string]]
+  ]
+  detached.className = self._classes[
+    shown.contact --[[@as string]]
+  ]
   detached.choiceCursor = self._choiceCursor
   return detached
 end

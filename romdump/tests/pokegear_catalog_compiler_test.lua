@@ -39,6 +39,34 @@ local function phonebookBytes(records)
   return table.concat(out)
 end
 
+function T.phone_catalog_records_native_name_and_class_sources()
+  local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
+  local decoded = assert(PokegearCatalogCompiler.decodePhonebook(phonebookBytes({ phonebookRecord(5, 11) })))
+  local contact = decoded.contacts[1]
+  Assert.equal(contact.name.bank, contact.messageBank, "caller names use their message bank")
+  Assert.equal(contact.name.entry, 0, "caller names use message entry zero")
+  Assert.equal(contact.class.kind, "message", "trainer classes use a source message")
+  Assert.equal(contact.class.bank, 730, "ordinary class text uses the source trainer-class bank")
+  Assert.equal(contact.class.entry, contact.trainer, "ordinary class entry follows the native trainer-class byte")
+  local mother = assert(PokegearCatalogCompiler.decodePhonebook(phonebookBytes({ phonebookRecord(200, 11) })))
+  Assert.equal(mother.contacts[1].class.kind, "blank", "the native Mom trainer class has no class label")
+end
+
+function T.native_phone_script_definitions_cover_all_numbered_slots()
+  local PokegearPhoneScriptSources = require("romdump.src.config.PokegearPhoneScriptSources")
+  local definitions = PokegearPhoneScriptSources.definitions
+  Assert.equal(#definitions, 455, "the source contains every numbered native phone script")
+  Assert.equal(definitions[1].id, 1, "native script ids start at one after the empty slot")
+  Assert.equal(definitions[1].male.bank, 716, "Elm's first script uses Elm's caller bank")
+  Assert.equal(definitions[1].male.entry, 1, "Elm's first male message matches the source definition")
+  Assert.equal(definitions[1].female.entry, 2, "Elm's first female message matches the source definition")
+  Assert.equal(definitions[455].id, 455, "native script ids preserve the final source slot")
+  for index, definition in ipairs(definitions) do
+    Assert.equal(definition.id, index, "native script records remain contiguous")
+    Assert.equal(definition.male.bank, definition.female.bank, "gendered script messages use one caller bank")
+  end
+end
+
 function T.well_formed_phonebook_decodes_contacts_with_stable_keys()
   local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
   local decoded, err = PokegearCatalogCompiler.decodePhonebook(
@@ -93,10 +121,8 @@ end
 
 function T.resource_lists_require_sentinel_termination()
   local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
-  local parsed, err = PokegearCatalogCompiler.validateResdatList(
-    resdatList(3, { { 143, 5, 1, 9, 0, 0 } }),
-    "fixture-list"
-  )
+  local parsed, err =
+    PokegearCatalogCompiler.validateResdatList(resdatList(3, { { 143, 5, 1, 9, 0, 0 } }), "fixture-list")
   Assert.notNil(parsed, "a terminated resource list must validate: " .. tostring(err and err.message or err))
   Assert.equal(parsed.resourceType, 3, "the list keeps its resource type")
   Assert.equal(#parsed.records, 1, "the list keeps its records")
@@ -131,10 +157,8 @@ end
 
 function T.header_sets_validate_bindings_and_reject_bad_transfers()
   local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
-  local parsed, err = PokegearCatalogCompiler.validateResdatHeaders(
-    resdatHeaders({ { 34, 35, 33, 32, 0, 0, 1, 7 } }),
-    "fixture-headers"
-  )
+  local parsed, err =
+    PokegearCatalogCompiler.validateResdatHeaders(resdatHeaders({ { 34, 35, 33, 32, 0, 0, 1, 7 } }), "fixture-headers")
   Assert.notNil(parsed, "a terminated header set must validate: " .. tostring(err and err.message or err))
   Assert.equal(#parsed, 1, "the header set keeps its records")
   Assert.equal(parsed[1].char, 34, "header records keep their character binding")

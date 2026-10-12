@@ -68,10 +68,7 @@ function T.every_native_caller_selects_its_source_program(romFs, versionId)
   -- may fall through to an all-purpose default conversation.
   local ok, PhoneCall = pcall(require, "game.hgss.src.pokegear.PhoneCall")
   if not ok then
-    error(
-      "phone conversation dispatch is not implemented yet: no native caller can select its source program",
-      0
-    )
+    error("phone conversation dispatch is not implemented yet: no native caller can select its source program", 0)
   end
   assert(type(PhoneCall) == "table", "phone conversation dispatch is not implemented yet")
   for _, vector in ipairs(selectorVectors()) do
@@ -87,6 +84,58 @@ function T.every_native_caller_selects_its_source_program(romFs, versionId)
     distinct = distinct + 1
   end
   Assert.isTrue(distinct > 1, "selector vectors resolve to distinct programs, never one default")
+end
+
+function T.native_script_dispatch_uses_exact_supported_family_routes()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local contacts = {
+    { key = "hg.trainer.200.map.0.contact.0", id = 7, family = "bike", map = 9, messageBank = 664 },
+    { key = "hg.trainer.201.map.0.contact.1", id = 8, family = "bill", map = 9, messageBank = 675 },
+  }
+  local catalog = { contacts = contacts, locations = {} }
+  local state = PokegearState.new({ seed = 1 }, { catalog = catalog })
+  for _, contact in ipairs(contacts) do
+    state:registerContact(contact.key)
+  end
+  local selected = {}
+  local call = PhoneCall.new({
+    state = state,
+    catalog = catalog,
+    messages = {
+      greeting = "fixture.greeting",
+      resolveLine = function(_, key, scriptId)
+        selected[#selected + 1] = { key = key, scriptId = scriptId }
+        return { tokens = { { kind = "glyph", text = "x" } } }
+      end,
+    },
+    world = {
+      signal = "strong",
+      reception = "good",
+      nativeSelectorFacts = function()
+        return { localMap = true }
+      end,
+    },
+  })
+  local cases = {
+    { contact = contacts[1], direction = "outgoing", expected = 84 },
+    { contact = contacts[2], direction = "outgoing", expected = 92 },
+    { contact = contacts[2], direction = "incoming", expected = 93 },
+  }
+  for index, case in ipairs(cases) do
+    local handle = call:begin({
+      id = "native-route-" .. index,
+      contact = case.contact.key,
+      direction = case.direction,
+      kind = "ordinary",
+    })
+    call:step(handle, {})
+    call:step(handle, {})
+    local view = call:view(handle)
+    Assert.equal(view.stage, "message", "a source-backed static route publishes its dialogue page")
+    Assert.equal(selected[index].scriptId, case.expected, "the native selector supplies the exact phone script ID")
+    call:cancel(handle, "fixture complete")
+  end
 end
 
 local suite = RomSuite.fromFacts(T)

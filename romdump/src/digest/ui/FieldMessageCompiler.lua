@@ -210,6 +210,10 @@ function FieldMessageCompiler.requiredBankIds()
   for _, bankId in ipairs(PokegearSources.phoneMessageBankIds()) do
     set[bankId] = true
   end
+  set[PokegearSources.phoneClassLabels.specialBank] = true
+  set[PokegearSources.phoneClassLabels.trainerBank] = true
+  set[PokegearSources.phoneClassLabels.landmarkBank] = true
+  set[PokegearSources.phoneClassLabels.landmarkFallbackBank] = true
   local out = {}
   for bankId in pairs(set) do
     out[#out + 1] = bankId

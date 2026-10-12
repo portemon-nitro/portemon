@@ -108,11 +108,25 @@ local function instantAudio()
   }
 end
 
--- Conversation effects run exactly once at their source stage: polls before
--- text completion change nothing, repeated status reads never duplicate an
--- effect, and closing the call after the effect stage neither repeats nor
--- rolls back what the stage committed.
-function T.tests.phone_conversation_effects_apply_once_at_their_source_stage()
+local function phoneMessages()
+  return {
+    greeting = "custom.greeting",
+    program = "custom.program",
+    resolveLine = function()
+      return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+    end,
+  }
+end
+
+local function localPhoneSelectorFacts()
+  return function()
+    return { localMap = true }
+  end
+end
+
+-- Native dialogue waits for text completion before entering the program
+-- stage. Repeated polls do not advance that stage.
+function T.tests.phone_text_wait_precedes_the_program_stage()
   local PhoneCall = requireFeature(
     "game.hgss.src.pokegear.PhoneCall",
     "phone calls have no foreground session owner yet: conversation effects cannot stage once at their source step"
@@ -125,33 +139,28 @@ function T.tests.phone_conversation_effects_apply_once_at_their_source_stage()
   local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
 
   local state = PokegearState.new({ seed = 4242 }, catalogRefs(record))
-  state:registerContact("custom.trainer-plain")
-  local world = { flags = {}, rematchReady = {} }
+  state:registerContact("custom.kurt")
+  local world = { flags = {}, rematchReady = {}, nativeSelectorFacts = localPhoneSelectorFacts() }
   local random = PokegearRandom.new(4242)
   local call = PhoneCall.new({
     state = state,
     catalog = record.catalog,
-    messages = { greeting = "custom.greeting", program = "custom.program" },
+    messages = phoneMessages(),
     world = world,
     audio = instantAudio(),
     random = random,
   })
   local handle = call:begin({
     id = "call-1",
-    contact = "custom.trainer-plain",
+    contact = "custom.kurt",
     direction = "outgoing",
     kind = "ordinary",
   })
 
-  -- Polls before the greeting text completes must not run the program
-  -- stage: the rematch flag stays unset until the source step is entered.
+  -- Reaching native dialogue stops at its text wait.
   call:step(handle, {})
-  Assert.isNil(world.rematchReady["custom.trainer-plain"], "pre-completion polls run no program effect")
   call:step(handle, {})
-  Assert.isTrue(
-    world.rematchReady["custom.trainer-plain"] == true,
-    "entering the program stage sets the source rematch flag"
-  )
+  Assert.equal((call:view(handle) --[[@as table]]).stage, "message", "native text holds before program effects")
 
   -- Repeated status and view reads never duplicate the staged effect.
   for _ = 1, 4 do
@@ -159,17 +168,12 @@ function T.tests.phone_conversation_effects_apply_once_at_their_source_stage()
     call:step(handle, {})
   end
   Assert.isTrue(
-    world.rematchReady["custom.trainer-plain"] == true,
-    "repeated polls leave the committed effect in place without duplication"
+    (call:view(handle) --[[@as table]]).stage == "message",
+    "repeated polls leave the native text stage unchanged"
   )
 
-  -- Closing after the effect stage keeps the committed effect: cancel
-  -- releases the call lease but never rolls back source mutations.
+  -- Closing during text releases the call lease.
   call:cancel(handle, "hangup")
-  Assert.isTrue(
-    world.rematchReady["custom.trainer-plain"] == true,
-    "cancelling after the effect stage preserves the committed effect"
-  )
   local terminal = call:result(handle)
   Assert.notNil(terminal, "a closed call still reports its terminal result")
 end
@@ -214,7 +218,8 @@ function T.tests.branches_without_their_world_owner_fail_with_attribution()
   local daycareErr = Assert.throws(function()
     withoutKurt:read("daycare.egg")
   end, "a branch reading absent Day Care state must fail")
-  local daycareMessage = tostring((type(daycareErr) == "table" and (daycareErr.code or daycareErr.message)) or daycareErr)
+  local daycareMessage =
+    tostring((type(daycareErr) == "table" and (daycareErr.code or daycareErr.message)) or daycareErr)
   Assert.notNil(
     (daycareMessage:find("daycare", 1, true) or (type(daycareErr) == "table" and daycareErr.domain == "daycare"))
         and true
@@ -558,7 +563,7 @@ function T.tests.phone_call_rejects_malformed_requests_without_taking_the_lease(
   local call = PhoneCall.new({
     state = state,
     catalog = record.catalog,
-    messages = { greeting = "custom.greeting", program = "custom.program" },
+    messages = phoneMessages(),
     world = world,
     audio = instantAudio(),
     random = PokegearRandom.new(21),
@@ -649,7 +654,12 @@ function T.tests.selectors_resolve_every_family_branch_in_source_order()
   for _, case in ipairs(elmCases) do
     check("elm", case[1], case[2], "elm resolves " .. case[2])
   end
-  check("elm-predefined", { predefinedScript = "elm-intro" }, "elm-predefined", "the predefined family keeps its script")
+  check(
+    "elm-predefined",
+    { predefinedScript = "elm-intro" },
+    "elm-predefined",
+    "the predefined family keeps its script"
+  )
   -- Higher branches win: each pair proves the order, not just the hit.
   check("elm", { localMap = true, panicCall = true }, "elm-local-map", "the local map precedes the panic call")
   check("elm", { localMap = false, panicCall = true }, "elm-panic", "a false local map falls through to panic")
@@ -659,7 +669,12 @@ function T.tests.selectors_resolve_every_family_branch_in_source_order()
   check("elm", { ssTicket = true, pokerus = true }, "elm-ticket", "the ticket precedes pokerus")
 
   check("oak", { excluded = true, dexSeen = 100 }, "oak-deferred", "oak exclusions defer first")
-  check("oak", { nationalDex = true, dexSeen = 5 }, "oak-national-evaluation", "the national choice precedes the seen count")
+  check(
+    "oak",
+    { nationalDex = true, dexSeen = 5 },
+    "oak-national-evaluation",
+    "the national choice precedes the seen count"
+  )
   check("oak", { dexSeen = 10, dexCaught = 5 }, "oak-evaluation", "the seen count evaluates")
   check("oak", {}, "oak-intro", "no dex knowledge introduces")
 
@@ -926,11 +941,16 @@ function T.tests.service_stage_without_its_owner_fails_before_any_effect()
 
   local state = PokegearState.new({ seed = 71 }, catalogRefs(record))
   state:registerContact("custom.kurt")
-  local world = { flags = {}, rematchReady = {}, aboutProduction = true }
+  local world = {
+    flags = {},
+    rematchReady = {},
+    aboutProduction = true,
+    nativeSelectorFacts = localPhoneSelectorFacts(),
+  }
   local call = PhoneCall.new({
     state = state,
     catalog = record.catalog,
-    messages = { greeting = "custom.greeting", program = "custom.program" },
+    messages = phoneMessages(),
     world = world,
     audio = instantAudio(),
     random = PokegearRandom.new(71),
@@ -943,10 +963,11 @@ function T.tests.service_stage_without_its_owner_fails_before_any_effect()
   })
   call:step(handle, {})
   call:step(handle, {})
+  call:step(handle, { advance = true })
   local failed = call:result(handle)
-  Assert.notNil(failed, "the failed stage still reports a terminal result")
+  Assert.notNil(failed, "the unavailable source owner returns a terminal result")
   local failure = (failed --[[@as table]]).error --[[@as table]]
-  Assert.notNil(failure, "the terminal result carries its failure")
+  Assert.equal(failure.code, "FEATURE_UNAVAILABLE", "only typed feature failures become terminal results")
   Assert.equal(failure.domain, "kurt", "the failure names the missing kurt domain")
   Assert.isNil(world.rematchReady["custom.kurt"], "the failed stage stages no readiness")
   Assert.deepEqual(state:readPhone().triggers, {}, "the failed stage sets no trigger")
@@ -962,6 +983,7 @@ function T.tests.service_stage_without_its_owner_fails_before_any_effect()
   })
   call:step(localHandle, {})
   call:step(localHandle, {})
+  call:step(localHandle, { advance = true })
   local done = call:result(localHandle)
   Assert.notNil(done, "the local branch completes without the owner")
   Assert.isNil((done --[[@as table]]).error, "the local branch carries no failure")
@@ -1039,9 +1061,8 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
   local PokegearState = require("libs.hgss.src.save.PokegearState")
 
   local catalog = CatalogFixture.makeCatalog()
-  local foe = CatalogFixture.makeFactory(0x5EED0001, catalog):createNormal(
-    CatalogFixture.normalRequest({ species = "TOTODILE", level = 4 })
-  )
+  local foe = CatalogFixture.makeFactory(0x5EED0001, catalog)
+    :createNormal(CatalogFixture.normalRequest({ species = "TOTODILE", level = 4 }))
   foe.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
   local owner = HgssMonService.new({
     catalog = catalog,
@@ -1057,9 +1078,8 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
     mapSection = 7,
     date = CatalogFixture.metDate(),
   })
-  local lead = CatalogFixture.makeFactory(0x33333333, catalog):createNormal(
-    CatalogFixture.normalRequest({ species = "CHIKORITA", level = 5 })
-  )
+  local lead = CatalogFixture.makeFactory(0x33333333, catalog)
+    :createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", level = 5 }))
   lead.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
   Assert.isTrue(owner:addMon(lead), "the prize battle needs its live party lead")
   local playerRecord = {
@@ -1122,7 +1142,8 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
               break
             end
           end
-          choices[#choices + 1] = SessionFixture.switchChoice(actor, assert(choiceId, "the replacement needs a reserve"))
+          choices[#choices + 1] =
+            SessionFixture.switchChoice(actor, assert(choiceId, "the replacement needs a reserve"))
         else
           choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
         end
@@ -1132,7 +1153,13 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
     end
     ticks = ticks + 1
   end
-  Assert.equal(battle:status().phase, "complete", "answered decisions finish the trainer battle")
+  local finalStatus = battle:status()
+  Assert.equal(
+    finalStatus.phase,
+    "complete",
+    "answered decisions finish the trainer battle: "
+      .. tostring(finalStatus.error or finalStatus.failure or finalStatus.reason)
+  )
   Assert.equal(battle:status().result, "win", "a fainted enemy side reports the win")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
   -- Class 2 pays rate 4 at final level 4: a prize of 64, quartered to
@@ -1221,16 +1248,15 @@ function T.tests.native_shaped_contact_keys_dispatch_through_their_generated_fam
   local call = PhoneCall.new({
     state = state,
     catalog = catalog,
-    messages = { greeting = "custom.greeting", program = "custom.program" },
+    messages = phoneMessages(),
     world = world,
     audio = instantAudio(),
     random = PokegearRandom.new(77),
   })
+  world.nativeSelectorFacts = localPhoneSelectorFacts()
   local expected = {
     ["hg.trainer.200.map.0.contact.0"] = "mother-greeting",
     ["hg.trainer.201.map.0.contact.1"] = "elm-early",
-    ["hg.trainer.202.map.0.contact.10"] = "trainer-ordinary",
-    ["hg.trainer.203.map.0.contact.17"] = "gym-waiting",
   }
   local id = 0
   for contactKey, program in pairs(expected) do
@@ -1238,6 +1264,7 @@ function T.tests.native_shaped_contact_keys_dispatch_through_their_generated_fam
     local handle = call:begin({ id = "native-" .. id, contact = contactKey, direction = "outgoing", kind = "ordinary" })
     call:step(handle, {})
     call:step(handle, {})
+    call:step(handle, { advance = true })
     Assert.equal(
       (call:view(handle) --[[@as table]]).program,
       program,

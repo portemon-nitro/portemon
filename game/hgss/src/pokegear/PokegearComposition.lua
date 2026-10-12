@@ -490,7 +490,7 @@ function PokegearComposition.compose(runtime, owners)
     "callers supply resolved greeting references, never the unresolved sentinel"
   )
   local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
-  local world = owners.world or PhoneWorldContext.new({ state = state })
+  local world = owners.world or PhoneWorldContext.new({ state = state, runtime = runtime, flags = runtime.eventState })
   assert(type(world) == "table", "world reads stay a record")
 
   local PokegearScriptHost = require("game.hgss.src.pokegear.PokegearScriptHost")
@@ -510,6 +510,7 @@ function PokegearComposition.compose(runtime, owners)
     calendar = calendar,
     random = random,
     world = world,
+    messages = messages,
     host = host,
     audio = ringAudioFor(audio),
   })

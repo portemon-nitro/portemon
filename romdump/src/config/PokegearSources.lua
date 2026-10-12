@@ -41,8 +41,22 @@ PokegearSources.spriteBindings = {
 
 PokegearSources.phonebook = { path = "tel/pmtel_book.dat", hgBytes = 1504, recordBytes = 20 }
 
+-- Native caller class labels use message bank 0730 for standard trainer
+-- classes and bank 0271 for the special phone-only classes. These values
+-- follow overlay_101_021F1D74.c and message_format.c at the pinned source.
+PokegearSources.phoneClassLabels = {
+  motherClass = 200,
+  professorClass = 201,
+  specialBank = 271,
+  specialFirstEntry = 38,
+  trainerBank = 730,
+  landmarkBank = 279,
+  landmarkFallbackBank = 280,
+  landmarkFallbackEntry = 2,
+}
+
 -- The phonebook record is little-endian four bytes, four halfwords, eight
--- bytes: contact id, entry type, contact class, trainer; map, gift, local
+-- bytes: contact id, entry type, contact class, trainer class; map, gift, local
 -- script, greeting; rematch weekday, rematch time, category, four source
 -- sort weights, and one spare byte.
 PokegearSources.phonebookFields = {

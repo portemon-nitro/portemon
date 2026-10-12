@@ -306,12 +306,17 @@ function PhoneCall:begin(args)
     contact = args.contact,
     direction = args.direction,
     kind = args.kind,
+    world = self._world,
+    record = record,
     greeting = greeting,
     facts = snapshotFacts(self._world, args.kind, args.direction),
     owner = nil,
     family = nil,
     program = nil,
     programSession = nil,
+    scriptId = nil,
+    lines = nil,
+    textPage = 1,
     stage = "connecting",
     position = 1,
     ticks = 0,
@@ -398,6 +403,68 @@ function PhoneCall:_selectProgramAtGreeting(session)
 end
 
 ---@param session table<string, unknown>
+---@param record table<string, unknown>
+local function selectNativeScript(session, record)
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local world = session.world --[[@as table<string, unknown>]]
+  local readFacts = world.nativeSelectorFacts
+  assert(type(readFacts) == "function", "native script selection reads source selector facts")
+  local nativeFacts = readFacts(world, record)
+  assert(type(nativeFacts) == "table", "native selector returns a fact record")
+  if session.family == "mother" then
+    if session.direction == "incoming" then
+      session.scriptId = facts.predefinedScript
+    elseif nativeFacts.localMap then
+      session.scriptId = 23
+    elseif not nativeFacts.gaveRivalName then
+      session.scriptId = 25
+    elseif not nativeFacts.talkedAfterNamingRival then
+      session.scriptId = 26
+    end
+  elseif session.family == "bill" then
+    if session.direction == "incoming" then
+      session.scriptId = 93
+    elseif nativeFacts.localMap then
+      session.scriptId = 92
+    end
+  elseif session.family == "bike" then
+    session.scriptId = nativeFacts.localMap and 84 or 85
+  elseif session.family == "kurt" then
+    if nativeFacts.localMap then
+      session.scriptId = 83
+    end
+  elseif session.family == "daycare" then
+    if record.id == 6 and session.direction == "incoming" then
+      session.scriptId = nativeFacts.eggCallPending and 96 or 95
+    elseif record.id == 7 and nativeFacts.localMap then
+      session.scriptId = 97
+    end
+  elseif session.family == "elm" then
+    if session.direction == "incoming" then
+      session.scriptId = facts.predefinedScript
+    elseif nativeFacts.localMap then
+      session.scriptId = 1
+    elseif facts.panicCall == true then
+      session.scriptId = 8
+    elseif nativeFacts.gaveRivalName == false then
+      session.scriptId = 9
+    elseif facts.eggEvent == true then
+      session.scriptId = 10
+    elseif facts.eggGift == true then
+      session.scriptId = 11
+    end
+  end
+  if type(session.scriptId) ~= "number" then
+    local failure = Errors.new(
+      ScriptErrors.FEATURE_UNAVAILABLE,
+      "native phone selector needs an unmodeled source branch for " .. tostring(session.family),
+      { family = session.family, contact = session.contact, program = session.program }
+    )
+    error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+  end
+end
+
+---@param session table<string, unknown>
 function PhoneCall:_openProgramSession(session)
   local programOwner = session.owner --[[@as string]]
   local request = {
@@ -438,6 +505,41 @@ local function stepProgram(session, input)
     return TrainerPhonePrograms.step(programSession, input)
   end
   return GenericPhoneProgram.step(programSession, input)
+end
+
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveNativeDialogue(messages, session)
+  selectNativeScript(session, session.record --[[@as table<string, unknown>]])
+  local scriptId = session.scriptId
+  local resolveLine = messages.resolveLine
+  assert(type(scriptId) == "number", "the selected caller carries its native script identity")
+  assert(type(resolveLine) == "function", "phone dialogue resolves through the field message provider")
+  return resolveLine(messages, session.contact, scriptId)
+end
+
+---@param self PhoneCall
+---@param session table<string, unknown>
+---@param failure unknown
+---@return boolean handled as an unavailable source feature
+local function failCall(self, session, failure)
+  session.failed = failure
+  session.stage = "done"
+  session.terminal = true
+  if self._active == session.id then
+    self._active = nil
+  end
+  if type(failure) == "table" and failure.code == ScriptErrors.FEATURE_UNAVAILABLE then
+    session.result = {
+      id = session.id,
+      contact = session.contact,
+      kind = session.kind,
+      error = failure,
+    }
+    return true
+  end
+  error(failure, 0)
 end
 
 ---@param session table<string, unknown>
@@ -507,18 +609,55 @@ function PhoneCall:step(handle, input)
         self:_selectProgramAtGreeting(session)
         self:_openProgramSession(session)
       end
+      local ok, formatted = pcall(resolveNativeDialogue, self._messages, session)
+      if not ok then
+        failCall(self, session, formatted)
+        return
+      end
+      assert(
+        type(formatted) == "table" and type(formatted.tokens) == "table",
+        "phone dialogue returns formatted source tokens"
+      )
+      local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+      local lines = {}
+      local pageTokens = {}
+      local function finishPage()
+        if #pageTokens > 0 then
+          lines[#lines + 1] = { text = FieldMessageText.tokensToText(pageTokens), tokens = pageTokens }
+          pageTokens = {}
+        end
+      end
+      for _, token in ipairs(formatted.tokens) do
+        if token.kind == "page_break" or token.kind == "prompt_break" then
+          finishPage()
+        else
+          pageTokens[#pageTokens + 1] = token
+        end
+      end
+      finishPage()
+      assert(#lines > 0, "phone scripts produce at least one printable text page")
+      session.lines = lines
+      session.stage = "message"
+      enterStage(session)
+      return
+    elseif stage == "message" then
+      if not forced then
+        return
+      end
+      forced = false
+      local page = session.textPage --[[@as integer]]
+      local lines = session.lines --[[@as table<integer, unknown>]]
+      if page < #lines then
+        session.textPage = page + 1
+        enterStage(session)
+        return
+      end
       session.stage = "program"
       enterStage(session)
     elseif stage == "program" then
       local ok, outcome = pcall(stepProgram, session, edges)
       if not ok then
-        session.failed = outcome
-        session.stage = "done"
-        session.terminal = true
-        session.result = { id = session.id, contact = session.contact, kind = session.kind, error = outcome }
-        if self._active == session.id then
-          self._active = nil
-        end
+        failCall(self, session, outcome)
         return
       end
       if outcome == "waiting" then
@@ -534,13 +673,7 @@ function PhoneCall:step(handle, input)
       end
       local ok, outcome = pcall(stepProgram, session, edges)
       if not ok then
-        session.failed = outcome
-        session.stage = "done"
-        session.terminal = true
-        session.result = { id = session.id, contact = session.contact, kind = session.kind, error = outcome }
-        if self._active == session.id then
-          self._active = nil
-        end
+        failCall(self, session, outcome)
         return
       end
       if outcome == "waiting" then
@@ -563,7 +696,7 @@ local function publicStage(stage)
   if stage == "connecting" then
     return "connecting"
   end
-  if stage == "greeting" or stage == "program" then
+  if stage == "greeting" or stage == "message" or stage == "program" then
     return "message"
   end
   if stage == "choice" then
@@ -593,6 +726,8 @@ function PhoneCall:view(handle)
     position = session.position,
     greeting = session.greeting,
     program = session.program,
+    lines = session.lines,
+    page = session.textPage,
   }
   if stage == "choice" then
     -- Only the savings choice waits for input today; the owed choice

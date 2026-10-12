@@ -78,17 +78,13 @@ local function syntheticBundle(marker)
 end
 
 local function requireProduction()
-  local loadedWriter, PokegearCacheWriter =
-    pcall(require, "romdump.src.digest.ui.PokegearCacheWriter")
+  local loadedWriter, PokegearCacheWriter = pcall(require, "romdump.src.digest.ui.PokegearCacheWriter")
   Assert.isTrue(
     loadedWriter,
     "the pokegear staged cache writer must be published before publication safety can be proven"
   )
   local loadedCache, PokegearCache = pcall(require, "libs.assets.src.PokegearCache")
-  Assert.isTrue(
-    loadedCache,
-    "the pokegear cache owner must be published before warm reads can be proven"
-  )
+  Assert.isTrue(loadedCache, "the pokegear cache owner must be published before warm reads can be proven")
   return assert(PokegearCacheWriter), assert(PokegearCache)
 end
 
@@ -127,24 +123,15 @@ function T.failed_rebuild_preserves_the_prior_ready_family_and_warm_reads_avoid_
   local oldMarker = PokegearCache.marker("rom-sha", "deps-sha")
   local oldBundle = syntheticBundle(oldMarker)
   Assert.isTrue(PokegearCacheWriter.write(cacheFs, oldBundle), "the first publication must succeed")
-  Assert.isTrue(
-    PokegearCache.isReady(cacheFs, oldMarker),
-    "the first publication must report its family ready"
-  )
+  Assert.isTrue(PokegearCache.isReady(cacheFs, oldMarker), "the first publication must report its family ready")
 
   -- A late backend failure must not report success and must leave the
   -- prior marker and payload usable.
   local failingFs = CacheFs.forVersion("heartgold", lateFailingBackend(2))
   local newMarker = PokegearCache.marker("rom-sha", "other-deps")
   local writeOk, writeResult = pcall(PokegearCacheWriter.write, failingFs, syntheticBundle(newMarker))
-  Assert.isTrue(
-    not (writeOk and writeResult),
-    "a rebuild failing on a late image write must not report success"
-  )
-  Assert.isTrue(
-    PokegearCache.isReady(cacheFs, oldMarker),
-    "the failed rebuild must preserve the prior ready marker"
-  )
+  Assert.isTrue(not (writeOk and writeResult), "a rebuild failing on a late image write must not report success")
+  Assert.isTrue(PokegearCache.isReady(cacheFs, oldMarker), "the failed rebuild must preserve the prior ready marker")
   local preserved = PokegearCache.loadManifest(cacheFs)
   Assert.equal(preserved.schema, oldBundle.manifest.schema, "the failed rebuild must preserve the prior payload")
 
@@ -186,10 +173,7 @@ end
 
 function T.custom_contact_and_station_records_validate_without_source_identities()
   local loaded, PokegearAssetSchema = pcall(require, "libs.assets.src.PokegearAssetSchema")
-  Assert.isTrue(
-    loaded,
-    "the pokegear asset schema must be published before custom records can be proven"
-  )
+  Assert.isTrue(loaded, "the pokegear asset schema must be published before custom records can be proven")
   local manifest = syntheticManifest()
   local record, err = PokegearAssetSchema.validate(manifest)
   Assert.notNil(record, "valid custom records must validate: " .. tostring(err and err.message or err))
@@ -224,6 +208,44 @@ function T.custom_contact_and_station_records_validate_without_source_identities
     tostring(dangTyped.message or dangTyped):find("custom.ghost", 1, true),
     "the dangling failure must name the missing reference"
   )
+end
+
+function T.native_phone_labels_and_contact_classes_use_semantic_shapes()
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local manifest = syntheticManifest()
+  local catalog = manifest.catalog
+  catalog.contacts[1] = {
+    key = "hg.trainer.200.map.0.contact.0",
+    messageBank = 641,
+    name = { bank = 641, entry = 0 },
+    class = { kind = "blank" },
+  }
+  catalog.contacts[2] = {
+    key = "hg.trainer.201.map.0.contact.1",
+    messageBank = 641,
+    name = { bank = 641, entry = 0 },
+    class = { kind = "message", bank = 730, entry = 38 },
+  }
+  catalog.contactOrder = { catalog.contacts[1].key, catalog.contacts[2].key }
+  catalog.callDefinitions = {}
+  for scriptId = 1, 455 do
+    catalog.callDefinitions[scriptId] = {
+      id = scriptId,
+      male = { bank = 641, entry = 1 },
+      female = { bank = 641, entry = 2 },
+      kind = "none",
+      param0 = 0,
+      param1 = 0,
+    }
+  end
+  catalog.landmarkLabels = { bank = 279, fallbackBank = 280, fallbackEntry = 2 }
+  local record, err = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "native labels and class references validate: " .. tostring(err and err.message or err))
+
+  catalog.landmarkLabels = nil
+  local rejected, missingLabels = PokegearAssetSchema.validate(manifest)
+  Assert.isNil(rejected, "native phone catalogs require landmark label references")
+  Assert.notNil(missingLabels, "missing landmark labels carry a schema error")
 end
 
 return { tests = T }

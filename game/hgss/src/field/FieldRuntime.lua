@@ -2191,11 +2191,24 @@ end
 -- compiled bank or greeting facts fails the boot instead of installing a
 -- fabricated greeting.
 ---@param catalog table<string, unknown> the borrowed compiled contact catalog
+---@param provider table<string, unknown> the borrowed field message provider
+---@param profile table<string, unknown> the native player profile
+---@param fontDef table<string, unknown> the generated field font
+---@param runtime table<string, unknown> the live field runtime
 ---@return table<string, string> contact key to greeting reference, with .greeting as the lease token
-local function phoneGreetingRefs(catalog)
+local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
+  local Errors = require("libs.errors.src.Errors")
+  local ScriptErrors = require("libs.script.src.errors")
   local contacts = assert(catalog.contacts, "companion feature needs its compiled contacts")
   assert(type(contacts) == "table", "companion greeting references read the compiled contacts")
+  assert(type(provider) == "table", "phone text resolves through the field message provider")
+  assert(type(profile) == "table" and type(profile.name) == "string", "phone text reads the live player profile")
+  assert(type(fontDef) == "table", "phone text uses the generated field font")
+  assert(type(runtime) == "table", "phone substitutions read the live field runtime")
+  local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+  local phoneLabels = assert(catalog.landmarkLabels, "phone catalog carries landmark message references")
   local messages = {}
+  local contactsByKey = {}
   local firstRef = nil
   for _, record in
     ipairs(contacts --[[@as table<integer, unknown>]])
@@ -2213,6 +2226,9 @@ local function phoneGreetingRefs(catalog)
       type(entry) == "number" and entry % 1 == 0 and entry >= 0,
       "companion greeting references read the compiled greeting number for " .. key
     )
+    contactsByKey[
+      key --[[@as string]]
+    ] = contact
     local ref = string.format("msg.hgss.%d.%d", bank, entry)
     messages[
       key --[[@as string]]
@@ -2223,6 +2239,140 @@ local function phoneGreetingRefs(catalog)
   end
   assert(firstRef ~= nil, "companion greeting references need at least one compiled contact")
   messages.greeting = firstRef
+  local function resolve(bankId, messageId, contactKey)
+    local acquire = provider.acquireBank --[[@as fun(self: table<string, unknown>, bankId: integer): table<string, unknown>? , Errors.Error?]]
+    local release = provider.releaseBank --[[@as fun(self: table<string, unknown>, bankId: integer)]]
+    local get = provider.get --[[@as fun(self: table<string, unknown>, bankId: integer, messageId: integer): table<string, unknown>? , Errors.Error?]]
+    local format = provider.format --[[@as fun(self: table<string, unknown>, template: table<string, unknown>, context: table<string, unknown>, resolvers: table<integer, function>): table<string, unknown>]]
+    assert(
+      type(acquire) == "function"
+        and type(release) == "function"
+        and type(get) == "function"
+        and type(format) == "function"
+    )
+    local bank, acquireError = acquire(provider, bankId)
+    assert(type(bank) == "table", "phone text bank " .. bankId .. " is acquired: " .. tostring(acquireError))
+    local function formatMessage()
+      local template, getError = get(provider, bankId, messageId)
+      assert(
+        type(template) == "table",
+        "phone message " .. bankId .. "." .. messageId .. " exists: " .. tostring(getError)
+      )
+      local resolvers = {}
+      local templateTokens = (template --[[@as table<string, unknown>]]).tokens
+      assert(type(templateTokens) == "table", "phone templates carry tokens")
+      for _, token in ipairs(templateTokens) do
+        if token.kind == "substitution" and token.control == FieldMessageText.TRNAME then
+          local function resolveTrainerName()
+            return assert(FieldMessageProvider.asciiGlyphTokens(profile.name, fontDef))
+          end
+          resolvers[token.control] = resolveTrainerName
+        elseif
+          token.kind == "substitution"
+          and token.control >= FieldMessageText.STRVAR_1
+          and token.control <= FieldMessageText.STRVAR_1 + 3
+        then
+          assert(type(contactKey) == "string", "phone substitutions identify their caller")
+          local slot = token.control - FieldMessageText.STRVAR_1
+          local function resolveSourceSubstitution()
+            local text = nil
+            if slot == 0 then
+              text = profile.name
+            elseif slot == 1 then
+              local contact = assert(contactsByKey[contactKey], "caller-name substitution resolves a catalog contact")
+              text = resolve(contact.messageBank, 0).text
+            elseif slot == 2 or slot == 3 then
+              local mapSection = nil
+              if slot == 2 then
+                local session = runtime.session
+                local currentMap = type(session) == "table" and session.currentMap or runtime.runtimeMap
+                assert(type(currentMap) == "table", "player landmark substitution reads the current map")
+                mapSection = currentMap.mapSectionNativeId
+              else
+                local contact =
+                  assert(contactsByKey[contactKey], "caller landmark substitution resolves a catalog contact")
+                mapSection = contact.map
+              end
+              assert(
+                type(mapSection) == "number" and mapSection % 1 == 0,
+                "landmark substitutions use native map sections"
+              )
+              local landmarkBankId, landmarkEntryId = phoneLabels.bank, mapSection
+              local acquireLandmark = provider.acquireBank --[[@as fun(self: table<string, unknown>, bankId: integer): table<string, unknown>? , Errors.Error?]]
+              local releaseLandmark = provider.releaseBank --[[@as fun(self: table<string, unknown>, bankId: integer)]]
+              local landmarkBank =
+                assert(acquireLandmark(provider, landmarkBankId), "the native landmark bank is available")
+              local landmarkCount = landmarkBank.messageCount --[[@as integer]]
+              releaseLandmark(provider, landmarkBankId)
+              if landmarkEntryId == 0 or landmarkEntryId >= landmarkCount then
+                landmarkBankId, landmarkEntryId = phoneLabels.fallbackBank, phoneLabels.fallbackEntry
+              end
+              text = resolve(landmarkBankId, landmarkEntryId, contactKey).text
+            end
+            assert(type(text) == "string", "source phone substitution has a resolved text value")
+            return assert(FieldMessageProvider.asciiGlyphTokens(text, fontDef))
+          end
+          resolvers[token.control] = resolveSourceSubstitution
+        end
+      end
+      return format(provider, template, {}, resolvers)
+    end
+    local ok, result = pcall(formatMessage)
+    release(provider, bankId)
+    if not ok then
+      error(result, 0)
+    end
+    assert(
+      not result.hadUnresolvedSubstitutions,
+      "phone message substitutions resolve through the field profile: " .. result.text
+    )
+    return result
+  end
+  ---@param _ table<string, unknown>
+  ---@param contactKey string
+  ---@return string resolved caller name
+  local function resolveName(_, contactKey)
+    local contact = assert(contactsByKey[contactKey], "phone name resolves a catalog contact")
+    local name = assert(contact.name, "phone contact carries its source name reference")
+    local formatted = resolve(name.bank, name.entry, contactKey)
+    return formatted.text
+  end
+  messages.resolveName = resolveName
+  ---@param _ table<string, unknown>
+  ---@param contactKey string
+  ---@return string resolved class name
+  local function resolveClass(_, contactKey)
+    local contact = assert(contactsByKey[contactKey], "phone class resolves a catalog contact")
+    local class = assert(contact.class, "phone contact carries its source class rule")
+    if class.kind == "blank" then
+      return ""
+    end
+    return resolve(class.bank, class.entry, contactKey).text
+  end
+  messages.resolveClass = resolveClass
+  ---@param _ table<string, unknown>
+  ---@param contactKey string
+  ---@param scriptId integer native script index
+  ---@return table<string, unknown> formatted message text
+  local function resolveLine(_, contactKey, scriptId)
+    local contact = assert(contactsByKey[contactKey], "phone dialogue resolves a catalog contact")
+    local definitions = catalog.callDefinitions
+    assert(type(definitions) == "table", "phone dialogue reads the compiled native script table")
+    local definition = assert(definitions[scriptId], "phone dialogue uses a compiled native script")
+    local gender = profile.gender == 0 and "male" or profile.gender == 1 and "female" or nil
+    assert(gender ~= nil, "phone dialogue has a native player gender")
+    local message = definition[gender]
+    if type(message) ~= "table" or message.bank ~= contact.messageBank then
+      local failure = Errors.new(
+        ScriptErrors.FEATURE_UNAVAILABLE,
+        "native phone script belongs to a different caller bank",
+        { contact = contactKey, script = scriptId, bank = contact.messageBank }
+      )
+      error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+    end
+    return resolve(message.bank, message.entry, contactKey)
+  end
+  messages.resolveLine = resolveLine
   return messages
 end
 
@@ -2237,7 +2387,7 @@ function FieldRuntime:_composePokegearFeature(boot)
     assets = manifest,
     clock = assert(self.localClock, "companion feature needs its civil clock"),
     audio = self.audio or boot.audioService,
-    messages = phoneGreetingRefs(catalog),
+    messages = phoneGreetingRefs(catalog, self.messageProvider, self.playerData.profile, self.fontDef, self),
   })
   self.pokegear = bundle
   self.incomingCalls = assert(bundle.incoming, "companion feature carries its incoming owner")

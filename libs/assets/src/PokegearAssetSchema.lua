@@ -45,6 +45,7 @@ local CATALOG_FIELDS = {
   reception = true,
   shows = true,
   radioEffects = true,
+  landmarkLabels = true,
 }
 
 local PLAY_MODES = {
@@ -320,8 +321,22 @@ local function checkCatalog(value)
     end
   end
   for key in pairs(CATALOG_FIELDS) do
-    if value[key] == nil then
+    if value[key] == nil and key ~= "landmarkLabels" then
       return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog is missing " .. key, {})
+    end
+  end
+  if type(value.callDefinitions) == "table" and #value.callDefinitions > 0 then
+    local labels = value.landmarkLabels
+    if
+      type(labels) ~= "table"
+      or not isInteger(labels.bank)
+      or labels.bank < 0
+      or not isInteger(labels.fallbackBank)
+      or labels.fallbackBank < 0
+      or not isInteger(labels.fallbackEntry)
+      or labels.fallbackEntry < 0
+    then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.landmarkLabels must carry message references", {})
     end
   end
   if type(value.contacts) ~= "table" then
@@ -345,6 +360,35 @@ local function checkCatalog(value)
       )
     end
     contactKeys[contact.key] = true
+    if type(value.callDefinitions) == "table" and #value.callDefinitions > 0 then
+      if
+        type(contact.messageBank) ~= "number"
+        or type(contact.name) ~= "table"
+        or contact.name.bank ~= contact.messageBank
+        or contact.name.entry ~= 0
+      then
+        return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must resolve its name from bank entry zero", {})
+      end
+      local class = contact.class
+      if type(class) ~= "table" then
+        return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. ".class must carry a native class rule", {})
+      end
+      if class.kind == "blank" then
+        if class.bank ~= nil or class.entry ~= nil then
+          return fail(
+            PokegearAssetSchema.ERROR.SHAPE_INVALID,
+            label .. ".class blank rule has no message reference",
+            {}
+          )
+        end
+      elseif class.kind == "message" then
+        if not isInteger(class.bank) or class.bank < 0 or not isInteger(class.entry) or class.entry < 0 then
+          return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. ".class message reference is invalid", {})
+        end
+      else
+        return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. ".class has an unknown rule", {})
+      end
+    end
     if contact.sortWeights ~= nil then
       if type(contact.sortWeights) ~= "table" or #contact.sortWeights == 0 then
         return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. ".sortWeights must list source sort weights", {})
@@ -405,6 +449,54 @@ local function checkCatalog(value)
   }) do
     if type(value[key]) ~= "table" then
       return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog." .. key .. " must be a record list", {})
+    end
+  end
+  if #value.callDefinitions > 0 then
+    local definitions = value.callDefinitions
+    if #definitions ~= 455 then
+      return fail(
+        PokegearAssetSchema.ERROR.SHAPE_INVALID,
+        "catalog.callDefinitions must contain all 455 native scripts",
+        {}
+      )
+    end
+    local contactBanks = {}
+    for _, contact in ipairs(value.contacts) do
+      contactBanks[contact.messageBank] = true
+    end
+    for index, definition in ipairs(definitions) do
+      local label = "catalog.callDefinitions[" .. index .. "]"
+      if type(definition) ~= "table" or definition.id ~= index then
+        return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must preserve its native script index", {})
+      end
+      for _, gender in ipairs({ "male", "female" }) do
+        local message = definition[gender]
+        if
+          type(message) ~= "table"
+          or not isInteger(message.bank)
+          or not isInteger(message.entry)
+          or message.entry < 0
+          or contactBanks[message.bank] ~= true
+        then
+          return fail(
+            PokegearAssetSchema.ERROR.DANGLING_REFERENCE,
+            label .. " has a message outside its contact banks",
+            {}
+          )
+        end
+      end
+      if definition.male.bank ~= definition.female.bank then
+        return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " gender messages must share a caller bank", {})
+      end
+      if
+        definition.kind ~= "none"
+        and definition.kind ~= "flag"
+        and definition.kind ~= "rematch"
+        and definition.kind ~= "item"
+        and definition.kind ~= "word"
+      then
+        return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " has an unknown native script type", {})
+      end
     end
   end
   if type(value.shows) ~= "table" then

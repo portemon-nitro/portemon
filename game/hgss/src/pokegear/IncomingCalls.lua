@@ -18,6 +18,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field private _calendar table<string, unknown> the borrowed civil calendar adapter
 ---@field private _random table<string, unknown> the borrowed companion draw streams
 ---@field private _world table<string, unknown> the borrowed world facts
+---@field private _messages table<string, unknown>?
 ---@field private _host table<string, unknown>? the borrowed companion application host
 ---@field private _audio table<string, unknown>? the borrowed ring tone owner
 ---@field private _cooldown integer accumulated eligible minutes
@@ -93,7 +94,7 @@ local function glyphCount(name)
   return count
 end
 
----@param opts { state: table<string, unknown>, catalog: table<string, unknown>, calendar: table<string, unknown>, random: table<string, unknown>, world: table<string, unknown>, host: table<string, unknown>?, audio: table<string, unknown>? }
+---@param opts { state: table<string, unknown>, catalog: table<string, unknown>, calendar: table<string, unknown>, random: table<string, unknown>, world: table<string, unknown>, messages: table<string, unknown>?, host: table<string, unknown>?, audio: table<string, unknown>? }
 ---@return IncomingCalls
 function IncomingCalls.new(opts)
   assert(type(opts) == "table", "incoming calls borrow their owners through a record")
@@ -143,6 +144,7 @@ function IncomingCalls.new(opts)
     _calendar = opts.calendar,
     _random = opts.random,
     _world = opts.world,
+    _messages = opts.messages,
     _host = opts.host,
     _audio = opts.audio,
     _cooldown = 0,
@@ -588,7 +590,12 @@ function IncomingCalls:notification()
   local record = self:_contactRecord(ring.contactKey)
   local name = ring.contactKey
   if record ~= nil then
-    if type(record.name) == "string" and record.name ~= "" then
+    if type(record.name) == "table" then
+      local messages = self._messages
+      local resolveName = type(messages) == "table" and messages.resolveName or nil
+      assert(type(resolveName) == "function", "incoming caller names resolve through the field message provider")
+      name = resolveName(messages, ring.contactKey)
+    elseif type(record.name) == "string" and record.name ~= "" then
       name = record.name
     elseif type(record.label) == "string" and record.label ~= "" then
       name = record.label

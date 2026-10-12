@@ -204,15 +204,14 @@ local function drawMenu(graphics, text, menu)
 end
 
 -- Draws the call speech/name windows from the conversation projection:
--- the frozen greeting and program text plus the owed choice with its
--- cursor while the engine waits for one.
+-- the resolved caller name and current source text page.
 ---@param graphics love.graphics
 ---@param text table<string, unknown>?
 ---@param call table<string, unknown>
 local function drawCall(graphics, text, call)
   fillRect(graphics, { 0.10, 0.10, 0.14 }, NAME_WINDOW.x, NAME_WINDOW.y, NAME_WINDOW.width, NAME_WINDOW.height)
   graphics.setColor(1, 1, 1, 1)
-  drawLine(text, tostring(call.contact), NAME_WINDOW.x + 4, NAME_WINDOW.y + 2)
+  drawLine(text, tostring(call.name), NAME_WINDOW.x + 4, NAME_WINDOW.y + 2)
   fillRect(graphics, { 0.94, 0.94, 0.96 }, SPEECH_WINDOW.x, SPEECH_WINDOW.y, SPEECH_WINDOW.width, SPEECH_WINDOW.height)
   graphics.setColor(0.08, 0.08, 0.10, 1)
   graphics.rectangle(
@@ -223,9 +222,11 @@ local function drawCall(graphics, text, call)
     SPEECH_WINDOW.height - 1
   )
   graphics.setColor(1, 1, 1, 1)
-  local body = tostring(call.greeting)
-  if call.program ~= nil then
-    body = body .. " " .. tostring(call.program)
+  local pages = call.lines
+  local page = call.page
+  local body = ""
+  if type(pages) == "table" and type(page) == "number" and type(pages[page]) == "table" then
+    body = tostring(pages[page].text)
   end
   drawLine(text, body, SPEECH_WINDOW.x + 4, SPEECH_WINDOW.y + 4)
   local choices = call.choices
