@@ -785,7 +785,6 @@ local function buildProgress(ctx)
     ctx.rows[#ctx.rows].valueRect =
       rect(row.valueRect.x, row.valueRect.y - flagOffset, row.valueRect.width, row.valueRect.height)
     ctx.rows[#ctx.rows].muted = flagModel.pending
-    ctx.rows[#ctx.rows].muted = flagModel.pending
   end
 end
 
@@ -1312,6 +1311,7 @@ local function buildChoiceScope(ctx)
   for _, row in ipairs(choiceList.rows) do
     local id = assert(dialog.idAt(row.index), "visible choice rows keep their logical identity")
     addFocusable(ctx, id)
+    ctx.roleById[id] = "choice"
     ctx.focusPositions[id] = rect(row.rect.x, row.rect.y - offset, row.rect.width, row.rect.height - 1)
     ctx.targets[id] = rect(row.rect.x, row.rect.y - offset, row.rect.width, row.rect.height - 1)
     ctx.rowMarkers[id] = rect(row.markerRect.x, row.markerRect.y - offset, row.markerRect.width, row.markerRect.height)
@@ -1344,6 +1344,7 @@ local function buildChoiceScope(ctx)
       backWidth = math.min(math.max(40, backGlyphWidth + 8), innerWidth)
       ctx.targets.cancel = rect(contentX + math.floor((innerWidth - backWidth) / 2), footerY, backWidth, 34)
       addFocusable(ctx, "cancel")
+      ctx.roleById.cancel = "action"
     end
   else
     local actionX = contentX + math.floor((innerWidth - pairWidth) / 2)
@@ -1351,6 +1352,7 @@ local function buildChoiceScope(ctx)
     ctx.targets.cancel = rect(actionX + chooseWidth + actionGap, footerY, backWidth, 34)
     addFocusable(ctx, "confirm")
     addFocusable(ctx, "cancel")
+    ctx.roleById.confirm, ctx.roleById.cancel = "action", "action"
   end
   if dialog.count == 0 or dialog.pending then
     ctx.disabledTargets.confirm = true
@@ -1385,13 +1387,16 @@ local function buildNameScope(ctx)
     rect(contentX + math.floor(innerWidth / 2) + 2, keyboardBottom, math.floor(innerWidth / 2) - 2, 24)
   addFocusable(ctx, "confirm")
   addFocusable(ctx, "cancel")
+  ctx.roleById.confirm, ctx.roleById.cancel = "action", "action"
   for row = 1, 6 do
     for column = 1, 13 do
       addFocusable(ctx, row .. ":" .. column)
+      ctx.roleById[row .. ":" .. column] = "name"
     end
   end
   for _, control in ipairs(naming.controls) do
     addFocusable(ctx, "name-control:" .. control.id)
+    ctx.roleById["name-control:" .. control.id] = "action"
   end
 end
 
@@ -1423,6 +1428,7 @@ local function buildNumberScope(ctx)
       ctx.targets.cancel =
         rect(contentX + math.floor((innerWidth - backWidth) / 2), contentBottom - backHeight, backWidth, backHeight)
       addFocusable(ctx, "cancel")
+      ctx.roleById.cancel = "action"
       local noticeInset = math.min(4, math.floor((innerWidth - 1) / 2))
       local noticeWidth = innerWidth - noticeInset * 2
       local noticeHeight = math.min(metrics.lineHeight, contentBottom - contentTop - backHeight - frame.actionGap)
@@ -1444,12 +1450,14 @@ local function buildNumberScope(ctx)
       local targetId = "number:place:" .. tostring(column.place) .. ":" .. direction
       ctx.targets[targetId] = targetRect
       addFocusable(ctx, targetId)
+      ctx.roleById[targetId] = "action"
     end
   end
   ctx.targets.confirm = numberLayout.confirmRect
   ctx.targets.cancel = numberLayout.backRect
   addFocusable(ctx, "confirm")
   addFocusable(ctx, "cancel")
+  ctx.roleById.confirm, ctx.roleById.cancel = "action", "action"
   ctx.valueModalValue = numberLayout.stripRect
   ctx.valueModalError = numberLayout.errorRect
 end
@@ -1516,6 +1524,7 @@ local function buildDecisionScope(ctx)
       ctx.targets[back.id] = backRect
       ctx.disabledTargets[back.id] = nil
       addFocusable(ctx, back.id)
+      ctx.roleById[back.id] = "action"
     else
       ctx.disabledTargets[back.id] = true
     end
@@ -1618,6 +1627,7 @@ local function buildDecisionScope(ctx)
       ctx.targets[action.id] = rowRect
       ctx.disabledTargets[action.id] = nil
       addFocusable(ctx, action.id)
+      ctx.roleById[action.id] = "action"
     else
       ctx.disabledTargets[action.id] = true
     end
@@ -1642,6 +1652,7 @@ local function buildDecisionScope(ctx)
     ctx.targets[back.id] = backRect
     ctx.disabledTargets[back.id] = nil
     addFocusable(ctx, back.id)
+    ctx.roleById[back.id] = "action"
   else
     ctx.disabledTargets[back.id] = true
   end
@@ -2297,8 +2308,10 @@ local function publishStatsRegion(nav)
       lastIvTarget = ivTarget
     end
   end
-  if #statsMatrix > 0 then
-    local viewport = assert(ctx.viewports.party, "Stats regions use the Party viewport")
+  -- Modal overlays never materialize the Party body viewport, so they keep
+  -- no virtual Stats region: their focus order holds no stats targets.
+  if #statsMatrix > 0 and ctx.viewports.party ~= nil then
+    local viewport = ctx.viewports.party
     local region = regionsById["party:stats"] or addRegion(nav, "party:stats", "table", viewport.clip)
     region.kind = "table"
     region.rect = viewport.clip
@@ -2485,7 +2498,21 @@ local function buildFocusNavigation(ctx, targetRecords)
   })
 end
 
-local function publishPlan(ctx)
+-- Semantic roles come from the target builders; the remaining textual
+-- fallbacks only cover choice rows, section-owned grid tiles and name keys.
+-- Every other target resolves to the default action role.
+local function targetRole(ctx, targetId)
+  return ctx.roleById[targetId]
+    or targetId:match("^choice:") and "choice"
+    or targetId:match("^location:tile:") and "location"
+    or targetId:match("^%d+:%d+$") and "name"
+    or "action"
+end
+
+-- Shared publication tail for one already-scoped context: ordered focus,
+-- target records, row value cells and compiled navigation. Modal overlays
+-- reuse it so layers never re-enter the public compute entry.
+local function publishActiveFields(ctx)
   local view, metrics = ctx.view, ctx.metrics
   for _, targetId in ipairs(ctx.focusable) do
     ctx.focusOrder[#ctx.focusOrder + 1] = targetId
@@ -2497,20 +2524,12 @@ local function publishPlan(ctx)
     local viewportId = ctx.viewportByTarget[targetId]
     local list = viewportId and ctx.viewports[viewportId]
     local containerClip = ctx.containerClips[targetId]
-    local role = ctx.roleById[targetId]
-      or targetId:match("^choice:") and "choice"
-      or targetId:match("^location:tile:") and "location"
-      or targetId:match("^%d+:%d+$") and "name"
-      or targetId:match("^name%-control:") and "action"
-      or targetId:match("^digit%-") and "action"
-      or (targetId == "confirm" or targetId == "cancel") and "action"
-      or "action"
     targetRecords[targetId] = {
       rect = targetRect,
       clip = list and list.clip or containerClip,
       focusable = ctx.focusableSet[targetId] == true,
       activationEnabled = not ctx.disabledTargets[targetId],
-      role = role,
+      role = targetRole(ctx, targetId),
       viewportId = viewportId,
     }
   end
@@ -2549,6 +2568,109 @@ local function publishPlan(ctx)
     end
   end
   local focusNavigation = buildFocusNavigation(ctx, targetRecords)
+  return {
+    defaultFocus = defaultFocus,
+    scrollOwner = scrollOwner,
+    targetRecords = targetRecords,
+    focusedValueHelp = focusedValueHelp,
+    focusNavigation = focusNavigation,
+  }
+end
+
+-- One detached plan record from a scoped context and its published fields.
+-- Overlay geometries carry no nested renderLayers so painters keep using
+-- the publication list they were given.
+local function toPlan(ctx, active, renderLayers)
+  local view = ctx.view
+  local inputLayerId = (renderLayers ~= nil and #renderLayers > 0 and renderLayers[#renderLayers].id) or ctx.scope.id
+  return {
+    viewport = rect(0, 0, ctx.width, ctx.height),
+    shell = ctx.shell,
+    content = rect(ctx.contentX, ctx.contentTop, ctx.innerWidth, ctx.contentBottom - ctx.contentTop),
+    footer = rect(ctx.contentX, ctx.height - ctx.footerHeight, ctx.innerWidth, ctx.footerHeight),
+    rows = ctx.rows,
+    focusedValueHelp = active.focusedValueHelp,
+    navigation = ctx.navigation,
+    focusOrder = ctx.focusOrder,
+    focusGraph = ctx.focusGraph,
+    focusNavigation = active.focusNavigation,
+    defaultFocus = active.defaultFocus,
+    targets = active.targetRecords,
+    actions = ctx.actions,
+    activeSection = ctx.section,
+    locationGrid = ctx.locationGrid,
+    locationFocusCue = ctx.locationFocusCue,
+    valueModal = ctx.valueModal,
+    valueModalValue = ctx.valueModalValue,
+    valueModalError = ctx.valueModalError,
+    valueModalNotice = ctx.valueModalNotice,
+    numberLayout = ctx.numberLayout,
+    numberTooSmall = ctx.numberTooSmall,
+    choiceTooSmall = ctx.choiceTooSmall,
+    decisionList = ctx.decisionList,
+    listSurfaces = ctx.listSurfaces,
+    partyStatsTable = ctx.partyStatsTable,
+    partyStrip = ctx.partyStrip,
+    partyMoves = ctx.partyMoves,
+    partyPageLabel = ctx.partyPageLabel,
+    locationHeader = ctx.locationHeader,
+    bagGrid = ctx.bagGrid,
+    bagTabs = ctx.bagTabs,
+    bagStripTarget = ctx.bagStripTarget,
+    bagPageText = ctx.bagPageTextRect,
+    bagPage = { index = (view.bagPage0 or 0) + 1, count = view.bagPageCount or 1 },
+    scrollOffset = view.scrollOffset or 0,
+    viewports = ctx.viewports,
+    lists = ctx.lists,
+    revealByTarget = ctx.revealByTarget,
+    rowMarkers = ctx.rowMarkers,
+    rowMarkerRadii = ctx.rowMarkerRadii,
+    rowLabelRects = ctx.rowLabelRects,
+    scrollOwner = active.scrollOwner,
+    scopeId = ctx.scope.id,
+    scopeEpoch = ctx.scope.epoch,
+    metrics = ctx.metrics,
+    renderLayers = renderLayers,
+    inputLayerId = inputLayerId,
+  }
+end
+
+-- Base page geometry is built once per publication without any modal scope.
+local function computePageLayout(baseView, width, height, metrics)
+  local ctx = newContext(baseView, width, height, metrics)
+  buildShell(ctx)
+  buildNoticeRows(ctx)
+  buildSection(ctx)
+  buildFooterActions(ctx)
+  finalizeTargets(ctx)
+  buildFocusGraph(ctx)
+  return toPlan(ctx, publishActiveFields(ctx), { { id = "page:" .. tostring(ctx.section), kind = "page" } })
+end
+
+-- One modal overlay from the publication's shared shell placement plus its
+-- own scope geometry. Section rows, footer actions and notice rows are never
+-- built here: scope pruning would discard them, and every overlay keeps its
+-- own mutable target and row maps.
+local function computeOverlayLayout(layerView, width, height, metrics, shared)
+  local ctx = newContext(layerView, width, height, metrics)
+  ctx.shell = rect(shared.shell.x, shared.shell.y, shared.shell.width, shared.shell.height)
+  ctx.shellX, ctx.shellWidth = shared.shellX, shared.shellWidth
+  ctx.contentX, ctx.contentTop, ctx.innerWidth = shared.contentX, shared.contentTop, shared.innerWidth
+  ctx.railX = shared.railX
+  if layerView.modal ~= nil then
+    buildDecisionScope(ctx)
+  else
+    buildValueScope(ctx)
+  end
+  finalizeTargets(ctx)
+  buildFocusGraph(ctx)
+  -- No nested renderLayers: painters fall back to the publication list.
+  return toPlan(ctx, publishActiveFields(ctx), nil)
+end
+
+local function publishPlan(ctx)
+  local view, metrics = ctx.view, ctx.metrics
+  local active = publishActiveFields(ctx)
   local modalLayers = view.modalLayers or {}
   local hasLayers = view.modal ~= nil or view.valueEditor ~= nil or #modalLayers > 0
   local renderLayers = {}
@@ -2566,11 +2688,20 @@ local function publishPlan(ctx)
     end
     local baseView = copyView()
     baseView.scope = { id = "section:" .. tostring(ctx.section), epoch = ctx.scope.epoch, kind = "section" }
+    local shared = {
+      shell = ctx.shell,
+      shellX = ctx.shellX,
+      shellWidth = ctx.shellWidth,
+      contentX = ctx.contentX,
+      contentTop = ctx.contentTop,
+      innerWidth = ctx.innerWidth,
+      railX = ctx.railX,
+    }
     renderLayers[1] = {
       id = "page:" .. tostring(ctx.section),
       kind = "page",
       view = baseView,
-      layout = Layout.compute(baseView, ctx.width, ctx.height, metrics),
+      layout = computePageLayout(baseView, ctx.width, ctx.height, metrics),
     }
     local decisionKind = {
       leave = "leave",
@@ -2606,7 +2737,7 @@ local function publishPlan(ctx)
         kind = layer.kind,
         payload = layer.payload,
         view = layerView,
-        layout = Layout.compute(layerView, ctx.width, ctx.height, metrics),
+        layout = computeOverlayLayout(layerView, ctx.width, ctx.height, metrics, shared),
         top = index == #modalLayers,
       }
     end
@@ -2622,56 +2753,7 @@ local function publishPlan(ctx)
   else
     renderLayers[1] = { id = "page:" .. tostring(ctx.section), kind = "page" }
   end
-  return {
-    viewport = rect(0, 0, ctx.width, ctx.height),
-    shell = ctx.shell,
-    content = rect(ctx.contentX, ctx.contentTop, ctx.innerWidth, ctx.contentBottom - ctx.contentTop),
-    footer = rect(ctx.contentX, ctx.height - ctx.footerHeight, ctx.innerWidth, ctx.footerHeight),
-    rows = ctx.rows,
-    focusedValueHelp = focusedValueHelp,
-    navigation = ctx.navigation,
-    focusOrder = ctx.focusOrder,
-    focusGraph = ctx.focusGraph,
-    focusNavigation = focusNavigation,
-    defaultFocus = defaultFocus,
-    targets = targetRecords,
-    actions = ctx.actions,
-    activeSection = ctx.section,
-    locationGrid = ctx.locationGrid,
-    locationFocusCue = ctx.locationFocusCue,
-    valueModal = ctx.valueModal,
-    valueModalValue = ctx.valueModalValue,
-    valueModalError = ctx.valueModalError,
-    valueModalNotice = ctx.valueModalNotice,
-    numberLayout = ctx.numberLayout,
-    numberTooSmall = ctx.numberTooSmall,
-    choiceTooSmall = ctx.choiceTooSmall,
-    decisionList = ctx.decisionList,
-    listSurfaces = ctx.listSurfaces,
-    partyStatsTable = ctx.partyStatsTable,
-    partyStrip = ctx.partyStrip,
-    partyMoves = ctx.partyMoves,
-    partyPageLabel = ctx.partyPageLabel,
-    locationHeader = ctx.locationHeader,
-    bagGrid = ctx.bagGrid,
-    bagTabs = ctx.bagTabs,
-    bagStripTarget = ctx.bagStripTarget,
-    bagPageText = ctx.bagPageTextRect,
-    bagPage = { index = (view.bagPage0 or 0) + 1, count = view.bagPageCount or 1 },
-    scrollOffset = view.scrollOffset or 0,
-    viewports = ctx.viewports,
-    lists = ctx.lists,
-    revealByTarget = ctx.revealByTarget,
-    rowMarkers = ctx.rowMarkers,
-    rowMarkerRadii = ctx.rowMarkerRadii,
-    rowLabelRects = ctx.rowLabelRects,
-    scrollOwner = scrollOwner,
-    scopeId = ctx.scope.id,
-    scopeEpoch = ctx.scope.epoch,
-    metrics = metrics,
-    renderLayers = renderLayers,
-    inputLayerId = renderLayers[#renderLayers].id or ctx.scope.id,
-  }
+  return toPlan(ctx, active, renderLayers)
 end
 
 function Layout.compute(view, width, height, metrics)

@@ -3341,4 +3341,119 @@ function T.tests.unlocated_map_browse_publishes_a_pending_header_without_tile_ta
   )
 end
 
+local function nestedModalView()
+  local editor = ValueEditor.new({ kind = "integer", value = 12, min = 0, max = 99, base = "decimal" })
+  local view = partyEditorView("Moves")
+  view.numberControlVisuals = { increment = { normal = { width = 8, height = 8 } } }
+  view.modalLayers = {
+    { id = "test:move", kind = "move", payload = { title = "Edit move: Tackle" } },
+    { id = "test:number", kind = "number", payload = { purpose = "move_pp", snapshot = editor:snapshot() } },
+  }
+  return view
+end
+
+local function computeCountedModalLayers(view, width, height, metrics)
+  local computeCalls = 0
+  local originalCompute = Layout.compute
+  Layout.compute = function(nestedView, nestedWidth, nestedHeight, nestedMetrics)
+    computeCalls = computeCalls + 1
+    return originalCompute(nestedView, nestedWidth, nestedHeight, nestedMetrics)
+  end
+  local ok, layout = pcall(Layout.compute, view, width, height, metrics)
+  Layout.compute = originalCompute
+  if not ok then
+    error(layout, 0)
+  end
+  return layout, computeCalls
+end
+
+function T.tests.nested_modal_layers_publish_in_one_pass_without_rebuilding_the_shared_page()
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  local view = nestedModalView()
+  local wide, wideCalls = computeCountedModalLayers(view, 640, 480, metrics)
+  Assert.equal(#wide.renderLayers, 3, "page plus two modal overlays publish three paint layers")
+  local page, move, number = wide.renderLayers[1], wide.renderLayers[2], wide.renderLayers[3]
+  Assert.equal(page.id, "page:Party", "the base layer keeps the page identity")
+  Assert.equal(page.kind, "page", "the base layer keeps the page kind")
+  Assert.equal(move.id, "test:move", "the parent overlay keeps its stack identity")
+  Assert.equal(move.kind, "move", "the parent overlay keeps its stack kind")
+  Assert.isFalse(move.top, "only the top overlay is marked top")
+  Assert.equal(number.id, "test:number", "the child overlay keeps its stack identity")
+  Assert.equal(number.kind, "number", "the child overlay keeps its stack kind")
+  Assert.isTrue(number.top, "the child overlay is the top layer")
+  Assert.equal(wide.inputLayerId, "test:number", "only the top overlay receives input")
+  Assert.notNil(page.layout, "the shared page publishes its own geometry")
+  Assert.notNil(move.layout, "the parent overlay publishes its own geometry")
+  Assert.notNil(number.layout, "the child overlay publishes its own geometry")
+  Assert.equal(page.layout.scopeId, "section:Party", "the shared page keeps the section scope")
+  Assert.equal(move.layout.scopeId, "test:move", "the parent overlay keeps its scope")
+  Assert.equal(number.layout.scopeId, "test:number", "the child overlay keeps its scope")
+  Assert.equal(move.layout.scopeEpoch, wide.scopeEpoch, "the parent overlay shares the publication epoch")
+  Assert.equal(number.layout.scopeEpoch, wide.scopeEpoch, "the child overlay shares the publication epoch")
+  Assert.isTrue(
+    page.layout.targets ~= move.layout.targets and move.layout.targets ~= number.layout.targets,
+    "overlays never share mutable target maps"
+  )
+  Assert.isTrue(
+    page.layout.rows ~= move.layout.rows and move.layout.rows ~= number.layout.rows,
+    "overlays never share mutable row maps"
+  )
+  Assert.notNil(page.layout.targets["party:move:0"], "the shared page keeps its own controls")
+  Assert.isNil(wide.targets["party-move:pp"], "the suspended parent action stays out of the active input scope")
+  local decisionRows = assert(move.layout.decisionList, "the parent overlay publishes its actions").rows
+  Assert.isTrue(#decisionRows >= 2, "the parent overlay keeps its primary actions and Back")
+  for _, row in ipairs(decisionRows) do
+    local centerX = row.rect.x + math.floor(row.rect.width / 2)
+    local centerY = row.rect.y + math.floor(row.rect.height / 2)
+    Assert.equal(
+      Layout.hitTest(move.layout, move.view, centerX, centerY),
+      row.targetId,
+      row.targetId .. " paints and hits the same rectangle"
+    )
+    if row.targetId ~= "cancel" then
+      Assert.isFalse(
+        Layout.hitTest(wide, view, centerX, centerY) == row.targetId,
+        row.targetId .. " never resolves through the published plan while suspended"
+      )
+    end
+  end
+  Assert.notNil(number.layout.targets.confirm, "the numeric child keeps its submission target")
+  Assert.notNil(number.layout.targets.cancel, "the numeric child keeps its Back target")
+  Assert.equal(wideCalls, 1, "one publication builds the shared page once and each overlay without a full recompute")
+
+  local compact, compactCalls = computeCountedModalLayers(nestedModalView(), 256, 192, metrics)
+  Assert.equal(#compact.renderLayers, 3, "a resized publication keeps all three paint layers")
+  Assert.equal(compact.renderLayers[2].id, "test:move", "a resized publication keeps overlay identities")
+  Assert.equal(compact.renderLayers[3].id, "test:number", "a resized publication keeps the top identity")
+  Assert.equal(compact.inputLayerId, "test:number", "a resized publication keeps the top input layer")
+  Assert.equal(compact.viewport.width, 256, "a resized publication reports the new width")
+  Assert.equal(compact.viewport.height, 192, "a resized publication reports the new height")
+  local wideSurface = assert(wide.renderLayers[2].layout.decisionList).surface
+  local compactSurface = assert(compact.renderLayers[2].layout.decisionList).surface
+  Assert.isTrue(
+    wideSurface.x ~= compactSurface.x or wideSurface.y ~= compactSurface.y or wideSurface.width ~= compactSurface.width,
+    "resize recomputes overlay geometry for the new viewport"
+  )
+  Assert.equal(compactCalls, 1, "a resized publication still builds the shared page exactly once")
+end
+
+function T.tests.modal_layer_without_its_paint_payload_fails_before_publishing()
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  local broken = partyEditorView("Moves")
+  broken.modalLayers = { { id = "test:broken", kind = "move" } }
+  Assert.throws(function()
+    Layout.compute(broken, 640, 480, metrics)
+  end, "a modal layer without its paint payload fails before publishing")
+end
+
 return T

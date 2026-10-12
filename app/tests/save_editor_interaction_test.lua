@@ -6116,6 +6116,103 @@ function T.tests.modal_keeps_the_resized_party_page_painted_but_rejects_old_inpu
   Assert.equal(harness.controller.partySlot0, selected, "a base activation cannot pass through the top modal")
 end
 
+function T.tests.nested_move_child_keeps_single_pass_paint_order_and_parent_state_across_viewports()
+  local harness = livePartyHarness(1)
+  harness.state:_ensurePartyDraft()
+  local draft = assert(harness.state.monDraft, "the Moves page needs its member draft")
+  local before = harness.state.monDraft:record().moves[1]
+  activate(harness.state, "party:page:next")
+  Assert.equal(harness.controller.partyTab, "Moves", "the Moves page owns the nested overlay")
+  activate(harness.state, "party:move:0")
+  Assert.equal(harness.controller.modal, "party-move", "an occupied slot opens its move overlay")
+  activate(harness.state, "party-move:pp")
+  Assert.notNil(harness.state.valueEditor, "the move action opens its numeric child")
+  Assert.isNil(harness.controller.modal, "the child suspends its parent overlay")
+  local stackKinds = {}
+  for _, layer in ipairs(harness.state.modalStack:layers()) do
+    stackKinds[#stackKinds + 1] = layer.kind
+  end
+  Assert.deepEqual(stackKinds, { "move", "number" }, "the stack retains the parent below its child")
+
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  for _, size in ipairs({
+    { width = 256, height = 192 },
+    { width = 640, height = 480 },
+    { width = 360, height = 640 },
+  }) do
+    local label = size.width .. "x" .. size.height
+    local view = harness.state:_snapshot()
+    view.numberControlVisuals = { increment = { normal = { width = 8, height = 8 } } }
+    local computeCalls = 0
+    local originalCompute = Layout.compute
+    Layout.compute = function(nestedView, width, height, nestedMetrics)
+      computeCalls = computeCalls + 1
+      return originalCompute(nestedView, width, height, nestedMetrics)
+    end
+    local ok, layout = pcall(Layout.compute, view, size.width, size.height, metrics)
+    Layout.compute = originalCompute
+    if not ok then
+      error(layout, 0)
+    end
+    Assert.equal(#layout.renderLayers, 3, label .. " paints page, parent decision, and numeric child")
+    local page, move, number = layout.renderLayers[1], layout.renderLayers[2], layout.renderLayers[3]
+    Assert.equal(page.kind, "page", label .. " keeps the page at the bottom")
+    Assert.equal(move.kind, "move", label .. " keeps the parent decision in the middle")
+    Assert.equal(number.kind, "number", label .. " keeps the numeric child on top")
+    Assert.isTrue(number.top, label .. " marks only the child top")
+    Assert.equal(layout.inputLayerId, number.id, label .. " sends input to the top overlay only")
+    Assert.notNil(page.layout.partyStrip, label .. " keeps the page painted under the overlays")
+    local decisionRows = assert(move.layout.decisionList, label .. " keeps the parent actions").rows
+    Assert.isTrue(#decisionRows >= 2, label .. " keeps the parent actions and Back")
+    Assert.notNil(number.layout.targets.confirm, label .. " keeps the child submission target")
+    Assert.notNil(number.layout.targets.cancel, label .. " keeps the child Back target")
+    for _, control in ipairs(layout.focusNavigation.controls) do
+      Assert.isNil(
+        control.id:match("^party%-move:"),
+        label .. " keeps the suspended parent action out of input: " .. control.id
+      )
+    end
+    for _, row in ipairs(decisionRows) do
+      if row.targetId ~= "cancel" then
+        local centerX = row.rect.x + math.floor(row.rect.width / 2)
+        local centerY = row.rect.y + math.floor(row.rect.height / 2)
+        Assert.isFalse(
+          Layout.hitTest(layout, view, centerX, centerY) == row.targetId,
+          label .. " never resolves the suspended " .. row.targetId
+        )
+      end
+    end
+    Assert.equal(
+      computeCalls,
+      1,
+      label .. " publishes the nested layers in one pass without rebuilding the page per layer"
+    )
+  end
+
+  activate(harness.state, "cancel")
+  Assert.isNil(harness.state.valueEditor, "the numeric child retires first")
+  Assert.equal(harness.controller.modal, "party-move", "dismissing the child returns to its parent overlay")
+  Assert.equal(harness.controller.focus, "party-move:pp", "the child returns to the action that opened it")
+  Assert.equal(harness.state.modalStack:top().kind, "move", "only the child layer is retired")
+  activate(harness.state, "party-move:pp")
+  Assert.notNil(harness.state.valueEditor, "the parent action reopens its child")
+  harness.state:_requestBack()
+  Assert.isNil(harness.state.valueEditor, "Back removes only the numeric child")
+  Assert.equal(harness.controller.modal, "party-move", "Back restores the retained move dialog")
+  Assert.equal(harness.controller.focus, "party-move:pp", "Back restores the child opener focus")
+  harness.state:_requestBack()
+  Assert.isNil(harness.controller.modal, "the next Back removes only the move dialog")
+  Assert.equal(harness.controller.partyTab, "Moves", "the selected page survives both pops")
+  Assert.equal(harness.controller.partySlot0, 0, "the selected member survives both pops")
+  Assert.isTrue(harness.state.monDraft == draft, "both pops retain the member draft")
+  Assert.equal(harness.state.monDraft:record().moves[1].pp, before.pp, "both pops leave draft PP unchanged")
+end
+
 function T.tests.member_removal_has_no_party_path()
   local harness = livePartyHarness(2)
   harness.state:_ensurePartyDraft()
@@ -6153,6 +6250,165 @@ function T.tests.back_from_a_selected_bag_item_returns_to_its_pocket()
   Assert.equal(harness.controller.focus, "bag:pocket:items", "focus returns to the pocket")
   Assert.isNil(harness.state.closeRequest, "the dirty session never enters its leave flow")
   Assert.deepEqual(harness.results, {}, "one Back never leaves the editor")
+end
+
+function T.tests.nested_bag_layers_keep_paint_order_and_reject_background_input_across_viewports()
+  local bagController = Controller.new()
+  bagController:setSection("Bag")
+  local itemCatalog = {}
+  local bagMetadata = {
+    catalog = itemCatalog,
+    pockets = { { key = "items" } },
+    pocketByKey = { items = { key = "items" } },
+    optionsByPocket = { items = { { key = "POTION", label = "Potion" } } },
+    itemByKey = { POTION = { item = "POTION", label = "Potion", iconKey = "potion" } },
+  }
+  local bagRevision = 1
+  local bagManifest = {
+    interactive = {
+      pocketTabs = { rects = {}, strips = { items = {} } },
+      focus = { tabs = { visual = {}, targets = {} } },
+      overlays = {
+        quantity = {
+          visuals = {
+            increment = { normal = { width = 8, height = 8 } },
+            decrement = { normal = { width = 8, height = 8 } },
+          },
+        },
+      },
+    },
+  }
+  local bagSession = {
+    revision = function()
+      return bagRevision
+    end,
+    bagSnapshot = function()
+      return { { item = "POTION", quantity = 5 } }
+    end,
+    snapshot = function()
+      return {
+        dirtySections = {
+          money = false,
+          frame = false,
+          flags = false,
+          party = false,
+          bag = false,
+          location = false,
+        },
+      }
+    end,
+  }
+  local bagState = stateHarness({
+    status = "ready",
+    controller = bagController,
+    fieldInput = FieldInput.new(),
+    inputTick = 0,
+    numberPressUntilTick = 0,
+    scopeEpoch = 0,
+    modalStack = ModalStack.new(),
+    modalLayerSequence = 0,
+    dependencies = { context = { itemCatalog = itemCatalog }, bagManifest = bagManifest },
+    session = bagSession,
+    valueEditor = nil,
+    valuePurpose = nil,
+    pendingQuantity = nil,
+    _bagCatalogMetadata = bagMetadata,
+  })
+  bagController:selectBagItem("POTION")
+  bagState:_openDecision("bag-item")
+  Assert.equal(bagController.modal, "bag-item", "the item opens its decision overlay")
+  local editor = ValueEditor.new({ kind = "integer", value = 5, min = 1, max = 99, base = "decimal" })
+  bagState:_installValueEditor(editor, "bag_quantity", "bag:item:POTION")
+  bagState.pendingQuantity = { itemKey = "POTION", mode = "set", returnModal = "bag-item" }
+  bagController.modal = nil
+  local stackKinds = {}
+  for _, layer in ipairs(bagState.modalStack:layers()) do
+    stackKinds[#stackKinds + 1] = layer.kind
+  end
+  Assert.deepEqual(stackKinds, { "bag-item", "number" }, "the stack retains the decision below its child")
+
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  for _, size in ipairs({
+    { width = 256, height = 192 },
+    { width = 640, height = 480 },
+    { width = 360, height = 640 },
+  }) do
+    local label = size.width .. "x" .. size.height
+    local view = bagState:_snapshot()
+    local computeCalls = 0
+    local originalCompute = Layout.compute
+    Layout.compute = function(nestedView, width, height, nestedMetrics)
+      computeCalls = computeCalls + 1
+      return originalCompute(nestedView, width, height, nestedMetrics)
+    end
+    local ok, layout = pcall(Layout.compute, view, size.width, size.height, metrics)
+    Layout.compute = originalCompute
+    if not ok then
+      error(layout, 0)
+    end
+    Assert.equal(#layout.renderLayers, 3, label .. " paints page, item decision, and quantity child")
+    local page, decision, number = layout.renderLayers[1], layout.renderLayers[2], layout.renderLayers[3]
+    Assert.equal(page.kind, "page", label .. " keeps the page at the bottom")
+    Assert.equal(decision.kind, "bag-item", label .. " keeps the item decision in the middle")
+    Assert.equal(number.kind, "number", label .. " keeps the quantity child on top")
+    Assert.isTrue(number.top, label .. " marks only the child top")
+    Assert.equal(layout.inputLayerId, number.id, label .. " sends input to the top overlay only")
+    local bagCards = assert(page.layout.bagGrid, label .. " keeps the page grid painted under the overlays")
+    Assert.equal(#bagCards, 1, label .. " keeps the single page row painted under the overlays")
+    Assert.equal(bagCards[1].targetId, "bag:item:POTION", label .. " keeps the page row identity")
+    Assert.equal(bagCards[1].label, "Potion", label .. " keeps the page row caption")
+    local decisionRows = assert(decision.layout.decisionList, label .. " keeps the decision actions").rows
+    Assert.isTrue(#decisionRows >= 2, label .. " keeps the decision actions and Back")
+    Assert.notNil(number.layout.targets.confirm, label .. " keeps the child submission target")
+    for _, control in ipairs(layout.focusNavigation.controls) do
+      Assert.isFalse(
+        control.id == "bag:quantity" or control.id == "bag:remove",
+        label .. " keeps the suspended decision action out of input: " .. control.id
+      )
+    end
+    for _, row in ipairs(decisionRows) do
+      if row.targetId ~= "cancel" then
+        local centerX = row.rect.x + math.floor(row.rect.width / 2)
+        local centerY = row.rect.y + math.floor(row.rect.height / 2)
+        Assert.isFalse(
+          Layout.hitTest(layout, view, centerX, centerY) == row.targetId,
+          label .. " never resolves the suspended " .. row.targetId
+        )
+      end
+    end
+    bagState:_activateControl("bag:quantity", layout)
+    Assert.deepEqual(
+      (function()
+        local kinds = {}
+        for _, layer in ipairs(bagState.modalStack:layers()) do
+          kinds[#kinds + 1] = layer.kind
+        end
+        return kinds
+      end)(),
+      { "bag-item", "number" },
+      label .. " never activates the suspended decision through the published plan"
+    )
+    Assert.equal(
+      computeCalls,
+      1,
+      label .. " publishes the nested layers in one pass without rebuilding the page per layer"
+    )
+  end
+
+  bagState:_requestBack()
+  Assert.isNil(bagState.valueEditor, "Back removes only the quantity child")
+  Assert.equal(bagController.modal, "bag-item", "Back restores the retained item decision")
+  Assert.equal(bagController.focus, "bag:item:POTION", "Back restores the child opener focus")
+  Assert.equal(bagState.modalStack:top().kind, "bag-item", "Back pops exactly the quantity layer")
+  bagState:_requestBack()
+  Assert.isNil(bagController.modal, "the next Back removes only the item decision")
+  Assert.equal(bagController.bagItemKey, "POTION", "the selected item survives both pops")
+  Assert.equal(#bagState.modalStack:layers(), 0, "both pops retire every modal layer")
 end
 
 function T.tests.back_from_coordinate_selection_returns_to_the_root_and_releases_grid_work()
