@@ -121,6 +121,7 @@ local DOMAINS = {
     "FieldMessageCacheWriter",
     "FieldMessageCompiler",
     "FieldMessageTokenizer",
+    "UiMessageBank",
     "FieldUiCacheWriter",
     "FieldUiCompiler",
     "MartAssetCompiler",

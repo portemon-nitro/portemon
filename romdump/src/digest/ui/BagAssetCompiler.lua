@@ -37,8 +37,7 @@ local BagCache = require("libs.assets.src.BagCache")
 local BagSources = require("romdump.src.config.BagSources")
 local BagPresentationCompiler = require("romdump.src.digest.ui.BagPresentationCompiler")
 local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
-local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
-local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
+local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local charmap = require("romdump.src.reference.hgss.charmap")
 
@@ -1126,36 +1125,35 @@ local QUANTITY_SUBSTITUTION_ALIAS = FieldMessageText.STRVAR_1 + 51
 local SALE_TOTAL_SUBSTITUTION = FieldMessageText.STRVAR_1 + 55
 
 local function readMessageBank(archive, bankId, role, dependencies)
-  local bytes, err = archive:readMember(bankId)
-  if not bytes then
-    sourceError("message bank " .. bankId .. " is unreadable: " .. Errors.format(err), { role = role, bank = bankId })
-  end
-  assert(bytes ~= nil, "unreadable message banks fail above")
-  dependencies[#dependencies + 1] = { name = "messages:member:" .. bankId, role = role, sha1 = Hashing.sha1hex(bytes) }
-  local bank, bankErr = FieldMessageBank.decode(bytes, { label = "bag-message-bank-" .. bankId })
+  local bank, failure = UiMessageBank.read(archive, bankId, role, dependencies, "bag-message-bank-" .. bankId)
   if not bank then
-    assert(bankErr)
-    sourceError("message bank " .. bankId .. " does not decode: " .. bankErr.message, {
-      role = role,
-      bank = bankId,
-      cause = bankErr.code,
-    })
+    assert(failure)
+    if failure.stage == "read" then
+      sourceError("message bank " .. bankId .. " is unreadable: " .. failure.message, { role = role, bank = bankId })
+    else
+      sourceError("message bank " .. bankId .. " does not decode: " .. failure.message, {
+        role = role,
+        bank = bankId,
+        cause = failure.code,
+      })
+    end
   end
+  assert(bank ~= nil, "unreadable message banks fail above")
   return bank
 end
 
 local function messageTokens(bank, bankId, index, role)
-  local message = bank.messages[index + 1]
-  if not message then
-    sourceError(
-      "message bank " .. bankId .. " carries no message " .. index,
-      { role = role, bank = bankId, index = index }
-    )
-  end
-  local tokens, err = FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = bankId, messageId = index })
+  local tokens, failure = UiMessageBank.tokens(bank, bankId, index, charmap)
   if not tokens then
-    assert(err)
-    sourceError("bag message does not tokenize: " .. err.message, { role = role, bank = bankId, index = index })
+    assert(failure)
+    if failure.stage == "missing_message" then
+      sourceError(
+        "message bank " .. bankId .. " carries no message " .. index,
+        { role = role, bank = bankId, index = index }
+      )
+    else
+      sourceError("bag message does not tokenize: " .. failure.message, { role = role, bank = bankId, index = index })
+    end
   end
   assert(tokens ~= nil, "untokenizable bag messages fail above")
   return tokens

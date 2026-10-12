@@ -26,8 +26,7 @@ local SummarySources = require("romdump.src.config.SummarySources")
 local SummaryPictureCompiler = require("romdump.src.digest.ui.SummaryPictureCompiler")
 local MonSources = require("romdump.src.config.MonSources")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
-local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
-local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
+local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
 local charmap = require("romdump.src.reference.hgss.charmap")
 
 ---@class SummaryAssetCompiler
@@ -765,21 +764,20 @@ local function lowerMessage(tokens, bankId, index)
 end
 
 local function readMessageBank(archive, bankId, role, dependencies)
-  local bytes, err = archive:readMember(bankId)
-  if not bytes then
-    sourceError("message bank " .. bankId .. " is unreadable: " .. Errors.format(err), { role = role, bank = bankId })
-  end
-  assert(bytes ~= nil, "unreadable message banks fail above")
-  dependencies[#dependencies + 1] = { name = "messages:member:" .. bankId, role = role, sha1 = Hashing.sha1hex(bytes) }
-  local bank, bankErr = FieldMessageBank.decode(bytes, { label = "summary-message-bank-" .. bankId })
+  local bank, failure = UiMessageBank.read(archive, bankId, role, dependencies, "summary-message-bank-" .. bankId)
   if not bank then
-    assert(bankErr)
-    sourceError("message bank " .. bankId .. " does not decode: " .. bankErr.message, {
-      role = role,
-      bank = bankId,
-      cause = bankErr.code,
-    })
+    assert(failure)
+    if failure.stage == "read" then
+      sourceError("message bank " .. bankId .. " is unreadable: " .. failure.message, { role = role, bank = bankId })
+    else
+      sourceError("message bank " .. bankId .. " does not decode: " .. failure.message, {
+        role = role,
+        bank = bankId,
+        cause = failure.code,
+      })
+    end
   end
+  assert(bank ~= nil, "unreadable message banks fail above")
   return bank
 end
 
@@ -787,11 +785,13 @@ local function tokenizeBank(bank, bankId, role)
   ---@type table[][] one token stream per bank message
   local tokens = {}
   for index = 0, #bank.messages - 1 do
-    local message = bank.messages[index + 1]
-    local stream, err = FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = bankId, messageId = index })
+    local stream, failure = UiMessageBank.tokens(bank, bankId, index, charmap)
     if not stream then
-      assert(err)
-      sourceError("summary message does not tokenize: " .. err.message, { role = role, bank = bankId, index = index })
+      assert(failure)
+      sourceError(
+        "summary message does not tokenize: " .. failure.message,
+        { role = role, bank = bankId, index = index }
+      )
     end
     assert(stream ~= nil, "untokenizable summary messages fail above")
     tokens[index + 1] = stream

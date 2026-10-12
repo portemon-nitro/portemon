@@ -388,6 +388,9 @@ local function fixture(opts)
       orderedMembers[bankId + 1] = FieldMessageBank.encodeForTests({ { EOS_UNIT } }, 7)
     end
   end
+  if opts.messageMemberTamper then
+    opts.messageMemberTamper(orderedMembers)
+  end
   local messageBytes = narc(orderedMembers)
   local bytes = narc(members)
   local moveBytes = narc(moveMembers)
@@ -512,10 +515,7 @@ function T.selection_entry_blink_frames_with_empty_cells_compile_as_transparent_
     BagAssetCompiler.ERROR.SOURCE_INVALID,
     "empty blink cells must clear sprite realization and fail only at the hero stage"
   )
-  Assert.isNil(
-    tostring(typed.message):find("no objects"),
-    "the failure must not come from empty-cell rasterization"
-  )
+  Assert.isNil(tostring(typed.message):find("no objects"), "the failure must not come from empty-cell rasterization")
 end
 
 -- The pocket-dependent lower palette comes from the second decoded palette
@@ -1675,6 +1675,166 @@ function T.selected_pocket_strips_replay_the_full_base_range_with_override()
       Assert.equal(b, expected.b, pocket .. " tab " .. destBank .. " replays its source bank blue")
     end
   end
+end
+
+-- The bag, party and summary producers share one message-bank
+-- read/digest/decode path: the shared helper records the exact member
+-- dependency before decoding and tokenizes through the same decoders,
+-- while each producer keeps its own error namespace. The tests below pin
+-- the shared plumbing against the direct decoders and pin each
+-- producer-facing failure to its own protocol code.
+local function requireMessageBankHelper()
+  local ok, helper = pcall(require, "romdump.src.digest.ui.UiMessageBank")
+  Assert.isTrue(ok, "the shared message-bank helper must exist: producer read/digest/decode has no shared owner")
+  Assert.equal(type(helper.read), "function", "the shared helper exposes its bank read")
+  Assert.equal(type(helper.tokens), "function", "the shared helper exposes its per-message tokenization")
+  return helper
+end
+
+local function messageMembersFor(banks)
+  local maxBank = 0
+  for bankId in pairs(banks) do
+    if bankId > maxBank then
+      maxBank = bankId
+    end
+  end
+  local orderedMembers = {}
+  for bankId = 0, maxBank do
+    if banks[bankId] then
+      orderedMembers[bankId + 1] = FieldMessageBank.encodeForTests(banks[bankId], 7)
+    else
+      orderedMembers[bankId + 1] = FieldMessageBank.encodeForTests({ { EOS_UNIT } }, 7)
+    end
+  end
+  return orderedMembers
+end
+
+local function messageArchiveFor(banks)
+  local Narc = require("libs.nds.src.nitro.Narc")
+  return assert(Narc.open(narc(messageMembersFor(banks)), "messages"))
+end
+
+-- A successful read records the exact member dependency (name, role and
+-- raw-byte digest) before decoding, and decodes what the direct decoder
+-- decodes.
+function T.shared_read_records_the_member_dependency_before_decode()
+  local helper = requireMessageBankHelper()
+  local Hashing = require("romdump.src.digest.Hashing")
+  local archive = messageArchiveFor(syntheticMessageBanks())
+  local raw = assert(archive:readMember(10), "synthetic bank 10 must exist")
+  local dependencies = {}
+  local bank = helper.read(archive, 10, "message-bank-10", dependencies, "bag-message-bank-10")
+  local read = assert(bank, "a complete synthetic bank must read")
+  Assert.equal(read.messageCount, 102, "the synthetic bank keeps its message census")
+  Assert.deepEqual(dependencies, {
+    { name = "messages:member:10", role = "message-bank-10", sha1 = Hashing.sha1hex(raw) },
+  }, "the read records the exact member identity, role and raw-byte digest")
+  local direct = assert(FieldMessageBank.decode(raw, { label = "bag-message-bank-10" }))
+  Assert.deepEqual(read.messages[1].raw, direct.messages[1].raw, "the shared read decodes the selected message bytes")
+end
+
+-- Per-message tokenization matches the direct tokenizer stream.
+function T.shared_tokens_match_the_direct_tokenizer()
+  local helper = requireMessageBankHelper()
+  local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
+  local archive = messageArchiveFor(syntheticMessageBanks())
+  local bank = helper.read(archive, 10, "message-bank-10", {}, "bag-message-bank-10")
+  assert(bank, "a complete synthetic bank must read")
+  local stream = helper.tokens(bank, 10, 0, charmap)
+  assert(stream, "a present message must tokenize")
+  local direct = assert(
+    FieldMessageTokenizer.tokenize(bank.messages[1].raw, charmap, { bankId = 10, messageId = 0 }),
+    "the direct tokenizer must accept the fixture message"
+  )
+  Assert.deepEqual(stream, direct, "the shared tokenization matches the direct token stream")
+end
+
+-- Read and tokenize failures return small tagged descriptors instead of
+-- raising: a missing member, a corrupt member, a missing selected
+-- message and an invalid control each report their own stage with the
+-- source bank and role. The corrupt member still records its digest,
+-- since the digest is taken before decode.
+function T.shared_failures_return_descriptors_without_raising()
+  local helper = requireMessageBankHelper()
+  local Hashing = require("romdump.src.digest.Hashing")
+  local sparse = messageArchiveFor({ [0] = { { EOS_UNIT } } })
+  local missingDependencies = {}
+  local readOk, missingBank, missingFailure =
+    pcall(helper.read, sparse, 10, "message-bank-10", missingDependencies, "bag-message-bank-10")
+  Assert.isTrue(readOk, "a missing member must not raise")
+  Assert.isNil(missingBank, "a missing member must not decode")
+  local missing = assert(missingFailure, "a missing member must describe its failure")
+  Assert.equal(missing.stage, "read", "a missing member reports the read stage")
+  Assert.equal(missing.bank, 10, "a missing member reports its bank")
+  Assert.equal(missing.role, "message-bank-10", "a missing member reports its role")
+  Assert.deepEqual(missingDependencies, {}, "a missing member records no digest")
+  local ordered = messageMembersFor(syntheticMessageBanks())
+  ordered[11] = "xx"
+  local Narc = require("libs.nds.src.nitro.Narc")
+  local corruptArchive = assert(Narc.open(narc(ordered), "messages"))
+  local corruptDependencies = {}
+  local decodeOk, corruptBank, corruptFailure =
+    pcall(helper.read, corruptArchive, 10, "message-bank-10", corruptDependencies, "bag-message-bank-10")
+  Assert.isTrue(decodeOk, "a corrupt member must not raise")
+  Assert.isNil(corruptBank, "a corrupt member must not decode")
+  local corrupt = assert(corruptFailure, "a corrupt member must describe its failure")
+  Assert.equal(corrupt.stage, "decode", "a corrupt member reports the decode stage")
+  Assert.equal(#corruptDependencies, 1, "the member digest is recorded before decode")
+  Assert.equal(corruptDependencies[1].name, "messages:member:10", "the pre-decode digest names the member")
+  Assert.equal(corruptDependencies[1].sha1, Hashing.sha1hex("xx"), "the pre-decode digest covers the raw member bytes")
+  local archive = messageArchiveFor(syntheticMessageBanks())
+  local bank = helper.read(archive, 10, "message-bank-10", {}, "bag-message-bank-10")
+  assert(bank, "a complete synthetic bank must read")
+  local tokenOk, missingStream, missingMessageFailure = pcall(helper.tokens, bank, 10, 9999, charmap)
+  Assert.isTrue(tokenOk, "a missing selected message must not raise")
+  Assert.isNil(missingStream, "a missing selected message must not tokenize")
+  local missingMessage = assert(missingMessageFailure, "a missing selected message must describe its failure")
+  Assert.equal(missingMessage.stage, "missing_message", "a missing selected message reports its stage")
+  local broken = syntheticMessageBanks()
+  broken[10][1] = messageUnits({ "TR", { 0xFFFE, 0x0200 }, "ASH" })
+  local brokenBank = helper.read(messageArchiveFor(broken), 10, "message-bank-10", {}, "bag-message-bank-10")
+  assert(brokenBank, "a bank with a control break still decodes")
+  local controlOk, brokenStream, controlFailure = pcall(helper.tokens, brokenBank, 10, 0, charmap)
+  Assert.isTrue(controlOk, "an invalid control must not raise")
+  Assert.isNil(brokenStream, "an invalid control must not tokenize")
+  local control = assert(controlFailure, "an invalid control must describe its failure")
+  Assert.equal(control.stage, "tokenize", "an invalid control reports the tokenize stage")
+end
+
+-- A bank without the selected message keeps the producer's own protocol
+-- code and names the missing message rather than a later stage.
+function T.missing_selected_message_keeps_the_feature_error_code()
+  local romFs = fixture({
+    messageTamper = function(banks)
+      banks[10] = {}
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "a bank without the selected message must not compile")
+  local typed = assert(err, "a missing selected message must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("carries no message", 1, true),
+    "the failure must name the missing message, got: " .. tostring(typed.message)
+  )
+end
+
+-- A corrupt message member keeps the producer's own protocol code and
+-- names the decode stage rather than a later stage.
+function T.corrupt_message_member_keeps_the_feature_error_code()
+  local romFs = fixture({
+    messageMemberTamper = function(orderedMembers)
+      orderedMembers[11] = "xx"
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "a corrupt message member must not compile")
+  local typed = assert(err, "a corrupt message member must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("does not decode", 1, true),
+    "the failure must name the decode stage, got: " .. tostring(typed.message)
+  )
 end
 
 return { tests = T }
