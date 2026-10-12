@@ -1353,6 +1353,58 @@ local function playerOccupies(runtimeMap, candidate, facts)
   return false
 end
 
+-- Snapshots the actor's committed anchor as a plain endpoint table. The
+-- snapshot is immediate: callers must not retain it across actor
+-- creation/removal, only feed it into the current resolution/transaction.
+---@param actor FieldActorManager.Actor
+---@return table<string, unknown>
+local function committedEndpoint(actor)
+  local state = actor:numericState()
+  local hasWorld = state.hasWorldPosition == 1
+  return {
+    fieldX = state.fieldX,
+    fieldZ = state.fieldZ,
+    worldX = hasWorld and state.worldX or nil,
+    worldY = hasWorld and state.worldY or nil,
+    worldZ = hasWorld and state.worldZ or nil,
+    surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
+    cellKey = actor.cellKey,
+    sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil,
+    resident = state.resident == 1,
+  }
+end
+
+-- Shared pure terrain sampling for direct placement and scripted
+-- destinations: field-to-local conversion, surface resolution, world
+-- projection, and plate source identity. Callers build their own resolve
+-- options (currentY/currentSurfaceId stay caller-specific) and keep their
+-- own residency, occupancy, and error-message policy.
+---@param entry FieldActorManager.Entry
+---@param mapCoords { fieldX: integer, fieldZ: integer }
+---@param resolveOpts { currentY: number?, currentSurfaceId: integer? }
+---@return FieldActorSurfaceSample sample
+---@return { x: number, y: number, z: number } world
+---@return table<string, unknown>? plate
+---@return string? plateCellKey
+---@return integer? plateSourceSurfaceId
+local function destinationSample(entry, mapCoords, resolveOpts)
+  local runtimeMap = entry.runtimeMap
+  local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, mapCoords.fieldX, mapCoords.fieldZ)
+  local sample = SurfaceResolver.new(runtimeMap.terrain):resolve({
+    localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,
+    localZ = localZ + FieldCoordinates.TILE_CENTER_OFFSET,
+    currentY = resolveOpts.currentY,
+    currentSurfaceId = resolveOpts.currentSurfaceId,
+  })
+  local world = FieldCoordinates.fieldToWorld(runtimeMap, mapCoords.fieldX, mapCoords.fieldZ, sample.worldY)
+  local plate = runtimeMap.terrain:plate(sample.surfaceId)
+  local plateCellKey, plateSourceSurfaceId
+  if plate then
+    plateCellKey, plateSourceSurfaceId = sourceIdentityFromPlate(plate)
+  end
+  return sample, world, plate, plateCellKey, plateSourceSurfaceId
+end
+
 ---@param self FieldActorManager
 ---@param entry FieldActorManager.Entry
 ---@param actor FieldActorManager.Actor
@@ -1413,18 +1465,7 @@ function FieldActorManager:_beginAutonomousAction(entry, actor, direction, conte
   if destination == nil and not holdWhenBlocked then
     return false
   end
-  local state = actor:numericState()
-  local start = {
-    fieldX = state.fieldX,
-    fieldZ = state.fieldZ,
-    worldX = state.hasWorldPosition == 1 and state.worldX or nil,
-    worldY = state.hasWorldPosition == 1 and state.worldY or nil,
-    worldZ = state.hasWorldPosition == 1 and state.worldZ or nil,
-    surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
-    cellKey = actor.cellKey,
-    sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil,
-    resident = state.resident == 1,
-  }
+  local start = committedEndpoint(actor)
   local destinationCandidate
   local reservationKey
   local runtimeAction = "walk"
@@ -2313,24 +2354,21 @@ function FieldActorManager:setPosition(actorId, position, options)
   local resident = isResident(entry.runtimeMap, position.fieldX, position.fieldZ)
   local cellKey = cellKeyFor(position.fieldX, position.fieldZ)
   local sample
-  local plate
   local plateCellKey
   local world
   local sourceSurfaceId = resident and actorSourceSurfaceId or nil
   if resident then
-    local localX, localZ = FieldCoordinates.fieldToLocal(entry.runtimeMap, position.fieldX, position.fieldZ)
-    local surfaceOpts = {
-      localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,
-      localZ = localZ + FieldCoordinates.TILE_CENTER_OFFSET,
+    local resolved, resolvedWorld, plate, sampledCellKey, plateSourceSurfaceId = destinationSample(entry, {
+      fieldX = position.fieldX,
+      fieldZ = position.fieldZ,
+    }, {
       currentY = position.worldY or actorWorldY,
-    } ---@type FieldActorSurfaceOptions
-    if position.worldY == nil then
-      surfaceOpts.currentSurfaceId = actorSurfaceId
-    end
-    sample = SurfaceResolver.new(entry.runtimeMap.terrain):resolve(surfaceOpts)
-    world = FieldCoordinates.fieldToWorld(entry.runtimeMap, position.fieldX, position.fieldZ, sample.worldY)
-    plate = assert(entry.runtimeMap.terrain:plate(sample.surfaceId), "actor destination surface is missing")
-    plateCellKey, sourceSurfaceId = sourceIdentityFromPlate(plate)
+      currentSurfaceId = position.worldY == nil and actorSurfaceId or nil,
+    })
+    assert(plate ~= nil, "actor destination surface is missing")
+    sample = resolved
+    world = resolvedWorld
+    plateCellKey, sourceSurfaceId = sampledCellKey, plateSourceSurfaceId
   end
 
   local newCandidate = sample
@@ -2520,26 +2558,6 @@ end
 
 -- Resolve destination for a scripted action without mutating actor or
 -- occupancy. Returns start/dest world anchors.
--- Snapshots the actor's committed anchor as a plain endpoint table. The
--- snapshot is immediate: callers must not retain it across actor
--- creation/removal, only feed it into the current resolution/transaction.
----@param actor FieldActorManager.Actor
----@return table<string, unknown>
-local function committedEndpoint(actor)
-  local state = actor:numericState()
-  local hasWorld = state.hasWorldPosition == 1
-  return {
-    fieldX = state.fieldX,
-    fieldZ = state.fieldZ,
-    worldX = hasWorld and state.worldX or nil,
-    worldY = hasWorld and state.worldY or nil,
-    worldZ = hasWorld and state.worldZ or nil,
-    surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
-    cellKey = actor.cellKey,
-    sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil,
-    resident = state.resident == 1,
-  }
-end
 
 ---@param actor FieldActorManager.Actor
 ---@param direction FieldDirection?
@@ -2588,18 +2606,17 @@ function FieldActorManager:_resolveScriptedDestination(actor, direction, distanc
     destFieldX = startFieldX + delta.fieldX * step
     destFieldZ = startFieldZ + delta.fieldZ * step
     -- Resolve surface at destination center.
-    local localX, localZ = FieldCoordinates.fieldToLocal(entry.runtimeMap, destFieldX, destFieldZ)
-    local sample = SurfaceResolver.new(entry.runtimeMap.terrain):resolve({
-      localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,
-      localZ = localZ + FieldCoordinates.TILE_CENTER_OFFSET,
+    local sample, world, plate, plateCellKey, plateSourceSurfaceId = destinationSample(entry, {
+      fieldX = destFieldX,
+      fieldZ = destFieldZ,
+    }, {
       currentY = startWorldY,
       currentSurfaceId = start.surfaceId,
     })
-    local world = FieldCoordinates.fieldToWorld(entry.runtimeMap, destFieldX, destFieldZ, sample.worldY)
+    assert(plate ~= nil, "scripted destination surface is missing")
     destWorldX, destWorldY, destWorldZ = world.x, world.y, world.z
     destSurfaceId = sample.surfaceId
-    local plate = assert(entry.runtimeMap.terrain:plate(sample.surfaceId), "scripted destination surface is missing")
-    destCellKey, destSourceSurfaceId = sourceIdentityFromPlate(plate)
+    destCellKey, destSourceSurfaceId = plateCellKey, plateSourceSurfaceId
     destCellKey = destCellKey or cellKeyFor(destFieldX, destFieldZ)
     destResident = isResident(entry.runtimeMap, destFieldX, destFieldZ)
   elseif direction ~= nil and distance == "zero" then
@@ -2645,15 +2662,13 @@ function FieldActorManager:_resolveTrajectoryDestination(actor, deltaX, deltaZ, 
   local destFieldZ = startFieldZ + deltaZ
   local destResident = isResident(entry.runtimeMap, destFieldX, destFieldZ)
   local hintWorldY = (startWorldY or 0) + surfaceBandDelta * 0.5
-  local localX, localZ = FieldCoordinates.fieldToLocal(entry.runtimeMap, destFieldX, destFieldZ)
-  local sample = SurfaceResolver.new(entry.runtimeMap.terrain):resolve({
-    localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,
-    localZ = localZ + FieldCoordinates.TILE_CENTER_OFFSET,
-    currentY = hintWorldY,
-  })
-  local world = FieldCoordinates.fieldToWorld(entry.runtimeMap, destFieldX, destFieldZ, sample.worldY)
-  local plate = assert(entry.runtimeMap.terrain:plate(sample.surfaceId), "trajectory destination surface is missing")
-  local destCellKey, destSourceSurfaceId = sourceIdentityFromPlate(plate)
+  local sample, world, plate, plateCellKey, plateSourceSurfaceId = destinationSample(
+    entry,
+    { fieldX = destFieldX, fieldZ = destFieldZ },
+    { currentY = hintWorldY }
+  )
+  assert(plate ~= nil, "trajectory destination surface is missing")
+  local destCellKey, destSourceSurfaceId = plateCellKey, plateSourceSurfaceId
   destCellKey = destCellKey or cellKeyFor(destFieldX, destFieldZ)
   return {
     start = start,
@@ -2728,7 +2743,6 @@ function FieldActorManager:beginScriptedAction(actorId, action)
     or kind == "gesture"
     or kind == "reveal_trainer"
     or kind == "trajectory_segment"
-    or kind == "presentation_offset"
   then
     durationTicks = MovementCalibration.actionTicks(action)
   else

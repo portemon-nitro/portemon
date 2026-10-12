@@ -3507,4 +3507,90 @@ function T.recorded_removal_survives_capture_and_reentry_until_reset()
   rebuilt:dispose()
 end
 
+-- A scripted jump, a trajectory segment and a direct placement from the same
+-- committed state sample the same destination terrain: field and world
+-- centers, surface identity and residency must agree across movement paths.
+function T.scripted_jump_and_direct_placement_agree_on_stacked_destination_anchors()
+  local function onUpperPlate()
+    local mgr = manager({ object({ objectEventId = 0, x = 9, z = 3 }) })
+    mgr:setPosition("map:61:object:0", { fieldX = 9, fieldZ = 3, worldY = 4 })
+    local actor = assert(mgr:getById("map:61:object:0"))
+    Assert.equal(actor:getSurfaceId(), 1, "the actor starts on the stacked plate")
+    return mgr, actor
+  end
+
+  local jumpMgr = onUpperPlate()
+  jumpMgr:beginScriptedAction(
+    "map:61:object:0",
+    { action = "jump", direction = "west", distance = "near", speed = "fast" }
+  )
+  local jump = assert(assert(jumpMgr:getById("map:61:object:0")):scriptedMotionState(), "the jump must be active")
+  Assert.equal(
+    jump.durationTicks,
+    MovementCalibration.actionTicks({ action = "jump", direction = "west", distance = "near", speed = "fast" }),
+    "jump motion keeps its calibrated timing"
+  )
+
+  local trajectoryMgr = onUpperPlate()
+  trajectoryMgr:beginScriptedAction("map:61:object:0", {
+    action = "trajectory_segment",
+    deltaX = -1,
+    deltaZ = 0,
+    surfaceBandDelta = 0,
+    ticks = 8,
+  })
+  local trajectory = assert(
+    assert(trajectoryMgr:getById("map:61:object:0")):scriptedMotionState(),
+    "the trajectory segment must be active"
+  )
+
+  local placeMgr, placed = onUpperPlate()
+  placeMgr:setPosition("map:61:object:0", { fieldX = 8, fieldZ = 3 })
+  local placedWorld = placed:getWorldPosition()
+
+  for _, motion in ipairs({ jump, trajectory }) do
+    Assert.equal(motion.destFieldX, 8, "all paths land on the same field tile")
+    Assert.equal(motion.destFieldZ, 3, "all paths land on the same field tile")
+    Assert.equal(motion.destWorldX, placedWorld.x, "all paths share the world center")
+    Assert.equal(motion.destWorldY, placedWorld.y, "all paths share the world center")
+    Assert.equal(motion.destWorldZ, placedWorld.z, "all paths share the world center")
+    Assert.equal(motion.destSurfaceId, placed:getSurfaceId(), "all paths agree on the plate")
+    Assert.equal(motion.destCellKey, placed.cellKey, "all paths agree on the cell identity")
+    Assert.equal(motion.destSourceSurfaceId, placed:getSourceSurfaceId(), "all paths agree on the source surface")
+    Assert.equal(motion.destResident, placed:isResident(), "all paths agree on residency")
+  end
+  Assert.isTrue(placed:isResident(), "the shared destination is resident")
+  jumpMgr:dispose()
+  trajectoryMgr:dispose()
+  placeMgr:dispose()
+end
+
+-- A scripted trajectory that cannot resolve terrain fails atomically: the
+-- actor keeps its numeric state and occupancy cell, no reservation leaks,
+-- and the explicit scripted overlap path still works afterwards.
+function T.failed_scripted_trajectory_leaves_no_partial_occupancy()
+  local mgr = manager({
+    object({ objectEventId = 0, x = 2, z = 3 }),
+    object({ objectEventId = 1, x = 8, z = 3, spriteId = 34 }),
+  })
+  local actor = assert(mgr:getById("map:61:object:0"))
+  throwsCode("FIELD_COORDINATES_OUT_OF_COVERAGE", function()
+    mgr:beginScriptedAction(actor.actorId, {
+      action = "trajectory_segment",
+      deltaX = 100,
+      deltaZ = 0,
+      surfaceBandDelta = 0,
+      ticks = 8,
+    })
+  end)
+  Assert.equal(actor:getFieldPosition().fieldX, 2, "the actor keeps its old position")
+  Assert.equal(actor:getFieldPosition().fieldZ, 3, "the actor keeps its old position")
+  Assert.isNil(actor:currentAction(), "no action started from the failed resolution")
+  Assert.equal(assert(getAt(mgr, 61, 2, 3, 0), "the actor kept its old cell").actorId, actor.actorId)
+  Assert.isTrue(mgr:isPausable(actor.actorId), "no reservation leaked from the failed resolution")
+  mgr:setPosition(actor.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
+  Assert.equal(actor:getFieldPosition().fieldX, 8, "the scripted overlap path still works afterwards")
+  mgr:dispose()
+end
+
 return { tests = T }
