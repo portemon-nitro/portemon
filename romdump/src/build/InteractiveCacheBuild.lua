@@ -23,6 +23,7 @@ local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local LogicalFieldPlan = require("romdump.src.build.LogicalFieldPlan")
+local InteractiveCacheCompletion = require("romdump.src.build.InteractiveCacheCompletion")
 
 ---@class InteractiveCacheBuild.EnrollCursor
 ---@field pending { milestone: string|nil, kind: string, key: string, urgency: string|nil }[]
@@ -108,15 +109,7 @@ local LogicalFieldPlan = require("romdump.src.build.LogicalFieldPlan")
 ---@field scopes table<string, InteractiveCacheBuild.Scope> cached per-scope terminal accounting
 ---@field roster table<string, { kind: string, key: string }[]> retained milestone membership per requested scope
 ---@field rosterFailure table<string, string> retained roster construction failures per scope
----@field completeUrgency string|nil retained explicit complete-build intent
----@field completeNext (fun(): { kind: string, key: string }|nil)|nil canonical complete enumerator once adopted
----@field completeExhausted boolean canonical complete enumeration reached its end
----@field completeScope InteractiveCacheBuild.Scope cached complete-build terminal accounting
----@field sweepAuthorized boolean background corpus completion authorized through the lifecycle seam
----@field sweepNext (fun(): { kind: string, key: string }|nil)|nil retained canonical corpus enumerator
----@field sweepCandidate string|nil current sweep-origin candidate awaiting settlement
----@field sweepExhausted boolean canonical corpus enumeration reached its end
----@field sweepFailure string|nil first background candidate failure when present
+---@field completion InteractiveCacheCompletion|nil complete and sweep owner, cleared on retirement
 ---@field foregroundPendingCount integer retained nonterminal required/near interest count
 ---@field clock fun(): number monotonic seconds source for background admission
 ---@field lastForegroundActivity number monotonic time of the latest required/near request, promotion, or settlement
@@ -194,12 +187,6 @@ local UPDATE_TIME_SLICE_SECONDS = 0.002
 -- candidates; explicit demand dispatches without consulting it and
 -- running jobs are never preempted. It guards against starting heavy
 -- work on the heels of a transition, not a performance target.
-local SWEEP_SETTLE_SECONDS = 1.0
--- Binary64 seconds cannot represent most decimal boundaries exactly
--- (1.9 - 0.9 reads 0.9999999999999999), so the quiet comparison
--- tolerates a nanosecond-scale epsilon far below any clock resolution.
-local SWEEP_SETTLE_EPSILON = 1e-9
-
 local function isInteger(value)
   return type(value) == "number" and value % 1 == 0
 end
@@ -330,15 +317,6 @@ function InteractiveCacheBuild.new(options)
     scopes = {},
     roster = {},
     rosterFailure = {},
-    completeUrgency = nil,
-    completeNext = nil,
-    completeExhausted = false,
-    completeScope = { remaining = 0, failed = 0, seen = {}, failure = nil },
-    sweepAuthorized = false,
-    sweepNext = nil,
-    sweepCandidate = nil,
-    sweepExhausted = false,
-    sweepFailure = nil,
     foregroundPendingCount = 0,
     clock = clock,
     lastForegroundActivity = clock(),
@@ -346,6 +324,7 @@ function InteractiveCacheBuild.new(options)
     followerMemo = nil,
     followerChecked = false,
   }, InteractiveCacheBuild)
+  session.completion = InteractiveCacheCompletion.new(session)
   return session
 end
 
@@ -903,17 +882,7 @@ function InteractiveCacheBuild:_noteTerminal(entry)
       end
     end
   end
-  local complete = self.completeScope
-  if complete.seen[entry.jobKey] == "pending" then
-    complete.seen[entry.jobKey] = "settled"
-    complete.remaining = complete.remaining - 1
-    if entry.failure ~= nil then
-      complete.failed = complete.failed + 1
-      if complete.failure == nil then
-        complete.failure = entry.failure
-      end
-    end
-  end
+  assert(self.completion, "completion owner remains live until retirement"):noteTerminal(entry)
 end
 
 ---@param entry InteractiveCacheBuild.Interest
@@ -1624,10 +1593,11 @@ function InteractiveCacheBuild:_needsSourceDemand()
   -- kind table here. Bootstrap answers from the field font alone and
   -- never pulls the inventory; the intro closure and the two bounded
   -- field milestones need source knowledge.
-  if self.completeUrgency ~= nil then
+  local completion = assert(self.completion, "completion owner remains live until retirement")
+  if completion:completeRequested() then
     return true
   end
-  if self.sweepAuthorized then
+  if completion:sweepIsAuthorized() then
     return true
   end
   -- Trusted restart attestations prove their scope without the worker
@@ -1646,10 +1616,11 @@ end
 
 ---@return boolean some retained demand can use mon page membership
 function InteractiveCacheBuild:_needsPageDemand()
-  if self.completeUrgency ~= nil then
+  local completion = assert(self.completion, "completion owner remains live until retirement")
+  if completion:completeRequested() then
     return true
   end
-  if self.sweepAuthorized then
+  if completion:sweepIsAuthorized() then
     return true
   end
   for _, entry in ipairs(self.interest) do
@@ -1807,181 +1778,13 @@ end
 ---@return boolean
 ---@return string|nil
 function InteractiveCacheBuild:requestComplete(urgency)
-  -- Explicit batch complete intent: the complete corpus enrolls through
-  -- the same registration logic as any other demand once the adopted
-  -- inventory can enumerate it. Registration only records the intent;
-  -- enrollment advances under the update budget. Idempotent.
-  assert(not self.retired, "generation session is retired")
-  ArtifactJobs.priorityFor(urgency)
-  if
-    self.completeUrgency == nil or ArtifactJobs.priorityFor(urgency) < ArtifactJobs.priorityFor(self.completeUrgency)
-  then
-    self.completeUrgency = urgency
-  end
-  return self:_completeAnswer()
+  return assert(self.completion, "generation session is retired"):requestComplete(urgency)
 end
 
----@return boolean ready
----@return string|nil failure
-function InteractiveCacheBuild:_completeAnswer()
-  -- Retained observation only: an unrequested complete build is pending
-  -- knowledge, never a vacuous success. No enumeration, IO or validation.
-  if self.completeUrgency == nil then
-    return false, nil
-  end
-  if self.completeScope.failure ~= nil then
-    return false, self.completeScope.failure
-  end
-  if not self.completeExhausted or self.completeScope.remaining > 0 then
-    return false, nil
-  end
-  return true, nil
-end
-
--- Explicit complete enrollment advances a small chunk per update through
--- the canonical producer enumerator, so entry work in the ticket queues
--- keeps progressing alongside it. Creating and advancing the enumerator
--- never builds, sorts, or copies the corpus: one logical job per
--- enumerator call enrolls under the budget with no worker payloads
--- allocated for the entire corpus at once.
 -- Owner-only lifecycle authorization for opportunistic background corpus
--- completion. The call itself is O(1): it records the authorization and
--- performs no enumeration, validation, filesystem IO, or submission.
--- Advancement happens in update through the same canonical registration
--- path as explicit demand. Idempotent. Never exposed through gameHost.
+-- completion. Never exposed through gameHost.
 function InteractiveCacheBuild:enableSweep()
-  assert(not self.retired, "generation session is retired")
-  self.sweepAuthorized = true
-  -- Authorization itself starts the quiet window: even an otherwise
-  -- idle session waits one continuous second before its first
-  -- background candidate instead of dispatching in the same tick.
-  self.lastForegroundActivity = self.clock()
-end
-
----@return boolean a fresh sweep-origin candidate must wait out foreground quiet
-function InteractiveCacheBuild:_sweepQuietPending()
-  return self.clock() - self.lastForegroundActivity < SWEEP_SETTLE_SECONDS - SWEEP_SETTLE_EPSILON
-end
-
----@param budget InteractiveCacheBuild.Budget|nil
-function InteractiveCacheBuild:_expandComplete(budget)
-  if self.completeUrgency == nil or self.completeExhausted then
-    return
-  end
-  -- The complete corpus is unknowable before source and page adoption:
-  -- enumeration waits for adopted membership instead of asserting on
-  -- discovery-time knowledge.
-  if not self.sourceLoaded or not self.pagesKnown then
-    return
-  end
-  if self.completeNext == nil then
-    if not self:_spendNode(budget) then
-      return
-    end
-    self.completeNext =
-      ArtifactJobs.completeIterator(assert(self.adopted, "complete enumeration needs its adopted inventory"))
-  end
-  local enrolled = 0
-  while enrolled < 8 do
-    local job = assert(self.completeNext, "complete enumeration owns its canonical enumerator")()
-    if job == nil then
-      self.completeExhausted = true
-      self.completeNext = nil
-      return
-    end
-    if not self:_spendNode(budget) then
-      return
-    end
-    enrolled = enrolled + 1
-    local entry = self:_register(job.kind, job.key, assert(self.completeUrgency, "complete intent owns its urgency"))
-    self:_accountCompleteMember(entry)
-  end
-end
-
----@param budget InteractiveCacheBuild.Budget|nil
-function InteractiveCacheBuild:_advanceSweep(budget)
-  -- Opportunistic background completion through the canonical graph: at
-  -- most one sweep-origin corpus candidate advances at a time, only
-  -- while no required or near work is outstanding, and never by
-  -- materializing the whole corpus. Ready and failed records settle
-  -- through the same registration path as explicit demand; a failed
-  -- candidate keeps its attributed failure without failing unrelated
-  -- scopes and the cursor moves on without retrying it.
-  if self.retired or not self.sweepAuthorized or self.sweepExhausted then
-    return
-  end
-  if self.foregroundPendingCount > 0 then
-    return
-  end
-  local candidate = self.sweepCandidate ~= nil and self.byKey[self.sweepCandidate] or nil
-  if candidate ~= nil then
-    if candidate.failure ~= nil then
-      if self.sweepFailure == nil then
-        self.sweepFailure = candidate.failure
-      end
-      self.sweepCandidate = nil
-    elseif candidate.ready then
-      self.sweepCandidate = nil
-    else
-      return
-    end
-  end
-  if not self.sourceLoaded or not self.pagesKnown then
-    return
-  end
-  -- Only fresh enrollment waits: settling an already-running candidate
-  -- above stays bookkeeping, and required/near promotion still reuses
-  -- the same ticket identity while the window runs.
-  if self:_sweepQuietPending() then
-    return
-  end
-  if self.sweepNext == nil then
-    if not self:_spendNode(budget) then
-      return
-    end
-    self.sweepNext =
-      ArtifactJobs.completeIterator(assert(self.adopted, "background enumeration needs its adopted inventory"))
-  end
-  while true do
-    if not self:_spendNode(budget) then
-      return
-    end
-    local job = assert(self.sweepNext, "background enumeration owns its canonical iterator")()
-    if job == nil then
-      self.sweepExhausted = true
-      self.sweepNext = nil
-      return
-    end
-    local entry = self:_register(job.kind, job.key, "sweep")
-    if entry.failure ~= nil then
-      if self.sweepFailure == nil then
-        self.sweepFailure = entry.failure
-      end
-    elseif not entry.ready then
-      self.sweepCandidate = entry.jobKey
-      return
-    end
-  end
-end
-
----@param entry InteractiveCacheBuild.Interest
-function InteractiveCacheBuild:_accountCompleteMember(entry)
-  local complete = self.completeScope
-  if complete.seen[entry.jobKey] ~= nil then
-    return
-  end
-  if entry.failure ~= nil then
-    complete.seen[entry.jobKey] = "settled"
-    complete.failed = complete.failed + 1
-    if complete.failure == nil then
-      complete.failure = entry.failure
-    end
-  elseif entry.ready then
-    complete.seen[entry.jobKey] = "settled"
-  else
-    complete.seen[entry.jobKey] = "pending"
-    complete.remaining = complete.remaining + 1
-  end
+  assert(self.completion, "generation session is retired"):enableSweep()
 end
 
 ---@param mapId integer
@@ -2650,18 +2453,18 @@ function InteractiveCacheBuild:_scheduleMetadataDemand()
         "source-plan",
         "global",
         self.milestones["new-game-intro"]
-          or self.completeUrgency
+          or assert(self.completion, "completion owner remains live until retirement"):requestedUrgency()
           or self.milestones["bootstrap"]
-          or (self.sweepAuthorized and "sweep")
+          or (assert(self.completion, "completion owner remains live until retirement"):sweepIsAuthorized() and "sweep")
           or "near"
       )
     end
   end
   if self.sourceLoaded and not self.pagesKnown and self:_needsPageDemand() then
     local layoutEntry = self.byKey["mon-layout:global"]
-    if layoutEntry == nil and (self.completeUrgency ~= nil or self.sweepAuthorized) then
-      layoutEntry =
-        self:_request("mon-layout", "global", self.completeUrgency or (self.sweepAuthorized and "sweep") or "near")
+    local completion = assert(self.completion, "completion owner remains live until retirement")
+    if layoutEntry == nil and completion:needsMembership() then
+      layoutEntry = self:_request("mon-layout", "global", completion:metadataUrgency("near"))
     end
     if self:_adoptPagesEligible() then
       self:_enqueueControl("adoptPages", 0, nil)
@@ -2757,11 +2560,7 @@ function InteractiveCacheBuild:_wakeForSourceAdoption()
   -- members stay registered exactly once through the accounted set. The
   -- background enumerator restarts on the same basis; authorization and
   -- any recorded background failure survive the transition.
-  self.completeNext = nil
-  self.completeExhausted = false
-  self.sweepNext = nil
-  self.sweepCandidate = nil
-  self.sweepExhausted = false
+  assert(self.completion, "completion owner remains live until retirement"):adopted()
 end
 -- Adoption replaces retained rosters synchronously: answers observed after
 -- this transition see final membership, and newly known members enroll
@@ -2834,11 +2633,7 @@ function InteractiveCacheBuild:_wakeForPagesAdoption()
       end
     end
   end
-  self.completeNext = nil
-  self.completeExhausted = false
-  self.sweepNext = nil
-  self.sweepCandidate = nil
-  self.sweepExhausted = false
+  assert(self.completion, "completion owner remains live until retirement"):adopted()
 end
 
 -- Observes already-submitted work for pool transitions through the public
@@ -2906,8 +2701,7 @@ function InteractiveCacheBuild:update()
   self:_scheduleMetadataDemand()
   self:_buildPendingRosters()
   self:_expandLogicalFields()
-  self:_expandComplete(budget)
-  self:_advanceSweep(budget)
+  assert(self.completion, "completion owner remains live until retirement"):pump(budget)
   -- New submissions precede the single pool lifecycle tick so dispatched
   -- work is observable in the same update; completions observed below are
   -- validated and adopted under the remaining same budget.
@@ -2974,7 +2768,7 @@ function InteractiveCacheBuild:_snapshotAnswer(ref)
   if ref.scope ~= nil then
     assert(type(ref.scope) == "string", "completion scope refs name their scope")
     if ref.scope == "complete" then
-      local ready, failure = self:_completeAnswer()
+      local ready, failure = assert(self.completion, "completion owner remains live until retirement"):answer()
       return snapshotAnswerRow(ref.scope, ready, failure)
     end
     local ready, failure = self:_retainedMilestoneAnswer(ref.scope)
@@ -3017,7 +2811,7 @@ function InteractiveCacheBuild:completionSnapshot(requirements)
     retired = self.retired,
     settled = self:status().settled,
     enumerationComplete = self.sourceLoaded and self.pagesKnown,
-    completeExhausted = self.completeExhausted,
+    completeExhausted = assert(self.completion, "completion owner remains live until retirement"):status().completeExhausted,
     answers = answers,
     outcomes = self:outcomes(),
   }
@@ -3048,62 +2842,13 @@ function InteractiveCacheBuild:_hasRunnablePlanning()
       end
     end
   end
-  return self:_completeExpansionReady() or self:_sweepExpansionReady()
-end
-
----@return boolean unexpanded background completion can advance now
-function InteractiveCacheBuild:_sweepExpansionReady()
-  if not self.sweepAuthorized or self.sweepExhausted or not self.sourceLoaded or not self.pagesKnown then
-    return false
-  end
-  -- Retained foreground exclusion first: required/near demand owns the
-  -- next background candidate. A running candidate is an external wait,
-  -- not runnable local planning.
-  if self.foregroundPendingCount > 0 then
-    return false
-  end
-  local candidate = self.sweepCandidate ~= nil and self.byKey[self.sweepCandidate] or nil
-  if candidate ~= nil then
-    -- Settling an already-admitted candidate is immediate bookkeeping even
-    -- inside the quiet window; a still-running one waits on pool results.
-    return candidate.ready or candidate.failure ~= nil
-  end
-  -- Only fresh enrollment waits out the quiet window, mirroring
-  -- _advanceSweep so runnable planning means progress without a clock wait.
-  return not self:_sweepQuietPending()
+  return assert(self.completion, "completion owner remains live until retirement"):hasRunnableExpansion()
 end
 
 ---@return number|nil seconds until local planning becomes retryable; nil when no clock-driven wake is needed
 function InteractiveCacheBuild:nextPlanningWakeDelay()
-  -- Retained scalar reads only: no cache IO, pool polling, or corpus scan.
-  if self.retired or not self.sweepAuthorized or self.sweepExhausted then
-    return nil
-  end
-  if not self.sourceLoaded or not self.pagesKnown then
-    return nil
-  end
-  if self.foregroundPendingCount > 0 then
-    return nil
-  end
-  local candidate = self.sweepCandidate ~= nil and self.byKey[self.sweepCandidate] or nil
-  if candidate ~= nil then
-    -- Bookkeeping settles immediately (runnable) or waits on pool results;
-    -- neither is a clock wait owned by this session.
-    return nil
-  end
-  if not self:_sweepQuietPending() then
-    return nil
-  end
-  local remaining = self.lastForegroundActivity + SWEEP_SETTLE_SECONDS - self.clock()
-  if remaining <= 0 then
-    return 0
-  end
-  return remaining
-end
-
----@return boolean unexpanded explicit complete demand can advance now
-function InteractiveCacheBuild:_completeExpansionReady()
-  return self.completeUrgency ~= nil and not self.completeExhausted and self.sourceLoaded and self.pagesKnown
+  local completion = self.completion
+  return completion ~= nil and completion:nextPlanningWakeDelay() or nil
 end
 
 ---@param name string bootstrap, new-game-intro, field-planning, or field-runtime
@@ -3174,26 +2919,6 @@ local function projectSettlement(milestonesTerminal, tally, milestoneFailed, met
     and (completeDone or milestoneFailed or metadataFailed)
 end
 
--- Background completion is never part of a gameplay readiness predicate:
--- the sweep observation reports authorized warming, exhaustion, or the
--- first background failure without entering any readiness gate.
----@param authorized boolean background corpus completion authorized
----@param exhausted boolean canonical corpus enumeration reached its end
----@param failure string|nil first background candidate failure when present
----@return string sweepState idle, warming, exhausted or incomplete
-local function projectSweep(authorized, exhausted, failure)
-  if not authorized then
-    return "idle"
-  end
-  if exhausted then
-    if failure ~= nil then
-      return "incomplete"
-    end
-    return "exhausted"
-  end
-  return "warming"
-end
-
 ---@return table<string, unknown>
 function InteractiveCacheBuild:status()
   -- Read-only retained observation: no cache IO, no validation, no pool
@@ -3228,6 +2953,13 @@ function InteractiveCacheBuild:status()
   -- waiting for successful sweep completion. Success never settles around
   -- running work.
   local tally = collectInterestStatus(self.interest)
+  local completionStatus = self.completion ~= nil and self.completion:status()
+    or {
+      completeDone = true,
+      completeAttested = false,
+      sweepState = "idle",
+      sweepFailure = nil,
+    }
   local milestonesTerminal = true
   if not self.retired then
     for _, name in ipairs(STATUS_MILESTONES) do
@@ -3236,7 +2968,7 @@ function InteractiveCacheBuild:status()
       end
     end
   end
-  local completeDone = self.completeUrgency == nil or self.completeExhausted
+  local completeDone = completionStatus.completeDone
   local metadataFailed = false
   if #tally.failures > 0 then
     local sourceOwner = self.byKey["source-plan:global"]
@@ -3248,7 +2980,7 @@ function InteractiveCacheBuild:status()
   local settled = projectSettlement(milestonesTerminal, tally, milestoneFailed, metadataFailed, completeDone)
   -- Exhaustive attestation is stricter than settlement: only an
   -- explicitly requested and exhausted complete build certifies it.
-  local completeAttested = self.completeUrgency ~= nil and self.completeExhausted
+  local completeAttested = completionStatus.completeAttested
   local complete = completeAttested
     and bootstrapState == "ready"
     and #tally.failures == 0
@@ -3270,8 +3002,8 @@ function InteractiveCacheBuild:status()
     enumerationComplete = self.sourceLoaded and self.pagesKnown or false,
     settled = settled,
     planningPending = self.planningPending,
-    sweepState = projectSweep(self.sweepAuthorized, self.sweepExhausted, self.sweepFailure),
-    sweepFailure = self.sweepFailure,
+    sweepState = completionStatus.sweepState,
+    sweepFailure = completionStatus.sweepFailure,
   }
 end
 
@@ -3377,15 +3109,11 @@ function InteractiveCacheBuild:retire()
   self.logicalDemand = {}
   self.logicalMembers = {}
   self.scriptAudioMemo = nil
-  self.completeUrgency = nil
-  self.completeNext = nil
-  self.completeExhausted = false
-  self.completeScope = { remaining = 0, failed = 0, seen = {}, failure = nil }
-  self.sweepAuthorized = false
-  self.sweepNext = nil
-  self.sweepCandidate = nil
-  self.sweepExhausted = false
-  self.sweepFailure = nil
+  local completion = self.completion
+  if completion ~= nil then
+    completion:retire()
+  end
+  self.completion = nil
   self.planningPending = false
 end
 

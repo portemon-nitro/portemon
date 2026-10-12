@@ -1493,6 +1493,85 @@ function T.foreground_demand_suppresses_the_sweep_clock_wait()
   Assert.isNil(session:nextPlanningWakeDelay(), "foreground demand owns the next candidate, not the sweep clock")
 end
 
+function T.late_page_adoption_restarts_completion_without_duplicate_jobs()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("late-completion-adoption-generation", pool, backend, clock)
+  session:requestComplete("required")
+  session:enableSweep()
+  for _ = 1, 4 do
+    session:update()
+  end
+  local beforeAdoption = session:status().enumerated
+  Assert.isTrue(beforeAdoption > 0, "completion has enrolled jobs before page adoption")
+
+  local adopted = warmingAdopted()
+  adopted.iconPageIds = { 0, 2 }
+  session:_adoptPublished(adopted)
+  tick.now = 1.0
+  for _ = 1, 20 do
+    session:update()
+  end
+
+  Assert.notNil(session.byKey["mon-icon-page:2"], "late page membership enters the restarted completion walk")
+  Assert.isTrue(session:status().enumerated >= beforeAdoption, "adoption preserves prior completion accounting")
+  local submitted = {}
+  for _, jobKey in ipairs(pool.submitted) do
+    submitted[jobKey] = (submitted[jobKey] or 0) + 1
+    Assert.equal(submitted[jobKey], 1, "restarted completion submits each canonical job once: " .. jobKey)
+  end
+  Assert.equal(submissionCount(pool, "mon-icon-page:2"), 1, "the newly adopted page is enrolled once")
+end
+
+function T.authorized_sweep_failure_keeps_ready_foreground_scope_ready()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("sweep-failure-scope-generation", pool, backend, clock)
+  pool.states["field-font:global"] = "ready"
+  local ready, failure = session:requestMilestone("bootstrap", "required")
+  Assert.isFalse(ready, "bootstrap is pending until the pump observes its warm font")
+  Assert.isNil(failure, "bootstrap registration reports no failure")
+  for _ = 1, 20 do
+    session:update()
+  end
+  local bootstrapReady, bootstrapFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(bootstrapReady, "bootstrap settles before background authorization")
+  Assert.isNil(bootstrapFailure, "bootstrap has no foreground failure")
+  Assert.equal(session:status().sweepState, "idle", "a ready foreground scope does not authorize a sweep")
+  Assert.equal(
+    submissionCount(pool, "field-font:global"),
+    1,
+    "bootstrap submits its foreground font even when the worker already has it"
+  )
+  Assert.equal(#pool.submitted, 1, "no sweep candidate is submitted before authorization")
+
+  local submittedBeforeSweep = #pool.submitted
+  session:enableSweep()
+  tick.now = 1.0
+  local failedJobKey = nil
+  for _ = 1, 30 do
+    session:update()
+    if #pool.submitted > submittedBeforeSweep then
+      failedJobKey = pool.submitted[submittedBeforeSweep + 1]
+      break
+    end
+  end
+  local sweepJobKey = assert(failedJobKey, "the authorized sweep submits a background candidate")
+  pool.states[sweepJobKey] = { state = "failed", details = { error = "synthetic sweep failure" } }
+  for _ = 1, 10 do
+    session:update()
+  end
+
+  local sweepStatus = session:status()
+  Assert.isTrue(tostring(sweepStatus.sweepFailure):find("synthetic sweep failure", 1, true) ~= nil)
+  local stillReady, stillFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(stillReady, "a later sweep failure cannot revoke a settled foreground scope")
+  Assert.isNil(stillFailure, "the sweep failure is not promoted to the foreground answer")
+  Assert.equal(sweepStatus.bootstrap, "ready", "status keeps foreground and sweep answers separate")
+end
+
 function T.icon_page_demand_registers_through_the_canonical_record()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
