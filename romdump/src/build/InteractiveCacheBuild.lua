@@ -17,6 +17,7 @@
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local CacheFs = require("libs.storage.src.CacheFs")
+local Errors = require("libs.errors.src.Errors")
 local StorageErrors = require("libs.storage.src.errors")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
@@ -1638,23 +1639,47 @@ function InteractiveCacheBuild:_followerError()
   if self.followerChecked then
     return self.followerMemo
   end
-  self.followerChecked = true
   local MonCache = require("libs.assets.src.MonCache")
-  local catalogOk, catalog = pcall(MonCache.loadCatalog, self.cacheFs)
-  if not catalogOk or type(catalog) ~= "table" then
+  local catalog, catalogErr = self.cacheFs:loadLua(MonCache.catalogPath())
+  if catalog == nil then
+    if catalogErr ~= nil then
+      local catalogCode = type(catalogErr) == "table" and catalogErr.code or nil
+      if catalogCode ~= StorageErrors.CACHE_FILE_MISSING then
+        error(catalogErr, 0)
+      end
+    end
+    self.followerChecked = true
     self.followerMemo = "mon catalog is not staged"
     return self.followerMemo
   end
-  local actorIndex = self.cacheFs:loadLua(FieldActorCache.indexPath())
-  if type(actorIndex) ~= "table" or type(actorIndex.spriteIds) ~= "table" then
+  if type(catalog) ~= "table" or catalog.schema ~= MonCache.CATALOG_SCHEMA then
+    Errors.raise("FOLLOWER_CATALOG_INVALID", "staged mon catalog is not the current catalog", {
+      path = MonCache.catalogPath(),
+    })
+  end
+  local actorIndex, actorErr = self.cacheFs:loadLua(FieldActorCache.indexPath())
+  if actorIndex == nil then
+    if actorErr ~= nil then
+      local actorCode = type(actorErr) == "table" and actorErr.code or nil
+      if actorCode ~= StorageErrors.CACHE_FILE_MISSING then
+        error(actorErr, 0)
+      end
+    end
+    self.followerChecked = true
     self.followerMemo = "merged actor index is not staged"
     return self.followerMemo
+  end
+  if type(actorIndex) ~= "table" or type(actorIndex.spriteIds) ~= "table" then
+    Errors.raise("FOLLOWER_ACTOR_INDEX_INVALID", "staged actor index carries no sprite id list", {
+      path = FieldActorCache.indexPath(),
+    })
   end
   local spriteIds = {}
   for _, spriteId in ipairs(actorIndex.spriteIds) do
     spriteIds[spriteId] = true
   end
   local followersOk, followersErr = ArtifactJobs.checkFollowers(catalog, spriteIds)
+  self.followerChecked = true
   if not followersOk then
     self.followerMemo = followersErr
     return self.followerMemo

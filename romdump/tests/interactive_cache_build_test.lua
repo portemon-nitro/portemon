@@ -10,7 +10,9 @@ local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CompilerPool = require("romdump.src.build.CompilerPool")
+local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
+local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
@@ -19,6 +21,7 @@ local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local MonCache = require("libs.assets.src.MonCache")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ScriptCache = require("libs.assets.src.ScriptCache")
+local StorageErrors = require("libs.storage.src.errors")
 
 local T = {}
 
@@ -2284,7 +2287,11 @@ function T.adopted_membership_and_cell_queries_use_session_local_lookups()
     Assert.isFalse(sourceMemberReady, "an admitted source member stays pending while its payload is cold")
     Assert.isNil(sourceMemberFailure, "an admitted source member has no rejection")
   end)
-  Assert.equal(sourceMemberTraversals[sessionA.scriptMemberIds], 0, "source adoption serves membership without walking its ordered list")
+  Assert.equal(
+    sourceMemberTraversals[sessionA.scriptMemberIds],
+    0,
+    "source adoption serves membership without walking its ordered list"
+  )
 
   local plansA = SourcePlan.project(planA)
   local expectedMemberIds = {}
@@ -2314,7 +2321,10 @@ function T.adopted_membership_and_cell_queries_use_session_local_lookups()
     local portraitReady, portraitFailure = sessionA:requestMonPortraitPage(127, "required")
     local cellReady, cellFailure = sessionA:requestCell({ matrixMemberId = 12, index = 127 }, "required")
     local canonicalCellReady, canonicalCellFailure = sessionA:requestJob("field-cell", "12-127", "required")
-    Assert.isFalse(scriptReady or audioReady or iconReady or portraitReady or cellReady or canonicalCellReady, "cold members stay pending")
+    Assert.isFalse(
+      scriptReady or audioReady or iconReady or portraitReady or cellReady or canonicalCellReady,
+      "cold members stay pending"
+    )
     Assert.isNil(scriptFailure, "an admitted script member has no rejection")
     Assert.isNil(audioFailure, "an admitted audio bank has no rejection")
     Assert.isNil(iconFailure, "an admitted icon page has no rejection")
@@ -2324,8 +2334,14 @@ function T.adopted_membership_and_cell_queries_use_session_local_lookups()
     local wrongIndexReady, wrongIndexFailure = sessionA:requestCell({ matrixMemberId = 12, index = 128 }, "required")
     local wrongMatrixReady, wrongMatrixFailure = sessionA:requestJob("field-cell", "13-127", "required")
     Assert.isFalse(wrongIndexReady or wrongMatrixReady, "unindexed cells stay unsupported")
-    Assert.isTrue(tostring(wrongIndexFailure):find("canonical index has no such cell", 1, true) ~= nil, "a missing cell keeps its diagnostic")
-    Assert.isTrue(tostring(wrongMatrixFailure):find("canonical index has no such cell", 1, true) ~= nil, "a missing matrix keeps its diagnostic")
+    Assert.isTrue(
+      tostring(wrongIndexFailure):find("canonical index has no such cell", 1, true) ~= nil,
+      "a missing cell keeps its diagnostic"
+    )
+    Assert.isTrue(
+      tostring(wrongMatrixFailure):find("canonical index has no such cell", 1, true) ~= nil,
+      "a missing matrix keeps its diagnostic"
+    )
   end)
   Assert.deepEqual(sessionA.scriptMemberIds, expectedMemberIds, "the authoritative source order remains intact")
   Assert.deepEqual(sessionA.mapCellKeys[7], planA.mapCellKeys[7], "the authoritative cell key order remains intact")
@@ -2721,7 +2737,8 @@ function T.requested_failure_settles_while_sweep_and_completion_stay_distinct()
   local backgroundBankKey = tostring(scopeSession.messageBankIds[1])
   scopeSession:requestMilestone("bootstrap", "required")
   scopeSession:requestJob("message-bank", backgroundBankKey, "near")
-  scopePool.states["message-bank:" .. backgroundBankKey] = { state = "failed", details = { error = "synthetic background failure" } }
+  scopePool.states["message-bank:" .. backgroundBankKey] =
+    { state = "failed", details = { error = "synthetic background failure" } }
   for _ = 1, 10 do
     scopeSession:update()
   end
@@ -2735,6 +2752,285 @@ function T.requested_failure_settles_while_sweep_and_completion_stay_distinct()
     Assert.deepEqual(scopeSession:status(), scopeFirst, "the pending answers stay stable without pumping")
   end
   Assert.equal(#scopePool.submitted, scopeSubmittedBefore, "observations submit no worker work")
+end
+
+-- Follower admission distinguishes absent staged inputs from broken ones.
+-- Only a missing catalog or index reads as not-staged; backend and
+-- content faults propagate and malformed staged records raise instead of
+-- masquerading as absence. A genuine follower gap stays an ordinary
+-- validation diagnostic, memoized until the next admission attempt.
+local function followerCatalogWith(visualId)
+  return {
+    schema = MonCache.CATALOG_SCHEMA,
+    species = {
+      testmon = {
+        forms = {
+          [0] = { follower = { visualId = visualId } },
+        },
+      },
+    },
+  }
+end
+
+local function followerIndexWith(spriteIds)
+  return {
+    schema = FieldActorCache.INDEX_SCHEMA,
+    spriteIds = spriteIds,
+  }
+end
+
+local function followerSessionFor(backend, generation)
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession(generation, pool, backend)
+  return session, cacheFs
+end
+
+function T.follower_absent_inputs_report_not_staged_without_throwing()
+  local missingBackend = FakeCache.new()
+  local missingSession, _ = followerSessionFor(missingBackend, "follower-absent-catalog-generation")
+  local missingCatalog = missingSession:_followerError()
+  Assert.equal(missingCatalog, "mon catalog is not staged", "an absent catalog reads as not staged")
+
+  local indexBackend = FakeCache.new()
+  local indexSession, indexCache = followerSessionFor(indexBackend, "follower-absent-index-generation")
+  indexCache:writeLua(MonCache.catalogPath(), followerCatalogWith(4242))
+  local missingIndex = indexSession:_followerError()
+  Assert.equal(missingIndex, "merged actor index is not staged", "an absent actor index reads as not staged")
+end
+
+function T.follower_storage_faults_escape_instead_of_reporting_not_staged()
+  local catalogPath = MonCache.catalogPath()
+  local actorPath = FieldActorCache.indexPath()
+  local catalogFaults = {
+    { code = StorageErrors.CACHE_READ_FAILED, detail = "synthetic catalog read failure" },
+    { code = StorageErrors.CACHE_LUA_PARSE_FAILED, detail = "synthetic catalog parse failure" },
+    { code = StorageErrors.CACHE_LUA_EVAL_FAILED, detail = "synthetic catalog eval failure" },
+  }
+  for _, fault in ipairs(catalogFaults) do
+    local backend = FakeCache.new()
+    local session, _ = followerSessionFor(backend, "follower-catalog-fault-generation")
+    local structured = Errors.new(fault.code, fault.detail, { path = catalogPath })
+    session.cacheFs = {
+      loadLua = function(_, path)
+        if path == catalogPath then
+          return nil, structured
+        end
+        error("unexpected follower read: " .. tostring(path))
+      end,
+    }
+    local ok, failure = pcall(function()
+      return session:_followerError()
+    end)
+    Assert.isFalse(ok, "a catalog " .. fault.code .. " must propagate instead of reading not staged")
+    Assert.isTrue(Errors.is(failure), "a catalog " .. fault.code .. " keeps its structured identity")
+    Assert.equal(failure.code, fault.code, "a catalog " .. fault.code .. " keeps its code")
+  end
+
+  do
+    local backend = FakeCache.new()
+    local session, _ = followerSessionFor(backend, "follower-catalog-throw-generation")
+    session.cacheFs = {
+      loadLua = function(_, path)
+        if path == catalogPath then
+          error("synthetic catalog backend boom", 0)
+        end
+        error("unexpected follower read: " .. tostring(path))
+      end,
+    }
+    local ok, failure = pcall(function()
+      return session:_followerError()
+    end)
+    Assert.isFalse(ok, "a throwing catalog backend must propagate instead of reading not staged")
+    Assert.isTrue(
+      tostring(failure):find("synthetic catalog backend boom", 1, true) ~= nil,
+      "a throwing catalog backend keeps its message: " .. tostring(failure)
+    )
+  end
+
+  local actorFaults = {
+    { code = StorageErrors.CACHE_READ_FAILED, detail = "synthetic actor read failure" },
+    { code = StorageErrors.CACHE_LUA_PARSE_FAILED, detail = "synthetic actor parse failure" },
+    { code = StorageErrors.CACHE_LUA_EVAL_FAILED, detail = "synthetic actor eval failure" },
+  }
+  for _, fault in ipairs(actorFaults) do
+    local backend = FakeCache.new()
+    local session, _ = followerSessionFor(backend, "follower-actor-fault-generation")
+    local structured = Errors.new(fault.code, fault.detail, { path = actorPath })
+    local catalog = followerCatalogWith(4242)
+    session.cacheFs = {
+      loadLua = function(_, path)
+        if path == catalogPath then
+          return catalog
+        end
+        if path == actorPath then
+          return nil, structured
+        end
+        error("unexpected follower read: " .. tostring(path))
+      end,
+    }
+    local ok, failure = pcall(function()
+      return session:_followerError()
+    end)
+    Assert.isFalse(ok, "an actor " .. fault.code .. " must propagate instead of reading not staged")
+    Assert.isTrue(Errors.is(failure), "an actor " .. fault.code .. " keeps its structured identity")
+    Assert.equal(failure.code, fault.code, "an actor " .. fault.code .. " keeps its code")
+  end
+
+  do
+    local backend = FakeCache.new()
+    local session, _ = followerSessionFor(backend, "follower-actor-throw-generation")
+    local catalog = followerCatalogWith(4242)
+    session.cacheFs = {
+      loadLua = function(_, path)
+        if path == catalogPath then
+          return catalog
+        end
+        if path == actorPath then
+          error("synthetic actor backend boom", 0)
+        end
+        error("unexpected follower read: " .. tostring(path))
+      end,
+    }
+    local ok, failure = pcall(function()
+      return session:_followerError()
+    end)
+    Assert.isFalse(ok, "a throwing actor backend must propagate instead of reading not staged")
+    Assert.isTrue(
+      tostring(failure):find("synthetic actor backend boom", 1, true) ~= nil,
+      "a throwing actor backend keeps its message: " .. tostring(failure)
+    )
+  end
+end
+
+function T.follower_malformed_staged_records_raise_instead_of_reporting_not_staged()
+  local malformedCatalogs = {
+    { label = "stale catalog schema", value = { schema = "stale-catalog-schema", species = {} } },
+  }
+  for _, case in ipairs(malformedCatalogs) do
+    local backend = FakeCache.new()
+    local session, cacheFs = followerSessionFor(backend, "follower-bad-catalog-generation")
+    cacheFs:writeLua(MonCache.catalogPath(), case.value)
+    local ok, failure = pcall(function()
+      return session:_followerError()
+    end)
+    Assert.isFalse(ok, "a malformed catalog (" .. case.label .. ") must raise instead of reading not staged")
+    Assert.isTrue(
+      tostring(failure):find("is not staged", 1, true) == nil,
+      "a malformed catalog (" .. case.label .. ") never masquerades as absence: " .. tostring(failure)
+    )
+  end
+
+  do
+    local backend = FakeCache.new()
+    local session, cacheFs = followerSessionFor(backend, "follower-nontable-catalog-generation")
+    cacheFs:write(MonCache.catalogPath(), "return 42")
+    local ok, failure = pcall(function()
+      return session:_followerError()
+    end)
+    Assert.isFalse(ok, "a non-table catalog must raise instead of reading not staged")
+    Assert.isTrue(
+      tostring(failure):find("is not staged", 1, true) == nil,
+      "a non-table catalog never masquerades as absence: " .. tostring(failure)
+    )
+  end
+
+  local malformedIndexes = {
+    { label = "index without sprite ids", value = { schema = FieldActorCache.INDEX_SCHEMA } },
+    {
+      label = "index with non-table sprite ids",
+      value = { schema = FieldActorCache.INDEX_SCHEMA, spriteIds = "nope" },
+    },
+  }
+  for _, case in ipairs(malformedIndexes) do
+    local backend = FakeCache.new()
+    local session, cacheFs = followerSessionFor(backend, "follower-bad-index-generation")
+    cacheFs:writeLua(MonCache.catalogPath(), followerCatalogWith(4242))
+    cacheFs:writeLua(FieldActorCache.indexPath(), case.value)
+    local ok, failure = pcall(function()
+      return session:_followerError()
+    end)
+    Assert.isFalse(ok, "a malformed actor index (" .. case.label .. ") must raise instead of reading not staged")
+    Assert.isTrue(
+      tostring(failure):find("is not staged", 1, true) == nil,
+      "a malformed actor index (" .. case.label .. ") never masquerades as absence: " .. tostring(failure)
+    )
+  end
+
+  do
+    local backend = FakeCache.new()
+    local session, cacheFs = followerSessionFor(backend, "follower-nontable-index-generation")
+    cacheFs:writeLua(MonCache.catalogPath(), followerCatalogWith(4242))
+    cacheFs:write(FieldActorCache.indexPath(), "return 42")
+    local ok, failure = pcall(function()
+      return session:_followerError()
+    end)
+    Assert.isFalse(ok, "a non-table actor index must raise instead of reading not staged")
+    Assert.isTrue(
+      tostring(failure):find("is not staged", 1, true) == nil,
+      "a non-table actor index never masquerades as absence: " .. tostring(failure)
+    )
+  end
+end
+
+function T.follower_gap_reports_validation_once_and_ready_when_covered()
+  local backend = FakeCache.new()
+  local session, cacheFs = followerSessionFor(backend, "follower-gap-generation")
+  cacheFs:writeLua(MonCache.catalogPath(), followerCatalogWith(4242))
+  cacheFs:writeLua(FieldActorCache.indexPath(), followerIndexWith({ 7 }))
+  local inner = cacheFs
+  local calls = 0
+  session.cacheFs = {
+    loadLua = function(_, path)
+      calls = calls + 1
+      return inner:loadLua(path)
+    end,
+  }
+  local first = session:_followerError()
+  Assert.notNil(first, "a missing follower visual reports its gap")
+  Assert.isTrue(tostring(first):find("4242", 1, true) ~= nil, "the gap names its missing visual: " .. tostring(first))
+  Assert.equal(calls, 2, "the first admission reads the catalog and the actor index once each")
+  local second = session:_followerError()
+  Assert.equal(second, first, "the repeated admission keeps its validation answer")
+  Assert.equal(calls, 2, "the repeated admission performs no further cache reads")
+
+  local coveredSession, coveredCache = followerSessionFor(backend, "follower-covered-generation")
+  coveredCache:writeLua(FieldActorCache.indexPath(), followerIndexWith({ 7, 4242 }))
+  local ready = coveredSession:_followerError()
+  Assert.isNil(ready, "complete follower coverage admits the milestone")
+end
+
+-- A backend throw leaves no memoized answer behind: the next admission
+-- re-reads instead of replaying a stale not-ready verdict.
+function T.follower_backend_throw_leaves_no_stale_memo_for_retry()
+  local backend = FakeCache.new()
+  local session, cacheFs = followerSessionFor(backend, "follower-retry-generation")
+  local inner = cacheFs
+  local throwing = true
+  local calls = 0
+  session.cacheFs = {
+    loadLua = function(_, path)
+      calls = calls + 1
+      if throwing and path == MonCache.catalogPath() then
+        error("synthetic catalog backend boom", 0)
+      end
+      return inner:loadLua(path)
+    end,
+  }
+  local ok = pcall(function()
+    return session:_followerError()
+  end)
+  Assert.isFalse(ok, "the first admission propagates the backend throw")
+  cacheFs:writeLua(MonCache.catalogPath(), followerCatalogWith(4242))
+  cacheFs:writeLua(FieldActorCache.indexPath(), followerIndexWith({ 7 }))
+  throwing = false
+  local callsBefore = calls
+  local diagnosis = session:_followerError()
+  Assert.notNil(diagnosis, "the retry re-reads instead of reusing a stale answer")
+  Assert.isTrue(
+    tostring(diagnosis):find("4242", 1, true) ~= nil,
+    "the retry reports the staged follower gap: " .. tostring(diagnosis)
+  )
+  Assert.isTrue(calls > callsBefore, "the retry performs fresh cache reads")
 end
 
 return { metadata = { capabilities = {} }, tests = T }
