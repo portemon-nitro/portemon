@@ -82,6 +82,8 @@ local LogicalFieldPlan = require("romdump.src.build.LogicalFieldPlan")
 ---@field messageBankIds integer[]
 ---@field audioBankIds integer[]
 ---@field scriptMemberIds integer[]
+---@field membershipByKind table<string, table<string, boolean>>
+---@field cellByKey table<string, table<string, unknown>>
 ---@field iconPageIds integer[]|nil absent until mon page membership is adopted
 ---@field portraitPageIds integer[]|nil absent until mon page membership is adopted
 ---@field mapDataIds integer[]
@@ -124,6 +126,10 @@ local LogicalFieldPlan = require("romdump.src.build.LogicalFieldPlan")
 ---@field followerChecked boolean
 local InteractiveCacheBuild = {}
 InteractiveCacheBuild.__index = InteractiveCacheBuild
+---@type fun(values: integer[]): table<string, boolean>
+local buildMembershipIndex
+---@type fun(indexBundle: table<string, unknown>): table<string, table<string, unknown>>
+local buildCellIndex
 
 ---@class InteractiveCacheBuild.Budget
 ---@field used integer
@@ -272,6 +278,15 @@ function InteractiveCacheBuild.new(options)
   -- Only source-static membership is known here: required message banks and
   -- supported field records derive from frozen catalogs without opening the
   -- dump. Everything else arrives with the worker inventory.
+  local messageBankIds = FieldMessageCompiler.requiredBankIds()
+  local mapDataIds = FieldMapDataCompiler.supportedMapIds()
+  local membershipByKind = {
+    ["message-bank"] = buildMembershipIndex(messageBankIds),
+    ["map-data"] = buildMembershipIndex(mapDataIds),
+    ["audio-bank"] = {},
+    ["script-member"] = {},
+    map = {},
+  }
   local queues = {}
   for _, priority in ipairs({ 0, 10, 100 }) do
     queues[priority] = { items = {}, head = 1 }
@@ -283,12 +298,14 @@ function InteractiveCacheBuild.new(options)
     epoch = epoch,
     pool = pool,
     cacheFs = cacheFs,
-    messageBankIds = FieldMessageCompiler.requiredBankIds(),
+    messageBankIds = messageBankIds,
     audioBankIds = {},
     scriptMemberIds = {},
+    membershipByKind = membershipByKind,
+    cellByKey = {},
     iconPageIds = {},
     portraitPageIds = {},
-    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
+    mapDataIds = mapDataIds,
     mapIds = {},
     mapCellKeys = {},
     interest = {},
@@ -448,22 +465,11 @@ end
 ---@return string|nil failure
 function InteractiveCacheBuild:_cellDescriptor(kind, key)
   assert(kind == "field-cell", "cell resolution requires the field-cell kind")
-  local matrixMemberId, index = key:match("^([0-9]+)-([0-9]+)$")
-  matrixMemberId, index = tonumber(matrixMemberId), tonumber(index)
-  local adopted = self.adopted
-  if adopted == nil or adopted.indexBundle == nil then
+  local descriptor = self.cellByKey[key]
+  if descriptor == nil then
     return nil, "field cell " .. key .. " is not in the canonical index"
   end
-  for _, matrix in ipairs(adopted.indexBundle.index.matrices) do
-    if matrix.matrixMemberId == matrixMemberId then
-      for _, descriptor in ipairs(matrix.cells) do
-        if descriptor.index == index then
-          return descriptor
-        end
-      end
-    end
-  end
-  return nil, "field cell " .. key .. " is not in the canonical index"
+  return descriptor
 end
 
 -- Complete ticket identity: entries by canonical job key, roster controls
@@ -1981,12 +1987,7 @@ end
 ---@param mapId integer
 ---@return boolean known
 function InteractiveCacheBuild:_knownMap(mapId)
-  for _, known in ipairs(self.mapIds) do
-    if known == mapId then
-      return true
-    end
-  end
-  return self.mapCellKeys[mapId] ~= nil
+  return self:_knownMember("map", tostring(mapId)) or self.mapCellKeys[mapId] ~= nil
 end
 
 -- The semantic closure of one map: its field record, its message bank,
@@ -2261,20 +2262,14 @@ function InteractiveCacheBuild:requestIconPage(pageId, urgency)
   if not self.pagesKnown then
     return self:_answer(self:_requestDirect("mon-icon-page", tostring(pageId), urgency))
   end
-  local supported = false
-  for _, candidate in ipairs(self.iconPageIds) do
-    if candidate == pageId then
-      supported = true
-      break
-    end
-  end
-  if not supported then
+  local key = tostring(pageId)
+  if not self:_knownMember("mon-icon-page", key) then
     return self:_exclude(
-      self:_requestDirect("mon-icon-page", tostring(pageId), urgency),
-      self.generationId .. " mon-icon-page " .. tostring(pageId) .. ": source has no such page"
+      self:_requestDirect("mon-icon-page", key, urgency),
+      self.generationId .. " mon-icon-page " .. key .. ": source has no such page"
     )
   end
-  return self:_answer(self:_requestDirect("mon-icon-page", tostring(pageId), urgency))
+  return self:_answer(self:_requestDirect("mon-icon-page", key, urgency))
 end
 
 ---@param pageId integer
@@ -2288,65 +2283,22 @@ function InteractiveCacheBuild:requestMonPortraitPage(pageId, urgency)
   if not self.pagesKnown then
     return self:_answer(self:_requestDirect("mon-portrait-page", tostring(pageId), urgency))
   end
-  local supported = false
-  for _, candidate in ipairs(self.portraitPageIds) do
-    if candidate == pageId then
-      supported = true
-      break
-    end
-  end
-  if not supported then
+  local key = tostring(pageId)
+  if not self:_knownMember("mon-portrait-page", key) then
     return self:_exclude(
-      self:_requestDirect("mon-portrait-page", tostring(pageId), urgency),
-      self.generationId .. " mon-portrait-page " .. tostring(pageId) .. ": source has no such page"
+      self:_requestDirect("mon-portrait-page", key, urgency),
+      self.generationId .. " mon-portrait-page " .. key .. ": source has no such page"
     )
   end
-  return self:_answer(self:_requestDirect("mon-portrait-page", tostring(pageId), urgency))
+  return self:_answer(self:_requestDirect("mon-portrait-page", key, urgency))
 end
 
 ---@param kind string
 ---@param key string
 ---@return boolean supported
 function InteractiveCacheBuild:_knownMember(kind, key)
-  local numeric = tonumber(key)
-  if kind == "message-bank" then
-    for _, candidate in ipairs(self.messageBankIds) do
-      if candidate == numeric then
-        return true
-      end
-    end
-  elseif kind == "audio-bank" then
-    for _, candidate in ipairs(self.audioBankIds) do
-      if candidate == numeric then
-        return true
-      end
-    end
-  elseif kind == "script-member" then
-    for _, candidate in ipairs(self.scriptMemberIds) do
-      if candidate == numeric then
-        return true
-      end
-    end
-  elseif kind == "map-data" then
-    for _, candidate in ipairs(self.mapDataIds) do
-      if candidate == numeric then
-        return true
-      end
-    end
-  elseif kind == "mon-icon-page" then
-    for _, candidate in ipairs(self.iconPageIds) do
-      if candidate == numeric then
-        return true
-      end
-    end
-  elseif kind == "mon-portrait-page" then
-    for _, candidate in ipairs(self.portraitPageIds) do
-      if candidate == numeric then
-        return true
-      end
-    end
-  end
-  return false
+  local membership = self.membershipByKind[kind]
+  return membership ~= nil and membership[key] == true
 end
 
 ---@param kind string
@@ -2737,10 +2689,22 @@ function InteractiveCacheBuild:_adoptSource(plan)
   -- lists instead of replacing them from raw data. Page membership is
   -- owned by the layout leg alone: a newly arrived source view neither
   -- supplies it nor resets already adopted pages.
+  local membershipByKind = {
+    ["message-bank"] = self.membershipByKind["message-bank"],
+    ["map-data"] = self.membershipByKind["map-data"],
+    ["audio-bank"] = buildMembershipIndex(base.audioBankIds),
+    ["script-member"] = buildMembershipIndex(base.scriptMemberIds),
+    map = buildMembershipIndex(base.mapIds),
+    ["mon-icon-page"] = self.membershipByKind["mon-icon-page"],
+    ["mon-portrait-page"] = self.membershipByKind["mon-portrait-page"],
+  }
+  local cellByKey = buildCellIndex(base.indexBundle)
   self.audioBankIds = base.audioBankIds
   self.scriptMemberIds = base.scriptMemberIds
   self.mapIds = base.mapIds
   self.mapCellKeys = base.mapCellKeys
+  self.membershipByKind = membershipByKind
+  self.cellByKey = cellByKey
   self.adopted = {
     indexBundle = base.indexBundle,
     scriptPlan = base.scriptPlan,
@@ -2835,6 +2799,21 @@ function InteractiveCacheBuild:_adoptPublished(plans)
   self.mapDataIds = copyList(plans.mapDataIds)
   self.mapIds = copyList(plans.mapIds)
   self.mapCellKeys = plans.mapCellKeys
+  local membershipByKind = {
+    ["message-bank"] = buildMembershipIndex(self.messageBankIds),
+    ["audio-bank"] = buildMembershipIndex(self.audioBankIds),
+    ["script-member"] = buildMembershipIndex(self.scriptMemberIds),
+    ["map-data"] = buildMembershipIndex(self.mapDataIds),
+    ["mon-icon-page"] = self.iconPageIds ~= nil and buildMembershipIndex(self.iconPageIds) or nil,
+    ["mon-portrait-page"] = self.portraitPageIds ~= nil and buildMembershipIndex(self.portraitPageIds) or nil,
+    map = buildMembershipIndex(self.mapIds),
+  }
+  local cellByKey = {}
+  if plans.indexBundle ~= nil then
+    cellByKey = buildCellIndex(plans.indexBundle)
+  end
+  self.membershipByKind = membershipByKind
+  self.cellByKey = cellByKey
   self.adopted = plans
   self.sourceLoaded = true
   self.pagesKnown = true
@@ -3387,6 +3366,8 @@ function InteractiveCacheBuild:retire()
   self.portraitPageIds = {}
   self.mapIds = {}
   self.mapCellKeys = {}
+  self.membershipByKind = {}
+  self.cellByKey = {}
   self.followerChecked = false
   self.followerMemo = nil
   self.enrollCursor = nil
@@ -3406,6 +3387,28 @@ function InteractiveCacheBuild:retire()
   self.sweepExhausted = false
   self.sweepFailure = nil
   self.planningPending = false
+end
+
+function buildMembershipIndex(values)
+  local membership = {}
+  for _, value in ipairs(values) do
+    membership[tostring(value)] = true
+  end
+  return membership
+end
+
+function buildCellIndex(indexBundle)
+  local membership = {}
+  local index = indexBundle.index ---@as table<string, unknown>
+  local matrices = index.matrices ---@as table[]
+  for _, matrix in ipairs(matrices) do
+    local matrixMemberId = matrix.matrixMemberId ---@as integer
+    for _, descriptor in ipairs(matrix.cells) do
+      local key = matrixMemberId .. "-" .. tostring(descriptor.index)
+      membership[key] = descriptor
+    end
+  end
+  return membership
 end
 
 return InteractiveCacheBuild

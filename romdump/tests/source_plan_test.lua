@@ -1426,8 +1426,6 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
     pool.states["mon-catalog:global"] = "ready"
     pool.states["mon-layout:global"] = "ready"
     pool.states["mon-portrait-page:0"] = "ready"
-    session.sourceLoaded = true
-    session.pagesKnown = true
     local adopted = {
       messageBankIds = {},
       audioBankIds = {},
@@ -1438,15 +1436,7 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
       mapIds = {},
       mapCellKeys = {},
     }
-    session.adopted = adopted
-    session.messageBankIds = {}
-    session.audioBankIds = {}
-    session.scriptMemberIds = {}
-    session.iconPageIds = { 0, 1 }
-    session.portraitPageIds = { 0 }
-    session.mapDataIds = {}
-    session.mapIds = {}
-    session.mapCellKeys = {}
+    session:_adoptPublished(adopted)
     -- The fixture models a post-adoption session: source membership is
     -- settled, so the source inventory reads ready without worker work.
     local sourcePlanEntry = {
