@@ -32,6 +32,7 @@ local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhoneP
 ---@field _selected integer zero-based absolute selection
 ---@field _scroll integer zero-based top offset into the order
 ---@field _mode string list, menu, sort, manual, or call
+---@field _entryOwner string menu or host, fixed by the initial entry path
 ---@field _menuCursor integer zero-based menu cursor
 ---@field _grab integer? the grabbed absolute index while moving
 ---@field _callHandle table<string, unknown>? the live conversation handle
@@ -196,6 +197,7 @@ function PhoneController.new(opts)
     _selected = 0,
     _scroll = 0,
     _mode = "list",
+    _entryOwner = opts.request == nil and "menu" or "host",
     _menuCursor = 0,
     _grab = nil,
     _callHandle = nil,
@@ -366,6 +368,33 @@ function PhoneController:_beginCall(contact, direction, kind, id, panel)
   if panel then
     self._panelTicks = 0
   end
+  if self._call:result(handle) ~= nil then
+    self:_finishCall()
+  end
+end
+
+-- Publishes one terminal call according to the entry owner. Menu calls
+-- release their handle and restore the contact list; host calls retain
+-- the handle and result until PokegearScriptHost closes them.
+---@return boolean whether a terminal handoff occurred
+function PhoneController:_finishCall()
+  local handle = self._callHandle
+  assert(handle ~= nil, "terminal phone calls retain their owner until handoff")
+  local result = self._call:result(handle)
+  if result == nil then
+    return false
+  end
+  if self._entryOwner == "host" then
+    self._result = result
+  else
+    self._call:release(handle)
+    self._callHandle = nil
+    self._mode = "list"
+    self._panelTicks = nil
+    self._held = nil
+    self._choiceCursor = 0
+  end
+  return true
 end
 
 -- Names the menu call kind for one contact: rematch-capable contacts
@@ -708,7 +737,7 @@ function PhoneController:_handleCall(event)
   end
   local shown = self._call:view(handle --[[@as table<string, unknown>]])
   if shown.result ~= nil or shown.stage == "completed" then
-    self._result = self._call:result(handle --[[@as table<string, unknown>]])
+    self:_finishCall()
   end
 end
 
@@ -726,12 +755,16 @@ function PhoneController:updateFixed(uiInput)
   for _, event in ipairs(uiInput) do
     if type(event) == "table" and type(event.type) == "string" then
       local previousMode = self._mode
+      local previousCallId = self._callId
       local previousCall = nil
       if previousMode == "call" and self._callHandle ~= nil then
         previousCall = self._call:view(self._callHandle --[[@as table<string, unknown>]])
       end
       local record = event --[[@as table<string, unknown>]]
       if self._mode == "call" then
+        if self._result ~= nil then
+          break
+        end
         self:_handleCall(record)
       elseif self._mode == "menu" then
         self:_handleMenu(record)
@@ -745,7 +778,13 @@ function PhoneController:updateFixed(uiInput)
       if previousMode ~= "call" and self._mode == "call" then
         break
       end
+      if self._callId ~= previousCallId then
+        break
+      end
       if previousCall ~= nil then
+        if self._callHandle == nil or self._result ~= nil then
+          break
+        end
         local nextCall = self._call:view(self._callHandle --[[@as table<string, unknown>]])
         if previousCall.stage ~= nextCall.stage or previousCall.page ~= nextCall.page then
           break
@@ -753,7 +792,7 @@ function PhoneController:updateFixed(uiInput)
       end
     end
   end
-  if panelRunning then
+  if panelRunning and self._panelTicks ~= nil then
     self._panelTicks = self._panelTicks --[[@as integer]] + 1
   end
 end
@@ -894,7 +933,7 @@ function PhoneController:status()
   if type(skin) ~= "number" then
     skin = 0
   end
-  local inCall = self._mode == "call"
+  local inCall = self._callHandle ~= nil and self._result == nil
   local inMenu = self._mode == "menu" or self._mode == "sort" or self._mode == "manual"
   local view = self:view()
   local content = self:_planContent(skin --[[@as integer]])

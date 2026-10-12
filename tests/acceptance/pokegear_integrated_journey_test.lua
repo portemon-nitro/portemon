@@ -13,11 +13,23 @@ local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local CacheFs = require("libs.storage.src.CacheFs")
 local PokegearCache = require("libs.assets.src.PokegearCache")
 local Fixture = require("tests.support.PokegearJourneyFixture")
+local PokegearSources = require("romdump.src.config.PokegearSources")
+
+local DERIVED_ASSETS = {}
+for _, key in ipairs(Fixture.JOURNEY_ASSETS) do
+  DERIVED_ASSETS[#DERIVED_ASSETS + 1] = key
+end
+for _, bankId in ipairs({ 271, 279, 280, 664, 675, 716, 730 }) do
+  DERIVED_ASSETS[#DERIVED_ASSETS + 1] = "message-bank:" .. tostring(bankId)
+end
+for _, bankId in ipairs(PokegearSources.phoneMessageBankIds()) do
+  DERIVED_ASSETS[#DERIVED_ASSETS + 1] = "message-bank:" .. tostring(bankId)
+end
 
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = Fixture.JOURNEY_ASSETS,
+    derivedAssets = DERIVED_ASSETS,
     tags = { "pokegear" },
   },
   tests = {},
@@ -33,6 +45,33 @@ local function nativeMomKey(game)
     end
   end
   error("the compiled phone catalog contains native contact zero", 0)
+end
+
+local function actionEdge(game)
+  game.runtime:pressAction()
+  game:step()
+  game.runtime:releaseAction()
+end
+
+local function cancelEdge(game)
+  game.runtime:pressCancel()
+  game:step()
+  game.runtime:releaseCancel()
+end
+
+local function phoneView(game)
+  local application = assert(game.runtime.applicationHost:status().application, "the gear application owns the tick")
+  local child = assert(application.child, "the Phone card publishes its child status")
+  return assert(child.view, "the Phone card publishes its detached view")
+end
+
+local function contactByFamily(catalog, family)
+  for _, contact in ipairs(catalog.contacts) do
+    if contact.family == family then
+      return contact
+    end
+  end
+  error("the native phone catalog contains a " .. family .. " contact", 0)
 end
 
 -- The fully acquired shell keeps one owner across every card: the gear
@@ -236,6 +275,65 @@ function T.tests.played_opening_scripts_register_no_caller_before_the_seal()
     )
     Assert.equal(Fixture.scriptFaults(game), 0, "the tower census must run without script faults")
     Assert.isTrue(Fixture.settleField(game), "the tower census must rest on an owned field")
+  end)
+end
+
+-- A completed menu dial releases its call owner back to the real contact
+-- list. The player can start another distinct call and dismiss the gear
+-- through the ordinary field application shell.
+function T.tests.completed_menu_dial_returns_to_contacts_and_gear_exits()
+  Fixture.withGame(Fixture.TOWN, function(game)
+    local catalog = assert(game.runtime.pokegearCatalog, "the field runtime owns the compiled phone catalog")
+    local mom = contactByFamily(catalog, "mother")
+    local elm = contactByFamily(catalog, "elm")
+    local gearState = assert(game.runtime.pokegearState, "the field runtime owns phonebook state")
+    gearState:registerContact(mom.key)
+    gearState:registerContact(elm.key)
+    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
+
+    Fixture.openGearThroughMenu(game)
+    game:advanceUntil("the Phone opening transition completes", function()
+      local status = game.runtime.applicationHost:status().application
+      return status ~= nil and status.transition == nil
+    end, 40)
+    actionEdge(game)
+    actionEdge(game)
+    actionEdge(game)
+    local firstCall = assert(phoneView(game).call, "the selected native Mom row starts a production dial")
+    Assert.equal(firstCall.contact, mom.key, "the first dial uses the first registered contact")
+    Assert.equal(firstCall.stage, "message", "the first native dial reaches source-backed text")
+    local firstId = firstCall.id
+
+    actionEdge(game)
+    cancelEdge(game)
+    local application = assert(game.runtime.applicationHost:status().application, "the gear remains open after hangup")
+    Assert.isFalse(application.busy, "a finished menu dial releases the child call owner")
+    Assert.equal(application.child.view.call, nil, "the finished dial returns the Phone child to its list view")
+    Assert.equal(#application.child.view.list.rows, 2, "the returned Phone list still contains both contacts")
+
+    game.runtime:press("south")
+    game:step()
+    game.runtime:release("south")
+    actionEdge(game)
+    actionEdge(game)
+    local secondCall = assert(phoneView(game).call, "the next selected contact starts a second production dial")
+    Assert.equal(secondCall.contact, elm.key, "the next dial follows the contact list selection")
+    Assert.isTrue(secondCall.id ~= firstId, "each menu dial receives its own conversation identity")
+    cancelEdge(game)
+    Assert.isFalse(
+      game.runtime.applicationHost:status().application.busy,
+      "hanging up the second menu dial also returns to the list"
+    )
+
+    Fixture.closeGearThroughMenu(game)
+    Assert.equal(
+      game.runtime.applicationHost:status().phase,
+      FieldApplicationHost.PHASES.closed,
+      "the ordinary shell cancel exits the gear after the dial"
+    )
+    Assert.isTrue(Fixture.settleField(game), "the completed journey returns to ordinary field ownership")
+    Assert.equal(Fixture.scriptFaults(game), 0, "the completed call journey runs without script faults")
+    Assert.equal(game:renderAttempts(), 0, "the call ownership acceptance stops before GPU rendering")
   end)
 end
 

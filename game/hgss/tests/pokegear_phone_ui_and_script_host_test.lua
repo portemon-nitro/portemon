@@ -110,6 +110,9 @@ local function worldFixture()
   return {
     flags = {},
     rematchReady = {},
+    nativeSelectorFacts = function()
+      return { localMap = true }
+    end,
     player = { x = 5, y = 7 },
   }
 end
@@ -126,12 +129,19 @@ local function openHost(record, world, audio)
   local PokegearState = require("libs.hgss.src.save.PokegearState")
   local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
   local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact("custom.mom")
   state:registerContact("custom.trainer-plain")
   state:registerContact("custom.leader-falkner")
   return PokegearScriptHost.new({
     state = state,
     catalog = record.catalog,
-    messages = { greeting = "custom.greeting", program = "custom.program" },
+    messages = {
+      greeting = "custom.greeting",
+      program = "custom.program",
+      resolveLine = function()
+        return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+    },
     world = world,
     audio = audio,
     random = PokegearRandom.new(4242),
@@ -234,7 +244,7 @@ function T.tests.script_application_lease_balances_input_routing_and_save_captur
     api = 1,
     id = "test.phone_lease",
     steps = {
-      S.phoneSetCall({ contact = "custom.trainer-plain", direction = "outgoing", kind = "ordinary" }),
+      S.phoneSetCall({ contact = "custom.mom", direction = "outgoing", kind = "ordinary" }),
       S.phoneRunCall(),
       S.stop(),
     },
@@ -288,7 +298,7 @@ function T.tests.script_application_lease_balances_input_routing_and_save_captur
   -- The settled call reports one terminal result; the return transition
   -- keeps save capture denied until the owner closes the handle.
   local terminal = settleCall(host, handle)
-  Assert.equal(terminal.contact, "custom.trainer-plain", "the terminal result names its contact")
+  Assert.equal(terminal.contact, "custom.mom", "the terminal result names its contact")
   Assert.equal(terminal.kind, "ordinary", "the terminal result names its call kind")
   local again = host:result(handle)
   Assert.deepEqual(again, terminal, "the terminal result reads back identically until closed")
@@ -301,7 +311,7 @@ function T.tests.script_application_lease_balances_input_routing_and_save_captur
   -- A fresh owner is admitted once the lease is free.
   local second = host:open({
     mode = "call",
-    request = { id = "second-1", contact = "custom.trainer-plain", direction = "outgoing", kind = "ordinary" },
+    request = { id = "second-1", contact = "custom.mom", direction = "outgoing", kind = "ordinary" },
     parentOwner = "script:second-parent",
   })
   host:cancel("test hangup")
@@ -316,7 +326,7 @@ function T.tests.script_application_lease_balances_input_routing_and_save_captur
   local PokegearApplicationTask = require("libs.hgss.src.script.tasks.PokegearApplicationTask")
   local third = host:open({
     mode = "call",
-    request = { id = "third-1", contact = "custom.trainer-plain", direction = "outgoing", kind = "ordinary" },
+    request = { id = "third-1", contact = "custom.mom", direction = "outgoing", kind = "ordinary" },
     parentOwner = "script:third-parent",
   })
   local cancels = 0
@@ -328,7 +338,7 @@ function T.tests.script_application_lease_balances_input_routing_and_save_captur
   local taskCtx = { services = { pokegearApplications = host }, input = { uiEvents = {} } }
   local taskState = PokegearApplicationTask.create({
     kind = "call",
-    request = { id = "third-1", contact = "custom.trainer-plain", direction = "outgoing", kind = "ordinary" },
+    request = { id = "third-1", contact = "custom.mom", direction = "outgoing", kind = "ordinary" },
     parentOwner = "script:third-parent",
   }, taskCtx)
   PokegearApplicationTask.cancel(taskState, "test cancellation", taskCtx)
@@ -369,12 +379,12 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
   local host, _ = openHost(record, world, audio)
   local taskCtx = { services = { pokegearApplications = host }, input = { uiEvents = {} } }
 
-  -- Open through the scheduler task so the task owns the immutable
-  -- request identity, then drive the invitation past its committed
-  -- stage: readiness stages exactly once at the source program step.
+  -- Open through the scheduler task, then drive the source-backed
+  -- savings choice through its durable effect before losing the handle.
+  world.flags.savingsChoice = false
   local taskState = PokegearApplicationTask.create({
     kind = "call",
-    request = { id = "invite-1", contact = "custom.leader-falkner", direction = "outgoing", kind = "rematch" },
+    request = { id = "offer-1", contact = "custom.mom", direction = "outgoing", kind = "ordinary" },
     parentOwner = "script:invite-parent",
   }, taskCtx)
   for _ = 1, 10 do
@@ -385,11 +395,16 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
   end
   local handle = host:activeHandle()
   if handle ~= nil then
-    settleCall(host, handle)
+    for _ = 1, 20 do
+      if host:result(handle) ~= nil then
+        break
+      end
+      host:step(handle, { { type = "confirm" } })
+    end
   end
   Assert.isTrue(
-    world.rematchReady["custom.leader-falkner"] == true,
-    "the invitation stages its readiness at the committed program step"
+    world.flags.savingsChoice == true,
+    "the source choice commits its durable effect before result publication"
   )
   local dialsAfterCommit = audio.dials
   Assert.isTrue(dialsAfterCommit >= 1, "the committed call dialled exactly through its audio boundary")
@@ -414,10 +429,7 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
   )
   Assert.isFalse(host:isActive(), "the fault never recreates the lost conversation")
   Assert.equal(audio.dials, dialsAfterCommit, "the fault replays no dial tone")
-  Assert.isTrue(
-    world.rematchReady["custom.leader-falkner"] == true,
-    "the fault neither repeats nor undoes the committed readiness"
-  )
+  Assert.isTrue(world.flags.savingsChoice == true, "the fault neither repeats nor undoes the committed choice")
 
   -- Repeated cancellation after the fault stays terminal: no error, no
   -- replay, no rollback.
@@ -425,18 +437,94 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
   PokegearApplicationTask.cancel(taskState, "test cancellation", taskCtx)
   Assert.isFalse(host:isActive(), "cancelling a faulted task recreates nothing")
   Assert.equal(audio.dials, dialsAfterCommit, "cancellation replays no conversation audio")
-  Assert.isTrue(world.rematchReady["custom.leader-falkner"] == true, "cancellation preserves the committed readiness")
+  Assert.isTrue(world.flags.savingsChoice == true, "cancellation preserves the committed choice")
 
   -- The released line still opens fresh: the fault consumed nothing it
   -- did not own.
   local fresh = host:open({
     mode = "call",
-    request = { id = "fresh-1", contact = "custom.trainer-plain", direction = "outgoing", kind = "ordinary" },
+    request = { id = "fresh-1", contact = "custom.mom", direction = "outgoing", kind = "ordinary" },
     parentOwner = "script:fresh-parent",
   })
-  settleCall(host, fresh)
+  host:cancel("fresh call cleanup")
   host:close(fresh)
   Assert.isTrue(host:isStableForSave(), "the faulted host still settles fresh calls cleanly")
+end
+
+function T.tests.menu_calls_return_to_list_while_host_calls_retain_their_result()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: menu calls cannot return to their contact list"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 77 }, { catalog = record.catalog })
+  state:registerContact("custom.trainer-plain")
+  state:registerContact("custom.leader-falkner")
+  local audio = countingAudio()
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = { greeting = "custom.greeting" },
+    world = worldFixture(),
+    audio = audio,
+    random = PokegearRandom.new(77),
+  })
+
+  local function dialSelected()
+    controller:updateFixed({ { type = "confirm" } })
+    controller:updateFixed({ { type = "confirm" } })
+    return controller:status().view.call
+  end
+
+  local first = dialSelected()
+  Assert.notNil(first, "the first contact starts a menu call")
+  local firstId = first.id
+  controller:updateFixed({ { type = "cancel" }, { type = "cancel" } })
+  local returned = controller:status()
+  Assert.isFalse(returned.busy, "a completed menu call releases the child call owner")
+  Assert.isFalse(returned.nestedCancel, "the returned list no longer owns nested cancel")
+  Assert.isTrue(returned.dismissible, "the returned list permits gear dismissal")
+  Assert.isNil(returned.view.call, "the returned list has no stale call view")
+  Assert.isNil(controller:takeResult(), "a menu call result does not escape to a script host")
+
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  local second = dialSelected()
+  Assert.notNil(second, "the next registered contact starts another call")
+  Assert.equal("custom.leader-falkner", second.contact, "the contact list remains usable after a call")
+  Assert.isTrue(firstId ~= second.id, "each menu dial receives a distinct call id")
+  controller:dispose()
+
+  local noSignalWorld = worldFixture()
+  noSignalWorld.signal = "none"
+  local noSignal = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = { greeting = "custom.greeting" },
+    world = noSignalWorld,
+    audio = countingAudio(),
+    random = PokegearRandom.new(78),
+  })
+  noSignal:updateFixed({ { type = "confirm" }, { type = "confirm" }, { type = "cancel" } })
+  Assert.isFalse(noSignal:status().busy, "an immediate no-signal result returns to the list")
+  Assert.isNil(noSignal:status().view.call, "an immediate no-signal result releases its call view")
+
+  local hostWorld = worldFixture()
+  hostWorld.signal = "none"
+  local host, _ = openHost(record, hostWorld, countingAudio())
+  local handle = openCall(host, "host-terminal")
+  local terminal = settleCall(host, handle)
+  Assert.deepEqual(host:result(handle), terminal, "the host retains its terminal result")
+  Assert.deepEqual(host:result(handle), terminal, "the host result remains stable until close")
+  host:close(handle)
+  Assert.isFalse(host:isActive(), "the host closes and releases its own child once")
+  Assert.throws(function()
+    host:result(handle)
+  end, "a closed host call rejects its stale handle")
 end
 
 -- Cancellation at each foreground stage stays terminal and exactly-once:
@@ -517,11 +605,10 @@ function T.tests.call_cancellation_is_terminal_at_each_stage_and_disposal_releas
   Assert.notNil(controller:status().view.call, "choosing Call starts its conversation")
   controller:updateFixed({ { type = "cancel" } })
   local terminal = controller:takeResult()
-  Assert.notNil(terminal, "call cancellation reports its terminal result")
-  Assert.equal(terminal.contact, "custom.trainer-plain", "the cancelled result names its contact")
-  Assert.equal(terminal.kind, "ordinary", "the cancelled result names its call kind")
+  Assert.isNil(terminal, "a menu cancellation does not publish a script-host result")
+  Assert.isFalse(controller:status().busy, "a menu cancellation returns to list mode")
   controller:updateFixed({ { type = "cancel" } })
-  Assert.deepEqual(controller:takeResult(), terminal, "repeated cancellation replays no hangup")
+  Assert.isNil(controller:takeResult(), "repeated cancellation does not publish a result")
   Assert.equal(audio.hangups, 1, "call cancellation unwinds its tones exactly once")
   controller:dispose()
   controller:dispose()
