@@ -164,6 +164,7 @@ local function expectedFiles()
     end
   end
   expected[HGSS_SOURCE_ROOT .. "/field/FollowerInteractionEngine.lua"] = true
+  expected["game/hgss/src/field/FieldBattleCoordinator.lua"] = true
   return expected
 end
 

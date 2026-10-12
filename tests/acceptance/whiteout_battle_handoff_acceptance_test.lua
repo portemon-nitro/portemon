@@ -119,7 +119,7 @@ local function advanceRetailLoss(game, observeStaticBlackout)
     local messageFadeCompletesThisTick = observeStaticBlackout
       and blackout.phase == "message_in"
       and blackout.coverAlpha == 0
-    local battle = game.runtime.battleRuntime
+    local battle = game.runtime.battleCoordinator:activeBattle()
     if battle ~= nil then
       local status = battle:status()
       if status.phase == "running" and status.request ~= nil then

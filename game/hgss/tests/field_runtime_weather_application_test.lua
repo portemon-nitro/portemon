@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
@@ -199,6 +200,7 @@ local function runtimeWithClock(catalog, calls, currentMap)
     },
     fieldEntranceIndicator = { updateFixed = function() end },
   }, FieldRuntime)
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
   runtime.worldSwapCoordinator = FieldWorldSwapCoordinator.new(runtime)
   return runtime
 end

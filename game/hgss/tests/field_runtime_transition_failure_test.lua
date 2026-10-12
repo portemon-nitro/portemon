@@ -8,6 +8,7 @@
 local Assert = require("tests.support.Assert")
 local S = require("gen4.script")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local FieldState = require("game.hgss.src.field.FieldState")
 local Registry = require("libs.script.src.Registry")
 local ScriptComposition = require("libs.script.src.Composition")
@@ -55,6 +56,7 @@ local function runtimeWithTransitionError(transitionError)
       end,
     },
   }, FieldRuntime)
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
   return runtime, calls
 end
 

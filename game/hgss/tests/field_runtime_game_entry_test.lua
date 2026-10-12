@@ -5,6 +5,7 @@ local Assert = require("tests.support.Assert")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local T = {}
@@ -233,6 +234,9 @@ local function captureRuntime(overrides)
   for key, value in pairs(overrides or {}) do
     runtime[key] = value
   end
+  if runtime.battleCoordinator == nil then
+    runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
+  end
   if runtime.saveCoordinator == nil then
     runtime.saveCoordinator = FieldSaveCoordinator.new(runtime)
   end
@@ -368,6 +372,7 @@ function T.warp_completion_does_not_request_an_implicit_save()
       advance = function() end,
     },
   }, FieldRuntime)
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
   runtime:update(0)
 
   Assert.isTrue(completionConsumed, "the transition completion edge is consumed")

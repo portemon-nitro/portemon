@@ -6,6 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 
 local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
 
@@ -41,8 +42,7 @@ end
 ---@param battle table live application battle lifetime in an unsafe subflow
 ---@return table runtime double with a stable session behind the active battle
 local function runtimeBehindBattle(battle)
-  return {
-    battleRuntime = battle,
+  local runtime = {
     pokemonMenu = nil,
     playerAvatar = nil,
     session = {
@@ -60,6 +60,9 @@ local function runtimeBehindBattle(battle)
       applicationHost = nil,
     },
   }
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
+  runtime.battleCoordinator.battleRuntime = battle
+  return runtime
 end
 
 function T.manual_save_stays_busy_through_battle_and_completion()

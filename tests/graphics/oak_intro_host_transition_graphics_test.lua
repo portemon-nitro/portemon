@@ -5,6 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local NewGame = require("game.hgss.src.newgame.NewGame")
@@ -258,7 +259,7 @@ local function bootCoveredField(scope)
   local fakeFog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = fakeFogTable }
   local originalNew = FieldRuntime.new
   FieldRuntime.new = function(_, _)
-    return setmetatable({
+    local runtime = setmetatable({
       cacheFs = cache,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       uiManifest = FieldUiFixture.fieldStateManifest(),
@@ -454,6 +455,8 @@ local function bootCoveredField(scope)
       },
       applyZoomChange = function() end,
     }, FieldRuntime)
+    runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
+    return runtime
   end
   local ok, state = pcall(FieldState.new, { saveId = "save-00000001", versionId = "heartgold" }, {
     topologyProvider = function(width, height)

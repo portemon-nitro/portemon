@@ -66,6 +66,8 @@ local FieldPresentation = require("data.manifests.field_presentation")
 local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
+local CAMERA_PROFILES_PATH = FieldCameraCache.profilesPath()
 local LocalClock = require("game.src.LocalClock")
 local RepoFs = require("libs.storage.src.RepoFs")
 local WindowConfig = require("game.src.WindowConfig")
@@ -166,6 +168,7 @@ end
 ---@field screenTopology ScreenTopology?
 ---@field fieldPixelScale FieldPixelScale
 ---@field saveStatus string?
+---@field errorText string? most recent field battle admission or lifecycle failure
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
 ---@field savePublished boolean whether the reserved record has been published
 ---@field saveCoordinator FieldSaveCoordinator required save capture/publication owner
@@ -185,8 +188,7 @@ end
 ---@field martService MartService the live mart inventory/session service
 ---@field martHost table<string, unknown> the one script-owned mart child host
 ---@field martStockResolver function the selected mart stock provider
----@field battleRuntime table<string, unknown>? the owned application battle lifetime (nil outside battles)
----@field battlePresentation table<string, unknown>? presentation port for owned battles
+---@field battleCoordinator FieldBattleCoordinator concrete owner of the battle lifetime
 ---@field pendingEncounterId integer|nil prepared unconsumed encounter identity
 ---@field pendingEncounter table<string, unknown>? prepared unconsumed encounter
 ---@field _trainerCatalog table<string, unknown>? composed immutable trainer template catalog (nil before composition)
@@ -195,7 +197,6 @@ end
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
 ---@field dexKnowledge table<string, unknown>? the owned dex knowledge
 ---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
----@field _lastBattleResult table<string, unknown>? latest committed battle outcome words
 ---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
 ---@field menuLaneWarps table<string, unknown>? the long-lived menu-origin warp service (nil before composition / after teardown)
@@ -260,100 +261,6 @@ FieldRuntime.__index = FieldRuntime
 ---@field replacement boolean
 ---@field previous FieldCoverage?
 ---@field state "prepared"|"committed"|"released"
-
-local NEXT_BATTLE_LAUNCH_ID = 0
-local CAMERA_PROFILES_PATH = FieldCameraCache.profilesPath()
-
--- Outdoor background identities selecting source-daylight scenes; every
--- other background plays under its interior band. Mirrors the source
--- background identity order behind the presentation scene inventory.
-local OUTDOOR_BATTLE_BACKGROUNDS = {
-  general = true,
-  ocean = true,
-  city = true,
-  forest = true,
-  mountain = true,
-  snow = true,
-}
-
--- Battle-private standing-tile water set behind MetatileBehavior_IsSurfableWater
--- (src/metatile_behavior.c). Battle scene selection keeps its own copy so
--- field movement keeps using MetatileBehavior.isSurfableWater unchanged.
-local BATTLE_SURFABLE_WATER_BEHAVIORS = {
-  [16] = true,
-  [17] = true,
-  [18] = true,
-  [19] = true,
-  [20] = true,
-  [21] = true,
-  [25] = true,
-  [42] = true,
-  [80] = true,
-  [81] = true,
-  [82] = true,
-  [83] = true,
-  [115] = true,
-  [120] = true,
-  [124] = true,
-}
-
--- Battle terrain class for one standing metatile behavior, in the precedence
--- of FieldSystem_GetTerrainFromStandingTile (src/battle/battle_setup.c):
--- ice, tall/very tall grass, sand, snow, marsh mud, cave floor
--- (include/constants/metatile_behavior.h), then the surfable-water flag set.
--- Returns nil when no special class applies so the background default holds.
----@param behavior integer?
----@return string? battle terrain class, nil when the background default applies
-local function battleTerrainForStandingBehavior(behavior)
-  if behavior == nil then
-    return nil
-  end
-  if behavior == 32 then
-    return "ice"
-  end
-  if MetatileBehavior.isTallGrass(behavior) or MetatileBehavior.isVeryTallGrass(behavior) then
-    return "grass"
-  end
-  if behavior == 33 then
-    return "sand"
-  end
-  if behavior == 168 then
-    return "snow"
-  end
-  if behavior == 164 then
-    return "great_marsh"
-  end
-  if behavior == 8 then
-    return "cave"
-  end
-  if BATTLE_SURFABLE_WATER_BEHAVIORS[behavior] == true then
-    return "water"
-  end
-  return nil
-end
-
--- Default battle terrain per background family when the standing behavior
--- names none explicitly.
-local DEFAULT_BATTLE_TERRAINS = {
-  general = "plain",
-  ocean = "water",
-  city = "building",
-  forest = "grass",
-  mountain = "mountain",
-  snow = "snow",
-  building_1 = "building",
-  building_2 = "building",
-  building_3 = "building",
-  cave_1 = "cave",
-  cave_2 = "cave",
-  cave_3 = "cave",
-  will = "will",
-  koga = "koga",
-  bruno = "bruno",
-  karen = "karen",
-  lance = "lance",
-  distortion_world = "distortion_world",
-}
 
 ---@param avatars table[]
 local function validateAvatarConfig(avatars)
@@ -1698,11 +1605,8 @@ function FieldRuntime:update(dt)
   -- Step encounters were already considered once per fixed tick above. A
   -- presented launch advances only through its envelope's fixed driver,
   -- never through this host-update pump as well.
-  if self.battleRuntime ~= nil or self._battleLaunch ~= nil then
-    local launch = self._battleLaunch
-    if launch == nil or launch.presented ~= true then
-      self:updateBattle()
-    end
+  if self.battleCoordinator:shouldPumpFromHost() then
+    self.battleCoordinator:updateBattle()
   end
   -- Lifetimes may have settled or released during pumping, so reconcile
   -- the gate again before the next update observes it.
@@ -1807,32 +1711,18 @@ function FieldRuntime:unbindPartyIconPreparation(binding)
   end
 end
 
--- Binds the per-launch presented-battle factory: the runtime calls it once
--- with a detached launch descriptor at admission and uses the fresh
--- five-operation port it returns for that launch only. A stored disposable
--- port can never span two launches, so production binds a factory instead.
--- Mirrors the party preparation binding: one owner, monotonically
--- increasing identities, and stale unbinds never detach a replacement.
----@param factory fun(descriptor: table<string, unknown>): table<string, unknown> per-launch presentation factory
----@return integer binding identity for the presented lifetime
+-- Binds the per-launch presented-battle factory.
+---@param factory fun(descriptor: table<string, unknown>): table<string, unknown>
+---@return integer binding identity
 function FieldRuntime:bindBattlePresentation(factory)
-  assert(type(factory) == "function", "battle presentation binding requires its factory function")
-  assert(self._battlePresentationFactory == nil, "one battle presentation binding owns the presented lifetime")
-  self._battlePresentationBindingId = (self._battlePresentationBindingId or 0) + 1
-  self._battlePresentationFactory = { id = self._battlePresentationBindingId, make = factory }
-  self._battlePresentationWithdrawn = false
-  return self._battlePresentationBindingId
+  return self.battleCoordinator:bindBattlePresentation(factory)
 end
 
--- Removes only the matching binding: a stale unbind never drops a
--- replacement presentation, and launches admitted after disposal fail at
--- admission instead of presenting without a screen.
----@param binding integer binding identity from bindBattlePresentation
+---@param binding integer binding identity
 function FieldRuntime:unbindBattlePresentation(binding)
-  local current = self._battlePresentationFactory
-  if current ~= nil and current.id == binding then
-    self._battlePresentationFactory = nil
-    self._battlePresentationWithdrawn = true
+  local coordinator = self.battleCoordinator
+  if coordinator ~= nil then
+    coordinator:unbindBattlePresentation(binding)
   end
 end
 
@@ -2093,13 +1983,9 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
   else
     self.dexKnowledge = PokedexKnowledge.new({ species = speciesRefs })
   end
-  self.battleRuntime = nil
-  self._battleLaunch = nil
-  self._battleReceipt = nil
-  self.battlePresentation = nil
+  self.battleCoordinator = FieldBattleCoordinator.new(self)
   self.pendingEncounterId = nil
   self.pendingEncounter = nil
-  self._lastBattleResult = nil
   -- The narrow battle host for script battle tasks: launch, status, and
   -- result reads delegate to the runtime's battle face. The adapter (not
   -- the whole runtime) is what scheduler services carry.
@@ -2110,9 +1996,7 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
     -- launching task: its defeat routes to the authored continuation,
     -- never to automatic recovery. Direct and step launches keep the
     -- automatic route. The mark lands synchronously before any poll.
-    if owner._battleLaunch ~= nil and owner._battleLaunch.launchId == launchId then
-      owner._battleLaunch.scripted = true
-    end
+    owner.battleCoordinator:markScriptedLaunch(launchId)
     return launchId
   end
   local function hostStatus(_, launchId)
@@ -2124,18 +2008,10 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
   self._battleHost = { launchBattle = hostLaunch, battleStatus = hostStatus, lastBattleResult = hostResult }
 end
 
--- Attaches the presentation port owned battles present through. Without
--- an attached port, owned battles acknowledge immediately; an attached
--- later UI may instead remain waiting, which holds the lifecycle without
--- touching simulation.
+-- Attaches the presentation port used by field-owned battles.
 ---@param port table<string, unknown>
 function FieldRuntime:attachBattlePresentation(port)
-  assert(type(port) == "table", "battle presentation stays a record")
-  assert(type(port.enter) == "function", "battle presentation implements enter")
-  assert(type(port.present) == "function", "battle presentation implements present")
-  assert(type(port.leave) == "function", "battle presentation implements leave")
-  assert(type(port.dispose) == "function", "battle presentation implements dispose")
-  self.battlePresentation = port
+  self.battleCoordinator:attachBattlePresentation(port)
 end
 
 -- Builds the detached scenario for one launch request from the prepared
@@ -2146,7 +2022,7 @@ end
 -- untouched, and unknown trainer identities fail loudly.
 ---@param request table<string, unknown>
 ---@return table<string, unknown> detached scenario fragment
-function FieldRuntime:_scenarioForRequest(request)
+function FieldRuntime:buildBattleScenario(request)
   local HgssBattleScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   assert(type(request) == "table" and type(request.kind) == "string", "scenario builds need their request")
   local live = { party = self.monService, bag = self.bagService, world = self.scripts.worldState }
@@ -2165,7 +2041,7 @@ function FieldRuntime:_scenarioForRequest(request)
     if self.pendingEncounter ~= nil then
       local pending = self.pendingEncounter --[[@as table<string, unknown>]]
       if payload.attemptId == nil or payload.attemptId == pending.id then
-        local encounter = self:_consumePendingEncounter()
+        local encounter = self:consumePendingEncounter()
         local mons = encounter.mons --[[@as table<integer, unknown>]]
         assert(type(mons) == "table" and type(mons[1]) == "table", "prepared encounters carry their mon")
         local first = mons[1] --[[@as table<string, unknown>]]
@@ -2205,6 +2081,18 @@ function FieldRuntime:_scenarioForRequest(request)
     )
   end
   return HgssBattleScenarioFactory.fromScript(request.payload --[[@as table<string, unknown>]], live)
+end
+
+---@return table<string, unknown> the consumed prepared encounter
+function FieldRuntime:consumePendingEncounter()
+  local pending = assert(self.pendingEncounter, "no prepared encounter to consume")
+  local id = self.pendingEncounterId
+  self.pendingEncounter = nil
+  self.pendingEncounterId = nil
+  if self._encounters ~= nil and id ~= nil then
+    return self._encounters:consume(id)
+  end
+  return pending
 end
 
 -- Materializes one bare species/level foe into a full mon record through
@@ -2349,72 +2237,14 @@ function FieldRuntime:_trainerPayload(payload)
   }
 end
 
--- Starts the owned application battle lifetime for one launch request and
--- freezes player input until it returns. Only one battle runs at a time;
--- presentation readiness (attached or default) gates entry and return.
----@param args { request: table<string, unknown>, scenario: table<string, unknown>?, presentation: table<string, unknown>?, seed: integer? }
+---@param args table<string, unknown>
 ---@return table<string, unknown> the owned application battle lifetime
 function FieldRuntime:startBattle(args)
-  assert(type(args) == "table", "battle launches require an argument record")
-  assert(self.battleRuntime == nil, "a battle is already active")
-  local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
-  local request = assert(args.request, "battle launches require their request")
-  local scenario = args.scenario or self:_scenarioForRequest(request)
-  -- Live consequence owners ride along so resolution stages through
-  -- them: the bag and dex owners plus the player money facts. Prize
-  -- inputs, captures, planned consumption, and roamer deltas arrive from
-  -- explicit drivers; without them the runtime stages only what the
-  -- executed battle determines.
-  local playerFacts = nil
-  if self.playerData ~= nil and self.playerDataContext ~= nil then
-    playerFacts = { record = self.playerData, context = self.playerDataContext }
-  end
-  -- The presentation port resolves per launch: an explicit caller port
-  -- wins, then the bound per-launch factory's fresh port for its admitted
-  -- launch, then the stored port. A presented field without its bound
-  -- factory never implicitly succeeds headless at this boundary.
-  local presentation = args.presentation
-  if presentation == nil then
-    local launch = self._battleLaunch
-    if launch ~= nil and launch.presented == true and launch.request.id == request.id and launch.port ~= nil then
-      presentation = launch.port
-    else
-      presentation = self.battlePresentation
-    end
-  end
-  local battle = BattleRuntime.new({
-    request = request,
-    scenario = scenario,
-    presentation = presentation,
-    party = self.monService,
-    bag = self.bagService,
-    dex = self.dexKnowledge,
-    player = playerFacts,
-    seed = args.seed,
-  })
-  self.battleRuntime = battle
-  if self.session ~= nil then
-    self.session:setBattleActive(true)
-  end
-  return battle
+  return self.battleCoordinator:startBattle(args)
 end
 
--- Reconciles the derived input gate from the current battle ownership:
--- a field-owned launch or battle handle plus any directly constructed
--- battle over the same live party. Both edges assign, so the gate never
--- latches true and an owned launch or return interval is never cleared
--- while it still owns the field.
 function FieldRuntime:_reconcileBattleGate()
-  if self.session == nil then
-    return
-  end
-  local owned = self.battleRuntime ~= nil or self._battleLaunch ~= nil
-  local direct = false
-  if self.monService ~= nil then
-    local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
-    direct = BattleRuntime.isActiveFor(self.monService)
-  end
-  self.session:setBattleActive(owned or direct)
+  self.battleCoordinator:reconcileBattleGate()
 end
 
 -- Accepts one complete battle only after its native consequences are
@@ -2424,8 +2254,8 @@ end
 ---@param battle table<string, unknown> the matching live battle
 ---@param status table<string, unknown> terminal battle status
 ---@return { result: string, sourceResult: integer, receipt: table<string, unknown>, successful: boolean }
-function FieldRuntime:_acceptCommittedBattleStatus(launch, battle, status)
-  assert(self.battleRuntime == battle, "only the owned battle can settle its field launch")
+function FieldRuntime:acceptCommittedBattleStatus(launch, battle, status)
+  assert(self.battleCoordinator:activeBattle() == battle, "only the owned battle can settle its field launch")
   assert(status.phase == "complete", "only a complete battle can be accepted")
   local receipt = status.outcomeReceipt
   assert(type(receipt) == "table" and receipt.committed == true, "battle completed without a committed outcome receipt")
@@ -2434,7 +2264,7 @@ function FieldRuntime:_acceptCommittedBattleStatus(launch, battle, status)
   if launch ~= nil then
     launch.result = result
     launch.sourceResult = sourceResult
-    self:_adoptBattlePlayerMoney(launch, receipt)
+    self.battleCoordinator:adoptCommittedPlayerMoney(launch, receipt)
   end
   return {
     result = result,
@@ -2444,980 +2274,30 @@ function FieldRuntime:_acceptCommittedBattleStatus(launch, battle, status)
   }
 end
 
--- Drives the owned battle once per runtime update and returns through the
--- stable field when it settles. A committed battle records its outcome
--- words for script result reads; a failed battle faults the runtime
--- loudly instead of resuming the story as a success. Presented launches
--- advance only here: the host-update pump skips them, and the envelope's
--- fixed driver is their sole caller.
 function FieldRuntime:updateBattle()
-  local launch = self._battleLaunch
-  if launch ~= nil and launch.presented == true then
-    self:_updatePresentedBattle(launch)
-    return
-  end
-  if launch ~= nil and launch.phase == "leaving" then
-    local phase, failure = self.overworld:phase()
-    if failure ~= nil or phase == "failed" then
-      launch.phase = "failed"
-      launch.error = failure
-      error(failure or "overworld leave failed", 0)
-    end
-    if phase ~= "absent" then
-      self:_reconcileBattleGate()
-      return
-    end
-    local request = launch.request
-    self:startBattle({ request = request, scenario = launch.scenario })
-    launch.phase = "active"
-  end
-
-  if launch ~= nil and launch.phase == "restoring" then
-    local phase, failure = self.overworld:phase()
-    if failure ~= nil or phase == "failed" then
-      launch.phase = "failed"
-      launch.error = failure
-      error(failure or "overworld restore failed", 0)
-    end
-    if phase ~= "present" then
-      self:_reconcileBattleGate()
-      return
-    end
-    launch.phase = "complete"
-    launch.committed = true
-    self._lastBattleResult = { result = launch.result, sourceResult = launch.sourceResult }
-    self._battleReceipt = launch
-    self._battleLaunch = nil
-    self:_reconcileBattleGate()
-    return
-  end
-
-  local battle = self.battleRuntime
-  if battle == nil then
-    self:_reconcileBattleGate()
-    return
-  end
-  battle:update()
-  local status = battle:status()
-  if status.phase ~= "complete" and status.phase ~= "failed" then
-    self:_reconcileBattleGate()
-    return
-  end
-  local accepted = true
-  local decision = nil
-  if status.phase == "complete" then
-    accepted, decision = pcall(self._acceptCommittedBattleStatus, self, launch, battle, status)
-  end
-  battle:dispose()
-  self.battleRuntime = nil
-  self:_reconcileBattleGate()
-  if status.phase == "failed" or not accepted then
-    local failure = status.error or (not accepted and tostring(decision)) or "the battle reported a failure"
-    if launch ~= nil then
-      launch.phase = "failed"
-      launch.error = failure
-      self._battleReceipt = launch
-      self._battleLaunch = nil
-    end
-    error(failure, 0)
-  end
-  if decision ~= nil then
-    if launch == nil then
-      self._lastBattleResult = { result = decision.result, sourceResult = decision.sourceResult }
-    elseif not decision.successful then
-      launch.phase = "complete"
-      launch.committed = true
-      self._lastBattleResult = { result = decision.result, sourceResult = decision.sourceResult }
-      self._battleReceipt = launch
-      self._battleLaunch = nil
-    else
-      launch.phase = "restoring"
-      self.overworld:requestRestore()
-    end
-  end
-  self:_reconcileBattleGate()
+  return self.battleCoordinator:updateBattle()
 end
 
--- Advances one presented launch through its covered envelope: full field
--- cover before semantic leave, one construction under that cover, ordered
--- playback and exactly-once commit, terminal cover before disposal, and
--- the distinct continuing, scripted-defeat, and automatic-defeat returns.
--- Every wait is level-triggered and idempotent across fixed updates.
----@param launch table<string, unknown> presented launch record
-function FieldRuntime:_updatePresentedBattle(launch)
-  local phase = launch.phase
-  if phase == "covering" then
-    if launch.coverComplete == true then
-      self.overworld:requestLeave()
-      launch.phase = "leaving"
-    end
-    return
-  end
-  if phase == "leaving" then
-    local overworldPhase, failure = self.overworld:phase()
-    if failure ~= nil or overworldPhase == "failed" then
-      launch.phase = "failed"
-      launch.error = failure
-      self.errorText = tostring(failure or "overworld leave failed")
-      return
-    end
-    if overworldPhase ~= "absent" then
-      return
-    end
-    local okConstruct, constructErr = pcall(function()
-      self:startBattle({ request = launch.request })
-    end)
-    if not okConstruct then
-      launch.phase = "failed"
-      launch.error = constructErr
-      self.errorText = tostring(constructErr or "presented battle construction failed")
-      return
-    end
-    launch.phase = "active"
-    return
-  end
-  if phase == "active" then
-    local battle = self.battleRuntime
-    if battle == nil then
-      launch.phase = "failed"
-      launch.error = "presented battle vanished before settlement"
-      self.errorText = tostring(launch.error)
-      return
-    end
-    battle:update()
-    local status = battle:status()
-    if status.phase ~= "complete" and status.phase ~= "failed" then
-      return
-    end
-    if status.phase == "failed" then
-      battle:dispose()
-      self.battleRuntime = nil
-      self:_resumeBattleAudio(launch, true)
-      if self.session ~= nil then
-        self.session:setBattleActive(false)
-        self.session:setForegroundHold(false)
-      end
-      launch.phase = "failed"
-      launch.error = status.error or "the battle reported a failure"
-      self.errorText = tostring(launch.error)
-      self._battleReceipt = launch
-      self._battleLaunch = nil
-      return
-    end
-    local accepted, decision = pcall(self._acceptCommittedBattleStatus, self, launch, battle, status)
-    if not accepted then
-      battle:dispose()
-      self.battleRuntime = nil
-      self:_resumeBattleAudio(launch, true)
-      if self.session ~= nil then
-        self.session:setBattleActive(false)
-        self.session:setForegroundHold(false)
-      end
-      launch.phase = "failed"
-      launch.error = tostring(decision)
-      self.errorText = launch.error
-      self._battleReceipt = launch
-      self._battleLaunch = nil
-      return
-    end
-    assert(decision ~= nil, "a complete presented battle returns its acceptance decision")
-    launch.phase = "terminal"
-    return
-  end
-  if phase == "terminal" then
-    if launch.battleCovered ~= true then
-      return
-    end
-    -- Terminal playback and acknowledgement finished under full battle
-    -- cover: dispose the battle port once while the envelope retains its
-    -- cover. The battle reference stays until the safe field returns so
-    -- the transient save gate and settle loops observe the lifetime.
-    local battle = self.battleRuntime
-    if battle ~= nil then
-      battle:dispose()
-    end
-    local result = launch.result
-    if result == "loss" or result == "draw" then
-      if launch.scripted == true then
-        -- Scripted defeat publishes its receipt while absent for the
-        -- authored continuation and transfers hold and cover there. The
-        -- battle reference releases now (settle loops observe the owned
-        -- lifetime until this handoff); the launch record persists until
-        -- the continuation restores or recovers, keeping the transient
-        -- save gate closed through the transfer.
-        launch.phase = "transfer"
-        launch.committed = true
-        self._lastBattleResult = { result = result, sourceResult = launch.sourceResult }
-        self._battleReceipt = launch
-        self.battleRuntime = nil
-      else
-        self:_beginAutomaticRecovery(launch)
-      end
-    else
-      self.overworld:requestRestore()
-      launch.phase = "restoring"
-    end
-    return
-  end
-  if phase == "restoring" then
-    local overworldPhase, failure = self.overworld:phase()
-    if failure ~= nil or overworldPhase == "failed" then
-      launch.phase = "failed"
-      launch.error = failure
-      self.errorText = tostring(failure or "overworld restore failed")
-      return
-    end
-    if overworldPhase ~= "present" then
-      return
-    end
-    -- The continuing return waits for actual destination scene and actor
-    -- presentation, never for presence alone; only then does field music
-    -- resume once ahead of the reveal.
-    if not self:destinationWorldPresentable() then
-      return
-    end
-    self:acknowledgeDestinationPresentation()
-    self:_resumeBattleAudio(launch, true)
-    launch.phase = "revealing"
-    return
-  end
-  if phase == "revealing" then
-    if launch.revealed ~= true then
-      return
-    end
-    self:_publishPresentedReceipt(launch)
-    return
-  end
-  if phase == "recovering" then
-    self:_pumpAutomaticRecovery(launch)
-    return
-  end
-  if phase == "transfer" then
-    self:_finishScriptedTransfer(launch)
-    return
-  end
-end
-
--- Starts the existing whiteout recovery exactly once for an automatically
--- launched defeat: relocation, healing, follower reset, message, and the
--- scheduled mom and Pokemon Center follow-up stay with that owner. The
--- launch has no launching script to perform the recovery.
----@param launch table<string, unknown> presented launch record
-function FieldRuntime:_beginAutomaticRecovery(launch)
-  if launch.recoveryStarted == true then
-    return
-  end
-  launch.recoveryStarted = true
-  local flow = self.blackoutFlow
-  if flow == nil then
-    launch.phase = "failed"
-    launch.error = "automatic defeat recovery requires its blackout flow"
-    self.errorText = tostring(launch.error)
-    return
-  end
-  local travel = self.fieldTravel
-  if travel == nil or travel.lastHealSpawn == nil then
-    launch.phase = "failed"
-    launch.error = "automatic defeat recovery requires its durable spawn"
-    self.errorText = tostring(launch.error)
-    return
-  end
-  local okStart, runId = pcall(function()
-    return flow:start(travel.lastHealSpawn)
-  end)
-  if not okStart then
-    launch.phase = "failed"
-    launch.error = runId
-    self.errorText = tostring(runId or "automatic defeat recovery failed to start")
-    return
-  end
-  launch.recoveryRunId = runId
-  launch.pendingRecoveryInput = nil
-  launch.phase = "recovering"
-end
-
--- Pumps the automatic recovery through the existing flow until its
--- follow-up is scheduled, then waits for the restored present field and
--- its actual scene readiness before exposing the safe field. The flow is
--- driven directly because no launching script owns its task: the waiting
--- recovery message answers only one queued genuine edge per tick, and
--- every other phase pumps dry. The consumed edge clears whether or not
--- the flow accepted it, so one held press never acknowledges twice. The
--- follow-up runs as a background script since no parent task run exists
--- to parent it to.
----@param launch table<string, unknown> presented launch record
-function FieldRuntime:_pumpAutomaticRecovery(launch)
-  local flow = self.blackoutFlow
-  if flow == nil then
-    launch.phase = "failed"
-    launch.error = "automatic defeat recovery lost its blackout flow"
-    self.errorText = tostring(launch.error)
-    return
-  end
-  if launch.recoveryFollowup ~= true then
-    local status = flow:status()
-    if status.error ~= nil then
-      launch.phase = "failed"
-      launch.error = status.error
-      self.errorText = tostring(status.error)
-      return
-    end
-    if status.complete ~= true then
-      local pending = launch.pendingRecoveryInput
-      launch.pendingRecoveryInput = nil
-      local admitted = type(pending) == "table" and pending.runId == launch.recoveryRunId
-      flow:updateFixed({
-        pressedAction = admitted == true and pending.pressedAction == true,
-        pressedCancel = admitted == true and pending.pressedCancel == true,
-        touchPressed = admitted == true and pending.touchPressed == true,
-      })
-      -- A tick that completes the flow falls through to the follow-up
-      -- below instead of waiting another tick: the restored field and
-      -- its committed receipt publish together, never a tick apart.
-      status = flow:status()
-      if status.error ~= nil then
-        launch.phase = "failed"
-        launch.error = status.error
-        self.errorText = tostring(status.error)
-        return
-      end
-      if status.complete ~= true then
-        return
-      end
-    end
-    local followup = flow:consumeResult(launch.recoveryRunId)
-    if type(followup) ~= "string" then
-      launch.phase = "failed"
-      launch.error = "completed blackout supplies no follow-up"
-      self.errorText = tostring(launch.error)
-      return
-    end
-    local scheduler = self.scripts ~= nil and self.scripts.scheduler or nil
-    if scheduler == nil then
-      launch.phase = "failed"
-      launch.error = "automatic defeat recovery requires its scheduler"
-      self.errorText = tostring(launch.error)
-      return
-    end
-    local composed = scheduler:resolveComposition(followup)
-    if composed == nil then
-      launch.phase = "failed"
-      launch.error = "blackout follow-up script is unavailable: " .. tostring(followup)
-      self.errorText = tostring(launch.error)
-      return
-    end
-    local session = self.session
-    local okChild, childErr = pcall(function()
-      return scheduler:createBackground(composed, nil, session ~= nil and session.tick or 0)
-    end)
-    if not okChild then
-      launch.phase = "failed"
-      launch.error = childErr
-      self.errorText = tostring(childErr or "blackout follow-up failed to schedule")
-      return
-    end
-    launch.recoveryFollowup = true
-  end
-  local overworldPhase, failure = self.overworld:phase()
-  if failure ~= nil or overworldPhase == "failed" then
-    launch.phase = "failed"
-    launch.error = failure
-    self.errorText = tostring(failure or "recovery restore failed")
-    return
-  end
-  if overworldPhase ~= "present" then
-    return
-  end
-  if not self:destinationWorldPresentable() then
-    return
-  end
-  self:acknowledgeDestinationPresentation()
-  -- Defeat transfers music ownership to the recovery path: release the
-  -- hold without replaying, respecting its authored music decision.
-  self:_resumeBattleAudio(launch, false)
-  launch.result = launch.result or "loss"
-  launch.sourceResult = launch.sourceResult or 0
-  self:_publishPresentedReceipt(launch)
-end
-
--- Finishes a scripted-defeat transfer once its authored continuation takes
--- ownership: an observed blackout run that completes and is consumed, or
--- an authored ordinary restoration. Until then the field stays covered
--- and absent under the source script's authority.
----@param launch table<string, unknown> presented launch record
-function FieldRuntime:_finishScriptedTransfer(launch)
-  local overworldPhase, failure = self.overworld:phase()
-  if failure ~= nil or overworldPhase == "failed" then
-    launch.phase = "failed"
-    launch.error = failure
-    self.errorText = tostring(failure or "transfer restore failed")
-    return
-  end
-  if overworldPhase == "present" then
-    self:_resumeBattleAudio(launch, false)
-    if self.session ~= nil then
-      self.session:setBattleActive(false)
-      self.session:setForegroundHold(false)
-    end
-    if self.input ~= nil then
-      self.input:clearAll()
-    end
-    self.battleRuntime = nil
-    self._battleLaunch = nil
-    return
-  end
-  local flow = self.blackoutFlow
-  if flow == nil then
-    return
-  end
-  local status = flow:status()
-  if status.phase ~= "idle" then
-    launch.transferBlackoutSeen = true
-    return
-  end
-  if launch.transferBlackoutSeen ~= true then
-    return
-  end
-  self:_resumeBattleAudio(launch, false)
-  if self.session ~= nil then
-    self.session:setBattleActive(false)
-    self.session:setForegroundHold(false)
-  end
-  if self.input ~= nil then
-    self.input:clearAll()
-  end
-  self.battleRuntime = nil
-  self._battleLaunch = nil
-end
-
--- Battle host observation for script result reads: the latest committed
--- outcome words, or nil when no battle has committed yet.
----@return table<string, unknown>?
 function FieldRuntime:lastBattleResult()
-  return self._lastBattleResult
+  local coordinator = self.battleCoordinator
+  return coordinator ~= nil and coordinator:lastBattleResult() or nil
 end
 
--- Battle host observation for script battle tasks: the owned battle's
--- committed outcome for one launch, or nil when no owned battle carries
--- that identity.
 ---@param launchId string
----@return table<string, unknown>?
+---@return table<string, unknown>? status record
 function FieldRuntime:battleStatus(launchId)
-  local receipt = self._battleReceipt
-  if receipt ~= nil and receipt.launchId == launchId then
-    return {
-      phase = receipt.phase,
-      committed = receipt.committed == true,
-      result = receipt.result,
-      sourceResult = receipt.sourceResult,
-      error = receipt.error,
-    }
-  end
-  local launch = self._battleLaunch
-  if launch ~= nil and launch.launchId == launchId then
-    return {
-      phase = launch.phase,
-      committed = launch.committed == true,
-      result = launch.result,
-      sourceResult = launch.sourceResult,
-      error = launch.error,
-    }
-  end
-  local battle = self.battleRuntime
-  if battle == nil then
-    return nil
-  end
-  return battle:battleStatus(launchId)
+  local coordinator = self.battleCoordinator
+  return coordinator ~= nil and coordinator:battleStatus(launchId) or nil
 end
 
--- Battle host launch for script battle tasks: issues a unique launch
--- identity per call (two runs of one script site never share a commit
--- receipt) and starts the owned battle for the evaluated payload. A bound
--- presented factory takes the covered envelope route (cover first, leave
--- only under full cover); without one the launch keeps its headless
--- leave-first behavior.
----@param spec { launchId: string?, kind: string?, details: table<string, unknown>? }
----@return string the issued launch identity
+---@param spec table<string, unknown>
+---@return string launch identity
 function FieldRuntime:launchBattle(spec)
-  assert(type(spec) == "table", "battle host launches require a spec record")
-  assert(self._battleLaunch == nil and self.battleRuntime == nil, "a field-owned battle is already active")
-  self._battleReceipt = nil
-  NEXT_BATTLE_LAUNCH_ID = NEXT_BATTLE_LAUNCH_ID + 1
-  local tag = spec.launchId or spec.kind or "battle"
-  local launchId = tostring(tag) .. "#" .. tostring(NEXT_BATTLE_LAUNCH_ID)
-  local payload = spec.details or {}
-  assert(type(payload) == "table", "battle host launches carry their payload record")
-  local request = { id = launchId, kind = spec.kind or "wild", payload = payload }
-  if self._battlePresentationFactory ~= nil then
-    return self:_launchPresentedBattle(launchId, request, nil)
-  end
-  assert(self._battlePresentationWithdrawn ~= true, "presented launches require their factory binding")
-  self.overworld:requestLeave()
-  self._battleLaunch = { launchId = launchId, phase = "leaving", request = request }
-  return launchId
+  return self.battleCoordinator:launchBattle(spec)
 end
 
--- Admits one presented launch: captures the launch environment before the
--- field changes, builds the fresh per-launch port through the bound
--- factory, then claims input/foreground and the battle-music policy for
--- the launch lifetime. Semantic leave waits for full field cover under
--- the envelope's fixed driver. A factory failure fails the admission
--- loudly with no partial claim and never impersonates a battle.
----@param launchId string issued launch identity
----@param request table<string, unknown> launch request carrying its identity and kind
----@param method string? encounter method for step admissions, nil otherwise
----@return string the issued launch identity
-function FieldRuntime:_launchPresentedBattle(launchId, request, method)
-  assert(self._battleLaunch == nil and self.battleRuntime == nil, "a field-owned battle is already active")
-  local binding = assert(self._battlePresentationFactory, "presented launches require their factory binding")
-  local environment = self:_captureLaunchEnvironment(request, method)
-  local launch = {
-    launchId = launchId,
-    phase = "covering",
-    request = request,
-    presented = true,
-    scripted = false,
-    environment = environment,
-    coverComplete = false,
-    battleCovered = false,
-    revealed = false,
-    result = nil,
-    sourceResult = nil,
-    committed = false,
-    error = nil,
-    recovery = nil,
-    recoveryFollowup = false,
-    transferBlackoutSeen = false,
-  }
-  local function presentedStatus()
-    return self:_presentedLaunchStatus(launchId)
-  end
-  local function presentedAdvance()
-    self:updateBattle()
-  end
-  local function presentedSubmit(reply)
-    return self:_presentedSubmit(launchId, reply)
-  end
-  local function presentedNotify(event)
-    self:_presentedNotify(launchId, event)
-  end
-  local function presentedRecoveryInput(edge)
-    return self:_presentedRecoveryInput(launchId, edge)
-  end
-  local descriptor = {
-    launchId = launchId,
-    kind = request.kind,
-    scripted = false,
-    environment = environment,
-    audio = self.audio,
-    musicRole = self:_battleMusicRole(request),
-    host = {
-      status = presentedStatus,
-      advance = presentedAdvance,
-      submit = presentedSubmit,
-      notify = presentedNotify,
-      recoveryInput = presentedRecoveryInput,
-    },
-  }
-  local ok, port = pcall(binding.make, descriptor)
-  if not ok or type(port) ~= "table" then
-    self.errorText = tostring(port or "presented battle factory returned no port")
-    error("presented battle admission failed for launch " .. launchId .. ": " .. tostring(self.errorText), 0)
-  end
-  launch.port = port
-  self._battleLaunch = launch
-  -- Claim input and the foreground hold synchronously, before another
-  -- catch-up tick can start a step: held and edge state clears so nothing
-  -- sticks across the envelope boundary.
-  if self.session ~= nil then
-    self.session:setBattleActive(true)
-    self.session:setForegroundHold(true)
-  end
-  if self.input ~= nil then
-    self.input:clearAll()
-  end
-  local audio = self.audio
-  if audio ~= nil and type(audio.suspendFieldPolicy) == "function" then
-    audio:suspendFieldPolicy(launchId)
-  end
-  return launchId
-end
-
--- Captures the actual launch environment before the field changes: source
--- map identity, committed tile and surface, standing behavior, avatar
--- movement mode, and time of day. Explicit source-request environment
--- overrides ride the record untouched for the scenario; the semantic
--- battle background resolves from the map's compiled battle background
--- with the surfing override to ocean, and terrain follows the standing
--- behavior ahead of the background default. Neither scene nor audio
--- selection consumes battle or encounter randomness.
----@param request table<string, unknown> launch request carrying its payload
----@param method string? encounter method for step admissions, nil otherwise
----@return table<string, unknown> detached launch environment
-function FieldRuntime:_captureLaunchEnvironment(request, method)
-  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local session = self.session
-  local map = nil
-  if session ~= nil then
-    map = session.currentMap
-  end
-  if map == nil then
-    map = self.runtimeMap
-  end
-  local background = "general"
-  if type(map) == "table" and type(map.fieldData) == "table" then
-    local compiled = map.fieldData.battleBackground
-    if type(compiled) == "string" and compiled ~= "" then
-      background = compiled
-    end
-  end
-  local player = self.player
-  local fieldX, fieldZ, surfaceId = nil, nil, nil
-  local behavior = nil
-  if player ~= nil then
-    fieldX, fieldZ, surfaceId = player.fieldX, player.fieldZ, player.surfaceId
-    behavior = self:_arrivalBehavior(map, player)
-  end
-  local movementMode = "walking"
-  local avatar = self.playerAvatar
-  if avatar ~= nil and type(avatar.status) == "function" then
-    local okStatus, status = pcall(function()
-      return avatar:status()
-    end)
-    if okStatus and type(status) == "table" and type(status.durableState) == "string" then
-      movementMode = status.durableState
-    end
-  end
-  if movementMode == "surfing" then
-    background = "ocean"
-  end
-  local hour = 12
-  if self.localClock ~= nil then
-    local okClock, now = pcall(function()
-      return self.localClock:nowLocal()
-    end)
-    if okClock and type(now) == "table" and type(now.hour) == "number" then
-      hour = now.hour
-    end
-  end
-  local band = "day"
-  local hourInt = math.floor(hour)
-  if hourInt >= 0 and hourInt < 24 then
-    local okBand, bandName = pcall(TimeOfDayProps.bandForHour, hourInt)
-    if okBand and bandName == "eve" then
-      band = "evening"
-    elseif okBand and bandName == "nite" then
-      band = "night"
-    end
-  end
-  if OUTDOOR_BATTLE_BACKGROUNDS[background] ~= true then
-    band = "day"
-  end
-  local terrain = DEFAULT_BATTLE_TERRAINS[background] or "plain"
-  local standingTerrain = battleTerrainForStandingBehavior(behavior)
-  if standingTerrain ~= nil then
-    terrain = standingTerrain
-  end
-  local sceneKey = background .. "/" .. terrain .. "/" .. band
-  if BattlePresentationCache.parseSceneKey(sceneKey) == nil then
-    error("presented battle resolved an unknown scene context: " .. sceneKey, 0)
-  end
-  local explicit = nil
-  local payload = request.payload
-  if type(payload) == "table" and type(payload.environment) == "table" then
-    explicit = payload.environment
-  end
-  return {
-    mapId = (type(map) == "table" and map.mapId) or nil,
-    fieldX = fieldX,
-    fieldZ = fieldZ,
-    surfaceId = surfaceId,
-    behavior = behavior,
-    movementMode = movementMode,
-    method = method,
-    background = background,
-    terrain = terrain,
-    time = band,
-    sceneKey = sceneKey,
-    sourceEnvironment = explicit,
-  }
-end
-
--- Chooses the source-defined battle music role for one launch: ordinary
--- wild, trainer, or rival roles from the staged presentation manifest.
--- Banks resolve through the normalized audio catalog at playback; a
--- missing manifest or role selects no music instead of guessing.
----@param request table<string, unknown> launch request carrying its kind and payload
----@return string? symbolic battle music role
-function FieldRuntime:_battleMusicRole(request)
-  if self.cacheFs == nil then
-    return nil
-  end
-  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local okManifest, manifest = pcall(BattlePresentationCache.load, self.cacheFs)
-  if not okManifest or type(manifest) ~= "table" then
-    return nil
-  end
-  local roles = manifest.audioRoles
-  if type(roles) ~= "table" then
-    return nil
-  end
-  if request.kind ~= "wild" then
-    local payload = request.payload
-    local rival = type(payload) == "table" and payload.rivalName
-    if type(rival) == "string" and rival ~= "" and type(roles.rival) == "string" then
-      return roles.rival
-    end
-    if type(roles.trainer) == "string" then
-      return roles.trainer
-    end
-    return nil
-  end
-  if type(roles.wild) == "string" then
-    return roles.wild
-  end
-  return nil
-end
-
--- Presented-launch observation for the envelope's fixed driver: the launch
--- phase, the owned battle phase, overworld presence, and recovery
--- ownership. Nil once the launch clears, so stale envelopes drop it.
----@param launchId string
----@return table<string, unknown>? detached launch status snapshot
-function FieldRuntime:_presentedLaunchStatus(launchId)
-  local launch = self._battleLaunch
-  if launch == nil or launch.launchId ~= launchId then
-    return nil
-  end
-  local snapshot = {
-    phase = launch.phase,
-    result = launch.result,
-    sourceResult = launch.sourceResult,
-    committed = launch.committed == true,
-    scripted = launch.scripted == true,
-    battlePhase = nil,
-    overworld = nil,
-    blackoutPhase = nil,
-  }
-  local battle = self.battleRuntime
-  if battle ~= nil then
-    local okBattle, battleStatus = pcall(function()
-      return battle:status()
-    end)
-    if okBattle and type(battleStatus) == "table" then
-      snapshot.battlePhase = battleStatus.phase
-    end
-  end
-  if self.overworld ~= nil then
-    local okOverworld, phase = pcall(function()
-      return self.overworld:phase()
-    end)
-    if okOverworld then
-      snapshot.overworld = phase
-    end
-  end
-  if self.blackoutFlow ~= nil then
-    local okFlow, flowStatus = pcall(function()
-      return self.blackoutFlow:status()
-    end)
-    if okFlow and type(flowStatus) == "table" then
-      snapshot.blackoutPhase = flowStatus.phase
-    end
-  end
-  return snapshot
-end
-
--- Queues one genuine recovery edge for the waiting defeat message: only
--- the matching launch admits it, only while recovering, and only while
--- the recovery flow itself waits for input. Anything else is dropped and
--- never deferred, so a press under cover or ahead of the wait cannot
--- answer it later. At most one edge waits per recovery run; the pump
--- consumes it exactly once on the next tick.
----@param launchId string owning launch identity
----@param edge table<string, unknown> one-shot semantic recovery edge
----@return boolean admitted
-function FieldRuntime:_presentedRecoveryInput(launchId, edge)
-  local launch = self._battleLaunch
-  if launch == nil or launch.launchId ~= launchId or launch.phase ~= "recovering" then
-    return false
-  end
-  local flow = self.blackoutFlow
-  if flow == nil then
-    return false
-  end
-  local okStatus, status = pcall(function()
-    return flow:status()
-  end)
-  if not okStatus or type(status) ~= "table" or status.waitingInput ~= true then
-    return false
-  end
-  if type(edge) ~= "table" then
-    return false
-  end
-  local pending = nil
-  if edge.pressedAction == true then
-    pending = { pressedAction = true }
-  elseif edge.pressedCancel == true then
-    pending = { pressedCancel = true }
-  elseif edge.touchPressed == true then
-    pending = { touchPressed = true }
-  end
-  if pending == nil then
-    return false
-  end
-  pending.runId = launch.recoveryRunId
-  launch.pendingRecoveryInput = pending
-  return true
-end
-
--- Presented decision submission behind the battle screen's accepted-choice
--- boundary: only the live launch battle answers, and only while it owns
--- an open request.
----@param launchId string
----@param reply table<string, unknown> sealed controller reply
----@return boolean stored
----@return table<string, unknown>? input error when the reply is rejected
-function FieldRuntime:_presentedSubmit(launchId, reply)
-  local launch = self._battleLaunch
-  if launch == nil or launch.launchId ~= launchId then
-    return false, { message = "no presented battle owns this launch" }
-  end
-  local battle = self.battleRuntime
-  if battle == nil then
-    return false, { message = "the presented battle is not constructed yet" }
-  end
-  return battle:submit(reply)
-end
-
--- Presented cover handshake from the envelope: each event fires its phase
--- transition exactly once; stale or out-of-phase events are ignored.
----@param launchId string
----@param event string cover-complete, battle-covered, or revealed
-function FieldRuntime:_presentedNotify(launchId, event)
-  local launch = self._battleLaunch
-  if launch == nil or launch.launchId ~= launchId then
-    return
-  end
-  if event == "cover-complete" then
-    if launch.phase == "covering" then
-      launch.coverComplete = true
-    end
-  elseif event == "battle-covered" then
-    if launch.phase == "terminal" then
-      launch.battleCovered = true
-    end
-  elseif event == "revealed" then
-    if launch.phase == "revealing" then
-      launch.revealed = true
-    end
-  elseif event == "screen-failed" then
-    -- A failed screen fails the launch loudly before commitment, without
-    -- publishing any result. After commitment (terminal and later)
-    -- mechanics are never rolled back or rerun to repair visuals.
-    if launch.phase == "covering" or launch.phase == "leaving" or launch.phase == "active" then
-      if self.battleRuntime ~= nil then
-        local _, _ = pcall(function()
-          return self.battleRuntime:dispose()
-        end)
-        self.battleRuntime = nil
-      end
-      self:_resumeBattleAudio(launch, true)
-      if self.session ~= nil then
-        self.session:setBattleActive(false)
-        self.session:setForegroundHold(false)
-      end
-      launch.phase = "failed"
-      launch.error = "the presented battle screen failed"
-      self.errorText = tostring(launch.error)
-      self._battleReceipt = launch
-      self._battleLaunch = nil
-    end
-  end
-end
-
--- Releases the battle-music claim for one launch: a matching continuing
--- return restores the current field policy once, while defeat transfers
--- ownership to the blackout and source recovery path untouched.
----@param launch table<string, unknown> presented launch record
----@param restoreMusic boolean true to restore the current field policy once
-function FieldRuntime:_resumeBattleAudio(launch, restoreMusic)
-  local audio = self.audio
-  if audio == nil or type(audio.resumeFieldPolicy) ~= "function" then
-    return
-  end
-  audio:resumeFieldPolicy(launch.launchId, restoreMusic == true)
-end
-
--- Adopts the committed receipt's validated player candidate money into the
--- live profile exactly once: prize money and blackout debits reach the live
--- wallet through this boundary, since the committer stages but never
--- publishes player money itself. Later saves capture the adopted money.
----@param launch table<string, unknown> launch record carrying its result
----@param receipt table<string, unknown> committed outcome receipt
-function FieldRuntime:_adoptBattlePlayerMoney(launch, receipt)
-  if launch.moneyAdopted == true then
-    return
-  end
-  launch.moneyAdopted = true
-  local candidate = receipt.player
-  if type(candidate) ~= "table" or type(candidate.profile) ~= "table" then
-    return
-  end
-  local live = self.playerData
-  if type(live) ~= "table" or type(live.profile) ~= "table" then
-    return
-  end
-  -- The live profile is borrowed by scripts, the mart, and the run gate:
-  -- adopt the wallet in place so every borrower keeps observing and
-  -- persisting one record.
-  live.profile.money = candidate.profile.money
-end
-
--- Publishes one committed continuing receipt only after the restored field
--- is revealed: usable field completion reaches scripts and saves solely
--- through this boundary.
----@param launch table<string, unknown> presented launch record
-function FieldRuntime:_publishPresentedReceipt(launch)
-  self._lastBattleResult = { result = launch.result, sourceResult = launch.sourceResult }
-  self._battleReceipt = launch
-  launch.phase = "complete"
-  launch.committed = true
-  self._battleLaunch = nil
-  -- The retained battle reference releases here: the save gate stays
-  -- closed through settlement, restoration, and reveal, and settle loops
-  -- observe the owned lifetime until the safe field returns.
-  self.battleRuntime = nil
-  if self.session ~= nil then
-    self.session:setBattleActive(false)
-    self.session:setForegroundHold(false)
-  end
-  if self.input ~= nil then
-    self.input:clearAll()
-  end
-end
-
--- Releases a prepared but unconsumed encounter without rerolling: the
--- service protection lifts and later steps may attempt anew. The prepared
--- mon is discarded, never battled and never committed.
----@return boolean released true when a pending encounter was held
 function FieldRuntime:cancelPendingEncounter()
-  if self.pendingEncounter == nil then
-    return false
-  end
-  self:_consumePendingEncounter()
-  return true
-end
-
----@return table<string, unknown> the consumed prepared encounter
-function FieldRuntime:_consumePendingEncounter()
-  local pending = assert(self.pendingEncounter, "no prepared encounter to consume")
-  local id = self.pendingEncounterId
-  self.pendingEncounter = nil
-  self.pendingEncounterId = nil
-  if self._encounters ~= nil and id ~= nil then
-    return self._encounters:consume(id)
-  end
-  return pending
+  return self.battleCoordinator:cancelPendingEncounter()
 end
 
 -- Composes the concrete encounter service over a compiled encounter
@@ -3484,7 +2364,7 @@ function FieldRuntime:attemptEncounter(context)
   if service == nil then
     return nil
   end
-  if self.battleRuntime ~= nil or self._battleLaunch ~= nil or self.pendingEncounterId ~= nil then
+  if self.battleCoordinator:hasBattleWork() or self.pendingEncounterId ~= nil then
     return nil
   end
   local worldState = assert(self.scripts, "encounter attempts require their script platform").worldState
@@ -3528,7 +2408,7 @@ function FieldRuntime:_consumeCommittedStep()
   if step == nil then
     return
   end
-  if self.battleRuntime ~= nil or self._battleLaunch ~= nil or self.pendingEncounterId ~= nil then
+  if self.battleCoordinator:hasBattleWork() or self.pendingEncounterId ~= nil then
     return
   end
   if session.mapEntryController:isActive() or session.dialogue:isModal() then
@@ -3568,7 +2448,7 @@ function FieldRuntime:_consumeCommittedStep()
   if result == nil or result.kind ~= "prepared" or result.encounter == nil then
     return
   end
-  if self._battlePresentationFactory == nil then
+  if not self.battleCoordinator:hasPresentationFactory() then
     return
   end
   self:_admitStepEncounter(result.encounter --[[@as table<string, unknown>]], method)
@@ -3611,11 +2491,10 @@ function FieldRuntime:_admitStepEncounter(encounter, method)
     attemptId = encounter.id,
     environment = encounter.environment,
   }
-  NEXT_BATTLE_LAUNCH_ID = NEXT_BATTLE_LAUNCH_ID + 1
-  local launchId = "wild#" .. tostring(NEXT_BATTLE_LAUNCH_ID)
+  local launchId = self.battleCoordinator:nextLaunchIdentity("wild")
   local request = { id = launchId, kind = "wild", payload = details }
-  self._battleReceipt = nil
-  self:_launchPresentedBattle(launchId, request, method)
+  self.battleCoordinator:clearReceipt()
+  self.battleCoordinator:launchPresentedBattle(launchId, request, method)
 end
 
 -- The encounter time of day behind step attempts: the encounter tables
@@ -3646,7 +2525,7 @@ end
 ---@param map table<string, unknown>?
 ---@param player table<string, unknown>?
 ---@return integer? standing metatile behavior when readable, nil otherwise
-function FieldRuntime:_arrivalBehavior(map, player)
+function FieldRuntime:arrivalBehavior(map, player)
   if type(map) ~= "table" or type(player) ~= "table" or map.collision == nil then
     return nil
   end
@@ -3669,7 +2548,7 @@ end
 ---@param player table<string, unknown>
 ---@return string? encounter method for the arrival tile, when one applies
 function FieldRuntime:_stepEncounterMethod(map, player)
-  local behavior = self:_arrivalBehavior(map, player)
+  local behavior = self:arrivalBehavior(map, player)
   if behavior == nil then
     return nil
   end
@@ -3984,6 +2863,10 @@ end
 -- dialogue -- and the field clearing means reset never leaves a hand-picked
 -- subset behind for its re-boot.
 function FieldRuntime:_releaseAll()
+  if self.battleCoordinator then
+    self.battleCoordinator:dispose()
+    self.battleCoordinator = nil
+  end
   if self.propAnimations then
     self.propAnimations:clear()
   end
@@ -3993,15 +2876,6 @@ function FieldRuntime:_releaseAll()
   if self.blackoutFlow then
     self.blackoutFlow:dispose()
   end
-  if self.battleRuntime then
-    self.battleRuntime:dispose()
-  end
-  self.battleRuntime = nil
-  self._battleLaunch = nil
-  self._battleReceipt = nil
-  self._lastBattleResult = nil
-  self._battlePresentationFactory = nil
-  self._battlePresentationBindingId = nil
   if self.transition then
     self:_disposePreparedSwap(self.transition.resolution, self.transition.prepared)
   end

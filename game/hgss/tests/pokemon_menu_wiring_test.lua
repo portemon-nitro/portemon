@@ -16,6 +16,7 @@ local FieldMoveTask = require("libs.hgss.src.script.tasks.FieldMoveTask")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -653,6 +654,7 @@ function T.tests.save_capture_is_denied_while_a_field_operation_is_pending()
     },
     pokemonMenu = composition,
   }, FieldRuntime)
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
   runtime.saveCoordinator = FieldSaveCoordinator.new(runtime)
   local record, reason = runtime:captureGameSave()
   Assert.isNil(record, "a pending field operation denies capture")
@@ -670,6 +672,7 @@ function T.tests.save_capture_is_denied_while_a_pc_application_owns_field_ui()
     },
     pcApplicationHost = { isActive = function() return true end },
   }, FieldRuntime)
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
   runtime.saveCoordinator = FieldSaveCoordinator.new(runtime)
   local record, reason = runtime:captureGameSave()
   Assert.isNil(record, "an open PC application cannot publish a partial snapshot")

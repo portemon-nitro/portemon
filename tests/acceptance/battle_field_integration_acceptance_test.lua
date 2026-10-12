@@ -290,8 +290,8 @@ local function runLeg(game, choose, budget)
   local runtime = game.runtime
   local turn = 0
   local ticks = 0
-  while runtime.battleRuntime ~= nil and ticks < (budget or 1200) do
-    local battle = runtime.battleRuntime
+  while runtime.battleCoordinator:activeBattle() ~= nil and ticks < (budget or 1200) do
+    local battle = runtime.battleCoordinator:activeBattle()
     local current = battle:status()
     if current.phase == "running" and current.request ~= nil then
       turn = turn + 1
@@ -312,7 +312,7 @@ local function runLeg(game, choose, budget)
     runtime:updateBattle()
     ticks = ticks + 1
   end
-  Assert.isNil(runtime.battleRuntime, "answered decisions settle the owned lifetime")
+  Assert.isNil(runtime.battleCoordinator:activeBattle(), "answered decisions settle the owned lifetime")
   return turn
 end
 
@@ -401,7 +401,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
     Assert.isFalse(badLaunch, "an unknown trainer identity fails preparation")
     local badMessage = tostring(badErr):lower()
     Assert.isTrue(badMessage:find("999999", 1, true) ~= nil, "the failure names the missing identity")
-    Assert.isNil(runtime.battleRuntime, "no battle lifetime starts for an unknown trainer")
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "no battle lifetime starts for an unknown trainer")
     Assert.isNil(runtime:lastBattleResult(), "a failed preparation records no outcome words")
     Assert.isNil(runtime.errorText, "a refused launch is not a field fault")
 
@@ -476,7 +476,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       presentation = headlessPort(wildRecordOne),
       seed = WILD_SEED_ONE,
     })
-    local wildOneBattle = assert(runtime.battleRuntime, "the field retains its active battle owner")
+    local wildOneBattle = assert(runtime.battleCoordinator:activeBattle(), "the field retains its active battle owner")
     Assert.isNil(runtime.pendingEncounterId, "the launch consumes the held preparation exactly once")
     Assert.notNil(runtime:battleStatus("launch-production-wild-one"), "the owned wild battle reports its identity")
     local foeOne = foeOf()
@@ -597,7 +597,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       presentation = headlessPort(wildRecordTwo),
       seed = WILD_SEED_TWO,
     })
-    local wildTwoBattle = assert(runtime.battleRuntime, "the field retains its active battle owner")
+    local wildTwoBattle = assert(runtime.battleCoordinator:activeBattle(), "the field retains its active battle owner")
     Assert.isNil(runtime.pendingEncounterId, "the second launch consumes its preparation exactly once")
     local foeTwo = foeOf()
     local replaced, healedTwo, promptsTwo = false, false, 0
@@ -720,7 +720,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       presentation = headlessPort(trainerRecord),
       seed = TRAINER_SEED,
     })
-    local trainerBattle = assert(runtime.battleRuntime, "the field retains its active battle owner")
+    local trainerBattle = assert(runtime.battleCoordinator:activeBattle(), "the field retains its active battle owner")
     Assert.notNil(runtime:battleStatus("launch-production-trainer"), "the owned trainer battle reports its identity")
 
     -- The veteran opens because the opener fell in the wild: toxic first,
@@ -1076,7 +1076,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       presentation = headlessPort(captureRecord),
       seed = CAPTURE_SEED,
     })
-    local captureBattle = assert(runtime.battleRuntime, "the field retains its active battle owner")
+    local captureBattle = assert(runtime.battleCoordinator:activeBattle(), "the field retains its active battle owner")
     local foeCapture = foeOf()
     runLeg(game, function(request)
       if request.kind == "learn_move" then
@@ -1158,7 +1158,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       presentation = headlessPort(doubleRecord),
       seed = DOUBLE_SEED,
     })
-    local doubleBattle = assert(runtime.battleRuntime, "the field retains its active battle owner")
+    local doubleBattle = assert(runtime.battleCoordinator:activeBattle(), "the field retains its active battle owner")
     Assert.notNil(runtime:battleStatus("launch-production-double"), "the owned double battle reports its identity")
 
     -- Ordinary strikes resolve by name from each combatant's live set so

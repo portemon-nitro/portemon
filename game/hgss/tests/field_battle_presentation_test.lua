@@ -13,6 +13,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -178,12 +179,12 @@ end
 ---@param envelope table
 local function waitConstructed(runtime, envelope)
   local ticks = 0
-  while runtime.battleRuntime == nil and ticks < 900 do
+  while runtime.battleCoordinator:activeBattle() == nil and ticks < 900 do
     runtime:update(1 / 30)
     envelope:updateFixed(TICK)
     ticks = ticks + 1
   end
-  Assert.notNil(runtime.battleRuntime, "the covered launch constructs its battle")
+  Assert.notNil(runtime.battleCoordinator:activeBattle(), "the covered launch constructs its battle")
 end
 
 ---@param runtime FieldRuntime
@@ -193,8 +194,8 @@ end
 ---@return integer answered player turns before the lifetime settled
 local function settle(runtime, envelope, choose, budget)
   local turns, ticks = 0, 0
-  while runtime.battleRuntime ~= nil and ticks < budget do
-    local battle = runtime.battleRuntime
+  while runtime.battleCoordinator:activeBattle() ~= nil and ticks < budget do
+    local battle = runtime.battleCoordinator:activeBattle()
     local current = battle:status()
     if current.phase == "failed" then
       error("the presented battle failed: " .. tostring(current.error), 0)
@@ -223,7 +224,7 @@ local function settle(runtime, envelope, choose, budget)
     envelope:updateFixed(TICK)
     ticks = ticks + 1
   end
-  Assert.isNil(runtime.battleRuntime, "answered decisions settle the owned presented lifetime")
+  Assert.isNil(runtime.battleCoordinator:activeBattle(), "answered decisions settle the owned presented lifetime")
   return turns
 end
 
@@ -242,14 +243,14 @@ end
 local function driveDefeatToRecovery(runtime, envelope, choose, budget)
   local turns, ticks = 0, 0
   while ticks < budget do
-    local launch = runtime._battleLaunch
+    local launch = runtime.battleCoordinator._battleLaunch
     if launch ~= nil and launch.phase == "recovering" then
       return turns
     end
     if launch == nil or launch.phase == "failed" then
       error("the defeat never entered recovery", 0)
     end
-    local battle = runtime.battleRuntime
+    local battle = runtime.battleCoordinator:activeBattle()
     if battle ~= nil then
       local current = battle:status()
       if current.phase == "failed" then
@@ -328,7 +329,7 @@ local function sparringChoose(runtime, request)
   if kinds["attack"] == true then
     return strike(actor)
   end
-  local battle = assert(runtime.battleRuntime, "fragments answer through the live battle")
+  local battle = assert(runtime.battleCoordinator:activeBattle(), "fragments answer through the live battle")
   local options = battle:decisionOptions(request.requestId)
   assert(options ~= nil, "options project for the open request")
   for _, entry in ipairs(options.actors) do
@@ -368,7 +369,7 @@ function T.presented_win_returns_through_cover_and_receipt()
       Assert.equal(runtime.overworld:phase(), "present", "the claim holds presence while covering")
       local coveredAt, leftAt, coverAtLeave = nil, nil, nil
       local ticks = 0
-      while runtime.battleRuntime == nil and ticks < 900 do
+      while runtime.battleCoordinator:activeBattle() == nil and ticks < 900 do
         runtime:update(1 / 30)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
@@ -381,7 +382,7 @@ function T.presented_win_returns_through_cover_and_receipt()
           coverAtLeave = envelope:cover().coefficient
         end
       end
-      Assert.notNil(runtime.battleRuntime, "the covered launch constructs its battle")
+      Assert.notNil(runtime.battleCoordinator:activeBattle(), "the covered launch constructs its battle")
       Assert.notNil(coveredAt, "cover completes before construction")
       Assert.notNil(leftAt, "semantic leave follows cover")
       Assert.isTrue(coveredAt <= leftAt, "leave never precedes full cover")
@@ -765,10 +766,10 @@ function T.quit_mid_battle_releases_once()
     local ok, failure = xpcall(function()
       runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       waitConstructed(runtime, envelope)
-      Assert.notNil(runtime.battleRuntime, "the launch is live before the quit")
+      Assert.notNil(runtime.battleCoordinator:activeBattle(), "the launch is live before the quit")
       assert(envelope:liveScreen(), "the live screen owns the launch")
       runtime:dispose()
-      Assert.isNil(runtime.battleRuntime, "quitting releases the live battle")
+      Assert.isNil(runtime.battleCoordinator, "quitting releases the battle owner")
       Assert.isNil(envelope:liveScreen(), "quitting releases the live screen")
       Assert.isTrue(doubles.text.measures >= 0, "borrowed text services survive the quit")
     end, debug.traceback)
@@ -890,8 +891,8 @@ function T.continuing_receipts_wait_for_the_reveal()
       waitConstructed(runtime, envelope)
       local revealing = false
       local turns, ticks = 0, 0
-      while runtime.battleRuntime ~= nil and ticks < 6000 do
-        local battle = runtime.battleRuntime
+      while runtime.battleCoordinator:activeBattle() ~= nil and ticks < 6000 do
+        local battle = runtime.battleCoordinator:activeBattle()
         local current = battle:status()
         if current.phase == "failed" then
           error("the presented battle failed: " .. tostring(current.error), 0)
@@ -917,17 +918,17 @@ function T.continuing_receipts_wait_for_the_reveal()
         runtime:update(1 / 30)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
-        local launch = runtime._battleLaunch
+        local launch = runtime.battleCoordinator._battleLaunch
         if launch ~= nil and launch.phase == "revealing" then
           revealing = true
           local status = runtime:battleStatus(launchId)
           Assert.isTrue(status ~= nil and not status.committed, "mid-reveal polls stay pending")
         end
       end
-      Assert.isNil(runtime.battleRuntime, "answered decisions settle the owned presented lifetime")
+      Assert.isNil(runtime.battleCoordinator:activeBattle(), "answered decisions settle the owned presented lifetime")
       Assert.isTrue(turns > 0, "the presented battle answers decisions")
       Assert.isTrue(revealing, "the return reveals before publishing")
-      Assert.isNil(runtime._battleLaunch, "the receipt clears the launch")
+      Assert.isNil(runtime.battleCoordinator._battleLaunch, "the receipt clears the launch")
     end, debug.traceback)
     local unbound = pcall(function()
       runtime:unbindBattlePresentation(binding)
@@ -956,8 +957,8 @@ function T.schedules_and_layouts_settle_identically()
     local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
     runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
     local turns, ticks = 0, 0
-    while (runtime.battleRuntime ~= nil or runtime._battleLaunch ~= nil) and ticks < 6000 do
-      local battle = runtime.battleRuntime
+    while (runtime.battleCoordinator:activeBattle() ~= nil or runtime.battleCoordinator._battleLaunch ~= nil) and ticks < 6000 do
+      local battle = runtime.battleCoordinator:activeBattle()
       if battle ~= nil then
         local current = battle:status()
         if current.phase == "running" and current.request ~= nil then
@@ -981,8 +982,8 @@ function T.schedules_and_layouts_settle_identically()
       envelope:updateFixed(stepsPerPump * TICK)
       ticks = ticks + 1
     end
-    Assert.isNil(runtime.battleRuntime, "the scheduled battle settles")
-    Assert.isNil(runtime._battleLaunch, "the receipt clears the launch")
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "the scheduled battle settles")
+    Assert.isNil(runtime.battleCoordinator._battleLaunch, "the receipt clears the launch")
     local consequence = {
       result = runtime:lastBattleResult(),
       money = runtime.playerData.profile.money - moneyBefore,
@@ -1034,7 +1035,9 @@ local function launchHarness(overrides)
   for key, value in pairs(overrides or {}) do
     base[key] = value
   end
-  return setmetatable(base, FieldRuntime)
+  local runtime = setmetatable(base, FieldRuntime)
+  runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
+  return runtime
 end
 
 local function launchStandingMap(background, behavior)
@@ -1061,7 +1064,7 @@ function T.surfing_background_time_and_fallback_rules_hold_for_both_launch_kinds
   for _, launch in ipairs(kinds) do
     local function capture(overrides, method)
       local runtime = launchHarness(overrides)
-      return runtime:_captureLaunchEnvironment({ kind = launch.kind, payload = launch.payload }, method)
+      return runtime.battleCoordinator:_captureLaunchEnvironment({ kind = launch.kind, payload = launch.payload }, method)
     end
     -- Outdoor night without a readable tile keeps the background default.
     local night = capture({
@@ -1151,15 +1154,15 @@ function T.host_updates_never_advance_presented_launches()
         runtime:update(1 / 30)
       end
       Assert.equal(runtime.overworld:phase(), "present", "host updates never request leave")
-      Assert.isNil(runtime.battleRuntime, "host updates never construct")
+      Assert.isNil(runtime.battleCoordinator:activeBattle(), "host updates never construct")
       Assert.equal(envelope:cover().coefficient, 0, "host updates never advance cover")
       waitConstructed(runtime, envelope)
-      local phaseBefore = runtime.battleRuntime:status().phase
+      local phaseBefore = runtime.battleCoordinator:activeBattle():status().phase
       for _ = 1, 10 do
         runtime:update(1 / 30)
       end
       Assert.equal(
-        runtime.battleRuntime:status().phase,
+        runtime.battleCoordinator:activeBattle():status().phase,
         phaseBefore,
         "host updates never advance the owned battle clock"
       )
