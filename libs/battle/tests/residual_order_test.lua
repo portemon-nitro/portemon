@@ -171,11 +171,7 @@ function T.simultaneous_faints_settle_in_source_sequence()
     { version = 1 }
   )
   local dispatch = EffectDispatch.new(bag, { toxic = fixedDamage(4), burn = fixedDamage(4) })
-  local context = EffectFixture.residualContext(
-    { [1] = 100, [2] = 80, [3] = 60 },
-    { [1] = 4, [2] = 4, [3] = 8 },
-    7
-  )
+  local context = EffectFixture.residualContext({ [1] = 100, [2] = 80, [3] = 60 }, { [1] = 4, [2] = 4, [3] = 8 }, 7)
 
   local outcome = Residuals.step(dispatch, context)
   Assert.isTrue(outcome.done, "the terminal pass completes")
@@ -456,28 +452,34 @@ function T.end_of_turn_phases_follow_controller_state_order()
   addNative(bag, "wish", EffectFixture.positionScope(1), { version = 1, turns = 5 })
   addNative(bag, "reflect", EffectFixture.sideScope(1), { version = 1, turns = 5 })
 
-  local keys =
-    { "trickroom", "perishsong", "futuresight", "burn", "poison", "leechseed", "ingrain", "sandstorm", "wish", "reflect" }
+  local keys = {
+    "trickroom",
+    "perishsong",
+    "futuresight",
+    "burn",
+    "poison",
+    "leechseed",
+    "ingrain",
+    "sandstorm",
+    "wish",
+    "reflect",
+  }
   local dispatch = EffectDispatch.new(bag, recordingHandlers(keys))
   local context = EffectFixture.residualContext({ [1] = 70 }, { [1] = 100 }, 7)
   local outcome = Residuals.step(dispatch, context)
   Assert.isTrue(outcome.done, "the phased pass completes")
-  Assert.deepEqual(
-    eventKeys(outcome.events),
-    {
-      "reflect",
-      "wish",
-      "sandstorm",
-      "ingrain",
-      "leechseed",
-      "poison",
-      "burn",
-      "futuresight",
-      "perishsong",
-      "trickroom",
-    },
-    "field states precede mon states precede extra states in source order"
-  )
+  Assert.deepEqual(eventKeys(outcome.events), {
+    "reflect",
+    "wish",
+    "sandstorm",
+    "ingrain",
+    "leechseed",
+    "poison",
+    "burn",
+    "futuresight",
+    "perishsong",
+    "trickroom",
+  }, "field states precede mon states precede extra states in source order")
 end
 
 -- The mon phase nests by battler: the faster battler's recovery and
@@ -606,12 +608,8 @@ function T.unknown_extension_instances_trail_native_order()
   )
   addNative(bag, "sandstorm", EffectFixture.fieldScope(), { version = 1, turns = 5 })
   addNative(bag, "leechseed", EffectFixture.activeScope(1, 1), { version = 1 })
-  local dispatch = EffectDispatch.new(
-    bag,
-    recordingHandlers({ "customgadget", "sandstorm", "leechseed" })
-  )
-  local outcome =
-    Residuals.step(dispatch, EffectFixture.residualContext({ [1] = 70 }, { [1] = 100 }, 7))
+  local dispatch = EffectDispatch.new(bag, recordingHandlers({ "customgadget", "sandstorm", "leechseed" }))
+  local outcome = Residuals.step(dispatch, EffectFixture.residualContext({ [1] = 70 }, { [1] = 100 }, 7))
   Assert.isTrue(outcome.done, "the mixed pass completes")
   Assert.deepEqual(
     eventKeys(outcome.events),
@@ -884,6 +882,275 @@ function T.native_registries_cover_the_residual_families()
     end
     Assert.isTrue(EffectDispatch.validateBindings(definition), key .. " passes binding validation")
   end
+end
+
+-- A mixed perish, weather, affliction, recovery, and live-ability pass
+-- agrees exactly across every budget partition: the unbounded run and
+-- every stepwise suspension, including one mid-pass save/restore through
+-- a recaptured bag, emit the same events, health, faint order, final
+-- frame, and labeled draw trace. The unit budget visits every partition
+-- boundary, so identical stepwise output proves budgeted suspension and
+-- snapshot restore never repeat completed work.
+function T.mixed_residual_pass_matches_across_every_budget_partition()
+  local EffectBag = bagOwner("scoped effect instances own their lifetimes")
+  local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
+  local Residuals = residualsOwner("native residual continuation owns phase and cursor structure")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+
+  -- Two tied leaders force one labeled tie draw; the trailer carries the
+  -- perish count, poison, and the live ability answer.
+  local speeds = { [1] = 100, [2] = 100, [3] = 60 }
+
+  ---@return table bag with weather, afflictions, recovery, and a perish count
+  local function buildBag()
+    local bag = EffectBag.new()
+    bag:add(
+      testDefinition("sandstorm", "weather", "clear"),
+      EffectFixture.fieldScope(),
+      EffectFixture.cause(1, 1),
+      { version = 1 }
+    )
+    for combatant = 1, 2 do
+      bag:add(
+        testDefinition("toxic", "affliction", "clear"),
+        EffectFixture.activeScope(combatant, 1),
+        EffectFixture.cause(3, 1),
+        { version = 1 }
+      )
+    end
+    bag:add(
+      testDefinition("poison", "affliction", "clear"),
+      EffectFixture.activeScope(3, 1),
+      EffectFixture.cause(1, 1),
+      { version = 1 }
+    )
+    bag:add(
+      testDefinition("perishsong", "expiration", "clear"),
+      EffectFixture.activeScope(3, 1),
+      EffectFixture.cause(1, 1),
+      { version = 1, counter = 3 }
+    )
+    return bag
+  end
+  local handlers = {
+    sandstorm = weatherDamage(2),
+    toxic = fixedDamage(4),
+    poison = fixedDamage(4),
+    perishsong = perishCount(),
+  }
+
+  ---@return table live battler answers behind the ability, holding, and condition phases
+  local function liveHooks()
+    return {
+      ability = function(combatant)
+        if combatant ~= 3 then
+          return nil
+        end
+        return { events = { { kind = "ability", key = "synchronize", combatant = combatant } } }
+      end,
+      heldItem = function(_)
+        return nil
+      end,
+      leftovers = function(combatant)
+        return { events = { { kind = "healed", key = "leftovers", combatant = combatant, restored = 0 } } }
+      end,
+      condition = function(_, _)
+        return nil
+      end,
+    }
+  end
+
+  ---@param health table<integer, integer> battle-local health under the run
+  ---@param log table[] draw entries in call order under the run
+  ---@return table pass context over an observing labeled stream
+  local function watchContext(health, log)
+    local inner = BattleRng.new(7)
+    local stream = {
+      nextU16 = function(_, label, cause)
+        local value = inner:nextU16(label, cause)
+        log[#log + 1] = { label = label, value = value }
+        return value
+      end,
+      capture = function(_)
+        return inner:capture()
+      end,
+    }
+    return { speeds = speeds, health = health, stream = stream, live = liveHooks() }
+  end
+
+  ---@param budget integer? committed phases each step may spend before yielding
+  ---@param restore boolean true to recapture the bag behind the first suspension
+  ---@return table run record with events, health, faints, frame, and draws
+  local function runPass(budget, restore)
+    local bag = buildBag()
+    local dispatch = EffectDispatch.new(bag, handlers)
+    local health = { [1] = 6, [2] = 6, [3] = 24 }
+    local events = {}
+    local draws = {}
+    local resume = nil
+    local restored = false
+    while true do
+      local context = watchContext(health, draws)
+      context.resume = resume
+      local outcome = Residuals.step(dispatch, context, budget)
+      Residuals.validateFrame(outcome.frame)
+      for _, event in ipairs(outcome.events) do
+        events[#events + 1] = event
+      end
+      if outcome.done then
+        local faints = {}
+        for _, event in ipairs(events) do
+          if event.kind == "faint" then
+            faints[#faints + 1] = event.combatant
+          end
+        end
+        return { events = events, health = health, faints = faints, frame = outcome.frame, draws = draws }
+      end
+      SessionFixture.assertPlainData(outcome.frame, "frame")
+      if restore and not restored then
+        restored = true
+        bag = EffectBag.new(bag:capture())
+        dispatch = EffectDispatch.new(bag, handlers)
+      end
+      resume = outcome.frame
+    end
+  end
+
+  local whole = runPass(nil, false)
+  Assert.isTrue(#whole.draws >= 1, "the tied leaders draw the labeled tie exactly once")
+  Assert.equal(whole.draws[1].label, "residual_tie", "the pass draws only its documented tie label")
+  Assert.deepEqual(whole.health, { [1] = 0, [2] = 0, [3] = 14 }, "weather and ticks land exactly once")
+  Assert.equal(#whole.faints, 2, "both fainting holders settle")
+  local expired = false
+  local abilities = 0
+  for _, event in ipairs(whole.events) do
+    if event.key == "perishsong" then
+      Assert.equal(event.kind, "tick", "the perish count ticks without expiring")
+    end
+    if event.kind == "expire" then
+      expired = true
+    end
+    if event.kind == "ability" then
+      abilities = abilities + 1
+      Assert.equal(event.combatant, 3, "only the live ability holder answers")
+    end
+  end
+  Assert.isFalse(expired, "the unexpired count never emits its expiration")
+  Assert.equal(abilities, 1, "the live ability answers exactly once")
+
+  local partitions = { runPass(1, false), runPass(2, false), runPass(5, false), runPass(2, true) }
+  for index, part in ipairs(partitions) do
+    local where = "partition " .. tostring(index) .. " matches the unbounded pass"
+    Assert.deepEqual(part.events, whole.events, where .. " event for event")
+    Assert.deepEqual(part.health, whole.health, where .. " in battle-local health")
+    Assert.deepEqual(part.faints, whole.faints, where .. " in faint order")
+    Assert.deepEqual(part.frame, whole.frame, where .. " in residual frame data")
+    Assert.deepEqual(part.draws, whole.draws, where .. " in labeled draw trace")
+  end
+end
+
+-- Foreign, nested-cursor, and impossibly-mapped resume frames fail closed
+-- through the pass entry: resuming at a nonzero budget raises the
+-- structured snapshot error before any handler runs or any draw is taken.
+function T.resume_frames_fail_closed_before_handlers_or_draws()
+  local EffectBag = bagOwner("scoped effect instances own their lifetimes")
+  local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
+  local Residuals = residualsOwner("native residual continuation owns phase and cursor structure")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  local BattleErrors =
+    SessionFixture.requirePresent("libs.battle.src.errors", "structured battle errors classify rejected snapshots")
+
+  -- Tied speeds force a labeled tie draw on a fresh pass, so zero draws
+  -- on a failed resume is a real observation rather than a quiet setup.
+  local speeds = { [1] = 100, [2] = 100 }
+  local drain = fixedDamage(4)
+  local calls = 0
+  local handlers = {
+    toxic = function(instance, context)
+      calls = calls + 1
+      return drain(instance, context)
+    end,
+  }
+  local draws = 0
+
+  ---@param health table<integer, integer> battle-local health under the attempt
+  ---@param resume table? continuation under the attempt
+  ---@return table pass context over a draw-counting labeled stream
+  local function watchContext(health, resume)
+    local inner = BattleRng.new(7)
+    local stream = {
+      nextU16 = function(_, label, cause)
+        draws = draws + 1
+        return inner:nextU16(label, cause)
+      end,
+      capture = function(_)
+        return inner:capture()
+      end,
+    }
+    return { speeds = speeds, health = health, stream = stream, resume = resume }
+  end
+
+  ---@return table bag with one affliction per combatant
+  local function buildBag()
+    local bag = EffectBag.new()
+    for combatant = 1, 2 do
+      bag:add(
+        testDefinition("toxic", "affliction", "clear"),
+        EffectFixture.activeScope(combatant, 1),
+        EffectFixture.cause(3 - combatant, 1),
+        { version = 1 }
+      )
+    end
+    return bag
+  end
+
+  local bag = buildBag()
+  local dispatch = EffectDispatch.new(bag, handlers)
+  local suspended = Residuals.step(dispatch, watchContext({ [1] = 20, [2] = 20 }, nil), 1)
+  Assert.isFalse(suspended.done, "a unit budget suspends behind committed work")
+  Residuals.validateFrame(suspended.frame)
+  calls = 0
+  draws = 0
+
+  ---@param resume table forged continuation under the attempt
+  ---@param why string malformed family under the attempt
+  local function checkFailsClosed(resume, why)
+    calls = 0
+    draws = 0
+    local health = { [1] = 20, [2] = 20 }
+    local ok, err = pcall(Residuals.step, dispatch, watchContext(health, resume), 2)
+    Assert.isFalse(ok, why .. " fails instead of running")
+    Assert.equal(type(err), "table", why .. " raises a structured error")
+    Assert.equal(err.code, BattleErrors.INCOMPATIBLE_SNAPSHOT, why .. " keeps the snapshot error family")
+    Assert.equal(calls, 0, why .. " never reaches a handler")
+    Assert.equal(draws, 0, why .. " never takes an RNG draw")
+  end
+
+  checkFailsClosed({ kind = Residuals.KIND, version = 9999, checkpoint = nil, fainted = {} }, "a future version")
+  local nested = {
+    kind = suspended.frame.kind,
+    version = suspended.frame.version,
+    checkpoint = { cursor = suspended.frame.cursor },
+    fainted = suspended.frame.fainted,
+    battlers = suspended.frame.battlers,
+    cursor = suspended.frame.cursor,
+    battler = suspended.frame.battler,
+    phase = suspended.frame.phase,
+  }
+  checkFailsClosed(nested, "a nested checkpoint cursor")
+  local mapped = {
+    kind = suspended.frame.kind,
+    version = suspended.frame.version,
+    checkpoint = suspended.frame.checkpoint,
+    fainted = suspended.frame.fainted,
+    battlers = suspended.frame.battlers,
+    cursor = suspended.frame.cursor,
+    battler = 99999,
+    phase = suspended.frame.phase,
+  }
+  checkFailsClosed(mapped, "an impossible holder mapping")
 end
 
 return { tests = T }

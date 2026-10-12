@@ -544,13 +544,15 @@ end
 ---@return integer[] frozen battler order for the pass
 ---@return integer one-based position of the next uncommitted group
 local function checkResumeFrame(frame)
+  -- Shape already admitted by validateFrame: only presence still needs
+  -- its own rejection so legacy fresh frames without a cursor fail here.
   if type(frame.battlers) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("resumed passes carry their frozen battler order", {}))
   end
-  if type(frame.cursor) ~= "number" or frame.cursor % 1 ~= 0 or frame.cursor < 1 then
+  if frame.cursor == nil then
     error(BattleErrors.incompatibleSnapshot("resumed passes cursor their next group", {}))
   end
-  if type(frame.battler) ~= "number" or type(frame.phase) ~= "string" then
+  if frame.battler == nil or frame.phase == nil then
     error(BattleErrors.incompatibleSnapshot("resumed passes cursor their battler and phase", {}))
   end
   local battlers = {} ---@type integer[]
@@ -606,6 +608,205 @@ local function scanFaints(health, speeds, fainted, ordered, events)
   end
 end
 
+---@class ResidualPass
+---@field health table<integer, integer> battle-local health under the pass
+---@field live ResidualLiveHooks? live battler answers behind the ability, holding, and condition phases
+---@field battlers integer[] frozen battler order for the pass
+---@field cursor integer one-based position of the next uncommitted group
+---@field checkpoint table<string, unknown>? finite-dispatch continuation inside the cursor group
+---@field fainted table<integer, boolean> combatants settled before the cursor
+---@field ordered integer[] settled combatants in first-seen order
+---@field collected table<integer, table<string, unknown>> frozen residual membership for the pass
+---@field ordinals table<integer, integer> source-derived dispatch position per instance identity
+---@field battlerIndex table<integer, integer> frozen position per battler identity
+---@field events table<string, unknown>[] pass events under emission
+
+--- Validates a fresh or suspended admission and restores its working
+--- pass: a suspended frame resumes behind its saved battler and phase
+--- cursor with its checkpoint and settled combatants, while a fresh
+--- pass seeds battler order from the sampled speeds. Fresh invalid
+--- resumes still fail before any draw or state mutation.
+---@param context ResidualSpeeds pass context; resume continues a suspended pass
+---@param health table<integer, integer> battle-local health under the pass
+---@return ResidualPass working pass with restored or seeded order, cursor, checkpoint, and faints
+local function resumePass(context, health)
+  local pass = {
+    health = health,
+    live = nil,
+    battlers = {},
+    cursor = 1,
+    checkpoint = nil,
+    fainted = {},
+    ordered = {},
+    collected = {},
+    ordinals = {},
+    battlerIndex = {},
+    events = {},
+  } ---@as ResidualPass
+  if context.resume ~= nil then
+    local frame = Residuals.validateFrame(context.resume)
+    local battlers, cursor = checkResumeFrame(frame)
+    pass.battlers = battlers
+    pass.cursor = cursor
+    pass.checkpoint = frame.checkpoint
+    for _, combatant in ipairs(frame.fainted) do
+      markFainted(health, pass.fainted, pass.ordered, combatant)
+    end
+  else
+    pass.battlers = residualBattlerOrder(context)
+  end
+  for combatant, hp in pairs(health) do
+    if type(combatant) == "number" and type(hp) == "number" and hp <= 0 then
+      markFainted(health, pass.fainted, pass.ordered, combatant)
+    end
+  end
+  return pass
+end
+
+--- Executes exactly one group of the native phase order and returns the
+--- budget it spent. Live battler answers and finite instances behind
+--- the group emit their events at once; a fainted holder's later phases
+--- stay silent while survivors still tick, and faint markers interleave
+--- immediately after their killing phase.
+---@param pass ResidualPass working pass under the step
+---@param dispatch ResidualDispatchView finite dispatch owning residual collection and liveness
+---@param context ResidualSpeeds pass context carrying speeds, health, and the labeled stream
+---@param group ResidualGroup group under execution
+---@return integer committed budget the group spent
+local function stepGroup(pass, dispatch, context, group)
+  local health = pass.health
+  local spent = 0
+  local invoked = false
+  local runnable = true
+  if group.region == "mon" then
+    local holder = pass.battlers[group.battler]
+    local hp = health[holder]
+    if type(hp) ~= "number" then
+      error(BattleErrors.invalidState("residual passes read battle-local health", { combatant = holder }))
+    end
+    -- Holders that left the field after settlement never answer
+    -- later phases; survivors still tick.
+    runnable = hp > 0
+  end
+  local liveEvents = nil
+  local live = pass.live
+  if runnable and live ~= nil and group.region == "mon" then
+    local holder = pass.battlers[group.battler]
+    local answer = nil
+    if group.phase == "ability" then
+      answer = live.ability(holder)
+    elseif group.phase == "held_item" then
+      answer = live.heldItem(holder)
+    elseif group.phase == "leftovers" then
+      answer = live.leftovers(holder)
+    elseif STATUS_PHASE_KEY[group.phase] ~= nil then
+      answer = live.condition(holder, STATUS_PHASE_KEY[group.phase] --[[@as string]])
+    end
+    if answer ~= nil then
+      if type(answer) ~= "table" or type(answer.events) ~= "table" then
+        error(BattleErrors.invalidState("residual live answers carry their events", { phase = group.phase }))
+      end
+      liveEvents = answer.events --[[@as table<integer, table<string, unknown>>]]
+    end
+  end
+  local outcome = nil
+  if runnable then
+    local wanted = groupInstanceIds(pass.collected, group, pass.battlers, pass.battlerIndex)
+    local usable = pass.checkpoint ~= nil
+    local suppressed = {}
+    for _, entry in ipairs(pass.collected) do
+      local instance = entry.instance
+      if type(instance) == "table" and type(instance.id) == "number" then
+        local id = instance.id --[[@as integer]]
+        local scope = instance.scope
+        local holderFainted = type(scope) == "table"
+          and type((scope --[[@as table<string, unknown>]]).combatant) == "number"
+          and pass.fainted[
+              (scope --[[@as table<string, unknown>]]).combatant --[[@as integer]]
+            ]
+            == true
+        if wanted[id] == true and not holderFainted then
+          usable = true
+        else
+          suppressed[id] = true
+        end
+      end
+    end
+    if usable then
+      local inner = {
+        speeds = context.speeds,
+        health = context.health,
+        stream = context.stream,
+        suppressedIds = suppressed,
+        resume = pass.checkpoint,
+        orderOrdinal = pass.ordinals,
+      }
+      outcome = dispatch:invoke("residual", inner, 1)
+      if type(outcome) ~= "table" or type(outcome.events) ~= "table" then
+        error(BattleErrors.invalidState("residual passes consume dispatch outcomes", {}))
+      end
+      invoked = true
+    end
+  end
+  local freshEvents = 0
+  if liveEvents ~= nil then
+    for _, event in ipairs(liveEvents) do
+      pass.events[#pass.events + 1] = event
+      freshEvents = freshEvents + 1
+    end
+    spent = spent + 1
+  end
+  if outcome ~= nil then
+    for _, event in ipairs(outcome.events) do
+      pass.events[#pass.events + 1] = event
+      freshEvents = freshEvents + 1
+    end
+    pass.checkpoint = outcome.checkpoint --[[@as table<string, unknown>]]
+    if outcome.done == true then
+      pass.cursor = pass.cursor + 1
+    else
+      spent = spent + 1
+    end
+    if outcome.done == true and freshEvents > 0 then
+      spent = spent + 1
+    end
+  else
+    pass.cursor = pass.cursor + 1
+  end
+  if liveEvents ~= nil or invoked then
+    scanFaints(health, context.speeds, pass.fainted, pass.ordered, pass.events)
+  end
+  return spent
+end
+
+--- Publishes the working pass as its outcome: budgeted suspension keeps
+--- the checkpoint behind the saved battler and phase cursor, while a
+--- completed pass carries the final events and settled combatants.
+---@param pass ResidualPass working pass under publication
+---@param done boolean true when the cursor ran past the final group
+---@return ResidualOutcome pass events with its completion flag and frame
+local function finishPass(pass, done)
+  local closing = groupAt(pass.battlers, math.min(pass.cursor, groupCount(pass.battlers)))
+  local held = {}
+  for index, combatant in ipairs(pass.battlers) do
+    held[index] = combatant
+  end
+  return {
+    events = pass.events,
+    done = done,
+    frame = {
+      kind = Residuals.KIND,
+      version = Residuals.VERSION,
+      checkpoint = pass.checkpoint,
+      fainted = pass.ordered,
+      battlers = held,
+      cursor = pass.cursor,
+      battler = closing.battler,
+      phase = closing.phase,
+    },
+  }
+end
+
 --- Runs the residual pass to completion or to its operation budget, where
 --- one unit is one committed battler phase or one invoked finite instance.
 --- A fresh pass freezes battler order once; every battler then walks the
@@ -635,184 +836,27 @@ function Residuals.step(dispatch, context, budget)
       "residual passes spend a positive operation budget"
     )
   end
-  local battlers = {}
-  local cursor = 1
-  local checkpoint = nil
-  local fainted = {}
-  local ordered = {}
-  if context.resume ~= nil then
-    local frame = Residuals.validateFrame(context.resume)
-    battlers, cursor = checkResumeFrame(frame)
-    checkpoint = frame.checkpoint
-    for _, combatant in ipairs(frame.fainted) do
-      markFainted(health, fainted, ordered, combatant)
-    end
-  else
-    battlers = residualBattlerOrder(context)
-  end
-  for combatant, hp in pairs(health) do
-    if type(combatant) == "number" and type(hp) == "number" and hp <= 0 then
-      markFainted(health, fainted, ordered, combatant)
-    end
-  end
+  local pass = resumePass(context, health)
+  pass.live = live
   -- Collected membership is stable across the pass: handlers mutate
   -- state but never add or remove instances, so every group maps one
   -- fresh collection against the frozen battler order without spending
   -- another tie draw.
-  local collected = dispatch:collect("residual", context)
-  local ordinals = planResidualOrder(collected, battlers)
-  local battlerIndex = {}
-  for position, combatant in ipairs(battlers) do
-    battlerIndex[combatant] = position
+  pass.collected = dispatch:collect("residual", context)
+  pass.ordinals = planResidualOrder(pass.collected, pass.battlers)
+  for position, combatant in ipairs(pass.battlers) do
+    pass.battlerIndex[combatant] = position
   end
-  local total = groupCount(battlers)
-  local holderOf = {} ---@type table<integer, integer>
-  for _, entry in ipairs(collected) do
-    local instance = entry.instance
-    if type(instance) == "table" and type(instance.id) == "number" then
-      local scope = instance.scope
-      if
-        type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).combatant) == "number"
-      then
-        holderOf[
-          instance.id --[[@as integer]]
-        ] = (scope --[[@as table<string, unknown>]]).combatant --[[@as integer]]
-      end
-    end
-  end
-  local events = {}
-  local done = cursor > total
+  local total = groupCount(pass.battlers)
+  local done = pass.cursor > total
   while (allowance == nil or allowance >= 1) and not done do
-    local group = groupAt(battlers, cursor)
-    local spent = 0
-    local invoked = false
-    local runnable = true
-    if group.region == "mon" then
-      local holder = battlers[group.battler]
-      local hp = health[holder]
-      if type(hp) ~= "number" then
-        error(BattleErrors.invalidState("residual passes read battle-local health", { combatant = holder }))
-      end
-      -- Holders that left the field after settlement never answer
-      -- later phases; survivors still tick.
-      runnable = hp > 0
-    end
-    local liveEvents = nil
-    if runnable and live ~= nil and group.region == "mon" then
-      local holder = battlers[group.battler]
-      local answer = nil
-      if group.phase == "ability" then
-        answer = live.ability(holder)
-      elseif group.phase == "held_item" then
-        answer = live.heldItem(holder)
-      elseif group.phase == "leftovers" then
-        answer = live.leftovers(holder)
-      elseif STATUS_PHASE_KEY[group.phase] ~= nil then
-        answer = live.condition(holder, STATUS_PHASE_KEY[group.phase] --[[@as string]])
-      end
-      if answer ~= nil then
-        if type(answer) ~= "table" or type(answer.events) ~= "table" then
-          error(BattleErrors.invalidState("residual live answers carry their events", { phase = group.phase }))
-        end
-        liveEvents = answer.events --[[@as table<integer, table<string, unknown>>]]
-      end
-    end
-    local outcome = nil
-    if runnable then
-      local wanted = groupInstanceIds(collected, group, battlers, battlerIndex)
-      local usable = false
-      for id in pairs(wanted) do
-        local scopeHolder = holderOf[id]
-        if type(scopeHolder) ~= "number" or fainted[scopeHolder] ~= true then
-          usable = true
-          break
-        end
-      end
-      if usable or checkpoint ~= nil then
-        local suppressed = {}
-        for _, entry in ipairs(collected) do
-          local instance = entry.instance
-          if type(instance) == "table" and type(instance.id) == "number" then
-            local id = instance.id --[[@as integer]]
-            local scope = instance.scope
-            local holderFainted = type(scope) == "table"
-              and type((scope --[[@as table<string, unknown>]]).combatant) == "number"
-              and fainted[
-                  (scope --[[@as table<string, unknown>]]).combatant --[[@as integer]]
-                ]
-                == true
-            if wanted[id] ~= true or holderFainted then
-              suppressed[id] = true
-            end
-          end
-        end
-        local inner = {
-          speeds = context.speeds,
-          health = context.health,
-          stream = context.stream,
-          suppressedIds = suppressed,
-          resume = checkpoint,
-          orderOrdinal = ordinals,
-        }
-        outcome = dispatch:invoke("residual", inner, 1)
-        if type(outcome) ~= "table" or type(outcome.events) ~= "table" then
-          error(BattleErrors.invalidState("residual passes consume dispatch outcomes", {}))
-        end
-        invoked = true
-      end
-    end
-    local freshEvents = 0
-    if liveEvents ~= nil then
-      for _, event in ipairs(liveEvents) do
-        events[#events + 1] = event
-        freshEvents = freshEvents + 1
-      end
-      spent = spent + 1
-    end
-    if outcome ~= nil then
-      for _, event in ipairs(outcome.events) do
-        events[#events + 1] = event
-        freshEvents = freshEvents + 1
-      end
-      checkpoint = outcome.checkpoint
-      if outcome.done == true then
-        cursor = cursor + 1
-      else
-        spent = spent + 1
-      end
-      if outcome.done == true and freshEvents > 0 then
-        spent = spent + 1
-      end
-    else
-      cursor = cursor + 1
-    end
-    if liveEvents ~= nil or invoked then
-      scanFaints(health, context.speeds, fainted, ordered, events)
-    end
+    local spent = stepGroup(pass, dispatch, context, groupAt(pass.battlers, pass.cursor))
     if allowance ~= nil then
       allowance = allowance - spent
     end
-    done = cursor > total
+    done = pass.cursor > total
   end
-  local closing = groupAt(battlers, math.min(cursor, total))
-  local held = {}
-  for index, combatant in ipairs(battlers) do
-    held[index] = combatant
-  end
-  return {
-    events = events,
-    done = done,
-    frame = {
-      kind = Residuals.KIND,
-      version = Residuals.VERSION,
-      checkpoint = checkpoint,
-      fainted = ordered,
-      battlers = held,
-      cursor = cursor,
-      battler = closing.battler,
-      phase = closing.phase,
-    },
-  }
+  return finishPass(pass, done)
 end
 
 return Residuals
