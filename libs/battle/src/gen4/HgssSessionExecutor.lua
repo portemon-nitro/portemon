@@ -274,37 +274,9 @@ end
 ---@param state table<string, unknown>
 ---@param admitted string[] admitted action kinds resolved at construction
 local function buildBatch(state, admitted)
-  local context = BattleContext.wrap(state)
-  local counter = state.batchCounter --[[@as integer]] + 1
-  state.batchCounter = counter
-  state.pending = {
-    batch = { id = counter, epoch = counter, requests = {} },
-    submitted = {},
-    reserved = { replacements = {}, items = {} },
-  }
-  local byController = {}
-  local controllerOrder = {}
-  for _, participantId in
-    ipairs(state.participantOrder --[[@as integer[] ]])
-  do
-    local participant = BattleState.participant(state, participantId)
-    local controller = participant.controller --[[@as string]]
-    for _, combatantId in
-      ipairs(participant.roster --[[@as integer[] ]])
-    do
-      local combatant = BattleState.combatant(state, combatantId)
-      if combatant.active ~= nil then
-        if byController[controller] == nil then
-          byController[controller] = {}
-          controllerOrder[#controllerOrder + 1] = controller
-        end
-        local active = combatant.active --[[@as table<string, unknown>]]
-        local actors = byController[controller]
-        actors[#actors + 1] = { combatant = combatantId, activation = active.activation }
-      end
-    end
-  end
-  if #controllerOrder == 0 then
+  local plan = DecisionBatch.prepare(state)
+  local controllers = plan.controllers --[[@as string[] ]]
+  if #controllers == 0 then
     state.pending = nil
     state.status = "ended"
     state.outcome = {
@@ -327,21 +299,7 @@ local function buildBatch(state, admitted)
     )(stream, "quick_claw", { kind = "order_sample", position = position })
   end
   (state.pending --[[@as table<string, unknown>]]).nativeOrderRolls = rolls
-  context:pushFrame({
-    kind = "round",
-    version = 1,
-    cursor = "awaiting_replies",
-    state = { round = state.round },
-  })
-  for _, controller in ipairs(controllerOrder) do
-    context:requestDecision({
-      controller = controller,
-      kind = HgssSessionExecutor.DECISION_KIND,
-      actors = byController[controller],
-      legalChoices = { kinds = admitted },
-    })
-  end
-  state.status = "waiting"
+  DecisionBatch.publishRound(state, plan, admitted, HgssSessionExecutor.DECISION_KIND)
 end
 
 ---@param state table<string, unknown>

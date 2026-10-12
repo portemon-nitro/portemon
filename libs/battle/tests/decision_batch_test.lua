@@ -52,6 +52,137 @@ local function requestFor(frame, controller)
   error("the " .. controller .. " request stays open")
 end
 
+---@return table combatant seed striking with a single known move
+local function sharedTackleCombatant(id, seed)
+  local entry = SessionFixture.combatant(id, seed)
+  entry.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return entry
+end
+
+---@param seeds table<integer, table<string, unknown>> combatant seeds under fact resolution
+---@return table<string, table<string, unknown>> immutable move facts for the shared fixture strikes
+local function sharedMoveFacts(seeds)
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local facts = {
+    TACKLE = catalog:move("TACKLE"),
+    STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
+  }
+  for _, seed in ipairs(seeds) do
+    local learned = seed.mon --[[@as table<string, unknown>]]
+    for _, entry in
+      ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(entry) == "table" and type(entry.move) == "string" and facts[entry.move] == nil then
+        facts[entry.move] = catalog:move(entry.move)
+      end
+    end
+    local form = catalog:form(learned.species --[[@as string]], learned.form --[[@as integer]])
+    for _, chance in ipairs(form.levelUpMoves) do
+      if facts[chance.move] == nil then
+        facts[chance.move] = catalog:move(chance.move)
+      end
+    end
+  end
+  return facts
+end
+
+---@param seeds table<integer, table<string, unknown>> combatant seeds under fact resolution
+---@return table<string, table<integer, table<string, unknown>>> static species facts for the shared combatants
+local function sharedSpeciesFacts(seeds)
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local facts = {}
+  for _, seed in ipairs(seeds) do
+    local mon = seed.mon --[[@as table<string, unknown>]]
+    local species = mon.species --[[@as string]]
+    local form = mon.form --[[@as integer]]
+    local speciesRecord = catalog:species(species)
+    local bucket = facts[species]
+    if bucket == nil then
+      bucket = {}
+      facts[species] = bucket
+    end
+    local formRecord = catalog:form(species, form)
+    local types = {} ---@type string[]
+    for _, key in
+      ipairs(formRecord.types --[[@as string[] ]])
+    do
+      types[#types + 1] = key --[[@as string]]
+    end
+    bucket[form] = {
+      baseStats = formRecord.baseStats,
+      growthCurve = catalog:growthCurve(speciesRecord.growthCurve --[[@as string]]),
+      types = types,
+      levelUpMoves = formRecord.levelUpMoves,
+      baseExpYield = speciesRecord.baseExpYield,
+      evYield = speciesRecord.evYield,
+    }
+  end
+  return facts
+end
+
+---@return table frozen battle content carrying the native ruleset with a doubles format
+local function sharedNativeDoubleContent()
+  local ContentBuilder = require("libs.content.src.ContentBuilder")
+  local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
+  local BattleContent = require("libs.battle.src.BattleContent")
+  local NativeTypeChart = require("libs.battle.src.gen4.NativeTypeChart")
+  local Executor = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.HgssSessionExecutor",
+    "the private native lifecycle owns HGSS ruleset sessions"
+  )
+  local builder = ContentBuilder.new()
+  NativeTypeChart.install(builder, "shared-batch-native-doubles")
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerRuleset(
+    Executor.RULESET,
+    { key = Executor.RULESET, chart = Executor.RULESET },
+    "shared-batch-native-doubles"
+  )
+  behaviors:registerFormat("test:shared-double", { key = "test:shared-double" }, "shared-batch-native-doubles")
+  return BattleContent.new(builder:freeze(), behaviors:freeze())
+end
+
+local SHARED_NATIVE_SEED = 0x1BADB002
+
+---@return table detached native doubles setup with two leads per side beside benched reserves
+local function sharedNativeDoublesScenario()
+  local Executor = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.HgssSessionExecutor",
+    "the private native lifecycle owns HGSS ruleset sessions"
+  )
+  local seeds = {
+    sharedTackleCombatant(1, 11),
+    sharedTackleCombatant(2, 12),
+    sharedTackleCombatant(5, 15),
+    sharedTackleCombatant(3, 23),
+    sharedTackleCombatant(4, 24),
+    sharedTackleCombatant(6, 26),
+  }
+  return {
+    ruleset = Executor.RULESET,
+    format = "test:shared-double",
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { seeds[1], seeds[2], seeds[3] }),
+      SessionFixture.participant(2, 2, "beta", { seeds[4], seeds[5], seeds[6] }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 1, { 1 }, 2),
+      SessionFixture.position(3, 2, { 2 }, 3),
+      SessionFixture.position(4, 2, { 2 }, 4),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = SHARED_NATIVE_SEED },
+    formatState = {},
+    moveFacts = sharedMoveFacts(seeds),
+    speciesFacts = sharedSpeciesFacts(seeds),
+  }
+end
+
 ---@param actor table combatant reference the choice is issued for
 ---@return table validated decision payload spending one shared unit on its holder
 local function itemChoice(actor)
@@ -230,6 +361,151 @@ function T.decision_envelopes_behave_identically_across_executors_and_arrival_or
 
   Assert.deepEqual(firstEvents, secondEvents, "submission order never affects the outcome")
   Assert.isTrue(#firstEvents > 0, "the committed batches settle their strikes")
+end
+
+-- Both session paths open batches through one shared construction step:
+-- the shared owner increments the batch counter, installs the pending
+-- maps, groups active fighters by controller, and publishes one request
+-- per controller.
+function T.both_session_paths_open_batches_through_shared_construction()
+  local BatchOwner =
+    SessionFixture.requirePresent("libs.battle.src.DecisionBatch", "shared batch construction owns batch opening")
+  Assert.isTrue(type(BatchOwner.prepare) == "function", "batch opening shares one counter and grouping step")
+  Assert.isTrue(type(BatchOwner.publishRound) == "function", "batch opening shares one request publication step")
+end
+
+-- The generic and native doubles open the identical batch protocol: one
+-- batch identity per opening, controllers grouped in participant and
+-- roster order, one request per controller, empty reservations, and no
+-- draws beyond the native pre-request order samples. Answering both
+-- batches advances both counters together.
+function T.generic_and_native_doubles_open_the_identical_batch_protocol()
+  local contracts = SessionFixture.sessionContracts()
+  local Lcrng = require("libs.mons.src.gen4.Lcrng")
+
+  local generic = SessionFixture.newSession(contracts, SessionFixture.buildScenario(reserveDoubles()))
+  local genericCallsBefore = generic:capture().rng.calls
+  local genericOpening = SessionFixture.driveUntilSettled(generic, 64)
+  Assert.equal(genericOpening.status, "waiting", "the generic doubles wait for both sides")
+  local genericSettled = generic:capture()
+  Assert.equal(genericSettled.batchCounter, 1, "the generic opening spends exactly one batch")
+  Assert.equal(genericSettled.rng.calls, genericCallsBefore, "the generic opening draws nothing")
+  Assert.isNil(genericSettled.pending.nativeOrderRolls, "the generic batch carries no order samples")
+  Assert.deepEqual(
+    genericSettled.pending.reserved,
+    { replacements = {}, items = {} },
+    "the generic opening starts with empty reservations"
+  )
+  local genericRequests = genericOpening.request.requests
+  Assert.equal(#genericRequests, 2, "the generic opening asks each controller once")
+  Assert.equal(genericRequests[1].controller, "alpha", "the generic publication follows roster order")
+  Assert.equal(genericRequests[2].controller, "beta", "the generic publication follows roster order")
+  Assert.isTrue(
+    genericRequests[1].requestId < genericRequests[2].requestId,
+    "the generic publication order matches the request order"
+  )
+  Assert.equal(genericRequests[1].kind, "action", "the generic request names its decision kind")
+  Assert.equal(genericRequests[2].kind, "action", "the generic request names its decision kind")
+  Assert.equal(genericOpening.request.epoch, 1, "the generic batch carries its first epoch")
+  Assert.equal(#genericRequests[1].actors, 2, "the generic reply answers both leads together")
+  Assert.equal(genericRequests[1].actors[1].combatant, 1, "the generic actors follow roster order")
+  Assert.equal(genericRequests[1].actors[2].combatant, 2, "the generic actors follow roster order")
+  Assert.equal(
+    genericRequests[1].actors[1].activation,
+    genericSettled.combatants[1].active.activation,
+    "the generic actor carries its live entry token"
+  )
+  Assert.equal(
+    genericRequests[1].actors[2].activation,
+    genericSettled.combatants[2].active.activation,
+    "the generic actor carries its live entry token"
+  )
+  Assert.equal(#genericRequests[2].actors, 1, "the opposing generic request addresses its lead")
+
+  local native = contracts.Battle.newSession(sharedNativeDoublesScenario(), sharedNativeDoubleContent())
+  local nativeCallsBefore = native:capture().rng.calls
+  local nativeOpening = SessionFixture.driveUntilSettled(native, 64)
+  Assert.equal(nativeOpening.status, "waiting", "the native doubles wait for both sides")
+  local nativeSettled = native:capture()
+  Assert.equal(nativeSettled.batchCounter, 1, "the native opening spends exactly one batch")
+  Assert.equal(
+    nativeSettled.rng.calls,
+    nativeCallsBefore + 4,
+    "the native opening spends exactly its four order samples"
+  )
+  local rolls = nativeSettled.pending.nativeOrderRolls
+  Assert.notNil(rolls, "the native batch stores its pre-request order samples")
+  assert(rolls ~= nil, "the order samples are observed before assertions")
+  Assert.equal(#rolls, 4, "the native batch stores one sample per battler slot")
+  local stream = Lcrng.new(SHARED_NATIVE_SEED)
+  for position = 1, 4 do
+    Assert.equal(rolls[position], stream:nextU16(), "the native samples replay the stream head in canonical slot order")
+  end
+  Assert.deepEqual(
+    nativeSettled.pending.reserved,
+    { replacements = {}, items = {} },
+    "the native opening starts with empty reservations"
+  )
+  local nativeRequests = nativeOpening.request.requests
+  Assert.equal(#nativeRequests, 2, "the native opening asks each controller once")
+  Assert.equal(nativeRequests[1].controller, "alpha", "the native publication follows roster order")
+  Assert.equal(nativeRequests[2].controller, "beta", "the native publication follows roster order")
+  Assert.isTrue(
+    nativeRequests[1].requestId < nativeRequests[2].requestId,
+    "the native publication order matches the request order"
+  )
+  Assert.equal(nativeRequests[1].kind, "action", "the native request names its decision kind")
+  Assert.equal(nativeRequests[2].kind, "action", "the native request names its decision kind")
+  Assert.equal(nativeOpening.request.epoch, 1, "the native batch carries its first epoch")
+  Assert.equal(#nativeRequests[1].actors, 2, "the native reply answers both leads together")
+  Assert.equal(nativeRequests[1].actors[1].combatant, 1, "the native actors follow roster order")
+  Assert.equal(nativeRequests[1].actors[2].combatant, 2, "the native actors follow roster order")
+  Assert.equal(#nativeRequests[2].actors, 2, "the opposing native request answers both leads together")
+  Assert.equal(nativeRequests[2].actors[1].combatant, 3, "the opposing native actors follow roster order")
+  Assert.equal(nativeRequests[2].actors[2].combatant, 4, "the opposing native actors follow roster order")
+
+  local twice = contracts.Battle.newSession(sharedNativeDoublesScenario(), sharedNativeDoubleContent())
+  local reopened = SessionFixture.driveUntilSettled(twice, 64)
+  Assert.deepEqual(
+    twice:capture().pending.nativeOrderRolls,
+    rolls,
+    "the identical seed replays the identical order samples"
+  )
+  twice:dispose()
+  _ = reopened
+
+  for _, request in ipairs(genericRequests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(3))
+    end
+    local ok, replyErr = generic:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "the generic opening replies are accepted: " .. tostring(replyErr))
+    Assert.isNil(replyErr, "accepted generic replies carry no input error")
+  end
+  for _, request in ipairs(nativeRequests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      local target = 1
+      if request.controller == "alpha" then
+        target = 3
+      end
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+    end
+    local ok, replyErr = native:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "the native opening replies are accepted: " .. tostring(replyErr))
+    Assert.isNil(replyErr, "accepted native replies carry no input error")
+  end
+  generic:advance(64)
+  native:advance(64)
+  Assert.equal(generic:capture().batchCounter, 2, "the answered generic batch advances its counter")
+  Assert.equal(native:capture().batchCounter, 2, "the answered native batch advances its counter")
+  local genericNext = SessionFixture.driveUntilSettled(generic, 64)
+  local nativeNext = SessionFixture.driveUntilSettled(native, 64)
+  Assert.equal(genericNext.request.epoch, 2, "the following generic batch carries the next epoch")
+  Assert.equal(nativeNext.request.epoch, 2, "the following native batch carries the next epoch")
+  generic:dispose()
+  native:dispose()
 end
 
 return { tests = T }

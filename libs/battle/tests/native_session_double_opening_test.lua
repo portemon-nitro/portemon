@@ -303,4 +303,205 @@ function T.fainted_double_opener_is_replaced_from_its_own_bench()
   session:dispose()
 end
 
+---@param id integer nonreused positive combatant identity
+---@param seed integer fixed generator state for the underlying mon
+---@return table combatant seed striking with a single known move
+local function tackleSeed(id, seed)
+  local entry = SessionFixture.combatant(id, seed)
+  entry.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return entry
+end
+
+---@return table detached native doubles setup with two healthy leads per side beside benched reserves
+local function handDoublesScenario()
+  local Executor = requirePresent(
+    "libs.battle.src.gen4.HgssSessionExecutor",
+    "the private native lifecycle owns HGSS ruleset sessions"
+  )
+  local seeds = {
+    tackleSeed(1, 11),
+    tackleSeed(2, 12),
+    tackleSeed(5, 15),
+    tackleSeed(3, 23),
+    tackleSeed(4, 24),
+    tackleSeed(6, 26),
+  }
+  return {
+    ruleset = Executor.RULESET,
+    format = "double",
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { seeds[1], seeds[2], seeds[3] }),
+      SessionFixture.participant(2, 2, "beta", { seeds[4], seeds[5], seeds[6] }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 1, { 1 }, 2),
+      SessionFixture.position(3, 2, { 2 }, 3),
+      SessionFixture.position(4, 2, { 2 }, 4),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = DOUBLE_SEED },
+    formatState = {},
+    moveFacts = doubleMoveFacts(seeds),
+    speciesFacts = doubleSpeciesFacts(seeds),
+  }
+end
+
+---@return table detached native singles setup where the foe lead falls to one opening strike
+local function lastStandSinglesScenario()
+  local Executor = requirePresent(
+    "libs.battle.src.gen4.HgssSessionExecutor",
+    "the private native lifecycle owns HGSS ruleset sessions"
+  )
+  local alpha = tackleSeed(1, 11)
+  local beta = tackleSeed(2, 23)
+  beta.mon.condition.currentHp = 1
+  local seeds = { alpha, beta }
+  return {
+    ruleset = Executor.RULESET,
+    format = "single",
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { alpha }),
+      SessionFixture.participant(2, 2, "beta", { beta }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = DOUBLE_SEED },
+    formatState = {},
+    moveFacts = doubleMoveFacts(seeds),
+    speciesFacts = doubleSpeciesFacts(seeds),
+  }
+end
+
+---@param collected table[] emitted events under inspection
+---@param combatant integer roster identity expected to have fainted
+---@return boolean true when a faint was announced for the combatant
+local function announcesFaintFor(collected, combatant)
+  for _, event in ipairs(collected) do
+    if event.kind == "faint" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if type(payload) == "table" and payload.combatant == combatant then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- The native opening samples exactly four order values before asking for
+-- decisions, stores them on the open batch in canonical slot order, and
+-- resamples them for every following batch. A final knockout without a
+-- reserve still ends through the mapped terminal word carrying its
+-- eligibility record, spending no further draws on the empty batch,
+-- while the generic path opens with no order samples at all.
+function T.native_opening_samples_four_order_values_and_keeps_the_terminal_record()
+  local contracts = SessionFixture.sessionContracts()
+  local content = doubleContent()
+
+  local session = contracts.Battle.newSession(handDoublesScenario(), content)
+  local callsBefore = session:capture().rng.calls
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the native doubles wait for both sides")
+  local settled = session:capture()
+  Assert.equal(settled.rng.calls, callsBefore + 4, "the opening spends exactly four order samples")
+  local rolls = settled.pending.nativeOrderRolls
+  Assert.notNil(rolls, "the open batch stores its pre-request order samples")
+  assert(rolls ~= nil, "the order samples are observed before assertions")
+  Assert.equal(#rolls, 4, "the open batch stores one sample per battler slot")
+  for _, sample in ipairs(rolls) do
+    Assert.isTrue(
+      type(sample) == "number" and sample % 1 == 0 and sample >= 0 and sample <= 65535,
+      "the stored samples stay raw 16-bit values"
+    )
+  end
+  local replay = contracts.Battle.newSession(handDoublesScenario(), content)
+  SessionFixture.driveUntilSettled(replay)
+  Assert.deepEqual(
+    replay:capture().pending.nativeOrderRolls,
+    rolls,
+    "the identical seed replays the identical order samples"
+  )
+  replay:dispose()
+  for _, request in ipairs(opening.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      local target = 1
+      if request.controller == "alpha" then
+        target = 3
+      end
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+    end
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "the native opening replies are accepted: " .. tostring(replyErr))
+    Assert.isNil(replyErr, "accepted native replies carry no input error")
+  end
+  local callsAfterOpen = settled.rng.calls
+  session:advance(64)
+  local following = SessionFixture.driveUntilSettled(session)
+  Assert.equal(following.status, "waiting", "the following turn asks for decisions")
+  local followingRolls = session:capture().pending.nativeOrderRolls
+  Assert.notNil(followingRolls, "the following batch stores its own order samples")
+  assert(followingRolls ~= nil, "the following samples are observed before assertions")
+  Assert.equal(#followingRolls, 4, "every batch samples one value per battler slot")
+  Assert.isTrue(
+    session:capture().rng.calls >= callsAfterOpen + 4,
+    "the following batch samples before its own requests"
+  )
+  session:dispose()
+
+  local lastStand = contracts.Battle.newSession(lastStandSinglesScenario(), content)
+  local lastOpening = SessionFixture.driveUntilSettled(lastStand)
+  Assert.equal(lastOpening.status, "waiting", "the last-stand singles ask for decisions")
+  for _, request in ipairs(lastOpening.request.requests) do
+    local target = 2
+    if request.controller == "beta" then
+      target = 1
+    end
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+    end
+    local ok, replyErr = lastStand:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "the last-stand replies are accepted")
+    Assert.isNil(replyErr, "accepted last-stand replies carry no input error")
+  end
+  local knockout = lastStand:advance(64)
+  Assert.isTrue(announcesFaintFor(knockout.events or {}, 2), "the final knockout is announced")
+  local afterKnockout = lastStand:capture()
+  local boundary = SessionFixture.driveUntilSettled(lastStand)
+  Assert.equal(boundary.status, "ended", "no reserve means no replacement and no next turn")
+  Assert.notNil(boundary.outcome, "the final knockout still names its terminal result")
+  Assert.equal(boundary.outcome.kind, "no_actors", "standings decide through the mapped terminal word")
+  Assert.isTrue(type(boundary.outcome.evolutionEligible) == "table", "the native terminal keeps its eligibility record")
+  Assert.isNil(boundary.request, "ended battles ask for nothing")
+  Assert.equal(lastStand:capture().rng.calls, afterKnockout.rng.calls, "the empty batch spends no further draws")
+  lastStand:dispose()
+
+  local generic = SessionFixture.newSession(
+    contracts,
+    SessionFixture.buildScenario({
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { SessionFixture.combatant(1, 11) }),
+        SessionFixture.participant(2, 2, "beta", { SessionFixture.combatant(3, 23) }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 3),
+      },
+    })
+  )
+  local genericOpening = SessionFixture.driveUntilSettled(generic, 64)
+  Assert.equal(genericOpening.status, "waiting", "the generic singles wait for both sides")
+  Assert.isNil(generic:capture().pending.nativeOrderRolls, "the generic batch carries no order samples")
+  generic:dispose()
+end
+
 return { tests = T }

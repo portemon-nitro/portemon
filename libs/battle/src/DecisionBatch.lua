@@ -6,6 +6,7 @@
 -- submit carries a binding callback that judges one choice against the
 -- staged reservations, and only the common action checks live here.
 
+local BattleContext = require("libs.battle.src.BattleContext")
 local BattleErrors = require("libs.battle.src.errors")
 local BattleProtocol = require("libs.battle.src.BattleProtocol")
 local BattleState = require("libs.battle.src.BattleState")
@@ -36,6 +37,80 @@ end
 ---@return string
 local function actorKey(combatant, activation)
   return combatant .. ":" .. (activation or "")
+end
+
+--- Opens one decision batch over the live battle state: increments the
+--- canonical batch counter, installs the empty pending maps, then groups
+--- the active fighters by controller in participant and roster order.
+--- The caller owns the empty-plan branch and any source-timed draws
+--- before publication; this step draws nothing and publishes no frame.
+---@param state table<string, unknown> live battle state opening its batch
+---@return { controllers: table<integer, string>, byController: table<string, table<integer, table<string, unknown>>> } plan holding `controllers` in publication order and `byController` actors
+function DecisionBatch.prepare(state)
+  assert(type(state) == "table", "batch opening requires its battle state")
+  local counter = state.batchCounter --[[@as integer]] + 1
+  state.batchCounter = counter
+  state.pending = {
+    batch = { id = counter, epoch = counter, requests = {} },
+    submitted = {},
+    reserved = { replacements = {}, items = {} },
+  }
+  local byController = {}
+  local controllerOrder = {}
+  for _, participantId in
+    ipairs(state.participantOrder --[[@as integer[] ]])
+  do
+    local participant = BattleState.participant(state, participantId)
+    local controller = participant.controller --[[@as string]]
+    for _, combatantId in
+      ipairs(participant.roster --[[@as integer[] ]])
+    do
+      local combatant = BattleState.combatant(state, combatantId)
+      if combatant.active ~= nil then
+        if byController[controller] == nil then
+          byController[controller] = {}
+          controllerOrder[#controllerOrder + 1] = controller
+        end
+        local active = combatant.active --[[@as table<string, unknown>]]
+        local actors = byController[controller]
+        actors[#actors + 1] = { combatant = combatantId, activation = active.activation }
+      end
+    end
+  end
+  return { controllers = controllerOrder, byController = byController }
+end
+
+--- Publishes one round frame and one decision request per grouped
+--- controller, then marks the battle waiting. Draws nothing and decides
+--- no terminal metadata: the caller skips this step when the plan holds
+--- no controller.
+---@param state table<string, unknown> live battle state holding the open batch
+---@param plan { controllers: table<integer, string>, byController: table<string, table<integer, table<string, unknown>>> } grouping plan returned by `prepare`
+---@param admittedKinds string[] admitted action kinds for the decision requests
+---@param decisionKind string decision vocabulary for the published requests
+function DecisionBatch.publishRound(state, plan, admittedKinds, decisionKind)
+  assert(type(state) == "table", "batch publication requires its battle state")
+  assert(type(plan) == "table", "batch publication requires its grouping plan")
+  assert(type(admittedKinds) == "table", "batch publication requires its admitted kinds")
+  assert(type(decisionKind) == "string", "batch publication requires its decision kind")
+  local controllers = plan.controllers --[[@as table<integer, string>]]
+  local byController = plan.byController --[[@as table<string, table<integer, table<string, unknown>>>]]
+  local context = BattleContext.wrap(state)
+  context:pushFrame({
+    kind = "round",
+    version = 1,
+    cursor = "awaiting_replies",
+    state = { round = state.round },
+  })
+  for _, controller in ipairs(controllers) do
+    context:requestDecision({
+      controller = controller,
+      kind = decisionKind,
+      actors = byController[controller],
+      legalChoices = { kinds = admittedKinds },
+    })
+  end
+  state.status = "waiting"
 end
 
 ---@param state table<string, unknown>
